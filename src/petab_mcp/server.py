@@ -14,7 +14,7 @@ Tool groups:
 * provenance/versions/errors: ``get_provenance``, ``get_errors``, ``list_versions``,
   ``get_version``, ``diff_versions``, ``rollback_to``, ``current_version``
 * session: ``reset``
-* skills (tool-usage documentation, loaded from ``.skills/``): ``list_skills``,
+* skills (tool-usage documentation, bundled under ``_skills/``): ``list_skills``,
   ``get_skill``
 
 No tool mutates the measurement/condition/observable tables — that invariant is
@@ -79,7 +79,7 @@ def create_server(
     """Build a FastMCP server bound to the PEtab problem at ``yaml_path``.
 
     ``skills_dir`` overrides where tool-usage skills are loaded from; when omitted
-    the ``.skills`` directory shipped with the server is discovered automatically.
+    the ``_skills`` directory bundled with the package is discovered automatically.
     """
     session = PetabSession(
         yaml_path,
@@ -384,7 +384,7 @@ def create_server(
         return json.dumps(session.provenance.list_versions(), indent=2)
 
     # ---------------------------------------------------------------- skills
-    # Tool-usage documentation, loaded from `.skills/` and exposed as
+    # Tool-usage documentation, loaded from the bundled `_skills/` and exposed as
     # `list_skills`/`get_skill` tools plus `petab://skills` resources.
     resolved_skills_dir = skills_dir or skills_mod.default_skills_dir()
     skills_mod.register_skills(mcp, skills_mod.load_skills(resolved_skills_dir))

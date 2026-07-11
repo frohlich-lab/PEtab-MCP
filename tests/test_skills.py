@@ -10,7 +10,7 @@ from petab_mcp.references import StubReferenceResolver
 from petab_mcp.server import create_server
 
 REPO_ROOT = Path(__file__).parent.parent
-SKILLS_DIR = REPO_ROOT / ".skills"
+SKILLS_DIR = REPO_ROOT / "src" / "petab_mcp" / "_skills"
 YAML_PATH = Path(__file__).parent / "data" / "toy_v1" / "problem.yaml"
 
 
@@ -74,9 +74,10 @@ def test_bundled_skill_loads():
     assert "add_reaction" in skill.text
 
 
-def test_default_skills_dir_finds_repo_skills():
+def test_default_skills_dir_finds_bundled_skills():
     found = skills_mod.default_skills_dir()
     assert found is not None
+    assert Path(found).name == "_skills"
     assert (Path(found) / "petab-model-building" / "SKILL.md").is_file()
 
 

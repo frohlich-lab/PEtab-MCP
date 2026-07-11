@@ -1,16 +1,19 @@
-"""Load agent *skills* from a ``.skills/`` directory and expose them over MCP.
+"""Load agent *skills* from the bundled ``_skills/`` directory and expose them over MCP.
 
 A *skill* is a directory that documents how to use this server's tools. It contains
 a ``SKILL.md`` file with a small YAML-style frontmatter block (``name`` and
 ``description``) followed by a markdown body, plus any number of supporting files
-(e.g. ``tools.md``) alongside it::
+(e.g. ``tools.md``) alongside it. The skills ship inside the package::
 
-    .skills/
+    src/petab_mcp/_skills/
       petab-model-building/
         SKILL.md
         tools.md
 
-Skills are shipped with the server and surfaced to MCP clients two ways:
+Because ``_skills`` lives next to this module it is found identically from a source
+checkout and an installed wheel.
+
+Skills are surfaced to MCP clients two ways:
 
 * **tools** — ``list_skills()`` and ``get_skill(name, file?)``. Tools are consumed
   by essentially every LLM client, so this is the reliable path for the agent to
@@ -19,10 +22,8 @@ Skills are shipped with the server and surfaced to MCP clients two ways:
   (a skill's ``SKILL.md``), mirroring the server's other ``petab://`` resources.
 
 The skills directory is resolved from (in order): an explicit ``skills_dir``
-argument, the ``PETAB_MCP_SKILLS_DIR`` environment variable, a packaged ``_skills``
-folder next to this module, a ``.skills`` directory found by walking up from this
-module (the source checkout), and finally ``.skills`` in the current directory. If
-none exists the server simply registers no skills.
+argument, the ``PETAB_MCP_SKILLS_DIR`` environment variable, and the bundled
+``_skills`` folder next to this module. If none exists the server registers no skills.
 """
 
 from __future__ import annotations
@@ -141,29 +142,24 @@ def load_skills(skills_dir: str | Path | None) -> list[Skill]:
 
 
 def default_skills_dir() -> Path | None:
-    """Best-effort discovery of the ``.skills`` directory (see module docstring)."""
+    """Locate the bundled ``_skills`` directory (see module docstring).
+
+    Honors ``PETAB_MCP_SKILLS_DIR`` as an override; otherwise returns the ``_skills``
+    folder shipped next to this module, or ``None`` if it is missing.
+    """
     env = os.environ.get("PETAB_MCP_SKILLS_DIR")
     if env:
         p = Path(env)
         return p if p.is_dir() else None
-
-    here = Path(__file__).resolve().parent
-    packaged = here / "_skills"
-    if packaged.is_dir():
-        return packaged
-    for parent in (here, *here.parents):
-        cand = parent / ".skills"
-        if cand.is_dir():
-            return cand
-    cwd = Path.cwd() / ".skills"
-    return cwd if cwd.is_dir() else None
+    packaged = Path(__file__).resolve().parent / "_skills"
+    return packaged if packaged.is_dir() else None
 
 
 def register_skills(mcp, skills: list[Skill]) -> list[Skill]:
     """Register ``list_skills``/``get_skill`` tools and ``petab://skills`` resources.
 
     Returns the registered skills (possibly empty). Registration is skipped entirely
-    when there are no skills, so the server surface is unchanged if ``.skills`` is
+    when there are no skills, so the server surface is unchanged if ``_skills`` is
     absent.
     """
     if not skills:

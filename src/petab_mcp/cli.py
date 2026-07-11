@@ -41,7 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--skills-dir",
         default=os.environ.get("PETAB_MCP_SKILLS_DIR"),
-        help="Directory of tool-usage skills to expose (default: bundled .skills).",
+        help="Directory of tool-usage skills to expose (default: bundled _skills).",
     )
     parser.add_argument(
         "--transport",
