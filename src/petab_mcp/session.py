@@ -50,6 +50,8 @@ class PetabSession:
         self.provenance = ProvenanceStore(root)
         self.resolver = resolver or EutilsReferenceResolver(mode=reference_mode)
         self.logger = logging_setup.configure(self.provenance.root)
+        # pyPESTO's own optimizer logs go to a separate <root>/pypesto.log
+        logging_setup.configure_pypesto(self.provenance.root)
 
         # batch (staging) state — chain several operations into one version
         self.batch_active: bool = False
