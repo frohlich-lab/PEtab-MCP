@@ -213,7 +213,7 @@ class PetabSession:
             )
             self._clear_batch()
         return {"committed": True, "version": version, "n_staged": len(staged),
-                "fit_status": fitsim.get("status"), "neg_log_likelihood": nllh}
+                **fitting.fit_result_block(fitsim, improvement)}
 
     def abort_batch(self) -> dict[str, Any]:
         with self.lock:
@@ -264,7 +264,8 @@ class PetabSession:
                     "neg_log_likelihood": nllh,
                 }
             )
-        return {"rolled_back_to": version, "version": new_version}
+        return {"rolled_back_to": version, "version": new_version,
+                **fitting.fit_result_block(sim)}
 
     # -- lifecycle ---------------------------------------------------------
     def reset(self) -> dict[str, Any]:
@@ -287,4 +288,4 @@ class PetabSession:
             self.provenance.append_event(
                 {"type": "reset", "version": new_version, "neg_log_likelihood": nllh}
             )
-        return {"reset": True, "version": new_version}
+        return {"reset": True, "version": new_version, **fitting.fit_result_block(sim)}

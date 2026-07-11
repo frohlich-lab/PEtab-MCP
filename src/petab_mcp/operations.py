@@ -273,11 +273,9 @@ def _commit_change(
         "event_timestamp": event["timestamp"],
     }
     if not staged:
-        result["fit_status"] = fitsim.get("status")
-        result["neg_log_likelihood"] = fitsim.get("neg_log_likelihood")
-        result["chi2"] = fitsim.get("chi2")
-        result["fitted_parameters"] = fitsim.get("fitted_parameters")
-        result["improvement"] = improvement or None
+        from . import fitting
+
+        result.update(fitting.fit_result_block(fitsim, improvement))
     return result
 
 

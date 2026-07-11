@@ -216,3 +216,41 @@ def test_empty_records():
     assert report["summary"]["chi2"] is None and report["summary"]["n_weighted"] == 0
     assert report["worst_points"] == []
     assert report["bias_flags"] == []
+    assert report["trend_flags"] == []
+
+
+def test_trend_flags_detect_time_shape_misfit():
+    # residuals rise monotonically with time (mean ~0), the signature of a wrong
+    # dynamics/asymptote that the mean-based bias flag misses.
+    recs = [
+        _rec("o", "c", 0.0, 0.0, 1.5, -1.5, -1.5, 1.0),
+        _rec("o", "c", 1.0, 0.0, 0.5, -0.5, -0.5, 1.0),
+        _rec("o", "c", 2.0, 0.0, -0.5, 0.5, 0.5, 1.0),
+        _rec("o", "c", 3.0, 0.0, -1.5, 1.5, 1.5, 1.0),
+    ]
+    report = fit.fit_inspection(recs)
+    assert report["bias_flags"] == []  # mean weighted residual is ~0 -> no bias flag
+    flags = report["trend_flags"]
+    assert len(flags) == 1
+    f = flags[0]
+    assert (f["observable_id"], f["condition_id"]) == ("o", "c")
+    assert f["time_residual_corr"] == pytest.approx(1.0)
+    assert f["pattern"] == "under_predicts_over_time"  # residual increases with time
+
+
+def test_trend_flags_silent_without_trend():
+    recs = [  # oscillating residuals -> no monotonic time trend
+        _rec("o", "c", 0.0, 0.0, -0.2, 0.2, 0.2, 1.0),
+        _rec("o", "c", 1.0, 0.0, 0.2, -0.2, -0.2, 1.0),
+        _rec("o", "c", 2.0, 0.0, -0.2, 0.2, 0.2, 1.0),
+        _rec("o", "c", 3.0, 0.0, 0.2, -0.2, -0.2, 1.0),
+    ]
+    assert fit.fit_inspection(recs)["trend_flags"] == []
+
+
+def test_trend_flags_need_enough_points():
+    recs = [  # only 2 points < the minimum for a trend
+        _rec("o", "c", 0.0, 0.0, 1.0, -1.0, -1.0, 1.0),
+        _rec("o", "c", 1.0, 0.0, -1.0, 1.0, 1.0, 1.0),
+    ]
+    assert fit.fit_inspection(recs)["trend_flags"] == []

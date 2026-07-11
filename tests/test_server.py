@@ -36,7 +36,7 @@ def test_tools_registered(tmp_path):
         "get_model", "get_model_structure", "validate_problem",
         "add_reaction", "change_rate_law", "remove_reaction",
         "get_parameters", "sync_parameters",
-        "get_simulations", "inspect_fit",
+        "get_fit_summary", "get_simulations", "inspect_fit",
         "get_provenance", "list_versions", "get_version", "diff_versions",
         "rollback_to", "current_version", "reset",
     }
@@ -178,18 +178,26 @@ def test_fit_tools(tmp_path):
         assert report["summary"]["n"] == 6
         assert report["chi2"] is not None
         assert len(report["worst_points"]) <= 3
-        # residuals broken down across each cross section
+        # residuals broken down across each cross section, plus the trend-flag key
         stats = report["statistics"]
         assert {o["observable_id"] for o in stats["by_observable"]} == {"obs_B"}
         assert {c["condition_id"] for c in stats["by_condition"]} == {"c0"}
         assert len(stats["by_time"]) == 6  # six distinct timepoints
+        assert "trend_flags" in report and "bias_flags" in report
 
-        # the simulation dataframe is exposed read-only via get_simulations
+        # compact metrics-only read (no records) — and the objective is now in describe
+        summary = _structured(await mcp.call_tool("get_fit_summary", {}))
+        assert "records" not in summary and summary["neg_log_likelihood"] is not None
+        desc = _structured(await mcp.call_tool("describe_problem", {}))
+        assert desc["neg_log_likelihood"] == pytest.approx(summary["neg_log_likelihood"])
+
+        # the simulation dataframe is exposed read-only via get_simulations; worst_n caps it
         sims = _structured(await mcp.call_tool("get_simulations", {}))
-        assert len(sims["records"]) == 6
-        assert sims["neg_log_likelihood"] is not None
+        assert len(sims["records"]) == 6 and sims["neg_log_likelihood"] is not None
+        capped = _structured(await mcp.call_tool("get_simulations", {"worst_n": 2}))
+        assert len(capped["records"]) == 2 and capped.get("records_truncated") is True
 
-        # a commit auto-fits: its result carries fit metrics and a new fitted version
+        # a commit auto-fits: its result carries the unified fit block + a fitted version
         res = _structured(await mcp.call_tool("change_parameter_bounds", {
             "parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3,
             "justification": "widen bounds", "n_starts": 2,
@@ -198,5 +206,9 @@ def test_fit_tools(tmp_path):
         assert res["fit_status"] == "fit"
         assert res["neg_log_likelihood"] is not None
         assert res["version"] == 1
+        assert res["improvement"]["is_new_best"] is not None
+        # diff_versions now reports the fit delta between versions
+        d = _structured(await mcp.call_tool("diff_versions", {"from_version": 0, "to_version": 1}))
+        assert "fit" in d and "neg_log_likelihood_delta" in d["fit"]
 
     asyncio.run(go())

@@ -199,6 +199,25 @@ def compute_improvement(
     }
 
 
+def fit_result_block(
+    fitsim: dict[str, Any] | None, improvement: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """The fit fields every commit path returns (single op, batch, rollback, reset).
+
+    Keeps the tool-result shape identical across commit kinds so an agent reads the same
+    keys everywhere. ``fitsim`` is a :func:`fit_and_simulate` payload (or the restored
+    simulation for rollback/reset); ``improvement`` is the :func:`compute_improvement` dict.
+    """
+    fitsim = fitsim or {}
+    return {
+        "fit_status": fitsim.get("status"),
+        "neg_log_likelihood": fitsim.get("neg_log_likelihood"),
+        "chi2": fitsim.get("chi2"),
+        "fitted_parameters": fitsim.get("fitted_parameters"),
+        "improvement": improvement or None,
+    }
+
+
 def build_sim_payload_for_version(payload: dict[str, Any] | None) -> dict[str, Any] | None:
     """The clean simulation blob persisted alongside a version (``simulations.json``).
 

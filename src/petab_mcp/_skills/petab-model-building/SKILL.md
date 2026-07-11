@@ -72,18 +72,19 @@ model and parameter table are reverted and nothing is versioned.
 
 ### `add_reaction(reaction, justification, references)`
 
-`reaction` is a single Antimony reaction line:
+`reaction` is a single Antimony reaction line (species/parameter names below are
+**illustrative placeholders** — use the actual entities from *your* model, not these):
 
 ```
-J1: A + B -> C; k_f*A*B
+J1: S1 + S2 -> S3; k_f*S1*S2
 ```
 
 - An `id:` prefix is optional — omit it and the server assigns `J1`, `J2`, …
 - Use `->` (or `=>`) between reactants and products. Stoichiometry is written as a
-  leading number: `2 A -> B`.
+  leading number: `2 S1 -> S2`.
 - A **rate law after `;` is required** for a new reaction.
 - **Reactions are irreversible** (one kinetic law). Model a reversible step
-  A⇌B either as a single net rate law `J: A -> B; k_f*A - k_r*B`, or as two
+  X⇌Y either as a single net rate law `J: X -> Y; k_f*X - k_r*Y`, or as two
   separate reactions.
 - New species mentioned in the reaction are created automatically (with a
   parametric initial condition). New symbols in the rate law that are not species
@@ -154,24 +155,27 @@ or `n_starts=0` to simulate without fitting.
 
 Inspect the result with:
 
-- `get_simulations()` — the stored simulation dataframe: fit metrics + per-point records
-  (measurement, simulation, residual, noise-weighted residual, noise).
+- `get_fit_summary()` — just the metrics (`neg_log_likelihood`, `chi2`, …), no records —
+  the cheapest way to check the score.
+- `get_simulations(worst_n?)` — the stored simulation dataframe: fit metrics + per-point
+  records (measurement, simulation, residual, noise-weighted residual, noise). Pass
+  `worst_n` to return only the N worst-fit points.
 - `inspect_fit(top_n)` — residual statistics overall and across each cross section
-  (observables, experiments/conditions, timepoints), the `top_n` worst-fit points, and
-  systematic-bias flags — so you see *where* the model fits poorly. It reads the stored
-  dataframe (no re-simulation).
+  (observables, conditions, timepoints), the `top_n` worst-fit points, systematic-bias
+  flags, and **trend flags** (residuals drifting with time — a dynamics/asymptote error) —
+  so you see *where* the model fits poorly. Reads the stored dataframe (no re-simulation).
 
 A typical loop: edit the model (it auto-fits) → `inspect_fit` to see where it still fits
 poorly → make the next justified edit → compare `is_new_best` / `improvement_vs_best_prior`
-across versions.
+across versions (or `diff_versions`, which reports the neg-log-likelihood delta).
 
 ## Step 6 — provenance, versions, and recovery
 
 - `list_versions()` — every snapshot with its kind (`initial`, `alteration`,
-  `batch`, `training`, `rollback`, `reset`), label, and timestamp.
-- `get_version(v)` / `diff_versions(from, to)` — inspect a version, or see the
-  Antimony diff + parameter add/remove/change between two.
-- `get_provenance(limit)` — recent events (alterations, training, rollbacks).
+  `batch`, `rollback`, `reset`), label, timestamp, and fit metrics — rank versions by fit.
+- `get_version(v)` / `diff_versions(from, to)` — inspect a version, or see the Antimony
+  diff + parameter add/remove/change + the neg-log-likelihood delta between two.
+- `get_provenance(limit)` — recent events (alterations, batches, rollbacks, resets).
 - `get_errors(limit)` — recent **rejected** operations and failed tool calls. When
   an operation returns `committed: false`, look here for the full context.
 - `rollback_to(version, justification?)` — restore a prior version (appends a new,
@@ -202,9 +206,9 @@ describe_problem()                         # orient
 get_model("antimony"); get_parameters()    # see model + parameters
 list_observables(); get_measurements()     # see what you're fitting
 
-add_reaction("J: B -> C; k3*B",
-             justification="B is enzymatically converted to C (…)",
-             references=["PMID:12345678"]) # -> committed + auto-fitted; k3 + C_init added
+add_reaction("v1: S -> P; k*S",            # ILLUSTRATIVE placeholders — use YOUR model's
+             justification="… mechanistic reason …",   # species/params, not S/P/k
+             references=["PMID:XXXXXXXX"]) # -> committed + auto-fitted; new symbols added
                                            #    result carries neg_log_likelihood / is_new_best
 inspect_fit()                              # where does it still fit poorly?
 get_simulations()                          # the simulated-vs-measured dataframe
