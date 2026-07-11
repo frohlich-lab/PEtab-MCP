@@ -53,7 +53,13 @@ SERVER_INSTRUCTIONS = (
     "`simulate`/`evaluate_objective`, fit with `optimize` (which records improvement vs "
     "prior trained versions). Every change is versioned and logged: inspect with "
     "`list_versions`, `diff_versions`, `get_provenance`; errors via `get_errors`; revert "
-    "with `rollback_to` or `reset`. New to this server? Call `list_skills` and read "
+    "with `rollback_to` or `reset`."
+)
+
+# Appended to the instructions only when skills are actually registered, so clients
+# are never told to call `list_skills`/`get_skill` when those tools are absent.
+_SKILLS_INSTRUCTION = (
+    " New to this server? Call `list_skills` and read "
     "`get_skill('petab-model-building')` for the full tool-usage workflow."
 )
 
@@ -88,7 +94,13 @@ def create_server(
         resolver=resolver,
     )
     engine = AmiciEngine(session, build_root=build_root)
-    mcp = FastMCP("petab-mcp", instructions=SERVER_INSTRUCTIONS)
+
+    # Load tool-usage skills up front so the server instructions only advertise
+    # `list_skills`/`get_skill` when skills are actually available (registered below).
+    resolved_skills_dir = skills_dir or skills_mod.default_skills_dir()
+    skills = skills_mod.load_skills(resolved_skills_dir)
+    instructions = SERVER_INSTRUCTIONS + (_SKILLS_INSTRUCTION if skills else "")
+    mcp = FastMCP("petab-mcp", instructions=instructions)
 
     # ------------------------------------------------------------------ read
     @mcp.tool()
@@ -384,10 +396,9 @@ def create_server(
         return json.dumps(session.provenance.list_versions(), indent=2)
 
     # ---------------------------------------------------------------- skills
-    # Tool-usage documentation, loaded from the bundled `_skills/` and exposed as
-    # `list_skills`/`get_skill` tools plus `petab://skills` resources.
-    resolved_skills_dir = skills_dir or skills_mod.default_skills_dir()
-    skills_mod.register_skills(mcp, skills_mod.load_skills(resolved_skills_dir))
+    # Register the skills loaded above as `list_skills`/`get_skill` tools plus
+    # `petab://skills` resources (no-op when no skills were found).
+    skills_mod.register_skills(mcp, skills)
 
     # keep references alive / silence linters for closure-registered callables
     _ = (PetabMcpError,)

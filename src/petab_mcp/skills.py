@@ -52,12 +52,15 @@ class Skill:
         return key in (self.name, self.slug)
 
     def summary(self) -> dict[str, object]:
+        # The resource URI uses the directory `slug` (a safe path segment), not the
+        # free-text frontmatter `name`, which may contain spaces or other characters
+        # that are invalid in a `petab://skills/{...}` path. `_find` resolves either.
         return {
             "name": self.name,
             "slug": self.slug,
             "description": self.description,
             "files": sorted(self.files),
-            "resource": f"petab://skills/{self.name}",
+            "resource": f"petab://skills/{self.slug}",
         }
 
 
@@ -122,13 +125,19 @@ def load_skills(skills_dir: str | Path | None) -> list[Skill]:
             continue
         text = skill_md.read_text(encoding="utf-8")
         meta, _body = parse_frontmatter(text)
+        base = child.resolve()
         files: dict[str, str] = {}
         for f in sorted(child.rglob("*")):
-            if f.is_file() and f.name != _SKILL_FILE:
-                try:
-                    files[f.relative_to(child).as_posix()] = f.read_text(encoding="utf-8")
-                except (UnicodeDecodeError, OSError):
-                    continue  # skip binary/unreadable support files
+            if not f.is_file() or f.name == _SKILL_FILE or f.is_symlink():
+                continue
+            # Never follow a symlink out of the skill tree: a support file's resolved
+            # path must stay within the skill directory before we read/expose it.
+            try:
+                if not f.resolve().is_relative_to(base):
+                    continue
+                files[f.relative_to(child).as_posix()] = f.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError, ValueError):
+                continue  # skip binary/unreadable/out-of-tree support files
         skills.append(
             Skill(
                 slug=child.name,
@@ -142,17 +151,22 @@ def load_skills(skills_dir: str | Path | None) -> list[Skill]:
 
 
 def default_skills_dir() -> Path | None:
-    """Locate the bundled ``_skills`` directory (see module docstring).
+    """Locate the skills directory (see module docstring).
 
-    Honors ``PETAB_MCP_SKILLS_DIR`` as an override; otherwise returns the ``_skills``
-    folder shipped next to this module, or ``None`` if it is missing.
+    Prefers ``PETAB_MCP_SKILLS_DIR`` when it points at a real directory, then the
+    ``_skills`` folder bundled next to this module. Returns the first that exists, or
+    ``None``. An invalid env override therefore falls back to the bundled skills
+    rather than disabling them.
     """
+    candidates: list[Path] = []
     env = os.environ.get("PETAB_MCP_SKILLS_DIR")
     if env:
-        p = Path(env)
-        return p if p.is_dir() else None
-    packaged = Path(__file__).resolve().parent / "_skills"
-    return packaged if packaged.is_dir() else None
+        candidates.append(Path(env))
+    candidates.append(Path(__file__).resolve().parent / "_skills")
+    for cand in candidates:
+        if cand.is_dir():
+            return cand
+    return None
 
 
 def register_skills(mcp, skills: list[Skill]) -> list[Skill]:
