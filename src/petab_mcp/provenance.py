@@ -31,6 +31,7 @@ class ProvenanceStore:
         self.root = Path(root)
         self.versions_dir = self.root / "versions"
         self.log_path = self.root / "provenance.jsonl"
+        self.errors_path = self.root / "errors.jsonl"
         self.head_path = self.root / "HEAD"
         self.versions_dir.mkdir(parents=True, exist_ok=True)
 
@@ -42,12 +43,25 @@ class ProvenanceStore:
         return event
 
     def recent_events(self, limit: int = 50) -> list[dict[str, Any]]:
-        if not self.log_path.exists():
+        return self._tail(self.log_path, limit)
+
+    # -- error log (separate from the success-oriented provenance log) ------
+    def log_error(self, record: dict[str, Any]) -> dict[str, Any]:
+        record = {"timestamp": _now(), **record}
+        with self.errors_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record) + "\n")
+        return record
+
+    def recent_errors(self, limit: int = 50) -> list[dict[str, Any]]:
+        return self._tail(self.errors_path, limit)
+
+    @staticmethod
+    def _tail(path: Path, limit: int) -> list[dict[str, Any]]:
+        if not path.exists():
             return []
-        with self.log_path.open(encoding="utf-8") as fh:
-            lines = [ln for ln in fh if ln.strip()]
-        events = [json.loads(ln) for ln in lines]
-        return events[-limit:] if limit and limit > 0 else events
+        with path.open(encoding="utf-8") as fh:
+            records = [json.loads(ln) for ln in fh if ln.strip()]
+        return records[-limit:] if limit and limit > 0 else records
 
     # -- HEAD --------------------------------------------------------------
     @property
@@ -92,7 +106,9 @@ class ProvenanceStore:
     def _version_dir(self, n: int) -> Path:
         vdir = self.versions_dir / f"v{n}"
         if not vdir.is_dir():
-            raise KeyError(f"No such version: v{n}")
+            from .errors import UnknownEntityError
+
+            raise UnknownEntityError(f"No such version: v{n}")
         return vdir
 
     def get_version(self, n: int) -> dict[str, Any]:

@@ -151,28 +151,42 @@ def _model_hash(sbml_str: str) -> str:
     return hashlib.sha256(sbml_str.encode("utf-8")).hexdigest()[:16]
 
 
-def _commit(
+def _commit_change(
     session,
     op: str,
     op_args: dict[str, Any],
     justification: str,
-    references: list[str],
-    apply_fn: Callable[[Any], Any],
+    references: list[str] | None,
+    *,
+    model_edit: Callable[[Any], Any] | None = None,
+    param_edit: Callable[[Any], Any] | None = None,
+    require_references: bool = True,
 ) -> dict[str, Any]:
+    """Shared commit pipeline for model and parameter operations.
+
+    ``model_edit(sbml_model)`` edits a *clone* of the model (triggers reconcile);
+    ``param_edit(problem)`` edits the parameter table in place. On any failure the model
+    and parameter table are reverted. When a batch is open the change is applied and
+    logged but no version is snapshotted until ``commit_batch``.
+    """
     if not isinstance(justification, str) or not justification.strip():
-        raise OperationError("A non-empty justification is required for a model operation.")
-    resolved = resolve_references(session.resolver, references)
+        raise OperationError("A non-empty justification is required for this operation.")
+    resolved = resolve_references(session.resolver, references, required=require_references)
 
     with session.lock:
         old_model = session.problem.model
         old_sbml = old_model.to_sbml_str()
         old_params = session.problem.parameter_df.copy(deep=True)
 
-        candidate = SbmlModel.from_string(old_sbml, model_id=old_model.model_id)
         try:
-            apply_result = apply_fn(candidate.sbml_model)
-            session.problem.model = candidate
-            recon = R.reconcile(session.problem)
+            if model_edit is not None:
+                candidate = SbmlModel.from_string(old_sbml, model_id=old_model.model_id)
+                apply_result = model_edit(candidate.sbml_model)
+                session.problem.model = candidate
+                recon = R.reconcile(session.problem)
+            else:
+                apply_result = param_edit(session.problem)
+                recon = None
             report = validate_problem(session.problem)
             if not report["valid"]:
                 raise ValidationError(
@@ -185,41 +199,47 @@ def _commit(
             session.problem.parameter_df = old_params
             raise
 
-        # committed
         new_ant = session.problem.model.to_antimony()
         param_diff = {
-            "added": recon["parameters"]["added"],
-            "removed": recon["parameters"]["removed"],
-            "pruned_species": recon["pruned"]["species"],
+            "added": recon["parameters"]["added"] if recon else [],
+            "removed": recon["parameters"]["removed"] if recon else [],
+            "pruned_species": recon["pruned"]["species"] if recon else [],
         }
-        version_before = session.provenance.current_version
-        version = session.provenance.snapshot_version(
-            model_ant=new_ant,
-            parameters=parameters_to_records(session.problem),
-            label=op,
-            kind="alteration",
-            meta={"operation": op, "args": op_args},
-        )
-        event = session.provenance.append_event(
-            {
-                "type": "alteration",
-                "operation": op,
-                "args": op_args,
-                "result": apply_result if isinstance(apply_result, (str, dict, list)) else None,
-                "justification": justification,
-                "references": resolved,
-                "parameter_diff": param_diff,
-                "version_before": version_before,
-                "version": version,
-                "model_hash_before": _model_hash(old_sbml),
-                "model_hash_after": _model_hash(session.problem.model.to_sbml_str()),
-            }
-        )
+        event_base = {
+            "type": "alteration",
+            "operation": op,
+            "args": op_args,
+            "result": apply_result if isinstance(apply_result, (str, dict, list)) else None,
+            "justification": justification,
+            "references": resolved,
+            "parameter_diff": param_diff,
+            "model_hash_before": _model_hash(old_sbml),
+            "model_hash_after": _model_hash(session.problem.model.to_sbml_str()),
+        }
+
+        staged = session.batch_active
+        if staged:
+            event = session.provenance.append_event({**event_base, "staged": True, "version": None})
+            session.staged.append({"operation": op, "args": op_args, "justification": justification})
+            version = None
+        else:
+            version_before = session.provenance.current_version
+            version = session.provenance.snapshot_version(
+                model_ant=new_ant,
+                parameters=parameters_to_records(session.problem),
+                label=op,
+                kind="alteration",
+                meta={"operation": op, "args": op_args},
+            )
+            event = session.provenance.append_event(
+                {**event_base, "version_before": version_before, "version": version}
+            )
 
     return {
         "committed": True,
         "operation": op,
         "version": version,
+        "staged": staged,
         "reconcile": recon,
         "references": resolved,
         "justification": justification,
@@ -228,38 +248,92 @@ def _commit(
     }
 
 
-# -- public operations -----------------------------------------------------
+# -- public operations: model ----------------------------------------------
 def add_reaction(session, reaction: str, justification: str, references: list[str]) -> dict[str, Any]:
     spec = parse_reaction_line(reaction)
-
-    def apply_fn(sm):
-        return {"reaction_id": _add_reaction_to_model(sm, spec)}
-
-    return _commit(session, "add_reaction", {"reaction": reaction}, justification, references, apply_fn)
+    return _commit_change(
+        session, "add_reaction", {"reaction": reaction}, justification, references,
+        model_edit=lambda sm: {"reaction_id": _add_reaction_to_model(sm, spec)},
+    )
 
 
 def change_rate_law(
     session, reaction_id: str, rate_law: str, justification: str, references: list[str]
 ) -> dict[str, Any]:
-    def apply_fn(sm):
+    def edit(sm):
         _change_rate_law_in_model(sm, reaction_id, rate_law)
         return {"reaction_id": reaction_id}
 
-    return _commit(
-        session,
-        "change_rate_law",
-        {"reaction_id": reaction_id, "rate_law": rate_law},
-        justification,
-        references,
-        apply_fn,
+    return _commit_change(
+        session, "change_rate_law", {"reaction_id": reaction_id, "rate_law": rate_law},
+        justification, references, model_edit=edit,
     )
 
 
 def remove_reaction(session, reaction_id: str, justification: str, references: list[str]) -> dict[str, Any]:
-    def apply_fn(sm):
+    def edit(sm):
         _remove_reaction_from_model(sm, reaction_id)
         return {"reaction_id": reaction_id}
 
-    return _commit(
-        session, "remove_reaction", {"reaction_id": reaction_id}, justification, references, apply_fn
+    return _commit_change(
+        session, "remove_reaction", {"reaction_id": reaction_id}, justification, references,
+        model_edit=edit,
+    )
+
+
+# -- public operations: parameters (justification required, references optional) --
+def _require_positive_for_log(problem, parameter_id: str, scale: str) -> None:
+    if scale not in ("log", "log10"):
+        return
+    row = problem.parameter_df.loc[parameter_id]
+    for field in ("lowerBound", "nominalValue"):
+        if field in problem.parameter_df.columns:
+            val = row[field]
+            try:
+                fval = float(val)
+            except (TypeError, ValueError):
+                continue
+            if fval == fval and fval <= 0:  # not NaN and non-positive
+                raise OperationError(
+                    f"Cannot use {scale} scale for {parameter_id!r}: {field}={val} must be > 0."
+                )
+
+
+def change_parameter_scale(
+    session, parameter_id: str, scale: str, justification: str, references: list[str] | None = None
+) -> dict[str, Any]:
+    from .parameters import update_parameters
+
+    def edit(problem):
+        update_parameters(problem, [{"id": parameter_id, "parameterScale": scale}])
+        _require_positive_for_log(problem, parameter_id, scale)
+        return {"parameter_id": parameter_id, "scale": scale}
+
+    return _commit_change(
+        session, "change_parameter_scale", {"parameter_id": parameter_id, "scale": scale},
+        justification, references, param_edit=edit, require_references=False,
+    )
+
+
+def change_parameter_bounds(
+    session,
+    parameter_id: str,
+    lower_bound: float,
+    upper_bound: float,
+    justification: str,
+    references: list[str] | None = None,
+) -> dict[str, Any]:
+    from .parameters import update_parameters
+
+    def edit(problem):
+        update_parameters(
+            problem,
+            [{"id": parameter_id, "lowerBound": lower_bound, "upperBound": upper_bound}],
+        )
+        return {"parameter_id": parameter_id, "lowerBound": lower_bound, "upperBound": upper_bound}
+
+    return _commit_change(
+        session, "change_parameter_bounds",
+        {"parameter_id": parameter_id, "lowerBound": lower_bound, "upperBound": upper_bound},
+        justification, references, param_edit=edit, require_references=False,
     )

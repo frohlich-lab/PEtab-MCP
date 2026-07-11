@@ -83,6 +83,44 @@ def test_remove_unknown_reaction(session):
         O.remove_reaction(session, "nope", justification="x", references=["PMID:1"])
 
 
+# -- parameter operations --------------------------------------------------
+def test_change_parameter_scale(session):
+    res = O.change_parameter_scale(session, "sigma_B", "log10", justification="spans magnitudes")
+    assert res["committed"] is True
+    assert res["references"] == []  # references optional for parameter operations
+    recs = {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
+    assert recs["sigma_B"]["parameterScale"] == "log10"
+
+
+def test_change_parameter_scale_requires_justification(session):
+    with pytest.raises(OperationError):
+        O.change_parameter_scale(session, "sigma_B", "log10", justification="")
+
+
+def test_change_parameter_scale_invalid_is_reverted(session):
+    # A_init has lowerBound 0 -> log10 is invalid; the table must be unchanged.
+    before = {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
+    with pytest.raises(OperationError):
+        O.change_parameter_scale(session, "A_init", "log10", justification="x")
+    after = {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
+    assert after["A_init"] == before["A_init"]
+
+
+def test_change_parameter_bounds(session):
+    res = O.change_parameter_bounds(session, "k1", 1e-3, 1e3, justification="physiological range")
+    assert res["committed"] is True
+    recs = {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
+    assert float(recs["k1"]["lowerBound"]) == 1e-3
+    assert float(recs["k1"]["upperBound"]) == 1e3
+
+
+def test_change_parameter_bounds_bad_range_reverts(session):
+    with pytest.raises(Exception):
+        O.change_parameter_bounds(session, "k1", 10.0, 1.0, justification="x")
+    recs = {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
+    assert float(recs["k1"]["upperBound"]) != 1.0  # not applied
+
+
 def test_operation_records_version_and_provenance(session):
     before = session.provenance.current_version
     O.add_reaction(session, "J: B -> D; k3*B", justification="x", references=["PMID:1"])

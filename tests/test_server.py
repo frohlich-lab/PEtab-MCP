@@ -106,6 +106,36 @@ def test_operation_missing_references_reports_error(tmp_path):
     asyncio.run(go())
 
 
+def test_rejected_operation_is_logged(tmp_path):
+    mcp = _server(tmp_path)
+
+    async def go():
+        res = _structured(await mcp.call_tool("change_parameter_scale", {
+            "parameter_id": "A_init", "scale": "log10", "justification": "x",
+        }))
+        assert res["committed"] is False  # A_init lb=0 -> log10 invalid
+        errs = _structured(await mcp.call_tool("get_errors", {}))
+        elist = errs["result"] if isinstance(errs, dict) and "result" in errs else errs
+        assert any(e["tool"] == "change_parameter_scale" for e in elist)
+
+    asyncio.run(go())
+
+
+def test_batch_tools(tmp_path):
+    mcp = _server(tmp_path)
+
+    async def go():
+        await mcp.call_tool("begin_batch", {"label": "b"})
+        await mcp.call_tool("add_reaction", {
+            "reaction": "J: B -> D; k3*B", "justification": "x", "references": ["PMID:1"]})
+        cur = _structured(await mcp.call_tool("current_version", {}))
+        assert cur["batch_active"] is True and cur["version"] == 0  # no version yet
+        cb = _structured(await mcp.call_tool("commit_batch", {}))
+        assert cb["version"] == 1
+
+    asyncio.run(go())
+
+
 def test_resources_registered(tmp_path):
     resources = asyncio.run(_server(tmp_path).list_resources())
     uris = {str(r.uri) for r in resources}

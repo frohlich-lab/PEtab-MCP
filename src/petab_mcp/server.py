@@ -5,12 +5,14 @@ Tool groups:
 * read-only (fixed design): ``describe_problem``, ``list_observables``,
   ``list_conditions``, ``get_measurements``
 * model (constrained operations): ``add_reaction``, ``change_rate_law``,
-  ``remove_reaction`` (each requires justification + references), plus read-only
+  ``remove_reaction`` (justification + references), ``change_parameter_scale``,
+  ``change_parameter_bounds`` (justification; references optional), plus read-only
   ``get_model``, ``get_model_structure``, ``validate_problem``
 * parameters (mutable): ``get_parameters``, ``update_parameters``, ``sync_parameters``
+* batching: ``begin_batch``, ``commit_batch``, ``abort_batch``
 * evaluation: ``simulate``, ``evaluate_objective``, ``optimize``
-* provenance/versions: ``get_provenance``, ``list_versions``, ``get_version``,
-  ``diff_versions``, ``rollback_to``, ``current_version``
+* provenance/versions/errors: ``get_provenance``, ``get_errors``, ``list_versions``,
+  ``get_version``, ``diff_versions``, ``rollback_to``, ``current_version``
 * session: ``reset``
 
 No tool mutates the measurement/condition/observable tables — that invariant is
@@ -41,10 +43,14 @@ SERVER_INSTRUCTIONS = (
     "through three constrained, justified operations — `add_reaction`, "
     "`change_rate_law`, `remove_reaction` — each of which requires a justification and "
     "PubMed-validated references and automatically keeps the SBML model and PEtab "
-    "parameter table consistent (parametric initial conditions). Tune parameters with "
-    "`update_parameters`, score with `simulate`/`evaluate_objective`, fit with "
-    "`optimize`. Every change is versioned and logged: inspect with `list_versions`, "
-    "`diff_versions`, `get_provenance`; revert with `rollback_to` or `reset`."
+    "parameter table consistent (parametric initial conditions). Parameter scales and "
+    "bounds are changed through versioned, justified operations "
+    "(`change_parameter_scale`, `change_parameter_bounds`). Chain several operations into "
+    "one version with `begin_batch`/`commit_batch`/`abort_batch`. Score with "
+    "`simulate`/`evaluate_objective`, fit with `optimize` (which records improvement vs "
+    "prior trained versions). Every change is versioned and logged: inspect with "
+    "`list_versions`, `diff_versions`, `get_provenance`; errors via `get_errors`; revert "
+    "with `rollback_to` or `reset`."
 )
 
 
@@ -94,6 +100,7 @@ def create_server(
             "n_measurements": int(p.n_measurements),
             "n_reactions_detail": [sm.getReaction(i).getId() for i in range(sm.getNumReactions())],
             "current_version": session.provenance.current_version,
+            "batch_active": session.batch_active,
             "fixed_tables": ["measurements", "conditions", "observables"],
             "amici_available": _amici_available(),
         }
@@ -132,13 +139,48 @@ def create_server(
         """Structured view of the model: species, parameters, reactions."""
         return model_mod.model_structure(session)
 
-    def _run_operation(fn, *args) -> dict[str, Any]:
+    def _log_error(tool: str, args: dict[str, Any], exc: Exception) -> None:
+        session.provenance.log_error(
+            {
+                "tool": tool,
+                "args": args,
+                "error_type": type(exc).__name__,
+                "message": str(exc),
+                "issues": getattr(exc, "issues", None),
+            }
+        )
+
+    def _run_operation(op_name, fn, *args) -> dict[str, Any]:
+        """Run an operation; on a known error, log it and return committed=False."""
         try:
             return fn(*args)
-        except ValidationError as exc:
-            return {"committed": False, "error": str(exc), "issues": exc.issues}
         except PetabMcpError as exc:
-            return {"committed": False, "error": str(exc)}
+            _log_error(op_name, {"args": [a for a in args if isinstance(a, (str, int, float, list))]}, exc)
+            session.logger.warning("operation %s rejected: %s", op_name, exc)
+            out = {"committed": False, "error": str(exc)}
+            if getattr(exc, "issues", None):
+                out["issues"] = exc.issues
+            return out
+        except Exception as exc:
+            _log_error(op_name, {}, exc)
+            session.logger.exception("operation %s crashed", op_name)
+            raise
+
+    def _run(tool: str, fn, args: dict[str, Any] | None = None):
+        """Run a non-operation tool; log failures (return {ok:false} or re-raise)."""
+        try:
+            return fn()
+        except PetabMcpError as exc:
+            _log_error(tool, args or {}, exc)
+            session.logger.warning("%s failed: %s", tool, exc)
+            out = {"ok": False, "error": str(exc)}
+            if getattr(exc, "issues", None):
+                out["issues"] = exc.issues
+            return out
+        except Exception as exc:
+            _log_error(tool, args or {}, exc)
+            session.logger.exception("%s crashed", tool)
+            raise
 
     @mcp.tool()
     def add_reaction(
@@ -150,7 +192,7 @@ def create_server(
         automatically to keep the SBML model and PEtab tables consistent.
         `justification` (non-empty) and `references` (>=1, PubMed-validated) are required.
         """
-        return _run_operation(ops_mod.add_reaction, session, reaction, justification, references)
+        return _run_operation("add_reaction", ops_mod.add_reaction, session, reaction, justification, references)
 
     @mcp.tool()
     def change_rate_law(
@@ -159,7 +201,7 @@ def create_server(
         """Replace a reaction's rate law (Antimony-like expression). Requires
         justification + references; parameters are reconciled automatically."""
         return _run_operation(
-            ops_mod.change_rate_law, session, reaction_id, rate_law, justification, references
+            "change_rate_law", ops_mod.change_rate_law, session, reaction_id, rate_law, justification, references
         )
 
     @mcp.tool()
@@ -168,7 +210,30 @@ def create_server(
     ) -> dict[str, Any]:
         """Remove a reaction entirely and prune any orphaned species/parameters.
         Requires justification + references."""
-        return _run_operation(ops_mod.remove_reaction, session, reaction_id, justification, references)
+        return _run_operation("remove_reaction", ops_mod.remove_reaction, session, reaction_id, justification, references)
+
+    @mcp.tool()
+    def change_parameter_scale(
+        parameter_id: str, scale: str, justification: str, references: list[str] | None = None
+    ) -> dict[str, Any]:
+        """Change a parameter's scale ('lin'|'log'|'log10'). Versioned; requires a
+        justification (references optional)."""
+        return _run_operation(
+            "change_parameter_scale", ops_mod.change_parameter_scale,
+            session, parameter_id, scale, justification, references,
+        )
+
+    @mcp.tool()
+    def change_parameter_bounds(
+        parameter_id: str, lower_bound: float, upper_bound: float,
+        justification: str, references: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Change a parameter's lower/upper bounds. Versioned; requires a justification
+        (references optional)."""
+        return _run_operation(
+            "change_parameter_bounds", ops_mod.change_parameter_bounds,
+            session, parameter_id, lower_bound, upper_bound, justification, references,
+        )
 
     @mcp.tool()
     def validate_problem() -> dict[str, Any]:
@@ -207,15 +272,37 @@ def create_server(
 
     @mcp.tool()
     def optimize(n_starts: int = 5, seed: int = 0) -> dict[str, Any]:
-        """Estimate the free parameters; writes the best fit back into the table."""
-        with session.lock:
-            return optimize_mod.optimize(session, engine, n_starts=n_starts, seed=seed)
+        """Estimate the free parameters; writes the best fit back and records improvement
+        vs prior trained versions."""
+        return _run("optimize", lambda: optimize_mod.optimize(session, engine, n_starts=n_starts, seed=seed),
+                    {"n_starts": n_starts})
+
+    # --------------------------------------------------------------- batching
+    @mcp.tool()
+    def begin_batch(label: str = "") -> dict[str, Any]:
+        """Start a batch: subsequent operations apply + log but defer versioning until commit_batch."""
+        return _run("begin_batch", lambda: session.begin_batch(label or None), {"label": label})
+
+    @mcp.tool()
+    def commit_batch(label: str = "") -> dict[str, Any]:
+        """Snapshot all staged operations as a single new version."""
+        return _run("commit_batch", lambda: session.commit_batch(label or None), {"label": label})
+
+    @mcp.tool()
+    def abort_batch() -> dict[str, Any]:
+        """Discard staged operations and restore the pre-batch version."""
+        return _run("abort_batch", session.abort_batch)
 
     # ------------------------------------------------------ provenance/versions
     @mcp.tool()
     def get_provenance(limit: int = 50) -> list[dict[str, Any]]:
         """Return the most recent provenance events (alterations, training, rollbacks)."""
         return session.provenance.recent_events(limit)
+
+    @mcp.tool()
+    def get_errors(limit: int = 50) -> list[dict[str, Any]]:
+        """Return the most recent logged errors (rejected operations / failed tool calls)."""
+        return session.provenance.recent_errors(limit)
 
     @mcp.tool()
     def list_versions() -> list[dict[str, Any]]:
@@ -225,28 +312,30 @@ def create_server(
     @mcp.tool()
     def get_version(version: int) -> dict[str, Any]:
         """Return a version's Antimony model and parameter table."""
-        return session.provenance.get_version(version)
+        return _run("get_version", lambda: session.provenance.get_version(version), {"version": version})
 
     @mcp.tool()
     def diff_versions(from_version: int, to_version: int) -> dict[str, Any]:
         """Diff two versions (Antimony unified diff + parameter add/remove/change)."""
-        return session.provenance.diff_versions(from_version, to_version)
+        return _run("diff_versions", lambda: session.provenance.diff_versions(from_version, to_version),
+                    {"from": from_version, "to": to_version})
 
     @mcp.tool()
     def rollback_to(version: int, justification: str = "") -> dict[str, Any]:
         """Revert the working model + parameters to a prior version (appends a new version)."""
-        return session.rollback_to(version, justification or None)
+        return _run("rollback_to", lambda: session.rollback_to(version, justification or None),
+                    {"version": version})
 
     @mcp.tool()
     def current_version() -> dict[str, Any]:
-        """Return the current (HEAD) version number."""
-        return {"version": session.provenance.current_version}
+        """Return the current (HEAD) version number and batch state."""
+        return {"version": session.provenance.current_version, "batch_active": session.batch_active}
 
     # --------------------------------------------------------------- session
     @mcp.tool()
     def reset() -> dict[str, Any]:
         """Revert model and parameters to the initial version (v0)."""
-        return session.reset()
+        return _run("reset", session.reset)
 
     # ------------------------------------------------------------- resources
     @mcp.resource("petab://model/antimony")
@@ -276,6 +365,10 @@ def create_server(
     @mcp.resource("petab://provenance")
     def _res_provenance() -> str:
         return json.dumps(session.provenance.recent_events(200), indent=2)
+
+    @mcp.resource("petab://errors")
+    def _res_errors() -> str:
+        return json.dumps(session.provenance.recent_errors(200), indent=2)
 
     @mcp.resource("petab://versions")
     def _res_versions() -> str:

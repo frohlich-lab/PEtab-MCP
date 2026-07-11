@@ -168,16 +168,21 @@ class EutilsReferenceResolver:
             )
 
 
-def resolve_references(resolver, references: list[str]) -> list[dict[str, Any]]:
-    """Validate that references are present and resolve each one.
+def resolve_references(
+    resolver, references: list[str] | None, required: bool = True
+) -> list[dict[str, Any]]:
+    """Resolve references, optionally requiring at least one.
 
-    ``references`` must be a non-empty list of non-empty strings. Returns the resolved
-    records (dicts). Raises ``ReferenceError`` when references are absent or (in
-    ``required`` mode) unresolvable.
+    Returns the resolved records (dicts). When ``required`` is True, an absent/empty
+    list raises ``ReferenceError``; when False, an empty list resolves to ``[]``. In the
+    resolver's ``required`` mode an unresolvable reference always raises.
     """
-    if not references or not isinstance(references, list):
-        raise ReferenceError("At least one reference is required for a model operation.")
+    references = references or []
+    if not isinstance(references, list):
+        raise ReferenceError("`references` must be a list of citation strings.")
     cleaned = [r.strip() for r in references if isinstance(r, str) and r.strip()]
     if not cleaned:
-        raise ReferenceError("At least one non-empty reference is required.")
+        if required:
+            raise ReferenceError("At least one reference is required for this operation.")
+        return []
     return [resolver.resolve(r).to_dict() for r in cleaned]

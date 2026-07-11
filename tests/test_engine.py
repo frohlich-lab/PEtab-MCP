@@ -51,3 +51,18 @@ def test_optimize_improves_fit(engine, session):
     assert result["backend"] == "pypesto"
     assert result["neg_log_likelihood"] <= before + 1e-6
     assert {"k1", "k2"} <= set(result["fitted_parameters"])
+
+
+def test_optimize_tracks_improvement_vs_versions(engine, session):
+    pytest.importorskip("pypesto", reason="pyPESTO not installed")
+    from petab_mcp import optimize as O
+
+    first = O.optimize(session, engine, n_starts=2, seed=1)["improvement"]
+    assert first["objective_before"] is not None
+    assert first["self_improvement"] is not None
+    assert first["is_new_best"] is True  # nothing to beat yet
+    assert first["improvement_vs_best_prior"] is None
+
+    second = O.optimize(session, engine, n_starts=2, seed=2)["improvement"]
+    assert second["best_prior_version"] is not None
+    assert second["improvement_vs_best_prior"] is not None
