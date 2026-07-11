@@ -1,6 +1,6 @@
 """Command-line entry point: ``petab-mcp --petab-yaml PATH``.
 
-Starts the local MCP server (stdio transport) for the given PEtab v2 problem.
+Starts the local MCP server (stdio transport) for the given PEtab v1 problem.
 """
 
 from __future__ import annotations
@@ -15,12 +15,12 @@ from .server import create_server
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="petab-mcp",
-        description="Local MCP server for interacting with a PEtab v2 problem.",
+        description="Local MCP server for interacting with a PEtab v1 problem.",
     )
     parser.add_argument(
         "--petab-yaml",
         default=os.environ.get("PETAB_MCP_YAML"),
-        help="Path to the PEtab v2 problem YAML (or set PETAB_MCP_YAML).",
+        help="Path to the PEtab v1 problem YAML (or set PETAB_MCP_YAML).",
     )
     parser.add_argument(
         "--build-root",

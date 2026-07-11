@@ -86,11 +86,13 @@ def default_compartment(sm) -> str:
 
 # -- parametric initial conditions -----------------------------------------
 def _ic_symbol_for(sm, sid: str) -> str | None:
+    """Return the parametric-IC parameter id for species ``sid`` if present."""
+    init_id = f"{sid}_init"
     for i in range(sm.getNumInitialAssignments()):
         ia = sm.getInitialAssignment(i)
         if ia.getSymbol() == sid:
             names = _ast_names(ia.getMath())
-            return next(iter(names)) if names else None
+            return init_id if names == {init_id} else None
     return None
 
 
@@ -113,10 +115,18 @@ def _set_parametric_ic(sm, sid: str, value: float) -> str:
         p.setId(init_id)
         p.setConstant(True)
         p.setValue(float(value))
-    if _ic_symbol_for(sm, sid) is None:
+    # Ensure there is exactly one initialAssignment for this species and that it
+    # points at the parametric-IC parameter.
+    ia = None
+    for i in range(sm.getNumInitialAssignments()):
+        cand = sm.getInitialAssignment(i)
+        if cand.getSymbol() == sid:
+            ia = cand
+            break
+    if ia is None:
         ia = sm.createInitialAssignment()
         ia.setSymbol(sid)
-        ia.setMath(libsbml.parseL3Formula(init_id))
+    ia.setMath(libsbml.parseL3Formula(init_id))
     return init_id
 
 

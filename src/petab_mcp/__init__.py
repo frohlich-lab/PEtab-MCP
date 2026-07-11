@@ -2,8 +2,8 @@
 
 The server wraps a single PEtab v1 problem and exposes it over the Model Context
 Protocol. The experimental design stays fixed — measurements, conditions and
-observables are read-only — while an agent may edit the **model** (SBML, via
-Antimony or SBML text) and the **parameter table**, then simulate and score the
+observables are read-only — while an agent may edit the **model** (expressed in
+Antimony via constrained operations) and the **parameter table**, then simulate and score the
 result against the fixed data with AMICI.
 """
 

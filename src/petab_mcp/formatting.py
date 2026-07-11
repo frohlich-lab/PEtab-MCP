@@ -1,6 +1,6 @@
 """Helpers to turn PEtab/pandas objects into compact, JSON-serializable records.
 
-MCP tool results must be plain JSON. petab.v2 tables come back either as pandas
+MCP tool results must be plain JSON. petab.v1 tables come back either as pandas
 DataFrames (which may be ``None`` when empty) or as lists of pydantic objects, and
 sympy/enum values need stringifying. These helpers centralize that conversion so
 every tool returns clean data.
