@@ -19,7 +19,7 @@ from petab.v1.C import ESTIMATE, PARAMETER_ID
 from petab.v1.models.sbml_model import SbmlModel
 
 from . import logging_setup
-from .errors import BatchError
+from .errors import BatchError, ValidationError
 from .parameters import parameters_to_records
 from .provenance import ProvenanceStore
 from .references import EutilsReferenceResolver
@@ -130,11 +130,19 @@ class PetabSession:
         """
         from . import fitting
 
+        if n_starts is not None:
+            try:
+                n_starts = int(n_starts)
+            except (TypeError, ValueError):
+                raise ValidationError(f"n_starts must be an integer >= 0, got {n_starts!r}.")
+            if n_starts < 0:
+                raise ValidationError(f"n_starts must be an integer >= 0, got {n_starts}.")
+
         engine = self.engine
         if engine is None or not self.auto_fit:
             return {"status": "skipped", "neg_log_likelihood": None, "chi2": None,
                     "fitted_parameters": None, "records": []}, {}
-        starts = self.auto_fit_starts if n_starts is None else int(n_starts)
+        starts = self.auto_fit_starts if n_starts is None else n_starts
         fitsim = fitting.fit_and_simulate(self, engine, do_fit=(starts != 0), n_starts=starts or 1)
         nllh = fitsim.get("neg_log_likelihood")
         improvement = (

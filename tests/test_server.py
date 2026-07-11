@@ -122,6 +122,23 @@ def test_rejected_operation_is_logged(tmp_path):
     asyncio.run(go())
 
 
+def test_negative_n_starts_rejected(tmp_path):
+    mcp = _server(tmp_path)
+
+    async def go():
+        res = _structured(await mcp.call_tool("add_reaction", {
+            "reaction": "J: B -> D; k3*B", "justification": "x",
+            "references": ["PMID:1"], "n_starts": -1,
+        }))
+        assert res["committed"] is False
+        assert "n_starts" in res["error"]
+        # a rejected edit creates no version
+        cur = _structured(await mcp.call_tool("current_version", {}))
+        assert cur["version"] == 0
+
+    asyncio.run(go())
+
+
 def test_batch_tools(tmp_path):
     mcp = _server(tmp_path)
 

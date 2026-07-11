@@ -342,7 +342,7 @@ def create_server(
         """Snapshot all staged operations as a single new version, fitting + simulating
         once for the whole batch (`n_starts` overrides the default; 0 = simulate only)."""
         return _run("commit_batch", lambda: session.commit_batch(label or None, n_starts=n_starts),
-                    {"label": label})
+                    {"label": label, "n_starts": n_starts})
 
     @mcp.tool()
     def abort_batch() -> dict[str, Any]:
