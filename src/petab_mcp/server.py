@@ -14,6 +14,8 @@ Tool groups:
 * provenance/versions/errors: ``get_provenance``, ``get_errors``, ``list_versions``,
   ``get_version``, ``diff_versions``, ``rollback_to``, ``current_version``
 * session: ``reset``
+* skills (tool-usage documentation, bundled under ``_skills/``): ``list_skills``,
+  ``get_skill``
 
 No tool mutates the measurement/condition/observable tables — that invariant is
 enforced structurally (there is simply no such tool) and re-checked by the operation
@@ -31,6 +33,7 @@ from . import model as model_mod
 from . import operations as ops_mod
 from . import optimize as optimize_mod
 from . import parameters as param_mod
+from . import skills as skills_mod
 from .engine import AmiciEngine
 from .errors import PetabMcpError, ValidationError
 from .formatting import df_to_records
@@ -53,6 +56,13 @@ SERVER_INSTRUCTIONS = (
     "with `rollback_to` or `reset`."
 )
 
+# Appended to the instructions only when skills are actually registered, so clients
+# are never told to call `list_skills`/`get_skill` when those tools are absent.
+_SKILLS_INSTRUCTION = (
+    " New to this server? Call `list_skills` and read "
+    "`get_skill('petab-model-building')` for the full tool-usage workflow."
+)
+
 
 def _amici_available() -> bool:
     try:
@@ -70,8 +80,13 @@ def create_server(
     provenance_dir: str | None = None,
     reference_mode: str = "best_effort",
     resolver: Any | None = None,
+    skills_dir: str | None = None,
 ) -> FastMCP:
-    """Build a FastMCP server bound to the PEtab problem at ``yaml_path``."""
+    """Build a FastMCP server bound to the PEtab problem at ``yaml_path``.
+
+    ``skills_dir`` overrides where tool-usage skills are loaded from; when omitted
+    the ``_skills`` directory bundled with the package is discovered automatically.
+    """
     session = PetabSession(
         yaml_path,
         provenance_dir=provenance_dir,
@@ -79,7 +94,13 @@ def create_server(
         resolver=resolver,
     )
     engine = AmiciEngine(session, build_root=build_root)
-    mcp = FastMCP("petab-mcp", instructions=SERVER_INSTRUCTIONS)
+
+    # Load tool-usage skills up front so the server instructions only advertise
+    # `list_skills`/`get_skill` when skills are actually available (registered below).
+    resolved_skills_dir = skills_dir or skills_mod.default_skills_dir()
+    skills = skills_mod.load_skills(resolved_skills_dir)
+    instructions = SERVER_INSTRUCTIONS + (_SKILLS_INSTRUCTION if skills else "")
+    mcp = FastMCP("petab-mcp", instructions=instructions)
 
     # ------------------------------------------------------------------ read
     @mcp.tool()
@@ -373,6 +394,11 @@ def create_server(
     @mcp.resource("petab://versions")
     def _res_versions() -> str:
         return json.dumps(session.provenance.list_versions(), indent=2)
+
+    # ---------------------------------------------------------------- skills
+    # Register the skills loaded above as `list_skills`/`get_skill` tools plus
+    # `petab://skills` resources (no-op when no skills were found).
+    skills_mod.register_skills(mcp, skills)
 
     # keep references alive / silence linters for closure-registered callables
     _ = (PetabMcpError,)
