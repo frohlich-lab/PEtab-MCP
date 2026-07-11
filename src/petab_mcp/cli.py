@@ -28,6 +28,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory for AMICI-compiled models (defaults to a temp dir).",
     )
     parser.add_argument(
+        "--provenance-dir",
+        default=os.environ.get("PETAB_MCP_PROVENANCE_DIR"),
+        help="Directory for provenance + version snapshots (default: <problem>/.petab_mcp).",
+    )
+    parser.add_argument(
+        "--reference-validation",
+        default=os.environ.get("PETAB_MCP_REFERENCE_VALIDATION", "best_effort"),
+        choices=["required", "best_effort", "off"],
+        help="How strictly to validate operation references against PubMed.",
+    )
+    parser.add_argument(
         "--transport",
         default="stdio",
         choices=["stdio", "sse", "streamable-http"],
@@ -44,7 +55,12 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-    server = create_server(args.petab_yaml, build_root=args.build_root)
+    server = create_server(
+        args.petab_yaml,
+        build_root=args.build_root,
+        provenance_dir=args.provenance_dir,
+        reference_mode=args.reference_validation,
+    )
     server.run(transport=args.transport)
     return 0
 

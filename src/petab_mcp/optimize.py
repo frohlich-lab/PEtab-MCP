@@ -45,16 +45,46 @@ def optimize(session, engine, n_starts: int = 10, seed: int = 0) -> dict[str, An
 
     df = session.problem.parameter_df
     fitted: dict[str, float] = {}
+    nllh = float(best["fval"])
     with session.lock:
         for name, value in zip(problem.x_names, x):
             if name in df.index:
                 linear = float(unscale(value, df.loc[name, PARAMETER_SCALE]))
                 df.loc[name, NOMINAL_VALUE] = linear
                 fitted[name] = linear
+        version = _record_training(session, n_starts, nllh, fitted)
 
     return {
         "backend": "pypesto",
         "n_starts": n_starts,
-        "neg_log_likelihood": float(best["fval"]),
+        "neg_log_likelihood": nllh,
         "fitted_parameters": fitted,
+        "version": version,
     }
+
+
+def _record_training(session, n_starts, nllh, fitted) -> int | None:
+    """Snapshot a training version and log a provenance training event."""
+    provenance = getattr(session, "provenance", None)
+    if provenance is None:
+        return None
+    from .parameters import parameters_to_records
+
+    version = provenance.snapshot_version(
+        model_ant=session.model.to_antimony(),
+        parameters=parameters_to_records(session.problem),
+        label="optimize",
+        kind="training",
+        meta={"n_starts": n_starts, "neg_log_likelihood": nllh},
+    )
+    provenance.append_event(
+        {
+            "type": "training",
+            "method": "pypesto",
+            "n_starts": n_starts,
+            "neg_log_likelihood": nllh,
+            "fitted_parameters": fitted,
+            "version": version,
+        }
+    )
+    return version

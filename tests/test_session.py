@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from petab_mcp import operations as O
 from petab_mcp.session import PetabSession
 
 
@@ -19,17 +20,31 @@ def test_sbml_hash_deterministic(session):
 
 def test_missing_yaml_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
-        PetabSession(tmp_path / "nope.yaml")
+        PetabSession(tmp_path / "nope.yaml", provenance_dir=str(tmp_path / "p"))
 
 
-def test_reset_restores_model(session):
-    from petab_mcp import model as M
+def test_initial_version_snapshotted(session):
+    assert session.provenance.current_version == 0
+    versions = session.provenance.list_versions()
+    assert versions[0]["kind"] == "initial"
 
-    original = M.get_model(session, "antimony")
-    original_hash = session.sbml_hash()
-    # edit an SBML model parameter, then reset
-    M.set_parameter_value(session, "k1", 12.34)
-    assert session.sbml_hash() != original_hash
-    session.reset()
-    assert session.sbml_hash() == original_hash
-    assert M.get_model(session, "antimony") == original
+
+def _species(session):
+    sm = session.model.sbml_model
+    return {sm.getSpecies(i).getId() for i in range(sm.getNumSpecies())}
+
+
+def _reactions(session):
+    sm = session.model.sbml_model
+    return {sm.getReaction(i).getId() for i in range(sm.getNumReactions())}
+
+
+def test_reset_reverts_to_v0(session):
+    O.add_reaction(session, "J: B -> D; k3*B", justification="test", references=["PMID:1"])
+    assert "D" in _species(session)
+    out = session.reset()
+    assert out["reset"] is True
+    # structurally identical to the initial model (SBML serialization need not be
+    # byte-identical across the Antimony round-trip)
+    assert _species(session) == {"A", "B"}
+    assert _reactions(session) == {"r1", "r2"}

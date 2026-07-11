@@ -12,11 +12,11 @@ def _by_id(session):
 
 def test_records(session):
     recs = _by_id(session)
-    assert set(recs) == {"k1", "k2", "sigma_B"}
+    assert set(recs) == {"k1", "k2", "sigma_B", "A_init", "B_init"}
     assert recs["k1"]["estimate"] is True
     assert recs["sigma_B"]["estimate"] is False
     assert recs["k1"]["parameterScale"] == "log10"
-    assert recs["sigma_B"]["parameterScale"] == "lin"
+    assert recs["A_init"]["parameterScale"] == "lin"  # IC params are linear
 
 
 def test_update_nominal_and_estimate(session):

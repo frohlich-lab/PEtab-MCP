@@ -17,7 +17,7 @@ def test_evaluate_objective(engine):
 
 def test_simulate(engine):
     out = engine.simulate()
-    assert set(out["parameters"]) == {"k1", "k2", "sigma_B"}
+    assert {"k1", "k2", "sigma_B", "A_init", "B_init"} == set(out["parameters"])
     assert len(out["simulations"]) == 6
 
 
@@ -30,6 +30,16 @@ def test_parameter_change_no_recompile(engine, session):
     obj1 = engine.evaluate_objective()
     assert session.sbml_hash() == h  # model unchanged
     assert obj1["neg_log_likelihood"] != obj0["neg_log_likelihood"]
+
+
+def test_simulate_after_operation_recompiles(engine, session):
+    from petab_mcp import operations as O
+
+    before = engine.evaluate_objective()["neg_log_likelihood"]
+    O.add_reaction(session, "J: B -> D; k3*B", justification="B to D", references=["PMID:1"])
+    after = engine.evaluate_objective()  # new species/param -> recompiles
+    assert after["neg_log_likelihood"] != before
+    assert after["n_data_points"] == 6
 
 
 def test_optimize_improves_fit(engine, session):
