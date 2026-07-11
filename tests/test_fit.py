@@ -127,10 +127,92 @@ def test_bias_flag_detects_systematic_offset():
     assert abs(flag["bias_z"]) >= fit._BIAS_Z_THRESHOLD
 
 
+_WEIGHTED_KEYS = {
+    "mean_weighted_residual",
+    "std_weighted_residual",
+    "rmse_weighted",
+    "chi2",
+    "reduced_chi2",
+    "max_abs_weighted_residual",
+    "bias_z",
+}
+_RAW_KEYS = {
+    "mean_residual",
+    "std_residual",
+    "mean_abs_residual",
+    "rmse",
+    "sse",
+    "max_abs_residual",
+}
+
+
+def test_stats_schema_is_stable_without_weighted_residuals():
+    # points that were simulated (raw residual present) but whose noise could not be
+    # evaluated -> no weighted residual. The weighted keys must still be present as None.
+    recs = [
+        _rec("o", "c", 0.0, 1.0, 0.5, 0.5, None, None),
+        _rec("o", "c", 1.0, 2.0, 1.0, 1.0, None, None),
+    ]
+    stats = fit.residual_statistics(recs)["overall"]
+    assert stats["n"] == 2 and stats["n_weighted"] == 0
+    # raw stats computed, weighted stats present but None
+    assert stats["rmse"] is not None
+    assert _WEIGHTED_KEYS <= set(stats)
+    assert all(stats[k] is None for k in _WEIGHTED_KEYS)
+
+
+def test_stats_schema_identical_across_groups():
+    # a mixed report: obs_A has weighted residuals, obs_noweight does not — both groups
+    # must expose the exact same key set so consumers never branch on presence.
+    recs = RECORDS + [
+        _rec("obs_noweight", "c9", 0.0, 1.0, 0.5, 0.5, None, None),
+    ]
+    report = fit.residual_statistics(recs)
+    key_sets = {frozenset(e) - {"observable_id"} for e in report["by_observable"]}
+    assert len(key_sets) == 1  # every group has identical keys
+    expected = {"n", "n_missing", "n_weighted"} | _RAW_KEYS | _WEIGHTED_KEYS
+    assert next(iter(key_sets)) == expected
+
+
+def test_chi2_prefers_res_when_weighted_incomplete():
+    # AmiciEngine._chi2 is a pure static method (no AMICI import), so we can unit-test
+    # its fallback logic directly. This guards the review fix: a partial weighted sum
+    # must not silently undercount when AMICI provides a complete RES vector.
+    from petab_mcp.engine import AmiciEngine
+
+    # all points have weighted residuals -> use them (petab-canonical)
+    full = [_rec("o", "c", 0.0, 1.0, 0.0, 1.0, 2.0, 0.5), _rec("o", "c", 1.0, 2.0, 0.0, 2.0, 1.0, 1.0)]
+    assert AmiciEngine._chi2(full, res=[9.0, 9.0]) == pytest.approx(5.0)  # 2^2 + 1^2, RES ignored
+
+    # one point has a residual but no weighted residual -> incomplete -> fall back to RES
+    mixed = [
+        _rec("o", "c", 0.0, 1.0, 0.0, 1.0, 2.0, 0.5),
+        _rec("o", "c", 1.0, 2.0, 0.0, 2.0, None, None),  # noise eval failed
+    ]
+    assert AmiciEngine._chi2(mixed, res=[1.0, 1.0, 1.0]) == pytest.approx(3.0)  # sum(RES^2)
+
+    # incomplete weighted AND no RES -> last-resort partial weighted sum
+    assert AmiciEngine._chi2(mixed, res=None) == pytest.approx(4.0)  # only the 2.0 term
+
+    # unsimulated points (no residual) don't count as "contributing", so a complete
+    # weighted set over the simulated points is still used
+    with_gap = [
+        _rec("o", "c", 0.0, 1.0, 0.0, 1.0, 2.0, 0.5),
+        _rec("o", "c", 1.0, 3.0, None, None, None, None),  # not simulated
+    ]
+    assert AmiciEngine._chi2(with_gap, res=[9.0]) == pytest.approx(4.0)  # 2^2, RES ignored
+
+    # nothing available
+    assert AmiciEngine._chi2([_rec("o", "c", 0.0, 1.0, None, None, None, None)], res=None) is None
+
+
 def test_empty_records():
     report = fit.fit_inspection([])
     assert report["n_points"] == 0
     assert report["summary"]["n"] == 0
     assert report["summary"]["mean_residual"] is None
+    # weighted keys present and None even with no data at all
+    assert _WEIGHTED_KEYS <= set(report["summary"])
+    assert report["summary"]["chi2"] is None and report["summary"]["n_weighted"] == 0
     assert report["worst_points"] == []
     assert report["bias_flags"] == []

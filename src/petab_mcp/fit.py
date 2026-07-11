@@ -82,10 +82,16 @@ def _group_statistics(records: list[dict[str, Any]]) -> dict[str, Any]:
     """Aggregate residual statistics over a set of records.
 
     ``residual`` statistics are in the observable's natural units; the
-    ``*_weighted`` / ``chi2`` statistics use noise-normalized residuals and are
-    comparable across observables. ``bias_z`` is the z-score of the mean weighted
-    residual (``mean_weighted * sqrt(n)``); its magnitude exceeding
+    ``*_weighted`` / ``chi2`` statistics use noise-normalized residuals (over the
+    ``n_weighted`` points whose noise could be evaluated) and are comparable across
+    observables. ``bias_z`` is the z-score of the mean weighted residual
+    (``mean_weighted * sqrt(n_weighted)``); its magnitude exceeding
     ``_BIAS_Z_THRESHOLD`` indicates a systematic over/under-shoot.
+
+    The key set is fixed regardless of the data: raw-residual keys are ``None`` when
+    the group is empty, and weighted keys are ``None`` (with ``n_weighted == 0``) when
+    no weighted residual could be computed — so downstream consumers see a stable
+    schema and never need membership checks.
     """
     residuals = [r for r in (_finite(rec.get("residual")) for rec in records) if r is not None]
     weighted = [
@@ -122,12 +128,25 @@ def _group_statistics(records: list[dict[str, Any]]) -> dict[str, Any]:
             }
         )
 
+    # Noise-weighted statistics (the chi2 terms). These keys are ALWAYS present —
+    # set to None when no weighted residual could be computed for the group — so the
+    # output schema does not vary with whether the noise model was evaluable.
+    _WEIGHTED_KEYS = (
+        "mean_weighted_residual",
+        "std_weighted_residual",
+        "rmse_weighted",
+        "chi2",
+        "reduced_chi2",
+        "max_abs_weighted_residual",
+        "bias_z",
+    )
     if weighted:
         nw = len(weighted)
         mean_w = _mean(weighted)
         chi2 = sum(w * w for w in weighted)
         stats.update(
             {
+                "n_weighted": nw,
                 "mean_weighted_residual": _round(mean_w),
                 "std_weighted_residual": _round(_std(weighted, mean_w)),
                 "rmse_weighted": _round(math.sqrt(chi2 / nw)),
@@ -137,6 +156,9 @@ def _group_statistics(records: list[dict[str, Any]]) -> dict[str, Any]:
                 "bias_z": _round(mean_w * math.sqrt(nw)),
             }
         )
+    else:
+        stats["n_weighted"] = 0
+        stats.update(dict.fromkeys(_WEIGHTED_KEYS, None))
     return stats
 
 

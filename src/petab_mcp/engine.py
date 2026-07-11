@@ -170,22 +170,28 @@ class AmiciEngine:
     def _chi2(records: list[dict[str, Any]], res=None) -> float | None:
         """Chi2 = sum of squared noise-weighted residuals.
 
-        Computed from the petab-canonical weighted residuals in ``records`` (which
-        equal ``petab.v1.calculate.calculate_chi2``); falls back to AMICI's ``RES``
-        vector only when weighted residuals are unavailable. This keeps chi2 defined
-        across AMICI versions where the ``RES`` field is not populated.
+        Prefers the petab-canonical weighted residuals in ``records`` (which equal
+        ``petab.v1.calculate.calculate_chi2``), but only when they are available for
+        *every* point that contributes to the objective. A point can have a residual
+        yet no weighted residual (its noise formula could not be evaluated); summing
+        only the available terms would undercount and disagree with the reported
+        neg-log-likelihood. In that mixed case we fall back to AMICI's complete
+        ``RES`` vector, and use the partial weighted sum only as a last resort when
+        ``RES`` is unavailable too. This keeps chi2 well-defined across AMICI versions
+        (some do not populate ``RES``) without silently under-reporting it.
         """
-        weighted = [
-            r["residual_weighted"] for r in records if r.get("residual_weighted") is not None
-        ]
-        if weighted:
+        contributing = [r for r in records if r.get("residual") is not None]
+        weighted = [r.get("residual_weighted") for r in contributing]
+        if contributing and all(w is not None for w in weighted):
             return float(sum(w * w for w in weighted))
         if res is not None:
             import numpy as np
 
             arr = np.asarray(res, dtype=float)
-            return float(np.sum(arr**2)) if arr.size else None
-        return None
+            if arr.size:
+                return float(np.sum(arr**2))
+        present = [w for w in weighted if w is not None]
+        return float(sum(w * w for w in present)) if present else None
 
     def _noise_context(self):
         """Symbolic noise formulas + tables needed to evaluate weighted residuals.
