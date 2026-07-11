@@ -1,0 +1,151 @@
+"""Provenance and versioning, persisted to disk.
+
+Under ``<store_root>/`` (default ``<problem_dir>/.petab_mcp``):
+
+* ``provenance.jsonl`` — append-only event log (alterations, training runs, rollbacks,
+  resets). Each event carries a UTC timestamp.
+* ``versions/vN/`` — a snapshot of the mutable model state at version N: ``model.ant``
+  (the canonical Antimony) and ``parameters.json`` (the parameter-table records), plus
+  ``meta.json`` (label, kind, parent, timestamp).
+* ``HEAD`` — the current version number.
+
+The store is pure storage: it records Antimony text + parameter records and reads them
+back. Applying a version to the live problem lives in the session/operations layer.
+"""
+
+from __future__ import annotations
+
+import difflib
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+class ProvenanceStore:
+    def __init__(self, root: str | Path) -> None:
+        self.root = Path(root)
+        self.versions_dir = self.root / "versions"
+        self.log_path = self.root / "provenance.jsonl"
+        self.errors_path = self.root / "errors.jsonl"
+        self.head_path = self.root / "HEAD"
+        self.versions_dir.mkdir(parents=True, exist_ok=True)
+
+    # -- event log ---------------------------------------------------------
+    def append_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        event = {"timestamp": _now(), **event}
+        with self.log_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(event) + "\n")
+        return event
+
+    def recent_events(self, limit: int = 50) -> list[dict[str, Any]]:
+        return self._tail(self.log_path, limit)
+
+    # -- error log (separate from the success-oriented provenance log) ------
+    def log_error(self, record: dict[str, Any]) -> dict[str, Any]:
+        record = {"timestamp": _now(), **record}
+        with self.errors_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record) + "\n")
+        return record
+
+    def recent_errors(self, limit: int = 50) -> list[dict[str, Any]]:
+        return self._tail(self.errors_path, limit)
+
+    @staticmethod
+    def _tail(path: Path, limit: int) -> list[dict[str, Any]]:
+        if not path.exists():
+            return []
+        with path.open(encoding="utf-8") as fh:
+            records = [json.loads(ln) for ln in fh if ln.strip()]
+        return records[-limit:] if limit and limit > 0 else records
+
+    # -- HEAD --------------------------------------------------------------
+    @property
+    def current_version(self) -> int:
+        if not self.head_path.exists():
+            return -1
+        try:
+            return int(self.head_path.read_text().strip())
+        except ValueError:
+            return -1
+
+    def _set_head(self, n: int) -> None:
+        self.head_path.write_text(str(n))
+
+    # -- versions ----------------------------------------------------------
+    def snapshot_version(
+        self,
+        model_ant: str,
+        parameters: list[dict[str, Any]],
+        label: str | None = None,
+        kind: str = "snapshot",
+        parent: int | None = None,
+        meta: dict[str, Any] | None = None,
+    ) -> int:
+        n = self.current_version + 1
+        vdir = self.versions_dir / f"v{n}"
+        vdir.mkdir(parents=True, exist_ok=True)
+        (vdir / "model.ant").write_text(model_ant, encoding="utf-8")
+        (vdir / "parameters.json").write_text(json.dumps(parameters, indent=2), encoding="utf-8")
+        meta_obj = {
+            "version": n,
+            "label": label,
+            "kind": kind,
+            "parent": self.current_version if parent is None else parent,
+            "timestamp": _now(),
+            **(meta or {}),
+        }
+        (vdir / "meta.json").write_text(json.dumps(meta_obj, indent=2), encoding="utf-8")
+        self._set_head(n)
+        return n
+
+    def _version_dir(self, n: int) -> Path:
+        vdir = self.versions_dir / f"v{n}"
+        if not vdir.is_dir():
+            from .errors import UnknownEntityError
+
+            raise UnknownEntityError(f"No such version: v{n}")
+        return vdir
+
+    def get_version(self, n: int) -> dict[str, Any]:
+        vdir = self._version_dir(n)
+        meta = json.loads((vdir / "meta.json").read_text())
+        return {
+            **meta,
+            "model_antimony": (vdir / "model.ant").read_text(encoding="utf-8"),
+            "parameters": json.loads((vdir / "parameters.json").read_text()),
+        }
+
+    def list_versions(self) -> list[dict[str, Any]]:
+        out = []
+        for vdir in sorted(
+            self.versions_dir.glob("v*"), key=lambda p: int(p.name[1:])
+        ):
+            meta = json.loads((vdir / "meta.json").read_text())
+            out.append(meta)
+        return out
+
+    def diff_versions(self, a: int, b: int) -> dict[str, Any]:
+        va, vb = self.get_version(a), self.get_version(b)
+        model_diff = "".join(
+            difflib.unified_diff(
+                va["model_antimony"].splitlines(keepends=True),
+                vb["model_antimony"].splitlines(keepends=True),
+                fromfile=f"v{a}/model.ant",
+                tofile=f"v{b}/model.ant",
+            )
+        )
+        pa = {p["parameterId"]: p for p in va["parameters"]}
+        pb = {p["parameterId"]: p for p in vb["parameters"]}
+        param_diff = {
+            "added": sorted(set(pb) - set(pa)),
+            "removed": sorted(set(pa) - set(pb)),
+            "changed": sorted(
+                pid for pid in set(pa) & set(pb) if pa[pid] != pb[pid]
+            ),
+        }
+        return {"from": a, "to": b, "model_diff": model_diff, "parameter_diff": param_diff}
