@@ -40,24 +40,25 @@ def configure(store_root: str | Path, level: int = logging.INFO) -> logging.Logg
 
 
 def configure_pypesto(store_root: str | Path, level: int = logging.DEBUG) -> logging.Logger:
-    """Route pyPESTO's own logging to ``<store_root>/pypesto.log``.
+    """Route the fitting optimizer's logging to ``<store_root>/pypesto.log``.
 
-    pyPESTO logs its multistart optimization (per-start progress, convergence, history) via
-    the ``pypesto`` logger. We attach a dedicated file handler at DEBUG and stop propagation
-    so those verbose logs land only in ``pypesto.log`` — not in ``petab_mcp.log`` or the
-    server's stderr. DEBUG is intentional: the whole point of the separate file is to hold
-    the detailed per-start fit log without cluttering anything else. Idempotent per path.
+    The fit runs pyPESTO with the Fides optimizer; both log through their own loggers
+    (``pypesto`` and ``fides``). We attach a dedicated file handler and stop propagation so
+    that (verbose) optimizer output lands only in ``pypesto.log`` — not in ``petab_mcp.log``
+    or the server's stderr. The separate file is the place for the detailed per-start /
+    per-iteration fit log without cluttering anything else. Idempotent per path.
     """
     root = Path(store_root)
     root.mkdir(parents=True, exist_ok=True)
     log_path = str((root / "pypesto.log").resolve())
 
-    logger = logging.getLogger("pypesto")
-    logger.setLevel(level)
     if log_path not in _pypesto_configured_paths:
         handler = logging.FileHandler(log_path, encoding="utf-8")
         handler.setFormatter(logging.Formatter(_FORMAT))
-        logger.addHandler(handler)
-        logger.propagate = False  # keep pyPESTO's verbose logs to its own file
+        for name in ("pypesto", "fides"):
+            lg = logging.getLogger(name)
+            lg.setLevel(level)
+            lg.addHandler(handler)
+            lg.propagate = False  # keep optimizer logs to their own file
         _pypesto_configured_paths.add(log_path)
-    return logger
+    return logging.getLogger("pypesto")

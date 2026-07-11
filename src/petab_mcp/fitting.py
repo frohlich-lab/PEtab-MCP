@@ -60,11 +60,17 @@ def _run_fit(session, engine, n_starts: int, seed: int = 0) -> dict[str, Any]:
     log = session.logger
     n_free = len(getattr(problem, "x_free_indices", None) or problem.x_names)
     log.info(
-        "fit: start n_starts=%d seed=%d n_free=%d sbml=%s objective_before=%s",
+        "fit: start optimizer=fides n_starts=%d seed=%d n_free=%d sbml=%s objective_before=%s",
         n_starts, seed, n_free, h, _fmt(objective_before),
     )
+    # Fides: a Newton trust-region optimizer that exploits AMICI's sensitivities; more
+    # robust than the default L-BFGS-B on stiff ODE likelihoods. Its per-iteration logging
+    # is routed to pypesto.log (see logging_setup.configure_pypesto).
+    optimizer = pypesto.optimize.FidesOptimizer(verbose=logging.INFO)
     t0 = time.perf_counter()
-    result = pypesto.optimize.minimize(problem, n_starts=n_starts, progress_bar=False)
+    result = pypesto.optimize.minimize(
+        problem, optimizer=optimizer, n_starts=n_starts, progress_bar=False
+    )
     duration = time.perf_counter() - t0
 
     # pyPESTO's own multistart report -> pypesto.log (its native logging is otherwise
