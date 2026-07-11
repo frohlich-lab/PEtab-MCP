@@ -190,6 +190,13 @@ def table_referenced_symbols(problem) -> set[str]:
                 names.add(str(col))
             for val in cdf[col]:
                 names |= formula_symbols(val)
+    # measurement-level observable/noise parameter overrides may reference parameters
+    mdf = problem.measurement_df
+    if mdf is not None:
+        for col in ("observableParameters", "noiseParameters"):
+            if col in mdf.columns:
+                for val in mdf[col]:
+                    names |= formula_symbols(val)
     return names
 
 
@@ -198,7 +205,9 @@ def prune_orphans(problem) -> dict[str, list[str]]:
     """Remove species/parameters no reaction, rule, IC, or fixed table references."""
     sm = problem.model.sbml_model
     keep = table_referenced_symbols(problem)
-    used_species = _reaction_species(sm)
+    # a species is "used" if it participates in a reaction or is referenced by any
+    # model math (kinetic law, rule, initial assignment) — not only reactions.
+    used_species = _reaction_species(sm) | (_model_math_names(sm) & species_ids(sm))
 
     removed_species: list[str] = []
     for sid in list(species_ids(sm)):
