@@ -142,7 +142,9 @@ def update_parameters(problem, updates: list[dict[str, Any]]) -> dict[str, Any]:
         resolved.append((pid, fields))
 
     touched = [pid for pid, _ in resolved]
-    snapshot = df.loc[touched].copy(deep=True)
+    # Snapshot the whole (small) table so rollback also undoes any column a prior
+    # edit may have created (e.g. adding an objectivePrior* column).
+    snapshot = df.copy(deep=True)
 
     try:
         for pid, fields in resolved:
@@ -165,10 +167,10 @@ def update_parameters(problem, updates: list[dict[str, Any]]) -> dict[str, Any]:
                     f"Parameter {pid!r}: lower bound {lb} exceeds upper bound {ub}."
                 )
     except ParameterError:
-        df.loc[touched] = snapshot
+        problem.parameter_df = snapshot
         raise
     except Exception as exc:
-        df.loc[touched] = snapshot
+        problem.parameter_df = snapshot
         raise ParameterError(f"Invalid parameter update: {exc}") from exc
 
     return {
