@@ -26,6 +26,33 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _write_simulations_tsv(vdir: Path, records: list[dict[str, Any]]) -> None:
+    """Best-effort PEtab simulation table for interop (never read back)."""
+    if not records:
+        return
+    try:
+        import pandas as pd
+        from petab.v1.C import (
+            OBSERVABLE_ID,
+            SIMULATION,
+            SIMULATION_CONDITION_ID,
+            TIME,
+        )
+
+        rows = [
+            {
+                OBSERVABLE_ID: r.get("observable_id"),
+                SIMULATION_CONDITION_ID: r.get("condition_id"),
+                TIME: r.get("time"),
+                SIMULATION: r.get("simulation"),
+            }
+            for r in records
+        ]
+        pd.DataFrame(rows).to_csv(vdir / "simulations.tsv", sep="\t", index=False)
+    except Exception:  # interop convenience only — never fail a snapshot over it
+        pass
+
+
 class ProvenanceStore:
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root)
@@ -85,6 +112,7 @@ class ProvenanceStore:
         kind: str = "snapshot",
         parent: int | None = None,
         meta: dict[str, Any] | None = None,
+        simulation: dict[str, Any] | None = None,
     ) -> int:
         n = self.current_version + 1
         vdir = self.versions_dir / f"v{n}"
@@ -100,6 +128,12 @@ class ProvenanceStore:
             **(meta or {}),
         }
         (vdir / "meta.json").write_text(json.dumps(meta_obj, indent=2), encoding="utf-8")
+        # The simulation dataframe generated for this version (measured vs simulated +
+        # residuals). Stored as JSON (read back by get_version) plus a best-effort PEtab
+        # simulation table for interop (never read back).
+        if simulation is not None:
+            (vdir / "simulations.json").write_text(json.dumps(simulation, indent=2), encoding="utf-8")
+            _write_simulations_tsv(vdir, simulation.get("records") or [])
         self._set_head(n)
         return n
 
@@ -114,10 +148,13 @@ class ProvenanceStore:
     def get_version(self, n: int) -> dict[str, Any]:
         vdir = self._version_dir(n)
         meta = json.loads((vdir / "meta.json").read_text())
+        sim_path = vdir / "simulations.json"
+        simulation = json.loads(sim_path.read_text()) if sim_path.is_file() else None
         return {
             **meta,
             "model_antimony": (vdir / "model.ant").read_text(encoding="utf-8"),
             "parameters": json.loads((vdir / "parameters.json").read_text()),
+            "simulation": simulation,
         }
 
     def list_versions(self) -> list[dict[str, Any]]:

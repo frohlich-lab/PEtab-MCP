@@ -7,7 +7,7 @@ and the rules behind these tools.
 
 | Tool | Signature | Returns / notes |
 | --- | --- | --- |
-| `describe_problem` | `()` | Summary: `model_id`, species/reaction/parameter counts, `free_parameters`, observables, condition/measurement counts, `current_version`, `batch_active`, `fixed_tables`, `amici_available`. |
+| `describe_problem` | `()` | Summary: `model_id`, species/reaction/parameter counts, `free_parameters`, observables, condition/measurement counts, `current_version`, `batch_active`, `fixed_tables`. |
 | `list_observables` | `()` | The fixed observables (formulas, noise models). |
 | `list_conditions` | `()` | The fixed conditions and the model changes they apply. |
 | `get_measurements` | `(condition_id?, observable_id?)` | The fixed measurement rows, optionally filtered. |
@@ -17,32 +17,37 @@ and the rules behind these tools.
 
 ## Model operations (justification + references required)
 
-Each applies to a model copy, reconciles SBML↔PEtab, lints, then commits or
-reverts. Returns `{committed, version, staged, reconcile, references,
-justification, validation, event_timestamp}` on success, or
+Each applies to a model copy, reconciles SBML↔PEtab, lints, then (on a non-batch commit)
+**fits + simulates** and commits — or reverts. Returns `{committed, version, staged,
+reconcile, references, justification, validation, event_timestamp, fit_status,
+neg_log_likelihood, chi2, fitted_parameters, improvement}` on success, or
 `{committed: false, error, issues?}` on rejection.
 
 | Tool | Signature | Notes |
 | --- | --- | --- |
-| `add_reaction` | `(reaction, justification, references)` | `reaction` is one Antimony line, e.g. `"J: A + B -> C; k_f*A*B"`. Rate law after `;` is required. New species → parametric IC; new rate-law symbols → parameters. |
-| `change_rate_law` | `(reaction_id, rate_law, justification, references)` | Replace a reaction's kinetic law; new symbols reconciled. |
-| `remove_reaction` | `(reaction_id, justification, references)` | Delete a reaction; prune orphaned species/parameters. |
+| `add_reaction` | `(reaction, justification, references, n_starts?)` | `reaction` is one Antimony line, e.g. `"J: A + B -> C; k_f*A*B"`. Rate law after `;` is required. New species → parametric IC; new rate-law symbols → parameters. |
+| `change_rate_law` | `(reaction_id, rate_law, justification, references, n_starts?)` | Replace a reaction's kinetic law; new symbols reconciled. |
+| `remove_reaction` | `(reaction_id, justification, references, n_starts?)` | Delete a reaction; prune orphaned species/parameters. |
+
+`n_starts` overrides the server default multistart count for the fit on this commit
+(`0` = simulate without fitting).
 
 ## Parameter operations (justification required, references optional)
 
-Versioned. Same commit pipeline / result shape as model operations.
+Versioned commits — same pipeline / result shape as model operations (they also fit +
+simulate). Parameter **values** (`nominalValue`) are set only by the fit; these change the
+search space.
 
 | Tool | Signature | Notes |
 | --- | --- | --- |
-| `change_parameter_scale` | `(parameter_id, scale, justification, references?)` | `scale` ∈ `{"lin","log","log10"}`. `log`/`log10` require `lowerBound` and `nominalValue` > 0. |
-| `change_parameter_bounds` | `(parameter_id, lower_bound, upper_bound, justification, references?)` | Set new bounds. |
+| `change_parameter_scale` | `(parameter_id, scale, justification, references?, n_starts?)` | `scale` ∈ `{"lin","log","log10"}`. `log`/`log10` require `lowerBound` and `nominalValue` > 0. |
+| `change_parameter_bounds` | `(parameter_id, lower_bound, upper_bound, justification, references?, n_starts?)` | Set new bounds. |
 
-## Parameters (quick, non-versioned)
+## Parameters (read-only + reconcile)
 
 | Tool | Signature | Notes |
 | --- | --- | --- |
-| `get_parameters` | `()` | The parameter table: id, bounds, `nominalValue`, `estimate`, scale, priors. |
-| `update_parameters` | `(updates)` | Each update: `{id, nominalValue?, lowerBound?, upperBound?, estimate?, parameterScale?}`. Transactional; **not** versioned. |
+| `get_parameters` | `()` | The parameter table: id, bounds, `nominalValue` (fit-only), `estimate`, scale, priors. |
 | `sync_parameters` | `(policy="report")` | Reconcile table with model. `"report"` lists missing model params; `"add"` inserts them with default bounds + `estimate=1`. |
 
 ## Batching
@@ -53,15 +58,18 @@ Versioned. Same commit pipeline / result shape as model operations.
 | `commit_batch` | `(label="")` | Snapshot all staged operations as one version. |
 | `abort_batch` | `()` | Discard staged edits; restore the pre-batch version. |
 
-While a batch is open, `optimize` / `rollback_to` / `reset` are blocked.
+While a batch is open, `rollback_to` / `reset` are blocked, and staged edits are not
+fitted; `commit_batch` fits + simulates the staged result once.
 
-## Evaluation (needs `amici`; `optimize` also needs `pypesto`)
+## Fit + simulation (automatic on commit; read-only tools)
+
+Fitting and simulation are not tools you call — they run on every commit. Inspect the
+result with:
 
 | Tool | Signature | Notes |
 | --- | --- | --- |
-| `simulate` | `()` | Simulate all experiments at current parameters. |
-| `evaluate_objective` | `()` | Negative log-likelihood vs the fixed data (**lower is better**). |
-| `optimize` | `(n_starts=5, seed=0)` | Multi-start fit; writes best fit back; records a training version with `objective_before`, `self_improvement`, `improvement_vs_best_prior`, `is_new_best`. |
+| `get_simulations` | `()` | The stored simulation dataframe: fit metrics (`neg_log_likelihood`, `chi2`, `status`, `fitted_parameters`) + per-point `records` (measurement, simulation, residual, `residual_weighted`, noise). Generated on demand if none exists yet. |
+| `inspect_fit` | `(top_n=10)` | Residual stats overall + across observables / experiments / timepoints, `top_n` worst-fit points, and bias flags. Reads the stored dataframe (no re-simulation). |
 
 ## Provenance, versions & errors
 
@@ -90,5 +98,7 @@ Read-only content, mirrored as MCP resources:
 - `petab://model/antimony`, `petab://model/sbml`
 - `petab://observables`, `petab://conditions`, `petab://measurements`,
   `petab://parameters`
+- `petab://fit` (current `inspect_fit` report), `petab://simulations` (stored simulation
+  dataframe)
 - `petab://provenance`, `petab://versions`, `petab://errors`
 - `petab://skills` (index of skills), `petab://skills/{name}` (a skill's `SKILL.md`)

@@ -7,7 +7,9 @@ Every operation:
 2. applies a structural edit to a *copy* of the model (libsbml);
 3. reconciles SBML↔PEtab (parametric ICs, parameter-table sync, orphan pruning);
 4. lints the candidate — on any failure the edit is reverted;
-5. on success commits, snapshots a new version, and logs a provenance ``alteration``.
+5. fits the parameters and simulates so the version records fitted values, fit metrics,
+   and the simulation dataframe — a fit/simulation failure reverts the edit (atomic commit);
+6. on success commits, snapshots a single new version, and logs a provenance ``alteration``.
 """
 
 from __future__ import annotations
@@ -161,6 +163,7 @@ def _commit_change(
     model_edit: Callable[[Any], Any] | None = None,
     param_edit: Callable[[Any], Any] | None = None,
     require_references: bool = True,
+    n_starts: int | None = None,
 ) -> dict[str, Any]:
     """Shared commit pipeline for model and parameter operations.
 
@@ -168,6 +171,12 @@ def _commit_change(
     ``param_edit(problem)`` edits the parameter table in place. On any failure the model
     and parameter table are reverted. When a batch is open the change is applied and
     logged but no version is snapshotted until ``commit_batch``.
+
+    On a non-batch commit the parameters are fitted and the model simulated *before* the
+    snapshot, so the single version records the fitted values, the fit metrics, and the
+    simulation dataframe. ``n_starts`` overrides the server default (0 = simulate-only).
+    The fit is part of the commit: a fit/simulation failure reverts the structural edit so
+    the commit is atomic.
     """
     if not isinstance(justification, str) or not justification.strip():
         raise OperationError("A non-empty justification is required for this operation.")
@@ -177,6 +186,8 @@ def _commit_change(
         old_model = session.problem.model
         old_sbml = old_model.to_sbml_str()
         old_params = session.problem.parameter_df.copy(deep=True)
+        fitsim: dict[str, Any] = {}
+        improvement: dict[str, Any] = {}
 
         try:
             if model_edit is not None:
@@ -194,6 +205,12 @@ def _commit_change(
                     issues=[i["message"] for i in report["issues"]
                             if i["level"] in ("error", "critical")],
                 )
+            # Fit + simulate the validated candidate before snapshotting (non-batch
+            # commits only). A fit/simulation failure falls through to the revert below —
+            # a commit is atomic: it either fully succeeds or changes nothing.
+            staged = session.batch_active
+            if not staged:
+                fitsim, improvement = session._auto_fit_and_improvement(n_starts)
         except Exception:
             session.problem.model = old_model
             session.problem.parameter_df = old_params
@@ -217,25 +234,34 @@ def _commit_change(
             "model_hash_after": _model_hash(session.problem.model.to_sbml_str()),
         }
 
-        staged = session.batch_active
         if staged:
             event = session.provenance.append_event({**event_base, "staged": True, "version": None})
             session.staged.append({"operation": op, "args": op_args, "justification": justification})
             version = None
         else:
+            from . import fitting
+
             version_before = session.provenance.current_version
+            nllh = fitsim.get("neg_log_likelihood")
             version = session.provenance.snapshot_version(
                 model_ant=new_ant,
-                parameters=parameters_to_records(session.problem),
+                parameters=parameters_to_records(session.problem),  # fitted values now
                 label=op,
                 kind="alteration",
-                meta={"operation": op, "args": op_args},
+                meta={"operation": op, "args": op_args, "fit_status": fitsim.get("status"),
+                      "neg_log_likelihood": nllh, "chi2": fitsim.get("chi2"),
+                      "fitted_parameters": fitsim.get("fitted_parameters"), **improvement},
+                simulation=fitting.build_sim_payload_for_version(fitsim),
             )
+            fitsim["version"] = version
             event = session.provenance.append_event(
-                {**event_base, "version_before": version_before, "version": version}
+                {**event_base, "version_before": version_before, "version": version,
+                 "fit_status": fitsim.get("status"), "neg_log_likelihood": nllh,
+                 "chi2": fitsim.get("chi2"), "fitted_parameters": fitsim.get("fitted_parameters"),
+                 **improvement}
             )
 
-    return {
+    result = {
         "committed": True,
         "operation": op,
         "version": version,
@@ -246,19 +272,31 @@ def _commit_change(
         "validation": report,
         "event_timestamp": event["timestamp"],
     }
+    if not staged:
+        result["fit_status"] = fitsim.get("status")
+        result["neg_log_likelihood"] = fitsim.get("neg_log_likelihood")
+        result["chi2"] = fitsim.get("chi2")
+        result["fitted_parameters"] = fitsim.get("fitted_parameters")
+        result["improvement"] = improvement or None
+    return result
 
 
 # -- public operations: model ----------------------------------------------
-def add_reaction(session, reaction: str, justification: str, references: list[str]) -> dict[str, Any]:
+def add_reaction(
+    session, reaction: str, justification: str, references: list[str],
+    n_starts: int | None = None,
+) -> dict[str, Any]:
     spec = parse_reaction_line(reaction)
     return _commit_change(
         session, "add_reaction", {"reaction": reaction}, justification, references,
         model_edit=lambda sm: {"reaction_id": _add_reaction_to_model(sm, spec)},
+        n_starts=n_starts,
     )
 
 
 def change_rate_law(
-    session, reaction_id: str, rate_law: str, justification: str, references: list[str]
+    session, reaction_id: str, rate_law: str, justification: str, references: list[str],
+    n_starts: int | None = None,
 ) -> dict[str, Any]:
     def edit(sm):
         _change_rate_law_in_model(sm, reaction_id, rate_law)
@@ -266,18 +304,21 @@ def change_rate_law(
 
     return _commit_change(
         session, "change_rate_law", {"reaction_id": reaction_id, "rate_law": rate_law},
-        justification, references, model_edit=edit,
+        justification, references, model_edit=edit, n_starts=n_starts,
     )
 
 
-def remove_reaction(session, reaction_id: str, justification: str, references: list[str]) -> dict[str, Any]:
+def remove_reaction(
+    session, reaction_id: str, justification: str, references: list[str],
+    n_starts: int | None = None,
+) -> dict[str, Any]:
     def edit(sm):
         _remove_reaction_from_model(sm, reaction_id)
         return {"reaction_id": reaction_id}
 
     return _commit_change(
         session, "remove_reaction", {"reaction_id": reaction_id}, justification, references,
-        model_edit=edit,
+        model_edit=edit, n_starts=n_starts,
     )
 
 
@@ -300,7 +341,8 @@ def _require_positive_for_log(problem, parameter_id: str, scale: str) -> None:
 
 
 def change_parameter_scale(
-    session, parameter_id: str, scale: str, justification: str, references: list[str] | None = None
+    session, parameter_id: str, scale: str, justification: str,
+    references: list[str] | None = None, n_starts: int | None = None,
 ) -> dict[str, Any]:
     from .parameters import update_parameters
 
@@ -311,7 +353,7 @@ def change_parameter_scale(
 
     return _commit_change(
         session, "change_parameter_scale", {"parameter_id": parameter_id, "scale": scale},
-        justification, references, param_edit=edit, require_references=False,
+        justification, references, param_edit=edit, require_references=False, n_starts=n_starts,
     )
 
 
@@ -322,6 +364,7 @@ def change_parameter_bounds(
     upper_bound: float,
     justification: str,
     references: list[str] | None = None,
+    n_starts: int | None = None,
 ) -> dict[str, Any]:
     from .parameters import update_parameters
 
@@ -335,5 +378,5 @@ def change_parameter_bounds(
     return _commit_change(
         session, "change_parameter_bounds",
         {"parameter_id": parameter_id, "lowerBound": lower_bound, "upperBound": upper_bound},
-        justification, references, param_edit=edit, require_references=False,
+        justification, references, param_edit=edit, require_references=False, n_starts=n_starts,
     )

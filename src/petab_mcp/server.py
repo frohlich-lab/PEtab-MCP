@@ -8,11 +8,11 @@ Tool groups:
   ``remove_reaction`` (justification + references), ``change_parameter_scale``,
   ``change_parameter_bounds`` (justification; references optional), plus read-only
   ``get_model``, ``get_model_structure``, ``validate_problem``
-* parameters (mutable): ``get_parameters``, ``update_parameters``, ``sync_parameters``
+* parameters (read-only + reconcile): ``get_parameters``, ``sync_parameters``
 * batching: ``begin_batch``, ``commit_batch``, ``abort_batch``
-* evaluation: ``simulate``, ``evaluate_objective``, ``optimize``
-* fit inspection: ``inspect_fit``, ``residual_statistics`` (residuals across
-  observables / experiments / timepoints)
+* fit + simulation: **automatic on every commit** — each commit fits the free
+  parameters and simulates, storing a simulation dataframe on the new version; inspect it
+  with ``inspect_fit`` and ``get_simulations``
 * provenance/versions/errors: ``get_provenance``, ``get_errors``, ``list_versions``,
   ``get_version``, ``diff_versions``, ``rollback_to``, ``current_version``
 * session: ``reset``
@@ -21,7 +21,8 @@ Tool groups:
 
 No tool mutates the measurement/condition/observable tables — that invariant is
 enforced structurally (there is simply no such tool) and re-checked by the operation
-pipeline's lint (see ``operations``/``validation``).
+pipeline's lint (see ``operations``/``validation``). Parameter *values* are set only by
+the automatic fit; bounds and scale are changed through the versioned operations.
 """
 
 from __future__ import annotations
@@ -32,13 +33,13 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from . import fit as fit_mod
+from . import fitting as fitting_mod
 from . import model as model_mod
 from . import operations as ops_mod
-from . import optimize as optimize_mod
 from . import parameters as param_mod
 from . import skills as skills_mod
 from .engine import AmiciEngine
-from .errors import PetabMcpError, ValidationError
+from .errors import PetabMcpError
 from .formatting import df_to_records
 from .session import PetabSession
 from .validation import validate_problem as _validate_problem
@@ -51,14 +52,18 @@ SERVER_INSTRUCTIONS = (
     "PubMed-validated references and automatically keeps the SBML model and PEtab "
     "parameter table consistent (parametric initial conditions). Parameter scales and "
     "bounds are changed through versioned, justified operations "
-    "(`change_parameter_scale`, `change_parameter_bounds`). Chain several operations into "
-    "one version with `begin_batch`/`commit_batch`/`abort_batch`. Score with "
-    "`simulate`/`evaluate_objective`, fit with `optimize` (which records improvement vs "
-    "prior trained versions), and diagnose the fit with `inspect_fit` / "
-    "`residual_statistics`, which break residuals down across observables, "
-    "experiments/conditions, and timepoints and surface the worst-fit points. Every "
-    "change is versioned and logged: inspect with `list_versions`, `diff_versions`, "
-    "`get_provenance`; errors via `get_errors`; revert with `rollback_to` or `reset`."
+    "(`change_parameter_scale`, `change_parameter_bounds`); parameter *values* are set "
+    "only by the automatic fit, not by hand. EVERY commit automatically fits the free "
+    "parameters and simulates, then snapshots a single version carrying the fitted "
+    "parameters, the fit metrics (neg_log_likelihood, chi2, improvement vs prior "
+    "versions), and a simulation dataframe. Pass `n_starts` on a commit to fit harder "
+    "(or 0 to simulate without fitting). Chain several edits into one version — fitted "
+    "once, on commit — with `begin_batch`/`commit_batch`/`abort_batch`. Read the stored "
+    "simulation dataframe with `get_simulations` and diagnose the fit with `inspect_fit`, "
+    "which breaks residuals down across observables, experiments/conditions, and "
+    "timepoints and surfaces the worst-fit points. Every change is versioned and logged: "
+    "inspect with `list_versions`, `diff_versions`, `get_provenance`; errors via "
+    "`get_errors`; revert with `rollback_to` or `reset`."
 )
 
 # Appended to the instructions only when skills are actually registered, so clients
@@ -69,16 +74,6 @@ _SKILLS_INSTRUCTION = (
 )
 
 
-def _amici_available() -> bool:
-    try:
-        import amici  # noqa: F401
-        from amici.importers.petab.v1 import import_petab_problem  # noqa: F401
-
-        return True
-    except Exception:
-        return False
-
-
 def create_server(
     yaml_path: str,
     build_root: str | None = None,
@@ -86,11 +81,17 @@ def create_server(
     reference_mode: str = "best_effort",
     resolver: Any | None = None,
     skills_dir: str | None = None,
+    auto_fit: bool = True,
+    auto_fit_starts: int = 5,
 ) -> FastMCP:
     """Build a FastMCP server bound to the PEtab problem at ``yaml_path``.
 
     ``skills_dir`` overrides where tool-usage skills are loaded from; when omitted
     the ``_skills`` directory bundled with the package is discovered automatically.
+
+    ``auto_fit`` (default on) makes every commit fit + simulate before snapshotting;
+    ``auto_fit_starts`` is the default pyPESTO multistart count (overridable per commit via
+    ``n_starts``). Set ``auto_fit=False`` to skip the compile-heavy fit hook (tests/dev).
     """
     session = PetabSession(
         yaml_path,
@@ -99,6 +100,10 @@ def create_server(
         resolver=resolver,
     )
     engine = AmiciEngine(session, build_root=build_root)
+    # Wire the engine so commits (operations / commit_batch) can fit + simulate.
+    session.engine = engine
+    session.auto_fit = auto_fit
+    session.auto_fit_starts = auto_fit_starts
 
     # Load tool-usage skills up front so the server instructions only advertise
     # `list_skills`/`get_skill` when skills are actually available (registered below).
@@ -128,7 +133,6 @@ def create_server(
             "current_version": session.provenance.current_version,
             "batch_active": session.batch_active,
             "fixed_tables": ["measurements", "conditions", "observables"],
-            "amici_available": _amici_available(),
         }
 
     @mcp.tool()
@@ -210,55 +214,63 @@ def create_server(
 
     @mcp.tool()
     def add_reaction(
-        reaction: str, justification: str, references: list[str]
+        reaction: str, justification: str, references: list[str], n_starts: int | None = None
     ) -> dict[str, Any]:
         """Add a reaction, given as an Antimony line, e.g. "J: A + B -> C; k_f*A*B".
 
         New species/parameters and their parametric initial conditions are added
         automatically to keep the SBML model and PEtab tables consistent.
         `justification` (non-empty) and `references` (>=1, PubMed-validated) are required.
+        On commit the free parameters are fitted and the model simulated; `n_starts`
+        overrides the server default (0 = simulate without fitting).
         """
-        return _run_operation("add_reaction", ops_mod.add_reaction, session, reaction, justification, references)
+        return _run_operation("add_reaction", ops_mod.add_reaction, session, reaction, justification, references, n_starts)
 
     @mcp.tool()
     def change_rate_law(
-        reaction_id: str, rate_law: str, justification: str, references: list[str]
+        reaction_id: str, rate_law: str, justification: str, references: list[str],
+        n_starts: int | None = None,
     ) -> dict[str, Any]:
         """Replace a reaction's rate law (Antimony-like expression). Requires
-        justification + references; parameters are reconciled automatically."""
+        justification + references; parameters are reconciled automatically. Fits +
+        simulates on commit (`n_starts` overrides the default; 0 = simulate only)."""
         return _run_operation(
-            "change_rate_law", ops_mod.change_rate_law, session, reaction_id, rate_law, justification, references
+            "change_rate_law", ops_mod.change_rate_law, session, reaction_id, rate_law, justification, references, n_starts
         )
 
     @mcp.tool()
     def remove_reaction(
-        reaction_id: str, justification: str, references: list[str]
+        reaction_id: str, justification: str, references: list[str], n_starts: int | None = None
     ) -> dict[str, Any]:
         """Remove a reaction entirely and prune any orphaned species/parameters.
-        Requires justification + references."""
-        return _run_operation("remove_reaction", ops_mod.remove_reaction, session, reaction_id, justification, references)
+        Requires justification + references. Fits + simulates on commit (`n_starts`
+        overrides the default; 0 = simulate only)."""
+        return _run_operation("remove_reaction", ops_mod.remove_reaction, session, reaction_id, justification, references, n_starts)
 
     @mcp.tool()
     def change_parameter_scale(
-        parameter_id: str, scale: str, justification: str, references: list[str] | None = None
+        parameter_id: str, scale: str, justification: str,
+        references: list[str] | None = None, n_starts: int | None = None,
     ) -> dict[str, Any]:
         """Change a parameter's scale ('lin'|'log'|'log10'). Versioned; requires a
-        justification (references optional)."""
+        justification (references optional). Fits + simulates on commit (`n_starts`
+        overrides the default; 0 = simulate only)."""
         return _run_operation(
             "change_parameter_scale", ops_mod.change_parameter_scale,
-            session, parameter_id, scale, justification, references,
+            session, parameter_id, scale, justification, references, n_starts,
         )
 
     @mcp.tool()
     def change_parameter_bounds(
         parameter_id: str, lower_bound: float, upper_bound: float,
-        justification: str, references: list[str] | None = None,
+        justification: str, references: list[str] | None = None, n_starts: int | None = None,
     ) -> dict[str, Any]:
         """Change a parameter's lower/upper bounds. Versioned; requires a justification
-        (references optional)."""
+        (references optional). Fits + simulates on commit (`n_starts` overrides the
+        default; 0 = simulate only)."""
         return _run_operation(
             "change_parameter_bounds", ops_mod.change_parameter_bounds,
-            session, parameter_id, lower_bound, upper_bound, justification, references,
+            session, parameter_id, lower_bound, upper_bound, justification, references, n_starts,
         )
 
     @mcp.tool()
@@ -269,15 +281,12 @@ def create_server(
     # ------------------------------------------------------------ parameters
     @mcp.tool()
     def get_parameters() -> list[dict[str, Any]]:
-        """Return the parameter table (id, bounds, nominal_value, estimate, prior)."""
-        return param_mod.parameters_to_records(session.problem)
+        """Return the parameter table (id, bounds, nominal_value, estimate, prior).
 
-    @mcp.tool()
-    def update_parameters(updates: list[dict]) -> dict[str, Any]:
-        """Edit parameters. Each update: {id, nominalValue?, lowerBound?, upperBound?,
-        estimate?, parameterScale?}."""
-        with session.lock:
-            return param_mod.update_parameters(session.problem, updates)
+        Values (`nominalValue`) are set by the automatic fit on commit; adjust bounds and
+        scale through `change_parameter_bounds` / `change_parameter_scale`.
+        """
+        return param_mod.parameters_to_records(session.problem)
 
     @mcp.tool()
     def sync_parameters(policy: str = "report") -> dict[str, Any]:
@@ -285,78 +294,42 @@ def create_server(
         with session.lock:
             return param_mod.sync_parameters(session.problem, policy)
 
-    # ------------------------------------------------------------ evaluation
-    @mcp.tool()
-    def simulate() -> dict[str, Any]:
-        """Simulate all experiments with the current model + parameter values."""
-        return engine.simulate()
+    # ------------------------------------------------- fit + simulation (read)
+    def _current_simulation() -> dict[str, Any]:
+        """The stored simulation dataframe, generated on demand if not present yet."""
+        if session.simulation is None or not session.simulation.get("records"):
+            fitting_mod.ensure_simulation(session, engine)
+        return session.simulation
 
     @mcp.tool()
-    def evaluate_objective() -> dict[str, Any]:
-        """Score the current model/parameters vs the fixed data (neg-log-likelihood)."""
-        return engine.evaluate_objective()
+    def get_simulations() -> dict[str, Any]:
+        """Return the stored simulation dataframe: the fit metrics plus per-point records
+        (measurement, simulation, residual, noise-weighted residual, noise).
 
-    @mcp.tool()
-    def optimize(n_starts: int = 5, seed: int = 0) -> dict[str, Any]:
-        """Estimate the free parameters; writes the best fit back and records improvement
-        vs prior trained versions."""
-        return _run("optimize", lambda: optimize_mod.optimize(session, engine, n_starts=n_starts, seed=seed),
-                    {"n_starts": n_starts})
-
-    # ------------------------------------------------------- fit inspection
-    _CROSS_SECTION_ALIASES = {
-        "observable": "by_observable",
-        "observables": "by_observable",
-        "condition": "by_condition",
-        "conditions": "by_condition",
-        "experiment": "by_condition",
-        "experiments": "by_condition",
-        "time": "by_time",
-        "times": "by_time",
-        "timepoint": "by_time",
-        "timepoints": "by_time",
-    }
-
-    def _fit_report(top_n: int) -> dict[str, Any]:
-        data = engine.residuals()
-        report = fit_mod.fit_inspection(data["records"], top_n=top_n)
-        report["neg_log_likelihood"] = data["neg_log_likelihood"]
-        report["chi2"] = data["chi2"]
-        return report
+        Refreshed automatically on every commit. If no simulation exists yet (fresh
+        problem, no commit) it is generated on demand from the current parameters.
+        """
+        return _run("get_simulations", _current_simulation)
 
     @mcp.tool()
     def inspect_fit(top_n: int = 10) -> dict[str, Any]:
-        """Inspect the current fit to the fixed data.
+        """Inspect the current fit to the fixed data using the stored simulation dataframe.
 
-        Simulates, then reports residual statistics overall and across each cross
-        section (observables, experiments/conditions, timepoints), the `top_n`
-        worst-fit points, and systematic-bias flags — so you can see *where* the
-        model fits poorly, not just the aggregate objective. Weighted residuals are
-        noise-normalized (the chi2 terms); raw residuals are in observable units.
-        """
-        return _run("inspect_fit", lambda: _fit_report(top_n), {"top_n": top_n})
-
-    @mcp.tool()
-    def residual_statistics(group_by: str = "all") -> dict[str, Any]:
-        """Residual statistics across a chosen cross section.
-
-        `group_by` is 'observable', 'condition' (a.k.a. 'experiment'), 'time', or
-        'all' (overall plus every cross section). Each group reports counts, mean/RMSE
-        of raw residuals, and noise-weighted stats (chi2, reduced_chi2, bias z-score).
+        Reports residual statistics overall and across each cross section (observables,
+        experiments/conditions, timepoints), the `top_n` worst-fit points, and
+        systematic-bias flags — so you can see *where* the model fits poorly, not just the
+        aggregate objective. Weighted residuals are noise-normalized (the chi2 terms); raw
+        residuals are in observable units. Reads the dataframe produced by the last commit
+        (no re-simulation).
         """
         def run() -> dict[str, Any]:
-            records = engine.residuals()["records"]
-            key = group_by.strip().lower()
-            if key in ("all", ""):
-                return fit_mod.residual_statistics(records)
-            if key not in _CROSS_SECTION_ALIASES:
-                raise ValidationError(
-                    f"Unknown group_by {group_by!r}; use one of "
-                    "'observable', 'condition'/'experiment', 'time', or 'all'."
-                )
-            return fit_mod.residual_statistics(records, cross_sections=[_CROSS_SECTION_ALIASES[key]])
+            sim = _current_simulation()
+            report = fit_mod.fit_inspection(sim["records"], top_n=top_n)
+            report["neg_log_likelihood"] = sim.get("neg_log_likelihood")
+            report["chi2"] = sim.get("chi2")
+            return report
 
-        return _run("residual_statistics", run, {"group_by": group_by})
+        return _run("inspect_fit", run, {"top_n": top_n})
 
     # --------------------------------------------------------------- batching
     @mcp.tool()
@@ -365,9 +338,11 @@ def create_server(
         return _run("begin_batch", lambda: session.begin_batch(label or None), {"label": label})
 
     @mcp.tool()
-    def commit_batch(label: str = "") -> dict[str, Any]:
-        """Snapshot all staged operations as a single new version."""
-        return _run("commit_batch", lambda: session.commit_batch(label or None), {"label": label})
+    def commit_batch(label: str = "", n_starts: int | None = None) -> dict[str, Any]:
+        """Snapshot all staged operations as a single new version, fitting + simulating
+        once for the whole batch (`n_starts` overrides the default; 0 = simulate only)."""
+        return _run("commit_batch", lambda: session.commit_batch(label or None, n_starts=n_starts),
+                    {"label": label})
 
     @mcp.tool()
     def abort_batch() -> dict[str, Any]:
@@ -457,7 +432,18 @@ def create_server(
 
     @mcp.resource("petab://fit")
     def _res_fit() -> str:
-        return json.dumps(_run("inspect_fit", lambda: _fit_report(10)), indent=2)
+        def run() -> dict[str, Any]:
+            sim = _current_simulation()
+            report = fit_mod.fit_inspection(sim["records"], top_n=10)
+            report["neg_log_likelihood"] = sim.get("neg_log_likelihood")
+            report["chi2"] = sim.get("chi2")
+            return report
+
+        return json.dumps(_run("inspect_fit", run), indent=2)
+
+    @mcp.resource("petab://simulations")
+    def _res_simulations() -> str:
+        return json.dumps(_run("get_simulations", _current_simulation), indent=2)
 
     # ---------------------------------------------------------------- skills
     # Register the skills loaded above as `list_skills`/`get_skill` tools plus

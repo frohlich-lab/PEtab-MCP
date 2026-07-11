@@ -2,9 +2,10 @@
 
 The server wraps a single PEtab v1 problem and exposes it over the Model Context
 Protocol. The experimental design stays fixed — measurements, conditions and
-observables are read-only — while an agent may edit the **model** (expressed in
-Antimony via constrained operations) and the **parameter table**, then simulate and score the
-result against the fixed data with AMICI.
+observables are read-only — while an agent edits the **model** (expressed in Antimony
+via constrained operations). Every commit automatically fits the free parameters and
+simulates against the fixed data with AMICI/pyPESTO, storing a simulation dataframe on
+the new version for statistical analysis.
 """
 
 from __future__ import annotations

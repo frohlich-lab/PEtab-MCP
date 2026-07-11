@@ -4,10 +4,11 @@ description: >-
   Use when interacting with the petab-mcp server to work a single PEtab v1
   parameter-estimation problem: read the fixed experimental design, edit the model
   through the constrained justified operations (add_reaction, change_rate_law,
-  remove_reaction), tune parameters, score/optimize against the fixed data, and
-  inspect provenance and versions. Explains the disciplined, auditable tool workflow,
-  the rules each tool enforces, how to read tool results, and how to recover from
-  rejected operations. Read this before calling any petab-mcp tool.
+  remove_reaction) — each commit automatically fits and simulates — then inspect the
+  fit (inspect_fit / get_simulations), provenance, and versions. Explains the
+  disciplined, auditable tool workflow, the rules each tool enforces, how to read tool
+  results, and how to recover from rejected operations. Read this before calling any
+  petab-mcp tool.
 ---
 
 # Working a PEtab problem with petab-mcp
@@ -43,14 +44,18 @@ file="tools.md")`).
 - **Everything is versioned.** Each committed operation snapshots a new version
   and appends a provenance event. Nothing is lost; you can diff, roll back, or
   reset.
+- **Fitting is automatic.** Every commit fits the free parameters and simulates
+  before snapshotting, so each version carries the fitted parameters, the fit metrics
+  (neg_log_likelihood, chi2, improvement vs prior versions), and a simulation dataframe.
+  You never call a fit or simulate tool by hand; parameter *values* are set only by this
+  fit.
 
 ## Step 1 — orient yourself (read-only)
 
 Always start by understanding the problem before changing it:
 
 - `describe_problem()` — model size, free parameters, table counts, current
-  version, whether a batch is open, and `amici_available` (whether simulation/
-  optimization tools will work).
+  version, and whether a batch is open.
 - `get_model("antimony")` — the canonical model text. Use `get_model("sbml")` for
   SBML, or `get_model_structure()` for a structured species/parameters/reactions view.
 - `list_observables()`, `list_conditions()`, `get_measurements(condition_id?,
@@ -107,61 +112,58 @@ Delete a reaction and prune any species/parameters left orphaned by the removal.
 
 ## Step 3 — parameters
 
-Two distinct paths, for two purposes:
+Parameter **values** (`nominalValue`) are set only by the automatic fit on commit —
+there is no manual value-editing tool. What you *can* change, through versioned, justified
+operations, is a parameter's search space:
 
-- **Versioned, justified structural intent** — use the operations. These snapshot
-  a version and require a justification:
-  - `change_parameter_scale(parameter_id, scale, justification, references?)` —
-    `scale` is `"lin"`, `"log"`, or `"log10"`. Switching to `log`/`log10` requires
-    the parameter's `lowerBound` and `nominalValue` to be **> 0**, or the operation
-    is rejected.
-  - `change_parameter_bounds(parameter_id, lower_bound, upper_bound,
-    justification, references?)`.
-- **Quick, non-versioned tuning** — `update_parameters(updates)` where each update
-  is `{"id": ..., "nominalValue"?, "lowerBound"?, "upperBound"?, "estimate"?,
-  "parameterScale"?}`. This is the fast path for setting nominal values, toggling
-  `estimate`, or adjusting bounds during exploration. It is transactional (a bad
-  update leaves the table unchanged) but does **not** create a version.
-- `sync_parameters(policy)` — reconcile the table with the model. `"report"`
-  (default) lists model parameters missing from the table; `"add"` inserts them
-  with default bounds and `estimate=1`. Operations already reconcile, so you rarely
-  need this, but it's useful after low-level tuning.
+- `change_parameter_scale(parameter_id, scale, justification, references?)` —
+  `scale` is `"lin"`, `"log"`, or `"log10"`. Switching to `log`/`log10` requires the
+  parameter's `lowerBound` and `nominalValue` to be **> 0**, or the operation is rejected.
+- `change_parameter_bounds(parameter_id, lower_bound, upper_bound, justification,
+  references?)`.
 
-Rule of thumb: use the **operations** when the change reflects a modelling
-decision worth auditing; use `update_parameters` for throwaway tuning before an
-`optimize` run.
+Both are commits, so they re-fit and re-simulate like any model edit — reach for them when
+a fit lands on a bound or a scale is inappropriate. Read the current table with
+`get_parameters()`; use `sync_parameters("report"|"add")` to reconcile the table with the
+model (operations already reconcile, so this is rarely needed).
 
 ## Step 4 — batching (group edits into one version)
 
 To land several related edits as a **single** version:
 
 1. `begin_batch(label)` — start staging. Subsequent operations are applied and
-   logged but not individually versioned.
+   logged but not individually versioned, and **not fitted** — the fit is deferred.
 2. Run the operations (`add_reaction`, `change_rate_law`, …).
-3. `commit_batch(label)` — snapshot everything as one version, **or**
-   `abort_batch()` — discard the staged edits and restore the pre-batch version.
+3. `commit_batch(label)` — fit + simulate the staged result **once**, then snapshot
+   everything as one version, **or** `abort_batch()` — discard the staged edits and
+   restore the pre-batch version.
 
-While a batch is open, `optimize`, `rollback_to`, and `reset` are blocked — commit
-or abort first. Use a batch when a mechanism spans multiple reactions and you want
-the version history to read as one coherent change.
+While a batch is open, `rollback_to` and `reset` are blocked — commit or abort first.
+Batching is also how you avoid re-fitting after every intermediate edit: a mechanism
+spanning several reactions is fitted just once, on `commit_batch`.
 
-## Step 5 — score and fit
+## Step 5 — read the fit (fitting is automatic)
 
-These need the simulation stack (`amici`, and `pypesto` for `optimize`). Check
-`describe_problem()["amici_available"]` first; if false, install the extras
-(`pip install 'petab-mcp[amici,optimize]'`).
+You never call a fit or simulate tool: **every commit** (a model edit, a parameter-scale/
+bounds change, or `commit_batch`) fits the free parameters and simulates before
+snapshotting. The commit result and the new version carry the fit metrics —
+`neg_log_likelihood` and `chi2` (**lower is better**) plus improvement metrics
+(`objective_before`, `self_improvement`, `improvement_vs_best_prior`, `is_new_best`), so
+competing versions can be ranked by objective. Pass `n_starts` on a commit to fit harder,
+or `n_starts=0` to simulate without fitting.
 
-- `simulate()` — simulate every experiment at the current parameters.
-- `evaluate_objective()` — score current model/parameters vs the fixed data
-  (returns a negative log-likelihood; **lower is better**).
-- `optimize(n_starts, seed)` — multi-start estimation with pyPESTO. It writes the
-  best fit back into the table and records a **training version** with improvement
-  metrics: `objective_before`, `self_improvement`, `improvement_vs_best_prior`,
-  and `is_new_best`. Because each `optimize` is versioned and scored, competing
-  model versions can be ranked by objective.
+Inspect the result with:
 
-A typical fit loop: edit the model → `update_parameters` to set reasonable starts/
-bounds → `optimize` → compare `is_new_best` / `improvement_vs_best_prior`.
+- `get_simulations()` — the stored simulation dataframe: fit metrics + per-point records
+  (measurement, simulation, residual, noise-weighted residual, noise).
+- `inspect_fit(top_n)` — residual statistics overall and across each cross section
+  (observables, experiments/conditions, timepoints), the `top_n` worst-fit points, and
+  systematic-bias flags — so you see *where* the model fits poorly. It reads the stored
+  dataframe (no re-simulation).
+
+A typical loop: edit the model (it auto-fits) → `inspect_fit` to see where it still fits
+poorly → make the next justified edit → compare `is_new_best` / `improvement_vs_best_prior`
+across versions.
 
 ## Step 6 — provenance, versions, and recovery
 
@@ -179,33 +181,35 @@ bounds → `optimize` → compare `is_new_best` / `improvement_vs_best_prior`.
 
 ## Reading tool results
 
-- **Model/parameter operations** return `{"committed": true, "version": N, ...}`
-  on success. On a rejected edit they return `{"committed": false, "error": "...",
-  "issues": [...]}` — the model is unchanged. Fix the reported issue (e.g. add a
-  reference, correct the rate law, respect the fixed observables) and retry.
+- **Model/parameter operations** return `{"committed": true, "version": N,
+  "fit_status": ..., "neg_log_likelihood": ..., "improvement": {...}, ...}` on success —
+  the fit metrics come back with the commit. On a rejected edit they return
+  `{"committed": false, "error": "...", "issues": [...]}` — the model is unchanged. Fix the
+  reported issue (e.g. add a reference, correct the rate law, respect the fixed
+  observables) and retry.
 - **Other tools** return `{"ok": false, "error": "..."}` on a known failure.
 - A rejected operation is **not silent**: it is logged and surfaced via
   `get_errors()`.
-- If a tool reports a missing optional dependency, it needs `amici`/`pypesto` —
-  install the extras and retry; other tools keep working without them.
+- A commit is **atomic**: if the fit or simulation fails, the whole edit is rejected
+  (nothing changes) and the error is surfaced — fix the model so it simulates and retry.
+  On success, `fit_status` is `"fit"` (fitted) or `"simulate_only"` (you passed
+  `n_starts=0`).
 
 ## A minimal end-to-end recipe
 
 ```
-describe_problem()                         # orient; check amici_available
+describe_problem()                         # orient
 get_model("antimony"); get_parameters()    # see model + parameters
 list_observables(); get_measurements()     # see what you're fitting
 
 add_reaction("J: B -> C; k3*B",
              justification="B is enzymatically converted to C (…)",
-             references=["PMID:12345678"]) # -> committed, new version; k3 + C_init added
-get_parameters()                           # set nominal/bounds for k3, C_init
-update_parameters([{"id":"k3","nominalValue":0.1,"lowerBound":1e-4,"upperBound":10}])
-
-evaluate_objective()                       # baseline score
-optimize(n_starts=20, seed=0)              # fit; check is_new_best
-list_versions(); diff_versions(0, 2)       # audit what changed
+             references=["PMID:12345678"]) # -> committed + auto-fitted; k3 + C_init added
+                                           #    result carries neg_log_likelihood / is_new_best
+inspect_fit()                              # where does it still fit poorly?
+get_simulations()                          # the simulated-vs-measured dataframe
+list_versions(); diff_versions(0, 1)       # audit what changed
 ```
 
-Keep edits small and justified, score after each meaningful change, and let the
-version history tell the story.
+Keep edits small and justified, read the fit after each change, and let the version
+history tell the story.

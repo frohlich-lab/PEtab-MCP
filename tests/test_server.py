@@ -13,11 +13,14 @@ _FORBIDDEN_TOOL_SUBSTRINGS = ("measurement", "observable", "condition")
 _WRITE_VERBS = ("update", "set", "add", "delete", "remove", "edit")
 
 
-def _server(tmp_path):
+def _server(tmp_path, auto_fit=False):
+    # auto_fit defaults off so structural/versioning tests don't compile+fit on every
+    # commit (and run without AMICI); the fit-tool test opts in explicitly.
     return create_server(
         str(YAML_PATH),
         provenance_dir=str(tmp_path / "prov"),
         resolver=StubReferenceResolver(),
+        auto_fit=auto_fit,
     )
 
 
@@ -32,13 +35,15 @@ def test_tools_registered(tmp_path):
         "describe_problem", "list_observables", "list_conditions", "get_measurements",
         "get_model", "get_model_structure", "validate_problem",
         "add_reaction", "change_rate_law", "remove_reaction",
-        "get_parameters", "update_parameters", "sync_parameters",
-        "simulate", "evaluate_objective", "optimize",
-        "inspect_fit", "residual_statistics",
+        "get_parameters", "sync_parameters",
+        "get_simulations", "inspect_fit",
         "get_provenance", "list_versions", "get_version", "diff_versions",
         "rollback_to", "current_version", "reset",
     }
     assert expected <= names
+    # fitting is automatic on commit — no manual fit/score/tune tools
+    assert not ({"simulate", "evaluate_objective", "optimize", "residual_statistics",
+                 "update_parameters", "refit"} & names)
     assert "update_model" not in names and "set_model_parameter" not in names
     assert "list_experiments" not in names
 
@@ -63,11 +68,6 @@ def test_describe_and_parameters(tmp_path):
         params = _structured(await mcp.call_tool("get_parameters", {}))
         recs = params["result"] if isinstance(params, dict) and "result" in params else params
         assert {r["parameterId"] for r in recs} == {"k1", "k2", "sigma_B", "A_init", "B_init"}
-
-        upd = _structured(await mcp.call_tool(
-            "update_parameters", {"updates": [{"id": "k1", "nominalValue": 0.7}]}
-        ))
-        assert "k1" in upd["updated"]
 
     asyncio.run(go())
 
@@ -143,6 +143,7 @@ def test_resources_registered(tmp_path):
     assert any("petab://provenance" in u for u in uris)
     assert any("petab://versions" in u for u in uris)
     assert any("petab://fit" in u for u in uris)
+    assert any("petab://simulations" in u for u in uris)
     assert any("model/antimony" in u for u in uris)
 
 
@@ -150,9 +151,12 @@ def test_fit_tools(tmp_path):
     import pytest
 
     pytest.importorskip("amici", reason="AMICI not installed; skipping fit-tool run")
-    mcp = _server(tmp_path)
+    pytest.importorskip("pypesto", reason="pyPESTO not installed; skipping fit-tool run")
+    mcp = _server(tmp_path, auto_fit=True)
 
     async def go():
+        # inspect_fit reads the stored simulation dataframe, generated on demand at cold
+        # start (no re-simulation on subsequent calls).
         report = _structured(await mcp.call_tool("inspect_fit", {"top_n": 3}))
         assert report["summary"]["n"] == 6
         assert report["chi2"] is not None
@@ -163,13 +167,19 @@ def test_fit_tools(tmp_path):
         assert {c["condition_id"] for c in stats["by_condition"]} == {"c0"}
         assert len(stats["by_time"]) == 6  # six distinct timepoints
 
-        by_obs = _structured(await mcp.call_tool("residual_statistics", {"group_by": "observable"}))
-        assert "by_observable" in by_obs and "by_condition" not in by_obs
+        # the simulation dataframe is exposed read-only via get_simulations
+        sims = _structured(await mcp.call_tool("get_simulations", {}))
+        assert len(sims["records"]) == 6
+        assert sims["neg_log_likelihood"] is not None
 
-        exp = _structured(await mcp.call_tool("residual_statistics", {"group_by": "experiment"}))
-        assert "by_condition" in exp  # 'experiment' aliases to condition
-
-        bad = _structured(await mcp.call_tool("residual_statistics", {"group_by": "nope"}))
-        assert bad["ok"] is False
+        # a commit auto-fits: its result carries fit metrics and a new fitted version
+        res = _structured(await mcp.call_tool("change_parameter_bounds", {
+            "parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3,
+            "justification": "widen bounds", "n_starts": 2,
+        }))
+        assert res["committed"] is True
+        assert res["fit_status"] == "fit"
+        assert res["neg_log_likelihood"] is not None
+        assert res["version"] == 1
 
     asyncio.run(go())

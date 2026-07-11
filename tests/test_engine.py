@@ -76,27 +76,34 @@ def test_simulate_after_operation_recompiles(engine, session):
     assert after["n_data_points"] == 6
 
 
-def test_optimize_improves_fit(engine, session):
+def test_fit_and_simulate_improves_fit(fit_session):
     pytest.importorskip("pypesto", reason="pyPESTO not installed")
-    from petab_mcp import optimize as O
+    from petab_mcp import fitting as F
 
+    engine = fit_session.engine
     before = engine.evaluate_objective()["neg_log_likelihood"]
-    result = O.optimize(session, engine, n_starts=3, seed=1)
-    assert result["backend"] == "pypesto"
+    result = F.fit_and_simulate(fit_session, engine, do_fit=True, n_starts=3)
+    assert result["status"] == "fit"
     assert result["neg_log_likelihood"] <= before + 1e-6
     assert {"k1", "k2"} <= set(result["fitted_parameters"])
+    assert len(result["records"]) == 6
+    assert fit_session.simulation is result  # stored on the session
 
 
-def test_optimize_tracks_improvement_vs_versions(engine, session):
+def test_commit_tracks_improvement_vs_versions(fit_session):
     pytest.importorskip("pypesto", reason="pyPESTO not installed")
-    from petab_mcp import optimize as O
+    from petab_mcp import operations as O
 
-    first = O.optimize(session, engine, n_starts=2, seed=1)["improvement"]
-    assert first["objective_before"] is not None
-    assert first["self_improvement"] is not None
-    assert first["is_new_best"] is True  # nothing to beat yet
-    assert first["improvement_vs_best_prior"] is None
+    # every commit auto-fits; improvement is tracked across committed versions
+    first = O.change_parameter_bounds(fit_session, "k1", 1e-3, 1e3, justification="widen k1")
+    assert first["fit_status"] == "fit"
+    imp1 = first["improvement"]
+    assert imp1["objective_before"] is not None
+    assert imp1["self_improvement"] is not None
+    assert imp1["is_new_best"] is True  # nothing to beat yet
+    assert imp1["improvement_vs_best_prior"] is None
 
-    second = O.optimize(session, engine, n_starts=2, seed=2)["improvement"]
-    assert second["best_prior_version"] is not None
-    assert second["improvement_vs_best_prior"] is not None
+    second = O.change_parameter_bounds(fit_session, "k2", 1e-3, 1e3, justification="widen k2")
+    imp2 = second["improvement"]
+    assert imp2["best_prior_version"] is not None
+    assert imp2["improvement_vs_best_prior"] is not None

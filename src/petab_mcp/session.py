@@ -57,6 +57,14 @@ class PetabSession:
         self.batch_start_version: int = -1
         self.staged: list[dict[str, Any]] = []
 
+        # Fit + simulate on commit. The engine is wired by the server after construction
+        # (it needs the session); until then, and in engine-free unit tests, the auto-fit
+        # hook no-ops. `simulation` holds the current per-point simulation dataframe.
+        self.engine: Any | None = None
+        self.simulation: dict[str, Any] | None = None
+        self.auto_fit: bool = True
+        self.auto_fit_starts: int = 5
+
         if self.provenance.current_version < 0:
             self.provenance.snapshot_version(
                 model_ant=self.model.to_antimony(),
@@ -98,11 +106,51 @@ class PetabSession:
         return df
 
     def apply_version(self, version: int) -> None:
-        """Set the working model + parameter table to a stored version (fixed tables kept)."""
+        """Set the working model + parameter table to a stored version (fixed tables kept).
+
+        Also restores the version's stored simulation dataframe (``None`` for legacy
+        versions that predate it). Stays engine-free: this runs during durable resume in
+        ``__init__`` before the engine is wired.
+        """
         with self.lock:
             snap = self.provenance.get_version(version)
             self._set_model_from_antimony(snap["model_antimony"])
             self.problem.parameter_df = self._param_df_from_records(snap["parameters"])
+            self.simulation = snap.get("simulation")
+
+    # -- auto fit + simulate on commit -------------------------------------
+    def _auto_fit_and_improvement(
+        self, n_starts: int | None = None
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Fit + simulate for a commit, returning (payload, improvement).
+
+        ``n_starts`` of 0 means simulate-only (no optimisation) for this commit; ``None``
+        uses the server default. No-ops (status ``"skipped"``) when no engine is wired or
+        ``auto_fit`` is off. A fit/simulation error propagates — the caller reverts.
+        """
+        from . import fitting
+
+        engine = self.engine
+        if engine is None or not self.auto_fit:
+            return {"status": "skipped", "neg_log_likelihood": None, "chi2": None,
+                    "fitted_parameters": None, "records": []}, {}
+        starts = self.auto_fit_starts if n_starts is None else int(n_starts)
+        fitsim = fitting.fit_and_simulate(self, engine, do_fit=(starts != 0), n_starts=starts or 1)
+        nllh = fitsim.get("neg_log_likelihood")
+        improvement = (
+            fitting.compute_improvement(self, nllh, fitsim.get("objective_before"))
+            if nllh is not None
+            else {}
+        )
+        return fitsim, improvement
+
+    def _restore_or_simulate(self) -> dict[str, Any] | None:
+        """Ensure ``self.simulation`` is populated after restoring a version (no refit)."""
+        from . import fitting
+
+        if (self.simulation is None or not self.simulation.get("records")) and self.engine is not None:
+            fitting.fit_and_simulate(self, self.engine, do_fit=False, n_starts=0)
+        return self.simulation
 
     # -- batching ----------------------------------------------------------
     def _require_no_open_batch(self, action: str) -> None:
@@ -122,24 +170,40 @@ class PetabSession:
             self.provenance.append_event({"type": "batch_begin", "label": label})
         return {"batch_active": True, "label": label, "start_version": self.batch_start_version}
 
-    def commit_batch(self, label: str | None = None) -> dict[str, Any]:
+    def commit_batch(self, label: str | None = None, n_starts: int | None = None) -> dict[str, Any]:
+        from . import fitting
+
         with self.lock:
             if not self.batch_active:
                 raise BatchError("No batch is open.")
             staged = list(self.staged)
+            # Fit + simulate the staged result once, before the single snapshot, so the
+            # batch version carries fitted params + metrics + the simulation dataframe.
+            # (batch_active is still True here; we call the orchestrator directly so no
+            # batch guard trips.)
+            fitsim, improvement = self._auto_fit_and_improvement(n_starts)
+            nllh = fitsim.get("neg_log_likelihood")
             version = self.provenance.snapshot_version(
                 model_ant=self.model.to_antimony(),
                 parameters=parameters_to_records(self.problem),
                 label=label or self.batch_label or "batch",
                 kind="batch",
-                meta={"staged_operations": staged, "n_staged": len(staged)},
+                meta={"staged_operations": staged, "n_staged": len(staged),
+                      "fit_status": fitsim.get("status"), "neg_log_likelihood": nllh,
+                      "chi2": fitsim.get("chi2"),
+                      "fitted_parameters": fitsim.get("fitted_parameters"), **improvement},
+                simulation=fitting.build_sim_payload_for_version(fitsim),
             )
+            fitsim["version"] = version
             self.provenance.append_event(
                 {"type": "batch_commit", "version": version, "label": label or self.batch_label,
-                 "n_staged": len(staged)}
+                 "n_staged": len(staged), "fit_status": fitsim.get("status"),
+                 "neg_log_likelihood": nllh, "chi2": fitsim.get("chi2"),
+                 "fitted_parameters": fitsim.get("fitted_parameters"), **improvement}
             )
             self._clear_batch()
-        return {"committed": True, "version": version, "n_staged": len(staged)}
+        return {"committed": True, "version": version, "n_staged": len(staged),
+                "fit_status": fitsim.get("status"), "neg_log_likelihood": nllh}
 
     def abort_batch(self) -> dict[str, Any]:
         with self.lock:
@@ -160,16 +224,26 @@ class PetabSession:
         self.staged = []
 
     def rollback_to(self, version: int, justification: str | None = None) -> dict[str, Any]:
-        """Revert to a prior version, appending a new (auditable) version + event."""
+        """Revert to a prior version, appending a new (auditable) version + event.
+
+        Restores the target version's stored simulation dataframe (no refit — this is a
+        restoration, not a new model); simulate-only fallback if that version lacks one.
+        """
+        from . import fitting
+
         with self.lock:
             self._require_no_open_batch("rollback")
             self.apply_version(version)
+            sim = self._restore_or_simulate()
+            nllh = sim.get("neg_log_likelihood") if sim else None
             new_version = self.provenance.snapshot_version(
                 model_ant=self.model.to_antimony(),
                 parameters=parameters_to_records(self.problem),
                 label=f"rollback->v{version}",
                 kind="rollback",
-                meta={"rolled_back_to": version, "justification": justification},
+                meta={"rolled_back_to": version, "justification": justification,
+                      "neg_log_likelihood": nllh},
+                simulation=fitting.build_sim_payload_for_version(sim),
             )
             self.provenance.append_event(
                 {
@@ -177,6 +251,7 @@ class PetabSession:
                     "rolled_back_to": version,
                     "version": new_version,
                     "justification": justification,
+                    "neg_log_likelihood": nllh,
                 }
             )
         return {"rolled_back_to": version, "version": new_version}
@@ -184,15 +259,22 @@ class PetabSession:
     # -- lifecycle ---------------------------------------------------------
     def reset(self) -> dict[str, Any]:
         """Revert model + parameters to the initial version (v0)."""
+        from . import fitting
+
         with self.lock:
             self._require_no_open_batch("reset")
             self.apply_version(0)
+            sim = self._restore_or_simulate()
+            nllh = sim.get("neg_log_likelihood") if sim else None
             new_version = self.provenance.snapshot_version(
                 model_ant=self.model.to_antimony(),
                 parameters=parameters_to_records(self.problem),
                 label="reset",
                 kind="reset",
-                meta={"reset_to": 0},
+                meta={"reset_to": 0, "neg_log_likelihood": nllh},
+                simulation=fitting.build_sim_payload_for_version(sim),
             )
-            self.provenance.append_event({"type": "reset", "version": new_version})
+            self.provenance.append_event(
+                {"type": "reset", "version": new_version, "neg_log_likelihood": nllh}
+            )
         return {"reset": True, "version": new_version}

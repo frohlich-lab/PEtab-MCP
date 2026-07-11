@@ -6,8 +6,8 @@ Uses AMICI's legacy PEtab v1 API (``amici.importers.petab.v1.import_petab_proble
 changes the hash and triggers a recompile, while parameter edits are cheap — the
 current ``nominalValue``s are passed as ``problem_parameters`` (on linear scale).
 
-AMICI is an optional dependency; importing this module is fine without it, but the
-simulate/objective calls raise a clear ``MissingDependencyError`` when it is absent.
+AMICI is a hard dependency (the server fits + simulates on every commit), so the imports
+here are unconditional; ``swig`` is still located on ``PATH`` for the C++ build.
 """
 
 from __future__ import annotations
@@ -28,8 +28,6 @@ from petab.v1.C import (
     TIME,
 )
 
-from .errors import MissingDependencyError
-
 
 def _ensure_swig_on_path() -> None:
     """AMICI compiles generated C++ via CMake+SWIG; make sure ``swig`` is found."""
@@ -43,15 +41,6 @@ def _ensure_swig_on_path() -> None:
             os.environ["PATH"] = str(cand) + os.pathsep + os.environ.get("PATH", "")
     except Exception:  # best-effort; AMICI will error clearly if still missing
         pass
-
-
-def _require_amici():
-    try:
-        import amici  # noqa: F401
-        from amici.importers.petab.v1 import import_petab_problem  # noqa: F401
-        from amici.sim.sundials.petab.v1 import simulate_petab  # noqa: F401
-    except Exception as exc:
-        raise MissingDependencyError("Simulation", "amici", "amici") from exc
 
 
 class AmiciEngine:
@@ -69,7 +58,6 @@ class AmiciEngine:
 
     # -- compilation cache -------------------------------------------------
     def _get_model(self):
-        _require_amici()
         _ensure_swig_on_path()
         h = self.session.sbml_hash()
         if h not in self._models:
