@@ -25,6 +25,17 @@ _DEFAULT_LB = 1e-5
 _DEFAULT_UB = 1e5
 
 
+def _default_bounds(nominal) -> tuple[float, float]:
+    """Bounds for an auto-added parameter that always bracket its nominal value."""
+    lb, ub = _DEFAULT_LB, _DEFAULT_UB
+    if nominal is None:
+        return lb, ub
+    nominal = float(nominal)
+    if nominal > 0:
+        return min(lb, nominal * 1e-3), max(ub, nominal * 1e3)
+    return min(lb, nominal - 1.0), max(ub, nominal + 1.0)
+
+
 def _param_map(problem) -> dict[str, Any]:
     return {p.id: p for p in problem.parameters}
 
@@ -111,18 +122,24 @@ def update_parameters(problem, updates: list[dict[str, Any]]) -> dict[str, Any]:
 
     try:
         # Apply all fields without per-assignment validation (avoids transient
-        # invalid states), then validate each touched parameter as a whole.
+        # invalid states), then validate each touched parameter as a whole and
+        # copy the *coerced* values back (so e.g. a numeric-string lb becomes a
+        # float rather than persisting as a raw string).
         for pid, fields in resolved:
             for field, value in fields.items():
                 object.__setattr__(pmap[pid], field, value)
         for pid in touched:
             param = pmap[pid]
-            type(param).model_validate(param.model_dump())
-            lb, ub = param.lb, param.ub
+            # warnings=False: a field may transiently hold a pre-coercion value
+            # (e.g. a numeric string) that the serializer would otherwise flag.
+            validated = type(param).model_validate(param.model_dump(warnings=False))
+            lb, ub = validated.lb, validated.ub
             if lb is not None and ub is not None and float(lb) > float(ub):
                 raise ParameterError(
                     f"Parameter {pid!r}: lower bound {lb} exceeds upper bound {ub}."
                 )
+            for field in _EDITABLE_FIELDS:
+                object.__setattr__(param, field, getattr(validated, field))
     except ParameterError:
         _rollback()
         raise
@@ -165,12 +182,13 @@ def sync_parameters(problem, policy: str = "report") -> dict[str, Any]:
     if policy == "add":
         for pid in diff["model_only"]:
             nominal = problem.model.get_parameter_value(pid)
+            lb, ub = _default_bounds(nominal)
             problem.add_parameter(
                 pid,
                 estimate=True,
                 nominal_value=nominal,
-                lb=_DEFAULT_LB,
-                ub=_DEFAULT_UB,
+                lb=lb,
+                ub=ub,
             )
             added.append(pid)
         diff = parameter_sync_diff(problem)

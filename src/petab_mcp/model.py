@@ -62,16 +62,21 @@ def update_model(session, text: str, fmt: str = "antimony") -> dict[str, Any]:
 
     with session.lock:
         session.problem.model = new_model
-        report = validate_problem(session.problem)
-        if not report["valid"]:
-            session.problem.model = old  # revert
-            raise ValidationError(
-                "Model update rejected: the new model is inconsistent with the "
-                "fixed experimental design or parameter table.",
-                issues=[i["message"] for i in report["issues"]
-                        if i["level"] in ("error", "critical")],
-            )
-        sync = parameter_sync_diff(session.problem)
+        try:
+            report = validate_problem(session.problem)
+            if not report["valid"]:
+                raise ValidationError(
+                    "Model update rejected: the new model is inconsistent with the "
+                    "fixed experimental design or parameter table.",
+                    issues=[i["message"] for i in report["issues"]
+                            if i["level"] in ("error", "critical")],
+                )
+            sync = parameter_sync_diff(session.problem)
+        except Exception:
+            # Any failure (validation raised, sync raised, ...) must not leave a
+            # broken model committed — restore the previous model.
+            session.problem.model = old
+            raise
 
     return {
         "committed": True,

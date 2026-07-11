@@ -55,6 +55,10 @@ def _optimize_pypesto(session, n_starts: int, seed: int) -> dict[str, Any]:
 
     result = pypesto.optimize.minimize(problem, n_starts=n_starts, progress_bar=False)
     best = result.optimize_result.list[0]
+    # NOTE: pyPESTO returns x on the optimization scale (e.g. log10 for log-scaled
+    # parameters). This path is currently unreachable (pyPESTO cannot build a v2
+    # problem); when it becomes reachable, unscale via the importer before writing
+    # back into the linear `nominal_value`.
     x = best["x"]
     fitted = {name: float(x[i]) for i, name in enumerate(problem.x_names)}
     _write_back(session, fitted)
@@ -114,10 +118,16 @@ def _optimize_scipy(session, engine, n_starts: int, seed: int) -> dict[str, Any]
         starts.append(sample)
 
     best_x, best_f = None, math.inf
-    for start in starts:
-        res = minimize(objective, start, method="L-BFGS-B", bounds=bounds)
-        if math.isfinite(res.fun) and res.fun < best_f:
-            best_f, best_x = float(res.fun), np.asarray(res.x, dtype=float)
+    try:
+        for start in starts:
+            res = minimize(objective, start, method="L-BFGS-B", bounds=bounds)
+            if math.isfinite(res.fun) and res.fun < best_f:
+                best_f, best_x = float(res.fun), np.asarray(res.x, dtype=float)
+    except Exception:
+        # `objective` mutates nominal_value in place; restore on any failure so a
+        # crashed optimization never leaves the table at arbitrary probe values.
+        _write_back(session, original)
+        raise
 
     if best_x is None:  # no start produced a finite objective
         _write_back(session, original)  # restore what we perturbed

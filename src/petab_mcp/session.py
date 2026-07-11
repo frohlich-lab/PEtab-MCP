@@ -46,4 +46,5 @@ class PetabSession:
     # -- lifecycle ---------------------------------------------------------
     def reset(self) -> None:
         """Reload the problem from disk, discarding model/parameter edits."""
-        self.problem = Problem.from_yaml(str(self.yaml_path))
+        with self.lock:
+            self.problem = Problem.from_yaml(str(self.yaml_path))

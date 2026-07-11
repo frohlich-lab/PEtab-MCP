@@ -152,12 +152,14 @@ def create_server(yaml_path: str, build_root: str | None = None) -> FastMCP:
     @mcp.tool()
     def update_parameters(updates: list[dict]) -> dict[str, Any]:
         """Edit parameters. Each update: {id, nominal_value?, lb?, ub?, estimate?, ...}."""
-        return param_mod.update_parameters(session.problem, updates)
+        with session.lock:
+            return param_mod.update_parameters(session.problem, updates)
 
     @mcp.tool()
     def sync_parameters(policy: str = "report") -> dict[str, Any]:
         """Reconcile the parameter table with the model ('report' or 'add')."""
-        return param_mod.sync_parameters(session.problem, policy)
+        with session.lock:
+            return param_mod.sync_parameters(session.problem, policy)
 
     # ------------------------------------------------------------ evaluation
     @mcp.tool()
@@ -173,7 +175,8 @@ def create_server(yaml_path: str, build_root: str | None = None) -> FastMCP:
     @mcp.tool()
     def optimize(n_starts: int = 5, seed: int = 0) -> dict[str, Any]:
         """Estimate the free parameters; writes the best fit back into the table."""
-        return optimize_mod.optimize(session, engine, n_starts=n_starts, seed=seed)
+        with session.lock:
+            return optimize_mod.optimize(session, engine, n_starts=n_starts, seed=seed)
 
     # --------------------------------------------------------------- session
     @mcp.tool()

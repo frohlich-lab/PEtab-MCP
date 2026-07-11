@@ -31,6 +31,23 @@ def test_update_bad_bounds(session):
         P.update_parameters(session.problem, [{"id": "k1", "lb": 10.0, "ub": 1.0}])
 
 
+def test_update_bad_bounds_is_atomic(session):
+    """A rejected update must leave the parameter fully unchanged."""
+    before = {r["id"]: r for r in P.parameters_to_records(session.problem)}["k1"]
+    with pytest.raises(ParameterError):
+        P.update_parameters(session.problem, [{"id": "k1", "lb": 10.0, "ub": 1.0}])
+    after = {r["id"]: r for r in P.parameters_to_records(session.problem)}["k1"]
+    assert after == before  # lb/ub not partially applied
+
+
+def test_update_coerces_numeric_string(session):
+    """Values arriving as numeric strings persist as floats, not raw strings."""
+    P.update_parameters(session.problem, [{"id": "k1", "lb": "0.001"}])
+    k1 = next(p for p in session.problem.parameters if p.id == "k1")
+    assert isinstance(k1.lb, float)
+    assert k1.lb == pytest.approx(0.001)
+
+
 def test_update_non_editable_field(session):
     with pytest.raises(ParameterError):
         P.update_parameters(session.problem, [{"id": "k1", "id_alias": "x"}])
