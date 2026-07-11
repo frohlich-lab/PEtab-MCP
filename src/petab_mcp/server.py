@@ -11,6 +11,8 @@ Tool groups:
 * parameters (mutable): ``get_parameters``, ``update_parameters``, ``sync_parameters``
 * batching: ``begin_batch``, ``commit_batch``, ``abort_batch``
 * evaluation: ``simulate``, ``evaluate_objective``, ``optimize``
+* fit inspection: ``inspect_fit``, ``residual_statistics`` (residuals across
+  observables / experiments / timepoints)
 * provenance/versions/errors: ``get_provenance``, ``get_errors``, ``list_versions``,
   ``get_version``, ``diff_versions``, ``rollback_to``, ``current_version``
 * session: ``reset``
@@ -29,6 +31,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from . import fit as fit_mod
 from . import model as model_mod
 from . import operations as ops_mod
 from . import optimize as optimize_mod
@@ -51,9 +54,11 @@ SERVER_INSTRUCTIONS = (
     "(`change_parameter_scale`, `change_parameter_bounds`). Chain several operations into "
     "one version with `begin_batch`/`commit_batch`/`abort_batch`. Score with "
     "`simulate`/`evaluate_objective`, fit with `optimize` (which records improvement vs "
-    "prior trained versions). Every change is versioned and logged: inspect with "
-    "`list_versions`, `diff_versions`, `get_provenance`; errors via `get_errors`; revert "
-    "with `rollback_to` or `reset`."
+    "prior trained versions), and diagnose the fit with `inspect_fit` / "
+    "`residual_statistics`, which break residuals down across observables, "
+    "experiments/conditions, and timepoints and surface the worst-fit points. Every "
+    "change is versioned and logged: inspect with `list_versions`, `diff_versions`, "
+    "`get_provenance`; errors via `get_errors`; revert with `rollback_to` or `reset`."
 )
 
 # Appended to the instructions only when skills are actually registered, so clients
@@ -298,6 +303,61 @@ def create_server(
         return _run("optimize", lambda: optimize_mod.optimize(session, engine, n_starts=n_starts, seed=seed),
                     {"n_starts": n_starts})
 
+    # ------------------------------------------------------- fit inspection
+    _CROSS_SECTION_ALIASES = {
+        "observable": "by_observable",
+        "observables": "by_observable",
+        "condition": "by_condition",
+        "conditions": "by_condition",
+        "experiment": "by_condition",
+        "experiments": "by_condition",
+        "time": "by_time",
+        "times": "by_time",
+        "timepoint": "by_time",
+        "timepoints": "by_time",
+    }
+
+    def _fit_report(top_n: int) -> dict[str, Any]:
+        data = engine.residuals()
+        report = fit_mod.fit_inspection(data["records"], top_n=top_n)
+        report["neg_log_likelihood"] = data["neg_log_likelihood"]
+        report["chi2"] = data["chi2"]
+        return report
+
+    @mcp.tool()
+    def inspect_fit(top_n: int = 10) -> dict[str, Any]:
+        """Inspect the current fit to the fixed data.
+
+        Simulates, then reports residual statistics overall and across each cross
+        section (observables, experiments/conditions, timepoints), the `top_n`
+        worst-fit points, and systematic-bias flags — so you can see *where* the
+        model fits poorly, not just the aggregate objective. Weighted residuals are
+        noise-normalized (the chi2 terms); raw residuals are in observable units.
+        """
+        return _run("inspect_fit", lambda: _fit_report(top_n), {"top_n": top_n})
+
+    @mcp.tool()
+    def residual_statistics(group_by: str = "all") -> dict[str, Any]:
+        """Residual statistics across a chosen cross section.
+
+        `group_by` is 'observable', 'condition' (a.k.a. 'experiment'), 'time', or
+        'all' (overall plus every cross section). Each group reports counts, mean/RMSE
+        of raw residuals, and noise-weighted stats (chi2, reduced_chi2, bias z-score).
+        """
+        def run() -> dict[str, Any]:
+            records = engine.residuals()["records"]
+            key = group_by.strip().lower()
+            if key in ("all", ""):
+                return fit_mod.residual_statistics(records)
+            if key not in _CROSS_SECTION_ALIASES:
+                raise ValidationError(
+                    f"Unknown group_by {group_by!r}; use one of "
+                    "'observable', 'condition'/'experiment', 'time', or 'all'."
+                )
+            return fit_mod.residual_statistics(records, cross_sections=[_CROSS_SECTION_ALIASES[key]])
+
+        return _run("residual_statistics", run, {"group_by": group_by})
+
     # --------------------------------------------------------------- batching
     @mcp.tool()
     def begin_batch(label: str = "") -> dict[str, Any]:
@@ -394,6 +454,10 @@ def create_server(
     @mcp.resource("petab://versions")
     def _res_versions() -> str:
         return json.dumps(session.provenance.list_versions(), indent=2)
+
+    @mcp.resource("petab://fit")
+    def _res_fit() -> str:
+        return json.dumps(_run("inspect_fit", lambda: _fit_report(10)), indent=2)
 
     # ---------------------------------------------------------------- skills
     # Register the skills loaded above as `list_skills`/`get_skill` tools plus

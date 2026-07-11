@@ -21,6 +21,40 @@ def test_simulate(engine):
     assert len(out["simulations"]) == 6
 
 
+def test_records_carry_weighted_residuals(engine):
+    rec = engine.evaluate_objective()["simulations"][0]
+    assert {"residual", "residual_weighted", "noise"} <= set(rec)
+    # obs_B noise is sigma_B (nominal 0.1); weighted residual = residual / sigma
+    assert rec["noise"] == pytest.approx(0.1)
+    assert rec["residual_weighted"] == pytest.approx(rec["residual"] / rec["noise"])
+
+
+def test_residuals_summary_matches_chi2(engine):
+    import math
+
+    import numpy as np
+
+    from petab_mcp import fit
+
+    data = engine.residuals()
+    assert data["n_data_points"] == 6
+    assert {"neg_log_likelihood", "chi2", "records"} <= set(data)
+
+    # chi2 is the sum of squared noise-weighted residuals (petab-canonical)
+    weighted = np.array([r["residual_weighted"] for r in data["records"]], dtype=float)
+    noise = np.array([r["noise"] for r in data["records"]], dtype=float)
+    assert float(np.sum(weighted**2)) == pytest.approx(data["chi2"], rel=1e-9)
+
+    # the Gaussian log-likelihood identity ties chi2 + noise back to AMICI's objective,
+    # cross-validating that our weighted residuals reproduce the fitted likelihood
+    nllh = 0.5 * (data["chi2"] + float(np.sum(np.log(2 * math.pi * noise**2))))
+    assert nllh == pytest.approx(data["neg_log_likelihood"], rel=1e-6)
+
+    # and the fit report's overall chi2 agrees (fit stats are rounded for compact output)
+    report = fit.fit_inspection(data["records"])
+    assert report["summary"]["chi2"] == pytest.approx(data["chi2"], abs=1e-5)
+
+
 def test_parameter_change_no_recompile(engine, session):
     from petab_mcp import parameters as P
 

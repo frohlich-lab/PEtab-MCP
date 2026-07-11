@@ -34,6 +34,7 @@ def test_tools_registered(tmp_path):
         "add_reaction", "change_rate_law", "remove_reaction",
         "get_parameters", "update_parameters", "sync_parameters",
         "simulate", "evaluate_objective", "optimize",
+        "inspect_fit", "residual_statistics",
         "get_provenance", "list_versions", "get_version", "diff_versions",
         "rollback_to", "current_version", "reset",
     }
@@ -141,4 +142,34 @@ def test_resources_registered(tmp_path):
     uris = {str(r.uri) for r in resources}
     assert any("petab://provenance" in u for u in uris)
     assert any("petab://versions" in u for u in uris)
+    assert any("petab://fit" in u for u in uris)
     assert any("model/antimony" in u for u in uris)
+
+
+def test_fit_tools(tmp_path):
+    import pytest
+
+    pytest.importorskip("amici", reason="AMICI not installed; skipping fit-tool run")
+    mcp = _server(tmp_path)
+
+    async def go():
+        report = _structured(await mcp.call_tool("inspect_fit", {"top_n": 3}))
+        assert report["summary"]["n"] == 6
+        assert report["chi2"] is not None
+        assert len(report["worst_points"]) <= 3
+        # residuals broken down across each cross section
+        stats = report["statistics"]
+        assert {o["observable_id"] for o in stats["by_observable"]} == {"obs_B"}
+        assert {c["condition_id"] for c in stats["by_condition"]} == {"c0"}
+        assert len(stats["by_time"]) == 6  # six distinct timepoints
+
+        by_obs = _structured(await mcp.call_tool("residual_statistics", {"group_by": "observable"}))
+        assert "by_observable" in by_obs and "by_condition" not in by_obs
+
+        exp = _structured(await mcp.call_tool("residual_statistics", {"group_by": "experiment"}))
+        assert "by_condition" in exp  # 'experiment' aliases to condition
+
+        bad = _structured(await mcp.call_tool("residual_statistics", {"group_by": "nope"}))
+        assert bad["ok"] is False
+
+    asyncio.run(go())
