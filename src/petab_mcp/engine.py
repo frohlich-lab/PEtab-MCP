@@ -19,8 +19,10 @@ from pathlib import Path
 from typing import Any
 
 from petab.v1.C import (
+    LIN,
     MEASUREMENT,
     OBSERVABLE_ID,
+    OBSERVABLE_TRANSFORMATION,
     SIMULATION,
     SIMULATION_CONDITION_ID,
     TIME,
@@ -125,7 +127,6 @@ class AmiciEngine:
 
     def evaluate_objective(self) -> dict[str, Any]:
         """Score the current model + parameters against the fixed measurements."""
-        import numpy as np
         from amici.sim.sundials.petab.v1 import LLH, RES
 
         with self.session.lock:
@@ -133,12 +134,7 @@ class AmiciEngine:
             records = self._simulation_records(model, result)
 
         llh = float(result[LLH])
-        res = result.get(RES)
-        chi2 = (
-            float(np.sum(np.asarray(res, dtype=float) ** 2))
-            if res is not None and len(np.asarray(res)) > 0
-            else None
-        )
+        chi2 = self._chi2(records, result.get(RES))
         return {
             "neg_log_likelihood": -llh,
             "log_likelihood": llh,
@@ -147,7 +143,100 @@ class AmiciEngine:
             "simulations": records,
         }
 
+    def residuals(self) -> dict[str, Any]:
+        """Per-point residuals (raw + noise-weighted) with an objective summary.
+
+        This is the data source for fit inspection: every measurement point is
+        returned with its ``residual`` (natural units), noise-weighted
+        ``residual_weighted`` (the chi2 term), and evaluated ``noise``. See
+        :mod:`petab_mcp.fit` for the cross-section aggregation built on top.
+        """
+        from amici.sim.sundials.petab.v1 import LLH, RES
+
+        with self.session.lock:
+            model, result, params = self._simulate()
+            records = self._simulation_records(model, result)
+
+        llh = float(result[LLH])
+        return {
+            "neg_log_likelihood": -llh,
+            "chi2": self._chi2(records, result.get(RES)),
+            "n_data_points": len(records),
+            "records": records,
+        }
+
     # -- helpers -----------------------------------------------------------
+    @staticmethod
+    def _chi2(records: list[dict[str, Any]], res=None) -> float | None:
+        """Chi2 = sum of squared noise-weighted residuals.
+
+        Prefers the petab-canonical weighted residuals in ``records`` (which equal
+        ``petab.v1.calculate.calculate_chi2``), but only when they are available for
+        *every* point that contributes to the objective. A point can have a residual
+        yet no weighted residual (its noise formula could not be evaluated); summing
+        only the available terms would undercount and disagree with the reported
+        neg-log-likelihood. In that mixed case we fall back to AMICI's complete
+        ``RES`` vector, and use the partial weighted sum only as a last resort when
+        ``RES`` is unavailable too. This keeps chi2 well-defined across AMICI versions
+        (some do not populate ``RES``) without silently under-reporting it.
+        """
+        contributing = [r for r in records if r.get("residual") is not None]
+        weighted = [r.get("residual_weighted") for r in contributing]
+        if contributing and all(w is not None for w in weighted):
+            return float(sum(w * w for w in weighted))
+        if res is not None:
+            import numpy as np
+
+            arr = np.asarray(res, dtype=float)
+            if arr.size:
+                return float(np.sum(arr**2))
+        present = [w for w in weighted if w is not None]
+        return float(sum(w * w for w in present)) if present else None
+
+    def _noise_context(self):
+        """Symbolic noise formulas + tables needed to evaluate weighted residuals.
+
+        Returns ``(noise_formulas, observable_df, parameter_df)`` or ``None`` if the
+        noise model cannot be prepared (in which case weighted residuals are skipped).
+        """
+        try:
+            from petab.v1.calculate import get_symbolic_noise_formulas
+
+            problem = self.session.problem
+            return (
+                get_symbolic_noise_formulas(problem.observable_df),
+                problem.observable_df,
+                problem.parameter_df,
+            )
+        except Exception:  # pragma: no cover - defensive; noise model unusable
+            return None
+
+    def _weighted_residual(self, ctx, row, m, s):
+        """petab-consistent (noise, weighted residual) for one point, or (None, None).
+
+        The weighted residual is ``(scale(m) - scale(s)) / sigma`` on the observable's
+        transformation scale — the quantity that enters chi2 — matching
+        ``petab.v1.calculate.calculate_residuals``.
+        """
+        if ctx is None or m is None or s is None:
+            return None, None
+        noise_formulas, observable_df, parameter_df = ctx
+        try:
+            from petab.v1 import scale as petab_scale
+            from petab.v1.calculate import evaluate_noise_formula
+
+            obs_id = row.get(OBSERVABLE_ID)
+            trafo = LIN
+            if obs_id in observable_df.index:
+                trafo = observable_df.loc[obs_id].get(OBSERVABLE_TRANSFORMATION, LIN) or LIN
+            noise = float(evaluate_noise_formula(row, noise_formulas, parameter_df, s))
+            if noise == 0.0:
+                return noise, None
+            weighted = (petab_scale(m, trafo) - petab_scale(s, trafo)) / noise
+            return noise, float(weighted)
+        except Exception:  # noise formula references model states / unresolved params
+            return None, None
+
     def _simulation_records(self, model, result) -> list[dict[str, Any]]:
         import math
 
@@ -157,6 +246,7 @@ class AmiciEngine:
         simdf = rdatas_to_simulation_df(result[RDATAS], model, meas)
         keys = [OBSERVABLE_ID, SIMULATION_CONDITION_ID, TIME]
         merged = meas.merge(simdf[keys + [SIMULATION]], on=keys, how="left")
+        ctx = self._noise_context()
 
         def num(v):
             try:
@@ -169,6 +259,8 @@ class AmiciEngine:
         for _, row in merged.iterrows():
             m = num(row.get(MEASUREMENT))
             s = num(row.get(SIMULATION))
+            residual = (m - s) if (m is not None and s is not None) else None
+            noise, weighted = self._weighted_residual(ctx, row, m, s)
             records.append(
                 {
                     "observable_id": row.get(OBSERVABLE_ID),
@@ -176,7 +268,9 @@ class AmiciEngine:
                     "time": num(row.get(TIME)),
                     "measurement": m,
                     "simulation": s,
-                    "residual": (m - s) if (m is not None and s is not None) else None,
+                    "residual": residual,
+                    "residual_weighted": weighted,
+                    "noise": noise,
                 }
             )
         return records
