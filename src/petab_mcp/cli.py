@@ -39,6 +39,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="How strictly to validate operation references against PubMed.",
     )
     parser.add_argument(
+        "--skills-dir",
+        default=os.environ.get("PETAB_MCP_SKILLS_DIR"),
+        help="Directory of tool-usage skills to expose (default: bundled .skills).",
+    )
+    parser.add_argument(
         "--transport",
         default="stdio",
         choices=["stdio", "sse", "streamable-http"],
@@ -60,6 +65,7 @@ def main(argv: list[str] | None = None) -> int:
         build_root=args.build_root,
         provenance_dir=args.provenance_dir,
         reference_mode=args.reference_validation,
+        skills_dir=args.skills_dir,
     )
     server.run(transport=args.transport)
     return 0
