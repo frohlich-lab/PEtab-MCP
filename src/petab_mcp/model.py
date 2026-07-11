@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from petab.v2.models.sbml_model import SbmlModel
+from petab.v1.models.sbml_model import SbmlModel
 
 from .errors import ModelUpdateError, UnknownEntityError, ValidationError
 from .parameters import parameter_sync_diff

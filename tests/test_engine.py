@@ -12,7 +12,7 @@ def test_evaluate_objective(engine):
     assert obj["n_data_points"] == 6
     assert len(obj["simulations"]) == 6
     rec = obj["simulations"][0]
-    assert {"observable_id", "time", "measurement", "simulation", "residual"} <= set(rec)
+    assert {"observable_id", "condition_id", "time", "measurement", "simulation", "residual"} <= set(rec)
 
 
 def test_simulate(engine):
@@ -26,16 +26,18 @@ def test_parameter_change_no_recompile(engine, session):
 
     obj0 = engine.evaluate_objective()
     h = session.sbml_hash()
-    P.update_parameters(session.problem, [{"id": "k1", "nominal_value": 1.0}])
+    P.update_parameters(session.problem, [{"id": "k1", "nominalValue": 1.0}])
     obj1 = engine.evaluate_objective()
     assert session.sbml_hash() == h  # model unchanged
     assert obj1["neg_log_likelihood"] != obj0["neg_log_likelihood"]
 
 
 def test_optimize_improves_fit(engine, session):
+    pytest.importorskip("pypesto", reason="pyPESTO not installed")
     from petab_mcp import optimize as O
 
     before = engine.evaluate_objective()["neg_log_likelihood"]
     result = O.optimize(session, engine, n_starts=3, seed=1)
+    assert result["backend"] == "pypesto"
     assert result["neg_log_likelihood"] <= before + 1e-6
-    assert set(result["fitted_parameters"]) == {"k1", "k2"}
+    assert {"k1", "k2"} <= set(result["fitted_parameters"])

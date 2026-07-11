@@ -3,16 +3,16 @@
 Tool groups:
 
 * read-only (fixed design): ``describe_problem``, ``list_observables``,
-  ``list_experiments``, ``list_conditions``, ``get_measurements``
+  ``list_conditions``, ``get_measurements``
 * model (mutable): ``get_model``, ``update_model``, ``get_model_structure``,
   ``set_model_parameter``, ``validate_problem``
 * parameters (mutable): ``get_parameters``, ``update_parameters``, ``sync_parameters``
 * evaluation: ``simulate``, ``evaluate_objective``, ``optimize``
 * session: ``reset``
 
-No tool mutates the measurement/experiment/condition/observable tables — that
-invariant is enforced structurally (there is simply no such tool) and by the
-model-update guardrail (see ``validation``/``model``).
+No tool mutates the measurement/condition/observable tables — that invariant is
+enforced structurally (there is simply no such tool) and by the model-update
+guardrail (see ``validation``/``model``).
 """
 
 from __future__ import annotations
@@ -32,9 +32,9 @@ from .session import PetabSession
 from .validation import validate_problem as _validate_problem
 
 SERVER_INSTRUCTIONS = (
-    "Interact with a fixed PEtab v2 estimation problem. The experimental design "
-    "(measurements, experiments, conditions, observables) is read-only; you may "
-    "edit the model (Antimony or SBML) and the parameter table, then `simulate`, "
+    "Interact with a fixed PEtab v1 estimation problem. The experimental design "
+    "(measurements, conditions, observables) is read-only; you may edit the model "
+    "(Antimony or SBML) and the parameter table, then `simulate`, "
     "`evaluate_objective`, or `optimize` to score the fit against the fixed data. "
     "Use `reset` to revert model/parameter edits."
 )
@@ -43,7 +43,7 @@ SERVER_INSTRUCTIONS = (
 def _amici_available() -> bool:
     try:
         import amici  # noqa: F401
-        from amici.importers.petab import PetabImporter  # noqa: F401
+        from amici.importers.petab.v1 import import_petab_problem  # noqa: F401
 
         return True
     except Exception:
@@ -64,17 +64,16 @@ def create_server(yaml_path: str, build_root: str | None = None) -> FastMCP:
         sm = session.model.sbml_model
         return {
             "model_id": session.model.model_id,
-            "n_species": sm.getNumSpecies(),
-            "n_reactions": sm.getNumReactions(),
-            "n_model_parameters": sm.getNumParameters(),
-            "n_table_parameters": len(p.parameters),
-            "n_estimated": p.n_estimated,
-            "free_parameters": list(p.x_free_ids),
-            "observables": list(p.get_observable_ids()),
-            "n_experiments": len(p.experiments),
-            "n_conditions": len(p.conditions),
-            "n_measurements": p.n_measurements,
-            "fixed_tables": ["measurements", "experiments", "conditions", "observables"],
+            "n_species": int(sm.getNumSpecies()),
+            "n_reactions": int(sm.getNumReactions()),
+            "n_model_parameters": int(sm.getNumParameters()),
+            "n_table_parameters": int(len(p.parameter_df)),
+            "n_estimated": int(p.n_estimated),
+            "free_parameters": [str(x) for x in p.x_free_ids],
+            "observables": [str(x) for x in p.get_observable_ids()],
+            "n_conditions": int(len(p.condition_df)),
+            "n_measurements": int(p.n_measurements),
+            "fixed_tables": ["measurements", "conditions", "observables"],
             "amici_available": _amici_available(),
         }
 
@@ -84,24 +83,19 @@ def create_server(yaml_path: str, build_root: str | None = None) -> FastMCP:
         return df_to_records(session.problem.observable_df)
 
     @mcp.tool()
-    def list_experiments() -> list[dict[str, Any]]:
-        """List the (fixed) experiments and their condition periods."""
-        return df_to_records(session.problem.experiment_df)
-
-    @mcp.tool()
     def list_conditions() -> list[dict[str, Any]]:
         """List the (fixed) conditions and the model changes they apply."""
         return df_to_records(session.problem.condition_df)
 
     @mcp.tool()
     def get_measurements(
-        experiment_id: str | None = None, observable_id: str | None = None
+        condition_id: str | None = None, observable_id: str | None = None
     ) -> list[dict[str, Any]]:
-        """Return the (fixed) measurement data, optionally filtered."""
+        """Return the (fixed) measurement data, optionally filtered by condition."""
         df = session.problem.measurement_df
         if df is not None:
-            if experiment_id is not None:
-                df = df[df["experimentId"] == experiment_id]
+            if condition_id is not None:
+                df = df[df["simulationConditionId"] == condition_id]
             if observable_id is not None:
                 df = df[df["observableId"] == observable_id]
         return df_to_records(df)
@@ -151,7 +145,8 @@ def create_server(yaml_path: str, build_root: str | None = None) -> FastMCP:
 
     @mcp.tool()
     def update_parameters(updates: list[dict]) -> dict[str, Any]:
-        """Edit parameters. Each update: {id, nominal_value?, lb?, ub?, estimate?, ...}."""
+        """Edit parameters. Each update: {id, nominalValue?, lowerBound?, upperBound?,
+        estimate?, parameterScale?}."""
         with session.lock:
             return param_mod.update_parameters(session.problem, updates)
 
@@ -198,10 +193,6 @@ def create_server(yaml_path: str, build_root: str | None = None) -> FastMCP:
     @mcp.resource("petab://observables")
     def _res_observables() -> str:
         return json.dumps(df_to_records(session.problem.observable_df), indent=2)
-
-    @mcp.resource("petab://experiments")
-    def _res_experiments() -> str:
-        return json.dumps(df_to_records(session.problem.experiment_df), indent=2)
 
     @mcp.resource("petab://conditions")
     def _res_conditions() -> str:

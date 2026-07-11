@@ -63,20 +63,3 @@ def df_to_records(df: "pd.DataFrame | None") -> list[dict[str, Any]]:
             record[str(col)] = _clean(val)
         records.append(record)
     return records
-
-
-def issues_to_records(validation_result) -> list[dict[str, Any]]:
-    """Convert a petab.v2 ``ValidationResultList`` to a list of issue dicts."""
-    out: list[dict[str, Any]] = []
-    for issue in validation_result:
-        level = getattr(issue, "level", None)
-        # `task` is the check's name (a string), not an object — use it directly.
-        task = getattr(issue, "task", None)
-        out.append(
-            {
-                "level": getattr(level, "name", str(level)).lower(),
-                "message": str(getattr(issue, "message", issue)),
-                "check": str(task) if task else None,
-            }
-        )
-    return out

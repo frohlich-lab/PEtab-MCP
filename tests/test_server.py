@@ -20,13 +20,14 @@ def test_tools_registered(yaml_path):
     tools = asyncio.run(mcp.list_tools())
     names = {t.name for t in tools}
     expected = {
-        "describe_problem", "list_observables", "list_experiments",
-        "list_conditions", "get_measurements", "get_model", "update_model",
+        "describe_problem", "list_observables", "list_conditions",
+        "get_measurements", "get_model", "update_model",
         "get_model_structure", "set_model_parameter", "validate_problem",
         "get_parameters", "update_parameters", "sync_parameters",
         "simulate", "evaluate_objective", "optimize", "reset",
     }
     assert expected <= names
+    assert "list_experiments" not in names  # no experiments in PEtab v1
 
 
 def test_no_tool_mutates_fixed_tables(yaml_path):
@@ -49,11 +50,11 @@ def test_describe_and_parameters(yaml_path):
         params = _structured(await mcp.call_tool("get_parameters", {}))
         # structured list results are wrapped under "result"
         recs = params["result"] if isinstance(params, dict) and "result" in params else params
-        ids = {r["id"] for r in recs}
+        ids = {r["parameterId"] for r in recs}
         assert ids == {"k1", "k2", "sigma_B"}
 
         upd = _structured(await mcp.call_tool(
-            "update_parameters", {"updates": [{"id": "k1", "nominal_value": 0.7}]}
+            "update_parameters", {"updates": [{"id": "k1", "nominalValue": 0.7}]}
         ))
         assert "k1" in upd["updated"]
 

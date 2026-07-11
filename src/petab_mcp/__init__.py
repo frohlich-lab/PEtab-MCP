@@ -1,10 +1,10 @@
-"""petab_mcp — a local MCP server for interacting with a PEtab (v2) problem.
+"""petab_mcp — a local MCP server for interacting with a PEtab (v1) problem.
 
-The server wraps a single PEtab v2 problem and exposes it over the Model Context
-Protocol. The experimental design stays fixed — measurements, experiments,
-conditions and observables are read-only — while an agent may edit the **model**
-(SBML, via Antimony or SBML text) and the **parameter table**, then simulate and
-score the result against the fixed data with AMICI.
+The server wraps a single PEtab v1 problem and exposes it over the Model Context
+Protocol. The experimental design stays fixed — measurements, conditions and
+observables are read-only — while an agent may edit the **model** (SBML, via
+Antimony or SBML text) and the **parameter table**, then simulate and score the
+result against the fixed data with AMICI.
 """
 
 from __future__ import annotations

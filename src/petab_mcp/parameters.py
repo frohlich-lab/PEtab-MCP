@@ -1,23 +1,42 @@
-"""Parameter-table inspection, editing, and model reconciliation.
+"""Parameter-table inspection, editing, and model reconciliation (PEtab v1).
 
-The parameter table is mutable. In PEtab v2 a parameter has the fields
-``id, lb, ub, nominal_value, estimate, prior_distribution, prior_parameters``
-(there is no ``parameterScale`` column — scale is expressed through the prior).
+In PEtab v1 the parameter table is a pandas DataFrame indexed by ``parameterId``
+with columns ``parameterScale`` (lin/log/log10), ``lowerBound``, ``upperBound``,
+``nominalValue``, ``estimate`` (0/1), and optional priors. Edits operate directly on
+``problem.parameter_df``.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+import petab.v1 as petab
+from petab.v1.C import (
+    ESTIMATE,
+    LIN,
+    LOG,
+    LOG10,
+    LOWER_BOUND,
+    NOMINAL_VALUE,
+    OBJECTIVE_PRIOR_PARAMETERS,
+    OBJECTIVE_PRIOR_TYPE,
+    PARAMETER_ID,
+    PARAMETER_SCALE,
+    UPPER_BOUND,
+)
+
 from .errors import ParameterError
 
+_SCALES = {LIN, LOG, LOG10}
+_NUMERIC_FIELDS = {LOWER_BOUND, UPPER_BOUND, NOMINAL_VALUE}
 _EDITABLE_FIELDS = (
-    "nominal_value",
-    "lb",
-    "ub",
-    "estimate",
-    "prior_distribution",
-    "prior_parameters",
+    NOMINAL_VALUE,
+    LOWER_BOUND,
+    UPPER_BOUND,
+    ESTIMATE,
+    PARAMETER_SCALE,
+    OBJECTIVE_PRIOR_TYPE,
+    OBJECTIVE_PRIOR_PARAMETERS,
 )
 
 # Defaults used when auto-adding a model parameter that is missing from the table.
@@ -36,160 +55,157 @@ def _default_bounds(nominal) -> tuple[float, float]:
     return min(lb, nominal - 1.0), max(ub, nominal + 1.0)
 
 
-def _param_map(problem) -> dict[str, Any]:
-    return {p.id: p for p in problem.parameters}
+def _clean(value: Any) -> Any:
+    import math
+
+    if value is None:
+        return None
+    if isinstance(value, float):
+        return None if (math.isnan(value) or math.isinf(value)) else value
+    if isinstance(value, (str, bool, int)):
+        return value
+    try:
+        import pandas as pd
+
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except (ValueError, TypeError):
+            pass
+    return str(value)
 
 
-def _param_record(p) -> dict[str, Any]:
-    def s(v):
-        return None if v is None else (v if isinstance(v, (int, float, bool, str)) else str(v))
-
-    return {
-        "id": p.id,
-        "lb": s(p.lb),
-        "ub": s(p.ub),
-        "nominal_value": s(p.nominal_value),
-        "estimate": bool(p.estimate),
-        "prior_distribution": s(p.prior_distribution),
-        "prior_parameters": s(p.prior_parameters),
-    }
+def _param_record(problem, pid: str) -> dict[str, Any]:
+    row = problem.parameter_df.loc[pid]
+    rec: dict[str, Any] = {PARAMETER_ID: pid}
+    for col in problem.parameter_df.columns:
+        rec[col] = _clean(row[col])
+    if ESTIMATE in rec and rec[ESTIMATE] is not None:
+        rec[ESTIMATE] = bool(int(float(rec[ESTIMATE])))
+    return rec
 
 
 def parameters_to_records(problem) -> list[dict[str, Any]]:
     """Return the parameter table as a list of JSON-friendly records."""
-    return [_param_record(p) for p in problem.parameters]
+    return [_param_record(problem, pid) for pid in problem.parameter_df.index]
 
 
-def _coerce_estimate(value: Any) -> bool:
+def _coerce_estimate_int(value: Any) -> int:
     if isinstance(value, bool):
-        return value
+        return int(value)
     if isinstance(value, (int, float)):
-        return bool(value)
+        return 1 if value else 0
     if isinstance(value, str):
         low = value.strip().lower()
         if low in ("true", "1", "yes"):
-            return True
+            return 1
         if low in ("false", "0", "no"):
-            return False
-    raise ParameterError(f"Cannot interpret estimate value {value!r} as boolean.")
+            return 0
+    raise ParameterError(f"Cannot interpret estimate value {value!r} as 0/1.")
 
 
 def update_parameters(problem, updates: list[dict[str, Any]]) -> dict[str, Any]:
     """Apply a batch of parameter-table edits, transactionally.
 
-    Each update is a dict with an ``id`` plus any of the editable fields. Unknown
-    ids, non-editable fields, or bounds violations raise ``ParameterError`` and
-    leave the table unchanged (all-or-nothing). Returns the updated records.
-
-    The apply/rollback dance is needed because petab's ``Parameter`` validates on
-    assignment (``lb <= ub``): setting fields one at a time could fail mid-update
-    on a transient invalid state, or leave a parameter half-modified.
+    Each update is a dict with an ``id`` (or ``parameterId``) plus any editable
+    PEtab column (``nominalValue``, ``lowerBound``, ``upperBound``, ``estimate``,
+    ``parameterScale``, prior columns). Unknown ids, non-editable columns, bad
+    bounds, or an invalid scale raise ``ParameterError`` and leave the table
+    unchanged.
     """
     if not isinstance(updates, list):
         raise ParameterError("`updates` must be a list of {id, ...field} objects.")
-    pmap = _param_map(problem)
+    df = problem.parameter_df
 
-    # First pass: validate structure and resolve the fields to change per id.
     resolved: list[tuple[str, dict[str, Any]]] = []
     for upd in updates:
-        pid = upd.get("id")
+        pid = upd.get("id", upd.get(PARAMETER_ID))
         if pid is None:
             raise ParameterError("Each update must include an 'id'.")
-        if pid not in pmap:
+        if pid not in df.index:
             raise ParameterError(
-                f"Unknown parameter id {pid!r}. Known ids: {sorted(pmap)}"
+                f"Unknown parameter id {pid!r}. Known ids: {sorted(df.index)}"
             )
         fields: dict[str, Any] = {}
         for field, value in upd.items():
-            if field == "id":
+            if field in ("id", PARAMETER_ID):
                 continue
             if field not in _EDITABLE_FIELDS:
                 raise ParameterError(
                     f"Field {field!r} is not editable. Editable: {_EDITABLE_FIELDS}"
                 )
-            fields[field] = _coerce_estimate(value) if field == "estimate" else value
+            fields[field] = value
         resolved.append((pid, fields))
 
-    touched = {pid for pid, _ in resolved}
-    snapshots = {
-        pid: {f: getattr(pmap[pid], f) for f in _EDITABLE_FIELDS} for pid in touched
-    }
-
-    def _rollback() -> None:
-        for pid, snap in snapshots.items():
-            for f, v in snap.items():
-                object.__setattr__(pmap[pid], f, v)
+    touched = [pid for pid, _ in resolved]
+    snapshot = df.loc[touched].copy(deep=True)
 
     try:
-        # Apply all fields without per-assignment validation (avoids transient
-        # invalid states), then validate each touched parameter as a whole and
-        # copy the *coerced* values back (so e.g. a numeric-string lb becomes a
-        # float rather than persisting as a raw string).
         for pid, fields in resolved:
-            for field, value in fields.items():
-                object.__setattr__(pmap[pid], field, value)
-        for pid in touched:
-            param = pmap[pid]
-            # warnings=False: a field may transiently hold a pre-coercion value
-            # (e.g. a numeric string) that the serializer would otherwise flag.
-            validated = type(param).model_validate(param.model_dump(warnings=False))
-            lb, ub = validated.lb, validated.ub
+            for col, value in fields.items():
+                if col in _NUMERIC_FIELDS:
+                    value = float(value)
+                elif col == ESTIMATE:
+                    value = _coerce_estimate_int(value)
+                elif col == PARAMETER_SCALE:
+                    value = str(value)
+                    if value not in _SCALES:
+                        raise ParameterError(
+                            f"Invalid parameterScale {value!r}; use one of {sorted(_SCALES)}."
+                        )
+                df.loc[pid, col] = value
+            lb = df.loc[pid, LOWER_BOUND] if LOWER_BOUND in df.columns else None
+            ub = df.loc[pid, UPPER_BOUND] if UPPER_BOUND in df.columns else None
             if lb is not None and ub is not None and float(lb) > float(ub):
                 raise ParameterError(
                     f"Parameter {pid!r}: lower bound {lb} exceeds upper bound {ub}."
                 )
-            for field in _EDITABLE_FIELDS:
-                object.__setattr__(param, field, getattr(validated, field))
     except ParameterError:
-        _rollback()
+        df.loc[touched] = snapshot
         raise
-    except Exception as exc:  # pydantic validation, coercion, ...
-        _rollback()
+    except Exception as exc:
+        df.loc[touched] = snapshot
         raise ParameterError(f"Invalid parameter update: {exc}") from exc
 
-    changed_ids = [pid for pid, _ in resolved]
     return {
-        "updated": changed_ids,
-        "parameters": [_param_record(pmap[pid]) for pid in changed_ids],
+        "updated": touched,
+        "parameters": [_param_record(problem, pid) for pid in touched],
     }
 
 
 def parameter_sync_diff(problem) -> dict[str, Any]:
     """Compare the model's parameters with the parameter table.
 
-    ``model_only`` are model parameters eligible for (but missing from) the table.
-    ``table_only`` are table entries not backed by a model parameter — usually
-    legitimate noise/observable parameters, occasionally stale after a model edit
-    (petab linting flags the truly extraneous ones).
+    ``model_only`` are model parameters missing from the table; ``table_only`` are
+    table entries not backed by a model parameter (usually noise/observable params).
     """
-    valid = set(problem.model.get_valid_parameters_for_parameter_table())
-    table_ids = {p.id for p in problem.parameters}
+    model_params = set(problem.get_model_parameters())
+    table_ids = set(problem.parameter_df.index)
     return {
-        "in_sync": valid.issubset(table_ids),
-        "model_only": sorted(valid - table_ids),
-        "table_only": sorted(table_ids - valid),
+        "in_sync": model_params.issubset(table_ids),
+        "model_only": sorted(model_params - table_ids),
+        "table_only": sorted(table_ids - model_params),
     }
 
 
 def sync_parameters(problem, policy: str = "report") -> dict[str, Any]:
-    """Reconcile the parameter table with the model.
-
-    ``policy='report'`` (default) just returns the diff; ``policy='add'`` also
-    appends any model-only parameters to the table with sensible defaults.
-    """
+    """Reconcile the parameter table with the model ('report' or 'add')."""
     diff = parameter_sync_diff(problem)
     added: list[str] = []
     if policy == "add":
         for pid in diff["model_only"]:
             nominal = problem.model.get_parameter_value(pid)
             lb, ub = _default_bounds(nominal)
-            problem.add_parameter(
-                pid,
-                estimate=True,
-                nominal_value=nominal,
-                lb=lb,
-                ub=ub,
-            )
+            scale = LOG10 if (nominal is not None and float(nominal) > 0) else LIN
+            problem.parameter_df.loc[pid, PARAMETER_SCALE] = scale
+            problem.parameter_df.loc[pid, LOWER_BOUND] = lb
+            problem.parameter_df.loc[pid, UPPER_BOUND] = ub
+            problem.parameter_df.loc[pid, NOMINAL_VALUE] = nominal
+            problem.parameter_df.loc[pid, ESTIMATE] = 1
             added.append(pid)
         diff = parameter_sync_diff(problem)
     elif policy != "report":

@@ -1,9 +1,9 @@
-"""Session state: a single PEtab v2 problem with a fixed design and a mutable model.
+"""Session state: a single PEtab v1 problem with a fixed design and a mutable model.
 
-``PetabSession`` owns the working ``petab.v2.Problem``. The experimental design —
-measurements, experiments, conditions, observables — is never mutated by any tool;
-only the model and the parameter table change. ``reset()`` reloads the problem from
-its YAML, discarding model/parameter edits.
+``PetabSession`` owns the working ``petab.v1.Problem``. The experimental design —
+measurements, conditions, observables — is never mutated by any tool; only the model
+and the parameter table change. ``reset()`` reloads the problem from its YAML,
+discarding model/parameter edits.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import hashlib
 import threading
 from pathlib import Path
 
-from petab.v2 import Problem
+from petab.v1 import Problem
 
 
 class PetabSession:

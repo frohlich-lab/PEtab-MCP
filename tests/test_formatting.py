@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from petab_mcp.formatting import df_to_records, issues_to_records
+from petab_mcp.formatting import df_to_records
 
 
 def test_named_index_becomes_id_key(session):
@@ -20,8 +20,9 @@ def test_filtered_measurements_no_spurious_id(session):
     assert all("id" not in r for r in recs)  # no positional-offset id leaks in
 
 
-def test_issues_check_is_task_name(session):
+def test_validation_reports_messages(session):
     from petab_mcp.model import _build_model
+    from petab_mcp.validation import validate_problem
 
     session.problem.model = _build_model(
         "model conversion_reaction\n species A = 1;\n k1 = 0.5;\n"
@@ -29,7 +30,7 @@ def test_issues_check_is_task_name(session):
         "antimony",
         "conversion_reaction",
     )
-    issues = issues_to_records(session.problem.validate())
-    checks = {i["check"] for i in issues if i["check"]}
-    assert checks  # at least one issue names its check
-    assert "str" not in checks  # not the useless type-name literal
+    report = validate_problem(session.problem)
+    assert report["valid"] is False
+    assert report["n_errors"] >= 1
+    assert report["issues"]  # human-readable messages captured from petab logging
