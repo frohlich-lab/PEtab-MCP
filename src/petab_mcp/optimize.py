@@ -123,9 +123,10 @@ def _optimize_scipy(session, engine, n_starts: int, seed: int) -> dict[str, Any]
             res = minimize(objective, start, method="L-BFGS-B", bounds=bounds)
             if math.isfinite(res.fun) and res.fun < best_f:
                 best_f, best_x = float(res.fun), np.asarray(res.x, dtype=float)
-    except Exception:
-        # `objective` mutates nominal_value in place; restore on any failure so a
-        # crashed optimization never leaves the table at arbitrary probe values.
+    except BaseException:
+        # `objective` mutates nominal_value in place; restore on any failure
+        # (including KeyboardInterrupt) so a crashed or interrupted optimization
+        # never leaves the table at arbitrary probe values.
         _write_back(session, original)
         raise
 

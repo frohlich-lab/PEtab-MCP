@@ -50,9 +50,11 @@ def df_to_records(df: "pd.DataFrame | None") -> list[dict[str, Any]]:
         return []
     records: list[dict[str, Any]] = []
     index_name = df.index.name
-    use_index = index_name is not None or not isinstance(
-        df.index, pd.RangeIndex
-    )
+    # Only surface the index when it is a meaningful, *named* primary key (petab's
+    # observable/parameter tables). Unnamed indexes — including the Int64Index that
+    # boolean-filtering leaves behind on a measurement table — carry only positional
+    # offsets and must not become a spurious `id` field.
+    use_index = index_name is not None
     for idx, row in df.iterrows():
         record: dict[str, Any] = {}
         if use_index:
@@ -68,11 +70,13 @@ def issues_to_records(validation_result) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for issue in validation_result:
         level = getattr(issue, "level", None)
+        # `task` is the check's name (a string), not an object — use it directly.
+        task = getattr(issue, "task", None)
         out.append(
             {
                 "level": getattr(level, "name", str(level)).lower(),
                 "message": str(getattr(issue, "message", issue)),
-                "check": type(getattr(issue, "task", "")).__name__ or None,
+                "check": str(task) if task else None,
             }
         )
     return out
