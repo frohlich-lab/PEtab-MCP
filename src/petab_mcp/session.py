@@ -13,14 +13,12 @@ import threading
 from pathlib import Path
 from typing import Any
 
-import pandas as pd
 from petab.v1 import Problem
-from petab.v1.C import ESTIMATE, PARAMETER_ID
 from petab.v1.models.sbml_model import SbmlModel
 
 from . import logging_setup
 from .errors import BatchError, ValidationError
-from .parameters import parameters_to_records
+from .parameters import problem_fingerprint
 from .provenance import ProvenanceStore
 from .references import EutilsReferenceResolver
 
@@ -64,13 +62,20 @@ class PetabSession:
         # hook no-ops. `simulation` holds the current per-point simulation dataframe.
         self.engine: Any | None = None
         self.simulation: dict[str, Any] | None = None
+        # pyPESTO traces/results of the last fit (live diagnostic; not persisted per version).
+        self.optimization: dict[str, Any] | None = None
+        # Reuse a cached fit when an identical estimation problem is committed again
+        # (keyed on the problem identity + n_starts/seed); `last_fit_cache_hit` records
+        # whether the most recent fit was served from that cache.
+        self.fit_cache: bool = True
+        self.last_fit_cache_hit: bool | None = None
         self.auto_fit: bool = True
         self.auto_fit_starts: int = 5
 
         if self.provenance.current_version < 0:
             self.provenance.snapshot_version(
                 model_ant=self.model.to_antimony(),
-                parameters=parameters_to_records(self.problem),
+                parameters=self.problem.parameter_df,
                 label="initial",
                 kind="initial",
             )
@@ -92,6 +97,17 @@ class PetabSession:
     def sbml_hash(self) -> str:
         return hashlib.sha256(self.model_sbml().encode("utf-8")).hexdigest()[:16]
 
+    def problem_hash(self) -> str:
+        """Hash of the full problem identity: model SBML + the parameter table.
+
+        Unlike ``sbml_hash`` (structure only — the right key for the AMICI compile cache),
+        this changes when a parameter's bounds/scale/estimate/value change, so it uniquely
+        identifies a *fit* and is the correct key for fit artifacts (the pyPESTO result
+        cache). Keying those on ``sbml_hash`` alone would collide across versions that
+        differ only in the parameter table.
+        """
+        return problem_fingerprint(self.model_sbml(), self.problem.parameter_df)
+
     def _set_model_from_antimony(self, antimony: str) -> None:
         rel = getattr(self.problem.model, "rel_path", None) if self.problem.model else None
         model = SbmlModel.from_antimony(antimony, model_id=getattr(self.problem.model, "model_id", None))
@@ -99,26 +115,23 @@ class PetabSession:
         self.problem.model = model
 
     # -- versioning --------------------------------------------------------
-    def _param_df_from_records(self, records: list[dict[str, Any]]) -> pd.DataFrame:
-        df = pd.DataFrame(records)
-        if PARAMETER_ID in df.columns:
-            df = df.set_index(PARAMETER_ID)
-        if ESTIMATE in df.columns:
-            df[ESTIMATE] = df[ESTIMATE].apply(lambda v: int(bool(v)))
-        return df
-
     def apply_version(self, version: int) -> None:
         """Set the working model + parameter table to a stored version (fixed tables kept).
 
-        Also restores the version's stored simulation dataframe (``None`` for legacy
-        versions that predate it). Stays engine-free: this runs during durable resume in
-        ``__init__`` before the engine is wired.
+        The parameter table is restored directly as the stored DataFrame (no JSON records
+        round-trip). Also restores the version's stored simulation dataframe (``None`` for
+        legacy versions that predate it). Stays engine-free: this runs during durable resume
+        in ``__init__`` before the engine is wired.
         """
         with self.lock:
             snap = self.provenance.get_version(version)
             self._set_model_from_antimony(snap["model_antimony"])
-            self.problem.parameter_df = self._param_df_from_records(snap["parameters"])
+            self.problem.parameter_df = self.provenance.get_parameter_df(version)
             self.simulation = snap.get("simulation")
+            # Restore this version's fit artifacts too: the optimization traces/results are
+            # persisted per version (``None`` for legacy/unfitted versions), so a rollback or
+            # durable resume brings them back rather than dropping them.
+            self.optimization = snap.get("optimization")
 
     # -- auto fit + simulate on commit -------------------------------------
     def _auto_fit_and_improvement(
@@ -195,7 +208,7 @@ class PetabSession:
             nllh = fitsim.get("neg_log_likelihood")
             version = self.provenance.snapshot_version(
                 model_ant=self.model.to_antimony(),
-                parameters=parameters_to_records(self.problem),
+                parameters=self.problem.parameter_df,
                 label=label or self.batch_label or "batch",
                 kind="batch",
                 meta={"staged_operations": staged, "n_staged": len(staged),
@@ -203,6 +216,7 @@ class PetabSession:
                       "chi2": fitsim.get("chi2"),
                       "fitted_parameters": fitsim.get("fitted_parameters"), **improvement},
                 simulation=fitting.build_sim_payload_for_version(fitsim),
+                optimization=fitting.build_optimization_payload_for_version(self.optimization),
             )
             fitsim["version"] = version
             self.provenance.append_event(
@@ -248,12 +262,13 @@ class PetabSession:
             nllh = sim.get("neg_log_likelihood") if sim else None
             new_version = self.provenance.snapshot_version(
                 model_ant=self.model.to_antimony(),
-                parameters=parameters_to_records(self.problem),
+                parameters=self.problem.parameter_df,
                 label=f"rollback->v{version}",
                 kind="rollback",
                 meta={"rolled_back_to": version, "justification": justification,
                       "neg_log_likelihood": nllh},
                 simulation=fitting.build_sim_payload_for_version(sim),
+                optimization=fitting.build_optimization_payload_for_version(self.optimization),
             )
             self.provenance.append_event(
                 {
@@ -279,11 +294,12 @@ class PetabSession:
             nllh = sim.get("neg_log_likelihood") if sim else None
             new_version = self.provenance.snapshot_version(
                 model_ant=self.model.to_antimony(),
-                parameters=parameters_to_records(self.problem),
+                parameters=self.problem.parameter_df,
                 label="reset",
                 kind="reset",
                 meta={"reset_to": 0, "neg_log_likelihood": nllh},
                 simulation=fitting.build_sim_payload_for_version(sim),
+                optimization=fitting.build_optimization_payload_for_version(self.optimization),
             )
             self.provenance.append_event(
                 {"type": "reset", "version": new_version, "neg_log_likelihood": nllh}

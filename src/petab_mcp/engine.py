@@ -147,8 +147,9 @@ class AmiciEngine:
 
         This is the data source for fit inspection: every measurement point is
         returned with its ``residual`` (natural units), noise-weighted
-        ``residual_weighted`` (the chi2 term), and evaluated ``noise``. See
-        :mod:`petab_mcp.fit` for the cross-section aggregation built on top.
+        ``residual_weighted`` (the chi2 term), and evaluated ``noise``. These records
+        back the ``simulations`` table exposed for SQL analysis via
+        :mod:`petab_mcp.data_access`.
         """
         from amici.sim.sundials.petab.v1 import LLH, RES
 

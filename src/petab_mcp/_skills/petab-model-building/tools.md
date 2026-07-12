@@ -64,15 +64,42 @@ fitted; `commit_batch` fits + simulates the staged result once.
 
 ## Fit + simulation (automatic on commit; read-only tools)
 
-Fitting and simulation are not tools you call — they run on every commit. Inspect the
-result with:
+Fitting and simulation are not tools you call — they run on every commit. Read the score
+with `get_fit_summary`, and diagnose the fit by querying the data with SQL:
 
 | Tool | Signature | Notes |
 | --- | --- | --- |
 | `get_fit_summary` | `()` | Just the metrics — `status`, `neg_log_likelihood`, `chi2`, `n_data_points`, `fitted_parameters`, `version` — **no records**. The cheapest score check. |
-| `get_simulations` | `(worst_n?)` | The stored simulation dataframe: fit metrics + per-point `records` (measurement, simulation, residual, `residual_weighted`, noise). `worst_n` returns only the N worst-fit points. Generated on demand if none exists yet. |
-| `inspect_fit` | `(top_n=10)` | Residual stats overall + across observables / conditions / timepoints, `top_n` worst-fit points, `bias_flags`, and `trend_flags` (residuals drifting with time). Reads the stored dataframe (no re-simulation). |
+| `list_data_tables` | `()` | The SQL tables `query_data` exposes: name, description, columns, row count. |
+| `query_data` | `(sql, max_rows=1000)` | Read-only DuckDB query over the tables below. Returns `{columns, rows, row_count, truncated}`. |
 | `get_fitting_log` | `(tail_lines=200)` | The tail of the pyPESTO/Fides optimizer log (`pypesto.log`): multistart spread, convergence, parameters pinned at bounds, ill-conditioning — the numerical view of the fit. `0` returns the whole file. |
+
+### `query_data` tables
+
+| Table | Columns (key ones) | Notes |
+| --- | --- | --- |
+| `measurements` | `observableId`, `simulationConditionId`, `time`, `measurement` | The fixed measurement data. |
+| `conditions` | `conditionId`, … | The fixed conditions. |
+| `observables` | `observableId`, `observableFormula`, `noiseFormula` | The fixed observables. |
+| `parameters` | `parameterId`, `lowerBound`, `upperBound`, `nominalValue`, `estimate`, `parameterScale`, priors | Parameter table (`nominalValue` fit-only). |
+| `simulations` | `observable_id`, `condition_id`, `time`, `measurement`, `simulation`, `residual`, `residual_weighted`, `noise` | Per-point dataframe from the last commit. `residual` = `measurement - simulation` (natural units); `residual_weighted` = `(m - s)/σ` (the χ² term); `noise` = σ. Generated on demand at cold start; empty until the first commit. |
+| `optimization_starts` | `start`, `id`, `fval`, `time`, `n_fval`, `n_grad`, `n_hess`, `exitflag`, `message` | pyPESTO multistart results from the last fit — one row per start (`start`=0 is best). Empty on a simulate-only pass / before the first fit. |
+| `optimization_trace` | `start`, `iteration`, `fval`, `time` | pyPESTO per-iteration trace from the last fit — the objective over each start's run. |
+
+The `simulations` / `optimization_*` tables are persisted per fitted version (and the pyPESTO
+result is stored as `pypesto_result.hdf5`), so `rollback_to` restores a version's fit
+artifacts, not only its model.
+
+Residual statistics, per-observable/-condition/-time breakdowns, worst-fit points, and bias
+or time-trend diagnostics are all just SQL. Filter to `residual_weighted IS NOT NULL` for
+residual stats — a row can have a NULL residual (unsimulated point / un-evaluable noise
+model), which would inflate a `count(*)`. E.g.
+`SELECT observable_id, count(*) AS n, sum(residual_weighted*residual_weighted) AS chi2 FROM simulations WHERE residual_weighted IS NOT NULL GROUP BY observable_id ORDER BY chi2 DESC`
+or `SELECT * FROM simulations WHERE residual_weighted IS NOT NULL ORDER BY abs(residual_weighted) DESC LIMIT 10`.
+
+`query_data` runs against a disposable in-memory **copy** of the tables, so any SQL is
+allowed and cannot affect the session; host file/network access (`read_csv`, `ATTACH`,
+`COPY`, `INSTALL`/`LOAD`, …) is disabled.
 
 ## Provenance, versions & errors
 
@@ -101,7 +128,8 @@ Read-only content, mirrored as MCP resources:
 - `petab://model/antimony`, `petab://model/sbml`
 - `petab://observables`, `petab://conditions`, `petab://measurements`,
   `petab://parameters`
-- `petab://fit` (current `inspect_fit` report), `petab://fit/log` (the pyPESTO optimizer
-  log), `petab://simulations` (stored simulation dataframe)
+- `petab://simulations` (stored simulation dataframe),
+  `petab://data/schema` (the `query_data` table schema),
+  `petab://fit/log` (the pyPESTO optimizer log)
 - `petab://provenance`, `petab://versions`, `petab://errors`
 - `petab://skills` (index of skills), `petab://skills/{name}` (a skill's `SKILL.md`)

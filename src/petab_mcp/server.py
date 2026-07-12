@@ -11,9 +11,10 @@ Tool groups:
 * parameters (read-only + reconcile): ``get_parameters``, ``sync_parameters``
 * batching: ``begin_batch``, ``commit_batch``, ``abort_batch``
 * fit + simulation: **automatic on every commit** — each commit fits the free
-  parameters and simulates, storing a simulation dataframe on the new version; inspect it
-  with ``get_fit_summary`` (metrics only), ``get_simulations`` (dataframe), ``inspect_fit``,
-  ``get_fitting_log`` (the pyPESTO/Fides optimizer log — multistart convergence + numerics)
+  parameters and simulates, storing a simulation dataframe on the new version; read the
+  score with ``get_fit_summary`` (metrics only), query the data (PEtab tables + simulation
+  dataframe + residuals + pyPESTO traces) with SQL via ``query_data`` / ``list_data_tables``,
+  and inspect the optimizer numerics with ``get_fitting_log`` (the pyPESTO/Fides log)
 * provenance/versions/errors: ``get_provenance``, ``get_errors``, ``list_versions``,
   ``get_version``, ``diff_versions``, ``rollback_to``, ``current_version``
 * session: ``reset``
@@ -33,7 +34,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from . import fit as fit_mod
+from . import data_access as data_mod
 from . import fitting as fitting_mod
 from . import model as model_mod
 from . import operations as ops_mod
@@ -61,12 +62,15 @@ SERVER_INSTRUCTIONS = (
     "versions), and a simulation dataframe. Pass `n_starts` on a commit to fit harder "
     "(or 0 to simulate without fitting). Chain several edits into one version — fitted "
     "once, on commit — with `begin_batch`/`commit_batch`/`abort_batch`. Check the score "
-    "cheaply with `get_fit_summary` (metrics only), read the stored simulation dataframe "
-    "with `get_simulations`, and diagnose the fit with `inspect_fit`, which breaks residuals "
-    "down across observables, conditions, and timepoints and surfaces the worst-fit points "
-    "and time-trend flags. `get_fitting_log` exposes the pyPESTO/Fides optimizer log (multistart "
-    "convergence, parameters pinned at bounds, ill-conditioning) for numerical diagnosis. "
-    "Every change is versioned and logged: rank versions by fit with "
+    "cheaply with `get_fit_summary` (metrics only). Diagnose the fit with SQL: `query_data` "
+    "runs DuckDB queries over a disposable copy of the PEtab tables (`measurements`, `conditions`, "
+    "`observables`, `parameters`), the `simulations` dataframe (measurement vs simulation "
+    "with per-point `residual`, `residual_weighted`, and `noise`), and the last fit's pyPESTO "
+    "multistart (`optimization_starts`, `optimization_trace`) — compute any residual "
+    "breakdown, worst-fit points, bias/time-trend check, or convergence diagnostic you need "
+    "(call `list_data_tables` for the schema). `get_fitting_log` exposes the pyPESTO/Fides "
+    "optimizer log (multistart convergence, parameters pinned at bounds, ill-conditioning) for "
+    "numerical diagnosis. Every change is versioned and logged: rank versions by fit with "
     "`list_versions` / `diff_versions` (which reports the neg-log-likelihood delta); inspect "
     "with `get_provenance`; errors via `get_errors`; revert with `rollback_to` or `reset`."
 )
@@ -139,7 +143,8 @@ def create_server(
             "batch_active": session.batch_active,
             "fixed_tables": ["measurements", "conditions", "observables"],
             # current fit metrics from the stored simulation (None until the first
-            # commit/simulation); read `get_fit_summary`/`inspect_fit` for more.
+            # commit/simulation); read `get_fit_summary`, or query `simulations` via
+            # `query_data`, for more.
             "neg_log_likelihood": (session.simulation or {}).get("neg_log_likelihood"),
             "chi2": (session.simulation or {}).get("chi2"),
         }
@@ -318,9 +323,9 @@ def create_server(
         """Return just the current fit metrics — no per-point records (a cheap read).
 
         `{status, neg_log_likelihood, chi2, n_data_points, fitted_parameters, version}`.
-        Use this to check the score without pulling the whole dataframe; use
-        `get_simulations` for the measured-vs-simulated points and `inspect_fit` for the
-        residual breakdown. Refreshed on every commit; generated on demand if none exists.
+        Use this to check the score without pulling the dataframe; use `query_data` to
+        query the measured-vs-simulated points and residuals with SQL. Refreshed on every
+        commit; generated on demand if none exists.
         """
         def run() -> dict[str, Any]:
             sim = _current_simulation() or {}
@@ -332,28 +337,16 @@ def create_server(
         return _run("get_fit_summary", run)
 
     @mcp.tool()
-    def get_simulations(worst_n: int | None = None) -> dict[str, Any]:
-        """Return the stored simulation dataframe: the fit metrics plus per-point records
-        (measurement, simulation, residual, noise-weighted residual, noise).
+    def list_data_tables() -> dict[str, Any]:
+        """List the SQL tables `query_data` exposes: name, description, columns, row count.
 
-        Refreshed automatically on every commit. If no simulation exists yet (fresh
-        problem, no commit) it is generated on demand from the current parameters. Pass
-        `worst_n` to return only the N worst-fit points (by |weighted residual|) instead of
-        every record — cheaper for large problems; use `get_fit_summary` for metrics only.
+        The tables are the PEtab design tables (`measurements`, `conditions`,
+        `observables`), the `parameters` table, the `simulations` dataframe (one row per
+        measurement point, carrying `simulation` and the residuals), and the last fit's
+        pyPESTO multistart (`optimization_starts`, `optimization_trace`). Use it to learn the
+        exact column names before writing a `query_data` query.
         """
-        def run() -> dict[str, Any]:
-            if worst_n is not None and worst_n < 0:
-                raise ValidationError(f"worst_n must be an integer >= 0, got {worst_n}.")
-            sim = _current_simulation()
-            if worst_n is not None and sim and sim.get("records"):
-                total = len(sim["records"])
-                kept = fit_mod.worst_points(sim["records"], worst_n)
-                sim = {**sim, "records": kept,
-                       "records_truncated": len(kept) < total,
-                       "n_records_returned": len(kept)}
-            return sim
-
-        return _run("get_simulations", run, {"worst_n": worst_n})
+        return _run("list_data_tables", lambda: data_mod.table_schema(session))
 
     @mcp.tool()
     def get_fitting_log(tail_lines: int = 200) -> dict[str, Any]:
@@ -383,24 +376,50 @@ def create_server(
         return _run("get_fitting_log", run, {"tail_lines": tail_lines})
 
     @mcp.tool()
-    def inspect_fit(top_n: int = 10) -> dict[str, Any]:
-        """Inspect the current fit to the fixed data using the stored simulation dataframe.
+    def query_data(sql: str, max_rows: int = 1000) -> dict[str, Any]:
+        """Run a SQL query (DuckDB) over the PEtab tables and the simulation dataframe.
 
-        Reports residual statistics overall and across each cross section (observables,
-        conditions, timepoints), the `top_n` worst-fit points, systematic-bias flags, and
-        time-trend flags (dynamics/asymptote errors) — so you can see *where* the model fits
-        poorly, not just the aggregate objective. Weighted residuals are noise-normalized
-        (the chi2 terms); raw residuals are in observable units. Reads the dataframe produced
-        by the last commit (no re-simulation).
+        The query runs against a private, disposable copy of the data, so any SQL is allowed
+        and nothing can affect the session (host file/network access is disabled). Tables:
+        `measurements`, `conditions`, `observables`, `parameters`; `simulations` — the
+        per-point dataframe from the last commit, with `measurement`, `simulation`, `residual`
+        (natural units), `residual_weighted` (the noise-normalized chi2 term), and `noise`
+        (sigma); and the last fit's pyPESTO multistart in `optimization_starts` (one row per
+        start, `start`=0 is best) and `optimization_trace` (fval per start/iteration). Call
+        `list_data_tables()` for the exact columns. Returns
+        `{columns, rows, row_count, truncated}` (capped at `max_rows`, default 1000); the
+        `simulations` dataframe is generated on demand if no commit has produced one yet.
+
+        This replaces the old fixed residual-analysis tools — compute whatever breakdown you
+        need in SQL. Filter to `residual_weighted IS NOT NULL` for residual stats (rows with
+        an unsimulated point or an un-evaluable noise model have a NULL residual). Per-
+        observable chi2 and worst-fit points, for example:
+          `SELECT observable_id, count(*) AS n,
+                  sum(residual_weighted*residual_weighted) AS chi2
+             FROM simulations WHERE residual_weighted IS NOT NULL
+             GROUP BY observable_id ORDER BY chi2 DESC`
+          `SELECT * FROM simulations WHERE residual_weighted IS NOT NULL
+             ORDER BY abs(residual_weighted) DESC LIMIT 10`
         """
         def run() -> dict[str, Any]:
-            sim = _current_simulation()
-            report = fit_mod.fit_inspection(sim["records"], top_n=top_n)
-            report["neg_log_likelihood"] = sim.get("neg_log_likelihood")
-            report["chi2"] = sim.get("chi2")
-            return report
+            # Reject bad arguments cheaply before generating a (compile-heavy) simulation.
+            data_mod.validate_query_args(sql, max_rows)
+            # Populate the stored simulation dataframe on demand so `simulations` is
+            # queryable (a no-op once a commit has produced one). A simulation failure must
+            # not block querying the static tables, so fall through with an empty table.
+            if session.simulation is None or not session.simulation.get("records"):
+                try:
+                    _current_simulation()
+                except Exception:  # pragma: no cover - defensive; static tables still work
+                    session.logger.warning(
+                        "query_data: could not generate simulation dataframe", exc_info=True
+                    )
+            return data_mod.run_query(session, sql, max_rows)
 
-        return _run("inspect_fit", run, {"top_n": top_n})
+        # Log the query (truncated) alongside max_rows so a failed call is reproducible
+        # from `get_errors`.
+        logged_sql = sql[:1000] if isinstance(sql, str) else sql
+        return _run("query_data", run, {"sql": logged_sql, "max_rows": max_rows})
 
     # --------------------------------------------------------------- batching
     @mcp.tool()
@@ -504,20 +523,13 @@ def create_server(
     def _res_versions() -> str:
         return json.dumps(session.provenance.list_versions(), indent=2)
 
-    @mcp.resource("petab://fit")
-    def _res_fit() -> str:
-        def run() -> dict[str, Any]:
-            sim = _current_simulation()
-            report = fit_mod.fit_inspection(sim["records"], top_n=10)
-            report["neg_log_likelihood"] = sim.get("neg_log_likelihood")
-            report["chi2"] = sim.get("chi2")
-            return report
-
-        return json.dumps(_run("inspect_fit", run), indent=2)
-
     @mcp.resource("petab://simulations")
     def _res_simulations() -> str:
-        return json.dumps(_run("get_simulations", _current_simulation), indent=2)
+        return json.dumps(_run("simulations", _current_simulation), indent=2)
+
+    @mcp.resource("petab://data/schema")
+    def _res_data_schema() -> str:
+        return json.dumps(data_mod.table_schema(session), indent=2)
 
     @mcp.resource("petab://fit/log")
     def _res_fit_log() -> str:

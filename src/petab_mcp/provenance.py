@@ -6,7 +6,13 @@ Under ``<store_root>/`` (default ``<problem_dir>/.petab_mcp``):
   resets). Each event carries a UTC timestamp.
 * ``versions/vN/`` — a snapshot of the mutable model state at version N: ``model.ant``
   (the canonical Antimony) and ``parameters.json`` (the parameter-table records), plus
-  ``meta.json`` (label, kind, parent, timestamp).
+  ``meta.json`` (label, kind, parent, timestamp). A fitted version also carries
+  ``simulations.json`` (the measured-vs-simulated dataframe + residuals), ``optimization.json``
+  (the pyPESTO per-start + per-iteration trace records), and ``pypesto_result.hdf5`` (the
+  pyPESTO result file, copied in from the per-model cache) — so rolling back restores a
+  version's fit artifacts, not just its model.
+* ``cache/`` — pyPESTO result files keyed by SBML hash (written on each fit, copied into
+  version dirs when snapshotted).
 * ``HEAD`` — the current version number.
 
 The store is pure storage: it records Antimony text + parameter records and reads them
@@ -17,6 +23,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -107,18 +114,23 @@ class ProvenanceStore:
     def snapshot_version(
         self,
         model_ant: str,
-        parameters: list[dict[str, Any]],
+        parameters: Any,
         label: str | None = None,
         kind: str = "snapshot",
         parent: int | None = None,
         meta: dict[str, Any] | None = None,
         simulation: dict[str, Any] | None = None,
+        optimization: dict[str, Any] | None = None,
     ) -> int:
         n = self.current_version + 1
         vdir = self.versions_dir / f"v{n}"
         vdir.mkdir(parents=True, exist_ok=True)
         (vdir / "model.ant").write_text(model_ant, encoding="utf-8")
-        (vdir / "parameters.json").write_text(json.dumps(parameters, indent=2), encoding="utf-8")
+        # The parameter table is stored as a DataFrame (PEtab-style TSV), not JSON records,
+        # so it round-trips as a real table with its dtypes intact.
+        from .parameters import parameter_df_to_tsv
+
+        (vdir / "parameters.tsv").write_text(parameter_df_to_tsv(parameters), encoding="utf-8")
         meta_obj = {
             "version": n,
             "label": label,
@@ -134,8 +146,26 @@ class ProvenanceStore:
         if simulation is not None:
             (vdir / "simulations.json").write_text(json.dumps(simulation, indent=2), encoding="utf-8")
             _write_simulations_tsv(vdir, simulation.get("records") or [])
+        # The optimization traces/results for this version: the per-start + per-iteration
+        # records (read back into the DuckDB tables) as JSON, plus the pyPESTO HDF5 result
+        # file copied in from the per-model cache (or the source version, on rollback).
+        if optimization is not None:
+            self._write_optimization(vdir, optimization)
         self._set_head(n)
         return n
+
+    @staticmethod
+    def _write_optimization(vdir: Path, optimization: dict[str, Any]) -> None:
+        persist = {k: optimization.get(k) for k in ("n_starts", "starts", "trace")}
+        (vdir / "optimization.json").write_text(json.dumps(persist, indent=2), encoding="utf-8")
+        result_file = optimization.get("result_file")
+        if result_file:
+            try:
+                src = Path(result_file)
+                if src.is_file():
+                    shutil.copyfile(src, vdir / "pypesto_result.hdf5")
+            except OSError:  # copying the interop hdf5 must never fail a snapshot
+                pass
 
     def _version_dir(self, n: int) -> Path:
         vdir = self.versions_dir / f"v{n}"
@@ -145,16 +175,47 @@ class ProvenanceStore:
             raise UnknownEntityError(f"No such version: v{n}")
         return vdir
 
+    def get_parameter_df(self, n: int):
+        """Read a version's parameter table back as a DataFrame (index = ``parameterId``)."""
+        return self._read_parameter_df(self._version_dir(n))
+
+    @staticmethod
+    def _read_parameter_df(vdir: Path):
+        """Load ``parameters.tsv`` as a DataFrame, falling back to legacy ``parameters.json``."""
+        import pandas as pd
+
+        tsv = vdir / "parameters.tsv"
+        if tsv.is_file():
+            return pd.read_csv(tsv, sep="\t", index_col=0)
+        legacy = vdir / "parameters.json"  # versions written before the TSV switch
+        df = pd.DataFrame(json.loads(legacy.read_text()))
+        if "parameterId" in df.columns:
+            df = df.set_index("parameterId")
+        return df
+
     def get_version(self, n: int) -> dict[str, Any]:
         vdir = self._version_dir(n)
         meta = json.loads((vdir / "meta.json").read_text())
         sim_path = vdir / "simulations.json"
         simulation = json.loads(sim_path.read_text()) if sim_path.is_file() else None
+        opt_path = vdir / "optimization.json"
+        optimization = json.loads(opt_path.read_text()) if opt_path.is_file() else None
+        if optimization is not None:
+            # Point at this version's copy of the pyPESTO result file (if it was stored), so a
+            # later rollback can copy it forward and tools can locate it.
+            hdf5 = vdir / "pypesto_result.hdf5"
+            optimization["result_file"] = str(hdf5) if hdf5.is_file() else None
+        # `parameters` stays a list of JSON records — the shape the MCP tool and diff want
+        # (and it must be JSON-serializable). The raw DataFrame is available separately via
+        # `get_parameter_df`, which the session uses to restore state directly.
+        from .parameters import parameter_df_to_records
+
         return {
             **meta,
             "model_antimony": (vdir / "model.ant").read_text(encoding="utf-8"),
-            "parameters": json.loads((vdir / "parameters.json").read_text()),
+            "parameters": parameter_df_to_records(self._read_parameter_df(vdir)),
             "simulation": simulation,
+            "optimization": optimization,
         }
 
     def list_versions(self) -> list[dict[str, Any]]:

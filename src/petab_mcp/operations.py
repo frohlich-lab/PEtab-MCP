@@ -23,7 +23,7 @@ from petab.v1.models.sbml_model import SbmlModel
 
 from . import reconcile as R
 from .errors import ModelUpdateError, PetabMcpError, UnknownEntityError, ValidationError
-from .parameters import parameters_to_records
+from .parameters import problem_fingerprint
 from .references import resolve_references
 from .validation import validate_problem
 
@@ -266,6 +266,12 @@ def _commit_change(
             "warnings": warnings,
             "model_hash_before": _model_hash(old_sbml),
             "model_hash_after": _model_hash(session.problem.model.to_sbml_str()),
+            # Problem hash = model + parameter table, so a parameter-only edit (bounds/scale)
+            # is reflected here even though the two model hashes above are identical.
+            "problem_hash_before": problem_fingerprint(old_sbml, old_params),
+            "problem_hash_after": problem_fingerprint(
+                session.problem.model.to_sbml_str(), session.problem.parameter_df
+            ),
         }
 
         if staged:
@@ -279,13 +285,14 @@ def _commit_change(
             nllh = fitsim.get("neg_log_likelihood")
             version = session.provenance.snapshot_version(
                 model_ant=new_ant,
-                parameters=parameters_to_records(session.problem),  # fitted values now
+                parameters=session.problem.parameter_df,  # the fitted table (df)
                 label=op,
                 kind="alteration",
                 meta={"operation": op, "args": op_args, "fit_status": fitsim.get("status"),
                       "neg_log_likelihood": nllh, "chi2": fitsim.get("chi2"),
                       "fitted_parameters": fitsim.get("fitted_parameters"), **improvement},
                 simulation=fitting.build_sim_payload_for_version(fitsim),
+                optimization=fitting.build_optimization_payload_for_version(session.optimization),
             )
             fitsim["version"] = version
             event = session.provenance.append_event(

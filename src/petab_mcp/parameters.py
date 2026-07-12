@@ -8,6 +8,7 @@ with columns ``parameterScale`` (lin/log/log10), ``lowerBound``, ``upperBound``,
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 import petab.v1 as petab
@@ -79,19 +80,46 @@ def _clean(value: Any) -> Any:
     return str(value)
 
 
-def _param_record(problem, pid: str) -> dict[str, Any]:
-    row = problem.parameter_df.loc[pid]
+def _param_record(df, pid: str) -> dict[str, Any]:
+    row = df.loc[pid]
     rec: dict[str, Any] = {PARAMETER_ID: pid}
-    for col in problem.parameter_df.columns:
+    for col in df.columns:
         rec[col] = _clean(row[col])
     if ESTIMATE in rec and rec[ESTIMATE] is not None:
         rec[ESTIMATE] = bool(int(float(rec[ESTIMATE])))
     return rec
 
 
+def parameter_df_to_records(df) -> list[dict[str, Any]]:
+    """Return a parameter-table DataFrame as a list of JSON-friendly records."""
+    return [_param_record(df, pid) for pid in df.index]
+
+
 def parameters_to_records(problem) -> list[dict[str, Any]]:
-    """Return the parameter table as a list of JSON-friendly records."""
-    return [_param_record(problem, pid) for pid in problem.parameter_df.index]
+    """Return the problem's parameter table as a list of JSON-friendly records."""
+    return parameter_df_to_records(problem.parameter_df)
+
+
+def parameter_df_to_tsv(df) -> str:
+    """Serialize the parameter table to PEtab-style TSV text (index = ``parameterId``).
+
+    This is the on-disk form of a version's parameter table (a real DataFrame, not JSON
+    records) and the canonical serialization hashed by :func:`problem_fingerprint`.
+    """
+    return df.to_csv(sep="\t")
+
+
+def problem_fingerprint(sbml_str: str, parameter_df) -> str:
+    """Short hash of the full problem identity: model SBML + the parameter-table DataFrame.
+
+    Distinct from the SBML-only model hash used for the AMICI compile cache: this also
+    changes when a parameter's bounds / scale / estimate / value change, so it correctly
+    identifies a *fit* — whose result depends on the parameter table, not just the model
+    structure. Keying fit artifacts (the pyPESTO result cache) and provenance on this,
+    rather than the SBML hash alone, keeps two versions that differ only in bounds distinct.
+    """
+    payload = sbml_str + "\n" + parameter_df_to_tsv(parameter_df)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def _coerce_estimate_int(value: Any) -> int:
@@ -175,7 +203,7 @@ def update_parameters(problem, updates: list[dict[str, Any]]) -> dict[str, Any]:
 
     return {
         "updated": touched,
-        "parameters": [_param_record(problem, pid) for pid in touched],
+        "parameters": [_param_record(problem.parameter_df, pid) for pid in touched],
     }
 
 

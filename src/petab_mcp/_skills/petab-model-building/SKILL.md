@@ -5,7 +5,8 @@ description: >-
   parameter-estimation problem: read the fixed experimental design, edit the model
   through the constrained justified operations (add_reaction, change_rate_law,
   remove_reaction) — each commit automatically fits and simulates — then inspect the
-  fit (inspect_fit / get_simulations), provenance, and versions. Explains the
+  fit by querying the data with SQL (query_data over the PEtab tables + the simulation
+  dataframe/residuals), provenance, and versions. Explains the
   disciplined, auditable tool workflow, the rules each tool enforces, how to read tool
   results, and how to recover from rejected operations. Read this before calling any
   petab-mcp tool.
@@ -47,7 +48,9 @@ file="tools.md")`).
   before snapshotting, so each version carries the fitted parameters, the fit metrics
   (neg_log_likelihood, chi2, improvement vs prior versions), and a simulation dataframe.
   You never call a fit or simulate tool by hand; parameter *values* are set only by this
-  fit.
+  fit. Fits are cached by estimation-problem identity, so re-committing a model+bounds you
+  already fit reuses the stored fit (skipping the optimizer) — transparently, with identical
+  results.
 
 ## Step 1 — orient yourself (read-only)
 
@@ -156,15 +159,47 @@ Inspect the result with:
 
 - `get_fit_summary()` — just the metrics (`neg_log_likelihood`, `chi2`, …), no records —
   the cheapest way to check the score.
-- `get_simulations(worst_n?)` — the stored simulation dataframe: fit metrics + per-point
-  records (measurement, simulation, residual, noise-weighted residual, noise). Pass
-  `worst_n` to return only the N worst-fit points.
-- `inspect_fit(top_n)` — residual statistics overall and across each cross section
-  (observables, conditions, timepoints), the `top_n` worst-fit points, systematic-bias
-  flags, and **trend flags** (residuals drifting with time — a dynamics/asymptote error) —
-  so you see *where* the model fits poorly. Reads the stored dataframe (no re-simulation).
+- `query_data(sql, max_rows?)` — a DuckDB query over a disposable copy of the data (any SQL
+  is allowed and cannot affect the session). This is how you diagnose *where* the model fits
+  poorly: there is no fixed menu of residual statistics —
+  you write the breakdown you need. The tables are the PEtab design (`measurements`,
+  `conditions`, `observables`), the `parameters` table, the `simulations` dataframe
+  from the last commit, and the last fit's pyPESTO multistart (`optimization_starts`,
+  `optimization_trace` — see below) — one row per measurement point with `measurement`, `simulation`,
+  `residual` (natural units), `residual_weighted` (the noise-normalized χ² term), and
+  `noise` (σ). Call `list_data_tables()` for the exact columns. Filter to
+  `residual_weighted IS NOT NULL` for residual stats — a row can have a NULL residual (an
+  unsimulated point, or a noise model that could not be evaluated), which would otherwise
+  inflate a `count(*)`. Examples:
+  - per-observable χ² (which observable fits worst):
+    `SELECT observable_id, count(*) AS n, sum(residual_weighted*residual_weighted) AS chi2
+     FROM simulations WHERE residual_weighted IS NOT NULL
+     GROUP BY observable_id ORDER BY chi2 DESC`
+  - the worst-fit points:
+    `SELECT * FROM simulations WHERE residual_weighted IS NOT NULL
+     ORDER BY abs(residual_weighted) DESC LIMIT 10`
+  - a systematic-bias check (mean weighted residual per observable — far from 0 ⇒ a
+    consistent over/under-shoot):
+    `SELECT observable_id, avg(residual_weighted) AS bias, count(*) AS n
+     FROM simulations WHERE residual_weighted IS NOT NULL GROUP BY observable_id`
+  - a time-trend check per observable/condition (residuals drifting with time ⇒ wrong
+    dynamics/asymptote):
+    `SELECT observable_id, condition_id, corr(time, residual_weighted) AS trend, count(*) AS n
+     FROM simulations WHERE residual_weighted IS NOT NULL
+     GROUP BY observable_id, condition_id HAVING count(*) >= 4`
+  - a convergence check on the last fit's multistart (did the starts agree on the optimum?):
+    `SELECT count(*) AS n_starts, min(fval) AS best, max(fval) AS worst,
+            sum(CASE WHEN fval <= (SELECT min(fval) FROM optimization_starts) + 1e-3
+                     THEN 1 ELSE 0 END) AS n_converged
+     FROM optimization_starts`
+  - the objective descent of the best start (`optimization_trace`, one row per iteration):
+    `SELECT iteration, fval FROM optimization_trace WHERE start = 0 ORDER BY iteration`
 
-A typical loop: edit the model (it auto-fits) → `inspect_fit` to see where it still fits
+  The `simulations`, `optimization_starts`, and `optimization_trace` tables are persisted
+  with each fitted version and restored on `rollback_to`, so they always reflect the
+  current version's fit.
+
+A typical loop: edit the model (it auto-fits) → `query_data` to see where it still fits
 poorly → make the next justified edit → compare `is_new_best` / `improvement_vs_best_prior`
 across versions (or `diff_versions`, which reports the neg-log-likelihood delta).
 
@@ -209,8 +244,9 @@ add_reaction("v1: S -> P; k*S",            # ILLUSTRATIVE placeholders — use Y
              justification="… mechanistic reason …",   # species/params, not S/P/k
              references=["PMID:XXXXXXXX"]) # -> committed + auto-fitted; new symbols added
                                            #    result carries neg_log_likelihood / is_new_best
-inspect_fit()                              # where does it still fit poorly?
-get_simulations()                          # the simulated-vs-measured dataframe
+query_data("SELECT observable_id, sum(residual_weighted*residual_weighted) AS chi2 "
+           "FROM simulations WHERE residual_weighted IS NOT NULL "
+           "GROUP BY observable_id ORDER BY chi2 DESC")  # where is it worst?
 list_versions(); diff_versions(0, 1)       # audit what changed
 ```
 

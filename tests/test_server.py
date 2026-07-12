@@ -36,7 +36,7 @@ def test_tools_registered(tmp_path):
         "get_model", "get_model_structure", "validate_problem",
         "add_reaction", "change_rate_law", "remove_reaction",
         "get_parameters", "sync_parameters",
-        "get_fit_summary", "get_simulations", "inspect_fit", "get_fitting_log",
+        "get_fit_summary", "query_data", "list_data_tables", "get_fitting_log",
         "get_provenance", "list_versions", "get_version", "diff_versions",
         "rollback_to", "current_version", "reset",
     }
@@ -46,6 +46,8 @@ def test_tools_registered(tmp_path):
                  "update_parameters", "refit"} & names)
     assert "update_model" not in names and "set_model_parameter" not in names
     assert "list_experiments" not in names
+    # the handcoded residual-analysis tools are gone — SQL via query_data replaces them
+    assert not ({"inspect_fit", "get_simulations"} & names)
 
 
 def test_no_tool_mutates_fixed_tables(tmp_path):
@@ -145,12 +147,89 @@ def test_negative_n_starts_rejected(tmp_path):
     asyncio.run(go())
 
 
-def test_get_simulations_rejects_negative_worst_n(tmp_path):
-    mcp = _server(tmp_path)  # validation fires before any simulation, so no AMICI needed
+def test_query_data_rejects_bad_input(tmp_path):
+    mcp = _server(tmp_path)  # arg validation fires before any simulation, so no AMICI needed
 
     async def go():
-        res = _structured(await mcp.call_tool("get_simulations", {"worst_n": -1}))
-        assert res.get("ok") is False and "worst_n" in res.get("error", "")
+        empty = _structured(await mcp.call_tool("query_data", {"sql": ""}))
+        assert empty.get("ok") is False and "sql" in empty.get("error", "")
+        bad_rows = _structured(await mcp.call_tool(
+            "query_data", {"sql": "SELECT 1", "max_rows": 0}))
+        assert bad_rows.get("ok") is False and "max_rows" in bad_rows.get("error", "")
+
+    asyncio.run(go())
+
+
+def test_query_data_logs_sql_on_error(tmp_path):
+    mcp = _server(tmp_path)  # querying a missing table fails; the sql must be in get_errors
+
+    async def go():
+        res = _structured(await mcp.call_tool(
+            "query_data", {"sql": "SELECT * FROM does_not_exist"}))
+        assert res.get("ok") is False
+        errs = _structured(await mcp.call_tool("get_errors", {}))
+        elist = errs["result"] if isinstance(errs, dict) and "result" in errs else errs
+        assert any(
+            e.get("tool") == "query_data"
+            and "does_not_exist" in str((e.get("args") or {}).get("sql", ""))
+            for e in elist
+        )
+
+    asyncio.run(go())
+
+
+def test_query_data_runs_on_copy(tmp_path):
+    # Mutating SQL runs against a disposable copy: it succeeds and does not affect the
+    # session — a fresh query still sees the full table.
+    mcp = _server(tmp_path)
+
+    async def go():
+        dropped = _structured(await mcp.call_tool(
+            "query_data", {"sql": "DROP TABLE measurements"}))
+        assert dropped.get("ok") is not False  # not rejected
+        again = _structured(await mcp.call_tool(
+            "query_data", {"sql": "SELECT count(*) AS n FROM measurements"}))
+        assert again["rows"][0]["n"] == 6
+
+    asyncio.run(go())
+
+
+def test_query_data_blocks_file_access(tmp_path):
+    mcp = _server(tmp_path)  # host file access stays disabled even on the copy
+
+    async def go():
+        res = _structured(await mcp.call_tool(
+            "query_data", {"sql": "SELECT * FROM read_csv_auto('/etc/hostname')"}))
+        assert res.get("ok") is False
+
+    asyncio.run(go())
+
+
+def test_list_data_tables(tmp_path):
+    mcp = _server(tmp_path)  # schema is static; no simulation/AMICI needed
+
+    async def go():
+        schema = _structured(await mcp.call_tool("list_data_tables", {}))
+        tables = {t["table"] for t in schema["tables"]}
+        assert tables == {
+            "measurements", "conditions", "observables", "parameters", "simulations",
+            "optimization_starts", "optimization_trace",
+        }
+
+    asyncio.run(go())
+
+
+def test_query_data_static_tables(tmp_path):
+    # Querying the static PEtab tables works even when the simulation dataframe cannot be
+    # produced (no AMICI here): query_data logs and falls through with an empty `simulations`.
+    mcp = _server(tmp_path)
+
+    async def go():
+        out = _structured(await mcp.call_tool(
+            "query_data", {"sql": "SELECT parameterId FROM parameters"}))
+        ids = {r["parameterId"] for r in out["rows"]}
+        assert ids == {"k1", "k2", "sigma_B", "A_init", "B_init"}
+        assert out["truncated"] is False
 
     asyncio.run(go())
 
@@ -175,9 +254,9 @@ def test_resources_registered(tmp_path):
     uris = {str(r.uri) for r in resources}
     assert any("petab://provenance" in u for u in uris)
     assert any("petab://versions" in u for u in uris)
-    assert any("petab://fit" in u for u in uris)
     assert any("petab://fit/log" in u for u in uris)
     assert any("petab://simulations" in u for u in uris)
+    assert any("petab://data/schema" in u for u in uris)
     assert any("model/antimony" in u for u in uris)
 
 
@@ -207,18 +286,32 @@ def test_fit_tools(tmp_path):
     mcp = _server(tmp_path, auto_fit=True)
 
     async def go():
-        # inspect_fit reads the stored simulation dataframe, generated on demand at cold
-        # start (no re-simulation on subsequent calls).
-        report = _structured(await mcp.call_tool("inspect_fit", {"top_n": 3}))
-        assert report["summary"]["n"] == 6
-        assert report["chi2"] is not None
-        assert len(report["worst_points"]) <= 3
-        # single-group cross sections (one observable, one condition) are omitted since
-        # they duplicate `overall`; by_time (multi-group) is kept, plus the flag keys
-        stats = report["statistics"]
-        assert "by_observable" not in stats and "by_condition" not in stats
-        assert len(stats["by_time"]) == 6  # six distinct timepoints
-        assert "trend_flags" in report and "bias_flags" in report
+        # the simulation dataframe is queryable with SQL via query_data; it is generated on
+        # demand at cold start (no re-simulation on subsequent calls).
+        allrows = _structured(await mcp.call_tool(
+            "query_data", {"sql": "SELECT * FROM simulations"}))
+        assert allrows["row_count"] == 6
+        assert {"residual", "residual_weighted", "noise"} <= set(allrows["columns"])
+
+        # residual breakdowns that the old inspect_fit hardcoded are now plain SQL
+        by_obs = _structured(await mcp.call_tool("query_data", {"sql": (
+            "SELECT observable_id, count(*) AS n, "
+            "sum(residual_weighted*residual_weighted) AS chi2 "
+            "FROM simulations GROUP BY observable_id")}))
+        assert {r["observable_id"] for r in by_obs["rows"]} == {"obs_B"}
+        assert by_obs["rows"][0]["n"] == 6 and by_obs["rows"][0]["chi2"] is not None
+
+        by_cond = _structured(await mcp.call_tool("query_data", {"sql": (
+            "SELECT DISTINCT condition_id FROM simulations")}))
+        assert {r["condition_id"] for r in by_cond["rows"]} == {"c0"}
+        by_time = _structured(await mcp.call_tool("query_data", {"sql": (
+            "SELECT DISTINCT time FROM simulations")}))
+        assert by_time["row_count"] == 6  # six distinct timepoints
+
+        # worst-fit points: an ORDER BY ... LIMIT instead of a dedicated tool
+        worst = _structured(await mcp.call_tool("query_data", {"sql": (
+            "SELECT * FROM simulations ORDER BY abs(residual_weighted) DESC LIMIT 3")}))
+        assert worst["row_count"] == 3
 
         # compact metrics-only read (no records) — and the objective is now in describe
         summary = _structured(await mcp.call_tool("get_fit_summary", {}))
@@ -226,14 +319,10 @@ def test_fit_tools(tmp_path):
         desc = _structured(await mcp.call_tool("describe_problem", {}))
         assert desc["neg_log_likelihood"] == pytest.approx(summary["neg_log_likelihood"])
 
-        # the simulation dataframe is exposed read-only via get_simulations; worst_n caps it
-        sims = _structured(await mcp.call_tool("get_simulations", {}))
-        assert len(sims["records"]) == 6 and sims["neg_log_likelihood"] is not None
-        capped = _structured(await mcp.call_tool("get_simulations", {"worst_n": 2}))
-        assert len(capped["records"]) == 2 and capped.get("records_truncated") is True
-        # worst_n >= total is not a truncation
-        allcap = _structured(await mcp.call_tool("get_simulations", {"worst_n": 999}))
-        assert len(allcap["records"]) == 6 and allcap.get("records_truncated") is False
+        # max_rows caps the result and flags truncation
+        capped = _structured(await mcp.call_tool(
+            "query_data", {"sql": "SELECT * FROM simulations", "max_rows": 2}))
+        assert capped["row_count"] == 2 and capped["truncated"] is True
 
         # a commit auto-fits: its result carries the unified fit block + a fitted version
         res = _structured(await mcp.call_tool("change_parameter_bounds", {
@@ -248,5 +337,13 @@ def test_fit_tools(tmp_path):
         # diff_versions now reports the fit delta between versions
         d = _structured(await mcp.call_tool("diff_versions", {"from_version": 0, "to_version": 1}))
         assert "fit" in d and "neg_log_likelihood_delta" in d["fit"]
+
+        # that fit's pyPESTO multistart is now queryable: results + per-iteration trace
+        starts = _structured(await mcp.call_tool("query_data", {"sql": (
+            "SELECT count(*) AS n, min(fval) AS best FROM optimization_starts")}))
+        assert starts["rows"][0]["n"] == 2 and starts["rows"][0]["best"] is not None
+        trace = _structured(await mcp.call_tool("query_data", {"sql": (
+            "SELECT count(*) AS n FROM optimization_trace")}))
+        assert trace["rows"][0]["n"] >= 1
 
     asyncio.run(go())

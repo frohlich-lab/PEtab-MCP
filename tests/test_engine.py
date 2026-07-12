@@ -34,8 +34,6 @@ def test_residuals_summary_matches_chi2(engine):
 
     import numpy as np
 
-    from petab_mcp import fit
-
     data = engine.residuals()
     assert data["n_data_points"] == 6
     assert {"neg_log_likelihood", "chi2", "records"} <= set(data)
@@ -49,10 +47,6 @@ def test_residuals_summary_matches_chi2(engine):
     # cross-validating that our weighted residuals reproduce the fitted likelihood
     nllh = 0.5 * (data["chi2"] + float(np.sum(np.log(2 * math.pi * noise**2))))
     assert nllh == pytest.approx(data["neg_log_likelihood"], rel=1e-6)
-
-    # and the fit report's overall chi2 agrees (fit stats are rounded for compact output)
-    report = fit.fit_inspection(data["records"])
-    assert report["summary"]["chi2"] == pytest.approx(data["chi2"], abs=1e-5)
 
 
 def test_parameter_change_no_recompile(engine, session):
@@ -88,6 +82,47 @@ def test_fit_and_simulate_improves_fit(fit_session):
     assert {"k1", "k2"} <= set(result["fitted_parameters"])
     assert len(result["records"]) == 6
     assert fit_session.simulation is result  # stored on the session
+
+
+def test_fit_records_optimization_trace(fit_session):
+    pytest.importorskip("pypesto", reason="pyPESTO not installed")
+    from petab_mcp import fitting as F
+
+    F.fit_and_simulate(fit_session, fit_session.engine, do_fit=True, n_starts=3)
+    opt = fit_session.optimization
+    assert opt is not None
+    # one result row per start; start 0 is the best (lowest fval)
+    assert opt["n_starts"] == 3 and len(opt["starts"]) == 3
+    fvals = [s["fval"] for s in opt["starts"]]
+    assert fvals[0] == min(v for v in fvals if v is not None)
+    # a per-iteration trace was recorded for at least the best start
+    assert any(t["start"] == 0 for t in opt["trace"])
+    assert all({"start", "iteration", "fval"} <= set(t) for t in opt["trace"])
+
+    # a simulate-only pass clears the (non-persisted) trace
+    F.fit_and_simulate(fit_session, fit_session.engine, do_fit=False, n_starts=0)
+    assert fit_session.optimization is None
+
+
+def test_fit_skip_reuses_cache(fit_session):
+    pytest.importorskip("pypesto", reason="pyPESTO not installed")
+    from petab_mcp import fitting as F
+
+    r1 = F.fit_and_simulate(fit_session, fit_session.engine, do_fit=True, n_starts=2)
+    assert fit_session.last_fit_cache_hit is False  # first fit: cache miss, ran the optimizer
+
+    # the SAME estimation problem (model/bounds/estimate/n_starts unchanged) is served from
+    # the cache — the optimizer is skipped, but the fitted values + objective still match.
+    r2 = F.fit_and_simulate(fit_session, fit_session.engine, do_fit=True, n_starts=2)
+    assert fit_session.last_fit_cache_hit is True
+    for k, v in r1["fitted_parameters"].items():
+        assert r2["fitted_parameters"][k] == pytest.approx(v)
+    assert r2["neg_log_likelihood"] == pytest.approx(r1["neg_log_likelihood"], rel=1e-6)
+
+    # disabling the cache forces a real re-fit
+    fit_session.fit_cache = False
+    F.fit_and_simulate(fit_session, fit_session.engine, do_fit=True, n_starts=2)
+    assert fit_session.last_fit_cache_hit is False
 
 
 def test_commit_tracks_improvement_vs_versions(fit_session):

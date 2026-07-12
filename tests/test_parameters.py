@@ -10,6 +10,23 @@ def _by_id(session):
     return {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
 
 
+def test_problem_fingerprint_depends_on_both_model_and_parameters():
+    import pandas as pd
+
+    def _df(rows):
+        return pd.DataFrame(rows).set_index("parameterId")
+
+    params = _df([{"parameterId": "k", "lowerBound": 1e-3, "upperBound": 1e3, "estimate": 1}])
+    base = P.problem_fingerprint("model m() end", params)
+    assert base == P.problem_fingerprint("model m() end", params)  # deterministic
+    assert len(base) == 16
+    # a different model -> different hash
+    assert base != P.problem_fingerprint("model m() k=1 end", params)
+    # same model, a changed parameter bound -> different hash (the footgun this guards)
+    changed = _df([{"parameterId": "k", "lowerBound": 1e-3, "upperBound": 1e6, "estimate": 1}])
+    assert base != P.problem_fingerprint("model m() end", changed)
+
+
 def test_records(session):
     recs = _by_id(session)
     assert set(recs) == {"k1", "k2", "sigma_B", "A_init", "B_init"}
