@@ -93,16 +93,27 @@ class AmiciEngine:
         return params
 
     def _simulate(self):
+        import warnings
+
         from amici.sim.sundials.petab.v1 import simulate_petab
 
         model = self._get_model()
         params = self._problem_parameters()
-        result = simulate_petab(
-            self.session.problem,
-            amici_model=model,
-            problem_parameters=params,
-            scaled_parameters=False,
-        )
+        with warnings.catch_warnings():
+            # Fixed/initial-condition/noise parameters (A_init, sigma_B, ...) are passed as
+            # problem_parameters but aren't ODE parameters, so AMICI warns "not used" on
+            # every simulation. That's expected here — silence it so it doesn't spam the log.
+            warnings.filterwarnings(
+                "ignore",
+                message="The following problem parameters were not used",
+                category=RuntimeWarning,
+            )
+            result = simulate_petab(
+                self.session.problem,
+                amici_model=model,
+                problem_parameters=params,
+                scaled_parameters=False,
+            )
         return model, result, params
 
     # -- public API --------------------------------------------------------

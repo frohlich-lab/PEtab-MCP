@@ -338,11 +338,20 @@ def fit_inspection(
     """
     records = list(records)
     stats = residual_statistics(records)
+    # Flags are computed over the FULL stats (so a single-observable/-condition bias is
+    # still caught), but the returned `statistics` drops single-group cross sections —
+    # they are byte-identical to `overall` and otherwise bloat the payload ~3-4x.
+    flags = _bias_flags(stats)
+    trends = _trend_flags(records)
+    compact = {"overall": stats["overall"]}
+    for block in ("by_observable", "by_condition", "by_time"):
+        if len(stats.get(block, [])) > 1:
+            compact[block] = stats[block]
     return {
         "n_points": len(records),
         "summary": stats["overall"],
-        "statistics": stats,
+        "statistics": compact,
         "worst_points": worst_points(records, top_n),
-        "bias_flags": _bias_flags(stats),
-        "trend_flags": _trend_flags(records),
+        "bias_flags": flags,
+        "trend_flags": trends,
     }

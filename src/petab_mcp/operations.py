@@ -2,8 +2,8 @@
 
 Every operation:
 
-1. requires a non-empty ``justification`` and ≥1 ``references`` (validated via the
-   session's :class:`ReferenceResolver`);
+1. requires a non-empty ``justification`` (``references`` are optional; any given are
+   validated via the session's :class:`ReferenceResolver`);
 2. applies a structural edit to a *copy* of the model (libsbml);
 3. reconciles SBML↔PEtab (parametric ICs, parameter-table sync, orphan pruning);
 4. lints the candidate — on any failure the edit is reverted;
@@ -153,6 +153,37 @@ def _model_hash(sbml_str: str) -> str:
     return hashlib.sha256(sbml_str.encode("utf-8")).hexdigest()[:16]
 
 
+def _observed_symbol_ids(problem) -> set[str]:
+    """Identifiers that appear in any observable formula — the 'observed' entities."""
+    from petab.v1.C import OBSERVABLE_FORMULA
+
+    ids: set[str] = set()
+    obs_df = getattr(problem, "observable_df", None)
+    if obs_df is not None and OBSERVABLE_FORMULA in obs_df.columns:
+        for formula in obs_df[OBSERVABLE_FORMULA]:
+            ids |= set(re.findall(r"[A-Za-z_]\w*", str(formula)))
+    return ids
+
+
+def _parsimony_warnings(problem, old_species: set[str]) -> list[str]:
+    """Advisory warnings for an edit that adds species appearing in no observable.
+
+    Data only constrains observed species, so a newly introduced *unobserved* species
+    (e.g. a sink ``B -> C``) can degenerately fit a single observable just as well as a
+    repair that reuses existing species (e.g. making a reaction reversible). We flag it so
+    the caller sees this in-loop, without rejecting the (structurally valid) edit.
+    """
+    new_species = set(R.species_ids(problem.model.sbml_model)) - old_species
+    unobserved = sorted(new_species - _observed_symbol_ids(problem))
+    if not unobserved:
+        return []
+    return [
+        f"Added unobserved species {unobserved}: they appear in no observable formula. "
+        "A repair that reuses observed/existing species (e.g. making an existing reaction "
+        "reversible) is usually preferable — an unobserved sink can degenerately fit the data."
+    ]
+
+
 def _commit_change(
     session,
     op: str,
@@ -185,6 +216,7 @@ def _commit_change(
     with session.lock:
         old_model = session.problem.model
         old_sbml = old_model.to_sbml_str()
+        old_species = set(R.species_ids(old_model.sbml_model))
         old_params = session.problem.parameter_df.copy(deep=True)
         fitsim: dict[str, Any] = {}
         improvement: dict[str, Any] = {}
@@ -217,6 +249,7 @@ def _commit_change(
             raise
 
         new_ant = session.problem.model.to_antimony()
+        warnings = _parsimony_warnings(session.problem, old_species) if recon is not None else []
         param_diff = {
             "added": recon["parameters"]["added"] if recon else [],
             "removed": recon["parameters"]["removed"] if recon else [],
@@ -230,6 +263,7 @@ def _commit_change(
             "justification": justification,
             "references": resolved,
             "parameter_diff": param_diff,
+            "warnings": warnings,
             "model_hash_before": _model_hash(old_sbml),
             "model_hash_after": _model_hash(session.problem.model.to_sbml_str()),
         }
@@ -270,6 +304,7 @@ def _commit_change(
         "references": resolved,
         "justification": justification,
         "validation": report,
+        "warnings": warnings,
         "event_timestamp": event["timestamp"],
     }
     if not staged:
@@ -281,20 +316,20 @@ def _commit_change(
 
 # -- public operations: model ----------------------------------------------
 def add_reaction(
-    session, reaction: str, justification: str, references: list[str],
+    session, reaction: str, justification: str, references: list[str] | None = None,
     n_starts: int | None = None,
 ) -> dict[str, Any]:
     spec = parse_reaction_line(reaction)
     return _commit_change(
         session, "add_reaction", {"reaction": reaction}, justification, references,
         model_edit=lambda sm: {"reaction_id": _add_reaction_to_model(sm, spec)},
-        n_starts=n_starts,
+        require_references=False, n_starts=n_starts,
     )
 
 
 def change_rate_law(
-    session, reaction_id: str, rate_law: str, justification: str, references: list[str],
-    n_starts: int | None = None,
+    session, reaction_id: str, rate_law: str, justification: str,
+    references: list[str] | None = None, n_starts: int | None = None,
 ) -> dict[str, Any]:
     def edit(sm):
         _change_rate_law_in_model(sm, reaction_id, rate_law)
@@ -302,12 +337,12 @@ def change_rate_law(
 
     return _commit_change(
         session, "change_rate_law", {"reaction_id": reaction_id, "rate_law": rate_law},
-        justification, references, model_edit=edit, n_starts=n_starts,
+        justification, references, model_edit=edit, require_references=False, n_starts=n_starts,
     )
 
 
 def remove_reaction(
-    session, reaction_id: str, justification: str, references: list[str],
+    session, reaction_id: str, justification: str, references: list[str] | None = None,
     n_starts: int | None = None,
 ) -> dict[str, Any]:
     def edit(sm):
@@ -316,7 +351,7 @@ def remove_reaction(
 
     return _commit_change(
         session, "remove_reaction", {"reaction_id": reaction_id}, justification, references,
-        model_edit=edit, n_starts=n_starts,
+        model_edit=edit, require_references=False, n_starts=n_starts,
     )
 
 

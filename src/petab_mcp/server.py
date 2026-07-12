@@ -5,9 +5,9 @@ Tool groups:
 * read-only (fixed design): ``describe_problem``, ``list_observables``,
   ``list_conditions``, ``get_measurements``
 * model (constrained operations): ``add_reaction``, ``change_rate_law``,
-  ``remove_reaction`` (justification + references), ``change_parameter_scale``,
-  ``change_parameter_bounds`` (justification; references optional), plus read-only
-  ``get_model``, ``get_model_structure``, ``validate_problem``
+  ``remove_reaction``, ``change_parameter_scale``, ``change_parameter_bounds`` (each
+  requires a justification; references optional), plus read-only ``get_model``,
+  ``get_model_structure``, ``validate_problem``
 * parameters (read-only + reconcile): ``get_parameters``, ``sync_parameters``
 * batching: ``begin_batch``, ``commit_batch``, ``abort_batch``
 * fit + simulation: **automatic on every commit** — each commit fits the free
@@ -49,9 +49,10 @@ SERVER_INSTRUCTIONS = (
     "Interact with a fixed PEtab v1 estimation problem. The experimental design "
     "(measurements, conditions, observables) is read-only. The model is edited ONLY "
     "through three constrained, justified operations — `add_reaction`, "
-    "`change_rate_law`, `remove_reaction` — each of which requires a justification and "
-    "PubMed-validated references and automatically keeps the SBML model and PEtab "
-    "parameter table consistent (parametric initial conditions). Parameter scales and "
+    "`change_rate_law`, `remove_reaction` — each of which requires a non-empty "
+    "justification (references are optional, PubMed-validated if given) and automatically "
+    "keeps the SBML model and PEtab parameter table consistent (parametric initial "
+    "conditions). Parameter scales and "
     "bounds are changed through versioned, justified operations "
     "(`change_parameter_scale`, `change_parameter_bounds`); parameter *values* are set "
     "only by the automatic fit, not by hand. EVERY commit automatically fits the free "
@@ -222,25 +223,27 @@ def create_server(
 
     @mcp.tool()
     def add_reaction(
-        reaction: str, justification: str, references: list[str], n_starts: int | None = None
+        reaction: str, justification: str, references: list[str] | None = None,
+        n_starts: int | None = None,
     ) -> dict[str, Any]:
         """Add a reaction, given as an Antimony line, e.g. "J: A + B -> C; k_f*A*B".
 
         New species/parameters and their parametric initial conditions are added
-        automatically to keep the SBML model and PEtab tables consistent.
-        `justification` (non-empty) and `references` (>=1, PubMed-validated) are required.
-        On commit the free parameters are fitted and the model simulated; `n_starts`
-        overrides the server default (0 = simulate without fitting).
+        automatically to keep the SBML model and PEtab tables consistent. `justification`
+        (non-empty) is required; `references` are optional (validated if given). On commit
+        the free parameters are fitted and the model simulated; `n_starts` overrides the
+        server default (0 = simulate without fitting). The result includes any parsimony
+        `warnings` (e.g. an added unobserved species).
         """
         return _run_operation("add_reaction", ops_mod.add_reaction, session, reaction, justification, references, n_starts)
 
     @mcp.tool()
     def change_rate_law(
-        reaction_id: str, rate_law: str, justification: str, references: list[str],
-        n_starts: int | None = None,
+        reaction_id: str, rate_law: str, justification: str,
+        references: list[str] | None = None, n_starts: int | None = None,
     ) -> dict[str, Any]:
-        """Replace a reaction's rate law (Antimony-like expression). Requires
-        justification + references; parameters are reconciled automatically. Fits +
+        """Replace a reaction's rate law (Antimony-like expression). Requires a
+        justification (references optional); parameters are reconciled automatically. Fits +
         simulates on commit (`n_starts` overrides the default; 0 = simulate only)."""
         return _run_operation(
             "change_rate_law", ops_mod.change_rate_law, session, reaction_id, rate_law, justification, references, n_starts
@@ -248,11 +251,12 @@ def create_server(
 
     @mcp.tool()
     def remove_reaction(
-        reaction_id: str, justification: str, references: list[str], n_starts: int | None = None
+        reaction_id: str, justification: str, references: list[str] | None = None,
+        n_starts: int | None = None,
     ) -> dict[str, Any]:
         """Remove a reaction entirely and prune any orphaned species/parameters.
-        Requires justification + references. Fits + simulates on commit (`n_starts`
-        overrides the default; 0 = simulate only)."""
+        Requires a justification (references optional). Fits + simulates on commit
+        (`n_starts` overrides the default; 0 = simulate only)."""
         return _run_operation("remove_reaction", ops_mod.remove_reaction, session, reaction_id, justification, references, n_starts)
 
     @mcp.tool()

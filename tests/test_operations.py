@@ -6,7 +6,6 @@ from petab_mcp import operations as O
 from petab_mcp import parameters as P
 from petab_mcp.errors import UnknownEntityError, ValidationError
 from petab_mcp.operations import OperationError, parse_reaction_line
-from petab_mcp.references import ReferenceError
 
 
 def _ids(session):
@@ -44,9 +43,19 @@ def test_requires_justification(session):
         O.add_reaction(session, "J: B -> D; k3*B", justification="  ", references=["PMID:1"])
 
 
-def test_requires_references(session):
-    with pytest.raises(ReferenceError):
-        O.add_reaction(session, "J: B -> D; k3*B", justification="ok", references=[])
+def test_references_optional_for_model_ops(session):
+    # references are optional for model ops now (justification still required). This edit
+    # adds species D, which appears in no observable -> a parsimony warning.
+    res = O.add_reaction(session, "J: B -> D; k3*B", justification="B is degraded to D")
+    assert res["committed"] is True
+    assert res["references"] == []
+    assert any("unobserved species" in w for w in res["warnings"])
+
+
+def test_no_parsimony_warning_when_reusing_species(session):
+    # a repair reusing existing species introduces no new species -> no warning
+    res = O.add_reaction(session, "J: B -> A; k2*B", justification="reverse conversion")
+    assert res["committed"] is True and res["warnings"] == []
 
 
 # -- add / change / remove -------------------------------------------------

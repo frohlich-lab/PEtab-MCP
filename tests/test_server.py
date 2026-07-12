@@ -94,15 +94,21 @@ def test_add_reaction_and_versions_via_tools(tmp_path):
     asyncio.run(go())
 
 
-def test_operation_missing_references_reports_error(tmp_path):
-    mcp = _server(tmp_path)
+def test_references_optional_but_justification_required(tmp_path):
+    mcp = _server(tmp_path)  # auto_fit off -> commit without fitting (no AMICI needed)
 
     async def go():
-        res = _structured(await mcp.call_tool("add_reaction", {
-            "reaction": "J: B -> D; k3*B", "justification": "x", "references": [],
+        # references are now OPTIONAL for model ops: an edit without any still commits
+        ok = _structured(await mcp.call_tool("add_reaction", {
+            "reaction": "J: B -> D; k3*B", "justification": "B is degraded to D",
         }))
-        assert res["committed"] is False
-        assert "error" in res
+        assert ok["committed"] is True
+
+        # justification is still REQUIRED: an empty one is rejected
+        bad = _structured(await mcp.call_tool("add_reaction", {
+            "reaction": "J2: D -> E; k4*D", "justification": "   ", "references": [],
+        }))
+        assert bad["committed"] is False and "error" in bad
 
     asyncio.run(go())
 
@@ -207,10 +213,10 @@ def test_fit_tools(tmp_path):
         assert report["summary"]["n"] == 6
         assert report["chi2"] is not None
         assert len(report["worst_points"]) <= 3
-        # residuals broken down across each cross section, plus the trend-flag key
+        # single-group cross sections (one observable, one condition) are omitted since
+        # they duplicate `overall`; by_time (multi-group) is kept, plus the flag keys
         stats = report["statistics"]
-        assert {o["observable_id"] for o in stats["by_observable"]} == {"obs_B"}
-        assert {c["condition_id"] for c in stats["by_condition"]} == {"c0"}
+        assert "by_observable" not in stats and "by_condition" not in stats
         assert len(stats["by_time"]) == 6  # six distinct timepoints
         assert "trend_flags" in report and "bias_flags" in report
 

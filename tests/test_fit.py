@@ -254,3 +254,13 @@ def test_trend_flags_need_enough_points():
         _rec("o", "c", 1.0, 0.0, -1.0, 1.0, 1.0, 1.0),
     ]
     assert fit.fit_inspection(recs)["trend_flags"] == []
+
+
+def test_fit_inspection_omits_single_group_cross_sections():
+    # one observable, one condition, several timepoints
+    recs = [_rec("o", "c", float(t), 1.0, 0.9, 0.1, 0.1, 1.0) for t in range(4)]
+    stats = fit.fit_inspection(recs)["statistics"]
+    assert "by_observable" not in stats  # single observable duplicates `overall`
+    assert "by_condition" not in stats   # single condition duplicates `overall`
+    assert len(stats["by_time"]) == 4    # multi-group cross section is kept
+    assert stats["overall"]["n"] == 4

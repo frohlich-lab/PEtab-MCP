@@ -15,19 +15,20 @@ and the rules behind these tools.
 | `get_model_structure` | `()` | Structured species / parameters / reactions view. |
 | `validate_problem` | `()` | Lint the current problem; reports `valid` + `issues`. |
 
-## Model operations (justification + references required)
+## Model operations (justification required, references optional)
 
 Each applies to a model copy, reconciles SBML↔PEtab, lints, then (on a non-batch commit)
 **fits + simulates** and commits — or reverts. Returns `{committed, version, staged,
-reconcile, references, justification, validation, event_timestamp, fit_status,
+reconcile, references, justification, validation, warnings, event_timestamp, fit_status,
 neg_log_likelihood, chi2, fitted_parameters, improvement}` on success, or
-`{committed: false, error, issues?}` on rejection.
+`{committed: false, error, issues?}` on rejection. `warnings` carries advisory notes (e.g.
+an added unobserved species).
 
 | Tool | Signature | Notes |
 | --- | --- | --- |
-| `add_reaction` | `(reaction, justification, references, n_starts?)` | `reaction` is one Antimony line, e.g. `"J: S1 + S2 -> S3; k_f*S1*S2"` (placeholder names). Rate law after `;` is required. New species → parametric IC; new rate-law symbols → parameters. |
-| `change_rate_law` | `(reaction_id, rate_law, justification, references, n_starts?)` | Replace a reaction's kinetic law; new symbols reconciled. |
-| `remove_reaction` | `(reaction_id, justification, references, n_starts?)` | Delete a reaction; prune orphaned species/parameters. |
+| `add_reaction` | `(reaction, justification, references?, n_starts?)` | `reaction` is one Antimony line, e.g. `"J: S1 + S2 -> S3; k_f*S1*S2"` (placeholder names). Rate law after `;` is required. New species → parametric IC; new rate-law symbols → parameters. |
+| `change_rate_law` | `(reaction_id, rate_law, justification, references?, n_starts?)` | Replace a reaction's kinetic law; new symbols reconciled. |
+| `remove_reaction` | `(reaction_id, justification, references?, n_starts?)` | Delete a reaction; prune orphaned species/parameters. |
 
 `n_starts` overrides the server default multistart count for the fit on this commit
 (`0` = simulate without fitting).

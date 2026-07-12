@@ -32,10 +32,9 @@ file="tools.md")`).
 - **The model is authored in Antimony** and edited *only* through
   `add_reaction`, `change_rate_law`, `remove_reaction`. Antimony is the canonical
   source of truth; SBML is derived.
-- **Every model operation must cite a justification and ≥1 reference.** The
-  justification must be a non-empty string; references are validated against
-  PubMed. Parameter-scale/bounds operations require a justification but references
-  are optional.
+- **Every model operation must cite a justification.** The justification must be a
+  non-empty string. References are **optional** for all operations; any you provide are
+  validated against PubMed.
 - **Consistency is automatic.** After each operation the server *reconciles*
   SBML↔PEtab: new rate-law symbols become model parameters, new species get a
   **parametric initial condition** (`S = S_init`, with `S_init` added to the
@@ -104,7 +103,7 @@ Delete a reaction and prune any species/parameters left orphaned by the removal.
 
 - **justification**: a concise mechanistic reason for the edit (what the reaction
   represents and why it belongs). Non-empty is required; empty strings are rejected.
-- **references**: a list of ≥1 citation strings. Accepted forms include PubMed IDs
+- **references**: an *optional* list of citation strings. Accepted forms include PubMed IDs
   (`"PMID:12345678"` or just `"12345678"`) and DOIs (`"10.1016/j.cell.2020.01.001"`).
   In `best_effort` mode (the default) references are verified when the network
   allows and recorded as unverified otherwise, but they must always be *present*.
