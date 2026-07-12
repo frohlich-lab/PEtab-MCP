@@ -71,6 +71,7 @@ result with:
 | `get_fit_summary` | `()` | Just the metrics — `status`, `neg_log_likelihood`, `chi2`, `n_data_points`, `fitted_parameters`, `version` — **no records**. The cheapest score check. |
 | `get_simulations` | `(worst_n?)` | The stored simulation dataframe: fit metrics + per-point `records` (measurement, simulation, residual, `residual_weighted`, noise). `worst_n` returns only the N worst-fit points. Generated on demand if none exists yet. |
 | `inspect_fit` | `(top_n=10)` | Residual stats overall + across observables / conditions / timepoints, `top_n` worst-fit points, `bias_flags`, and `trend_flags` (residuals drifting with time). Reads the stored dataframe (no re-simulation). |
+| `get_fitting_log` | `(tail_lines=200)` | The tail of the pyPESTO/Fides optimizer log (`pypesto.log`): multistart spread, convergence, parameters pinned at bounds, ill-conditioning — the numerical view of the fit. `0` returns the whole file. |
 
 ## Provenance, versions & errors
 
@@ -99,7 +100,7 @@ Read-only content, mirrored as MCP resources:
 - `petab://model/antimony`, `petab://model/sbml`
 - `petab://observables`, `petab://conditions`, `petab://measurements`,
   `petab://parameters`
-- `petab://fit` (current `inspect_fit` report), `petab://simulations` (stored simulation
-  dataframe)
+- `petab://fit` (current `inspect_fit` report), `petab://fit/log` (the pyPESTO optimizer
+  log), `petab://simulations` (stored simulation dataframe)
 - `petab://provenance`, `petab://versions`, `petab://errors`
 - `petab://skills` (index of skills), `petab://skills/{name}` (a skill's `SKILL.md`)

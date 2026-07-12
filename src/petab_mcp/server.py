@@ -12,7 +12,8 @@ Tool groups:
 * batching: ``begin_batch``, ``commit_batch``, ``abort_batch``
 * fit + simulation: **automatic on every commit** — each commit fits the free
   parameters and simulates, storing a simulation dataframe on the new version; inspect it
-  with ``get_fit_summary`` (metrics only), ``get_simulations`` (dataframe), ``inspect_fit``
+  with ``get_fit_summary`` (metrics only), ``get_simulations`` (dataframe), ``inspect_fit``,
+  ``get_fitting_log`` (the pyPESTO/Fides optimizer log — multistart convergence + numerics)
 * provenance/versions/errors: ``get_provenance``, ``get_errors``, ``list_versions``,
   ``get_version``, ``diff_versions``, ``rollback_to``, ``current_version``
 * session: ``reset``
@@ -62,7 +63,9 @@ SERVER_INSTRUCTIONS = (
     "cheaply with `get_fit_summary` (metrics only), read the stored simulation dataframe "
     "with `get_simulations`, and diagnose the fit with `inspect_fit`, which breaks residuals "
     "down across observables, conditions, and timepoints and surfaces the worst-fit points "
-    "and time-trend flags. Every change is versioned and logged: rank versions by fit with "
+    "and time-trend flags. `get_fitting_log` exposes the pyPESTO/Fides optimizer log (multistart "
+    "convergence, parameters pinned at bounds, ill-conditioning) for numerical diagnosis. "
+    "Every change is versioned and logged: rank versions by fit with "
     "`list_versions` / `diff_versions` (which reports the neg-log-likelihood delta); inspect "
     "with `get_provenance`; errors via `get_errors`; revert with `rollback_to` or `reset`."
 )
@@ -349,6 +352,33 @@ def create_server(
         return _run("get_simulations", run, {"worst_n": worst_n})
 
     @mcp.tool()
+    def get_fitting_log(tail_lines: int = 200) -> dict[str, Any]:
+        """Return the tail of the pyPESTO/Fides optimizer log for the fits run so far.
+
+        Every commit fits the free parameters with a pyPESTO multistart (the Fides
+        trust-region optimizer); its per-start objective values, the multistart summary,
+        convergence messages, and any ill-conditioning / gradient warnings are written to
+        `<store>/pypesto.log`. This tool surfaces that log so the *numerical* behaviour of
+        the fit can be inspected directly — multistart spread (did starts agree on one
+        optimum?), convergence, parameters pinned at their bounds, and non-identifiability
+        signatures. Returns `{path, exists, n_lines_total, tail_lines, log}` (the last
+        `tail_lines` lines of the file; pass a larger value for more history, `0` for all).
+        """
+        def run() -> dict[str, Any]:
+            if not isinstance(tail_lines, int) or tail_lines < 0:
+                raise ValidationError(f"tail_lines must be an integer >= 0, got {tail_lines!r}.")
+            path = session.provenance.root / "pypesto.log"
+            if not path.exists():
+                return {"path": str(path), "exists": False, "n_lines_total": 0,
+                        "tail_lines": tail_lines, "log": ""}
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            kept = lines if tail_lines == 0 else lines[-tail_lines:]
+            return {"path": str(path), "exists": True, "n_lines_total": len(lines),
+                    "tail_lines": tail_lines, "log": "\n".join(kept)}
+
+        return _run("get_fitting_log", run, {"tail_lines": tail_lines})
+
+    @mcp.tool()
     def inspect_fit(top_n: int = 10) -> dict[str, Any]:
         """Inspect the current fit to the fixed data using the stored simulation dataframe.
 
@@ -484,6 +514,11 @@ def create_server(
     @mcp.resource("petab://simulations")
     def _res_simulations() -> str:
         return json.dumps(_run("get_simulations", _current_simulation), indent=2)
+
+    @mcp.resource("petab://fit/log")
+    def _res_fit_log() -> str:
+        path = session.provenance.root / "pypesto.log"
+        return path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
 
     # ---------------------------------------------------------------- skills
     # Register the skills loaded above as `list_skills`/`get_skill` tools plus

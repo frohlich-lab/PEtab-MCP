@@ -36,7 +36,7 @@ def test_tools_registered(tmp_path):
         "get_model", "get_model_structure", "validate_problem",
         "add_reaction", "change_rate_law", "remove_reaction",
         "get_parameters", "sync_parameters",
-        "get_fit_summary", "get_simulations", "inspect_fit",
+        "get_fit_summary", "get_simulations", "inspect_fit", "get_fitting_log",
         "get_provenance", "list_versions", "get_version", "diff_versions",
         "rollback_to", "current_version", "reset",
     }
@@ -170,8 +170,27 @@ def test_resources_registered(tmp_path):
     assert any("petab://provenance" in u for u in uris)
     assert any("petab://versions" in u for u in uris)
     assert any("petab://fit" in u for u in uris)
+    assert any("petab://fit/log" in u for u in uris)
     assert any("petab://simulations" in u for u in uris)
     assert any("model/antimony" in u for u in uris)
+
+
+def test_get_fitting_log(tmp_path):
+    # No AMICI/pyPESTO needed: the pypesto.log handler is installed at session start, so
+    # the tool reads a (possibly empty) log without a fit ever running. Validates the
+    # read path + argument checking that the mathematician persona relies on.
+    mcp = _server(tmp_path)
+
+    async def go():
+        res = _structured(await mcp.call_tool("get_fitting_log", {"tail_lines": 50}))
+        assert set(res) >= {"path", "exists", "n_lines_total", "tail_lines", "log"}
+        assert res["path"].endswith("pypesto.log")
+        assert isinstance(res["log"], str)
+        # negative tail_lines is rejected (logged as an error, returns ok=False)
+        bad = _structured(await mcp.call_tool("get_fitting_log", {"tail_lines": -1}))
+        assert bad.get("ok") is False
+
+    asyncio.run(go())
 
 
 def test_fit_tools(tmp_path):
