@@ -48,7 +48,10 @@ from .validation import validate_problem as _validate_problem
 
 SERVER_INSTRUCTIONS = (
     "Interact with a fixed PEtab v1 estimation problem. The experimental design "
-    "(measurements, conditions, observables) is read-only. The model is edited ONLY "
+    "(measurements, conditions, observables) is read-only. If the problem ships WITHOUT a "
+    "model (`describe_problem` reports `model_initialized: false`), zero-shot the whole "
+    "model once from Antimony with `init_model` (justification + references, refused once a "
+    "model exists). Thereafter the model is edited ONLY "
     "through three constrained, justified operations — `add_reaction`, "
     "`change_rate_law`, `remove_reaction` — each of which requires a non-empty "
     "justification (references are optional, PubMed-validated if given) and automatically "
@@ -129,6 +132,7 @@ def create_server(
         sm = session.model.sbml_model
         return {
             "model_id": session.model.model_id,
+            "model_initialized": session.has_model(),
             "n_species": int(sm.getNumSpecies()),
             "n_reactions": int(sm.getNumReactions()),
             "n_model_parameters": int(sm.getNumParameters()),
@@ -194,12 +198,20 @@ def create_server(
             }
         )
 
+    def _short(value: Any, limit: int = 200) -> Any:
+        """Truncate long strings before they go into the (persisted) error log, so a large
+        argument — e.g. a whole Antimony model passed to `init_model` — cannot bloat the
+        provenance error log or dump the full model contents into it."""
+        if isinstance(value, str) and len(value) > limit:
+            return value[:limit] + f"… (+{len(value) - limit} chars)"
+        return value
+
     def _run_operation(op_name, fn, *args) -> dict[str, Any]:
         """Run an operation; on a known error, log it and return committed=False."""
         try:
             return fn(*args)
         except PetabMcpError as exc:
-            _log_error(op_name, {"args": [a for a in args if isinstance(a, (str, int, float, list))]}, exc)
+            _log_error(op_name, {"args": [_short(a) for a in args if isinstance(a, (str, int, float, list))]}, exc)
             session.logger.warning("operation %s rejected: %s", op_name, exc)
             out = {"committed": False, "error": str(exc)}
             if getattr(exc, "issues", None):
@@ -225,6 +237,24 @@ def create_server(
             _log_error(tool, args or {}, exc)
             session.logger.exception("%s crashed", tool)
             raise
+
+    @mcp.tool()
+    def init_model(
+        antimony: str, justification: str,
+        references: list[str] | None = None, n_starts: int | None = None,
+    ) -> dict[str, Any]:
+        """Zero-shot the whole model from an Antimony string when NONE is initialized yet.
+
+        Use this only for a fresh problem that ships without a model (`describe_problem`
+        reports `model_initialized: false`). It parses the Antimony, reconciles the SBML
+        model with the PEtab parameter table (parametric initial conditions, parameter-table
+        sync), lints, and fits on commit — like any other model operation, so it requires a
+        non-empty `justification` (`references` are optional, validated if given). Once a
+        model exists it is REFUSED; edit an existing model with `add_reaction` /
+        `change_rate_law` / `remove_reaction`. `n_starts` overrides the fit default (0 =
+        simulate only).
+        """
+        return _run_operation("init_model", ops_mod.init_model, session, antimony, justification, references, n_starts)
 
     @mcp.tool()
     def add_reaction(

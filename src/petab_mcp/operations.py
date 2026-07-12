@@ -192,6 +192,7 @@ def _commit_change(
     references: list[str] | None,
     *,
     model_edit: Callable[[Any], Any] | None = None,
+    model_build: Callable[[], tuple[Any, Any]] | None = None,
     param_edit: Callable[[Any], Any] | None = None,
     require_references: bool = True,
     n_starts: int | None = None,
@@ -199,6 +200,8 @@ def _commit_change(
     """Shared commit pipeline for model and parameter operations.
 
     ``model_edit(sbml_model)`` edits a *clone* of the model (triggers reconcile);
+    ``model_build()`` returns a brand-new ``(SbmlModel, apply_result)`` that *replaces*
+    the model wholesale (used to zero-shot a model when none exists — also reconciled);
     ``param_edit(problem)`` edits the parameter table in place. On any failure the model
     and parameter table are reverted. When a batch is open the change is applied and
     logged but no version is snapshotted until ``commit_batch``.
@@ -209,6 +212,10 @@ def _commit_change(
     The fit is part of the commit: a fit/simulation failure reverts the structural edit so
     the commit is atomic.
     """
+    if sum(cb is not None for cb in (model_build, model_edit, param_edit)) != 1:
+        raise ValueError(
+            "_commit_change requires exactly one of model_build, model_edit, param_edit."
+        )
     if not isinstance(justification, str) or not justification.strip():
         raise OperationError("A non-empty justification is required for this operation.")
     resolved = resolve_references(session.resolver, references, required=require_references)
@@ -222,7 +229,11 @@ def _commit_change(
         improvement: dict[str, Any] = {}
 
         try:
-            if model_edit is not None:
+            if model_build is not None:
+                candidate, apply_result = model_build()
+                session.problem.model = candidate
+                recon = R.reconcile(session.problem)
+            elif model_edit is not None:
                 candidate = SbmlModel.from_string(old_sbml, model_id=old_model.model_id)
                 apply_result = model_edit(candidate.sbml_model)
                 session.problem.model = candidate
@@ -322,10 +333,71 @@ def _commit_change(
 
 
 # -- public operations: model ----------------------------------------------
+def _ensure_no_model(session) -> None:
+    """Guard for ``init_model``: a model must NOT already be initialized."""
+    if session.has_model():
+        raise OperationError(
+            "A model is already initialized; init_model only zero-shots a model when none "
+            "exists. Edit the existing model with add_reaction / change_rate_law / "
+            "remove_reaction instead."
+        )
+
+
+def init_model(
+    session, antimony: str, justification: str,
+    references: list[str] | None = None, n_starts: int | None = None,
+) -> dict[str, Any]:
+    """Zero-shot the whole model from Antimony when none has been initialized yet.
+
+    Refuses if a model already exists — an existing model is edited only through the
+    incremental operations (``add_reaction`` / ``change_rate_law`` / ``remove_reaction``).
+    Like every model operation it requires a justification (references optional), reconciles
+    SBML↔PEtab (parametric ICs, parameter-table sync), lints, and fits on commit.
+    """
+    if not isinstance(antimony, str) or not antimony.strip():
+        raise OperationError("init_model requires a non-empty Antimony model string.")
+    _ensure_no_model(session)  # fast pre-check; re-checked under the commit lock in build()
+
+    def build():
+        # Authoritative re-check: build() runs inside session.lock, so two concurrent
+        # init_model calls cannot both pass has_model() and race to overwrite a model.
+        _ensure_no_model(session)
+        # The Antimony header names the model (Antimony is canonical); pass model_id=None so
+        # a placeholder skeleton id (from a model-less load) never overrides that name.
+        try:
+            candidate = SbmlModel.from_antimony(antimony, model_id=None)
+        except Exception as exc:
+            raise ModelUpdateError(f"Failed to parse antimony model: {exc}") from exc
+        candidate.rel_path = getattr(session.problem.model, "rel_path", None) or "model.xml"
+        sm = candidate.sbml_model
+        return candidate, {
+            "model_id": candidate.model_id,
+            "n_species": sm.getNumSpecies(),
+            "n_reactions": sm.getNumReactions(),
+        }
+
+    # Store only a size summary in the provenance args — the full Antimony is already
+    # captured verbatim as the new version's model snapshot (avoids bloating the event log).
+    return _commit_change(
+        session, "init_model", {"antimony_chars": len(antimony)}, justification, references,
+        model_build=build, require_references=False, n_starts=n_starts,
+    )
+
+
+def _require_model(session, op: str) -> None:
+    """Structural edits operate on an existing model; there must be one to edit."""
+    if not session.has_model():
+        raise OperationError(
+            f"Cannot {op}: no model has been initialized yet. Zero-shot one first with "
+            "init_model (Antimony)."
+        )
+
+
 def add_reaction(
     session, reaction: str, justification: str, references: list[str] | None = None,
     n_starts: int | None = None,
 ) -> dict[str, Any]:
+    _require_model(session, "add a reaction")
     spec = parse_reaction_line(reaction)
     return _commit_change(
         session, "add_reaction", {"reaction": reaction}, justification, references,
@@ -338,6 +410,8 @@ def change_rate_law(
     session, reaction_id: str, rate_law: str, justification: str,
     references: list[str] | None = None, n_starts: int | None = None,
 ) -> dict[str, Any]:
+    _require_model(session, "change a rate law")
+
     def edit(sm):
         _change_rate_law_in_model(sm, reaction_id, rate_law)
         return {"reaction_id": reaction_id}
@@ -352,6 +426,8 @@ def remove_reaction(
     session, reaction_id: str, justification: str, references: list[str] | None = None,
     n_starts: int | None = None,
 ) -> dict[str, Any]:
+    _require_model(session, "remove a reaction")
+
     def edit(sm):
         _remove_reaction_from_model(sm, reaction_id)
         return {"reaction_id": reaction_id}

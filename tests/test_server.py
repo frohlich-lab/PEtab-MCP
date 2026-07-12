@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 from pathlib import Path
+
+import libsbml
 
 from petab_mcp.references import StubReferenceResolver
 from petab_mcp.server import create_server
 
 YAML_PATH = Path(__file__).parent / "data" / "toy_v1" / "problem.yaml"
+DATA_DIR = YAML_PATH.parent
 
 # Tables that must never be mutable — assert no tool can write them.
 _FORBIDDEN_TOOL_SUBSTRINGS = ("measurement", "observable", "condition")
@@ -24,6 +28,40 @@ def _server(tmp_path, auto_fit=False):
     )
 
 
+def _empty_model_server(tmp_path):
+    """A server over a problem that ships WITHOUT a model (empty SBML, no model.ant)."""
+    work = tmp_path / "empty"
+    work.mkdir()
+    for name in ("problem.yaml", "conditions.tsv", "measurements.tsv",
+                 "observables.tsv", "parameters.tsv"):
+        shutil.copy(DATA_DIR / name, work / name)
+    doc = libsbml.SBMLDocument(3, 2)
+    model = doc.createModel()
+    model.setId("conversion_reaction")
+    model.setMetaId("conversion_reaction")
+    libsbml.writeSBMLToFile(doc, str(work / "conversion_reaction.xml"))
+    return create_server(
+        str(work / "problem.yaml"),
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+        auto_fit=False,
+    )
+
+
+_REVERSIBLE_ANTIMONY = (
+    "model conversion_reaction\n"
+    "  compartment compartment_ = 1;\n"
+    "  species A in compartment_;\n"
+    "  species B in compartment_;\n"
+    "  A = A_init; B = B_init;\n"
+    "  A_init = 1.0; B_init = 0.0;\n"
+    "  k1 = 0.25; k2 = 0.05;\n"
+    "  r1: A => B; k1 * A;\n"
+    "  r2: B => A; k2 * B;\n"
+    "end\n"
+)
+
+
 def _structured(result):
     return result[1]  # FastMCP.call_tool -> (content_blocks, structured_result)
 
@@ -34,7 +72,7 @@ def test_tools_registered(tmp_path):
     expected = {
         "describe_problem", "list_observables", "list_conditions", "get_measurements",
         "get_model", "get_model_structure", "validate_problem",
-        "add_reaction", "change_rate_law", "remove_reaction",
+        "init_model", "add_reaction", "change_rate_law", "remove_reaction",
         "get_parameters", "sync_parameters",
         "get_fit_summary", "query_data", "list_data_tables", "get_fitting_log",
         "get_provenance", "list_versions", "get_version", "diff_versions",
@@ -245,6 +283,46 @@ def test_batch_tools(tmp_path):
         assert cur["batch_active"] is True and cur["version"] == 0  # no version yet
         cb = _structured(await mcp.call_tool("commit_batch", {}))
         assert cb["version"] == 1
+
+    asyncio.run(go())
+
+
+def test_init_model_refused_when_model_exists_via_tool(tmp_path):
+    mcp = _server(tmp_path)
+
+    async def go():
+        desc = _structured(await mcp.call_tool("describe_problem", {}))
+        assert desc["model_initialized"] is True
+        res = _structured(await mcp.call_tool("init_model", {
+            "antimony": _REVERSIBLE_ANTIMONY, "justification": "x", "references": ["PMID:1"],
+        }))
+        assert res["committed"] is False and "already initialized" in res["error"]
+
+    asyncio.run(go())
+
+
+def test_init_model_zero_shots_via_tool(tmp_path):
+    mcp = _empty_model_server(tmp_path)
+
+    async def go():
+        desc = _structured(await mcp.call_tool("describe_problem", {}))
+        assert desc["model_initialized"] is False
+        assert desc["n_reactions"] == 0
+
+        # incremental edit is refused before any model exists
+        rej = _structured(await mcp.call_tool("add_reaction", {
+            "reaction": "r1: A => B; k1*A", "justification": "x", "references": ["PMID:1"]}))
+        assert rej["committed"] is False
+
+        res = _structured(await mcp.call_tool("init_model", {
+            "antimony": _REVERSIBLE_ANTIMONY,
+            "justification": "reversible conversion", "references": ["PMID:1"],
+        }))
+        assert res["committed"] is True and res["version"] == 1
+
+        desc2 = _structured(await mcp.call_tool("describe_problem", {}))
+        assert desc2["model_initialized"] is True
+        assert desc2["n_reactions"] == 2
 
     asyncio.run(go())
 

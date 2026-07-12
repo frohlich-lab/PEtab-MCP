@@ -30,7 +30,10 @@ file="tools.md")`).
 - **The design is fixed.** `measurements`, `conditions`, and `observables` are
   read-only. No tool mutates them; an edit that breaks a fixed observable or
   condition is *rejected*, not applied.
-- **The model is authored in Antimony** and edited *only* through
+- **The model is authored in Antimony.** If the problem ships *without* a model
+  (`describe_problem` reports `model_initialized: false`), zero-shot the whole model
+  once from Antimony with `init_model` — this is the only way to create a model, and it
+  is refused once one exists. An existing model is then edited *only* through
   `add_reaction`, `change_rate_law`, `remove_reaction`. Antimony is the canonical
   source of truth; SBML is derived.
 - **Every model operation must cite a justification.** The justification must be a
@@ -71,6 +74,29 @@ Always start by understanding the problem before changing it:
 Each of these applies the edit to a *copy* of the model, reconciles SBML↔PEtab,
 lints the candidate, and **only commits if the result is valid**. On failure the
 model and parameter table are reverted and nothing is versioned.
+
+### `init_model(antimony, justification, references?)` — only when there is no model
+
+For a fresh problem that ships without a model (`describe_problem` →
+`model_initialized: false`), author the entire model as one Antimony string and commit
+it with `init_model`. The Antimony declares the compartments, species (with their
+initial conditions), parameters, and reactions:
+
+```
+model my_model
+  compartment c = 1;
+  species S1 in c; species S2 in c;
+  S1 = S1_init; S2 = S2_init;
+  S1_init = 1.0; S2_init = 0.0;
+  k_f = 0.1;
+  J1: S1 -> S2; k_f*S1;
+end
+```
+
+`init_model` reconciles, lints, and fits exactly like the incremental edits, and is
+**refused once a model exists** — after the first model, make every change through
+`add_reaction` / `change_rate_law` / `remove_reaction` so the history stays fine-grained
+and auditable.
 
 ### `add_reaction(reaction, justification, references)`
 

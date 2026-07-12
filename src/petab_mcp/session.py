@@ -42,6 +42,11 @@ class PetabSession:
         ant_file = self.yaml_path.parent / "model.ant"
         if ant_file.is_file():
             self._set_model_from_antimony(ant_file.read_text(encoding="utf-8"))
+        elif self.problem.model is None:
+            # No Antimony source and no SBML in the YAML: start from an empty model so
+            # the working object always exists. The model is "uninitialized" (see
+            # `has_model`) until the agent zero-shots one via the `init_model` operation.
+            self._set_model_from_antimony("model model\nend")
 
         self.lock = threading.RLock()
         root = Path(provenance_dir) if provenance_dir else self.yaml_path.parent / ".petab_mcp"
@@ -90,6 +95,19 @@ class PetabSession:
         if self.problem.model is None:
             raise ValueError("The PEtab problem has no model.")
         return self.problem.model
+
+    def has_model(self) -> bool:
+        """Whether a model has been *initialized* (has any species or reactions).
+
+        A freshly loaded problem with no Antimony/SBML source carries an empty model
+        skeleton; ``init_model`` zero-shots the real model into it, and refuses once a
+        model is present. Structural edits (``add_reaction`` etc.) require this to be True.
+        """
+        model = self.problem.model
+        if model is None:
+            return False
+        sm = model.sbml_model
+        return sm.getNumReactions() > 0 or sm.getNumSpecies() > 0
 
     def model_sbml(self) -> str:
         return self.model.to_sbml_str()
