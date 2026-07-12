@@ -12,7 +12,7 @@ Tool groups:
 * batching: ``begin_batch``, ``commit_batch``, ``abort_batch``
 * fit + simulation: **automatic on every commit** — each commit fits the free
   parameters and simulates, storing a simulation dataframe on the new version; inspect it
-  with ``inspect_fit`` and ``get_simulations``
+  with ``get_fit_summary`` (metrics only), ``get_simulations`` (dataframe), ``inspect_fit``
 * provenance/versions/errors: ``get_provenance``, ``get_errors``, ``list_versions``,
   ``get_version``, ``diff_versions``, ``rollback_to``, ``current_version``
 * session: ``reset``
@@ -39,7 +39,7 @@ from . import operations as ops_mod
 from . import parameters as param_mod
 from . import skills as skills_mod
 from .engine import AmiciEngine
-from .errors import PetabMcpError
+from .errors import PetabMcpError, ValidationError
 from .formatting import df_to_records
 from .session import PetabSession
 from .validation import validate_problem as _validate_problem
@@ -58,12 +58,13 @@ SERVER_INSTRUCTIONS = (
     "parameters, the fit metrics (neg_log_likelihood, chi2, improvement vs prior "
     "versions), and a simulation dataframe. Pass `n_starts` on a commit to fit harder "
     "(or 0 to simulate without fitting). Chain several edits into one version — fitted "
-    "once, on commit — with `begin_batch`/`commit_batch`/`abort_batch`. Read the stored "
-    "simulation dataframe with `get_simulations` and diagnose the fit with `inspect_fit`, "
-    "which breaks residuals down across observables, experiments/conditions, and "
-    "timepoints and surfaces the worst-fit points. Every change is versioned and logged: "
-    "inspect with `list_versions`, `diff_versions`, `get_provenance`; errors via "
-    "`get_errors`; revert with `rollback_to` or `reset`."
+    "once, on commit — with `begin_batch`/`commit_batch`/`abort_batch`. Check the score "
+    "cheaply with `get_fit_summary` (metrics only), read the stored simulation dataframe "
+    "with `get_simulations`, and diagnose the fit with `inspect_fit`, which breaks residuals "
+    "down across observables, conditions, and timepoints and surfaces the worst-fit points "
+    "and time-trend flags. Every change is versioned and logged: rank versions by fit with "
+    "`list_versions` / `diff_versions` (which reports the neg-log-likelihood delta); inspect "
+    "with `get_provenance`; errors via `get_errors`; revert with `rollback_to` or `reset`."
 )
 
 # Appended to the instructions only when skills are actually registered, so clients
@@ -133,6 +134,10 @@ def create_server(
             "current_version": session.provenance.current_version,
             "batch_active": session.batch_active,
             "fixed_tables": ["measurements", "conditions", "observables"],
+            # current fit metrics from the stored simulation (None until the first
+            # commit/simulation); read `get_fit_summary`/`inspect_fit` for more.
+            "neg_log_likelihood": (session.simulation or {}).get("neg_log_likelihood"),
+            "chi2": (session.simulation or {}).get("chi2"),
         }
 
     @mcp.tool()
@@ -302,25 +307,57 @@ def create_server(
         return session.simulation
 
     @mcp.tool()
-    def get_simulations() -> dict[str, Any]:
+    def get_fit_summary() -> dict[str, Any]:
+        """Return just the current fit metrics — no per-point records (a cheap read).
+
+        `{status, neg_log_likelihood, chi2, n_data_points, fitted_parameters, version}`.
+        Use this to check the score without pulling the whole dataframe; use
+        `get_simulations` for the measured-vs-simulated points and `inspect_fit` for the
+        residual breakdown. Refreshed on every commit; generated on demand if none exists.
+        """
+        def run() -> dict[str, Any]:
+            sim = _current_simulation() or {}
+            return {k: sim.get(k) for k in (
+                "status", "neg_log_likelihood", "chi2", "n_data_points",
+                "fitted_parameters", "version",
+            )}
+
+        return _run("get_fit_summary", run)
+
+    @mcp.tool()
+    def get_simulations(worst_n: int | None = None) -> dict[str, Any]:
         """Return the stored simulation dataframe: the fit metrics plus per-point records
         (measurement, simulation, residual, noise-weighted residual, noise).
 
         Refreshed automatically on every commit. If no simulation exists yet (fresh
-        problem, no commit) it is generated on demand from the current parameters.
+        problem, no commit) it is generated on demand from the current parameters. Pass
+        `worst_n` to return only the N worst-fit points (by |weighted residual|) instead of
+        every record — cheaper for large problems; use `get_fit_summary` for metrics only.
         """
-        return _run("get_simulations", _current_simulation)
+        def run() -> dict[str, Any]:
+            if worst_n is not None and worst_n < 0:
+                raise ValidationError(f"worst_n must be an integer >= 0, got {worst_n}.")
+            sim = _current_simulation()
+            if worst_n is not None and sim and sim.get("records"):
+                total = len(sim["records"])
+                kept = fit_mod.worst_points(sim["records"], worst_n)
+                sim = {**sim, "records": kept,
+                       "records_truncated": len(kept) < total,
+                       "n_records_returned": len(kept)}
+            return sim
+
+        return _run("get_simulations", run, {"worst_n": worst_n})
 
     @mcp.tool()
     def inspect_fit(top_n: int = 10) -> dict[str, Any]:
         """Inspect the current fit to the fixed data using the stored simulation dataframe.
 
         Reports residual statistics overall and across each cross section (observables,
-        experiments/conditions, timepoints), the `top_n` worst-fit points, and
-        systematic-bias flags — so you can see *where* the model fits poorly, not just the
-        aggregate objective. Weighted residuals are noise-normalized (the chi2 terms); raw
-        residuals are in observable units. Reads the dataframe produced by the last commit
-        (no re-simulation).
+        conditions, timepoints), the `top_n` worst-fit points, systematic-bias flags, and
+        time-trend flags (dynamics/asymptote errors) — so you can see *where* the model fits
+        poorly, not just the aggregate objective. Weighted residuals are noise-normalized
+        (the chi2 terms); raw residuals are in observable units. Reads the dataframe produced
+        by the last commit (no re-simulation).
         """
         def run() -> dict[str, Any]:
             sim = _current_simulation()
@@ -352,7 +389,7 @@ def create_server(
     # ------------------------------------------------------ provenance/versions
     @mcp.tool()
     def get_provenance(limit: int = 50) -> list[dict[str, Any]]:
-        """Return the most recent provenance events (alterations, training, rollbacks)."""
+        """Return the most recent provenance events (alterations, batches, rollbacks, resets)."""
         return session.provenance.recent_events(limit)
 
     @mcp.tool()
@@ -362,7 +399,8 @@ def create_server(
 
     @mcp.tool()
     def list_versions() -> list[dict[str, Any]]:
-        """List all model versions (snapshots) with their kind/label/timestamp."""
+        """List all model versions (snapshots) with kind/label/timestamp and fit metrics
+        (neg_log_likelihood, chi2, is_new_best) — use it to rank versions by fit."""
         return session.provenance.list_versions()
 
     @mcp.tool()
@@ -372,7 +410,9 @@ def create_server(
 
     @mcp.tool()
     def diff_versions(from_version: int, to_version: int) -> dict[str, Any]:
-        """Diff two versions (Antimony unified diff + parameter add/remove/change)."""
+        """Diff two versions: Antimony unified diff + parameter add/remove/change + a `fit`
+        block with each version's neg_log_likelihood/chi2 and the neg-log-likelihood delta
+        (positive = the `to` version fits better)."""
         return _run("diff_versions", lambda: session.provenance.diff_versions(from_version, to_version),
                     {"from": from_version, "to": to_version})
 

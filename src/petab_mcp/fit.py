@@ -3,7 +3,7 @@
 Given per-data-point residual records — as produced by
 :meth:`petab_mcp.engine.AmiciEngine.residuals` — this module aggregates residual
 statistics across the natural cross sections of a PEtab problem
-(**observables**, **experiments/conditions**, **timepoints**) and assembles a
+(**observables**, **conditions**, **timepoints**) and assembles a
 "fit inspection" report that surfaces the worst-fit points and any systematic
 bias.
 
@@ -45,6 +45,12 @@ CROSS_SECTIONS: dict[str, str] = {
 
 # |z| beyond which a group's mean weighted residual is flagged as systematic bias.
 _BIAS_Z_THRESHOLD = 2.0
+
+# |corr(time, weighted residual)| beyond which a group is flagged as having a systematic
+# time trend — a dynamics/asymptote error the mean-based bias flag misses (the residuals
+# drift from one sign to the other over time, averaging to ~0). Needs a few timepoints.
+_TREND_R_THRESHOLD = 0.8
+_TREND_MIN_POINTS = 4
 
 
 def _finite(value: Any) -> float | None:
@@ -259,6 +265,66 @@ def _bias_flags(report: dict[str, Any]) -> list[dict[str, Any]]:
     return flags
 
 
+def _corr(xs: list[float], ys: list[float]) -> float | None:
+    """Pearson correlation of two equal-length sequences, or ``None`` if undefined."""
+    n = len(xs)
+    if n < 2:
+        return None
+    mx, my = sum(xs) / n, sum(ys) / n
+    sxx = sum((x - mx) ** 2 for x in xs)
+    syy = sum((y - my) ** 2 for y in ys)
+    if sxx <= 0 or syy <= 0:
+        return None
+    sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    return sxy / math.sqrt(sxx * syy)
+
+
+def _trend_flags(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Per (observable, condition) groups whose residuals trend systematically with time.
+
+    A strong correlation between ``time`` and the (signed) weighted residual means the model
+    has the wrong dynamics/asymptote — it drifts from under- to over-prediction (or vice
+    versa) across time, so the *mean* residual (and hence ``bias_z``) can be ~0 while the fit
+    is clearly wrong. This is the signal a plain bias flag misses.
+    """
+    groups: dict[tuple[Any, Any], list[dict[str, Any]]] = {}
+    order: list[tuple[Any, Any]] = []
+    for rec in records:
+        gk = (rec.get("observable_id"), rec.get("condition_id"))
+        if gk not in groups:
+            groups[gk] = []
+            order.append(gk)
+        groups[gk].append(rec)
+
+    flags: list[dict[str, Any]] = []
+    for obs, cond in order:
+        pairs = [
+            (t, w)
+            for t, w in (
+                (_finite(r.get("time")), _finite(r.get("residual_weighted")))
+                for r in groups[(obs, cond)]
+            )
+            if t is not None and w is not None
+        ]
+        if len(pairs) < _TREND_MIN_POINTS:
+            continue
+        r = _corr([t for t, _ in pairs], [w for _, w in pairs])
+        if r is None or abs(r) < _TREND_R_THRESHOLD:
+            continue
+        flags.append(
+            {
+                "observable_id": obs,
+                "condition_id": cond,
+                "n": len(pairs),
+                "time_residual_corr": _round(r),
+                # residual falls with time (r<0) => simulation rises past the data late
+                "pattern": "over_predicts_over_time" if r < 0 else "under_predicts_over_time",
+            }
+        )
+    flags.sort(key=lambda f: abs(f["time_residual_corr"]), reverse=True)
+    return flags
+
+
 def fit_inspection(
     records: Iterable[dict[str, Any]],
     top_n: int = 10,
@@ -266,17 +332,17 @@ def fit_inspection(
     """Assemble a fit-inspection report from per-point residual records.
 
     The report bundles the overall fit summary, residual statistics across every
-    cross section (observable/condition/time), the ``top_n`` worst-fit points, and
-    systematic-bias flags — everything an assistant needs to diagnose *where* a
-    model fits the data poorly.
+    cross section (observable/condition/time), the ``top_n`` worst-fit points,
+    systematic-bias flags, and time-trend flags (dynamics/asymptote errors) —
+    everything an assistant needs to diagnose *where* a model fits the data poorly.
     """
     records = list(records)
     stats = residual_statistics(records)
-    flags = _bias_flags(stats)
     return {
         "n_points": len(records),
         "summary": stats["overall"],
         "statistics": stats,
         "worst_points": worst_points(records, top_n),
-        "bias_flags": flags,
+        "bias_flags": _bias_flags(stats),
+        "trend_flags": _trend_flags(records),
     }

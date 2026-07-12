@@ -25,7 +25,7 @@ neg_log_likelihood, chi2, fitted_parameters, improvement}` on success, or
 
 | Tool | Signature | Notes |
 | --- | --- | --- |
-| `add_reaction` | `(reaction, justification, references, n_starts?)` | `reaction` is one Antimony line, e.g. `"J: A + B -> C; k_f*A*B"`. Rate law after `;` is required. New species → parametric IC; new rate-law symbols → parameters. |
+| `add_reaction` | `(reaction, justification, references, n_starts?)` | `reaction` is one Antimony line, e.g. `"J: S1 + S2 -> S3; k_f*S1*S2"` (placeholder names). Rate law after `;` is required. New species → parametric IC; new rate-law symbols → parameters. |
 | `change_rate_law` | `(reaction_id, rate_law, justification, references, n_starts?)` | Replace a reaction's kinetic law; new symbols reconciled. |
 | `remove_reaction` | `(reaction_id, justification, references, n_starts?)` | Delete a reaction; prune orphaned species/parameters. |
 
@@ -68,18 +68,19 @@ result with:
 
 | Tool | Signature | Notes |
 | --- | --- | --- |
-| `get_simulations` | `()` | The stored simulation dataframe: fit metrics (`neg_log_likelihood`, `chi2`, `status`, `fitted_parameters`) + per-point `records` (measurement, simulation, residual, `residual_weighted`, noise). Generated on demand if none exists yet. |
-| `inspect_fit` | `(top_n=10)` | Residual stats overall + across observables / experiments / timepoints, `top_n` worst-fit points, and bias flags. Reads the stored dataframe (no re-simulation). |
+| `get_fit_summary` | `()` | Just the metrics — `status`, `neg_log_likelihood`, `chi2`, `n_data_points`, `fitted_parameters`, `version` — **no records**. The cheapest score check. |
+| `get_simulations` | `(worst_n?)` | The stored simulation dataframe: fit metrics + per-point `records` (measurement, simulation, residual, `residual_weighted`, noise). `worst_n` returns only the N worst-fit points. Generated on demand if none exists yet. |
+| `inspect_fit` | `(top_n=10)` | Residual stats overall + across observables / conditions / timepoints, `top_n` worst-fit points, `bias_flags`, and `trend_flags` (residuals drifting with time). Reads the stored dataframe (no re-simulation). |
 
 ## Provenance, versions & errors
 
 | Tool | Signature | Notes |
 | --- | --- | --- |
-| `get_provenance` | `(limit=50)` | Recent events (alterations, training, rollbacks). |
+| `get_provenance` | `(limit=50)` | Recent events (alterations, batches, rollbacks, resets). |
 | `get_errors` | `(limit=50)` | Recent rejected operations / failed tool calls. |
-| `list_versions` | `()` | All versions with kind/label/timestamp. |
+| `list_versions` | `()` | All versions with kind/label/timestamp **and fit metrics** — rank versions by fit. |
 | `get_version` | `(version)` | A version's Antimony model + parameter table. |
-| `diff_versions` | `(from_version, to_version)` | Antimony unified diff + parameter add/remove/change. |
+| `diff_versions` | `(from_version, to_version)` | Antimony unified diff + parameter add/remove/change + a `fit` block (each version's nll/chi2 and the neg-log-likelihood delta). |
 | `rollback_to` | `(version, justification?)` | Restore a prior version as a new version. |
 | `current_version` | `()` | HEAD version + batch state. |
 | `reset` | `()` | Revert model + parameters to the initial version (v0). |

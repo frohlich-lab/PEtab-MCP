@@ -1,7 +1,26 @@
 from __future__ import annotations
 
+import pytest
+
 from petab_mcp import operations as O
 from petab_mcp.provenance import ProvenanceStore
+
+
+def test_diff_versions_reports_fit_delta(tmp_path):
+    store = ProvenanceStore(tmp_path / ".petab_mcp")
+    store.snapshot_version("model m() end", [{"parameterId": "k", "estimate": 1}],
+                           label="v0", meta={"neg_log_likelihood": -6.6, "chi2": 3.4})
+    store.snapshot_version("model m() k=1 end", [{"parameterId": "k", "estimate": 1}],
+                           label="v1", meta={"neg_log_likelihood": -8.3, "chi2": 0.04})
+    fit = store.diff_versions(0, 1)["fit"]
+    assert fit["from_neg_log_likelihood"] == -6.6
+    assert fit["to_neg_log_likelihood"] == -8.3
+    assert fit["neg_log_likelihood_delta"] == pytest.approx(1.7)  # positive => v1 better
+    assert fit["from_chi2"] == 3.4 and fit["to_chi2"] == 0.04
+
+    # a version without stored fit metrics yields a None delta (not a crash)
+    store.snapshot_version("model m() end", [], label="v2")
+    assert store.diff_versions(0, 2)["fit"]["neg_log_likelihood_delta"] is None
 
 
 def test_snapshot_and_get(tmp_path):

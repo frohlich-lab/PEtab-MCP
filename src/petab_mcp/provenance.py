@@ -2,7 +2,7 @@
 
 Under ``<store_root>/`` (default ``<problem_dir>/.petab_mcp``):
 
-* ``provenance.jsonl`` — append-only event log (alterations, training runs, rollbacks,
+* ``provenance.jsonl`` — append-only event log (alterations, batch commits, rollbacks,
   resets). Each event carries a UTC timestamp.
 * ``versions/vN/`` — a snapshot of the mutable model state at version N: ``model.ant``
   (the canonical Antimony) and ``parameters.json`` (the parameter-table records), plus
@@ -185,4 +185,15 @@ class ProvenanceStore:
                 pid for pid in set(pa) & set(pb) if pa[pid] != pb[pid]
             ),
         }
-        return {"from": a, "to": b, "model_diff": model_diff, "parameter_diff": param_diff}
+        # Fit comparison from each version's stored metrics (present for fitted versions).
+        na, nb = va.get("neg_log_likelihood"), vb.get("neg_log_likelihood")
+        fit = {
+            "from_neg_log_likelihood": na,
+            "to_neg_log_likelihood": nb,
+            # positive => version `b` fits better than `a` (lower neg-log-likelihood)
+            "neg_log_likelihood_delta": (na - nb) if (na is not None and nb is not None) else None,
+            "from_chi2": va.get("chi2"),
+            "to_chi2": vb.get("chi2"),
+        }
+        return {"from": a, "to": b, "model_diff": model_diff,
+                "parameter_diff": param_diff, "fit": fit}

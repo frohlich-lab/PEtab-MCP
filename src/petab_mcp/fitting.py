@@ -15,9 +15,17 @@ than being swallowed into a degraded "committed but not fitted" state.
 
 from __future__ import annotations
 
+import logging
+import math
+import time
 from typing import Any
 
 from petab.v1.C import NOMINAL_VALUE, PARAMETER_SCALE
+
+
+def _fmt(x: Any) -> str:
+    """Compact float formatting for log lines (``n/a`` for missing)."""
+    return f"{x:.6g}" if isinstance(x, (int, float)) and not isinstance(x, bool) else "n/a"
 
 
 def _run_fit(session, engine, n_starts: int, seed: int = 0) -> dict[str, Any]:
@@ -48,7 +56,30 @@ def _run_fit(session, engine, n_starts: int, seed: int = 0) -> dict[str, Any]:
         model_name=f"petab_mcp_pp_{h}",
     )
     problem = importer.create_problem()
-    result = pypesto.optimize.minimize(problem, n_starts=n_starts, progress_bar=False)
+
+    log = session.logger
+    free = getattr(problem, "x_free_indices", None)
+    n_free = len(free) if free is not None else len(problem.x_names)
+    log.info(
+        "fit: start optimizer=fides n_starts=%d seed=%d n_free=%d sbml=%s objective_before=%s",
+        n_starts, seed, n_free, h, _fmt(objective_before),
+    )
+    # Fides: a Newton trust-region optimizer that exploits AMICI's sensitivities; more
+    # robust than the default L-BFGS-B on stiff ODE likelihoods. Its per-iteration logging
+    # is routed to pypesto.log (see logging_setup.configure_pypesto).
+    optimizer = pypesto.optimize.FidesOptimizer(verbose=logging.INFO)
+    t0 = time.perf_counter()
+    result = pypesto.optimize.minimize(
+        problem, optimizer=optimizer, n_starts=n_starts, progress_bar=False
+    )
+    duration = time.perf_counter() - t0
+
+    # pyPESTO's own multistart report -> pypesto.log (its native logging is otherwise
+    # sparse for a successful minimize; warnings/errors it emits are captured there too).
+    try:
+        logging.getLogger("pypesto").info("multistart summary:\n%s", result.summary())
+    except Exception:  # summary() API drift across pyPESTO versions must not fail a fit
+        pass
 
     best = result.optimize_result.list[0]
     x = [float(v) for v in best["x"]]
@@ -62,6 +93,20 @@ def _run_fit(session, engine, n_starts: int, seed: int = 0) -> dict[str, Any]:
                 linear = float(unscale(value, df.loc[name, PARAMETER_SCALE]))
                 df.loc[name, NOMINAL_VALUE] = linear
                 fitted[name] = linear
+
+    # Convergence summary: how many multistarts landed near the best objective.
+    fvals = [
+        float(s["fval"]) for s in result.optimize_result.list
+        if s.get("fval") is not None and math.isfinite(float(s["fval"]))
+    ]
+    n_converged = sum(1 for v in fvals if v <= nllh + 1e-3)
+    log.info(
+        "fit: done best_nllh=%s self_improvement=%s time=%.2fs starts=%d converged~%d "
+        "fval[min/max]=%s/%s fitted=%s",
+        _fmt(nllh), _fmt(objective_before - nllh), duration, len(fvals), n_converged,
+        _fmt(min(fvals) if fvals else None), _fmt(max(fvals) if fvals else None),
+        {k: round(v, 6) for k, v in fitted.items()},
+    )
     return {"fitted": fitted, "neg_log_likelihood": nllh, "objective_before": objective_before}
 
 
@@ -95,6 +140,11 @@ def fit_and_simulate(
             "version": None,
         }
         session.simulation = payload
+        session.logger.info(
+            "fit_and_simulate: status=%s nllh=%s chi2=%s n_points=%s",
+            payload["status"], _fmt(payload["neg_log_likelihood"]),
+            _fmt(payload["chi2"]), payload["n_data_points"],
+        )
         return payload
 
 
@@ -147,6 +197,25 @@ def compute_improvement(
         "best_prior_neg_log_likelihood": best_prior_nllh,
         "improvement_vs_best_prior": improvement_vs_best_prior,
         "is_new_best": is_new_best,
+    }
+
+
+def fit_result_block(
+    fitsim: dict[str, Any] | None, improvement: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """The fit fields every commit path returns (single op, batch, rollback, reset).
+
+    Keeps the tool-result shape identical across commit kinds so an agent reads the same
+    keys everywhere. ``fitsim`` is a :func:`fit_and_simulate` payload (or the restored
+    simulation for rollback/reset); ``improvement`` is the :func:`compute_improvement` dict.
+    """
+    fitsim = fitsim or {}
+    return {
+        "fit_status": fitsim.get("status"),
+        "neg_log_likelihood": fitsim.get("neg_log_likelihood"),
+        "chi2": fitsim.get("chi2"),
+        "fitted_parameters": fitsim.get("fitted_parameters"),
+        "improvement": improvement or None,
     }
 
 
