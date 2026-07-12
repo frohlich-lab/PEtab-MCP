@@ -13,30 +13,55 @@ import logging
 from pathlib import Path
 
 _LOGGER_NAME = "petab_mcp"
-_configured_paths: set[str] = set()
-_pypesto_configured_paths: set[str] = set()
-
 _FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+
+# The single active file handler installed on each logger group. These loggers are
+# process-global, so we keep ONE handler per group and swap it when the store dir changes
+# (rather than accumulating a handler — and an open fd — per session/directory).
+_petab_handler: logging.FileHandler | None = None
+_optimizer_handler: logging.FileHandler | None = None
 
 
 def get_logger() -> logging.Logger:
     return logging.getLogger(_LOGGER_NAME)
 
 
+def _swap_file_handler(
+    current: logging.FileHandler | None,
+    logger_names: tuple[str, ...],
+    log_path: str,
+    level: int,
+    propagate: bool,
+) -> logging.FileHandler:
+    """Install a single file handler at ``log_path`` on ``logger_names``, replacing any
+    previously installed one so repeated calls (with different dirs) don't accumulate
+    handlers or leak file descriptors."""
+    for name in logger_names:
+        logging.getLogger(name).setLevel(level)
+    if current is not None and getattr(current, "baseFilename", None) == log_path:
+        return current  # already installed for this path
+
+    handler = logging.FileHandler(log_path, encoding="utf-8")
+    handler.setFormatter(logging.Formatter(_FORMAT))
+    for name in logger_names:
+        lg = logging.getLogger(name)
+        if current is not None and current in lg.handlers:
+            lg.removeHandler(current)
+        lg.addHandler(handler)
+        lg.propagate = propagate
+    if current is not None:
+        current.close()
+    return handler
+
+
 def configure(store_root: str | Path, level: int = logging.INFO) -> logging.Logger:
     """Ensure the ``petab_mcp`` logger writes to ``<store_root>/petab_mcp.log``."""
+    global _petab_handler
     root = Path(store_root)
     root.mkdir(parents=True, exist_ok=True)
     log_path = str((root / "petab_mcp.log").resolve())
-
-    logger = logging.getLogger(_LOGGER_NAME)
-    logger.setLevel(level)
-    if log_path not in _configured_paths:
-        handler = logging.FileHandler(log_path, encoding="utf-8")
-        handler.setFormatter(logging.Formatter(_FORMAT))
-        logger.addHandler(handler)
-        _configured_paths.add(log_path)
-    return logger
+    _petab_handler = _swap_file_handler(_petab_handler, (_LOGGER_NAME,), log_path, level, True)
+    return logging.getLogger(_LOGGER_NAME)
 
 
 def configure_pypesto(store_root: str | Path, level: int = logging.DEBUG) -> logging.Logger:
@@ -46,19 +71,13 @@ def configure_pypesto(store_root: str | Path, level: int = logging.DEBUG) -> log
     (``pypesto`` and ``fides``). We attach a dedicated file handler and stop propagation so
     that (verbose) optimizer output lands only in ``pypesto.log`` — not in ``petab_mcp.log``
     or the server's stderr. The separate file is the place for the detailed per-start /
-    per-iteration fit log without cluttering anything else. Idempotent per path.
+    per-iteration fit log without cluttering anything else.
     """
+    global _optimizer_handler
     root = Path(store_root)
     root.mkdir(parents=True, exist_ok=True)
     log_path = str((root / "pypesto.log").resolve())
-
-    if log_path not in _pypesto_configured_paths:
-        handler = logging.FileHandler(log_path, encoding="utf-8")
-        handler.setFormatter(logging.Formatter(_FORMAT))
-        for name in ("pypesto", "fides"):
-            lg = logging.getLogger(name)
-            lg.setLevel(level)
-            lg.addHandler(handler)
-            lg.propagate = False  # keep optimizer logs to their own file
-        _pypesto_configured_paths.add(log_path)
+    _optimizer_handler = _swap_file_handler(
+        _optimizer_handler, ("pypesto", "fides"), log_path, level, False
+    )
     return logging.getLogger("pypesto")

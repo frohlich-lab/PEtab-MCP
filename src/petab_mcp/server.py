@@ -39,7 +39,7 @@ from . import operations as ops_mod
 from . import parameters as param_mod
 from . import skills as skills_mod
 from .engine import AmiciEngine
-from .errors import PetabMcpError
+from .errors import PetabMcpError, ValidationError
 from .formatting import df_to_records
 from .session import PetabSession
 from .validation import validate_problem as _validate_problem
@@ -335,12 +335,15 @@ def create_server(
         every record — cheaper for large problems; use `get_fit_summary` for metrics only.
         """
         def run() -> dict[str, Any]:
+            if worst_n is not None and worst_n < 0:
+                raise ValidationError(f"worst_n must be an integer >= 0, got {worst_n}.")
             sim = _current_simulation()
             if worst_n is not None and sim and sim.get("records"):
-                sim = {**sim,
-                       "records": fit_mod.worst_points(sim["records"], worst_n),
-                       "records_truncated": True,
-                       "n_records_returned": min(worst_n, len(sim["records"]))}
+                total = len(sim["records"])
+                kept = fit_mod.worst_points(sim["records"], worst_n)
+                sim = {**sim, "records": kept,
+                       "records_truncated": len(kept) < total,
+                       "n_records_returned": len(kept)}
             return sim
 
         return _run("get_simulations", run, {"worst_n": worst_n})

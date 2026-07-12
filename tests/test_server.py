@@ -139,6 +139,16 @@ def test_negative_n_starts_rejected(tmp_path):
     asyncio.run(go())
 
 
+def test_get_simulations_rejects_negative_worst_n(tmp_path):
+    mcp = _server(tmp_path)  # validation fires before any simulation, so no AMICI needed
+
+    async def go():
+        res = _structured(await mcp.call_tool("get_simulations", {"worst_n": -1}))
+        assert res.get("ok") is False and "worst_n" in res.get("error", "")
+
+    asyncio.run(go())
+
+
 def test_batch_tools(tmp_path):
     mcp = _server(tmp_path)
 
@@ -196,6 +206,9 @@ def test_fit_tools(tmp_path):
         assert len(sims["records"]) == 6 and sims["neg_log_likelihood"] is not None
         capped = _structured(await mcp.call_tool("get_simulations", {"worst_n": 2}))
         assert len(capped["records"]) == 2 and capped.get("records_truncated") is True
+        # worst_n >= total is not a truncation
+        allcap = _structured(await mcp.call_tool("get_simulations", {"worst_n": 999}))
+        assert len(allcap["records"]) == 6 and allcap.get("records_truncated") is False
 
         # a commit auto-fits: its result carries the unified fit block + a fitted version
         res = _structured(await mcp.call_tool("change_parameter_bounds", {

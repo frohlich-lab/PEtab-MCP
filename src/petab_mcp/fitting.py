@@ -58,7 +58,8 @@ def _run_fit(session, engine, n_starts: int, seed: int = 0) -> dict[str, Any]:
     problem = importer.create_problem()
 
     log = session.logger
-    n_free = len(getattr(problem, "x_free_indices", None) or problem.x_names)
+    free = getattr(problem, "x_free_indices", None)
+    n_free = len(free) if free is not None else len(problem.x_names)
     log.info(
         "fit: start optimizer=fides n_starts=%d seed=%d n_free=%d sbml=%s objective_before=%s",
         n_starts, seed, n_free, h, _fmt(objective_before),
