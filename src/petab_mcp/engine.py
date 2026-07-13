@@ -63,16 +63,40 @@ class AmiciEngine:
         if h not in self._models:
             from amici.importers.petab.v1 import import_petab_problem
 
+            build_dir = self.build_root / f"m_{h}"
+
             # compile_=None reuses an already-compiled build for this SBML hash
-            # (recompiling a module already imported in-process would fail). The
-            # hash-keyed cache is always valid: identical SBML + fixed tables map
-            # to an identical compiled model, so there is nothing to invalidate.
-            self._models[h] = import_petab_problem(
-                self.session.problem,
-                output_dir=str(self.build_root / f"m_{h}"),
-                model_name=f"petab_mcp_{h}",
-                compile_=None,
-            )
+            # (recompiling a module already imported in-process would fail). A
+            # COMPLETE hash-keyed build is always valid: identical SBML + fixed
+            # tables map to an identical compiled model. The one exception is a
+            # build interrupted mid-compile (a killed run, a crash), which leaves
+            # `build_dir` non-empty but not importable; compile_=None then refuses
+            # with AMICI's "Cannot compile to <dir>: not empty" and poisons that
+            # hash for every future run (the dir lives outside work/, so cleanup()
+            # never clears it). Recover by wiping the partial build and forcing a
+            # fresh compile once (compile_=True — the recovery is a rebuild, not a
+            # reuse).
+            try:
+                self._models[h] = import_petab_problem(
+                    self.session.problem,
+                    output_dir=str(build_dir),
+                    model_name=f"petab_mcp_{h}",
+                    compile_=None,
+                )
+            except ValueError as exc:
+                # Match AMICI's specific "output dir not empty" failure, not any
+                # ValueError that happens to contain "not empty".
+                msg = str(exc)
+                if "Cannot compile to" not in msg or "not empty" not in msg:
+                    raise
+                shutil.rmtree(build_dir, ignore_errors=True)
+                build_dir.mkdir(parents=True, exist_ok=True)
+                self._models[h] = import_petab_problem(
+                    self.session.problem,
+                    output_dir=str(build_dir),
+                    model_name=f"petab_mcp_{h}",
+                    compile_=True,
+                )
         return self._models[h]
 
     def _problem_parameters(self) -> dict[str, float]:
