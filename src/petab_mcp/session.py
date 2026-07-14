@@ -191,7 +191,13 @@ class PetabSession:
 
         if (self.simulation is None or not self.simulation.get("records")) and self.engine is not None:
             fitting.fit_and_simulate(self, self.engine, do_fit=False, n_starts=0)
-        return self.simulation
+        # A payload restored from a stored version predates the n_estimated field; stamp it
+        # (from the just-applied version's parameter table) so fit_result_block can still
+        # derive k and report the goodness-of-fit metrics on rollback/reset.
+        sim = self.simulation
+        if sim is not None and sim.get("n_estimated") is None:
+            sim["n_estimated"] = int(self.problem.n_estimated)
+        return sim
 
     # -- batching ----------------------------------------------------------
     def _require_no_open_batch(self, action: str) -> None:

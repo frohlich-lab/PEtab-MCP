@@ -68,14 +68,17 @@ class AmiciEngine:
             # compile_=None reuses an already-compiled build for this SBML hash
             # (recompiling a module already imported in-process would fail). A
             # COMPLETE hash-keyed build is always valid: identical SBML + fixed
-            # tables map to an identical compiled model. The one exception is a
-            # build interrupted mid-compile (a killed run, a crash), which leaves
-            # `build_dir` non-empty but not importable; compile_=None then refuses
-            # with AMICI's "Cannot compile to <dir>: not empty" and poisons that
-            # hash for every future run (the dir lives outside work/, so cleanup()
-            # never clears it). Recover by wiping the partial build and forcing a
-            # fresh compile once (compile_=True — the recovery is a rebuild, not a
-            # reuse).
+            # tables map to an identical compiled model. Two failure modes poison
+            # a hash for every future run (the dir lives outside work/, so
+            # cleanup() never clears it):
+            #   1. a build interrupted mid-compile (a killed run, a crash) leaves
+            #      `build_dir` non-empty but not importable; compile_=None then
+            #      refuses with AMICI's "Cannot compile to <dir>: not empty";
+            #   2. a COMPLETE build that no longer imports (an AMICI/Python ABI
+            #      change, a corrupt/half-written extension), which raises an
+            #      ImportError at load time.
+            # Recover from either by wiping the build and forcing a fresh compile
+            # once (compile_=True — the recovery is a rebuild, not a reuse).
             try:
                 self._models[h] = import_petab_problem(
                     self.session.problem,
@@ -83,12 +86,14 @@ class AmiciEngine:
                     model_name=f"petab_mcp_{h}",
                     compile_=None,
                 )
-            except ValueError as exc:
-                # Match AMICI's specific "output dir not empty" failure, not any
-                # ValueError that happens to contain "not empty".
-                msg = str(exc)
-                if "Cannot compile to" not in msg or "not empty" not in msg:
-                    raise
+            except (ValueError, ImportError) as exc:
+                # For a ValueError, match AMICI's specific "output dir not empty"
+                # failure so an unrelated ValueError still surfaces; an ImportError
+                # (a complete-but-unloadable build) always warrants a rebuild.
+                if isinstance(exc, ValueError):
+                    msg = str(exc)
+                    if "Cannot compile to" not in msg or "not empty" not in msg:
+                        raise
                 shutil.rmtree(build_dir, ignore_errors=True)
                 build_dir.mkdir(parents=True, exist_ok=True)
                 self._models[h] = import_petab_problem(

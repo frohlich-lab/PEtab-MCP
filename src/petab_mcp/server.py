@@ -352,17 +352,27 @@ def create_server(
     def get_fit_summary() -> dict[str, Any]:
         """Return just the current fit metrics — no per-point records (a cheap read).
 
-        `{status, neg_log_likelihood, chi2, n_data_points, fitted_parameters, version}`.
-        Use this to check the score without pulling the dataframe; use `query_data` to
-        query the measured-vs-simulated points and residuals with SQL. Refreshed on every
-        commit; generated on demand if none exists.
+        `{status, neg_log_likelihood, chi2, n_data_points, fitted_parameters, version}`
+        plus the complexity-penalised scores `{bic, aic, chi2_dof, reduced_chi2,
+        chi2_gof_pvalue}` (lower bic/aic is better; reduced_chi2 ≈ 1 and a non-tiny
+        chi2_gof_pvalue mean the fit has reached the noise floor). Use this to check the
+        score without pulling the dataframe; use `query_data` to query the
+        measured-vs-simulated points and residuals with SQL. Refreshed on every commit;
+        generated on demand if none exists.
         """
         def run() -> dict[str, Any]:
             sim = _current_simulation() or {}
-            return {k: sim.get(k) for k in (
+            out = {k: sim.get(k) for k in (
                 "status", "neg_log_likelihood", "chi2", "n_data_points",
                 "fitted_parameters", "version",
             )}
+            # k is the number of estimated parameters (n_estimated), which is well-defined
+            # even on a simulate-only pass where `fitted_parameters` is None (e.g. baseline).
+            out.update(fitting_mod.goodness_of_fit(
+                sim.get("neg_log_likelihood"), sim.get("chi2"),
+                int(session.problem.n_estimated), sim.get("n_data_points"),
+            ))
+            return out
 
         return _run("get_fit_summary", run)
 

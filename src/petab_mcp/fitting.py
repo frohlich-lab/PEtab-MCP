@@ -342,6 +342,9 @@ def fit_and_simulate(
         payload = {
             "status": "fit" if do_fit else "simulate_only",
             "fitted_parameters": fit["fitted"] if fit else None,
+            # The estimated-parameter count k, so the goodness-of-fit metrics (bic/reduced_chi2)
+            # are available even on a simulate-only pass where `fitted_parameters` is None.
+            "n_estimated": int(session.problem.n_estimated),
             "neg_log_likelihood": sim["neg_log_likelihood"],
             "chi2": sim["chi2"],
             "n_data_points": sim["n_data_points"],
@@ -413,6 +416,50 @@ def compute_improvement(
     }
 
 
+def goodness_of_fit(
+    nll: float | None, chi2: float | None, k: int | None, n: int | None
+) -> dict[str, Any]:
+    """Complexity-penalised fit scores, so a commit is judged on more than raw nll.
+
+    The agent otherwise sees only the raw nll/chi2 and cannot tell "already at the noise
+    floor" from "keep going". These derived scores make that explicit:
+
+    * ``bic = k*ln(n) + 2*nll`` and ``aic = 2*k + 2*nll`` (lower is better) charge for every
+      free parameter, so an edit that adds a parameter for a marginal nll drop scores WORSE.
+    * ``reduced_chi2 = chi2 / (n - k)`` is ≈ 1 when the model fits to the noise floor.
+    * ``chi2_gof_pvalue`` is the upper-tail chi2 p-value on ``chi2`` with ``n - k`` degrees
+      of freedom: the fit is adequate (not rejected) when this is not tiny (e.g. ≳ 0.05).
+
+    ``k`` is the number of estimated parameters, ``n`` the number of data points. ``bic`` and
+    ``aic`` are ``None`` only when ``nll``/``k``/``n`` are missing; the chi2-based fields
+    (``chi2_dof``, ``reduced_chi2``, ``chi2_gof_pvalue``) are additionally ``None`` when the
+    degrees of freedom ``n - k`` are non-positive (an under-determined fit) or ``chi2`` is
+    missing.
+    """
+    import math
+
+    out: dict[str, Any] = {
+        "bic": None, "aic": None, "chi2_dof": None,
+        "reduced_chi2": None, "chi2_gof_pvalue": None,
+    }
+    if nll is None or k is None or n is None or n <= 0:
+        return out
+    out["bic"] = k * math.log(n) + 2.0 * nll
+    out["aic"] = 2.0 * k + 2.0 * nll
+    dof = n - k
+    if dof > 0:
+        out["chi2_dof"] = dof
+        if chi2 is not None:
+            out["reduced_chi2"] = chi2 / dof
+            try:
+                from scipy.stats import chi2 as _chi2_dist
+
+                out["chi2_gof_pvalue"] = float(_chi2_dist.sf(chi2, dof))
+            except Exception:  # pragma: no cover - scipy always present via pypesto
+                pass
+    return out
+
+
 def fit_result_block(
     fitsim: dict[str, Any] | None, improvement: dict[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -421,15 +468,29 @@ def fit_result_block(
     Keeps the tool-result shape identical across commit kinds so an agent reads the same
     keys everywhere. ``fitsim`` is a :func:`fit_and_simulate` payload (or the restored
     simulation for rollback/reset); ``improvement`` is the :func:`compute_improvement` dict.
+    Beyond the raw nll/chi2 it also carries the complexity-penalised
+    :func:`goodness_of_fit` scores (bic/aic/reduced_chi2/gof p-value) so the agent can see
+    when the fit is already at the noise floor and stop adding parameters.
     """
     fitsim = fitsim or {}
-    return {
+    fitted = fitsim.get("fitted_parameters")
+    nll = fitsim.get("neg_log_likelihood")
+    chi2 = fitsim.get("chi2")
+    n = fitsim.get("n_data_points")
+    # k = number of estimated parameters. Prefer len(fitted_parameters) after a fit; fall back
+    # to the payload's n_estimated on simulate-only / rollback / reset paths (fitted is None
+    # there), so the goodness-of-fit metrics are present on every commit, not just fitted ones.
+    k = len(fitted) if fitted is not None else fitsim.get("n_estimated")
+    block = {
         "fit_status": fitsim.get("status"),
-        "neg_log_likelihood": fitsim.get("neg_log_likelihood"),
-        "chi2": fitsim.get("chi2"),
-        "fitted_parameters": fitsim.get("fitted_parameters"),
+        "neg_log_likelihood": nll,
+        "chi2": chi2,
+        "n_data_points": n,
+        "fitted_parameters": fitted,
         "improvement": improvement or None,
     }
+    block.update(goodness_of_fit(nll, chi2, k, n))
+    return block
 
 
 def build_sim_payload_for_version(payload: dict[str, Any] | None) -> dict[str, Any] | None:
