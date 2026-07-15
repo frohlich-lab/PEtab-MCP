@@ -486,6 +486,9 @@ def fit_result_block(
         "neg_log_likelihood": nll,
         "chi2": chi2,
         "n_data_points": n,
+        # Surface the estimated-parameter count k next to bic so the parameter penalty in
+        # bic = k*ln(n) + 2*nll is legible — adding a free parameter must earn its keep.
+        "n_estimated": k,
         "fitted_parameters": fitted,
         "improvement": improvement or None,
     }
