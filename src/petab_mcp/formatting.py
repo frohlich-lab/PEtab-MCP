@@ -63,3 +63,48 @@ def df_to_records(df: "pd.DataFrame | None") -> list[dict[str, Any]]:
             record[str(col)] = _clean(val)
         records.append(record)
     return records
+
+
+def summarize_measurements(df: "pd.DataFrame | None", *, preview: int = 4) -> dict[str, Any]:
+    """Compact summary of a measurement table: per observable×condition, the point count,
+    time span, value min/max/mean, and a small evenly-spaced ``preview`` of points.
+
+    Returned by ``get_measurements`` by default so the panel sees the data's SHAPE (dynamics,
+    ranges, sampling) without every raw point re-entering the LLM context on every turn — a
+    full measurement dump is ~6k tokens and compounds as history. Full records remain
+    available via ``get_measurements(summarize=False)`` or SQL over the ``measurements`` table.
+    """
+    if df is None or len(df) == 0:
+        # Same key set as the non-empty return, so consumers never special-case empty.
+        return {"n_points": 0, "n_groups": 0, "columns": [], "groups": [], "note": "no measurements"}
+    id_cols = [c for c in ("observableId", "simulationConditionId",
+                           "preequilibrationConditionId") if c in df.columns]
+    tcol = "time" if "time" in df.columns else None
+    vcol = "measurement" if "measurement" in df.columns else None
+    groups: list[dict[str, Any]] = []
+    grouper = df.groupby(id_cols, sort=False) if id_cols else [((), df)]
+    for key, sub in grouper:
+        key = key if isinstance(key, tuple) else (key,)
+        g: dict[str, Any] = {c: _clean(v) for c, v in zip(id_cols, key)}
+        g["n"] = int(len(sub))
+        if tcol is not None:
+            g["time"] = {"min": _clean(sub[tcol].min()), "max": _clean(sub[tcol].max())}
+        if vcol is not None:
+            m = pd.to_numeric(sub[vcol], errors="coerce")
+            g["measurement"] = {"min": _clean(m.min()), "max": _clean(m.max()),
+                                "mean": _clean(round(float(m.mean()), 6)) if len(m) else None}
+            if tcol is not None:
+                ss = sub.sort_values(tcol)
+                n = len(ss)
+                idx = ([0] if n <= 1 or preview <= 1 else
+                       sorted({int(round(i * (n - 1) / (preview - 1))) for i in range(min(preview, n))}))
+                g["preview"] = [{"time": _clean(ss.iloc[i][tcol]),
+                                 "measurement": _clean(ss.iloc[i][vcol])} for i in idx]
+        groups.append(g)
+    return {
+        "n_points": int(len(df)), "n_groups": len(groups),
+        "columns": [str(c) for c in df.columns], "groups": groups,
+        "note": "Summary view (per observable×condition: n, time span, value min/max/mean, and a "
+                "few preview points). Call get_measurements(summarize=False) for all points, or "
+                "query_data for SQL over the `measurements` table.",
+    }

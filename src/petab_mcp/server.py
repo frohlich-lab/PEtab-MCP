@@ -42,7 +42,7 @@ from . import parameters as param_mod
 from . import skills as skills_mod
 from .engine import AmiciEngine
 from .errors import PetabMcpError, ValidationError
-from .formatting import df_to_records
+from .formatting import df_to_records, summarize_measurements
 from .session import PetabSession
 from .validation import validate_problem as _validate_problem
 
@@ -165,16 +165,24 @@ def create_server(
 
     @mcp.tool()
     def get_measurements(
-        condition_id: str | None = None, observable_id: str | None = None
-    ) -> list[dict[str, Any]]:
-        """Return the (fixed) measurement data, optionally filtered by condition."""
+        condition_id: str | None = None, observable_id: str | None = None,
+        summarize: bool = True,
+    ) -> "list[dict[str, Any]] | dict[str, Any]":
+        """Return the (fixed) measurement data, optionally filtered by condition/observable.
+
+        By default (``summarize=True``) returns a COMPACT SUMMARY — per observable×condition:
+        point count, time span, value min/max/mean, and a few preview points — so the data's
+        shape is visible without every raw point (a full dump is ~6k tokens and re-enters the
+        context each turn). Pass ``summarize=False`` for the full per-point records, or use
+        ``query_data`` for targeted SQL over the ``measurements`` table.
+        """
         df = session.problem.measurement_df
         if df is not None:
             if condition_id is not None:
                 df = df[df["simulationConditionId"] == condition_id]
             if observable_id is not None:
                 df = df[df["observableId"] == observable_id]
-        return df_to_records(df)
+        return summarize_measurements(df) if summarize else df_to_records(df)
 
     # ----------------------------------------------------------------- model
     @mcp.tool()
@@ -416,7 +424,7 @@ def create_server(
         return _run("get_fitting_log", run, {"tail_lines": tail_lines})
 
     @mcp.tool()
-    def query_data(sql: str, max_rows: int = 1000) -> dict[str, Any]:
+    def query_data(sql: str, max_rows: int = 50) -> dict[str, Any]:
         """Run a SQL query (DuckDB) over the PEtab tables and the simulation dataframe.
 
         The query runs against a private, disposable copy of the data, so any SQL is allowed
@@ -427,7 +435,8 @@ def create_server(
         (sigma); and the last fit's pyPESTO multistart in `optimization_starts` (one row per
         start, `start`=0 is best) and `optimization_trace` (fval per start/iteration). Call
         `list_data_tables()` for the exact columns. Returns
-        `{columns, rows, row_count, truncated}` (capped at `max_rows`, default 1000); the
+        `{columns, rows, row_count, truncated}` (capped at `max_rows`, default 50 to keep
+        results compact — raise it explicitly for a full dump; prefer aggregations); the
         `simulations` dataframe is generated on demand if no commit has produced one yet.
 
         This replaces the old fixed residual-analysis tools — compute whatever breakdown you

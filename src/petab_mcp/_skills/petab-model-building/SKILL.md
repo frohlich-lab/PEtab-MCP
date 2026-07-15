@@ -63,7 +63,7 @@ Always start by understanding the problem before changing it:
   version, and whether a batch is open.
 - `get_model("antimony")` — the canonical model text. Use `get_model("sbml")` for
   SBML, or `get_model_structure()` for a structured species/parameters/reactions view.
-- `list_observables()`, `list_conditions()`, `get_measurements(condition_id?,
+- `list_observables()`, `list_conditions()`, `get_measurements(condition_id?, summarize=True,
   observable_id?)` — the fixed data you are fitting. These constrain every edit.
 - `get_parameters()` — the parameter table (id, bounds, nominalValue, estimate,
   scale, priors).

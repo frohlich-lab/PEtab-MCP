@@ -10,7 +10,7 @@ and the rules behind these tools.
 | `describe_problem` | `()` | Summary: `model_id`, `model_initialized` (false ⇒ zero-shot with `init_model` first), species/reaction/parameter counts, `free_parameters`, observables, condition/measurement counts, `current_version`, `batch_active`, `fixed_tables`. |
 | `list_observables` | `()` | The fixed observables (formulas, noise models). |
 | `list_conditions` | `()` | The fixed conditions and the model changes they apply. |
-| `get_measurements` | `(condition_id?, observable_id?)` | The fixed measurement rows, optionally filtered. |
+| `get_measurements` | `(condition_id?, observable_id?, summarize=True)` | Compact summary of the measurements by default (per observable×condition: count, time span, value min/max/mean, a few preview points); pass `summarize=False` for the full measurement rows. |
 | `get_model` | `(format="antimony")` | Model as text. `format` is `"antimony"` (canonical) or `"sbml"`. |
 | `get_model_structure` | `()` | Structured species / parameters / reactions view. |
 | `validate_problem` | `()` | Lint the current problem; reports `valid` + `issues`. |
