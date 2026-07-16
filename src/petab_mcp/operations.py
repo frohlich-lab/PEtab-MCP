@@ -29,6 +29,47 @@ from .validation import validate_problem
 
 _ARROW_RE = re.compile(r"\s*(->|=>)\s*")
 
+# AMICI reserves a handful of short symbols for its generated code (the state vector ``x``,
+# parameters ``p``, constants ``k``, expressions ``w``, time ``t``, the Heaviside/root vector
+# ``h``, Euler's ``e`` …). A model entity that reuses one of those names fails code generation
+# with a cryptic ``KeyError: 'amici_<name>'`` — which looks nothing like a name clash. Map the
+# clash-prone ones to a concrete rename so the rejection is actionable.
+_AMICI_RESERVED_HINTS = {
+    "h": "n_hill or hill_coeff", "e": "eff or efficiency", "t": "tau or t_delay",
+    "x": "x_state", "k": "k_rate", "p": "prot", "w": "w_rate",
+}
+_AMICI_RESERVED_RE = re.compile(r"amici_([A-Za-z]\w?)\b")
+
+
+def _compile_fit_failure_message(exc: Exception) -> str:
+    """Turn an AMICI/pyPESTO compile-or-fit failure into an actionable rejection message.
+
+    A model symbol whose name collides with an AMICI-reserved codegen name (``h``, ``t``,
+    ``x`` …) fails compilation with a cryptic ``'amici_<name>'`` KeyError that reads nothing
+    like a name clash — the generic message below blamed an "ill-posed ODE" and sent the agent
+    off to debug the maths (which is why the repressilator's first, correct model, whose Hill
+    exponent was named ``h``, was abandoned). Detect the clash (a *short* symbol after the
+    ``amici_`` codegen prefix — long ones like ``amici_model`` are internals, not user symbols)
+    and tell it to rename; otherwise fall back to the ill-posed hint, which does describe the
+    genuine non-integrable-ODE case.
+    """
+    m = _AMICI_RESERVED_RE.search(str(exc))
+    if m:
+        name = m.group(1)
+        suggest = _AMICI_RESERVED_HINTS.get(name, f"{name}_rate")
+        return (
+            f"the model uses a symbol named '{name}', which collides with a name AMICI reserves "
+            "for its generated code (reserved short symbols include h, t, x, k, p, w, e). Rename "
+            f"it everywhere it appears in the Antimony (e.g. '{name}' -> '{suggest}') and "
+            "re-author with set_model — the model structure itself may well be fine."
+        )
+    return (
+        f"the model passed validation but could not be compiled/fit: {exc}. This usually means "
+        "it is ill-posed for estimation — an unstable or non-integrable ODE, or a rate law the "
+        "solver cannot handle. Re-check that the simulated trajectories stay bounded and the "
+        "initial conditions are sane, then re-author with set_model."
+    )
+
 
 class OperationError(PetabMcpError):
     """An invalid model operation (bad justification, unparseable reaction, ...)."""
@@ -250,10 +291,30 @@ def _commit_change(
                 )
             # Fit + simulate the validated candidate before snapshotting (non-batch
             # commits only). A fit/simulation failure falls through to the revert below —
-            # a commit is atomic: it either fully succeeds or changes nothing.
+            # a commit is atomic: it either fully succeeds or changes nothing. Wrap an
+            # AMICI/pyPESTO failure (e.g. a model that lints clean but cannot be compiled —
+            # a reserved-name codegen clash, an unsupported construct) as a ModelUpdateError
+            # so the tool returns a clean committed=false with the message, instead of the
+            # raw exception crashing the call.
             staged = session.batch_active
             if not staged:
-                fitsim, improvement = session._auto_fit_and_improvement(n_starts)
+                # A model with no estimated parameters has nothing to fit; catch it here with a
+                # clear, actionable message rather than letting pyPESTO fail cryptically
+                # ("'NoneType' object is not iterable") deep in the optimizer.
+                if int(getattr(session.problem, "n_estimated", 0) or 0) == 0:
+                    raise ModelUpdateError(
+                        "the model has NO estimated (free) parameters, so there is nothing to "
+                        "fit. Give it at least one free parameter — a new symbol you use in a "
+                        "rate law becomes an estimated parameter automatically, so declare one "
+                        "(or keep using the shipped free parameters) — then re-author with "
+                        "set_model."
+                    )
+                try:
+                    fitsim, improvement = session._auto_fit_and_improvement(n_starts)
+                except PetabMcpError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - surface as a clean, actionable rejection
+                    raise ModelUpdateError(_compile_fit_failure_message(exc)) from exc
         except Exception:
             session.problem.model = old_model
             session.problem.parameter_df = old_params
@@ -333,37 +394,43 @@ def _commit_change(
 
 
 # -- public operations: model ----------------------------------------------
-def _ensure_no_model(session) -> None:
-    """Guard for ``init_model``: a model must NOT already be initialized."""
-    if session.has_model():
-        raise OperationError(
-            "A model is already initialized; init_model only zero-shots a model when none "
-            "exists. Edit the existing model with add_reaction / change_rate_law / "
-            "remove_reaction instead."
-        )
-
-
-def init_model(
+def set_model(
     session, antimony: str, justification: str,
     references: list[str] | None = None, n_starts: int | None = None,
 ) -> dict[str, Any]:
-    """Zero-shot the whole model from Antimony when none has been initialized yet.
+    """Author the WHOLE model from Antimony — the single whole-model operation.
 
-    Refuses if a model already exists — an existing model is edited only through the
-    incremental operations (``add_reaction`` / ``change_rate_law`` / ``remove_reaction``).
-    Like every model operation it requires a justification (references optional), reconciles
-    SBML↔PEtab (parametric ICs, parameter-table sync), lints, and fits on commit.
+    This BUILDS the first model when the problem ships model-less (``model_initialized:
+    false``) AND re-authors/replaces an existing model wholesale; it is never refused. Use it
+    to set model STRUCTURE — a coupled/symmetric rate-law change, adding or removing several
+    reactions at once — in one coherent step, instead of a sequence of incremental edits that
+    leave intermediate models inconsistent (the incremental ``add_reaction`` /
+    ``change_rate_law`` / ``remove_reaction`` remain for local refinement). Goes through the
+    same commit pipeline as every model op: SBML↔PEtab reconcile (parametric ICs +
+    parameter-table sync), petab lint, and a fit on commit; any failure reverts, so a bad
+    (re-)author changes nothing.
+
+    Because the whole model is replaced, reconcile drops the parameter-table rows of any
+    parameter the new model no longer declares. That silently discards a previously-fitted
+    value, so this warns when the re-author removes a previously-ESTIMATED parameter (fixed
+    noise/initial-condition parameters and anything still referenced by the observable/noise
+    or condition tables are preserved).
     """
     if not isinstance(antimony, str) or not antimony.strip():
-        raise OperationError("init_model requires a non-empty Antimony model string.")
-    _ensure_no_model(session)  # fast pre-check; re-checked under the commit lock in build()
+        raise OperationError("set_model requires a non-empty Antimony model string.")
+
+    # Snapshot the currently-estimated parameter ids so we can flag any the re-author drops.
+    from petab.v1.C import ESTIMATE
+
+    prior_estimated: set[str] = set()
+    try:
+        df = session.problem.parameter_df
+        if ESTIMATE in df.columns:
+            prior_estimated = {str(p) for p in df.index[df[ESTIMATE].fillna(0).astype(float) != 0]}
+    except Exception:  # never let the warning bookkeeping break the op
+        prior_estimated = set()
 
     def build():
-        # Authoritative re-check: build() runs inside session.lock, so two concurrent
-        # init_model calls cannot both pass has_model() and race to overwrite a model.
-        _ensure_no_model(session)
-        # The Antimony header names the model (Antimony is canonical); pass model_id=None so
-        # a placeholder skeleton id (from a model-less load) never overrides that name.
         try:
             candidate = SbmlModel.from_antimony(antimony, model_id=None)
         except Exception as exc:
@@ -376,20 +443,30 @@ def init_model(
             "n_reactions": sm.getNumReactions(),
         }
 
-    # Store only a size summary in the provenance args — the full Antimony is already
-    # captured verbatim as the new version's model snapshot (avoids bloating the event log).
-    return _commit_change(
-        session, "init_model", {"antimony_chars": len(antimony)}, justification, references,
+    result = _commit_change(
+        session, "set_model", {"antimony_chars": len(antimony)}, justification, references,
         model_build=build, require_references=False, n_starts=n_starts,
     )
+
+    # Guardrail: a re-author that no longer declares a previously-estimated parameter drops
+    # its row (and its fitted value). Surface that — it is the one real footgun of a wholesale
+    # replace; fixed/table-referenced parameters are not affected.
+    removed = ((result.get("reconcile") or {}).get("parameters") or {}).get("removed") or []
+    dropped = sorted(p for p in removed if str(p) in prior_estimated)
+    if dropped:
+        result["warnings"] = list(result.get("warnings") or []) + [
+            f"set_model dropped previously-estimated parameter(s) {dropped}: their fitted "
+            "values are gone. Re-declare them in the Antimony if that was unintended."
+        ]
+    return result
 
 
 def _require_model(session, op: str) -> None:
     """Structural edits operate on an existing model; there must be one to edit."""
     if not session.has_model():
         raise OperationError(
-            f"Cannot {op}: no model has been initialized yet. Zero-shot one first with "
-            "init_model (Antimony)."
+            f"Cannot {op}: no model has been initialized yet. Author one first with "
+            "set_model (Antimony)."
         )
 
 

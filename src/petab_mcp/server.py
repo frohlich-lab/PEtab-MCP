@@ -33,6 +33,7 @@ import json
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from petab.v1.C import PARAMETER_SCALE
 
 from . import data_access as data_mod
 from . import fitting as fitting_mod
@@ -49,10 +50,11 @@ from .validation import validate_problem as _validate_problem
 SERVER_INSTRUCTIONS = (
     "Interact with a fixed PEtab v1 estimation problem. The experimental design "
     "(measurements, conditions, observables) is read-only. If the problem ships WITHOUT a "
-    "model (`describe_problem` reports `model_initialized: false`), zero-shot the whole "
-    "model once from Antimony with `init_model` (justification + references, refused once a "
-    "model exists). Thereafter the model is edited ONLY "
-    "through three constrained, justified operations — `add_reaction`, "
+    "model (`describe_problem` reports `model_initialized: false`), author the whole "
+    "model from Antimony with `set_model` (justification + references). `set_model` also "
+    "re-authors an existing model wholesale — the clean way to make a coupled/structural "
+    "change in one step; for smaller, local changes the model is edited "
+    "through the constrained, justified operations — `add_reaction`, "
     "`change_rate_law`, `remove_reaction` — each of which requires a non-empty "
     "justification (references are optional, PubMed-validated if given) and automatically "
     "keeps the SBML model and PEtab parameter table consistent (parametric initial "
@@ -208,7 +210,7 @@ def create_server(
 
     def _short(value: Any, limit: int = 200) -> Any:
         """Truncate long strings before they go into the (persisted) error log, so a large
-        argument — e.g. a whole Antimony model passed to `init_model` — cannot bloat the
+        argument — e.g. a whole Antimony model passed to `set_model` — cannot bloat the
         provenance error log or dump the full model contents into it."""
         if isinstance(value, str) and len(value) > limit:
             return value[:limit] + f"… (+{len(value) - limit} chars)"
@@ -247,22 +249,28 @@ def create_server(
             raise
 
     @mcp.tool()
-    def init_model(
+    def set_model(
         antimony: str, justification: str,
         references: list[str] | None = None, n_starts: int | None = None,
     ) -> dict[str, Any]:
-        """Zero-shot the whole model from an Antimony string when NONE is initialized yet.
+        """Author the WHOLE model from an Antimony string — the single whole-model operation.
 
-        Use this only for a fresh problem that ships without a model (`describe_problem`
-        reports `model_initialized: false`). It parses the Antimony, reconciles the SBML
-        model with the PEtab parameter table (parametric initial conditions, parameter-table
-        sync), lints, and fits on commit — like any other model operation, so it requires a
-        non-empty `justification` (`references` are optional, validated if given). Once a
-        model exists it is REFUSED; edit an existing model with `add_reaction` /
-        `change_rate_law` / `remove_reaction`. `n_starts` overrides the fit default (0 =
-        simulate only).
+        Use it to BUILD the first model when the problem ships model-less (`describe_problem`
+        reports `model_initialized: false`) AND to re-author/replace an existing model
+        wholesale — it is never refused. Reach for it to make a STRUCTURAL change as one
+        coherent step — a coupled or symmetric rate-law change, or adding/removing several
+        reactions at once — instead of a sequence of incremental edits that leave intermediate
+        models inconsistent (the `add_reaction` / `change_rate_law` / `remove_reaction`
+        operations remain for local refinement). It reconciles the SBML model with the
+        PEtab parameter table (parametric initial conditions, parameter-table sync), lints, and
+        fits on commit, exactly like the other model ops; any failure reverts, so a bad
+        re-author changes nothing. `justification` (non-empty) is required; `references` are
+        optional; `n_starts` overrides the fit default (0 = simulate only). Because the whole
+        model is replaced, the result `warnings` flag any previously-ESTIMATED parameter the
+        re-author no longer declares (its fitted value is dropped); fixed noise/initial-
+        condition parameters and anything the observable/condition tables reference survive.
         """
-        return _run_operation("init_model", ops_mod.init_model, session, antimony, justification, references, n_starts)
+        return _run_operation("set_model", ops_mod.set_model, session, antimony, justification, references, n_starts)
 
     @mcp.tool()
     def add_reaction(
@@ -360,10 +368,12 @@ def create_server(
     def get_fit_summary() -> dict[str, Any]:
         """Return just the current fit metrics — no per-point records (a cheap read).
 
-        `{status, neg_log_likelihood, chi2, n_data_points, fitted_parameters, version}`
-        plus the complexity-penalised scores `{bic, aic, chi2_dof, reduced_chi2,
-        chi2_gof_pvalue}` (lower bic/aic is better; reduced_chi2 ≈ 1 and a non-tiny
-        chi2_gof_pvalue mean the fit has reached the noise floor). Use this to check the
+        `{status, neg_log_likelihood, chi2, n_data_points, fitted_parameters,
+        parameter_scales, version}` plus the complexity-penalised scores `{bic, aic, chi2_dof,
+        reduced_chi2, chi2_gof_pvalue}` (lower bic/aic is better; reduced_chi2 ≈ 1 and a non-tiny
+        chi2_gof_pvalue mean the fit has reached the noise floor). `fitted_parameters` are LINEAR
+        (unscaled) values; `parameter_scales` gives each one's estimation scale (lin/log10) —
+        a fitted value is the linear number, never its log10 coordinate. Use this to check the
         score without pulling the dataframe; use `query_data` to query the
         measured-vs-simulated points and residuals with SQL. Refreshed on every commit;
         generated on demand if none exists.
@@ -372,8 +382,15 @@ def create_server(
             sim = _current_simulation() or {}
             out = {k: sim.get(k) for k in (
                 "status", "neg_log_likelihood", "chi2", "n_data_points",
-                "fitted_parameters", "version",
+                "fitted_parameters", "parameter_scales", "version",
             )}
+            # Always pair fitted values with their scale (restored/rollback payloads may lack the
+            # map), so a linear value is never misread as a log10 coordinate.
+            if out.get("fitted_parameters") and not out.get("parameter_scales"):
+                pdf = session.problem.parameter_df
+                out["parameter_scales"] = {
+                    pid: str(pdf.loc[pid, PARAMETER_SCALE])
+                    for pid in out["fitted_parameters"] if pid in pdf.index}
             # k is the number of estimated parameters (n_estimated), which is well-defined
             # even on a simulate-only pass where `fitted_parameters` is None (e.g. baseline).
             out.update(fitting_mod.goodness_of_fit(
@@ -383,6 +400,30 @@ def create_server(
             return out
 
         return _run("get_fit_summary", run)
+
+    @mcp.tool()
+    def get_run_timing() -> dict[str, Any]:
+        """Cumulative server-side timing for this run, split by cost kind.
+
+        `{compile_seconds, fit_seconds, n_compiles, n_fits}`. `compile_seconds` is the AMICI
+        model-BUILD time (the one-time C++ compile per unique structure — the engine's build
+        plus pyPESTO's own); `fit_seconds` is the pyPESTO multistart OPTIMIZATION time. Both
+        accumulate only when work actually happens, so a compile/fit cache hit adds nothing.
+        These are server-side wall times (a breakdown of the heavy compute), distinct from the
+        client's `compute_seconds` tool-busy measure, which also covers reads/SQL.
+        """
+        def run() -> dict[str, Any]:
+            # Read under the lock so the four accumulators are a consistent snapshot even if a
+            # fit is mid-update on another thread (the panel dispatches tool calls concurrently).
+            with session.lock:
+                return {
+                    "compile_seconds": round(float(session.compile_seconds), 3),
+                    "fit_seconds": round(float(session.fit_seconds), 3),
+                    "n_compiles": int(session.n_compiles),
+                    "n_fits": int(session.n_fits),
+                }
+
+        return _run("get_run_timing", run)
 
     @mcp.tool()
     def list_data_tables() -> dict[str, Any]:

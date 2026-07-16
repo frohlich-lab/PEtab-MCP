@@ -1,4 +1,4 @@
-"""Zero-shotting the model with ``init_model`` (only when none is initialized)."""
+"""Authoring the whole model with ``set_model`` (builds the first model AND re-authors)."""
 
 from __future__ import annotations
 
@@ -29,6 +29,20 @@ REVERSIBLE_ANTIMONY = """model conversion_reaction
   k2 = 0.05;
   r1: A => B; k1 * A;
   r2: B => A; k2 * B;
+end
+"""
+
+# A one-reaction re-author (drops r2 and its rate constant k2 vs REVERSIBLE_ANTIMONY).
+ONE_REACTION_ANTIMONY = """model conversion_reaction
+  compartment compartment_ = 1;
+  species A in compartment_;
+  species B in compartment_;
+  A = A_init;
+  B = B_init;
+  A_init = 1.0;
+  B_init = 0.0;
+  k1 = 0.25;
+  r1: A => B; k1 * A;
 end
 """
 
@@ -83,13 +97,13 @@ def test_empty_problem_has_no_model(empty_session):
     assert empty_session.provenance.current_version == 0
 
 
-def test_init_model_zero_shots(empty_session):
-    res = O.init_model(
+def test_set_model_builds_the_first_model(empty_session):
+    res = O.set_model(
         empty_session, REVERSIBLE_ANTIMONY,
         justification="reversible conversion A<->B", references=["PMID:1"],
     )
     assert res["committed"] is True
-    assert res["operation"] == "init_model"
+    assert res["operation"] == "set_model"
     assert empty_session.has_model() is True
     assert _species(empty_session) == {"A", "B"}
     assert _reactions(empty_session) == {"r1", "r2"}
@@ -97,37 +111,37 @@ def test_init_model_zero_shots(empty_session):
     assert {"k1", "k2", "A_init", "B_init", "sigma_B"} <= _ids(empty_session)
 
 
-def test_init_model_references_optional(empty_session):
+def test_set_model_references_optional(empty_session):
     # references are optional for model operations (like add_reaction et al.)
-    res = O.init_model(empty_session, REVERSIBLE_ANTIMONY, justification="reversible A<->B")
+    res = O.set_model(empty_session, REVERSIBLE_ANTIMONY, justification="reversible A<->B")
     assert res["committed"] is True
     assert res["references"] == []
     assert empty_session.has_model() is True
 
 
-def test_init_model_uses_antimony_header_model_id(empty_session):
+def test_set_model_uses_antimony_header_model_id(empty_session):
     # the Antimony header names the model, not the empty-load placeholder id
-    O.init_model(empty_session, REVERSIBLE_ANTIMONY, justification="build")
+    O.set_model(empty_session, REVERSIBLE_ANTIMONY, justification="build")
     assert empty_session.model.model_id == "conversion_reaction"
 
 
-def test_init_model_requires_justification(empty_session):
+def test_set_model_requires_justification(empty_session):
     with pytest.raises(OperationError):
-        O.init_model(empty_session, REVERSIBLE_ANTIMONY, justification="  ", references=["PMID:1"])
+        O.set_model(empty_session, REVERSIBLE_ANTIMONY, justification="  ", references=["PMID:1"])
 
 
-def test_init_model_requires_nonempty_antimony(empty_session):
+def test_set_model_requires_nonempty_antimony(empty_session):
     with pytest.raises(OperationError):
-        O.init_model(empty_session, "   ", justification="x", references=["PMID:1"])
+        O.set_model(empty_session, "   ", justification="x", references=["PMID:1"])
 
 
-def test_init_model_rejects_unparseable_antimony(empty_session):
+def test_set_model_rejects_unparseable_antimony(empty_session):
     from petab_mcp.errors import ModelUpdateError
 
     with pytest.raises(ModelUpdateError):
-        O.init_model(empty_session, "this is not antimony {{{", justification="x",
-                     references=["PMID:1"])
-    # a failed init leaves the problem model-less (atomic revert)
+        O.set_model(empty_session, "this is not antimony {{{", justification="x",
+                    references=["PMID:1"])
+    # a failed author leaves the problem model-less (atomic revert)
     assert empty_session.has_model() is False
 
 
@@ -140,16 +154,29 @@ def test_incremental_edits_refuse_without_a_model(empty_session):
         O.remove_reaction(empty_session, "r1", justification="x", references=["PMID:1"])
 
 
-def test_can_edit_after_init(empty_session):
-    O.init_model(empty_session, REVERSIBLE_ANTIMONY, justification="build", references=["PMID:1"])
+def test_can_edit_after_set_model(empty_session):
+    O.set_model(empty_session, REVERSIBLE_ANTIMONY, justification="build", references=["PMID:1"])
     res = O.add_reaction(empty_session, "rdeg: A => ; kdeg*A",
                          justification="degradation", references=["PMID:2"])
     assert res["committed"] is True
     assert "rdeg" in _reactions(empty_session)
 
 
-# -- existing model: init_model is refused ---------------------------------
-def test_init_model_refused_when_model_exists(session):
+# -- existing model: set_model re-authors it wholesale (never refused) ------
+def test_set_model_replaces_existing_model(session):
+    # THE point of set_model: NOT refused when a model already exists — the new Antimony
+    # replaces the current model wholesale.
     assert session.has_model() is True
-    with pytest.raises(OperationError):
-        O.init_model(session, REVERSIBLE_ANTIMONY, justification="x", references=["PMID:1"])
+    res = O.set_model(session, ONE_REACTION_ANTIMONY, justification="drop the reverse reaction")
+    assert res["committed"] is True
+    assert res["operation"] == "set_model"
+    assert _reactions(session) == {"r1"}          # r2 gone
+    assert "k2" not in _ids(session)              # its orphaned rate constant pruned
+
+
+def test_set_model_warns_on_dropped_estimated_param(session):
+    # k2 is estimated (estimate=1) in the toy parameter table; re-authoring without it drops
+    # its row + fitted value, which set_model must warn about.
+    res = O.set_model(session, ONE_REACTION_ANTIMONY, justification="drop r2/k2")
+    assert res["committed"] is True
+    assert any("k2" in w for w in (res.get("warnings") or [])), res.get("warnings")

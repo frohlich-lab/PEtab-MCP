@@ -16,10 +16,12 @@ description: >-
 
 `petab-mcp` wraps **one** PEtab v1 parameter-estimation problem and turns model
 building into a disciplined, auditable loop. The tools are deliberately narrow:
-the experimental design is read-only, the model can only change through three
-justified operations, and every committed change is versioned and logged. Work
-*with* those constraints — do not look for a "replace the model" or "edit the
-measurements" tool; there isn't one, by design.
+the experimental design is read-only, the model changes only through `set_model`
+(author or replace the whole model in Antimony) or the constrained justified edits
+(`add_reaction` / `change_rate_law` / `remove_reaction`), and every committed change is
+versioned and logged. Work *with* those constraints — do not look for an "edit the
+measurements" tool; there isn't one, by design. To write the Antimony that `set_model`
+and the edits take, see the companion `antimony-authoring` skill.
 
 For the exhaustive per-tool signature/return reference, read `tools.md` in this
 skill (also available from the server as `get_skill("petab-model-building",
@@ -30,20 +32,27 @@ file="tools.md")`).
 - **The design is fixed.** `measurements`, `conditions`, and `observables` are
   read-only. No tool mutates them; an edit that breaks a fixed observable or
   condition is *rejected*, not applied.
-- **The model is authored in Antimony.** If the problem ships *without* a model
-  (`describe_problem` reports `model_initialized: false`), zero-shot the whole model
-  once from Antimony with `init_model` — this is the only way to create a model, and it
-  is refused once one exists. An existing model is then edited *only* through
-  `add_reaction`, `change_rate_law`, `remove_reaction`. Antimony is the canonical
-  source of truth; SBML is derived.
+- **The model is authored in Antimony with `set_model`.** If the problem ships *without* a
+  model (`describe_problem` reports `model_initialized: false`), author the whole model from
+  Antimony with `set_model`. `set_model` is the single whole-model operation — it also
+  re-authors an existing model wholesale, the clean way to make a coupled/symmetric or
+  multi-reaction structural change in one coherent step; for smaller, local changes refine
+  with `add_reaction`, `change_rate_law`, `remove_reaction`. Antimony is the canonical source
+  of truth; SBML is derived.
 - **Every model operation must cite a justification.** The justification must be a
   non-empty string. References are **optional** for all operations; any you provide are
   validated against PubMed.
 - **Consistency is automatic.** After each operation the server *reconciles*
-  SBML↔PEtab: new rate-law symbols become model parameters, new species get a
-  **parametric initial condition** (`S = S_init`, with `S_init` added to the
-  parameter table on a linear scale), and orphaned entities are pruned. The
-  parameter table therefore always matches the model.
+  SBML↔PEtab: new rate-law symbols become estimated model parameters (log10 scale by default,
+  with bounds bracketing the nominal value), new species get a **parametric initial condition**
+  (`S = S_init`, with `S_init` added to the parameter table on a linear scale, *fixed*), and
+  orphaned entities are pruned. The parameter table therefore always matches the model.
+  - **Exponents are special.** A new symbol used as an **exponent** — a Hill / cooperativity
+    coefficient, e.g. `n_hill` in `K^n_hill/(K^n_hill + x^n_hill)` — is created on a **linear**
+    scale with **tight bounds** (≈1–8), not the default log10. This is deliberate: on a wide
+    log10 scale an exponent fits to a huge value (a near-step-function) that makes the ODE stiff
+    and the fit plateau. Keep it that way — if you set an exponent's scale/bounds by hand, use
+    `lin` with a tight range; never put a Hill coefficient on log10 with wide bounds.
 - **Everything is versioned.** Each committed operation snapshots a new version
   and appends a provenance event. Nothing is lost; you can diff, roll back, or
   reset.
@@ -75,12 +84,13 @@ Each of these applies the edit to a *copy* of the model, reconciles SBML↔PEtab
 lints the candidate, and **only commits if the result is valid**. On failure the
 model and parameter table are reverted and nothing is versioned.
 
-### `init_model(antimony, justification, references?)` — only when there is no model
+### `set_model(antimony, justification, references?)` — author the whole model
 
-For a fresh problem that ships without a model (`describe_problem` →
-`model_initialized: false`), author the entire model as one Antimony string and commit
-it with `init_model`. The Antimony declares the compartments, species (with their
-initial conditions), parameters, and reactions:
+`set_model` is the single whole-model operation: it **builds** the first model when the
+problem ships model-less (`describe_problem` → `model_initialized: false`) and
+**re-authors / replaces** an existing model wholesale — it is never refused. Author the
+entire model as one Antimony string declaring the compartments, species (with their initial
+conditions), parameters, and reactions:
 
 ```
 model my_model
@@ -93,10 +103,16 @@ model my_model
 end
 ```
 
-`init_model` reconciles, lints, and fits exactly like the incremental edits, and is
-**refused once a model exists** — after the first model, make every change through
-`add_reaction` / `change_rate_law` / `remove_reaction` so the history stays fine-grained
-and auditable.
+It reconciles, lints, and fits exactly like the incremental edits, and reverts on failure so
+a bad (re-)author changes nothing. Reach for it for the initial build and for any change that
+is **structural and coupled** — the same rate-law form across several reactions, a symmetric
+set that must stay identical, or adding/removing several reactions at once — where a sequence
+of incremental edits would leave the model inconsistent between steps. Because the whole model
+is replaced, the result **warns** if the re-author no longer declares a previously-*estimated*
+parameter (its fitted value is dropped); fixed noise / initial-condition parameters and
+anything the observable, noise, or condition tables reference are preserved. Prefer the
+incremental edits below for a genuinely local change (they keep the history fine-grained);
+prefer `set_model` for a whole-structure move.
 
 ### `add_reaction(reaction, justification, references)`
 

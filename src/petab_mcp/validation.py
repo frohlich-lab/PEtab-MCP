@@ -1,10 +1,18 @@
-"""Problem validation via petab.v1 linting.
+"""Problem validation: petab.v1 linting + libsbml SBML consistency.
 
 petab.v1's ``lint_problem(problem)`` returns a bool (``True`` if errors occurred) and
 reports the specifics through the ``petab`` logger rather than a structured result.
 We capture those log records so the report still carries human-readable messages, and
 rely on the same lint to enforce the invariant that the model must satisfy the fixed
 tables (an observable/condition/parameter referencing a missing entity is an error).
+
+petab's lint only checks the PEtab *tables* against the model, not the SBML document
+itself, so we ALSO run libsbml's ``checkConsistency`` on the candidate model and fold its
+findings into the same ``issues`` list. Structural SBML problems (general/identifier/MathML/
+overdetermined consistency) become hard errors that gate the commit — surfaced to the agent
+pre-compile with a clear message instead of an opaque AMICI codegen crash. Unit-consistency,
+modeling-practice, and SBO checks are turned OFF: these are unit-less mechanistic models, so
+those categories would flag essentially every reaction/parameter and drown the real signal.
 """
 
 from __future__ import annotations
@@ -13,6 +21,15 @@ import logging
 from typing import Any
 
 import petab.v1 as petab
+
+# libsbml consistency categories that are pure noise for unit-less mechanistic models — we
+# neither gate nor report them (every species/parameter would otherwise flag a unit warning).
+_SBML_SILENCED_CATEGORIES = (
+    "LIBSBML_CAT_UNITS_CONSISTENCY",
+    "LIBSBML_CAT_MODELING_PRACTICE",
+    "LIBSBML_CAT_SBO_CONSISTENCY",
+)
+_SBML_MSG_CAP = 300  # keep a single SBML message from bloating the (re-sent) tool result
 
 
 class _CaptureHandler(logging.Handler):
@@ -24,11 +41,55 @@ class _CaptureHandler(logging.Handler):
         self.records.append(record)
 
 
-def validate_problem(problem) -> dict[str, Any]:
-    """Run petab.v1 linting and return a JSON-friendly report.
+def _sbml_consistency_issues(problem) -> list[dict[str, Any]]:
+    """libsbml ``checkConsistency`` on the candidate SBML, as ``issues``.
 
-    Returns ``valid`` (no errors), ``n_errors``/``n_warnings``, and the captured
-    ``issues`` (level/message/check).
+    ERROR/FATAL findings are hard errors (they gate the commit); WARNING findings are
+    advisory. The noisy categories in ``_SBML_SILENCED_CATEGORIES`` are disabled first.
+    Best-effort: any failure here returns ``[]`` rather than breaking validation.
+    """
+    try:
+        import libsbml
+
+        sbml_model = getattr(problem.model, "sbml_model", None)
+        doc = sbml_model.getSBMLDocument() if sbml_model is not None else None
+        if doc is None:
+            return []
+        for cat in _SBML_SILENCED_CATEGORIES:
+            code = getattr(libsbml, cat, None)
+            if code is not None:
+                doc.setConsistencyChecks(code, False)
+        doc.getErrorLog().clearLog()  # so we read only THIS consistency pass
+        doc.checkConsistency()
+
+        issues: list[dict[str, Any]] = []
+        for i in range(doc.getNumErrors()):
+            err = doc.getError(i)
+            severity = err.getSeverity()
+            if severity >= libsbml.LIBSBML_SEV_ERROR:
+                level = "error"
+            elif severity == libsbml.LIBSBML_SEV_WARNING:
+                level = "warning"
+            else:
+                continue  # skip INFO
+            message = (err.getShortMessage() or err.getMessage() or "").strip()
+            if len(message) > _SBML_MSG_CAP:
+                message = message[:_SBML_MSG_CAP] + "…"
+            issues.append({
+                "level": level,
+                "message": message,
+                "check": f"sbml:{err.getCategoryAsString()}",
+            })
+        return issues
+    except Exception:  # noqa: BLE001 - validation must never crash on the SBML lint
+        return []
+
+
+def validate_problem(problem) -> dict[str, Any]:
+    """Run petab.v1 linting + libsbml SBML consistency and return a JSON-friendly report.
+
+    Returns ``valid`` (no errors from either check), ``n_errors``/``n_warnings``, and the
+    captured ``issues`` (level/message/check) — petab table issues first, then SBML ones.
     """
     logger = logging.getLogger("petab")
     handler = _CaptureHandler()
@@ -52,8 +113,15 @@ def validate_problem(problem) -> dict[str, Any]:
     ]
     n_errors = sum(1 for r in handler.records if r.levelno >= logging.ERROR)
     n_warnings = sum(1 for r in handler.records if r.levelno == logging.WARNING)
+
+    sbml_issues = _sbml_consistency_issues(problem)
+    issues += sbml_issues
+    sbml_errors = sum(1 for i in sbml_issues if i["level"] == "error")
+    n_errors += sbml_errors
+    n_warnings += sum(1 for i in sbml_issues if i["level"] == "warning")
+
     return {
-        "valid": not has_errors,
+        "valid": (not has_errors) and sbml_errors == 0,
         "n_errors": n_errors,
         "n_warnings": n_warnings,
         "issues": issues,

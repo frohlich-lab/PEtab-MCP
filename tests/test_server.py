@@ -72,9 +72,9 @@ def test_tools_registered(tmp_path):
     expected = {
         "describe_problem", "list_observables", "list_conditions", "get_measurements",
         "get_model", "get_model_structure", "validate_problem",
-        "init_model", "add_reaction", "change_rate_law", "remove_reaction",
+        "set_model", "add_reaction", "change_rate_law", "remove_reaction",
         "get_parameters", "sync_parameters",
-        "get_fit_summary", "query_data", "list_data_tables", "get_fitting_log",
+        "get_fit_summary", "get_run_timing", "query_data", "list_data_tables", "get_fitting_log",
         "get_provenance", "list_versions", "get_version", "diff_versions",
         "rollback_to", "current_version", "reset",
     }
@@ -287,21 +287,22 @@ def test_batch_tools(tmp_path):
     asyncio.run(go())
 
 
-def test_init_model_refused_when_model_exists_via_tool(tmp_path):
+def test_set_model_reauthors_when_model_exists_via_tool(tmp_path):
+    # set_model is NOT refused on an existing model — it re-authors it wholesale.
     mcp = _server(tmp_path)
 
     async def go():
         desc = _structured(await mcp.call_tool("describe_problem", {}))
         assert desc["model_initialized"] is True
-        res = _structured(await mcp.call_tool("init_model", {
-            "antimony": _REVERSIBLE_ANTIMONY, "justification": "x", "references": ["PMID:1"],
+        res = _structured(await mcp.call_tool("set_model", {
+            "antimony": _REVERSIBLE_ANTIMONY, "justification": "re-author", "references": ["PMID:1"],
         }))
-        assert res["committed"] is False and "already initialized" in res["error"]
+        assert res["committed"] is True
 
     asyncio.run(go())
 
 
-def test_init_model_zero_shots_via_tool(tmp_path):
+def test_set_model_builds_via_tool(tmp_path):
     mcp = _empty_model_server(tmp_path)
 
     async def go():
@@ -314,7 +315,7 @@ def test_init_model_zero_shots_via_tool(tmp_path):
             "reaction": "r1: A => B; k1*A", "justification": "x", "references": ["PMID:1"]}))
         assert rej["committed"] is False
 
-        res = _structured(await mcp.call_tool("init_model", {
+        res = _structured(await mcp.call_tool("set_model", {
             "antimony": _REVERSIBLE_ANTIMONY,
             "justification": "reversible conversion", "references": ["PMID:1"],
         }))

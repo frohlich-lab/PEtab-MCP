@@ -130,6 +130,27 @@ def test_change_parameter_bounds_bad_range_reverts(session):
     assert float(recs["k1"]["upperBound"]) != 1.0  # not applied
 
 
+def test_compile_fit_failure_message_reserved_name():
+    # A codegen clash on an AMICI-reserved symbol (KeyError 'amici_h') must yield a rename
+    # hint that names the offending symbol — NOT the generic "ill-posed ODE" message.
+    msg = O._compile_fit_failure_message(KeyError("amici_h"))
+    assert "'h'" in msg and "reserves" in msg and "rename" in msg.lower()
+    assert "ill-posed" not in msg
+
+
+def test_compile_fit_failure_message_generic_is_ill_posed():
+    # A genuine solver failure keeps the ill-posed guidance.
+    msg = O._compile_fit_failure_message(RuntimeError("CVODES failed: too much accuracy"))
+    assert "ill-posed" in msg
+
+
+def test_compile_fit_failure_message_no_false_positive_on_internals():
+    # 'amici_model' is an internal identifier, not a user symbol clash -> ill-posed fallback.
+    msg = O._compile_fit_failure_message(RuntimeError("could not build amici_model in /tmp"))
+    assert "ill-posed" in msg
+    assert "reserves" not in msg
+
+
 def test_operation_records_version_and_provenance(session):
     before = session.provenance.current_version
     O.add_reaction(session, "J: B -> D; k3*B", justification="x", references=["PMID:1"])

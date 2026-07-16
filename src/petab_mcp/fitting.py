@@ -238,12 +238,24 @@ def _run_fit(session, engine, n_starts: int, seed: int = 0) -> dict[str, Any]:
     session.last_fit_cache_hit = False
 
     h = session.sbml_hash()
+    # pyPESTO builds its OWN AMICI model (a second compile of the same structure, under a
+    # distinct module name). Charge it to the compile bucket like the engine's build, but —
+    # mirroring the engine's `_models` guard — only the FIRST time this structure is built:
+    # a re-fit of the same SBML (e.g. a parameter-bound edit) reuses the compiled module, so
+    # counting it again would over-report compiles. Runs under `session.lock` (the caller
+    # holds it), so both the accumulator writes and the `_pypesto_hashes` update are safe.
+    _first_pypesto_build = h not in engine._pypesto_hashes
+    _compile_t0 = time.perf_counter()
     importer = pypesto.petab.PetabImporter(
         session.problem,
         output_folder=str(engine.build_root / f"pypesto_{h}"),
         model_name=f"petab_mcp_pp_{h}",
     )
     problem = importer.create_problem()
+    if _first_pypesto_build:
+        session.compile_seconds += time.perf_counter() - _compile_t0
+        session.n_compiles += 1
+        engine._pypesto_hashes.add(h)
 
     free = getattr(problem, "x_free_indices", None)
     n_free = len(free) if free is not None else len(problem.x_names)
@@ -268,6 +280,10 @@ def _run_fit(session, engine, n_starts: int, seed: int = 0) -> dict[str, Any]:
         problem, optimizer=optimizer, n_starts=n_starts, progress_bar=False, **minimize_kwargs
     )
     duration = time.perf_counter() - t0
+    # The multistart optimization is the recurring "fit" cost (a fit-cache hit returns above
+    # without reaching here, so it correctly adds nothing). Under `session.lock`.
+    session.fit_seconds += duration
+    session.n_fits += 1
 
     # pyPESTO's own multistart report -> pypesto.log (its native logging is otherwise
     # sparse for a successful minimize; warnings/errors it emits are captured there too).
@@ -341,7 +357,15 @@ def fit_and_simulate(
 
         payload = {
             "status": "fit" if do_fit else "simulate_only",
+            # fitted_parameters are always LINEAR (unscaled) values. parameter_scales gives each
+            # one's ESTIMATION scale (lin/log10), co-located so a reader never mistakes a linear
+            # value for its log10 coordinate — e.g. a Hill coefficient fitted to 15.3 (linear) is
+            # 15.3, NOT 10**15.3. (An analyst once made exactly that error.)
             "fitted_parameters": fit["fitted"] if fit else None,
+            "parameter_scales": (
+                {pid: str(session.problem.parameter_df.loc[pid, PARAMETER_SCALE])
+                 for pid in fit["fitted"]}
+                if fit else None),
             # The estimated-parameter count k, so the goodness-of-fit metrics (bic/reduced_chi2)
             # are available even on a simulate-only pass where `fitted_parameters` is None.
             "n_estimated": int(session.problem.n_estimated),
@@ -489,7 +513,10 @@ def fit_result_block(
         # Surface the estimated-parameter count k next to bic so the parameter penalty in
         # bic = k*ln(n) + 2*nll is legible — adding a free parameter must earn its keep.
         "n_estimated": k,
+        # fitted_parameters: LINEAR (unscaled) values; parameter_scales: each one's estimation
+        # scale (lin/log10). Kept side by side so a linear value is never misread as a log10 one.
         "fitted_parameters": fitted,
+        "parameter_scales": fitsim.get("parameter_scales"),
         "improvement": improvement or None,
     }
     block.update(goodness_of_fit(nll, chi2, k, n))

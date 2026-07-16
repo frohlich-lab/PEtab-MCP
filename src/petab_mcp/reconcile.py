@@ -57,6 +57,48 @@ def rate_law_symbols(rate_law: str) -> set[str]:
     return _ast_names(math)
 
 
+def _exponent_symbols(sm) -> set[str]:
+    """Names that appear anywhere in an EXPONENT position (``base ** exponent``) across the
+    model's reaction rate laws, rules, and initial assignments.
+
+    Such a parameter is a cooperativity / Hill exponent. On the default wide ``log10`` scale a
+    fitted exponent can run to ~100 — a near-step-function that makes the ODE stiff and the fit
+    plateau (a repressilator run fitted a Hill coefficient of 15). Estimating it on a LINEAR
+    scale with tight bounds keeps it in the biophysically sane range. Only ``base**exp`` powers
+    count — ``exp(x)`` (AST_FUNCTION_EXP) is not a cooperativity exponent and is ignored.
+    """
+    found: set[str] = set()
+
+    def walk(node):
+        if node is None:
+            return
+        t = node.getType()
+        if t in (libsbml.AST_POWER, libsbml.AST_FUNCTION_POWER) and node.getNumChildren() == 2:
+            found.update(_ast_names(node.getChild(1)))  # names in the exponent subtree
+        for i in range(node.getNumChildren()):
+            walk(node.getChild(i))
+
+    for i in range(sm.getNumReactions()):
+        kl = sm.getReaction(i).getKineticLaw()
+        if kl is not None:
+            walk(kl.getMath())
+    for i in range(sm.getNumRules()):
+        walk(sm.getRule(i).getMath())
+    for i in range(sm.getNumInitialAssignments()):
+        walk(sm.getInitialAssignment(i).getMath())
+    return found
+
+
+def _exponent_bounds(nominal) -> tuple[float, float]:
+    """Tight LINEAR bounds for a cooperativity / Hill exponent (typical range ~1–8), always
+    bracketing the nominal value so the fit starts feasible."""
+    lb, ub = 1.0, 8.0
+    if nominal is not None:
+        n = float(nominal)
+        lb, ub = min(lb, n), max(ub, n)
+    return lb, ub
+
+
 def formula_symbols(formula: Any) -> set[str]:
     """Best-effort identifier extraction from an observable/noise/condition formula."""
     if formula is None:
@@ -86,13 +128,23 @@ def default_compartment(sm) -> str:
 
 # -- parametric initial conditions -----------------------------------------
 def _ic_symbol_for(sm, sid: str) -> str | None:
-    """Return the parametric-IC parameter id for species ``sid`` if present."""
-    init_id = f"{sid}_init"
+    """Return the parametric-IC parameter id for species ``sid`` if its initial assignment is
+    already a SINGLE parameter — whether the server's own ``<sid>_init`` OR one the author
+    supplied (e.g. writing ``p1 = p1_0`` with a ``p1_0`` parameter).
+
+    Accepting the author's own IC parameter is essential: otherwise a model that parametrises
+    its initial conditions under a different name gets a fresh ``<sid>_init`` (defaulting to 0)
+    forced on top, silently discarding the intended initial value and starting the species at 0.
+    """
     for i in range(sm.getNumInitialAssignments()):
         ia = sm.getInitialAssignment(i)
         if ia.getSymbol() == sid:
             names = _ast_names(ia.getMath())
-            return init_id if names == {init_id} else None
+            if len(names) == 1:
+                (name,) = names
+                if sm.getParameter(name) is not None:  # a plain parameter, not an expression
+                    return name
+            return None
     return None
 
 
@@ -269,16 +321,23 @@ def sync_parameter_table(problem) -> dict[str, list[str]]:
     valid = set(problem.model.get_valid_parameters_for_parameter_table())
     table_ids = set(problem.parameter_df.index)
     ic_params = _ic_parameter_ids(sm)
+    exp_params = _exponent_symbols(sm)  # cooperativity/Hill exponents -> lin scale, tight bounds
     keep_table = table_referenced_symbols(problem)  # observable/noise params etc.
 
     added, removed = [], []
 
     for pid in sorted(valid - table_ids):
         value = problem.model.get_parameter_value(pid)
-        lb, ub = _default_bounds(value)
         if pid in ic_params:
+            lb, ub = _default_bounds(value)
             scale, estimate = LIN, 0
+        elif pid in exp_params:
+            # An exponent (Hill coefficient): estimate on a LINEAR scale with tight bounds so it
+            # cannot run off to a near-step-function on the wide default log10 range.
+            lb, ub = _exponent_bounds(value)
+            scale, estimate = LIN, 1
         else:
+            lb, ub = _default_bounds(value)
             scale, estimate = LOG10, 1
         problem.parameter_df.loc[pid, PARAMETER_SCALE] = scale
         problem.parameter_df.loc[pid, LOWER_BOUND] = lb

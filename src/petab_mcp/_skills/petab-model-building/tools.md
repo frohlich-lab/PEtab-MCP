@@ -7,7 +7,7 @@ and the rules behind these tools.
 
 | Tool | Signature | Returns / notes |
 | --- | --- | --- |
-| `describe_problem` | `()` | Summary: `model_id`, `model_initialized` (false ⇒ zero-shot with `init_model` first), species/reaction/parameter counts, `free_parameters`, observables, condition/measurement counts, `current_version`, `batch_active`, `fixed_tables`. |
+| `describe_problem` | `()` | Summary: `model_id`, `model_initialized` (false ⇒ author the model with `set_model` first), species/reaction/parameter counts, `free_parameters`, observables, condition/measurement counts, `current_version`, `batch_active`, `fixed_tables`. |
 | `list_observables` | `()` | The fixed observables (formulas, noise models). |
 | `list_conditions` | `()` | The fixed conditions and the model changes they apply. |
 | `get_measurements` | `(condition_id?, observable_id?, summarize=True)` | Compact summary of the measurements by default (per observable×condition: count, time span, value min/max/mean, a few preview points); pass `summarize=False` for the full measurement rows. |
@@ -26,7 +26,7 @@ an added unobserved species).
 
 | Tool | Signature | Notes |
 | --- | --- | --- |
-| `init_model` | `(antimony, justification, references?, n_starts?)` | Zero-shot the **whole** model from Antimony when none is initialized (`describe_problem` → `model_initialized: false`). **Refused once a model exists** — use the incremental edits below instead. Reconciles + fits like any commit. |
+| `set_model` | `(antimony, justification, references?, n_starts?)` | Author the **whole** model from an Antimony string — the single whole-model op. **Builds** the first model when none is initialized (`describe_problem` → `model_initialized: false`) and **re-authors / replaces** an existing one (never refused). Use for the initial build and for a coupled/symmetric or multi-reaction **structural** change in one coherent step; reconciles + fits, reverts on failure. Warns if a previously-**estimated** parameter is dropped (fixed noise/IC params + table-referenced symbols are preserved). |
 | `add_reaction` | `(reaction, justification, references?, n_starts?)` | `reaction` is one Antimony line, e.g. `"J: S1 + S2 -> S3; k_f*S1*S2"` (placeholder names). Rate law after `;` is required. New species → parametric IC; new rate-law symbols → parameters. Requires an initialized model. |
 | `change_rate_law` | `(reaction_id, rate_law, justification, references?, n_starts?)` | Replace a reaction's kinetic law; new symbols reconciled. |
 | `remove_reaction` | `(reaction_id, justification, references?, n_starts?)` | Delete a reaction; prune orphaned species/parameters. |

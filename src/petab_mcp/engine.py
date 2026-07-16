@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -55,12 +56,22 @@ class AmiciEngine:
         )
         self.build_root.mkdir(parents=True, exist_ok=True)
         self._models: dict[str, Any] = {}
+        # SBML hashes pyPESTO has already built a problem for this run. Mirrors ``_models``
+        # for the engine's own build: it lets the fitter charge the (one-time) pyPESTO model
+        # build to ``compile_seconds`` only the FIRST time a structure is seen, so a re-fit of
+        # the same structure (a parameter-only edit) doesn't over-count compiles.
+        self._pypesto_hashes: set[str] = set()
 
     # -- compilation cache -------------------------------------------------
     def _get_model(self):
         _ensure_swig_on_path()
         h = self.session.sbml_hash()
         if h not in self._models:
+            # Time the model BUILD (compile/import). This runs once per unique SBML hash —
+            # every later call for the same hash is a dict hit and adds nothing — and is
+            # always under `session.lock` (callers simulate/evaluate under it), so the
+            # accumulator write is safe. See `PetabSession.compile_seconds`.
+            _compile_t0 = time.perf_counter()
             from amici.importers.petab.v1 import import_petab_problem
 
             build_dir = self.build_root / f"m_{h}"
@@ -102,6 +113,8 @@ class AmiciEngine:
                     model_name=f"petab_mcp_{h}",
                     compile_=True,
                 )
+            self.session.compile_seconds += time.perf_counter() - _compile_t0
+            self.session.n_compiles += 1
         return self._models[h]
 
     def _problem_parameters(self) -> dict[str, float]:

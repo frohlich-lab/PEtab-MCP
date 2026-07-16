@@ -45,7 +45,7 @@ class PetabSession:
         elif self.problem.model is None:
             # No Antimony source and no SBML in the YAML: start from an empty model so
             # the working object always exists. The model is "uninitialized" (see
-            # `has_model`) until the agent zero-shots one via the `init_model` operation.
+            # `has_model`) until the agent authors one via the `set_model` operation.
             self._set_model_from_antimony("model model\nend")
 
         self.lock = threading.RLock()
@@ -77,6 +77,17 @@ class PetabSession:
         self.auto_fit: bool = True
         self.auto_fit_starts: int = 5
 
+        # Cumulative server-side timing for this run, split so the two very different costs
+        # are legible: `compile_seconds` is AMICI model BUILD time (the one-time C++ compile
+        # per unique structure — engine `_get_model` and pyPESTO's own build), `fit_seconds`
+        # is pyPESTO OPTIMIZATION time (the recurring multistart `minimize`). Both accumulate
+        # only when work actually happens (a compile/fit cache hit adds nothing), and every
+        # write is under `self.lock` (fits/sims already hold it). Read via `get_run_timing`.
+        self.compile_seconds: float = 0.0
+        self.fit_seconds: float = 0.0
+        self.n_compiles: int = 0
+        self.n_fits: int = 0
+
         if self.provenance.current_version < 0:
             self.provenance.snapshot_version(
                 model_ant=self.model.to_antimony(),
@@ -100,8 +111,8 @@ class PetabSession:
         """Whether a model has been *initialized* (has any species or reactions).
 
         A freshly loaded problem with no Antimony/SBML source carries an empty model
-        skeleton; ``init_model`` zero-shots the real model into it, and refuses once a
-        model is present. Structural edits (``add_reaction`` etc.) require this to be True.
+        skeleton; ``set_model`` authors the real model into it (and can re-author it later).
+        Structural edits (``add_reaction`` etc.) require this to be True.
         """
         model = self.problem.model
         if model is None:
