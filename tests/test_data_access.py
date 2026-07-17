@@ -238,3 +238,27 @@ def test_nan_values_cleaned_to_none(session):
     # NaN is not valid JSON; it must come back as None.
     val = out["rows"][0]["simulation"]
     assert val is None or (isinstance(val, float) and not math.isnan(val))
+
+
+# -- fit_diagnosis: the compact, bounded residual read for the lead ---------
+def test_fit_diagnosis_empty_without_simulation(session):
+    out = data_access.fit_diagnosis(session)
+    assert out["per_observable"] == [] and out["worst_points"] == []
+    assert "no simulation" in out["status"]
+
+
+def test_fit_diagnosis_compact_and_bounded(session):
+    session.simulation = {"records": SIM_RECORDS}
+    out = data_access.fit_diagnosis(session, worst_n=2)
+    assert out["n_points"] == 3                          # the NULL-residual row is excluded
+    assert out["total_chi2"] == pytest.approx(5.0)       # 2^2 + 0^2 + (-1)^2
+    per = {r["observable_id"]: r for r in out["per_observable"]}
+    assert per["obs_A"]["n"] == 2 and per["obs_A"]["chi2"] == pytest.approx(4.0)
+    assert per["obs_A"]["mean_weighted_residual"] == pytest.approx(1.0)
+    assert per["obs_A"]["max_abs_weighted_residual"] == pytest.approx(2.0)
+    assert per["obs_B"]["mean_weighted_residual"] == pytest.approx(-1.0)  # systematic bias
+    # per_observable ranked worst-chi2 first
+    assert out["per_observable"][0]["observable_id"] == "obs_A"
+    # worst_points bounded to worst_n and ordered by |residual_weighted|
+    assert len(out["worst_points"]) == 2
+    assert abs(out["worst_points"][0]["residual_weighted"]) == pytest.approx(2.0)

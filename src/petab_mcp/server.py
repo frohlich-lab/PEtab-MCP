@@ -511,6 +511,47 @@ def create_server(
         logged_sql = sql[:1000] if isinstance(sql, str) else sql
         return _run("query_data", run, {"sql": logged_sql, "max_rows": max_rows})
 
+    @mcp.tool()
+    def get_fit_diagnosis(worst_n: int = 8) -> dict[str, Any]:
+        """A COMPACT, size-bounded residual diagnosis of the current fit — where/how it is off.
+
+        Fixed aggregations (NOT open SQL): one row per observable with its weighted `chi2`,
+        `mean_weighted_residual` (bias — far from 0 = a systematic over/under-shoot), and worst
+        |residual|; plus the `worst_n` largest-residual points (measurement vs simulation). Use
+        this to locate a poor fit cheaply, without pulling the raw per-point data. For a full
+        custom breakdown use `query_data`; for the optimizer log use `get_fitting_log`. The
+        simulation dataframe is generated on demand if no commit has produced one yet.
+        """
+        def run() -> dict[str, Any]:
+            if session.simulation is None or not session.simulation.get("records"):
+                try:
+                    _current_simulation()
+                except Exception:  # pragma: no cover - defensive; return the empty-fit result
+                    session.logger.warning(
+                        "get_fit_diagnosis: could not generate simulation dataframe", exc_info=True
+                    )
+            return data_mod.fit_diagnosis(session, worst_n)
+
+        return _run("get_fit_diagnosis", run, {"worst_n": worst_n})
+
+    @mcp.tool()
+    def get_identifiability(top_n: int = 8) -> dict[str, Any]:
+        """Parameter-identifiability diagnosis of the current fit — WHICH estimated parameters
+        are unconstrained or trade off, i.e. the basis for SIMPLIFYING an over-parameterised
+        model (raw nll/bic tell you it's too complex, not which parameters to cut). Combines the
+        Fisher Information Matrix at the optimum — per-parameter standard error + fold_uncertainty,
+        marginal and partial correlations, and the near-flat eigen-directions (= non-identifiable
+        parameter COMBINATIONS) — with the multistart spread (how much each parameter wanders
+        across near-optimal starts, a model-free check). Returns a ranked `candidates` list
+        (at_bound / poorly_constrained / collinear / flat_direction / multistart_unstable): fix
+        it, drop its term, or MERGE a collinear pair into one parameter. Bounded output; needs a
+        fitted model. Read se/correlations together with multistart_std — the FIM is local.
+        """
+        def run() -> dict[str, Any]:
+            return fitting_mod.identifiability(session, engine, top_n=top_n)
+
+        return _run("get_identifiability", run, {"top_n": top_n})
+
     # --------------------------------------------------------------- batching
     @mcp.tool()
     def begin_batch(label: str = "") -> dict[str, Any]:

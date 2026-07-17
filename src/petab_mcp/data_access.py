@@ -220,3 +220,55 @@ def run_query(session, sql: str, max_rows: int = 1000) -> dict[str, Any]:
         "row_count": len(records),
         "truncated": truncated,
     }
+
+
+def fit_diagnosis(session, worst_n: int = 8) -> dict[str, Any]:
+    """A COMPACT, size-bounded residual diagnosis of the current fit.
+
+    Unlike :func:`run_query` (arbitrary SQL, can return the whole dataset), this returns fixed
+    aggregations with capped output — one row per observable (weighted χ², mean weighted
+    residual = bias, worst |residual|) plus the ``worst_n`` largest-residual points — so a
+    caller can see WHERE and HOW a fit is off without pulling the raw per-point data into its
+    context. Computed from the last commit's simulation dataframe.
+    """
+    import pandas as pd
+
+    df = _frames(session)["simulations"]
+    if df is None or df.empty:
+        return {"status": "no simulation yet — commit a model first",
+                "per_observable": [], "worst_points": []}
+    d = df[df["residual_weighted"].notna()].copy()
+    if d.empty:
+        return {"status": "no weighted residuals available (unfitted or non-evaluable noise)",
+                "per_observable": [], "worst_points": []}
+    d["_rw"] = d["residual_weighted"].astype(float)
+
+    per_observable = []
+    for obs, g in d.groupby("observable_id"):
+        rw = g["_rw"]
+        per_observable.append({
+            "observable_id": _clean(obs),
+            "n": int(len(g)),
+            "chi2": round(float((rw * rw).sum()), 3),
+            "mean_weighted_residual": round(float(rw.mean()), 3),   # far from 0 => systematic bias
+            "max_abs_weighted_residual": round(float(rw.abs().max()), 3),
+        })
+    per_observable.sort(key=lambda r: r["chi2"], reverse=True)
+
+    worst = d.reindex(d["_rw"].abs().sort_values(ascending=False).index).head(int(worst_n))
+    worst_points = [{
+        "observable_id": _clean(r["observable_id"]), "condition_id": _clean(r["condition_id"]),
+        "time": _clean(r["time"]), "measurement": round(float(r["measurement"]), 4),
+        "simulation": round(float(r["simulation"]), 4),
+        "residual_weighted": round(float(r["_rw"]), 3),
+    } for _, r in worst.iterrows()]
+
+    return {
+        "n_points": int(len(d)),
+        "total_chi2": round(float((d["_rw"] * d["_rw"]).sum()), 3),
+        "per_observable": per_observable,   # bounded: one row per observable
+        "worst_points": worst_points,       # bounded: <= worst_n rows
+        "hint": ("mean_weighted_residual far from 0 = a systematic over/under-shoot for that "
+                 "observable; worst_points show the largest model-vs-data deviations. For a full "
+                 "breakdown or the optimizer log, delegate to an analyst."),
+    }

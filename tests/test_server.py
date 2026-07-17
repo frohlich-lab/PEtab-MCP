@@ -74,7 +74,8 @@ def test_tools_registered(tmp_path):
         "get_model", "get_model_structure", "validate_problem",
         "set_model", "add_reaction", "change_rate_law", "remove_reaction",
         "get_parameters", "sync_parameters",
-        "get_fit_summary", "get_run_timing", "query_data", "list_data_tables", "get_fitting_log",
+        "get_fit_summary", "get_fit_diagnosis", "get_run_timing", "query_data", "list_data_tables",
+        "get_fitting_log",
         "get_provenance", "list_versions", "get_version", "diff_versions",
         "rollback_to", "current_version", "reset",
     }
