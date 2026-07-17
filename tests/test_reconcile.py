@@ -82,3 +82,11 @@ def test_reconcile_parametrises_a_literal_ic():
     ic = R.ensure_parametric_initial_conditions(sm)
     assert 'q1_init' in ic
     assert abs(sm.getParameter('q1_init').getValue() - 2.5) < 1e-9
+
+
+def test_ic_bounds_are_nonnegative_and_bracket_nominal():
+    # A concentration: lower bound is 0; upper bound is the default, widened to 10x a large value.
+    assert R._ic_bounds(3.6) == (0.0, 100.0)      # small nominal -> default upper (1e2)
+    assert R._ic_bounds(50.0) == (0.0, 500.0)     # large nominal -> 10x upper
+    assert R._ic_bounds(0.0) == (0.0, 100.0)
+    assert R._ic_bounds(None) == (0.0, 100.0)     # NaN/None guard -> treated as 0

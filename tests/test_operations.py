@@ -69,6 +69,22 @@ def test_add_reaction_auto_adds_species_and_params(session):
     assert set(res["reconcile"]["parameters"]["added"]) == {"D_init", "k3"}
 
 
+def test_ic_parameter_fixed_by_default(session):
+    # A new species' initial-condition parameter is FIXED (estimate 0) unless the scenario opts in.
+    O.add_reaction(session, "J: B -> D; k3*B", justification="B converts to D")
+    assert int(session.problem.parameter_df.loc["D_init", "estimate"]) == 0
+
+
+def test_ic_parameter_estimated_when_opted_in(session):
+    # With estimate_initial_conditions on, the IC is estimated: non-negative, linear scale.
+    session.estimate_initial_conditions = True
+    O.add_reaction(session, "J: B -> D; k3*B", justification="B converts to D")
+    row = session.problem.parameter_df.loc["D_init"]
+    assert int(row["estimate"]) == 1
+    assert row["parameterScale"] == "lin"
+    assert float(row["lowerBound"]) == 0.0
+
+
 def test_change_rate_law(session):
     O.add_reaction(session, "J: B -> D; k3*B", justification="x", references=["PMID:1"])
     res = O.change_rate_law(

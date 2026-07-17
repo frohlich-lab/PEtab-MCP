@@ -97,6 +97,7 @@ def create_server(
     skills_dir: str | None = None,
     auto_fit: bool = True,
     auto_fit_starts: int = 5,
+    estimate_initial_conditions: bool = False,
 ) -> FastMCP:
     """Build a FastMCP server bound to the PEtab problem at ``yaml_path``.
 
@@ -106,6 +107,9 @@ def create_server(
     ``auto_fit`` (default on) makes every commit fit + simulate before snapshotting;
     ``auto_fit_starts`` is the default pyPESTO multistart count (overridable per commit via
     ``n_starts``). Set ``auto_fit=False`` to skip the compile-heavy fit hook (tests/dev).
+
+    ``estimate_initial_conditions`` (opt-in, default off): estimate initial-condition parameters
+    rather than fixing them at the observed t=0 value. Off keeps a problem's standard ICs.
     """
     session = PetabSession(
         yaml_path,
@@ -118,6 +122,9 @@ def create_server(
     session.engine = engine
     session.auto_fit = auto_fit
     session.auto_fit_starts = auto_fit_starts
+    # Opt-in: estimate initial-condition parameters instead of fixing them at the observed t=0
+    # value (off by default so published problems keep their standard IC treatment).
+    session.estimate_initial_conditions = estimate_initial_conditions
 
     # Load tool-usage skills up front so the server instructions only advertise
     # `list_skills`/`get_skill` when skills are actually available (registered below).

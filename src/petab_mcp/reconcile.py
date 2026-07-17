@@ -314,9 +314,22 @@ def _ic_parameter_ids(sm) -> set[str]:
     return ic
 
 
-def sync_parameter_table(problem) -> dict[str, list[str]]:
+def _ic_bounds(value: float) -> tuple[float, float]:
+    """Bounds for an ESTIMATED initial-condition parameter: a concentration, so non-negative,
+    on a linear scale, generously bracketing the observed t=0 value."""
+    try:
+        v = max(0.0, float(value))
+    except (TypeError, ValueError):
+        v = 0.0
+    return 0.0, max(1e2, v * 10.0)
+
+
+def sync_parameter_table(problem, estimate_ics: bool = False) -> dict[str, list[str]]:
     """Add rows for new model parameters; remove rows for parameters gone from the model
-    (keeping observable/noise parameters). Returns the add/remove diff."""
+    (keeping observable/noise parameters). Returns the add/remove diff.
+
+    ``estimate_ics`` (opt-in, per scenario) makes initial-condition parameters ESTIMATED rather
+    than fixed at the observed t=0 value."""
     sm = problem.model.sbml_model
     valid = set(problem.model.get_valid_parameters_for_parameter_table())
     table_ids = set(problem.parameter_df.index)
@@ -329,8 +342,13 @@ def sync_parameter_table(problem) -> dict[str, list[str]]:
     for pid in sorted(valid - table_ids):
         value = problem.model.get_parameter_value(pid)
         if pid in ic_params:
-            lb, ub = _default_bounds(value)
-            scale, estimate = LIN, 0
+            # Initial conditions: FIXED at the observed t=0 value by default. When the scenario
+            # opts in (estimate_ics), ESTIMATE them instead (non-negative, linear) — treating the
+            # noisy t=0 measurement as a parameter to fit and count honestly in k, not ground
+            # truth. Opting in requires the scenario's BIC reference to estimate its ICs too, so
+            # the comparison stays fair; left off, published problems keep their standard ICs.
+            lb, ub = _ic_bounds(value) if estimate_ics else _default_bounds(value)
+            scale, estimate = LIN, (1 if estimate_ics else 0)
         elif pid in exp_params:
             # An exponent (Hill coefficient): estimate on a LINEAR scale with tight bounds so it
             # cannot run off to a near-step-function on the wide default log10 range.
@@ -353,10 +371,13 @@ def sync_parameter_table(problem) -> dict[str, list[str]]:
     return {"added": added, "removed": removed}
 
 
-def reconcile(problem) -> dict[str, Any]:
-    """Full reconciliation after a structural edit: prune, parametric ICs, table sync."""
+def reconcile(problem, estimate_ics: bool = False) -> dict[str, Any]:
+    """Full reconciliation after a structural edit: prune, parametric ICs, table sync.
+
+    ``estimate_ics`` (opt-in) makes initial-condition parameters estimated (see
+    :func:`sync_parameter_table`)."""
     sm = problem.model.sbml_model
     pruned = prune_orphans(problem)
     ensure_parametric_initial_conditions(sm)
-    synced = sync_parameter_table(problem)
+    synced = sync_parameter_table(problem, estimate_ics=estimate_ics)
     return {"pruned": pruned, "parameters": synced}
