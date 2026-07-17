@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pandas as pd
 import pytest
 
 pytest.importorskip("amici", reason="AMICI not installed; skipping simulation tests")
@@ -19,6 +20,49 @@ def test_simulate(engine):
     out = engine.simulate()
     assert {"k1", "k2", "sigma_B", "A_init", "B_init"} == set(out["parameters"])
     assert len(out["simulations"]) == 6
+
+
+def test_replicate_measurements_not_double_counted(engine, session):
+    """Replicate measurements must not inflate n_data_points / chi2.
+
+    ``_simulation_records`` used to merge the measurement and simulation tables on
+    (observableId, simulationConditionId, time) alone. For replicate rows that share
+    a key, that cross-joins each size-r group into r*r rows, so a table with r=2
+    replicates reported ``n_data_points == sum(r**2) == 24`` (and a ~2x-inflated chi2)
+    instead of the true 12. The merge is now one-to-one with the measurements.
+    """
+    import numpy as np
+
+    base = session.problem.measurement_df
+    # Two replicates per point (distinct measured values, identical key): 6 groups of
+    # size 2 => 12 true points, which the buggy merge would have blown up to 24.
+    dup = base.copy()
+    dup["measurement"] = dup["measurement"] + 0.01
+    rep = pd.concat([base, dup], ignore_index=True)
+    session.problem.measurement_df = rep
+
+    obj = engine.evaluate_objective()
+    # one record per measurement row (Sum r), not the buggy cross-join (Sum r**2)
+    assert obj["n_data_points"] == len(rep) == 2 * len(base)
+    assert len(obj["simulations"]) == len(rep)
+
+    # every (obs, cond, time) group has exactly its 2 replicates, sharing one simulation
+    groups: dict[tuple, list[float]] = {}
+    for r in obj["simulations"]:
+        groups.setdefault((r["observable_id"], r["condition_id"], r["time"]), []).append(r["simulation"])
+    assert {len(v) for v in groups.values()} == {2}
+    for sims in groups.values():
+        assert sims[0] == pytest.approx(sims[1])  # replicates simulate identically
+
+    # chi2 counts each weighted residual once, not r*r times: it equals the sum over
+    # the records and stays consistent with AMICI's likelihood. Derive the noise term
+    # from the per-record noise (not a hard-coded sigma) so the identity holds even if
+    # the toy problem's noise model or size changes.
+    weighted = np.array([r["residual_weighted"] for r in obj["simulations"]], dtype=float)
+    noise = np.array([r["noise"] for r in obj["simulations"]], dtype=float)
+    assert obj["chi2"] == pytest.approx(float(np.sum(weighted**2)), rel=1e-9)
+    nllh = 0.5 * (obj["chi2"] + float(np.sum(np.log(2 * np.pi * noise**2))))
+    assert nllh == pytest.approx(obj["neg_log_likelihood"], rel=1e-6)
 
 
 def test_records_carry_weighted_residuals(engine):

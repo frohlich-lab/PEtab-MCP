@@ -287,7 +287,26 @@ class AmiciEngine:
         meas = self.session.problem.measurement_df
         simdf = rdatas_to_simulation_df(result[RDATAS], model, meas)
         keys = [OBSERVABLE_ID, SIMULATION_CONDITION_ID, TIME]
-        merged = meas.merge(simdf[keys + [SIMULATION]], on=keys, how="left")
+        # ``rdatas_to_simulation_df`` (a thin wrapper over amici's
+        # ``rdatas_to_measurement_df``) carries exactly one simulation row per
+        # measurement row, but replicate measurements share the same
+        # (observableId, simulationConditionId, time) key. Merging on ``keys`` alone
+        # would cross-join each size-r replicate group into r*r rows, inflating
+        # ``n_data_points`` (and chi2, which counts each weighted residual r*r times).
+        # Tag each row with its within-group replicate index so the merge stays
+        # one-to-one with the measurements: ``len(merged) == len(meas)``. The simulated
+        # value is identical across a replicate group, so pairing by index is exact
+        # regardless of the (possibly reordered) row order in ``simdf``.
+        rep = "_petab_mcp_replicate"
+        while rep in meas.columns or rep in simdf.columns:  # avoid clobbering real columns
+            rep += "_"
+        meas = meas.assign(**{rep: meas.groupby(keys, sort=False).cumcount()})
+        simdf = simdf.assign(**{rep: simdf.groupby(keys, sort=False).cumcount()})
+        # ``validate="1:1"`` asserts (keys + rep) is unique on both sides — a fail-fast
+        # guard if amici's per-measurement simulation ordering ever changes.
+        merged = meas.merge(
+            simdf[keys + [rep, SIMULATION]], on=keys + [rep], how="left", validate="1:1"
+        )
         ctx = self._noise_context()
 
         def num(v):
