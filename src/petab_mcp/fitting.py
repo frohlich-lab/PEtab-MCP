@@ -514,6 +514,33 @@ def ensure_simulation(session, engine) -> dict[str, Any] | None:
     return session.simulation
 
 
+def fit_summary(session, engine) -> dict[str, Any]:
+    """The current fit metrics, no per-point records — a cheap score read (backs
+    ``get_fit_summary``).
+
+    Ensures a simulation dataframe exists, then returns ``{status, neg_log_likelihood, chi2,
+    n_data_points, fitted_parameters, parameter_scales, version}`` plus the complexity-
+    penalised :func:`goodness_of_fit` scores. ``k`` uses ``n_estimated`` (well-defined even on
+    a simulate-only pass). Pairs fitted values with their estimation scale even when a
+    restored/rollback payload lacks the map, so a linear value is never misread as a log10 one.
+    """
+    sim = ensure_simulation(session, engine) or {}
+    out = {k: sim.get(k) for k in (
+        "status", "neg_log_likelihood", "chi2", "n_data_points",
+        "fitted_parameters", "parameter_scales", "version",
+    )}
+    if out.get("fitted_parameters") and not out.get("parameter_scales"):
+        pdf = session.problem.parameter_df
+        out["parameter_scales"] = {
+            pid: str(pdf.loc[pid, PARAMETER_SCALE])
+            for pid in out["fitted_parameters"] if pid in pdf.index}
+    out.update(goodness_of_fit(
+        sim.get("neg_log_likelihood"), sim.get("chi2"),
+        int(session.problem.n_estimated), sim.get("n_data_points"),
+    ))
+    return out
+
+
 def compute_improvement(
     session, nllh: float | None, objective_before: float | None = None
 ) -> dict[str, Any]:

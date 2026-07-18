@@ -81,3 +81,23 @@ def configure_pypesto(store_root: str | Path, level: int = logging.DEBUG) -> log
         _optimizer_handler, ("pypesto", "fides"), log_path, level, False
     )
     return logging.getLogger("pypesto")
+
+
+def pypesto_log_path(store_root: str | Path) -> Path:
+    """Path of the pyPESTO/Fides optimizer log under ``store_root`` (see :func:`configure_pypesto`)."""
+    return Path(store_root) / "pypesto.log"
+
+
+def read_pypesto_log(store_root: str | Path, tail_lines: int) -> dict:
+    """Read the pyPESTO optimizer log, returning ``{path, exists, n_lines_total, tail_lines, log}``.
+
+    ``tail_lines`` of ``0`` returns the whole file; a positive N the last N lines. Backs the
+    ``get_fitting_log`` tool (which validates ``tail_lines`` first)."""
+    path = pypesto_log_path(store_root)
+    if not path.exists():
+        return {"path": str(path), "exists": False, "n_lines_total": 0,
+                "tail_lines": tail_lines, "log": ""}
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    kept = lines if tail_lines == 0 else lines[-tail_lines:]
+    return {"path": str(path), "exists": True, "n_lines_total": len(lines),
+            "tail_lines": tail_lines, "log": "\n".join(kept)}

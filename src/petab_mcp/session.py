@@ -142,6 +142,34 @@ class PetabSession:
         model.rel_path = rel or "model.xml"
         self.problem.model = model
 
+    def describe(self) -> dict[str, Any]:
+        """A summary of the problem — model size, tables, free parameters, current fit metrics.
+
+        Backs the ``describe_problem`` tool. ``neg_log_likelihood``/``chi2`` come from the
+        stored simulation and are ``None`` until the first commit/simulation.
+        """
+        p = self.problem
+        sm = self.model.sbml_model
+        return {
+            "model_id": self.model.model_id,
+            "model_initialized": self.has_model(),
+            "n_species": int(sm.getNumSpecies()),
+            "n_reactions": int(sm.getNumReactions()),
+            "n_model_parameters": int(sm.getNumParameters()),
+            "n_table_parameters": int(len(p.parameter_df)),
+            "n_estimated": int(p.n_estimated),
+            "free_parameters": [str(x) for x in p.x_free_ids],
+            "observables": [str(x) for x in p.get_observable_ids()],
+            "n_conditions": int(len(p.condition_df)),
+            "n_measurements": int(p.n_measurements),
+            "n_reactions_detail": [sm.getReaction(i).getId() for i in range(sm.getNumReactions())],
+            "current_version": self.provenance.current_version,
+            "batch_active": self.batch_active,
+            "fixed_tables": ["measurements", "conditions", "observables"],
+            "neg_log_likelihood": (self.simulation or {}).get("neg_log_likelihood"),
+            "chi2": (self.simulation or {}).get("chi2"),
+        }
+
     # -- versioning --------------------------------------------------------
     def apply_version(self, version: int) -> None:
         """Set the working model + parameter table to a stored version (fixed tables kept).
