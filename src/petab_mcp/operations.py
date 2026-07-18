@@ -14,7 +14,6 @@ Every operation:
 
 from __future__ import annotations
 
-import hashlib
 import re
 from typing import Any, Callable
 
@@ -23,7 +22,7 @@ from petab.v1.models.sbml_model import SbmlModel
 
 from . import reconcile as R
 from .errors import ModelUpdateError, PetabMcpError, UnknownEntityError, ValidationError
-from .parameters import problem_fingerprint
+from .parameters import problem_fingerprint, sha16
 from .references import resolve_references
 from .validation import validate_problem
 
@@ -190,10 +189,6 @@ def _remove_reaction_from_model(sm, reaction_id: str) -> None:
 
 
 # -- commit pipeline -------------------------------------------------------
-def _model_hash(sbml_str: str) -> str:
-    return hashlib.sha256(sbml_str.encode("utf-8")).hexdigest()[:16]
-
-
 def _observed_symbol_ids(problem) -> set[str]:
     """Identifiers that appear in any observable formula — the 'observed' entities."""
     from petab.v1.C import OBSERVABLE_FORMULA
@@ -299,17 +294,12 @@ def _commit_change(
             # raw exception crashing the call.
             staged = session.batch_active
             if not staged:
-                # A model with no estimated parameters has nothing to fit; catch it here with a
-                # clear, actionable message rather than letting pyPESTO fail cryptically
-                # ("'NoneType' object is not iterable") deep in the optimizer.
-                if int(getattr(session.problem, "n_estimated", 0) or 0) == 0:
-                    raise ModelUpdateError(
-                        "the model has NO estimated (free) parameters, so there is nothing to "
-                        "fit. Give it at least one free parameter — a new symbol you use in a "
-                        "rate law becomes an estimated parameter automatically, so declare one "
-                        "(or keep using the shipped free parameters) — then re-author with "
-                        "set_model."
-                    )
+                # The fit is part of the commit. `_auto_fit_and_improvement` raises a clean
+                # ModelUpdateError when the model has no estimated parameters (nothing to fit,
+                # a guard shared with the batch path). Wrap any OTHER AMICI/pyPESTO failure
+                # (a model that lints clean but cannot be compiled — a reserved-name codegen
+                # clash, an unsupported construct) as a ModelUpdateError too, so the tool
+                # returns a clean committed=false with the message instead of crashing the call.
                 try:
                     fitsim, improvement = session._auto_fit_and_improvement(n_starts)
                 except PetabMcpError:
@@ -322,6 +312,7 @@ def _commit_change(
             raise
 
         new_ant = session.problem.model.to_antimony()
+        new_sbml = session.problem.model.to_sbml_str()  # serialize once; reused for both hashes
         warnings = _parsimony_warnings(session.problem, old_species) if recon is not None else []
         param_diff = {
             "added": recon["parameters"]["added"] if recon else [],
@@ -337,14 +328,12 @@ def _commit_change(
             "references": resolved,
             "parameter_diff": param_diff,
             "warnings": warnings,
-            "model_hash_before": _model_hash(old_sbml),
-            "model_hash_after": _model_hash(session.problem.model.to_sbml_str()),
+            "model_hash_before": sha16(old_sbml),
+            "model_hash_after": sha16(new_sbml),
             # Problem hash = model + parameter table, so a parameter-only edit (bounds/scale)
             # is reflected here even though the two model hashes above are identical.
             "problem_hash_before": problem_fingerprint(old_sbml, old_params),
-            "problem_hash_after": problem_fingerprint(
-                session.problem.model.to_sbml_str(), session.problem.parameter_df
-            ),
+            "problem_hash_after": problem_fingerprint(new_sbml, session.problem.parameter_df),
         }
 
         if staged:
@@ -352,20 +341,16 @@ def _commit_change(
             session.staged.append({"operation": op, "args": op_args, "justification": justification})
             version = None
         else:
-            from . import fitting
-
             version_before = session.provenance.current_version
             nllh = fitsim.get("neg_log_likelihood")
-            version = session.provenance.snapshot_version(
-                model_ant=new_ant,
-                parameters=session.problem.parameter_df,  # the fitted table (df)
+            version = session._snapshot_version(
                 label=op,
                 kind="alteration",
                 meta={"operation": op, "args": op_args, "fit_status": fitsim.get("status"),
                       "neg_log_likelihood": nllh, "chi2": fitsim.get("chi2"),
                       "fitted_parameters": fitsim.get("fitted_parameters"), **improvement},
-                simulation=fitting.build_sim_payload_for_version(fitsim),
-                optimization=fitting.build_optimization_payload_for_version(session.optimization),
+                sim=fitsim,
+                model_ant=new_ant,  # already serialized above; avoid re-serializing
             )
             fitsim["version"] = version
             event = session.provenance.append_event(

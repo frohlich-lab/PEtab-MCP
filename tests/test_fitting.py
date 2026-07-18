@@ -68,6 +68,42 @@ def test_robust_to_garbage_result():
     assert fitting._optimization_payload(object()) == {"n_starts": 0, "starts": [], "trace": []}
 
 
+# --- fitted-value extraction: only ESTIMATED params, unscaled to linear -------------------
+
+def test_fitted_values_selects_only_free_params():
+    """pyPESTO's x/x_names carry every parameter; `_fitted_values` must keep only the free
+    (estimated) ones, so k = len(fitted_parameters) equals n_estimated and the complexity
+    scores stay correct. Regression guard for the fixed-params-inflate-k bug."""
+    import pytest
+
+    from petab.v1.C import ESTIMATE, NOMINAL_VALUE, PARAMETER_SCALE
+
+    df = _pdf([
+        {"parameterId": "k1", "estimate": 1, "nominalValue": 1.0, PARAMETER_SCALE: "log10"},
+        {"parameterId": "k2", "estimate": 1, "nominalValue": 1.0, PARAMETER_SCALE: "log10"},
+        {"parameterId": "sigma", "estimate": 0, "nominalValue": 0.1, PARAMETER_SCALE: "lin"},
+        {"parameterId": "A_init", "estimate": 0, "nominalValue": 1.0, PARAMETER_SCALE: "lin"},
+    ])
+    # A pyPESTO-style FULL vector (all four params) in scaled space; free indices are k1, k2.
+    x_names = ["k1", "k2", "sigma", "A_init"]
+    x_values = [0.0, 1.0, 7.0, 9.0]  # log10 -> 10**x; the fixed 7.0/9.0 must be ignored
+    fitted = fitting._fitted_values(x_names, x_values, [0, 1], df)
+
+    assert set(fitted) == {"k1", "k2"}          # fixed sigma/A_init excluded
+    assert fitted["k1"] == pytest.approx(1.0)   # 10**0
+    assert fitted["k2"] == pytest.approx(10.0)  # 10**1
+    _ = (ESTIMATE, NOMINAL_VALUE)  # imported for parity with the parameter table shape
+
+    # free_indices=None -> every parameter is treated as free (an all-free problem)
+    all_free = fitting._fitted_values(["k1", "k2"], [0.0, 2.0], None,
+                                      _pdf([
+                                          {"parameterId": "k1", "nominalValue": 1.0,
+                                           PARAMETER_SCALE: "log10"},
+                                          {"parameterId": "k2", "nominalValue": 1.0,
+                                           PARAMETER_SCALE: "log10"}]))
+    assert set(all_free) == {"k1", "k2"}
+
+
 # --- fit cache / fit-skip identity --------------------------------------------------------
 
 def _pdf(rows):

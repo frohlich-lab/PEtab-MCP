@@ -29,6 +29,8 @@ from petab.v1.C import (
     TIME,
 )
 
+from .formatting import finite_float
+
 
 def _ensure_swig_on_path() -> None:
     """AMICI compiles generated C++ via CMake+SWIG; make sure ``swig`` is found."""
@@ -118,19 +120,13 @@ class AmiciEngine:
         return self._models[h]
 
     def _problem_parameters(self) -> dict[str, float]:
-        import math
-
         from petab.v1.C import NOMINAL_VALUE
 
         df = self.session.problem.parameter_df
         params: dict[str, float] = {}
         for pid in df.index:
-            val = df.loc[pid, NOMINAL_VALUE]
-            try:
-                fval = float(val)
-            except (TypeError, ValueError):
-                continue
-            if not (math.isnan(fval) or math.isinf(fval)):
+            fval = finite_float(df.loc[pid, NOMINAL_VALUE])
+            if fval is not None:
                 params[pid] = fval
         return params
 
@@ -280,8 +276,6 @@ class AmiciEngine:
             return None, None
 
     def _simulation_records(self, model, result) -> list[dict[str, Any]]:
-        import math
-
         from amici.sim.sundials.petab.v1 import RDATAS, rdatas_to_simulation_df
 
         meas = self.session.problem.measurement_df
@@ -309,24 +303,17 @@ class AmiciEngine:
         )
         ctx = self._noise_context()
 
-        def num(v):
-            try:
-                f = float(v)
-                return None if math.isnan(f) or math.isinf(f) else f
-            except (TypeError, ValueError):
-                return None
-
         records: list[dict[str, Any]] = []
         for _, row in merged.iterrows():
-            m = num(row.get(MEASUREMENT))
-            s = num(row.get(SIMULATION))
+            m = finite_float(row.get(MEASUREMENT))
+            s = finite_float(row.get(SIMULATION))
             residual = (m - s) if (m is not None and s is not None) else None
             noise, weighted = self._weighted_residual(ctx, row, m, s)
             records.append(
                 {
                     "observable_id": row.get(OBSERVABLE_ID),
                     "condition_id": row.get(SIMULATION_CONDITION_ID),
-                    "time": num(row.get(TIME)),
+                    "time": finite_float(row.get(TIME)),
                     "measurement": m,
                     "simulation": s,
                     "residual": residual,
@@ -335,11 +322,3 @@ class AmiciEngine:
                 }
             )
         return records
-
-    def invalidate(self) -> None:
-        """No-op: the compile cache is keyed by SBML hash and never goes stale.
-
-        Kept for API compatibility. Clearing it would force a recompile of a
-        module already imported in-process, which AMICI rejects.
-        """
-        return None

@@ -231,8 +231,6 @@ def fit_diagnosis(session, worst_n: int = 8) -> dict[str, Any]:
     caller can see WHERE and HOW a fit is off without pulling the raw per-point data into its
     context. Computed from the last commit's simulation dataframe.
     """
-    import pandas as pd
-
     df = _frames(session)["simulations"]
     if df is None or df.empty:
         return {"status": "no simulation yet — commit a model first",

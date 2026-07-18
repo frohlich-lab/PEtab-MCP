@@ -123,7 +123,9 @@ def test_fit_and_simulate_improves_fit(fit_session):
     result = F.fit_and_simulate(fit_session, engine, do_fit=True, n_starts=3)
     assert result["status"] == "fit"
     assert result["neg_log_likelihood"] <= before + 1e-6
-    assert {"k1", "k2"} <= set(result["fitted_parameters"])
+    # fitted_parameters holds ONLY the estimated params (k1, k2) — never the fixed
+    # sigma_B/A_init/B_init — so k = len(fitted) equals n_estimated and the scores stay honest.
+    assert set(result["fitted_parameters"]) == {"k1", "k2"}
     assert len(result["records"]) == 6
     assert fit_session.simulation is result  # stored on the session
 

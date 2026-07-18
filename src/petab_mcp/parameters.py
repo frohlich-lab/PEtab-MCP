@@ -11,7 +11,6 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
-import petab.v1 as petab
 from petab.v1.C import (
     ESTIMATE,
     LIN,
@@ -27,6 +26,7 @@ from petab.v1.C import (
 )
 
 from .errors import ParameterError
+from .formatting import _clean
 
 _SCALES = {LIN, LOG, LOG10}
 _NUMERIC_FIELDS = {LOWER_BOUND, UPPER_BOUND, NOMINAL_VALUE}
@@ -49,6 +49,16 @@ _DEFAULT_LB = 1e-3
 _DEFAULT_UB = 1e2
 
 
+def sha16(text: str) -> str:
+    """A short, stable content hash (first 16 hex chars of SHA-256) of ``text``.
+
+    The one truncated-SHA256 idiom shared by every identity key in the package: the SBML
+    (compile) hash, the problem fingerprint, and the fit fingerprint. Centralised so the
+    digest length/algorithm is defined once.
+    """
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
 def _default_bounds(nominal) -> tuple[float, float]:
     """Bounds for an auto-added parameter that always bracket its nominal value."""
     lb, ub = _DEFAULT_LB, _DEFAULT_UB
@@ -58,30 +68,6 @@ def _default_bounds(nominal) -> tuple[float, float]:
     if nominal > 0:
         return min(lb, nominal), max(ub, nominal)
     return min(lb, nominal - 1.0), max(ub, nominal + 1.0)
-
-
-def _clean(value: Any) -> Any:
-    import math
-
-    if value is None:
-        return None
-    if isinstance(value, float):
-        return None if (math.isnan(value) or math.isinf(value)) else value
-    if isinstance(value, (str, bool, int)):
-        return value
-    try:
-        import pandas as pd
-
-        if pd.isna(value):
-            return None
-    except (TypeError, ValueError):
-        pass
-    if hasattr(value, "item"):
-        try:
-            return value.item()
-        except (ValueError, TypeError):
-            pass
-    return str(value)
 
 
 def _param_record(df, pid: str) -> dict[str, Any]:
@@ -123,7 +109,7 @@ def problem_fingerprint(sbml_str: str, parameter_df) -> str:
     rather than the SBML hash alone, keeps two versions that differ only in bounds distinct.
     """
     payload = sbml_str + "\n" + parameter_df_to_tsv(parameter_df)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+    return sha16(payload)
 
 
 def _coerce_estimate_int(value: Any) -> int:

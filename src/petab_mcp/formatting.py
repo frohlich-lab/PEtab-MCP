@@ -12,6 +12,27 @@ import math
 from typing import Any
 
 import pandas as pd
+from petab.v1.C import (
+    MEASUREMENT,
+    OBSERVABLE_ID,
+    PREEQUILIBRATION_CONDITION_ID,
+    SIMULATION_CONDITION_ID,
+    TIME,
+)
+
+
+def finite_float(value: Any) -> float | None:
+    """Coerce ``value`` to a finite ``float``, or ``None`` (missing / NaN / Inf).
+
+    The single place that turns a possibly-missing numeric cell into a JSON-safe number:
+    JSON has no NaN/Inf, and downstream stats treat them as absent. Shared by :func:`_clean`
+    and the per-point record builders so the coercion rule lives in one spot.
+    """
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if (math.isnan(f) or math.isinf(f)) else f
 
 
 def _clean(value: Any) -> Any:
@@ -20,9 +41,7 @@ def _clean(value: Any) -> Any:
         return None
     if isinstance(value, float):
         # JSON has no NaN/Inf; represent them as None so results stay valid.
-        if math.isnan(value) or math.isinf(value):
-            return None
-        return value
+        return finite_float(value)
     if isinstance(value, (str, int, bool)):
         return value
     # pandas NA, sympy exprs, enums, numpy scalars, ...
@@ -77,10 +96,10 @@ def summarize_measurements(df: "pd.DataFrame | None", *, preview: int = 4) -> di
     if df is None or len(df) == 0:
         # Same key set as the non-empty return, so consumers never special-case empty.
         return {"n_points": 0, "n_groups": 0, "columns": [], "groups": [], "note": "no measurements"}
-    id_cols = [c for c in ("observableId", "simulationConditionId",
-                           "preequilibrationConditionId") if c in df.columns]
-    tcol = "time" if "time" in df.columns else None
-    vcol = "measurement" if "measurement" in df.columns else None
+    id_cols = [c for c in (OBSERVABLE_ID, SIMULATION_CONDITION_ID,
+                           PREEQUILIBRATION_CONDITION_ID) if c in df.columns]
+    tcol = TIME if TIME in df.columns else None
+    vcol = MEASUREMENT if MEASUREMENT in df.columns else None
     groups: list[dict[str, Any]] = []
     grouper = df.groupby(id_cols, sort=False) if id_cols else [((), df)]
     for key, sub in grouper:

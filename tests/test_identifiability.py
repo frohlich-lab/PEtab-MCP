@@ -1,4 +1,4 @@
-"""Unit tests for the identifiability statistics core (:func:`fitting._identifiability_stats`).
+"""Unit tests for the identifiability statistics core (:func:`identifiability._identifiability_stats`).
 
 These exercise the pure math — FIM -> SE / marginal & partial correlations / flat eigen-directions
 / candidates, plus the multistart-spread signal — with hand-built matrices, so no AMICI/pyPESTO
@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from petab_mcp.fitting import _identifiability_stats
+from petab_mcp.identifiability import _identifiability_stats, identifiability
 
 
 def _meta(*ids, scale="log10", est_scaled=1.0, at_bound=False):
@@ -100,3 +100,19 @@ def test_no_signal_reports_unavailable():
     out = _identifiability_stats(_meta("a"), None, {})
     assert out["available"] is False and out["method"] == "none"
     assert out["candidates"] == []
+
+
+def test_identifiability_fim_less_fallback_tolerates_nan_estimate(session):
+    """The FIM-less fallback (no engine) must not crash when an `estimate` cell is NaN — it
+    coerces NaN to 'not estimated' instead of raising ValueError from int(NaN)."""
+    from petab.v1.C import ESTIMATE
+
+    df = session.problem.parameter_df
+    df.loc["k1", ESTIMATE] = np.nan  # a NaN estimate flag on a formerly-estimated parameter
+
+    out = identifiability(session, engine=None)  # engine=None -> FIM-less fallback path
+
+    assert isinstance(out, dict) and "available" in out
+    ids = {p["id"] for p in out["parameters"]}
+    assert "k1" not in ids   # NaN estimate treated as not-estimated
+    assert "k2" in ids       # the remaining estimated parameter is still listed

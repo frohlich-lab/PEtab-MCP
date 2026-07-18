@@ -33,10 +33,11 @@ import json
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
-from petab.v1.C import PARAMETER_SCALE
+from petab.v1.C import OBSERVABLE_ID, PARAMETER_SCALE, SIMULATION_CONDITION_ID
 
 from . import data_access as data_mod
 from . import fitting as fitting_mod
+from . import identifiability as identifiability_mod
 from . import model as model_mod
 from . import operations as ops_mod
 from . import parameters as param_mod
@@ -188,9 +189,9 @@ def create_server(
         df = session.problem.measurement_df
         if df is not None:
             if condition_id is not None:
-                df = df[df["simulationConditionId"] == condition_id]
+                df = df[df[SIMULATION_CONDITION_ID] == condition_id]
             if observable_id is not None:
-                df = df[df["observableId"] == observable_id]
+                df = df[df[OBSERVABLE_ID] == observable_id]
         return summarize_measurements(df) if summarize else df_to_records(df)
 
     # ----------------------------------------------------------------- model
@@ -555,7 +556,7 @@ def create_server(
         fitted model. Read se/correlations together with multistart_std — the FIM is local.
         """
         def run() -> dict[str, Any]:
-            return fitting_mod.identifiability(session, engine, top_n=top_n)
+            return identifiability_mod.identifiability(session, engine, top_n=top_n)
 
         return _run("get_identifiability", run, {"top_n": top_n})
 
@@ -679,6 +680,4 @@ def create_server(
     # `petab://skills` resources (no-op when no skills were found).
     skills_mod.register_skills(mcp, skills)
 
-    # keep references alive / silence linters for closure-registered callables
-    _ = (PetabMcpError,)
     return mcp

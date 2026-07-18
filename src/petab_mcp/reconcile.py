@@ -18,11 +18,16 @@ from typing import Any
 
 import libsbml
 from petab.v1.C import (
+    CONDITION_NAME,
     ESTIMATE,
     LIN,
     LOG10,
     LOWER_BOUND,
+    NOISE_FORMULA,
+    NOISE_PARAMETERS,
     NOMINAL_VALUE,
+    OBSERVABLE_FORMULA,
+    OBSERVABLE_PARAMETERS,
     PARAMETER_SCALE,
     UPPER_BOUND,
 )
@@ -241,21 +246,21 @@ def table_referenced_symbols(problem) -> set[str]:
     names: set[str] = set()
     odf = problem.observable_df
     if odf is not None:
-        for col in ("observableFormula", "noiseFormula"):
+        for col in (OBSERVABLE_FORMULA, NOISE_FORMULA):
             if col in odf.columns:
                 for val in odf[col]:
                     names |= formula_symbols(val)
     cdf = problem.condition_df
     if cdf is not None:
         for col in cdf.columns:
-            if col != "conditionName":
+            if col != CONDITION_NAME:
                 names.add(str(col))
             for val in cdf[col]:
                 names |= formula_symbols(val)
     # measurement-level observable/noise parameter overrides may reference parameters
     mdf = problem.measurement_df
     if mdf is not None:
-        for col in ("observableParameters", "noiseParameters"):
+        for col in (OBSERVABLE_PARAMETERS, NOISE_PARAMETERS):
             if col in mdf.columns:
                 for val in mdf[col]:
                     names |= formula_symbols(val)
@@ -355,8 +360,16 @@ def sync_parameter_table(problem, estimate_ics: bool = False) -> dict[str, list[
             lb, ub = _exponent_bounds(value)
             scale, estimate = LIN, 1
         else:
+            # A generic rate constant: estimate on log10 when the nominal is positive (the usual
+            # case for a kinetic parameter). A non-positive nominal cannot live on a log scale,
+            # so fall back to linear — mirroring the guard in parameters.sync_parameters and
+            # avoiding an invalid log10 row (non-positive bound) that the lint would then reject.
             lb, ub = _default_bounds(value)
-            scale, estimate = LOG10, 1
+            try:
+                positive = value is not None and float(value) > 0
+            except (TypeError, ValueError):
+                positive = False
+            scale, estimate = (LOG10 if positive else LIN), 1
         problem.parameter_df.loc[pid, PARAMETER_SCALE] = scale
         problem.parameter_df.loc[pid, LOWER_BOUND] = lb
         problem.parameter_df.loc[pid, UPPER_BOUND] = ub

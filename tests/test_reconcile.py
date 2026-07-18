@@ -90,3 +90,25 @@ def test_ic_bounds_are_nonnegative_and_bracket_nominal():
     assert R._ic_bounds(50.0) == (0.0, 500.0)     # large nominal -> 10x upper
     assert R._ic_bounds(0.0) == (0.0, 100.0)
     assert R._ic_bounds(None) == (0.0, 100.0)     # NaN/None guard -> treated as 0
+
+
+def test_sync_parameter_table_uses_linear_for_nonpositive_nominal(session):
+    """A rate-law parameter initialised to 0 (or negative) cannot live on a log10 scale;
+    reconcile must fall back to a linear scale rather than emit an invalid log10 row with a
+    non-positive bound (which the lint would then reject). Mirrors parameters.sync_parameters.
+    """
+    from petab.v1.C import LIN, PARAMETER_SCALE
+
+    ant = (
+        "model zero_rate\n"
+        "  compartment c = 1;\n"
+        "  species A in c; species B in c;\n"
+        "  A = 1.0; B = 0.0;\n"
+        "  k_off = 0;\n"                    # a rate constant initialised to zero
+        "  r1: A -> B; k_off * A;\n"
+        "end\n"
+    )
+    session._set_model_from_antimony(ant)
+    R.reconcile(session.problem)
+    pdf = session.problem.parameter_df
+    assert pdf.loc["k_off", PARAMETER_SCALE] == LIN   # linear, NOT an invalid log10
