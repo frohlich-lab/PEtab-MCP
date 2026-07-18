@@ -25,6 +25,7 @@ import urllib.request
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from .constants import REFERENCE_TIMEOUT_SECONDS
 from .errors import PetabMcpError
 
 _EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
@@ -79,7 +80,7 @@ class StubReferenceResolver:
 class EutilsReferenceResolver:
     """Resolve PMIDs/DOIs against NCBI E-utilities."""
 
-    def __init__(self, mode: str = "best_effort", timeout: float = 15.0) -> None:
+    def __init__(self, mode: str = "best_effort", timeout: float = REFERENCE_TIMEOUT_SECONDS) -> None:
         if mode not in ("required", "best_effort", "off"):
             raise ValueError(f"Unknown reference-validation mode {mode!r}.")
         self.mode = mode

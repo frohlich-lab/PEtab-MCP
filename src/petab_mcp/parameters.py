@@ -25,6 +25,7 @@ from petab.v1.C import (
     UPPER_BOUND,
 )
 
+from .constants import DEFAULT_PARAMETER_LOWER_BOUND, DEFAULT_PARAMETER_UPPER_BOUND
 from .errors import ParameterError
 from .formatting import _clean
 
@@ -40,15 +41,6 @@ _EDITABLE_FIELDS = (
     OBJECTIVE_PRIOR_PARAMETERS,
 )
 
-# Defaults used when auto-adding a model parameter that is missing from the table.
-# Kept fairly TIGHT (five decades) so a multistart over an auto-created parameter can actually
-# converge — a very wide range (e.g. 1e-5..1e5) makes a several-parameter fit multimodal and
-# prone to sticking in a poor local optimum. Wide enough for the kinetic scales these models
-# use; only widened further when a nominal value falls outside (so bounds always bracket it).
-_DEFAULT_LB = 1e-3
-_DEFAULT_UB = 1e2
-
-
 def sha16(text: str) -> str:
     """A short, stable content hash (first 16 hex chars of SHA-256) of ``text``.
 
@@ -61,7 +53,7 @@ def sha16(text: str) -> str:
 
 def _default_bounds(nominal) -> tuple[float, float]:
     """Bounds for an auto-added parameter that always bracket its nominal value."""
-    lb, ub = _DEFAULT_LB, _DEFAULT_UB
+    lb, ub = DEFAULT_PARAMETER_LOWER_BOUND, DEFAULT_PARAMETER_UPPER_BOUND
     if nominal is None:
         return lb, ub
     nominal = float(nominal)

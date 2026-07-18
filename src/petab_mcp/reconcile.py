@@ -32,6 +32,13 @@ from petab.v1.C import (
     UPPER_BOUND,
 )
 
+from .constants import (
+    EXPONENT_LOWER_BOUND,
+    EXPONENT_UPPER_BOUND,
+    IC_LOWER_BOUND,
+    IC_UPPER_BOUND_FACTOR,
+    IC_UPPER_BOUND_FLOOR,
+)
 from .errors import ParameterError
 from .parameters import _default_bounds
 
@@ -98,7 +105,7 @@ def _exponent_symbols(sm) -> set[str]:
 def _exponent_bounds(nominal) -> tuple[float, float]:
     """Tight LINEAR bounds for a cooperativity / Hill exponent (typical range ~1–8), always
     bracketing the nominal value so the fit starts feasible."""
-    lb, ub = 1.0, 8.0
+    lb, ub = EXPONENT_LOWER_BOUND, EXPONENT_UPPER_BOUND
     if nominal is not None:
         n = float(nominal)
         lb, ub = min(lb, n), max(ub, n)
@@ -324,10 +331,10 @@ def _ic_bounds(value: float) -> tuple[float, float]:
     """Bounds for an ESTIMATED initial-condition parameter: a concentration, so non-negative,
     on a linear scale, generously bracketing the observed t=0 value."""
     try:
-        v = max(0.0, float(value))
+        v = max(IC_LOWER_BOUND, float(value))
     except (TypeError, ValueError):
-        v = 0.0
-    return 0.0, max(1e2, v * 10.0)
+        v = IC_LOWER_BOUND
+    return IC_LOWER_BOUND, max(IC_UPPER_BOUND_FLOOR, v * IC_UPPER_BOUND_FACTOR)
 
 
 def sync_parameter_table(problem, estimate_ics: bool = False) -> dict[str, list[str]]:

@@ -16,6 +16,7 @@ from petab.v1 import Problem
 from petab.v1.models.sbml_model import SbmlModel
 
 from . import logging_setup
+from .constants import DEFAULT_AUTO_FIT_STARTS
 from .errors import BatchError, ModelUpdateError, ValidationError
 from .parameters import problem_fingerprint, sha16
 from .provenance import ProvenanceStore
@@ -74,7 +75,7 @@ class PetabSession:
         self.fit_cache: bool = True
         self.last_fit_cache_hit: bool | None = None
         self.auto_fit: bool = True
-        self.auto_fit_starts: int = 5
+        self.auto_fit_starts: int = DEFAULT_AUTO_FIT_STARTS
 
         # Cumulative server-side timing for this run, split so the two very different costs
         # are legible: `compile_seconds` is AMICI model BUILD time (the one-time C++ compile

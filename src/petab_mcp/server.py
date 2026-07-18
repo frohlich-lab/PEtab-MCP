@@ -50,6 +50,7 @@ from . import operations as ops_mod
 from . import parameters as param_mod
 from . import reconcile as reconcile_mod
 from . import skills as skills_mod
+from .constants import DEFAULT_AUTO_FIT_STARTS
 from .engine import AmiciEngine
 from .errors import PetabMcpError, ValidationError
 from .formatting import df_to_records, summarize_measurements
@@ -649,7 +650,7 @@ def create_server(
     resolver: Any | None = None,
     skills_dir: str | None = None,
     auto_fit: bool = True,
-    auto_fit_starts: int = 5,
+    auto_fit_starts: int = DEFAULT_AUTO_FIT_STARTS,
     estimate_initial_conditions: bool = False,
 ) -> FastMCP:
     """Build a FastMCP server bound to the PEtab problem at ``yaml_path``.
