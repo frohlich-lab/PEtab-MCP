@@ -32,6 +32,7 @@ from petab.v1.C import (
     UPPER_BOUND,
 )
 
+from .errors import ParameterError
 from .parameters import _default_bounds
 
 _IDENT_RE = re.compile(r"[A-Za-z_]\w*")
@@ -394,3 +395,44 @@ def reconcile(problem, estimate_ics: bool = False) -> dict[str, Any]:
     ensure_parametric_initial_conditions(sm)
     synced = sync_parameter_table(problem, estimate_ics=estimate_ics)
     return {"pruned": pruned, "parameters": synced}
+
+
+# -- manual parameter-table sync (the `sync_parameters` tool) ---------------
+def parameter_sync_diff(problem) -> dict[str, Any]:
+    """What a parameter-table sync would change, WITHOUT mutating anything.
+
+    Keyed the same way as :func:`sync_parameter_table` (petab's
+    ``get_valid_parameters_for_parameter_table`` — every model parameter except rule targets):
+
+    * ``model_only`` — model parameters missing from the table (a sync would ADD these);
+    * ``table_only`` — orphaned table rows: not backed by a model parameter AND not referenced
+      by the fixed observable/noise/condition tables (a sync would REMOVE these). Rows the
+      fixed tables reference (e.g. ``sigma_*``) are kept and never listed here.
+    """
+    valid = set(problem.model.get_valid_parameters_for_parameter_table())
+    table_ids = set(problem.parameter_df.index)
+    keep_table = table_referenced_symbols(problem)
+    orphans = table_ids - valid - keep_table
+    return {
+        "in_sync": valid.issubset(table_ids) and not orphans,
+        "model_only": sorted(valid - table_ids),
+        "table_only": sorted(orphans),
+    }
+
+
+def sync_parameters(problem, policy: str = "report", estimate_ics: bool = False) -> dict[str, Any]:
+    """Reconcile the parameter table with the model ('report' or 'add').
+
+    ``'report'`` returns :func:`parameter_sync_diff` and changes nothing. ``'add'`` runs the
+    SAME :func:`sync_parameter_table` the commit pipeline runs — adding rows for model
+    parameters missing from the table (with the initial-condition / Hill-exponent / scale
+    handling) AND removing orphaned rows — so the manual tool and the automatic commit path
+    reconcile identically. Returns ``{policy, added, removed, diff}``.
+    """
+    if policy == "report":
+        return {"policy": policy, "added": [], "removed": [], "diff": parameter_sync_diff(problem)}
+    if policy == "add":
+        synced = sync_parameter_table(problem, estimate_ics=estimate_ics)
+        return {"policy": policy, "added": synced["added"], "removed": synced["removed"],
+                "diff": parameter_sync_diff(problem)}
+    raise ParameterError(f"Unknown sync policy {policy!r}; use 'report' or 'add'.")

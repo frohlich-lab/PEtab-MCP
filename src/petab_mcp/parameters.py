@@ -195,39 +195,3 @@ def update_parameters(problem, updates: list[dict[str, Any]]) -> dict[str, Any]:
         "updated": touched,
         "parameters": [_param_record(problem.parameter_df, pid) for pid in touched],
     }
-
-
-def parameter_sync_diff(problem) -> dict[str, Any]:
-    """Compare the model's parameters with the parameter table.
-
-    ``model_only`` are model parameters missing from the table; ``table_only`` are
-    table entries not backed by a model parameter (usually noise/observable params).
-    """
-    model_params = set(problem.get_model_parameters())
-    table_ids = set(problem.parameter_df.index)
-    return {
-        "in_sync": model_params.issubset(table_ids),
-        "model_only": sorted(model_params - table_ids),
-        "table_only": sorted(table_ids - model_params),
-    }
-
-
-def sync_parameters(problem, policy: str = "report") -> dict[str, Any]:
-    """Reconcile the parameter table with the model ('report' or 'add')."""
-    diff = parameter_sync_diff(problem)
-    added: list[str] = []
-    if policy == "add":
-        for pid in diff["model_only"]:
-            nominal = problem.model.get_parameter_value(pid)
-            lb, ub = _default_bounds(nominal)
-            scale = LOG10 if (nominal is not None and float(nominal) > 0) else LIN
-            problem.parameter_df.loc[pid, PARAMETER_SCALE] = scale
-            problem.parameter_df.loc[pid, LOWER_BOUND] = lb
-            problem.parameter_df.loc[pid, UPPER_BOUND] = ub
-            problem.parameter_df.loc[pid, NOMINAL_VALUE] = nominal
-            problem.parameter_df.loc[pid, ESTIMATE] = 1
-            added.append(pid)
-        diff = parameter_sync_diff(problem)
-    elif policy != "report":
-        raise ParameterError(f"Unknown sync policy {policy!r}; use 'report' or 'add'.")
-    return {"policy": policy, "added": added, "diff": diff}

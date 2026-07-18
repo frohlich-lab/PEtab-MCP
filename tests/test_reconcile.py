@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from petab.v1.models.sbml_model import SbmlModel
 
 from petab_mcp import reconcile as R
@@ -112,3 +113,48 @@ def test_sync_parameter_table_uses_linear_for_nonpositive_nominal(session):
     R.reconcile(session.problem)
     pdf = session.problem.parameter_df
     assert pdf.loc["k_off", PARAMETER_SCALE] == LIN   # linear, NOT an invalid log10
+
+
+# -- manual sync_parameters tool (consolidated onto sync_parameter_table) ------------------
+
+def test_sync_parameters_reports_in_sync(session):
+    """The toy problem loads already reconciled: 'report' shows nothing to add/remove."""
+    out = R.sync_parameters(session.problem, "report")
+    assert out["diff"]["in_sync"] is True
+    assert out["diff"]["model_only"] == [] and out["diff"]["table_only"] == []
+    assert out["added"] == [] and out["removed"] == []
+
+
+def test_sync_parameters_report_does_not_mutate(session):
+    """'report' is a dry run — it must not change the parameter table."""
+    session.problem.parameter_df = session.problem.parameter_df.drop(index="k1")  # create drift
+    before = set(session.problem.parameter_df.index)
+    out = R.sync_parameters(session.problem, "report")
+    assert "k1" in out["diff"]["model_only"]              # a sync WOULD add k1
+    assert set(session.problem.parameter_df.index) == before  # but report changed nothing
+
+
+def test_sync_parameters_add_is_full_reconcile(session):
+    """'add' runs the full reconcile: re-adds a missing model param AND removes an orphan row
+    (not in the model, not referenced by the fixed tables) — matching the commit pipeline."""
+    from petab.v1.C import ESTIMATE, LOWER_BOUND, NOMINAL_VALUE, PARAMETER_SCALE, UPPER_BOUND
+
+    df = session.problem.parameter_df
+    df.loc["orphan_z", [PARAMETER_SCALE, LOWER_BOUND, UPPER_BOUND, NOMINAL_VALUE, ESTIMATE]] = \
+        ["log10", 1e-3, 1e3, 1.0, 1]                       # a stray orphan row
+    session.problem.parameter_df = df.drop(index="k1")     # drop a real model param
+
+    out = R.sync_parameters(session.problem, "add")
+
+    assert "k1" in out["added"]           # missing model param re-added
+    assert "orphan_z" in out["removed"]   # orphan removed
+    assert out["diff"]["in_sync"] is True
+    idx = set(session.problem.parameter_df.index)
+    assert "k1" in idx and "orphan_z" not in idx
+
+
+def test_sync_parameters_rejects_unknown_policy(session):
+    from petab_mcp.errors import ParameterError
+
+    with pytest.raises(ParameterError):
+        R.sync_parameters(session.problem, "frobnicate")

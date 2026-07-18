@@ -41,6 +41,7 @@ from . import identifiability as identifiability_mod
 from . import model as model_mod
 from . import operations as ops_mod
 from . import parameters as param_mod
+from . import reconcile as reconcile_mod
 from . import skills as skills_mod
 from .engine import AmiciEngine
 from .errors import PetabMcpError, ValidationError
@@ -361,9 +362,18 @@ def create_server(
 
     @mcp.tool()
     def sync_parameters(policy: str = "report") -> dict[str, Any]:
-        """Reconcile the parameter table with the model ('report' or 'add')."""
+        """Reconcile the parameter table with the model ('report' or 'add').
+
+        `report` lists model params missing from the table and orphaned table rows without
+        changing anything; `add` runs the same full reconcile the commit pipeline does —
+        adding the missing params (with initial-condition/exponent/scale handling) and
+        removing the orphans.
+        """
         with session.lock:
-            return param_mod.sync_parameters(session.problem, policy)
+            return reconcile_mod.sync_parameters(
+                session.problem, policy,
+                estimate_ics=bool(getattr(session, "estimate_initial_conditions", False)),
+            )
 
     # ------------------------------------------------- fit + simulation (read)
     def _current_simulation() -> dict[str, Any]:

@@ -50,7 +50,7 @@ search space.
 | Tool | Signature | Notes |
 | --- | --- | --- |
 | `get_parameters` | `()` | The parameter table: id, bounds, `nominalValue` (fit-only), `estimate`, scale, priors. |
-| `sync_parameters` | `(policy="report")` | Reconcile table with model. `"report"` lists missing model params; `"add"` inserts them with default bounds + `estimate=1`. |
+| `sync_parameters` | `(policy="report")` | Reconcile table with model. `"report"` lists model params missing from the table and orphaned table rows (no change); `"add"` runs the full reconcile — adds missing params (with IC/exponent/scale handling) and removes orphaned rows — the same sync the commit pipeline runs. |
 
 ## Batching
 

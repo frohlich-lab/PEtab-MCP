@@ -79,9 +79,3 @@ def test_update_coerces_numeric_string(session):
 def test_update_non_editable_field(session):
     with pytest.raises(ParameterError):
         P.update_parameters(session.problem, [{"id": "k1", "parameterName": "x"}])
-
-
-def test_sync_reports_in_sync(session):
-    out = P.sync_parameters(session.problem, "report")
-    assert out["diff"]["in_sync"] is True
-    assert out["diff"]["model_only"] == []
