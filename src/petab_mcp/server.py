@@ -359,10 +359,20 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         reduced_chi2, chi2_gof_pvalue}` (lower bic/aic is better; reduced_chi2 ≈ 1 and a non-tiny
         chi2_gof_pvalue mean the fit has reached the noise floor). `fitted_parameters` are LINEAR
         (unscaled) values; `parameter_scales` gives each one's estimation scale (lin/log10) —
-        a fitted value is the linear number, never its log10 coordinate. Use this to check the
-        score without pulling the dataframe; use `query_data` to query the
-        measured-vs-simulated points and residuals with SQL. Refreshed on every commit;
-        generated on demand if none exists.
+        a fitted value is the linear number, never its log10 coordinate. `parameters_at_bound`
+        lists any fitted parameter sitting within ~1% of its lower/upper bound (on its own
+        estimation scale) — `[]` when none do. One or two commits pinned at a bound after you
+        widen it is normal; the SAME parameter re-pinning after repeated widenings means the
+        optimum is unbounded (often an exponent trying to fake a mechanism the model doesn't
+        have) — that's a modeling problem, not a bounds problem, so stop moving the box and
+        revisit the model structure instead. `noise_sigma_report` lists every ESTIMATED
+        noise-sigma parameter's fitted value against a data-driven reference (a fraction of its
+        observable's own raw measurement std) regardless of whether it's at bound — a sigma
+        approaching that reference is quietly doing the same thing as an at-bound parameter
+        (masking a mechanism problem behind inflated noise); `change_parameter_bounds` rejects
+        widening a sigma past it. Use this to check the score without pulling the dataframe;
+        use `query_data` to query the measured-vs-simulated points and residuals with SQL.
+        Refreshed on every commit; generated on demand if none exists.
         """
         return ctx.run("get_fit_summary", lambda: fitting_mod.fit_summary(session, engine))
 

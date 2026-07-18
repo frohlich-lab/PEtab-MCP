@@ -53,9 +53,11 @@ def test_references_optional_for_model_ops(session):
 
 
 def test_no_parsimony_warning_when_reusing_species(session):
-    # a repair reusing existing species introduces no new species -> no warning
+    # a repair reusing existing species introduces no new species -> no parsimony warning
+    # (a sigma-bound-tightening warning may still appear; that's a separate concern)
     res = O.add_reaction(session, "J: B -> A; k2*B", justification="reverse conversion")
-    assert res["committed"] is True and res["warnings"] == []
+    assert res["committed"] is True
+    assert not any("unobserved species" in w for w in res["warnings"])
 
 
 # -- add / change / remove -------------------------------------------------

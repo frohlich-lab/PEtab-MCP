@@ -22,6 +22,8 @@ from typing import Any
 
 import petab.v1 as petab
 
+from .reconcile import _model_math_names, observation_model_symbols, parameter_ids
+
 # libsbml consistency categories that are pure noise for unit-less mechanistic models — we
 # neither gate nor report them (every species/parameter would otherwise flag a unit warning).
 _SBML_SILENCED_CATEGORIES = (
@@ -85,6 +87,41 @@ def _sbml_consistency_issues(problem) -> list[dict[str, Any]]:
         return []
 
 
+def _observation_model_reuse_issues(problem) -> list[dict[str, Any]]:
+    """Hard-error on a model that reuses a fixed observation-model parameter (an
+    observable-scaling factor or noise sigma, resolved through the observable/noise formulas or
+    their measurement-level ``observableParameters``/``noiseParameters`` overrides) as a
+    mechanistic rate constant inside a reaction, rule, or initial assignment.
+
+    A benchmark sweep caught exactly this: two independent runs wired the Brannmark scenario's
+    four fixed observable-scaling factors directly into their reaction rate laws instead of
+    introducing the ~14 real kinetic parameters the scenario expects, ending up with a
+    severely under-mechanistic model that still passed its own chi2 goodness-of-fit check
+    (with help from noise sigmas inflated 20-60x). Gate this at commit time rather than relying
+    on an agent to notice: reusing one of these symbols does not "cost" anything on its own
+    metrics, so nothing else in the pipeline would catch it.
+    """
+    sm = problem.model.sbml_model
+    reused = (observation_model_symbols(problem) & parameter_ids(sm)) & _model_math_names(sm)
+    return [
+        {
+            "level": "error",
+            "message": (
+                f"'{pid}' is a fixed observation-model parameter (an observable-scaling factor "
+                "or noise sigma, resolved through the measurement table's observableParameters/"
+                "noiseParameters or an observable/noise formula) but is ALSO used inside a "
+                "reaction, rule, or initial assignment. Reusing it lets the model dodge "
+                "introducing a real kinetic parameter, and reusing/inflating a noise sigma can "
+                "mask a wrong mechanism behind an artificially loose noise model instead of "
+                "being estimated as what it actually is. Introduce a SEPARATE, dedicated "
+                "parameter for the reaction instead."
+            ),
+            "check": "observation_model_reuse",
+        }
+        for pid in sorted(reused)
+    ]
+
+
 def validate_problem(problem) -> dict[str, Any]:
     """Run petab.v1 linting + libsbml SBML consistency and return a JSON-friendly report.
 
@@ -120,8 +157,12 @@ def validate_problem(problem) -> dict[str, Any]:
     n_errors += sbml_errors
     n_warnings += sum(1 for i in sbml_issues if i["level"] == "warning")
 
+    reuse_issues = _observation_model_reuse_issues(problem)
+    issues += reuse_issues
+    n_errors += len(reuse_issues)
+
     return {
-        "valid": (not has_errors) and sbml_errors == 0,
+        "valid": (not has_errors) and sbml_errors == 0 and not reuse_issues,
         "n_errors": n_errors,
         "n_warnings": n_warnings,
         "issues": issues,

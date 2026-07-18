@@ -22,10 +22,24 @@ import os
 import time
 from typing import Any
 
-from petab.v1.C import ESTIMATE, NOMINAL_VALUE, PARAMETER_SCALE
+from petab.v1.C import (
+    ESTIMATE,
+    LIN,
+    LOG,
+    LOG10,
+    LOWER_BOUND,
+    NOMINAL_VALUE,
+    PARAMETER_SCALE,
+    UPPER_BOUND,
+)
 
+from . import reconcile as _reconcile
+from .constants import PARAMETER_AT_BOUND_RELATIVE_TOL
 from .formatting import finite_float as _flt
 from .parameters import parameter_df_to_tsv, sha16
+
+# pyPESTO's parameter-table column that tags an inner (hierarchical) parameter.
+_PARAMETER_TYPE_COL = "parameterType"
 
 def _env_float(name: str, default: float) -> float:
     """A finite, strictly-positive float from ``name``, or ``default`` when the env var is unset,
@@ -212,6 +226,87 @@ def _apply_fitted(session, fitted: dict[str, float]) -> None:
                     pass
 
 
+def _build_hierarchical_problem(session, importer_kwargs: dict[str, Any]):
+    """Best-effort hierarchical pyPESTO problem for ``session``'s current problem.
+
+    Returns ``(pypesto_problem, inner_scales)`` where ``inner_scales`` maps each inner
+    parameter id to the estimation scale it was tagged on (so the fit can un-scale the
+    analytically-solved value back to linear), or ``(None, {})`` when the problem has no
+    cleanly-separable inner parameters (see :func:`reconcile.classify_inner_parameters`) or
+    pyPESTO rejects the hierarchical setup.
+
+    The whole win is optimization efficiency/robustness: the inner parameters (noise sigmas,
+    observable-scaling factors) are solved analytically per objective evaluation instead of by
+    the outer multistart, shrinking the outer search (e.g. a benchmark's 13 estimated params →
+    5 outer). It does NOT change what the parameters converge to — a sigma's analytic optimum is
+    the same RMS the joint optimizer finds — so the fit's nllh/identity is unchanged.
+
+    Tagging is applied to a COPY of the parameter table handed to pyPESTO; the session's own
+    table is left untouched (the agent keeps seeing ordinary parameters, ``n_estimated``/``k``
+    stays correct because inner parameters are still ``estimate=1`` there, and the fit-cache key
+    is unaffected). On ANY failure this returns ``(None, {})`` so the caller falls back to the
+    ordinary joint fit — hierarchical never risks a fit that would otherwise succeed.
+    """
+    inner = _reconcile.classify_inner_parameters(session.problem)
+    if not inner:
+        return None, {}
+    try:
+        import copy
+
+        import pypesto.petab
+        from pypesto.hierarchical.petab import correct_parameter_df_bounds
+
+        df = session.problem.parameter_df.copy(deep=True)
+        df[_PARAMETER_TYPE_COL] = None
+        inner_scales: dict[str, str] = {}
+        for pid, typ in inner.items():
+            df.loc[pid, _PARAMETER_TYPE_COL] = typ
+            # pyPESTO requires sigma inner parameters on a LINEAR scale (its validator rejects
+            # log/log10 for sigma). Scaling/offset keep their scale.
+            if typ == _reconcile.INNER_TYPE_SIGMA:
+                df.loc[pid, PARAMETER_SCALE] = LIN
+            inner_scales[pid] = str(df.loc[pid, PARAMETER_SCALE])
+        # Sigma → [0, inf], scaling/offset → [-inf, inf]; required by the inner solver.
+        df = correct_parameter_df_bounds(df)
+
+        hier_problem = copy.copy(session.problem)  # shallow: shares model/measurement/etc.
+        hier_problem.parameter_df = df
+        importer = pypesto.petab.PetabImporter(hier_problem, hierarchical=True, **importer_kwargs)
+        return importer.create_problem(), inner_scales
+    except Exception:  # noqa: BLE001 - hierarchical is best-effort; fall back to a joint fit
+        session.logger.warning(
+            "hierarchical optimization setup failed (%s inner params: %s); "
+            "falling back to a joint fit", len(inner), sorted(inner), exc_info=True
+        )
+        return None, {}
+
+
+def _inner_fitted_values(pypesto_problem, best, inner_scales: dict[str, str]) -> dict[str, float]:
+    """Analytically-solved inner-parameter values from a hierarchical fit result, as
+    ``{parameter_id: linear value}`` — merged into ``fitted`` alongside the outer parameters so
+    the parameter count ``k`` and the value writeback both cover every estimated parameter.
+
+    pyPESTO returns ``best["inner_parameters"]`` positionally; the calculator's
+    ``get_interpretable_inner_par_ids()`` gives the matching id order, and each value is on the
+    parameter's own estimation scale (so it un-scales to linear exactly like an outer one).
+    Returns ``{}`` if the result carries no inner parameters or the ids can't be recovered.
+    """
+    values = best.get("inner_parameters")
+    if values is None:
+        return {}
+    try:
+        from petab.v1.parameters import unscale
+
+        calc = pypesto_problem.objective.calculator
+        ids = calc.get_interpretable_inner_par_ids()
+        if len(ids) != len(values):
+            return {}
+        return {pid: float(unscale(float(v), inner_scales.get(pid, LIN)))
+                for pid, v in zip(ids, values)}
+    except Exception:  # noqa: BLE001 - inner-value recovery is best-effort reporting
+        return {}
+
+
 def _write_pypesto_result(session, result, problem_hash: str) -> str | None:
     """Write the pyPESTO ``Result`` to a per-fit HDF5 file; return its path (or ``None``).
 
@@ -355,12 +450,20 @@ def _run_fit(session, engine, n_starts: int, seed: int = 0) -> dict[str, Any]:
     # holds it), so both the accumulator writes and the `_pypesto_hashes` update are safe.
     _first_pypesto_build = h not in engine._pypesto_hashes
     _compile_t0 = time.perf_counter()
-    importer = pypesto.petab.PetabImporter(
-        session.problem,
-        output_folder=str(engine.build_root / f"pypesto_{h}"),
-        model_name=f"petab_mcp_pp_{h}",
-    )
-    problem = importer.create_problem()
+    _importer_kwargs = {
+        "output_folder": str(engine.build_root / f"pypesto_{h}"),
+        "model_name": f"petab_mcp_pp_{h}",
+    }
+    # Prefer a hierarchical objective (inner-solve the noise sigmas / observable-scaling factors,
+    # shrinking the outer search) when the problem has cleanly-separable inner parameters; fall
+    # back to the ordinary joint objective otherwise. Best-effort: never fails a viable fit.
+    problem, inner_scales = _build_hierarchical_problem(session, _importer_kwargs)
+    hierarchical = problem is not None
+    if hierarchical:
+        log.info("fit: hierarchical objective (inner params: %s)", sorted(inner_scales))
+    else:
+        importer = pypesto.petab.PetabImporter(session.problem, **_importer_kwargs)
+        problem = importer.create_problem()
     if _first_pypesto_build:
         session.compile_seconds += time.perf_counter() - _compile_t0
         session.n_compiles += 1
@@ -434,9 +537,15 @@ def _run_fit(session, engine, n_starts: int, seed: int = 0) -> dict[str, Any]:
     # `fitted` the free parameters only — otherwise k = len(fitted) overcounts and every
     # complexity-penalised score (bic/aic/reduced_chi2) is wrong and disagrees with n_estimated.
     fitted = _fitted_values(problem.x_names, best["x"], getattr(problem, "x_free_indices", None), df)
+    if hierarchical:
+        # Merge the analytically-solved inner parameters (not in the outer vector above) so
+        # `fitted` covers EVERY estimated parameter — keeping k = len(fitted) consistent with
+        # session.n_estimated, and writing the inner values back to the table like any other fit.
+        fitted.update(_inner_fitted_values(problem, best, inner_scales))
     with session.lock:
         for name, linear in fitted.items():
-            df.loc[name, NOMINAL_VALUE] = linear
+            if name in df.index:
+                df.loc[name, NOMINAL_VALUE] = linear
 
     # Convergence summary: how many multistarts landed near the best objective.
     fvals = [
@@ -535,23 +644,106 @@ def ensure_simulation(session, engine) -> dict[str, Any] | None:
     return session.simulation
 
 
+def _scaled(value: float, scale: str) -> float:
+    """``value`` in its estimation-scale coordinate, so "distance to bound" is measured the
+    way the optimizer actually sees it (decades for log10, not raw linear units)."""
+    if scale == LOG10:
+        return math.log10(value)
+    if scale == LOG:
+        return math.log(value)
+    return value
+
+
+def parameters_at_bound(
+    fitted: dict[str, float] | None, parameter_df: Any,
+    tol: float = PARAMETER_AT_BOUND_RELATIVE_TOL,
+) -> list[dict[str, Any]]:
+    """Fitted parameters sitting within ``tol`` (fraction of the scaled bound span) of their
+    lower or upper bound — the standard fit report's early-warning for "the optimum is
+    unbounded", not just "the search space happened to be tight". See
+    ``PARAMETER_AT_BOUND_RELATIVE_TOL`` for why this matters more than it looks: an exponent
+    (or any parameter) that re-pins to whatever bound you set, widening after widening, is a
+    sign the model is missing a mechanism — not that the box needs to move again.
+
+    Returns ``[]`` when there is nothing to flag (no fit yet, or every value sits mid-range).
+    Each flagged entry is ``{parameter_id, side, value, bound_value}`` with ``side`` "lower" or
+    "upper".
+    """
+    if not fitted or parameter_df is None:
+        return []
+    flags = []
+    for pid, value in fitted.items():
+        if pid not in parameter_df.index:
+            continue
+        row = parameter_df.loc[pid]
+        scale = str(row[PARAMETER_SCALE])
+        try:
+            lb, ub = float(row[LOWER_BOUND]), float(row[UPPER_BOUND])
+            v, l, u = _scaled(float(value), scale), _scaled(lb, scale), _scaled(ub, scale)
+        except (TypeError, ValueError):
+            continue
+        span = u - l
+        if span <= 0:
+            continue
+        frac = (v - l) / span
+        if frac <= tol:
+            flags.append({"parameter_id": pid, "side": "lower", "value": value, "bound_value": lb})
+        elif frac >= 1 - tol:
+            flags.append({"parameter_id": pid, "side": "upper", "value": value, "bound_value": ub})
+    return flags
+
+
+def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[str, dict[str, Any]]:
+    """Every ESTIMATED noise-sigma parameter's fitted value against its data-driven reference —
+    surfaced proactively on EVERY commit, not just once it's pinned at its bound (see
+    :func:`parameters_at_bound`), so the agent sees where the reference comes from before it
+    ever gets there. Keyed by parameter id; each entry is ``{fitted, upper_bound_cap, data_std,
+    fraction_of_data_std}`` (the last two ``None`` if the observable's std can't be computed).
+    This is purely informational/for the commit-time guard in ``operations`` — it never rewrites
+    the parameter table's actual bounds.
+
+    ``{}`` is normal — most parameters aren't noise sigmas at all.
+    """
+    if not fitted or problem is None:
+        return {}
+    from . import reconcile as R
+
+    out: dict[str, dict[str, Any]] = {}
+    for pid in sorted(R.noise_sigma_ids(problem) & set(fitted)):
+        value = fitted[pid]
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            continue
+        data_std = R.sigma_data_std(problem, pid)
+        out[pid] = {
+            "fitted": value,
+            "upper_bound_cap": R.sigma_upper_bound_cap(problem, pid),
+            "data_std": data_std,
+            "fraction_of_data_std": (value / data_std) if data_std else None,
+        }
+    return out
+
+
 def fit_summary(session, engine) -> dict[str, Any]:
     """The current fit metrics, no per-point records — a cheap score read (backs
     ``get_fit_summary``).
 
     Ensures a simulation dataframe exists, then returns ``{status, neg_log_likelihood, chi2,
     n_data_points, fitted_parameters, parameter_scales, version}`` plus the complexity-
-    penalised :func:`goodness_of_fit` scores. ``k`` uses ``n_estimated`` (well-defined even on
-    a simulate-only pass). Pairs fitted values with their estimation scale even when a
-    restored/rollback payload lacks the map, so a linear value is never misread as a log10 one.
+    penalised :func:`goodness_of_fit` scores, ``parameters_at_bound`` (see
+    :func:`parameters_at_bound`), and ``noise_sigma_report`` (see :func:`noise_sigma_report`).
+    ``k`` uses ``n_estimated`` (well-defined even on a simulate-only pass). Pairs fitted values
+    with their estimation scale even when a restored/rollback payload lacks the map, so a linear
+    value is never misread as a log10 one.
     """
     sim = ensure_simulation(session, engine) or {}
     out = {k: sim.get(k) for k in (
         "status", "neg_log_likelihood", "chi2", "n_data_points",
         "fitted_parameters", "parameter_scales", "version",
     )}
+    pdf = session.problem.parameter_df
     if out.get("fitted_parameters") and not out.get("parameter_scales"):
-        pdf = session.problem.parameter_df
         out["parameter_scales"] = {
             pid: str(pdf.loc[pid, PARAMETER_SCALE])
             for pid in out["fitted_parameters"] if pid in pdf.index}
@@ -559,6 +751,8 @@ def fit_summary(session, engine) -> dict[str, Any]:
         sim.get("neg_log_likelihood"), sim.get("chi2"),
         int(session.problem.n_estimated), sim.get("n_data_points"),
     ))
+    out["parameters_at_bound"] = parameters_at_bound(out.get("fitted_parameters"), pdf)
+    out["noise_sigma_report"] = noise_sigma_report(session.problem, out.get("fitted_parameters"))
     return out
 
 
@@ -647,7 +841,8 @@ def goodness_of_fit(
 
 
 def fit_result_block(
-    fitsim: dict[str, Any] | None, improvement: dict[str, Any] | None = None
+    fitsim: dict[str, Any] | None, improvement: dict[str, Any] | None = None,
+    parameter_df: Any = None, problem: Any = None,
 ) -> dict[str, Any]:
     """The fit fields every commit path returns (single op, batch, rollback, reset).
 
@@ -656,7 +851,11 @@ def fit_result_block(
     simulation for rollback/reset); ``improvement`` is the :func:`compute_improvement` dict.
     Beyond the raw nll/chi2 it also carries the complexity-penalised
     :func:`goodness_of_fit` scores (bic/aic/reduced_chi2/gof p-value) so the agent can see
-    when the fit is already at the noise floor and stop adding parameters.
+    when the fit is already at the noise floor and stop adding parameters,
+    ``parameters_at_bound`` (see :func:`parameters_at_bound`; empty when ``parameter_df`` is
+    not passed) so a parameter pinned to its bound is flagged in the SAME report instead of
+    requiring a separate ``get_parameters()`` comparison, and ``noise_sigma_report`` (see
+    :func:`noise_sigma_report`; empty when ``problem`` is not passed).
     """
     fitsim = fitsim or {}
     fitted = fitsim.get("fitted_parameters")
@@ -680,6 +879,8 @@ def fit_result_block(
         "fitted_parameters": fitted,
         "parameter_scales": fitsim.get("parameter_scales"),
         "improvement": improvement or None,
+        "parameters_at_bound": parameters_at_bound(fitted, parameter_df),
+        "noise_sigma_report": noise_sigma_report(problem, fitted),
     }
     block.update(goodness_of_fit(nll, chi2, k, n))
     return block

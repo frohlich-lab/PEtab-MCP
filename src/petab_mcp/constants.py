@@ -45,6 +45,27 @@ IC_LOWER_BOUND = 0.0
 IC_UPPER_BOUND_FLOOR = 1e2
 IC_UPPER_BOUND_FACTOR = 10.0
 
+# -- at-bound reporting -----------------------------------------------------
+# A fitted parameter within this fraction of its lower/upper bound (measured on its own
+# estimation scale, so a log10 parameter is judged by decades, not raw linear distance) is
+# flagged in the standard fit report. A parameter repeatedly re-pinning to its bound after a
+# bounds widening usually means the OPTIMUM is unbounded (e.g. a Hill exponent wanting to run
+# to a near-step-function to fake a mechanism the model is missing) — a modeling problem, not
+# a search-space one — so this is meant to catch that early rather than relying on the agent
+# to eyeball `get_parameters()` against the fitted value after every commit.
+PARAMETER_AT_BOUND_RELATIVE_TOL = 0.01
+
+# -- noise-sigma reporting ---------------------------------------------------
+# An ESTIMATED noise-sigma parameter above this fraction of its observable's own raw
+# measurement std (across every time point / condition) is flagged in the standard fit report.
+# A sigma free to float lets the optimizer make almost ANY mechanism look "statistically
+# adequate" (chi2_gof_pvalue >= 0.05) by simply inflating the assumed noise until residuals fit
+# inside it — a benchmark sweep did exactly this (sigma fit to 20-60x its nominal scale) while
+# the underlying mechanism was missing whole reaction pathways. A sigma that has to explain a
+# large fraction of the data's own variability isn't measurement noise anymore; it's covering
+# for the model.
+NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD = 0.5
+
 # -- reference validation --------------------------------------------------
 # Network timeout (seconds) for resolving a reference against NCBI E-utilities.
 REFERENCE_TIMEOUT_SECONDS = 15.0

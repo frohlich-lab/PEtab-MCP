@@ -53,6 +53,28 @@ file="tools.md")`).
     log10 scale an exponent fits to a huge value (a near-step-function) that makes the ODE stiff
     and the fit plateau. Keep it that way — if you set an exponent's scale/bounds by hand, use
     `lin` with a tight range; never put a Hill coefficient on log10 with wide bounds.
+  - **Noise sigmas have a reference, not a free run.** Every commit's `noise_sigma_report`
+    (also in `get_fit_summary`) lists each ESTIMATED noise-sigma parameter's fitted value
+    against a data-driven reference — a fraction of its observable's own raw measurement std
+    (across every time point/condition), see `NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD`. A sigma
+    free to explain a large share of the data's own variability isn't measurement noise
+    anymore, it's covering for the mechanism: a benchmark run once let its sigmas float to
+    20-60x their nominal scale, which alone made a model missing whole reaction pathways pass
+    its own goodness-of-fit check. The shipped bounds themselves are left alone, but
+    `change_parameter_bounds` REJECTS an attempt to WIDEN a sigma's `upperBound` past this
+    reference — if a fit pins a sigma at its current bound, that's the SAME signal as any other
+    at-bound parameter below: fix the mechanism, don't try to widen the box.
+- **Observation-model parameters are off-limits inside the mechanism.** An observable-scaling
+  factor or noise sigma — anything resolved through the measurement table's
+  `observableParameters`/`noiseParameters` columns or an observable/noise formula — must NEVER
+  also appear inside a reaction, rule, or initial assignment. Reusing one there is a REJECTED
+  edit (an SBML-vs-PEtab structural check, not a lint warning): it lets a model dodge
+  introducing a real kinetic parameter by repurposing one that's actually part of the fixed
+  observation model. Two independent runs on the same benchmark did exactly this — wired the
+  four fixed observable-scaling factors directly into their reaction rate laws instead of the
+  ~14 real kinetic parameters the scenario expected — and both looked "adequate" until the fit
+  was compared against the true mechanism. Introduce your OWN parameter for a reaction rate,
+  always.
 - **Everything is versioned.** Each committed operation snapshots a new version
   and appends a provenance event. Nothing is lost; you can diff, roll back, or
   reset.
@@ -172,6 +194,22 @@ a fit lands on a bound or a scale is inappropriate. Read the current table with
 `get_parameters()`; use `sync_parameters("report"|"add")` to reconcile the table with the
 model (operations already reconcile, so this is rarely needed).
 
+**A parameter that keeps re-pinning to whatever bound you set is not a bounds problem.** Every
+commit's `parameters_at_bound` (also in `get_fit_summary`) flags any fitted parameter within
+~1% of its lower/upper bound — check it after every commit, not just when a fit looks off.
+Widen or shift the box once — if the SAME parameter shows up in `parameters_at_bound` again at
+the new edge, moving it further won't help; that pattern means the optimizer wants the
+parameter arbitrarily large/small (often an exponent trying to fake a near-step-function),
+which is a sign the *model* is missing a mechanism the data needs, not that the search space is
+mis-sized. At that point stop touching bounds and revisit the model structure instead
+(`add_reaction` / `change_rate_law` / `set_model`) — use `query_data`'s bias/time-trend
+diagnostics (Step 5) to see what the current mechanism can't reproduce.
+
+If the parameter pinned at its bound is a **noise sigma**, don't even try widening it —
+`change_parameter_bounds` will reject a widen past its data-driven cap outright (see the
+invariant above). A sigma at that cap means the current mechanism's residuals are already as
+large as the data's own variability; the fix is exclusively a model-structure one.
+
 ## Step 4 — batching (group edits into one version)
 
 To land several related edits as a **single** version:
@@ -229,6 +267,16 @@ Inspect the result with:
     `SELECT observable_id, condition_id, corr(time, residual_weighted) AS trend, count(*) AS n
      FROM simulations WHERE residual_weighted IS NOT NULL
      GROUP BY observable_id, condition_id HAVING count(*) >= 4`
+
+  **If a noise sigma is estimated, re-run your bias/trend checks on raw `residual`, not just
+  `residual_weighted`.** A weighted residual is `residual / noise` — once a fit inflates its
+  sigma, the weighted view looks adequate BY CONSTRUCTION regardless of whether the underlying
+  fit is actually good, because dividing by a bigger sigma shrinks every weighted residual
+  toward zero. The raw residual (natural units, independent of whatever sigma the optimizer
+  picked) still shows the true bias/trend a bad mechanism leaves behind. Check
+  `noise_sigma_report` (Step 3) after every commit; if a sigma is approaching its reference,
+  treat `residual_weighted` looking clean as suspect and confirm against raw `residual` instead
+  of taking chi2_gof_pvalue at face value.
   - a convergence check on the last fit's multistart (did the starts agree on the optimum?):
     `SELECT count(*) AS n_starts, min(fval) AS best, max(fval) AS worst,
             sum(CASE WHEN fval <= (SELECT min(fval) FROM optimization_starts) + 1e-3

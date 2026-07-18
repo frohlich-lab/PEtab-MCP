@@ -23,10 +23,12 @@ from petab.v1.C import (
     LIN,
     LOG10,
     LOWER_BOUND,
+    MEASUREMENT,
     NOISE_FORMULA,
     NOISE_PARAMETERS,
     NOMINAL_VALUE,
     OBSERVABLE_FORMULA,
+    OBSERVABLE_ID,
     OBSERVABLE_PARAMETERS,
     PARAMETER_SCALE,
     UPPER_BOUND,
@@ -38,6 +40,7 @@ from .constants import (
     IC_LOWER_BOUND,
     IC_UPPER_BOUND_FACTOR,
     IC_UPPER_BOUND_FLOOR,
+    NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD,
 )
 from .errors import ParameterError
 from .parameters import _default_bounds
@@ -249,8 +252,11 @@ def _model_math_names(sm) -> set[str]:
     return names
 
 
-def table_referenced_symbols(problem) -> set[str]:
-    """Symbols the *fixed* tables (observables, conditions) depend on."""
+def _observable_and_measurement_symbols(problem) -> set[str]:
+    """Symbols referenced by the observable/noise formulas AND their measurement-level
+    ``observableParameters``/``noiseParameters`` overrides — shared by
+    :func:`table_referenced_symbols` (which also folds in condition-table symbols) and
+    :func:`observation_model_symbols` (which deliberately does NOT)."""
     names: set[str] = set()
     odf = problem.observable_df
     if odf is not None:
@@ -258,14 +264,6 @@ def table_referenced_symbols(problem) -> set[str]:
             if col in odf.columns:
                 for val in odf[col]:
                     names |= formula_symbols(val)
-    cdf = problem.condition_df
-    if cdf is not None:
-        for col in cdf.columns:
-            if col != CONDITION_NAME:
-                names.add(str(col))
-            for val in cdf[col]:
-                names |= formula_symbols(val)
-    # measurement-level observable/noise parameter overrides may reference parameters
     mdf = problem.measurement_df
     if mdf is not None:
         for col in (OBSERVABLE_PARAMETERS, NOISE_PARAMETERS):
@@ -273,6 +271,182 @@ def table_referenced_symbols(problem) -> set[str]:
                 for val in mdf[col]:
                     names |= formula_symbols(val)
     return names
+
+
+def table_referenced_symbols(problem) -> set[str]:
+    """Symbols the *fixed* tables (observables, conditions) depend on."""
+    names = _observable_and_measurement_symbols(problem)
+    cdf = problem.condition_df
+    if cdf is not None:
+        for col in cdf.columns:
+            if col != CONDITION_NAME:
+                names.add(str(col))
+            for val in cdf[col]:
+                names |= formula_symbols(val)
+    return names
+
+
+def observation_model_symbols(problem) -> set[str]:
+    """Symbols belonging to the FIXED *observation model* specifically — observable-scaling
+    factors and noise sigmas resolved through the observable/noise formulas and their
+    measurement-level ``observableParameters``/``noiseParameters`` overrides.
+
+    Deliberately EXCLUDES condition-table symbols (those are legitimate model DRIVING INPUTS —
+    e.g. a dose species fed through a condition column — not observation-model constants).
+    Used to catch a model that reuses one of these as a mechanistic rate constant instead of
+    introducing a dedicated parameter for it (see ``validation._observation_model_reuse_issues``):
+    a run once "fit" the Brannmark benchmark by wiring its four fixed observable-scaling
+    factors directly into the reaction rate laws instead of the ~14 real kinetic parameters the
+    scenario expects, and by letting its noise sigmas float to 20-60x their nominal scale — both
+    let a fundamentally under-mechanistic model pass its own goodness-of-fit check.
+    """
+    return _observable_and_measurement_symbols(problem)
+
+
+def noise_sigma_ids(problem) -> set[str]:
+    """Parameter ids that serve specifically as a NOISE sigma — resolved through the
+    observable table's ``noiseFormula`` column or the measurement table's ``noiseParameters``
+    overrides. Narrower than :func:`observation_model_symbols`, which also includes
+    observable-SCALING factors (resolved through ``observableFormula``/``observableParameters``)
+    that don't get the data-driven bound treatment below."""
+    names: set[str] = set()
+    odf = problem.observable_df
+    if odf is not None and NOISE_FORMULA in odf.columns:
+        for val in odf[NOISE_FORMULA]:
+            names |= formula_symbols(val)
+    mdf = problem.measurement_df
+    if mdf is not None and NOISE_PARAMETERS in mdf.columns:
+        for val in mdf[NOISE_PARAMETERS]:
+            names |= formula_symbols(val)
+    return names
+
+
+def observable_scaling_ids(problem) -> set[str]:
+    """Parameter ids resolved through the observable table's ``observableFormula`` column or
+    the measurement table's ``observableParameters`` overrides — i.e. observable-scaling /
+    offset factors. The counterpart of :func:`noise_sigma_ids` on the observable side; used to
+    classify inner parameters for hierarchical optimization (see
+    :func:`classify_inner_parameters`)."""
+    names: set[str] = set()
+    odf = problem.observable_df
+    if odf is not None and OBSERVABLE_FORMULA in odf.columns:
+        for val in odf[OBSERVABLE_FORMULA]:
+            names |= formula_symbols(val)
+    mdf = problem.measurement_df
+    if mdf is not None and OBSERVABLE_PARAMETERS in mdf.columns:
+        for val in mdf[OBSERVABLE_PARAMETERS]:
+            names |= formula_symbols(val)
+    return names
+
+
+# Inner-parameter type tags (pyPESTO's ``parameterType`` column values). Kept as local
+# literals so this module stays dependency-light (no pypesto import); fitting.py maps them to
+# pyPESTO's ``InnerParameterType`` when it builds the hierarchical objective.
+INNER_TYPE_SIGMA = "sigma"
+INNER_TYPE_SCALING = "scaling"
+
+
+def classify_inner_parameters(problem) -> dict[str, str]:
+    """Which ESTIMATED parameters can be solved analytically in a hierarchical (inner) problem,
+    and as what type — ``{parameter_id: "sigma" | "scaling"}``.
+
+    A parameter is inner-eligible only if it belongs purely to the fixed OBSERVATION model:
+    a noise sigma (via ``noiseFormula`` / measurement ``noiseParameters``) → ``"sigma"``, or an
+    observable-scaling factor (via ``observableFormula`` / ``observableParameters``) →
+    ``"scaling"``. A parameter that is BOTH (or that also appears in the model's own math — a
+    reused observation-model parameter, which ``validation`` already rejects) is left OUT: it is
+    not cleanly separable, so it stays an ordinary outer parameter. Only currently-ESTIMATED
+    parameters are returned (a fixed sigma/scaling has nothing to solve).
+
+    Offsets are deliberately NOT classified here (detecting an additive offset needs formula
+    parsing pyPESTO does itself); such a parameter simply stays outer. Hierarchical optimization
+    is best-effort — see ``fitting`` — so anything this misclassifies fails pyPESTO's own
+    validation there and falls back to a joint fit rather than corrupting anything.
+    """
+    sigmas = noise_sigma_ids(problem)
+    scalings = observable_scaling_ids(problem)
+    model_names = _model_math_names(problem.model.sbml_model)
+    out: dict[str, str] = {}
+    for pid in sorted((sigmas | scalings)):
+        if not is_parameter_estimated(problem, pid):
+            continue
+        if pid in model_names:
+            continue  # reused inside the model's own math — not a clean inner parameter
+        in_sigma, in_scaling = pid in sigmas, pid in scalings
+        if in_sigma and not in_scaling:
+            out[pid] = INNER_TYPE_SIGMA
+        elif in_scaling and not in_sigma:
+            out[pid] = INNER_TYPE_SCALING
+        # both → ambiguous; leave outer
+    return out
+
+
+def _measurement_rows_for_sigma(problem, pid: str):
+    """Measurement rows whose noise is modelled by sigma parameter ``pid`` — matched via a
+    direct ``noiseParameters`` override, or (for a sigma named directly in the fixed
+    ``noiseFormula`` rather than through the ``noiseParameter1_<obsId>`` placeholder
+    convention) via the observable(s) whose formula names it. ``None`` if no match/no data."""
+    mdf = problem.measurement_df
+    if mdf is None or MEASUREMENT not in mdf.columns:
+        return None
+    if NOISE_PARAMETERS in mdf.columns:
+        mask = mdf[NOISE_PARAMETERS].apply(
+            lambda cell: cell == cell and pid in {p.strip() for p in str(cell).split(";")}
+        )
+        if mask.any():
+            return mdf[mask]
+    odf = problem.observable_df
+    if odf is not None and NOISE_FORMULA in odf.columns and OBSERVABLE_ID in mdf.columns:
+        obs_ids = [oid for oid, formula in odf[NOISE_FORMULA].items()
+                   if pid in formula_symbols(formula)]
+        if obs_ids:
+            return mdf[mdf[OBSERVABLE_ID].isin(obs_ids)]
+    return None
+
+
+def sigma_data_std(problem, pid: str) -> float | None:
+    """Raw measurement std (across every time point / condition) of the observable(s)
+    noise-sigma parameter ``pid`` models the noise for — the basis for its bound cap (see
+    :func:`sigma_upper_bound_cap`) and for reporting a fitted sigma against its reference (see
+    ``fitting.noise_sigma_report``). ``None`` if ``pid`` isn't a resolvable sigma, or there's
+    too little data to compute a std.
+    """
+    rows = _measurement_rows_for_sigma(problem, pid)
+    if rows is None or rows.empty:
+        return None
+    values = rows[MEASUREMENT].dropna().astype(float)
+    if len(values) < 2:
+        return None
+    std = float(values.std(ddof=0))
+    return std if std > 0 else None
+
+
+def sigma_upper_bound_cap(
+    problem, pid: str, max_fraction: float = NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD,
+) -> float | None:
+    """Data-driven upper-bound cap for noise-sigma parameter ``pid``: ``max_fraction`` times
+    :func:`sigma_data_std`. ``None`` if that std can't be computed — callers must not
+    tighten/reject on a ``None`` cap.
+
+    A sigma free to explain a large fraction of the data's own variability isn't measurement
+    noise anymore, it's covering for the model: an optimizer can make almost ANY mechanism
+    "pass" a chi2 goodness-of-fit check by simply inflating sigma until residuals fit inside
+    it. See ``NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD``.
+    """
+    std = sigma_data_std(problem, pid)
+    return max_fraction * std if std is not None else None
+
+
+def is_parameter_estimated(problem, pid: str) -> bool:
+    """Whether ``pid``'s current ``estimate`` flag is truthy (robust to ``NaN``/missing —
+    treated as not-estimated, same idiom as ``set_model``'s prior-estimated snapshot)."""
+    df = problem.parameter_df
+    if pid not in df.index or ESTIMATE not in df.columns:
+        return False
+    try:
+        return float(df.loc[pid, ESTIMATE]) != 0
+    except (TypeError, ValueError):
+        return False
 
 
 # -- pruning ---------------------------------------------------------------

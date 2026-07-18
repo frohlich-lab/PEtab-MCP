@@ -20,9 +20,16 @@ and the rules behind these tools.
 Each applies to a model copy, reconciles SBML↔PEtab, lints, then (on a non-batch commit)
 **fits + simulates** and commits — or reverts. Returns `{committed, version, staged,
 reconcile, references, justification, validation, warnings, event_timestamp, fit_status,
-neg_log_likelihood, chi2, fitted_parameters, improvement}` on success, or
-`{committed: false, error, issues?}` on rejection. `warnings` carries advisory notes (e.g.
-an added unobserved species).
+neg_log_likelihood, chi2, fitted_parameters, parameters_at_bound, noise_sigma_report,
+improvement}` on success, or `{committed: false, error, issues?}` on rejection. `warnings`
+carries advisory notes (e.g. an added unobserved species). `parameters_at_bound` (see
+`get_fit_summary` below) flags any fitted parameter pinned to its lower/upper bound on THIS
+commit; `noise_sigma_report` lists every ESTIMATED noise-sigma parameter's fitted value against
+its data-driven reference regardless of whether it's at bound. A model that reuses a fixed
+observable-scaling factor or noise sigma (anything resolved through the measurement table's
+`observableParameters`/`noiseParameters` or an observable/noise formula) inside a reaction,
+rule, or initial assignment is a hard **rejection** (`check: "observation_model_reuse"` in
+`issues`) — introduce a dedicated parameter instead.
 
 | Tool | Signature | Notes |
 | --- | --- | --- |
@@ -43,7 +50,7 @@ search space.
 | Tool | Signature | Notes |
 | --- | --- | --- |
 | `change_parameter_scale` | `(parameter_id, scale, justification, references?, n_starts?)` | `scale` ∈ `{"lin","log","log10"}`. `log`/`log10` require `lowerBound` and `nominalValue` > 0. |
-| `change_parameter_bounds` | `(parameter_id, lower_bound, upper_bound, justification, references?, n_starts?)` | Set new bounds. |
+| `change_parameter_bounds` | `(parameter_id, lower_bound, upper_bound, justification, references?, n_starts?)` | Set new bounds. REJECTED for an ESTIMATED noise-sigma parameter if `upper_bound` exceeds its data-driven reference (a fraction of the observable's raw measurement std) — don't try to widen a sigma past this to "fix" an at-bound fit. |
 
 ## Parameters (read-only + reconcile)
 
@@ -70,7 +77,7 @@ with `get_fit_summary`, and diagnose the fit by querying the data with SQL:
 
 | Tool | Signature | Notes |
 | --- | --- | --- |
-| `get_fit_summary` | `()` | Just the metrics — `status`, `neg_log_likelihood`, `chi2`, `n_data_points`, `fitted_parameters`, `version` — **no records**. The cheapest score check. |
+| `get_fit_summary` | `()` | Just the metrics — `status`, `neg_log_likelihood`, `chi2`, `n_data_points`, `fitted_parameters`, `version` — **no records**. The cheapest score check. `parameters_at_bound` flags any fitted parameter within ~1% of its lower/upper bound (its own estimation scale) — `[]` when none. One pinned commit after a widening is normal; the SAME parameter re-pinning after repeated widenings means the optimum is unbounded — a modeling problem (revisit the model structure), not a bounds problem. |
 | `list_data_tables` | `()` | The SQL tables `query_data` exposes: name, description, columns, row count. |
 | `query_data` | `(sql, max_rows=1000)` | Read-only DuckDB query over the tables below. Returns `{columns, rows, row_count, truncated}`. |
 | `get_fitting_log` | `(tail_lines=200)` | The tail of the pyPESTO/Fides optimizer log (`pypesto.log`): multistart spread, convergence, parameters pinned at bounds, ill-conditioning — the numerical view of the fit. `0` returns the whole file. |

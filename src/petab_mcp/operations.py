@@ -21,6 +21,7 @@ import libsbml
 from petab.v1.models.sbml_model import SbmlModel
 
 from . import reconcile as R
+from .constants import NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD
 from .errors import ModelUpdateError, PetabMcpError, UnknownEntityError, ValidationError
 from .parameters import problem_fingerprint, sha16
 from .references import resolve_references
@@ -375,7 +376,8 @@ def _commit_change(
     if not staged:
         from . import fitting
 
-        result.update(fitting.fit_result_block(fitsim, improvement))
+        result.update(fitting.fit_result_block(
+            fitsim, improvement, session.problem.parameter_df, problem=session.problem))
     return result
 
 
@@ -536,6 +538,28 @@ def change_parameter_scale(
     )
 
 
+def _reject_sigma_bound_widening(problem, parameter_id: str, upper_bound: float) -> None:
+    """Refuse to widen an ESTIMATED noise-sigma parameter's upperBound past its data-driven cap
+    (see ``R.sigma_upper_bound_cap``). Without this, a fit pinned at that cap could be "fixed"
+    the same way a benchmark run once fixed it — by widening the box until the sigma can
+    inflate far enough to make an under-mechanistic model look statistically adequate again.
+    A FIXED sigma is left alone: its bounds don't affect a fit it's never optimized over. This
+    only ever REJECTS an explicit widening attempt — it never rewrites a bound itself."""
+    if parameter_id not in R.noise_sigma_ids(problem):
+        return
+    if not R.is_parameter_estimated(problem, parameter_id):
+        return
+    cap = R.sigma_upper_bound_cap(problem, parameter_id)
+    if cap is not None and float(upper_bound) > cap:
+        raise OperationError(
+            f"Cannot widen the upperBound of {parameter_id!r} to {upper_bound:.6g}: noise-sigma "
+            f"parameters are capped at {cap:.6g} ({NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD:.0%} of "
+            "this observable's raw measurement std) so a fit can't hide a wrong mechanism by "
+            "inflating the assumed noise. If the fit is pinned at this bound, revisit the model "
+            "structure — don't widen the sigma further."
+        )
+
+
 def change_parameter_bounds(
     session,
     parameter_id: str,
@@ -548,6 +572,7 @@ def change_parameter_bounds(
     from .parameters import update_parameters
 
     def edit(problem):
+        _reject_sigma_bound_widening(problem, parameter_id, upper_bound)
         update_parameters(
             problem,
             [{"id": parameter_id, "lowerBound": lower_bound, "upperBound": upper_bound}],
