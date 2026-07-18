@@ -157,3 +157,46 @@ def test_fit_cache_roundtrip_and_apply(session):
     # _apply_fitted writes the cached values into nominalValue (the fit's effect)
     fitting._apply_fitted(session, {"k1": 0.25})
     assert float(session.problem.parameter_df.loc["k1", "nominalValue"]) == 0.25
+
+
+def test_default_fit_workers_prefers_slurm(monkeypatch):
+    """_default_fit_workers uses SLURM_CPUS_PER_TASK when set (the cores actually granted)."""
+    monkeypatch.setenv("SLURM_CPUS_PER_TASK", "7")
+    assert fitting._default_fit_workers() == 7
+
+
+def test_default_fit_workers_falls_back_off_scheduler(monkeypatch):
+    """Off a scheduler (or with a junk/<1 SLURM value) it falls back to box-minus-one core."""
+    import os
+
+    expected = max(1, (os.cpu_count() or 1) - 1)
+    monkeypatch.delenv("SLURM_CPUS_PER_TASK", raising=False)
+    assert fitting._default_fit_workers() == expected
+    for bad in ("0", "-2", "garbage", ""):
+        monkeypatch.setenv("SLURM_CPUS_PER_TASK", bad)
+        assert fitting._default_fit_workers() == expected
+
+
+def test_fit_n_workers_env_precedence(monkeypatch):
+    """FIT_N_WORKERS precedence: PETAB_MCP_FIT_N_WORKERS > SLURM_CPUS_PER_TASK > cpu_count-1."""
+    import importlib
+    import os
+
+    try:
+        monkeypatch.setenv("PETAB_MCP_FIT_N_WORKERS", "3")
+        monkeypatch.setenv("SLURM_CPUS_PER_TASK", "7")
+        importlib.reload(fitting)
+        assert fitting.FIT_N_WORKERS == 3  # explicit override wins
+
+        monkeypatch.delenv("PETAB_MCP_FIT_N_WORKERS", raising=False)
+        importlib.reload(fitting)
+        assert fitting.FIT_N_WORKERS == 7  # then the scheduler grant
+
+        monkeypatch.delenv("SLURM_CPUS_PER_TASK", raising=False)
+        importlib.reload(fitting)
+        assert fitting.FIT_N_WORKERS == max(1, (os.cpu_count() or 1) - 1)  # then the box default
+    finally:
+        # Restore the module to the ambient environment so the reloaded module-level
+        # constant doesn't leak the patched values into later tests.
+        monkeypatch.undo()
+        importlib.reload(fitting)

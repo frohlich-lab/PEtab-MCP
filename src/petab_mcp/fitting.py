@@ -62,12 +62,33 @@ def _env_int(name: str, default: int) -> int:
 # both sides use the SAME cap + worker count. Kept generous — Fides returns best-so-far for a
 # capped start, so too tight a cap would silently degrade fit quality.
 FIT_PER_START_TIMEOUT_S = _env_float("PETAB_MCP_FIT_PER_START_TIMEOUT", 60.0)
-# Max pyPESTO worker processes for the multistart (env PETAB_MCP_FIT_N_WORKERS; default = box minus
-# one core). The batch runner dispatches examples one at a time, so a fit has the whole machine;
-# running the starts in parallel cuts wall-clock to ~ceil(n_starts / workers) waves. Set to 1 to
-# force sequential fitting. Mirrors examples/_harness/fit_budget.py, which the harness keeps in
-# sync via the env var so its budget matches this server's actual parallelism.
-FIT_N_WORKERS = _env_int("PETAB_MCP_FIT_N_WORKERS", max(1, (os.cpu_count() or 1) - 1))
+
+
+def _default_fit_workers() -> int:
+    """Default multistart worker count when ``PETAB_MCP_FIT_N_WORKERS`` is unset.
+
+    Prefer the CPUs a batch scheduler actually granted (``SLURM_CPUS_PER_TASK``) over
+    ``os.cpu_count()``: the latter reports the whole machine and ignores a cgroup/cpuset limit,
+    so under Slurm — which pins the process to N cores but leaves ``os.cpu_count()`` reporting
+    the node's full count — a ``box minus one core`` default would massively oversubscribe the
+    allocation (e.g. ~255 workers pinned into a 4-core grant). Off a scheduler, fall back to
+    ``box minus one core`` as before.
+    """
+    slurm = _env_int("SLURM_CPUS_PER_TASK", 0)
+    if slurm >= 1:
+        return slurm
+    return max(1, (os.cpu_count() or 1) - 1)
+
+
+# Max pyPESTO worker processes for the multistart (env PETAB_MCP_FIT_N_WORKERS; default =
+# SLURM_CPUS_PER_TASK when set, else box minus one core — see _default_fit_workers). The batch
+# runner dispatches examples one at a time, so a fit has the whole machine; running the starts in
+# parallel cuts wall-clock to ~ceil(n_starts / workers) waves. Set to 1 to force sequential
+# fitting. examples/_harness/fit_budget.py keeps the SAME default (its _default_workers mirrors
+# _default_fit_workers) and, when the harness drives a run, also exports its resolved value as
+# PETAB_MCP_FIT_N_WORKERS onto this server — so the harness's budget matches the real parallelism
+# whether the value comes from the shared default or the export.
+FIT_N_WORKERS = _env_int("PETAB_MCP_FIT_N_WORKERS", _default_fit_workers())
 
 
 def _fides_maxtime_options() -> dict[str, Any]:
