@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import time
 from typing import Any
 
@@ -25,6 +26,72 @@ from petab.v1.C import ESTIMATE, NOMINAL_VALUE, PARAMETER_SCALE
 
 from .formatting import finite_float as _flt
 from .parameters import parameter_df_to_tsv, sha16
+
+def _env_float(name: str, default: float) -> float:
+    """A finite, strictly-positive float from ``name``, or ``default`` when the env var is unset,
+    non-numeric, or not a finite positive number — a bad override can't NaN/Inf/<=0 the cap or
+    crash import."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return val if math.isfinite(val) and val > 0 else default
+
+
+def _env_int(name: str, default: int) -> int:
+    """A positive int (>=1) from ``name``, or ``default`` for an unset/non-numeric/<1 override."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return val if val >= 1 else default
+
+
+# Per-start wall-clock cap for a single Fides optimization start (seconds; env
+# PETAB_MCP_FIT_PER_START_TIMEOUT, default 60). Fides defaults MAXTIME to inf, so one stiff start
+# can run unbounded and out-idle the MCP transport, which the harness then mistakes for a hang.
+# Bounding each start makes a full multistart fit's worst-case duration finite and predictable,
+# which the harness sizes its sse_read_timeout + stall watchdog to (see examples/_harness/
+# fit_budget.py). The harness exports its own resolved values onto this server's environment, so
+# both sides use the SAME cap + worker count. Kept generous — Fides returns best-so-far for a
+# capped start, so too tight a cap would silently degrade fit quality.
+FIT_PER_START_TIMEOUT_S = _env_float("PETAB_MCP_FIT_PER_START_TIMEOUT", 60.0)
+# Max pyPESTO worker processes for the multistart (env PETAB_MCP_FIT_N_WORKERS; default = box minus
+# one core). The batch runner dispatches examples one at a time, so a fit has the whole machine;
+# running the starts in parallel cuts wall-clock to ~ceil(n_starts / workers) waves. Set to 1 to
+# force sequential fitting. Mirrors examples/_harness/fit_budget.py, which the harness keeps in
+# sync via the env var so its budget matches this server's actual parallelism.
+FIT_N_WORKERS = _env_int("PETAB_MCP_FIT_N_WORKERS", max(1, (os.cpu_count() or 1) - 1))
+
+
+def _fides_maxtime_options() -> dict[str, Any]:
+    """``{fides.Options.MAXTIME: FIT_PER_START_TIMEOUT_S}`` when this ``fides`` exposes ``MAXTIME``,
+    else ``{}`` (older/absent fides just runs uncapped)."""
+    try:
+        import fides
+        return {fides.Options.MAXTIME: FIT_PER_START_TIMEOUT_S}
+    except Exception:  # noqa: BLE001 - no fides / no MAXTIME on this version: run uncapped
+        return {}
+
+
+def _fit_engine(n_starts: int):
+    """A pyPESTO engine that runs the multistart across up to ``FIT_N_WORKERS`` worker processes
+    (never more than there are starts), or ``None`` (pyPESTO's sequential ``SingleCoreEngine``) for
+    a single effective worker or when a parallel engine can't be constructed."""
+    workers = max(1, min(FIT_N_WORKERS, int(n_starts)))
+    if workers < 2:
+        return None
+    try:
+        from pypesto.engine import MultiProcessEngine
+        return MultiProcessEngine(n_procs=workers)
+    except Exception:  # noqa: BLE001 - parallel engine unavailable: fall back to sequential
+        return None
 
 
 def _fmt(x: Any) -> str:
@@ -280,14 +347,22 @@ def _run_fit(session, engine, n_starts: int, seed: int = 0) -> dict[str, Any]:
 
     free = getattr(problem, "x_free_indices", None)
     n_free = len(free) if free is not None else len(problem.x_names)
+    # Parallelise the multistart across worker processes when more than one is warranted; None runs
+    # pyPESTO's sequential engine. Sized so the harness's fit budget (ceil(n_starts/workers) waves)
+    # matches the real wall-clock — see examples/_harness/fit_budget.py.
+    pp_engine = _fit_engine(n_starts)
+    workers = getattr(pp_engine, "n_procs", 1) or 1
     log.info(
-        "fit: start optimizer=fides n_starts=%d seed=%d n_free=%d sbml=%s objective_before=%s",
-        n_starts, seed, n_free, h, _fmt(objective_before),
+        "fit: start optimizer=fides n_starts=%d workers=%d seed=%d n_free=%d sbml=%s "
+        "objective_before=%s", n_starts, workers, seed, n_free, h, _fmt(objective_before),
     )
     # Fides: a Newton trust-region optimizer that exploits AMICI's sensitivities; more
     # robust than the default L-BFGS-B on stiff ODE likelihoods. Its per-iteration logging
-    # is routed to pypesto.log (see logging_setup.configure_pypesto).
-    optimizer = pypesto.optimize.FidesOptimizer(verbose=logging.INFO)
+    # is routed to pypesto.log (see logging_setup.configure_pypesto). MAXTIME caps each start's
+    # wall time (FIT_PER_START_TIMEOUT_S) so a stiff start can't run unbounded and hang the
+    # transport; Fides returns that start's best-so-far when the cap is hit.
+    optimizer = pypesto.optimize.FidesOptimizer(
+        verbose=logging.INFO, options=_fides_maxtime_options())
     # Record the per-iteration optimization history in memory (no trace files) so the
     # traces can be exposed as SQL tables. Older pyPESTO without HistoryOptions just runs
     # without a trace.
@@ -297,9 +372,26 @@ def _run_fit(session, engine, n_starts: int, seed: int = 0) -> dict[str, Any]:
     except Exception:  # noqa: BLE001 - HistoryOptions absent/renamed in this pyPESTO
         pass
     t0 = time.perf_counter()
-    result = pypesto.optimize.minimize(
-        problem, optimizer=optimizer, n_starts=n_starts, progress_bar=False, **minimize_kwargs
-    )
+    try:
+        result = pypesto.optimize.minimize(
+            problem, optimizer=optimizer, n_starts=n_starts, engine=pp_engine,
+            progress_bar=False, **minimize_kwargs
+        )
+    except Exception as exc:  # noqa: BLE001 - retry sequentially before giving up
+        # A parallel multistart can construct its engine fine yet still fail at runtime
+        # (pickling/spawn issues, a worker dying). That is a parallel-only failure — the same fit
+        # runs fine on the sequential engine — so fall back to it rather than failing the whole
+        # commit. Sequential is slower, so this can exceed the parallel-sized fit budget on a big
+        # n_starts; that is an acceptable rare-path cost vs. a hard failure (the run's resume logic
+        # backstops a timeout). A sequential fit that itself fails re-raises normally.
+        if pp_engine is None:
+            raise
+        log.warning("fit: parallel multistart failed (%s: %s); retrying sequentially",
+                    type(exc).__name__, exc)
+        result = pypesto.optimize.minimize(
+            problem, optimizer=optimizer, n_starts=n_starts, engine=None,
+            progress_bar=False, **minimize_kwargs
+        )
     duration = time.perf_counter() - t0
     # The multistart optimization is the recurring "fit" cost (a fit-cache hit returns above
     # without reaching here, so it correctly adds nothing). Under `session.lock`.
