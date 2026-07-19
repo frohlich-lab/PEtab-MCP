@@ -47,6 +47,11 @@ file="tools.md")`).
   with bounds bracketing the nominal value), new species get a **parametric initial condition**
   (`S = S_init`, with `S_init` added to the parameter table on a linear scale, *fixed*), and
   orphaned entities are pruned. The parameter table therefore always matches the model.
+  - **Initial conditions are FIXED by default** (whether they are estimated is a fixed
+    per-scenario setting, not something you switch in-loop). Every commit's **`initial_conditions`**
+    block reports each species' t=0 status (`fixed` / `estimated` / `condition_table`, and whether
+    the declared t=0 is used) — read it rather than re-authoring to try to change an IC. *How* ICs
+    reconcile is covered in the `antimony-authoring` skill.
   - **Exponents are special.** A new symbol used as an **exponent** — a Hill / cooperativity
     coefficient, e.g. `n_hill` in `K^n_hill/(K^n_hill + x^n_hill)` — is created on a **linear**
     scale with **tight bounds** (≈1–8), not the default log10. This is deliberate: on a wide

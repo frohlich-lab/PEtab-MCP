@@ -73,6 +73,7 @@ def test_tools_registered(tmp_path):
         "describe_problem", "list_observables", "list_conditions", "get_measurements",
         "get_model", "get_model_structure", "validate_problem",
         "set_model", "add_reaction", "change_rate_law", "remove_reaction",
+        "change_parameter_scale", "change_parameter_bounds",
         "get_parameters", "sync_parameters",
         "get_fit_summary", "get_fit_diagnosis", "get_run_timing", "query_data", "list_data_tables",
         "get_fitting_log",
@@ -85,6 +86,9 @@ def test_tools_registered(tmp_path):
                  "update_parameters", "refit"} & names)
     assert "update_model" not in names and "set_model_parameter" not in names
     assert "list_experiments" not in names
+    # changing a parameter's estimate status in-loop is deliberately unsupported — no such tool
+    assert not ({"estimate_parameter", "change_parameter_estimated",
+                 "fix_parameter", "pin_parameter"} & names)
     # the handcoded residual-analysis tools are gone — SQL via query_data replaces them
     assert not ({"inspect_fit", "get_simulations"} & names)
 
@@ -131,6 +135,22 @@ def test_add_reaction_and_versions_via_tools(tmp_path):
         prov = _structured(await mcp.call_tool("get_provenance", {}))
         plist = prov["result"] if isinstance(prov, dict) and "result" in prov else prov
         assert any(e["type"] == "alteration" for e in plist)
+
+    asyncio.run(go())
+
+
+def test_initial_conditions_report_via_tool(tmp_path):
+    mcp = _server(tmp_path)  # auto_fit off -> commit without fitting (no AMICI needed)
+
+    async def go():
+        # a reconciling model op's result carries the per-species initial_conditions report
+        res = _structured(await mcp.call_tool("add_reaction", {
+            "reaction": "J: B -> D; k3*B", "justification": "B converts to D",
+        }))
+        ics = {r["species"]: r for r in res["initial_conditions"]}
+        assert {"A", "B", "D"} <= set(ics)
+        assert ics["D"]["newly_added"] is True
+        assert ics["D"]["t0_source"] == "fixed" and ics["D"]["declared_t0_used"] is True
 
     asyncio.run(go())
 

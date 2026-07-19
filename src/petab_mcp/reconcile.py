@@ -467,6 +467,88 @@ def is_parameter_estimated(problem, pid: str) -> bool:
         return False
 
 
+# -- initial-condition report ----------------------------------------------
+def initial_conditions_report(
+    problem, added: set[str] | None = None
+) -> list[dict[str, Any]]:
+    """Per-species account of how each t=0 initial condition is resolved *after* reconcile.
+
+    Antimony can only declare a species' t=0 *value* — it has no way to say "estimate this
+    initial condition". Whether that declared value actually governs the simulated t=0 state is
+    decided by the reconcile/parameter/condition tables, not the model text, and the outcome is
+    otherwise invisible: a declared t=0 is silently OVERRIDDEN when its ``<species>_init``
+    parameter is estimated (the fit then sets t=0, the declared value is only the start) or when
+    the species is driven per-condition by a condition-table column. Surfacing this after every
+    model op is what lets the caller see immediately whether a t=0 "fix" took — instead of
+    re-authoring the model under a series of different IC naming schemes that all fit identically
+    because none of them ever changed the estimate status (see issue #57). Whether ICs are
+    estimated at all is fixed by the scenario (the ``estimate_initial_conditions`` server
+    setting), not switchable from the model text.
+
+    For each species returns ``{species, ic_parameter, declared_t0, estimated, set_by_condition,
+    t0_source, declared_t0_used, newly_added, note}``:
+
+    * ``declared_t0`` — the t=0 value declared in the Antimony (the IC parameter's value);
+    * ``estimated`` — whether the IC parameter is a FREE (fit) parameter or FIXED;
+    * ``set_by_condition`` — whether the species (or its IC parameter) is a condition-table column,
+      i.e. set per condition, which overrides the Antimony t=0;
+    * ``t0_source`` — ``"fixed"`` | ``"estimated"`` | ``"condition_table"``;
+    * ``declared_t0_used`` — the bottom line: does the declared t=0 govern the simulated t=0 state
+      (``True`` only for a plain FIXED IC), or is it overridden;
+    * ``newly_added`` — whether this op introduced the IC parameter (from the reconcile diff).
+    """
+    sm = problem.model.sbml_model
+    cond_cols = condition_column_symbols(problem)
+    added = added or set()
+    out: list[dict[str, Any]] = []
+    for i in range(sm.getNumSpecies()):
+        sp = sm.getSpecies(i)
+        sid = sp.getId()
+        ic = _ic_symbol_for(sm, sid)
+        declared: float | None = None
+        if ic is not None and sm.getParameter(ic) is not None:
+            declared = float(sm.getParameter(ic).getValue())
+        elif sp.isSetInitialConcentration():
+            declared = float(sp.getInitialConcentration())
+        elif sp.isSetInitialAmount():
+            declared = float(sp.getInitialAmount())
+        estimated = ic is not None and is_parameter_estimated(problem, ic)
+        set_by_condition = sid in cond_cols or (ic is not None and ic in cond_cols)
+        if set_by_condition:
+            t0_source, declared_t0_used, note = (
+                "condition_table",
+                False,
+                "set per condition by the condition table — the Antimony t=0 is NOT used.",
+            )
+        elif estimated:
+            t0_source, declared_t0_used, note = (
+                "estimated",
+                False,
+                "ESTIMATED free parameter — the fit sets t=0; the declared value is only the "
+                "starting guess.",
+            )
+        else:
+            t0_source, declared_t0_used, note = (
+                "fixed",
+                True,
+                "FIXED at the declared t=0 value — this value governs the simulated t=0 state.",
+            )
+        out.append(
+            {
+                "species": sid,
+                "ic_parameter": ic,
+                "declared_t0": declared,
+                "estimated": bool(estimated),
+                "set_by_condition": bool(set_by_condition),
+                "t0_source": t0_source,
+                "declared_t0_used": bool(declared_t0_used),
+                "newly_added": bool(ic in added) if ic else False,
+                "note": note,
+            }
+        )
+    return out
+
+
 # -- pruning ---------------------------------------------------------------
 def prune_orphans(problem) -> dict[str, list[str]]:
     """Remove species/parameters no reaction, rule, IC, or fixed table references."""

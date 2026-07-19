@@ -320,6 +320,16 @@ def _commit_change(
             "removed": recon["parameters"]["removed"] if recon else [],
             "pruned_species": recon["pruned"]["species"] if recon else [],
         }
+        # Per-species initial-condition account: for every species, whether its declared t=0
+        # is FIXED (survives into the simulated t=0 state), ESTIMATED (the fit sets it), or
+        # overridden per-condition — so the caller can see immediately whether a t=0 fix took,
+        # instead of guessing IC naming schemes that all fit identically (issue #57). Computed
+        # whenever a model exists (cheap, analytic); `newly_added` marks ICs this op introduced.
+        initial_conditions = (
+            R.initial_conditions_report(session.problem, added=set(param_diff["added"]))
+            if session.has_model()
+            else []
+        )
         event_base = {
             "type": "alteration",
             "operation": op,
@@ -367,6 +377,7 @@ def _commit_change(
         "version": version,
         "staged": staged,
         "reconcile": recon,
+        "initial_conditions": initial_conditions,
         "references": resolved,
         "justification": justification,
         "validation": report,

@@ -19,10 +19,15 @@ and the rules behind these tools.
 
 Each applies to a model copy, reconciles SBML↔PEtab, lints, then (on a non-batch commit)
 **fits + simulates** and commits — or reverts. Returns `{committed, version, staged,
-reconcile, references, justification, validation, warnings, event_timestamp, fit_status,
-neg_log_likelihood, chi2, fitted_parameters, parameters_at_bound, noise_sigma_report,
+reconcile, initial_conditions, references, justification, validation, warnings, event_timestamp,
+fit_status, neg_log_likelihood, chi2, fitted_parameters, parameters_at_bound, noise_sigma_report,
 improvement}` on success, or `{committed: false, error, issues?}` on rejection. `warnings`
-carries advisory notes (e.g. an added unobserved species). `parameters_at_bound` (see
+carries advisory notes (e.g. an added unobserved species). `initial_conditions` is a per-species
+list — `{species, ic_parameter, declared_t0, estimated, set_by_condition, t0_source
+(fixed|estimated|condition_table), declared_t0_used, newly_added, note}` — reporting whether each
+species' declared t=0 governs the simulated t=0 state (`declared_t0_used: true`, a fixed IC) or is
+overridden by estimation or a condition-table column. The model text cannot set estimate status
+(whether ICs are estimated is a per-scenario setting) — read this block instead of re-authoring. `parameters_at_bound` (see
 `get_fit_summary` below) flags any fitted parameter pinned to its lower/upper bound on THIS
 commit; `noise_sigma_report` lists every ESTIMATED noise-sigma parameter's fitted value against
 its data-driven reference regardless of whether it's at bound. A model that reuses a fixed

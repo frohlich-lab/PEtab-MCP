@@ -49,9 +49,18 @@ end
 `set_model` and the edits don't just parse the Antimony — they **reconcile** it with the PEtab
 parameter table, then **lint** and **fit**. Author with this in mind:
 
-- **Every species gets a parametric initial condition.** The server rewrites `A = 1.0` into
-  `A = A_init` with `A_init` added to the parameter table (linear scale, *fixed*). You may
-  write `A = A_init; A_init = 1.0;` yourself, but you don't have to.
+- **Every species gets a parametric initial condition, FIXED at its declared t=0.** The server
+  rewrites `A = 1.0` into `A = A_init` with `A_init` added to the parameter table (linear scale,
+  `estimate = 0` — *fixed at 1.0*). You may write `A = A_init; A_init = 1.0;` yourself, but you
+  don't have to. **Antimony cannot say "estimate this initial condition"** — the declared number
+  is only the t=0 *value*; whether it is fitted is a parameter-table property, not model text. So
+  writing the IC under a different name (`A_init`, `A_basal`, `p0_A`, a literal, an assignment
+  rule) never changes whether it's estimated — they all reconcile to the same fixed `A_init` and
+  fit identically. Whether initial conditions are estimated at all is set by the problem/scenario,
+  not switchable from the model, so **don't re-author trying to make one estimable.** Every commit
+  returns an **`initial_conditions`** block reporting, per species, whether its t=0 is `fixed`
+  (declared value used), `estimated` (the fit sets it), or `condition_table` (set per condition) —
+  read it to see the mode instead of guessing.
 - **New rate-law symbols become estimated parameters.** Any name in a rate law that isn't a
   species or an existing table parameter is created as a new parameter (log10 scale,
   `estimate = 1`). This is how you introduce a new kinetic constant — just use it in the rate
@@ -143,3 +152,8 @@ edits when the structure itself is what changed.
   `^4` → the quantity is fixed and un-estimable, so a wrong guess can never be corrected by the
   fit. Fix: replace the literal with a named parameter (structural constants — stoichiometry,
   the `1` in a Hill/MM denominator — excepted).
+- Re-authoring a model repeatedly to make an initial condition estimable — trying `A_init`,
+  `A_basal`, `p0_A`, a literal, then an assignment rule → every scheme reconciles to the same
+  *fixed* `A_init` and the fit is identical each time (the NLL never moves). Antimony has no
+  estimate-status syntax, and whether ICs are estimated is a fixed per-scenario setting. Fix: stop
+  re-authoring; read the commit's `initial_conditions` report to see each IC's actual status.

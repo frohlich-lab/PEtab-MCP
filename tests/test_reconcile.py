@@ -193,6 +193,53 @@ def test_condition_column_symbols_are_the_input_columns():
     assert R.condition_column_symbols(prob) == {"dose"}  # not conditionId/conditionName
 
 
+# -- initial-condition report (issue #57) ---------------------------------------------------
+
+def test_initial_conditions_report_fixed_by_default(session):
+    """The toy problem's ICs are FIXED: the report says the declared t=0 governs the t=0 state."""
+    rep = {r["species"]: r for r in R.initial_conditions_report(session.problem)}
+    assert set(rep) == {"A", "B"}
+    a = rep["A"]
+    assert a["ic_parameter"] == "A_init"
+    assert a["declared_t0"] == 1.0
+    assert a["estimated"] is False
+    assert a["set_by_condition"] is False
+    assert a["t0_source"] == "fixed"
+    assert a["declared_t0_used"] is True          # declared t=0 survives into the t=0 state
+    assert rep["B"]["declared_t0"] == 0.0 and rep["B"]["declared_t0_used"] is True
+
+
+def test_initial_conditions_report_flags_estimated_ic(session):
+    """An ESTIMATED IC is reported as not governing t=0 (the fit sets it), not fixed."""
+    from petab.v1.C import ESTIMATE
+
+    session.problem.parameter_df.loc["A_init", ESTIMATE] = 1
+    a = {r["species"]: r for r in R.initial_conditions_report(session.problem)}["A"]
+    assert a["estimated"] is True
+    assert a["t0_source"] == "estimated"
+    assert a["declared_t0_used"] is False
+
+
+def test_initial_conditions_report_marks_newly_added(session):
+    """`added` (the reconcile diff) flags which ICs this op introduced."""
+    rep = {r["species"]: r for r in
+           R.initial_conditions_report(session.problem, added={"A_init"})}
+    assert rep["A"]["newly_added"] is True
+    assert rep["B"]["newly_added"] is False
+
+
+def test_initial_conditions_report_condition_column_override():
+    """A species set per-condition by a condition-table column: its Antimony t=0 is overridden."""
+    prob = _condcol_problem()
+    R.ensure_parametric_initial_conditions(prob.model.sbml_model)
+    # Rename the condition column to the species id so the species itself is condition-set.
+    prob.condition_df = prob.condition_df.rename(columns={"dose": "X"})
+    x = {r["species"]: r for r in R.initial_conditions_report(prob)}["X"]
+    assert x["set_by_condition"] is True
+    assert x["t0_source"] == "condition_table"
+    assert x["declared_t0_used"] is False
+
+
 def test_condition_column_parameter_not_synced_into_parameter_table():
     """A parameter that is a condition-table column is a per-condition PEtab override, so reconcile
     must NOT write it into the parameter table (PEtab forbids it there) while still syncing a real

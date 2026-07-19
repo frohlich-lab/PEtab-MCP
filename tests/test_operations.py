@@ -111,6 +111,23 @@ def test_remove_unknown_reaction(session):
 
 
 # -- parameter operations --------------------------------------------------
+# -- initial-condition report (issue #57) ----------------------------------
+def test_commit_result_includes_initial_conditions(session):
+    # Every reconciling model op reports each species' IC status; a new species is flagged.
+    res = O.add_reaction(session, "J: B -> D; k3*B", justification="B converts to D")
+    ics = {r["species"]: r for r in res["initial_conditions"]}
+    assert {"A", "B", "D"} <= set(ics)
+    assert ics["D"]["newly_added"] is True
+    assert ics["D"]["t0_source"] == "fixed" and ics["D"]["declared_t0_used"] is True
+
+
+def test_no_parameter_estimate_or_fix_operation():
+    # Changing a parameter's estimate status in-loop is deliberately unsupported — no such op.
+    assert not hasattr(O, "estimate_parameter")
+    assert not hasattr(O, "change_parameter_estimated")
+    assert not hasattr(O, "fix_parameter")
+
+
 def test_change_parameter_scale(session):
     res = O.change_parameter_scale(session, "sigma_B", "log10", justification="spans magnitudes")
     assert res["committed"] is True
