@@ -188,3 +188,28 @@ def test_commit_tracks_improvement_vs_versions(fit_session):
     imp2 = second["improvement"]
     assert imp2["best_prior_version"] is not None
     assert imp2["improvement_vs_best_prior"] is not None
+
+
+def test_model_less_problem_does_not_segfault(session, engine):
+    """A zero-shot problem before any set_model has no species; handing its empty model to
+    AMICI segfaults the server (blasi's 0/5 sweep failure). The engine must refuse it and the
+    simulate path must degrade gracefully, WITHOUT invoking AMICI at all (so this test needs no
+    compile)."""
+    from petab_mcp import fitting
+    from petab_mcp.errors import ModelUpdateError
+    from petab_mcp.model import SbmlModel
+
+    session.problem.model = SbmlModel.from_antimony("model m\nend")
+    assert not session.has_model()
+
+    # _get_model refuses rather than handing an empty model to AMICI (which would SIGSEGV).
+    with pytest.raises(ModelUpdateError):
+        engine._get_model()
+
+    # ensure_simulation short-circuits (no AMICI import) and leaves no simulation.
+    assert fitting.ensure_simulation(session, engine) is None
+
+    # fit_summary returns cleanly with None metrics — the judge scores this as "no valid fit".
+    fs = fitting.fit_summary(session, engine)
+    assert fs.get("neg_log_likelihood") is None
+    assert fs.get("bic") is None

@@ -67,6 +67,20 @@ class AmiciEngine:
     # -- compilation cache -------------------------------------------------
     def _get_model(self):
         _ensure_swig_on_path()
+        # AMICI's SBML import SEGFAULTS (SIGSEGV, killing the whole server process) on a
+        # model-less problem — an empty model whose observables reference undefined output
+        # parameters, i.e. a zero-shot problem before any set_model. Refuse to hand such a model
+        # to AMICI: raise a clean, actionable error instead of a hard crash. (blasi went 0/5 in a
+        # sweep because a get_fit_summary/simulate on its model-less state crashed the server; the
+        # simulate paths also short-circuit on has_model() — see fitting.ensure_simulation — so
+        # this is the defense-in-depth backstop for any caller.)
+        if not self.session.has_model():
+            from .errors import ModelUpdateError
+
+            raise ModelUpdateError(
+                "No model to simulate or fit: the problem has no species/reactions yet. Build a "
+                "model with set_model before requesting a simulation, fit, or fit summary."
+            )
         h = self.session.sbml_hash()
         if h not in self._models:
             # Time the model BUILD (compile/import). This runs once per unique SBML hash —
