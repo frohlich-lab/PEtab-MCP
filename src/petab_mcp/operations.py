@@ -323,7 +323,14 @@ def _commit_change(
             else:
                 apply_result = param_edit(session.problem)
                 recon = None
-            report = validate_problem(session.problem)
+            # A parameter that ships FIXED and is a mechanistic/structural constant (a
+            # conservation total, a known rate) must not be removed or freed by an edit —
+            # validation rejects either. Best-effort: an unreadable v0 yields an empty set.
+            try:
+                protected_fixed = session.protected_fixed_parameter_ids()
+            except Exception:  # noqa: BLE001 - never let the lookup break a commit
+                protected_fixed = None
+            report = validate_problem(session.problem, protected_fixed_ids=protected_fixed)
             if not report["valid"]:
                 raise ValidationError(
                     f"Operation {op!r} rejected: the resulting problem is invalid.",
@@ -457,7 +464,9 @@ def set_model(
     parameter the new model no longer declares. That silently discards a previously-fitted
     value, so this warns when the re-author removes a previously-ESTIMATED parameter (fixed
     noise/initial-condition parameters and anything still referenced by the observable/noise
-    or condition tables are preserved).
+    or condition tables are preserved). Dropping (or reintroducing as estimated) a shipped-FIXED
+    mechanistic constant — a conservation total, a known rate — is a harder case: the commit
+    pipeline's validation REJECTS it outright (see ``validation._fixed_constant_role_issues``).
     """
     if not isinstance(antimony, str) or not antimony.strip():
         raise OperationError("set_model requires a non-empty Antimony model string.")

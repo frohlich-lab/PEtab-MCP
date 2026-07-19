@@ -80,6 +80,43 @@ file="tools.md")`).
   ~14 real kinetic parameters the scenario expected — and both looked "adequate" until the fit
   was compared against the true mechanism. Introduce your OWN parameter for a reaction rate,
   always.
+- **Parameter roles are enforced — respect what each parameter IS.** `get_parameters()` gives
+  every row a `role` and a `status`; keep to them.
+  - A `noise_sigma` or `observable_scaling` factor belongs to the fixed observation model, never
+    the mechanism (the previous invariant — reusing one in a rate law is a *rejected* edit).
+  - **You don't set a parameter's estimated/fixed status — there is no tool to toggle it.** A
+    symbol you introduce in the Antimony comes in as an *estimated* parameter (new rate-law
+    symbols are added estimated); a parameter the problem ships fixed stays fixed only while your
+    model keeps declaring it. So the way to control what is estimated is the *model*, not a flag.
+  - **Don't spend an estimated parameter on a value you already know.** A parameter you introduce
+    comes in `estimate=1` and counts toward *k* (the estimated-parameter count), inflating BIC
+    however tight its bounds — a narrow box via `change_parameter_bounds` does not make it "fixed",
+    it just makes an expensive parameter impersonate a constant (and a literal in the rate law is
+    not the answer either — it hides the value from the parameter table). The known fixed constants
+    a problem cares about already ship *fixed* in its parameter table; build the mechanism on those
+    (keep them declared) instead of introducing your own. A run that pinned three known constants
+    with ultra-narrow bounds fit a 6-parameter model that lost on BIC to the 3-parameter winners
+    that didn't estimate those constants at all.
+  - **A shipped-fixed mechanistic constant can't be removed or freed.** A shipped-fixed
+    parameter is a known constant — a conservation total (e.g. a `*_total` held at 1), a measured
+    concentration, a fixed rate. Dropping it from the model — re-authoring without it, or removing
+    the reaction that uses it, so reconcile prunes it — is a *rejected* edit
+    (`check: "fixed_constant_removed"`); so is having it come back estimated after a
+    drop-and-reintroduce (`check: "fixed_constant_made_estimated"`): an estimated conservation
+    total drifts off its value (a run let totals fixed at 1 wander to 9 / 0.001 / 0.4) and adds to
+    *k*. Keep such constants declared and build the mechanism on them, as shipped. (Initial-
+    condition parameters are pruned normally with their species, and observation-model factors are
+    exempt — they have their own estimation paths.)
+  - **The model must actually USE every fixed constant and every condition-table quantity.** A
+    fixed constant you declare but never reference in a rate law/rule is pruned as an orphan and
+    then trips the removal rule above — so *use* each one, don't just declare it. Likewise, every
+    condition-table column sets a model quantity per condition (a dose, an input level, a genotype
+    switch); if the model never uses that quantity, the conditions don't perturb it — every
+    condition simulates identically and the experimental design is ignored. Declaring a
+    condition-table target the model never references is a *rejected* edit
+    (`check: "unused_condition_target"`): wire each condition quantity into the mechanism (an
+    input/driver in a rate law, or the initial state of a species that participates in the
+    dynamics).
 - **Everything is versioned.** Each committed operation snapshots a new version
   and appends a provenance event. Nothing is lost; you can diff, roll back, or
   reset.
@@ -102,7 +139,10 @@ Always start by understanding the problem before changing it:
 - `list_observables()`, `list_conditions()`, `get_measurements(condition_id?, summarize=True,
   observable_id?)` — the fixed data you are fitting. These constrain every edit.
 - `get_parameters()` — the parameter table (id, bounds, nominalValue, estimate,
-  scale, priors).
+  scale, priors), each row annotated with its **`role`** (`kinetic` / `noise_sigma` /
+  `observable_scaling` / `initial_condition` / `exponent` / `constant`) and its **`status`**
+  (`estimated` / `fixed`). Read these before you wire a symbol into a rate law or decide what to
+  estimate — they keep parameter roles straight (see the role invariant below).
 - `validate_problem()` — lint the current problem and see any outstanding issues.
 
 ## Step 2 — edit the model (constrained + justified)

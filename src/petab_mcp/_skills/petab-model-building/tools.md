@@ -13,7 +13,7 @@ and the rules behind these tools.
 | `get_measurements` | `(condition_id?, observable_id?, summarize=True)` | Compact summary of the measurements by default (per observable×condition: count, time span, value min/max/mean, a few preview points); pass `summarize=False` for the full measurement rows. |
 | `get_model` | `(format="antimony")` | Model as text. `format` is `"antimony"` (canonical) or `"sbml"`. |
 | `get_model_structure` | `()` | Structured species / parameters / reactions view. |
-| `validate_problem` | `()` | Lint the current problem; reports `valid` + `issues`. |
+| `validate_problem` | `()` | Lint the current problem; reports `valid` + `issues` (includes the role checks: an observation-model factor reused in the mechanism, a shipped-fixed constant removed or made estimated, and a condition-table target the model never uses). |
 
 ## Model operations (justification required, references optional)
 
@@ -34,7 +34,17 @@ its data-driven reference regardless of whether it's at bound. A model that reus
 observable-scaling factor or noise sigma (anything resolved through the measurement table's
 `observableParameters`/`noiseParameters` or an observable/noise formula) inside a reaction,
 rule, or initial assignment is a hard **rejection** (`check: "observation_model_reuse"` in
-`issues`) — introduce a dedicated parameter instead.
+`issues`) — introduce a dedicated parameter instead. A parameter the problem ships **fixed**
+(`estimate=0`) that is a mechanistic/structural constant — a conservation total, a known rate —
+must not be **removed** (`check: "fixed_constant_removed"`) or turned **estimated**
+(`check: "fixed_constant_made_estimated"`): dropping it changes the problem, and estimating it
+lets its value drift and adds to *k*, inflating BIC. There is no tool to toggle a parameter
+between fixed and estimated, so keep such constants declared and build on them as the problem
+ships them; observation-model factors and initial conditions are exempt (pruned normally with
+their species / their own estimation paths). Finally, a **condition-table target the model never
+uses** is a hard **rejection** (`check: "unused_condition_target"`): a condition column sets a
+model quantity per condition, so if the model never references it the conditions don't perturb the
+model — use each condition quantity in the mechanism.
 
 | Tool | Signature | Notes |
 | --- | --- | --- |
@@ -61,7 +71,7 @@ search space.
 
 | Tool | Signature | Notes |
 | --- | --- | --- |
-| `get_parameters` | `()` | The parameter table: id, bounds, `nominalValue` (fit-only), `estimate`, scale, priors. |
+| `get_parameters` | `()` | The parameter table: id, bounds, `nominalValue` (fit-only), `estimate`, scale, priors, plus `role` (`kinetic`/`noise_sigma`/`observable_scaling`/`initial_condition`/`exponent`/`constant`) and `status` (`estimated`/`fixed`). |
 | `sync_parameters` | `(policy="report")` | Reconcile table with model. `"report"` lists model params missing from the table and orphaned table rows (no change); `"add"` runs the full reconcile — adds missing params (with IC/exponent/scale handling) and removes orphaned rows — the same sync the commit pipeline runs. |
 
 ## Batching

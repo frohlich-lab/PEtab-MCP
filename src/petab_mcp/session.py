@@ -56,6 +56,11 @@ class PetabSession:
         # pyPESTO's own optimizer logs go to a separate <root>/pypesto.log
         logging_setup.configure_pypesto(self.provenance.root)
 
+        # Ids of parameters that ship FIXED and are structural/mechanistic constants — the ones
+        # the agent must neither free nor remove. Derived once from the initial (v0) problem and
+        # cached (the shipped design never changes); see `protected_fixed_parameter_ids`.
+        self._protected_fixed_ids: set[str] | None = None
+
         # batch (staging) state — chain several operations into one version
         self.batch_active: bool = False
         self.batch_label: str | None = None
@@ -142,6 +147,59 @@ class PetabSession:
         model = SbmlModel.from_antimony(antimony, model_id=getattr(self.problem.model, "model_id", None))
         model.rel_path = rel or "model.xml"
         self.problem.model = model
+
+    def protected_fixed_parameter_ids(self) -> set[str]:
+        """Ids of parameters that ship FIXED (``estimate=0``) and are mechanistic/structural
+        constants — a conservation total, a known rate, a measured concentration. These must not
+        be freed *or* removed: validation rejects a commit that turns one estimated or drops it
+        from the model (see ``validation._fixed_constant_role_issues``).
+
+        Derived from the initial (v0) problem and cached — the shipped design never changes.
+        EXCLUDED (each has its own handling, so neither is "protected"):
+
+        * initial-condition parameters — removed legitimately when their species is removed;
+          detected from the v0 model, with an ``*_init`` name fallback for a model-less v0 whose
+          empty model can't classify them;
+        * observation-model factors (noise sigmas, observable scaling/offset) — pinned by the
+          fixed observable/measurement tables and given their own estimation paths.
+        """
+        if self._protected_fixed_ids is not None:
+            return self._protected_fixed_ids
+        self._protected_fixed_ids = self._compute_protected_fixed_ids()
+        return self._protected_fixed_ids
+
+    def _compute_protected_fixed_ids(self) -> set[str]:
+        from petab.v1.C import ESTIMATE
+
+        from . import reconcile as R
+
+        try:
+            ref_df = self.provenance.get_parameter_df(0)
+        except Exception:  # no v0 yet (shouldn't happen post-init) — nothing to protect
+            return set()
+        if ESTIMATE not in getattr(ref_df, "columns", []):
+            return set()
+
+        def _is_fixed(value: Any) -> bool:
+            try:
+                return float(value) == 0
+            except (TypeError, ValueError):
+                return False
+
+        fixed = {str(pid) for pid in ref_df.index if _is_fixed(ref_df.loc[pid, ESTIMATE])}
+        if not fixed:
+            return set()
+
+        ic: set[str] = {p for p in fixed if p.endswith("_init")}
+        try:  # initial-condition parameters declared by the v0 model (catches author-named ICs)
+            snap = self.provenance.get_version(0)
+            v0_model = SbmlModel.from_antimony(snap["model_antimony"], model_id=None)
+            ic |= {str(x) for x in R._ic_parameter_ids(v0_model.sbml_model)}
+        except Exception:  # best-effort — the *_init fallback above still applies
+            pass
+
+        obs = {str(x) for x in (R.noise_sigma_ids(self.problem) | R.observable_scaling_ids(self.problem))}
+        return fixed - ic - obs
 
     def describe(self) -> dict[str, Any]:
         """A summary of the problem — model size, tables, free parameters, current fit metrics.

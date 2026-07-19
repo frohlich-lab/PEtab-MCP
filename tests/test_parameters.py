@@ -36,6 +36,20 @@ def test_records(session):
     assert recs["A_init"]["parameterScale"] == "lin"  # IC params are linear
 
 
+def test_records_include_role_and_status(session):
+    recs = _by_id(session)
+    # roles name what each parameter IS
+    assert recs["k1"]["role"] == "kinetic"
+    assert recs["k2"]["role"] == "kinetic"
+    assert recs["sigma_B"]["role"] == "noise_sigma"
+    assert recs["A_init"]["role"] == "initial_condition"
+    assert recs["B_init"]["role"] == "initial_condition"
+    # status restates the estimate flag in words
+    assert recs["k1"]["status"] == "estimated"
+    assert recs["sigma_B"]["status"] == "fixed"
+    assert recs["A_init"]["status"] == "fixed"
+
+
 def test_update_nominal_and_estimate(session):
     P.update_parameters(session.problem, [{"id": "k1", "nominalValue": 0.9}])
     P.update_parameters(session.problem, [{"id": "sigma_B", "estimate": "true"}])

@@ -5,7 +5,8 @@ underlying data as SQL tables the agent can query directly. Everything the model
 loop produces is queryable in one place:
 
 * the fixed experimental design — ``measurements``, ``conditions``, ``observables``;
-* the ``parameters`` table (bounds, scale, fitted ``nominalValue``, ``estimate``, priors);
+* the ``parameters`` table (bounds, scale, fitted ``nominalValue``, ``estimate``, priors,
+  plus each parameter's ``role`` and ``status``);
 * the ``simulations`` dataframe from the last commit — one row per measurement point,
   carrying the ``simulation`` value and the **residuals** (``residual``,
   ``residual_weighted`` — the chi2 term — and the evaluated ``noise``) next to the
@@ -60,7 +61,9 @@ TABLE_DESCRIPTIONS: dict[str, str] = {
     "conditions": "Fixed experimental conditions and the model changes they apply.",
     "observables": "Fixed observable definitions (formula, noise model, transformation).",
     "parameters": (
-        "Parameter table: bounds, scale, nominalValue (fit-only), estimate, priors."
+        "Parameter table: bounds, scale, nominalValue (fit-only), estimate, priors, plus "
+        "role (kinetic/noise_sigma/observable_scaling/initial_condition/exponent/constant) "
+        "and status (estimated/fixed)."
     ),
     "simulations": (
         "Per-point simulation dataframe from the last commit: measurement vs simulation "

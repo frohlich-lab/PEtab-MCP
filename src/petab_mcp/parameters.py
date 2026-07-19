@@ -78,8 +78,27 @@ def parameter_df_to_records(df) -> list[dict[str, Any]]:
 
 
 def parameters_to_records(problem) -> list[dict[str, Any]]:
-    """Return the problem's parameter table as a list of JSON-friendly records."""
-    return parameter_df_to_records(problem.parameter_df)
+    """Return the problem's parameter table as JSON-friendly records, each annotated with its
+    ``role`` and its ``status`` ("estimated" / "fixed").
+
+    The ``role`` (see :func:`reconcile.parameter_roles`) tells a mechanistic KINETIC constant
+    apart from an observation-model factor (a scaling/offset or noise sigma), an initial
+    condition, a Hill exponent, or a structural CONSTANT; ``status`` restates the raw
+    ``estimate`` flag in words. Both make a parameter's declared role legible at a glance —
+    so a scaling factor isn't repurposed as a rate constant, and a known constant is used as the
+    fixed parameter the problem ships rather than spent as an estimated (k-counting) one. The
+    estimated/fixed status is set by the shipped table and reconcile, not toggled by hand.
+    """
+    from .reconcile import parameter_roles  # lazy: reconcile imports from this module
+
+    roles = parameter_roles(problem)
+    records = parameter_df_to_records(problem.parameter_df)
+    for rec in records:
+        pid = str(rec.get(PARAMETER_ID))
+        rec["role"] = roles.get(pid)
+        est = rec.get(ESTIMATE)
+        rec["status"] = None if est is None else ("estimated" if est else "fixed")
+    return records
 
 
 def parameter_df_to_tsv(df) -> str:

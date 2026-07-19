@@ -247,7 +247,10 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         optional; `n_starts` overrides the fit default (0 = simulate only). Because the whole
         model is replaced, the result `warnings` flag any previously-ESTIMATED parameter the
         re-author no longer declares (its fitted value is dropped); fixed noise/initial-
-        condition parameters and anything the observable/condition tables reference survive.
+        condition parameters and anything the observable/condition tables reference survive. A
+        re-author that drops (or reintroduces as estimated) a shipped-FIXED mechanistic constant
+        — a conservation total, a known rate — is REJECTED, not warned: keep such constants
+        declared and build the mechanism on them as shipped.
         """
         return ctx.run_operation("set_model", ops_mod.set_model, session, antimony, justification, references, n_starts)
 
@@ -318,7 +321,11 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
     @mcp.tool()
     def validate_problem() -> dict[str, Any]:
         """Lint the current problem (model + tables) and report issues."""
-        return _validate_problem(session.problem)
+        try:
+            protected_fixed = session.protected_fixed_parameter_ids()
+        except Exception:  # noqa: BLE001 - the role check is best-effort; lint still runs
+            protected_fixed = None
+        return _validate_problem(session.problem, protected_fixed_ids=protected_fixed)
 
 
 # -------------------------------------------------------------- parameter tools
@@ -327,7 +334,20 @@ def _register_parameter_tools(mcp: FastMCP, ctx: _Ctx) -> None:
 
     @mcp.tool()
     def get_parameters() -> list[dict[str, Any]]:
-        """Return the parameter table (id, bounds, nominal_value, estimate, prior).
+        """Return the parameter table (id, bounds, nominal_value, estimate, prior), each row
+        annotated with its `role` and `status`.
+
+        `role` names what the parameter IS — `kinetic` (a mechanistic rate constant used in a
+        rate law), `noise_sigma` or `observable_scaling` (fixed observation-model factors, never
+        to be wired into a reaction), `initial_condition`, `exponent` (a Hill coefficient), or
+        `constant` (an otherwise-unreferenced constant). `status` is `"estimated"` or `"fixed"`.
+        Use these to keep roles straight: don't repurpose a scaling/offset factor as a rate
+        constant, and don't spend an estimated parameter on a value you already know — a parameter
+        you introduce is added estimated and counts toward k (inflating BIC) however tight its
+        bounds. A parameter's estimated/fixed status is not something you set here: a symbol you
+        introduce is added estimated, and a shipped-fixed constant stays fixed only while your
+        model keeps declaring it — so build on the constants the problem ships fixed rather than
+        introducing your own.
 
         Values (`nominalValue`) are set by the automatic fit on commit; adjust bounds and
         scale through `change_parameter_bounds` / `change_parameter_scale`.

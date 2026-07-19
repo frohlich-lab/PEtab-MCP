@@ -408,6 +408,57 @@ def observable_scaling_ids(problem) -> set[str]:
 INNER_TYPE_SIGMA = "sigma"
 INNER_TYPE_SCALING = "scaling"
 
+# Parameter-role tags surfaced by ``get_parameters`` (see :func:`parameter_roles`). They name
+# what a parameter *is* in the problem, so the agent can tell a mechanistic rate constant apart
+# from an observation-model factor (a scaling/offset or noise sigma) or a structural constant —
+# the distinction the role-enforcement checks in :mod:`validation` are about.
+ROLE_NOISE_SIGMA = "noise_sigma"
+ROLE_OBSERVABLE_SCALING = "observable_scaling"
+ROLE_INITIAL_CONDITION = "initial_condition"
+ROLE_EXPONENT = "exponent"
+ROLE_KINETIC = "kinetic"
+ROLE_CONSTANT = "constant"
+
+
+def parameter_roles(problem) -> dict[str, str]:
+    """Best-effort role for every parameter-table id — ``{parameter_id: role}``.
+
+    The role names what the parameter *is* (in priority order): a NOISE sigma or an
+    observable SCALING/offset factor (the fixed observation model, resolved through the
+    observable/noise formulas or their measurement-level overrides), an INITIAL-CONDITION
+    parameter, a cooperativity/Hill EXPONENT, a mechanistic KINETIC constant (a symbol used in
+    a reaction rate law / rule / initial assignment), or an otherwise-unreferenced CONSTANT.
+
+    Surfaced by ``get_parameters`` so a scaling factor or a structural constant is legible as
+    such — the two role-enforcement checks (a scaling factor wired into a rate law; a fixed
+    constant made estimated) are about exactly this classification. Observation-model roles are
+    checked first so a reused parameter still reads as what it fundamentally is.
+    """
+    model = getattr(problem, "model", None)
+    sm = model.sbml_model if model is not None else None
+    sigmas = noise_sigma_ids(problem)
+    scalings = observable_scaling_ids(problem)
+    ic_params = _ic_parameter_ids(sm) if sm is not None else set()
+    exp_params = _exponent_symbols(sm) if sm is not None else set()
+    model_math = _model_math_names(sm) if sm is not None else set()
+
+    roles: dict[str, str] = {}
+    for raw in problem.parameter_df.index:
+        pid = str(raw)
+        if pid in sigmas:
+            roles[pid] = ROLE_NOISE_SIGMA
+        elif pid in scalings:
+            roles[pid] = ROLE_OBSERVABLE_SCALING
+        elif pid in ic_params:
+            roles[pid] = ROLE_INITIAL_CONDITION
+        elif pid in exp_params:
+            roles[pid] = ROLE_EXPONENT
+        elif pid in model_math:
+            roles[pid] = ROLE_KINETIC
+        else:
+            roles[pid] = ROLE_CONSTANT
+    return roles
+
 
 def classify_inner_parameters(problem) -> dict[str, str]:
     """Which ESTIMATED parameters can be solved analytically in a hierarchical (inner) problem,
