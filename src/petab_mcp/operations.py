@@ -202,22 +202,66 @@ def _observed_symbol_ids(problem) -> set[str]:
     return ids
 
 
-def _parsimony_warnings(problem, old_species: set[str]) -> list[str]:
-    """Advisory warnings for an edit that adds species appearing in no observable.
+def _reaches_observed(sid: str, edges: dict[str, set[str]], targets: set[str]) -> bool:
+    """Whether ``sid`` feeds — through the influence graph — any observed species in ``targets``."""
+    seen: set[str] = set()
+    stack: list[str] = list(edges.get(sid, ()))
+    while stack:
+        cur = stack.pop()
+        if cur in targets:
+            return True
+        if cur in seen:
+            continue
+        seen.add(cur)
+        stack.extend(edges.get(cur, ()))
+    return False
 
-    Data only constrains observed species, so a newly introduced *unobserved* species
-    (e.g. a sink ``B -> C``) can degenerately fit a single observable just as well as a
-    repair that reuses existing species (e.g. making a reaction reversible). We flag it so
-    the caller sees this in-loop, without rejecting the (structurally valid) edit.
+
+def _parsimony_warnings(problem, old_species: set[str]) -> list[str]:
+    """Advisory warning for an edit that adds a *genuinely disconnected* hidden species.
+
+    Data only constrains species that connect to an observable, so a newly introduced species
+    that feeds no observable — a dead-end sink like ``B -> C`` — can degenerately fit a single
+    observable just as well as a repair that reuses existing species (e.g. making a reaction
+    reversible). We flag *only* that case, in-loop, without rejecting the (structurally valid)
+    edit.
+
+    We deliberately do NOT flag species that are legitimately unobserved, because doing so
+    trained the agent to ignore the warning entirely (it fired 62× on correct choices in one
+    benchmark). Suppressed:
+
+    * **condition-table inputs** — a species set per-condition (a dose/genotype column);
+    * **held const/boundary species and rule-driven forcing terms** — model INPUTS, not free
+      states (see :func:`reconcile.input_species`);
+    * **any species that feeds an observed species** — an enzyme, a substrate, an upstream
+      regulator reaches an observable through the reaction network, so the data does constrain
+      it (see :func:`reconcile.species_influence_graph`).
     """
-    new_species = set(R.species_ids(problem.model.sbml_model)) - old_species
-    unobserved = sorted(new_species - _observed_symbol_ids(problem))
+    sm = problem.model.sbml_model
+    new_species = set(R.species_ids(sm)) - old_species
+    if not new_species:
+        return []
+    observed = _observed_symbol_ids(problem)
+    unobserved = new_species - observed
     if not unobserved:
         return []
+
+    exempt = R.condition_column_symbols(problem) | R.input_species(sm)
+    observed_species = observed & set(R.species_ids(sm))
+    edges = R.species_influence_graph(sm)
+    disconnected = sorted(
+        sid
+        for sid in unobserved
+        if sid not in exempt and not _reaches_observed(sid, edges, observed_species)
+    )
+    if not disconnected:
+        return []
     return [
-        f"Added unobserved species {unobserved}: they appear in no observable formula. "
-        "A repair that reuses observed/existing species (e.g. making an existing reaction "
-        "reversible) is usually preferable — an unobserved sink can degenerately fit the data."
+        f"Added unobserved species {disconnected}: they feed no observable, come from no "
+        "condition-table input, and are set by no forcing rule — genuinely disconnected hidden "
+        "states that no data constrains. A repair that reuses observed/existing species (e.g. "
+        "making an existing reaction reversible) is usually preferable, since a disconnected "
+        "species can degenerately fit the data."
     ]
 
 

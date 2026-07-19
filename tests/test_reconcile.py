@@ -252,3 +252,43 @@ def test_condition_column_parameter_not_synced_into_parameter_table():
     assert "dose" not in diff["added"]
     assert "k" in prob.parameter_df.index             # a genuine kinetic is still synced
     assert not petab.lint_problem(prob)               # petab accepts the verbatim condition column
+
+
+# -- observable-connection gating (issue #64) ------------------------------
+# A -> B -> D: B is a free state fed by A; D is a pure downstream sink. `sink`'s rate reuses B,
+# so D receives mass but drives nothing.
+INFLUENCE_ANTIMONY = """model influence_test
+  compartment c = 1;
+  species A in c; species B in c; species D in c;
+  A = 1.0; B = 0.0; D = 0.0;
+  k1 = 0.5; k3 = 0.2;
+  r1: A => B; k1 * A;
+  sink: B => D; k3 * B;
+end
+"""
+
+# I is a held (const) input; F is driven by an assignment rule (a forcing term); X is a free state.
+INPUT_ANTIMONY = """model input_test
+  compartment c = 1;
+  const species I in c;
+  species X in c; species F in c;
+  I = 1.0; X = 1.0;
+  F := 2 * I;
+  k = 0.1;
+  r: X => ; k * X;
+end
+"""
+
+
+def test_species_influence_graph_is_directional():
+    edges = R.species_influence_graph(_sm(INFLUENCE_ANTIMONY))
+    assert "B" in edges["A"]                    # A drives its product B
+    assert "D" in edges["B"]                    # B drives its sink D
+    assert edges.get("D", set()) == set()       # a pure sink drives nothing downstream
+
+
+def test_input_species_flags_const_boundary_and_rule_driven():
+    inputs = R.input_species(_sm(INPUT_ANTIMONY))
+    assert "I" in inputs                        # const species -> a held input
+    assert "F" in inputs                        # assignment-rule-driven -> a forcing term
+    assert "X" not in inputs                    # a free dynamic state, not an input

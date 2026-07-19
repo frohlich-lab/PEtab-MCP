@@ -253,6 +253,51 @@ def _model_math_names(sm) -> set[str]:
     return names
 
 
+def input_species(sm) -> set[str]:
+    """Species that are model INPUTS / forcing terms rather than free dynamic states: held
+    constant, on the boundary, or driven by an assignment- or rate-rule (a forcing function).
+
+    Their trajectory is imposed, not fitted — like a condition-table column — so they are
+    legitimately absent from every observable and must NOT be flagged as an unconstrained
+    hidden state (e.g. a genotype flag ``S_on`` or an input/forcing level ``insulin_level``)."""
+    inputs: set[str] = set()
+    for i in range(sm.getNumSpecies()):
+        sp = sm.getSpecies(i)
+        if sp.getConstant() or sp.getBoundaryCondition():
+            inputs.add(sp.getId())
+    for i in range(sm.getNumRules()):
+        rule = sm.getRule(i)
+        if rule.isSetVariable() and (rule.isAssignment() or rule.isRate()):
+            inputs.add(rule.getVariable())
+    return inputs & species_ids(sm)
+
+
+def species_influence_graph(sm) -> dict[str, set[str]]:
+    """Directed 'influences' graph over species: ``X -> Y`` when ``X`` enters the rate at which
+    ``Y`` changes — i.e. ``X`` is a reactant/modifier of, or appears in the rate law of, a
+    reaction for which ``Y`` is a reactant or product.
+
+    A pure *product* of a reaction does not influence its other species (it is downstream), so a
+    dead-end sink ``B -> D`` yields no outgoing edge from ``D``: ``D`` can reach no observed
+    species. That reachability is exactly what distinguishes a genuinely disconnected hidden
+    state (worth flagging) from a species that feeds — however indirectly — an observable (an
+    enzyme, a substrate, an upstream regulator)."""
+    species = species_ids(sm)
+    edges: dict[str, set[str]] = {}
+    for i in range(sm.getNumReactions()):
+        rxn = sm.getReaction(i)
+        reactants = {rxn.getReactant(j).getSpecies() for j in range(rxn.getNumReactants())}
+        products = {rxn.getProduct(j).getSpecies() for j in range(rxn.getNumProducts())}
+        modifiers = {rxn.getModifier(j).getSpecies() for j in range(rxn.getNumModifiers())}
+        kl = rxn.getKineticLaw()
+        rate_syms = _ast_names(kl.getMath()) if kl is not None else set()
+        drivers = (reactants | modifiers | rate_syms) & species
+        changed = reactants | products
+        for x in drivers:
+            edges.setdefault(x, set()).update(changed)
+    return edges
+
+
 def _observable_and_measurement_symbols(problem) -> set[str]:
     """Symbols referenced by the observable/noise formulas AND their measurement-level
     ``observableParameters``/``noiseParameters`` overrides — shared by

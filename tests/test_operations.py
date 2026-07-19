@@ -60,6 +60,24 @@ def test_no_parsimony_warning_when_reusing_species(session):
     assert not any("unobserved species" in w for w in res["warnings"])
 
 
+def test_no_parsimony_warning_when_new_species_feeds_observable(session):
+    # C is unobserved but PRODUCES the observed species B (C -> B), so the data constrains it
+    # through the network — a legitimate upstream addition, not a degenerate sink. The warning
+    # must not fire, or it trains the agent to ignore the one warning type that ever does.
+    res = O.add_reaction(session, "J: C -> B; k3*C", justification="C is converted to B")
+    assert res["committed"] is True
+    assert "C" in _species(session)
+    assert not any("unobserved species" in w for w in res["warnings"])
+
+
+def test_parsimony_warning_still_fires_for_disconnected_sink(session):
+    # D is a pure downstream sink of the observed species B (B -> D): it feeds no observable and
+    # no input sets it, so it stays flagged as a genuinely disconnected hidden state.
+    res = O.add_reaction(session, "J: B -> D; k3*B", justification="B drains to D")
+    assert res["committed"] is True
+    assert any("unobserved species" in w for w in res["warnings"])
+
+
 # -- add / change / remove -------------------------------------------------
 def test_add_reaction_auto_adds_species_and_params(session):
     res = O.add_reaction(
