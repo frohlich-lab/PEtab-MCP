@@ -158,3 +158,50 @@ def test_sync_parameters_rejects_unknown_policy(session):
 
     with pytest.raises(ParameterError):
         R.sync_parameters(session.problem, "frobnicate")
+
+
+# A model driven by a per-condition input parameter ``dose`` that is ALSO a condition-table column,
+# plus a genuine kinetic ``k``. This is how benchmark condition tables carry parametric inputs
+# (EGF doses, insulin steps, rate multipliers).
+_CONDCOL_ANTIMONY = """model m
+  compartment c = 1;
+  species X in c; X = 0;
+  dose = 1; k = 0.1;
+  r1: -> X; c*dose*k;
+  r2: X -> ; c*k*X;
+end"""
+
+
+def _condcol_problem():
+    import pandas as pd
+    import petab.v1 as petab
+
+    cond = pd.DataFrame({"conditionId": ["c1", "c2"], "dose": [1.0, 5.0]}).set_index("conditionId")
+    obs = pd.DataFrame({"observableId": ["obs_X"], "observableFormula": ["X"],
+                        "noiseFormula": ["1"]}).set_index("observableId")
+    meas = pd.DataFrame({"observableId": ["obs_X", "obs_X"], "simulationConditionId": ["c1", "c2"],
+                         "time": [1.0, 1.0], "measurement": [0.3, 1.2]})
+    par = pd.DataFrame({"parameterId": ["k"], "parameterScale": ["log10"], "lowerBound": [1e-3],
+                        "upperBound": [1e3], "nominalValue": [0.1], "estimate": [1]}
+                       ).set_index("parameterId")
+    return petab.Problem(model=SbmlModel.from_antimony(_CONDCOL_ANTIMONY), condition_df=cond,
+                         observable_df=obs, measurement_df=meas, parameter_df=par)
+
+
+def test_condition_column_symbols_are_the_input_columns():
+    prob = _condcol_problem()
+    assert R.condition_column_symbols(prob) == {"dose"}  # not conditionId/conditionName
+
+
+def test_condition_column_parameter_not_synced_into_parameter_table():
+    """A parameter that is a condition-table column is a per-condition PEtab override, so reconcile
+    must NOT write it into the parameter table (PEtab forbids it there) while still syncing a real
+    kinetic — so a benchmark condition table with parametric input columns ships verbatim."""
+    import petab.v1 as petab
+
+    prob = _condcol_problem()
+    diff = R.sync_parameter_table(prob)
+    assert "dose" not in prob.parameter_df.index      # condition-column param stays out of the table
+    assert "dose" not in diff["added"]
+    assert "k" in prob.parameter_df.index             # a genuine kinetic is still synced
+    assert not petab.lint_problem(prob)               # petab accepts the verbatim condition column

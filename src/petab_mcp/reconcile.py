@@ -18,6 +18,7 @@ from typing import Any
 
 import libsbml
 from petab.v1.C import (
+    CONDITION_ID,
     CONDITION_NAME,
     ESTIMATE,
     LIN,
@@ -286,6 +287,23 @@ def table_referenced_symbols(problem) -> set[str]:
     return names
 
 
+def condition_column_symbols(problem) -> set[str]:
+    """Parameters/species that are CONDITION-TABLE COLUMN HEADERS (excluding conditionId/Name).
+
+    A model parameter that appears as a condition-table column is set PER CONDITION — a PEtab
+    condition override — so it must NOT be written into the parameter table: PEtab rejects it there
+    ("… is not allowed to occur in the parameters table"). Excluding these from the parameter-table
+    sync lets a benchmark condition table with parametric input columns (EGF doses, insulin steps,
+    rate multipliers, genotype switches) ship VERBATIM instead of being rewritten onto species.
+    Mirrors petab's own ``get_valid_parameters_for_parameter_table`` (which blacklists the condition
+    columns). Cell *values* that reference an estimated parameter (a shared dose amplitude) are a
+    different thing — those stay, via :func:`table_referenced_symbols`."""
+    cdf = problem.condition_df
+    if cdf is None:
+        return set()
+    return {str(c) for c in cdf.columns} - {CONDITION_NAME, CONDITION_ID}
+
+
 def observation_model_symbols(problem) -> set[str]:
     """Symbols belonging to the FIXED *observation model* specifically — observable-scaling
     factors and noise sigmas resolved through the observable/noise formulas and their
@@ -519,6 +537,12 @@ def sync_parameter_table(problem, estimate_ics: bool = False) -> dict[str, list[
     than fixed at the observed t=0 value."""
     sm = problem.model.sbml_model
     valid = set(problem.model.get_valid_parameters_for_parameter_table())
+    # A parameter that is a CONDITION-TABLE COLUMN is set per condition (a PEtab condition
+    # override), not a parameter-table row — PEtab forbids it in the parameter table. Drop such
+    # columns from the sync so a condition table with parametric input columns ships verbatim
+    # (see condition_column_symbols); without this, reconcile force-added them and petab lint then
+    # rejected the problem ("… not allowed to occur in the parameters table").
+    valid -= condition_column_symbols(problem)
     table_ids = set(problem.parameter_df.index)
     ic_params = _ic_parameter_ids(sm)
     exp_params = _exponent_symbols(sm)  # cooperativity/Hill exponents -> lin scale, tight bounds
