@@ -78,6 +78,29 @@ class AmiciEngine:
 
             build_dir = self.build_root / f"m_{h}"
 
+            # Dump the exact model about to be handed to AMICI *before* the import call. AMICI's
+            # SBML import + C++ codegen can hard-crash the process (a segfault-class failure in
+            # libsbml/codegen on a pathological model) that no Python exception can catch and that
+            # leaves no traceback — the MCP client just sees the connection drop (httpx.ReadError).
+            # When that happens, this INFO line is the last thing in server.log and pinpoints the
+            # offending model. Only logged on a fresh build (once per SBML hash), so it is not
+            # noisy. (A blasi sweep run died exactly this way with no record of the culprit model.)
+            # Wrapped whole in a broad guard: this is best-effort diagnostics and must NEVER block
+            # the build (a missing sbml_model or a throwing libsbml accessor would otherwise do so).
+            log = getattr(self.session, "logger", None)
+            if log is not None:
+                try:
+                    sm = self.session.problem.model.sbml_model
+                    ant = self.session.problem.model.to_antimony()
+                    log.info(
+                        "AMICI import starting (sbml_hash=%s, species=%d, reactions=%d); if the "
+                        "server process dies during this import with no traceback, THIS is the "
+                        "model that crashed it:\n%s",
+                        h, sm.getNumSpecies(), sm.getNumReactions(), ant,
+                    )
+                except Exception:  # noqa: BLE001 - diagnostic only, never block the build
+                    log.info("AMICI import starting (sbml_hash=%s); model dump unavailable", h)
+
             # compile_=None reuses an already-compiled build for this SBML hash
             # (recompiling a module already imported in-process would fail). A
             # COMPLETE hash-keyed build is always valid: identical SBML + fixed
