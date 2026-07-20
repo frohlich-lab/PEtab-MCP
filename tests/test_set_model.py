@@ -61,6 +61,25 @@ ONE_REACTION_ANTIMONY = """model conversion_reaction
 end
 """
 
+# A genuinely-different re-author that KEEPS both reactions (and k1) and adds a B degradation —
+# a real structural change (so it is not de-duplicated as a no-op) that still declares k1.
+REVERSIBLE_PLUS_DEG_ANTIMONY = """model conversion_reaction
+  compartment compartment_ = 1;
+  species A in compartment_;
+  species B in compartment_;
+  A = A_init;
+  B = B_init;
+  A_init = 1.0;
+  B_init = 0.0;
+  k1 = 0.5;
+  k2 = 0.1;
+  kdeg = 0.01;
+  r1: A => B; k1 * A;
+  r2: B => A; k2 * B;
+  rdeg: B => ; kdeg * B;
+end
+"""
+
 
 def _write_empty_sbml(path: Path, model_id: str = "conversion_reaction") -> None:
     doc = libsbml.SBMLDocument(3, 2)
@@ -229,8 +248,10 @@ def test_shipped_fixed_constant_is_protected(fixed_k1_session):
     # k1 ships fixed and is a mechanistic (kinetic) constant, so it is protected.
     assert "k1" in sess.protected_fixed_parameter_ids()
 
-    # A re-author that KEEPS k1 declared leaves it fixed (reconcile preserves the estimate flag).
-    res = O.set_model(sess, REVERSIBLE_ANTIMONY, justification="keep both reactions")
+    # A (genuine) re-author that KEEPS k1 declared leaves it fixed (reconcile preserves the
+    # estimate flag). A structural change — adding a B degradation — so it is not de-duplicated
+    # as a no-op re-author of the identical shipped model.
+    res = O.set_model(sess, REVERSIBLE_PLUS_DEG_ANTIMONY, justification="keep k1, add degradation")
     assert res["committed"] is True
     k1_row = {r["parameterId"]: r for r in P.parameters_to_records(sess.problem)}["k1"]
     assert k1_row["status"] == "fixed" and k1_row["role"] == "kinetic"

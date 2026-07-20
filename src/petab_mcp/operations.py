@@ -21,10 +21,11 @@ import libsbml
 from petab.v1.C import LOWER_BOUND, UPPER_BOUND
 from petab.v1.models.sbml_model import SbmlModel
 
+from . import dedup as D
 from . import reconcile as R
 from .constants import NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD, WIDENING_NEGLIGIBLE_BIC_GAIN
 from .errors import ModelUpdateError, PetabMcpError, UnknownEntityError, ValidationError
-from .parameters import problem_fingerprint, sha16
+from .parameters import problem_fingerprint, sha16, structure_fingerprint
 from .references import resolve_references
 from .validation import validate_problem
 
@@ -278,6 +279,7 @@ def _commit_change(
     param_edit: Callable[[Any], Any] | None = None,
     require_references: bool = True,
     n_starts: int | None = None,
+    dedup: bool = False,
 ) -> dict[str, Any]:
     """Shared commit pipeline for model and parameter operations.
 
@@ -293,6 +295,13 @@ def _commit_change(
     simulation dataframe. ``n_starts`` overrides the server default (0 = simulate-only).
     The fit is part of the commit: a fit/simulation failure reverts the structural edit so
     the commit is atomic.
+
+    ``dedup`` (set by ``set_model``, the whole-model re-author) enables the structure-level
+    de-duplication guard (see :mod:`dedup`, issue #59): after reconcile+validate but BEFORE the
+    expensive fit, the resolved structure is fingerprinted and — if it is byte-identical to the
+    current version — the recompile+fit+snapshot are skipped and a no-op result is returned;
+    revisiting an already-tried (or worse-scoring) structure attaches an advisory ``warning``;
+    and an identical structure re-authored too many times is refused outright.
     """
     if sum(cb is not None for cb in (model_build, model_edit, param_edit)) != 1:
         raise ValueError(
@@ -346,6 +355,58 @@ def _commit_change(
             # so the tool returns a clean committed=false with the message, instead of the
             # raw exception crashing the call.
             staged = session.batch_active
+            dedup_warnings: list[str] = []
+            if dedup and not staged:
+                # Structure-level de-dup, BEFORE the expensive recompile+fit (see `dedup`).
+                # The candidate is already installed + reconciled + validated, so its resolved
+                # structure and estimation setup are final.
+                structure_hash = structure_fingerprint(
+                    session.problem.model.sbml_model, session.problem.parameter_df)
+                head_version = session.provenance.current_version
+                head_structure_hash = structure_fingerprint(old_model.sbml_model, old_params)
+                same_setup = (
+                    D.estimation_setup_signature(session.problem.parameter_df)
+                    == D.estimation_setup_signature(old_params)
+                )
+                registry = D.build_registry(session)
+                # Count re-authors under (structure + estimation setup), so re-authoring the same
+                # structure with DIFFERENT bounds/scale (a real change) is not counted toward the
+                # identical-re-author loop guard — only a genuinely identical re-author is.
+                prior_attempts = session.note_reauthor_attempt(
+                    D.reauthor_key(structure_hash, session.problem.parameter_df))
+                decision = D.decide(
+                    structure_hash=structure_hash,
+                    head_structure_hash=head_structure_hash,
+                    same_setup=same_setup,
+                    head_version=head_version,
+                    registry=registry,
+                    prior_attempts=prior_attempts,
+                )
+                if decision["action"] == "terminate":
+                    raise ModelUpdateError(decision["message"])
+                if decision["action"] == "skip":
+                    # Byte-identical to the current version: revert the (unchanged) candidate and
+                    # short-circuit — no recompile, no fit, no new version. Logged so the avoided
+                    # churn is still auditable in the provenance trace.
+                    session.problem.model = old_model
+                    session.problem.parameter_df = old_params
+                    dup_v = decision["duplicate_of"]
+                    dup = next((r for r in registry if r.get("version") == dup_v), {})
+                    session.provenance.append_event({
+                        "type": "set_model_noop", "operation": op,
+                        "duplicate_of_version": dup_v, "structure_hash": structure_hash,
+                        "justification": justification, "references": resolved,
+                        "reauthor_attempts": prior_attempts + 1,
+                    })
+                    session.logger.info(
+                        "set_model no-op: identical to v%s — skipped recompile+fit+snapshot", dup_v)
+                    return {
+                        "committed": False, "no_change": True, "operation": op,
+                        "version": head_version, "duplicate_of_version": dup_v,
+                        "message": decision["message"], "warnings": [],
+                        "neg_log_likelihood": dup.get("neg_log_likelihood"), "bic": dup.get("bic"),
+                    }
+                dedup_warnings = decision.get("warnings") or []
             if not staged:
                 # The fit is part of the commit. `_auto_fit_and_improvement` raises a clean
                 # ModelUpdateError when the model has no estimated parameters (nothing to fit,
@@ -366,7 +427,8 @@ def _commit_change(
 
         new_ant = session.problem.model.to_antimony()
         new_sbml = session.problem.model.to_sbml_str()  # serialize once; reused for both hashes
-        warnings = _parsimony_warnings(session.problem, old_species) if recon is not None else []
+        warnings = (_parsimony_warnings(session.problem, old_species) if recon is not None else [])
+        warnings += dedup_warnings  # structure-revisit advisories (dedup); [] for non-set_model ops
         param_diff = {
             "added": recon["parameters"]["added"] if recon else [],
             "removed": recon["parameters"]["removed"] if recon else [],
@@ -459,14 +521,20 @@ def set_model(
     """Author the WHOLE model from Antimony — the single whole-model operation.
 
     This BUILDS the first model when the problem ships model-less (``model_initialized:
-    false``) AND re-authors/replaces an existing model wholesale; it is never refused. Use it
-    to set model STRUCTURE — a coupled/symmetric rate-law change, adding or removing several
-    reactions at once — in one coherent step, instead of a sequence of incremental edits that
-    leave intermediate models inconsistent (the incremental ``add_reaction`` /
-    ``change_rate_law`` / ``remove_reaction`` remain for local refinement). Goes through the
-    same commit pipeline as every model op: SBML↔PEtab reconcile (parametric ICs +
-    parameter-table sync), petab lint, and a fit on commit; any failure reverts, so a bad
-    (re-)author changes nothing.
+    false``) AND re-authors/replaces an existing model wholesale. Use it to set model STRUCTURE
+    — a coupled/symmetric rate-law change, adding or removing several reactions at once — in one
+    coherent step, instead of a sequence of incremental edits that leave intermediate models
+    inconsistent (the incremental ``add_reaction`` / ``change_rate_law`` / ``remove_reaction``
+    remain for local refinement). Goes through the same commit pipeline as every model op:
+    SBML↔PEtab reconcile (parametric ICs + parameter-table sync), petab lint, and a fit on
+    commit; any failure reverts, so a bad (re-)author changes nothing.
+
+    A *genuinely new* structure is always committed. Re-authoring a structure already visited
+    this run is de-duplicated (see :mod:`dedup`, issue #59), because it would only recompile and
+    refit to the same result: re-authoring the CURRENT model is a no-op (``committed: false``,
+    ``no_change: true`` — no fit, no new version); re-authoring an EARLIER model commits but
+    warns to use ``restore_version(n)`` instead (which reuses the stored fit); and the same
+    structure re-authored too many times is refused outright, to break an unproductive loop.
 
     Because the whole model is replaced, reconcile drops the parameter-table rows of any
     parameter the new model no longer declares. That silently discards a previously-fitted
@@ -505,8 +573,13 @@ def set_model(
 
     result = _commit_change(
         session, "set_model", {"antimony_chars": len(antimony)}, justification, references,
-        model_build=build, require_references=False, n_starts=n_starts,
+        model_build=build, require_references=False, n_starts=n_starts, dedup=True,
     )
+
+    # A no-op re-author (byte-identical to the current version) short-circuits before the fit and
+    # never reaches the reconcile/warnings bookkeeping below; return its result unchanged.
+    if result.get("no_change"):
+        return result
 
     # Guardrail: a re-author that no longer declares a previously-estimated parameter drops
     # its row (and its fitted value). Surface that — it is the one real footgun of a wholesale

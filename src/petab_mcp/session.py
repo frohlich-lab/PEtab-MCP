@@ -121,13 +121,18 @@ class PetabSession:
         self.best_gof_pvalue: float | None = None
         self.op_history: list[dict[str, Any]] = []
 
+        # De-duplication memory for whole-model re-authoring (see :mod:`dedup` and issue #59):
+        # how many times each *identical* re-author has been handed to `set_model` this run, keyed
+        # by structure fingerprint + estimation setup (see `dedup.reauthor_key`) so that only truly
+        # identical re-authors — not the same structure with changed bounds/scale — count toward
+        # the loop guard. A within-run counter (a fresh run legitimately starts over), not persisted.
+        self._reauthor_attempts: dict[str, int] = {}
+
         if self.provenance.current_version < 0:
-            self.provenance.snapshot_version(
-                model_ant=self.model.to_antimony(),
-                parameters=self.problem.parameter_df,
-                label="initial",
-                kind="initial",
-            )
+            # Route through _snapshot_version (not the store directly) so the initial version also
+            # carries a structure_hash in its meta — otherwise v0 would be invisible to the de-dup
+            # registry and a re-author of the initial model wouldn't be recognised as a revisit.
+            self._snapshot_version(label="initial", kind="initial", meta={}, sim=None)
             self.provenance.append_event({"type": "initial", "version": 0})
         else:
             # durable resume: restore the working state from the latest version
@@ -315,6 +320,25 @@ class PetabSession:
         pass it when the caller already serialized it, to avoid re-serializing.
         """
         from . import fitting
+        from .parameters import structure_fingerprint
+
+        # Stamp the structure fingerprint + BIC into every version's meta so the de-dup registry
+        # (see :func:`dedup.build_registry`) can recognise a re-authored structure and rank
+        # structure families by fit. Computed once here so every commit path records it
+        # uniformly; best-effort, since a fingerprint/score failure must never fail a snapshot.
+        meta = dict(meta or {})
+        if "structure_hash" not in meta:
+            try:
+                meta["structure_hash"] = structure_fingerprint(
+                    self.model.sbml_model, self.problem.parameter_df)
+            except Exception:  # noqa: BLE001 - advisory metadata only
+                pass
+        if "bic" not in meta:
+            nll = (sim or {}).get("neg_log_likelihood")
+            fitted = (sim or {}).get("fitted_parameters")
+            k = len(fitted) if fitted is not None else (sim or {}).get("n_estimated")
+            meta["bic"] = fitting.goodness_of_fit(
+                nll, (sim or {}).get("chi2"), k, (sim or {}).get("n_data_points")).get("bic")
 
         return self.provenance.snapshot_version(
             model_ant=self.model.to_antimony() if model_ant is None else model_ant,
@@ -597,6 +621,27 @@ class PetabSession:
         return {"rolled_back_to": version, "version": new_version,
                 **fitting.fit_result_block(
                     sim, parameter_df=self.problem.parameter_df, problem=self.problem)}
+
+    def restore_version(self, version: int, justification: str | None = None) -> dict[str, Any]:
+        """Bring a prior version's model + parameters back as the working state (no refit).
+
+        The cheap, correct way to "go back" to an earlier structure — it restores the target
+        version's stored fit instead of recompiling and refitting, and is what ``set_model``'s
+        de-dup guidance points at instead of re-authoring an already-visited model (a re-author
+        recompiles, refits, and appends a byte-identical version; this does none of that). It is
+        exactly :meth:`rollback_to` under a name that reads correctly for that workflow — it
+        appends the same auditable rollback version and event.
+        """
+        return self.rollback_to(version, justification)
+
+    def note_reauthor_attempt(self, key: str) -> int:
+        """Record a ``set_model`` re-author under ``key`` (a structure+setup identity — see
+        :func:`dedup.reauthor_key`), returning the count of PRIOR identical re-authors this run
+        (0 the first time). Backs the identical-re-author loop guard (see :mod:`dedup`). Callers
+        already hold ``self.lock``."""
+        prior = self._reauthor_attempts.get(key, 0)
+        self._reauthor_attempts[key] = prior + 1
+        return prior
 
     # -- lifecycle ---------------------------------------------------------
     def reset(self) -> dict[str, Any]:

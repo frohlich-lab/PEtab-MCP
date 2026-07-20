@@ -92,7 +92,11 @@ SERVER_INSTRUCTIONS = (
     "optimizer log (multistart convergence, parameters pinned at bounds, ill-conditioning) for "
     "numerical diagnosis. Every change is versioned and logged: rank versions by fit with "
     "`list_versions` / `diff_versions` (which reports the neg-log-likelihood delta); inspect "
-    "with `get_provenance`; errors via `get_errors`; revert with `rollback_to` or `reset`."
+    "with `get_provenance`; errors via `get_errors`; revert with `rollback_to` or `reset`. To go "
+    "BACK to an earlier model, use `restore_version(n)` — it restores that version's stored fit "
+    "without recompiling/refitting; do NOT re-author an earlier model with `set_model` (that "
+    "just refits to the same result and appends a duplicate — `set_model` warns on, then refuses, "
+    "a re-authored structure it has already seen)."
 )
 
 # Appended to the instructions only when skills are actually registered, so clients
@@ -236,21 +240,27 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
 
         Use it to BUILD the first model when the problem ships model-less (`describe_problem`
         reports `model_initialized: false`) AND to re-author/replace an existing model
-        wholesale — it is never refused. Reach for it to make a STRUCTURAL change as one
-        coherent step — a coupled or symmetric rate-law change, or adding/removing several
-        reactions at once — instead of a sequence of incremental edits that leave intermediate
-        models inconsistent (the `add_reaction` / `change_rate_law` / `remove_reaction`
-        operations remain for local refinement). It reconciles the SBML model with the
-        PEtab parameter table (parametric initial conditions, parameter-table sync), lints, and
-        fits on commit, exactly like the other model ops; any failure reverts, so a bad
-        re-author changes nothing. `justification` (non-empty) is required; `references` are
-        optional; `n_starts` overrides the fit default (0 = simulate only). Because the whole
-        model is replaced, the result `warnings` flag any previously-ESTIMATED parameter the
-        re-author no longer declares (its fitted value is dropped); fixed noise/initial-
-        condition parameters and anything the observable/condition tables reference survive. A
-        re-author that drops (or reintroduces as estimated) a shipped-FIXED mechanistic constant
-        — a conservation total, a known rate — is REJECTED, not warned: keep such constants
-        declared and build the mechanism on them as shipped.
+        wholesale. Reach for it to make a STRUCTURAL change as one coherent step — a coupled or
+        symmetric rate-law change, or adding/removing several reactions at once — instead of a
+        sequence of incremental edits that leave intermediate models inconsistent (the
+        `add_reaction` / `change_rate_law` / `remove_reaction` operations remain for local
+        refinement). It reconciles the SBML model with the PEtab parameter table (parametric
+        initial conditions, parameter-table sync), lints, and fits on commit, exactly like the
+        other model ops; any failure reverts, so a bad re-author changes nothing. `justification`
+        (non-empty) is required; `references` are optional; `n_starts` overrides the fit default
+        (0 = simulate only). Because the whole model is replaced, the result `warnings` flag any
+        previously-ESTIMATED parameter the re-author no longer declares (its fitted value is
+        dropped); fixed noise/initial-condition parameters and anything the observable/condition
+        tables reference survive. A re-author that drops (or reintroduces as estimated) a
+        shipped-FIXED mechanistic constant — a conservation total, a known rate — is REJECTED,
+        not warned: keep such constants declared and build the mechanism on them as shipped.
+
+        A genuinely NEW structure always commits. Re-authoring a structure already seen this run
+        is de-duplicated (it would refit to the same result): re-authoring the CURRENT model is a
+        no-op (`committed: false`, `no_change: true` — no fit, no new version); re-authoring an
+        EARLIER model commits but warns to use `restore_version(n)` instead; and an identical
+        structure re-authored repeatedly is refused, to break an unproductive loop. To go back to
+        a prior model, prefer `restore_version(n)`.
         """
         return ctx.run_operation("set_model", ops_mod.set_model, session, antimony, justification, references, n_starts)
 
@@ -621,6 +631,21 @@ def _register_provenance_tools(mcp: FastMCP, ctx: _Ctx) -> None:
     def rollback_to(version: int, justification: str = "") -> dict[str, Any]:
         """Revert the working model + parameters to a prior version (appends a new version)."""
         return ctx.run("rollback_to", lambda: session.rollback_to(version, justification or None),
+                       {"version": version})
+
+    @mcp.tool()
+    def restore_version(version: int, justification: str = "") -> dict[str, Any]:
+        """Bring a prior version's model + parameters back as the working state, WITHOUT refitting.
+
+        The cheap, correct way to go back to an earlier model: it restores that version's stored
+        fit instead of recompiling and refitting. Prefer this over re-authoring an earlier model
+        with `set_model` — a re-author recompiles, refits, and appends a byte-identical duplicate
+        version (and `set_model` will warn, then refuse, once it detects the repeat), whereas this
+        reuses the existing fit and records a clean restore. Find the target with `list_versions`
+        (pick the lowest-bic / is_new_best version), then `restore_version(v)`. Appends a new
+        version, like `rollback_to` (of which this is the aptly-named equivalent)."""
+        return ctx.run("restore_version",
+                       lambda: session.restore_version(version, justification or None),
                        {"version": version})
 
     @mcp.tool()

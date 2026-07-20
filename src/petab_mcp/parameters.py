@@ -123,6 +123,71 @@ def problem_fingerprint(sbml_str: str, parameter_df) -> str:
     return sha16(payload)
 
 
+def estimated_ids(parameter_df) -> list[str]:
+    """Sorted ids of the ESTIMATED (``estimate`` != 0) parameters.
+
+    The free-parameter SET that, together with the reaction network, defines a model's
+    *structure* for :func:`structure_fingerprint`. Robust to a missing/NaN/non-numeric
+    ``estimate`` column (the same idiom ``set_model`` uses for its prior-estimated snapshot).
+    """
+    if parameter_df is None or ESTIMATE not in getattr(parameter_df, "columns", []):
+        return []
+    try:
+        mask = parameter_df[ESTIMATE].fillna(0).astype(float) != 0
+    except (TypeError, ValueError):  # non-numeric estimate column -> treat every id as free
+        return sorted(str(p) for p in parameter_df.index)
+    return sorted(str(p) for p in parameter_df.index[mask])
+
+
+def structure_fingerprint(sbml_model, parameter_df) -> str:
+    """Short hash of the model STRUCTURE: the reaction network (each reaction's reactant/product
+    stoichiometry + rate-law FORM) plus the SET of estimated parameters — deliberately IGNORING
+    nominal (starting) values, bounds, and scales.
+
+    This is the identity used to recognise a *re-authored structure* across ``set_model`` calls:
+    two authorings that describe the same reactions and rate laws with the same estimated-parameter
+    set share a fingerprint even if their starting guesses or bounds differ. That "ignore nominal
+    values" property is essential — the automatic fit overwrites an estimated parameter's
+    ``nominalValue`` with the fitted optimum, so a re-author's *authored* starting values never
+    match the committed version's *fitted* ones; a value-sensitive hash (``problem_fingerprint``)
+    would therefore never recognise the duplicate. It is coarser than ``problem_fingerprint`` (the
+    exact fit) — it answers "have we visited this structure before?", which is what de-duplicating
+    re-authors, warning on revisited worse families, and stopping identical-re-author loops need
+    (see :mod:`petab_mcp.dedup`).
+    """
+    import libsbml
+
+    sm = sbml_model
+    species = sorted(sm.getSpecies(i).getId() for i in range(sm.getNumSpecies()))
+    reactions: list[tuple] = []
+    for i in range(sm.getNumReactions()):
+        rxn = sm.getReaction(i)
+        reactants = sorted(
+            (rxn.getReactant(j).getSpecies(), float(rxn.getReactant(j).getStoichiometry()))
+            for j in range(rxn.getNumReactants())
+        )
+        products = sorted(
+            (rxn.getProduct(j).getSpecies(), float(rxn.getProduct(j).getStoichiometry()))
+            for j in range(rxn.getNumProducts())
+        )
+        kl = rxn.getKineticLaw()
+        law = ""
+        if kl is not None and kl.getMath() is not None:
+            # Canonical infix form of the rate-law math tree; strip whitespace so trivial
+            # spacing differences don't change the structural identity.
+            law = (libsbml.formulaToL3String(kl.getMath()) or "").replace(" ", "")
+        # Reaction id is deliberately excluded — an identical network authored with different
+        # reaction ids (J1 vs r1) is the same structure. Sorting makes it order-independent.
+        reactions.append((tuple(reactants), tuple(products), law))
+    reactions.sort()
+    payload = repr({
+        "species": species,
+        "reactions": reactions,
+        "estimated": estimated_ids(parameter_df),
+    })
+    return sha16(payload)
+
+
 def _coerce_estimate_int(value: Any) -> int:
     if isinstance(value, bool):
         return int(value)

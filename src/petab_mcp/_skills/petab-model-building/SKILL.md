@@ -155,7 +155,7 @@ model and parameter table are reverted and nothing is versioned.
 
 `set_model` is the single whole-model operation: it **builds** the first model when the
 problem ships model-less (`describe_problem` → `model_initialized: false`) and
-**re-authors / replaces** an existing model wholesale — it is never refused. Author the
+**re-authors / replaces** an existing model wholesale. Author the
 entire model as one Antimony string declaring the compartments, species (with their initial
 conditions), parameters, and reactions:
 
@@ -180,6 +180,14 @@ parameter (its fitted value is dropped); fixed noise / initial-condition paramet
 anything the observable, noise, or condition tables reference are preserved. Prefer the
 incremental edits below for a genuinely local change (they keep the history fine-grained);
 prefer `set_model` for a whole-structure move.
+
+`set_model` remembers the structures it has already seen (issue #59): a genuinely new
+structure always commits, but re-authoring the **current** model is a no-op (`no_change:
+true` — no fit, no new version), re-authoring an **earlier** model commits with a warning to
+use `restore_version(n)` instead, and an identical structure re-authored repeatedly is
+**refused** to break an unproductive loop. To go **back** to a prior model, use
+`restore_version(n)` — never re-author it (a re-author recompiles and refits to the same
+result and appends a duplicate version).
 
 ### `add_reaction(reaction, justification, references)`
 
@@ -402,6 +410,9 @@ across versions (or `diff_versions`, which reports the neg-log-likelihood delta)
   an operation returns `committed: false`, look here for the full context.
 - `rollback_to(version, justification?)` — restore a prior version (appends a new,
   auditable version rather than erasing history).
+- `restore_version(version, justification?)` — go **back** to an earlier model: the same
+  as `rollback_to`, aptly named. Use it (not a `set_model` re-author) to return to a prior
+  model — it reuses that version's stored fit instead of recompiling and refitting.
 - `current_version()` — the HEAD version and batch state.
 - `reset()` — revert model + parameters to the initial version (v0).
 

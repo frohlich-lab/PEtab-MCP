@@ -1,0 +1,224 @@
+"""Structure-level de-duplication of whole-model re-authoring (`set_model`) — issue #59.
+
+Covers the pure pieces (structure fingerprint, estimation-setup signature, the `decide`
+state machine) without AMICI, plus the integration behaviour through `operations.set_model`
+on the engine-free toy session (skip a no-op re-author, warn on a revisit, terminate an
+identical-re-author loop) and the `restore_version` escape hatch.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from petab_mcp import dedup as D
+from petab_mcp import operations as O
+from petab_mcp import parameters as P
+from petab.v1.C import ESTIMATE, LOWER_BOUND, NOMINAL_VALUE, UPPER_BOUND
+from petab_mcp.errors import ModelUpdateError
+from petab.v1.models.sbml_model import SbmlModel
+
+# Reversible A<->B (the toy structure) and a one-reaction variant that drops r2/k2.
+REVERSIBLE = """model conversion_reaction
+  compartment compartment_ = 1;
+  species A in compartment_;
+  species B in compartment_;
+  A = A_init;
+  B = B_init;
+  A_init = 1.0;
+  B_init = 0.0;
+  k1 = 0.25;
+  k2 = 0.05;
+  r1: A => B; k1 * A;
+  r2: B => A; k2 * B;
+end
+"""
+
+# Same STRUCTURE as REVERSIBLE, only the starting guesses differ (the fit ignores them).
+REVERSIBLE_OTHER_VALUES = REVERSIBLE.replace("k1 = 0.25", "k1 = 3.0").replace("k2 = 0.05", "k2 = 9.9")
+
+ONE_REACTION = """model conversion_reaction
+  compartment compartment_ = 1;
+  species A in compartment_;
+  species B in compartment_;
+  A = A_init;
+  B = B_init;
+  A_init = 1.0;
+  B_init = 0.0;
+  k1 = 0.25;
+  r1: A => B; k1 * A;
+end
+"""
+
+
+def _sm(antimony: str):
+    return SbmlModel.from_antimony(antimony, model_id=None).sbml_model
+
+
+# -- structure_fingerprint --------------------------------------------------
+def test_structure_fingerprint_ignores_nominal_values(session):
+    """Two authorings of the same structure with different starting guesses fingerprint the same —
+    the property that lets a re-author be recognised despite the fit overwriting nominal values."""
+    df = session.problem.parameter_df
+    a = P.structure_fingerprint(_sm(REVERSIBLE), df)
+    b = P.structure_fingerprint(_sm(REVERSIBLE_OTHER_VALUES), df)
+    assert a == b
+
+
+def test_structure_fingerprint_changes_with_structure(session):
+    df = session.problem.parameter_df
+    assert P.structure_fingerprint(_sm(REVERSIBLE), df) != P.structure_fingerprint(_sm(ONE_REACTION), df)
+
+
+def test_structure_fingerprint_changes_with_estimated_set(session):
+    """Fixing a parameter (estimate 1 -> 0) is a structural change for fingerprint purposes."""
+    df = session.problem.parameter_df.copy(deep=True)
+    sm = _sm(REVERSIBLE)
+    base = P.structure_fingerprint(sm, df)
+    df.loc["k2", ESTIMATE] = 0
+    assert P.structure_fingerprint(sm, df) != base
+
+
+# -- estimation_setup_signature ---------------------------------------------
+def test_setup_signature_ignores_estimated_nominal_but_not_bounds(session):
+    df = session.problem.parameter_df.copy(deep=True)
+    base = D.estimation_setup_signature(df)
+    # Changing an ESTIMATED parameter's starting value must not change the signature...
+    df2 = df.copy(deep=True)
+    df2.loc["k1", NOMINAL_VALUE] = float(df2.loc["k1", NOMINAL_VALUE]) * 7 + 1
+    assert D.estimation_setup_signature(df2) == base
+    # ...but changing its bounds must.
+    df3 = df.copy(deep=True)
+    df3.loc["k1", UPPER_BOUND] = float(df3.loc["k1", UPPER_BOUND]) * 10
+    assert D.estimation_setup_signature(df3) != base
+
+
+# -- reauthor_key: identical re-author identity (structure + setup) ---------
+def test_reauthor_key_distinguishes_different_bounds(session):
+    """The loop-guard key changes when bounds change, so re-authoring the same structure with
+    different bounds is NOT counted as an identical re-author (addresses PR #70 review)."""
+    df = session.problem.parameter_df
+    sh = P.structure_fingerprint(_sm(REVERSIBLE), df)
+    df2 = df.copy(deep=True)
+    df2.loc["k1", UPPER_BOUND] = float(df2.loc["k1", UPPER_BOUND]) * 10
+    assert D.reauthor_key(sh, df) != D.reauthor_key(sh, df2)
+    # ...but it is stable for the same structure + same setup (an identical re-author).
+    assert D.reauthor_key(sh, df) == D.reauthor_key(sh, df.copy(deep=True))
+
+
+# -- decide() (pure) --------------------------------------------------------
+def _reg(*entries):
+    """Build a registry from (version, structure_hash, bic) tuples."""
+    return [{"version": v, "structure_hash": s, "problem_hash": None,
+             "neg_log_likelihood": None, "bic": b} for v, s, b in entries]
+
+
+def test_decide_proceeds_on_fresh_structure():
+    d = D.decide(structure_hash="new", head_structure_hash="head", same_setup=False,
+                 head_version=0, registry=_reg((0, "head", 1.0)), prior_attempts=0)
+    assert d["action"] == "proceed"
+    assert d["warnings"] == []
+
+
+def test_decide_skips_identical_head():
+    d = D.decide(structure_hash="X", head_structure_hash="X", same_setup=True,
+                 head_version=3, registry=_reg((3, "X", 1.0)), prior_attempts=1)
+    assert d["action"] == "skip"
+    assert d["duplicate_of"] == 3
+    assert "restore_version" in d["message"]
+
+
+def test_decide_no_skip_when_setup_differs():
+    # Same structure as HEAD but a bound changed — a real edit, not a no-op.
+    d = D.decide(structure_hash="X", head_structure_hash="X", same_setup=False,
+                 head_version=3, registry=_reg((3, "X", 1.0)), prior_attempts=1)
+    assert d["action"] == "proceed"
+
+
+def test_decide_terminates_after_repeated_reauthors():
+    d = D.decide(structure_hash="X", head_structure_hash="Y", same_setup=False,
+                 head_version=5, registry=_reg((5, "Y", 1.0)),
+                 prior_attempts=D.MAX_IDENTICAL_REAUTHORS)
+    assert d["action"] == "terminate"
+    assert "restore_version" in d["message"]
+
+
+def test_decide_warns_on_revisiting_prior_version():
+    d = D.decide(structure_hash="X", head_structure_hash="Y", same_setup=False,
+                 head_version=2, registry=_reg((1, "X", 1.0), (2, "Y", 1.0)), prior_attempts=1)
+    assert d["action"] == "proceed"
+    assert any("restore_version(1)" in w for w in d["warnings"])
+
+
+def test_decide_warns_on_worse_family():
+    # Structure X's best bic (20) is far worse than the global best (1, at v2).
+    d = D.decide(structure_hash="X", head_structure_hash="Y", same_setup=False,
+                 head_version=2, registry=_reg((1, "X", 20.0), (2, "Y", 1.0)), prior_attempts=1)
+    assert d["action"] == "proceed"
+    assert any("WORSE" in w for w in d["warnings"])
+
+
+def test_decide_no_worse_warning_within_margin():
+    d = D.decide(structure_hash="X", head_structure_hash="Y", same_setup=False,
+                 head_version=2, registry=_reg((1, "X", 3.0), (2, "Y", 1.0)), prior_attempts=1)
+    assert not any("WORSE" in w for w in d["warnings"])
+
+
+def test_decide_handles_numpy_bic_scalars():
+    """BIC values stored as NumPy scalars must still drive the worse-family warning — an
+    isinstance(float) filter would silently drop numpy.float64 (addresses PR #70 review)."""
+    import numpy as np
+
+    reg = [{"version": 1, "structure_hash": "X", "problem_hash": None,
+            "neg_log_likelihood": None, "bic": np.float64(20.0)},
+           {"version": 2, "structure_hash": "Y", "problem_hash": None,
+            "neg_log_likelihood": None, "bic": np.float64(1.0)}]
+    d = D.decide(structure_hash="X", head_structure_hash="Y", same_setup=False,
+                 head_version=2, registry=reg, prior_attempts=1)
+    assert any("WORSE" in w for w in d["warnings"])
+
+
+# -- integration through operations.set_model (engine-free toy session) -----
+def test_set_model_skips_identical_reauthor(session):
+    """Re-authoring the current structure (even with different starting values) is a no-op:
+    no fit, no new version."""
+    assert session.provenance.current_version == 0
+    res = O.set_model(session, REVERSIBLE_OTHER_VALUES, justification="same structure again")
+    assert res["committed"] is False
+    assert res["no_change"] is True
+    assert res["duplicate_of_version"] == 0
+    # no new version was snapshotted
+    assert session.provenance.current_version == 0
+
+
+def test_set_model_terminates_identical_loop(session):
+    """After MAX_IDENTICAL_REAUTHORS authorings of one structure, set_model refuses the next."""
+    for _ in range(D.MAX_IDENTICAL_REAUTHORS):
+        res = O.set_model(session, REVERSIBLE, justification="again")
+        assert res["no_change"] is True
+    with pytest.raises(ModelUpdateError, match="restore_version"):
+        O.set_model(session, REVERSIBLE, justification="one time too many")
+    # still no churn: the identical re-authors created no versions
+    assert session.provenance.current_version == 0
+
+
+def test_set_model_warns_when_revisiting_a_prior_structure(session):
+    """Going to a new structure and back surfaces a restore_version advisory (not a refusal)."""
+    r1 = O.set_model(session, ONE_REACTION, justification="drop the reverse reaction")
+    assert r1["committed"] is True
+    assert session.provenance.current_version == 1  # a real change
+    # Re-author the ORIGINAL (reversible) structure, which is now v0 in the history.
+    r2 = O.set_model(session, REVERSIBLE, justification="bring back the reverse reaction")
+    assert r2["committed"] is True  # a real change from the current (one-reaction) HEAD
+    assert any("restore_version(0)" in w for w in (r2.get("warnings") or [])), r2.get("warnings")
+
+
+def test_restore_version_goes_back_without_dedup(session):
+    """restore_version is the cheap way back — it restores a prior model and is not a re-author."""
+    O.set_model(session, ONE_REACTION, justification="drop r2")
+    assert {session.model.sbml_model.getReaction(i).getId()
+            for i in range(session.model.sbml_model.getNumReactions())} == {"r1"}
+    out = session.restore_version(0)
+    assert out["rolled_back_to"] == 0
+    # the reversible structure (r1 + r2) is back
+    assert {session.model.sbml_model.getReaction(i).getId()
+            for i in range(session.model.sbml_model.getNumReactions())} == {"r1", "r2"}

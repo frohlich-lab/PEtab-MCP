@@ -48,7 +48,7 @@ model — use each condition quantity in the mechanism.
 
 | Tool | Signature | Notes |
 | --- | --- | --- |
-| `set_model` | `(antimony, justification, references?, n_starts?)` | Author the **whole** model from an Antimony string — the single whole-model op. **Builds** the first model when none is initialized (`describe_problem` → `model_initialized: false`) and **re-authors / replaces** an existing one (never refused). Use for the initial build and for a coupled/symmetric or multi-reaction **structural** change in one coherent step; reconciles + fits, reverts on failure. Warns if a previously-**estimated** parameter is dropped (fixed noise/IC params + table-referenced symbols are preserved). |
+| `set_model` | `(antimony, justification, references?, n_starts?)` | Author the **whole** model from an Antimony string — the single whole-model op. **Builds** the first model when none is initialized (`describe_problem` → `model_initialized: false`) and **re-authors / replaces** an existing one. Use for the initial build and for a coupled/symmetric or multi-reaction **structural** change in one coherent step; reconciles + fits, reverts on failure. Warns if a previously-**estimated** parameter is dropped (fixed noise/IC params + table-referenced symbols are preserved). **De-dup:** a genuinely new structure commits; re-authoring the *current* model is a no-op (`no_change: true`), an *earlier* model warns to use `restore_version(n)`, and an identical structure re-authored repeatedly is refused. To go back to a prior model use `restore_version`, not `set_model`. |
 | `add_reaction` | `(reaction, justification, references?, n_starts?)` | `reaction` is one Antimony line, e.g. `"J: S1 + S2 -> S3; k_f*S1*S2"` (placeholder names). Rate law after `;` is required. New species → parametric IC; new rate-law symbols → parameters. Requires an initialized model. |
 | `change_rate_law` | `(reaction_id, rate_law, justification, references?, n_starts?)` | Replace a reaction's kinetic law; new symbols reconciled. |
 | `remove_reaction` | `(reaction_id, justification, references?, n_starts?)` | Delete a reaction; prune orphaned species/parameters. |
@@ -134,6 +134,7 @@ allowed and cannot affect the session; host file/network access (`read_csv`, `AT
 | `get_version` | `(version)` | A version's Antimony model + parameter table. |
 | `diff_versions` | `(from_version, to_version)` | Antimony unified diff + parameter add/remove/change + a `fit` block (each version's nll/chi2 and the neg-log-likelihood delta). |
 | `rollback_to` | `(version, justification?)` | Restore a prior version as a new version. |
+| `restore_version` | `(version, justification?)` | Go **back** to an earlier model: restores its model + stored fit as the working state (no recompile/refit), appending a new version. Prefer this over re-authoring an earlier model with `set_model` (that refits to the same result and, once detected as a repeat, is warned then refused). Same effect as `rollback_to`, aptly named for going back. |
 | `current_version` | `()` | HEAD version + batch state. |
 | `reset` | `()` | Revert model + parameters to the initial version (v0). |
 

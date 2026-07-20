@@ -61,6 +61,19 @@ _REVERSIBLE_ANTIMONY = (
     "end\n"
 )
 
+# A one-reaction re-author (drops r2/k2) — a genuinely different structure from the toy model.
+_ONE_REACTION_ANTIMONY = (
+    "model conversion_reaction\n"
+    "  compartment compartment_ = 1;\n"
+    "  species A in compartment_;\n"
+    "  species B in compartment_;\n"
+    "  A = A_init; B = B_init;\n"
+    "  A_init = 1.0; B_init = 0.0;\n"
+    "  k1 = 0.25;\n"
+    "  r1: A => B; k1 * A;\n"
+    "end\n"
+)
+
 
 def _structured(result):
     return result[1]  # FastMCP.call_tool -> (content_blocks, structured_result)
@@ -78,7 +91,7 @@ def test_tools_registered(tmp_path):
         "get_fit_summary", "get_fit_diagnosis", "get_run_timing", "query_data", "list_data_tables",
         "get_fitting_log",
         "get_provenance", "list_versions", "get_version", "diff_versions",
-        "rollback_to", "current_version", "reset",
+        "rollback_to", "restore_version", "current_version", "reset",
     }
     assert expected <= names
     # fitting is automatic on commit — no manual fit/score/tune tools
@@ -315,10 +328,44 @@ def test_set_model_reauthors_when_model_exists_via_tool(tmp_path):
     async def go():
         desc = _structured(await mcp.call_tool("describe_problem", {}))
         assert desc["model_initialized"] is True
+        # A genuine wholesale re-author (different structure) commits a new version.
         res = _structured(await mcp.call_tool("set_model", {
-            "antimony": _REVERSIBLE_ANTIMONY, "justification": "re-author", "references": ["PMID:1"],
+            "antimony": _ONE_REACTION_ANTIMONY, "justification": "re-author", "references": ["PMID:1"],
         }))
         assert res["committed"] is True
+        assert res["version"] == 1
+        # Re-authoring that SAME structure again is a de-duplicated no-op (issue #59): no fit,
+        # no new version.
+        again = _structured(await mcp.call_tool("set_model", {
+            "antimony": _ONE_REACTION_ANTIMONY, "justification": "identical re-author",
+            "references": ["PMID:1"],
+        }))
+        assert again["committed"] is False
+        assert again["no_change"] is True
+        assert again["duplicate_of_version"] == 1
+        assert _structured(await mcp.call_tool("current_version", {}))["version"] == 1
+
+    asyncio.run(go())
+
+
+def test_restore_version_tool_registered_and_restores(tmp_path):
+    # restore_version -> rollback_to restores a prior version and re-simulates it, so it needs
+    # the engine (AMICI). The engine-free restore behaviour is covered in test_dedup.
+    import pytest
+
+    pytest.importorskip("amici", reason="AMICI not installed; skipping restore_version run")
+    mcp = _server(tmp_path)
+
+    async def go():
+        # re-author to a one-reaction model (v1), then restore the original reversible v0
+        await mcp.call_tool("set_model", {
+            "antimony": _ONE_REACTION_ANTIMONY, "justification": "drop r2", "references": ["PMID:1"]})
+        struct = _structured(await mcp.call_tool("get_model_structure", {}))
+        assert {r["id"] for r in struct["reactions"]} == {"r1"}
+        out = _structured(await mcp.call_tool("restore_version", {"version": 0}))
+        assert out["rolled_back_to"] == 0
+        struct = _structured(await mcp.call_tool("get_model_structure", {}))
+        assert {r["id"] for r in struct["reactions"]} == {"r1", "r2"}
 
     asyncio.run(go())
 
