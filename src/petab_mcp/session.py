@@ -16,7 +16,13 @@ from petab.v1 import Problem
 from petab.v1.models.sbml_model import SbmlModel
 
 from . import logging_setup
-from .constants import DEFAULT_AUTO_FIT_STARTS
+from .constants import (
+    ADEQUATE_GOF_PVALUE,
+    DEFAULT_AUTO_FIT_STARTS,
+    NON_IMPROVING_STREAK_CAP,
+    PLATEAU_MIN_BIC_GAIN,
+    PLATEAU_WINDOW,
+)
 from .errors import BatchError, ModelUpdateError, ValidationError
 from .parameters import problem_fingerprint, sha16
 from .provenance import ProvenanceStore
@@ -93,6 +99,28 @@ class PetabSession:
         self.n_compiles: int = 0
         self.n_fits: int = 0
 
+        # Early-stop chain state (see constants.py). Every genuine fitted commit is recorded as
+        # one "op" so the harness can stop a run that has stopped improving and score the BEST
+        # model rather than the last-committed one. ``is_new_best`` tracks BIC (see
+        # fitting.compute_improvement), so the checkpoint below IS the version at which the last
+        # (gated) new best fired — one coherent BIC notion drives the flag, the streak, and the
+        # checkpoint:
+        #   * ``non_improving_streak`` — consecutive fitted ops since the last new best; the hard
+        #     stall cap fires on it.
+        #   * ``best_version`` / ``best_bic`` / ``best_nll`` / ``best_gof_pvalue`` — the best-BIC
+        #     fitted model so far (the checkpoint the judge restores + scores; also the reference
+        #     compute_improvement gates the next fit against).
+        #   * ``op_history`` — per-op (version, bic, running best_bic, gof p, is_new_best), used to
+        #     surface "best-BIC improvement over the last N ops" and to detect a plateau.
+        # All writes happen under ``self.lock`` on the commit path (fits already hold it); reads go
+        # through ``progress_report`` which takes the lock for a consistent snapshot.
+        self.non_improving_streak: int = 0
+        self.best_version: int | None = None
+        self.best_bic: float | None = None
+        self.best_nll: float | None = None
+        self.best_gof_pvalue: float | None = None
+        self.op_history: list[dict[str, Any]] = []
+
         if self.provenance.current_version < 0:
             self.provenance.snapshot_version(
                 model_ant=self.model.to_antimony(),
@@ -104,6 +132,32 @@ class PetabSession:
         else:
             # durable resume: restore the working state from the latest version
             self.apply_version(self.provenance.current_version)
+            # ...and seed the best-BIC checkpoint from the prior events, so the first commit after
+            # a resume is judged against the run's real best rather than treated as a free new best.
+            self._seed_progress_from_provenance()
+
+    def _seed_progress_from_provenance(self) -> None:
+        """Seed ``best_bic`` / ``best_version`` / ``best_nll`` from prior events (durable resume).
+
+        Scans the log for the lowest recorded ``bic`` so ``compute_improvement`` and the streak
+        pick up where the last process left off. The streak and ``op_history`` stay reset — they
+        are within-run heuristics whose exact sequence isn't reconstructed. Best-effort: events
+        written before ``bic`` was recorded simply don't seed. Called under construction, so no
+        lock is needed.
+        """
+        try:
+            for ev in self.provenance.recent_events(0):
+                bic = ev.get("bic")
+                if bic is None:
+                    continue
+                bic = float(bic)
+                if self.best_bic is None or bic < self.best_bic:
+                    self.best_bic = bic
+                    self.best_version = ev.get("version")
+                    nll = ev.get("neg_log_likelihood")
+                    self.best_nll = float(nll) if nll is not None else None
+        except Exception:  # noqa: BLE001 - seeding is best-effort; a resume must never fail on it
+            self.logger.warning("could not seed best-BIC checkpoint from provenance", exc_info=True)
 
     # -- model access ------------------------------------------------------
     @property
@@ -313,7 +367,7 @@ class PetabSession:
         fitsim = fitting.fit_and_simulate(self, engine, do_fit=(starts != 0), n_starts=starts or 1)
         nllh = fitsim.get("neg_log_likelihood")
         improvement = (
-            fitting.compute_improvement(self, nllh, fitsim.get("objective_before"))
+            fitting.compute_improvement(self, nllh, fitsim.get("objective_before"), fitsim=fitsim)
             if nllh is not None
             else {}
         )
@@ -337,6 +391,105 @@ class PetabSession:
         if sim is not None and sim.get("n_estimated") is None:
             sim["n_estimated"] = int(self.problem.n_estimated)
         return sim
+
+    # -- early-stop chain --------------------------------------------------
+    def record_fit_progress(
+        self, version: int, fitsim: dict[str, Any], improvement: dict[str, Any]
+    ) -> None:
+        """Record one genuine fitted commit as an "op" for the early-stop chain.
+
+        Called from the commit paths (single op + batch) *after* a fit ran. Restorations
+        (rollback/reset) and simulate-only passes are NOT ops — the caller only invokes this when
+        a real fit produced this version — so they never perturb the streak or the checkpoint.
+        Resets the non-improving streak and adopts this version as the best-BIC checkpoint when
+        ``is_new_best`` fires, else increments the streak. Since ``is_new_best`` tracks BIC (see
+        :func:`fitting.compute_improvement`), a new best is exactly a new best-BIC checkpoint — the
+        flag, the streak, and the checkpoint stay in lock step on one score.
+
+        Takes ``self.lock`` itself (a reentrant ``RLock``, so this is safe whether or not the
+        caller already holds it) so the write path is self-contained and symmetric with the locked
+        read in :meth:`progress_report`.
+        """
+        from . import fitting
+
+        nll = fitsim.get("neg_log_likelihood")
+        chi2 = fitsim.get("chi2")
+        n = fitsim.get("n_data_points")
+        # k = estimated-parameter count. Use n_estimated (the estimate=1 count) so this BIC matches
+        # the judge's — it counts k the same way (fitted_parameters can include inner/fixed params).
+        k = fitsim.get("n_estimated")
+        gof = fitting.goodness_of_fit(nll, chi2, k, n)
+        bic = gof.get("bic")
+        gof_p = gof.get("chi2_gof_pvalue")
+        is_new_best = bool(improvement.get("is_new_best"))
+
+        with self.lock:
+            if is_new_best:
+                self.non_improving_streak = 0
+                if bic is not None:
+                    self.best_bic = bic
+                    self.best_version = version
+                    self.best_nll = nll
+                    self.best_gof_pvalue = gof_p
+            else:
+                self.non_improving_streak += 1
+
+            self.op_history.append({
+                "version": version,
+                "bic": bic,
+                "best_bic": self.best_bic,   # running best AFTER this op — for the plateau window
+                "gof_pvalue": gof_p,
+                "is_new_best": is_new_best,
+            })
+
+    def progress_report(self) -> dict[str, Any]:
+        """A snapshot of the early-stop chain state — the harness polls this to stop a stalled
+        run, and it is surfaced in each commit result so the agent sees progress every turn.
+
+        ``should_stop`` (with a human-readable ``stop_reason``) is the deterministic early-stop
+        signal: the hard non-improving-streak cap, or a plateau (best model adequate AND the best
+        BIC gained less than ``PLATEAU_MIN_BIC_GAIN`` over the last ``PLATEAU_WINDOW`` ops).
+        """
+        with self.lock:
+            hist = self.op_history
+            n_ops = len(hist)
+            streak = self.non_improving_streak
+            # best-BIC improvement over the last PLATEAU_WINDOW ops (positive => BIC still falling).
+            bic_gain_over_window = None
+            if n_ops > PLATEAU_WINDOW:
+                prev = hist[-PLATEAU_WINDOW - 1]["best_bic"]
+                cur = hist[-1]["best_bic"]
+                if prev is not None and cur is not None:
+                    bic_gain_over_window = prev - cur
+
+            best_adequate = (
+                self.best_gof_pvalue is not None and self.best_gof_pvalue >= ADEQUATE_GOF_PVALUE
+            )
+            stop_reason = None
+            if streak >= NON_IMPROVING_STREAK_CAP:
+                stop_reason = (
+                    f"non-improving-streak cap reached ({streak} consecutive fitted ops with no "
+                    f"new best, cap {NON_IMPROVING_STREAK_CAP})"
+                )
+            elif (best_adequate and bic_gain_over_window is not None
+                  and bic_gain_over_window < PLATEAU_MIN_BIC_GAIN):
+                stop_reason = (
+                    f"plateau: best model is adequate (chi2 GoF p={self.best_gof_pvalue:.3g}) and "
+                    f"best BIC improved by only {bic_gain_over_window:.3g} over the last "
+                    f"{PLATEAU_WINDOW} ops (< {PLATEAU_MIN_BIC_GAIN})"
+                )
+            return {
+                "n_fitted_ops": n_ops,
+                "non_improving_streak": streak,
+                "streak_cap": NON_IMPROVING_STREAK_CAP,
+                "best_version": self.best_version,
+                "best_bic": self.best_bic,
+                "best_gof_pvalue": self.best_gof_pvalue,
+                "bic_improvement_over_last_n": bic_gain_over_window,
+                "plateau_window": PLATEAU_WINDOW,
+                "should_stop": stop_reason is not None,
+                "stop_reason": stop_reason,
+            }
 
     # -- batching ----------------------------------------------------------
     def _require_no_open_batch(self, action: str) -> None:
@@ -385,8 +538,12 @@ class PetabSession:
                  "neg_log_likelihood": nllh, "chi2": fitsim.get("chi2"),
                  "fitted_parameters": fitsim.get("fitted_parameters"), **improvement}
             )
+            # Record this as an early-stop-chain op only when a real fit ran (not simulate-only).
+            if fitsim.get("status") == "fit":
+                self.record_fit_progress(version, fitsim, improvement)
             self._clear_batch()
         return {"committed": True, "version": version, "n_staged": len(staged),
+                "progress": self.progress_report(),
                 **fitting.fit_result_block(
                     fitsim, improvement, self.problem.parameter_df, problem=self.problem)}
 

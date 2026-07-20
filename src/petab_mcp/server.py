@@ -589,7 +589,8 @@ def _register_provenance_tools(mcp: FastMCP, ctx: _Ctx) -> None:
     @mcp.tool()
     def list_versions() -> list[dict[str, Any]]:
         """List all model versions (snapshots) with kind/label/timestamp and fit metrics
-        (neg_log_likelihood, chi2, is_new_best) — use it to rank versions by fit."""
+        (neg_log_likelihood, chi2, bic, is_new_best) — use it to rank versions by BIC and find
+        the best-scoring one. `is_new_best` tracks BIC (gated on a minimum effect size)."""
         return session.provenance.list_versions()
 
     @mcp.tool()
@@ -615,6 +616,19 @@ def _register_provenance_tools(mcp: FastMCP, ctx: _Ctx) -> None:
     def current_version() -> dict[str, Any]:
         """Return the current (HEAD) version number and batch state."""
         return {"version": session.provenance.current_version, "batch_active": session.batch_active}
+
+    @mcp.tool()
+    def get_progress() -> dict[str, Any]:
+        """Early-stop-chain progress for this run — a cheap counter read (no fit/simulation).
+
+        `{n_fitted_ops, non_improving_streak, streak_cap, best_version, best_bic,
+        best_gof_pvalue, bic_improvement_over_last_n, plateau_window, should_stop, stop_reason}`.
+        `best_version` is the lowest-BIC fitted model committed so far (the checkpoint to score);
+        `non_improving_streak` counts consecutive fitted ops since the last real new best.
+        `should_stop` is set (with a `stop_reason`) once the run has stopped making progress — the
+        hard non-improving-streak cap, or a plateau once the best model is statistically adequate.
+        """
+        return session.progress_report()
 
 
 # ---------------------------------------------------------------- session tools

@@ -421,6 +421,10 @@ def _commit_change(
                  "chi2": fitsim.get("chi2"), "fitted_parameters": fitsim.get("fitted_parameters"),
                  **improvement}
             )
+            # Record this as an early-stop-chain op only when a real fit ran (simulate-only
+            # passes don't move the streak/checkpoint). Under the session lock, held here.
+            if fitsim.get("status") == "fit":
+                session.record_fit_progress(version, fitsim, improvement)
 
     result = {
         "committed": True,
@@ -438,6 +442,9 @@ def _commit_change(
     if not staged:
         from . import fitting
 
+        # Surface the early-stop-chain progress (streak, best-BIC checkpoint, best-BIC gain over
+        # the last N ops) on every commit so the agent sees it each turn.
+        result["progress"] = session.progress_report()
         result.update(fitting.fit_result_block(
             fitsim, improvement, session.problem.parameter_df, problem=session.problem))
     return result

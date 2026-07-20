@@ -34,7 +34,7 @@ from petab.v1.C import (
 )
 
 from . import reconcile as _reconcile
-from .constants import PARAMETER_AT_BOUND_RELATIVE_TOL
+from .constants import NEW_BEST_MIN_DELTA_BIC, PARAMETER_AT_BOUND_RELATIVE_TOL
 from .formatting import finite_float as _flt
 from .parameters import parameter_df_to_tsv, sha16
 
@@ -764,39 +764,55 @@ def fit_summary(session, engine) -> dict[str, Any]:
 
 
 def compute_improvement(
-    session, nllh: float | None, objective_before: float | None = None
+    session, nllh: float | None, objective_before: float | None = None,
+    fitsim: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Improvement metrics for a fit, ranking it against all prior fitted versions.
+    """Improvement metrics for a fit, ranking it against the best model so far **by BIC**.
 
-    Scans the provenance log for the best (lowest) ``neg_log_likelihood`` recorded by any
-    prior event — every committed version now carries one — so versions can be ranked by
-    objective. Must be called *before* the caller appends the current event, so a fit never
-    compares against itself.
+    ``is_new_best`` tracks BIC — the same complexity-penalised score the judge gates on and the
+    early-stop checkpoint stores — so the flag, the non-improving-streak reset, and the
+    best-model checkpoint all move on one coherent notion of "better". A fit is a new best only
+    when its BIC beats the reference by at least ``NEW_BEST_MIN_DELTA_BIC`` (the conventional
+    "positive evidence" bar), so a raw nll drop bought by an extra parameter that actually RAISES
+    BIC does NOT count, and neither does a 1e-6 noise-floor twitch.
+
+    The reference is the session's best-BIC CHECKPOINT (``best_bic`` / ``best_version`` /
+    ``best_nll``), set on the previous new best — not the raw running minimum. Comparing against
+    the checkpoint is what lets a slow, steady BIC creep of < ``NEW_BEST_MIN_DELTA_BIC`` per op
+    still register a new best once it CUMULATIVELY clears the bar, instead of starving the streak
+    while the fit genuinely improves. Must be called BEFORE :meth:`session.record_fit_progress`
+    updates the checkpoint, so a fit never compares against itself. The first fitted version (no
+    checkpoint yet) is always a new best.
     """
-    provenance = getattr(session, "provenance", None)
-    best_prior_nllh = None
-    best_prior_version = None
-    if provenance is not None:
-        for ev in provenance.recent_events(0):  # full history
-            v = ev.get("neg_log_likelihood")
-            if v is not None:
-                v = float(v)
-                if best_prior_nllh is None or v < best_prior_nllh:
-                    best_prior_nllh, best_prior_version = v, ev.get("version")
+    fitsim = fitsim or {}
+    bic = goodness_of_fit(
+        nllh, fitsim.get("chi2"), fitsim.get("n_estimated"), fitsim.get("n_data_points"),
+    ).get("bic")
+
+    best_prior_bic = getattr(session, "best_bic", None)
+    best_prior_version = getattr(session, "best_version", None)
+    best_prior_nllh = getattr(session, "best_nll", None)
 
     self_improvement = None
     if objective_before is not None and nllh is not None:
         self_improvement = objective_before - nllh
-    improvement_vs_best_prior = None
-    if best_prior_nllh is not None and nllh is not None:
-        improvement_vs_best_prior = best_prior_nllh - nllh
-    is_new_best = best_prior_nllh is None or (nllh is not None and nllh < best_prior_nllh)
+    improvement_vs_best_prior = None  # BIC delta: > 0 means this fit is better than the checkpoint
+    if best_prior_bic is not None and bic is not None:
+        improvement_vs_best_prior = best_prior_bic - bic
+    # ``<=`` so an improvement EXACTLY at the threshold counts as a new best — i.e. ΔBIC >= the
+    # gate, matching the docstring's "at least NEW_BEST_MIN_DELTA_BIC" (a strict ``<`` would exclude
+    # the boundary and leave the streak un-reset there).
+    is_new_best = best_prior_bic is None or (
+        bic is not None and bic <= best_prior_bic - NEW_BEST_MIN_DELTA_BIC
+    )
 
     return {
         "neg_log_likelihood": nllh,
         "objective_before": objective_before,
         "self_improvement": self_improvement,
+        "bic": bic,
         "best_prior_version": best_prior_version,
+        "best_prior_bic": best_prior_bic,
         "best_prior_neg_log_likelihood": best_prior_nllh,
         "improvement_vs_best_prior": improvement_vs_best_prior,
         "is_new_best": is_new_best,

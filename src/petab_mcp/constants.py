@@ -20,6 +20,41 @@ from __future__ import annotations
 # CLI default read this one value so they cannot drift; overridable per commit via ``n_starts``.
 DEFAULT_AUTO_FIT_STARTS = 5
 
+# -- early-stop chain (effect-size gate + non-improving-streak cap + best-BIC checkpoint) ---
+# The model-building loop otherwise wanders past the noise floor until the LangGraph recursion
+# limit or a provider error fires — a whole-model op is ~4 super-steps, so by the time a 500-step
+# limit trips, 100+ ops (observed streaks of 40-46 non-improving versions) are already burned. The
+# recursion limit is the wrong lever; these three coupled knobs make the loop stop when the score
+# stops moving, and score the BEST model rather than whatever happened to be committed last.
+#
+# (a) Minimum BIC improvement for a fit to count as a NEW BEST — the gate on ``is_new_best``
+# (see :func:`fitting.compute_improvement`). ``is_new_best`` tracks BIC (the same score the judge
+# and the checkpoint use), so the flag, the non-improving-streak reset, and the best-model
+# checkpoint all move on one coherent notion of "better". Without a threshold the flag fired on
+# ANY score twitch (down to ~1e-6, or an nll drop bought by an extra parameter that actually
+# RAISES BIC), so noise-floor wander looked like progress and kept resetting the streak. ΔBIC ≥ 2
+# is the conventional "positive evidence" bar. The comparison is against the current best-BIC
+# CHECKPOINT (not the raw running minimum), so a steady sub-threshold BIC creep still registers a
+# new best once it CUMULATIVELY clears the bar, rather than starving the streak while it improves.
+NEW_BEST_MIN_DELTA_BIC = 2.0
+
+# (b) Hard cap on consecutive fitted commits with NO new best (post the gate above): once the
+# streak reaches this, the run stops. This is the load-bearing early-stop lever — the worst runs
+# never reach statistical adequacy, so an adequacy-gated stop alone would let them run to the
+# recursion limit. Sized well below the ~40-46-op streaks observed in the trace review.
+NON_IMPROVING_STREAK_CAP = 15
+
+# (b, softer) Plateau early-stop: once the best model is statistically adequate AND the best BIC
+# has improved by less than ``PLATEAU_MIN_BIC_GAIN`` over the last ``PLATEAU_WINDOW`` fitted ops,
+# stop — there is nothing left to gain. Complements the hard cap (which catches never-adequate
+# runs); this one lets an already-good run finish promptly instead of polishing the noise floor.
+PLATEAU_MIN_BIC_GAIN = 1.0
+PLATEAU_WINDOW = 5
+
+# The chi2 goodness-of-fit p-value at/above which the best model is considered statistically
+# adequate for the plateau gate (its residuals are consistent with the known measurement noise).
+ADEQUATE_GOF_PVALUE = 0.05
+
 # -- default parameter-table bounds ----------------------------------------
 # Bounds for an auto-added model parameter missing from the table (linear values; always widened
 # to bracket the nominal). Kept fairly TIGHT (five decades) so a multistart over an auto-created

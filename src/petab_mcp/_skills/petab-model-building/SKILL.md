@@ -275,10 +275,21 @@ spanning several reactions is fitted just once, on `commit_batch`.
 You never call a fit or simulate tool: **every commit** (a model edit, a parameter-scale/
 bounds change, or `commit_batch`) fits the free parameters and simulates before
 snapshotting. The commit result and the new version carry the fit metrics —
-`neg_log_likelihood` and `chi2` (**lower is better**) plus improvement metrics
-(`objective_before`, `self_improvement`, `improvement_vs_best_prior`, `is_new_best`), so
-competing versions can be ranked by objective. Pass `n_starts` on a commit to fit harder,
-or `n_starts=0` to simulate without fitting.
+`neg_log_likelihood` and `chi2` (**lower is better**), the complexity-penalised `bic`, plus
+improvement metrics (`objective_before`, `self_improvement`, `improvement_vs_best_prior`,
+`is_new_best`), so competing versions can be ranked. `is_new_best` and `improvement_vs_best_prior`
+track **BIC** (not raw nll) against your best model so far, and `is_new_best` is gated on a
+**minimum effect size** (ΔBIC ≥ 2, the "positive evidence" bar): a fit only counts as a new best
+when it meaningfully lowers BIC — so a 1e-6 twitch, or an nll drop bought by an extra parameter
+that actually *raises* BIC, is not mistaken for progress. Pass `n_starts` on a commit to fit
+harder, or `n_starts=0` to simulate without fitting.
+
+The commit result also carries a `progress` block — `non_improving_streak` (fitted ops since
+the last real new best), the lowest-BIC `best_version` seen so far, and
+`bic_improvement_over_last_n` (best-BIC gained over the last few ops). When the score stops
+moving — the streak reaches its cap, or the best model is already adequate and the BIC has
+flattened — the run is stopped and the **best-BIC version is scored**, not whatever happened
+to be committed last. So don't keep editing a fit that has reached the noise floor; finish.
 
 **Rank models by `bic` (or `aic`), not by the χ² p-value.** `get_fit_summary` also reports
 `reduced_chi2` and `chi2_gof_pvalue`, but these test goodness-of-fit against a *known* noise
