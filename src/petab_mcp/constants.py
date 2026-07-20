@@ -72,14 +72,6 @@ DEFAULT_PARAMETER_UPPER_BOUND = 1e2
 EXPONENT_LOWER_BOUND = 1.0
 EXPONENT_UPPER_BOUND = 8.0
 
-# -- estimated initial-condition bounds ------------------------------------
-# Bounds for an ESTIMATED initial-condition parameter: a concentration, so non-negative, on a
-# linear scale, generously bracketing the observed t=0 value (upper = the larger of the floor and
-# a multiple of that value).
-IC_LOWER_BOUND = 0.0
-IC_UPPER_BOUND_FLOOR = 1e2
-IC_UPPER_BOUND_FACTOR = 10.0
-
 # -- at-bound reporting -----------------------------------------------------
 # A fitted parameter within this fraction of its lower/upper bound (measured on its own
 # estimation scale, so a log10 parameter is judged by decades, not raw linear distance) is

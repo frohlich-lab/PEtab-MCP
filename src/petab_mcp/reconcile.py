@@ -2,8 +2,11 @@
 
 Enforces the invariants:
 
-* **Parametric initial conditions** — every species ``S`` gets an initial-assignment to
-  a parameter ``S_init``.
+* **Parametric initial conditions** — every species ``S`` gets a parametric initial assignment.
+  A literal IC is parametrised as a fresh ``S_init`` parameter, but an author's own parametric IC
+  is PRESERVED — whether a single parameter (``S = S_0``) or a COMPOUND expression of parameters
+  (``Rec2 = ini_R1*ini_R2fold``, ``Exposed = exposed_init_conc*population``). Its parameters are
+  the settable/estimatable IC and are synced into the parameter table.
 * **Parameter-table sync** — every model parameter (rate constants + IC parameters) has a
   row in the parameter table; parameters no longer in the model are removed, *except*
   those used by the fixed observable/noise formulas (e.g. ``sigma_*``).
@@ -39,9 +42,6 @@ from petab.v1.C import (
 from .constants import (
     EXPONENT_LOWER_BOUND,
     EXPONENT_UPPER_BOUND,
-    IC_LOWER_BOUND,
-    IC_UPPER_BOUND_FACTOR,
-    IC_UPPER_BOUND_FLOOR,
     NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD,
 )
 from .errors import ParameterError
@@ -179,6 +179,25 @@ def _ic_symbol_for(sm, sid: str) -> str | None:
     return None
 
 
+def _ic_expression_params(sm, sid: str) -> list[str]:
+    """Parameters referenced by species ``sid``'s initial assignment when it is a COMPOUND
+    parametric expression (more than a single bare parameter — that single case is handled by
+    :func:`_ic_symbol_for`). Returns ``[]`` when the species has no initial assignment or the
+    assignment references no model parameter (a bare literal, or an expression of only species).
+
+    Preserving such an assignment keeps a published compound initial condition — e.g. schwen's
+    ``Rec2 = ini_R1*ini_R2fold`` or oliveira's ``Exposed = exposed_init_conc*population`` — instead
+    of overwriting it with a fresh fixed ``<sid>_init`` and silently discarding the estimated
+    seed(s). Its parameters are picked up as IC parameters by :func:`_ic_parameter_ids`.
+    """
+    for i in range(sm.getNumInitialAssignments()):
+        ia = sm.getInitialAssignment(i)
+        if ia.getSymbol() == sid:
+            names = _ast_names(ia.getMath())
+            return sorted(n for n in names if sm.getParameter(n) is not None)
+    return []
+
+
 def add_species_with_parametric_ic(sm, sid: str, initial_value: float = 0.0) -> None:
     comp = default_compartment(sm)
     sp = sm.createSpecies()
@@ -222,6 +241,13 @@ def ensure_parametric_initial_conditions(sm) -> list[str]:
         existing = _ic_symbol_for(sm, sid)
         if existing is not None:
             ic_params.append(existing)
+            continue
+        expr_params = _ic_expression_params(sm, sid)
+        if expr_params:
+            # A COMPOUND parametric IC (e.g. Rec2 = ini_R1*ini_R2fold): keep the expression as-is;
+            # its parameters ARE the settable/estimatable IC (synced by _ic_parameter_ids). Do NOT
+            # clobber it with a fresh <sid>_init, which would discard the estimated seed(s).
+            ic_params.extend(expr_params)
             continue
         value = 0.0
         if sp.isSetInitialConcentration():
@@ -711,22 +737,13 @@ def _ic_parameter_ids(sm) -> set[str]:
     return ic
 
 
-def _ic_bounds(value: float) -> tuple[float, float]:
-    """Bounds for an ESTIMATED initial-condition parameter: a concentration, so non-negative,
-    on a linear scale, generously bracketing the observed t=0 value."""
-    try:
-        v = max(IC_LOWER_BOUND, float(value))
-    except (TypeError, ValueError):
-        v = IC_LOWER_BOUND
-    return IC_LOWER_BOUND, max(IC_UPPER_BOUND_FLOOR, v * IC_UPPER_BOUND_FACTOR)
-
-
 def sync_parameter_table(problem, estimate_ics: bool = False) -> dict[str, list[str]]:
     """Add rows for new model parameters; remove rows for parameters gone from the model
     (keeping observable/noise parameters). Returns the add/remove diff.
 
     ``estimate_ics`` (opt-in, per scenario) makes initial-condition parameters ESTIMATED rather
-    than fixed at the observed t=0 value."""
+    than fixed at the observed t=0 value -- EXCEPT species that start empty (t=0 == 0), which stay
+    fixed at 0 (a scenario can thus estimate only the seeded pools without shipping named ICs)."""
     sm = problem.model.sbml_model
     valid = set(problem.model.get_valid_parameters_for_parameter_table())
     # A parameter that is a CONDITION-TABLE COLUMN is set per condition (a PEtab condition
@@ -746,12 +763,30 @@ def sync_parameter_table(problem, estimate_ics: bool = False) -> dict[str, list[
         value = problem.model.get_parameter_value(pid)
         if pid in ic_params:
             # Initial conditions: FIXED at the observed t=0 value by default. When the scenario
-            # opts in (estimate_ics), ESTIMATE them instead (non-negative, linear) — treating the
-            # noisy t=0 measurement as a parameter to fit and count honestly in k, not ground
-            # truth. Opting in requires the scenario's BIC reference to estimate its ICs too, so
-            # the comparison stays fair; left off, published problems keep their standard ICs.
-            lb, ub = _ic_bounds(value) if estimate_ics else _default_bounds(value)
-            scale, estimate = LIN, (1 if estimate_ics else 0)
+            # opts in (estimate_ics), ESTIMATE them instead — treating the noisy t=0 measurement as
+            # a parameter to fit and counting it honestly in k, not as ground truth. Opting in
+            # requires the scenario's BIC reference to estimate its ICs too, so the comparison stays
+            # fair; left off, published problems keep their standard ICs.
+            # EXCEPTION: a species that STARTS EMPTY (t=0 value == 0) stays FIXED at 0 even under
+            # estimate_ics. "Estimating" an empty pool is meaningless, and fixing it lets a scenario
+            # estimate ONLY the genuinely-seeded species without having to ship named <sid>_init
+            # seeds — the candidate's zero-start species are fixed at 0 by this same rule, so the
+            # BIC comparison stays at parity (a scenario can seed a few pools and leave the rest 0).
+            # A seeded IC is a strictly-positive concentration, so it is estimated on LOG10 with the
+            # usual wide bracketing bounds — exactly like a positive kinetic parameter. This resolves
+            # seeds spanning many orders of magnitude (a receptor pool ~1e7 beside a kinase ~1e-2),
+            # which a linear IC scale could not.
+            try:
+                v0 = float(value) if value is not None else 0.0
+            except (TypeError, ValueError):
+                v0 = 0.0
+            lb, ub = _default_bounds(value)
+            if bool(estimate_ics) and v0 > 0.0:
+                scale, estimate = LOG10, 1
+            elif bool(estimate_ics) and v0 != 0.0:
+                scale, estimate = LIN, 1          # nonzero but non-positive: cannot live on log10
+            else:
+                scale, estimate = LIN, 0          # empty pool, or estimate_ics off: fixed
         elif pid in exp_params:
             # An exponent (Hill coefficient): estimate on a LINEAR scale with tight bounds so it
             # cannot run off to a near-step-function on the wide default log10 range.

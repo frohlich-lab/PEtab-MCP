@@ -95,14 +95,16 @@ def test_ic_parameter_fixed_by_default(session):
     assert int(session.problem.parameter_df.loc["D_init", "estimate"]) == 0
 
 
-def test_ic_parameter_estimated_when_opted_in(session):
-    # With estimate_initial_conditions on, the IC is estimated: non-negative, linear scale.
+def test_empty_pool_ic_stays_fixed_even_when_opted_in(session):
+    # A newly-added species starts EMPTY (t=0 == 0). Even with estimate_initial_conditions on, an
+    # empty pool's IC stays FIXED at 0 — estimate_ics estimates only genuinely-seeded (nonzero)
+    # species (see reconcile.sync_parameter_table + test_reconcile). A modeller seeds a pool by
+    # giving it a nonzero initial; a species declared to start empty has no t=0 value to fit.
     session.estimate_initial_conditions = True
     O.add_reaction(session, "J: B -> D; k3*B", justification="B converts to D")
     row = session.problem.parameter_df.loc["D_init"]
-    assert int(row["estimate"]) == 1
-    assert row["parameterScale"] == "lin"
-    assert float(row["lowerBound"]) == 0.0
+    assert int(row["estimate"]) == 0
+    assert float(row["nominalValue"]) == 0.0
 
 
 def test_change_rate_law(session):

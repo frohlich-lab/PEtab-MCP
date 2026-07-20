@@ -67,6 +67,20 @@ IC_LITERAL_ANTIMONY = """model ic_lit
 end
 """
 
+# The author parametrises an IC as a COMPOUND expression of parameters (r2 = ini_R1*ini_R2fold),
+# as several benchmark models do — it must be preserved, not clobbered with a fresh r2_init=0.
+IC_COMPOUND_ANTIMONY = """model ic_compound
+  compartment c = 1;
+  species r1 in c; species r2 in c;
+  r1 = ini_R1;
+  r2 = ini_R1 * ini_R2fold;
+  ini_R1 = 5.0; ini_R2fold = 3.0;
+  koff = 0.1;
+  deg1: r1 -> ; koff * r1;
+  deg2: r2 -> ; koff * r2;
+end
+"""
+
 
 def test_reconcile_respects_authors_own_ic_parameter():
     # The author's p1_0 must be recognised as the IC param — NOT clobbered by a fresh p1_init=0.
@@ -85,12 +99,18 @@ def test_reconcile_parametrises_a_literal_ic():
     assert abs(sm.getParameter('q1_init').getValue() - 2.5) < 1e-9
 
 
-def test_ic_bounds_are_nonnegative_and_bracket_nominal():
-    # A concentration: lower bound is 0; upper bound is the default, widened to 10x a large value.
-    assert R._ic_bounds(3.6) == (0.0, 100.0)      # small nominal -> default upper (1e2)
-    assert R._ic_bounds(50.0) == (0.0, 500.0)     # large nominal -> 10x upper
-    assert R._ic_bounds(0.0) == (0.0, 100.0)
-    assert R._ic_bounds(None) == (0.0, 100.0)     # NaN/None guard -> treated as 0
+def test_reconcile_preserves_a_compound_parametric_ic():
+    # r2 = ini_R1*ini_R2fold must be KEPT: no r2_init clobber, and both parameters surface as IC
+    # parameters (so the parameter-table sync keeps/estimates them rather than dropping the seed).
+    sm = SbmlModel.from_antimony(IC_COMPOUND_ANTIMONY).sbml_model
+    ic = R.ensure_parametric_initial_conditions(sm)
+    assert sm.getParameter('r2_init') is None            # the compound IC is NOT clobbered
+    assert {'ini_R1', 'ini_R2fold'} <= set(ic)           # both compound-IC params reported
+    assert set(R._ic_parameter_ids(sm)) >= {'ini_R1', 'ini_R2fold'}
+    # the initial assignment still evaluates to the product (expression untouched)
+    ia = next(sm.getInitialAssignment(i) for i in range(sm.getNumInitialAssignments())
+              if sm.getInitialAssignment(i).getSymbol() == 'r2')
+    assert R._ast_names(ia.getMath()) == {'ini_R1', 'ini_R2fold'}
 
 
 def test_sync_parameter_table_uses_linear_for_nonpositive_nominal(session):
@@ -113,6 +133,40 @@ def test_sync_parameter_table_uses_linear_for_nonpositive_nominal(session):
     R.reconcile(session.problem)
     pdf = session.problem.parameter_df
     assert pdf.loc["k_off", PARAMETER_SCALE] == LIN   # linear, NOT an invalid log10
+
+
+def test_estimate_ics_estimates_only_nonzero_start_species():
+    """estimate_ics estimates SEEDED (nonzero-start) ICs but keeps empty pools FIXED at 0.
+
+    A scenario can then estimate just the seeded species without shipping named <sid>_init seeds:
+    the candidate's zero-start species are fixed at 0 by the same rule, so ΔBIC stays at parity.
+    """
+    import pandas as pd
+    import petab.v1 as petab
+    from petab.v1.C import (ESTIMATE, LIN, LOG10, LOWER_BOUND, NOMINAL_VALUE,
+                            PARAMETER_ID, PARAMETER_SCALE, UPPER_BOUND)
+
+    ant = (
+        "model seeded_and_empty\n"
+        "  compartment c = 1;\n"
+        "  species A in c; species B in c;\n"
+        "  A = 2.5; B = 0.0;\n"                 # A is seeded (nonzero t=0); B starts empty
+        "  k1 = 0.3;\n"
+        "  r1: A -> B; k1 * A;\n"
+        "end\n"
+    )
+    prob = petab.Problem(model=SbmlModel.from_antimony(ant))
+    prob.parameter_df = pd.DataFrame(
+        columns=[PARAMETER_SCALE, LOWER_BOUND, UPPER_BOUND, NOMINAL_VALUE, ESTIMATE]
+    ).rename_axis(PARAMETER_ID)
+    R.reconcile(prob, estimate_ics=True)
+    pdf = prob.parameter_df
+    assert pdf.loc["A_init", ESTIMATE] == 1        # seeded pool: ESTIMATED
+    assert pdf.loc["A_init", PARAMETER_SCALE] == LOG10   # a positive concentration -> log10
+    assert abs(pdf.loc["A_init", NOMINAL_VALUE] - 2.5) < 1e-9
+    assert pdf.loc["B_init", ESTIMATE] == 0        # empty pool: FIXED at 0 despite estimate_ics
+    assert pdf.loc["B_init", PARAMETER_SCALE] == LIN
+    assert abs(pdf.loc["B_init", NOMINAL_VALUE]) < 1e-12
 
 
 # -- manual sync_parameters tool (consolidated onto sync_parameter_table) ------------------
