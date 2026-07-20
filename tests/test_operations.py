@@ -50,7 +50,7 @@ def test_references_optional_for_model_ops(session):
     # references are optional for model ops now (justification still required). This edit
     # adds species D, which appears in no observable -> a parsimony warning.
     res = _set_model(session, ["J: B => D; k3 * B;"], justification="B is degraded to D")
-    assert res["committed"] is True
+    assert res["applied"] is True
     assert res["references"] == []
     assert any("unobserved species" in w for w in res["warnings"])
 
@@ -59,7 +59,7 @@ def test_no_parsimony_warning_when_reusing_species(session):
     # a repair reusing existing species introduces no new species -> no parsimony warning
     # (a sigma-bound-tightening warning may still appear; that's a separate concern)
     res = _set_model(session, ["J: A => B; k3 * A;"], justification="extra forward conversion")
-    assert res["committed"] is True
+    assert res["applied"] is True
     assert not any("unobserved species" in w for w in res["warnings"])
 
 
@@ -68,7 +68,7 @@ def test_no_parsimony_warning_when_new_species_feeds_observable(session):
     # through the network — a legitimate upstream addition, not a degenerate sink. The warning
     # must not fire, or it trains the agent to ignore the one warning type that ever does.
     res = _set_model(session, ["J: C => B; k3 * C;"], justification="C is converted to B")
-    assert res["committed"] is True
+    assert res["applied"] is True
     assert "C" in _species(session)
     assert not any("unobserved species" in w for w in res["warnings"])
 
@@ -77,7 +77,7 @@ def test_parsimony_warning_still_fires_for_disconnected_sink(session):
     # D is a pure downstream sink of the observed species B (B -> D): it feeds no observable and
     # no input sets it, so it stays flagged as a genuinely disconnected hidden state.
     res = _set_model(session, ["J: B => D; k3 * B;"], justification="B drains to D")
-    assert res["committed"] is True
+    assert res["applied"] is True
     assert any("unobserved species" in w for w in res["warnings"])
 
 
@@ -85,7 +85,7 @@ def test_parsimony_warning_still_fires_for_disconnected_sink(session):
 def test_reauthor_auto_adds_species_and_params(session):
     res = _set_model(session, ["J: B => D; k3 * B;"], justification="B converts to D",
                      references=["PMID:1"])
-    assert res["committed"] is True
+    assert res["applied"] is True
     assert "D" in _species(session)
     assert {"D_init", "k3"} <= _ids(session)  # new IC param + rate constant added to table
     assert set(res["reconcile"]["parameters"]["added"]) == {"D_init", "k3"}
@@ -114,7 +114,7 @@ def test_reauthor_change_rate_law(session):
     _set_model(session, ["J: B => D; k3 * B;"], justification="x", references=["PMID:1"])
     res = _set_model(session, ["J: B => D; k3 * B * B;"], justification="second order",
                      references=["PMID:2"])
-    assert res["committed"] is True
+    assert res["applied"] is True
     rxn = session.model.sbml_model.getReaction("J")
     formula = rxn.getKineticLaw().getFormula()
     assert "B * B" in formula.replace("^", " ") or "B^2" in formula
@@ -124,7 +124,7 @@ def test_reauthor_without_reaction_prunes_orphans(session):
     # Author a reaction that introduces D, then re-author WITHOUT it: D and its params are pruned.
     _set_model(session, ["J: B => D; k3 * B;"], justification="x", references=["PMID:1"])
     res = _set_model(session, [], justification="retract the sink", references=["PMID:3"])
-    assert res["committed"] is True
+    assert res["applied"] is True
     assert "D" not in _species(session)
     assert not ({"D_init", "k3"} & _ids(session))  # orphans pruned from the table
 
@@ -149,7 +149,7 @@ def test_no_parameter_estimate_or_fix_operation():
 
 def test_change_parameter_scale(session):
     res = O.change_parameter_scale(session, "sigma_B", "log10", justification="spans magnitudes")
-    assert res["committed"] is True
+    assert res["applied"] is True
     assert res["references"] == []  # references optional for parameter operations
     recs = {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
     assert recs["sigma_B"]["parameterScale"] == "log10"
@@ -171,7 +171,7 @@ def test_change_parameter_scale_invalid_is_reverted(session):
 
 def test_change_parameter_bounds(session):
     res = O.change_parameter_bounds(session, "k1", 1e-3, 1e3, justification="physiological range")
-    assert res["committed"] is True
+    assert res["applied"] is True
     recs = {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
     assert float(recs["k1"]["lowerBound"]) == 1e-3
     assert float(recs["k1"]["upperBound"]) == 1e3
@@ -185,11 +185,11 @@ def test_change_parameter_bounds_bad_range_reverts(session):
 
 
 # -- repeated-widening backstop (issue #56) --------------------------------
-def _add_version(session, *, upper, nllh, kind="alteration"):
+def _add_version(session, *, upper, nllh, kind="fit"):
     """Snapshot a real version whose stored parameter table sets k1's UPPER bound to ``upper``
-    and whose meta records ``neg_log_likelihood`` (``None`` => a simulate-only commit). The
+    and whose meta records ``neg_log_likelihood`` (``None`` => a simulate-only fit). The
     guard reconstructs widening history from these stored tables, so this mirrors exactly how a
-    real commit / batch / rollback lands on disk."""
+    real fit / rollback lands on disk."""
     from petab.v1.C import UPPER_BOUND
 
     df = session.problem.parameter_df.copy(deep=True)
@@ -281,11 +281,11 @@ def test_rollback_resets_widening_count(session):
     O._reject_repeated_widening(session, session.problem, "k1", 1e-4, 1e4)  # no raise
 
 
-def test_widenings_inside_committed_batches_are_counted(session):
-    # A widening committed via a batch lands as a normal version snapshot, so it counts toward
-    # the backstop exactly like a single-op widening.
-    _add_version(session, upper=1e3, nllh=100.0, kind="batch")
-    _add_version(session, upper=1e4, nllh=99.9, kind="batch")
+def test_widenings_across_fitted_versions_are_counted(session):
+    # A widening that reaches a version via any fit snapshot counts toward the backstop exactly
+    # like any other; the guard reads stored parameter tables regardless of the version's kind.
+    _add_version(session, upper=1e3, nllh=100.0, kind="fit")
+    _add_version(session, upper=1e4, nllh=99.9, kind="fit")
     _pin_k1_at_upper(session, 1e4)
     with pytest.raises(OperationError, match="Refusing to widen"):
         O._reject_repeated_widening(session, session.problem, "k1", 1e-4, 1e5)
@@ -312,12 +312,14 @@ def test_compile_fit_failure_message_no_false_positive_on_internals():
     assert "reserves" not in msg
 
 
-def test_operation_records_version_and_provenance(session):
+def test_edit_records_event_but_no_version(session):
+    # An edit is fit-free: it logs an `edit` event and marks the change pending a fit, but does
+    # NOT snapshot a version (versions are fit snapshots — issue #81).
     before = session.provenance.current_version
     _set_model(session, ["J: B => D; k3 * B;"], justification="x", references=["PMID:1"])
-    assert session.provenance.current_version == before + 1
+    assert session.provenance.current_version == before  # edit does not snapshot a version
     events = session.provenance.recent_events()
-    alt = [e for e in events if e["type"] == "alteration"][-1]
-    assert alt["operation"] == "set_model"
-    assert alt["justification"] == "x"
-    assert alt["references"][0]["input"] == "PMID:1"
+    edit = [e for e in events if e["type"] == "edit"][-1]
+    assert edit["operation"] == "set_model"
+    assert edit["justification"] == "x"
+    assert edit["references"][0]["input"] == "PMID:1"

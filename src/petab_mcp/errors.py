@@ -54,7 +54,3 @@ class ParameterError(PetabMcpError):
 
 class UnknownEntityError(PetabMcpError):
     """A referenced id (parameter, observable, experiment, ...) does not exist."""
-
-
-class BatchError(PetabMcpError):
-    """An invalid batch/staging action (e.g. committing with no batch open)."""

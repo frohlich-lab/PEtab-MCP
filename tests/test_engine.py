@@ -169,12 +169,13 @@ def test_fit_skip_reuses_cache(fit_session):
     assert fit_session.last_fit_cache_hit is False
 
 
-def test_commit_tracks_improvement_vs_versions(fit_session):
+def test_fit_tracks_improvement_vs_versions(fit_session):
     pytest.importorskip("pypesto", reason="pyPESTO not installed")
     from petab_mcp import operations as O
 
-    # every commit auto-fits; improvement is tracked across committed versions
-    first = O.change_parameter_bounds(fit_session, "k1", 1e-3, 1e3, justification="widen k1")
+    # edits are fit-free; `fit` scores them and tracks improvement across the fitted versions
+    O.change_parameter_bounds(fit_session, "k1", 1e-3, 1e3, justification="widen k1")
+    first = fit_session.fit()
     assert first["fit_status"] == "fit"
     imp1 = first["improvement"]
     assert imp1["objective_before"] is not None
@@ -182,7 +183,8 @@ def test_commit_tracks_improvement_vs_versions(fit_session):
     assert imp1["is_new_best"] is True  # nothing to beat yet
     assert imp1["improvement_vs_best_prior"] is None
 
-    second = O.change_parameter_bounds(fit_session, "k2", 1e-3, 1e3, justification="widen k2")
+    O.change_parameter_bounds(fit_session, "k2", 1e-3, 1e3, justification="widen k2")
+    second = fit_session.fit()
     imp2 = second["improvement"]
     assert imp2["best_prior_version"] is not None
     assert imp2["improvement_vs_best_prior"] is not None

@@ -136,7 +136,7 @@ def test_set_model_builds_the_first_model(empty_session):
         empty_session, REVERSIBLE_ANTIMONY,
         justification="reversible conversion A<->B", references=["PMID:1"],
     )
-    assert res["committed"] is True
+    assert res["applied"] is True
     assert res["operation"] == "set_model"
     assert empty_session.has_model() is True
     assert _species(empty_session) == {"A", "B"}
@@ -148,7 +148,7 @@ def test_set_model_builds_the_first_model(empty_session):
 def test_set_model_references_optional(empty_session):
     # references are optional for model operations (set_model / the parameter edits)
     res = O.set_model(empty_session, REVERSIBLE_ANTIMONY, justification="reversible A<->B")
-    assert res["committed"] is True
+    assert res["applied"] is True
     assert res["references"] == []
     assert empty_session.has_model() is True
 
@@ -185,7 +185,7 @@ def test_can_reauthor_after_set_model(empty_session):
     O.set_model(empty_session, REVERSIBLE_ANTIMONY, justification="build", references=["PMID:1"])
     res = O.set_model(empty_session, REVERSIBLE_PLUS_DEG_ANTIMONY,
                       justification="add degradation", references=["PMID:2"])
-    assert res["committed"] is True
+    assert res["applied"] is True
     assert "rdeg" in _reactions(empty_session)
 
 
@@ -195,7 +195,7 @@ def test_set_model_replaces_existing_model(session):
     # replaces the current model wholesale.
     assert session.has_model() is True
     res = O.set_model(session, ONE_REACTION_ANTIMONY, justification="drop the reverse reaction")
-    assert res["committed"] is True
+    assert res["applied"] is True
     assert res["operation"] == "set_model"
     assert _reactions(session) == {"r1"}          # r2 gone
     assert "k2" not in _ids(session)              # its orphaned rate constant pruned
@@ -205,7 +205,7 @@ def test_set_model_warns_on_dropped_estimated_param(session):
     # k2 is estimated (estimate=1) in the toy parameter table; re-authoring without it drops
     # its row + fitted value, which set_model must warn about.
     res = O.set_model(session, ONE_REACTION_ANTIMONY, justification="drop r2/k2")
-    assert res["committed"] is True
+    assert res["applied"] is True
     assert any("k2" in w for w in (res.get("warnings") or [])), res.get("warnings")
 
 
@@ -245,7 +245,7 @@ def test_shipped_fixed_constant_is_protected(fixed_k1_session):
     # estimate flag). A structural change — adding a B degradation — so it is not de-duplicated
     # as a no-op re-author of the identical shipped model.
     res = O.set_model(sess, REVERSIBLE_PLUS_DEG_ANTIMONY, justification="keep k1, add degradation")
-    assert res["committed"] is True
+    assert res["applied"] is True
     k1_row = {r["parameterId"]: r for r in P.parameters_to_records(sess.problem)}["k1"]
     assert k1_row["status"] == "fixed" and k1_row["role"] == "kinetic"
 
@@ -309,4 +309,4 @@ def test_set_model_accepts_used_condition_target(drive_condition_session):
     res = O.set_model(
         sess, _DRIVE_MODEL.format(rate="k1 * A * drive;"), justification="drive drives r1"
     )
-    assert res["committed"] is True
+    assert res["applied"] is True

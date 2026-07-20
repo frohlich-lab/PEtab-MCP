@@ -3,7 +3,6 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from petab_mcp import operations as O
 from petab_mcp.provenance import ProvenanceStore
 
 
@@ -111,7 +110,7 @@ def test_versioning_diff_and_rollback(session, reauthor_toy):
     }
     assert species == {"A", "B"}
     kinds = [v["kind"] for v in session.provenance.list_versions()]
-    assert kinds == ["initial", "alteration", "rollback"]
+    assert kinds == ["initial", "fit", "rollback"]
 
 
 def test_durable_resume(yaml_path, tmp_path, reauthor_toy):

@@ -23,11 +23,11 @@ def test_problem_hash_tracks_parameter_table(session):
     # identity — otherwise the fit cache / provenance would treat two different fits as one.
     sbml0, prob0 = session.sbml_hash(), session.problem_hash()
     res = O.change_parameter_bounds(session, "k1", 1e-4, 1e4, justification="widen k1")
-    assert res["committed"] is True
+    assert res["applied"] is True
     assert session.sbml_hash() == sbml0        # model structure unchanged
     assert session.problem_hash() != prob0     # parameter table changed -> problem changed
 
-    # and the alteration event makes that visible: model hash steady, problem hash moved
+    # and the edit event makes that visible: model hash steady, problem hash moved
     ev = next(e for e in reversed(session.provenance.recent_events(0))
               if e.get("operation") == "change_parameter_bounds")
     assert ev["model_hash_before"] == ev["model_hash_after"]

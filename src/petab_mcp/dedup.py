@@ -1,21 +1,21 @@
-"""Structure-level de-duplication for whole-model re-authoring (``set_model``).
+"""Structure-level de-duplication for the ``fit`` tool (issue #59; relocated by issue #81).
 
-The model-building loop's single most frequent waste is re-authoring a structure it has
-already visited: a byte-identical re-encode of the current model (same reactions, same fit,
-zero change), or oscillating back into a structure family that already scored worse — each
-one recompiles and refits to the *same* result. This module gives ``set_model`` a memory. It
-fingerprints the resolved structure (see :func:`petab_mcp.parameters.structure_fingerprint`)
-and, BEFORE the expensive recompile+fit, decides whether to
+The model-building loop's single most frequent waste is fitting a structure it has already
+visited: a byte-identical re-encode of the current model (same reactions, same fit, zero change),
+or oscillating back into a structure family that already scored worse — each one recompiles and
+refits to the *same* result. This module gives ``fit`` a memory. It fingerprints the resolved
+structure (see :func:`petab_mcp.parameters.structure_fingerprint`) and, BEFORE the expensive
+recompile+fit, decides whether to
 
-* **skip** a no-op re-author (byte-identical to the current version) — no fit, no new version;
+* **skip** a no-op fit (byte-identical to the current version) — no fit, no new version;
 * **warn** when revisiting a structure already in the history, or a family whose best BIC was
   materially worse than the best model so far (and point at ``restore_version(n)``);
-* **terminate** an identical-re-author loop after a few repeats (they cannot change anything).
+* **terminate** an identical-fit loop after a few repeats (they cannot change anything).
 
 The heavy lifting is the pure :func:`decide` — it takes fingerprints + a small registry of
 prior versions and returns an action, so it is trivially testable without AMICI. The caller
-(:mod:`petab_mcp.operations`) computes the fingerprints, runs :func:`decide`, and enacts the
-result. See issue #59.
+(:meth:`petab_mcp.session.PetabSession.fit`) computes the fingerprints, runs :func:`decide`, and
+enacts the result. See issues #59 and #81.
 """
 
 from __future__ import annotations
@@ -147,14 +147,14 @@ def decide(
             byte-identical to the current HEAD: skip the recompile+fit and the new version.
         ``{"action": "proceed", "warnings": [...]}`` — commit normally, attaching any advisories.
     """
-    # (d) An identical structure authored too many times cannot change anything — stop the loop.
+    # (d) An identical structure fit too many times cannot change anything — stop the loop.
     if prior_attempts >= MAX_IDENTICAL_REAUTHORS:
         return {"action": "terminate", "message": (
-            f"set_model has been given this same model structure {prior_attempts + 1} times now. "
-            "Re-authoring an identical structure recompiles and refits to the SAME result — it "
-            "cannot improve the fit. Stop re-authoring it: if this is your best model it is "
-            "already committed, so go back to it with restore_version(n) (use list_versions to "
-            "find the best-bic version), or make a genuinely different structural change."
+            f"This same model structure has been fit {prior_attempts + 1} times now. Re-fitting an "
+            "identical structure recompiles and refits to the SAME result — it cannot improve the "
+            "fit. Stop re-fitting it: if this is your best model it is already committed, so go "
+            "back to it with restore_version(n) (use list_versions to find the best-bic version), "
+            "or make a genuinely different structural change and fit THAT."
         )}
 
     # (a) Byte-identical to the current HEAD (same structure AND same estimation setup): nothing
@@ -165,9 +165,9 @@ def decide(
             "duplicate_of": head_version,
             "warnings": [],
             "message": (
-                f"This model is identical to the current version (v{head_version}); no change was "
-                "made and the fit was not re-run (its metrics are unchanged — see get_fit_summary). "
-                "To improve the fit, change the STRUCTURE; to go back to an earlier model, use "
+                f"This model is identical to the current version (v{head_version}); the fit was "
+                "not re-run (its metrics are unchanged — see get_fit_summary). To improve the fit, "
+                "change the STRUCTURE and fit again; to go back to an earlier model, use "
                 "restore_version(n)."
             ),
         }
@@ -184,7 +184,7 @@ def decide(
         warnings.append(
             f"This model structure was already committed at version(s) {prior_versions}. "
             f"restore_version({latest}) brings that model back without recompiling or refitting; "
-            "re-authoring it just creates a duplicate."
+            "re-fitting it just creates a duplicate."
         )
     # (b) The structure family already scored materially worse than the best model so far.
     family = _min_bic_entry(matches)

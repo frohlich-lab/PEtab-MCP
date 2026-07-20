@@ -3,26 +3,27 @@ name: petab-model-building
 description: >-
   Use when interacting with the petab-mcp server to work a single PEtab v1
   parameter-estimation problem: read the fixed experimental design, author or re-author the
-  whole model in Antimony with set_model and adjust parameter search
-  spaces (change_parameter_scale, change_parameter_bounds) — each commit automatically fits
-  and simulates — then inspect the fit by querying the data with SQL (query_data over the PEtab
-  tables + the simulation dataframe/residuals), provenance, and versions. Explains the
-  disciplined, auditable tool workflow, the rules each tool enforces, how to read tool
-  results, and how to recover from rejected operations. Read this before calling any
-  petab-mcp tool.
+  whole model in Antimony with set_model (the single model editor) and adjust parameter search
+  spaces (change_parameter_scale, change_parameter_bounds) — these edits are FIT-FREE — then call
+  `fit` once to score the assembled change and snapshot a version, and inspect the fit by querying
+  the data with SQL (query_data over the PEtab tables + the simulation dataframe/residuals),
+  provenance, and versions. Explains the disciplined, auditable tool workflow, the rules each tool
+  enforces, how to read tool results, and how to recover from rejected operations. Read this
+  before calling any petab-mcp tool.
 ---
 
 # Working a PEtab problem with petab-mcp
 
 `petab-mcp` wraps **one** PEtab v1 parameter-estimation problem and turns model
 building into a disciplined, auditable loop. The tools are deliberately narrow:
-the experimental design is read-only, the model changes through `set_model`
-(author or replace the whole model in Antimony), the parameter
-search space through `change_parameter_scale` / `change_parameter_bounds`, and every
-committed change is versioned and logged. Work *with* those constraints — do not look for
-an "edit the measurements" tool or an incremental single-reaction editor; there aren't any,
-by design. To write the Antimony that `set_model` takes, see the companion
-`antimony-authoring` skill.
+the experimental design is read-only, the model changes only through `set_model` (the single
+model editor — author or replace the whole model in Antimony), and the parameter search space
+through `change_parameter_scale` / `change_parameter_bounds`. These edits are **fit-free** — they
+mutate the working model and are logged, but scoring is a separate, explicit step: you assemble a
+coherent change through edits, then call `fit` **once** to score it and snapshot a version. Work
+*with* those constraints — do not look for an "edit the measurements" tool or an incremental
+single-reaction editor; there aren't any, by design. To write the Antimony that `set_model` takes,
+see the companion `antimony-authoring` skill.
 
 For the exhaustive per-tool signature/return reference, read `tools.md` in this
 skill (also available from the server as `get_skill("petab-model-building",
@@ -47,7 +48,7 @@ file="tools.md")`).
   (`S = S_init`, with `S_init` added to the parameter table on a linear scale, *fixed*), and
   orphaned entities are pruned. The parameter table therefore always matches the model.
   - **Initial conditions are FIXED by default** (whether they are estimated is a fixed
-    per-scenario setting, not something you switch in-loop). Every commit's **`initial_conditions`**
+    per-scenario setting, not something you switch in-loop). Every edit's **`initial_conditions`**
     block reports each species' t=0 status (`fixed` / `estimated` / `condition_table`, and whether
     the declared t=0 is used) — read it rather than re-authoring to try to change an IC. *How* ICs
     reconcile is covered in the `antimony-authoring` skill.
@@ -57,7 +58,7 @@ file="tools.md")`).
     log10 scale an exponent fits to a huge value (a near-step-function) that makes the ODE stiff
     and the fit plateau. Keep it that way — if you set an exponent's scale/bounds by hand, use
     `lin` with a tight range; never put a Hill coefficient on log10 with wide bounds.
-  - **Noise sigmas have a reference, not a free run.** Every commit's `noise_sigma_report`
+  - **Noise sigmas have a reference, not a free run.** Every fit's `noise_sigma_report`
     (also in `get_fit_summary`) lists each ESTIMATED noise-sigma parameter's fitted value
     against a data-driven reference — a fraction of its observable's own raw measurement std
     (across every time point/condition), see `NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD`. A sigma
@@ -116,23 +117,29 @@ file="tools.md")`).
     (`check: "unused_condition_target"`): wire each condition quantity into the mechanism (an
     input/driver in a rate law, or the initial state of a species that participates in the
     dynamics).
-- **Everything is versioned.** Each committed operation snapshots a new version
-  and appends a provenance event. Nothing is lost; you can diff, roll back, or
-  reset.
-- **Fitting is automatic.** Every commit fits the free parameters and simulates
-  before snapshotting, so each version carries the fitted parameters, the fit metrics
-  (neg_log_likelihood, chi2, improvement vs prior versions), and a simulation dataframe.
-  You never call a fit or simulate tool by hand; parameter *values* are set only by this
-  fit. Fits are cached by estimation-problem identity, so re-committing a model+bounds you
-  already fit reuses the stored fit (skipping the optimizer) — transparently, with identical
-  results.
+- **Everything is versioned — a version is a fit.** Every operation (edits, `fit`,
+  rollbacks, resets) appends a provenance event, so nothing is lost. A **version** is
+  specifically a fit snapshot: an edit mutates the working model and records an `edit`
+  event but does *not* create a version, and only `fit` (or a rollback/reset) snapshots
+  one. You can diff, roll back, or reset.
+- **Fitting is a separate, explicit step.** Edits never fit — they mutate the working
+  model, reconcile, and lint, but carry no score. A dedicated **`fit`** tool is the only
+  thing that fits: it runs a pyPESTO multistart over the current working model's free
+  parameters, simulates, and snapshots a single version carrying the fitted parameters,
+  the fit metrics (neg_log_likelihood, chi2, bic, improvement vs prior versions), and a
+  simulation dataframe. Parameter *values* are set only by this fit. `fit` de-duplicates:
+  re-fitting a model byte-identical to the current version reuses the stored fit (skipping
+  the optimizer) — transparently, with identical results. The discipline is: **assemble a
+  coherent structural change through edits, then call `fit` once to score it** — don't fit
+  after every micro-edit, and don't stack more edits on a stale score.
 
 ## Step 1 — orient yourself (read-only)
 
 Always start by understanding the problem before changing it:
 
 - `describe_problem()` — model size, free parameters, table counts, current
-  version, and whether a batch is open.
+  version, and whether the working model has unfit edits (`has_unfit_edits`,
+  `n_pending_edits`).
 - `get_model("antimony")` — the canonical model text. Use `get_model("sbml")` for
   SBML, or `get_model_structure()` for a structured species/parameters/reactions view.
 - `list_observables()`, `list_conditions()`, `get_measurements(condition_id?, summarize=True,
@@ -144,11 +151,14 @@ Always start by understanding the problem before changing it:
   estimate — they keep parameter roles straight (see the role invariant below).
 - `validate_problem()` — lint the current problem and see any outstanding issues.
 
-## Step 2 — edit the model (whole-model authoring, justified)
+## Step 2 — edit the model (whole-model authoring, justified, fit-free)
 
 `set_model` applies the (re-)authored model to a *copy* of the problem, reconciles SBML↔PEtab,
-lints the candidate, and **only commits if the result is valid**. On failure the model and
-parameter table are reverted and nothing is versioned.
+lints the candidate, and **only applies if the result is valid**. On a lint failure the model and
+parameter table are reverted and nothing changes. An edit is **fit-free**: it does *not* fit, does
+*not* simulate, and does *not* create a version — its result carries no fit metrics, only
+`applied: true`, the reconcile/IC report, and `pending_fit: true` with `n_pending_edits`. Score the
+assembled change by calling `fit` (Step 4) once you have made all the edits that belong together.
 
 ### `set_model(antimony, justification, references?)` — author the whole model
 
@@ -169,9 +179,11 @@ model my_model
 end
 ```
 
-It reconciles, lints, and fits, and reverts on failure so a bad (re-)author changes nothing.
-Because the whole model is replaced, the result **warns** if the re-author no longer declares a
-previously-*estimated* parameter (its fitted value is dropped); fixed noise / initial-condition
+It reconciles and lints — **fit-free** (call `fit`, Step 4, to score it) — and reverts on a lint
+failure so a bad (re-)author changes nothing. Every structural change — adding or removing a
+reaction, changing a rate law — is made this way, by re-authoring the whole model in one coherent
+step. Because the whole model is replaced, the result **warns** if the re-author no longer declares
+a previously-*estimated* parameter (its fitted value is dropped); fixed noise / initial-condition
 parameters and anything the observable, noise, or condition tables reference are preserved.
 
 **Writing reactions inside the model** (see the `antimony-authoring` skill for the full guide):
@@ -187,13 +199,10 @@ parameters and anything the observable, noise, or condition tables reference are
   (`k_f*X`) only for a genuinely irreversible step — synthesis, degradation, an effectively
   one-way catalytic step.
 
-`set_model` remembers the structures it has already seen (issue #59): a genuinely new
-structure always commits, but re-authoring the **current** model is a no-op (`no_change:
-true` — no fit, no new version), re-authoring an **earlier** model commits with a warning to
-use `restore_version(n)` instead, and an identical structure re-authored repeatedly is
-**refused** to break an unproductive loop. To go **back** to a prior model, use
-`restore_version(n)` — never re-author it (a re-author recompiles and refits to the same
-result and appends a duplicate version).
+To go **back** to a prior model, use `restore_version(n)` — never re-author it. A re-author is
+just another edit that then has to be re-fit; `fit` de-duplicates and, for a structure already in
+the history, warns you to use `restore_version(n)` instead (see Step 4). `restore_version(n)`
+reuses that version's stored fit without recompiling or refitting.
 
 ### Writing a good justification + references
 
@@ -208,9 +217,9 @@ result and appends a duplicate version).
 
 ## Step 3 — parameters
 
-Parameter **values** (`nominalValue`) are set only by the automatic fit on commit —
-there is no manual value-editing tool. What you *can* change, through versioned, justified
-operations, is a parameter's search space:
+Parameter **values** (`nominalValue`) are set only by `fit` — there is no manual
+value-editing tool. What you *can* change, through justified, fit-free operations, is a
+parameter's search space:
 
 - `change_parameter_scale(parameter_id, scale, justification, references?)` —
   `scale` is `"lin"`, `"log"`, or `"log10"`. Switching to `log`/`log10` requires the
@@ -218,14 +227,15 @@ operations, is a parameter's search space:
 - `change_parameter_bounds(parameter_id, lower_bound, upper_bound, justification,
   references?)`.
 
-Both are commits, so they re-fit and re-simulate like any model edit — reach for them when
-a fit lands on a bound or a scale is inappropriate. Read the current table with
-`get_parameters()`; use `sync_parameters("report"|"add")` to reconcile the table with the
-model (operations already reconcile, so this is rarely needed).
+Both are **fit-free** edits like the model edits — reach for them when a fit lands on a bound
+or a scale is inappropriate, then call `fit` afterward to re-score. A bounds edit no longer
+refits by itself. Read the current table with `get_parameters()`; use
+`sync_parameters("report"|"add")` to reconcile the table with the model (operations already
+reconcile, so this is rarely needed).
 
 **A parameter that keeps re-pinning to whatever bound you set is not a bounds problem.** Every
-commit's `parameters_at_bound` (also in `get_fit_summary`) flags any fitted parameter within
-~1% of its lower/upper bound — check it after every commit, not just when a fit looks off.
+fit's `parameters_at_bound` (also in `get_fit_summary`) flags any fitted parameter within
+~1% of its lower/upper bound — check it after every fit, not just when a fit looks off.
 **Widen at most once.** If the SAME parameter shows up in `parameters_at_bound` again at the new
 edge, moving it further won't help: a parameter pinned at a bound with a flat or collinear
 **FIM direction is *unidentifiable*, not under-explored** — the data don't constrain it, so the
@@ -269,39 +279,49 @@ If the parameter pinned at its bound is a **noise sigma**, don't even try wideni
 invariant above). A sigma at that cap means the current mechanism's residuals are already as
 large as the data's own variability; the fix is exclusively a model-structure one.
 
-## Step 4 — batching (group edits into one version)
+## Step 4 — fit the assembled change (the only fitting step)
 
-To land several related edits as a **single** version:
+Edits are fit-free, so `fit` is the one tool that scores. Make all the edits that belong
+to a coherent structural change, then call `fit` **once**:
 
-1. `begin_batch(label)` — start staging. Subsequent operations are applied and
-   logged but not individually versioned, and **not fitted** — the fit is deferred.
-2. Run the operations (a `set_model` re-author together with `change_parameter_bounds` /
-   `change_parameter_scale` edits, …).
-3. `commit_batch(label)` — fit + simulate the staged result **once**, then snapshot
-   everything as one version, **or** `abort_batch()` — discard the staged edits and
-   restore the pre-batch version.
+`fit(n_starts?, justification?)` fits the current working model's free parameters with a
+pyPESTO multistart, simulates, and snapshots a **single** version carrying the fitted
+parameters, the full fit block (`neg_log_likelihood`, `chi2`, `bic`, `aic`, …), and the
+simulation dataframe. `n_starts` overrides the server's default multistart count for this
+fit (`0` = simulate without optimising). On success it returns `{"committed": true,
+"version": N, "warnings", "progress", …fit block…}`.
 
-While a batch is open, `rollback_to` and `reset` are blocked — commit or abort first.
-Batching is also how you avoid re-fitting after every intermediate edit: a re-authored model
-plus its parameter-space adjustments are fitted just once, on `commit_batch`. (A single
-`set_model` already authors the whole structure at once, so the common use is grouping it with
-the parameter-table edits it needs.)
+`fit` de-duplicates redundant work:
 
-## Step 5 — read the fit (fitting is automatic)
+- If the working model is **byte-identical to the current version**, `fit` skips the refit
+  and returns the stored metrics: `{"committed": false, "no_change": true, "version",
+  "duplicate_of_version", "message", "warnings", "neg_log_likelihood", "bic"}`.
+- A structure **already elsewhere in the history** is fit but the result **warns** to use
+  `restore_version(n)` instead (which reuses the stored fit without recompiling); the *same*
+  structure fit too many times is **refused** to break an unproductive loop.
+- A model that **can't compile or has no free parameters** returns `{"committed": false,
+  "error": …}` and **leaves the working model in place** to repair — a fit failure does *not*
+  revert your edits, so fix the model (so it simulates / has free parameters) and fit again.
 
-You never call a fit or simulate tool: **every commit** (a model edit, a parameter-scale/
-bounds change, or `commit_batch`) fits the free parameters and simulates before
-snapshotting. The commit result and the new version carry the fit metrics —
-`neg_log_likelihood` and `chi2` (**lower is better**), the complexity-penalised `bic`, plus
-improvement metrics (`objective_before`, `self_improvement`, `improvement_vs_best_prior`,
-`is_new_best`), so competing versions can be ranked. `is_new_best` and `improvement_vs_best_prior`
-track **BIC** (not raw nll) against your best model so far, and `is_new_best` is gated on a
-**minimum effect size** (ΔBIC ≥ 2, the "positive evidence" bar): a fit only counts as a new best
-when it meaningfully lowers BIC — so a 1e-6 twitch, or an nll drop bought by an extra parameter
-that actually *raises* BIC, is not mistaken for progress. Pass `n_starts` on a commit to fit
-harder, or `n_starts=0` to simulate without fitting.
+The intended discipline is one fit per coherent structural change: fit after you have
+assembled a change, *before* deciding the next step — not after every micro-edit, and never
+stacking further edits on a stale score. Never answer a bad fit with a reflexive "widen a bound
+and refit" loop: assemble the change, score it once, read the fit, then decide.
 
-The commit result also carries a `progress` block — `non_improving_streak` (fitted ops since
+## Step 5 — read the fit
+
+The score comes from `fit` (Step 4), the one tool that fits and simulates. The `fit` result
+and the new version carry the fit metrics — `neg_log_likelihood` and `chi2` (**lower is
+better**), the complexity-penalised `bic`, plus improvement metrics (`objective_before`,
+`self_improvement`, `improvement_vs_best_prior`, `is_new_best`), so competing versions can be
+ranked. `is_new_best` and `improvement_vs_best_prior` track **BIC** (not raw nll) against your
+best model so far, and `is_new_best` is gated on a **minimum effect size** (ΔBIC ≥ 2, the
+"positive evidence" bar): a fit only counts as a new best when it meaningfully lowers BIC — so
+a 1e-6 twitch, or an nll drop bought by an extra parameter that actually *raises* BIC, is not
+mistaken for progress. Pass `n_starts` on `fit` to fit harder, or `n_starts=0` to simulate
+without fitting.
+
+The `fit` result also carries a `progress` block — `non_improving_streak` (fitted ops since
 the last real new best), the lowest-BIC `best_version` seen so far, and
 `bic_improvement_over_last_n` (best-BIC gained over the last few ops). When the score stops
 moving — the streak reaches its cap, or the best model is already adequate and the BIC has
@@ -361,7 +381,7 @@ Inspect the result with:
   poorly: there is no fixed menu of residual statistics —
   you write the breakdown you need. The tables are the PEtab design (`measurements`,
   `conditions`, `observables`), the `parameters` table, the `simulations` dataframe
-  from the last commit, and the last fit's pyPESTO multistart (`optimization_starts`,
+  from the last fit, and the last fit's pyPESTO multistart (`optimization_starts`,
   `optimization_trace` — see below) — one row per measurement point with `measurement`, `simulation`,
   `residual` (natural units), `residual_weighted` (the noise-normalized χ² term), and
   `noise` (σ). Call `list_data_tables()` for the exact columns. Filter to
@@ -391,7 +411,7 @@ Inspect the result with:
   fit is actually good, because dividing by a bigger sigma shrinks every weighted residual
   toward zero. The raw residual (natural units, independent of whatever sigma the optimizer
   picked) still shows the true bias/trend a bad mechanism leaves behind. Check
-  `noise_sigma_report` (Step 3) after every commit; if a sigma is approaching its reference,
+  `noise_sigma_report` (Step 3) after every fit; if a sigma is approaching its reference,
   treat `residual_weighted` looking clean as suspect and confirm against raw `residual` instead
   of taking chi2_gof_pvalue at face value.
   - a convergence check on the last fit's multistart (did the starts agree on the optimum?):
@@ -406,42 +426,56 @@ Inspect the result with:
   with each fitted version and restored on `rollback_to`, so they always reflect the
   current version's fit.
 
-A typical loop: edit the model (it auto-fits) → `query_data` to see where it still fits
-poorly → make the next justified edit → compare `is_new_best` / `improvement_vs_best_prior`
-across versions (or `diff_versions`, which reports the neg-log-likelihood delta).
+A typical loop: make the edits for one coherent structural change → `fit` once to score it →
+`query_data` to see where it still fits poorly → make the next justified edit(s) → `fit`
+again → compare `is_new_best` / `improvement_vs_best_prior` across versions (or
+`diff_versions`, which reports the neg-log-likelihood delta).
 
 ## Step 6 — provenance, versions, and recovery
 
-- `list_versions()` — every snapshot with its kind (`initial`, `alteration`,
-  `batch`, `rollback`, `reset`), label, timestamp, and fit metrics — rank versions by fit.
+- `list_versions()` — every snapshot with its kind (`initial`, `fit`, `rollback`,
+  `reset`), label, timestamp, and fit metrics — rank versions by fit. A version is always a
+  fit snapshot; edits do not appear here (they are `edit` events in the provenance log).
 - `get_version(v)` / `diff_versions(from, to)` — inspect a version, or see the Antimony
   diff + parameter add/remove/change + the neg-log-likelihood delta between two.
-- `get_provenance(limit)` — recent events (alterations, batches, rollbacks, resets).
-- `get_errors(limit)` — recent **rejected** operations and failed tool calls. When
-  an operation returns `committed: false`, look here for the full context.
+- `get_provenance(limit)` — recent events, each with a `type` (`initial`, `edit`, `fit`,
+  `fit_noop`, `rollback`, `reset`) — every edit, fit, no-op fit, rollback, and reset.
+- `get_errors(limit)` — recent **rejected** operations and failed tool calls. When an edit
+  returns `applied: false` or a `fit` returns `committed: false`, look here for the full
+  context.
 - `rollback_to(version, justification?)` — restore a prior version (appends a new,
   auditable version rather than erasing history).
 - `restore_version(version, justification?)` — go **back** to an earlier model: the same
   as `rollback_to`, aptly named. Use it (not a `set_model` re-author) to return to a prior
   model — it reuses that version's stored fit instead of recompiling and refitting.
-- `current_version()` — the HEAD version and batch state.
+- `current_version()` — the HEAD version plus `has_unfit_edits` / `n_pending_edits` (whether
+  the working model has edits not yet scored by a `fit`).
 - `reset()` — revert model + parameters to the initial version (v0).
 
 ## Reading tool results
 
-- **Model/parameter operations** return `{"committed": true, "version": N,
-  "fit_status": ..., "neg_log_likelihood": ..., "improvement": {...}, ...}` on success —
-  the fit metrics come back with the commit. On a rejected edit they return
-  `{"committed": false, "error": "...", "issues": [...]}` — the model is unchanged. Fix the
-  reported issue (e.g. add a reference, correct the rate law, respect the fixed
-  observables) and retry.
+- **Model/parameter edits** (`set_model`, `change_parameter_scale`,
+  `change_parameter_bounds`) return
+  `{"applied": true, "operation": ..., "version": null, "reconcile": {...},
+  "initial_conditions": [...], "references": ..., "justification": ..., "validation": ...,
+  "warnings": [...], "parameter_diff": {...}, "pending_fit": true, "n_pending_edits": ...,
+  "message": ...}` on success. An edit carries **no** fit metrics (no `neg_log_likelihood`,
+  no `bic`, no `committed` key) and `version` is `null` — it has not been scored yet; call
+  `fit` to score the assembled change. On a rejected edit they return `{"applied": false,
+  "error": "...", "issues": [...]}` — the model is unchanged. Fix the reported issue (e.g. add
+  a reference, correct the rate law, respect the fixed observables) and retry.
+- **`fit`** returns `{"committed": true, "version": N, "warnings", "progress", …fit block…}`
+  on a fit that snapshots a version; `{"committed": false, "no_change": true, "version",
+  "duplicate_of_version", "message", "warnings", "neg_log_likelihood", "bic"}` when the working
+  model is identical to the current version (the stored fit is reused); or `{"committed": false,
+  "error": "..."}` when the model can't compile or has no free parameters — a fit failure
+  **leaves your edits in place** so you can repair the model and fit again.
 - **Other tools** return `{"ok": false, "error": "..."}` on a known failure.
-- A rejected operation is **not silent**: it is logged and surfaced via
+- A rejected edit or failed `fit` is **not silent**: it is logged and surfaced via
   `get_errors()`.
-- A commit is **atomic**: if the fit or simulation fails, the whole edit is rejected
-  (nothing changes) and the error is surfaced — fix the model so it simulates and retry.
-  On success, `fit_status` is `"fit"` (fitted) or `"simulate_only"` (you passed
-  `n_starts=0`).
+- An edit is **atomic**: if reconcile/lint fails, the whole edit is reverted (nothing
+  changes) and the error is surfaced. On a successful `fit`, the fit block's `fit_status` is
+  `"fit"` (fitted) or `"simulate_only"` (you passed `n_starts=0`).
 
 ## A minimal end-to-end recipe
 
@@ -453,14 +487,18 @@ list_observables(); get_measurements()     # see what you're fitting
 set_model("model m\n  compartment c = 1;\n  species S in c; species P in c;\n"
           "  S = S_init; P = P_init; S_init = 1.0; P_init = 0.0; k = 0.1;\n"
           "  v1: S -> P; k*S\nend",     # ILLUSTRATIVE placeholders — use YOUR model's
-          justification="… mechanistic reason …",    # species/params, not S/P/k
-          references=["PMID:XXXXXXXX"]) # -> committed + auto-fitted; new symbols added
-                                        #    result carries neg_log_likelihood / is_new_best
+          justification="… mechanistic reason …")     # species/params, not S/P/k
+                                        # -> applied (fit-free); new symbols added,
+                                        #    pending_fit: true — no score yet
+# … any further edits that belong to the same coherent change …
+fit(justification="score the assembled change")  # -> committed + version N; result carries
+                                                  #    neg_log_likelihood / bic / is_new_best
 query_data("SELECT observable_id, sum(residual_weighted*residual_weighted) AS chi2 "
            "FROM simulations WHERE residual_weighted IS NOT NULL "
            "GROUP BY observable_id ORDER BY chi2 DESC")  # where is it worst?
 list_versions(); diff_versions(0, 1)       # audit what changed
 ```
 
-Keep each re-author focused and justified, read the fit after each change, and let the version
-history tell the story.
+Assemble a coherent change through a justified `set_model` re-author (plus any parameter-space
+edits), `fit` once to score it, read the fit before the next step, and let the version history
+tell the story.

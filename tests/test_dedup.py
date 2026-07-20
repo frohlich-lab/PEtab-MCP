@@ -1,20 +1,18 @@
-"""Structure-level de-duplication of whole-model re-authoring (`set_model`) — issue #59.
+"""Structure-level de-duplication — issue #59.
 
 Covers the pure pieces (structure fingerprint, estimation-setup signature, the `decide`
-state machine) without AMICI, plus the integration behaviour through `operations.set_model`
-on the engine-free toy session (skip a no-op re-author, warn on a revisit, terminate an
-identical-re-author loop) and the `restore_version` escape hatch.
+state machine) without AMICI. Since issue #81 relocated the de-dup TRIGGER from ``set_model``
+(a now fit-free edit) to the ``fit`` tool, the end-to-end skip/warn/terminate behaviour is
+exercised against a real fit in ``test_fit.py``; here we only check that a re-author is a plain
+fit-free edit (no dedup at edit time) and that ``restore_version`` still goes back cheaply.
 """
 
 from __future__ import annotations
 
-import pytest
-
 from petab_mcp import dedup as D
 from petab_mcp import operations as O
 from petab_mcp import parameters as P
-from petab.v1.C import ESTIMATE, LOWER_BOUND, NOMINAL_VALUE, UPPER_BOUND
-from petab_mcp.errors import ModelUpdateError
+from petab.v1.C import ESTIMATE, NOMINAL_VALUE, UPPER_BOUND
 from petab.v1.models.sbml_model import SbmlModel
 
 # Reversible A<->B (the toy structure) and a one-reaction variant that drops r2/k2.
@@ -177,39 +175,16 @@ def test_decide_handles_numpy_bic_scalars():
     assert any("WORSE" in w for w in d["warnings"])
 
 
-# -- integration through operations.set_model (engine-free toy session) -----
-def test_set_model_skips_identical_reauthor(session):
-    """Re-authoring the current structure (even with different starting values) is a no-op:
-    no fit, no new version."""
+# -- integration: an edit no longer dedups (that moved to `fit`, issue #81) --
+def test_set_model_reauthor_is_a_fit_free_edit(session):
+    """Re-authoring the current structure is now a plain fit-free edit — it APPLIES (no dedup,
+    no fit, no version at edit time); the de-dup that skips an identical model happens at fit."""
     assert session.provenance.current_version == 0
     res = O.set_model(session, REVERSIBLE_OTHER_VALUES, justification="same structure again")
-    assert res["committed"] is False
-    assert res["no_change"] is True
-    assert res["duplicate_of_version"] == 0
-    # no new version was snapshotted
+    assert res["applied"] is True
+    assert res["version"] is None and res["pending_fit"] is True
+    # no version is snapshotted by an edit
     assert session.provenance.current_version == 0
-
-
-def test_set_model_terminates_identical_loop(session):
-    """After MAX_IDENTICAL_REAUTHORS authorings of one structure, set_model refuses the next."""
-    for _ in range(D.MAX_IDENTICAL_REAUTHORS):
-        res = O.set_model(session, REVERSIBLE, justification="again")
-        assert res["no_change"] is True
-    with pytest.raises(ModelUpdateError, match="restore_version"):
-        O.set_model(session, REVERSIBLE, justification="one time too many")
-    # still no churn: the identical re-authors created no versions
-    assert session.provenance.current_version == 0
-
-
-def test_set_model_warns_when_revisiting_a_prior_structure(session):
-    """Going to a new structure and back surfaces a restore_version advisory (not a refusal)."""
-    r1 = O.set_model(session, ONE_REACTION, justification="drop the reverse reaction")
-    assert r1["committed"] is True
-    assert session.provenance.current_version == 1  # a real change
-    # Re-author the ORIGINAL (reversible) structure, which is now v0 in the history.
-    r2 = O.set_model(session, REVERSIBLE, justification="bring back the reverse reaction")
-    assert r2["committed"] is True  # a real change from the current (one-reaction) HEAD
-    assert any("restore_version(0)" in w for w in (r2.get("warnings") or [])), r2.get("warnings")
 
 
 def test_restore_version_goes_back_without_dedup(session):

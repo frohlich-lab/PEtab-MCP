@@ -1,18 +1,21 @@
-"""The constrained, justified model operations.
+"""The constrained, justified model/parameter edits.
 
-Structural change is made by authoring the whole model with ``set_model``; the parameter-table
-edits adjust a parameter's search space.
+Structural change is made by authoring the whole model with ``set_model`` (the single model
+editor); the parameter-table edits adjust a parameter's search space.
 
-Every operation:
+Every edit:
 
 1. requires a non-empty ``justification`` (``references`` are optional; any given are
    validated via the session's :class:`ReferenceResolver`);
 2. applies a structural edit to a *copy* of the model (libsbml);
 3. reconciles SBML↔PEtab (parametric ICs, parameter-table sync, orphan pruning);
-4. lints the candidate — on any failure the edit is reverted;
-5. fits the parameters and simulates so the version records fitted values, fit metrics,
-   and the simulation dataframe — a fit/simulation failure reverts the edit (atomic commit);
-6. on success commits, snapshots a single new version, and logs a provenance ``alteration``.
+4. lints the candidate — on any failure the edit is reverted (atomic);
+5. logs a provenance ``edit`` event and records the change as *pending a fit*.
+
+Issue #81 decoupled editing from fitting: an edit mutates the working model but does NOT fit
+and does NOT create a version. The explicit ``fit`` tool (see :meth:`session.PetabSession.fit`)
+scores the assembled working model — it fits, simulates, and snapshots the single version that
+records the fitted values, fit metrics, and simulation dataframe.
 """
 
 from __future__ import annotations
@@ -23,11 +26,10 @@ from typing import Any, Callable
 from petab.v1.C import LOWER_BOUND, UPPER_BOUND
 from petab.v1.models.sbml_model import SbmlModel
 
-from . import dedup as D
 from . import reconcile as R
 from .constants import NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD, WIDENING_NEGLIGIBLE_BIC_GAIN
 from .errors import ModelUpdateError, PetabMcpError, ValidationError
-from .parameters import estimated_mask, problem_fingerprint, sha16, structure_fingerprint
+from .parameters import estimated_mask, problem_fingerprint, sha16
 from .references import resolve_references
 from .validation import validate_problem
 
@@ -167,30 +169,21 @@ def _commit_change(
     # this explicitly, so the default just keeps a future caller from silently making them
     # mandatory again.
     require_references: bool = False,
-    n_starts: int | None = None,
-    dedup: bool = False,
 ) -> dict[str, Any]:
-    """Shared commit pipeline for model and parameter operations.
+    """Apply one model/parameter edit to the working model — WITHOUT fitting or versioning.
 
     ``model_edit(sbml_model)`` edits a *clone* of the model (triggers reconcile);
     ``model_build()`` returns a brand-new ``(SbmlModel, apply_result)`` that *replaces*
     the model wholesale (used to zero-shot a model when none exists — also reconciled);
-    ``param_edit(problem)`` edits the parameter table in place. On any failure the model
-    and parameter table are reverted. When a batch is open the change is applied and
-    logged but no version is snapshotted until ``commit_batch``.
+    ``param_edit(problem)`` edits the parameter table in place. On any failure the model and
+    parameter table are reverted so an edit is atomic.
 
-    On a non-batch commit the parameters are fitted and the model simulated *before* the
-    snapshot, so the single version records the fitted values, the fit metrics, and the
-    simulation dataframe. ``n_starts`` overrides the server default (0 = simulate-only).
-    The fit is part of the commit: a fit/simulation failure reverts the structural edit so
-    the commit is atomic.
-
-    ``dedup`` (set by ``set_model``, the whole-model re-author) enables the structure-level
-    de-duplication guard (see :mod:`dedup`, issue #59): after reconcile+validate but BEFORE the
-    expensive fit, the resolved structure is fingerprinted and — if it is byte-identical to the
-    current version — the recompile+fit+snapshot are skipped and a no-op result is returned;
-    revisiting an already-tried (or worse-scoring) structure attaches an advisory ``warning``;
-    and an identical structure re-authored too many times is refused outright.
+    Issue #81 decoupled editing from fitting: an edit mutates the working model and reconciles +
+    validates it, but does NOT fit and does NOT snapshot a version — the explicit ``fit`` tool does
+    both (fit + version), and the structure-level de-duplication (issue #59) moved there too. The
+    edit is recorded as a *pending edit* (:meth:`session.record_edit`) and logged as an ``edit``
+    provenance event; call ``fit`` to score the assembled model. Returns ``applied: true`` with the
+    reconcile/validation/warnings — but no fit metrics, since no fit ran.
     """
     if sum(cb is not None for cb in (model_build, model_edit, param_edit)) != 1:
         raise ValueError(
@@ -205,8 +198,6 @@ def _commit_change(
         old_sbml = old_model.to_sbml_str()
         old_species = set(R.species_ids(old_model.sbml_model))
         old_params = session.problem.parameter_df.copy(deep=True)
-        fitsim: dict[str, Any] = {}
-        improvement: dict[str, Any] = {}
 
         estimate_ics = bool(getattr(session, "estimate_initial_conditions", False))
         try:
@@ -227,7 +218,7 @@ def _commit_change(
             # validation rejects either. Best-effort: an unreadable v0 yields an empty set.
             try:
                 protected_fixed = session.protected_fixed_parameter_ids()
-            except Exception:  # noqa: BLE001 - never let the lookup break a commit
+            except Exception:  # noqa: BLE001 - never let the lookup break an edit
                 protected_fixed = None
             report = validate_problem(session.problem, protected_fixed_ids=protected_fixed)
             if not report["valid"]:
@@ -236,88 +227,15 @@ def _commit_change(
                     issues=[i["message"] for i in report["issues"]
                             if i["level"] in ("error", "critical")],
                 )
-            # Fit + simulate the validated candidate before snapshotting (non-batch
-            # commits only). A fit/simulation failure falls through to the revert below —
-            # a commit is atomic: it either fully succeeds or changes nothing. Wrap an
-            # AMICI/pyPESTO failure (e.g. a model that lints clean but cannot be compiled —
-            # a reserved-name codegen clash, an unsupported construct) as a ModelUpdateError
-            # so the tool returns a clean committed=false with the message, instead of the
-            # raw exception crashing the call.
-            staged = session.batch_active
-            dedup_warnings: list[str] = []
-            if dedup and not staged:
-                # Structure-level de-dup, BEFORE the expensive recompile+fit (see `dedup`).
-                # The candidate is already installed + reconciled + validated, so its resolved
-                # structure and estimation setup are final.
-                structure_hash = structure_fingerprint(
-                    session.problem.model.sbml_model, session.problem.parameter_df)
-                head_version = session.provenance.current_version
-                head_structure_hash = structure_fingerprint(old_model.sbml_model, old_params)
-                same_setup = (
-                    D.estimation_setup_signature(session.problem.parameter_df)
-                    == D.estimation_setup_signature(old_params)
-                )
-                registry = D.build_registry(session)
-                # Count re-authors under (structure + estimation setup), so re-authoring the same
-                # structure with DIFFERENT bounds/scale (a real change) is not counted toward the
-                # identical-re-author loop guard — only a genuinely identical re-author is.
-                prior_attempts = session.note_reauthor_attempt(
-                    D.reauthor_key(structure_hash, session.problem.parameter_df))
-                decision = D.decide(
-                    structure_hash=structure_hash,
-                    head_structure_hash=head_structure_hash,
-                    same_setup=same_setup,
-                    head_version=head_version,
-                    registry=registry,
-                    prior_attempts=prior_attempts,
-                )
-                if decision["action"] == "terminate":
-                    raise ModelUpdateError(decision["message"])
-                if decision["action"] == "skip":
-                    # Byte-identical to the current version: revert the (unchanged) candidate and
-                    # short-circuit — no recompile, no fit, no new version. Logged so the avoided
-                    # churn is still auditable in the provenance trace.
-                    session.problem.model = old_model
-                    session.problem.parameter_df = old_params
-                    dup_v = decision["duplicate_of"]
-                    dup = next((r for r in registry if r.get("version") == dup_v), {})
-                    session.provenance.append_event({
-                        "type": "set_model_noop", "operation": op,
-                        "duplicate_of_version": dup_v, "structure_hash": structure_hash,
-                        "justification": justification, "references": resolved,
-                        "reauthor_attempts": prior_attempts + 1,
-                    })
-                    session.logger.info(
-                        "set_model no-op: identical to v%s — skipped recompile+fit+snapshot", dup_v)
-                    return {
-                        "committed": False, "no_change": True, "operation": op,
-                        "version": head_version, "duplicate_of_version": dup_v,
-                        "message": decision["message"], "warnings": [],
-                        "neg_log_likelihood": dup.get("neg_log_likelihood"), "bic": dup.get("bic"),
-                    }
-                dedup_warnings = decision.get("warnings") or []
-            if not staged:
-                # The fit is part of the commit. `_auto_fit_and_improvement` raises a clean
-                # ModelUpdateError when the model has no estimated parameters (nothing to fit,
-                # a guard shared with the batch path). Wrap any OTHER AMICI/pyPESTO failure
-                # (a model that lints clean but cannot be compiled — a reserved-name codegen
-                # clash, an unsupported construct) as a ModelUpdateError too, so the tool
-                # returns a clean committed=false with the message instead of crashing the call.
-                try:
-                    fitsim, improvement = session._auto_fit_and_improvement(n_starts)
-                except PetabMcpError:
-                    raise
-                except Exception as exc:  # noqa: BLE001 - surface as a clean, actionable rejection
-                    raise ModelUpdateError(_compile_fit_failure_message(exc)) from exc
         except Exception:
+            # An edit is atomic: on any failure (reconcile, lint) restore the model and
+            # parameter table so nothing changes. No fit runs here — that is the `fit` tool.
             session.problem.model = old_model
             session.problem.parameter_df = old_params
             raise
 
-        new_ant = session.problem.model.to_antimony()
         new_sbml = session.problem.model.to_sbml_str()  # serialize once; reused for both hashes
         warnings = (_parsimony_warnings(session.problem, old_species) if recon is not None else [])
-        warnings += dedup_warnings  # structure-revisit advisories (dedup); [] for non-set_model ops
         param_diff = {
             "added": recon["parameters"]["added"] if recon else [],
             "removed": recon["parameters"]["removed"] if recon else [],
@@ -333,8 +251,9 @@ def _commit_change(
             if session.has_model()
             else []
         )
-        event_base = {
-            "type": "alteration",
+        # Log the edit (no version — versions are fit snapshots, see `fit`) and mark it pending.
+        event = session.provenance.append_event({
+            "type": "edit",
             "operation": op,
             "args": op_args,
             "result": apply_result if isinstance(apply_result, (str, dict, list)) else None,
@@ -348,85 +267,54 @@ def _commit_change(
             # is reflected here even though the two model hashes above are identical.
             "problem_hash_before": problem_fingerprint(old_sbml, old_params),
             "problem_hash_after": problem_fingerprint(new_sbml, session.problem.parameter_df),
-        }
+        })
+        session.record_edit(op, op_args, justification)
+        n_pending = len(session.pending_edits)
 
-        if staged:
-            event = session.provenance.append_event({**event_base, "staged": True, "version": None})
-            session.staged.append({"operation": op, "args": op_args, "justification": justification})
-            version = None
-        else:
-            version_before = session.provenance.current_version
-            nllh = fitsim.get("neg_log_likelihood")
-            version = session._snapshot_version(
-                label=op,
-                kind="alteration",
-                meta={"operation": op, "args": op_args, "fit_status": fitsim.get("status"),
-                      "neg_log_likelihood": nllh, "chi2": fitsim.get("chi2"),
-                      "fitted_parameters": fitsim.get("fitted_parameters"), **improvement},
-                sim=fitsim,
-                model_ant=new_ant,  # already serialized above; avoid re-serializing
-            )
-            fitsim["version"] = version
-            event = session.provenance.append_event(
-                {**event_base, "version_before": version_before, "version": version,
-                 "fit_status": fitsim.get("status"), "neg_log_likelihood": nllh,
-                 "chi2": fitsim.get("chi2"), "fitted_parameters": fitsim.get("fitted_parameters"),
-                 **improvement}
-            )
-            # Record this as an early-stop-chain op only when a real fit ran (simulate-only
-            # passes don't move the streak/checkpoint). Under the session lock, held here.
-            if fitsim.get("status") == "fit":
-                session.record_fit_progress(version, fitsim, improvement)
-
-    result = {
-        "committed": True,
+    return {
+        "applied": True,
         "operation": op,
-        "version": version,
-        "staged": staged,
+        "version": None,
         "reconcile": recon,
         "initial_conditions": initial_conditions,
         "references": resolved,
         "justification": justification,
         "validation": report,
         "warnings": warnings,
+        "parameter_diff": param_diff,
+        "pending_fit": True,
+        "n_pending_edits": n_pending,
         "event_timestamp": event["timestamp"],
+        "message": (
+            "Edit applied to the working model but NOT yet scored — no fit ran and no version was "
+            "created. Make any further edits that belong to this change, then call fit() to fit the "
+            "free parameters, snapshot a version, and get the fit metrics."
+        ),
     }
-    if not staged:
-        from . import fitting
-
-        # Surface the early-stop-chain progress (streak, best-BIC checkpoint, best-BIC gain over
-        # the last N ops) on every commit so the agent sees it each turn.
-        result["progress"] = session.progress_report()
-        result.update(fitting.fit_result_block(
-            fitsim, improvement, session.problem.parameter_df, problem=session.problem))
-    return result
 
 
 # -- public operations: model ----------------------------------------------
 def set_model(
     session, antimony: str, justification: str,
-    references: list[str] | None = None, n_starts: int | None = None,
+    references: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Author the WHOLE model from Antimony.
+    """Author the WHOLE model from Antimony — the single model editor.
 
     This BUILDS the first model when the problem ships model-less (``model_initialized:
-    false``) AND re-authors/replaces an existing model wholesale. Goes through the same commit
-    pipeline as every model op: SBML↔PEtab reconcile (parametric ICs + parameter-table sync),
-    petab lint, and a fit on commit; any failure reverts, so a bad (re-)author changes nothing.
-
-    A *genuinely new* structure is always committed. Re-authoring a structure already visited
-    this run is de-duplicated (see :mod:`dedup`, issue #59), because it would only recompile and
-    refit to the same result: re-authoring the CURRENT model is a no-op (``committed: false``,
-    ``no_change: true`` — no fit, no new version); re-authoring an EARLIER model commits but
-    warns to use ``restore_version(n)`` instead (which reuses the stored fit); and the same
-    structure re-authored too many times is refused outright, to break an unproductive loop.
+    false``) AND re-authors/replaces an existing model wholesale. Every structural change — adding
+    or removing a reaction, changing a rate law — is made by re-authoring the whole model in one
+    coherent step. Like every edit it reconciles SBML↔PEtab (parametric ICs + parameter-table
+    sync) and lints, reverting on failure so a bad (re-)author changes nothing — but it does NOT
+    fit and does NOT create a version (issue #81); call ``fit`` to score the model. Re-authoring
+    the same structure is cheap (no fit); the de-duplication that used to gate a re-author now
+    gates ``fit`` (issue #59), so an identical structure is only fit once.
 
     Because the whole model is replaced, reconcile drops the parameter-table rows of any
     parameter the new model no longer declares. That silently discards a previously-fitted
     value, so this warns when the re-author removes a previously-ESTIMATED parameter (fixed
     noise/initial-condition parameters and anything still referenced by the observable/noise
     or condition tables are preserved). Dropping (or reintroducing as estimated) a shipped-FIXED
-    mechanistic constant — a conservation total, a known rate — is a harder case: the commit
+    mechanistic constant — a conservation total, a known rate — is a harder case: the edit
     pipeline's validation REJECTS it outright (see ``validation._fixed_constant_role_issues``).
     """
     if not isinstance(antimony, str) or not antimony.strip():
@@ -458,13 +346,8 @@ def set_model(
 
     result = _commit_change(
         session, "set_model", {"antimony_chars": len(antimony)}, justification, references,
-        model_build=build, require_references=False, n_starts=n_starts, dedup=True,
+        model_build=build, require_references=False,
     )
-
-    # A no-op re-author (byte-identical to the current version) short-circuits before the fit and
-    # never reaches the reconcile/warnings bookkeeping below; return its result unchanged.
-    if result.get("no_change"):
-        return result
 
     # Guardrail: a re-author that no longer declares a previously-estimated parameter drops
     # its row (and its fitted value). Surface that — it is the one real footgun of a wholesale
@@ -499,7 +382,7 @@ def _require_positive_for_log(problem, parameter_id: str, scale: str) -> None:
 
 def change_parameter_scale(
     session, parameter_id: str, scale: str, justification: str,
-    references: list[str] | None = None, n_starts: int | None = None,
+    references: list[str] | None = None,
 ) -> dict[str, Any]:
     from .parameters import update_parameters
 
@@ -510,7 +393,7 @@ def change_parameter_scale(
 
     return _commit_change(
         session, "change_parameter_scale", {"parameter_id": parameter_id, "scale": scale},
-        justification, references, param_edit=edit, require_references=False, n_starts=n_starts,
+        justification, references, param_edit=edit, require_references=False,
     )
 
 
@@ -556,7 +439,7 @@ def _widening_history(session, parameter_id: str, side: str) -> tuple[int, float
     """``(count, last_bic_gain)`` for the CURRENT run of widenings of ``parameter_id`` on ``side``.
 
     Reconstructed from each committed version's STORED parameter table (not from event args), so
-    it is faithful across rollbacks, resets, and batch commits alike — the version snapshot is the
+    it is faithful across fits, rollbacks, and resets alike — the version snapshot is the
     ground truth of what the bounds actually were, however the version was produced. Walking the
     version history in order:
 
@@ -661,7 +544,6 @@ def change_parameter_bounds(
     upper_bound: float,
     justification: str,
     references: list[str] | None = None,
-    n_starts: int | None = None,
 ) -> dict[str, Any]:
     from .parameters import update_parameters
 
@@ -677,5 +559,5 @@ def change_parameter_bounds(
     return _commit_change(
         session, "change_parameter_bounds",
         {"parameter_id": parameter_id, "lowerBound": lower_bound, "upperBound": upper_bound},
-        justification, references, param_edit=edit, require_references=False, n_starts=n_starts,
+        justification, references, param_edit=edit, require_references=False,
     )

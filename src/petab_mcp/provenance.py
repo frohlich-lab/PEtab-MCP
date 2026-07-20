@@ -2,8 +2,8 @@
 
 Under ``<store_root>/`` (default ``<problem_dir>/.petab_mcp``):
 
-* ``provenance.jsonl`` — append-only event log (alterations, batch commits, rollbacks,
-  resets). Each event carries a UTC timestamp.
+* ``provenance.jsonl`` — append-only event log (edits, fits, rollbacks, resets). Each
+  event carries a UTC timestamp.
 * ``versions/vN/`` — a snapshot of the mutable model state at version N: ``model.ant``
   (the canonical Antimony) and ``parameters.json`` (the parameter-table records), plus
   ``meta.json`` (label, kind, parent, timestamp). A fitted version also carries
@@ -174,6 +174,15 @@ class ProvenanceStore:
 
             raise UnknownEntityError(f"No such version: v{n}")
         return vdir
+
+    def get_meta(self, n: int) -> dict[str, Any]:
+        """Read a version's ``meta.json`` ONLY (label/kind/fit metrics/structure_hash/fit_status).
+
+        Cheap: it does not touch the model, parameter table, simulation records, or optimization
+        trace (unlike :meth:`get_version`), so callers that only need meta fields — e.g. the fit
+        de-dup check — avoid a large disk read on the hot path.
+        """
+        return json.loads((self._version_dir(n) / "meta.json").read_text())
 
     def get_parameter_df(self, n: int):
         """Read a version's parameter table back as a DataFrame (index = ``parameterId``)."""

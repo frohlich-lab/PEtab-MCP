@@ -23,7 +23,7 @@ from .constants import (
     PLATEAU_MIN_BIC_GAIN,
     PLATEAU_WINDOW,
 )
-from .errors import BatchError, ModelUpdateError, ValidationError
+from .errors import ModelUpdateError, PetabMcpError, ValidationError
 from .parameters import problem_fingerprint, sha16
 from .provenance import ProvenanceStore
 from .references import EutilsReferenceResolver
@@ -82,13 +82,14 @@ class PetabSession:
         # cached (the shipped design never changes); see `protected_fixed_parameter_ids`.
         self._protected_fixed_ids: set[str] | None = None
 
-        # batch (staging) state — chain several operations into one version
-        self.batch_active: bool = False
-        self.batch_label: str | None = None
-        self.batch_start_version: int = -1
-        self.staged: list[dict[str, Any]] = []
+        # Uncommitted working-model edits since the last fit. Edits (set_model, reaction/rate-law
+        # edits, parameter bounds/scale) mutate the working model WITHOUT fitting or snapshotting a
+        # version; each records an entry here. The explicit `fit` tool consumes this list: it fits
+        # the working model, snapshots one version, and clears the list. So `pending_edits` non-empty
+        # is exactly "the working model has been edited but not yet scored" (see `has_unfit_edits`).
+        self.pending_edits: list[dict[str, Any]] = []
 
-        # Fit + simulate on commit. The engine is wired by the server after construction
+        # Fit + simulate on the explicit `fit` tool. The engine is wired by the server after
         # (it needs the session); until then, and in engine-free unit tests, the auto-fit
         # hook no-ops. `simulation` holds the current per-point simulation dataframe.
         self.engine: Any | None = None
@@ -136,12 +137,12 @@ class PetabSession:
         self.best_gof_pvalue: float | None = None
         self.op_history: list[dict[str, Any]] = []
 
-        # De-duplication memory for whole-model re-authoring (see :mod:`dedup` and issue #59):
-        # how many times each *identical* re-author has been handed to `set_model` this run, keyed
-        # by structure fingerprint + estimation setup (see `dedup.reauthor_key`) so that only truly
-        # identical re-authors — not the same structure with changed bounds/scale — count toward
-        # the loop guard. A within-run counter (a fresh run legitimately starts over), not persisted.
-        self._reauthor_attempts: dict[str, int] = {}
+        # De-duplication memory for identical fits (see :mod:`dedup` and issue #59): how many times
+        # each *identical* estimation problem has been handed to `fit` this run, keyed by structure
+        # fingerprint + estimation setup (see `dedup.reauthor_key`) so that only truly identical
+        # problems — not the same structure with changed bounds/scale — count toward the loop guard.
+        # A within-run counter (a fresh run legitimately starts over), not persisted.
+        self._fit_attempts: dict[str, int] = {}
 
         if self.provenance.current_version < 0:
             # Route through _snapshot_version (not the store directly) so the initial version also
@@ -298,7 +299,12 @@ class PetabSession:
             "n_measurements": int(p.n_measurements),
             "n_reactions_detail": [sm.getReaction(i).getId() for i in range(sm.getNumReactions())],
             "current_version": self.provenance.current_version,
-            "batch_active": self.batch_active,
+            # Working-model edits (set_model, reaction/rate-law edits, bounds/scale) do NOT fit or
+            # version — the explicit `fit` tool does. `has_unfit_edits` is True when the working
+            # model has been edited since the last fit, so the metrics below (from the last fitted
+            # version) are stale for the working model until `fit` is called.
+            "has_unfit_edits": self.has_unfit_edits(),
+            "n_pending_edits": len(self.pending_edits),
             "fixed_tables": ["measurements", "conditions", "observables"],
             "neg_log_likelihood": (self.simulation or {}).get("neg_log_likelihood"),
             "chi2": (self.simulation or {}).get("chi2"),
@@ -322,6 +328,8 @@ class PetabSession:
             # persisted per version (``None`` for legacy/unfitted versions), so a rollback or
             # durable resume brings them back rather than dropping them.
             self.optimization = snap.get("optimization")
+            # The working model now equals a stored version, so there are no uncommitted edits.
+            self.pending_edits = []
 
     def _snapshot_version(
         self, *, label: str, kind: str, meta: dict[str, Any],
@@ -376,36 +384,43 @@ class PetabSession:
             optimization=fitting.build_optimization_payload_for_version(self.optimization),
         )
 
-    # -- auto fit + simulate on commit -------------------------------------
+    @staticmethod
+    def _coerce_n_starts(n_starts: int | None) -> int | None:
+        """Validate ``n_starts`` — ``None`` (server default) or an integer >= 0 (0 = simulate-only)
+        — returning the coerced int. Raises :class:`ValidationError` on a negative/non-integer."""
+        if n_starts is None:
+            return None
+        try:
+            n_starts = int(n_starts)
+        except (TypeError, ValueError):
+            raise ValidationError(f"n_starts must be an integer >= 0, got {n_starts!r}.")
+        if n_starts < 0:
+            raise ValidationError(f"n_starts must be an integer >= 0, got {n_starts}.")
+        return n_starts
+
+    # -- fit + simulate ----------------------------------------------------
     def _auto_fit_and_improvement(
         self, n_starts: int | None = None
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Fit + simulate for a commit, returning (payload, improvement).
+        """Fit + simulate for a ``fit`` call, returning (payload, improvement).
 
-        ``n_starts`` of 0 means simulate-only (no optimisation) for this commit; ``None``
-        uses the server default. No-ops (status ``"skipped"``) when no engine is wired or
-        ``auto_fit`` is off. A fit/simulation error propagates — the caller reverts.
+        ``n_starts`` of 0 means simulate-only (no optimisation); ``None`` uses the server default.
+        No-ops (status ``"skipped"``) when no engine is wired or ``auto_fit`` is off. A fit/simulation
+        error propagates to the caller.
         """
         from . import fitting
 
-        if n_starts is not None:
-            try:
-                n_starts = int(n_starts)
-            except (TypeError, ValueError):
-                raise ValidationError(f"n_starts must be an integer >= 0, got {n_starts!r}.")
-            if n_starts < 0:
-                raise ValidationError(f"n_starts must be an integer >= 0, got {n_starts}.")
+        n_starts = self._coerce_n_starts(n_starts)
 
         engine = self.engine
         if engine is None or not self.auto_fit:
             return {"status": "skipped", "neg_log_likelihood": None, "chi2": None,
                     "fitted_parameters": None, "records": []}, {}
         starts = self.auto_fit_starts if n_starts is None else n_starts
-        # A fit needs at least one free parameter. Catch the zero-estimated case here — this
-        # covers BOTH a single-op commit and commit_batch — with a clear, actionable message
-        # rather than letting pyPESTO fail cryptically ("'NoneType' object is not iterable")
-        # deep in the optimizer. A simulate-only pass (starts == 0) optimises nothing, so it
-        # is exempt.
+        # A fit needs at least one free parameter. Catch the zero-estimated case here — on the
+        # explicit `fit` path — with a clear, actionable message rather than letting pyPESTO fail
+        # cryptically ("'NoneType' object is not iterable") deep in the optimizer. A simulate-only
+        # pass (starts == 0) optimises nothing, so it is exempt.
         if starts != 0 and int(getattr(self.problem, "n_estimated", 0) or 0) == 0:
             raise ModelUpdateError(
                 "the model has NO estimated (free) parameters, so there is nothing to "
@@ -550,79 +565,182 @@ class PetabSession:
                 "stop_reason": stop_reason,
             }
 
-    # -- batching ----------------------------------------------------------
-    def _require_no_open_batch(self, action: str) -> None:
-        if self.batch_active:
-            raise BatchError(
-                f"Cannot {action} while a batch is open; commit_batch or abort_batch first."
+    # -- working-model edits + fit -----------------------------------------
+    def has_unfit_edits(self) -> bool:
+        """Whether the working model carries edits made since the last fit (see `pending_edits`)."""
+        return bool(self.pending_edits)
+
+    def record_edit(self, operation: str, args: dict[str, Any], justification: str) -> None:
+        """Log a working-model edit as pending an eventual fit (see `pending_edits`).
+
+        Called from :mod:`operations` after an edit is applied + reconciled + validated. Callers
+        already hold ``self.lock``.
+        """
+        self.pending_edits.append(
+            {"operation": operation, "args": args, "justification": justification})
+
+    def _fit_dedup(self) -> tuple[dict[str, Any], str]:
+        """Decide what an explicit `fit` should do with the current working model (see :mod:`dedup`).
+
+        The de-dup gates the FIT — the expensive step. Returns ``(decision, fit_key)`` where
+        ``decision`` is a :func:`dedup.decide` result and ``fit_key`` identifies this estimation
+        problem (structure + setup) for the identical-fit loop guard. This method is READ-ONLY: it
+        does not bump the fit-attempt counter — the caller counts an attempt only once it actually
+        proceeds to a real fit (so a no-op skip or a rejected fit never inflates the guard). Callers
+        hold ``self.lock``.
+        """
+        from . import dedup as D
+        from .parameters import structure_fingerprint
+
+        structure_hash = structure_fingerprint(self.model.sbml_model, self.problem.parameter_df)
+        head_version = self.provenance.current_version
+        try:
+            head_meta = self.provenance.get_meta(head_version)  # meta.json only — no heavy payload
+        except Exception:  # noqa: BLE001 - unreadable HEAD just disables the skip/warn logic
+            head_meta = {}
+        head_structure_hash = head_meta.get("structure_hash")
+        # A "skip" is only safe against a HEAD carrying a REAL optimized fit: a simulate-only or
+        # unfitted (v0) HEAD also records a neg_log_likelihood, so gate on fit_status == "fit"
+        # (stamped by every fit/rollback/reset that restores a real fit) — else a real fit after a
+        # simulate-only one would be wrongly skipped, returning un-optimized metrics.
+        head_is_fit = head_meta.get("fit_status") == "fit"
+        try:
+            head_df = self.provenance.get_parameter_df(head_version)
+            same_setup = (
+                D.estimation_setup_signature(self.problem.parameter_df)
+                == D.estimation_setup_signature(head_df)
             )
+        except Exception:  # noqa: BLE001 - can't read HEAD's table: treat setup as changed
+            same_setup = False
+        fit_key = D.reauthor_key(structure_hash, self.problem.parameter_df)
+        prior_attempts = self._fit_attempts.get(fit_key, 0)  # READ only; incremented on proceed
+        decision = D.decide(
+            structure_hash=structure_hash,
+            head_structure_hash=head_structure_hash,
+            same_setup=same_setup,
+            head_version=head_version,
+            registry=D.build_registry(self),
+            prior_attempts=prior_attempts,
+        )
+        # A "skip" means byte-identical to HEAD. Only honour it when HEAD is a real fit — otherwise
+        # (the initial/unfitted model, or a simulate-only HEAD) this is the FIRST real fit of the
+        # structure and must run.
+        if decision["action"] == "skip" and not head_is_fit:
+            decision = {"action": "proceed", "warnings": decision.get("warnings", [])}
+        return decision, fit_key
 
-    def begin_batch(self, label: str | None = None) -> dict[str, Any]:
-        with self.lock:
-            if self.batch_active:
-                raise BatchError("A batch is already open.")
-            self.batch_active = True
-            self.batch_label = label
-            self.batch_start_version = self.provenance.current_version
-            self.staged = []
-            self.provenance.append_event({"type": "batch_begin", "label": label})
-        return {"batch_active": True, "label": label, "start_version": self.batch_start_version}
+    def fit(self, n_starts: int | None = None, justification: str | None = None) -> dict[str, Any]:
+        """Fit the current working model, snapshot a version, and score it — the ONLY tool that fits.
 
-    def commit_batch(self, label: str | None = None, n_starts: int | None = None) -> dict[str, Any]:
+        Edits (``set_model``, reaction/rate-law edits, bounds/scale) mutate the working model
+        without fitting; ``fit`` scores the assembled model: it fits the free parameters, simulates,
+        snapshots ONE version carrying the fitted parameters + metrics + simulation dataframe,
+        records the early-stop-chain op, and clears the pending edits. ``n_starts`` overrides the
+        server default (0 = simulate without optimising); ``justification`` is optional.
+
+        Before the (expensive) fit it de-duplicates: if the working model is byte-identical to the
+        current fitted version the refit is skipped and the stored metrics are returned
+        (``committed: false, no_change: true``); a structure revisited from history warns to use
+        ``restore_version(n)``; and the same structure fitted too many times is refused, to break an
+        unproductive loop.
+        """
         from . import fitting
+        from .operations import _compile_fit_failure_message
 
         with self.lock:
-            if not self.batch_active:
-                raise BatchError("No batch is open.")
-            staged = list(self.staged)
-            # Fit + simulate the staged result once, before the single snapshot, so the
-            # batch version carries fitted params + metrics + the simulation dataframe.
-            # (batch_active is still True here; we call the orchestrator directly so no
-            # batch guard trips.)
-            fitsim, improvement = self._auto_fit_and_improvement(n_starts)
+            if not self.has_model():
+                raise ModelUpdateError(
+                    "there is no model to fit yet — author one with set_model first.")
+
+            # Validate n_starts BEFORE the de-dup so a rejected value never counts toward the
+            # identical-fit loop guard (which is only bumped once we commit to a real fit below).
+            n_starts = self._coerce_n_starts(n_starts)
+
+            decision, fit_key = self._fit_dedup()
+            if decision["action"] == "terminate":
+                raise ModelUpdateError(decision["message"])
+            if decision["action"] == "skip":
+                return self._fit_noop_result(decision)
+            warnings = decision.get("warnings", [])
+            # We are committing to a real fit of this structure — count it toward the loop guard now
+            # (a no-op skip / terminate / rejected n_starts above never reaches here, so only genuine
+            # fit attempts are counted).
+            self.note_fit_attempt(fit_key)
+
+            # The fit is the commit. `_auto_fit_and_improvement` raises a clean ModelUpdateError when
+            # the model has no estimated parameters; wrap any OTHER AMICI/pyPESTO failure (a model
+            # that lints clean but cannot be compiled — a reserved-name codegen clash, an unsupported
+            # construct) as a ModelUpdateError so the tool returns committed=false with an actionable
+            # message rather than crashing. The working model is NOT reverted: edits are fit-free, so
+            # a failed fit leaves the edited model in place for the agent to repair and re-fit.
+            try:
+                fitsim, improvement = self._auto_fit_and_improvement(n_starts)
+            except PetabMcpError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - surface as a clean, actionable rejection
+                raise ModelUpdateError(_compile_fit_failure_message(exc)) from exc
+
+            staged = list(self.pending_edits)
             nllh = fitsim.get("neg_log_likelihood")
             version = self._snapshot_version(
-                label=label or self.batch_label or "batch",
-                kind="batch",
-                meta={"staged_operations": staged, "n_staged": len(staged),
+                label="fit",
+                kind="fit",
+                meta={"staged_edits": staged, "n_edits": len(staged),
                       "fit_status": fitsim.get("status"), "neg_log_likelihood": nllh,
                       "chi2": fitsim.get("chi2"),
                       "fitted_parameters": fitsim.get("fitted_parameters"), **improvement},
                 sim=fitsim,
             )
             fitsim["version"] = version
-            self.provenance.append_event(
-                {"type": "batch_commit", "version": version, "label": label or self.batch_label,
-                 "n_staged": len(staged), "fit_status": fitsim.get("status"),
-                 "neg_log_likelihood": nllh, "chi2": fitsim.get("chi2"),
+            event = self.provenance.append_event(
+                {"type": "fit", "version": version, "justification": justification,
+                 "staged_edits": staged, "n_edits": len(staged),
+                 "fit_status": fitsim.get("status"), "neg_log_likelihood": nllh,
+                 "chi2": fitsim.get("chi2"),
                  "fitted_parameters": fitsim.get("fitted_parameters"), **improvement}
             )
-            # Record this as an early-stop-chain op only when a real fit ran (not simulate-only).
+            # Record this as an early-stop-chain op only when a real fit ran (simulate-only passes
+            # don't move the streak/checkpoint).
             if fitsim.get("status") == "fit":
                 self.record_fit_progress(version, fitsim, improvement)
-            self._clear_batch()
-        return {"committed": True, "version": version, "n_staged": len(staged),
+            self.pending_edits = []
+
+        return {"committed": True, "version": version, "warnings": warnings,
+                "event_timestamp": event["timestamp"],
                 "progress": self.progress_report(),
                 **fitting.fit_result_block(
                     fitsim, improvement, self.problem.parameter_df, problem=self.problem)}
 
-    def abort_batch(self) -> dict[str, Any]:
-        with self.lock:
-            if not self.batch_active:
-                raise BatchError("No batch is open.")
-            start = self.batch_start_version
-            n = len(self.staged)
-            self.apply_version(start)  # discard staged edits
-            self.provenance.append_event({"type": "batch_abort", "restored_version": start,
-                                          "discarded": n})
-            self._clear_batch()
-        return {"aborted": True, "restored_version": start, "discarded": n}
+    def _fit_noop_result(self, decision: dict[str, Any]) -> dict[str, Any]:
+        """Short-circuit result for a ``fit`` skipped as byte-identical to the current version.
 
-    def _clear_batch(self) -> None:
-        self.batch_active = False
-        self.batch_label = None
-        self.batch_start_version = -1
-        self.staged = []
+        No recompile, no fit, no new version — the stored metrics stand. The pending edits (which
+        netted to no change) are cleared and the no-op is logged so the avoided churn stays
+        auditable in the provenance trace.
+        """
+        dup_v = decision["duplicate_of"]
+        try:
+            meta = self.provenance.get_meta(dup_v)  # meta.json only — the stored fit scalars
+        except Exception:  # noqa: BLE001 - unreadable version: report the no-op without metrics
+            meta = {}
+        self.provenance.append_event({
+            "type": "fit_noop", "duplicate_of_version": dup_v,
+            "n_edits": len(self.pending_edits),
+        })
+        self.logger.info("fit no-op: identical to v%s — skipped recompile+fit+snapshot", dup_v)
+        self.pending_edits = []
+        # Mirror the scalar fit keys a real fit returns (fit_status/nll/chi2/bic), so a caller that
+        # reads them off the result doesn't hit a missing key on a no-op; `no_change: true` and the
+        # thinner shape (no per-point/per-parameter block) still distinguish it. Full detail is
+        # unchanged from the duplicate version — see get_fit_summary / that version.
+        return {
+            "committed": False, "no_change": True, "version": dup_v,
+            "duplicate_of_version": dup_v, "message": decision.get("message"),
+            "warnings": decision.get("warnings", []),
+            "fit_status": meta.get("fit_status"),
+            "neg_log_likelihood": meta.get("neg_log_likelihood"),
+            "chi2": meta.get("chi2"), "bic": meta.get("bic"),
+        }
 
     def rollback_to(self, version: int, justification: str | None = None) -> dict[str, Any]:
         """Revert to a prior version, appending a new (auditable) version + event.
@@ -633,15 +751,17 @@ class PetabSession:
         from . import fitting
 
         with self.lock:
-            self._require_no_open_batch("rollback")
             self.apply_version(version)
             sim = self._restore_or_simulate()
             nllh = sim.get("neg_log_likelihood") if sim else None
             new_version = self._snapshot_version(
                 label=f"rollback->v{version}",
                 kind="rollback",
+                # Carry the restored fit's status so the de-dup can tell a rollback of a REAL fit
+                # ("fit") from one of a simulate-only/unfitted version — else re-fitting a restored
+                # model would be wrongly skipped or wrongly re-run.
                 meta={"rolled_back_to": version, "justification": justification,
-                      "neg_log_likelihood": nllh},
+                      "fit_status": (sim or {}).get("status"), "neg_log_likelihood": nllh},
                 sim=sim,
             )
             self.provenance.append_event(
@@ -669,13 +789,13 @@ class PetabSession:
         """
         return self.rollback_to(version, justification)
 
-    def note_reauthor_attempt(self, key: str) -> int:
-        """Record a ``set_model`` re-author under ``key`` (a structure+setup identity — see
-        :func:`dedup.reauthor_key`), returning the count of PRIOR identical re-authors this run
-        (0 the first time). Backs the identical-re-author loop guard (see :mod:`dedup`). Callers
-        already hold ``self.lock``."""
-        prior = self._reauthor_attempts.get(key, 0)
-        self._reauthor_attempts[key] = prior + 1
+    def note_fit_attempt(self, key: str) -> int:
+        """Record a ``fit`` of the estimation problem ``key`` (a structure+setup identity — see
+        :func:`dedup.reauthor_key`), returning the count of PRIOR identical fits this run (0 the
+        first time). Backs the identical-fit loop guard (see :mod:`dedup`). Callers already hold
+        ``self.lock``."""
+        prior = self._fit_attempts.get(key, 0)
+        self._fit_attempts[key] = prior + 1
         return prior
 
     # -- lifecycle ---------------------------------------------------------
@@ -684,14 +804,16 @@ class PetabSession:
         from . import fitting
 
         with self.lock:
-            self._require_no_open_batch("reset")
             self.apply_version(0)
             sim = self._restore_or_simulate()
             nllh = sim.get("neg_log_likelihood") if sim else None
             new_version = self._snapshot_version(
                 label="reset",
                 kind="reset",
-                meta={"reset_to": 0, "neg_log_likelihood": nllh},
+                # Carry the restored sim's status (v0 is unfitted, so "simulate_only"/None) so the
+                # de-dup treats a reset HEAD as not-a-real-fit and a following fit runs.
+                meta={"reset_to": 0, "fit_status": (sim or {}).get("status"),
+                      "neg_log_likelihood": nllh},
                 sim=sim,
             )
             self.provenance.append_event(

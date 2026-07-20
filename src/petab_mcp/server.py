@@ -8,9 +8,8 @@ Tool groups:
   ``change_parameter_scale``, ``change_parameter_bounds`` (each requires a justification;
   references optional), plus read-only ``get_model``, ``get_model_structure``, ``validate_problem``
 * parameters (read-only + reconcile): ``get_parameters``, ``sync_parameters``
-* batching: ``begin_batch``, ``commit_batch``, ``abort_batch``
-* fit + simulation: **automatic on every commit** — each commit fits the free
-  parameters and simulates, storing a simulation dataframe on the new version; read the
+* fit + simulation: edits are **fit-free**; the dedicated ``fit`` tool fits the free
+  parameters, simulates, and snapshots the version. Read the
   score with ``get_fit_summary`` (metrics only), query the data (PEtab tables + simulation
   dataframe + residuals + pyPESTO traces) with SQL via ``query_data`` / ``list_data_tables``,
   and inspect the optimizer numerics with ``get_fitting_log`` (the pyPESTO/Fides log)
@@ -23,7 +22,7 @@ Tool groups:
 No tool mutates the measurement/condition/observable tables — that invariant is
 enforced structurally (there is simply no such tool) and re-checked by the operation
 pipeline's lint (see ``operations``/``validation``). Parameter *values* are set only by
-the automatic fit; bounds and scale are changed through the versioned operations.
+the ``fit`` tool; bounds and scale are changed through the justified edits.
 
 ``create_server`` wires the session/engine and delegates the (large) tool + resource
 surface to the ``_register_*`` groups below, each closing over a small :class:`_Ctx`
@@ -65,19 +64,22 @@ SERVER_INSTRUCTIONS = (
     "justification (references are optional, PubMed-validated if given) and automatically "
     "keeps the SBML model and PEtab parameter table consistent (parametric initial "
     "conditions). Every species gets a parametric initial condition, FIXED at its declared t=0 "
-    "by default; each commit returns an `initial_conditions` block reporting whether every "
+    "by default; each edit returns an `initial_conditions` block reporting whether every "
     "species' t=0 is fixed (declared value used), estimated (the fit sets it), or set per "
     "condition. Antimony cannot declare estimate status, so re-naming an initial condition in the "
     "model never changes whether it is fitted — read the report instead of guessing. Parameter "
     "scales and "
-    "bounds are changed through versioned, justified operations "
+    "bounds are changed through justified edits "
     "(`change_parameter_scale`, `change_parameter_bounds`); parameter *values* are set "
-    "only by the automatic fit, not by hand. EVERY commit automatically fits the free "
-    "parameters and simulates, then snapshots a single version carrying the fitted "
-    "parameters, the fit metrics (neg_log_likelihood, chi2, improvement vs prior "
-    "versions), and a simulation dataframe. Pass `n_starts` on a commit to fit harder "
-    "(or 0 to simulate without fitting). Chain several edits into one version — fitted "
-    "once, on commit — with `begin_batch`/`commit_batch`/`abort_batch`. Check the score "
+    "only by the fit, not by hand. EDITS ARE FIT-FREE: `set_model` and the edits mutate the "
+    "working model but do NOT fit and do NOT create a version — `describe_problem` reports "
+    "`has_unfit_edits: true` until you score it. Assemble a coherent change, then call `fit` "
+    "ONCE: it fits the free parameters with a pyPESTO multistart, simulates, and snapshots the "
+    "single version carrying the fitted parameters, the fit metrics (neg_log_likelihood, chi2, "
+    "improvement vs prior versions), and a simulation dataframe. Pass `n_starts` on `fit` to fit "
+    "harder (or 0 to simulate without optimising). `fit` de-duplicates: it skips the refit and "
+    "returns the stored metrics when the working model is byte-identical to the current version. "
+    "Check the score "
     "cheaply with `get_fit_summary` (metrics only). Diagnose the fit with SQL: `query_data` "
     "runs DuckDB queries over a disposable copy of the PEtab tables (`measurements`, `conditions`, "
     "`observables`, `parameters`), the `simulations` dataframe (measurement vs simulation "
@@ -90,8 +92,8 @@ SERVER_INSTRUCTIONS = (
     "`list_versions` / `diff_versions` (which reports the neg-log-likelihood delta); inspect "
     "with `get_provenance`; errors via `get_errors`; revert with `rollback_to` or `reset`. To go "
     "BACK to an earlier model, use `restore_version(n)` — it restores that version's stored fit "
-    "without recompiling/refitting; do NOT re-author an earlier model with `set_model` (that "
-    "just refits to the same result and appends a duplicate — `set_model` warns on, then refuses, "
+    "without recompiling/refitting; do NOT re-author an earlier model with `set_model` and `fit` "
+    "(that just refits to the same result and appends a duplicate — `fit` warns on, then refuses, "
     "a re-authored structure it has already seen)."
 )
 
@@ -136,19 +138,44 @@ class _Ctx:
         return value
 
     def run_operation(self, op_name: str, fn, *args) -> dict[str, Any]:
-        """Run an operation; on a known error, log it and return committed=False."""
+        """Run an edit; on a known error, log it and return ``applied: False``.
+
+        Edits don't fit — the fit + version live in the separate ``fit`` tool — so a
+        successful edit returns ``applied: True`` and a rejected one ``applied: False``.
+        """
         try:
             return fn(*args)
         except PetabMcpError as exc:
             self.log_error(op_name, {"args": [self.short(a) for a in args if isinstance(a, (str, int, float, list))]}, exc)
             self.session.logger.warning("operation %s rejected: %s", op_name, exc)
-            out = {"committed": False, "error": str(exc)}
+            out = {"applied": False, "error": str(exc)}
             if getattr(exc, "issues", None):
                 out["issues"] = exc.issues
             return out
         except Exception as exc:
             self.log_error(op_name, {}, exc)
             self.session.logger.exception("operation %s crashed", op_name)
+            raise
+
+    def run_fit(self, fn, args: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Run the ``fit`` tool; on a known error, log it and return ``committed: False``.
+
+        Unlike an edit, ``fit`` produces a version (``committed: True``, ``version: N``) or a
+        de-dup no-op (``committed: False``, ``no_change: True``); a rejected fit — a model that
+        can't compile or has no free parameters — returns ``committed: False`` with the message.
+        """
+        try:
+            return fn()
+        except PetabMcpError as exc:
+            self.log_error("fit", args or {}, exc)
+            self.session.logger.warning("fit rejected: %s", exc)
+            out = {"committed": False, "error": str(exc)}
+            if getattr(exc, "issues", None):
+                out["issues"] = exc.issues
+            return out
+        except Exception as exc:
+            self.log_error("fit", args or {}, exc)
+            self.session.logger.exception("fit crashed")
             raise
 
     def run(self, tool: str, fn, args: dict[str, Any] | None = None):
@@ -230,55 +257,55 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
     @mcp.tool()
     def set_model(
         antimony: str, justification: str,
-        references: list[str] | None = None, n_starts: int | None = None,
+        references: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Author the WHOLE model from an Antimony string.
+        """Author the WHOLE model from an Antimony string — the single model editor.
 
         Use it to BUILD the first model when the problem ships model-less (`describe_problem`
         reports `model_initialized: false`) AND to re-author/replace an existing model
-        wholesale. Reach for it to make a STRUCTURAL change as one coherent step — a coupled or
-        symmetric rate-law change, or adding/removing several reactions at once. It reconciles the
-        SBML model with the PEtab parameter table (parametric
-        initial conditions, parameter-table sync), lints, and fits on commit, exactly like the
-        other model ops; any failure reverts, so a bad re-author changes nothing. `justification`
-        (non-empty) is required; `references` are optional; `n_starts` overrides the fit default
-        (0 = simulate only). Because the whole model is replaced, the result `warnings` flag any
+        wholesale. Every structural change — adding or removing a reaction, changing a rate law —
+        is made by re-authoring the whole model as one coherent step. It reconciles the SBML model
+        with the PEtab parameter table (parametric initial conditions, parameter-table sync) and
+        lints, exactly like the parameter edits; any failure reverts, so a bad re-author changes
+        nothing. `justification` (non-empty) is required; `references` are optional.
+
+        This is an EDIT: it mutates the working model but does NOT fit and does NOT create a
+        version — call `fit()` when the model is assembled to score it and snapshot a version
+       . Because the whole model is replaced, the result `warnings` flag any
         previously-ESTIMATED parameter the re-author no longer declares (its fitted value is
         dropped); fixed noise/initial-condition parameters and anything the observable/condition
         tables reference survive. A re-author that drops (or reintroduces as estimated) a
         shipped-FIXED mechanistic constant — a conservation total, a known rate — is REJECTED,
         not warned: keep such constants declared and build the mechanism on them as shipped.
 
-        A genuinely NEW structure always commits. Re-authoring a structure already seen this run
-        is de-duplicated (it would refit to the same result): re-authoring the CURRENT model is a
-        no-op (`committed: false`, `no_change: true` — no fit, no new version); re-authoring an
-        EARLIER model commits but warns to use `restore_version(n)` instead; and an identical
-        structure re-authored repeatedly is refused, to break an unproductive loop. To go back to
-        a prior model, prefer `restore_version(n)`.
+        Re-authoring the same structure is cheap now (no fit happens until you call `fit`); the
+        de-duplication happens at `fit` time — an identical structure
+        is fit only once, and `fit` points you at `restore_version(n)` for a structure already in
+        the history. To go back to a prior model, prefer `restore_version(n)`.
         """
-        return ctx.run_operation("set_model", ops_mod.set_model, session, antimony, justification, references, n_starts)
+        return ctx.run_operation("set_model", ops_mod.set_model, session, antimony, justification, references)
 
     @mcp.tool()
     def change_parameter_scale(
         parameter_id: str, scale: str, justification: str,
-        references: list[str] | None = None, n_starts: int | None = None,
+        references: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Change a parameter's scale ('lin'|'log'|'log10'). Versioned; requires a
-        justification (references optional). Fits + simulates on commit (`n_starts`
-        overrides the default; 0 = simulate only)."""
+        """Change a parameter's scale ('lin'|'log'|'log10'). Requires a justification
+        (references optional). An EDIT: mutates the parameter table but does NOT fit — call
+        `fit()` to score it."""
         return ctx.run_operation(
             "change_parameter_scale", ops_mod.change_parameter_scale,
-            session, parameter_id, scale, justification, references, n_starts,
+            session, parameter_id, scale, justification, references,
         )
 
     @mcp.tool()
     def change_parameter_bounds(
         parameter_id: str, lower_bound: float, upper_bound: float,
-        justification: str, references: list[str] | None = None, n_starts: int | None = None,
+        justification: str, references: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Change a parameter's lower/upper bounds. Versioned; requires a justification
-        (references optional). Fits + simulates on commit (`n_starts` overrides the
-        default; 0 = simulate only). REJECTS a widening past an ESTIMATED noise-sigma's
+        """Change a parameter's lower/upper bounds. Requires a justification (references
+        optional). An EDIT: mutates the parameter table but does NOT fit — call `fit()` to
+        score it. REJECTS a widening past an ESTIMATED noise-sigma's
         data-driven cap, and REJECTS a THIRD widening of a still-pinned parameter whose last
         widening bought a negligible BIC gain — a parameter re-pinning at a bound with a flat/
         collinear FIM direction (see `get_identifiability`) is unidentifiable, not
@@ -287,7 +314,7 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         hard-code a value — there is no value/estimate tool, and a literal is a magic number)."""
         return ctx.run_operation(
             "change_parameter_bounds", ops_mod.change_parameter_bounds,
-            session, parameter_id, lower_bound, upper_bound, justification, references, n_starts,
+            session, parameter_id, lower_bound, upper_bound, justification, references,
         )
 
     @mcp.tool()
@@ -349,6 +376,35 @@ def _register_parameter_tools(mcp: FastMCP, ctx: _Ctx) -> None:
 def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
     session = ctx.session
     engine = ctx.engine
+
+    @mcp.tool()
+    def fit(n_starts: int | None = None, justification: str = "") -> dict[str, Any]:
+        """Fit the current working model and snapshot a version — the ONLY tool that fits.
+
+        Edits (`set_model`, `change_parameter_scale`, `change_parameter_bounds`) mutate the working
+        model but do NOT fit — they leave it pending a score (`describe_problem` →
+        `has_unfit_edits: true`). Assemble
+        a coherent change through those edits, then call `fit` ONCE to score it: it fits the free
+        parameters with a pyPESTO multistart, simulates, and snapshots a SINGLE version carrying the
+        fitted parameters, the fit metrics (`neg_log_likelihood`, `chi2`, complexity-penalised `bic`,
+        and `improvement` vs the best prior version), and the simulation dataframe. `n_starts`
+        overrides the multistart default (0 = simulate without optimising); `justification` is
+        optional. The result carries the same fit block every version does, plus a `progress` block
+        (non-improving streak, best-BIC checkpoint, early-stop signal).
+
+        Fitting is the expensive step, so `fit` de-duplicates: if the working model is
+        byte-identical to the current version it returns the stored metrics WITHOUT re-fitting
+        (`committed: false`, `no_change: true`); a structure already in the history is fit but warns
+        to use `restore_version(n)`; and the same structure fit repeatedly is refused, to break an
+        unproductive loop. A model that can't compile or has no free parameters returns
+        `committed: false` with an actionable message and the working model is left in place to
+        repair. Don't stack more edits on a stale score — fit after a coherent structural change,
+        before deciding the next step.
+        """
+        return ctx.run_fit(
+            lambda: session.fit(n_starts=n_starts, justification=justification or None),
+            {"n_starts": n_starts},
+        )
 
     @mcp.tool()
     def get_fit_summary() -> dict[str, Any]:
@@ -455,7 +511,7 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         results compact — raise it explicitly for a full dump; prefer aggregations); the
         `simulations` dataframe is generated on demand if no commit has produced one yet.
 
-        This replaces the old fixed residual-analysis tools — compute whatever breakdown you
+        Compute whatever residual breakdown you
         need in SQL. Filter to `residual_weighted IS NOT NULL` for residual stats (rows with
         an unsimulated point or an un-evaluable noise model have a NULL residual). Per-
         observable chi2 and worst-fit points, for example:
@@ -530,35 +586,13 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         return ctx.run("get_identifiability", run, {"top_n": top_n})
 
 
-# --------------------------------------------------------------- batching tools
-def _register_batch_tools(mcp: FastMCP, ctx: _Ctx) -> None:
-    session = ctx.session
-
-    @mcp.tool()
-    def begin_batch(label: str = "") -> dict[str, Any]:
-        """Start a batch: subsequent operations apply + log but defer versioning until commit_batch."""
-        return ctx.run("begin_batch", lambda: session.begin_batch(label or None), {"label": label})
-
-    @mcp.tool()
-    def commit_batch(label: str = "", n_starts: int | None = None) -> dict[str, Any]:
-        """Snapshot all staged operations as a single new version, fitting + simulating
-        once for the whole batch (`n_starts` overrides the default; 0 = simulate only)."""
-        return ctx.run("commit_batch", lambda: session.commit_batch(label or None, n_starts=n_starts),
-                       {"label": label, "n_starts": n_starts})
-
-    @mcp.tool()
-    def abort_batch() -> dict[str, Any]:
-        """Discard staged operations and restore the pre-batch version."""
-        return ctx.run("abort_batch", session.abort_batch)
-
-
 # ------------------------------------------------------ provenance/version tools
 def _register_provenance_tools(mcp: FastMCP, ctx: _Ctx) -> None:
     session = ctx.session
 
     @mcp.tool()
     def get_provenance(limit: int = 50) -> list[dict[str, Any]]:
-        """Return the most recent provenance events (alterations, batches, rollbacks, resets)."""
+        """Return the most recent provenance events (edits, fits, rollbacks, resets)."""
         return session.provenance.recent_events(limit)
 
     @mcp.tool()
@@ -568,9 +602,10 @@ def _register_provenance_tools(mcp: FastMCP, ctx: _Ctx) -> None:
 
     @mcp.tool()
     def list_versions() -> list[dict[str, Any]]:
-        """List all model versions (snapshots) with kind/label/timestamp and fit metrics
+        """List all model versions (fit snapshots) with kind/label/timestamp and fit metrics
         (neg_log_likelihood, chi2, bic, is_new_best) — use it to rank versions by BIC and find
-        the best-scoring one. `is_new_best` tracks BIC (gated on a minimum effect size)."""
+        the best-scoring one. Every version is a `fit` result (or the `initial`/`rollback`/`reset`
+        snapshots); `is_new_best` tracks BIC (gated on a minimum effect size)."""
         return session.provenance.list_versions()
 
     @mcp.tool()
@@ -609,8 +644,10 @@ def _register_provenance_tools(mcp: FastMCP, ctx: _Ctx) -> None:
 
     @mcp.tool()
     def current_version() -> dict[str, Any]:
-        """Return the current (HEAD) version number and batch state."""
-        return {"version": session.provenance.current_version, "batch_active": session.batch_active}
+        """Return the current (HEAD) version number and whether the working model has unfit edits."""
+        return {"version": session.provenance.current_version,
+                "has_unfit_edits": session.has_unfit_edits(),
+                "n_pending_edits": len(session.pending_edits)}
 
     @mcp.tool()
     def get_progress() -> dict[str, Any]:
@@ -724,7 +761,7 @@ def create_server(
         resolver=resolver,
     )
     engine = AmiciEngine(session, build_root=build_root)
-    # Wire the engine so commits (operations / commit_batch) can fit + simulate.
+    # Wire the engine so the `fit` tool can fit + simulate.
     session.engine = engine
     session.auto_fit = auto_fit
     session.auto_fit_starts = auto_fit_starts
@@ -745,7 +782,6 @@ def create_server(
     _register_model_tools(mcp, ctx)
     _register_parameter_tools(mcp, ctx)
     _register_fit_tools(mcp, ctx)
-    _register_batch_tools(mcp, ctx)
     _register_provenance_tools(mcp, ctx)
     _register_session_tools(mcp, ctx)
     _register_resources(mcp, ctx)

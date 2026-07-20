@@ -1,10 +1,11 @@
-"""Fit + simulate orchestration run automatically on every model commit.
+"""Fit + simulate orchestration run by the explicit ``fit`` tool.
 
-The model-building loop is: *commit → fit → simulate → store a simulation dataframe →
+The model-building loop is: *edit → fit → simulate → store a simulation dataframe →
 statistical analysis reads that stored dataframe*. This module owns the middle two
-steps. A commit (see :mod:`operations` and :meth:`session.commit_batch`) calls
-:func:`fit_and_simulate` *before* it snapshots a version, so the single version it writes
-carries the fitted parameters, the fit metrics, and the per-point simulation records.
+steps. The ``fit`` tool (see :meth:`session.PetabSession.fit`) calls :func:`fit_and_simulate`
+*before* it snapshots a version, so the single version it writes carries the fitted parameters,
+the fit metrics, and the per-point simulation records. Edits (see :mod:`operations`) are
+fit-free and do not touch this module (issue #81).
 
 Fitting uses pyPESTO (an AMICI-backed objective); a single :meth:`AmiciEngine.residuals`
 call then materialises the simulation dataframe (measured vs. simulated, with raw and
@@ -405,8 +406,8 @@ def _run_fit(session, engine, n_starts: int, seed: int = 0) -> dict[str, Any]:
 
     Writes the best start's (unscaled) values into ``nominalValue``. Returns the fit's
     ``neg_log_likelihood`` (pyPESTO ``fval``), the fitted values, and the objective at the
-    pre-fit nominal values (for improvement tracking). No batch guard, no snapshot, no
-    simulation — callers own those.
+    pre-fit nominal values (for improvement tracking). No snapshot, no simulation — callers
+    own those.
     """
     import numpy as np
     import pypesto.optimize
@@ -757,6 +758,10 @@ def fit_summary(session, engine) -> dict[str, Any]:
     ))
     out["parameters_at_bound"] = parameters_at_bound(out.get("fitted_parameters"), pdf)
     out["noise_sigma_report"] = noise_sigma_report(session.problem, out.get("fitted_parameters"))
+    # These metrics are the LAST fit's. Edits are fit-free, so the working model can have moved on
+    # since then; flag it so a caller never mistakes a stale score for the edited model's score.
+    # `version` above is the version these metrics belong to; call `fit` to score the working model.
+    out["has_unfit_edits"] = session.has_unfit_edits()
     return out
 
 
@@ -864,9 +869,9 @@ def fit_result_block(
     fitsim: dict[str, Any] | None, improvement: dict[str, Any] | None = None,
     parameter_df: Any = None, problem: Any = None,
 ) -> dict[str, Any]:
-    """The fit fields every commit path returns (single op, batch, rollback, reset).
+    """The fit fields every fit-bearing result returns (``fit``, rollback, reset).
 
-    Keeps the tool-result shape identical across commit kinds so an agent reads the same
+    Keeps the tool-result shape identical across those paths so an agent reads the same
     keys everywhere. ``fitsim`` is a :func:`fit_and_simulate` payload (or the restored
     simulation for rollback/reset); ``improvement`` is the :func:`compute_improvement` dict.
     Beyond the raw nll/chi2 it also carries the complexity-penalised
