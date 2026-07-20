@@ -642,9 +642,9 @@ def ensure_simulation(session, engine) -> dict[str, Any] | None:
     # handing its empty model to AMICI segfaults the server (see AmiciEngine._get_model). Skip
     # simulation entirely and leave session.simulation empty; fit_summary reads `... or {}` and
     # reports None metrics, which the judge scores as a clean "no valid fit" rather than crashing.
-if not session.has_model():
-    session.simulation = None
-    return None
+    if not session.has_model():
+        session.simulation = None
+        return None
     sim = getattr(session, "simulation", None)
     if sim is None or not sim.get("records"):
         fit_and_simulate(session, engine, do_fit=False, n_starts=0)
@@ -813,9 +813,11 @@ def goodness_of_fit(
 
     * ``bic = k*ln(n) + 2*nll`` and ``aic = 2*k + 2*nll`` (lower is better) charge for every
       free parameter, so an edit that adds a parameter for a marginal nll drop scores WORSE.
-    * ``reduced_chi2 = chi2 / (n - k)`` is ≈ 1 when the model fits to the noise floor.
-    * ``chi2_gof_pvalue`` is the upper-tail chi2 p-value on ``chi2`` with ``n - k`` degrees
-      of freedom: the fit is adequate (not rejected) when this is not tiny (e.g. ≳ 0.05).
+    * ``reduced_chi2 = chi2 / (n - k)`` is ≈ 1 when the model fits to the noise floor, and
+      ``chi2_gof_pvalue`` is the upper-tail chi2 p-value on ``chi2`` with ``n - k`` degrees of
+      freedom. Both are only meaningful with a KNOWN noise level: when the observable noise
+      sigmas are ESTIMATED, chi2 pins near ``n`` by construction, so reduced_chi2 ≈ 1 and the
+      p-value are uninformative — rank models by ``bic``/``aic``, not by these.
 
     ``k`` is the number of estimated parameters, ``n`` the number of data points. ``bic`` and
     ``aic`` are ``None`` only when ``nll``/``k``/``n`` are missing; the chi2-based fields

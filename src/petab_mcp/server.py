@@ -381,8 +381,12 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
 
         `{status, neg_log_likelihood, chi2, n_data_points, fitted_parameters,
         parameter_scales, version}` plus the complexity-penalised scores `{bic, aic, chi2_dof,
-        reduced_chi2, chi2_gof_pvalue}` (lower bic/aic is better; reduced_chi2 ≈ 1 and a non-tiny
-        chi2_gof_pvalue mean the fit has reached the noise floor). `fitted_parameters` are LINEAR
+        reduced_chi2, chi2_gof_pvalue}` (lower bic/aic is better — the score to rank models by).
+        `reduced_chi2`/`chi2_gof_pvalue` are only meaningful with a KNOWN noise level: when the
+        observable noise sigmas are ESTIMATED, chi2 pins near `n_data_points` by construction, so
+        reduced_chi2 ≈ 1 and its p-value are uninformative — do not use them as a fit-adequacy
+        gate (judge adequacy from residual STRUCTURE instead, e.g. `get_fit_diagnosis`).
+        `fitted_parameters` are LINEAR
         (unscaled) values; `parameter_scales` gives each one's estimation scale (lin/log10) —
         a fitted value is the linear number, never its log10 coordinate. `parameters_at_bound`
         lists any fitted parameter sitting within ~1% of its lower/upper bound (on its own

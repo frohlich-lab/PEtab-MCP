@@ -280,6 +280,18 @@ snapshotting. The commit result and the new version carry the fit metrics —
 competing versions can be ranked by objective. Pass `n_starts` on a commit to fit harder,
 or `n_starts=0` to simulate without fitting.
 
+**Rank models by `bic` (or `aic`), not by the χ² p-value.** `get_fit_summary` also reports
+`reduced_chi2` and `chi2_gof_pvalue`, but these test goodness-of-fit against a *known* noise
+level. When a problem's observable noise sigmas are **estimated** (they appear in the parameter
+table with `estimate=1`), the fit inflates them to absorb the residuals, so `chi2` pins near the
+number of data points by construction — `reduced_chi2 ≈ 1` and its p-value become uninformative
+(often stuck at the noise floor no matter how wrong the mechanism is). Do **not** treat
+`chi2_gof_pvalue ≥ 0.05` as the success criterion, restructure to raise it, or widen a sigma to
+lower `reduced_chi2`. Judge whether a mechanism is missing from the residual **structure** — a
+systematic per-observable bias or a residual time-trend (Step 5's SQL / `get_fit_diagnosis`),
+read on the *raw* `residual` when a sigma is estimated — and rank the candidates that pass by
+`bic`.
+
 Inspect the result with:
 
 - `get_fit_summary()` — just the metrics (`neg_log_likelihood`, `chi2`, …), no records —
