@@ -51,6 +51,57 @@ def test_static_tables_queryable_without_simulation(session):
     assert ids == {"A_init", "B_init", "k1", "k2", "sigma_B"}
 
 
+def test_empty_parameter_table_does_not_break_queries(session):
+    # A model-less benchmark problem ships a header-only parameters.tsv, so the parameter
+    # table has zero rows — which turned into a zero-column DataFrame that DuckDB refuses to
+    # register, making EVERY query_data call fail (even `SELECT 1`). Regression: with no
+    # parameters, `SELECT 1` and the fixed tables must still be queryable.
+    session.problem.parameter_df = session.problem.parameter_df.iloc[0:0]
+    assert len(session.problem.parameter_df) == 0
+
+    assert data_access.run_query(session, "SELECT 1 AS one")["rows"][0]["one"] == 1
+
+    meas = data_access.run_query(session, "SELECT * FROM measurements")
+    assert meas["row_count"] == 6 and "measurement" in meas["columns"]
+
+    # `TABLE measurements` (DuckDB shorthand for SELECT *) works too — the exact call the
+    # trace-review found the agent repeatedly proposing and failing.
+    assert data_access.run_query(session, "TABLE measurements")["row_count"] == 6
+
+    # the empty parameters table is still there, queryable, with its canonical columns
+    params = data_access.run_query(session, "SELECT * FROM parameters")
+    assert params["row_count"] == 0
+    assert set(data_access.PARAMETER_COLUMNS) <= set(params["columns"])
+
+
+def test_absent_optional_table_does_not_break_queries(session):
+    # An optional PEtab table petab loaded as None (e.g. no condition table) must not break
+    # the query surface either: it becomes an empty, canonically-typed table.
+    session.problem.condition_df = None
+    out = data_access.run_query(session, "SELECT 1 AS one")
+    assert out["rows"][0]["one"] == 1
+    cond = data_access.run_query(session, "SELECT * FROM conditions")
+    assert cond["row_count"] == 0
+    assert set(data_access.CONDITION_COLUMNS) <= set(cond["columns"])
+
+
+def test_empty_parameter_table_schema_keeps_columns(session):
+    # list_data_tables must still expose the parameter columns before any parameter exists.
+    session.problem.parameter_df = session.problem.parameter_df.iloc[0:0]
+    tables = {t["table"]: t for t in data_access.table_schema(session)["tables"]}
+    assert tables["parameters"]["n_rows"] == 0
+    assert set(data_access.PARAMETER_COLUMNS) <= set(tables["parameters"]["columns"])
+
+
+def test_sql_error_points_at_working_alternatives(session):
+    # A failed query should guide the agent to the tools that DO work rather than being
+    # re-proposed blindly — the error names get_measurements and list_data_tables.
+    with pytest.raises(ValidationError) as excinfo:
+        data_access.run_query(session, "SELECT * FROM nonexistent_table")
+    msg = str(excinfo.value)
+    assert "get_measurements" in msg and "list_data_tables" in msg
+
+
 def test_named_index_promoted_to_column(session):
     # observables/conditions are indexed by their id in petab; it must be a queryable column.
     obs = data_access.run_query(session, "SELECT observableId FROM observables")

@@ -31,8 +31,39 @@ from __future__ import annotations
 
 from typing import Any
 
+from petab.v1.C import (
+    CONDITION_ID,
+    ESTIMATE,
+    LOWER_BOUND,
+    MEASUREMENT,
+    NOISE_FORMULA,
+    NOMINAL_VALUE,
+    OBSERVABLE_FORMULA,
+    OBSERVABLE_ID,
+    PARAMETER_ID,
+    PARAMETER_SCALE,
+    SIMULATION_CONDITION_ID,
+    TIME,
+    UPPER_BOUND,
+)
+
 from .errors import MissingDependencyError, ValidationError
 from .formatting import _clean
+
+# Canonical (minimal) column schema for each FIXED PEtab table. Used only as a FALLBACK when
+# the live table is absent (an optional table petab loaded as ``None``) or empty with no
+# columns at all — e.g. a model-less problem that ships a header-only ``parameters.tsv``, whose
+# parameter table has zero rows and (once turned into JSON records) zero columns. DuckDB refuses
+# to register a zero-column DataFrame ("Need a DataFrame with at least one column"), and because
+# every table is copied in BEFORE the query runs, one such frame made EVERY ``query_data`` call
+# fail — even ``SELECT 1``. Giving the empty table its real column names keeps it queryable
+# (it just returns no rows) and keeps the whole query surface working.
+MEASUREMENT_COLUMNS = [OBSERVABLE_ID, SIMULATION_CONDITION_ID, TIME, MEASUREMENT]
+CONDITION_COLUMNS = [CONDITION_ID]
+OBSERVABLE_COLUMNS = [OBSERVABLE_ID, OBSERVABLE_FORMULA, NOISE_FORMULA]
+PARAMETER_COLUMNS = [
+    PARAMETER_ID, PARAMETER_SCALE, LOWER_BOUND, UPPER_BOUND, NOMINAL_VALUE, ESTIMATE,
+]
 
 # Canonical column order for the per-point simulation dataframe. Declaring it up front means
 # the ``simulations`` table has a stable schema (and named columns resolve in SQL) even at
@@ -105,12 +136,31 @@ def _promote_index(df):
     return df.reset_index() if named else df.copy()
 
 
+def _with_schema(df, columns):
+    """Guarantee a queryable schema so the frame can be registered into DuckDB.
+
+    A fixed PEtab table can be absent (``None`` — an optional table petab did not load) or
+    present-but-empty with no columns at all (the parameter table of a model-less problem,
+    once turned into zero JSON records). DuckDB cannot register a zero-column DataFrame, and
+    since the tables are copied in before the query runs, one such frame breaks EVERY query.
+    Fall back to an empty frame carrying the table's canonical column NAMES in that case (the
+    columns are ``object``-dtyped — no rows to infer types from — which DuckDB registers fine);
+    otherwise pass the real frame through untouched (its own columns are authoritative).
+    """
+    import pandas as pd
+
+    if df is None or df.shape[1] == 0:
+        return pd.DataFrame(columns=columns)
+    return df
+
+
 def _frames(session) -> dict[str, Any]:
     """Build the ``{table_name: DataFrame}`` mapping registered for a query.
 
     Reads the *current* problem tables and the stored simulation dataframe
     (``session.simulation``); the ``simulations`` frame is empty (but well-typed) when no
-    commit has produced records yet.
+    commit has produced records yet. Every frame is guaranteed at least one column (see
+    :func:`_with_schema`) so registering it into DuckDB cannot fail on an empty table.
     """
     import pandas as pd
 
@@ -118,10 +168,12 @@ def _frames(session) -> dict[str, Any]:
 
     problem = session.problem
     frames: dict[str, Any] = {
-        "measurements": _promote_index(problem.measurement_df),
-        "conditions": _promote_index(problem.condition_df),
-        "observables": _promote_index(problem.observable_df),
-        "parameters": pd.DataFrame(parameters_to_records(problem)),
+        "measurements": _with_schema(_promote_index(problem.measurement_df), MEASUREMENT_COLUMNS),
+        "conditions": _with_schema(_promote_index(problem.condition_df), CONDITION_COLUMNS),
+        "observables": _with_schema(_promote_index(problem.observable_df), OBSERVABLE_COLUMNS),
+        "parameters": _with_schema(
+            pd.DataFrame(parameters_to_records(problem)), PARAMETER_COLUMNS
+        ),
     }
 
     sim = getattr(session, "simulation", None) or {}
@@ -135,11 +187,6 @@ def _frames(session) -> dict[str, Any]:
     frames["optimization_trace"] = pd.DataFrame(
         opt.get("trace") or [], columns=OPTIMIZATION_TRACE_COLUMNS
     )
-
-    # Never register ``None`` (an absent optional table) — use an empty frame instead.
-    for name, df in list(frames.items()):
-        if df is None:
-            frames[name] = pd.DataFrame()
     return frames
 
 
@@ -196,10 +243,22 @@ def run_query(session, sql: str, max_rows: int = 1000) -> dict[str, Any]:
         # query has a private, disposable copy it can freely mutate — nothing is written back
         # to the session, and the whole database is discarded when the connection closes.
         # Table names are fixed internal constants, so the CREATE is not an injection point.
-        for name, df in frames.items():
-            con.register("_src", df)
-            con.execute(f'CREATE TABLE "{name}" AS SELECT * FROM _src')
-            con.unregister("_src")
+        # A failure HERE (e.g. an un-registerable frame) happens before the user's SQL runs, so
+        # surface it as a clean, actionable client error — pointing at the working alternatives —
+        # rather than letting a raw exception crash the tool and get blindly re-proposed.
+        try:
+            for name, df in frames.items():
+                con.register("_src", df)
+                try:
+                    con.execute(f'CREATE TABLE "{name}" AS SELECT * FROM _src')
+                finally:
+                    con.unregister("_src")  # always drop the alias, even if the CREATE raised
+        except duckdb.Error as exc:
+            raise ValidationError(
+                f"Could not prepare the data tables for the query ({exc}). Use "
+                "`get_measurements` for the raw measurement data, or `list_data_tables` for "
+                "the available tables and their columns."
+            ) from exc
         # Copying isolates the *data*, but not the host: a query could still read/write local
         # files or reach the network (read_csv/parquet, ATTACH, COPY, INSTALL/LOAD, httpfs).
         # Disable that and lock the setting so the query can't turn it back on.
@@ -210,7 +269,10 @@ def run_query(session, sql: str, max_rows: int = 1000) -> dict[str, Any]:
             columns = [d[0] for d in rel.description] if rel.description else []
             rows = rel.fetchmany(max_rows + 1)
         except duckdb.Error as exc:
-            raise ValidationError(f"SQL error: {exc}") from exc
+            raise ValidationError(
+                f"SQL error: {exc}. Call `list_data_tables` for the exact table/column names, "
+                "or use `get_measurements` for the raw measurement data."
+            ) from exc
     finally:
         con.close()
 
