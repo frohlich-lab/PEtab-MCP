@@ -2,11 +2,11 @@
 name: petab-model-building
 description: >-
   Use when interacting with the petab-mcp server to work a single PEtab v1
-  parameter-estimation problem: read the fixed experimental design, edit the model
-  through the constrained justified operations (add_reaction, change_rate_law,
-  remove_reaction) — each commit automatically fits and simulates — then inspect the
-  fit by querying the data with SQL (query_data over the PEtab tables + the simulation
-  dataframe/residuals), provenance, and versions. Explains the
+  parameter-estimation problem: read the fixed experimental design, author or re-author the
+  whole model in Antimony with set_model and adjust parameter search
+  spaces (change_parameter_scale, change_parameter_bounds) — each commit automatically fits
+  and simulates — then inspect the fit by querying the data with SQL (query_data over the PEtab
+  tables + the simulation dataframe/residuals), provenance, and versions. Explains the
   disciplined, auditable tool workflow, the rules each tool enforces, how to read tool
   results, and how to recover from rejected operations. Read this before calling any
   petab-mcp tool.
@@ -16,12 +16,13 @@ description: >-
 
 `petab-mcp` wraps **one** PEtab v1 parameter-estimation problem and turns model
 building into a disciplined, auditable loop. The tools are deliberately narrow:
-the experimental design is read-only, the model changes only through `set_model`
-(author or replace the whole model in Antimony) or the constrained justified edits
-(`add_reaction` / `change_rate_law` / `remove_reaction`), and every committed change is
-versioned and logged. Work *with* those constraints — do not look for an "edit the
-measurements" tool; there isn't one, by design. To write the Antimony that `set_model`
-and the edits take, see the companion `antimony-authoring` skill.
+the experimental design is read-only, the model changes through `set_model`
+(author or replace the whole model in Antimony), the parameter
+search space through `change_parameter_scale` / `change_parameter_bounds`, and every
+committed change is versioned and logged. Work *with* those constraints — do not look for
+an "edit the measurements" tool or an incremental single-reaction editor; there aren't any,
+by design. To write the Antimony that `set_model` takes, see the companion
+`antimony-authoring` skill.
 
 For the exhaustive per-tool signature/return reference, read `tools.md` in this
 skill (also available from the server as `get_skill("petab-model-building",
@@ -34,11 +35,9 @@ file="tools.md")`).
   condition is *rejected*, not applied.
 - **The model is authored in Antimony with `set_model`.** If the problem ships *without* a
   model (`describe_problem` reports `model_initialized: false`), author the whole model from
-  Antimony with `set_model`. `set_model` is the single whole-model operation — it also
-  re-authors an existing model wholesale, the clean way to make a coupled/symmetric or
-  multi-reaction structural change in one coherent step; for smaller, local changes refine
-  with `add_reaction`, `change_rate_law`, `remove_reaction`. Antimony is the canonical source
-  of truth; SBML is derived.
+  Antimony with `set_model`. `set_model` builds the first model and re-authors an existing one
+  wholesale. Antimony is the canonical source of truth; SBML is
+  derived.
 - **Every model operation must cite a justification.** The justification must be a
   non-empty string. References are **optional** for all operations; any you provide are
   validated against PubMed.
@@ -145,15 +144,15 @@ Always start by understanding the problem before changing it:
   estimate — they keep parameter roles straight (see the role invariant below).
 - `validate_problem()` — lint the current problem and see any outstanding issues.
 
-## Step 2 — edit the model (constrained + justified)
+## Step 2 — edit the model (whole-model authoring, justified)
 
-Each of these applies the edit to a *copy* of the model, reconciles SBML↔PEtab,
-lints the candidate, and **only commits if the result is valid**. On failure the
-model and parameter table are reverted and nothing is versioned.
+`set_model` applies the (re-)authored model to a *copy* of the problem, reconciles SBML↔PEtab,
+lints the candidate, and **only commits if the result is valid**. On failure the model and
+parameter table are reverted and nothing is versioned.
 
 ### `set_model(antimony, justification, references?)` — author the whole model
 
-`set_model` is the single whole-model operation: it **builds** the first model when the
+`set_model` **builds** the first model when the
 problem ships model-less (`describe_problem` → `model_initialized: false`) and
 **re-authors / replaces** an existing model wholesale. Author the
 entire model as one Antimony string declaring the compartments, species (with their initial
@@ -170,16 +169,23 @@ model my_model
 end
 ```
 
-It reconciles, lints, and fits exactly like the incremental edits, and reverts on failure so
-a bad (re-)author changes nothing. Reach for it for the initial build and for any change that
-is **structural and coupled** — the same rate-law form across several reactions, a symmetric
-set that must stay identical, or adding/removing several reactions at once — where a sequence
-of incremental edits would leave the model inconsistent between steps. Because the whole model
-is replaced, the result **warns** if the re-author no longer declares a previously-*estimated*
-parameter (its fitted value is dropped); fixed noise / initial-condition parameters and
-anything the observable, noise, or condition tables reference are preserved. Prefer the
-incremental edits below for a genuinely local change (they keep the history fine-grained);
-prefer `set_model` for a whole-structure move.
+It reconciles, lints, and fits, and reverts on failure so a bad (re-)author changes nothing.
+Because the whole model is replaced, the result **warns** if the re-author no longer declares a
+previously-*estimated* parameter (its fitted value is dropped); fixed noise / initial-condition
+parameters and anything the observable, noise, or condition tables reference are preserved.
+
+**Writing reactions inside the model** (see the `antimony-authoring` skill for the full guide):
+
+- Use `->` between reactants and products; a rate law after `;` is required. Stoichiometry is a
+  leading number: `2 S1 -> S2`. New symbols in a rate law that are not species become
+  **parameters** (reconciled into the parameter table with default bounds — tune them in Step 3);
+  new species get a parametric initial condition.
+- **Prefer reversible reactions.** A reaction carries one kinetic law and the dynamics come
+  entirely from it (the arrow adds no flux — reactions are created `reversible=false`), so model
+  a reversible step X⇌Y as a **single** reaction with a net `forward - reverse` rate law
+  (`J: X -> Y; k_f*X - k_r*Y`) rather than two opposing one-way reactions. Use a forward-only law
+  (`k_f*X`) only for a genuinely irreversible step — synthesis, degradation, an effectively
+  one-way catalytic step.
 
 `set_model` remembers the structures it has already seen (issue #59): a genuinely new
 structure always commits, but re-authoring the **current** model is a no-op (`no_change:
@@ -188,39 +194,6 @@ use `restore_version(n)` instead, and an identical structure re-authored repeate
 **refused** to break an unproductive loop. To go **back** to a prior model, use
 `restore_version(n)` — never re-author it (a re-author recompiles and refits to the same
 result and appends a duplicate version).
-
-### `add_reaction(reaction, justification, references)`
-
-`reaction` is a single Antimony reaction line (species/parameter names below are
-**illustrative placeholders** — use the actual entities from *your* model, not these):
-
-```
-J1: S1 + S2 -> S3; k_f*S1*S2
-```
-
-- An `id:` prefix is optional — omit it and the server assigns `J1`, `J2`, …
-- Use `->` between reactants and products. Stoichiometry is written as a
-  leading number: `2 S1 -> S2`.
-- A **rate law after `;` is required** for a new reaction.
-- **Prefer reversible reactions.** A reaction carries one kinetic law and the dynamics come
-  entirely from it (the arrow adds no flux — reactions are created `reversible=false`), so model
-  a reversible step X⇌Y as a **single** reaction with a net `forward - reverse` rate law
-  (`J: X -> Y; k_f*X - k_r*Y`) rather than two opposing one-way reactions. Use a forward-only law
-  (`k_f*X`) only for a genuinely irreversible step — synthesis, degradation, an effectively
-  one-way catalytic step. (See the `antimony-authoring` skill.)
-- New species mentioned in the reaction are created automatically (with a
-  parametric initial condition). New symbols in the rate law that are not species
-  become **parameters** — after adding, call `get_parameters()` and set sensible
-  `nominalValue`/bounds/`estimate` for them (see Step 3).
-
-### `change_rate_law(reaction_id, rate_law, justification, references)`
-
-Replace one reaction's kinetic law. New symbols become parameters and are
-reconciled just like `add_reaction`.
-
-### `remove_reaction(reaction_id, justification, references)`
-
-Delete a reaction and prune any species/parameters left orphaned by the removal.
 
 ### Writing a good justification + references
 
@@ -267,8 +240,8 @@ removes the redundant degree of freedom from the *model*; it never hard-codes a 
 no value/`estimate` tool, and a literal in a rate law is just a magic number — parameter values
 come only from the fit):
 
-1. **Remove it** — drop the reaction/term it belongs to (`remove_reaction` / `change_rate_law`)
-   when that parameter is what makes its mechanism redundant.
+1. **Remove it** — re-author with `set_model` dropping the reaction/term it belongs to, when
+   that parameter is what makes its mechanism redundant.
 2. **Use its limiting form** — a rate the fit pushes toward infinity usually means an
    *irreversible* reaction (drop the reverse term) or an *instantaneous* / quasi-steady-state
    step (replace the kinetics with its algebraic limit, which has no free rate); a rate pushed
@@ -285,9 +258,9 @@ product or ratio, e.g. `k_cat*E_tot` → one `Vmax` — but that is optional, no
 
 A single re-pin can also mean the *model* is missing a mechanism the data need (often an exponent
 trying to fake a near-step-function) — use `query_data`'s bias/time-trend diagnostics (Step 5) to
-see what the current structure can't reproduce, then add the missing reaction rather than stretch
-a bound. The rule is the same in every case: never answer a re-pin with another bounds widening —
-make a **structural** edit (`add_reaction` / `change_rate_law` / `set_model`) or leave the
+see what the current structure can't reproduce, then re-author with the missing reaction rather
+than stretch a bound. The rule is the same in every case: never answer a re-pin with another
+bounds widening — make a **structural** edit by re-authoring with `set_model`, or leave the
 parameter be. The harness enforces this as a backstop: `change_parameter_bounds` **rejects a third
 widening** of a still-pinned parameter whose previous widening bought a negligible BIC gain.
 
@@ -302,14 +275,17 @@ To land several related edits as a **single** version:
 
 1. `begin_batch(label)` — start staging. Subsequent operations are applied and
    logged but not individually versioned, and **not fitted** — the fit is deferred.
-2. Run the operations (`add_reaction`, `change_rate_law`, …).
+2. Run the operations (a `set_model` re-author together with `change_parameter_bounds` /
+   `change_parameter_scale` edits, …).
 3. `commit_batch(label)` — fit + simulate the staged result **once**, then snapshot
    everything as one version, **or** `abort_batch()` — discard the staged edits and
    restore the pre-batch version.
 
 While a batch is open, `rollback_to` and `reset` are blocked — commit or abort first.
-Batching is also how you avoid re-fitting after every intermediate edit: a mechanism
-spanning several reactions is fitted just once, on `commit_batch`.
+Batching is also how you avoid re-fitting after every intermediate edit: a re-authored model
+plus its parameter-space adjustments are fitted just once, on `commit_batch`. (A single
+`set_model` already authors the whole structure at once, so the common use is grouping it with
+the parameter-table edits it needs.)
 
 ## Step 5 — read the fit (fitting is automatic)
 
@@ -331,6 +307,38 @@ the last real new best), the lowest-BIC `best_version` seen so far, and
 moving — the streak reaches its cap, or the best model is already adequate and the BIC has
 flattened — the run is stopped and the **best-BIC version is scored**, not whatever happened
 to be committed last. So don't keep editing a fit that has reached the noise floor; finish.
+
+**When the fit plateaus, the verdict is structural — change the model's FORM, don't re-fit the
+same structure.** When the run stops making progress, the `progress` block's `should_stop` fires
+and `stop_reason` carries this nudge. A plateau — the streak reaching its cap, or the BIC flat over
+the last few ops — is the signature of the classic failure mode: the model's *structure* cannot
+reproduce the data — a missing latent process, an absent feedback reaction, or a rate law of the
+wrong form — so an **optimizer/bounds** problem's cure (re-fit, widen bounds, flip a scale,
+re-author a near-duplicate) will **not** help. This is the same lesson as the single-parameter
+re-pin in Step 3, scaled up to the whole model: diagnosing the misfit as structural and then
+re-parameterizing anyway is not progress. If the plateaued best model is **still not adequate**,
+the fix is exclusively structural.
+
+When you see it — or reach the same conclusion yourself (several distinct parameters pinned at
+their bounds at once, multistarts converging cleanly to the same wall, the residual *shape*
+unchanged across fits) — the next model **must change form**, not re-fit the same one.
+Re-parameterizing, widening bounds, or re-authoring a near-duplicate is **disallowed as the
+response to a structural verdict**. Confirm first with `get_identifiability` and the residual bias
+/ time-trend queries (Step 5's `query_data`) to see what the current structure *can't* reproduce,
+then reach for a generic structural move — these are **categories to consider, not a prescribed
+answer for any particular problem**:
+
+- **add a latent / unobserved state** — a species or driver the observation model doesn't measure
+  but the dynamics need;
+- **raise the interaction order** — linear → nonlinear, add a higher-order / saturating /
+  cooperative term where a first-order rate law is too rigid;
+- **add feedback / regulation** — a product or downstream species acting back on an earlier rate.
+
+Pick the category the residual diagnostics point at, re-author the whole model with that
+structural change via `set_model`, and re-read the fit. (If the diagnostics say a *single*
+parameter is simply unidentifiable and no structural move removes it, that's Step 3's "leave it
+pinned" case — not this one; this nudge is about a *plateau* / a *run of re-fits*, the signature of
+a missing mechanism.)
 
 **Rank models by `bic` (or `aic`), not by the χ² p-value.** `get_fit_summary` also reports
 `reduced_chi2` and `chi2_gof_pvalue`, but these test goodness-of-fit against a *known* noise
@@ -442,15 +450,17 @@ describe_problem()                         # orient
 get_model("antimony"); get_parameters()    # see model + parameters
 list_observables(); get_measurements()     # see what you're fitting
 
-add_reaction("v1: S -> P; k*S",            # ILLUSTRATIVE placeholders — use YOUR model's
-             justification="… mechanistic reason …",   # species/params, not S/P/k
-             references=["PMID:XXXXXXXX"]) # -> committed + auto-fitted; new symbols added
-                                           #    result carries neg_log_likelihood / is_new_best
+set_model("model m\n  compartment c = 1;\n  species S in c; species P in c;\n"
+          "  S = S_init; P = P_init; S_init = 1.0; P_init = 0.0; k = 0.1;\n"
+          "  v1: S -> P; k*S\nend",     # ILLUSTRATIVE placeholders — use YOUR model's
+          justification="… mechanistic reason …",    # species/params, not S/P/k
+          references=["PMID:XXXXXXXX"]) # -> committed + auto-fitted; new symbols added
+                                        #    result carries neg_log_likelihood / is_new_best
 query_data("SELECT observable_id, sum(residual_weighted*residual_weighted) AS chi2 "
            "FROM simulations WHERE residual_weighted IS NOT NULL "
            "GROUP BY observable_id ORDER BY chi2 DESC")  # where is it worst?
 list_versions(); diff_versions(0, 1)       # audit what changed
 ```
 
-Keep edits small and justified, read the fit after each change, and let the version
+Keep each re-author focused and justified, read the fit after each change, and let the version
 history tell the story.

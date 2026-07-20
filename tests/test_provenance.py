@@ -93,8 +93,8 @@ def test_events_appended_and_tailed(tmp_path):
     assert all("timestamp" in e for e in ev)
 
 
-def test_versioning_diff_and_rollback(session):
-    O.add_reaction(session, "J: B -> D; k3*B", justification="x", references=["PMID:1"])
+def test_versioning_diff_and_rollback(session, reauthor_toy):
+    reauthor_toy(session, ["J: B => D; k3 * B;"], justification="x", references=["PMID:1"])
     assert session.provenance.current_version == 1
 
     diff = session.provenance.diff_versions(0, 1)
@@ -114,14 +114,14 @@ def test_versioning_diff_and_rollback(session):
     assert kinds == ["initial", "alteration", "rollback"]
 
 
-def test_durable_resume(yaml_path, tmp_path):
+def test_durable_resume(yaml_path, tmp_path, reauthor_toy):
     """A second session on the same provenance dir resumes from HEAD."""
     from petab_mcp.references import StubReferenceResolver
     from petab_mcp.session import PetabSession
 
     prov = str(tmp_path / "prov")
     s1 = PetabSession(yaml_path, provenance_dir=prov, resolver=StubReferenceResolver())
-    O.add_reaction(s1, "J: B -> D; k3*B", justification="x", references=["PMID:1"])
+    reauthor_toy(s1, ["J: B => D; k3 * B;"], justification="x", references=["PMID:1"])
     assert s1.provenance.current_version == 1
 
     s2 = PetabSession(yaml_path, provenance_dir=prov, resolver=StubReferenceResolver())

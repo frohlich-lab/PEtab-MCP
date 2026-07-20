@@ -141,3 +141,40 @@ def test_checkpoint_holds_the_lowest_bic_after_wandering_worse(session):
     p = session.progress_report()
     assert p["best_version"] == 1
     assert p["non_improving_streak"] == 1
+
+
+# --- (d) structural-inadequacy nudge folded into the stop reason (issue #82) --------------
+def test_streak_cap_stop_reason_carries_structural_nudge_when_inadequate(session):
+    """A never-adequate run that hits the streak cap is the structural-inadequacy case: its
+    stop_reason must tell the agent to change the model's FORM, not re-fit the same structure."""
+    session.record_fit_progress(1, _fitsim(-50.0, 500.0), {"is_new_best": True})  # never adequate
+    for v in range(2, 2 + NON_IMPROVING_STREAK_CAP):
+        session.record_fit_progress(v, _fitsim(-50.0, 500.0), {"is_new_best": False})
+
+    reason = session.progress_report()["stop_reason"].lower()
+    assert "streak" in reason
+    assert "structural" in reason and "form" in reason
+    assert "set_model" in reason
+
+
+def test_adequate_plateau_stop_reason_omits_structural_nudge(session):
+    """An adequate-and-flat plateau is a SUCCESS stop, so its stop_reason must NOT append the
+    structural nudge — telling an already-adequate model it 'cannot fit the data' is contradictory.
+    """
+    session.record_fit_progress(1, _fitsim(-50.0, 18.0), {"is_new_best": True})  # adequate
+    for v in range(2, 2 + PLATEAU_WINDOW):
+        session.record_fit_progress(v, _fitsim(-50.0, 18.0), {"is_new_best": False})
+
+    reason = session.progress_report()["stop_reason"].lower()
+    assert "plateau" in reason and "adequate" in reason
+    assert "structural" not in reason  # no nudge on a success stop
+    assert "cannot fit" not in reason
+
+
+def test_running_report_has_no_stop_reason_and_no_nudge(session):
+    """While the run is still making progress there is no stop and hence no nudge text."""
+    for i, v in enumerate(range(1, 6)):
+        session.record_fit_progress(v, _fitsim(-50.0 - 5.0 * i, 18.0), {"is_new_best": True})
+    p = session.progress_report()
+    assert p["should_stop"] is False
+    assert p["stop_reason"] is None

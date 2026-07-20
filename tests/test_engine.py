@@ -104,11 +104,9 @@ def test_parameter_change_no_recompile(engine, session):
     assert obj1["neg_log_likelihood"] != obj0["neg_log_likelihood"]
 
 
-def test_simulate_after_operation_recompiles(engine, session):
-    from petab_mcp import operations as O
-
+def test_simulate_after_operation_recompiles(engine, session, reauthor_toy):
     before = engine.evaluate_objective()["neg_log_likelihood"]
-    O.add_reaction(session, "J: B -> D; k3*B", justification="B to D", references=["PMID:1"])
+    reauthor_toy(session, ["J: B => D; k3 * B;"], justification="B to D", references=["PMID:1"])
     after = engine.evaluate_objective()  # new species/param -> recompiles
     assert after["neg_log_likelihood"] != before
     assert after["n_data_points"] == 6

@@ -4,8 +4,31 @@ import pytest
 
 from petab_mcp import operations as O
 from petab_mcp import parameters as P
-from petab_mcp.errors import UnknownEntityError, ValidationError
-from petab_mcp.operations import OperationError, parse_reaction_line
+from petab_mcp.operations import OperationError
+
+# The shipped toy model (tests/data/toy_v1/model.ant), used as the base for every re-author.
+# Structural edits are made by authoring this base with the change applied via ``set_model`` —
+# ``{extra}`` is where extra reaction lines are spliced in.
+_BASE_MODEL = """model conversion_reaction
+  compartment compartment_ = 1;
+  species A in compartment_;
+  species B in compartment_;
+  A = A_init;
+  B = B_init;
+  A_init = 1.0;
+  B_init = 0.0;
+  k1 = 0.5;
+  k2 = 0.1;
+  r1: A => B; k1 * A;
+  r2: B => A; k2 * B;
+{extra}end
+"""
+
+
+def _set_model(session, extra=(), *, justification="test", **kwargs):
+    """Re-author the base model with ``extra`` reaction lines spliced in (each on its own line)."""
+    antimony = _BASE_MODEL.format(extra="".join(f"  {line}\n" for line in extra))
+    return O.set_model(session, antimony, justification=justification, **kwargs)
 
 
 def _ids(session):
@@ -17,36 +40,16 @@ def _species(session):
     return {sm.getSpecies(i).getId() for i in range(sm.getNumSpecies())}
 
 
-# -- parsing ---------------------------------------------------------------
-def test_parse_reaction_line():
-    spec = parse_reaction_line("J: 2 A + B -> C; k1*A*B")
-    assert spec["id"] == "J"
-    assert spec["reactants"] == [("A", 2.0), ("B", 1.0)]
-    assert spec["products"] == [("C", 1.0)]
-    assert spec["rate_law"] == "k1*A*B"
-
-
-def test_parse_reaction_line_degradation():
-    spec = parse_reaction_line("A => ; k_deg*A")
-    assert spec["reactants"] == [("A", 1.0)]
-    assert spec["products"] == []
-
-
-def test_parse_reaction_line_no_arrow():
-    with pytest.raises(OperationError):
-        parse_reaction_line("A + B; k*A")
-
-
 # -- enforcement -----------------------------------------------------------
 def test_requires_justification(session):
     with pytest.raises(OperationError):
-        O.add_reaction(session, "J: B -> D; k3*B", justification="  ", references=["PMID:1"])
+        O.set_model(session, _BASE_MODEL.format(extra=""), justification="  ", references=["PMID:1"])
 
 
 def test_references_optional_for_model_ops(session):
     # references are optional for model ops now (justification still required). This edit
     # adds species D, which appears in no observable -> a parsimony warning.
-    res = O.add_reaction(session, "J: B -> D; k3*B", justification="B is degraded to D")
+    res = _set_model(session, ["J: B => D; k3 * B;"], justification="B is degraded to D")
     assert res["committed"] is True
     assert res["references"] == []
     assert any("unobserved species" in w for w in res["warnings"])
@@ -55,7 +58,7 @@ def test_references_optional_for_model_ops(session):
 def test_no_parsimony_warning_when_reusing_species(session):
     # a repair reusing existing species introduces no new species -> no parsimony warning
     # (a sigma-bound-tightening warning may still appear; that's a separate concern)
-    res = O.add_reaction(session, "J: B -> A; k2*B", justification="reverse conversion")
+    res = _set_model(session, ["J: A => B; k3 * A;"], justification="extra forward conversion")
     assert res["committed"] is True
     assert not any("unobserved species" in w for w in res["warnings"])
 
@@ -64,7 +67,7 @@ def test_no_parsimony_warning_when_new_species_feeds_observable(session):
     # C is unobserved but PRODUCES the observed species B (C -> B), so the data constrains it
     # through the network — a legitimate upstream addition, not a degenerate sink. The warning
     # must not fire, or it trains the agent to ignore the one warning type that ever does.
-    res = O.add_reaction(session, "J: C -> B; k3*C", justification="C is converted to B")
+    res = _set_model(session, ["J: C => B; k3 * C;"], justification="C is converted to B")
     assert res["committed"] is True
     assert "C" in _species(session)
     assert not any("unobserved species" in w for w in res["warnings"])
@@ -73,16 +76,15 @@ def test_no_parsimony_warning_when_new_species_feeds_observable(session):
 def test_parsimony_warning_still_fires_for_disconnected_sink(session):
     # D is a pure downstream sink of the observed species B (B -> D): it feeds no observable and
     # no input sets it, so it stays flagged as a genuinely disconnected hidden state.
-    res = O.add_reaction(session, "J: B -> D; k3*B", justification="B drains to D")
+    res = _set_model(session, ["J: B => D; k3 * B;"], justification="B drains to D")
     assert res["committed"] is True
     assert any("unobserved species" in w for w in res["warnings"])
 
 
-# -- add / change / remove -------------------------------------------------
-def test_add_reaction_auto_adds_species_and_params(session):
-    res = O.add_reaction(
-        session, "J: B -> D; k3*B", justification="B converts to D", references=["PMID:1"]
-    )
+# -- re-author: reconcile of new/removed structure -------------------------
+def test_reauthor_auto_adds_species_and_params(session):
+    res = _set_model(session, ["J: B => D; k3 * B;"], justification="B converts to D",
+                     references=["PMID:1"])
     assert res["committed"] is True
     assert "D" in _species(session)
     assert {"D_init", "k3"} <= _ids(session)  # new IC param + rate constant added to table
@@ -91,7 +93,7 @@ def test_add_reaction_auto_adds_species_and_params(session):
 
 def test_ic_parameter_fixed_by_default(session):
     # A new species' initial-condition parameter is FIXED (estimate 0) unless the scenario opts in.
-    O.add_reaction(session, "J: B -> D; k3*B", justification="B converts to D")
+    _set_model(session, ["J: B => D; k3 * B;"], justification="B converts to D")
     assert int(session.problem.parameter_df.loc["D_init", "estimate"]) == 0
 
 
@@ -101,40 +103,37 @@ def test_empty_pool_ic_stays_fixed_even_when_opted_in(session):
     # species (see reconcile.sync_parameter_table + test_reconcile). A modeller seeds a pool by
     # giving it a nonzero initial; a species declared to start empty has no t=0 value to fit.
     session.estimate_initial_conditions = True
-    O.add_reaction(session, "J: B -> D; k3*B", justification="B converts to D")
+    _set_model(session, ["J: B => D; k3 * B;"], justification="B converts to D")
     row = session.problem.parameter_df.loc["D_init"]
     assert int(row["estimate"]) == 0
     assert float(row["nominalValue"]) == 0.0
 
 
-def test_change_rate_law(session):
-    O.add_reaction(session, "J: B -> D; k3*B", justification="x", references=["PMID:1"])
-    res = O.change_rate_law(
-        session, "J", "k3*B*B", justification="second order", references=["PMID:2"]
-    )
+def test_reauthor_change_rate_law(session):
+    # Re-authoring the same reaction id with a new rate law replaces its kinetic law.
+    _set_model(session, ["J: B => D; k3 * B;"], justification="x", references=["PMID:1"])
+    res = _set_model(session, ["J: B => D; k3 * B * B;"], justification="second order",
+                     references=["PMID:2"])
     assert res["committed"] is True
     rxn = session.model.sbml_model.getReaction("J")
-    assert "B * B" in rxn.getKineticLaw().getFormula().replace("^", " ") or "B^2" in rxn.getKineticLaw().getFormula()
+    formula = rxn.getKineticLaw().getFormula()
+    assert "B * B" in formula.replace("^", " ") or "B^2" in formula
 
 
-def test_remove_reaction_prunes_orphans(session):
-    O.add_reaction(session, "J: B -> D; k3*B", justification="x", references=["PMID:1"])
-    res = O.remove_reaction(session, "J", justification="retracted", references=["PMID:3"])
+def test_reauthor_without_reaction_prunes_orphans(session):
+    # Author a reaction that introduces D, then re-author WITHOUT it: D and its params are pruned.
+    _set_model(session, ["J: B => D; k3 * B;"], justification="x", references=["PMID:1"])
+    res = _set_model(session, [], justification="retract the sink", references=["PMID:3"])
     assert res["committed"] is True
     assert "D" not in _species(session)
     assert not ({"D_init", "k3"} & _ids(session))  # orphans pruned from the table
-
-
-def test_remove_unknown_reaction(session):
-    with pytest.raises(UnknownEntityError):
-        O.remove_reaction(session, "nope", justification="x", references=["PMID:1"])
 
 
 # -- parameter operations --------------------------------------------------
 # -- initial-condition report (issue #57) ----------------------------------
 def test_commit_result_includes_initial_conditions(session):
     # Every reconciling model op reports each species' IC status; a new species is flagged.
-    res = O.add_reaction(session, "J: B -> D; k3*B", justification="B converts to D")
+    res = _set_model(session, ["J: B => D; k3 * B;"], justification="B converts to D")
     ics = {r["species"]: r for r in res["initial_conditions"]}
     assert {"A", "B", "D"} <= set(ics)
     assert ics["D"]["newly_added"] is True
@@ -315,10 +314,10 @@ def test_compile_fit_failure_message_no_false_positive_on_internals():
 
 def test_operation_records_version_and_provenance(session):
     before = session.provenance.current_version
-    O.add_reaction(session, "J: B -> D; k3*B", justification="x", references=["PMID:1"])
+    _set_model(session, ["J: B => D; k3 * B;"], justification="x", references=["PMID:1"])
     assert session.provenance.current_version == before + 1
     events = session.provenance.recent_events()
     alt = [e for e in events if e["type"] == "alteration"][-1]
-    assert alt["operation"] == "add_reaction"
+    assert alt["operation"] == "set_model"
     assert alt["justification"] == "x"
     assert alt["references"][0]["input"] == "PMID:1"

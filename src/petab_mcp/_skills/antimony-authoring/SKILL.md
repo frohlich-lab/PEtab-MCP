@@ -1,8 +1,8 @@
 ---
 name: antimony-authoring
 description: >-
-  Use when writing the Antimony model string for petab-mcp's set_model (or the
-  add_reaction / change_rate_law edits) — the syntax essentials, the SBML↔PEtab reconcile
+  Use when writing the Antimony model string for petab-mcp's set_model —
+  the syntax essentials, the SBML↔PEtab reconcile
   contract the server applies afterwards, the naming rules that avoid AMICI code-generation
   clashes, and the recurring parse/lint/reconcile failure modes with their fixes. Read this
   before authoring or editing a model so a set_model call commits instead of being rejected.
@@ -12,11 +12,10 @@ description: >-
 # Authoring Antimony for petab-mcp
 
 The model is authored in **Antimony** — a compact text language for SBML. You pass a whole
-Antimony string to `set_model` (build or re-author), and single Antimony fragments to
-`add_reaction` / `change_rate_law`. This skill is about writing Antimony the server will
-**accept** on the first try: the goal is to spend the model-building loop on *mechanism*, not
-on fixing parse errors. Most model-definition failures come from a handful of avoidable
-mistakes catalogued below.
+Antimony string to `set_model` (build or re-author). This skill is about writing Antimony
+the server will **accept** on the first try: the goal is to spend the model-building loop on
+*mechanism*, not on fixing parse errors. Most model-definition failures come from a handful of
+avoidable mistakes catalogued below.
 
 ## Minimal template
 
@@ -39,8 +38,8 @@ end
   rate law carries both directions — a net `forward - reverse` term, e.g.
   `r1: A -> B; kf*A - kr*B` — rather than splitting a reversible step into two one-way
   reactions. A reaction **must** have a rate law after the `;`, and the dynamics come *entirely*
-  from that rate law: the arrow adds no flux of its own (`add_reaction` always creates the SBML
-  reaction as `reversible=false`; `->` and `=>` are equivalent there), so express reversibility
+  from that rate law: the arrow adds no flux of its own (reactions are created as
+  `reversible=false`; `->` and `=>` are equivalent there), so express reversibility
   in the rate law, not the arrow. Use a forward-only law (`kf*A`) only for a genuinely one-way
   step — synthesis, degradation, an effectively irreversible catalytic step.
 - `^` is exponentiation (`p^2`), `*` `/` `+` `-` as usual. Rate laws are ordinary algebra over

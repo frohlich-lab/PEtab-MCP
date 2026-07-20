@@ -71,7 +71,7 @@ def test_bundled_skill_loads():
     assert skill.description  # non-empty description from frontmatter
     assert "tools.md" in skill.files
     assert "SKILL.md" not in skill.files  # SKILL.md is the body, not a support file
-    assert "add_reaction" in skill.text
+    assert "set_model" in skill.text
 
 
 def test_default_skills_dir_finds_bundled_skills():

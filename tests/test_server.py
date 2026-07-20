@@ -16,6 +16,29 @@ DATA_DIR = YAML_PATH.parent
 _FORBIDDEN_TOOL_SUBSTRINGS = ("measurement", "observable", "condition")
 _WRITE_VERBS = ("update", "set", "add", "delete", "remove", "edit")
 
+# The shipped toy model — structural edits in these tests are made by re-authoring this base
+# (via `set_model`) with extra reaction lines spliced into `{extra}`.
+_TOY_BASE_MODEL = """model conversion_reaction
+  compartment compartment_ = 1;
+  species A in compartment_;
+  species B in compartment_;
+  A = A_init;
+  B = B_init;
+  A_init = 1.0;
+  B_init = 0.0;
+  k1 = 0.5;
+  k2 = 0.1;
+  r1: A => B; k1 * A;
+  r2: B => A; k2 * B;
+{extra}end
+"""
+
+
+def _reauthored(extra_reactions=()):
+    """The toy model Antimony re-authored with ``extra_reactions`` (Antimony lines) added."""
+    body = "".join(f"  {line}\n" for line in extra_reactions)
+    return _TOY_BASE_MODEL.format(extra=body)
+
 
 def _server(tmp_path, auto_fit=False):
     # auto_fit defaults off so structural/versioning tests don't compile+fit on every
@@ -85,7 +108,7 @@ def test_tools_registered(tmp_path):
     expected = {
         "describe_problem", "list_observables", "list_conditions", "get_measurements",
         "get_model", "get_model_structure", "validate_problem",
-        "set_model", "add_reaction", "change_rate_law", "remove_reaction",
+        "set_model",
         "change_parameter_scale", "change_parameter_bounds",
         "get_parameters", "sync_parameters",
         "get_fit_summary", "get_fit_diagnosis", "get_run_timing", "query_data", "list_data_tables",
@@ -94,6 +117,8 @@ def test_tools_registered(tmp_path):
         "rollback_to", "restore_version", "current_version", "reset",
     }
     assert expected <= names
+    # the incremental structural tools are not registered — structure is edited via set_model
+    assert not ({"add_reaction", "change_rate_law", "remove_reaction"} & names)
     # fitting is automatic on commit — no manual fit/score/tune tools
     assert not ({"simulate", "evaluate_objective", "optimize", "residual_statistics",
                  "update_parameters", "refit"} & names)
@@ -130,12 +155,12 @@ def test_describe_and_parameters(tmp_path):
     asyncio.run(go())
 
 
-def test_add_reaction_and_versions_via_tools(tmp_path):
+def test_set_model_and_versions_via_tools(tmp_path):
     mcp = _server(tmp_path)
 
     async def go():
-        res = _structured(await mcp.call_tool("add_reaction", {
-            "reaction": "J: B -> D; k3*B",
+        res = _structured(await mcp.call_tool("set_model", {
+            "antimony": _reauthored(["J: B => D; k3 * B;"]),
             "justification": "B converts to D",
             "references": ["PMID:1"],
         }))
@@ -157,8 +182,8 @@ def test_initial_conditions_report_via_tool(tmp_path):
 
     async def go():
         # a reconciling model op's result carries the per-species initial_conditions report
-        res = _structured(await mcp.call_tool("add_reaction", {
-            "reaction": "J: B -> D; k3*B", "justification": "B converts to D",
+        res = _structured(await mcp.call_tool("set_model", {
+            "antimony": _reauthored(["J: B => D; k3 * B;"]), "justification": "B converts to D",
         }))
         ics = {r["species"]: r for r in res["initial_conditions"]}
         assert {"A", "B", "D"} <= set(ics)
@@ -173,14 +198,15 @@ def test_references_optional_but_justification_required(tmp_path):
 
     async def go():
         # references are now OPTIONAL for model ops: an edit without any still commits
-        ok = _structured(await mcp.call_tool("add_reaction", {
-            "reaction": "J: B -> D; k3*B", "justification": "B is degraded to D",
+        ok = _structured(await mcp.call_tool("set_model", {
+            "antimony": _reauthored(["J: B => D; k3 * B;"]), "justification": "B is degraded to D",
         }))
         assert ok["committed"] is True
 
         # justification is still REQUIRED: an empty one is rejected
-        bad = _structured(await mcp.call_tool("add_reaction", {
-            "reaction": "J2: D -> E; k4*D", "justification": "   ", "references": [],
+        bad = _structured(await mcp.call_tool("set_model", {
+            "antimony": _reauthored(["J2: D => E; k4 * D;"]), "justification": "   ",
+            "references": [],
         }))
         assert bad["committed"] is False and "error" in bad
 
@@ -206,8 +232,8 @@ def test_negative_n_starts_rejected(tmp_path):
     mcp = _server(tmp_path)
 
     async def go():
-        res = _structured(await mcp.call_tool("add_reaction", {
-            "reaction": "J: B -> D; k3*B", "justification": "x",
+        res = _structured(await mcp.call_tool("set_model", {
+            "antimony": _reauthored(["J: B => D; k3 * B;"]), "justification": "x",
             "references": ["PMID:1"], "n_starts": -1,
         }))
         assert res["committed"] is False
@@ -311,8 +337,9 @@ def test_batch_tools(tmp_path):
 
     async def go():
         await mcp.call_tool("begin_batch", {"label": "b"})
-        await mcp.call_tool("add_reaction", {
-            "reaction": "J: B -> D; k3*B", "justification": "x", "references": ["PMID:1"]})
+        await mcp.call_tool("set_model", {
+            "antimony": _reauthored(["J: B => D; k3 * B;"]), "justification": "x",
+            "references": ["PMID:1"]})
         cur = _structured(await mcp.call_tool("current_version", {}))
         assert cur["batch_active"] is True and cur["version"] == 0  # no version yet
         cb = _structured(await mcp.call_tool("commit_batch", {}))
@@ -378,11 +405,7 @@ def test_set_model_builds_via_tool(tmp_path):
         assert desc["model_initialized"] is False
         assert desc["n_reactions"] == 0
 
-        # incremental edit is refused before any model exists
-        rej = _structured(await mcp.call_tool("add_reaction", {
-            "reaction": "r1: A => B; k1*A", "justification": "x", "references": ["PMID:1"]}))
-        assert rej["committed"] is False
-
+        # set_model builds the first model from Antimony when the problem ships model-less
         res = _structured(await mcp.call_tool("set_model", {
             "antimony": _REVERSIBLE_ANTIMONY,
             "justification": "reversible conversion", "references": ["PMID:1"],

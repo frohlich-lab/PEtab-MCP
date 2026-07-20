@@ -91,8 +91,8 @@ def test_rollback_restores_and_copies_optimization(session):
     assert session.optimization is None
 
 
-def test_reset_reverts_to_v0(session):
-    O.add_reaction(session, "J: B -> D; k3*B", justification="test", references=["PMID:1"])
+def test_reset_reverts_to_v0(session, reauthor_toy):
+    reauthor_toy(session, ["J: B => D; k3 * B;"], justification="test", references=["PMID:1"])
     assert "D" in _species(session)
     out = session.reset()
     assert out["reset"] is True

@@ -1,4 +1,7 @@
-"""The three constrained, justified model operations.
+"""The constrained, justified model operations.
+
+Structural change is made by authoring the whole model with ``set_model``; the parameter-table
+edits adjust a parameter's search space.
 
 Every operation:
 
@@ -17,19 +20,16 @@ from __future__ import annotations
 import re
 from typing import Any, Callable
 
-import libsbml
 from petab.v1.C import LOWER_BOUND, UPPER_BOUND
 from petab.v1.models.sbml_model import SbmlModel
 
 from . import dedup as D
 from . import reconcile as R
 from .constants import NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD, WIDENING_NEGLIGIBLE_BIC_GAIN
-from .errors import ModelUpdateError, PetabMcpError, UnknownEntityError, ValidationError
+from .errors import ModelUpdateError, PetabMcpError, ValidationError
 from .parameters import estimated_mask, problem_fingerprint, sha16, structure_fingerprint
 from .references import resolve_references
 from .validation import validate_problem
-
-_ARROW_RE = re.compile(r"\s*(->|=>)\s*")
 
 # AMICI reserves a handful of short symbols for its generated code (the state vector ``x``,
 # parameters ``p``, constants ``k``, expressions ``w``, time ``t``, the Heaviside/root vector
@@ -75,120 +75,6 @@ def _compile_fit_failure_message(exc: Exception) -> str:
 
 class OperationError(PetabMcpError):
     """An invalid model operation (bad justification, unparseable reaction, ...)."""
-
-
-# -- reaction-line parsing -------------------------------------------------
-def _parse_side(side: str) -> list[tuple[str, float]]:
-    side = side.strip()
-    if not side:
-        return []
-    terms = []
-    for raw in side.split("+"):
-        tok = raw.strip()
-        if not tok:
-            continue
-        parts = tok.split()
-        if len(parts) == 1:
-            terms.append((parts[0], 1.0))
-        elif len(parts) == 2:
-            try:
-                terms.append((parts[1], float(parts[0])))
-            except ValueError as exc:
-                raise OperationError(f"Bad stoichiometry term {tok!r}.") from exc
-        else:
-            raise OperationError(f"Bad stoichiometry term {tok!r}.")
-    return terms
-
-
-def parse_reaction_line(line: str) -> dict[str, Any]:
-    """Parse ``[id:] reactants (->|=>) products [; rate_law]``."""
-    text = line.strip().rstrip(";").strip()
-    rate_law = None
-    if ";" in text:
-        text, rate_law = (p.strip() for p in text.split(";", 1))
-    rid = None
-    # an "id:" prefix (colon before the arrow, not part of the arrow)
-    if ":" in text.split("->")[0].split("=>")[0]:
-        rid, text = (p.strip() for p in text.split(":", 1))
-    m = _ARROW_RE.search(text)
-    if not m:
-        raise OperationError(
-            f"Reaction {line!r} must contain '->' or '=>' between reactants and products."
-        )
-    reactants = _parse_side(text[: m.start()])
-    products = _parse_side(text[m.end():])
-    if not reactants and not products:
-        raise OperationError(f"Reaction {line!r} has no reactants or products.")
-    return {"id": rid, "reactants": reactants, "products": products, "rate_law": rate_law}
-
-
-# -- structural edits (applied to a candidate libsbml model) ---------------
-def _ensure_species(sm, sid: str) -> None:
-    if sm.getSpecies(sid) is None:
-        R.add_species_with_parametric_ic(sm, sid, 0.0)
-
-
-def _add_reaction_to_model(sm, spec: dict[str, Any]) -> str:
-    rid = spec["id"]
-    if rid is None:
-        n = sm.getNumReactions() + 1
-        while sm.getReaction(f"J{n}") is not None:
-            n += 1
-        rid = f"J{n}"
-    if sm.getReaction(rid) is not None:
-        raise OperationError(f"Reaction id {rid!r} already exists.")
-    if not spec["rate_law"]:
-        raise OperationError("A new reaction requires a rate law (after ';').")
-
-    for sid, _ in spec["reactants"] + spec["products"]:
-        _ensure_species(sm, sid)
-    # new rate-law symbols that are not species become parameters
-    known_species = R.species_ids(sm)
-    for sym in R.rate_law_symbols(spec["rate_law"]):
-        if sym not in known_species and sm.getParameter(sym) is None:
-            R.add_parameter(sm, sym)
-
-    rxn = sm.createReaction()
-    rxn.setId(rid)
-    rxn.setReversible(False)
-    rxn.setFast(False)
-    for sid, st in spec["reactants"]:
-        ref = rxn.createReactant()
-        ref.setSpecies(sid)
-        ref.setStoichiometry(st)
-        ref.setConstant(True)
-    for sid, st in spec["products"]:
-        ref = rxn.createProduct()
-        ref.setSpecies(sid)
-        ref.setStoichiometry(st)
-        ref.setConstant(True)
-    kl = rxn.createKineticLaw()
-    math = libsbml.parseL3Formula(spec["rate_law"])
-    if math is None:
-        raise OperationError(f"Could not parse rate law {spec['rate_law']!r}.")
-    kl.setMath(math)
-    return rid
-
-
-def _change_rate_law_in_model(sm, reaction_id: str, rate_law: str) -> None:
-    rxn = sm.getReaction(reaction_id)
-    if rxn is None:
-        raise UnknownEntityError(f"No reaction with id {reaction_id!r}.")
-    known_species = R.species_ids(sm)
-    for sym in R.rate_law_symbols(rate_law):
-        if sym not in known_species and sm.getParameter(sym) is None:
-            R.add_parameter(sm, sym)
-    math = libsbml.parseL3Formula(rate_law)
-    if math is None:
-        raise OperationError(f"Could not parse rate law {rate_law!r}.")
-    kl = rxn.getKineticLaw() or rxn.createKineticLaw()
-    kl.setMath(math)
-
-
-def _remove_reaction_from_model(sm, reaction_id: str) -> None:
-    if sm.getReaction(reaction_id) is None:
-        raise UnknownEntityError(f"No reaction with id {reaction_id!r}.")
-    sm.removeReaction(reaction_id)
 
 
 # -- commit pipeline -------------------------------------------------------
@@ -521,16 +407,12 @@ def set_model(
     session, antimony: str, justification: str,
     references: list[str] | None = None, n_starts: int | None = None,
 ) -> dict[str, Any]:
-    """Author the WHOLE model from Antimony — the single whole-model operation.
+    """Author the WHOLE model from Antimony.
 
     This BUILDS the first model when the problem ships model-less (``model_initialized:
-    false``) AND re-authors/replaces an existing model wholesale. Use it to set model STRUCTURE
-    — a coupled/symmetric rate-law change, adding or removing several reactions at once — in one
-    coherent step, instead of a sequence of incremental edits that leave intermediate models
-    inconsistent (the incremental ``add_reaction`` / ``change_rate_law`` / ``remove_reaction``
-    remain for local refinement). Goes through the same commit pipeline as every model op:
-    SBML↔PEtab reconcile (parametric ICs + parameter-table sync), petab lint, and a fit on
-    commit; any failure reverts, so a bad (re-)author changes nothing.
+    false``) AND re-authors/replaces an existing model wholesale. Goes through the same commit
+    pipeline as every model op: SBML↔PEtab reconcile (parametric ICs + parameter-table sync),
+    petab lint, and a fit on commit; any failure reverts, so a bad (re-)author changes nothing.
 
     A *genuinely new* structure is always committed. Re-authoring a structure already visited
     this run is de-duplicated (see :mod:`dedup`, issue #59), because it would only recompile and
@@ -595,60 +477,6 @@ def set_model(
             "values are gone. Re-declare them in the Antimony if that was unintended."
         ]
     return result
-
-
-def _require_model(session, op: str) -> None:
-    """Structural edits operate on an existing model; there must be one to edit."""
-    if not session.has_model():
-        raise OperationError(
-            f"Cannot {op}: no model has been initialized yet. Author one first with "
-            "set_model (Antimony)."
-        )
-
-
-def add_reaction(
-    session, reaction: str, justification: str, references: list[str] | None = None,
-    n_starts: int | None = None,
-) -> dict[str, Any]:
-    _require_model(session, "add a reaction")
-    spec = parse_reaction_line(reaction)
-    return _commit_change(
-        session, "add_reaction", {"reaction": reaction}, justification, references,
-        model_edit=lambda sm: {"reaction_id": _add_reaction_to_model(sm, spec)},
-        require_references=False, n_starts=n_starts,
-    )
-
-
-def change_rate_law(
-    session, reaction_id: str, rate_law: str, justification: str,
-    references: list[str] | None = None, n_starts: int | None = None,
-) -> dict[str, Any]:
-    _require_model(session, "change a rate law")
-
-    def edit(sm):
-        _change_rate_law_in_model(sm, reaction_id, rate_law)
-        return {"reaction_id": reaction_id}
-
-    return _commit_change(
-        session, "change_rate_law", {"reaction_id": reaction_id, "rate_law": rate_law},
-        justification, references, model_edit=edit, require_references=False, n_starts=n_starts,
-    )
-
-
-def remove_reaction(
-    session, reaction_id: str, justification: str, references: list[str] | None = None,
-    n_starts: int | None = None,
-) -> dict[str, Any]:
-    _require_model(session, "remove a reaction")
-
-    def edit(sm):
-        _remove_reaction_from_model(sm, reaction_id)
-        return {"reaction_id": reaction_id}
-
-    return _commit_change(
-        session, "remove_reaction", {"reaction_id": reaction_id}, justification, references,
-        model_edit=edit, require_references=False, n_starts=n_starts,
-    )
 
 
 # -- public operations: parameters (justification required, references optional) --
@@ -818,8 +646,8 @@ def _reject_repeated_widening(
         f"bound after {count} previous widenings for a negligible ~{last_gain:.2g} BIC gain. A "
         "parameter pinned at a bound with a flat/collinear FIM direction (check "
         "get_identifiability) is UNIDENTIFIABLE, not under-explored — widening chases it toward "
-        "infinity while it keeps re-pinning. Instead REMOVE its reaction (remove_reaction / "
-        "change_rate_law) or use its LIMITING form (make the reaction irreversible / the step "
+        "infinity while it keeps re-pinning. Instead re-author with set_model to REMOVE its "
+        "reaction or use its LIMITING form (make the reaction irreversible / the step "
         "instantaneous); if neither is possible, LEAVE it pinned — do not widen again or "
         "hard-code a value (there is no value/estimate tool, and a literal is just a magic "
         "number — values come only from the fit)."

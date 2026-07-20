@@ -4,10 +4,9 @@ Tool groups:
 
 * read-only (fixed design): ``describe_problem``, ``list_observables``,
   ``list_conditions``, ``get_measurements``
-* model (constrained operations): ``add_reaction``, ``change_rate_law``,
-  ``remove_reaction``, ``change_parameter_scale``, ``change_parameter_bounds`` (each
-  requires a justification; references optional), plus read-only ``get_model``,
-  ``get_model_structure``, ``validate_problem``
+* model (constrained operations): ``set_model`` (author/replace the whole model),
+  ``change_parameter_scale``, ``change_parameter_bounds`` (each requires a justification;
+  references optional), plus read-only ``get_model``, ``get_model_structure``, ``validate_problem``
 * parameters (read-only + reconcile): ``get_parameters``, ``sync_parameters``
 * batching: ``begin_batch``, ``commit_batch``, ``abort_batch``
 * fit + simulation: **automatic on every commit** — each commit fits the free
@@ -62,10 +61,7 @@ SERVER_INSTRUCTIONS = (
     "(measurements, conditions, observables) is read-only. If the problem ships WITHOUT a "
     "model (`describe_problem` reports `model_initialized: false`), author the whole "
     "model from Antimony with `set_model` (justification + references). `set_model` also "
-    "re-authors an existing model wholesale — the clean way to make a coupled/structural "
-    "change in one step; for smaller, local changes the model is edited "
-    "through the constrained, justified operations — `add_reaction`, "
-    "`change_rate_law`, `remove_reaction` — each of which requires a non-empty "
+    "re-authors an existing model wholesale. It requires a non-empty "
     "justification (references are optional, PubMed-validated if given) and automatically "
     "keeps the SBML model and PEtab parameter table consistent (parametric initial "
     "conditions). Every species gets a parametric initial condition, FIXED at its declared t=0 "
@@ -236,15 +232,13 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         antimony: str, justification: str,
         references: list[str] | None = None, n_starts: int | None = None,
     ) -> dict[str, Any]:
-        """Author the WHOLE model from an Antimony string — the single whole-model operation.
+        """Author the WHOLE model from an Antimony string.
 
         Use it to BUILD the first model when the problem ships model-less (`describe_problem`
         reports `model_initialized: false`) AND to re-author/replace an existing model
         wholesale. Reach for it to make a STRUCTURAL change as one coherent step — a coupled or
-        symmetric rate-law change, or adding/removing several reactions at once — instead of a
-        sequence of incremental edits that leave intermediate models inconsistent (the
-        `add_reaction` / `change_rate_law` / `remove_reaction` operations remain for local
-        refinement). It reconciles the SBML model with the PEtab parameter table (parametric
+        symmetric rate-law change, or adding/removing several reactions at once. It reconciles the
+        SBML model with the PEtab parameter table (parametric
         initial conditions, parameter-table sync), lints, and fits on commit, exactly like the
         other model ops; any failure reverts, so a bad re-author changes nothing. `justification`
         (non-empty) is required; `references` are optional; `n_starts` overrides the fit default
@@ -263,44 +257,6 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         a prior model, prefer `restore_version(n)`.
         """
         return ctx.run_operation("set_model", ops_mod.set_model, session, antimony, justification, references, n_starts)
-
-    @mcp.tool()
-    def add_reaction(
-        reaction: str, justification: str, references: list[str] | None = None,
-        n_starts: int | None = None,
-    ) -> dict[str, Any]:
-        """Add a reaction, given as an Antimony line, e.g. "J: A + B -> C; k_f*A*B".
-
-        New species/parameters and their parametric initial conditions are added
-        automatically to keep the SBML model and PEtab tables consistent. `justification`
-        (non-empty) is required; `references` are optional (validated if given). On commit
-        the free parameters are fitted and the model simulated; `n_starts` overrides the
-        server default (0 = simulate without fitting). The result includes any parsimony
-        `warnings` (e.g. an added unobserved species).
-        """
-        return ctx.run_operation("add_reaction", ops_mod.add_reaction, session, reaction, justification, references, n_starts)
-
-    @mcp.tool()
-    def change_rate_law(
-        reaction_id: str, rate_law: str, justification: str,
-        references: list[str] | None = None, n_starts: int | None = None,
-    ) -> dict[str, Any]:
-        """Replace a reaction's rate law (Antimony-like expression). Requires a
-        justification (references optional); parameters are reconciled automatically. Fits +
-        simulates on commit (`n_starts` overrides the default; 0 = simulate only)."""
-        return ctx.run_operation(
-            "change_rate_law", ops_mod.change_rate_law, session, reaction_id, rate_law, justification, references, n_starts
-        )
-
-    @mcp.tool()
-    def remove_reaction(
-        reaction_id: str, justification: str, references: list[str] | None = None,
-        n_starts: int | None = None,
-    ) -> dict[str, Any]:
-        """Remove a reaction entirely and prune any orphaned species/parameters.
-        Requires a justification (references optional). Fits + simulates on commit
-        (`n_starts` overrides the default; 0 = simulate only)."""
-        return ctx.run_operation("remove_reaction", ops_mod.remove_reaction, session, reaction_id, justification, references, n_starts)
 
     @mcp.tool()
     def change_parameter_scale(
@@ -666,6 +622,10 @@ def _register_provenance_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         `non_improving_streak` counts consecutive fitted ops since the last real new best.
         `should_stop` is set (with a `stop_reason`) once the run has stopped making progress — the
         hard non-improving-streak cap, or a plateau once the best model is statistically adequate.
+        A plateaued `stop_reason` also carries the structural-inadequacy nudge: when the score
+        stops moving and the best model is still not adequate, the misfit is the model's FORM — the
+        next model must change the structure (add a latent state, add a feedback reaction, raise
+        interaction order), not re-fit or widen the same one.
         """
         return session.progress_report()
 

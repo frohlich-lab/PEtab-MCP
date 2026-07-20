@@ -104,6 +104,18 @@ NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD = 0.5
 # mention". The skill guidance is stricter still (widen at most once) — this is the hard backstop.
 WIDENING_NEGLIGIBLE_BIC_GAIN = 2.0
 
+# -- structural-inadequacy nudge (issue #82) --------------------------------
+# When the misfit is STRUCTURAL — the model's structure itself cannot fit the data, not the
+# optimizer or the bounds — the fix is to change the model's FORM (add a latent/unobserved state,
+# add a feedback/regulation reaction, raise the interaction order), NOT to re-parameterize or widen
+# bounds within the same structure. The failure mode this addresses (seen across the crauste
+# deep-dive) is an agent that correctly DIAGNOSES structural inadequacy and then re-fits the same
+# structure anyway. The
+# early-stop plateau/streak signal already detects "the score has stopped moving", so rather than
+# adding a separate detector the structural-change nudge is folded into the ``stop_reason`` those
+# stops emit (see ``session._STRUCTURAL_PLATEAU_ADVICE`` / ``progress_report``), model-agnostically
+# (categories of structural move, never a specific mechanism).
+
 # -- reference validation --------------------------------------------------
 # Network timeout (seconds) for resolving a reference against NCBI E-utilities.
 REFERENCE_TIMEOUT_SECONDS = 15.0

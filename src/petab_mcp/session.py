@@ -28,6 +28,21 @@ from .parameters import problem_fingerprint, sha16
 from .provenance import ProvenanceStore
 from .references import EutilsReferenceResolver
 
+# Appended to an early-stop ``stop_reason`` only when the best model is NOT adequate (see
+# progress_report): a stall with an inadequate best is the signature of STRUCTURAL inadequacy —
+# the model's form, not the optimizer or the bounds. The nudge stays model-agnostic (issue #82):
+# it names generic structural MOVE CATEGORIES, never a specific mechanism, so it can't teach to a
+# withheld-model benchmark.
+_STRUCTURAL_PLATEAU_ADVICE = (
+    "The best model is still not adequate and the fit has plateaued: this is the signature of "
+    "STRUCTURAL inadequacy — the model's FORM cannot fit the data — not an optimizer or bounds "
+    "problem, so re-parameterizing or widening bounds will not help. Change the model's structure "
+    "rather than re-fitting the same one: consider a generic structural move (categories, not a "
+    "specific answer) — add a latent / unobserved state; add a feedback / regulation reaction; or "
+    "raise the interaction order (linear -> nonlinear / higher-order) — and re-author it with "
+    "set_model."
+)
+
 
 class PetabSession:
     """Holds the working problem, provenance store, and reference resolver."""
@@ -176,7 +191,8 @@ class PetabSession:
 
         A freshly loaded problem with no Antimony/SBML source carries an empty model
         skeleton; ``set_model`` authors the real model into it (and can re-author it later).
-        Structural edits (``add_reaction`` etc.) require this to be True.
+        Reported as ``model_initialized`` by ``describe_problem``; ``set_model`` works whether or
+        not it is True (it builds the first model when it is False).
         """
         model = self.problem.model
         if model is None:
@@ -428,7 +444,7 @@ class PetabSession:
 
     # -- early-stop chain --------------------------------------------------
     def record_fit_progress(
-        self, version: int, fitsim: dict[str, Any], improvement: dict[str, Any]
+        self, version: int, fitsim: dict[str, Any], improvement: dict[str, Any],
     ) -> None:
         """Record one genuine fitted commit as an "op" for the early-stop chain.
 
@@ -482,7 +498,11 @@ class PetabSession:
 
         ``should_stop`` (with a human-readable ``stop_reason``) is the deterministic early-stop
         signal: the hard non-improving-streak cap, or a plateau (best model adequate AND the best
-        BIC gained less than ``PLATEAU_MIN_BIC_GAIN`` over the last ``PLATEAU_WINDOW`` ops).
+        BIC gained less than ``PLATEAU_MIN_BIC_GAIN`` over the last ``PLATEAU_WINDOW`` ops). When a
+        stop fires and the best model is **still not adequate**, the stall is the signature of
+        STRUCTURAL inadequacy, so ``stop_reason`` also carries the issue-#82 nudge to change the
+        model's FORM rather than re-parameterize. An adequate stop is a success — it gets no such
+        nudge (the model fits; there is nothing structural to fix).
         """
         with self.lock:
             hist = self.op_history
@@ -503,15 +523,20 @@ class PetabSession:
             if streak >= NON_IMPROVING_STREAK_CAP:
                 stop_reason = (
                     f"non-improving-streak cap reached ({streak} consecutive fitted ops with no "
-                    f"new best, cap {NON_IMPROVING_STREAK_CAP})"
+                    f"new best, cap {NON_IMPROVING_STREAK_CAP})."
                 )
             elif (best_adequate and bic_gain_over_window is not None
                   and bic_gain_over_window < PLATEAU_MIN_BIC_GAIN):
                 stop_reason = (
                     f"plateau: best model is adequate (chi2 GoF p={self.best_gof_pvalue:.3g}) and "
                     f"best BIC improved by only {bic_gain_over_window:.3g} over the last "
-                    f"{PLATEAU_WINDOW} ops (< {PLATEAU_MIN_BIC_GAIN})"
+                    f"{PLATEAU_WINDOW} ops (< {PLATEAU_MIN_BIC_GAIN})."
                 )
+            # The structural-inadequacy nudge fires only when a stop coincides with a best model
+            # that is NOT adequate — appending "the model's FORM cannot fit" to an adequate stop
+            # would contradict it. (An adequate plateau is a success stop.)
+            if stop_reason is not None and not best_adequate:
+                stop_reason = f"{stop_reason} {_STRUCTURAL_PLATEAU_ADVICE}"
             return {
                 "n_fitted_ops": n_ops,
                 "non_improving_streak": streak,

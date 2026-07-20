@@ -146,7 +146,7 @@ def test_set_model_builds_the_first_model(empty_session):
 
 
 def test_set_model_references_optional(empty_session):
-    # references are optional for model operations (like add_reaction et al.)
+    # references are optional for model operations (set_model / the parameter edits)
     res = O.set_model(empty_session, REVERSIBLE_ANTIMONY, justification="reversible A<->B")
     assert res["committed"] is True
     assert res["references"] == []
@@ -179,19 +179,12 @@ def test_set_model_rejects_unparseable_antimony(empty_session):
     assert empty_session.has_model() is False
 
 
-def test_incremental_edits_refuse_without_a_model(empty_session):
-    with pytest.raises(OperationError):
-        O.add_reaction(empty_session, "r1: A => B; k1*A", justification="x", references=["PMID:1"])
-    with pytest.raises(OperationError):
-        O.change_rate_law(empty_session, "r1", "k1*A", justification="x", references=["PMID:1"])
-    with pytest.raises(OperationError):
-        O.remove_reaction(empty_session, "r1", justification="x", references=["PMID:1"])
-
-
-def test_can_edit_after_set_model(empty_session):
+def test_can_reauthor_after_set_model(empty_session):
+    # After the initial build, a structural change is another whole-model re-author that adds a
+    # reaction.
     O.set_model(empty_session, REVERSIBLE_ANTIMONY, justification="build", references=["PMID:1"])
-    res = O.add_reaction(empty_session, "rdeg: A => ; kdeg*A",
-                         justification="degradation", references=["PMID:2"])
+    res = O.set_model(empty_session, REVERSIBLE_PLUS_DEG_ANTIMONY,
+                      justification="add degradation", references=["PMID:2"])
     assert res["committed"] is True
     assert "rdeg" in _reactions(empty_session)
 
