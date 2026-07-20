@@ -242,13 +242,43 @@ model (operations already reconcile, so this is rarely needed).
 **A parameter that keeps re-pinning to whatever bound you set is not a bounds problem.** Every
 commit's `parameters_at_bound` (also in `get_fit_summary`) flags any fitted parameter within
 ~1% of its lower/upper bound — check it after every commit, not just when a fit looks off.
-Widen or shift the box once — if the SAME parameter shows up in `parameters_at_bound` again at
-the new edge, moving it further won't help; that pattern means the optimizer wants the
-parameter arbitrarily large/small (often an exponent trying to fake a near-step-function),
-which is a sign the *model* is missing a mechanism the data needs, not that the search space is
-mis-sized. At that point stop touching bounds and revisit the model structure instead
-(`add_reaction` / `change_rate_law` / `set_model`) — use `query_data`'s bias/time-trend
-diagnostics (Step 5) to see what the current mechanism can't reproduce.
+**Widen at most once.** If the SAME parameter shows up in `parameters_at_bound` again at the new
+edge, moving it further won't help: a parameter pinned at a bound with a flat or collinear
+**FIM direction is *unidentifiable*, not under-explored** — the data don't constrain it, so the
+optimizer slides it to whatever edge you offer. Confirm the diagnosis with `get_identifiability`
+(a `flat_direction` or `collinear_with` flag on that parameter, or a large `fold_uncertainty`),
+then **do NOT widen or flip its scale again** — repeated widening just chases the value toward
+infinity (100 → 1e6 → log scale) for a negligible or negative gain while it re-pins. Judge that
+gain in **BIC, not raw NLL**: a bounds-only re-fit leaves the parameter count `k` and data count
+`n` unchanged, so `improvement_vs_best_prior` (an NLL delta) converts as `ΔBIC = 2·ΔNLL`, and a
+BIC gain below ~2 is negligible. Resolve it **structurally**, in priority order — the fix
+removes the redundant degree of freedom from the *model*; it never hard-codes a value (there is
+no value/`estimate` tool, and a literal in a rate law is just a magic number — parameter values
+come only from the fit):
+
+1. **Remove it** — drop the reaction/term it belongs to (`remove_reaction` / `change_rate_law`)
+   when that parameter is what makes its mechanism redundant.
+2. **Use its limiting form** — a rate the fit pushes toward infinity usually means an
+   *irreversible* reaction (drop the reverse term) or an *instantaneous* / quasi-steady-state
+   step (replace the kinetics with its algebraic limit, which has no free rate); a rate pushed
+   toward zero means the reaction isn't needed. Taking the limit deletes the parameter — you are
+   not choosing a number for it.
+
+**If neither is possible, leave it be.** An unidentifiable parameter you can't cleanly remove or
+take a limit of is not a failure to fix — just stop touching it: do NOT widen again, flip its
+scale, or hard-code a value. Leaving it pinned costs you nothing beyond one unconstrained
+parameter; the alternatives (a runaway search space or a magic number) are worse. (When
+`get_identifiability` shows it is `collinear_with` a partner rather than flat on its own, one
+extra option is to merge the pair into the single combination the data *can* constrain — their
+product or ratio, e.g. `k_cat*E_tot` → one `Vmax` — but that is optional, not required.)
+
+A single re-pin can also mean the *model* is missing a mechanism the data need (often an exponent
+trying to fake a near-step-function) — use `query_data`'s bias/time-trend diagnostics (Step 5) to
+see what the current structure can't reproduce, then add the missing reaction rather than stretch
+a bound. The rule is the same in every case: never answer a re-pin with another bounds widening —
+make a **structural** edit (`add_reaction` / `change_rate_law` / `set_model`) or leave the
+parameter be. The harness enforces this as a backstop: `change_parameter_bounds` **rejects a third
+widening** of a still-pinned parameter whose previous widening bought a negligible BIC gain.
 
 If the parameter pinned at its bound is a **noise sigma**, don't even try widening it —
 `change_parameter_bounds` will reject a widen past its data-driven cap outright (see the

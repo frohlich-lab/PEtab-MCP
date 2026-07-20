@@ -101,6 +101,17 @@ PARAMETER_AT_BOUND_RELATIVE_TOL = 0.01
 # for the model.
 NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD = 0.5
 
+# -- repeated-widening backstop ---------------------------------------------
+# A parameter pinned at a bound with a flat / collinear FIM direction is UNIDENTIFIABLE, not
+# under-explored: widening its box just lets the optimum slide to the new edge and re-pin for a
+# negligible fit gain, chasing the search space toward infinity (armistead widened one rate 4x
+# this way before finally fixing it). ``change_parameter_bounds`` REJECTS a THIRD such widening
+# of a still-pinned parameter when the previous widening bought less than this much BIC. The
+# threshold is in BIC because a bounds-only re-fit keeps k and n fixed, so an NLL improvement
+# converts as delta_bic = 2 * delta_nll; a BIC gain below ~2 is "not worth more than a bare
+# mention". The skill guidance is stricter still (widen at most once) — this is the hard backstop.
+WIDENING_NEGLIGIBLE_BIC_GAIN = 2.0
+
 # -- reference validation --------------------------------------------------
 # Network timeout (seconds) for resolving a reference against NCBI E-utilities.
 REFERENCE_TIMEOUT_SECONDS = 15.0

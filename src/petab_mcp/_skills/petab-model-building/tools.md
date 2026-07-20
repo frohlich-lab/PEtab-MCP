@@ -65,7 +65,7 @@ search space.
 | Tool | Signature | Notes |
 | --- | --- | --- |
 | `change_parameter_scale` | `(parameter_id, scale, justification, references?, n_starts?)` | `scale` ∈ `{"lin","log","log10"}`. `log`/`log10` require `lowerBound` and `nominalValue` > 0. |
-| `change_parameter_bounds` | `(parameter_id, lower_bound, upper_bound, justification, references?, n_starts?)` | Set new bounds. REJECTED for an ESTIMATED noise-sigma parameter if `upper_bound` exceeds its data-driven reference (a fraction of the observable's raw measurement std) — don't try to widen a sigma past this to "fix" an at-bound fit. |
+| `change_parameter_bounds` | `(parameter_id, lower_bound, upper_bound, justification, references?, n_starts?)` | Set new bounds. REJECTED for an ESTIMATED noise-sigma parameter if `upper_bound` exceeds its data-driven reference (a fraction of the observable's raw measurement std). Also REJECTED as a **third widening** of a still-pinned parameter whose last widening bought a negligible BIC gain — a parameter re-pinning at a bound with a flat/collinear FIM direction (see `get_identifiability`) is unidentifiable, not under-explored: remove its reaction or use its limiting (irreversible/instantaneous) form instead of widening again; if neither is possible, leave it pinned (don't hard-code a value — there is no value/estimate tool, and a literal is a magic number). |
 
 ## Parameters (read-only + reconcile)
 
@@ -92,7 +92,7 @@ with `get_fit_summary`, and diagnose the fit by querying the data with SQL:
 
 | Tool | Signature | Notes |
 | --- | --- | --- |
-| `get_fit_summary` | `()` | Just the metrics — `status`, `neg_log_likelihood`, `chi2`, `n_data_points`, `fitted_parameters`, `version` — **no records**. The cheapest score check. `parameters_at_bound` flags any fitted parameter within ~1% of its lower/upper bound (its own estimation scale) — `[]` when none. One pinned commit after a widening is normal; the SAME parameter re-pinning after repeated widenings means the optimum is unbounded — a modeling problem (revisit the model structure), not a bounds problem. |
+| `get_fit_summary` | `()` | Just the metrics — `status`, `neg_log_likelihood`, `chi2`, `n_data_points`, `fitted_parameters`, `version` — **no records**. The cheapest score check. `parameters_at_bound` flags any fitted parameter within ~1% of its lower/upper bound (its own estimation scale) — `[]` when none. Widen at most once; the SAME parameter re-pinning after a widening means it is unidentifiable (a flat/collinear FIM direction — confirm with `get_identifiability`), not under-explored, so don't widen or flip its scale again — remove its reaction or use its limiting (irreversible/instantaneous) form; if neither is possible, leave it pinned rather than hard-code a value. |
 | `list_data_tables` | `()` | The SQL tables `query_data` exposes: name, description, columns, row count. |
 | `query_data` | `(sql, max_rows=1000)` | Read-only DuckDB query over the tables below. Returns `{columns, rows, row_count, truncated}`. |
 | `get_fitting_log` | `(tail_lines=200)` | The tail of the pyPESTO/Fides optimizer log (`pypesto.log`): multistart spread, convergence, parameters pinned at bounds, ill-conditioning — the numerical view of the fit. `0` returns the whole file. |

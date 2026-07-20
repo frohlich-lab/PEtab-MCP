@@ -155,8 +155,10 @@ def _identifiability_stats(
                   "with multistart_std (a model-free spread) and flat_directions (the actual "
                   "non-identifiable parameter combinations). High |r|≈1, large fold_uncertainty, "
                   "at_bound, or a flat direction all mark a parameter as a simplification "
-                  "candidate: fix it, remove its term, or merge a collinear pair into one "
-                  "parameter (e.g. a ratio/product)."),
+                  "candidate: remove its term, take its limiting (irreversible/instantaneous) "
+                  "form, or merge a collinear pair into one parameter (e.g. a ratio/product) — "
+                  "all MODEL edits. If none fits cleanly, leave it: there is no value/estimate "
+                  "tool, and a hard-coded literal is a magic number; values come only from the fit."),
     }
 
 

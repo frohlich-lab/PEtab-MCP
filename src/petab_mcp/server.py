@@ -312,7 +312,13 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
     ) -> dict[str, Any]:
         """Change a parameter's lower/upper bounds. Versioned; requires a justification
         (references optional). Fits + simulates on commit (`n_starts` overrides the
-        default; 0 = simulate only)."""
+        default; 0 = simulate only). REJECTS a widening past an ESTIMATED noise-sigma's
+        data-driven cap, and REJECTS a THIRD widening of a still-pinned parameter whose last
+        widening bought a negligible BIC gain — a parameter re-pinning at a bound with a flat/
+        collinear FIM direction (see `get_identifiability`) is unidentifiable, not
+        under-explored, so remove its reaction or use its limiting (irreversible/instantaneous)
+        form instead of widening again; if neither is possible, leave it pinned (do not
+        hard-code a value — there is no value/estimate tool, and a literal is a magic number)."""
         return ctx.run_operation(
             "change_parameter_bounds", ops_mod.change_parameter_bounds,
             session, parameter_id, lower_bound, upper_bound, justification, references, n_starts,
@@ -390,12 +396,15 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         (unscaled) values; `parameter_scales` gives each one's estimation scale (lin/log10) —
         a fitted value is the linear number, never its log10 coordinate. `parameters_at_bound`
         lists any fitted parameter sitting within ~1% of its lower/upper bound (on its own
-        estimation scale) — `[]` when none do. One or two commits pinned at a bound after you
-        widen it is normal; the SAME parameter re-pinning after repeated widenings means the
-        optimum is unbounded (often an exponent trying to fake a mechanism the model doesn't
-        have) — that's a modeling problem, not a bounds problem, so stop moving the box and
-        revisit the model structure instead. `noise_sigma_report` lists every ESTIMATED
-        noise-sigma parameter's fitted value against a data-driven reference (a fraction of its
+        estimation scale) — `[]` when none do. Widen at most once; the SAME parameter
+        re-pinning after a widening means it is UNIDENTIFIABLE (a flat/collinear FIM direction —
+        confirm with `get_identifiability`), not under-explored, so the optimum is unbounded
+        (often an exponent trying to fake a mechanism the model doesn't have). Don't widen or
+        flip its scale again — remove its reaction or use its limiting (irreversible/
+        instantaneous) form; if neither is possible, leave it pinned (don't hard-code a value —
+        values come only from the fit). `noise_sigma_report`
+        lists every ESTIMATED noise-sigma parameter's fitted value against a data-driven
+        reference (a fraction of its
         observable's own raw measurement std) regardless of whether it's at bound — a sigma
         approaching that reference is quietly doing the same thing as an at-bound parameter
         (masking a mechanism problem behind inflated noise); `change_parameter_bounds` rejects
@@ -540,8 +549,10 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         marginal and partial correlations, and the near-flat eigen-directions (= non-identifiable
         parameter COMBINATIONS) — with the multistart spread (how much each parameter wanders
         across near-optimal starts, a model-free check). Returns a ranked `candidates` list
-        (at_bound / poorly_constrained / collinear / flat_direction / multistart_unstable): fix
-        it, drop its term, or MERGE a collinear pair into one parameter. Bounded output; needs a
+        (at_bound / poorly_constrained / collinear / flat_direction / multistart_unstable): drop
+        its term, take its limiting (irreversible/instantaneous) form, or MERGE a collinear pair
+        into one parameter — all model edits (there is no value/`estimate` tool). If none applies
+        cleanly, leave the parameter as is rather than hard-code a value. Bounded output; needs a
         fitted model. Read se/correlations together with multistart_std — the FIM is local.
         """
         def run() -> dict[str, Any]:

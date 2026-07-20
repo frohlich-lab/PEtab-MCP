@@ -18,10 +18,11 @@ import re
 from typing import Any, Callable
 
 import libsbml
+from petab.v1.C import LOWER_BOUND, UPPER_BOUND
 from petab.v1.models.sbml_model import SbmlModel
 
 from . import reconcile as R
-from .constants import NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD
+from .constants import NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD, WIDENING_NEGLIGIBLE_BIC_GAIN
 from .errors import ModelUpdateError, PetabMcpError, UnknownEntityError, ValidationError
 from .parameters import problem_fingerprint, sha16
 from .references import resolve_references
@@ -631,6 +632,124 @@ def _reject_sigma_bound_widening(problem, parameter_id: str, upper_bound: float)
         )
 
 
+def _pinned_side(session, problem, parameter_id: str) -> str | None:
+    """``"lower"``/``"upper"`` if the parameter's last fitted value sits AT that bound (it
+    re-pinned), else ``None``. Reads the current HEAD fit from ``session.simulation`` against
+    the parameter table's current bounds — the state as it is BEFORE this bounds edit applies.
+    ``None`` (no block) whenever there is no fit to judge against."""
+    from . import fitting
+
+    fitted = (getattr(session, "simulation", None) or {}).get("fitted_parameters")
+    if not fitted:
+        return None
+    for flag in fitting.parameters_at_bound(fitted, problem.parameter_df):
+        if flag["parameter_id"] == parameter_id:
+            return flag["side"]
+    return None
+
+
+def _widening_history(session, parameter_id: str, side: str) -> tuple[int, float | None]:
+    """``(count, last_bic_gain)`` for the CURRENT run of widenings of ``parameter_id`` on ``side``.
+
+    Reconstructed from each committed version's STORED parameter table (not from event args), so
+    it is faithful across rollbacks, resets, and batch commits alike — the version snapshot is the
+    ground truth of what the bounds actually were, however the version was produced. Walking the
+    version history in order:
+
+    * ``count`` increments on every step where the ``side`` bound moved OUTWARD (a widening) and
+      RESETS to 0 on any step where it moved INWARD — a ``rollback_to`` / ``reset`` (or an
+      explicit narrowing) restores a smaller box and legitimately starts exploration over, so the
+      count reflects only the current uninterrupted run of widenings, not stale ones already undone.
+    * ``last_bic_gain`` is the BIC improvement the MOST RECENT widening bought — ``delta_bic =
+      2 * delta_nll``, since a bounds-only re-fit keeps k and n fixed — or ``None`` when either
+      version's ``neg_log_likelihood`` is missing (e.g. a simulate-only commit).
+
+    Needs no extra per-session state; ``None``/``0`` whenever the history can't be read."""
+    prov = getattr(session, "provenance", None)
+    if prov is None:
+        return 0, None
+    bound_col = UPPER_BOUND if side == "upper" else LOWER_BOUND
+    try:
+        metas = prov.list_versions()
+    except Exception:  # noqa: BLE001 - unreadable version store
+        return 0, None
+    nllh_by_version: dict[int, float | None] = {}
+    for m in metas:
+        v = m.get("version")
+        if v is None:
+            continue
+        nll = m.get("neg_log_likelihood")
+        nllh_by_version[int(v)] = float(nll) if nll is not None else None
+
+    count = 0
+    last_gain: float | None = None
+    prev_bound: float | None = None
+    prev_nllh: float | None = None
+    for v in sorted(nllh_by_version):
+        try:
+            bound = float(prov.get_parameter_df(v).loc[parameter_id, bound_col])
+        except Exception:  # noqa: BLE001 - parameter absent at this version / unreadable snapshot
+            continue
+        nllh = nllh_by_version[v]
+        if prev_bound is not None:
+            if (bound > prev_bound) if side == "upper" else (bound < prev_bound):  # widened
+                count += 1
+                last_gain = (2.0 * (prev_nllh - nllh)
+                             if (prev_nllh is not None and nllh is not None) else None)
+            elif (bound < prev_bound) if side == "upper" else (bound > prev_bound):  # narrowed
+                count, last_gain = 0, None
+        prev_bound, prev_nllh = bound, nllh
+    return count, last_gain
+
+
+def _reject_repeated_widening(
+    session, problem, parameter_id: str, lower_bound: float, upper_bound: float,
+) -> None:
+    """Refuse a THIRD widening of a parameter that keeps re-pinning to its bound for a negligible
+    fit gain. A parameter pinned at a bound with a flat / collinear FIM direction (see
+    ``get_identifiability``) is UNIDENTIFIABLE, not under-explored: each widening just lets the
+    optimum slide to the new edge and re-pin, chasing the search space toward infinity for ~0 BIC
+    (armistead widened one rate 4x this way before fixing it). The skill says widen at most once;
+    this is the hard backstop. Noise sigmas have their own, stricter cap
+    (:func:`_reject_sigma_bound_widening`) and are left to it. This only ever REJECTS — it never
+    rewrites a bound — and a missing fit / provenance simply means no block."""
+    if parameter_id in R.noise_sigma_ids(problem):
+        return
+    if not R.is_parameter_estimated(problem, parameter_id):
+        return
+    side = _pinned_side(session, problem, parameter_id)
+    if side is None:  # not currently re-pinning — a normal, allowed bounds move
+        return
+    bound_col = UPPER_BOUND if side == "upper" else LOWER_BOUND
+    try:
+        current = float(problem.parameter_df.loc[parameter_id, bound_col])
+    except (KeyError, TypeError, ValueError):
+        return
+    proposed = float(upper_bound if side == "upper" else lower_bound)
+    widening = proposed > current if side == "upper" else proposed < current
+    if not widening:  # narrowing or shifting the other side — not the pathology this guards
+        return
+    count, last_gain = _widening_history(session, parameter_id, side)
+    if count < 2:  # a first or second widening is fine; the guard blocks the third
+        return
+    # Block ONLY on a KNOWN, negligible gain — the backstop is defined by negligible BIC
+    # improvement, so an unknown gain (e.g. a simulate-only commit with no neg_log_likelihood)
+    # must not trigger it, and neither may a widening that is still buying a real improvement.
+    if last_gain is None or last_gain >= WIDENING_NEGLIGIBLE_BIC_GAIN:
+        return
+    raise OperationError(
+        f"Refusing to widen {parameter_id!r} a {count + 1}th time: it re-pinned at its {side} "
+        f"bound after {count} previous widenings for a negligible ~{last_gain:.2g} BIC gain. A "
+        "parameter pinned at a bound with a flat/collinear FIM direction (check "
+        "get_identifiability) is UNIDENTIFIABLE, not under-explored — widening chases it toward "
+        "infinity while it keeps re-pinning. Instead REMOVE its reaction (remove_reaction / "
+        "change_rate_law) or use its LIMITING form (make the reaction irreversible / the step "
+        "instantaneous); if neither is possible, LEAVE it pinned — do not widen again or "
+        "hard-code a value (there is no value/estimate tool, and a literal is just a magic "
+        "number — values come only from the fit)."
+    )
+
+
 def change_parameter_bounds(
     session,
     parameter_id: str,
@@ -644,6 +763,7 @@ def change_parameter_bounds(
 
     def edit(problem):
         _reject_sigma_bound_widening(problem, parameter_id, upper_bound)
+        _reject_repeated_widening(session, problem, parameter_id, lower_bound, upper_bound)
         update_parameters(
             problem,
             [{"id": parameter_id, "lowerBound": lower_bound, "upperBound": upper_bound}],
