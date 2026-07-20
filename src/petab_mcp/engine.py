@@ -64,6 +64,20 @@ class AmiciEngine:
         # the same structure (a parameter-only edit) doesn't over-count compiles.
         self._pypesto_hashes: set[str] = set()
 
+    def pypesto_importer_kwargs(self, sbml_hash: str | None = None) -> dict[str, str]:
+        """Output kwargs for a pyPESTO ``PetabImporter``, keyed on the model's SBML hash so
+        pyPESTO's own compiled module is cached/reused per structure (mirroring ``_models``).
+
+        Shared by the fit (:mod:`fitting`) and the FIM (:mod:`identifiability`) so the
+        output-folder / model-name convention lives in one place. Pass ``sbml_hash`` when the
+        caller already computed it (avoids re-hashing); otherwise it is read from the session.
+        """
+        h = sbml_hash or self.session.sbml_hash()
+        return {
+            "output_folder": str(self.build_root / f"pypesto_{h}"),
+            "model_name": f"petab_mcp_pp_{h}",
+        }
+
     # -- compilation cache -------------------------------------------------
     def _get_model(self):
         _ensure_swig_on_path()

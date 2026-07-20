@@ -379,11 +379,14 @@ def _register_parameter_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         adding the missing params (with initial-condition/exponent/scale handling) and
         removing the orphans.
         """
-        with session.lock:
-            return reconcile_mod.sync_parameters(
-                session.problem, policy,
-                estimate_ics=bool(getattr(session, "estimate_initial_conditions", False)),
-            )
+        def run() -> dict[str, Any]:
+            with session.lock:
+                return reconcile_mod.sync_parameters(
+                    session.problem, policy,
+                    estimate_ics=bool(getattr(session, "estimate_initial_conditions", False)),
+                )
+
+        return ctx.run("sync_parameters", run, {"policy": policy})
 
 
 # ------------------------------------------------------- fit + simulation tools

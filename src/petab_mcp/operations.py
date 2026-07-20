@@ -25,7 +25,7 @@ from . import dedup as D
 from . import reconcile as R
 from .constants import NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD, WIDENING_NEGLIGIBLE_BIC_GAIN
 from .errors import ModelUpdateError, PetabMcpError, UnknownEntityError, ValidationError
-from .parameters import problem_fingerprint, sha16, structure_fingerprint
+from .parameters import estimated_mask, problem_fingerprint, sha16, structure_fingerprint
 from .references import resolve_references
 from .validation import validate_problem
 
@@ -277,7 +277,10 @@ def _commit_change(
     model_edit: Callable[[Any], Any] | None = None,
     model_build: Callable[[], tuple[Any, Any]] | None = None,
     param_edit: Callable[[Any], Any] | None = None,
-    require_references: bool = True,
+    # References are optional (only a non-empty justification is required); every caller passes
+    # this explicitly, so the default just keeps a future caller from silently making them
+    # mandatory again.
+    require_references: bool = False,
     n_starts: int | None = None,
     dedup: bool = False,
 ) -> dict[str, Any]:
@@ -554,7 +557,7 @@ def set_model(
     try:
         df = session.problem.parameter_df
         if ESTIMATE in df.columns:
-            prior_estimated = {str(p) for p in df.index[df[ESTIMATE].fillna(0).astype(float) != 0]}
+            prior_estimated = {str(p) for p in df.index[estimated_mask(df)]}
     except Exception:  # never let the warning bookkeeping break the op
         prior_estimated = set()
 

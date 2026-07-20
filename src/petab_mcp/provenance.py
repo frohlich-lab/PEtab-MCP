@@ -220,9 +220,10 @@ class ProvenanceStore:
 
     def list_versions(self) -> list[dict[str, Any]]:
         out = []
-        for vdir in sorted(
-            self.versions_dir.glob("v*"), key=lambda p: int(p.name[1:])
-        ):
+        # Only ``v<int>`` directories are versions; skip any stray ``v*`` entry (a leftover temp
+        # dir, an editor artefact) so `int(name[1:])` can't raise and break version listing.
+        vdirs = [d for d in self.versions_dir.glob("v*") if d.is_dir() and d.name[1:].isdigit()]
+        for vdir in sorted(vdirs, key=lambda p: int(p.name[1:])):
             meta = json.loads((vdir / "meta.json").read_text())
             out.append(meta)
         return out

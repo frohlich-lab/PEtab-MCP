@@ -100,7 +100,9 @@ def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
             raw_key, raw_val = line.split(":", 1)
             key = raw_key.strip()
             val = raw_val.strip()
-            if val in (">", ">-", "|", "|-"):  # block scalar: collect indented lines
+            # block scalar indicators: folded (>) / literal (|), each with an optional chomping
+            # indicator (- strip, + keep) — collect the indented lines that follow.
+            if val in (">", ">-", ">+", "|", "|-", "|+"):
                 block = []
             else:
                 meta[key] = _unquote(val)

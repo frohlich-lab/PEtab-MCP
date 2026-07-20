@@ -165,8 +165,8 @@ model my_model
   species S1 in c; species S2 in c;
   S1 = S1_init; S2 = S2_init;
   S1_init = 1.0; S2_init = 0.0;
-  k_f = 0.1;
-  J1: S1 -> S2; k_f*S1;
+  k_f = 0.1; k_r = 0.05;
+  J1: S1 -> S2; k_f*S1 - k_r*S2;   // reversible: net rate = forward - reverse
 end
 ```
 
@@ -199,12 +199,15 @@ J1: S1 + S2 -> S3; k_f*S1*S2
 ```
 
 - An `id:` prefix is optional — omit it and the server assigns `J1`, `J2`, …
-- Use `->` (or `=>`) between reactants and products. Stoichiometry is written as a
+- Use `->` between reactants and products. Stoichiometry is written as a
   leading number: `2 S1 -> S2`.
 - A **rate law after `;` is required** for a new reaction.
-- **Reactions are irreversible** (one kinetic law). Model a reversible step
-  X⇌Y either as a single net rate law `J: X -> Y; k_f*X - k_r*Y`, or as two
-  separate reactions.
+- **Prefer reversible reactions.** A reaction carries one kinetic law and the dynamics come
+  entirely from it (the arrow adds no flux — reactions are created `reversible=false`), so model
+  a reversible step X⇌Y as a **single** reaction with a net `forward - reverse` rate law
+  (`J: X -> Y; k_f*X - k_r*Y`) rather than two opposing one-way reactions. Use a forward-only law
+  (`k_f*X`) only for a genuinely irreversible step — synthesis, degradation, an effectively
+  one-way catalytic step. (See the `antimony-authoring` skill.)
 - New species mentioned in the reaction are created automatically (with a
   parametric initial condition). New symbols in the rate law that are not species
   become **parameters** — after adding, call `get_parameters()` and set sensible

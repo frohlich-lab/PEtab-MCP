@@ -22,10 +22,6 @@ _petab_handler: logging.FileHandler | None = None
 _optimizer_handler: logging.FileHandler | None = None
 
 
-def get_logger() -> logging.Logger:
-    return logging.getLogger(_LOGGER_NAME)
-
-
 def _swap_file_handler(
     current: logging.FileHandler | None,
     logger_names: tuple[str, ...],

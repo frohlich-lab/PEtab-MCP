@@ -36,7 +36,7 @@ from petab.v1.C import (
 from . import reconcile as _reconcile
 from .constants import NEW_BEST_MIN_DELTA_BIC, PARAMETER_AT_BOUND_RELATIVE_TOL
 from .formatting import finite_float as _flt
-from .parameters import parameter_df_to_tsv, sha16
+from .parameters import estimated_mask, parameter_df_to_tsv, sha16
 
 # pyPESTO's parameter-table column that tags an inner (hierarchical) parameter.
 _PARAMETER_TYPE_COL = "parameterType"
@@ -179,7 +179,7 @@ def fit_fingerprint(
     if ESTIMATE in df.columns and NOMINAL_VALUE in df.columns:
         df = df.copy()
         try:
-            estimated = df[ESTIMATE].fillna(0).astype(float) != 0
+            estimated = estimated_mask(df)
             df.loc[estimated, NOMINAL_VALUE] = float("nan")
         except (TypeError, ValueError):  # non-numeric estimate column -> hash it as-is
             pass
@@ -450,10 +450,7 @@ def _run_fit(session, engine, n_starts: int, seed: int = 0) -> dict[str, Any]:
     # holds it), so both the accumulator writes and the `_pypesto_hashes` update are safe.
     _first_pypesto_build = h not in engine._pypesto_hashes
     _compile_t0 = time.perf_counter()
-    _importer_kwargs = {
-        "output_folder": str(engine.build_root / f"pypesto_{h}"),
-        "model_name": f"petab_mcp_pp_{h}",
-    }
+    _importer_kwargs = engine.pypesto_importer_kwargs(h)
     # Prefer a hierarchical objective (inner-solve the noise sigmas / observable-scaling factors,
     # shrinking the outer search) when the problem has cleanly-separable inner parameters; fall
     # back to the ordinary joint objective otherwise. Best-effort: never fails a viable fit.
@@ -841,8 +838,6 @@ def goodness_of_fit(
     degrees of freedom ``n - k`` are non-positive (an under-determined fit) or ``chi2`` is
     missing.
     """
-    import math
-
     out: dict[str, Any] = {
         "bic": None, "aic": None, "chi2_dof": None,
         "reduced_chi2": None, "chi2_gof_pvalue": None,
@@ -887,10 +882,14 @@ def fit_result_block(
     nll = fitsim.get("neg_log_likelihood")
     chi2 = fitsim.get("chi2")
     n = fitsim.get("n_data_points")
-    # k = number of estimated parameters. Prefer len(fitted_parameters) after a fit; fall back
-    # to the payload's n_estimated on simulate-only / rollback / reset paths (fitted is None
-    # there), so the goodness-of-fit metrics are present on every commit, not just fitted ones.
-    k = len(fitted) if fitted is not None else fitsim.get("n_estimated")
+    # k = number of estimated parameters (n_estimated) — the honest BIC complexity count. It
+    # matches compute_improvement / record_fit_progress / fit_summary and includes any inner
+    # (analytically-profiled) params that len(fitted_parameters) omits, so the block's bic agrees
+    # with improvement.bic within the same result. Fall back to len(fitted_parameters) only when
+    # the payload carries no n_estimated (legacy simulate-only payloads).
+    k = fitsim.get("n_estimated")
+    if k is None and fitted is not None:
+        k = len(fitted)
     block = {
         "fit_status": fitsim.get("status"),
         "neg_log_likelihood": nll,

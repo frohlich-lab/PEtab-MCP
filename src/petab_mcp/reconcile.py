@@ -13,6 +13,7 @@ Enforces the invariants:
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 
@@ -46,7 +47,9 @@ from .constants import (
 from .errors import ParameterError
 from .parameters import _default_bounds
 
-_IDENT_RE = re.compile(r"[A-Za-z_]\w*")
+# Leading (?<![\w.]) so a digit-glued run is never read as an identifier: the `e5` in `1e5`
+# and the `e` in `2.5e-3` (scientific-notation exponents) stay part of their numeric literal.
+_IDENT_RE = re.compile(r"(?<![\w.])[A-Za-z_]\w*")
 
 
 # -- symbol helpers --------------------------------------------------------
@@ -117,13 +120,24 @@ def _exponent_bounds(nominal) -> tuple[float, float]:
 
 
 def formula_symbols(formula: Any) -> set[str]:
-    """Best-effort identifier extraction from an observable/noise/condition formula."""
+    """Best-effort identifier extraction from an observable/noise/condition formula.
+
+    ``None`` and a pandas empty cell (``float('nan')``) yield an empty set — ``str(nan)`` would
+    otherwise leak a bogus ``"nan"`` symbol into the keep/sigma/scaling sets. Numeric literals
+    (including scientific notation) never contribute identifiers thanks to ``_IDENT_RE``.
+    """
     if formula is None:
         return set()
-    text = str(formula)
-    # drop numeric-looking tokens and common function names
-    ident = set(_IDENT_RE.findall(text))
-    return {t for t in ident if not t.isdigit()}
+    if not isinstance(formula, str):
+        # A non-string cell is a pandas/NumPy scalar. An empty cell (NaN/Inf, or a non-float
+        # scalar like numpy.float32(nan) / pandas <NA>) must not leak a bogus symbol via str().
+        # Require a finite numeric coercion; anything else contributes no identifiers.
+        try:
+            if not math.isfinite(float(formula)):
+                return set()
+        except (TypeError, ValueError):
+            return set()
+    return set(_IDENT_RE.findall(str(formula)))
 
 
 def species_ids(sm) -> set[str]:
@@ -793,6 +807,10 @@ def parameter_sync_diff(problem) -> dict[str, Any]:
       fixed tables reference (e.g. ``sigma_*``) are kept and never listed here.
     """
     valid = set(problem.model.get_valid_parameters_for_parameter_table())
+    # A condition-table column is set per condition, not a parameter-table row (PEtab forbids it
+    # there), so `sync_parameter_table` excludes these from its adds — mirror that here, or the
+    # report claims a sync would add e.g. `dose` while `add` correctly leaves it out.
+    valid -= condition_column_symbols(problem)
     table_ids = set(problem.parameter_df.index)
     keep_table = table_referenced_symbols(problem)
     orphans = table_ids - valid - keep_table

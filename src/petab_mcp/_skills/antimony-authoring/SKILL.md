@@ -29,20 +29,24 @@ model my_model
   B = 0.0;
   kf = 0.1;                        // parameters are plain assignments
   kr = 0.05;
-  r1: A => B; kf * A;              // reaction: id: reactants => products; RATE LAW;
-  r2: B => A; kr * B;
+  r1: A -> B; kf * A - kr * B;     // ONE reversible reaction: net rate = forward - reverse
 end
 ```
 
 - Wrap everything in `model <id> … end`. The `<id>` names the model (it wins over any
   placeholder id from a model-less load).
-- `=>` is an **irreversible** reaction; `->` is **reversible** (AMICI/PEtab treat these
-  differently — use `=>` and write each direction explicitly unless you truly want one
-  reversible reaction). A reaction **must** have a rate law after the `;`.
+- Use `->` for reactions and **prefer reversible reactions**: write a *single* reaction whose
+  rate law carries both directions — a net `forward - reverse` term, e.g.
+  `r1: A -> B; kf*A - kr*B` — rather than splitting a reversible step into two one-way
+  reactions. A reaction **must** have a rate law after the `;`, and the dynamics come *entirely*
+  from that rate law: the arrow adds no flux of its own (`add_reaction` always creates the SBML
+  reaction as `reversible=false`; `->` and `=>` are equivalent there), so express reversibility
+  in the rate law, not the arrow. Use a forward-only law (`kf*A`) only for a genuinely one-way
+  step — synthesis, degradation, an effectively irreversible catalytic step.
 - `^` is exponentiation (`p^2`), `*` `/` `+` `-` as usual. Rate laws are ordinary algebra over
   species and parameters.
-- An empty/degradation reaction has no product: `deg: A => ; kdeg * A;`. A synthesis has no
-  reactant: `syn: => A; ksyn;`.
+- An empty/degradation reaction has no product: `deg: A -> ; kdeg * A;`. A synthesis has no
+  reactant: `syn: -> A; ksyn;`.
 
 ## What the server does after you author (the reconcile contract)
 
@@ -79,13 +83,13 @@ numeric literal: rates, thresholds, amplitudes, basal levels, and — especially
 **exponents** (Hill / cooperativity coefficients). A hard-coded number is *fixed*: the fit
 cannot touch it, so if your guess is wrong the model can never correct it.
 
-- **Bad:** `prod: => x1; 10 * K^2 / (K^2 + x3^2);` — the `10` (max rate) and both `2`s (the
+- **Bad:** `prod: -> x1; 10 * K^2 / (K^2 + x3^2);` — the `10` (max rate) and both `2`s (the
   Hill exponent) are hard-coded and un-estimable.
-- **Good:** `prod: => x1; alpha * K^n_hill / (K^n_hill + x3^n_hill);` — `alpha`, `K`, `n_hill`
+- **Good:** `prod: -> x1; alpha * K^n_hill / (K^n_hill + x3^n_hill);` — `alpha`, `K`, `n_hill`
   are named, so each is created as an estimated parameter (and because `n_hill` sits in an
   exponent, the server auto-assigns it a *linear* scale with tight bounds — see the
   petab-model-building skill).
-- **Exception — structural constants stay literal.** Stoichiometric coefficients (`2 A => B`)
+- **Exception — structural constants stay literal.** Stoichiometric coefficients (`2 A -> B`)
   and the `1` in a Hill / Michaelis–Menten denominator (`.../(1 + ...)`) are part of the
   functional *form*, not tunable quantities; leave those as numbers.
 
@@ -143,9 +147,13 @@ edits when the structure itself is what changed.
   multi-letter names.
 - Substrate/species name not matching a condition dose column → doses silently not applied /
   lint "missing entity". Fix: name the species exactly as the condition column.
-- Reaction line without a rate law (`J: A => B;`) → parse error. Fix: add `; <rate>`.
-- Reversible `->` used where two irreversible `=>` were intended → wrong dynamics / extra
-  implied reverse flux. Fix: write each direction as its own `=>` reaction.
+- Reaction line without a rate law (`J: A -> B;`) → parse error. Fix: add `; <rate>`.
+- A reversible step split into two opposing one-way reactions, or written with a forward-only
+  rate law where the reverse flux matters → the model can't relax back toward equilibrium and
+  the fit fights the missing reverse term. Fix: use a *single* reversible reaction with a net
+  `forward - reverse` rate law (`J: A -> B; kf*A - kr*B`). (The arrow itself is inert — reactions
+  are created `reversible=false` and the ODE is the rate law — so reversibility must live in the
+  rate law.)
 - Dropping a needed kinetic parameter on a whole-model `set_model` re-author → its fitted value
   is lost (see the `warnings`). Fix: re-declare it in the Antimony if it was unintended.
 - Hard-coded numeric constant in a rate law — a rate, threshold, or (worst) an exponent like

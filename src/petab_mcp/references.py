@@ -1,9 +1,9 @@
 """Reference resolution and validation against PubMed.
 
-Every model operation must cite ≥1 reference. References are validated against PubMed
-so provenance points at real literature. Because this package is a standalone MCP
-server (it cannot call another MCP server), it talks to NCBI E-utilities directly over
-HTTPS via ``urllib`` — no extra dependency.
+Every model operation requires a non-empty justification; references are OPTIONAL. Any
+references that ARE supplied are validated against PubMed so provenance points at real
+literature. Because this package is a standalone MCP server (it cannot call another MCP
+server), it talks to NCBI E-utilities directly over HTTPS via ``urllib`` — no extra dependency.
 
 Validation is pluggable (``ReferenceResolver``) and mode-controlled:
 
@@ -131,8 +131,12 @@ class EutilsReferenceResolver:
                 note="validation off",
             )
 
+        # Resolve the PMID up front so a later network failure in ``_summary`` still keeps a
+        # DOI-resolved PMID (the except branch below reports ``pmid``, not just ``pmid_m``).
+        pmid = pmid_m.group(1) if pmid_m else None
         try:
-            pmid = pmid_m.group(1) if pmid_m else (self._doi_to_pmid(doi) if doi else None)
+            if pmid is None and doi:
+                pmid = self._doi_to_pmid(doi)
             summary = self._summary(pmid) if pmid else None
             if summary:
                 return ResolvedReference(
@@ -163,7 +167,7 @@ class EutilsReferenceResolver:
             return ResolvedReference(
                 input=ref,
                 verified=False,
-                pmid=pmid_m.group(1) if pmid_m else None,
+                pmid=pmid,
                 doi=doi,
                 note=f"unverified (network unavailable: {type(exc).__name__})",
             )

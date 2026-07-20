@@ -336,7 +336,17 @@ class PetabSession:
         if "bic" not in meta:
             nll = (sim or {}).get("neg_log_likelihood")
             fitted = (sim or {}).get("fitted_parameters")
-            k = len(fitted) if fitted is not None else (sim or {}).get("n_estimated")
+            # k = n_estimated (the honest BIC complexity count), so a rolled-back / reset version's
+            # bic matches the fitted version it restored: the restored payload is stamped with
+            # n_estimated (see apply_version) and self.problem.n_estimated is authoritative for the
+            # state being snapshotted. len(fitted_parameters) can differ (it omits analytically-
+            # profiled inner params), so it is only a last-resort fallback.
+            k = (sim or {}).get("n_estimated")
+            if k is None:
+                try:
+                    k = int(self.problem.n_estimated)
+                except Exception:  # noqa: BLE001 - bic is advisory metadata; never fail a snapshot
+                    k = len(fitted) if fitted is not None else None
             meta["bic"] = fitting.goodness_of_fit(
                 nll, (sim or {}).get("chi2"), k, (sim or {}).get("n_data_points")).get("bic")
 

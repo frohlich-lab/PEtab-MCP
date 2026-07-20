@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .formatting import finite_float
 from .parameters import estimated_ids
 
 # The same structure may be authored at most this many times before ``set_model`` refuses
@@ -35,15 +36,6 @@ MAX_IDENTICAL_REAUTHORS = 3
 # WORSE (higher) than the best BIC seen so far: revisiting it is very unlikely to beat the
 # current best. ~5 BIC units is the conventional "positive evidence" threshold.
 WORSE_BIC_MARGIN = 5.0
-
-
-def _num(value: Any) -> float | None:
-    """A finite float or ``None`` (NaN/Inf/non-numeric all collapse to ``None``)."""
-    try:
-        f = float(value)
-    except (TypeError, ValueError):
-        return None
-    return f if f == f and f not in (float("inf"), float("-inf")) else None
 
 
 def estimation_setup_signature(parameter_df) -> tuple:
@@ -68,11 +60,11 @@ def estimation_setup_signature(parameter_df) -> tuple:
         row = df.loc[pid]
         est = pid in estimated
         scale = str(row[PARAMETER_SCALE]) if PARAMETER_SCALE in cols else None
-        lb = _num(row[LOWER_BOUND]) if LOWER_BOUND in cols else None
-        ub = _num(row[UPPER_BOUND]) if UPPER_BOUND in cols else None
+        lb = finite_float(row[LOWER_BOUND]) if LOWER_BOUND in cols else None
+        ub = finite_float(row[UPPER_BOUND]) if UPPER_BOUND in cols else None
         entry: tuple = (pid, est, scale, lb, ub)
         if not est:
-            entry = entry + (_num(row[NOMINAL_VALUE]) if NOMINAL_VALUE in cols else None,)
+            entry = entry + (finite_float(row[NOMINAL_VALUE]) if NOMINAL_VALUE in cols else None,)
         rows.append(entry)
     return tuple(rows)
 
@@ -120,12 +112,12 @@ def build_registry(session) -> list[dict[str, Any]]:
 
 
 def _min_bic_entry(entries: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """The entry with the smallest finite BIC, or ``None``. Uses :func:`_num` (not an
+    """The entry with the smallest finite BIC, or ``None``. Uses :func:`~petab_mcp.formatting.finite_float` (not an
     ``isinstance`` check) so a BIC stored as a NumPy scalar — common in fit payloads — still
     counts; an ``isinstance(x, float)`` filter would silently drop ``numpy.float64`` and quietly
     disable the worse-family / best-structure logic."""
-    scored = [e for e in entries if _num(e.get("bic")) is not None]
-    return min(scored, key=lambda e: _num(e["bic"])) if scored else None
+    scored = [e for e in entries if finite_float(e.get("bic")) is not None]
+    return min(scored, key=lambda e: finite_float(e["bic"])) if scored else None
 
 
 def decide(
@@ -198,7 +190,7 @@ def decide(
     family = _min_bic_entry(matches)
     best = _min_bic_entry(registry)
     if family is not None and best is not None:
-        fb, gb = _num(family["bic"]), _num(best["bic"])
+        fb, gb = finite_float(family["bic"]), finite_float(best["bic"])
         if fb is not None and gb is not None and fb - gb > WORSE_BIC_MARGIN:
             warnings.append(
                 f"This structure family previously scored bic≈{fb:.1f}, {fb - gb:.1f} WORSE than "

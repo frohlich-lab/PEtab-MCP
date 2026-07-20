@@ -94,8 +94,11 @@ with `get_fit_summary`, and diagnose the fit by querying the data with SQL:
 | --- | --- | --- |
 | `get_fit_summary` | `()` | Just the metrics — `status`, `neg_log_likelihood`, `chi2`, `n_data_points`, `fitted_parameters`, `version` — **no records**. The cheapest score check. `parameters_at_bound` flags any fitted parameter within ~1% of its lower/upper bound (its own estimation scale) — `[]` when none. Widen at most once; the SAME parameter re-pinning after a widening means it is unidentifiable (a flat/collinear FIM direction — confirm with `get_identifiability`), not under-explored, so don't widen or flip its scale again — remove its reaction or use its limiting (irreversible/instantaneous) form; if neither is possible, leave it pinned rather than hard-code a value. |
 | `list_data_tables` | `()` | The SQL tables `query_data` exposes: name, description, columns, row count. |
-| `query_data` | `(sql, max_rows=1000)` | Read-only DuckDB query over the tables below. Returns `{columns, rows, row_count, truncated}`. |
+| `query_data` | `(sql, max_rows=50)` | Read-only DuckDB query over the tables below. Returns `{columns, rows, row_count, truncated}` (capped at `max_rows`; raise it explicitly for a full dump). |
 | `get_fitting_log` | `(tail_lines=200)` | The tail of the pyPESTO/Fides optimizer log (`pypesto.log`): multistart spread, convergence, parameters pinned at bounds, ill-conditioning — the numerical view of the fit. `0` returns the whole file. |
+| `get_fit_diagnosis` | `(worst_n=8)` | Compact, size-bounded residual diagnosis (fixed aggregations, not open SQL): one row per observable with weighted `chi2`, `mean_weighted_residual` (bias), and worst \|residual\|, plus the `worst_n` largest-residual points. The cheap way to locate a poor fit without pulling per-point data. |
+| `get_identifiability` | `(top_n=8)` | Parameter-identifiability diagnosis (FIM at the optimum + multistart spread): a ranked `candidates` list (`at_bound` / `poorly_constrained` / `collinear` / `flat_direction` / `multistart_unstable`) — the basis for SIMPLIFYING an over-parameterised model. Needs a fitted model. |
+| `get_run_timing` | `()` | Cumulative server-side timing: `{compile_seconds, fit_seconds, n_compiles, n_fits}` — the AMICI compile vs pyPESTO optimization split (cache hits add nothing). |
 
 ### `query_data` tables
 
@@ -136,6 +139,7 @@ allowed and cannot affect the session; host file/network access (`read_csv`, `AT
 | `rollback_to` | `(version, justification?)` | Restore a prior version as a new version. |
 | `restore_version` | `(version, justification?)` | Go **back** to an earlier model: restores its model + stored fit as the working state (no recompile/refit), appending a new version. Prefer this over re-authoring an earlier model with `set_model` (that refits to the same result and, once detected as a repeat, is warned then refused). Same effect as `rollback_to`, aptly named for going back. |
 | `current_version` | `()` | HEAD version + batch state. |
+| `get_progress` | `()` | Early-stop-chain progress (a cheap counter read, no fit): `{n_fitted_ops, non_improving_streak, streak_cap, best_version, best_bic, best_gof_pvalue, bic_improvement_over_last_n, plateau_window, should_stop, stop_reason}`. `best_version` is the lowest-BIC model committed so far (the checkpoint to score). |
 | `reset` | `()` | Revert model + parameters to the initial version (v0). |
 
 ## Skills (this documentation, over MCP)

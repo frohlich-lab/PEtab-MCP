@@ -26,6 +26,9 @@ from typing import Any
 
 from petab.v1.C import ESTIMATE, NOMINAL_VALUE, PARAMETER_SCALE
 
+from .constants import PARAMETER_AT_BOUND_RELATIVE_TOL
+from .parameters import estimated_mask
+
 
 def _identifiability_stats(
     params_meta: list[dict[str, Any]],
@@ -76,7 +79,11 @@ def _identifiability_stats(
                 # a legible multiplicative uncertainty for log-scaled params
                 if sc in ("log10", "log"):
                     base = 10.0 if sc == "log10" else math.e
-                    per[pid]["fold_uncertainty"] = round(float(base ** se[i]), 3)
+                    # base ** se overflows to inf for a practically-unidentifiable parameter
+                    # (huge-but-finite se) — keep the JSON NaN/Inf-free like the rest of the API.
+                    fold = float(base ** se[i])
+                    if math.isfinite(fold):
+                        per[pid]["fold_uncertainty"] = round(fold, 3)
         # marginal correlations from the covariance
         dvar = np.sqrt(np.outer(var, var))
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -174,11 +181,8 @@ def _compute_fim(session, engine):
 
         from .engine import _ensure_swig_on_path
         _ensure_swig_on_path()
-        h = session.sbml_hash()
         importer = pypesto.petab.PetabImporter(
-            session.problem,
-            output_folder=str(engine.build_root / f"pypesto_{h}"),
-            model_name=f"petab_mcp_pp_{h}",
+            session.problem, **engine.pypesto_importer_kwargs()
         )
         problem = importer.create_problem()
         df = session.problem.parameter_df
@@ -277,12 +281,10 @@ def identifiability(session, engine=None, *, top_n: int = 8, corr_threshold: flo
     if free_names is None:  # no FIM: use the estimated params in table order
         free_names = []
         if ESTIMATE in df.columns:
-            # `estimate` can be NaN / non-numeric; coerce defensively (fillna(0)) so a bad cell
-            # yields "not estimated" rather than crashing this FIM-less fallback with a
-            # ValueError from int(NaN) — matching the fillna guard used elsewhere.
+            # `estimate` can be NaN / non-numeric; estimated_mask coerces defensively (a bad cell
+            # yields "not estimated") and here a wholly non-numeric column falls back to none free.
             try:
-                est = df[ESTIMATE].fillna(0).astype(float)
-                free_names = [str(i) for i in df.index if est.loc[i] != 0]
+                free_names = [str(i) for i in df.index[estimated_mask(df)]]
             except (TypeError, ValueError):
                 free_names = []
 
@@ -299,7 +301,9 @@ def identifiability(session, engine=None, *, top_n: int = 8, corr_threshold: flo
         ub = _scaled(name, UPPER_BOUND) if (name in df.index and UPPER_BOUND in df.columns) else None
         at_bound = False
         if est_s is not None and lb is not None and ub is not None and ub > lb:
-            tol = 1e-3 * (ub - lb)
+            # Same relative tolerance the fit report uses (fitting.parameters_at_bound), so a
+            # parameter isn't flagged at-bound by one path and not the other.
+            tol = PARAMETER_AT_BOUND_RELATIVE_TOL * (ub - lb)
             at_bound = (est_s - lb) <= tol or (ub - est_s) <= tol
         params_meta.append({
             "id": name,

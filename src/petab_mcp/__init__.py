@@ -13,7 +13,7 @@ from __future__ import annotations
 __version__ = "0.1.0"
 
 from .errors import (
-    FixedTableError,
+    BatchError,
     MissingDependencyError,
     ModelUpdateError,
     ParameterError,
@@ -30,7 +30,7 @@ __all__ = [
     "MissingDependencyError",
     "ModelUpdateError",
     "ValidationError",
-    "FixedTableError",
+    "BatchError",
     "ParameterError",
     "UnknownEntityError",
 ]

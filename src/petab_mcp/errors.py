@@ -48,10 +48,6 @@ class ValidationError(PetabMcpError):
         super().__init__(message)
 
 
-class FixedTableError(PetabMcpError):
-    """A caller tried to mutate a table that is required to stay fixed."""
-
-
 class ParameterError(PetabMcpError):
     """An invalid parameter-table update (unknown id, bad bounds/scale, ...)."""
 

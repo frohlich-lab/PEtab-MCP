@@ -123,6 +123,18 @@ def problem_fingerprint(sbml_str: str, parameter_df) -> str:
     return sha16(payload)
 
 
+def estimated_mask(parameter_df) -> Any:
+    """Boolean mask over ``parameter_df.index``: True where ``estimate`` != 0 (NaN/missing → 0).
+
+    The single expression every "which parameters are estimated" site shares, so the coercion
+    rule (`fillna(0).astype(float) != 0`) lives in one place and cannot drift. Assumes ``ESTIMATE``
+    is a column; may raise ``TypeError``/``ValueError`` on a wholly non-numeric ``estimate``
+    column — callers wrap it with their own fallback (``estimated_ids`` treats that as "all free",
+    the FIM fallback and the re-author snapshot treat it as "none free").
+    """
+    return parameter_df[ESTIMATE].fillna(0).astype(float) != 0
+
+
 def estimated_ids(parameter_df) -> list[str]:
     """Sorted ids of the ESTIMATED (``estimate`` != 0) parameters.
 
@@ -133,7 +145,7 @@ def estimated_ids(parameter_df) -> list[str]:
     if parameter_df is None or ESTIMATE not in getattr(parameter_df, "columns", []):
         return []
     try:
-        mask = parameter_df[ESTIMATE].fillna(0).astype(float) != 0
+        mask = estimated_mask(parameter_df)
     except (TypeError, ValueError):  # non-numeric estimate column -> treat every id as free
         return sorted(str(p) for p in parameter_df.index)
     return sorted(str(p) for p in parameter_df.index[mask])
