@@ -241,6 +241,167 @@ def _unused_condition_target_issues(problem) -> list[dict[str, Any]]:
     ]
 
 
+# -- authoring-time check: frozen parametric reaction stoichiometry (checks the CONVERTED SBML) --
+def frozen_parametric_stoichiometry_issues(sbml_model) -> list[dict[str, Any]]:
+    """Hard-error when a reaction stoichiometry was written as a PARAMETER/symbol in Antimony.
+
+    When an Antimony reaction uses a symbol as a stoichiometry coefficient — e.g.
+    ``Naive -> N_burst EarlyEffector`` with ``N_burst`` a declared parameter — libantimony's SBML
+    export FREEZES the symbol's nominal value into a constant literal stoichiometry and DROPS the
+    parameter: the intended estimable amplification factor silently becomes a fixed constant that
+    never enters the fit, with no error (issue #89). It gets worse when the symbol is also used in
+    the rate law — it is dropped there too, leaving a dangling reference.
+
+    libantimony leaves exactly one fingerprint of the frozen symbol: it sets the
+    ``SpeciesReference`` **id** to the original symbol name. A literal coefficient (``-> 2 X``)
+    leaves the id UNSET, so the two cases — which carry an identical numeric ``stoichiometry`` —
+    are cleanly distinguishable on the converted SBML (verified against libantimony/libroadrunner
+    2.9). This is why the check reads the CONVERTED model rather than trying to re-parse the
+    Antimony source.
+
+    Scope: this is an Antimony-CONVERSION artifact, so it is run on the freshly-converted candidate
+    at the ``set_model`` authoring boundary (see :func:`operations.set_model`), NOT wired into
+    :func:`validate_problem`. A hand-authored or loaded SBML L3 model may legitimately give a
+    constant species reference an id, which is not this bug — so this must never run against an
+    arbitrary loaded model.
+
+    A species reference is flagged only when it is CONSTANT (a frozen coefficient) and its id is
+    NOT the target of an initial assignment or rule (a rule-driven, genuinely variable
+    stoichiometry is not frozen and would be legitimately estimable). Returns the standard
+    ``{level, message, check}`` issue dicts, deduplicated by ``(reaction, species, symbol)``.
+    Best-effort: any failure yields ``[]`` — a detection bug must never hard-block authoring.
+    """
+    try:
+        return _frozen_parametric_stoichiometry_issues(sbml_model)
+    except Exception:  # noqa: BLE001 - never let a detection bug block authoring
+        return []
+
+
+def _frozen_parametric_stoichiometry_issues(sbml_model) -> list[dict[str, Any]]:
+    # A species-reference id targeted by an initial assignment or a rule is a genuinely variable
+    # (rule-driven) stoichiometry, not a frozen constant — never flag those.
+    driven: set[str] = set()
+    for i in range(sbml_model.getNumInitialAssignments()):
+        driven.add(sbml_model.getInitialAssignment(i).getSymbol())
+    for i in range(sbml_model.getNumRules()):
+        rule = sbml_model.getRule(i)
+        if rule.isSetVariable():
+            driven.add(rule.getVariable())
+
+    issues: list[dict[str, Any]] = []
+    seen: set[tuple[str | None, str, str]] = set()
+    for i in range(sbml_model.getNumReactions()):
+        reaction = sbml_model.getReaction(i)
+        rid = reaction.getId() or None
+        sides = (
+            ("reactant", reaction.getReactant, reaction.getNumReactants()),
+            ("product", reaction.getProduct, reaction.getNumProducts()),
+        )
+        for side, get_ref, count in sides:
+            for j in range(count):
+                sref = get_ref(j)
+                # Frozen-symbol fingerprint: a CONSTANT species reference carrying an id that no
+                # rule drives. A literal coefficient leaves the id unset and is skipped here.
+                if not sref.isSetId() or not sref.getConstant():
+                    continue
+                symbol = sref.getId()
+                if symbol in driven:
+                    continue
+                species = sref.getSpecies()
+                key = (rid, species, symbol)
+                if key in seen:
+                    continue
+                seen.add(key)
+                issues.append({
+                    "level": "error",
+                    "message": _frozen_stoichiometry_message(
+                        rid, side, species, symbol, sref.getStoichiometry()
+                    ),
+                    "check": "symbolic_stoichiometry",
+                })
+    return issues
+
+
+def _frozen_stoichiometry_message(rid, side: str, species: str, symbol: str, frozen: float) -> str:
+    where = f"Reaction '{rid}'" if rid else f"A reaction (on its {side} side)"
+    # Tailor the estimable-case guidance to the side: a PRODUCT coefficient amplifies the product's
+    # flux; a REACTANT coefficient scales that reactant's own consumption. A reaction's single rate
+    # drives every participant, so the factor has to move into a per-species rate term (splitting
+    # the reaction if needed) rather than multiplying the whole reaction rate.
+    if side == "product":
+        split = (
+            f"split it into a unit-stoichiometry consumption '<reactant> -> ; <rate>' and a scaled "
+            f"production '-> {species}; {symbol} * <rate>', so only '{species}' is amplified while "
+            "the reactant is still consumed 1:1"
+        )
+    else:
+        split = (
+            f"scale only that reactant's own consumption — e.g. '{species} -> ; {symbol} * <rate>' "
+            f"with the product formed in its own reaction — so only '{species}' is consumed "
+            f"'{symbol}'-fold"
+        )
+    return (
+        f"{where} uses parameter/symbol '{symbol}' as the stoichiometry coefficient of species "
+        f"'{species}'. Antimony froze it to the constant {frozen:g} and DROPPED '{symbol}' from "
+        "the model, so it is neither estimable nor present — the intended tunable factor silently "
+        "became a fixed constant. If the coefficient is a known numeric constant, write that number "
+        f"directly as a literal (e.g. '{frozen:g} {species}' or '2.0 {species}'), which is preserved correctly. If it must be "
+        "ESTIMATED it cannot be a stoichiometry at all — a reaction's single rate drives every "
+        f"participant, so {split}, keeping '{symbol}' a real estimated parameter in the rate law."
+    )
+
+
+def stoichiometry_conflict_issues(conversion_error) -> list[dict[str, Any]]:
+    """Recognize the ONE Antimony→SBML *conversion failure* that is really a #89 footgun.
+
+    When a symbol is used as a stoichiometry coefficient in more than one place — most naturally
+    the SAME symbol on both sides of a reaction (``N A -> N B``) — libantimony names both species
+    references after that symbol, and the two collide under SBML's id-uniqueness rule, so the
+    conversion FAILS with an opaque libSBML error instead of producing a model
+    :func:`frozen_parametric_stoichiometry_issues` could inspect. libantimony sets a species
+    reference id ONLY for a symbolic stoichiometry, so a species-reference id conflict during
+    conversion uniquely signals this same footgun — surface the actionable guidance rather than
+    the raw libSBML text. Returns the standard issue list if the error matches, else ``[]`` (the
+    caller then reports the parse error as usual). Best-effort: any failure yields ``[]``.
+    """
+    try:
+        text = str(conversion_error or "")
+        low = text.lower()
+        if "speciesreference" not in low or "conflict" not in low:
+            return []
+        # Best-effort pull of the offending name from "... <speciesReference> id 'NAME' conflicts".
+        symbol = ""
+        anchor = low.find("speciesreference")
+        id_at = low.find("id '", anchor)
+        if id_at != -1:
+            start = id_at + len("id '")
+            end = text.find("'", start)  # slice the ORIGINAL text to keep the symbol's case
+            if end != -1:
+                symbol = text[start:end]
+        return [{
+            "level": "error",
+            "message": _stoichiometry_conflict_message(symbol),
+            "check": "symbolic_stoichiometry",
+        }]
+    except Exception:  # noqa: BLE001 - detection must never mask the underlying parse error
+        return []
+
+
+def _stoichiometry_conflict_message(symbol: str) -> str:
+    sym = f"'{symbol}'" if symbol else "a parameter/symbol"
+    return (
+        f"A reaction uses {sym} as a stoichiometry coefficient in more than one place (e.g. the "
+        "SAME symbol on both sides of a reaction). Antimony represents a symbolic stoichiometry by "
+        f"naming the species reference after the symbol, so reusing {sym} makes two references "
+        "collide and the Antimony→SBML conversion fails outright. As with any symbolic "
+        "stoichiometry the coefficient would be frozen to a constant and the parameter dropped — it "
+        "cannot be estimated this way. If the coefficients are known whole numbers, write the "
+        "integers directly (e.g. '2 A -> 2 B'). If a factor must be ESTIMATED, move it into the "
+        f"rate law with {sym} as a real parameter — split the reaction so each species' flux is "
+        "scaled independently — rather than writing it as a stoichiometry."
+    )
+
+
 def validate_problem(problem, protected_fixed_ids=None) -> dict[str, Any]:
     """Run petab.v1 linting + libsbml SBML consistency and return a JSON-friendly report.
 

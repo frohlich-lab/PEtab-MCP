@@ -179,6 +179,51 @@ def test_set_model_rejects_unparseable_antimony(empty_session):
     assert empty_session.has_model() is False
 
 
+# A model that (incorrectly) writes a declared parameter as a product stoichiometry coefficient.
+# Antimony would freeze N_burst to its nominal and drop it, so set_model rejects it up front (#89).
+PARAMETRIC_STOICH_ANTIMONY = """model conversion_reaction
+  compartment compartment_ = 1;
+  species A in compartment_;
+  species B in compartment_;
+  A = A_init;
+  B = B_init;
+  A_init = 1.0;
+  B_init = 0.0;
+  k1 = 0.5;
+  N_burst = 3;
+  r1: A -> N_burst B; k1 * A;
+end
+"""
+
+
+def test_set_model_rejects_parametric_stoichiometry(empty_session):
+    from petab_mcp.errors import ValidationError
+
+    # `N_burst` used as a product coefficient would be silently baked to a constant and dropped;
+    # set_model rejects it before building anything, naming the parameter.
+    with pytest.raises(ValidationError) as exc:
+        O.set_model(empty_session, PARAMETRIC_STOICH_ANTIMONY, justification="burst amplification")
+    assert any("N_burst" in issue for issue in (exc.value.issues or [])), exc.value.issues
+    # Rejected up front — the problem is left model-less (nothing was built or committed).
+    assert empty_session.has_model() is False
+
+
+def test_set_model_rejects_same_symbol_stoichiometry_on_both_sides(empty_session):
+    from petab_mcp.errors import ValidationError
+
+    # `n` as a coefficient on BOTH sides collides two SpeciesReference ids and fails the Antimony
+    # conversion; set_model recognizes it as the same footgun and gives actionable guidance rather
+    # than the opaque libSBML id-conflict error.
+    both_sides = (
+        "model m\n  species A; species B; A = 1; B = 0; k = 0.1; n = 2;\n"
+        "  r1: n A -> n B; k * A;\nend"
+    )
+    with pytest.raises(ValidationError) as exc:
+        O.set_model(empty_session, both_sides, justification="cooperative conversion")
+    assert any("stoichiometry" in issue.lower() for issue in (exc.value.issues or [])), exc.value.issues
+    assert empty_session.has_model() is False
+
+
 def test_can_reauthor_after_set_model(empty_session):
     # After the initial build, a structural change is another whole-model re-author that adds a
     # reaction.

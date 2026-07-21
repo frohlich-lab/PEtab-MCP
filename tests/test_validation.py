@@ -1,10 +1,22 @@
 from __future__ import annotations
 
+import pytest
+from petab.v1.models.sbml_model import SbmlModel
+
 from petab_mcp.validation import (
     _fixed_constant_role_issues,
     _unused_condition_target_issues,
+    frozen_parametric_stoichiometry_issues,
+    stoichiometry_conflict_issues,
     validate_problem,
 )
+
+
+def _stoich_issues(antimony: str):
+    """Convert Antimony (as set_model does) and run the frozen-stoichiometry check on the SBML."""
+    return frozen_parametric_stoichiometry_issues(
+        SbmlModel.from_antimony(antimony, model_id=None).sbml_model
+    )
 
 
 def test_valid_problem(session):
@@ -64,3 +76,97 @@ def test_protected_fixed_ids_exclude_ics_and_observation_params(session):
 def test_unused_condition_target_check_is_noop_without_targets(session):
     # The toy condition table has only conditionId (no target columns), so nothing to check.
     assert _unused_condition_target_issues(session.problem) == []
+
+
+# --- frozen parametric reaction stoichiometry (issue #89) -----------------------------------
+# libantimony freezes a symbol used as a stoichiometry coefficient to a constant, drops the
+# parameter, and leaves the dropped symbol as the SpeciesReference id — the signal we detect. A
+# literal coefficient leaves the id unset, so it is never flagged.
+# The shipped toy base model (tests/data/toy_v1/model.ant) — real reactions with `=>` arrows and
+# no coefficients: it must NOT trip the check (a false positive would block every real edit).
+_TOY_BASE = """model conversion_reaction
+  compartment compartment_ = 1;
+  species A in compartment_;
+  species B in compartment_;
+  A = A_init;
+  B = B_init;
+  A_init = 1.0;
+  B_init = 0.0;
+  k1 = 0.5;
+  k2 = 0.1;
+  r1: A => B; k1 * A;
+  r2: B => A; k2 * B;
+end
+"""
+
+
+def test_parametric_product_stoichiometry_is_flagged():
+    # A parameter used as a product coefficient is the footgun: frozen to a constant, dropped.
+    issues = _stoich_issues("X -> N X; c*k*X; N=3; c=1; k=0.1")
+    assert [i["check"] for i in issues] == ["symbolic_stoichiometry"]
+    assert "N" in issues[0]["message"]
+    # The message names the frozen value, points at a literal integer as the simple fix, and gives
+    # the product-side estimable form (split off a scaled production).
+    msg = issues[0]["message"].lower()
+    assert "literal" in msg and "3" in msg
+    assert "production" in msg
+
+
+def test_literal_integer_stoichiometry_is_accepted():
+    # Autocatalysis regression guard: a literal integer coefficient is preserved and must stay OK.
+    assert _stoich_issues("X -> 2 X; c*k*X; c=1; k=0.1") == []
+
+
+def test_symbolic_reactant_stoichiometry_is_flagged_with_reactant_guidance():
+    issues = _stoich_issues("r1: N A -> B; k*A; N=2; k=0.1")
+    assert [i["check"] for i in issues] == ["symbolic_stoichiometry"]
+    msg = issues[0]["message"]
+    assert "r1" in msg and "N" in msg and "A" in msg
+    # Reactant-side guidance talks about consuming the reactant N-fold, not amplifying a product.
+    assert "consum" in msg.lower() and "production '->" not in msg
+
+
+def test_parametric_stoichiometry_flagged_even_when_symbol_also_in_rate_law():
+    # N is used in the rate law too, but antimony STILL freezes+drops it from the stoichiometry
+    # (leaving a dangling rate-law reference); the SpeciesReference-id fingerprint still catches it.
+    assert _stoich_issues("X -> N X; N*k*X; N=3; k=0.1")
+
+
+def test_multi_product_flags_only_the_symbolic_coefficient():
+    issues = _stoich_issues("A -> 2 B + M C; k*A; M=4; k=0.1")
+    assert len(issues) == 1
+    assert "M" in issues[0]["message"] and "C" in issues[0]["message"]
+
+
+def test_real_toy_model_has_no_false_positive():
+    # The `=>`-arrow toy with plain (coefficient-1) reactions must not be flagged.
+    assert _stoich_issues(_TOY_BASE) == []
+
+
+def test_float_literal_and_degradation_are_accepted():
+    assert _stoich_issues("A -> 2.0 B; k*A; k=0.1") == []
+    assert _stoich_issues("A => ; k*A; k=0.1") == []
+
+
+def test_different_symbols_on_both_sides_are_both_flagged():
+    # Distinct symbols each get their own species-reference id, so both are detected.
+    issues = _stoich_issues("N A -> M B; k*A; N=2; M=3; k=0.1")
+    assert len(issues) == 2
+    joined = " ".join(i["message"] for i in issues)
+    assert "N" in joined and "M" in joined
+
+
+def test_same_symbol_both_sides_conversion_conflict_is_recognized():
+    # The SAME symbol on both sides makes libantimony collide two species-reference ids, so the
+    # conversion (raw from_antimony) fails; stoichiometry_conflict_issues turns that opaque libSBML
+    # error into the #89 guidance.
+    with pytest.raises(Exception) as exc:  # petab raises RuntimeError from antimony2sbml
+        SbmlModel.from_antimony("N A -> N B; k*A; N=2; k=0.1", model_id=None)
+    issues = stoichiometry_conflict_issues(exc.value)
+    assert [i["check"] for i in issues] == ["symbolic_stoichiometry"]
+    assert "N" in issues[0]["message"] and "both sides" in issues[0]["message"]
+
+
+def test_conflict_detector_ignores_unrelated_errors():
+    assert stoichiometry_conflict_issues("Failed to parse antimony model: syntax error") == []
+    assert stoichiometry_conflict_issues(RuntimeError("some other libSBML complaint")) == []

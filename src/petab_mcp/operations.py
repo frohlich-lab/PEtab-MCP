@@ -31,7 +31,11 @@ from .constants import NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD, WIDENING_NEGLIGIBLE
 from .errors import ModelUpdateError, PetabMcpError, ValidationError
 from .parameters import estimated_mask, problem_fingerprint, sha16
 from .references import resolve_references
-from .validation import validate_problem
+from .validation import (
+    frozen_parametric_stoichiometry_issues,
+    stoichiometry_conflict_issues,
+    validate_problem,
+)
 
 # AMICI reserves a handful of short symbols for its generated code (the state vector ``x``,
 # parameters ``p``, constants ``k``, expressions ``w``, time ``t``, the Heaviside/root vector
@@ -335,9 +339,31 @@ def set_model(
         try:
             candidate = SbmlModel.from_antimony(antimony, model_id=None)
         except Exception as exc:
+            # A symbol reused as a stoichiometry coefficient (e.g. the SAME parameter on both sides,
+            # `N A -> N B`) makes libantimony stamp two species references with the same id, which
+            # collides and fails the conversion — the same #89 footgun, so give the actionable
+            # guidance instead of the opaque libSBML error (see validation.stoichiometry_conflict_issues).
+            conflict = stoichiometry_conflict_issues(exc)
+            if conflict:
+                raise ValidationError(
+                    "set_model rejected: a reaction reuses a parameter/symbol as a stoichiometry "
+                    "coefficient (e.g. on both sides), which Antimony cannot represent.",
+                    issues=[i["message"] for i in conflict],
+                ) from exc
             raise ModelUpdateError(f"Failed to parse antimony model: {exc}") from exc
         candidate.rel_path = getattr(session.problem.model, "rel_path", None) or "model.xml"
         sm = candidate.sbml_model
+        # A parameter written as a reaction stoichiometry coefficient (e.g. `-> N_burst X`) is
+        # frozen to a constant and dropped by the Antimony→SBML conversion; libantimony leaves the
+        # dropped symbol as the SpeciesReference id, so catch it on the freshly-converted candidate
+        # before it is committed (see validation.frozen_parametric_stoichiometry_issues, issue #89).
+        stoich_issues = frozen_parametric_stoichiometry_issues(sm)
+        if stoich_issues:
+            raise ValidationError(
+                "set_model rejected: a reaction uses a parameter/symbol as a stoichiometry "
+                "coefficient, which Antimony freezes to a constant and drops.",
+                issues=[i["message"] for i in stoich_issues],
+            )
         return candidate, {
             "model_id": candidate.model_id,
             "n_species": sm.getNumSpecies(),
