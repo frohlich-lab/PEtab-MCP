@@ -232,12 +232,22 @@ def _set_parametric_ic(sm, sid: str, value: float) -> str:
     return init_id
 
 
-def ensure_parametric_initial_conditions(sm) -> list[str]:
-    """Give every species a parametric IC; returns the IC parameter ids created/kept."""
+def ensure_parametric_initial_conditions(sm, skip_species: set[str] | None = None) -> list[str]:
+    """Give every species a parametric IC; returns the IC parameter ids created/kept.
+
+    ``skip_species`` are species whose initial condition is set PER CONDITION by a condition-table
+    column (a PEtab species-initial override, e.g. armistead's per-genotype metabolite baselines).
+    Their IC is neither a free parameter nor a fixed literal — the condition table drives it — so we
+    leave the declared initial in place and do NOT mint a ``<sid>_init``. Minting one would add an
+    estimated, non-identifiable parameter that the per-condition override silently supersedes
+    (inflating k with no fit effect), which is exactly the artefact this avoids."""
+    skip = skip_species or set()
     ic_params: list[str] = []
     for i in range(sm.getNumSpecies()):
         sp = sm.getSpecies(i)
         sid = sp.getId()
+        if sid in skip:  # condition-column-driven initial; not a parameter
+            continue
         existing = _ic_symbol_for(sm, sid)
         if existing is not None:
             ic_params.append(existing)
@@ -617,9 +627,9 @@ def initial_conditions_report(
     the species is driven per-condition by a condition-table column. Surfacing this after every
     model op is what lets the caller see immediately whether a t=0 "fix" took — instead of
     re-authoring the model under a series of different IC naming schemes that all fit identically
-    because none of them ever changed the estimate status (see issue #57). Whether ICs are
-    estimated at all is fixed by the scenario (the ``estimate_initial_conditions`` server
-    setting), not switchable from the model text.
+    because none of them ever changed the estimate status (see issue #57). ICs are ESTIMATED by
+    default (fixed only at 0 = empty pool or 1 = unit normalization); this is decided by value in
+    reconcile, not switchable from the model text.
 
     For each species returns ``{species, ic_parameter, declared_t0, estimated, set_by_condition,
     t0_source, declared_t0_used, newly_added, note}``:
@@ -660,14 +670,24 @@ def initial_conditions_report(
             t0_source, declared_t0_used, note = (
                 "estimated",
                 False,
-                "ESTIMATED free parameter — the fit sets t=0; the declared value is only the "
-                "starting guess.",
+                "ESTIMATED free parameter (the default for initial conditions) — the fit sets "
+                "t=0; the declared value is only the starting guess.",
             )
         else:
+            # FIXED. Under the always-on default, an IC is only fixed at the two leak-free value
+            # conventions (0 = empty pool, 1 = unit normalization) or because it was shipped as a
+            # fixed parameter row; say which, so the caller sees why it is not estimated.
+            if declared == 0.0:
+                why = "an empty pool (t=0 == 0)"
+            elif declared == 1.0:
+                why = "a unit normalization (t=0 == 1)"
+            else:
+                why = "shipped as a fixed parameter"
             t0_source, declared_t0_used, note = (
                 "fixed",
                 True,
-                "FIXED at the declared t=0 value — this value governs the simulated t=0 state.",
+                f"FIXED at the declared t=0 value ({why}) — this value governs the simulated "
+                "t=0 state.",
             )
         out.append(
             {
@@ -737,13 +757,15 @@ def _ic_parameter_ids(sm) -> set[str]:
     return ic
 
 
-def sync_parameter_table(problem, estimate_ics: bool = False) -> dict[str, list[str]]:
+def sync_parameter_table(problem) -> dict[str, list[str]]:
     """Add rows for new model parameters; remove rows for parameters gone from the model
     (keeping observable/noise parameters). Returns the add/remove diff.
 
-    ``estimate_ics`` (opt-in, per scenario) makes initial-condition parameters ESTIMATED rather
-    than fixed at the observed t=0 value -- EXCEPT species that start empty (t=0 == 0), which stay
-    fixed at 0 (a scenario can thus estimate only the seeded pools without shipping named ICs)."""
+    Initial conditions are ESTIMATED by default -- a declared t=0 is only a guess and must never
+    be silently frozen (issue #90). Two leak-free VALUE conventions stay FIXED: an IC of exactly
+    ``0`` (an empty pool -- nothing to estimate) and an IC of exactly ``1`` (a unit normalization,
+    e.g. a conserved-total set to 1). A caller that needs some other IC fixed ships it as a fixed
+    parameter row (reconcile never re-touches existing rows)."""
     sm = problem.model.sbml_model
     valid = set(problem.model.get_valid_parameters_for_parameter_table())
     # A parameter that is a CONDITION-TABLE COLUMN is set per condition (a PEtab condition
@@ -762,31 +784,31 @@ def sync_parameter_table(problem, estimate_ics: bool = False) -> dict[str, list[
     for pid in sorted(valid - table_ids):
         value = problem.model.get_parameter_value(pid)
         if pid in ic_params:
-            # Initial conditions: FIXED at the observed t=0 value by default. When the scenario
-            # opts in (estimate_ics), ESTIMATE them instead — treating the noisy t=0 measurement as
-            # a parameter to fit and counting it honestly in k, not as ground truth. Opting in
-            # requires the scenario's BIC reference to estimate its ICs too, so the comparison stays
-            # fair; left off, published problems keep their standard ICs.
-            # EXCEPTION: a species that STARTS EMPTY (t=0 value == 0) stays FIXED at 0 even under
-            # estimate_ics. "Estimating" an empty pool is meaningless, and fixing it lets a scenario
-            # estimate ONLY the genuinely-seeded species without having to ship named <sid>_init
-            # seeds — the candidate's zero-start species are fixed at 0 by this same rule, so the
-            # BIC comparison stays at parity (a scenario can seed a few pools and leave the rest 0).
-            # A seeded IC is a strictly-positive concentration, so it is estimated on LOG10 with the
-            # usual wide bracketing bounds — exactly like a positive kinetic parameter. This resolves
-            # seeds spanning many orders of magnitude (a receptor pool ~1e7 beside a kinase ~1e-2),
-            # which a linear IC scale could not.
+            # Initial conditions are ESTIMATED by default (issue #90): a declared t=0 is only a
+            # guess, and freezing it hands the optimizer a value it can never correct (crauste
+            # Naive: ~460 guess frozen where the truth is ~8090). A seeded/guessed IC is a
+            # strictly-positive concentration, so it is estimated on LOG10 with the usual wide
+            # bracketing bounds — exactly like a positive kinetic parameter — resolving seeds that
+            # span many orders (a receptor pool ~1e7 beside a kinase ~1e-2).
+            #   TWO leak-free VALUE conventions stay FIXED instead:
+            #     v0 == 0.0  -> an empty pool: nothing to estimate, and it cannot live on log10.
+            #     v0 == 1.0  -> a unit normalization: a conserved-total / normalization convention
+            #                   set to 1 (e.g. sneyd IPR_R, blasi x_0ac). Fixing it BY VALUE names
+            #                   no species, so — unlike shipping it as a fixed param — it leaks no
+            #                   hidden structure to a zero-shot agent.
+            # Any OTHER IC that must stay fixed is shipped as a fixed parameter row (which this sync
+            # never re-touches). A nonzero non-positive nominal can't live on log10 -> linear.
             try:
                 v0 = float(value) if value is not None else 0.0
             except (TypeError, ValueError):
                 v0 = 0.0
             lb, ub = _default_bounds(value)
-            if bool(estimate_ics) and v0 > 0.0:
-                scale, estimate = LOG10, 1
-            elif bool(estimate_ics) and v0 != 0.0:
-                scale, estimate = LIN, 1          # nonzero but non-positive: cannot live on log10
+            if v0 == 0.0 or v0 == 1.0:
+                scale, estimate = LIN, 0          # empty pool / unit normalization: FIXED
+            elif v0 > 0.0:
+                scale, estimate = LOG10, 1        # positive seed/guess: estimate on log10
             else:
-                scale, estimate = LIN, 0          # empty pool, or estimate_ics off: fixed
+                scale, estimate = LIN, 1          # nonzero but non-positive: cannot live on log10
         elif pid in exp_params:
             # An exponent (Hill coefficient): estimate on a LINEAR scale with tight bounds so it
             # cannot run off to a near-step-function on the wide default log10 range.
@@ -817,15 +839,17 @@ def sync_parameter_table(problem, estimate_ics: bool = False) -> dict[str, list[
     return {"added": added, "removed": removed}
 
 
-def reconcile(problem, estimate_ics: bool = False) -> dict[str, Any]:
+def reconcile(problem) -> dict[str, Any]:
     """Full reconciliation after a structural edit: prune, parametric ICs, table sync.
 
-    ``estimate_ics`` (opt-in) makes initial-condition parameters estimated (see
+    Initial conditions are estimated by default (fixed only at 0 or 1; see
     :func:`sync_parameter_table`)."""
     sm = problem.model.sbml_model
     pruned = prune_orphans(problem)
-    ensure_parametric_initial_conditions(sm)
-    synced = sync_parameter_table(problem, estimate_ics=estimate_ics)
+    # Species whose IC is set per-condition (a condition-table column) are driven by the condition
+    # table, not estimated — skip parametrising them (see ensure_parametric_initial_conditions).
+    ensure_parametric_initial_conditions(sm, skip_species=condition_column_symbols(problem))
+    synced = sync_parameter_table(problem)
     return {"pruned": pruned, "parameters": synced}
 
 
@@ -856,7 +880,7 @@ def parameter_sync_diff(problem) -> dict[str, Any]:
     }
 
 
-def sync_parameters(problem, policy: str = "report", estimate_ics: bool = False) -> dict[str, Any]:
+def sync_parameters(problem, policy: str = "report") -> dict[str, Any]:
     """Reconcile the parameter table with the model ('report' or 'add').
 
     ``'report'`` returns :func:`parameter_sync_diff` and changes nothing. ``'add'`` runs the
@@ -868,7 +892,7 @@ def sync_parameters(problem, policy: str = "report", estimate_ics: bool = False)
     if policy == "report":
         return {"policy": policy, "added": [], "removed": [], "diff": parameter_sync_diff(problem)}
     if policy == "add":
-        synced = sync_parameter_table(problem, estimate_ics=estimate_ics)
+        synced = sync_parameter_table(problem)
         return {"policy": policy, "added": synced["added"], "removed": synced["removed"],
                 "diff": parameter_sync_diff(problem)}
     raise ParameterError(f"Unknown sync policy {policy!r}; use 'report' or 'add'.")

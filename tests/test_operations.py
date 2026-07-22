@@ -91,22 +91,23 @@ def test_reauthor_auto_adds_species_and_params(session):
     assert set(res["reconcile"]["parameters"]["added"]) == {"D_init", "k3"}
 
 
-def test_ic_parameter_fixed_by_default(session):
-    # A new species' initial-condition parameter is FIXED (estimate 0) unless the scenario opts in.
-    _set_model(session, ["J: B => D; k3 * B;"], justification="B converts to D")
-    assert int(session.problem.parameter_df.loc["D_init", "estimate"]) == 0
-
-
-def test_empty_pool_ic_stays_fixed_even_when_opted_in(session):
-    # A newly-added species starts EMPTY (t=0 == 0). Even with estimate_initial_conditions on, an
-    # empty pool's IC stays FIXED at 0 — estimate_ics estimates only genuinely-seeded (nonzero)
-    # species (see reconcile.sync_parameter_table + test_reconcile). A modeller seeds a pool by
-    # giving it a nonzero initial; a species declared to start empty has no t=0 value to fit.
-    session.estimate_initial_conditions = True
+def test_empty_pool_ic_fixed(session):
+    # A species created EMPTY (t0 == 0) has its IC FIXED at 0 (the empty-pool value rule); ICs are
+    # otherwise ESTIMATED by default.
     _set_model(session, ["J: B => D; k3 * B;"], justification="B converts to D")
     row = session.problem.parameter_df.loc["D_init"]
     assert int(row["estimate"]) == 0
     assert float(row["nominalValue"]) == 0.0
+
+
+def test_seeded_ic_estimated_by_default(session):
+    # A newly-authored species given a positive initial is ESTIMATED (always-on): the declared
+    # value is only a guess and must never be silently frozen (issue #90).
+    _set_model(session, ["J: B => D; k3 * B;", "D = 5.0;"],
+               justification="B converts to D, D seeded at a guess")
+    row = session.problem.parameter_df.loc["D_init"]
+    assert int(row["estimate"]) == 1
+    assert abs(float(row["nominalValue"]) - 5.0) < 1e-9
 
 
 def test_reauthor_change_rate_law(session):

@@ -355,3 +355,64 @@ def test_set_model_accepts_used_condition_target(drive_condition_session):
         sess, _DRIVE_MODEL.format(rate="k1 * A * drive;"), justification="drive drives r1"
     )
     assert res["applied"] is True
+
+
+# -- always-on ICs: estimate a created seed, fix a unit normalization (#90) -------------------
+# Authoring on a zero-shot problem (empty parameter table) must add B_init (a positive guess, 460)
+# as ESTIMATED — never freezing the guess (the crauste `Naive` failure) — while A == 1.0 is a unit
+# normalization and stays FIXED by value.
+_ZERO_SHOT_IC_ANTIMONY = """model conversion_reaction
+  compartment compartment_ = 1;
+  species A in compartment_;
+  species B in compartment_;
+  A = 1.0;
+  B = 460.0;
+  k1 = 0.25;
+  k2 = 0.05;
+  r1: A => B; k1 * A;
+  r2: B => A; k2 * B;
+end
+"""
+
+
+@pytest.fixture
+def zero_shot_empty_ic_session(tmp_path) -> PetabSession:
+    """A model-less (zero-shot) problem with an EMPTY parameter table (no shipped ICs), so the ICs
+    the agent authors are created fresh by reconcile."""
+    import pandas as pd
+
+    work = tmp_path / "empty_ic"
+    work.mkdir()
+    for name in ("problem.yaml", "conditions.tsv", "observables.tsv", "measurements.tsv"):
+        shutil.copy(DATA_DIR / name, work / name)
+    _write_empty_sbml(work / "conversion_reaction.xml")
+    # Parameter table WITHOUT ICs (reconcile creates them) — matches a zero-shot's empty table;
+    # sigma_B stays because the observable's noiseFormula references it (a fixed noise param).
+    pdf = pd.read_csv(DATA_DIR / "parameters.tsv", sep="\t")
+    pdf[pdf["parameterId"].isin(["k1", "k2", "sigma_B"])].to_csv(
+        work / "parameters.tsv", sep="\t", index=False
+    )
+    return PetabSession(
+        str(work / "problem.yaml"),
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+    )
+
+
+def test_set_model_estimates_created_ic_and_fixes_unit_normalization(zero_shot_empty_ic_session):
+    from petab.v1.C import ESTIMATE, LOG10, PARAMETER_SCALE
+
+    sess = zero_shot_empty_ic_session
+    res = O.set_model(
+        sess, _ZERO_SHOT_IC_ANTIMONY, justification="zero-shot; B seeded at a positive guess"
+    )
+    assert res["applied"] is True
+    pdf = sess.problem.parameter_df
+    # B's positive declared IC is only a guess -> ESTIMATED on log10, never frozen (issue #90).
+    assert int(pdf.loc["B_init", ESTIMATE]) == 1
+    assert pdf.loc["B_init", PARAMETER_SCALE] == LOG10
+    # A == 1.0 is a unit normalization -> FIXED by value.
+    assert int(pdf.loc["A_init", ESTIMATE]) == 0
+    ics = {r["species"]: r for r in res["initial_conditions"]}
+    assert ics["B"]["t0_source"] == "estimated"
+    assert ics["A"]["t0_source"] == "fixed"

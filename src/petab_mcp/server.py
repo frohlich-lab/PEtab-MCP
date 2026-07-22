@@ -364,10 +364,7 @@ def _register_parameter_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         """
         def run() -> dict[str, Any]:
             with session.lock:
-                return reconcile_mod.sync_parameters(
-                    session.problem, policy,
-                    estimate_ics=bool(getattr(session, "estimate_initial_conditions", False)),
-                )
+                return reconcile_mod.sync_parameters(session.problem, policy)
 
         return ctx.run("sync_parameters", run, {"policy": policy})
 
@@ -740,7 +737,6 @@ def create_server(
     skills_dir: str | None = None,
     auto_fit: bool = True,
     auto_fit_starts: int = DEFAULT_AUTO_FIT_STARTS,
-    estimate_initial_conditions: bool = False,
 ) -> FastMCP:
     """Build a FastMCP server bound to the PEtab problem at ``yaml_path``.
 
@@ -751,8 +747,9 @@ def create_server(
     ``auto_fit_starts`` is the default pyPESTO multistart count (overridable per commit via
     ``n_starts``). Set ``auto_fit=False`` to skip the compile-heavy fit hook (tests/dev).
 
-    ``estimate_initial_conditions`` (opt-in, default off): estimate initial-condition parameters
-    rather than fixing them at the observed t=0 value. Off keeps a problem's standard ICs.
+    Initial conditions are ESTIMATED by default (fixed only at 0 = empty pool or 1 = unit
+    normalization; see ``reconcile.sync_parameter_table``); to keep another IC fixed, ship it as
+    a fixed parameter row.
     """
     session = PetabSession(
         yaml_path,
@@ -765,9 +762,6 @@ def create_server(
     session.engine = engine
     session.auto_fit = auto_fit
     session.auto_fit_starts = auto_fit_starts
-    # Opt-in: estimate initial-condition parameters instead of fixing them at the observed t=0
-    # value (off by default so published problems keep their standard IC treatment).
-    session.estimate_initial_conditions = estimate_initial_conditions
 
     # Load tool-usage skills up front so the server instructions only advertise
     # `list_skills`/`get_skill` when skills are actually available (registered below).

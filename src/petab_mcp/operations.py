@@ -203,17 +203,16 @@ def _commit_change(
         old_species = set(R.species_ids(old_model.sbml_model))
         old_params = session.problem.parameter_df.copy(deep=True)
 
-        estimate_ics = bool(getattr(session, "estimate_initial_conditions", False))
         try:
             if model_build is not None:
                 candidate, apply_result = model_build()
                 session.problem.model = candidate
-                recon = R.reconcile(session.problem, estimate_ics=estimate_ics)
+                recon = R.reconcile(session.problem)
             elif model_edit is not None:
                 candidate = SbmlModel.from_string(old_sbml, model_id=old_model.model_id)
                 apply_result = model_edit(candidate.sbml_model)
                 session.problem.model = candidate
-                recon = R.reconcile(session.problem, estimate_ics=estimate_ics)
+                recon = R.reconcile(session.problem)
             else:
                 apply_result = param_edit(session.problem)
                 recon = None

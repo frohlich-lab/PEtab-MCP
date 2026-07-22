@@ -135,38 +135,120 @@ def test_sync_parameter_table_uses_linear_for_nonpositive_nominal(session):
     assert pdf.loc["k_off", PARAMETER_SCALE] == LIN   # linear, NOT an invalid log10
 
 
-def test_estimate_ics_estimates_only_nonzero_start_species():
-    """estimate_ics estimates SEEDED (nonzero-start) ICs but keeps empty pools FIXED at 0.
-
-    A scenario can then estimate just the seeded species without shipping named <sid>_init seeds:
-    the candidate's zero-start species are fixed at 0 by the same rule, so ΔBIC stays at parity.
-    """
+# -- always-on IC estimation; fix only the {0, 1} value conventions (#90) -----------------
+def _bare_problem(antimony):
+    """A bare petab.Problem with an empty parameter table. No observable/measurement tables are
+    needed — the IC estimate decision is purely value-based (estimated by default; fixed at 0/1)."""
     import pandas as pd
     import petab.v1 as petab
-    from petab.v1.C import (ESTIMATE, LIN, LOG10, LOWER_BOUND, NOMINAL_VALUE,
-                            PARAMETER_ID, PARAMETER_SCALE, UPPER_BOUND)
+    from petab.v1.C import (ESTIMATE, LOWER_BOUND, NOMINAL_VALUE, PARAMETER_ID,
+                            PARAMETER_SCALE, UPPER_BOUND)
+
+    prob = petab.Problem(model=SbmlModel.from_antimony(antimony))
+    prob.parameter_df = pd.DataFrame(
+        columns=[PARAMETER_SCALE, LOWER_BOUND, UPPER_BOUND, NOMINAL_VALUE, ESTIMATE]
+    ).rename_axis(PARAMETER_ID)
+    return prob
+
+
+def test_ic_estimated_by_default_empty_pool_fixed():
+    """ICs are ESTIMATED by default: a positive seed is estimated on log10; an empty pool
+    (t0 == 0) stays fixed at 0."""
+    from petab.v1.C import ESTIMATE, LIN, LOG10, NOMINAL_VALUE, PARAMETER_SCALE
 
     ant = (
         "model seeded_and_empty\n"
         "  compartment c = 1;\n"
         "  species A in c; species B in c;\n"
-        "  A = 2.5; B = 0.0;\n"                 # A is seeded (nonzero t=0); B starts empty
+        "  A = 2.5; B = 0.0;\n"                 # A seeded (nonzero, != 1); B empty
         "  k1 = 0.3;\n"
         "  r1: A -> B; k1 * A;\n"
+        "end\n"
+    )
+    prob = _bare_problem(ant)
+    R.reconcile(prob)
+    pdf = prob.parameter_df
+    assert pdf.loc["A_init", ESTIMATE] == 1              # estimated by default
+    assert pdf.loc["A_init", PARAMETER_SCALE] == LOG10   # positive -> log10
+    assert abs(pdf.loc["A_init", NOMINAL_VALUE] - 2.5) < 1e-9
+    assert pdf.loc["B_init", ESTIMATE] == 0             # empty pool -> FIXED
+    assert pdf.loc["B_init", PARAMETER_SCALE] == LIN
+
+
+def test_ic_unit_normalization_stays_fixed():
+    """An IC declared exactly 1.0 is a unit normalization (a conserved-total convention) and stays
+    FIXED — decided by value, so it names no species and leaks nothing (issue #90)."""
+    from petab.v1.C import ESTIMATE, LIN, PARAMETER_SCALE
+
+    ant = (
+        "model unit_norm\n"
+        "  compartment c = 1;\n"
+        "  species R in c; species O in c;\n"
+        "  R = 1.0; O = 0.0;\n"                 # R is the total-receptor normalization (== 1)
+        "  k1 = 0.3;\n"
+        "  r1: R -> O; k1 * R;\n"
+        "end\n"
+    )
+    prob = _bare_problem(ant)
+    R.reconcile(prob)
+    pdf = prob.parameter_df
+    assert pdf.loc["R_init", ESTIMATE] == 0             # unit normalization -> FIXED
+    assert pdf.loc["R_init", PARAMETER_SCALE] == LIN
+    assert pdf.loc["O_init", ESTIMATE] == 0             # empty pool -> FIXED
+
+
+def test_condition_column_species_ic_not_parametrised():
+    """A species whose initial value is set PER CONDITION by a condition-table column (a PEtab
+    species-initial override, e.g. armistead's per-genotype metabolite baselines) is driven by the
+    condition table — reconcile must NOT mint an estimated ``<sid>_init`` for it (the per-condition
+    override would silently supersede it, inflating k with a non-identifiable parameter)."""
+    import pandas as pd
+    import petab.v1 as petab
+    from petab.v1.C import (CONDITION_ID, ESTIMATE, LOWER_BOUND, NOMINAL_VALUE,
+                            PARAMETER_ID, PARAMETER_SCALE, UPPER_BOUND)
+
+    ant = (
+        "model condcol_ic\n"
+        "  compartment c = 1;\n"
+        "  species M in c; species P in c;\n"
+        "  M = 0.988; P = 0.0;\n"                # M's initial is set per condition (a species column)
+        "  k1 = 0.3;\n"
+        "  r1: M -> P; k1 * M;\n"
         "end\n"
     )
     prob = petab.Problem(model=SbmlModel.from_antimony(ant))
     prob.parameter_df = pd.DataFrame(
         columns=[PARAMETER_SCALE, LOWER_BOUND, UPPER_BOUND, NOMINAL_VALUE, ESTIMATE]
     ).rename_axis(PARAMETER_ID)
-    R.reconcile(prob, estimate_ics=True)
+    prob.condition_df = pd.DataFrame(
+        {"M": [0.988, 0.822]}, index=pd.Index(["wt", "mut"], name=CONDITION_ID)
+    )
+    R.reconcile(prob)
     pdf = prob.parameter_df
-    assert pdf.loc["A_init", ESTIMATE] == 1        # seeded pool: ESTIMATED
-    assert pdf.loc["A_init", PARAMETER_SCALE] == LOG10   # a positive concentration -> log10
-    assert abs(pdf.loc["A_init", NOMINAL_VALUE] - 2.5) < 1e-9
-    assert pdf.loc["B_init", ESTIMATE] == 0        # empty pool: FIXED at 0 despite estimate_ics
-    assert pdf.loc["B_init", PARAMETER_SCALE] == LIN
-    assert abs(pdf.loc["B_init", NOMINAL_VALUE]) < 1e-12
+    assert "M_init" not in pdf.index                    # condition-driven -> NOT parametrised
+    assert pdf.loc["P_init", ESTIMATE] == 0             # empty pool still fixed at 0
+
+
+def test_ic_estimate_is_value_based_not_observation_based():
+    """Always-on: a nonzero, non-1 IC is estimated with no observable/measurement tables present —
+    the decision is purely value-based (a species observed only at t>0 is no longer a special case;
+    a declared guess is simply never frozen)."""
+    from petab.v1.C import ESTIMATE
+
+    ant = (
+        "model decay\n"
+        "  compartment c = 1;\n"
+        "  species A in c; species B in c;\n"
+        "  A = 1.0; B = 460.0;\n"               # B a positive guess (!= 1); A a unit normalization
+        "  k1 = 0.3;\n"
+        "  r1: B -> A; k1 * B;\n"
+        "end\n"
+    )
+    prob = _bare_problem(ant)
+    R.reconcile(prob)
+    pdf = prob.parameter_df
+    assert pdf.loc["B_init", ESTIMATE] == 1             # guessed IC -> estimated, never frozen
+    assert pdf.loc["A_init", ESTIMATE] == 0             # A == 1.0 -> unit normalization, fixed
 
 
 # -- manual sync_parameters tool (consolidated onto sync_parameter_table) ------------------

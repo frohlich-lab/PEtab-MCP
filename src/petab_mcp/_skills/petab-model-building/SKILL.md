@@ -233,6 +233,17 @@ refits by itself. Read the current table with `get_parameters()`; use
 `sync_parameters("report"|"add")` to reconcile the table with the model (operations already
 reconcile, so this is rarely needed).
 
+**Fractional modifiers belong on a LINEAR scale with STRICT bounds.** A parameter that is a
+fraction / efficiency / bounded multiplier — an inhibition or activation factor in a term like
+`(1 − alpha)` or `(1 + alpha)`, a split ratio, a saturating gain — is auto-added on `log10` (the
+default for any positive parameter), which is the wrong space for it: on a wide log10 box it can
+drift to a physically meaningless value (e.g. an inhibition fraction `> 1` that flips a reaction
+rate NEGATIVE) that fits the data slightly better but is nonsense. As soon as you introduce such a
+parameter, `change_parameter_scale` it to `"lin"` and `change_parameter_bounds` it to the range that
+keeps it physical (typically `[0, 1]`, or whatever keeps the rate factor it enters positive) — a
+justified, fit-free pair of edits. This is a modelling choice you make up front from the term's
+meaning, not a reaction to a bad fit.
+
 **A parameter that keeps re-pinning to whatever bound you set is not a bounds problem.** Every
 fit's `parameters_at_bound` (also in `get_fit_summary`) flags any fitted parameter within
 ~1% of its lower/upper bound — check it after every fit, not just when a fit looks off.

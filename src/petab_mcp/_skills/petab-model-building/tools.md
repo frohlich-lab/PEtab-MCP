@@ -26,10 +26,14 @@ message}` on success — **no** fit metrics (no `neg_log_likelihood`, no `bic`, 
 key) — or `{applied: false, error, issues?}` on rejection. `warnings` carries advisory notes
 (e.g. an added unobserved species). `initial_conditions` is a per-species list —
 `{species, ic_parameter, declared_t0, estimated, set_by_condition, t0_source
-(fixed|estimated|condition_table), declared_t0_used, newly_added, note}` — reporting whether each
-species' declared t=0 governs the simulated t=0 state (`declared_t0_used: true`, a fixed IC) or is
-overridden by estimation or a condition-table column. The model text cannot set estimate status
-(whether ICs are estimated is a per-scenario setting) — read this block instead of re-authoring.
+(fixed|estimated|condition_table), declared_t0_used, newly_added, note}`. **Initial conditions are
+ESTIMATED by default.** You do NOT set an IC's estimated/fixed status (there is no tool for that —
+see below); reconcile derives it from the value you declare in the model: a species declared at
+exactly **0** (empty pool) or exactly **1** (a unit-normalisation / conserved-total convention) is
+FIXED; a species whose initial is set by a **condition-table column** is driven per-condition
+(`t0_source: condition_table`); any other positive value is ESTIMATED (`t0_source: estimated`,
+counted in *k*). A parameter the problem ships FIXED and you reference as an IC stays fixed. Read
+this block to see how each species' IC was classified rather than re-authoring.
 (`parameters_at_bound` and `noise_sigma_report` are fit artifacts and come back on the `fit`
 result, not on an edit — see `get_fit_summary` below.) A model that reuses a fixed
 observable-scaling factor or noise sigma (anything resolved through the measurement table's
