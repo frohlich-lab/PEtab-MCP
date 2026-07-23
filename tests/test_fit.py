@@ -28,7 +28,9 @@ def test_batch_api_removed(session):
 # -- edits are fit-free -------------------------------------------------------
 def test_edit_marks_pending_without_versioning(session):
     assert not session.has_unfit_edits()
-    res = O.change_parameter_bounds(session, "k1", 1e-3, 1e3, justification="widen")
+    res = O.change_parameters(
+        session, [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
+        justification="widen")
     assert res["applied"] is True and res["version"] is None
     assert session.has_unfit_edits() and res["n_pending_edits"] == 1
     assert session.provenance.current_version == 0  # no version created by an edit
@@ -56,7 +58,9 @@ def test_fit_without_a_model_is_rejected(empty_session):
 # -- fit: fit + snapshot + clear pending (needs the engine) -------------------
 def test_fit_scores_edits_and_snapshots_a_version(fit_session):
     sess = fit_session
-    O.change_parameter_bounds(sess, "k1", 1e-3, 1e3, justification="widen")
+    O.change_parameters(
+        sess, [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
+        justification="widen")
     assert sess.has_unfit_edits()
 
     res = sess.fit(n_starts=2)

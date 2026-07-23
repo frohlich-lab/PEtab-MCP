@@ -148,39 +148,96 @@ def test_no_parameter_estimate_or_fix_operation():
     assert not hasattr(O, "fix_parameter")
 
 
-def test_change_parameter_scale(session):
-    res = O.change_parameter_scale(session, "sigma_B", "log10", justification="spans magnitudes")
+def test_change_parameters_scale(session):
+    res = O.change_parameters(
+        session, [{"parameter_id": "sigma_B", "scale": "log10"}],
+        justification="spans magnitudes")
     assert res["applied"] is True
+    assert res["operation"] == "change_parameters"
     assert res["references"] == []  # references optional for parameter operations
     recs = {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
     assert recs["sigma_B"]["parameterScale"] == "log10"
 
 
-def test_change_parameter_scale_requires_justification(session):
+def test_change_parameters_requires_justification(session):
     with pytest.raises(OperationError):
-        O.change_parameter_scale(session, "sigma_B", "log10", justification="")
+        O.change_parameters(
+            session, [{"parameter_id": "sigma_B", "scale": "log10"}], justification="")
 
 
-def test_change_parameter_scale_invalid_is_reverted(session):
+def test_change_parameters_empty_list_rejected(session):
+    with pytest.raises(OperationError, match="non-empty list"):
+        O.change_parameters(session, [], justification="nothing to do")
+
+
+def test_change_parameters_invalid_scale_is_reverted(session):
     # A_init has lowerBound 0 -> log10 is invalid; the table must be unchanged.
     before = {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
     with pytest.raises(OperationError):
-        O.change_parameter_scale(session, "A_init", "log10", justification="x")
+        O.change_parameters(session, [{"parameter_id": "A_init", "scale": "log10"}],
+                            justification="x")
     after = {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
     assert after["A_init"] == before["A_init"]
 
 
-def test_change_parameter_bounds(session):
-    res = O.change_parameter_bounds(session, "k1", 1e-3, 1e3, justification="physiological range")
+def test_change_parameters_bounds(session):
+    res = O.change_parameters(
+        session, [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
+        justification="physiological range")
     assert res["applied"] is True
     recs = {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
     assert float(recs["k1"]["lowerBound"]) == 1e-3
     assert float(recs["k1"]["upperBound"]) == 1e3
 
 
-def test_change_parameter_bounds_bad_range_reverts(session):
+def test_change_parameters_batch_applies_bounds_and_scale_atomically(session):
+    # One call retunes several parameters at once — the point of the batched editor.
+    res = O.change_parameters(session, [
+        {"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3},
+        {"parameter_id": "sigma_B", "scale": "log10"},
+    ], justification="coherent retuning")
+    assert res["applied"] is True
+    recs = {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
+    assert float(recs["k1"]["lowerBound"]) == 1e-3 and float(recs["k1"]["upperBound"]) == 1e3
+    assert recs["sigma_B"]["parameterScale"] == "log10"
+
+
+def test_change_parameters_single_entry_bounds_and_scale(session):
+    # ONE entry carrying BOTH a bound change and a scale change (the merged-entry path that
+    # armistead's changes_by_id produces): bounds must apply AND the positive-box check must run
+    # against the new scale+bounds. k1 = 0.5 with lb 1e-3 is a valid log10 box.
+    res = O.change_parameters(session, [
+        {"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3, "scale": "log10"},
+    ], justification="retune k1 box and scale together")
+    assert res["applied"] is True
+    recs = {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
+    assert float(recs["k1"]["lowerBound"]) == 1e-3 and float(recs["k1"]["upperBound"]) == 1e3
+    assert recs["k1"]["parameterScale"] == "log10"
+
+
+def test_change_parameters_rejects_unknown_entry_key(session):
+    # A misspelled optional key must be REJECTED, not silently dropped (a `scal` typo would
+    # otherwise leave the scale unchanged while the call reports success).
+    with pytest.raises(OperationError, match="unknown key"):
+        O.change_parameters(
+            session, [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3,
+                       "scal": "log10"}],
+            justification="typo'd scale key")
+
+
+def test_change_parameters_duplicate_id_rejected(session):
+    with pytest.raises(OperationError, match="more than one entry"):
+        O.change_parameters(session, [
+            {"parameter_id": "k1", "scale": "log10"},
+            {"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3},
+        ], justification="combine these")
+
+
+def test_change_parameters_bad_range_reverts(session):
     with pytest.raises(Exception):
-        O.change_parameter_bounds(session, "k1", 10.0, 1.0, justification="x")
+        O.change_parameters(
+            session, [{"parameter_id": "k1", "lower_bound": 10.0, "upper_bound": 1.0}],
+            justification="x")
     recs = {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
     assert float(recs["k1"]["upperBound"]) != 1.0  # not applied
 
@@ -226,7 +283,9 @@ def test_third_widening_rejected_through_full_operation_and_reverts(session):
     _add_version(session, upper=1e4, nllh=99.9)
     _pin_k1_at_upper(session, 1e4)
     with pytest.raises(OperationError):
-        O.change_parameter_bounds(session, "k1", 1e-4, 1e5, justification="widen again")
+        O.change_parameters(
+            session, [{"parameter_id": "k1", "lower_bound": 1e-4, "upper_bound": 1e5}],
+            justification="widen again")
     assert float(session.problem.parameter_df.loc["k1", UPPER_BOUND]) == 1e4  # unchanged
 
 

@@ -109,7 +109,7 @@ def test_tools_registered(tmp_path):
         "describe_problem", "list_observables", "list_conditions", "get_measurements",
         "get_model", "get_model_structure", "validate_problem",
         "set_model",
-        "change_parameter_scale", "change_parameter_bounds",
+        "change_parameters",
         "fit",
         "get_parameters", "sync_parameters",
         "get_fit_summary", "get_fit_diagnosis", "get_run_timing", "query_data", "list_data_tables",
@@ -229,13 +229,13 @@ def test_rejected_operation_is_logged(tmp_path):
     mcp = _server(tmp_path)
 
     async def go():
-        res = _structured(await mcp.call_tool("change_parameter_scale", {
-            "parameter_id": "A_init", "scale": "log10", "justification": "x",
+        res = _structured(await mcp.call_tool("change_parameters", {
+            "changes": [{"parameter_id": "A_init", "scale": "log10"}], "justification": "x",
         }))
         assert res["applied"] is False  # A_init lb=0 -> log10 invalid
         errs = _structured(await mcp.call_tool("get_errors", {}))
         elist = errs["result"] if isinstance(errs, dict) and "result" in errs else errs
-        assert any(e["tool"] == "change_parameter_scale" for e in elist)
+        assert any(e["tool"] == "change_parameters" for e in elist)
 
     asyncio.run(go())
 
@@ -352,8 +352,9 @@ def test_edit_then_fit_via_tools_multi_edit(tmp_path):
             "antimony": _reauthored(["J: B => D; k3 * B;"]), "justification": "x",
             "references": ["PMID:1"]}))
         assert e1["applied"] is True
-        e2 = _structured(await mcp.call_tool("change_parameter_bounds", {
-            "parameter_id": "k1", "lower_bound": 1e-2, "upper_bound": 1e2, "justification": "tighter"}))
+        e2 = _structured(await mcp.call_tool("change_parameters", {
+            "changes": [{"parameter_id": "k1", "lower_bound": 1e-2, "upper_bound": 1e2}],
+            "justification": "tighter"}))
         assert e2["applied"] is True and e2["n_pending_edits"] == 2
         cur = _structured(await mcp.call_tool("current_version", {}))
         assert cur["version"] == 0 and cur["has_unfit_edits"] is True  # no version yet
@@ -508,8 +509,8 @@ def test_fit_tools(tmp_path):
 
         # a fit-free edit followed by `fit`: the fit result carries the unified fit block + a
         # fitted version (n_starts now lives on `fit`, not the edit).
-        edit = _structured(await mcp.call_tool("change_parameter_bounds", {
-            "parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3,
+        edit = _structured(await mcp.call_tool("change_parameters", {
+            "changes": [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
             "justification": "widen bounds",
         }))
         assert edit["applied"] is True and edit["version"] is None

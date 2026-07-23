@@ -168,7 +168,9 @@ def test_fit_tracks_improvement_vs_versions(fit_session):
     from petab_mcp import operations as O
 
     # edits are fit-free; `fit` scores them and tracks improvement across the fitted versions
-    O.change_parameter_bounds(fit_session, "k1", 1e-3, 1e3, justification="widen k1")
+    O.change_parameters(
+        fit_session, [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
+        justification="widen k1")
     first = fit_session.fit()
     assert first["fit_status"] == "fit"
     imp1 = first["improvement"]
@@ -177,7 +179,9 @@ def test_fit_tracks_improvement_vs_versions(fit_session):
     assert imp1["is_new_best"] is True  # nothing to beat yet
     assert imp1["improvement_vs_best_prior"] is None
 
-    O.change_parameter_bounds(fit_session, "k2", 1e-3, 1e3, justification="widen k2")
+    O.change_parameters(
+        fit_session, [{"parameter_id": "k2", "lower_bound": 1e-3, "upper_bound": 1e3}],
+        justification="widen k2")
     second = fit_session.fit()
     imp2 = second["improvement"]
     assert imp2["best_prior_version"] is not None

@@ -4,7 +4,8 @@ description: >-
   Use when interacting with the petab-mcp server to work a single PEtab v1
   parameter-estimation problem: read the fixed experimental design, author or re-author the
   whole model in Antimony with set_model (the single model editor) and adjust parameter search
-  spaces (change_parameter_scale, change_parameter_bounds) — these edits are FIT-FREE — then call
+  spaces (change_parameters — one batched call carrying bound/scale edits) — these edits are
+  FIT-FREE — then call
   `fit` once to score the assembled change and snapshot a version, and inspect the fit by querying
   the data with SQL (query_data over the PEtab tables + the simulation dataframe/residuals),
   provenance, and versions. Explains the disciplined, auditable tool workflow, the rules each tool
@@ -18,7 +19,8 @@ description: >-
 building into a disciplined, auditable loop. The tools are deliberately narrow:
 the experimental design is read-only, the model changes only through `set_model` (the single
 model editor — author or replace the whole model in Antimony), and the parameter search space
-through `change_parameter_scale` / `change_parameter_bounds`. These edits are **fit-free** — they
+through `change_parameters` (one batched call: a `changes` list whose entries each set bounds
+and/or scale for a parameter). These edits are **fit-free** — they
 mutate the working model and are logged, but scoring is a separate, explicit step: you assemble a
 coherent change through edits, then call `fit` **once** to score it and snapshot a version. Work
 *with* those constraints — do not look for an "edit the measurements" tool or an incremental
@@ -67,7 +69,7 @@ file="tools.md")`).
     anymore, it's covering for the mechanism: a benchmark run once let its sigmas float to
     20-60x their nominal scale, which alone made a model missing whole reaction pathways pass
     its own goodness-of-fit check. The shipped bounds themselves are left alone, but
-    `change_parameter_bounds` REJECTS an attempt to WIDEN a sigma's `upperBound` past this
+    `change_parameters` REJECTS an attempt to WIDEN a sigma's `upperBound` past this
     reference — if a fit pins a sigma at its current bound, that's the SAME signal as any other
     at-bound parameter below: fix the mechanism, don't try to widen the box.
 - **Observation-model parameters are off-limits inside the mechanism.** An observable-scaling
@@ -91,7 +93,7 @@ file="tools.md")`).
     model keeps declaring it. So the way to control what is estimated is the *model*, not a flag.
   - **Don't spend an estimated parameter on a value you already know.** A parameter you introduce
     comes in `estimate=1` and counts toward *k* (the estimated-parameter count), inflating BIC
-    however tight its bounds — a narrow box via `change_parameter_bounds` does not make it "fixed",
+    however tight its bounds — a narrow box via `change_parameters` does not make it "fixed",
     it just makes an expensive parameter impersonate a constant (and a literal in the rate law is
     not the answer either — it hides the value from the parameter table). The known fixed constants
     a problem cares about already ship *fixed* in its parameter table; build the mechanism on those
@@ -222,15 +224,17 @@ Parameter **values** (`nominalValue`) are set only by `fit` — there is no manu
 value-editing tool. What you *can* change, through justified, fit-free operations, is a
 parameter's search space:
 
-- `change_parameter_scale(parameter_id, scale, justification, references?)` —
-  `scale` is `"lin"`, `"log"`, or `"log10"`. Switching to `log`/`log10` requires the
-  parameter's `lowerBound` and `nominalValue` to be **> 0**, or the operation is rejected.
-- `change_parameter_bounds(parameter_id, lower_bound, upper_bound, justification,
-  references?)`.
+- `change_parameters(changes, justification, references?)` — `changes` is a NON-EMPTY list of
+  per-parameter entries `{parameter_id, lower_bound?, upper_bound?, scale?}`, and one
+  `justification` covers the whole batch. A bound edit gives BOTH `lower_bound` and `upper_bound`
+  (or neither); `scale` is `"lin"`, `"log"`, or `"log10"` (switching to `log`/`log10` requires the
+  parameter's `lowerBound` and `nominalValue` to be **> 0**, or the entry is rejected). The batch is
+  applied ATOMICALLY — one rejected entry reverts the whole call.
 
-Both are **fit-free** edits like the model edits — reach for them when a fit lands on a bound
-or a scale is inappropriate, then call `fit` afterward to re-score. A bounds edit no longer
-refits by itself. Read the current table with `get_parameters()`; use
+This is a **fit-free** edit like the model edits — reach for it when a fit lands on a bound
+or a scale is inappropriate, then call `fit` afterward to re-score. It no longer refits by
+itself. Bundle a coherent retuning — every bound/scale change you want — into ONE
+`change_parameters` call, then fit once. Read the current table with `get_parameters()`; use
 `sync_parameters("report"|"add")` to reconcile the table with the model (operations already
 reconcile, so this is rarely needed).
 
@@ -240,9 +244,10 @@ fraction / efficiency / bounded multiplier — an inhibition or activation facto
 default for any positive parameter), which is the wrong space for it: on a wide log10 box it can
 drift to a physically meaningless value (e.g. an inhibition fraction `> 1` that flips a reaction
 rate NEGATIVE) that fits the data slightly better but is nonsense. As soon as you introduce such a
-parameter, `change_parameter_scale` it to `"lin"` and `change_parameter_bounds` it to the range that
-keeps it physical (typically `[0, 1]`, or whatever keeps the rate factor it enters positive) — a
-justified, fit-free pair of edits. This is a modelling choice you make up front from the term's
+parameter, `change_parameters` it to `"lin"` scale with bounds set to the range that
+keeps it physical (typically `[0, 1]`, or whatever keeps the rate factor it enters positive) — one
+`changes` entry carrying both the `scale` and the `lower_bound`/`upper_bound`, a
+justified, fit-free edit. This is a modelling choice you make up front from the term's
 meaning, not a reaction to a bad fit.
 
 **A parameter that keeps re-pinning to whatever bound you set is not a bounds problem.** Every
@@ -283,11 +288,11 @@ trying to fake a near-step-function) — use `query_data`'s bias/time-trend diag
 see what the current structure can't reproduce, then re-author with the missing reaction rather
 than stretch a bound. The rule is the same in every case: never answer a re-pin with another
 bounds widening — make a **structural** edit by re-authoring with `set_model`, or leave the
-parameter be. The harness enforces this as a backstop: `change_parameter_bounds` **rejects a third
+parameter be. The harness enforces this as a backstop: `change_parameters` **rejects a third
 widening** of a still-pinned parameter whose previous widening bought a negligible BIC gain.
 
 If the parameter pinned at its bound is a **noise sigma**, don't even try widening it —
-`change_parameter_bounds` will reject a widen past its data-driven cap outright (see the
+`change_parameters` will reject a widen past its data-driven cap outright (see the
 invariant above). A sigma at that cap means the current mechanism's residuals are already as
 large as the data's own variability; the fix is exclusively a model-structure one.
 
@@ -466,8 +471,7 @@ again → compare `is_new_best` / `improvement_vs_best_prior` across versions (o
 
 ## Reading tool results
 
-- **Model/parameter edits** (`set_model`, `change_parameter_scale`,
-  `change_parameter_bounds`) return
+- **Model/parameter edits** (`set_model`, `change_parameters`) return
   `{"applied": true, "operation": ..., "version": null, "reconcile": {...},
   "initial_conditions": [...], "references": ..., "justification": ..., "validation": ...,
   "warnings": [...], "parameter_diff": {...}, "pending_fit": true, "n_pending_edits": ...,

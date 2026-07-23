@@ -411,23 +411,6 @@ def _require_positive_for_log(problem, parameter_id: str, scale: str) -> None:
                 )
 
 
-def change_parameter_scale(
-    session, parameter_id: str, scale: str, justification: str,
-    references: list[str] | None = None,
-) -> dict[str, Any]:
-    from .parameters import update_parameters
-
-    def edit(problem):
-        update_parameters(problem, [{"id": parameter_id, "parameterScale": scale}])
-        _require_positive_for_log(problem, parameter_id, scale)
-        return {"parameter_id": parameter_id, "scale": scale}
-
-    return _commit_change(
-        session, "change_parameter_scale", {"parameter_id": parameter_id, "scale": scale},
-        justification, references, param_edit=edit, require_references=False,
-    )
-
-
 def _reject_sigma_bound_widening(problem, parameter_id: str, upper_bound: float) -> None:
     """Refuse to widen an ESTIMATED noise-sigma parameter's upperBound past its data-driven cap
     (see ``R.sigma_upper_bound_cap``). Without this, a fit pinned at that cap could be "fixed"
@@ -568,27 +551,99 @@ def _reject_repeated_widening(
     )
 
 
-def change_parameter_bounds(
+def change_parameters(
     session,
-    parameter_id: str,
-    lower_bound: float,
-    upper_bound: float,
+    changes: list[dict[str, Any]],
     justification: str,
     references: list[str] | None = None,
 ) -> dict[str, Any]:
+    """Batch-edit the bounds and/or scale of one or more parameters in ONE atomic edit.
+
+    ``changes`` is a non-empty list of per-parameter dicts, each naming ``parameter_id`` and any
+    of ``lower_bound`` / ``upper_bound`` (a bound edit — give BOTH or neither) and ``scale``
+    ('lin'|'log'|'log10'). Group everything that belongs to one coherent retuning into a single
+    call, then ``fit`` once to score it. Every per-parameter backstop still applies (a re-pinned
+    parameter's 3rd widening, a noise-sigma cap, a log scale on a non-positive box); because the
+    whole batch is atomic, one rejected entry reverts ALL of them and nothing changes. An EDIT:
+    mutates the parameter table but does NOT fit."""
     from .parameters import update_parameters
 
-    def edit(problem):
-        _reject_sigma_bound_widening(problem, parameter_id, upper_bound)
-        _reject_repeated_widening(session, problem, parameter_id, lower_bound, upper_bound)
-        update_parameters(
-            problem,
-            [{"id": parameter_id, "lowerBound": lower_bound, "upperBound": upper_bound}],
+    if not isinstance(changes, list) or not changes:
+        raise OperationError(
+            "change_parameters: 'changes' must be a non-empty list of "
+            "{parameter_id, lower_bound?, upper_bound?, scale?} entries."
         )
-        return {"parameter_id": parameter_id, "lowerBound": lower_bound, "upperBound": upper_bound}
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for i, ch in enumerate(changes):
+        if not isinstance(ch, dict):
+            raise OperationError(f"change_parameters: entry {i} is not an object.")
+        pid = ch.get("parameter_id")
+        if not pid or not isinstance(pid, str):
+            raise OperationError(
+                f"change_parameters: entry {i} is missing a string 'parameter_id'."
+            )
+        if pid in seen:
+            raise OperationError(
+                f"change_parameters: {pid!r} appears in more than one entry — combine its bound "
+                "and scale edits into a single entry."
+            )
+        seen.add(pid)
+        unknown = set(ch) - {"parameter_id", "lower_bound", "upper_bound", "scale"}
+        if unknown:
+            raise OperationError(
+                f"change_parameters: entry for {pid!r} has unknown key(s) {sorted(unknown)} — "
+                "allowed keys are parameter_id, lower_bound, upper_bound, scale (a misspelled key "
+                "would otherwise be silently ignored)."
+            )
+        lb, ub, scale = ch.get("lower_bound"), ch.get("upper_bound"), ch.get("scale")
+        if lb is None and ub is None and scale is None:
+            raise OperationError(
+                f"change_parameters: the entry for {pid!r} changes nothing — give "
+                "lower_bound+upper_bound and/or scale."
+            )
+        if (lb is None) != (ub is None):
+            raise OperationError(
+                f"change_parameters: {pid!r} sets only one bound — a bound edit needs BOTH "
+                "lower_bound and upper_bound (or neither)."
+            )
+        normalized.append(
+            {"parameter_id": pid, "lower_bound": lb, "upper_bound": ub, "scale": scale}
+        )
+
+    def edit(problem):
+        updates: list[dict[str, Any]] = []
+        scale_checks: list[tuple[str, str]] = []  # (pid, scale) to verify AFTER the batched update
+        changed = []
+        for ch in normalized:
+            pid, lb, ub, scale = ch["parameter_id"], ch["lower_bound"], ch["upper_bound"], ch["scale"]
+            update: dict[str, Any] = {"id": pid}
+            if ub is not None:
+                # Widening backstops read the pre-edit bound, so they must run BEFORE any update.
+                # Entries are distinct parameters, so checking them all against the pristine table
+                # (before the single batched write below) is equivalent to interleaving.
+                _reject_sigma_bound_widening(problem, pid, ub)
+                _reject_repeated_widening(session, problem, pid, lb, ub)
+                update["lowerBound"], update["upperBound"] = lb, ub
+            if scale is not None:
+                update["parameterScale"] = scale
+                scale_checks.append((pid, scale))
+            updates.append(update)
+            summary: dict[str, Any] = {"parameter_id": pid}
+            if ub is not None:
+                summary["lower_bound"], summary["upper_bound"] = lb, ub
+            if scale is not None:
+                summary["scale"] = scale
+            changed.append(summary)
+        # One transactional write for the whole batch — a single parameter-table snapshot.
+        update_parameters(problem, updates)
+        for pid, scale in scale_checks:
+            # Positive-box check reads the NEW scale + bounds, so it runs AFTER the update.
+            _require_positive_for_log(problem, pid, scale)
+        return {"changed": changed}
 
     return _commit_change(
-        session, "change_parameter_bounds",
-        {"parameter_id": parameter_id, "lowerBound": lower_bound, "upperBound": upper_bound},
+        session, "change_parameters",
+        {"changes": [{k: v for k, v in c.items() if v is not None} for c in normalized]},
         justification, references, param_edit=edit, require_references=False,
     )

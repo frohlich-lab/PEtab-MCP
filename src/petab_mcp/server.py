@@ -5,7 +5,7 @@ Tool groups:
 * read-only (fixed design): ``describe_problem``, ``list_observables``,
   ``list_conditions``, ``get_measurements``
 * model (constrained operations): ``set_model`` (author/replace the whole model),
-  ``change_parameter_scale``, ``change_parameter_bounds`` (each requires a justification;
+  ``change_parameters`` (batched bound/scale edits; requires a justification;
   references optional), plus read-only ``get_model``, ``get_model_structure``, ``validate_problem``
 * parameters (read-only + reconcile): ``get_parameters``, ``sync_parameters``
 * fit + simulation: edits are **fit-free**; the dedicated ``fit`` tool fits the free
@@ -74,7 +74,8 @@ SERVER_INSTRUCTIONS = (
     "model never changes whether it is fitted — read the report instead of guessing. Parameter "
     "scales and "
     "bounds are changed through justified edits "
-    "(`change_parameter_scale`, `change_parameter_bounds`); parameter *values* are set "
+    "(`change_parameters`, one batched call carrying a list of per-parameter bound/scale "
+    "changes); parameter *values* are set "
     "only by the fit, not by hand. EDITS ARE FIT-FREE: `set_model` and the edits mutate the "
     "working model but do NOT fit and do NOT create a version — `describe_problem` reports "
     "`has_unfit_edits: true` until you score it. Assemble a coherent change, then call `fit` "
@@ -290,35 +291,29 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         return ctx.run_operation("set_model", ops_mod.set_model, session, antimony, justification, references)
 
     @mcp.tool()
-    def change_parameter_scale(
-        parameter_id: str, scale: str, justification: str,
+    def change_parameters(
+        changes: list[dict[str, Any]], justification: str,
         references: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Change a parameter's scale ('lin'|'log'|'log10'). Requires a justification
-        (references optional). An EDIT: mutates the parameter table but does NOT fit — call
-        `fit()` to score it."""
-        return ctx.run_operation(
-            "change_parameter_scale", ops_mod.change_parameter_scale,
-            session, parameter_id, scale, justification, references,
-        )
+        """Batch-edit the bounds and/or scale of one or more parameters in ONE atomic call.
 
-    @mcp.tool()
-    def change_parameter_bounds(
-        parameter_id: str, lower_bound: float, upper_bound: float,
-        justification: str, references: list[str] | None = None,
-    ) -> dict[str, Any]:
-        """Change a parameter's lower/upper bounds. Requires a justification (references
-        optional). An EDIT: mutates the parameter table but does NOT fit — call `fit()` to
-        score it. REJECTS a widening past an ESTIMATED noise-sigma's
-        data-driven cap, and REJECTS a THIRD widening of a still-pinned parameter whose last
-        widening bought a negligible BIC gain — a parameter re-pinning at a bound with a flat/
-        collinear FIM direction (see `get_identifiability`) is unidentifiable, not
-        under-explored, so remove its reaction or use its limiting (irreversible/instantaneous)
-        form instead of widening again; if neither is possible, leave it pinned (do not
-        hard-code a value — there is no value/estimate tool, and a literal is a magic number)."""
+        `changes` is a non-empty list of per-parameter entries, each with `parameter_id` and any
+        of `lower_bound` / `upper_bound` (a bound edit — give BOTH or neither) and `scale`
+        ('lin'|'log'|'log10'). Group everything belonging to one coherent retuning into a single
+        call (one `justification` for the batch), then `fit()` once to score it. An EDIT: mutates
+        the parameter table but does NOT fit.
+
+        Atomic: if any entry is rejected the WHOLE batch reverts. Each bound entry REJECTS a
+        widening past an ESTIMATED noise-sigma's data-driven cap, and REJECTS a THIRD widening of
+        a still-pinned parameter whose last widening bought a negligible BIC gain — a parameter
+        re-pinning at a bound with a flat/collinear FIM direction (see `get_identifiability`) is
+        unidentifiable, not under-explored, so remove its reaction or use its limiting
+        (irreversible/instantaneous) form instead of widening again; if neither is possible, leave
+        it pinned (do not hard-code a value — there is no value/estimate tool, and a literal is a
+        magic number)."""
         return ctx.run_operation(
-            "change_parameter_bounds", ops_mod.change_parameter_bounds,
-            session, parameter_id, lower_bound, upper_bound, justification, references,
+            "change_parameters", ops_mod.change_parameters,
+            session, changes, justification, references,
         )
 
     @mcp.tool()
@@ -353,7 +348,8 @@ def _register_parameter_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         introducing your own.
 
         Values (`nominalValue`) are set by the automatic fit on commit; adjust bounds and
-        scale through `change_parameter_bounds` / `change_parameter_scale`.
+        scale through `change_parameters` (one batched call: a `changes` list whose entries
+        each carry `lower_bound`/`upper_bound` and/or `scale` for a parameter).
         """
         return param_mod.parameters_to_records(session.problem)
 
@@ -382,7 +378,7 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
     def fit(n_starts: int | None = None, justification: str = "") -> dict[str, Any]:
         """Fit the current working model and snapshot a version — the ONLY tool that fits.
 
-        Edits (`set_model`, `change_parameter_scale`, `change_parameter_bounds`) mutate the working
+        Edits (`set_model`, `change_parameters`) mutate the working
         model but do NOT fit — they leave it pending a score (`describe_problem` →
         `has_unfit_edits: true`). Assemble
         a coherent change through those edits, then call `fit` ONCE to score it: it fits the free
@@ -433,7 +429,7 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         reference (a fraction of its
         observable's own raw measurement std) regardless of whether it's at bound — a sigma
         approaching that reference is quietly doing the same thing as an at-bound parameter
-        (masking a mechanism problem behind inflated noise); `change_parameter_bounds` rejects
+        (masking a mechanism problem behind inflated noise); `change_parameters` rejects
         widening a sigma past it. Use this to check the score without pulling the dataframe;
         use `query_data` to query the measured-vs-simulated points and residuals with SQL.
         Refreshed on every commit; generated on demand if none exists.
