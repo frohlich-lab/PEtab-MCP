@@ -45,10 +45,11 @@ file="tools.md")`).
 - **Consistency is automatic.** After each operation the server *reconciles*
   SBML↔PEtab: new rate-law symbols become estimated model parameters (log10 scale by default,
   with bounds bracketing the nominal value), new species get a **parametric initial condition**
-  (`S = S_init`, with `S_init` added to the parameter table on a linear scale, *fixed*), and
+  (`S = S_init`, with `S_init` added to the parameter table, *estimated by default*), and
   orphaned entities are pruned. The parameter table therefore always matches the model.
-  - **Initial conditions are FIXED by default** (whether they are estimated is a fixed
-    per-scenario setting, not something you switch in-loop). Every edit's **`initial_conditions`**
+  - **Initial conditions are ESTIMATED by default** — except an IC of exactly `0` or `1`, or a
+    parameter the problem ships FIXED in the table that you reference by name as the IC; those stay
+    fixed (you don't switch this in-loop). Every edit's **`initial_conditions`**
     block reports each species' t=0 status (`fixed` / `estimated` / `condition_table`, and whether
     the declared t=0 is used) — read it rather than re-authoring to try to change an IC. *How* ICs
     reconcile is covered in the `antimony-authoring` skill.

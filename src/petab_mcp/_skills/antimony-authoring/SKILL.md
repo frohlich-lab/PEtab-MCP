@@ -52,16 +52,17 @@ end
 `set_model` and the edits don't just parse the Antimony — they **reconcile** it with the PEtab
 parameter table, then **lint** and **fit**. Author with this in mind:
 
-- **Every species gets a parametric initial condition, FIXED at its declared t=0.** The server
-  rewrites `A = 1.0` into `A = A_init` with `A_init` added to the parameter table (linear scale,
-  `estimate = 0` — *fixed at 1.0*). You may write `A = A_init; A_init = 1.0;` yourself, but you
-  don't have to. **Antimony cannot say "estimate this initial condition"** — the declared number
-  is only the t=0 *value*; whether it is fitted is a parameter-table property, not model text. So
-  writing the IC under a different name (`A_init`, `A_basal`, `p0_A`, a literal, an assignment
-  rule) never changes whether it's estimated — they all reconcile to the same fixed `A_init` and
-  fit identically. Whether initial conditions are estimated at all is set by the problem/scenario,
-  not switchable from the model, so **don't re-author trying to make one estimable.** Every commit
-  returns an **`initial_conditions`** block reporting, per species, whether its t=0 is `fixed`
+- **Every species gets a parametric initial condition, ESTIMATED by default.** The server rewrites
+  `A = 5.0` into `A = A_init` with `A_init` added to the parameter table, and the fit refines it (a
+  declared t=0 is only a starting guess) — EXCEPT an IC of exactly `0` (empty pool) or exactly `1`
+  (unit normalization), which stay FIXED, and **a parameter the problem ships FIXED in the parameter
+  table** (a literature baseline): reference it by NAME as the IC and it stays fixed. You may write
+  `A = A_init; A_init = 5.0;` yourself, but you don't have to. **Antimony cannot say "estimate this
+  initial condition"** — the declared number is only the t=0 *value*; whether it is fitted is a
+  parameter-table property, not model text. So writing the IC under a different name (`A_init`,
+  `A_basal`, `p0_A`, a literal, an assignment rule) never changes whether it's estimated — they all
+  reconcile identically, so **don't re-author trying to change an IC's estimate status.** Every
+  commit returns an **`initial_conditions`** block reporting, per species, whether its t=0 is `fixed`
   (declared value used), `estimated` (the fit sets it), or `condition_table` (set per condition) —
   read it to see the mode instead of guessing.
 - **New rate-law symbols become estimated parameters.** Any name in a rate law that isn't a
