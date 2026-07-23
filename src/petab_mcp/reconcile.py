@@ -69,14 +69,6 @@ def _ast_names(math) -> set[str]:
     return names
 
 
-def rate_law_symbols(rate_law: str) -> set[str]:
-    """Names referenced by a rate-law / expression string."""
-    math = libsbml.parseL3Formula(rate_law)
-    if math is None:
-        raise ValueError(f"Could not parse expression: {rate_law!r}")
-    return _ast_names(math)
-
-
 def _exponent_symbols(sm) -> set[str]:
     """Names that appear anywhere in an EXPONENT position (``base ** exponent``) across the
     model's reaction rate laws, rules, and initial assignments.
@@ -148,15 +140,6 @@ def parameter_ids(sm) -> set[str]:
     return {sm.getParameter(i).getId() for i in range(sm.getNumParameters())}
 
 
-def default_compartment(sm) -> str:
-    if sm.getNumCompartments() == 0:
-        c = sm.createCompartment()
-        c.setId("default_compartment")
-        c.setConstant(True)
-        c.setSize(1.0)
-    return sm.getCompartment(0).getId()
-
-
 # -- parametric initial conditions -----------------------------------------
 def _ic_symbol_for(sm, sid: str) -> str | None:
     """Return the parametric-IC parameter id for species ``sid`` if its initial assignment is
@@ -196,18 +179,6 @@ def _ic_expression_params(sm, sid: str) -> list[str]:
             names = _ast_names(ia.getMath())
             return sorted(n for n in names if sm.getParameter(n) is not None)
     return []
-
-
-def add_species_with_parametric_ic(sm, sid: str, initial_value: float = 0.0) -> None:
-    comp = default_compartment(sm)
-    sp = sm.createSpecies()
-    sp.setId(sid)
-    sp.setCompartment(comp)
-    sp.setHasOnlySubstanceUnits(False)
-    sp.setBoundaryCondition(False)
-    sp.setConstant(False)
-    sp.setInitialConcentration(float(initial_value))
-    _set_parametric_ic(sm, sid, float(initial_value))
 
 
 def _set_parametric_ic(sm, sid: str, value: float) -> str:
@@ -266,14 +237,6 @@ def ensure_parametric_initial_conditions(sm, skip_species: set[str] | None = Non
             value = sp.getInitialAmount()
         ic_params.append(_set_parametric_ic(sm, sid, value))
     return ic_params
-
-
-def add_parameter(sm, pid: str, value: float = 0.1) -> None:
-    if sm.getParameter(pid) is None:
-        p = sm.createParameter()
-        p.setId(pid)
-        p.setConstant(True)
-        p.setValue(float(value))
 
 
 # -- reference set ---------------------------------------------------------

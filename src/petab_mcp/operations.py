@@ -85,14 +85,20 @@ class OperationError(PetabMcpError):
 
 # -- commit pipeline -------------------------------------------------------
 def _observed_symbol_ids(problem) -> set[str]:
-    """Identifiers that appear in any observable formula — the 'observed' entities."""
+    """Identifiers that appear in any observable formula — the 'observed' entities.
+
+    Uses the canonical :func:`reconcile.formula_symbols` extractor (with its negative
+    lookbehind) rather than a bare ``[A-Za-z_]\\w*`` scan, so a scientific-notation literal
+    like ``1e5`` never leaks a bogus ``e5`` identifier — matching every other
+    formula-symbol site in the package.
+    """
     from petab.v1.C import OBSERVABLE_FORMULA
 
     ids: set[str] = set()
     obs_df = getattr(problem, "observable_df", None)
     if obs_df is not None and OBSERVABLE_FORMULA in obs_df.columns:
         for formula in obs_df[OBSERVABLE_FORMULA]:
-            ids |= set(re.findall(r"[A-Za-z_]\w*", str(formula)))
+            ids |= R.formula_symbols(formula)
     return ids
 
 

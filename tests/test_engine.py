@@ -16,12 +16,6 @@ def test_evaluate_objective(engine):
     assert {"observable_id", "condition_id", "time", "measurement", "simulation", "residual"} <= set(rec)
 
 
-def test_simulate(engine):
-    out = engine.simulate()
-    assert {"k1", "k2", "sigma_B", "A_init", "B_init"} == set(out["parameters"])
-    assert len(out["simulations"]) == 6
-
-
 def test_replicate_measurements_not_double_counted(engine, session):
     """Replicate measurements must not inflate n_data_points / chi2.
 

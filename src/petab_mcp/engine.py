@@ -170,49 +170,7 @@ class AmiciEngine:
             self.session.n_compiles += 1
         return self._models[h]
 
-    def _problem_parameters(self) -> dict[str, float]:
-        from petab.v1.C import NOMINAL_VALUE
-
-        df = self.session.problem.parameter_df
-        params: dict[str, float] = {}
-        for pid in df.index:
-            fval = finite_float(df.loc[pid, NOMINAL_VALUE])
-            if fval is not None:
-                params[pid] = fval
-        return params
-
-    def _simulate(self):
-        import warnings
-
-        from amici.sim.sundials.petab.v1 import simulate_petab
-
-        model = self._get_model()
-        params = self._problem_parameters()
-        with warnings.catch_warnings():
-            # Fixed/initial-condition/noise parameters (A_init, sigma_B, ...) are passed as
-            # problem_parameters but aren't ODE parameters, so AMICI warns "not used" on
-            # every simulation. That's expected here — silence it so it doesn't spam the log.
-            warnings.filterwarnings(
-                "ignore",
-                message="The following problem parameters were not used",
-                category=RuntimeWarning,
-            )
-            result = simulate_petab(
-                self.session.problem,
-                amici_model=model,
-                problem_parameters=params,
-                scaled_parameters=False,
-            )
-        return model, result, params
-
     # -- public API --------------------------------------------------------
-    def simulate(self) -> dict[str, Any]:
-        """Simulate all conditions with the current model + parameter values."""
-        with self.session.lock:
-            model, result, params = self._simulate()
-            records = self._simulation_records(model, result)
-        return {"parameters": params, "simulations": records}
-
     @staticmethod
     def _res_from_rdatas(rdatas) -> list[float] | None:
         """AMICI's complete residual vector across all conditions, or ``None``.
@@ -238,8 +196,8 @@ class AmiciEngine:
         """``(nllh, records, res)`` from the pyPESTO objective at the current nominal values.
 
         The single evaluation path for "what is this model's likelihood". It deliberately does
-        NOT go through :meth:`_simulate`: that builds a second AMICI model with its own
-        default-configured solver, and evaluating the likelihood there while the fit evaluated
+        NOT build a second AMICI model with its own default-configured solver (as a direct
+        ``simulate_petab`` call would): evaluating the likelihood there while the fit evaluated
         it through pyPESTO's objective is what let the two disagree — a converged fit could be
         recorded as NaN because the *other* path failed to integrate its optimum. Here the
         number the fit minimised and the number reported for it are produced by the same

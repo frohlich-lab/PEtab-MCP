@@ -86,8 +86,8 @@ def reauthor_key(structure_hash: str, parameter_df) -> str:
 
 
 def build_registry(session) -> list[dict[str, Any]]:
-    """Prior committed versions as ``{version, structure_hash, problem_hash, neg_log_likelihood,
-    bic}`` dicts, read from each version's stored meta.
+    """Prior committed versions as ``{version, structure_hash, neg_log_likelihood, bic}`` dicts,
+    read from each version's stored meta.
 
     Versions written before the ``structure_hash`` field existed are skipped — they simply do
     not participate in de-duplication. Never raises: bookkeeping must not break a commit.
@@ -104,7 +104,6 @@ def build_registry(session) -> list[dict[str, Any]]:
         registry.append({
             "version": meta.get("version"),
             "structure_hash": sh,
-            "problem_hash": meta.get("problem_hash"),
             "neg_log_likelihood": meta.get("neg_log_likelihood"),
             "bic": meta.get("bic"),
         })

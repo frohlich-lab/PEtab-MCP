@@ -194,6 +194,12 @@ class PetabSession:
                     self.best_version = ev.get("version")
                     nll = ev.get("neg_log_likelihood")
                     self.best_nll = float(nll) if nll is not None else None
+                    # Seed the checkpoint's adequacy too (persisted in the fit event). Without it
+                    # best_gof_pvalue stays None after a resume, so the best model reads as
+                    # never-adequate and the adequate-plateau stop can't fire (an older event
+                    # written before this field simply leaves it None, as before).
+                    gofp = ev.get("chi2_gof_pvalue")
+                    self.best_gof_pvalue = float(gofp) if gofp is not None else None
         except Exception:  # noqa: BLE001 - seeding is best-effort; a resume must never fail on it
             self.logger.warning("could not seed best-BIC checkpoint from provenance", exc_info=True)
 
@@ -714,12 +720,18 @@ class PetabSession:
 
             staged = list(self.pending_edits)
             nllh = fitsim.get("neg_log_likelihood")
+            # Persist the goodness-of-fit p-value in the fit meta + event so a durable resume can
+            # restore the best-BIC checkpoint's adequacy (see _seed_progress_from_provenance);
+            # the events otherwise carry bic/nll but not the p-value.
+            gof_pvalue = fitting.goodness_of_fit(
+                nllh, fitsim.get("chi2"), fitsim.get("n_estimated"),
+                fitsim.get("n_data_points")).get("chi2_gof_pvalue")
             version = self._snapshot_version(
                 label="fit",
                 kind="fit",
                 meta={"staged_edits": staged, "n_edits": len(staged),
                       "fit_status": fitsim.get("status"), "neg_log_likelihood": nllh,
-                      "chi2": fitsim.get("chi2"),
+                      "chi2": fitsim.get("chi2"), "chi2_gof_pvalue": gof_pvalue,
                       "fitted_parameters": fitsim.get("fitted_parameters"), **improvement},
                 sim=fitsim,
             )
@@ -728,7 +740,7 @@ class PetabSession:
                 {"type": "fit", "version": version, "justification": justification,
                  "staged_edits": staged, "n_edits": len(staged),
                  "fit_status": fitsim.get("status"), "neg_log_likelihood": nllh,
-                 "chi2": fitsim.get("chi2"),
+                 "chi2": fitsim.get("chi2"), "chi2_gof_pvalue": gof_pvalue,
                  "fitted_parameters": fitsim.get("fitted_parameters"), **improvement}
             )
             # Record this as an early-stop-chain op only when a real fit ran (simulate-only passes
