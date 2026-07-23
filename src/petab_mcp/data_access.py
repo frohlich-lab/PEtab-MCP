@@ -315,6 +315,11 @@ def fit_diagnosis(session, worst_n: int = 8) -> dict[str, Any]:
             "chi2": round(float((rw * rw).sum()), 3),
             "mean_weighted_residual": round(float(rw.mean()), 3),   # far from 0 => systematic bias
             "max_abs_weighted_residual": round(float(rw.abs().max()), 3),
+            # Sign-based structure tests (see _residual_structure): these survive estimated
+            # noise sigmas, which flatten the magnitude scores above. Isolated so a failure in
+            # the added stats degrades to "tests unavailable" rather than taking down the whole
+            # (pre-existing, robust) magnitude diagnosis for this observable.
+            **_safe_residual_structure(g),
         })
     per_observable.sort(key=lambda r: r["chi2"], reverse=True)
 
@@ -326,12 +331,125 @@ def fit_diagnosis(session, worst_n: int = 8) -> dict[str, Any]:
         "residual_weighted": round(float(r["_rw"]), 3),
     } for _, r in worst.iterrows()]
 
+    structure_flags = [o["observable_id"] for o in per_observable
+                       if o.get("structure_flag")]
+    # Low power is only a concern where nothing was flagged: a flagged observable already
+    # found its structure, so its tests being underpowered elsewhere (e.g. a runs test made
+    # undefined by an all-one-sign series that the sign test still flagged) is moot. This
+    # flag exists to warn that "nothing flagged" is weak evidence, so it must reflect only the
+    # unflagged, underpowered observables.
+    any_low_power = any(o.get("structure_low_power") and not o.get("structure_flag")
+                        for o in per_observable)
+
     return {
         "n_points": int(len(d)),
         "total_chi2": round(float((d["_rw"] * d["_rw"]).sum()), 3),
         "per_observable": per_observable,   # bounded: one row per observable
         "worst_points": worst_points,       # bounded: <= worst_n rows
+        # The residual-structure verdict, rolled up: which observables show a significant
+        # sign-test bias or runs-test time trend (p < 0.05), and whether the tests are
+        # underpowered at this sample size (so "nothing flagged" is weak, not reassuring).
+        "residual_structure": {
+            "flagged_observables": structure_flags,
+            "low_power": any_low_power,
+            "summary": _structure_summary(structure_flags, any_low_power),
+        },
         "hint": ("mean_weighted_residual far from 0 = a systematic over/under-shoot for that "
-                 "observable; worst_points show the largest model-vs-data deviations. For a full "
-                 "breakdown or the optimizer log, delegate to an analyst."),
+                 "observable; worst_points show the largest model-vs-data deviations. "
+                 "sign_test / runs_test detect bias and time trend from residual SIGNS, so they "
+                 "still work when estimated noise sigmas flatten chi2/reduced_chi2 — but are "
+                 "underpowered on few points (low_power), so read a non-significant result as "
+                 "weak, not as a pass. For a full breakdown or the optimizer log, delegate to "
+                 "an analyst."),
     }
+
+
+# p-value at/below which a residual-structure test is called significant in the rolled-up
+# verdict (the per-test p-values are always reported raw, so a caller can judge for itself).
+_STRUCTURE_ALPHA = 0.05
+
+
+def _safe_residual_structure(group) -> dict[str, Any]:
+    """:func:`_residual_structure`, but any failure in the added stats degrades to a
+    tests-unavailable stub instead of taking down the whole diagnosis (which the magnitude
+    aggregations above compute robustly). fit_diagnosis is called by the agent's
+    get_fit_diagnosis AND by the judge, so a raise here must not break either."""
+    try:
+        return _residual_structure(group)
+    except Exception:  # noqa: BLE001 - advisory stats; never fail the diagnosis on them
+        return {"sign_test": None, "runs_test": None,
+                "structure_flag": False, "structure_low_power": True}
+
+
+def _residual_structure(group) -> dict[str, Any]:
+    """Sign-test + runs-test summary for one observable's residuals (see
+    :mod:`petab_mcp.residual_tests`).
+
+    BOTH tests are per (condition) SERIES, then Fisher-combined across conditions into one
+    p-value each. The runs test must be per-series (a runs test across conditions would invent
+    spurious runs at the boundaries); the SIGN test is per-series too, so that opposite biases
+    in different conditions — an over-shoot in one, an under-shoot in another — do not cancel
+    into a spuriously balanced pooled count and hide a real systematic bias. Replicate points
+    sharing a (condition, time) are AVERAGED to one residual first: replicates are not an
+    independent draw of the residual's sign, and leaving them in would let a high-replicate
+    timepoint dominate.
+
+    ``group`` is the observable's rows from :func:`fit_diagnosis`, already restricted to points
+    with a weighted residual; the raw ``residual`` (same sign, sigma being positive) is the sign
+    source. Conditions are iterated once, collecting both per-series p-values and the usable
+    (non-zero) point count that gauges power.
+    """
+    from . import residual_tests as rt
+
+    g = group.copy()
+    g["_r"] = g["residual"].astype(float)
+    # Average replicates to one residual per (condition, time), then order by time per series.
+    collapsed = (g.groupby(["condition_id", "time"], dropna=False)["_r"].mean()
+                 .reset_index())
+
+    sign_ps: list[float] = []
+    runs_ps: list[float] = []
+    n_pos = n_neg = 0
+    usable = 0  # total non-zero, finite points across series — the real power denominator
+    for _cond, s in collapsed.groupby("condition_id", dropna=False):
+        vals = s.sort_values("time")["_r"].tolist()
+        st = rt.sign_test(vals)
+        n_pos += st["n_pos"]
+        n_neg += st["n_neg"]
+        usable += st["n"]
+        if st["p"] is not None:
+            sign_ps.append(st["p"])
+        rres = rt.runs_test(vals)
+        if rres["p"] is not None:
+            runs_ps.append(rres["p"])
+
+    sign_p = rt.fisher_combine(sign_ps)
+    runs_p = rt.fisher_combine(runs_ps)
+    # Power is the usable-point count, not raw len (which counts exact-zero timepoints the tests
+    # drop). A runs test additionally needs a computable series (both signs present somewhere).
+    low_power = usable < rt.MIN_POWER_N
+    sig_bias = sign_p is not None and sign_p < _STRUCTURE_ALPHA
+    sig_trend = runs_p is not None and runs_p < _STRUCTURE_ALPHA
+    return {
+        "sign_test": {"n_pos": n_pos, "n_neg": n_neg, "p": _round_p(sign_p),
+                      "n_series": len(sign_ps), "low_power": low_power},
+        "runs_test": {"p": _round_p(runs_p), "n_series": len(runs_ps),
+                      "low_power": low_power or not runs_ps},
+        "structure_flag": bool(sig_bias or sig_trend),
+        "structure_low_power": bool(low_power or not runs_ps),
+    }
+
+
+def _round_p(p: float | None) -> float | None:
+    return None if p is None else round(float(p), 4)
+
+
+def _structure_summary(flagged: list[str], low_power: bool) -> str:
+    if flagged:
+        return (f"systematic residual structure in {', '.join(flagged)} "
+                f"(sign-test bias or runs-test time trend, p < {_STRUCTURE_ALPHA}) — "
+                "the model's FORM is missing something for those observables.")
+    if low_power:
+        return ("no significant residual structure, but the tests are UNDERPOWERED at this "
+                "sample size — this is weak evidence of adequacy, not a pass.")
+    return "no significant residual structure detected (residuals look sign-random)."

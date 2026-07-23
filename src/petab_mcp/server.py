@@ -544,11 +544,21 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         """A COMPACT, size-bounded residual diagnosis of the current fit — where/how it is off.
 
         Fixed aggregations (NOT open SQL): one row per observable with its weighted `chi2`,
-        `mean_weighted_residual` (bias — far from 0 = a systematic over/under-shoot), and worst
-        |residual|; plus the `worst_n` largest-residual points (measurement vs simulation). Use
-        this to locate a poor fit cheaply, without pulling the raw per-point data. For a full
-        custom breakdown use `query_data`; for the optimizer log use `get_fitting_log`. The
-        simulation dataframe is generated on demand if no commit has produced one yet.
+        `mean_weighted_residual` (bias — far from 0 = a systematic over/under-shoot), worst
+        |residual|, and two SIGN-based structure tests — `sign_test` (bias) and `runs_test`
+        (time trend / serial correlation), each with a `p` and a `low_power` flag; plus the
+        `worst_n` largest-residual points (measurement vs simulation) and a rolled-up
+        `residual_structure` verdict naming any observable with significant structure.
+
+        The sign/runs tests exist BECAUSE `chi2`/`reduced_chi2`/`chi2_gof_pvalue` are
+        uninformative when the noise sigmas are ESTIMATED (a free sigma inflates to absorb
+        misfit, so magnitude scores pin near their null however wrong the FORM is). Reading only
+        residual SIGNS, these still detect a systematic bias or drift the magnitude scores miss.
+        They have low power on few points, though: treat `low_power` non-significant results as
+        weak evidence, NOT a pass, and never as a hard finish gate. Use this to locate a poor
+        fit cheaply; for a full custom breakdown use `query_data`, for the optimizer log
+        `get_fitting_log`. The simulation dataframe is generated on demand if no commit has
+        produced one yet.
         """
         def run() -> dict[str, Any]:
             if session.simulation is None or not session.simulation.get("records"):

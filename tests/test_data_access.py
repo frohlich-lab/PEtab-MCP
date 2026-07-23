@@ -313,3 +313,22 @@ def test_fit_diagnosis_compact_and_bounded(session):
     # worst_points bounded to worst_n and ordered by |residual_weighted|
     assert len(out["worst_points"]) == 2
     assert abs(out["worst_points"][0]["residual_weighted"]) == pytest.approx(2.0)
+    # residual-structure tests are attached per observable and rolled up
+    assert "sign_test" in per["obs_A"] and "runs_test" in per["obs_A"]
+    assert "residual_structure" in out
+    # too few points here -> flagged underpowered, so "nothing flagged" is not a pass
+    assert out["residual_structure"]["low_power"] is True
+
+
+def test_fit_diagnosis_flags_systematic_bias(session):
+    """A one-sided residual series must be flagged by the sign test through fit_diagnosis."""
+    session.simulation = {"records":
+                          [_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0)
+                           for t in range(10)]}
+    out = data_access.fit_diagnosis(session)
+    row = out["per_observable"][0]
+    assert row["sign_test"]["n_pos"] == 10 and row["sign_test"]["n_neg"] == 0
+    assert row["sign_test"]["p"] is not None and row["sign_test"]["p"] < 0.01
+    assert row["structure_flag"] is True
+    assert "obs_A" in out["residual_structure"]["flagged_observables"]
+    assert out["residual_structure"]["low_power"] is False  # 10 points -> powered
