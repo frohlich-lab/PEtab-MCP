@@ -213,19 +213,66 @@ class AmiciEngine:
             records = self._simulation_records(model, result)
         return {"parameters": params, "simulations": records}
 
+    @staticmethod
+    def _res_from_rdatas(rdatas) -> list[float] | None:
+        """AMICI's complete residual vector across all conditions, or ``None``.
+
+        The chi2 fallback source (see :meth:`_chi2`): when a point has a residual but no
+        petab-weighted one — its noise formula could not be evaluated — the record-based sum
+        would undercount, and AMICI's own ``res`` still covers every point. ``simulate_petab``
+        used to hand this over as ``result[RES]``; taking the objective's route instead, it has
+        to be gathered off the per-condition ``ReturnData``. Returns ``None`` if any condition
+        lacks one (an AMICI build or reporting mode that does not populate ``res``), so the
+        caller falls through to an honest missing score rather than a partial sum. Only the sum
+        of squares is used, so ordering across conditions does not matter.
+        """
+        out: list[float] = []
+        for rd in rdatas:
+            r = getattr(rd, "res", None)
+            if r is None or len(r) == 0:
+                return None
+            out.extend(float(v) for v in r)
+        return out or None
+
+    def _objective_evaluate(self):
+        """``(nllh, records, res)`` from the pyPESTO objective at the current nominal values.
+
+        The single evaluation path for "what is this model's likelihood". It deliberately does
+        NOT go through :meth:`_simulate`: that builds a second AMICI model with its own
+        default-configured solver, and evaluating the likelihood there while the fit evaluated
+        it through pyPESTO's objective is what let the two disagree — a converged fit could be
+        recorded as NaN because the *other* path failed to integrate its optimum. Here the
+        number the fit minimised and the number reported for it are produced by the same
+        objective, so they cannot drift.
+
+        Per-point records still come from AMICI's ``ReturnData``: pyPESTO hands them back when
+        the objective is called with ``return_dict=True`` (it switches AMICI to full reporting),
+        so the simulation dataframe is unchanged.
+        """
+        from amici.sim.sundials.petab.v1 import RDATAS
+        from pypesto.C import FVAL
+        from pypesto.C import RDATAS as PP_RDATAS
+
+        from . import fitting
+
+        problem, _ = fitting.estimation_problem(self.session, self)
+        x = fitting.problem_x_from_nominal(problem, self.session.problem.parameter_df)
+        ret = problem.objective(x, sensi_orders=(0,), return_dict=True)
+        rdatas = ret[PP_RDATAS]
+        # pyPESTO's fval IS the negative log-likelihood it minimises.
+        nllh = finite_float(ret[FVAL])
+        records = self._simulation_records(problem.objective.amici_model, {RDATAS: rdatas})
+        return nllh, records, self._res_from_rdatas(rdatas)
+
     def evaluate_objective(self) -> dict[str, Any]:
         """Score the current model + parameters against the fixed measurements."""
-        from amici.sim.sundials.petab.v1 import LLH, RES
-
         with self.session.lock:
-            model, result, params = self._simulate()
-            records = self._simulation_records(model, result)
+            nllh, records, res = self._objective_evaluate()
 
-        llh = float(result[LLH])
-        chi2 = self._chi2(records, result.get(RES))
+        chi2 = self._chi2(records, res)
         return {
-            "neg_log_likelihood": -llh,
-            "log_likelihood": llh,
+            "neg_log_likelihood": nllh,
+            "log_likelihood": -nllh if nllh is not None else None,
             "chi2": chi2,
             "n_data_points": len(records),
             "simulations": records,
@@ -240,47 +287,79 @@ class AmiciEngine:
         back the ``simulations`` table exposed for SQL analysis via
         :mod:`petab_mcp.data_access`.
         """
-        from amici.sim.sundials.petab.v1 import LLH, RES
-
         with self.session.lock:
-            model, result, params = self._simulate()
-            records = self._simulation_records(model, result)
+            nllh, records, res = self._objective_evaluate()
 
-        llh = float(result[LLH])
+        n_expected, n_missing = self.simulation_gap(records)
         return {
-            "neg_log_likelihood": -llh,
-            "chi2": self._chi2(records, result.get(RES)),
+            "neg_log_likelihood": nllh,
+            "chi2": self._chi2(records, res),
             "n_data_points": len(records),
+            # How many measured points the trajectory never reached. Non-zero is why an
+            # llh comes back NaN, so it travels with the payload instead of being
+            # discoverable only by querying per-point records for nulls.
+            "n_expected_points": n_expected,
+            "n_missing_simulations": n_missing,
             "records": records,
         }
 
     # -- helpers -----------------------------------------------------------
     @staticmethod
-    def _chi2(records: list[dict[str, Any]], res=None) -> float | None:
-        """Chi2 = sum of squared noise-weighted residuals.
+    def _expected_points(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """The points that contribute to the objective: every measured point.
+
+        A measurement contributes whether or not the simulation reached it — the
+        neg-log-likelihood sums over all of them — so this, not the set that happens to
+        have a residual, is the denominator chi2 must cover.
+        """
+        return [r for r in records if r.get("measurement") is not None]
+
+    @classmethod
+    def simulation_gap(cls, records: list[dict[str, Any]]) -> tuple[int, int]:
+        """``(n_expected, n_missing)`` — measured points, and how many the simulation
+        never reached (integration failed/stopped early, so ``simulation`` came back
+        NaN and :func:`finite_float` turned it into ``None``).
+
+        ``n_missing > 0`` means the trajectory is incomplete: AMICI's llh is NaN for
+        that evaluation, and any chi2 computed from the surviving points would describe
+        a different (smaller) dataset than ``n_data_points``.
+        """
+        expected = cls._expected_points(records)
+        missing = sum(1 for r in expected if r.get("residual") is None)
+        return len(expected), missing
+
+    @classmethod
+    def _chi2(cls, records: list[dict[str, Any]], res=None) -> float | None:
+        """Chi2 = sum of squared noise-weighted residuals, or ``None`` if incomplete.
 
         Prefers the petab-canonical weighted residuals in ``records`` (which equal
         ``petab.v1.calculate.calculate_chi2``), but only when they are available for
-        *every* point that contributes to the objective. A point can have a residual
-        yet no weighted residual (its noise formula could not be evaluated); summing
-        only the available terms would undercount and disagree with the reported
-        neg-log-likelihood. In that mixed case we fall back to AMICI's complete
-        ``RES`` vector, and use the partial weighted sum only as a last resort when
-        ``RES`` is unavailable too. This keeps chi2 well-defined across AMICI versions
-        (some do not populate ``RES``) without silently under-reporting it.
+        *every* point that contributes to the objective — a point can be missing its
+        weighted residual either because its noise formula could not be evaluated, or
+        because the simulation never reached it. Summing only the available terms would
+        undercount and disagree with the reported neg-log-likelihood: a model whose
+        trajectory dies a third of the way through the time course would otherwise report
+        a plausible finite chi2 over the points it did reach, scored against the FULL
+        ``n_data_points`` (wrong dof, wrong reduced_chi2, wrong GoF p-value) while its
+        nll went NaN. So an incomplete set falls back to AMICI's complete ``RES`` vector,
+        and failing that returns ``None`` — an honestly missing score that
+        :func:`fitting.goodness_of_fit` already handles — rather than a partial sum that
+        is indistinguishable from a real one.
         """
-        contributing = [r for r in records if r.get("residual") is not None]
+        expected = cls._expected_points(records)
+        contributing = [r for r in expected if r.get("residual") is not None]
         weighted = [r.get("residual_weighted") for r in contributing]
-        if contributing and all(w is not None for w in weighted):
+        complete = len(contributing) == len(expected)
+        if complete and contributing and all(w is not None for w in weighted):
             return float(sum(w * w for w in weighted))
         if res is not None:
             import numpy as np
 
             arr = np.asarray(res, dtype=float)
-            if arr.size:
+            # A partial simulation leaves NaN in RES too; only a finite total is usable.
+            if arr.size and np.all(np.isfinite(arr)):
                 return float(np.sum(arr**2))
-        present = [w for w in weighted if w is not None]
-        return float(sum(w * w for w in present)) if present else None
+        return None
 
     def _noise_context(self):
         """Symbolic noise formulas + tables needed to evaluate weighted residuals.

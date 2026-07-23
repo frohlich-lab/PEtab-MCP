@@ -8,6 +8,7 @@ table are mutable, and every committed change is snapshotted as a version and lo
 
 from __future__ import annotations
 
+import math
 import threading
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,18 @@ _STRUCTURAL_PLATEAU_ADVICE = (
     "specific answer) — add a latent / unobserved state; add a feedback / regulation reaction; or "
     "raise the interaction order (linear -> nonlinear / higher-order) — and re-author it with "
     "set_model."
+)
+
+# Appended instead of the structural nudge when a stall happened without ever scoring a model.
+# Not a modelling problem: the likelihood could not be evaluated (typically the simulation does
+# not reach every measured timepoint), so no fit produced a comparable BIC.
+_UNSCORED_STALL_ADVICE = (
+    "No fit in this run produced a usable score, so there is no best model to compare against: "
+    "this is an EVALUATION failure, not evidence about the model's form. The likelihood is "
+    "undefined when the simulation does not reach every measured timepoint — check "
+    "get_fit_summary's n_missing_simulations and the per-point records for unsimulated points, "
+    "and address why the trajectory stops (stiffness / a parameter pinned at a bound / an "
+    "unbounded rate) before drawing any conclusion about the structure."
 )
 
 
@@ -172,6 +185,10 @@ class PetabSession:
                 if bic is None:
                     continue
                 bic = float(bic)
+                # Skip non-finite scores from older events, so a resume can't seed the
+                # checkpoint with a NaN that no later fit could beat (see record_fit_progress).
+                if not math.isfinite(bic):
+                    continue
                 if self.best_bic is None or bic < self.best_bic:
                     self.best_bic = bic
                     self.best_version = ev.get("version")
@@ -489,14 +506,23 @@ class PetabSession:
         is_new_best = bool(improvement.get("is_new_best"))
 
         with self.lock:
-            if is_new_best:
+            # `bic is not None` is NOT enough: a NaN is a float, so a fit whose likelihood
+            # came back non-finite would be adopted as the checkpoint and then never beaten
+            # (every later `bic <= NaN - delta` is False). goodness_of_fit already maps
+            # non-finite scores to None; this is the belt-and-braces guard at the write site,
+            # so the checkpoint invariant — "best_bic is a real, beatable number" — holds
+            # locally no matter how the score was produced.
+            usable = bic is not None and math.isfinite(bic)
+            if is_new_best and usable:
                 self.non_improving_streak = 0
-                if bic is not None:
-                    self.best_bic = bic
-                    self.best_version = version
-                    self.best_nll = nll
-                    self.best_gof_pvalue = gof_p
+                self.best_bic = bic
+                self.best_version = version
+                self.best_nll = nll
+                self.best_gof_pvalue = gof_p
             else:
+                # An unscoreable fit is not progress: it advances the streak like any other
+                # non-improving op, so a model that keeps failing to evaluate still trips the
+                # stall cap instead of resetting it forever.
                 self.non_improving_streak += 1
 
             self.op_history.append({
@@ -547,10 +573,16 @@ class PetabSession:
                     f"best BIC improved by only {bic_gain_over_window:.3g} over the last "
                     f"{PLATEAU_WINDOW} ops (< {PLATEAU_MIN_BIC_GAIN})."
                 )
+            # A stall with NO checkpoint at all is a different diagnosis: nothing has ever
+            # produced a usable score, so the fits are failing to evaluate rather than the
+            # model's form failing to fit. Telling the agent to change the STRUCTURE there
+            # sends it re-authoring models to escape what is actually an evaluation problem.
+            if stop_reason is not None and self.best_version is None:
+                stop_reason = f"{stop_reason} {_UNSCORED_STALL_ADVICE}"
             # The structural-inadequacy nudge fires only when a stop coincides with a best model
             # that is NOT adequate — appending "the model's FORM cannot fit" to an adequate stop
             # would contradict it. (An adequate plateau is a success stop.)
-            if stop_reason is not None and not best_adequate:
+            elif stop_reason is not None and not best_adequate:
                 stop_reason = f"{stop_reason} {_STRUCTURAL_PLATEAU_ADVICE}"
             return {
                 "n_fitted_ops": n_ops,

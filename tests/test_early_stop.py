@@ -178,3 +178,70 @@ def test_running_report_has_no_stop_reason_and_no_nudge(session):
     p = session.progress_report()
     assert p["should_stop"] is False
     assert p["stop_reason"] is None
+
+
+# --- (e) non-finite scores must never become the checkpoint --------------------------------
+# Regression for the crauste sweep run whose FIRST fit returned a NaN neg-log-likelihood: NaN
+# is a float, so it passed the old `bic is not None` guard, became best_bic, and then locked
+# the run out for good — every later `bic <= NaN - delta` is False, so no fit could ever be a
+# new best again. 16 fits, 73 minutes, and an unscoreable result.
+def test_nan_nll_yields_no_bic_at_all():
+    """The upstream chokepoint: a non-finite likelihood is a MISSING score, not a NaN score."""
+    g = fitting.goodness_of_fit(float("nan"), 145.98, 10, 21)
+    assert g["bic"] is None and g["aic"] is None
+    assert fitting.goodness_of_fit(float("inf"), 145.98, 10, 21)["bic"] is None
+    # a non-finite chi2 likewise yields no chi2-based scores, but the bic still stands
+    g2 = fitting.goodness_of_fit(-50.0, float("nan"), 2, 20)
+    assert g2["bic"] is not None
+    assert g2["reduced_chi2"] is None and g2["chi2_gof_pvalue"] is None
+
+
+def test_nan_first_fit_does_not_become_the_checkpoint(session):
+    """A NaN first fit must leave the checkpoint unset, so the NEXT good fit can claim it."""
+    session.record_fit_progress(1, _fitsim(float("nan"), 145.98, n=21, k=10),
+                                {"is_new_best": True})
+    p = session.progress_report()
+    assert p["best_version"] is None
+    assert p["best_bic"] is None
+    assert p["non_improving_streak"] == 1   # an unscoreable fit is not progress
+
+    # The next real fit is a legitimate new best and claims the checkpoint.
+    fs = _fitsim(266.62, 100.0, n=21, k=10)
+    imp = fitting.compute_improvement(session, nllh=266.62, objective_before=8377.0, fitsim=fs)
+    assert imp["is_new_best"] is True
+    session.record_fit_progress(2, fs, imp)
+    p = session.progress_report()
+    assert p["best_version"] == 2
+    assert p["best_bic"] == pytest.approx(fitting.goodness_of_fit(266.62, 100.0, 10, 21)["bic"])
+    assert p["non_improving_streak"] == 0
+
+
+def test_improving_fits_are_never_locked_out_by_a_poisoned_checkpoint(session):
+    """Belt-and-braces: even if a NaN reaches best_bic, later fits must still be comparable.
+
+    This is the exact shape of the lost run — a NaN checkpoint followed by fits at BIC 580,
+    569 and 519 — none of which could register under the old comparison.
+    """
+    session.best_bic, session.best_version, session.best_nll = float("nan"), 1, float("nan")
+    for bic_target in (580.97, 569.19, 519.86):
+        # BIC = k·ln(n) + 2·nll  =>  nll = (bic - k·ln(n)) / 2
+        import math
+        nll = (bic_target - 10 * math.log(21)) / 2
+        fs = _fitsim(nll, 100.0, n=21, k=10)
+        imp = fitting.compute_improvement(session, nllh=nll, objective_before=8377.0, fitsim=fs)
+        assert imp["is_new_best"] is True, f"BIC {bic_target} must be able to beat a NaN"
+        session.record_fit_progress(2, fs, imp)
+        assert session.best_bic == pytest.approx(bic_target)
+
+
+def test_stall_without_any_checkpoint_reports_an_evaluation_failure(session):
+    """A stall where nothing ever scored is an EVALUATION problem: the stop_reason must say so
+    instead of blaming the model's structure and sending the agent re-authoring."""
+    for v in range(1, 2 + NON_IMPROVING_STREAK_CAP):
+        session.record_fit_progress(v, _fitsim(float("nan"), 145.98, n=21, k=10),
+                                    {"is_new_best": True})
+    reason = session.progress_report()["stop_reason"].lower()
+    assert "evaluation failure" in reason
+    assert "n_missing_simulations" in reason
+    assert "structural inadequacy" not in reason
+    assert "set_model" not in reason

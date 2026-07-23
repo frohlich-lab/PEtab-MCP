@@ -401,6 +401,97 @@ def _optimization_payload(result) -> dict[str, Any]:
     return {"n_starts": len(starts), "starts": starts, "trace": trace}
 
 
+def estimation_problem(session, engine):
+    """The pyPESTO problem for the session's CURRENT estimation problem, cached on the engine.
+
+    ONE pyPESTO problem now serves both jobs that need a likelihood: the multistart fit, and
+    every plain evaluation of the objective (:meth:`AmiciEngine.evaluate_objective` /
+    :meth:`AmiciEngine.residuals`). That unification is the fix for a class of bug, not just an
+    optimisation — while the fit and the evaluation each built their own AMICI model and their
+    own solver, the two could disagree about the very same likelihood at the very same
+    parameters, and did: a crauste fit converged at nll 266.62 while re-simulating its optimum
+    failed to integrate past t=22 and reported NaN. Sharing the objective makes "the nll of
+    this fit" a single number computed one way.
+
+    It also halves the compiling: the fit used to build ``petab_mcp_pp_<hash>`` while the engine
+    built ``petab_mcp_<hash>`` from the same SBML — two full C++ builds of one structure, ~80s
+    each on a cluster node.
+
+    Cached on ``engine`` under :meth:`session.problem_hash` — the model AND the parameter table,
+    since pyPESTO bakes bounds/scales/fixed values into the problem at construction, so a
+    bounds edit (or the nominal-value write-back after a fit) must rebuild it. Rebuilding is
+    cheap relative to a compile: the AMICI module is keyed on the SBML hash alone and is reused.
+
+    Returns ``(problem, inner_scales)`` — see :func:`_build_hierarchical_problem` for the
+    latter (``{}`` for an ordinary joint problem).
+    """
+    import pypesto.petab
+
+    key = session.problem_hash()
+    cached = getattr(engine, "_estimation_problem_cache", None)
+    if cached is not None and cached[0] == key:
+        return cached[1], cached[2]
+
+    h = session.sbml_hash()
+    # Charge the (one-time) model build to the compile bucket only the FIRST time a structure
+    # is seen, mirroring the engine's own `_models` guard: rebuilding the pyPESTO problem for a
+    # changed parameter table reuses the compiled module and must not count as a compile.
+    first_build = h not in engine._pypesto_hashes
+    t0 = time.perf_counter()
+    importer_kwargs = engine.pypesto_importer_kwargs(h)
+    # Prefer a hierarchical objective (inner-solve the noise sigmas / observable-scaling
+    # factors, shrinking the outer search) when the problem has cleanly-separable inner
+    # parameters; fall back to the ordinary joint objective otherwise.
+    problem, inner_scales = _build_hierarchical_problem(session, importer_kwargs)
+    if problem is None:
+        importer = pypesto.petab.PetabImporter(session.problem, **importer_kwargs)
+        problem = importer.create_problem()
+        inner_scales = {}
+    if first_build:
+        session.compile_seconds += time.perf_counter() - t0
+        session.n_compiles += 1
+        engine._pypesto_hashes.add(h)
+
+    engine._estimation_problem_cache = (key, problem, inner_scales)
+    return problem, inner_scales
+
+
+def problem_x_from_nominal(problem, parameter_df) -> list[float]:
+    """The pyPESTO parameter vector for the current ``nominalValue``s.
+
+    Returns the FREE parameters only, in ``x_free_indices`` order — the convention a
+    problem-bound objective expects: :meth:`pypesto.Problem.__init__` rewrites its objective to
+    take the reduced vector and re-insert ``x_fixed_vals`` itself. (An optimizer *result*'s
+    ``x``, by contrast, is full-dimensional — see :func:`_fitted_values`. The two differ, which
+    is easy to get wrong: passing the full vector raises a bare numpy shape mismatch.)
+
+    Values are expressed on each parameter's ESTIMATION scale, whereas the session's table
+    holds linear ones. ``problem.x_scales`` is the authority on the scale — not the session's
+    table — because a hierarchical problem is built from a modified copy (sigma parameters are
+    forced to a linear scale there).
+
+    Fixed parameters are pyPESTO's baked-in values, not the table's; that stays correct because
+    :func:`estimation_problem` caches on ``session.problem_hash()``, which changes whenever any
+    parameter's value/bounds/scale/estimate does, forcing a rebuild.
+    """
+    from petab.v1.parameters import scale as petab_scale
+
+    full: list[float] = []
+    for name, sc in zip(problem.x_names, problem.x_scales):
+        val = _flt(parameter_df.loc[name, NOMINAL_VALUE]) if name in parameter_df.index else None
+        if val is None:
+            # No usable nominal value (a parameter pyPESTO knows about that the table doesn't,
+            # or a NaN cell): leave pyPESTO's own value in place rather than silently zeroing.
+            fixed = dict(zip(problem.x_fixed_indices, problem.x_fixed_vals))
+            full.append(float(fixed.get(len(full), 0.0)))
+            continue
+        full.append(float(petab_scale(val, sc)))
+    free = getattr(problem, "x_free_indices", None)
+    if free is None:
+        return full
+    return [full[i] for i in free]
+
+
 def _run_fit(session, engine, n_starts: int, seed: int = 0) -> dict[str, Any]:
     """Estimate the free parameters with pyPESTO and write the best fit back.
 
@@ -420,7 +511,13 @@ def _run_fit(session, engine, n_starts: int, seed: int = 0) -> dict[str, Any]:
 
     log = session.logger
     # objective at the current nominal values, for improvement tracking
-    objective_before = float(engine.evaluate_objective()["neg_log_likelihood"])
+    # May be None: `evaluate_objective` reports a non-finite likelihood as a MISSING score, and
+    # an unstable model at its pre-fit nominal values legitimately has one. That is not a reason
+    # to refuse to fit it — the multistart samples its own start points and can still find a
+    # good optimum — so carry the missing value through (compute_improvement and _fmt both
+    # handle None) instead of `float(None)`, which would abort the fit and, via
+    # `_compile_fit_failure_message`, tell the agent its model is ill-posed for estimation.
+    objective_before = _flt(engine.evaluate_objective()["neg_log_likelihood"])
 
     # Reuse a previous fit of this exact estimation problem instead of re-optimizing: the
     # cache is keyed on the problem identity (model + bounds/scale/estimate + fixed values +
@@ -442,30 +539,12 @@ def _run_fit(session, engine, n_starts: int, seed: int = 0) -> dict[str, Any]:
                     "objective_before": objective_before, "optimization": opt}
     session.last_fit_cache_hit = False
 
-    h = session.sbml_hash()
-    # pyPESTO builds its OWN AMICI model (a second compile of the same structure, under a
-    # distinct module name). Charge it to the compile bucket like the engine's build, but —
-    # mirroring the engine's `_models` guard — only the FIRST time this structure is built:
-    # a re-fit of the same SBML (e.g. a parameter-bound edit) reuses the compiled module, so
-    # counting it again would over-report compiles. Runs under `session.lock` (the caller
-    # holds it), so both the accumulator writes and the `_pypesto_hashes` update are safe.
-    _first_pypesto_build = h not in engine._pypesto_hashes
-    _compile_t0 = time.perf_counter()
-    _importer_kwargs = engine.pypesto_importer_kwargs(h)
-    # Prefer a hierarchical objective (inner-solve the noise sigmas / observable-scaling factors,
-    # shrinking the outer search) when the problem has cleanly-separable inner parameters; fall
-    # back to the ordinary joint objective otherwise. Best-effort: never fails a viable fit.
-    problem, inner_scales = _build_hierarchical_problem(session, _importer_kwargs)
-    hierarchical = problem is not None
+    # The SAME problem the engine evaluates the objective against (see estimation_problem):
+    # one AMICI model, one solver, one notion of this model's likelihood.
+    problem, inner_scales = estimation_problem(session, engine)
+    hierarchical = bool(inner_scales)
     if hierarchical:
         log.info("fit: hierarchical objective (inner params: %s)", sorted(inner_scales))
-    else:
-        importer = pypesto.petab.PetabImporter(session.problem, **_importer_kwargs)
-        problem = importer.create_problem()
-    if _first_pypesto_build:
-        session.compile_seconds += time.perf_counter() - _compile_t0
-        session.n_compiles += 1
-        engine._pypesto_hashes.add(h)
 
     free = getattr(problem, "x_free_indices", None)
     n_free = len(free) if free is not None else len(problem.x_names)
@@ -476,7 +555,8 @@ def _run_fit(session, engine, n_starts: int, seed: int = 0) -> dict[str, Any]:
     workers = getattr(pp_engine, "n_procs", 1) or 1
     log.info(
         "fit: start optimizer=fides n_starts=%d workers=%d seed=%d n_free=%d sbml=%s "
-        "objective_before=%s", n_starts, workers, seed, n_free, h, _fmt(objective_before),
+        "objective_before=%s", n_starts, workers, seed, n_free, session.sbml_hash(),
+        _fmt(objective_before),
     )
     # Fides: a Newton trust-region optimizer that exploits AMICI's sensitivities; more
     # robust than the default L-BFGS-B on stiff ODE likelihoods. Its per-iteration logging
@@ -554,7 +634,8 @@ def _run_fit(session, engine, n_starts: int, seed: int = 0) -> dict[str, Any]:
     log.info(
         "fit: done best_nllh=%s self_improvement=%s time=%.2fs starts=%d converged~%d "
         "fval[min/max]=%s/%s fitted=%s",
-        _fmt(nllh), _fmt(objective_before - nllh), duration, len(fvals), n_converged,
+        _fmt(nllh), _fmt(objective_before - nllh if objective_before is not None else None),
+        duration, len(fvals), n_converged,
         _fmt(min(fvals) if fvals else None), _fmt(max(fvals) if fvals else None),
         {k: round(v, 6) for k, v in fitted.items()},
     )
@@ -574,6 +655,63 @@ def _run_fit(session, engine, n_starts: int, seed: int = 0) -> dict[str, Any]:
         })
     return {"fitted": fitted, "neg_log_likelihood": nllh, "objective_before": objective_before,
             "optimization": optimization}
+
+
+#: Relative gap between the optimizer's objective and the re-simulated one above which the
+#: two are reported as disagreeing. Both evaluate the same likelihood at the same parameters,
+#: so anything past a loose numerical tolerance means the two evaluations differ in substance
+#: (solver settings, or a parameter that did not round-trip), not in rounding.
+OBJECTIVE_AGREEMENT_RTOL = 1e-3
+
+
+def _reconcile_objective(session, fit: dict[str, Any] | None,
+                         sim: dict[str, Any]) -> tuple[float | None, str | None]:
+    """Pick the authoritative neg-log-likelihood for a fit, returning ``(nllh, note)``.
+
+    Two numbers claim to be "the" nll of a fitted model: the objective pyPESTO minimised
+    (``fit["neg_log_likelihood"]``, its best start's ``fval``) and the one obtained by
+    re-simulating at the written-back parameters (``sim["neg_log_likelihood"]``). They are
+    the same quantity at the same point and normally agree — but not always: the
+    re-simulation goes through :meth:`AmiciEngine.residuals`, whose ``simulate_petab`` call
+    uses AMICI's default solver settings rather than the ones pyPESTO's objective was
+    configured with. At a stiff optimum (parameters pinned at their bounds) the default
+    solver can fail to integrate the full time course where the optimizer's succeeded,
+    yielding a NaN llh for a fit that in fact converged.
+
+    Taking the re-simulated value unconditionally — as this did — meant a converged fit
+    could be recorded as NaN, which then propagated into a NaN BIC and, via
+    :meth:`session.record_fit_progress`, into a best-BIC checkpoint that no later fit could
+    ever beat (NaN comparisons are always False). So the optimizer's value wins whenever it
+    is finite: it is what was actually optimised, and it is defined over the complete
+    dataset. The re-simulated value is kept in the payload either way, and a disagreement
+    is surfaced as a note rather than silently resolved.
+
+    A simulate-only pass (no fit) has only the simulated value, which is then authoritative.
+    """
+    nll_sim = _flt(sim.get("neg_log_likelihood"))
+    if fit is None:
+        return nll_sim, None
+    nll_opt = _flt(fit.get("neg_log_likelihood"))
+    n_missing = sim.get("n_missing_simulations") or 0
+    if nll_opt is None:
+        # The optimizer itself has no usable objective (every start non-finite). Nothing to
+        # prefer; the fit genuinely failed to produce a score.
+        return nll_sim, ("optimizer returned no finite objective"
+                         if nll_sim is None else None)
+    if nll_sim is None:
+        note = (f"re-simulating the fitted point did not reach {n_missing} of "
+                f"{sim.get('n_expected_points')} measured points, so its likelihood is "
+                f"undefined; reporting the optimizer's objective ({_fmt(nll_opt)}) instead. "
+                "The fit converged — this is a solver/integration gap at the optimum, not a "
+                "failed fit.")
+        session.logger.warning("fit: %s", note)
+        return nll_opt, note
+    if abs(nll_opt - nll_sim) > OBJECTIVE_AGREEMENT_RTOL * max(1.0, abs(nll_opt)):
+        note = (f"optimizer objective {_fmt(nll_opt)} disagrees with the re-simulated "
+                f"{_fmt(nll_sim)} at the same parameters; reporting the optimizer's.")
+        session.logger.warning("fit: %s", note)
+        return nll_opt, note
+    return nll_opt, None
 
 
 def fit_and_simulate(
@@ -596,6 +734,7 @@ def fit_and_simulate(
         fit = _run_fit(session, engine, n_starts, seed) if do_fit else None
         sim = engine.residuals()
         records = sim["records"]
+        nllh, nll_note = _reconcile_objective(session, fit, sim)
 
         payload = {
             "status": "fit" if do_fit else "simulate_only",
@@ -611,9 +750,17 @@ def fit_and_simulate(
             # The estimated-parameter count k, so the goodness-of-fit metrics (bic/reduced_chi2)
             # are available even on a simulate-only pass where `fitted_parameters` is None.
             "n_estimated": int(session.problem.n_estimated),
-            "neg_log_likelihood": sim["neg_log_likelihood"],
+            # The OPTIMIZER's objective at its best start when that is available (see
+            # _reconcile_objective) — the quantity actually minimised, and the one every
+            # downstream score (bic, is_new_best, the judge) must agree with.
+            "neg_log_likelihood": nllh,
+            # What re-simulating the fitted point produced, kept alongside so a
+            # disagreement between the two stays visible rather than silently resolved.
+            "neg_log_likelihood_simulated": sim["neg_log_likelihood"],
+            "objective_note": nll_note,
             "chi2": sim["chi2"],
             "n_data_points": sim["n_data_points"],
+            "n_missing_simulations": sim.get("n_missing_simulations"),
             "records": records,
             "objective_before": fit["objective_before"] if fit else None,
             "version": None,
@@ -745,6 +892,7 @@ def fit_summary(session, engine) -> dict[str, Any]:
     sim = ensure_simulation(session, engine) or {}
     out = {k: sim.get(k) for k in (
         "status", "neg_log_likelihood", "chi2", "n_data_points",
+        "n_missing_simulations", "objective_note",
         "fitted_parameters", "parameter_scales", "version",
     )}
     pdf = session.problem.parameter_df
@@ -791,7 +939,10 @@ def compute_improvement(
         nllh, fitsim.get("chi2"), fitsim.get("n_estimated"), fitsim.get("n_data_points"),
     ).get("bic")
 
-    best_prior_bic = getattr(session, "best_bic", None)
+    # A non-finite checkpoint is no checkpoint: treat it as absent so a session that somehow
+    # acquired one (a legacy provenance seed, a version written before goodness_of_fit
+    # rejected non-finite scores) recovers on its next fit instead of staying locked out.
+    best_prior_bic = _flt(getattr(session, "best_bic", None))
     best_prior_version = getattr(session, "best_version", None)
     best_prior_nllh = getattr(session, "best_nll", None)
 
@@ -847,6 +998,14 @@ def goodness_of_fit(
         "bic": None, "aic": None, "chi2_dof": None,
         "reduced_chi2": None, "chi2_gof_pvalue": None,
     }
+    # Non-finite inputs are MISSING scores, not scores. A NaN nll would otherwise produce
+    # bic = k*ln(n) + 2*NaN = NaN, which is a float and passes every `is not None` guard
+    # downstream — and because NaN compares False against everything, a NaN adopted as the
+    # best-BIC checkpoint locks out every subsequent fit for the rest of the run (the
+    # `is_new_best` test can never fire again). Coercing to None here is the single upstream
+    # chokepoint that keeps a failed evaluation from masquerading as a real score.
+    nll = _flt(nll)
+    chi2 = _flt(chi2)
     if nll is None or k is None or n is None or n <= 0:
         return out
     out["bic"] = k * math.log(n) + 2.0 * nll
@@ -900,6 +1059,10 @@ def fit_result_block(
         "neg_log_likelihood": nll,
         "chi2": chi2,
         "n_data_points": n,
+        # Non-zero means the trajectory did not reach every measured point, so chi2 is None
+        # and the likelihood came from the optimizer rather than the re-simulation.
+        "n_missing_simulations": fitsim.get("n_missing_simulations"),
+        "objective_note": fitsim.get("objective_note"),
         # Surface the estimated-parameter count k next to bic so the parameter penalty in
         # bic = k*ln(n) + 2*nll is legible — adding a free parameter must earn its keep.
         "n_estimated": k,
@@ -928,6 +1091,9 @@ def build_sim_payload_for_version(payload: dict[str, Any] | None) -> dict[str, A
         "neg_log_likelihood": payload.get("neg_log_likelihood"),
         "chi2": payload.get("chi2"),
         "n_data_points": payload.get("n_data_points"),
+        # Carried so a restored version keeps the reason its likelihood was/wasn't usable,
+        # rather than looking like a clean fit after a rollback.
+        "n_missing_simulations": payload.get("n_missing_simulations"),
         "fitted_parameters": payload.get("fitted_parameters"),
         "records": payload.get("records"),
     }

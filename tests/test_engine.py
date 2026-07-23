@@ -213,3 +213,49 @@ def test_model_less_problem_does_not_segfault(session, engine):
     fs = fitting.fit_summary(session, engine)
     assert fs.get("neg_log_likelihood") is None
     assert fs.get("bic") is None
+
+
+def test_fit_objective_and_reported_nll_are_the_same_number(fit_session):
+    """The fit's objective and the harness's reported nll must agree exactly.
+
+    They are the same likelihood at the same parameters, but they used to be computed by two
+    different AMICI models with two different solvers — the fit through pyPESTO's objective,
+    the report by re-simulating via simulate_petab. That let them disagree: a crauste fit
+    converged at nll 266.62 while the re-simulation of its own optimum failed to integrate past
+    t=22 and reported NaN, which then poisoned the best-BIC checkpoint and cost the run its
+    score. Both now go through one shared objective (fitting.estimation_problem), so this is an
+    identity, not an approximation.
+    """
+    from petab_mcp import fitting
+
+    res = fit_session.fit(justification="test")
+    reported = res["neg_log_likelihood"]
+    assert reported is not None
+
+    # Re-evaluating the committed model must reproduce the number that was reported for it.
+    again = fit_session.engine.evaluate_objective()["neg_log_likelihood"]
+    assert again == pytest.approx(reported, rel=1e-9)
+
+    # ...and that number is the optimizer's own objective at the fitted point.
+    problem, _ = fitting.estimation_problem(fit_session, fit_session.engine)
+    x = fitting.problem_x_from_nominal(problem, fit_session.problem.parameter_df)
+    assert float(problem.objective(x)) == pytest.approx(reported, rel=1e-9)
+
+
+def test_one_amici_build_per_structure(fit_session):
+    """The fit and the objective evaluation must share ONE compiled model.
+
+    They used to build two (`petab_mcp_<hash>` and `petab_mcp_pp_<hash>`) from the same SBML —
+    at ~80s a build on a cluster node, that was ~20 minutes of a 73-minute benchmark run spent
+    compiling the same structure twice.
+    """
+    fit_session.fit(justification="test")
+    n_after_first = fit_session.n_compiles
+    # A re-fit of the SAME structure must not compile again...
+    fit_session.engine.evaluate_objective()
+    fit_session.fit(justification="test again")
+    assert fit_session.n_compiles == n_after_first
+    # ...and the objective's model is the one the engine reports on.
+    problem, _ = __import__("petab_mcp.fitting", fromlist=["x"]).estimation_problem(
+        fit_session, fit_session.engine)
+    assert problem.objective.amici_model is not None
