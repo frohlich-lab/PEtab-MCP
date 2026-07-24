@@ -256,4 +256,8 @@ def test_one_amici_build_per_structure(fit_session):
     # ...and the objective's model is the one the engine reports on.
     problem, _ = __import__("petab_mcp.fitting", fromlist=["x"]).estimation_problem(
         fit_session, fit_session.engine)
-    assert problem.objective.amici_model is not None
+    # Reach the model the way the engine does (via _objective_amici_model), so this stays green even
+    # if the fixture ever yields an AggregatedObjective. The helper itself, incl. a real
+    # AggregatedObjective, is covered without a compile in tests/test_objective_amici_model.py.
+    from petab_mcp.engine import _objective_amici_model
+    assert _objective_amici_model(problem.objective) is not None

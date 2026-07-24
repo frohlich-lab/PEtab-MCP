@@ -46,6 +46,32 @@ def _ensure_swig_on_path() -> None:
         pass
 
 
+def _objective_amici_model(objective):
+    """The AMICI model behind a pyPESTO objective.
+
+    A plain ``AmiciObjective`` exposes ``amici_model`` directly, but pyPESTO builds an
+    ``AggregatedObjective`` (which wraps several per-condition sub-objectives and has NO
+    ``amici_model`` of its own) for some PEtab problems — intermittently, depending on the model,
+    which was crashing evaluation with ``'AggregatedObjective' object has no attribute
+    'amici_model'``. Fall through to the aggregate's sub-objectives and return the first
+    ``amici_model`` found (they all share one compiled model)."""
+    model = getattr(objective, "amici_model", None)
+    if model is not None:
+        return model
+    # Explicit None check (not truthiness): an aggregate that legitimately exposes an EMPTY
+    # `_objectives` must not fall through to `objectives` — an empty list is still the right,
+    # authoritative container.
+    subs = getattr(objective, "_objectives", None)
+    if subs is None:
+        subs = getattr(objective, "objectives", None)
+    for sub in subs or []:
+        model = getattr(sub, "amici_model", None)
+        if model is not None:
+            return model
+    raise AttributeError(
+        f"{type(objective).__name__} exposes no amici_model (nor do any sub-objectives)")
+
+
 class AmiciEngine:
     """Compile-cached AMICI backend bound to a :class:`PetabSession`."""
 
@@ -219,7 +245,7 @@ class AmiciEngine:
         rdatas = ret[PP_RDATAS]
         # pyPESTO's fval IS the negative log-likelihood it minimises.
         nllh = finite_float(ret[FVAL])
-        records = self._simulation_records(problem.objective.amici_model, {RDATAS: rdatas})
+        records = self._simulation_records(_objective_amici_model(problem.objective), {RDATAS: rdatas})
         return nllh, records, self._res_from_rdatas(rdatas)
 
     def evaluate_objective(self) -> dict[str, Any]:
