@@ -56,6 +56,46 @@ _UNSCORED_STALL_ADVICE = (
     "unbounded rate) before drawing any conclusion about the structure."
 )
 
+# Appended to the structural nudge when the best model's chi2 GoF only looks adequate because an
+# ESTIMATED noise sigma inflated to absorb the misfit (see _noise_sigma_inflated / constants.
+# NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD). The chi2 GoF test is then powerless — it rescales to
+# whatever sigma makes chi2/dof ~= 1 — so an underfit model reads as "adequate" and the run would
+# stop early on it. The fix is mechanistic, not noise-side.
+_SIGMA_INFLATED_ADVICE = (
+    " NOTE: the best model's fit only looks statistically adequate because its ESTIMATED noise "
+    "sigma is inflated above its data-driven cap, absorbing the misfit — the chi2 goodness-of-fit "
+    "is not real adequacy here. Do NOT widen or lean on the noise; fix the mechanism so the "
+    "residuals shrink at a plausible sigma (the residual sign/runs tests still flag the structure)."
+)
+
+# The other tail: the best model's ESTIMATED noise sigma collapsed implausibly small, so the fit
+# is explaining nearly all the data's variability — overfitting the noise for a good-looking score.
+_SIGMA_COLLAPSED_ADVICE = (
+    " NOTE: the best model's ESTIMATED noise sigma has collapsed far below the data's own "
+    "variability — the fit is absorbing nearly all the data into the mean, the fingerprint of "
+    "overfitting the noise, so its low score is not genuine adequacy. Prefer a simpler / more "
+    "parsimonious mechanism at a plausible sigma rather than a more flexible one that drives the "
+    "residuals to ~0."
+)
+
+
+def _noise_sigma_inflated(report: "dict[str, Any] | None") -> bool:
+    """Whether any estimated noise sigma is inflated past its data-driven cap (the noise absorbing
+    model misfit, so a passing chi2 GoF is not genuine adequacy). Delegates to the single source of
+    truth — :func:`fitting.noise_sigma_inflated` — so the plateau-adequacy gate here and the judge's
+    success gate can never drift on what "inflated" means."""
+    from . import fitting
+    return fitting.noise_sigma_inflated(report)
+
+
+def _noise_sigma_collapsed(report: "dict[str, Any] | None") -> bool:
+    """Whether any estimated noise sigma is fitted implausibly small (overfitting the noise).
+    Delegates to :func:`fitting.noise_sigma_collapsed` — the same definition the judge's success
+    gate uses — so a model the judge would reject for a collapsed sigma is also NOT counted adequate
+    here, instead of plateau-stopping and then being rejected downstream."""
+    from . import fitting
+    return fitting.noise_sigma_collapsed(report)
+
 
 class PetabSession:
     """Holds the working problem, provenance store, and reference resolver."""
@@ -148,6 +188,17 @@ class PetabSession:
         self.best_bic: float | None = None
         self.best_nll: float | None = None
         self.best_gof_pvalue: float | None = None
+        # The best model's noise-model status, for the adequacy gate. When the noise sigma is
+        # ESTIMATED the chi2 GoF is uninformative (a free sigma is fit to the residual std, so
+        # chi2/dof ~= 1 by construction), so adequacy omits GoF and judges the sigma's plausibility
+        # instead: best_sigma_inflated (sigma absorbing misfit past its data-driven cap) means NOT
+        # adequate. Fixed-noise problems keep the GoF. (Issue: blasi/sneyd underfits stopped early
+        # as "adequate" on a meaningless GoF.)
+        self.best_sigma_estimated: bool = False
+        self.best_sigma_inflated: bool = False
+        # ...and collapsed (fitted implausibly small = overfitting the noise). Estimated-sigma
+        # adequacy requires NEITHER inflated NOR collapsed, matching the judge's success gate.
+        self.best_sigma_collapsed: bool = False
         self.op_history: list[dict[str, Any]] = []
 
         # De-duplication memory for identical fits (see :mod:`dedup` and issue #59): how many times
@@ -200,6 +251,12 @@ class PetabSession:
                     # written before this field simply leaves it None, as before).
                     gofp = ev.get("chi2_gof_pvalue")
                     self.best_gof_pvalue = float(gofp) if gofp is not None else None
+                    # Persisted alongside GoF so a resumed best keeps its adequacy verdict; older
+                    # events without the fields default to False (fixed / not inflated), so the
+                    # adequacy gate falls back to the GoF branch exactly as before.
+                    self.best_sigma_estimated = bool(ev.get("noise_sigma_estimated", False))
+                    self.best_sigma_inflated = bool(ev.get("noise_sigma_inflated", False))
+                    self.best_sigma_collapsed = bool(ev.get("noise_sigma_collapsed", False))
         except Exception:  # noqa: BLE001 - seeding is best-effort; a resume must never fail on it
             self.logger.warning("could not seed best-BIC checkpoint from provenance", exc_info=True)
 
@@ -525,6 +582,16 @@ class PetabSession:
                 self.best_version = version
                 self.best_nll = nll
                 self.best_gof_pvalue = gof_p
+                # Reuse the flags the commit path stashed on fitsim; fall back to computing them
+                # for direct callers (e.g. tests) that pass a raw fitsim without them.
+                report = fitsim.get("noise_sigma_report")
+                self.best_sigma_estimated = fitsim.get("noise_sigma_estimated", bool(report))
+                self.best_sigma_inflated = (fitsim["noise_sigma_inflated"]
+                                            if "noise_sigma_inflated" in fitsim
+                                            else _noise_sigma_inflated(report))
+                self.best_sigma_collapsed = (fitsim["noise_sigma_collapsed"]
+                                             if "noise_sigma_collapsed" in fitsim
+                                             else _noise_sigma_collapsed(report))
             else:
                 # An unscoreable fit is not progress: it advances the streak like any other
                 # non-improving op, so a model that keeps failing to evaluate still trips the
@@ -563,9 +630,22 @@ class PetabSession:
                 if prev is not None and cur is not None:
                     bic_gain_over_window = prev - cur
 
-            best_adequate = (
-                self.best_gof_pvalue is not None and self.best_gof_pvalue >= ADEQUATE_GOF_PVALUE
-            )
+            # Adequacy of the best model. The right test depends on the noise model:
+            #  * ESTIMATED sigma — the chi2 GoF is uninformative (a free sigma is fit to the
+            #    residual std, so chi2/dof ~= 1 by construction for good AND bad models alike), so
+            #    OMIT it and judge on the sigma's plausibility: an INFLATED sigma (absorbing misfit)
+            #    or a COLLAPSED one (overfitting the noise) means NOT adequate; otherwise adequate.
+            #    Requiring neither keeps this in lock-step with the judge's success gate, so a model
+            #    the judge would reject for its sigma is never plateau-stopped here as "adequate".
+            #    This is what caught blasi/sneyd, which used to stop early on a meaningless GoF.
+            #  * FIXED sigma — chi2 GoF against the known noise IS a real adequacy test; keep it.
+            if self.best_sigma_estimated:
+                best_adequate = not (self.best_sigma_inflated or self.best_sigma_collapsed)
+            else:
+                best_adequate = (
+                    self.best_gof_pvalue is not None
+                    and self.best_gof_pvalue >= ADEQUATE_GOF_PVALUE
+                )
             stop_reason = None
             if streak >= NON_IMPROVING_STREAK_CAP:
                 stop_reason = (
@@ -574,8 +654,10 @@ class PetabSession:
                 )
             elif (best_adequate and bic_gain_over_window is not None
                   and bic_gain_over_window < PLATEAU_MIN_BIC_GAIN):
+                basis = ("estimated noise sigma within its plausible range" if self.best_sigma_estimated
+                         else f"chi2 GoF p={self.best_gof_pvalue:.3g}")
                 stop_reason = (
-                    f"plateau: best model is adequate (chi2 GoF p={self.best_gof_pvalue:.3g}) and "
+                    f"plateau: best model is adequate ({basis}) and "
                     f"best BIC improved by only {bic_gain_over_window:.3g} over the last "
                     f"{PLATEAU_WINDOW} ops (< {PLATEAU_MIN_BIC_GAIN})."
                 )
@@ -590,6 +672,12 @@ class PetabSession:
             # would contradict it. (An adequate plateau is a success stop.)
             elif stop_reason is not None and not best_adequate:
                 stop_reason = f"{stop_reason} {_STRUCTURAL_PLATEAU_ADVICE}"
+                # If the inadequacy is a masking noise model, add the matching noise-side warning so
+                # the agent fixes the mechanism instead of leaning on the sigma.
+                if self.best_sigma_inflated:
+                    stop_reason = f"{stop_reason}{_SIGMA_INFLATED_ADVICE}"
+                elif self.best_sigma_collapsed:
+                    stop_reason = f"{stop_reason}{_SIGMA_COLLAPSED_ADVICE}"
             return {
                 "n_fitted_ops": n_ops,
                 "non_improving_streak": streak,
@@ -736,11 +824,20 @@ class PetabSession:
                 sim=fitsim,
             )
             fitsim["version"] = version
+            # Noise-sigma flags computed ONCE here and stashed on fitsim, so this event and the
+            # checkpoint update in record_fit_progress (below) reuse them instead of recomputing.
+            _nsr = fitsim.get("noise_sigma_report")
+            fitsim["noise_sigma_estimated"] = bool(_nsr)
+            fitsim["noise_sigma_inflated"] = _noise_sigma_inflated(_nsr)
+            fitsim["noise_sigma_collapsed"] = _noise_sigma_collapsed(_nsr)
             event = self.provenance.append_event(
                 {"type": "fit", "version": version, "justification": justification,
                  "staged_edits": staged, "n_edits": len(staged),
                  "fit_status": fitsim.get("status"), "neg_log_likelihood": nllh,
                  "chi2": fitsim.get("chi2"), "chi2_gof_pvalue": gof_pvalue,
+                 "noise_sigma_estimated": fitsim["noise_sigma_estimated"],
+                 "noise_sigma_inflated": fitsim["noise_sigma_inflated"],
+                 "noise_sigma_collapsed": fitsim["noise_sigma_collapsed"],
                  "fitted_parameters": fitsim.get("fitted_parameters"), **improvement}
             )
             # Record this as an early-stop-chain op only when a real fit ran (simulate-only passes

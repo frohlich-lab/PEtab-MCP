@@ -35,7 +35,11 @@ from petab.v1.C import (
 )
 
 from . import reconcile as _reconcile
-from .constants import NEW_BEST_MIN_DELTA_BIC, PARAMETER_AT_BOUND_RELATIVE_TOL
+from .constants import (
+    NEW_BEST_MIN_DELTA_BIC,
+    NOISE_SIGMA_COLLAPSE_FRACTION,
+    PARAMETER_AT_BOUND_RELATIVE_TOL,
+)
 from .formatting import finite_float as _flt
 from .parameters import estimated_mask, parameter_df_to_tsv, sha16
 
@@ -875,6 +879,44 @@ def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[st
             "fraction_of_data_std": (value / data_std) if data_std else None,
         }
     return out
+
+
+def noise_sigma_inflated(report: "dict[str, Any] | None") -> bool:
+    """True if any ESTIMATED noise sigma in a ``noise_sigma_report`` is fitted ABOVE its
+    data-driven cap — i.e. the noise is absorbing model misfit rather than measuring it. The single
+    source of truth for "this sigma is inflated", used by the session's plateau-adequacy gate AND
+    the judge's success gate so they can't drift apart. Best-effort: an empty/unreadable report or
+    a non-numeric entry is treated as NOT inflated."""
+    if not isinstance(report, dict):
+        return False
+    for entry in report.values():
+        if not isinstance(entry, dict):
+            continue
+        fitted, cap = entry.get("fitted"), entry.get("upper_bound_cap")
+        try:
+            if fitted is not None and cap is not None and float(fitted) > float(cap):
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def noise_sigma_collapsed(report: "dict[str, Any] | None") -> bool:
+    """True if any ESTIMATED noise sigma is fitted implausibly SMALL — below
+    ``constants.NOISE_SIGMA_COLLAPSE_FRACTION`` of its observable's own data std, i.e. the model is
+    explaining nearly all the data's variability (overfitting the noise for a suspiciously good BIC).
+    The other tail of :func:`noise_sigma_inflated`, and likewise the single source of truth shared by
+    the session's adequacy gate and the judge's success gate. Best-effort: an empty/unreadable report
+    or a non-numeric ``fraction_of_data_std`` is treated as NOT collapsed."""
+    if not isinstance(report, dict):
+        return False
+    for entry in report.values():
+        if not isinstance(entry, dict):
+            continue
+        frac = entry.get("fraction_of_data_std")
+        if isinstance(frac, (int, float)) and frac < NOISE_SIGMA_COLLAPSE_FRACTION:
+            return True
+    return False
 
 
 def fit_summary(session, engine) -> dict[str, Any]:

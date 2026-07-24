@@ -93,6 +93,12 @@ PARAMETER_AT_BOUND_RELATIVE_TOL = 0.01
 # for the model.
 NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD = 0.5
 
+# The other tail: a fitted noise sigma BELOW this fraction of its observable's own data std is
+# implausibly small — the model is explaining ~all of the data's variability, the fingerprint of
+# overfitting the noise. Shared by the plateau adequacy gate (session) and the judge's success gate
+# so both agree on "collapsed".
+NOISE_SIGMA_COLLAPSE_FRACTION = 0.1
+
 # -- repeated-widening backstop ---------------------------------------------
 # A parameter pinned at a bound with a flat / collinear FIM direction is UNIDENTIFIABLE, not
 # under-explored: widening its box just lets the optimum slide to the new edge and re-pin for a

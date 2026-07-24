@@ -120,6 +120,94 @@ def test_plateau_stops_an_adequate_flat_run(session):
     assert "plateau" in p["stop_reason"].lower()
 
 
+def _fitsim_inflated_sigma(nll: float, chi2: float, *, n: int = 20, k: int = 2) -> dict:
+    """Like ``_fitsim`` but the fit reports an ESTIMATED noise sigma fitted ABOVE its data-driven
+    cap — the inflated-sigma case where a passing chi2 GoF is not genuine adequacy."""
+    fs = _fitsim(nll, chi2, n=n, k=k)
+    fs["noise_sigma_report"] = {
+        "sigma": {"fitted": 0.5, "upper_bound_cap": 0.1, "data_std": 0.2,
+                  "fraction_of_data_std": 2.5}}
+    return fs
+
+
+def test_inflated_sigma_blocks_the_adequate_plateau_stop(session):
+    """A flat run whose good chi2 GoF is only propped up by an inflated estimated sigma is NOT
+    adequate for the plateau gate, so it must NOT stop early — the blasi/sneyd underfit case where
+    a free sigma absorbs the misfit and fakes chi2/dof ~ 1."""
+    session.record_fit_progress(1, _fitsim_inflated_sigma(-50.0, 18.0), {"is_new_best": True})
+    for v in range(2, 2 + PLATEAU_WINDOW):
+        session.record_fit_progress(v, _fitsim_inflated_sigma(-50.0, 18.0), {"is_new_best": False})
+    p = session.progress_report()
+    assert p["best_gof_pvalue"] is not None and p["best_gof_pvalue"] >= 0.05  # GoF LOOKS adequate
+    assert session.best_sigma_inflated is True                                # but sigma inflated
+    assert p["bic_improvement_over_last_n"] == pytest.approx(0.0)             # and BIC is flat
+    assert p["should_stop"] is False                                          # -> no plateau stop
+
+
+def test_estimated_sigma_not_inflated_is_adequate_without_gof(session):
+    """With an ESTIMATED, non-inflated sigma the adequacy gate OMITS the (uninformative) chi2 GoF:
+    a flat run is adequate and plateau-stops even when its chi2 would FAIL a GoF test."""
+    def _fs():
+        f = _fitsim(-50.0, 500.0)  # chi2 >> dof -> GoF would reject, if it were consulted
+        f["noise_sigma_report"] = {"sigma": {"fitted": 0.05, "upper_bound_cap": 0.1,
+                                             "data_std": 0.2, "fraction_of_data_std": 0.25}}
+        return f
+    session.record_fit_progress(1, _fs(), {"is_new_best": True})
+    for v in range(2, 2 + PLATEAU_WINDOW):
+        session.record_fit_progress(v, _fs(), {"is_new_best": False})
+    p = session.progress_report()
+    assert p["best_gof_pvalue"] is not None and p["best_gof_pvalue"] < 0.05  # GoF WOULD reject
+    assert session.best_sigma_estimated is True and session.best_sigma_inflated is False
+    assert p["should_stop"] is True                                          # adequate anyway
+    assert "plateau" in p["stop_reason"].lower() and "chi2 gof" not in p["stop_reason"].lower()
+
+
+def test_inflated_sigma_streak_cap_reason_carries_sigma_advice(session):
+    """When an inflated-sigma run finally trips the streak cap, its stop_reason carries BOTH the
+    structural nudge and the noise-side (inflated-sigma) warning so the agent fixes the mechanism
+    rather than leaning on the free sigma."""
+    session.record_fit_progress(1, _fitsim_inflated_sigma(-50.0, 18.0), {"is_new_best": True})
+    for v in range(2, 2 + NON_IMPROVING_STREAK_CAP):
+        session.record_fit_progress(v, _fitsim_inflated_sigma(-50.0, 18.0), {"is_new_best": False})
+    p = session.progress_report()
+    assert p["should_stop"] is True
+    reason = p["stop_reason"].lower()
+    assert "structural" in reason and "sigma" in reason and "inflated" in reason
+
+
+def _fitsim_collapsed_sigma(nll: float, chi2: float, *, n: int = 20, k: int = 2) -> dict:
+    """Like ``_fitsim`` but the fit reports an ESTIMATED sigma collapsed far below the data std
+    (fraction < NOISE_SIGMA_COLLAPSE_FRACTION) — overfitting the noise, the other implausible tail."""
+    fs = _fitsim(nll, chi2, n=n, k=k)
+    fs["noise_sigma_report"] = {
+        "sigma": {"fitted": 0.01, "upper_bound_cap": 0.5, "data_std": 1.0,
+                  "fraction_of_data_std": 0.01}}
+    return fs
+
+
+def test_collapsed_sigma_blocks_the_adequate_plateau_stop(session):
+    """A COLLAPSED estimated sigma (overfitting the noise) is NOT adequate either — the agent gate
+    must reject it like the judge's success gate does, so a run doesn't plateau-stop 'adequate' and
+    then get rejected downstream for the same sigma."""
+    session.record_fit_progress(1, _fitsim_collapsed_sigma(-50.0, 18.0), {"is_new_best": True})
+    for v in range(2, 2 + PLATEAU_WINDOW):
+        session.record_fit_progress(v, _fitsim_collapsed_sigma(-50.0, 18.0), {"is_new_best": False})
+    p = session.progress_report()
+    assert session.best_sigma_estimated is True and session.best_sigma_collapsed is True
+    assert session.best_sigma_inflated is False
+    assert p["should_stop"] is False
+
+
+def test_collapsed_sigma_streak_cap_reason_carries_sigma_advice(session):
+    """A collapsed-sigma run that trips the streak cap gets the structural nudge + the collapsed
+    (overfitting-the-noise) warning."""
+    session.record_fit_progress(1, _fitsim_collapsed_sigma(-50.0, 18.0), {"is_new_best": True})
+    for v in range(2, 2 + NON_IMPROVING_STREAK_CAP):
+        session.record_fit_progress(v, _fitsim_collapsed_sigma(-50.0, 18.0), {"is_new_best": False})
+    reason = session.progress_report()["stop_reason"].lower()
+    assert "structural" in reason and "collapsed" in reason and "overfitting" in reason
+
+
 def test_steadily_improving_run_never_stops_early(session):
     """A run that keeps landing real new bests keeps the streak at zero and the BIC falling, so
     neither the cap nor the plateau ever fires."""
