@@ -186,18 +186,36 @@ def _fitsim_collapsed_sigma(nll: float, chi2: float, *, n: int = 20, k: int = 2)
 
 
 def test_sigma_gamed_improvement_does_not_reset_the_streak(session):
-    """A sigma-GAMED new best — a genuinely lower BIC bought by an inflated estimated sigma — must
-    NOT reset the non-improving streak, so a run that keeps lowering BIC only by gaming the noise
-    trips the streak cap instead of running to the recursion limit. The checkpoint is still adopted
-    (it IS the best BIC), so the judge scores the real best model."""
+    """A sigma-GAMED new best — a lower BIC bought by an inflated estimated sigma — does NOT reset
+    the non-improving streak, so an all-gamed run trips the streak cap instead of running to the
+    recursion limit. With no plausible best to protect, the gamed model is still recorded as best
+    (best_version not None) so the adequacy gate + judge can handle it."""
     # Every op is a genuine new best by BIC (nll strictly drops) but each games the sigma.
     for i, v in enumerate(range(1, 1 + NON_IMPROVING_STREAK_CAP)):
         session.record_fit_progress(v, _fitsim_inflated_sigma(-50.0 - i, 18.0),
                                     {"is_new_best": True})
     p = session.progress_report()
-    assert session.best_version is not None and session.best_sigma_inflated is True  # adopted
+    assert session.best_version is not None and session.best_sigma_inflated is True  # gamed best kept
     assert p["non_improving_streak"] == NON_IMPROVING_STREAK_CAP  # gamed bests never reset it
-    assert p["should_stop"] is True                              # -> trips the streak cap
+    assert p["should_stop"] is True                             # -> trips the streak cap
+
+
+def test_gamed_fit_does_not_overwrite_a_plausible_best_checkpoint(session):
+    """A plausible best-BIC checkpoint is NOT overwritten by a later, strictly-lower-BIC sigma-gamed
+    fit: adoption is gated on sigma plausibility, so the judge always scores the best PLAUSIBLE
+    model. (Regression guard: extra search runway must not demote a passing checkpoint to a gamed
+    one and flip a would-pass to a fail.)"""
+    plausible = _fitsim(-50.0, 18.0)
+    plausible["noise_sigma_report"] = {"sigma": {"fitted": 0.05, "upper_bound_cap": 0.1,
+                                                 "data_std": 0.2, "fraction_of_data_std": 0.25}}
+    session.record_fit_progress(1, plausible, {"is_new_best": True})
+    best_v, best_bic = session.best_version, session.best_bic
+    assert best_v == 1 and session.best_sigma_inflated is False
+    # A later fit with STRICTLY LOWER BIC (nll -80 < -50) but an inflated sigma must NOT take over.
+    session.record_fit_progress(2, _fitsim_inflated_sigma(-80.0, 18.0), {"is_new_best": True})
+    assert session.best_version == best_v            # plausible checkpoint preserved...
+    assert session.best_bic == best_bic
+    assert session.best_sigma_inflated is False       # ...best is still the plausible model
 
 
 def test_a_plausible_new_best_after_gaming_resets_the_streak(session):
@@ -212,6 +230,52 @@ def test_a_plausible_new_best_after_gaming_resets_the_streak(session):
                                                  "data_std": 0.2, "fraction_of_data_std": 0.25}}
     session.record_fit_progress(4, plausible, {"is_new_best": True})
     assert session.progress_report()["non_improving_streak"] == 0  # a real fix clears it
+
+
+def _fs_plausible_sigma_flagged(flagged: bool):
+    """A fit with a PLAUSIBLE estimated sigma (neither inflated nor collapsed) whose residuals are
+    structurally flagged iff `flagged` — the sneyd case: underfit that the sigma gate can't catch."""
+    f = _fitsim(-50.0, 18.0)
+    f["noise_sigma_report"] = {"sigma": {"fitted": 0.05, "upper_bound_cap": 0.1,
+                                         "data_std": 0.2, "fraction_of_data_std": 0.25}}
+    f["residual_flagged"] = flagged
+    return f
+
+
+def test_flagged_residual_structure_blocks_the_adequate_plateau_stop(session):
+    """A best model with a PLAUSIBLE estimated sigma but structurally-flagged residuals (sign/runs)
+    is NOT adequate — its form is incomplete — so a flat-BIC run does NOT plateau-stop; it keeps
+    searching (sneyd: underfits that used to stop 'adequate' while flagging residuals)."""
+    session.record_fit_progress(1, _fs_plausible_sigma_flagged(True), {"is_new_best": True})
+    for v in range(2, 2 + PLATEAU_WINDOW):
+        session.record_fit_progress(v, _fs_plausible_sigma_flagged(True), {"is_new_best": False})
+    p = session.progress_report()
+    assert session.best_sigma_estimated is True and session.best_sigma_inflated is False
+    assert session.best_residual_flagged is True
+    assert p["bic_improvement_over_last_n"] == pytest.approx(0.0)  # BIC is flat...
+    assert p["should_stop"] is False                              # ...but residual structure blocks it
+
+
+def test_unflagged_residual_still_plateau_stops(session):
+    """Contrast: the SAME plausible-sigma flat run WITHOUT flagged residuals still plateau-stops —
+    the residual gate only bites when the sign/runs tests actually flag structure (no regression)."""
+    session.record_fit_progress(1, _fs_plausible_sigma_flagged(False), {"is_new_best": True})
+    for v in range(2, 2 + PLATEAU_WINDOW):
+        session.record_fit_progress(v, _fs_plausible_sigma_flagged(False), {"is_new_best": False})
+    p = session.progress_report()
+    assert session.best_residual_flagged is False
+    assert p["should_stop"] is True and "plateau" in p["stop_reason"].lower()
+
+
+def test_flagged_residual_streak_cap_carries_structural_nudge(session):
+    """When a residual-flagged run finally trips the streak cap, its stop_reason carries the
+    structural nudge (change the FORM) — the run never counted as adequate."""
+    session.record_fit_progress(1, _fs_plausible_sigma_flagged(True), {"is_new_best": True})
+    for v in range(2, 2 + NON_IMPROVING_STREAK_CAP):
+        session.record_fit_progress(v, _fs_plausible_sigma_flagged(True), {"is_new_best": False})
+    p = session.progress_report()
+    assert p["should_stop"] is True
+    assert "structural" in p["stop_reason"].lower()
 
 
 def test_collapsed_sigma_blocks_the_adequate_plateau_stop(session):

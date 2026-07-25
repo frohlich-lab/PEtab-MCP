@@ -199,6 +199,11 @@ class PetabSession:
         # ...and collapsed (fitted implausibly small = overfitting the noise). Estimated-sigma
         # adequacy requires NEITHER inflated NOR collapsed, matching the judge's success gate.
         self.best_sigma_collapsed: bool = False
+        # The best model's residual-structure flag (sign/runs tests, which survive estimated sigmas
+        # unlike chi2 GoF). A structurally-mis-specified best model is NOT adequate regardless of the
+        # noise model, so a run whose residuals stay structured keeps searching instead of
+        # plateau-stopping early (sneyd: underfits stopped as "adequate" while flagging residuals).
+        self.best_residual_flagged: bool = False
         self.op_history: list[dict[str, Any]] = []
 
         # De-duplication memory for identical fits (see :mod:`dedup` and issue #59): how many times
@@ -257,6 +262,7 @@ class PetabSession:
                     self.best_sigma_estimated = bool(ev.get("noise_sigma_estimated", False))
                     self.best_sigma_inflated = bool(ev.get("noise_sigma_inflated", False))
                     self.best_sigma_collapsed = bool(ev.get("noise_sigma_collapsed", False))
+                    self.best_residual_flagged = bool(ev.get("residual_flagged", False))
         except Exception:  # noqa: BLE001 - seeding is best-effort; a resume must never fail on it
             self.logger.warning("could not seed best-BIC checkpoint from provenance", exc_info=True)
 
@@ -550,9 +556,11 @@ class PetabSession:
         ``is_new_best`` fires, else increments the streak. Since ``is_new_best`` tracks BIC (see
         :func:`fitting.compute_improvement`), a new best is exactly a new best-BIC checkpoint — the
         flag, the streak, and the checkpoint stay in lock step on one score. EXCEPTION: a new best
-        whose lower BIC was bought by an implausible ESTIMATED noise sigma (inflated/collapsed) still
-        adopts the checkpoint but does NOT reset the streak — a sigma-gamed "improvement" is not
-        progress, so such a run trips the streak cap instead of running to the recursion limit.
+        whose lower BIC was bought by an implausible ESTIMATED noise sigma (inflated/collapsed) does
+        NOT reset the streak, and is NOT adopted at all when it would OVERWRITE a currently-plausible
+        best (the judge would fail the gamed model). So a plausible would-pass checkpoint survives a
+        later gamed fit, and an all-gamed run trips the streak cap instead of running to the
+        recursion limit. A gamed fit is still recorded as best over an absent/already-gamed best.
 
         Takes ``self.lock`` itself (a reentrant ``RLock``, so this is safe whether or not the
         caller already holds it) so the write path is self-contained and symmetric with the locked
@@ -589,7 +597,16 @@ class PetabSession:
             # so the checkpoint invariant — "best_bic is a real, beatable number" — holds
             # locally no matter how the score was produced.
             usable = bic is not None and math.isfinite(bic)
-            if is_new_best and usable:
+            # Don't let a sigma-GAMED fit OVERWRITE a currently-plausible best checkpoint: the judge
+            # would fail the gamed model, so a plausible (would-pass) checkpoint must survive a
+            # later, lower-BIC gamed fit — else the extra search runway could demote a passing best
+            # to a gamed one and flip a would-pass to a fail. A gamed fit IS still adopted when
+            # there is no plausible best to protect (best is None, or is itself already gamed), so an
+            # all-gamed run still records its lowest-BIC gamed model (the adequacy gate + judge then
+            # handle it), keeping the sigma-adequacy gate live rather than dead.
+            best_is_plausible = (self.best_version is not None
+                                 and not (self.best_sigma_inflated or self.best_sigma_collapsed))
+            if is_new_best and usable and not (sigma_implausible and best_is_plausible):
                 self.best_bic = bic
                 self.best_version = version
                 self.best_nll = nll
@@ -597,20 +614,19 @@ class PetabSession:
                 self.best_sigma_estimated = sigma_estimated
                 self.best_sigma_inflated = sig_inflated
                 self.best_sigma_collapsed = sig_collapsed
-                # A sigma-GAMED "improvement" — a lower BIC bought by an inflated/collapsed
-                # ESTIMATED sigma — is not genuine progress: it does NOT reset the non-improving
-                # streak, so a run that keeps lowering BIC only by gaming the noise trips the streak
-                # cap instead of burning to the recursion limit. The checkpoint is still adopted (it
-                # IS the best BIC), so the judge scores the real best model and the sigma advice
-                # still reaches the agent at the stop.
+                self.best_residual_flagged = bool(fitsim.get("residual_flagged", False))
+                # A sigma-gamed "improvement" is not genuine progress even when adopted (it can only
+                # be adopted here over an absent/already-gamed best): it does NOT reset the
+                # non-improving streak, so an all-gamed run trips the streak cap instead of burning
+                # to the recursion limit.
                 if sigma_implausible:
                     self.non_improving_streak += 1
                 else:
                     self.non_improving_streak = 0
             else:
-                # An unscoreable fit is not progress: it advances the streak like any other
-                # non-improving op, so a model that keeps failing to evaluate still trips the
-                # stall cap instead of resetting it forever.
+                # Not progress -> advance the streak: a non-improving fit, a non-finite score, OR a
+                # gamed fit blocked from overwriting a plausible best. None is adopted; none resets
+                # the streak, so a stalled/gaming run still trips the cap instead of resetting it.
                 self.non_improving_streak += 1
 
             self.op_history.append({
@@ -650,8 +666,10 @@ class PetabSession:
             #    residual std, so chi2/dof ~= 1 by construction for good AND bad models alike), so
             #    OMIT it and judge on the sigma's plausibility: an INFLATED sigma (absorbing misfit)
             #    or a COLLAPSED one (overfitting the noise) means NOT adequate; otherwise adequate.
-            #    Requiring neither keeps this in lock-step with the judge's success gate, so a model
-            #    the judge would reject for its sigma is never plateau-stopped here as "adequate".
+            #    Requiring neither mirrors the judge's sigma check, so a model the judge would reject
+            #    for its sigma is never plateau-stopped here as "adequate". (Overall adequacy is
+            #    STRICTER than the judge, not lock-step: it ALSO requires structure-free residuals
+            #    below — which the judge does NOT check — so don't drop that to "restore lock-step".)
             #    This is what caught blasi/sneyd, which used to stop early on a meaningless GoF.
             #  * FIXED sigma — chi2 GoF against the known noise IS a real adequacy test; keep it.
             if self.best_sigma_estimated:
@@ -661,6 +679,20 @@ class PetabSession:
                     self.best_gof_pvalue is not None
                     and self.best_gof_pvalue >= ADEQUATE_GOF_PVALUE
                 )
+            # ...AND the residuals must not still show significant STRUCTURE. The sign/runs tests
+            # survive estimated sigmas (unlike chi2 GoF), so a best model that fits the magnitude but
+            # is systematically biased/trended has an incomplete FORM — not adequate, so the run keeps
+            # searching rather than plateau-stopping (sneyd: underfits that stopped as "adequate" with
+            # a plausible sigma while flagging structured residuals). A genuinely-better-than-truth
+            # model can still flag residuals (irreducible data structure); it simply forgoes the early
+            # plateau stop and terminates at the streak cap instead. The extra runway can't turn a
+            # PASSING run into a failing one: record_fit_progress won't let a later lower-BIC gamed
+            # fit OVERWRITE an already-plausible best (see the gate there), so once a run has a
+            # plausible would-pass checkpoint it survives to the judge. (It does NOT make every best
+            # plausible: an all-gamed run whose best was never plausible still keeps its gamed best,
+            # which the judge then fails on the sigma — as it would have with or without this gate.)
+            if self.best_residual_flagged:
+                best_adequate = False
             stop_reason = None
             if streak >= NON_IMPROVING_STREAK_CAP:
                 stop_reason = (
@@ -845,6 +877,12 @@ class PetabSession:
             fitsim["noise_sigma_estimated"] = bool(_nsr)
             fitsim["noise_sigma_inflated"] = _noise_sigma_inflated(_nsr)
             fitsim["noise_sigma_collapsed"] = _noise_sigma_collapsed(_nsr)
+            # Residual-structure flag of THIS fit (sign/runs tests survive estimated sigmas). Stashed
+            # like the noise flags so the adequacy gate in record_fit_progress/progress_report can
+            # treat a structurally-mis-specified best model as NOT adequate — see issue: sneyd
+            # underfits plateau-stopped as "adequate" while flagging structured residuals.
+            from . import data_access as _data_access
+            fitsim["residual_flagged"] = _data_access.residual_structure_flagged(self)
             event = self.provenance.append_event(
                 {"type": "fit", "version": version, "justification": justification,
                  "staged_edits": staged, "n_edits": len(staged),
@@ -853,6 +891,7 @@ class PetabSession:
                  "noise_sigma_estimated": fitsim["noise_sigma_estimated"],
                  "noise_sigma_inflated": fitsim["noise_sigma_inflated"],
                  "noise_sigma_collapsed": fitsim["noise_sigma_collapsed"],
+                 "residual_flagged": fitsim["residual_flagged"],
                  "fitted_parameters": fitsim.get("fitted_parameters"), **improvement}
             )
             # Record this as an early-stop-chain op only when a real fit ran (simulate-only passes

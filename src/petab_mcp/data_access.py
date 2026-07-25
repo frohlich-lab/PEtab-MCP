@@ -379,6 +379,29 @@ def fit_diagnosis(session, worst_n: int = 8) -> dict[str, Any]:
     }
 
 
+def residual_structure_flagged(session) -> bool:
+    """True if the current fit's residuals show significant STRUCTURE (sign/runs tests) in ANY
+    observable — a form-incompleteness signal that SURVIVES estimated noise sigmas (unlike chi2
+    GoF, which a free sigma rescales to look adequate). Used by the session's plateau-adequacy gate
+    so a model whose residuals are still structured keeps searching instead of stopping early.
+    Best-effort: any diagnostic failure returns False (never block a run on an advisory stat).
+
+    Computes ONLY the per-observable sign/runs verdict (the same ``structure_flag`` fit_diagnosis
+    reports), short-circuiting at the first flagged observable — it skips fit_diagnosis's magnitude
+    aggregations and worst-points sort, since this runs on every commit."""
+    try:
+        df = _frames(session)["simulations"]
+        if df is None or df.empty:
+            return False
+        d = df[df["residual_weighted"].notna()]
+        if d.empty:
+            return False
+        return any(_safe_residual_structure(g).get("structure_flag")
+                   for _obs, g in d.groupby("observable_id"))
+    except Exception:  # noqa: BLE001 - advisory; a diagnostic failure must not affect the fit/gate
+        return False
+
+
 # p-value at/below which a residual-structure test is called significant in the rolled-up
 # verdict (the per-test p-values are always reported raw, so a caller can judge for itself).
 _STRUCTURE_ALPHA = 0.05
