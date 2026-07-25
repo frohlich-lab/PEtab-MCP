@@ -430,7 +430,13 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         observable's own raw measurement std) regardless of whether it's at bound — a sigma
         approaching that reference is quietly doing the same thing as an at-bound parameter
         (masking a mechanism problem behind inflated noise); `change_parameters` rejects
-        widening a sigma past it. Use this to check the score without pulling the dataframe;
+        widening a sigma past it. Each entry carries a `status` (`ok`/`inflated`/`collapsed`, or
+        `unknown` when the observable's measurement std can't be computed so it can't be assessed), and
+        the top level flags `noise_sigma_inflated`/`noise_sigma_collapsed` with `noise_sigma_advice`
+        when either is set: an inflated sigma is absorbing model misfit, a collapsed one is
+        overfitting the noise — either way the bic is NOT genuine adequacy and a finish on it is
+        REFUSED, so fix the model FORM (not the noise) when you see this. Use this to check the
+        score without pulling the dataframe;
         use `query_data` to query the measured-vs-simulated points and residuals with SQL.
         Refreshed on every commit; generated on demand if none exists.
         """

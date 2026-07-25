@@ -549,7 +549,10 @@ class PetabSession:
         Resets the non-improving streak and adopts this version as the best-BIC checkpoint when
         ``is_new_best`` fires, else increments the streak. Since ``is_new_best`` tracks BIC (see
         :func:`fitting.compute_improvement`), a new best is exactly a new best-BIC checkpoint — the
-        flag, the streak, and the checkpoint stay in lock step on one score.
+        flag, the streak, and the checkpoint stay in lock step on one score. EXCEPTION: a new best
+        whose lower BIC was bought by an implausible ESTIMATED noise sigma (inflated/collapsed) still
+        adopts the checkpoint but does NOT reset the streak — a sigma-gamed "improvement" is not
+        progress, so such a run trips the streak cap instead of running to the recursion limit.
 
         Takes ``self.lock`` itself (a reentrant ``RLock``, so this is safe whether or not the
         caller already holds it) so the write path is self-contained and symmetric with the locked
@@ -567,6 +570,16 @@ class PetabSession:
         bic = gof.get("bic")
         gof_p = gof.get("chi2_gof_pvalue")
         is_new_best = bool(improvement.get("is_new_best"))
+        # Noise-model plausibility of THIS fit (single source of truth shared with the judge's
+        # success gate). Reuse the flags the commit path stashed on fitsim; fall back to computing
+        # them for direct callers (e.g. tests) that pass a raw fitsim without them.
+        report = fitsim.get("noise_sigma_report")
+        sigma_estimated = fitsim.get("noise_sigma_estimated", bool(report))
+        sig_inflated = (fitsim["noise_sigma_inflated"] if "noise_sigma_inflated" in fitsim
+                        else _noise_sigma_inflated(report))
+        sig_collapsed = (fitsim["noise_sigma_collapsed"] if "noise_sigma_collapsed" in fitsim
+                         else _noise_sigma_collapsed(report))
+        sigma_implausible = bool(sigma_estimated and (sig_inflated or sig_collapsed))
 
         with self.lock:
             # `bic is not None` is NOT enough: a NaN is a float, so a fit whose likelihood
@@ -577,21 +590,23 @@ class PetabSession:
             # locally no matter how the score was produced.
             usable = bic is not None and math.isfinite(bic)
             if is_new_best and usable:
-                self.non_improving_streak = 0
                 self.best_bic = bic
                 self.best_version = version
                 self.best_nll = nll
                 self.best_gof_pvalue = gof_p
-                # Reuse the flags the commit path stashed on fitsim; fall back to computing them
-                # for direct callers (e.g. tests) that pass a raw fitsim without them.
-                report = fitsim.get("noise_sigma_report")
-                self.best_sigma_estimated = fitsim.get("noise_sigma_estimated", bool(report))
-                self.best_sigma_inflated = (fitsim["noise_sigma_inflated"]
-                                            if "noise_sigma_inflated" in fitsim
-                                            else _noise_sigma_inflated(report))
-                self.best_sigma_collapsed = (fitsim["noise_sigma_collapsed"]
-                                             if "noise_sigma_collapsed" in fitsim
-                                             else _noise_sigma_collapsed(report))
+                self.best_sigma_estimated = sigma_estimated
+                self.best_sigma_inflated = sig_inflated
+                self.best_sigma_collapsed = sig_collapsed
+                # A sigma-GAMED "improvement" — a lower BIC bought by an inflated/collapsed
+                # ESTIMATED sigma — is not genuine progress: it does NOT reset the non-improving
+                # streak, so a run that keeps lowering BIC only by gaming the noise trips the streak
+                # cap instead of burning to the recursion limit. The checkpoint is still adopted (it
+                # IS the best BIC), so the judge scores the real best model and the sigma advice
+                # still reaches the agent at the stop.
+                if sigma_implausible:
+                    self.non_improving_streak += 1
+                else:
+                    self.non_improving_streak = 0
             else:
                 # An unscoreable fit is not progress: it advances the streak like any other
                 # non-improving op, so a model that keeps failing to evaluate still trips the

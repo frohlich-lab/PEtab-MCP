@@ -849,6 +849,25 @@ def parameters_at_bound(
     return flags
 
 
+def _entry_inflated(entry: "dict[str, Any]") -> bool:
+    """Whether ONE noise_sigma_report entry is inflated: fitted above its data-driven cap (the
+    noise absorbing model misfit). Shared by the per-entry ``status`` and :func:`noise_sigma_inflated`
+    so the agent-facing status can't drift from the gate that fails the run."""
+    fitted, cap = entry.get("fitted"), entry.get("upper_bound_cap")
+    try:
+        return fitted is not None and cap is not None and float(fitted) > float(cap)
+    except (TypeError, ValueError):
+        return False
+
+
+def _entry_collapsed(entry: "dict[str, Any]") -> bool:
+    """Whether ONE noise_sigma_report entry is collapsed: fraction of its observable's data std
+    below ``NOISE_SIGMA_COLLAPSE_FRACTION`` (overfitting the noise). Shared by the per-entry
+    ``status`` and :func:`noise_sigma_collapsed`."""
+    frac = entry.get("fraction_of_data_std")
+    return isinstance(frac, (int, float)) and frac < NOISE_SIGMA_COLLAPSE_FRACTION
+
+
 def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[str, dict[str, Any]]:
     """Every ESTIMATED noise-sigma parameter's fitted value against its data-driven reference —
     surfaced proactively on EVERY commit, not just once it's pinned at its bound (see
@@ -872,12 +891,25 @@ def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[st
         except (TypeError, ValueError):
             continue
         data_std = R.sigma_data_std(problem, pid)
-        out[pid] = {
+        entry = {
             "fitted": value,
             "upper_bound_cap": R.sigma_upper_bound_cap(problem, pid),
             "data_std": data_std,
             "fraction_of_data_std": (value / data_std) if data_std else None,
         }
+        # Per-entry plausibility from the SAME predicates the top-level noise_sigma_inflated/
+        # collapsed use (single source of truth, so the agent-facing status can't drift from the
+        # gate that fails the run). "unknown" when the observable's std can't be computed (data_std
+        # None -> nothing to assess against): report that honestly rather than a reassuring "ok".
+        if data_std is None:
+            entry["status"] = "unknown"
+        elif _entry_inflated(entry):
+            entry["status"] = "inflated"     # noise absorbing model misfit
+        elif _entry_collapsed(entry):
+            entry["status"] = "collapsed"    # overfitting the noise for a good-looking score
+        else:
+            entry["status"] = "ok"
+        out[pid] = entry
     return out
 
 
@@ -889,16 +921,7 @@ def noise_sigma_inflated(report: "dict[str, Any] | None") -> bool:
     a non-numeric entry is treated as NOT inflated."""
     if not isinstance(report, dict):
         return False
-    for entry in report.values():
-        if not isinstance(entry, dict):
-            continue
-        fitted, cap = entry.get("fitted"), entry.get("upper_bound_cap")
-        try:
-            if fitted is not None and cap is not None and float(fitted) > float(cap):
-                return True
-        except (TypeError, ValueError):
-            continue
-    return False
+    return any(_entry_inflated(e) for e in report.values() if isinstance(e, dict))
 
 
 def noise_sigma_collapsed(report: "dict[str, Any] | None") -> bool:
@@ -910,13 +933,41 @@ def noise_sigma_collapsed(report: "dict[str, Any] | None") -> bool:
     or a non-numeric ``fraction_of_data_std`` is treated as NOT collapsed."""
     if not isinstance(report, dict):
         return False
-    for entry in report.values():
-        if not isinstance(entry, dict):
-            continue
-        frac = entry.get("fraction_of_data_std")
-        if isinstance(frac, (int, float)) and frac < NOISE_SIGMA_COLLAPSE_FRACTION:
-            return True
-    return False
+    return any(_entry_collapsed(e) for e in report.values() if isinstance(e, dict))
+
+
+# Agent-facing advice when the fit's noise model is implausible. Surfaced proactively on every
+# get_fit_summary (not just at a plateau stop) and echoed by the harness finish gate, so the agent
+# learns WHY a good-looking BIC won't be accepted and fixes the mechanism instead of the noise.
+NOISE_SIGMA_INFLATED_ADVICE = (
+    "an ESTIMATED noise sigma is inflated above its data-driven cap, absorbing the model misfit — "
+    "the chi2 goodness-of-fit is not genuine adequacy here. Do NOT widen or lean on the noise; fix "
+    "the mechanism so the residuals shrink at a plausible sigma (the residual sign/runs tests still "
+    "flag the structure). A fit resting on an inflated sigma will NOT be accepted as finished."
+)
+NOISE_SIGMA_COLLAPSED_ADVICE = (
+    "an ESTIMATED noise sigma has collapsed far below the data's own variability — the fit is "
+    "overfitting the noise for a good-looking score, not genuine adequacy. Prefer a simpler / more "
+    "parsimonious mechanism at a plausible sigma rather than one that drives the residuals to ~0. "
+    "A fit resting on a collapsed sigma will NOT be accepted as finished."
+)
+
+
+def noise_sigma_advice_for(inflated: bool, collapsed: bool) -> str | None:
+    """Advice from already-computed inflated/collapsed flags (so a caller that needs both the flags
+    AND the advice — e.g. :func:`fit_summary` — computes the two predicates ONCE). Inflation is
+    reported first when both tails are present, since it is the more common misfit-masking case."""
+    if inflated:
+        return NOISE_SIGMA_INFLATED_ADVICE
+    if collapsed:
+        return NOISE_SIGMA_COLLAPSED_ADVICE
+    return None
+
+
+def noise_sigma_advice(report: "dict[str, Any] | None") -> str | None:
+    """Concise agent-facing advice for an implausible noise model, or ``None`` when the fit's
+    estimated sigmas are plausible (for callers that only have the report, e.g. get_fit_diagnosis)."""
+    return noise_sigma_advice_for(noise_sigma_inflated(report), noise_sigma_collapsed(report))
 
 
 def fit_summary(session, engine) -> dict[str, Any]:
@@ -947,7 +998,18 @@ def fit_summary(session, engine) -> dict[str, Any]:
         int(session.problem.n_estimated), sim.get("n_data_points"),
     ))
     out["parameters_at_bound"] = parameters_at_bound(out.get("fitted_parameters"), pdf)
-    out["noise_sigma_report"] = noise_sigma_report(session.problem, out.get("fitted_parameters"))
+    _report = noise_sigma_report(session.problem, out.get("fitted_parameters"))
+    out["noise_sigma_report"] = _report
+    # Proactive plausibility verdict on EVERY read (not just at a plateau stop): a good BIC bought
+    # with an inflated/collapsed estimated sigma is not real adequacy and will not be accepted as
+    # finished. Surfaced here so the agent can act on it, and read by the harness finish gate.
+    _inflated = noise_sigma_inflated(_report)
+    _collapsed = noise_sigma_collapsed(_report)
+    out["noise_sigma_inflated"] = _inflated
+    out["noise_sigma_collapsed"] = _collapsed
+    _advice = noise_sigma_advice_for(_inflated, _collapsed)
+    if _advice is not None:
+        out["noise_sigma_advice"] = _advice
     # These metrics are the LAST fit's. Edits are fit-free, so the working model can have moved on
     # since then; flag it so a caller never mistakes a stale score for the edited model's score.
     # `version` above is the version these metrics belong to; call `fit` to score the working model.

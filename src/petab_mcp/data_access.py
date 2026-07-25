@@ -341,11 +341,26 @@ def fit_diagnosis(session, worst_n: int = 8) -> dict[str, Any]:
     any_low_power = any(o.get("structure_low_power") and not o.get("structure_flag")
                         for o in per_observable)
 
+    # Noise-model plausibility, echoed here too (the agent reads this tool to see WHERE the fit is
+    # off): an inflated/collapsed ESTIMATED sigma means a good BIC is not genuine adequacy — the fix
+    # is mechanistic, not noise-side. Best-effort; advisory only, never breaks the diagnosis (the
+    # judge calls this too). Empty {} when the problem has no estimated sigma or no fit yet.
+    noise_sigma: dict[str, Any] = {}
+    try:
+        from . import fitting
+        _fit = (getattr(session, "simulation", None) or {}).get("fitted_parameters")
+        _rep = fitting.noise_sigma_report(session.problem, _fit)
+        if _rep:
+            noise_sigma = {"report": _rep, "advice": fitting.noise_sigma_advice(_rep)}
+    except Exception:  # noqa: BLE001 - advisory; never break the diagnosis
+        noise_sigma = {}
+
     return {
         "n_points": int(len(d)),
         "total_chi2": round(float((d["_rw"] * d["_rw"]).sum()), 3),
         "per_observable": per_observable,   # bounded: one row per observable
         "worst_points": worst_points,       # bounded: <= worst_n rows
+        "noise_sigma": noise_sigma,         # {} if no estimated sigma/fit; else {report, advice} (advice None when plausible)
         # The residual-structure verdict, rolled up: which observables show a significant
         # sign-test bias or runs-test time trend (p < 0.05), and whether the tests are
         # underpowered at this sample size (so "nothing flagged" is weak, not reassuring).

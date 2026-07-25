@@ -185,6 +185,35 @@ def _fitsim_collapsed_sigma(nll: float, chi2: float, *, n: int = 20, k: int = 2)
     return fs
 
 
+def test_sigma_gamed_improvement_does_not_reset_the_streak(session):
+    """A sigma-GAMED new best — a genuinely lower BIC bought by an inflated estimated sigma — must
+    NOT reset the non-improving streak, so a run that keeps lowering BIC only by gaming the noise
+    trips the streak cap instead of running to the recursion limit. The checkpoint is still adopted
+    (it IS the best BIC), so the judge scores the real best model."""
+    # Every op is a genuine new best by BIC (nll strictly drops) but each games the sigma.
+    for i, v in enumerate(range(1, 1 + NON_IMPROVING_STREAK_CAP)):
+        session.record_fit_progress(v, _fitsim_inflated_sigma(-50.0 - i, 18.0),
+                                    {"is_new_best": True})
+    p = session.progress_report()
+    assert session.best_version is not None and session.best_sigma_inflated is True  # adopted
+    assert p["non_improving_streak"] == NON_IMPROVING_STREAK_CAP  # gamed bests never reset it
+    assert p["should_stop"] is True                              # -> trips the streak cap
+
+
+def test_a_plausible_new_best_after_gaming_resets_the_streak(session):
+    """The gate is specific to gamed improvements: a genuine (plausible-sigma) new best still resets
+    the streak, so fixing the noise model immediately clears the accumulated penalty."""
+    for i, v in enumerate(range(1, 4)):
+        session.record_fit_progress(v, _fitsim_inflated_sigma(-50.0 - i, 18.0),
+                                    {"is_new_best": True})
+    assert session.progress_report()["non_improving_streak"] == 3  # gamed improvements accrued
+    plausible = _fitsim(-60.0, 18.0)
+    plausible["noise_sigma_report"] = {"sigma": {"fitted": 0.05, "upper_bound_cap": 0.1,
+                                                 "data_std": 0.2, "fraction_of_data_std": 0.25}}
+    session.record_fit_progress(4, plausible, {"is_new_best": True})
+    assert session.progress_report()["non_improving_streak"] == 0  # a real fix clears it
+
+
 def test_collapsed_sigma_blocks_the_adequate_plateau_stop(session):
     """A COLLAPSED estimated sigma (overfitting the noise) is NOT adequate either — the agent gate
     must reject it like the judge's success gate does, so a run doesn't plateau-stop 'adequate' and
