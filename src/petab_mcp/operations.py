@@ -773,7 +773,7 @@ def bundle_result(
         message = (
             "Edit applied and a version was snapshotted, but the fit did not finish cleanly, so "
             f"this call carries no metrics: the working model is now version {version}. Read "
-            "`fit.error`, then read the score with get_fit_summary / list_versions before making "
+            "`fit.error`, then read that version's score with list_versions before making "
             "another change — do NOT re-fit, the model is already scored."
         )
     else:

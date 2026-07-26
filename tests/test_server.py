@@ -520,6 +520,15 @@ def test_fit_tools(tmp_path):
         assert res["neg_log_likelihood"] is not None
         assert res["version"] == 1
         assert res["improvement"]["is_new_best"] is not None
+        # the compact residual-structure verdict rides on the fit result (issue #113), so the
+        # agent doesn't spend a get_fit_diagnosis call to learn its model's form is incomplete —
+        # but the DETAIL behind it deliberately does not, or it would ride on every fit.
+        assert set(res["residual_structure"]) == {
+            "flagged_observables", "low_power", "summary"}
+        assert "per_observable" not in res and "worst_points" not in res
+        diag = _structured(await mcp.call_tool("get_fit_diagnosis", {}))
+        assert diag["residual_structure"] == res["residual_structure"]
+        assert diag["per_observable"] and "worst_points" in diag
         # diff_versions now reports the fit delta between versions
         d = _structured(await mcp.call_tool("diff_versions", {"from_version": 0, "to_version": 1}))
         assert "fit" in d and "neg_log_likelihood_delta" in d["fit"]

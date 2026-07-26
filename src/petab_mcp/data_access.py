@@ -296,14 +296,19 @@ def fit_diagnosis(session, worst_n: int = 8) -> dict[str, Any]:
     caller can see WHERE and HOW a fit is off without pulling the raw per-point data into its
     context. Computed from the last commit's simulation dataframe.
     """
+    # The early returns carry residual_structure too (as the "tests unavailable" verdict): the key
+    # is part of this tool's contract and the fit result's, so a caller reading it must never have
+    # to guard for its absence just because there is nothing to diagnose yet.
     df = _frames(session)["simulations"]
     if df is None or df.empty:
         return {"status": "no simulation yet — commit a model first",
-                "per_observable": [], "worst_points": []}
+                "per_observable": [], "worst_points": [],
+                "residual_structure": _unavailable_structure()}
     d = df[df["residual_weighted"].notna()].copy()
     if d.empty:
         return {"status": "no weighted residuals available (unfitted or non-evaluable noise)",
-                "per_observable": [], "worst_points": []}
+                "per_observable": [], "worst_points": [],
+                "residual_structure": _unavailable_structure()}
     d["_rw"] = d["residual_weighted"].astype(float)
 
     per_observable = []
@@ -331,15 +336,10 @@ def fit_diagnosis(session, worst_n: int = 8) -> dict[str, Any]:
         "residual_weighted": round(float(r["_rw"]), 3),
     } for _, r in worst.iterrows()]
 
-    structure_flags = [o["observable_id"] for o in per_observable
-                       if o.get("structure_flag")]
-    # Low power is only a concern where nothing was flagged: a flagged observable already
-    # found its structure, so its tests being underpowered elsewhere (e.g. a runs test made
-    # undefined by an all-one-sign series that the sign test still flagged) is moot. This
-    # flag exists to warn that "nothing flagged" is weak evidence, so it must reflect only the
-    # unflagged, underpowered observables.
-    any_low_power = any(o.get("structure_low_power") and not o.get("structure_flag")
-                        for o in per_observable)
+    # Rolled up from the per-observable verdicts ALREADY computed above — no second pass of the
+    # sign/runs tests. Shares its builder with residual_structure_rollup (which the fit path calls
+    # directly), so the two can never drift apart.
+    structure = _rollup_structure((o["observable_id"], o) for o in per_observable)
 
     # Noise-model plausibility, echoed here too (the agent reads this tool to see WHERE the fit is
     # off): an inflated/collapsed ESTIMATED sigma means a good BIC is not genuine adequacy — the fix
@@ -364,11 +364,9 @@ def fit_diagnosis(session, worst_n: int = 8) -> dict[str, Any]:
         # The residual-structure verdict, rolled up: which observables show a significant
         # sign-test bias or runs-test time trend (p < 0.05), and whether the tests are
         # underpowered at this sample size (so "nothing flagged" is weak, not reassuring).
-        "residual_structure": {
-            "flagged_observables": structure_flags,
-            "low_power": any_low_power,
-            "summary": _structure_summary(structure_flags, any_low_power),
-        },
+        # The `fit` result carries this SAME rollup (see residual_structure_rollup), so calling
+        # this tool is only needed for the per-observable table and worst_points below.
+        "residual_structure": structure,
         "hint": ("mean_weighted_residual far from 0 = a systematic over/under-shoot for that "
                  "observable; worst_points show the largest model-vs-data deviations. "
                  "sign_test / runs_test detect bias and time trend from residual SIGNS, so they "
@@ -379,27 +377,85 @@ def fit_diagnosis(session, worst_n: int = 8) -> dict[str, Any]:
     }
 
 
-def residual_structure_flagged(session) -> bool:
-    """True if the current fit's residuals show significant STRUCTURE (sign/runs tests) in ANY
-    observable — a form-incompleteness signal that SURVIVES estimated noise sigmas (unlike chi2
-    GoF, which a free sigma rescales to look adequate). Used by the session's plateau-adequacy gate
-    so a model whose residuals are still structured keeps searching instead of stopping early.
-    Best-effort: any diagnostic failure returns False (never block a run on an advisory stat).
+_STRUCTURE_UNAVAILABLE = "residual-structure tests unavailable (no weighted residuals yet)."
 
-    Computes ONLY the per-observable sign/runs verdict (the same ``structure_flag`` fit_diagnosis
-    reports), short-circuiting at the first flagged observable — it skips fit_diagnosis's magnitude
-    aggregations and worst-points sort, since this runs on every commit."""
+
+def residual_structure_rollup(session) -> dict[str, Any]:
+    """The current fit's residual-structure verdict, rolled up — the SAME
+    ``{flagged_observables, low_power, summary}`` shape :func:`fit_diagnosis` returns under its
+    ``residual_structure`` key, so one key name never means two shapes.
+
+    Which observables show significant residual STRUCTURE (sign/runs tests) — a
+    form-incompleteness signal that SURVIVES estimated noise sigmas (unlike chi2 GoF, which a free
+    sigma rescales to look adequate). Computed on every commit to feed the session's
+    plateau-adequacy gate, and returned on the ``fit`` result so the agent gets the verdict without
+    spending a separate ``get_fit_diagnosis`` call (see issue #113).
+
+    Computes ONLY the per-observable sign/runs verdict — it skips fit_diagnosis's magnitude
+    aggregations and worst-points sort, since this runs on every fit. Best-effort: no simulation,
+    no weighted residuals, or any diagnostic failure degrades to a well-formed
+    "tests unavailable" dict, so the gate is never blocked and the agent never hits a missing key.
+    """
     try:
         df = _frames(session)["simulations"]
         if df is None or df.empty:
-            return False
+            return _unavailable_structure()
         d = df[df["residual_weighted"].notna()]
         if d.empty:
-            return False
-        return any(_safe_residual_structure(g).get("structure_flag")
-                   for _obs, g in d.groupby("observable_id"))
+            return _unavailable_structure()
+        verdicts = [(_clean(obs), _safe_residual_structure(g)) for obs, g in
+                    d.groupby("observable_id")]
     except Exception:  # noqa: BLE001 - advisory; a diagnostic failure must not affect the fit/gate
-        return False
+        return _unavailable_structure()
+    return _rollup_structure(verdicts)
+
+
+def _rollup_structure(verdicts) -> dict[str, Any]:
+    """Roll ``(observable_id, verdict)`` pairs up into the reported verdict. The single builder
+    behind BOTH :func:`fit_diagnosis`'s ``residual_structure`` key and
+    :func:`residual_structure_rollup`, so the shape and the rules stay identical; each caller
+    passes the per-observable verdicts it has already computed."""
+    pairs = list(verdicts)
+    # SORTED, so the verdict does not depend on the caller's iteration order: fit_diagnosis rolls
+    # up a chi2-ranked per_observable while residual_structure_rollup walks groupby order, and the
+    # two must agree exactly (both the list and the summary string built from it) whenever more
+    # than one observable is flagged. The chi2 RANKING lives in per_observable, not here.
+    flagged = sorted(obs for obs, v in pairs if v.get("structure_flag"))
+    # Low power is only a concern where nothing was flagged: a flagged observable already found
+    # its structure, so its tests being underpowered elsewhere (e.g. a runs test made undefined by
+    # an all-one-sign series that the sign test still flagged) is moot. This flag exists to warn
+    # that "nothing flagged" is weak evidence, so it must reflect only the unflagged,
+    # underpowered observables.
+    low_power = any(v.get("structure_low_power") and not v.get("structure_flag")
+                    for _obs, v in pairs)
+    return {"flagged_observables": flagged, "low_power": low_power,
+            "summary": _structure_summary(flagged, low_power)}
+
+
+def _unavailable_structure() -> dict[str, Any]:
+    """The degraded rollup: well-formed, and honest that nothing was tested (NOT a clean bill)."""
+    return {"flagged_observables": [], "low_power": True,
+            "summary": _STRUCTURE_UNAVAILABLE}
+
+
+def residual_flag(structure: dict[str, Any]) -> bool | None:
+    """The bare structure flag of a rollup, or ``None`` when the tests could not run at all.
+
+    The distinction matters wherever the flag is RECORDED (the version meta, the fit event): an
+    unavailable verdict flags nothing, but recording that as ``False`` would turn "untested" into a
+    clean bill of health. Consumers that only gate on it (the plateau-adequacy check) coerce the
+    ``None`` to falsy anyway, so they are unaffected."""
+    if structure.get("summary") == _STRUCTURE_UNAVAILABLE:
+        return None
+    return bool(structure.get("flagged_observables"))
+
+
+def residual_structure_flagged(session) -> bool:
+    """True if the current fit's residuals show significant structure in ANY observable — the bare
+    boolean the session's plateau-adequacy gate consumes. See :func:`residual_structure_rollup`,
+    which this wraps; a caller that needs BOTH forms should call the rollup once and derive the
+    bool from it rather than calling both (the commit path in ``PetabSession.fit`` does)."""
+    return bool(residual_structure_rollup(session)["flagged_observables"])
 
 
 # p-value at/below which a residual-structure test is called significant in the rolled-up

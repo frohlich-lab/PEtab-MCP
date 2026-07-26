@@ -569,10 +569,22 @@ neg-log-likelihood delta).
   a reference, correct the rate law, respect the fixed observables) and retry.
 - **`fit`** returns `{"committed": true, "version": N, "warnings", "progress", …fit block…}`
   on a fit that snapshots a version; `{"committed": false, "no_change": true, "version",
-  "duplicate_of_version", "message", "warnings", "neg_log_likelihood", "bic"}` when the working
+  "duplicate_of_version", "message", "warnings", "neg_log_likelihood", "bic",
+  "residual_structure"}` when the working
   model is identical to the current version (the stored fit is reused); or `{"committed": false,
   "error": "..."}` when the model can't compile or has no free parameters — a fit failure
   **leaves your edits in place** so you can repair the model and fit again.
+- The fit block also carries the **noise-model verdict**: `noise_sigma_report` plus
+  `noise_sigma_inflated` / `noise_sigma_collapsed`, and `noise_sigma_advice` when either is true.
+  An inflated or collapsed ESTIMATED sigma means a good `bic`/χ² is not genuine adequacy — fix the
+  mechanism, not the noise. These are the same keys `get_fit_summary` reports.
+- The fit block includes **`residual_structure`** — `{"flagged_observables": [...], "low_power",
+  "summary"}` — the sign/runs verdict on whether the residuals are still structured, i.e. whether
+  the model's FORM is incomplete. It is the same rollup `get_fit_diagnosis` reports, so read it
+  here rather than spending a call to ask; call `get_fit_diagnosis` for the per-observable table
+  and worst points *behind* the verdict. A non-empty `flagged_observables` names the observables
+  whose form is still missing something; `low_power: true` means "nothing flagged" is weak
+  evidence, not a pass.
 - **Other tools** return `{"ok": false, "error": "..."}` on a known failure.
 - A rejected edit or failed `fit` is **not silent**: it is logged and surfaced via
   `get_errors()`.

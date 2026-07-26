@@ -532,7 +532,14 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         `fit_n_starts_default`; below it fits LESS hard than omitting the argument, and 0 simulates
         without optimising. The result's own `n_starts` is what actually ran. `justification` is
         optional. The result carries the same fit block every version does, plus a `progress` block
-        (non-improving streak, best-BIC checkpoint, early-stop signal).
+        (non-improving streak, best-BIC checkpoint, early-stop signal) and two adequacy verdicts:
+        `residual_structure` — whether the residuals still show significant STRUCTURE
+        (`flagged_observables` + a one-line `summary`), i.e. whether the model's FORM is still
+        missing something — and the noise-model verdict (`noise_sigma_inflated` /
+        `noise_sigma_collapsed`, with `noise_sigma_advice` when either is true), i.e. whether a
+        good `bic` was bought with an implausible estimated sigma. Read both off this result: you
+        do NOT need `get_fit_summary` at all, nor `get_fit_diagnosis` to learn WHETHER the
+        residuals are structured — only to see the per-observable table and the worst points.
 
         Fitting is the expensive step, so `fit` de-duplicates: if the working model is
         byte-identical to the current version it returns the stored metrics WITHOUT re-fitting
@@ -700,6 +707,10 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         (time trend / serial correlation), each with a `p` and a `low_power` flag; plus the
         `worst_n` largest-residual points (measurement vs simulation) and a rolled-up
         `residual_structure` verdict naming any observable with significant structure.
+
+        That `residual_structure` verdict is ALREADY on every `fit` result — call this tool when
+        you need the detail behind it (which points, how big, which observable carries the chi2),
+        not to ask whether the residuals are structured.
 
         The sign/runs tests exist BECAUSE `chi2`/`reduced_chi2`/`chi2_gof_pvalue` are
         uninformative when the noise sigmas are ESTIMATED (a free sigma inflates to absorb

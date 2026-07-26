@@ -97,6 +97,22 @@ def _noise_sigma_collapsed(report: "dict[str, Any] | None") -> bool:
     return fitting.noise_sigma_collapsed(report)
 
 
+def _residual_structure_of(session: "PetabSession") -> "dict[str, Any]":
+    """The compact residual-structure verdict of the session's CURRENT simulation — the same
+    ``{flagged_observables, low_power, summary}`` rollup ``get_fit_diagnosis`` reports. Delegates to
+    :func:`data_access.residual_structure_rollup` (best-effort: never raises), the single source of
+    truth, so what the fit result says and what the adequacy gate acts on can never disagree."""
+    from . import data_access
+    return data_access.residual_structure_rollup(session)
+
+
+def _residual_flag_of(structure: "dict[str, Any]") -> "bool | None":
+    """The bare flag to RECORD for a verdict — ``None`` when the tests could not run, so an
+    untested fit is never stored as a clean bill of health. See :func:`data_access.residual_flag`."""
+    from . import data_access
+    return data_access.residual_flag(structure)
+
+
 class PetabSession:
     """Holds the working problem, provenance store, and reference resolver."""
 
@@ -844,6 +860,14 @@ class PetabSession:
         records the early-stop-chain op, and clears the pending edits. ``n_starts`` overrides the
         server default (0 = simulate without optimising); ``justification`` is optional.
 
+        The result also carries the two adequacy verdicts this method computes anyway for the
+        plateau-adequacy gate: ``residual_structure`` (the compact sign/runs verdict on whether the
+        model's FORM is still incomplete) and the noise-model verdict
+        (``noise_sigma_inflated``/``noise_sigma_collapsed`` + advice). Returning them saves the
+        caller a separate ``get_fit_summary``/``get_fit_diagnosis`` round-trip; ``get_fit_diagnosis``
+        remains the way to get the per-observable table and worst points behind the verdict, and
+        ``get_fit_summary`` the way for a caller that did NOT run the fit to read the same score.
+
         Before the (expensive) fit it de-duplicates: if the working model is byte-identical to the
         current fitted version the refit is skipped and the stored metrics are returned
         (``committed: false, no_change: true``) — unless this fit runs MORE multistarts than that
@@ -900,6 +924,18 @@ class PetabSession:
             gof_pvalue = fitting.goodness_of_fit(
                 nllh, fitsim.get("chi2"), fitsim.get("n_estimated"),
                 fitsim.get("n_data_points")).get("chi2_gof_pvalue")
+            # Residual-structure verdict of THIS fit (sign/runs tests survive estimated sigmas),
+            # computed ONCE here and stashed on fitsim like the noise flags below. Three consumers:
+            # the compact rollup rides on the fit RESULT so the agent doesn't spend a
+            # get_fit_diagnosis call to learn its model's form is still incomplete (issue #113);
+            # the bare bool goes into the version meta + event, and feeds the adequacy gate in
+            # record_fit_progress/progress_report so a structurally-mis-specified best model is NOT
+            # treated as adequate (see issue: sneyd underfits plateau-stopped as "adequate" while
+            # flagging structured residuals). Must run BEFORE _snapshot_version so the version meta
+            # can carry the flag; safe here since _auto_fit_and_improvement already set
+            # self.simulation, which is what the diagnosis reads.
+            fitsim["residual_structure"] = _residual_structure_of(self)
+            fitsim["residual_flagged"] = _residual_flag_of(fitsim["residual_structure"])
             version = self._snapshot_version(
                 label="fit",
                 kind="fit",
@@ -909,22 +945,26 @@ class PetabSession:
                       "n_starts": fitsim.get("n_starts"),
                       "fit_status": fitsim.get("status"), "neg_log_likelihood": nllh,
                       "chi2": fitsim.get("chi2"), "chi2_gof_pvalue": gof_pvalue,
+                      "residual_flagged": fitsim["residual_flagged"],
                       "fitted_parameters": fitsim.get("fitted_parameters"), **improvement},
                 sim=fitsim,
             )
             fitsim["version"] = version
-            # Noise-sigma flags computed ONCE here and stashed on fitsim, so this event and the
-            # checkpoint update in record_fit_progress (below) reuse them instead of recomputing.
-            _nsr = fitsim.get("noise_sigma_report")
+            # Noise-sigma report + flags computed ONCE here and stashed on fitsim, so this event,
+            # the checkpoint update in record_fit_progress (below) and the returned fit block all
+            # read the SAME verdict instead of recomputing (or disagreeing).
+            #
+            # The report must be COMPUTED here: fit_and_simulate's payload never carried a
+            # `noise_sigma_report` key, so the `fitsim.get(...)` this used to do read None on every
+            # real fit — which silently pinned noise_sigma_estimated/inflated/collapsed to False in
+            # the event, in the best-BIC checkpoint and in the plateau-adequacy gate, disabling the
+            # implausible-sigma checks entirely. The unit tests inject the key into a synthetic
+            # fitsim and call record_fit_progress directly, so they never caught it.
+            _nsr = fitting.noise_sigma_report(self.problem, fitsim.get("fitted_parameters"))
+            fitsim["noise_sigma_report"] = _nsr
             fitsim["noise_sigma_estimated"] = bool(_nsr)
             fitsim["noise_sigma_inflated"] = _noise_sigma_inflated(_nsr)
             fitsim["noise_sigma_collapsed"] = _noise_sigma_collapsed(_nsr)
-            # Residual-structure flag of THIS fit (sign/runs tests survive estimated sigmas). Stashed
-            # like the noise flags so the adequacy gate in record_fit_progress/progress_report can
-            # treat a structurally-mis-specified best model as NOT adequate — see issue: sneyd
-            # underfits plateau-stopped as "adequate" while flagging structured residuals.
-            from . import data_access as _data_access
-            fitsim["residual_flagged"] = _data_access.residual_structure_flagged(self)
             event = self.provenance.append_event(
                 {"type": "fit", "version": version, "justification": justification,
                  "staged_edits": staged, "n_edits": len(staged),
@@ -966,10 +1006,14 @@ class PetabSession:
         })
         self.logger.info("fit no-op: identical to v%s — skipped recompile+fit+snapshot", dup_v)
         self.pending_edits = []
+        from . import fitting
+
+        structure = _residual_structure_of(self)
+        flag = _residual_flag_of(structure)
         # Mirror the scalar fit keys a real fit returns (fit_status/n_starts/nll/chi2/bic), so a
         # caller that reads them off the result doesn't hit a missing key on a no-op; `no_change:
         # true` and the thinner shape (no per-point/per-parameter block) still distinguish it. Full
-        # detail is unchanged from the duplicate version — see get_fit_summary / that version.
+        # per-point detail is unchanged from the duplicate version — read it from that version.
         return {
             "committed": False, "no_change": True, "version": dup_v,
             "duplicate_of_version": dup_v, "message": decision.get("message"),
@@ -981,6 +1025,21 @@ class PetabSession:
             "fit_status": meta.get("fit_status"),
             "neg_log_likelihood": meta.get("neg_log_likelihood"),
             "chi2": meta.get("chi2"), "bic": meta.get("bic"),
+            # BOTH adequacy verdicts, on the same terms a real fit reports them. The noise verdict
+            # cannot be omitted here: its advice key is absent when the noise model is plausible,
+            # so a result carrying none of these keys reads as "plausible" — and the lead has no
+            # get_fit_summary to check against. Computed from the CURRENT state, which is the
+            # duplicate version's by construction.
+            **fitting.noise_sigma_block(
+                self.problem, (self.simulation or {}).get("fitted_parameters")),
+            # The structure verdict too: every doc tells the agent to read it off the fit result,
+            # so a no-op must not be the one shape that lacks it. Recomputed from the CURRENT
+            # simulation, which is exactly the duplicate version's — that identity is what
+            # "no_change" means — rather than read from the meta, which stores only the flag.
+            "residual_structure": structure,
+            # Falls back to the stored flag if the tests can't run now; None (never False) when
+            # neither is available: "unknown", not a clean bill of health.
+            "residual_flagged": (meta.get("residual_flagged") if flag is None else flag),
         }
 
     def rollback_to(self, version: int, justification: str | None = None) -> dict[str, Any]:
@@ -995,6 +1054,11 @@ class PetabSession:
             self.apply_version(version)
             sim = self._restore_or_simulate()
             nllh = sim.get("neg_log_likelihood") if sim else None
+            # Verdict of the RESTORED state, so the fit block reads the same everywhere and the
+            # agent restoring a prior best sees its structure verdict without a follow-up call.
+            structure = _residual_structure_of(self)
+            if sim is not None:
+                sim["residual_structure"] = structure
             new_version = self._snapshot_version(
                 label=f"rollback->v{version}",
                 kind="rollback",
@@ -1002,7 +1066,8 @@ class PetabSession:
                 # ("fit") from one of a simulate-only/unfitted version — else re-fitting a restored
                 # model would be wrongly skipped or wrongly re-run.
                 meta={"rolled_back_to": version, "justification": justification,
-                      "fit_status": (sim or {}).get("status"), "neg_log_likelihood": nllh},
+                      "fit_status": (sim or {}).get("status"), "neg_log_likelihood": nllh,
+                      "residual_flagged": _residual_flag_of(structure)},
                 sim=sim,
             )
             self.provenance.append_event(
@@ -1048,13 +1113,17 @@ class PetabSession:
             self.apply_version(0)
             sim = self._restore_or_simulate()
             nllh = sim.get("neg_log_likelihood") if sim else None
+            structure = _residual_structure_of(self)
+            if sim is not None:
+                sim["residual_structure"] = structure
             new_version = self._snapshot_version(
                 label="reset",
                 kind="reset",
                 # Carry the restored sim's status (v0 is unfitted, so "simulate_only"/None) so the
                 # de-dup treats a reset HEAD as not-a-real-fit and a following fit runs.
                 meta={"reset_to": 0, "fit_status": (sim or {}).get("status"),
-                      "neg_log_likelihood": nllh},
+                      "neg_log_likelihood": nllh,
+                      "residual_flagged": _residual_flag_of(structure)},
                 sim=sim,
             )
             self.provenance.append_event(

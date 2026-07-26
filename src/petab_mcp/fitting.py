@@ -1142,8 +1142,14 @@ def fit_result_block(
     when the fit is already at the noise floor and stop adding parameters,
     ``parameters_at_bound`` (see :func:`parameters_at_bound`; empty when ``parameter_df`` is
     not passed) so a parameter pinned to its bound is flagged in the SAME report instead of
-    requiring a separate ``get_parameters()`` comparison, and ``noise_sigma_report`` (see
-    :func:`noise_sigma_report`; empty when ``problem`` is not passed).
+    requiring a separate ``get_parameters()`` comparison, the noise-model verdict
+    (``noise_sigma_report`` plus ``noise_sigma_inflated`` / ``noise_sigma_collapsed`` and, only
+    when implausible, ``noise_sigma_advice`` — the same flat keys :func:`fit_summary` reports, so
+    a score read off ``fit`` names things exactly as one read off ``get_fit_summary``), and the
+    compact
+    ``residual_structure`` verdict the caller stashed on ``fitsim`` (see
+    :func:`data_access.residual_structure_rollup`) so the agent learns whether its model's FORM is
+    still incomplete without spending a separate ``get_fit_diagnosis`` call.
     """
     fitsim = fitsim or {}
     fitted = fitsim.get("fitted_parameters")
@@ -1180,9 +1186,47 @@ def fit_result_block(
         "parameter_scales": fitsim.get("parameter_scales"),
         "improvement": improvement or None,
         "parameters_at_bound": parameters_at_bound(fitted, parameter_df),
-        "noise_sigma_report": noise_sigma_report(problem, fitted),
+        # Prefer the report PetabSession.fit already computed and stashed, so the event, the
+        # adequacy gate and this block cannot disagree; computed here for the paths that don't
+        # stash one (rollback/reset).
+        **noise_sigma_block(problem, fitted, report=fitsim.get("noise_sigma_report")),
+        # The COMPACT residual-structure verdict only — which observables show significant
+        # sign/runs structure, plus a one-line summary. Deliberately not the per-observable table
+        # or worst_points: those would ride on EVERY fit result and pile up in the agent's re-sent
+        # history, so they stay behind get_fit_diagnosis (issue #113).
+        "residual_structure": fitsim.get("residual_structure"),
     }
     block.update(goodness_of_fit(nll, chi2, k, n))
+    return block
+
+
+def noise_sigma_block(
+    problem: Any, fitted: dict[str, float] | None, report: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The noise-model verdict as it appears on any fit-bearing result.
+
+    The raw ``noise_sigma_report`` plus the ``noise_sigma_inflated`` / ``noise_sigma_collapsed``
+    verdict and — ONLY when implausible — ``noise_sigma_advice``, mirroring :func:`fit_summary`'s
+    flat keys so a score read off ``fit`` names things exactly as one read off ``get_fit_summary``.
+
+    Shared by :func:`fit_result_block` and the ``fit`` no-op deliberately: because the advice key
+    is ABSENT when the noise model is plausible, a result that omits these keys entirely reads to
+    an agent as "plausible". Any fit-bearing shape must therefore carry the whole verdict or none
+    of it, and the lead has no ``get_fit_summary`` to fall back on. ``report`` short-circuits the
+    computation for a caller that already has one.
+    """
+    if report is None:
+        report = noise_sigma_report(problem, fitted)
+    inflated = noise_sigma_inflated(report)
+    collapsed = noise_sigma_collapsed(report)
+    block = {
+        "noise_sigma_report": report,
+        "noise_sigma_inflated": inflated,
+        "noise_sigma_collapsed": collapsed,
+    }
+    advice = noise_sigma_advice_for(inflated, collapsed)
+    if advice is not None:
+        block["noise_sigma_advice"] = advice
     return block
 
 

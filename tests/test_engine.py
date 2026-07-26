@@ -214,15 +214,22 @@ def test_model_less_problem_does_not_segfault(session, engine):
 
 
 def test_fit_objective_and_reported_nll_are_the_same_number(fit_session):
-    """The fit's objective and the harness's reported nll must agree exactly.
+    """The fit's objective and the harness's reported nll must be the same likelihood.
 
     They are the same likelihood at the same parameters, but they used to be computed by two
     different AMICI models with two different solvers — the fit through pyPESTO's objective,
     the report by re-simulating via simulate_petab. That let them disagree: a crauste fit
     converged at nll 266.62 while the re-simulation of its own optimum failed to integrate past
     t=22 and reported NaN, which then poisoned the best-BIC checkpoint and cost the run its
-    score. Both now go through one shared objective (fitting.estimation_problem), so this is an
-    identity, not an approximation.
+    score. Both now go through one shared objective (fitting.estimation_problem).
+
+    Sharing that objective makes the FORMULA and the parameters identical, but each side still
+    runs its own adaptive integration, so the agreement is bounded by the ODE solver's tolerance,
+    not by floating-point rounding — a rounding-level bound here is a flake waiting for a solver
+    or platform that lands the optimum slightly differently. The bound is therefore
+    OBJECTIVE_AGREEMENT_RTOL, the same threshold `_reconcile_objective` uses in production to
+    decide these two numbers "differ in substance"; the regression above is far coarser than it
+    (a NaN or an unreached point fails at any tolerance).
     """
     from petab_mcp import fitting
 
@@ -230,14 +237,15 @@ def test_fit_objective_and_reported_nll_are_the_same_number(fit_session):
     reported = res["neg_log_likelihood"]
     assert reported is not None
 
+    rtol = fitting.OBJECTIVE_AGREEMENT_RTOL
     # Re-evaluating the committed model must reproduce the number that was reported for it.
     again = fit_session.engine.evaluate_objective()["neg_log_likelihood"]
-    assert again == pytest.approx(reported, rel=1e-9)
+    assert again == pytest.approx(reported, rel=rtol)
 
     # ...and that number is the optimizer's own objective at the fitted point.
     problem, _ = fitting.estimation_problem(fit_session, fit_session.engine)
     x = fitting.problem_x_from_nominal(problem, fit_session.problem.parameter_df)
-    assert float(problem.objective(x)) == pytest.approx(reported, rel=1e-9)
+    assert float(problem.objective(x)) == pytest.approx(reported, rel=rtol)
 
 
 def test_one_amici_build_per_structure(fit_session):

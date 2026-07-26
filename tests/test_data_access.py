@@ -296,6 +296,8 @@ def test_fit_diagnosis_empty_without_simulation(session):
     out = data_access.fit_diagnosis(session)
     assert out["per_observable"] == [] and out["worst_points"] == []
     assert "no simulation" in out["status"]
+    # the verdict key is present even here, so reading it never needs an absence guard
+    assert out["residual_structure"] == data_access.residual_structure_rollup(session)
 
 
 def test_fit_diagnosis_compact_and_bounded(session):
@@ -356,9 +358,11 @@ def test_residual_structure_flagged_false_when_no_weighted_residuals(session):
     matching fit_diagnosis, which reports no residual structure for the same input."""
     session.simulation = {"records": [_rec("o", "c", 0.0, 1.0, float("nan"), None, None, None)]}
     assert data_access.residual_structure_flagged(session) is False
-    # fit_diagnosis short-circuits here with no residual_structure block; neither reports structure.
+    # fit_diagnosis short-circuits here, but still carries the (unavailable) verdict — the key is
+    # part of its contract, so a caller never has to guard for its absence.
     diag = data_access.fit_diagnosis(session)
-    assert not (diag.get("residual_structure") or {}).get("flagged_observables")
+    assert diag["residual_structure"] == data_access.residual_structure_rollup(session)
+    assert not diag["residual_structure"]["flagged_observables"]
 
 
 def test_residual_structure_flagged_agrees_with_fit_diagnosis_on_mixed(session):
@@ -367,3 +371,85 @@ def test_residual_structure_flagged_agrees_with_fit_diagnosis_on_mixed(session):
     session.simulation = {"records": SIM_RECORDS}
     assert data_access.residual_structure_flagged(session) is bool(
         data_access.fit_diagnosis(session)["residual_structure"]["flagged_observables"])
+
+
+# -- residual_structure_rollup: the compact verdict returned ON the fit result (issue #113) ------
+def test_residual_structure_rollup_names_the_flagged_observable(session):
+    """The rollup is the verdict `fit` returns, so it must NAME what is structured, not just say
+    that something is — and agree exactly with fit_diagnosis's own rollup (one key name, one
+    shape, one set of rules)."""
+    session.simulation = {"records":
+                          [_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0)
+                           for t in range(10)]}
+    out = data_access.residual_structure_rollup(session)
+    assert out["flagged_observables"] == ["obs_A"]
+    assert out["low_power"] is False
+    assert "obs_A" in out["summary"]
+    assert out == data_access.fit_diagnosis(session)["residual_structure"]
+
+
+def test_residual_structure_rollup_reports_low_power_on_the_mixed_set(session):
+    """Few points -> nothing flagged but the tests are underpowered, which the summary must say
+    outright: "nothing flagged" here is weak evidence, not a pass."""
+    session.simulation = {"records": SIM_RECORDS}
+    out = data_access.residual_structure_rollup(session)
+    assert out["flagged_observables"] == []
+    assert out["low_power"] is True
+    assert "UNDERPOWERED" in out["summary"]
+    assert out == data_access.fit_diagnosis(session)["residual_structure"]
+
+
+@pytest.mark.parametrize(
+    "records",
+    [None, [], [_rec("o", "c", 0.0, 1.0, float("nan"), None, None, None)]],
+    ids=["no-simulation", "no-records", "no-weighted-residuals"],
+)
+def test_residual_structure_rollup_degrades_to_a_well_formed_verdict(session, records):
+    """No fit to test -> every key still present (the agent reads this off the fit result, so a
+    missing key would be a KeyError), flagging nothing but NOT claiming adequacy."""
+    session.simulation = None if records is None else {"records": records}
+    out = data_access.residual_structure_rollup(session)
+    assert out["flagged_observables"] == [] and out["low_power"] is True
+    assert "unavailable" in out["summary"]
+
+
+def test_residual_structure_rollup_never_raises(session, monkeypatch):
+    """An advisory stat must never take down the fit or the plateau gate that consume it."""
+    monkeypatch.setattr(data_access, "_frames",
+                        lambda _s: (_ for _ in ()).throw(RuntimeError("boom")))
+    out = data_access.residual_structure_rollup(session)
+    assert out["flagged_observables"] == [] and out["low_power"] is True
+    assert data_access.residual_structure_flagged(session) is False
+
+
+def test_residual_structure_rollup_agrees_with_fit_diagnosis_on_several_flagged(session):
+    """The two callers walk the observables in DIFFERENT orders — fit_diagnosis rolls up a
+    chi2-ranked per_observable, the rollup walks groupby order — so with more than one flagged
+    observable the verdict must be order-independent, or `fit` and `get_fit_diagnosis` would
+    disagree on both the list and the summary string built from it."""
+    # obs_B carries the larger chi2, so fit_diagnosis ranks it first while groupby yields obs_A
+    # first; both one-sided, so both flag.
+    records = ([_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)]
+               + [_rec("obs_B", "c0", float(t), 3.0, 0.0, 3.0, 3.0, 1.0) for t in range(10)])
+    session.simulation = {"records": records}
+    diag = data_access.fit_diagnosis(session)
+    assert [o["observable_id"] for o in diag["per_observable"]] == ["obs_B", "obs_A"]
+
+    rollup = data_access.residual_structure_rollup(session)
+    assert rollup["flagged_observables"] == ["obs_A", "obs_B"]
+    assert rollup == diag["residual_structure"]
+    assert rollup["summary"] == diag["residual_structure"]["summary"]
+
+
+def test_residual_flag_separates_untested_from_unflagged(session):
+    """`False` must mean "tested, nothing found"; an unavailable verdict is `None`. Recording the
+    two the same way would turn "we never ran the tests" into a clean bill of health."""
+    session.simulation = None
+    assert data_access.residual_flag(data_access.residual_structure_rollup(session)) is None
+
+    session.simulation = {"records": SIM_RECORDS}
+    assert data_access.residual_flag(data_access.residual_structure_rollup(session)) is False
+
+    session.simulation = {"records": [_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0)
+                                      for t in range(10)]}
+    assert data_access.residual_flag(data_access.residual_structure_rollup(session)) is True
