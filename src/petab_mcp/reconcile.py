@@ -35,6 +35,7 @@ from petab.v1.C import (
     OBSERVABLE_FORMULA,
     OBSERVABLE_ID,
     OBSERVABLE_PARAMETERS,
+    OBSERVABLE_TRANSFORMATION,
     PARAMETER_SCALE,
     UPPER_BOUND,
 )
@@ -397,6 +398,27 @@ def noise_sigma_ids(problem) -> set[str]:
     return names
 
 
+def plausibility_sigma_ids(problem) -> set[str]:
+    """:func:`noise_sigma_ids` MINUS the observable-scaling symbols — the set whose fitted values
+    are worth judging as a noise sd.
+
+    A symbol that ALSO resolves through the observable side is a scaling factor whose product with
+    the real sigma forms the sd (fiedler's per-gel ``s_pMek_*`` appear in both ``noiseParameters``
+    and ``observableParameters``). Scoring each as if it WERE the sd flagged them 900x "inflated"
+    while the real sigmas read "collapsed", on a scale-degenerate manifold where which coordinate
+    looks large is arbitrary.
+
+    Deliberately a SEPARATE function rather than a narrowing of ``noise_sigma_ids`` itself: that
+    primitive has other consumers with different needs. In particular
+    :func:`classify_inner_parameters` relies on a parameter being in BOTH sets to detect the
+    ambiguous dual-role case and leave it OUTER — narrowing the primitive made the two sets
+    disjoint by construction, silently reclassifying fiedler's 8 gel factors as hierarchical
+    scaling parameters and handing them to an inner solver whose independence assumption they
+    violate.
+    """
+    return noise_sigma_ids(problem) - observable_scaling_ids(problem)
+
+
 def observable_scaling_ids(problem) -> set[str]:
     """Parameter ids resolved through the observable table's ``observableFormula`` column or
     the measurement table's ``observableParameters`` overrides — i.e. observable-scaling /
@@ -531,23 +553,341 @@ def _measurement_rows_for_sigma(problem, pid: str):
     return None
 
 
+def _observable_transformations(problem, rows) -> set[str]:
+    """The ``observableTransformation``(s) (``lin``/``log``/``log10``) of the observables the
+    given measurement rows belong to. ``{"lin"}`` when the column is absent/blank — PEtab's
+    default."""
+    odf = problem.observable_df
+    if odf is None or OBSERVABLE_TRANSFORMATION not in odf.columns \
+            or OBSERVABLE_ID not in rows.columns:
+        return {LIN}
+    out: set[str] = set()
+    for oid in rows[OBSERVABLE_ID].dropna().unique():
+        try:
+            t = odf.loc[oid, OBSERVABLE_TRANSFORMATION]
+        except KeyError:
+            continue
+        t = str(t).strip().lower()
+        out.add(t if t in (LIN, "log", "log10") else LIN)
+    return out or {LIN}
+
+
+def _transform_values(values, transformation: str):
+    """Measurement values on the ESTIMATION scale. A ``log``/``log10`` observable's residuals —
+    and therefore its noise sigma — live in log space, so the scale a sigma must be judged
+    against is the std of the TRANSFORMED data, not of the raw linear values (the two differ by
+    orders of magnitude; see issue: the gate was dimensionally invalid). Non-positive values are
+    dropped, being undefined under a log transform."""
+    import numpy as np
+    if transformation == "log":
+        v = values[values > 0]
+        return np.log(v) if len(v) else v
+    if transformation == "log10":
+        v = values[values > 0]
+        return np.log10(v) if len(v) else v
+    return values
+
+
+def sigma_noise_coordinate(problem, pid: str, rows=None) -> str | None:
+    """The coordinate in which ``pid``'s noise is ADDITIVE (homoscedastic) — ``lin``, ``log`` or
+    ``log10`` — which is the only coordinate where "sigma vs data spread" is a meaningful ratio.
+
+    Three cases, unified:
+      * ``observableTransformation`` is ``log``/``log10`` — residuals and sigma already live there.
+      * a PROPORTIONAL ``noiseFormula`` (``noiseParameter1_X*X``) on a ``lin`` observable — sigma =
+        cv*y is additive in LOG space with sd ~= cv (since d(ln y) = dy/y), so the parameter is
+        directly comparable to the std of ``ln`` data. This is why a bare CV must never be compared
+        against a linear std.
+      * otherwise ``lin``.
+    ``None`` when the covered observables mix transformations (no single comparable coordinate)."""
+    if rows is None:
+        rows = _measurement_rows_for_sigma(problem, pid)
+    if rows is None or rows.empty:
+        return None
+    transformations = _observable_transformations(problem, rows)
+    if len(transformations) != 1:
+        return None
+    t = next(iter(transformations))
+    if t in ("log", "log10"):
+        return t
+    # A PROPORTIONAL sd (cv*y) on a lin observable is additive in LOG space with sd ~= cv, so the
+    # cv is comparable to the std of ln y. Decided from the symbolic form (see sigma_noise_form),
+    # never from the spread of the data. A form we cannot summarise (mixed additive+proportional)
+    # returns None so the caller fails open instead of judging on an arbitrary scale.
+    form = sigma_noise_form(problem, pid, rows)
+    if form == "proportional":
+        return "log"
+    if form == "additive":
+        return t
+    return None
+
+
 def sigma_data_std(problem, pid: str) -> float | None:
-    """Raw measurement std (across every time point / condition) of the observable(s)
-    noise-sigma parameter ``pid`` models the noise for — the basis for its bound cap (see
-    :func:`sigma_upper_bound_cap`) and for reporting a fitted sigma against its reference (see
-    ``fitting.noise_sigma_report``). ``None`` if ``pid`` isn't a resolvable sigma, or there's
-    too little data to compute a std.
+    """Measurement std of the observable(s) whose noise sigma parameter ``pid`` models — computed
+    ON THE OBSERVABLE'S ESTIMATION SCALE, so it is dimensionally comparable to the fitted sigma.
+
+    This is the basis for the bound cap (see :func:`sigma_upper_bound_cap`) and for reporting a
+    fitted sigma against its reference (``fitting.noise_sigma_report``). For a ``log``/``log10``
+    observable the sigma is a log-space sd, so the std is taken over the TRANSFORMED measurements;
+    comparing it against the raw linear std made a correct sigma look collapsed by many orders of
+    magnitude. ``None`` if ``pid`` isn't a resolvable sigma, or there's too little data, or the
+    observables it covers mix transformations (no single comparable scale — fail open rather than
+    judge on the wrong one).
     """
     rows = _measurement_rows_for_sigma(problem, pid)
     if rows is None or rows.empty:
         return None
-    values = rows[MEASUREMENT].dropna().astype(float)
+    coordinate = sigma_noise_coordinate(problem, pid, rows)
+    if coordinate is None:
+        return None  # mixed scales -> no single meaningful reference; don't flag
+    values = _transform_values(rows[MEASUREMENT].dropna().astype(float), coordinate)
     if len(values) < 2:
         return None
     std = float(values.std(ddof=0))
     return std if std > 0 else None
 
 
+def sigma_difference_noise_estimate(problem, pid: str) -> float | None:
+    """A MODEL-FREE estimate of ``pid``'s noise level, from successive differences of adjacent
+    measurements (the Rice 1984 difference-based variance estimator):
+
+        sigma^2 ~= mean((y[i+1] - y[i])^2) / 2
+
+    Differences are taken WITHIN each ``(observable, condition)`` series ordered by time, on the
+    coordinate where the noise is additive (see :func:`sigma_noise_coordinate`). A smooth mean
+    function nearly cancels between adjacent samples, so what survives is dominated by noise — which
+    makes this an independent yardstick that needs NEITHER replicates NOR a ground-truth model. That
+    is what the plausibility band lacks: it can only compare a sigma to the marginal data spread,
+    which conflates variance the model explains with variance it can't.
+
+    ADVISORY ONLY, and BIASED UPWARD: whatever the mean function does between two samples is counted
+    as noise, so sparse or fast-varying series over-estimate (measured across this benchmark: ~1.9x
+    the shipped sigma at the median), and a CUMULATIVE series is pathological (its differences are
+    the increments — ~24x on oliveira). Returns ``None`` when there is too little data to difference.
+
+    WHY THIS DETECTS INFLATION BUT NOT COLLAPSE (don't re-derive it):
+
+    * The bias means ``estimate >= sigma_true`` in expectation — an UPPER bound on the noise. So
+      ``fitted > estimate`` implies ``fitted > sigma_true``: the inflation inference is valid, and
+      the bias only makes it conservative.
+    * Collapse asks the opposite question ("is ``fitted`` far BELOW ``sigma_true``?"), which needs a
+      LOWER bound. Differencing can only ever over-attribute variation to noise, never under-, so it
+      cannot supply one: a correctly-fitted sigma also sits below this estimate, by an unknown margin
+      (1x-24x here). Signal and artifact are indistinguishable in that direction.
+    * More fundamentally, overfitting is an OUT-OF-SAMPLE concept: this estimator reads the raw data
+      and never the residuals, so it returns the same number whether or not the model interpolated
+      them. No in-sample statistic can certify overfitting — a flexible enough model matches any
+      in-sample criterion. Only held-out/cross-validated likelihood can, at the cost of a refit per
+      fold (affordable post-run in a judge; not within an agent's ~11-fit budget).
+    * Replicates are the exception: two measurements at the SAME design point differ by noise alone,
+      so pure error is UNBIASED and supports a two-sided lack-of-fit test. Only 3 of 16 benchmark
+      examples have any.
+
+    So absent validation data, a collapsed sigma on a real problem is not detectable here, and BIC's
+    ``k*ln(n)`` — itself a cheap surrogate for out-of-sample error — is the practical guard. It
+    leaks exactly when the extra flexibility is not counted in ``k`` (added states, non-identifiable
+    directions).
+    """
+    rows = _measurement_rows_for_sigma(problem, pid)
+    if rows is None or rows.empty or MEASUREMENT not in rows.columns:
+        return None
+    coordinate = sigma_noise_coordinate(problem, pid, rows)
+    if coordinate is None:
+        return None
+    import numpy as np
+
+    group_cols = [c for c in ("observableId", "simulationConditionId") if c in rows.columns]
+    grouped = rows.groupby(group_cols, sort=False) if group_cols else [(None, rows)]
+    squares: list[float] = []
+    for _key, series in grouped:
+        if "time" in series.columns:
+            series = series.sort_values("time")
+        values = _transform_values(series[MEASUREMENT].dropna().astype(float), coordinate)
+        values = np.asarray(values, dtype=float)
+        if len(values) >= 3:  # need at least two differences for a usable mean
+            squares.extend(np.diff(values) ** 2)
+    if len(squares) < 2:
+        return None
+    estimate = float(np.sqrt(float(np.mean(squares)) / 2.0))
+    return estimate if estimate > 0 else None
+
+
+def _noise_expr_and_observable(problem, pid: str, rows):
+    """``(sympy_expr, observable_symbol, observable_id)`` for the noise of the rows ``pid`` covers,
+    with the measurement-table ``noiseParameters`` overrides already substituted, or ``None``.
+
+    Overrides are resolved the way petab does it — a cell naming a PARAMETER becomes that
+    parameter's symbol, a numeric cell becomes the number — so the fitted sigma survives as a
+    symbol we can substitute a value for. (Getting this wrong is what made an earlier attempt
+    evaluate the formula without reference to the sigma at all.) Requires the covered rows to share
+    one observable and one override list, which is the normal case; ``None`` otherwise so callers
+    fail open rather than average incomparable formulas.
+    """
+    odf = getattr(problem, "observable_df", None)
+    if odf is None or NOISE_FORMULA not in odf.columns or OBSERVABLE_ID not in rows.columns:
+        return None
+    observable_ids = rows[OBSERVABLE_ID].dropna().unique()
+    if len(observable_ids) != 1:
+        return None
+    observable_id = str(observable_ids[0])
+    override_cells = (set(rows[NOISE_PARAMETERS].dropna().astype(str))
+                      if NOISE_PARAMETERS in rows.columns else set())
+    # Differing override lists across rows (fiedler's per-gel scale factors) mean the covered rows
+    # do not share one sd expression; the caller must fail open rather than pick one arbitrarily.
+    if len(override_cells) > 1:
+        return None
+    try:
+        import sympy as sp
+        from petab.v1 import split_parameter_replacement_list
+        from petab.v1.calculate import get_symbolic_noise_formulas
+
+        expr = get_symbolic_noise_formulas(odf).get(observable_id)
+        if expr is None:
+            return None
+        overrides = {}
+        for i, value in enumerate(split_parameter_replacement_list(
+                next(iter(override_cells)) if override_cells else None)):
+            overrides[sp.Symbol(f"noiseParameter{i + 1}_{observable_id}", real=True)] = (
+                sp.Symbol(str(value), real=True) if isinstance(value, str) else value)
+        expr = expr.subs(overrides)
+        # The formula may name the observable id OR the model quantity the observable reports
+        # (armistead: observable `Cer_obs`, noiseFormula `noiseParameter1_Cer_obs*Cer`). Resolve
+        # the level symbol through observableFormula rather than guessing, so the derivative below
+        # is taken with respect to the symbol actually present.
+        candidates = [sp.Symbol(observable_id, real=True)]
+        if OBSERVABLE_FORMULA in odf.columns:
+            try:
+                candidates += [sp.Symbol(name, real=True)
+                               for name in sorted(formula_symbols(odf.loc[observable_id,
+                                                                         OBSERVABLE_FORMULA]))]
+            except KeyError:
+                pass
+        free = expr.free_symbols
+        level = next((c for c in candidates if c in free), candidates[0])
+        return expr, level, observable_id
+    except Exception:  # noqa: BLE001 - advisory scale only
+        return None
+
+
+def _per_observable_agreement(problem, pid, rows, fn):
+    """Apply ``fn(sub_rows)`` to each covered observable's rows and return the common result, or
+    ``None`` if they disagree or any is ``None``.
+
+    A sigma shared across many observables (blasi: one ``sigma`` for 16 acetylation states) is the
+    normal case, and each observable carries its OWN ``noiseParameter1_<obsId>`` placeholder, so the
+    expression must be resolved per observable. Requiring agreement keeps the reported verdict
+    meaningful: if one observable's noise is proportional and another's additive, no single scalar
+    describes the sigma and we fail open.
+    """
+    if OBSERVABLE_ID not in rows.columns:
+        return fn(rows)
+    results = []
+    for _oid, sub in rows.groupby(OBSERVABLE_ID, sort=False):
+        result = fn(sub)
+        if result is None:
+            return None
+        results.append(result)
+    if not results:
+        return None
+    first = results[0]
+    for other in results[1:]:
+        if isinstance(first, float) and isinstance(other, float):
+            if not math.isclose(first, other, rel_tol=1e-9):
+                return None
+        elif other != first:
+            return None
+    return first
+
+
+def sigma_noise_form(problem, pid: str, rows=None) -> str | None:
+    """How the noise depends on the observable, decided from the SYMBOLIC formula, not from data:
+
+    * ``"additive"`` — the sd does not involve the observable, so it IS an sd on the observable's
+      transformation scale (``d(expr)/d(y) == 0``).
+    * ``"proportional"`` — the sd is ``cv * y``, i.e. ``expr / y`` is free of ``y``; the parameter
+      is a dimensionless coefficient of variation.
+    * ``None`` — anything else (a mixed ``sqrt(a**2 + (b*y)**2)``, an unresolvable formula), where
+      no single scalar summarises the noise and the caller must fail open.
+
+    Reading the expression is the whole point: an earlier attempt inferred this from the DISPERSION
+    of evaluated values, which made the verdict depend on where the measurement magnitudes happened
+    to sit — the same model and sigma scored collapsed / ok / inflated on different data ranges.
+    """
+    if rows is None:
+        rows = _measurement_rows_for_sigma(problem, pid)
+    if rows is None or rows.empty:
+        return None
+    def _form(sub_rows):
+        resolved = _noise_expr_and_observable(problem, pid, sub_rows)
+        if resolved is None:
+            return None
+        expr, y, _obs = resolved
+        try:
+            import sympy as sp
+
+            if sp.simplify(sp.diff(expr, y)) == 0:
+                return "additive"
+            if y not in sp.simplify(expr / y).free_symbols:
+                return "proportional"
+            return None
+        except Exception:  # noqa: BLE001
+            return None
+
+    return _per_observable_agreement(problem, pid, rows, _form)
+
+
+def sigma_effective_value(problem, pid: str, fitted: float,
+                          fitted_values: "dict[str, float] | None" = None) -> float | None:
+    """The sd implied by ``pid = fitted``, expressed on the scale :func:`sigma_data_std` measures.
+
+    Evaluated from the noiseFormula, so a COMPOSITE sd (fiedler's
+    ``noiseParameter1*noiseParameter2`` — a per-gel scale times the sigma, where neither factor is
+    an sd alone) comes out right. For ``proportional`` noise the value returned is the coefficient
+    of variation, which is the sd in log space, matching the coordinate
+    :func:`sigma_noise_coordinate` reports for that form. ``None`` when the form is not one of the
+    two summarisable cases, or the expression will not reduce to a number.
+    """
+    rows = _measurement_rows_for_sigma(problem, pid)
+    if rows is None or rows.empty:
+        return None
+    form = sigma_noise_form(problem, pid, rows)
+    if form is None:
+        return None
+    def _value(sub_rows):
+      resolved = _noise_expr_and_observable(problem, pid, sub_rows)
+      if resolved is None:
+        return None
+      expr, y, _obs = resolved
+      try:
+        import sympy as sp
+
+        # Substitute every parameter value we know: the fitted sigma, its co-parameters from this
+        # fit, then the table's nominals for anything unfitted.
+        subs = {}
+        pdf = getattr(problem, "parameter_df", None)
+        if pdf is not None and NOMINAL_VALUE in pdf.columns:
+            for name in pdf.index:
+                try:
+                    subs[sp.Symbol(str(name), real=True)] = float(pdf.loc[name, NOMINAL_VALUE])
+                except (TypeError, ValueError):
+                    continue
+        for name, value in {**(fitted_values or {}), pid: fitted}.items():
+            try:
+                subs[sp.Symbol(str(name), real=True)] = float(value)
+            except (TypeError, ValueError):
+                continue
+        # For proportional noise divide out the observable FIRST, so the result is the cv and no
+        # value of y is needed at all; additive noise is already independent of y.
+        target = sp.simplify(expr / y) if form == "proportional" else expr
+        value = sp.simplify(target.subs(subs))
+        if value.free_symbols:  # an unresolved symbol -> we do not guess, we fail open
+            return None
+        result = float(value)
+        return result if math.isfinite(result) and result > 0 else None
+      except Exception:  # noqa: BLE001 - advisory scale only
+        return None
+
+    return _per_observable_agreement(problem, pid, rows, _value)
 def sigma_upper_bound_cap(
     problem, pid: str, max_fraction: float = NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD,
 ) -> float | None:

@@ -579,10 +579,17 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         values come only from the fit). `noise_sigma_report`
         lists every ESTIMATED noise-sigma parameter's fitted value against a data-driven
         reference (a fraction of its
-        observable's own raw measurement std) regardless of whether it's at bound — a sigma
-        approaching that reference is quietly doing the same thing as an at-bound parameter
-        (masking a mechanism problem behind inflated noise); `change_parameters` rejects
-        widening a sigma past it. Each entry carries a `status` (`ok`/`inflated`/`collapsed`, or
+        observable's measurement std, on the scale its noise is additive on) regardless of whether
+        it's at bound — a sigma approaching that reference is quietly doing the same thing as an
+        at-bound parameter (masking a mechanism problem behind inflated noise); `change_parameters`
+        WARNS (does not reject) when widening a sigma past it. The decisive, ground-truth-free
+        evidence that a sigma is absorbing misfit is structured residuals — check
+        `get_fit_diagnosis`'s sign/runs tests. Each entry also reports `data_noise_estimate`, a
+        MODEL-FREE noise level from successive measurement differences, and
+        `fitted_over_data_noise` — purely ADVISORY (nothing gates on them). That estimate is biased
+        HIGH (it counts whatever the mean does between samples as noise), so a fitted sigma far
+        ABOVE it is strong evidence of inflation, while one below it is only weak evidence of
+        collapse. Each entry carries a `status` (`ok`/`inflated`/`collapsed`, or
         `unknown` when the observable's measurement std can't be computed so it can't be assessed), and
         the top level flags `noise_sigma_inflated`/`noise_sigma_collapsed` with `noise_sigma_advice`
         when either is set: an inflated sigma is absorbing model misfit, a collapsed one is

@@ -261,6 +261,17 @@ def _commit_change(
 
         new_sbml = session.problem.model.to_sbml_str()  # serialize once; reused for both hashes
         warnings = (_parsimony_warnings(session.problem, old_species) if recon is not None else [])
+        # Warnings raised by the edit callback itself (e.g. change_parameters' advisory sigma cap)
+        # must reach the CALLER, not just the provenance log — an advisory nobody reads is the same
+        # as no guard at all. `recon is None` for every parameter edit, so the parsimony list above
+        # is always empty there and these would otherwise be dropped.
+        # A bundled `set_model(parameters=[...])` (#117) nests the parameter result under
+        # "parameters", so reading only the top level silently dropped the advisory on exactly the
+        # call that re-authors the model AND widens the noise box together.
+        for _source in (apply_result, (apply_result or {}).get("parameters")
+                        if isinstance(apply_result, dict) else None):
+            if isinstance(_source, dict):
+                warnings = warnings + [w for w in (_source.get("warnings") or []) if w]
         param_diff = {
             "added": recon["parameters"]["added"] if recon else [],
             "removed": recon["parameters"]["removed"] if recon else [],
@@ -444,26 +455,43 @@ def _require_positive_for_log(problem, parameter_id: str, scale: str) -> None:
                 )
 
 
-def _reject_sigma_bound_widening(problem, parameter_id: str, upper_bound: float) -> None:
-    """Refuse to widen an ESTIMATED noise-sigma parameter's upperBound past its data-driven cap
-    (see ``R.sigma_upper_bound_cap``). Without this, a fit pinned at that cap could be "fixed"
-    the same way a benchmark run once fixed it — by widening the box until the sigma can
-    inflate far enough to make an under-mechanistic model look statistically adequate again.
-    A FIXED sigma is left alone: its bounds don't affect a fit it's never optimized over. This
-    only ever REJECTS an explicit widening attempt — it never rewrites a bound itself."""
-    if parameter_id not in R.noise_sigma_ids(problem):
-        return
+def _warn_sigma_bound_widening(problem, parameter_id: str, upper_bound: float) -> str | None:
+    """Advisory warning when an ESTIMATED noise sigma's upperBound is widened past its data-driven
+    cap (see ``R.sigma_upper_bound_cap``), or ``None``. A FIXED sigma is ignored: its bounds don't
+    affect a fit it is never optimized over.
+
+    WARNS rather than rejects (#118). The cap is a fraction of the observable's MARGINAL data std,
+    which conflates variance the model explains with variance it can't: across the benchmark, the
+    true models' own sigmas span ~0.0004-0.59 of that std, so any band wide enough to be safe is
+    too wide to be decisive. On a real problem there is no reference to check it against, so a hard
+    rejection could block a legitimate edit with no recourse. The load-bearing evidence for "sigma
+    is absorbing misfit" is the RESIDUAL STRUCTURE (sign/runs tests in get_fit_diagnosis), which is
+    transform-invariant and needs no ground truth — this warning just points at it."""
+    if parameter_id not in R.plausibility_sigma_ids(problem):
+        return None
     if not R.is_parameter_estimated(problem, parameter_id):
-        return
+        return None
     cap = R.sigma_upper_bound_cap(problem, parameter_id)
-    if cap is not None and float(upper_bound) > cap:
-        raise OperationError(
-            f"Cannot widen the upperBound of {parameter_id!r} to {upper_bound:.6g}: noise-sigma "
-            f"parameters are capped at {cap:.6g} ({NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD:.0%} of "
-            "this observable's raw measurement std) so a fit can't hide a wrong mechanism by "
-            "inflating the assumed noise. If the fit is pinned at this bound, revisit the model "
-            "structure — don't widen the sigma further."
-        )
+    if cap is None or float(upper_bound) <= cap:
+        return None
+    # Only warn about an actual WIDENING. Without comparing to the CURRENT bound this fires on a
+    # TIGHTENING that merely lands above the cap — e.g. perelson ships [1e-10, 1e10] against a cap
+    # of ~0.31, so an agent correctly narrowing to [1e-3, 1.0] would be told its improvement is a
+    # dangerous widening. A bound that was already past the cap and is moving DOWN is progress.
+    try:
+        current = float(problem.parameter_df.loc[parameter_id, UPPER_BOUND])
+    except (KeyError, TypeError, ValueError):
+        current = None
+    if current is not None and current == current and float(upper_bound) <= current:
+        return None
+    return (
+        f"WARNING: widening the upperBound of {parameter_id!r} to {upper_bound:.6g} takes it past "
+        f"{cap:.6g} ({NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD:.0%} of this observable's measurement "
+        "std, on the scale its noise is additive on). A sigma free to grow can make an "
+        "under-mechanistic model look statistically adequate. This is ADVISORY — check "
+        "get_fit_diagnosis: if the residual sign/runs tests flag structure, the mechanism is "
+        "missing something and widening the noise will only hide it."
+    )
 
 
 def _pinned_side(session, problem, parameter_id: str) -> str | None:
@@ -544,11 +572,12 @@ def _reject_repeated_widening(
     ``get_identifiability``) is UNIDENTIFIABLE, not under-explored: each widening just lets the
     optimum slide to the new edge and re-pin, chasing the search space toward infinity for ~0 BIC
     (armistead widened one rate 4x this way before fixing it). The skill says widen at most once;
-    this is the hard backstop. Noise sigmas have their own, stricter cap
-    (:func:`_reject_sigma_bound_widening`) and are left to it. This only ever REJECTS — it never
-    rewrites a bound — and a missing fit / provenance simply means no block."""
-    if parameter_id in R.noise_sigma_ids(problem):
-        return
+    this is the hard backstop. It applies to NOISE SIGMAS TOO: they used to be exempt because
+    ``_reject_sigma_bound_widening`` rejected them on a stricter data-driven cap, but that cap is
+    now only advisory (:func:`_warn_sigma_bound_widening`, #118 — it compares against the marginal
+    data std, which no fixed band can hold), so exempting them here would leave the one parameter
+    class that can buy adequacy by inflating with NO hard limit at all. This only ever REJECTS — it
+    never rewrites a bound — and a missing fit / provenance simply means no block."""
     if not R.is_parameter_estimated(problem, parameter_id):
         return
     side = _pinned_side(session, problem, parameter_id)
@@ -664,6 +693,7 @@ def _parameter_edit(session, normalized: list[dict[str, Any]]) -> Callable[[Any]
         updates: list[dict[str, Any]] = []
         scale_checks: list[tuple[str, str]] = []  # (pid, scale) to verify AFTER the batched update
         changed = []
+        warnings: list[str] = []
         for ch in normalized:
             pid, lb, ub, scale = ch["parameter_id"], ch["lower_bound"], ch["upper_bound"], ch["scale"]
             update: dict[str, Any] = {"id": pid}
@@ -671,7 +701,12 @@ def _parameter_edit(session, normalized: list[dict[str, Any]]) -> Callable[[Any]
                 # Widening backstops read the pre-edit bound, so they must run BEFORE any update.
                 # Entries are distinct parameters, so checking them all against the pristine table
                 # (before the single batched write below) is equivalent to interleaving.
-                _reject_sigma_bound_widening(problem, pid, ub)
+                # The sigma cap only WARNS (#118) — it is a marginal-std heuristic with no ground
+                # truth to check it against on a real problem; the repeated-widening backstop below
+                # is unidentifiability evidence and still rejects.
+                sigma_warning = _warn_sigma_bound_widening(problem, pid, ub)
+                if sigma_warning:
+                    warnings.append(sigma_warning)
                 _reject_repeated_widening(session, problem, pid, lb, ub)
                 update["lowerBound"], update["upperBound"] = lb, ub
             if scale is not None:
@@ -689,7 +724,10 @@ def _parameter_edit(session, normalized: list[dict[str, Any]]) -> Callable[[Any]
         for pid, scale in scale_checks:
             # Positive-box check reads the NEW scale + bounds, so it runs AFTER the update.
             _require_positive_for_log(problem, pid, scale)
-        return {"changed": changed}
+        out: dict[str, Any] = {"changed": changed}
+        if warnings:
+            out["warnings"] = warnings   # advisory only; the edit was applied
+        return out
 
     return edit
 

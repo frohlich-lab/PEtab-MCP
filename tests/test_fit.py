@@ -223,10 +223,16 @@ def test_the_noop_carries_an_implausible_noise_verdict(fit_session):
     """The case the omission would have hidden: when the duplicate version's noise model IS
     implausible, the de-duplicated fit must say so — including the advice string, which is the
     only key that distinguishes "implausible" from "plausible" by its presence."""
-    from petab.v1.C import ESTIMATE
+    from petab.v1.C import ESTIMATE, LOWER_BOUND, UPPER_BOUND
 
     sess = fit_session
     sess.problem.parameter_df.loc["sigma_B", ESTIMATE] = 1
+    # FORCE the implausible verdict via the box rather than hoping the fit lands outside the band:
+    # once the plausibility gate became dimensionally correct (#118) this fixture's sigma fitted to
+    # a perfectly reasonable value and the test went vacuous. Clamping sigma_B many orders below
+    # the data's own spread makes "collapsed" deterministic, which is what the test is about.
+    sess.problem.parameter_df.loc["sigma_B", LOWER_BOUND] = 1e-9
+    sess.problem.parameter_df.loc["sigma_B", UPPER_BOUND] = 1e-8
     first = sess.fit(n_starts=2)
     assert first["noise_sigma_collapsed"] or first["noise_sigma_inflated"], (
         "fixture no longer produces an implausible sigma — this test would be vacuous")

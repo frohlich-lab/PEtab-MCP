@@ -19,6 +19,7 @@ from petab.v1.models.sbml_model import SbmlModel
 from . import logging_setup
 from .constants import (
     ADEQUATE_GOF_PVALUE,
+    OVERFIT_GOF_PVALUE,
     DEFAULT_AUTO_FIT_STARTS,
     NON_IMPROVING_STREAK_CAP,
     PLATEAU_MIN_BIC_GAIN,
@@ -86,6 +87,17 @@ def _noise_sigma_inflated(report: "dict[str, Any] | None") -> bool:
     success gate can never drift on what "inflated" means."""
     from . import fitting
     return fitting.noise_sigma_inflated(report)
+
+
+def _noise_sigma_assessable(report: "dict[str, Any] | None") -> bool:
+    """Whether ANY entry in a noise_sigma_report was actually assessable — i.e. carries a usable
+    ``fraction_of_data_std``. An entry whose observable std can't be computed is reported with
+    ``status: "unknown"`` and makes both plausibility predicates fail open, so callers must not
+    read "not inflated and not collapsed" as evidence of plausibility."""
+    if not isinstance(report, dict):
+        return False
+    return any(isinstance(e, dict) and isinstance(e.get("fraction_of_data_std"), (int, float))
+               for e in report.values())
 
 
 def _noise_sigma_collapsed(report: "dict[str, Any] | None") -> bool:
@@ -220,6 +232,10 @@ class PetabSession:
         # noise model, so a run whose residuals stay structured keeps searching instead of
         # plateau-stopping early (sneyd: underfits stopped as "adequate" while flagging residuals).
         self.best_residual_flagged: bool = False
+        # Whether the best model's estimated sigmas could actually be ASSESSED (at least one entry
+        # has a usable data_std, i.e. status is not "unknown"). Without this, an unassessable sigma
+        # makes both predicates fail open to False and the model reads "adequate" on no evidence.
+        self.best_sigma_assessable: bool = False
         self.op_history: list[dict[str, Any]] = []
 
         # De-duplication memory for identical fits (see :mod:`dedup` and issue #59): how many times
@@ -279,6 +295,7 @@ class PetabSession:
                     self.best_sigma_inflated = bool(ev.get("noise_sigma_inflated", False))
                     self.best_sigma_collapsed = bool(ev.get("noise_sigma_collapsed", False))
                     self.best_residual_flagged = bool(ev.get("residual_flagged", False))
+                    self.best_sigma_assessable = bool(ev.get("noise_sigma_assessable", False))
         except Exception:  # noqa: BLE001 - seeding is best-effort; a resume must never fail on it
             self.logger.warning("could not seed best-BIC checkpoint from provenance", exc_info=True)
 
@@ -611,6 +628,8 @@ class PetabSession:
                         else _noise_sigma_inflated(report))
         sig_collapsed = (fitsim["noise_sigma_collapsed"] if "noise_sigma_collapsed" in fitsim
                          else _noise_sigma_collapsed(report))
+        sig_assessable = (fitsim["noise_sigma_assessable"] if "noise_sigma_assessable" in fitsim
+                          else _noise_sigma_assessable(report))
         sigma_implausible = bool(sigma_estimated and (sig_inflated or sig_collapsed))
 
         with self.lock:
@@ -639,6 +658,7 @@ class PetabSession:
                 self.best_sigma_inflated = sig_inflated
                 self.best_sigma_collapsed = sig_collapsed
                 self.best_residual_flagged = bool(fitsim.get("residual_flagged", False))
+                self.best_sigma_assessable = sig_assessable
                 # A sigma-gamed "improvement" is not genuine progress even when adopted (it can only
                 # be adopted here over an absent/already-gamed best): it does NOT reset the
                 # non-improving streak, so an all-gamed run trips the streak cap instead of burning
@@ -695,14 +715,28 @@ class PetabSession:
             #    STRICTER than the judge, not lock-step: it ALSO requires structure-free residuals
             #    below — which the judge does NOT check — so don't drop that to "restore lock-step".)
             #    This is what caught blasi/sneyd, which used to stop early on a meaningless GoF.
-            #  * FIXED sigma — chi2 GoF against the known noise IS a real adequacy test; keep it.
-            if self.best_sigma_estimated:
+            #  * FIXED sigma — chi2 GoF against the known noise IS a real adequacy test; keep it,
+            #    but TWO-SIDED. p below ADEQUATE_GOF_PVALUE means the residuals are too big for the
+            #    known noise (underfit); p above OVERFIT_GOF_PVALUE means they are far too SMALL —
+            #    the model is fitting the noise, which is not adequacy either. Testing only the
+            #    lower tail scored rahman runs at chi2/n = 0.016 / 0.051 (p = 0.9999999) as
+            #    "adequate". This tail only exists for a fixed sigma: an ESTIMATED sigma absorbs
+            #    residual shrinkage into itself, pinning chi2/n at ~1 from below.
+            gof_adequate = (
+                self.best_gof_pvalue is not None
+                and ADEQUATE_GOF_PVALUE <= self.best_gof_pvalue <= OVERFIT_GOF_PVALUE
+            )
+            if self.best_sigma_estimated and self.best_sigma_assessable:
                 best_adequate = not (self.best_sigma_inflated or self.best_sigma_collapsed)
+            elif self.best_sigma_estimated:
+                # Estimated sigma we could NOT assess (every entry status "unknown" — e.g. the
+                # observable's std is uncomputable, or its noise formula is composite). Both sigma
+                # predicates fail open to False, so `not (False or False)` would declare the model
+                # adequate on NO evidence at all, skipping the chi2 branch too and leaving the run
+                # with zero adequacy test. Fall back to the (weak, but real) GoF instead.
+                best_adequate = gof_adequate
             else:
-                best_adequate = (
-                    self.best_gof_pvalue is not None
-                    and self.best_gof_pvalue >= ADEQUATE_GOF_PVALUE
-                )
+                best_adequate = gof_adequate
             # ...AND the residuals must not still show significant STRUCTURE. The sign/runs tests
             # survive estimated sigmas (unlike chi2 GoF), so a best model that fits the magnitude but
             # is systematically biased/trended has an incomplete FORM — not adequate, so the run keeps
@@ -965,6 +999,12 @@ class PetabSession:
             fitsim["noise_sigma_estimated"] = bool(_nsr)
             fitsim["noise_sigma_inflated"] = _noise_sigma_inflated(_nsr)
             fitsim["noise_sigma_collapsed"] = _noise_sigma_collapsed(_nsr)
+            fitsim["noise_sigma_assessable"] = _noise_sigma_assessable(_nsr)
+            # NOTE: fitsim["residual_flagged"] is already set above from the SAME rollup, as the
+            # TRI-STATE bool|None (None = the sign/runs tests could not run at all). Do not
+            # recompute it here: that both duplicated the residual pass and coerced None -> False,
+            # so the version meta recorded null while the fit event recorded false for one fit, and
+            # a resumed run restored "residuals verified clean" for a model never tested.
             event = self.provenance.append_event(
                 {"type": "fit", "version": version, "justification": justification,
                  "staged_edits": staged, "n_edits": len(staged),
@@ -974,6 +1014,7 @@ class PetabSession:
                  "noise_sigma_inflated": fitsim["noise_sigma_inflated"],
                  "noise_sigma_collapsed": fitsim["noise_sigma_collapsed"],
                  "residual_flagged": fitsim["residual_flagged"],
+                 "noise_sigma_assessable": fitsim["noise_sigma_assessable"],
                  "fitted_parameters": fitsim.get("fitted_parameters"), **improvement}
             )
             # Record this as an early-stop-chain op only when a real fit ran (simulate-only passes

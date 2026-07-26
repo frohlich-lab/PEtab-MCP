@@ -55,6 +55,15 @@ PLATEAU_WINDOW = 5
 # adequate for the plateau gate (its residuals are consistent with the known measurement noise).
 ADEQUATE_GOF_PVALUE = 0.05
 
+# The OTHER tail of the same chi2 GoF test. A p-value close to 1 means chi2 is far BELOW its
+# degrees of freedom — the residuals are much smaller than the KNOWN noise, i.e. the model is
+# fitting the noise rather than the signal. Testing only `p >= 0.05` is one-sided and scores such
+# an overfit as "adequate" (observed: rahman runs at chi2/n = 0.016 and 0.051 with p = 0.9999999).
+# Only meaningful for a FIXED sigma: when sigma is ESTIMATED the MLE absorbs residual shrinkage
+# into sigma itself, pinning chi2/n at ~1 from below (empirical floor 0.98 over 40 runs), so this
+# tail is unreachable there and the estimated-sigma branch judges the sigma's plausibility instead.
+OVERFIT_GOF_PVALUE = 0.995
+
 # -- default parameter-table bounds ----------------------------------------
 # Bounds for an auto-added model parameter missing from the table (linear values; always widened
 # to bracket the nominal). Kept fairly TIGHT (five decades) so a multistart over an auto-created
@@ -91,13 +100,31 @@ PARAMETER_AT_BOUND_RELATIVE_TOL = 0.01
 # the underlying mechanism was missing whole reaction pathways. A sigma that has to explain a
 # large fraction of the data's own variability isn't measurement noise anymore; it's covering
 # for the model.
-NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD = 0.5
+#
+# CALIBRATION (#118): both thresholds are measured in the coordinate where the noise is ADDITIVE
+# (see reconcile.sigma_noise_coordinate) — the only scale on which this ratio means anything. They
+# are deliberately WIDE, because the benchmark's own ground-truth sigmas span ~0.0004-0.59 of their
+# data std: a tight band rejects the true model. The band's job is to catch the pathological tails
+# (a sigma driven to ~0 to overfit the noise, or inflated many-fold to absorb misfit), NOT to
+# adjudicate a merely unusual-looking noise level.
+NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD = 0.75
 
 # The other tail: a fitted noise sigma BELOW this fraction of its observable's own data std is
 # implausibly small — the model is explaining ~all of the data's variability, the fingerprint of
 # overfitting the noise. Shared by the plateau adequacy gate (session) and the judge's success gate
 # so both agree on "collapsed".
-NOISE_SIGMA_COLLAPSE_FRACTION = 0.1
+NOISE_SIGMA_COLLAPSE_FRACTION = 0.01
+
+# -- reference-sigma comparison (the judge's preferred noise check, #118) ----
+# When reference.json records the TRUE model's own fitted noise sigmas, the judge compares a
+# candidate's sigma to those instead of to a fraction of the marginal data std — the dimensionally
+# sound comparison, and the one that doesn't conflate variance the model EXPLAINS with variance it
+# can't (which is why fiedler/oliveira looked "collapsed" at 0.0004-0.0026 of the marginal std).
+# A candidate sigma is implausible when it falls outside
+# [sigma_ref / FACTOR, sigma_ref * FACTOR]. Deliberately generous: a good model that is not
+# literally the truth still has somewhat different residuals, and a sharp test (e.g. the exact
+# chi2 point-null n*s^2/s_ref^2 ~ chi2_{n-k}) rejects legitimate near-misses once n is large.
+NOISE_SIGMA_REFERENCE_FACTOR = 3.0
 
 # -- repeated-widening backstop ---------------------------------------------
 # A parameter pinned at a bound with a flat / collinear FIM direction is UNIDENTIFIABLE, not

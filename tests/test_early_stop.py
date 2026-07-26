@@ -15,6 +15,7 @@ import pytest
 from petab_mcp import fitting
 from petab_mcp.constants import (
     NEW_BEST_MIN_DELTA_BIC,
+    NOISE_SIGMA_COLLAPSE_FRACTION,
     NON_IMPROVING_STREAK_CAP,
     PLATEAU_WINDOW,
 )
@@ -180,8 +181,11 @@ def _fitsim_collapsed_sigma(nll: float, chi2: float, *, n: int = 20, k: int = 2)
     (fraction < NOISE_SIGMA_COLLAPSE_FRACTION) — overfitting the noise, the other implausible tail."""
     fs = _fitsim(nll, chi2, n=n, k=k)
     fs["noise_sigma_report"] = {
-        "sigma": {"fitted": 0.01, "upper_bound_cap": 0.5, "data_std": 1.0,
-                  "fraction_of_data_std": 0.01}}
+        "sigma": {"fitted": NOISE_SIGMA_COLLAPSE_FRACTION / 10, "upper_bound_cap": 0.5,
+                  "data_std": 1.0,
+                  # derived from the constant so a threshold recalibration can't silently make
+                  # this fixture stop being "collapsed" (it did, at [0.01, 0.75] — see #118)
+                  "fraction_of_data_std": NOISE_SIGMA_COLLAPSE_FRACTION / 10}}
     return fs
 
 
@@ -426,3 +430,38 @@ def test_stall_without_any_checkpoint_reports_an_evaluation_failure(session):
     assert "n_missing_simulations" in reason
     assert "structural inadequacy" not in reason
     assert "set_model" not in reason
+
+
+# --- fixed-sigma GoF must be TWO-sided (#118) ------------------------------------------------
+def _fitsim_fixed_sigma(chi2: float, *, n: int = 20, k: int = 2) -> dict:
+    """A fit with NO estimated sigma (empty noise_sigma_report -> the fixed-sigma adequacy
+    branch), whose chi2 the caller sets to drive the GoF p-value."""
+    fs = _fitsim(-50.0, chi2, n=n, k=k)
+    fs["noise_sigma_report"] = {}
+    return fs
+
+
+def test_fixed_sigma_overfit_is_not_adequate(session):
+    """chi2 FAR BELOW its dof means the residuals are much smaller than the KNOWN noise — the model
+    is fitting the noise, which is not adequacy. A one-sided `p >= 0.05` test scored exactly this as
+    adequate (rahman: chi2/n = 0.016, p = 0.9999999), letting an overfit run plateau-stop."""
+    # chi2 << dof -> p -> 1
+    fs = _fitsim_fixed_sigma(0.3)
+    session.record_fit_progress(1, fs, {"is_new_best": True})
+    for v in range(2, 2 + PLATEAU_WINDOW):
+        session.record_fit_progress(v, fs, {"is_new_best": False})
+    p = session.progress_report()
+    assert session.best_sigma_estimated is False
+    assert p["best_gof_pvalue"] > 0.99          # would pass a one-sided `>= 0.05` test
+    assert p["should_stop"] is False            # ...but the two-sided gate blocks the stop
+
+
+def test_fixed_sigma_well_calibrated_fit_is_still_adequate(session):
+    """No regression: chi2 near its dof stays adequate and plateau-stops as before."""
+    fs = _fitsim_fixed_sigma(18.0)              # chi2 ~ dof = 18 -> p comfortably mid-range
+    session.record_fit_progress(1, fs, {"is_new_best": True})
+    for v in range(2, 2 + PLATEAU_WINDOW):
+        session.record_fit_progress(v, fs, {"is_new_best": False})
+    p = session.progress_report()
+    assert 0.05 <= p["best_gof_pvalue"] <= 0.995
+    assert p["should_stop"] is True and "plateau" in p["stop_reason"].lower()

@@ -853,9 +853,21 @@ def _entry_inflated(entry: "dict[str, Any]") -> bool:
     """Whether ONE noise_sigma_report entry is inflated: fitted above its data-driven cap (the
     noise absorbing model misfit). Shared by the per-entry ``status`` and :func:`noise_sigma_inflated`
     so the agent-facing status can't drift from the gate that fails the run."""
-    fitted, cap = entry.get("fitted"), entry.get("upper_bound_cap")
+    # Judge the EFFECTIVE sd (noiseFormula evaluated at the fitted value) against the cap, which is
+    # a fraction of the same-scale data std; `fitted` alone is dimensionally wrong for
+    # proportional/CV and log-space sigmas. Falls back to `fitted` for entries built before
+    # effective_sigma existed (older persisted reports).
+    # Only fall back to `fitted` for an OLD persisted entry that predates effective_sigma. A
+    # FRESH entry whose key is present but None means the formula could not be evaluated, and
+    # judging the raw parameter against a scaled cap is precisely the dimensionally-invalid
+    # comparison this gate exists to avoid — such an entry is "unknown", not "inflated".
+    if "effective_sigma" in entry:
+        eff = entry.get("effective_sigma")
+    else:
+        eff = entry.get("fitted")
+    cap = entry.get("upper_bound_cap")
     try:
-        return fitted is not None and cap is not None and float(fitted) > float(cap)
+        return eff is not None and cap is not None and float(eff) > float(cap)
     except (TypeError, ValueError):
         return False
 
@@ -884,18 +896,45 @@ def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[st
     from . import reconcile as R
 
     out: dict[str, dict[str, Any]] = {}
-    for pid in sorted(R.noise_sigma_ids(problem) & set(fitted)):
+    # ESTIMATED sigmas only. A FIXED sigma is a declared constant of the problem — the agent
+    # cannot inflate or collapse it — so judging its plausibility can only produce false positives,
+    # and it also made `noise_sigma_estimated` (bool of this report) true for problems whose sigmas
+    # are all fixed. oliveira is the case: sd_cumulative_cases ships fixed at 1.0 against cumulative
+    # counts whose marginal std is 390 (dominated by the trend the model explains), so it read
+    # "collapsed" at 0.0026 for a noise level the benchmark declared, not one any fit chose.
+    for pid in sorted(R.plausibility_sigma_ids(problem) & set(fitted)):
+        # Fail OPEN when there is no parameter table to consult (a bare observable+measurement
+        # problem): unknown estimate status must not silently drop the sigma from the report.
+        if getattr(problem, "parameter_df", None) is not None \
+                and not R.is_parameter_estimated(problem, pid):
+            continue
         value = fitted[pid]
         try:
             value = float(value)
         except (TypeError, ValueError):
             continue
         data_std = R.sigma_data_std(problem, pid)
+        # Compare the EFFECTIVE sd (the noiseFormula evaluated at this value) against a data std
+        # taken on the SAME estimation scale — not the bare parameter against the raw linear std.
+        # A proportional/CV parameter and a log-space sd are both dimensionally incomparable to the
+        # raw std, which used to flag correct models by orders of magnitude (see sigma_data_std /
+        # sigma_effective_value).
+        effective = R.sigma_effective_value(problem, pid, value, fitted_values=fitted)
+        # A MODEL-FREE noise yardstick from successive measurement differences — independent of both
+        # the model and any ground truth, unlike the marginal-std band. Advisory and biased UPWARD
+        # (see sigma_difference_noise_estimate): fitted >> estimate is strong evidence of inflation;
+        # fitted << estimate is only weak evidence of collapse.
+        data_noise = R.sigma_difference_noise_estimate(problem, pid)
         entry = {
             "fitted": value,
+            "effective_sigma": effective,
             "upper_bound_cap": R.sigma_upper_bound_cap(problem, pid),
             "data_std": data_std,
-            "fraction_of_data_std": (value / data_std) if data_std else None,
+            "fraction_of_data_std": (effective / data_std)
+                                    if (data_std and effective is not None) else None,
+            "data_noise_estimate": data_noise,
+            "fitted_over_data_noise": (effective / data_noise)
+                                      if (data_noise and effective is not None) else None,
         }
         # Per-entry plausibility from the SAME predicates the top-level noise_sigma_inflated/
         # collapsed use (single source of truth, so the agent-facing status can't drift from the
