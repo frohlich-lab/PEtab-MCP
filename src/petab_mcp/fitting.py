@@ -1160,6 +1160,10 @@ def fit_result_block(
         k = len(fitted)
     block = {
         "fit_status": fitsim.get("status"),
+        # The multistart count the fit actually ran with (``None`` for a restored version, which
+        # did not fit). Reported because `n_starts` OVERRIDES the server default rather than adding
+        # to it, so this is how a caller confirms it fitted harder and not weaker.
+        "n_starts": fitsim.get("n_starts"),
         "neg_log_likelihood": nll,
         "chi2": chi2,
         "n_data_points": n,

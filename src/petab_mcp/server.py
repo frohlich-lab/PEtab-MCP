@@ -76,14 +76,24 @@ SERVER_INSTRUCTIONS = (
     "bounds are changed through justified edits "
     "(`change_parameters`, one batched call carrying a list of per-parameter bound/scale "
     "changes); parameter *values* are set "
-    "only by the fit, not by hand. EDITS ARE FIT-FREE: `set_model` and the edits mutate the "
-    "working model but do NOT fit and do NOT create a version — `describe_problem` reports "
-    "`has_unfit_edits: true` until you score it. Assemble a coherent change, then call `fit` "
+    "only by the fit, not by hand. EDITS ARE FIT-FREE BY DEFAULT: `set_model` and the edits mutate "
+    "the working model but do NOT fit and do NOT create a version — `describe_problem` reports "
+    "`has_unfit_edits: true` until you score it. A single coherent change is best made as ONE "
+    "call: `set_model(antimony, justification, parameters=[...], fit=true)` applies the re-author "
+    "and the bound/scale edits atomically and scores them, snapshotting one version (the fit "
+    "result is nested under `fit`); `change_parameters(..., fit=true)` does the same for a "
+    "parameters-only retuning. Leave them unbundled when a change spans several edits: assemble "
+    "it, then call `fit` "
     "ONCE: it fits the free parameters with a pyPESTO multistart, simulates, and snapshots the "
     "single version carrying the fitted parameters, the fit metrics (neg_log_likelihood, chi2, "
-    "improvement vs prior versions), and a simulation dataframe. Pass `n_starts` on `fit` to fit "
-    "harder (or 0 to simulate without optimising). `fit` de-duplicates: it skips the refit and "
-    "returns the stored metrics when the working model is byte-identical to the current version. "
+    "improvement vs prior versions), and a simulation dataframe. `n_starts` (on `fit` or on a "
+    "bundled edit) REPLACES the server's configured multistart count — `describe_problem` reports "
+    "it as `fit_n_starts_default` — so pass it only to go ABOVE that number; below it fits LESS "
+    "hard than omitting it, and 0 simulates without optimising. Every fit result reports the "
+    "`n_starts` it actually ran with. "
+    "`fit` de-duplicates: it skips the refit and "
+    "returns the stored metrics when the working model is byte-identical to the current version "
+    "(unless the new fit asks for MORE multistarts than that version used, which does run). "
     "Check the score "
     "cheaply with `get_fit_summary` (metrics only). Diagnose the fit with SQL: `query_data` "
     "runs DuckDB queries over a disposable copy of the PEtab tables (`measurements`, `conditions`, "
@@ -183,6 +193,87 @@ class _Ctx:
             self.session.logger.exception("fit crashed")
             raise
 
+    def edit_then_fit(
+        self, edit_result: dict[str, Any], n_starts: int | None, justification: str,
+    ) -> dict[str, Any]:
+        """Score a just-applied edit and merge the two results — the ``fit=true`` bundle (#114).
+
+        The fit goes through :meth:`run_fit`, so a rejected fit is logged and shaped exactly like a
+        standalone one (``committed: false`` + ``error``). Unlike the standalone tool, an
+        UNEXPECTED exception is caught here too rather than propagating: ``run_fit`` re-raises
+        anything that is not a :class:`PetabMcpError` (a crash in the snapshot / progress /
+        result-block code, which sits outside ``session.fit``'s own wrap), and letting that escape
+        would surface the whole call as a failed *edit* when the edit already applied. Degrading it
+        to a failed fit keeps the one invariant this bundle owes the caller: the edit is in place,
+        `applied: true`, and the reason the score is missing is in ``fit.error``. ``run_fit`` has
+        already logged it either way.
+        """
+        # HEAD before the fit, so `bundle_result` can tell whether a version was actually created
+        # instead of inferring it from the pending-edit flag (see its docstring).
+        head_before = self.session.provenance.current_version
+        try:
+            fit_result = self.run_fit(
+                lambda: self.session.fit(n_starts=n_starts, justification=justification or None),
+                {"n_starts": n_starts, "bundled": True},
+            )
+        except Exception as exc:  # noqa: BLE001 - already logged by run_fit; see the docstring
+            fit_result = {
+                "committed": False,
+                "error": f"the edit applied but the fit crashed unexpectedly: {exc}",
+            }
+        return ops_mod.bundle_result(self.session, edit_result, fit_result, head_before)
+
+    def reject_operation(
+        self, op_name: str, message: str, args: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Log and return an ``applied: False`` rejection for an argument the tool layer itself
+        refuses — the same shape :meth:`run_operation` produces for a rejected edit.
+
+        ``args`` are recorded in the persisted error log (truncated by :meth:`short`, as in
+        ``run_operation``) so a tool-layer rejection is as debuggable as one raised inside the
+        operation: the log shows WHICH argument value was refused, not just the message.
+        """
+        exc = ops_mod.OperationError(message)
+        self.log_error(op_name, {k: self.short(v) for k, v in (args or {}).items()}, exc)
+        self.session.logger.warning("operation %s rejected: %s", op_name, exc)
+        return {"applied": False, "error": message}
+
+    def check_bundle_args(
+        self, op_name: str, fit: bool, n_starts: int | None,
+    ) -> dict[str, Any] | None:
+        """Validate an editor's bundle arguments BEFORE the edit runs; a rejection dict or None.
+
+        Both checks have to happen up front. ``n_starts`` without ``fit=true`` would be silently
+        ignored, and a BAD ``n_starts`` is only rejected inside ``session.fit`` — by which point the
+        edit has applied, so an argument typo would leave an unscored edit behind and a message
+        telling the agent to repair a model that is fine. Rejecting both here keeps a malformed
+        call a pure no-op.
+        """
+        if n_starts is None:
+            return None
+        args = {"fit": fit, "n_starts": n_starts}
+        default = self.session.auto_fit_starts
+        if not fit:
+            return self.reject_operation(
+                op_name, f"{op_name}: 'n_starts' only applies with fit=true — pass fit=true to "
+                "score this edit in the same call, or drop n_starts and call fit(n_starts=...) "
+                "once the change is assembled.", args)
+        try:
+            coerced = self.session._coerce_n_starts(n_starts)
+        except PetabMcpError as exc:
+            return self.reject_operation(
+                op_name, f"{op_name}: {exc} (omit it to use the server default of {default}).",
+                args)
+        # Not an error — a smaller value is legitimate (0 = simulate only) — but say so, since
+        # `n_starts` REPLACES the default and a caller aiming to "fit harder" with a number below
+        # it would quietly get a weaker fit than omitting the argument.
+        if coerced is not None and 0 < coerced < default:
+            self.session.logger.warning(
+                "%s: n_starts=%d is BELOW the server default of %d, so this fit is weaker than "
+                "omitting n_starts would be (it overrides the default, it does not add to it).",
+                op_name, coerced, default)
+        return None
+
     def run(self, tool: str, fn, args: dict[str, Any] | None = None):
         """Run a non-operation tool; log failures (return {ok:false} or re-raise)."""
         try:
@@ -210,7 +301,12 @@ def _register_read_tools(mcp: FastMCP, ctx: _Ctx) -> None:
 
     @mcp.tool()
     def describe_problem() -> dict[str, Any]:
-        """Summarize the problem: model size, tables, and free parameters."""
+        """Summarize the problem: model size, tables, and free parameters.
+
+        Also reports `fit_n_starts_default` — the pyPESTO multistart count a fit uses when
+        `n_starts` is omitted. Read it before passing `n_starts` anywhere: that argument REPLACES
+        this default rather than adding to it, so a value below it fits less hard.
+        """
         return session.describe()
 
     @mcp.tool()
@@ -263,6 +359,9 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
     def set_model(
         antimony: str, justification: str,
         references: list[str] | None = None,
+        parameters: list[dict[str, Any]] | None = None,
+        fit: bool = False,
+        n_starts: int | None = None,
     ) -> dict[str, Any]:
         """Author the WHOLE model from an Antimony string — the single model editor.
 
@@ -274,9 +373,21 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         lints, exactly like the parameter edits; any failure reverts, so a bad re-author changes
         nothing. `justification` (non-empty) is required; `references` are optional.
 
-        This is an EDIT: it mutates the working model but does NOT fit and does NOT create a
-        version — call `fit()` when the model is assembled to score it and snapshot a version
-       . Because the whole model is replaced, the result `warnings` flag any
+        PREFER THE ONE-CALL FORM for a coherent change: pass `parameters=[{parameter_id,
+        lower_bound?, upper_bound?, scale?}, ...]` to apply the bound/scale edits `change_parameters`
+        would — atomically with the re-author, so a rejected entry reverts the re-author too — and
+        `fit=true` to score the assembled change and snapshot ONE
+        version (`n_starts` means what it does on `fit` — omit it unless you want MORE starts than
+        the server default; it is REJECTED without `fit=true` rather than ignored).
+        The bundled result keeps the edit fields and nests the whole fit result under
+        `fit`, mirroring `version`/`committed` at the top level. If the edit applies but the fit
+        FAILS, the edit stays in place (`applied: true`, `committed: false`, `fit.error`) — repair
+        and call `fit()`; nothing is half-applied.
+
+        This is an EDIT: on its own (`fit` omitted) it mutates the working model but does NOT fit
+        and does NOT create a version — call `fit()` when the model is assembled to score it and
+        snapshot a version. Keep them separate when a change spans several `set_model` calls: edit,
+        edit, then `fit` once. Because the whole model is replaced, the result `warnings` flag any
         previously-ESTIMATED parameter the re-author no longer declares (its fitted value is
         dropped); fixed noise/initial-condition parameters and anything the observable/condition
         tables reference survive. A re-author that drops (or reintroduces as estimated) a
@@ -288,20 +399,43 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         is fit only once, and `fit` points you at `restore_version(n)` for a structure already in
         the history. To go back to a prior model, prefer `restore_version(n)`.
         """
-        return ctx.run_operation("set_model", ops_mod.set_model, session, antimony, justification, references)
+        # Same principle as change_parameters' unknown-key rejection: an argument that would be
+        # silently ignored — or rejected only once the edit had applied — is a rejection up front.
+        rejected = ctx.check_bundle_args("set_model", fit, n_starts)
+        if rejected is not None:
+            return rejected
+        # One critical section for the pair, so nothing can fit between the edit and its fit
+        # (`session.lock` is an RLock, so the nested acquisitions inside each call are fine).
+        with session.lock:
+            result = ctx.run_operation(
+                "set_model", ops_mod.set_model,
+                session, antimony, justification, references, parameters,
+            )
+            if not fit or not result.get("applied"):
+                return result
+            return ctx.edit_then_fit(result, n_starts, justification)
 
     @mcp.tool()
     def change_parameters(
         changes: list[dict[str, Any]], justification: str,
         references: list[str] | None = None,
+        fit: bool = False,
+        n_starts: int | None = None,
     ) -> dict[str, Any]:
         """Batch-edit the bounds and/or scale of one or more parameters in ONE atomic call.
 
         `changes` is a non-empty list of per-parameter entries, each with `parameter_id` and any
         of `lower_bound` / `upper_bound` (a bound edit — give BOTH or neither) and `scale`
         ('lin'|'log'|'log10'). Group everything belonging to one coherent retuning into a single
-        call (one `justification` for the batch), then `fit()` once to score it. An EDIT: mutates
-        the parameter table but does NOT fit.
+        call (one `justification` for the batch), and pass `fit=true` (see `set_model` for
+        `n_starts`, which is REJECTED without `fit=true` rather than ignored)
+        to score the retuning in the SAME call — the bundled result nests the whole fit result
+        under `fit` and mirrors `version`/`committed` at the top level. If the edit applies but the
+        fit FAILS the edit stays in place (`applied: true`, `committed: false`, `fit.error`).
+        Without `fit` it is a plain EDIT: mutates the parameter table but does NOT fit — leave it
+        unbundled when the retuning is part of a larger change you want to `fit()` once, and note
+        that a bound/scale change that belongs WITH a re-author is better passed to
+        `set_model(parameters=[...])` as one call.
 
         Atomic: if any entry is rejected the WHOLE batch reverts. Each bound entry REJECTS a
         widening past an ESTIMATED noise-sigma's data-driven cap, and REJECTS a THIRD widening of
@@ -311,10 +445,17 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         (irreversible/instantaneous) form instead of widening again; if neither is possible, leave
         it pinned (do not hard-code a value — there is no value/estimate tool, and a literal is a
         magic number)."""
-        return ctx.run_operation(
-            "change_parameters", ops_mod.change_parameters,
-            session, changes, justification, references,
-        )
+        rejected = ctx.check_bundle_args("change_parameters", fit, n_starts)  # see set_model
+        if rejected is not None:
+            return rejected
+        with session.lock:  # see set_model: one critical section for the bundled edit + fit
+            result = ctx.run_operation(
+                "change_parameters", ops_mod.change_parameters,
+                session, changes, justification, references,
+            )
+            if not fit or not result.get("applied"):
+                return result
+            return ctx.edit_then_fit(result, n_starts, justification)
 
     @mcp.tool()
     def validate_problem() -> dict[str, Any]:
@@ -376,16 +517,20 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
 
     @mcp.tool()
     def fit(n_starts: int | None = None, justification: str = "") -> dict[str, Any]:
-        """Fit the current working model and snapshot a version — the ONLY tool that fits.
+        """Fit the current working model and snapshot a version — score a change without re-editing.
 
-        Edits (`set_model`, `change_parameters`) mutate the working
-        model but do NOT fit — they leave it pending a score (`describe_problem` →
-        `has_unfit_edits: true`). Assemble
-        a coherent change through those edits, then call `fit` ONCE to score it: it fits the free
+        Use this when a coherent change spans SEVERAL edits: `set_model` / `change_parameters`
+        without `fit=true` mutate the working model but do NOT fit, leaving it pending a score
+        (`describe_problem` → `has_unfit_edits: true`). Make those edits, then call `fit` ONCE to
+        score them together. (A change that IS one edit is cheaper as `set_model(..., fit=true)`,
+        which runs exactly this fit.) It fits the free
         parameters with a pyPESTO multistart, simulates, and snapshots a SINGLE version carrying the
         fitted parameters, the fit metrics (`neg_log_likelihood`, `chi2`, complexity-penalised `bic`,
         and `improvement` vs the best prior version), and the simulation dataframe. `n_starts`
-        overrides the multistart default (0 = simulate without optimising); `justification` is
+        REPLACES the server's configured multistart count rather than adding to it, so omit it
+        unless you want MORE starts than that default — read it as `describe_problem`'s
+        `fit_n_starts_default`; below it fits LESS hard than omitting the argument, and 0 simulates
+        without optimising. The result's own `n_starts` is what actually ran. `justification` is
         optional. The result carries the same fit block every version does, plus a `progress` block
         (non-improving streak, best-BIC checkpoint, early-stop signal).
 

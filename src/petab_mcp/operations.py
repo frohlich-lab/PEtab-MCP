@@ -185,8 +185,11 @@ def _commit_change(
     ``model_edit(sbml_model)`` edits a *clone* of the model (triggers reconcile);
     ``model_build()`` returns a brand-new ``(SbmlModel, apply_result)`` that *replaces*
     the model wholesale (used to zero-shot a model when none exists — also reconciled);
-    ``param_edit(problem)`` edits the parameter table in place. On any failure the model and
-    parameter table are reverted so an edit is atomic.
+    ``param_edit(problem)`` edits the parameter table in place. A ``param_edit`` may accompany a
+    model build/edit (``set_model(parameters=[...])``, issue #114): both then land in the SAME
+    transaction — the parameter edit runs AFTER the reconcile, so it can target a parameter the
+    re-author just introduced, and a rejected entry reverts the re-author too. On any failure the
+    model and parameter table are reverted so an edit is atomic.
 
     Issue #81 decoupled editing from fitting: an edit mutates the working model and reconciles +
     validates it, but does NOT fit and does NOT snapshot a version — the explicit ``fit`` tool does
@@ -195,9 +198,12 @@ def _commit_change(
     provenance event; call ``fit`` to score the assembled model. Returns ``applied: true`` with the
     reconcile/validation/warnings — but no fit metrics, since no fit ran.
     """
-    if sum(cb is not None for cb in (model_build, model_edit, param_edit)) != 1:
+    if model_build is not None and model_edit is not None:
+        raise ValueError("_commit_change takes at most one of model_build, model_edit.")
+    if model_build is None and model_edit is None and param_edit is None:
         raise ValueError(
-            "_commit_change requires exactly one of model_build, model_edit, param_edit."
+            "_commit_change requires at least one callback: a model_build OR a model_edit "
+            "(optionally with a param_edit), or a param_edit on its own."
         )
     if not isinstance(justification, str) or not justification.strip():
         raise OperationError("A non-empty justification is required for this operation.")
@@ -210,6 +216,7 @@ def _commit_change(
         old_params = session.problem.parameter_df.copy(deep=True)
 
         try:
+            apply_result: Any = None
             if model_build is not None:
                 candidate, apply_result = model_build()
                 session.problem.model = candidate
@@ -220,8 +227,17 @@ def _commit_change(
                 session.problem.model = candidate
                 recon = R.reconcile(session.problem)
             else:
-                apply_result = param_edit(session.problem)
                 recon = None
+            if param_edit is not None:
+                # AFTER the reconcile: the parameter table only holds the re-authored model's
+                # parameters once reconcile has run, so a bundled bound edit can target a symbol
+                # this very (re-)author introduced — and an entry naming a parameter the re-author
+                # dropped is rejected loudly instead of silently doing nothing.
+                param_result = param_edit(session.problem)
+                apply_result = (
+                    {"model": apply_result, "parameters": param_result}
+                    if recon is not None else param_result
+                )
             # A parameter that ships FIXED and is a mechanistic/structural constant (a
             # conservation total, a known rate) must not be removed or freed by an edit —
             # validation rejects either. Best-effort: an unreadable v0 yields an empty set.
@@ -306,6 +322,7 @@ def _commit_change(
 def set_model(
     session, antimony: str, justification: str,
     references: list[str] | None = None,
+    parameters: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Author the WHOLE model from Antimony — the single model editor.
 
@@ -325,9 +342,20 @@ def set_model(
     or condition tables are preserved). Dropping (or reintroducing as estimated) a shipped-FIXED
     mechanistic constant — a conservation total, a known rate — is a harder case: the edit
     pipeline's validation REJECTS it outright (see ``validation._fixed_constant_role_issues``).
+
+    ``parameters`` optionally carries the SAME per-parameter entries ``change_parameters`` takes
+    (issue #114). They are applied in the same transaction as the re-author, AFTER the reconcile —
+    so an entry may target a parameter this author introduces, and a rejected entry reverts the
+    re-author too. ``None``/``[]`` means "no parameter edit"; the whole bundle is recorded as ONE
+    edit event, since it is one logical change.
     """
     if not isinstance(antimony, str) or not antimony.strip():
         raise OperationError("set_model requires a non-empty Antimony model string.")
+
+    normalized = (
+        _normalize_parameter_changes(parameters, label="set_model", arg="parameters")
+        if parameters else []
+    )
 
     # Snapshot the currently-estimated parameter ids so we can flag any the re-author drops.
     from petab.v1.C import ESTIMATE
@@ -375,9 +403,14 @@ def set_model(
             "n_reactions": sm.getNumReactions(),
         }
 
+    op_args: dict[str, Any] = {"antimony_chars": len(antimony)}
+    if normalized:
+        op_args["changes"] = _changes_arg(normalized)
     result = _commit_change(
-        session, "set_model", {"antimony_chars": len(antimony)}, justification, references,
-        model_build=build, require_references=False,
+        session, "set_model", op_args, justification, references,
+        model_build=build,
+        param_edit=_parameter_edit(session, normalized) if normalized else None,
+        require_references=False,
     )
 
     # Guardrail: a re-author that no longer declares a previously-estimated parameter drops
@@ -551,65 +584,81 @@ def _reject_repeated_widening(
     )
 
 
-def change_parameters(
-    session,
-    changes: list[dict[str, Any]],
-    justification: str,
-    references: list[str] | None = None,
-) -> dict[str, Any]:
-    """Batch-edit the bounds and/or scale of one or more parameters in ONE atomic edit.
-
-    ``changes`` is a non-empty list of per-parameter dicts, each naming ``parameter_id`` and any
-    of ``lower_bound`` / ``upper_bound`` (a bound edit — give BOTH or neither) and ``scale``
-    ('lin'|'log'|'log10'). Group everything that belongs to one coherent retuning into a single
-    call, then ``fit`` once to score it. Every per-parameter backstop still applies (a re-pinned
-    parameter's 3rd widening, a noise-sigma cap, a log scale on a non-positive box); because the
-    whole batch is atomic, one rejected entry reverts ALL of them and nothing changes. An EDIT:
-    mutates the parameter table but does NOT fit."""
-    from .parameters import update_parameters
-
+def _normalize_parameter_changes(
+    changes: list[dict[str, Any]], label: str = "change_parameters", arg: str = "changes",
+) -> list[dict[str, Any]]:
+    """Validate + normalize a ``changes`` list into ``{parameter_id, lower_bound, upper_bound,
+    scale}`` entries (missing fields as ``None``), raising :class:`OperationError` on anything
+    malformed. Shared by ``change_parameters`` and ``set_model(parameters=[...])`` so both paths
+    enforce exactly the same entry contract (issue #114); ``label`` names the offending argument
+    in the rejection message, so a bundled entry doesn't report a tool the caller never called."""
     if not isinstance(changes, list) or not changes:
         raise OperationError(
-            "change_parameters: 'changes' must be a non-empty list of "
+            f"{label}: {arg!r} must be a non-empty list of "
             "{parameter_id, lower_bound?, upper_bound?, scale?} entries."
         )
     normalized: list[dict[str, Any]] = []
     seen: set[str] = set()
     for i, ch in enumerate(changes):
         if not isinstance(ch, dict):
-            raise OperationError(f"change_parameters: entry {i} is not an object.")
+            raise OperationError(f"{label}: entry {i} is not an object.")
         pid = ch.get("parameter_id")
         if not pid or not isinstance(pid, str):
             raise OperationError(
-                f"change_parameters: entry {i} is missing a string 'parameter_id'."
+                f"{label}: entry {i} is missing a string 'parameter_id'."
             )
         if pid in seen:
             raise OperationError(
-                f"change_parameters: {pid!r} appears in more than one entry — combine its bound "
+                f"{label}: {pid!r} appears in more than one entry — combine its bound "
                 "and scale edits into a single entry."
             )
         seen.add(pid)
         unknown = set(ch) - {"parameter_id", "lower_bound", "upper_bound", "scale"}
         if unknown:
             raise OperationError(
-                f"change_parameters: entry for {pid!r} has unknown key(s) {sorted(unknown)} — "
+                f"{label}: entry for {pid!r} has unknown key(s) {sorted(unknown)} — "
                 "allowed keys are parameter_id, lower_bound, upper_bound, scale (a misspelled key "
                 "would otherwise be silently ignored)."
             )
         lb, ub, scale = ch.get("lower_bound"), ch.get("upper_bound"), ch.get("scale")
         if lb is None and ub is None and scale is None:
             raise OperationError(
-                f"change_parameters: the entry for {pid!r} changes nothing — give "
+                f"{label}: the entry for {pid!r} changes nothing — give "
                 "lower_bound+upper_bound and/or scale."
             )
         if (lb is None) != (ub is None):
             raise OperationError(
-                f"change_parameters: {pid!r} sets only one bound — a bound edit needs BOTH "
+                f"{label}: {pid!r} sets only one bound — a bound edit needs BOTH "
                 "lower_bound and upper_bound (or neither)."
             )
+        # Bounds must be real numbers HERE, not at the point of writing them: `update_parameters`
+        # coerces with a bare `float(value)`, whose ValueError is not a PetabMcpError and so
+        # escapes the tool's error wrapper as an unstructured MCP failure instead of a clean
+        # `applied: false`. (bool is an int subclass — reject it explicitly, `True` is not a bound.)
+        for field, value in (("lower_bound", lb), ("upper_bound", ub)):
+            if value is None:
+                continue
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise OperationError(
+                    f"{label}: {pid!r} has a non-numeric {field} ({value!r}) — bounds must be "
+                    "numbers."
+                )
+            if value != value or value in (float("inf"), float("-inf")):  # NaN / infinity
+                raise OperationError(
+                    f"{label}: {pid!r} has a non-finite {field} ({value!r}) — bounds must be "
+                    "finite numbers."
+                )
         normalized.append(
             {"parameter_id": pid, "lower_bound": lb, "upper_bound": ub, "scale": scale}
         )
+    return normalized
+
+
+def _parameter_edit(session, normalized: list[dict[str, Any]]) -> Callable[[Any], dict[str, Any]]:
+    """Build the ``param_edit(problem)`` callback that applies ``normalized`` (from
+    :func:`_normalize_parameter_changes`) as ONE transactional write, with every per-parameter
+    backstop. Shared by ``change_parameters`` and ``set_model(parameters=[...])``."""
+    from .parameters import update_parameters
 
     def edit(problem):
         updates: list[dict[str, Any]] = []
@@ -642,8 +691,107 @@ def change_parameters(
             _require_positive_for_log(problem, pid, scale)
         return {"changed": changed}
 
+    return edit
+
+
+def _changes_arg(normalized: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The normalized entries as they go into the provenance event args (``None``s dropped)."""
+    return [{k: v for k, v in c.items() if v is not None} for c in normalized]
+
+
+def change_parameters(
+    session,
+    changes: list[dict[str, Any]],
+    justification: str,
+    references: list[str] | None = None,
+) -> dict[str, Any]:
+    """Batch-edit the bounds and/or scale of one or more parameters in ONE atomic edit.
+
+    ``changes`` is a non-empty list of per-parameter dicts, each naming ``parameter_id`` and any
+    of ``lower_bound`` / ``upper_bound`` (a bound edit — give BOTH or neither) and ``scale``
+    ('lin'|'log'|'log10'). Group everything that belongs to one coherent retuning into a single
+    call, then ``fit`` once to score it. Every per-parameter backstop still applies (a re-pinned
+    parameter's 3rd widening, a noise-sigma cap, a log scale on a non-positive box); because the
+    whole batch is atomic, one rejected entry reverts ALL of them and nothing changes. An EDIT:
+    mutates the parameter table but does NOT fit — the ``fit`` tool's optional ``fit=true`` bundle
+    (issue #114) is wired at the server layer, not here."""
+    normalized = _normalize_parameter_changes(changes)
     return _commit_change(
-        session, "change_parameters",
-        {"changes": [{k: v for k, v in c.items() if v is not None} for c in normalized]},
-        justification, references, param_edit=edit, require_references=False,
+        session, "change_parameters", {"changes": _changes_arg(normalized)},
+        justification, references,
+        param_edit=_parameter_edit(session, normalized), require_references=False,
     )
+
+
+# -- bundled edit + fit (issue #114) ---------------------------------------
+def bundle_result(
+    session, edit_result: dict[str, Any], fit_result: dict[str, Any],
+    head_before: int | None = None,
+) -> dict[str, Any]:
+    """Merge an edit result and the fit result of a bundled ``fit=true`` call.
+
+    The two shapes are kept SEPARATE rather than flattened: the whole fit result (its metrics, or
+    its ``error`` / ``no_change`` short-circuit) lands untouched under ``fit``, so no key of either
+    result is clobbered — in particular the edit's own ``warnings`` (e.g. "the re-author dropped a
+    previously-estimated parameter") survive alongside the fit's. Only ``version``/``committed``
+    are mirrored to the top level, because "which version did this call produce?" is the first
+    thing a caller reads.
+
+    On a failure the message does NOT prescribe a fix, it forwards ``fit.error`` — because that
+    error is not always "the model is broken". The identical-structure loop guard reaches the same
+    branch, and its message says the opposite (stop re-fitting this structure, go back with
+    ``restore_version(n)``); a top-level "repair the model and call fit() again" would send the
+    agent straight back into the loop the guard exists to break, and the agent reads the message
+    first. Any future rejection reason is forwarded correctly for the same reason.
+
+    Whether a version was created is decided by comparing HEAD against ``head_before``, NOT by
+    ``has_unfit_edits()``. They usually agree, but ``session.fit`` clears the pending edits several
+    statements after it snapshots — an event-log write failure in that window leaves the edits
+    pending with HEAD already advanced, and the proxy would then claim nothing was scored.
+    ``pending_fit`` is still reported from the session: it is a separate fact (are there edits the
+    next fit would score?) and stays accurate in that window too.
+    """
+    committed = bool(fit_result.get("committed"))
+    pending = session.has_unfit_edits()
+    version = fit_result.get("version")
+    head_now = session.provenance.current_version
+    if committed:
+        message = (
+            f"Edit applied and scored: version {version} was created. "
+            "Read the `fit` block for the metrics."
+        )
+    elif fit_result.get("no_change"):
+        message = (
+            "Edit applied, but the fit was a no-op: the resulting model is identical to version "
+            f"{fit_result.get('duplicate_of_version')}, so its stored metrics stand (see `fit`). "
+            "Make a genuinely different change, or restore_version(n) to go back."
+        )
+    elif head_before is not None and head_now != head_before:
+        # The fit broke only AFTER snapshotting, so HEAD moved: report where it landed rather than
+        # asking for a re-fit that would be a de-dup no-op against the version just created.
+        version = version if version is not None else head_now
+        message = (
+            "Edit applied and a version was snapshotted, but the fit did not finish cleanly, so "
+            f"this call carries no metrics: the working model is now version {version}. Read "
+            "`fit.error`, then read the score with get_fit_summary / list_versions before making "
+            "another change — do NOT re-fit, the model is already scored."
+        )
+    else:
+        message = (
+            "Edit APPLIED to the working model, but it was NOT scored — the edit is still in "
+            "place and no version was created. The fit reported: "
+            f"{fit_result.get('error') or 'no error message'} — ACT ON THAT rather than assuming "
+            "the model is broken: it says whether to repair and re-fit, or to stop re-fitting "
+            "this structure and go back with restore_version(n)."
+        )
+    return {
+        **edit_result,
+        "committed": committed,
+        "version": version,
+        "pending_fit": pending,
+        "n_pending_edits": len(session.pending_edits),
+        "warnings": list(edit_result.get("warnings") or [])
+        + list(fit_result.get("warnings") or []),
+        "fit": fit_result,
+        "message": message,
+    }

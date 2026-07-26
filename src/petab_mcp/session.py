@@ -391,6 +391,11 @@ class PetabSession:
             # version) are stale for the working model until `fit` is called.
             "has_unfit_edits": self.has_unfit_edits(),
             "n_pending_edits": len(self.pending_edits),
+            # The multistart count a fit uses when `n_starts` is omitted. Reported because
+            # `n_starts` OVERRIDES it rather than adding to it: without knowing the number, a
+            # caller cannot tell whether the value it passes fits harder or (silently) weaker,
+            # and guessing low degrades every fit it makes.
+            "fit_n_starts_default": int(self.auto_fit_starts),
             "fixed_tables": ["measurements", "conditions", "observables"],
             "neg_log_likelihood": (self.simulation or {}).get("neg_log_likelihood"),
             "chi2": (self.simulation or {}).get("chi2"),
@@ -516,6 +521,9 @@ class PetabSession:
                 "set_model."
             )
         fitsim = fitting.fit_and_simulate(self, engine, do_fit=(starts != 0), n_starts=starts or 1)
+        # The multistart count this fit ACTUALLY used, so a caller never has to infer whether its
+        # `n_starts` raised or lowered the server default (`n_starts` overrides it).
+        fitsim["n_starts"] = starts
         nllh = fitsim.get("neg_log_likelihood")
         improvement = (
             fitting.compute_improvement(self, nllh, fitsim.get("objective_before"), fitsim=fitsim)
@@ -752,7 +760,7 @@ class PetabSession:
         self.pending_edits.append(
             {"operation": operation, "args": args, "justification": justification})
 
-    def _fit_dedup(self) -> tuple[dict[str, Any], str]:
+    def _fit_dedup(self, starts: int | None = None) -> tuple[dict[str, Any], str]:
         """Decide what an explicit `fit` should do with the current working model (see :mod:`dedup`).
 
         The de-dup gates the FIT — the expensive step. Returns ``(decision, fit_key)`` where
@@ -761,6 +769,11 @@ class PetabSession:
         does not bump the fit-attempt counter — the caller counts an attempt only once it actually
         proceeds to a real fit (so a no-op skip or a rejected fit never inflates the guard). Callers
         hold ``self.lock``.
+
+        ``starts`` is the multistart count this fit would run with. A skip is downgraded when it
+        is HIGHER than the count HEAD was fit with: the model is unchanged, but a bigger multistart
+        is a genuinely different (more thorough) search that can find a better optimum, so
+        returning HEAD's weaker stored metrics would silently ignore a deliberate "fit harder".
         """
         from . import dedup as D
         from .parameters import structure_fingerprint
@@ -800,10 +813,30 @@ class PetabSession:
         # structure and must run.
         if decision["action"] == "skip" and not head_is_fit:
             decision = {"action": "proceed", "warnings": decision.get("warnings", [])}
+        # ... nor when this fit would search HARDER than HEAD's did. The structure hash and the
+        # setup signature both ignore the multistart count, so without this an explicit
+        # `fit(n_starts=10*default)` on an unchanged model would return HEAD's weaker stored
+        # metrics as if it had run. `None` (a HEAD from before n_starts was recorded, or a
+        # rollback snapshot) is unknown, not smaller, so it keeps the skip.
+        if decision["action"] == "skip" and starts is not None:
+            head_starts = head_meta.get("n_starts")
+            if isinstance(head_starts, int) and starts > head_starts:
+                decision = {
+                    "action": "proceed",
+                    "warnings": decision.get("warnings", []) + [
+                        f"The model is unchanged from v{head_version}, but this fit runs "
+                        f"{starts} multistarts against its {head_starts}, so it is being re-fit "
+                        "rather than skipped. If you did not mean to search harder, omit n_starts."
+                    ],
+                }
         return decision, fit_key
 
     def fit(self, n_starts: int | None = None, justification: str | None = None) -> dict[str, Any]:
-        """Fit the current working model, snapshot a version, and score it — the ONLY tool that fits.
+        """Fit the current working model, snapshot a version, and score it.
+
+        The single fitting path: the ``fit`` tool calls this directly, and an editor called with
+        ``fit=true`` (issue #114) routes through it too, so the de-duplication, the snapshot and the
+        metrics are identical either way.
 
         Edits (``set_model``, reaction/rate-law edits, bounds/scale) mutate the working model
         without fitting; ``fit`` scores the assembled model: it fits the free parameters, simulates,
@@ -813,7 +846,9 @@ class PetabSession:
 
         Before the (expensive) fit it de-duplicates: if the working model is byte-identical to the
         current fitted version the refit is skipped and the stored metrics are returned
-        (``committed: false, no_change: true``); a structure revisited from history warns to use
+        (``committed: false, no_change: true``) — unless this fit runs MORE multistarts than that
+        version did, which is a more thorough search and does run; a structure revisited from
+        history warns to use
         ``restore_version(n)``; and the same structure fitted too many times is refused, to break an
         unproductive loop.
         """
@@ -829,7 +864,11 @@ class PetabSession:
             # identical-fit loop guard (which is only bumped once we commit to a real fit below).
             n_starts = self._coerce_n_starts(n_starts)
 
-            decision, fit_key = self._fit_dedup()
+            # The count this fit would actually run with — the de-dup needs it to tell a genuine
+            # "fit harder" from a redundant refit (see `_fit_dedup`). Mirrors the same expression
+            # in `_auto_fit_and_improvement`.
+            starts = self.auto_fit_starts if n_starts is None else n_starts
+            decision, fit_key = self._fit_dedup(starts)
             if decision["action"] == "terminate":
                 raise ModelUpdateError(decision["message"])
             if decision["action"] == "skip":
@@ -865,6 +904,9 @@ class PetabSession:
                 label="fit",
                 kind="fit",
                 meta={"staged_edits": staged, "n_edits": len(staged),
+                      # Recorded so a later fit can tell whether it would search HARDER than this
+                      # one did (see `_fit_dedup`) — the structure/setup hashes both ignore it.
+                      "n_starts": fitsim.get("n_starts"),
                       "fit_status": fitsim.get("status"), "neg_log_likelihood": nllh,
                       "chi2": fitsim.get("chi2"), "chi2_gof_pvalue": gof_pvalue,
                       "fitted_parameters": fitsim.get("fitted_parameters"), **improvement},
@@ -924,14 +966,18 @@ class PetabSession:
         })
         self.logger.info("fit no-op: identical to v%s — skipped recompile+fit+snapshot", dup_v)
         self.pending_edits = []
-        # Mirror the scalar fit keys a real fit returns (fit_status/nll/chi2/bic), so a caller that
-        # reads them off the result doesn't hit a missing key on a no-op; `no_change: true` and the
-        # thinner shape (no per-point/per-parameter block) still distinguish it. Full detail is
-        # unchanged from the duplicate version — see get_fit_summary / that version.
+        # Mirror the scalar fit keys a real fit returns (fit_status/n_starts/nll/chi2/bic), so a
+        # caller that reads them off the result doesn't hit a missing key on a no-op; `no_change:
+        # true` and the thinner shape (no per-point/per-parameter block) still distinguish it. Full
+        # detail is unchanged from the duplicate version — see get_fit_summary / that version.
         return {
             "committed": False, "no_change": True, "version": dup_v,
             "duplicate_of_version": dup_v, "message": decision.get("message"),
             "warnings": decision.get("warnings", []),
+            # The multistart count the metrics being returned came from — i.e. the DUPLICATE
+            # version's, since this call ran no fit of its own. `None` for a version snapshotted
+            # before n_starts was recorded.
+            "n_starts": meta.get("n_starts"),
             "fit_status": meta.get("fit_status"),
             "neg_log_likelihood": meta.get("neg_log_likelihood"),
             "chi2": meta.get("chi2"), "bic": meta.get("bic"),
