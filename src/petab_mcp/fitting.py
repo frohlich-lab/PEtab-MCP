@@ -76,8 +76,8 @@ def _env_int(name: str, default: int) -> int:
 # PETAB_MCP_FIT_PER_START_TIMEOUT, default 60). Fides defaults MAXTIME to inf, so one stiff start
 # can run unbounded and out-idle the MCP transport, which the harness then mistakes for a hang.
 # Bounding each start makes a full multistart fit's worst-case duration finite and predictable,
-# which the harness sizes its sse_read_timeout + stall watchdog to (see examples/_harness/
-# fit_budget.py). The harness exports its own resolved values onto this server's environment, so
+# which the harness sizes its sse_read_timeout + stall watchdog to (see
+# petab_harness/fit_budget.py). The harness exports its own resolved values onto this server's environment, so
 # both sides use the SAME cap + worker count. Kept generous — Fides returns best-so-far for a
 # capped start, so too tight a cap would silently degrade fit quality.
 FIT_PER_START_TIMEOUT_S = _env_float("PETAB_MCP_FIT_PER_START_TIMEOUT", 60.0)
@@ -103,7 +103,7 @@ def _default_fit_workers() -> int:
 # SLURM_CPUS_PER_TASK when set, else box minus one core — see _default_fit_workers). The batch
 # runner dispatches examples one at a time, so a fit has the whole machine; running the starts in
 # parallel cuts wall-clock to ~ceil(n_starts / workers) waves. Set to 1 to force sequential
-# fitting. examples/_harness/fit_budget.py keeps the SAME default (its _default_workers mirrors
+# fitting. petab_harness/fit_budget.py keeps the SAME default (its _default_workers mirrors
 # _default_fit_workers) and, when the harness drives a run, also exports its resolved value as
 # PETAB_MCP_FIT_N_WORKERS onto this server — so the harness's budget matches the real parallelism
 # whether the value comes from the shared default or the export.
@@ -554,7 +554,7 @@ def _run_fit(session, engine, n_starts: int, seed: int = 0) -> dict[str, Any]:
     n_free = len(free) if free is not None else len(problem.x_names)
     # Parallelise the multistart across worker processes when more than one is warranted; None runs
     # pyPESTO's sequential engine. Sized so the harness's fit budget (ceil(n_starts/workers) waves)
-    # matches the real wall-clock — see examples/_harness/fit_budget.py.
+    # matches the real wall-clock — see petab_harness/fit_budget.py.
     pp_engine = _fit_engine(n_starts)
     workers = getattr(pp_engine, "n_procs", 1) or 1
     log.info(
