@@ -173,7 +173,7 @@ def test_change_parameters_scale(session):
         session, [{"parameter_id": "sigma_B", "scale": "log10"}],
         justification="spans magnitudes")
     assert res["applied"] is True
-    assert res["operation"] == "change_parameters"
+    assert res["operation"] == "make_changes"
     assert res["references"] == []  # references optional for parameter operations
     recs = {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
     assert recs["sigma_B"]["parameterScale"] == "log10"
@@ -400,6 +400,6 @@ def test_edit_records_event_but_no_version(session):
     assert session.provenance.current_version == before  # edit does not snapshot a version
     events = session.provenance.recent_events()
     edit = [e for e in events if e["type"] == "edit"][-1]
-    assert edit["operation"] == "set_model"
+    assert edit["operation"] == "make_changes"
     assert edit["justification"] == "x"
     assert edit["references"][0]["input"] == "PMID:1"

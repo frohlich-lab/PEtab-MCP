@@ -44,7 +44,7 @@ _STRUCTURAL_PLATEAU_ADVICE = (
     "rather than re-fitting the same one: consider a generic structural move (categories, not a "
     "specific answer) — add a latent / unobserved state; add a feedback / regulation reaction; or "
     "raise the interaction order (linear -> nonlinear / higher-order) — and re-author it with "
-    "set_model."
+    "make_changes."
 )
 
 # Appended instead of the structural nudge when a stall happened without ever scoring a model.
@@ -478,16 +478,23 @@ class PetabSession:
 
     @staticmethod
     def _coerce_n_starts(n_starts: int | None) -> int | None:
-        """Validate ``n_starts`` — ``None`` (server default) or an integer >= 0 (0 = simulate-only)
-        — returning the coerced int. Raises :class:`ValidationError` on a negative/non-integer."""
+        """Validate ``n_starts`` — ``None`` (server default) or an integer >= 1 — returning the
+        coerced int. Raises :class:`ValidationError` otherwise.
+
+        0 used to mean "simulate without optimising". It is refused now: every change is scored,
+        and a version whose parameters were never optimised is not a score — it records whatever
+        the nominal values happened to be, then competes on BIC against versions that were fit.
+        The simulate-only pass itself is unaffected; it is still how a restore re-simulates a
+        stored fit (``fit_and_simulate(do_fit=False)``), which is not a caller-reachable path.
+        """
         if n_starts is None:
             return None
         try:
             n_starts = int(n_starts)
         except (TypeError, ValueError):
-            raise ValidationError(f"n_starts must be an integer >= 0, got {n_starts!r}.")
-        if n_starts < 0:
-            raise ValidationError(f"n_starts must be an integer >= 0, got {n_starts}.")
+            raise ValidationError(f"n_starts must be an integer >= 1, got {n_starts!r}.")
+        if n_starts < 1:
+            raise ValidationError(f"n_starts must be an integer >= 1, got {n_starts}.")
         return n_starts
 
     # -- fit + simulate ----------------------------------------------------
@@ -496,9 +503,9 @@ class PetabSession:
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Fit + simulate for a ``fit`` call, returning (payload, improvement).
 
-        ``n_starts`` of 0 means simulate-only (no optimisation); ``None`` uses the server default.
-        No-ops (status ``"skipped"``) when no engine is wired or ``auto_fit`` is off. A fit/simulation
-        error propagates to the caller.
+        ``n_starts`` is a multistart count >= 1; ``None`` uses the server default. No-ops (status
+        ``"skipped"``) when no engine is wired or ``auto_fit`` is off. A fit/simulation error
+        propagates to the caller.
         """
         from . import fitting
 
@@ -509,19 +516,18 @@ class PetabSession:
             return {"status": "skipped", "neg_log_likelihood": None, "chi2": None,
                     "fitted_parameters": None, "records": []}, {}
         starts = self.auto_fit_starts if n_starts is None else n_starts
-        # A fit needs at least one free parameter. Catch the zero-estimated case here — on the
-        # explicit `fit` path — with a clear, actionable message rather than letting pyPESTO fail
-        # cryptically ("'NoneType' object is not iterable") deep in the optimizer. A simulate-only
-        # pass (starts == 0) optimises nothing, so it is exempt.
-        if starts != 0 and int(getattr(self.problem, "n_estimated", 0) or 0) == 0:
+        # A fit needs at least one free parameter. Catch the zero-estimated case here with a clear,
+        # actionable message rather than letting pyPESTO fail cryptically ("'NoneType' object is
+        # not iterable") deep in the optimizer.
+        if int(getattr(self.problem, "n_estimated", 0) or 0) == 0:
             raise ModelUpdateError(
                 "the model has NO estimated (free) parameters, so there is nothing to "
                 "fit. Give it at least one free parameter — a new symbol you use in a "
                 "rate law becomes an estimated parameter automatically, so declare one "
                 "(or keep using the shipped free parameters) — then re-author with "
-                "set_model."
+                "make_changes."
             )
-        fitsim = fitting.fit_and_simulate(self, engine, do_fit=(starts != 0), n_starts=starts or 1)
+        fitsim = fitting.fit_and_simulate(self, engine, do_fit=True, n_starts=starts)
         # The multistart count this fit ACTUALLY used, so a caller never has to infer whether its
         # `n_starts` raised or lowered the server default (`n_starts` overrides it).
         fitsim["n_starts"] = starts
@@ -860,7 +866,7 @@ class PetabSession:
         without fitting; ``fit`` scores the assembled model: it fits the free parameters, simulates,
         snapshots ONE version carrying the fitted parameters + metrics + simulation dataframe,
         records the early-stop-chain op, and clears the pending edits. ``n_starts`` overrides the
-        server default (0 = simulate without optimising); ``justification`` is optional.
+        server default (and must be >= 1); ``justification`` is optional.
 
         The result also carries the two adequacy verdicts this method computes anyway for the
         plateau-adequacy gate: ``residual_structure`` (the compact sign/runs verdict on whether the
@@ -884,7 +890,7 @@ class PetabSession:
         with self.lock:
             if not self.has_model():
                 raise ModelUpdateError(
-                    "there is no model to fit yet — author one with set_model first.")
+                    "there is no model to fit yet — author one with make_changes first.")
 
             # Validate n_starts BEFORE the de-dup so a rejected value never counts toward the
             # identical-fit loop guard (which is only bumped once we commit to a real fit below).

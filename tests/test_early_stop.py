@@ -339,7 +339,7 @@ def test_streak_cap_stop_reason_carries_structural_nudge_when_inadequate(session
     reason = session.progress_report()["stop_reason"].lower()
     assert "streak" in reason
     assert "structural" in reason and "form" in reason
-    assert "set_model" in reason
+    assert "make_changes" in reason
 
 
 def test_adequate_plateau_stop_reason_omits_structural_nudge(session):
@@ -429,7 +429,7 @@ def test_stall_without_any_checkpoint_reports_an_evaluation_failure(session):
     assert "evaluation failure" in reason
     assert "n_missing_simulations" in reason
     assert "structural inadequacy" not in reason
-    assert "set_model" not in reason
+    assert "make_changes" not in reason
 
 
 # --- fixed-sigma GoF must be TWO-sided (#118) ------------------------------------------------

@@ -1,7 +1,9 @@
 """The constrained, justified model/parameter edits.
 
-Structural change is made by authoring the whole model with ``set_model`` (the single model
-editor); the parameter-table edits adjust a parameter's search space.
+The two edit paths behind the server's single ``make_changes`` tool: :func:`set_model` authors
+the whole model, :func:`change_parameters` adjusts a parameter's search space. They stay
+separate functions because they are separate transactions with separate validation; the tool
+layer picks one per call and then scores the result (see :meth:`session.PetabSession.fit`).
 
 Every edit:
 
@@ -12,10 +14,11 @@ Every edit:
 4. lints the candidate — on any failure the edit is reverted (atomic);
 5. logs a provenance ``edit`` event and records the change as *pending a fit*.
 
-Issue #81 decoupled editing from fitting: an edit mutates the working model but does NOT fit
-and does NOT create a version. The explicit ``fit`` tool (see :meth:`session.PetabSession.fit`)
-scores the assembled working model — it fits, simulates, and snapshots the single version that
-records the fitted values, fit metrics, and simulation dataframe.
+An edit function on its own mutates the working model but does NOT fit and does NOT create a
+version (issue #81). Fitting is the separate step that scores the assembled working model —
+it fits, simulates, and snapshots the single version that records the fitted values, fit
+metrics, and simulation dataframe. Nothing exposes the two halves independently: ``make_changes``
+always runs both, so an unscored edit is only ever a transient state inside one call.
 """
 
 from __future__ import annotations
@@ -69,13 +72,13 @@ def _compile_fit_failure_message(exc: Exception) -> str:
             f"the model uses a symbol named '{name}', which collides with a name AMICI reserves "
             "for its generated code (reserved short symbols include h, t, x, k, p, w, e). Rename "
             f"it everywhere it appears in the Antimony (e.g. '{name}' -> '{suggest}') and "
-            "re-author with set_model — the model structure itself may well be fine."
+            "re-author with make_changes — the model structure itself may well be fine."
         )
     return (
         f"the model passed validation but could not be compiled/fit: {exc}. This usually means "
         "it is ill-posed for estimation — an unstable or non-integrable ODE, or a rate law the "
         "solver cannot handle. Re-check that the simulated trajectories stay bounded and the "
-        "initial conditions are sane, then re-author with set_model."
+        "initial conditions are sane, then re-author with make_changes."
     )
 
 
@@ -333,16 +336,16 @@ def set_model(
     references: list[str] | None = None,
     parameters: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Author the WHOLE model from Antimony — the single model editor.
+    """Author the WHOLE model from Antimony — the structural edit path of ``make_changes``.
 
     This BUILDS the first model when the problem ships model-less (``model_initialized:
     false``) AND re-authors/replaces an existing model wholesale. Every structural change — adding
     or removing a reaction, changing a rate law — is made by re-authoring the whole model in one
     coherent step. Like every edit it reconciles SBML↔PEtab (parametric ICs + parameter-table
     sync) and lints, reverting on failure so a bad (re-)author changes nothing — but it does NOT
-    fit and does NOT create a version (issue #81); call ``fit`` to score the model. Re-authoring
-    the same structure is cheap (no fit); the de-duplication that used to gate a re-author now
-    gates ``fit`` (issue #59), so an identical structure is only fit once.
+    fit and does NOT create a version (issue #81); the caller scores it. De-duplication of an
+    identical structure is applied by the FIT (issue #59), not here, so an identical structure is
+    only fit once.
 
     Because the whole model is replaced, reconcile drops the parameter-table rows of any
     parameter the new model no longer declares. That silently discards a previously-fitted
@@ -352,17 +355,17 @@ def set_model(
     mechanistic constant — a conservation total, a known rate — is a harder case: the edit
     pipeline's validation REJECTS it outright (see ``validation._fixed_constant_role_issues``).
 
-    ``parameters`` optionally carries the SAME per-parameter entries ``change_parameters`` takes
-    (issue #114). They are applied in the same transaction as the re-author, AFTER the reconcile —
+    ``parameters`` optionally carries the SAME per-parameter entries :func:`change_parameters`
+    takes (issue #114). They are applied in the same transaction as the re-author, AFTER the reconcile —
     so an entry may target a parameter this author introduces, and a rejected entry reverts the
     re-author too. ``None``/``[]`` means "no parameter edit"; the whole bundle is recorded as ONE
     edit event, since it is one logical change.
     """
     if not isinstance(antimony, str) or not antimony.strip():
-        raise OperationError("set_model requires a non-empty Antimony model string.")
+        raise OperationError("make_changes requires a non-empty Antimony model string when `antimony` is given.")
 
     normalized = (
-        _normalize_parameter_changes(parameters, label="set_model", arg="parameters")
+        _normalize_parameter_changes(parameters, arg="parameters")
         if parameters else []
     )
 
@@ -388,7 +391,7 @@ def set_model(
             conflict = stoichiometry_conflict_issues(exc)
             if conflict:
                 raise ValidationError(
-                    "set_model rejected: a reaction reuses a parameter/symbol as a stoichiometry "
+                    "make_changes rejected: a reaction reuses a parameter/symbol as a stoichiometry "
                     "coefficient (e.g. on both sides), which Antimony cannot represent.",
                     issues=[i["message"] for i in conflict],
                 ) from exc
@@ -402,7 +405,7 @@ def set_model(
         stoich_issues = frozen_parametric_stoichiometry_issues(sm)
         if stoich_issues:
             raise ValidationError(
-                "set_model rejected: a reaction uses a parameter/symbol as a stoichiometry "
+                "make_changes rejected: a reaction uses a parameter/symbol as a stoichiometry "
                 "coefficient, which Antimony freezes to a constant and drops.",
                 issues=[i["message"] for i in stoich_issues],
             )
@@ -416,7 +419,7 @@ def set_model(
     if normalized:
         op_args["parameters"] = _parameters_arg(normalized)
     result = _commit_change(
-        session, "set_model", op_args, justification, references,
+        session, "make_changes", op_args, justification, references,
         model_build=build,
         param_edit=_parameter_edit(session, normalized) if normalized else None,
         require_references=False,
@@ -429,7 +432,7 @@ def set_model(
     dropped = sorted(p for p in removed if str(p) in prior_estimated)
     if dropped:
         result["warnings"] = list(result.get("warnings") or []) + [
-            f"set_model dropped previously-estimated parameter(s) {dropped}: their fitted "
+            f"the re-author dropped previously-estimated parameter(s) {dropped}: their fitted "
             "values are gone. Re-declare them in the Antimony if that was unintended."
         ]
     return result
@@ -609,7 +612,7 @@ def _reject_repeated_widening(
         f"bound after {count} previous widenings for a negligible ~{last_gain:.2g} BIC gain. A "
         "parameter pinned at a bound with a flat/collinear FIM direction (check "
         "get_identifiability) is UNIDENTIFIABLE, not under-explored — widening chases it toward "
-        "infinity while it keeps re-pinning. Instead re-author with set_model to REMOVE its "
+        "infinity while it keeps re-pinning. Instead re-author with make_changes to REMOVE its "
         "reaction or use its LIMITING form (make the reaction irreversible / the step "
         "instantaneous); if neither is possible, LEAVE it pinned — do not widen again or "
         "hard-code a value (there is no value/estimate tool, and a literal is just a magic "
@@ -618,13 +621,13 @@ def _reject_repeated_widening(
 
 
 def _normalize_parameter_changes(
-    changes: list[dict[str, Any]], label: str = "change_parameters", arg: str = "parameters",
+    changes: list[dict[str, Any]], label: str = "make_changes", arg: str = "parameters",
 ) -> list[dict[str, Any]]:
     """Validate + normalize a ``parameters`` list into ``{parameter_id, lower_bound, upper_bound,
     scale}`` entries (missing fields as ``None``), raising :class:`OperationError` on anything
-    malformed. Shared by ``change_parameters`` and ``set_model(parameters=[...])`` so both paths
-    enforce exactly the same entry contract (issue #114); ``label`` names the offending argument
-    in the rejection message, so a bundled entry doesn't report a tool the caller never called."""
+    malformed. Shared by both edit paths so they enforce exactly the same entry contract (issue
+    #114); ``label``/``arg`` name the offending argument in the rejection message, which is why
+    they default to the TOOL's names rather than these functions'."""
     if not isinstance(changes, list) or not changes:
         raise OperationError(
             f"{label}: {arg!r} must be a non-empty list of "
@@ -755,88 +758,157 @@ def change_parameters(
     ``parameters`` is a non-empty list of per-parameter dicts, each naming ``parameter_id`` and any
     of ``lower_bound`` / ``upper_bound`` (a bound edit — give BOTH or neither) and ``scale``
     ('lin'|'log'|'log10'). Group everything that belongs to one coherent retuning into a single
-    call, then ``fit`` once to score it. Every per-parameter backstop still applies (a re-pinned
-    parameter's 3rd widening, a noise-sigma cap, a log scale on a non-positive box); because the
-    whole batch is atomic, one rejected entry reverts ALL of them and nothing changes. An EDIT:
-    mutates the parameter table but does NOT fit — the ``fit`` tool's optional ``fit=true`` bundle
-    (issue #114) is wired at the server layer, not here."""
+    call. Every per-parameter backstop still applies (a re-pinned parameter's 3rd widening, a
+    noise-sigma cap, a log scale on a non-positive box); because the whole batch is atomic, one
+    rejected entry reverts ALL of them and nothing changes. An EDIT: mutates the parameter table
+    but does NOT fit — the fit that scores it is wired at the server layer, not here."""
     normalized = _normalize_parameter_changes(parameters)
     return _commit_change(
-        session, "change_parameters", {"parameters": _parameters_arg(normalized)},
+        session, "make_changes", {"parameters": _parameters_arg(normalized)},
         justification, references,
         param_edit=_parameter_edit(session, normalized), require_references=False,
     )
 
 
-# -- bundled edit + fit (issue #114) ---------------------------------------
+# -- edit + fit, as one all-or-nothing change ------------------------------
+def working_state(session) -> dict[str, Any]:
+    """Snapshot the working state an edit mutates, so it can be undone AFTER the fact.
+
+    ``_commit_change`` already reverts an edit that fails its own reconcile/lint, but that
+    rollback is inside the edit. This snapshot covers the step after it: the fit. Holds the model
+    OBJECT (an edit replaces the reference rather than mutating it) plus a deep copy of the
+    parameter table, and the pending-edit count to trim back to.
+    """
+    with session.lock:
+        return {
+            "model": session.problem.model,
+            "parameters": session.problem.parameter_df.copy(deep=True),
+            "n_pending_edits": len(session.pending_edits),
+        }
+
+
+def revert_working_state(session, snapshot: dict[str, Any], reason: str) -> None:
+    """Undo an applied edit whose fit did not produce a version, and log the revert.
+
+    The invariant this exists for: a change is either scored or gone. Leaving an unscored edit in
+    place put the working model into a state nothing had verified — the agent's next call built on
+    an unknown baseline, `describe_problem` reported `has_unfit_edits: true` with no tool that
+    could clear it, and the finish gate blocked on it.
+
+    The `edit` event is NOT erased — the log is append-only and the edit really did happen. A
+    ``revert`` event is appended after it, so the trace reads: edited, fit failed, reverted.
+    """
+    with session.lock:
+        before = session.problem.model.to_sbml_str()
+        before_params = session.problem.parameter_df
+        session.problem.model = snapshot["model"]
+        session.problem.parameter_df = snapshot["parameters"]
+        del session.pending_edits[snapshot["n_pending_edits"]:]
+        session.provenance.append_event({
+            "type": "revert",
+            "operation": "make_changes",
+            "reason": reason,
+            "model_hash_before": sha16(before),
+            "model_hash_after": sha16(session.problem.model.to_sbml_str()),
+            "problem_hash_before": problem_fingerprint(before, before_params),
+            "problem_hash_after": problem_fingerprint(
+                session.problem.model.to_sbml_str(), session.problem.parameter_df),
+        })
+
+
+
+def clear_scored_edits(session, snapshot: dict[str, Any]) -> None:
+    """Drop pending edits that a snapshotted version already records, leaving the model alone.
+
+    The counterpart to :func:`revert_working_state` for the case where the version DID get
+    created: the change is scored, so the pending flag is stale bookkeeping rather than an
+    unscored edit, and undoing the model would throw away a version.
+    """
+    with session.lock:
+        del session.pending_edits[snapshot["n_pending_edits"]:]
+
+
+# Keys of the edit half that survive into a `make_changes` result. Everything else the edit
+# produces — the reconcile report, the validation report, the parameter diff, the initial-condition
+# account, the echoed justification/references, the pending-edit counters — is dropped: it rides on
+# EVERY call, into a history nothing prunes, and none of it is a score. What the agent decides on is
+# the fit, so the fit is the result.
+_EDIT_KEYS_KEPT = ("warnings",)
+
+
 def bundle_result(
     session, edit_result: dict[str, Any], fit_result: dict[str, Any],
     head_before: int,
 ) -> dict[str, Any]:
-    """Merge an edit result and the fit result of a bundled ``fit=true`` call.
+    """The result of one ``make_changes`` call: a flag, a version, and the fit — flat.
 
-    The two shapes are kept SEPARATE rather than flattened: the whole fit result (its metrics, or
-    its ``error`` / ``no_change`` short-circuit) lands untouched under ``fit``, so no key of either
-    result is clobbered — in particular the edit's own ``warnings`` (e.g. "the re-author dropped a
-    previously-estimated parameter") survive alongside the fit's. Only ``version``/``committed``
-    are mirrored to the top level, because "which version did this call produce?" is the first
-    thing a caller reads.
+    The fit is FLATTENED to the top level rather than nested under ``fit``, because after the
+    collapse there is no second thing in the result to disambiguate it from: a call is a change
+    and its score, so the score IS the result. That also makes a score read off ``make_changes``
+    name its fields exactly as one read off ``get_fit_summary`` or ``restore_version``.
 
-    On a failure the message does NOT prescribe a fix, it forwards ``fit.error`` — because that
-    error is not always "the model is broken". The identical-structure loop guard reaches the same
-    branch, and its message says the opposite (stop re-fitting this structure, go back with
-    ``restore_version(n)``); a top-level "repair the model and call fit() again" would send the
-    agent straight back into the loop the guard exists to break, and the agent reads the message
-    first. Any future rejection reason is forwarded correctly for the same reason.
+    ``applied`` is the state flag: whether the change is IN the working model when the call
+    returns. It is not "did the edit apply" — an edit that applies and then fails to fit is
+    reverted (see :func:`revert_working_state`), so that call reports ``applied: false``, and the
+    agent never has to reason about a half-done state. ``committed`` is the separate question of
+    whether a VERSION was created; the two differ only for the de-dup no-op, where the change is
+    in place but is byte-identical to an existing version.
+
+    On a failure the message does NOT prescribe a fix, it forwards ``error`` — because that error
+    is not always "the model is broken". The identical-structure loop guard reaches the same
+    branch, and its message says the opposite (stop re-sending this structure, go back with
+    ``restore_version(n)``); a top-level "repair it and try again" would send the agent straight
+    back into the loop the guard exists to break, and the agent reads the message first.
 
     Whether a version was created is decided by comparing HEAD against ``head_before``, NOT by
     ``has_unfit_edits()``. They usually agree, but ``session.fit`` clears the pending edits several
     statements after it snapshots — an event-log write failure in that window leaves the edits
     pending with HEAD already advanced, and the proxy would then claim nothing was scored.
-    ``pending_fit`` is still reported from the session: it is a separate fact (are there edits the
-    next fit would score?) and stays accurate in that window too.
     """
     committed = bool(fit_result.get("committed"))
-    pending = session.has_unfit_edits()
+    no_change = bool(fit_result.get("no_change"))
     version = fit_result.get("version")
     head_now = session.provenance.current_version
+    snapshotted = head_now != head_before
     if committed:
+        applied = True
+        message = f"Change applied and scored as version {version}."
+    elif no_change:
+        applied = True
         message = (
-            f"Edit applied and scored: version {version} was created. "
-            "Read the `fit` block for the metrics."
+            "Change applied, but the fit was a no-op: the resulting model is identical to version "
+            f"{fit_result.get('duplicate_of_version')}, so its stored metrics stand. Make a "
+            "genuinely different change, or restore_version(n) to go back."
         )
-    elif fit_result.get("no_change"):
-        message = (
-            "Edit applied, but the fit was a no-op: the resulting model is identical to version "
-            f"{fit_result.get('duplicate_of_version')}, so its stored metrics stand (see `fit`). "
-            "Make a genuinely different change, or restore_version(n) to go back."
-        )
-    elif head_now != head_before:
+    elif snapshotted:
         # The fit broke only AFTER snapshotting, so HEAD moved: report where it landed rather than
         # asking for a re-fit that would be a de-dup no-op against the version just created.
+        applied = True
         version = version if version is not None else head_now
         message = (
-            "Edit applied and a version was snapshotted, but the fit did not finish cleanly, so "
+            "Change applied and a version was snapshotted, but the fit did not finish cleanly, so "
             f"this call carries no metrics: the working model is now version {version}. Read "
-            "`fit.error`, then read that version's score with list_versions before making "
-            "another change — do NOT re-fit, the model is already scored."
+            "`error`, then read that version's score with list_versions before making another "
+            "change — do NOT re-send it, the model is already scored."
         )
     else:
+        applied = False
+        version = head_now
         message = (
-            "Edit APPLIED to the working model, but it was NOT scored — the edit is still in "
-            "place and no version was created. The fit reported: "
-            f"{fit_result.get('error') or 'no error message'} — ACT ON THAT rather than assuming "
-            "the model is broken: it says whether to repair and re-fit, or to stop re-fitting "
-            "this structure and go back with restore_version(n)."
+            "Change REVERTED: it could not be scored, so it was undone — the working model is "
+            f"unchanged, still version {head_now}, and nothing is left half-done. The fit "
+            f"reported: {fit_result.get('error') or 'no error message'} — ACT ON THAT rather than "
+            "assuming the model is broken: it says whether to fix the change and send it again, "
+            "or to stop re-sending this structure and go back with restore_version(n)."
         )
-    return {
-        **edit_result,
+    warnings = list(edit_result.get("warnings") or []) + list(fit_result.get("warnings") or [])
+    result = {
+        **{k: edit_result[k] for k in _EDIT_KEYS_KEPT if k in edit_result},
+        **{k: v for k, v in fit_result.items() if k not in ("committed", "version", "warnings")},
+        "applied": applied,
         "committed": committed,
         "version": version,
-        "pending_fit": pending,
-        "n_pending_edits": len(session.pending_edits),
-        "warnings": list(edit_result.get("warnings") or [])
-        + list(fit_result.get("warnings") or []),
-        "fit": fit_result,
+        "warnings": warnings,
         "message": message,
     }
+    return result

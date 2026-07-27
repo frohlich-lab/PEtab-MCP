@@ -119,7 +119,7 @@ class AmiciEngine:
 
             raise ModelUpdateError(
                 "No model to simulate or fit: the problem has no species/reactions yet. Build a "
-                "model with set_model before requesting a simulation, fit, or fit summary."
+                "model with make_changes before requesting a simulation, fit, or fit summary."
             )
         h = self.session.sbml_hash()
         if h not in self._models:

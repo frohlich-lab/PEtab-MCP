@@ -137,7 +137,7 @@ def test_set_model_builds_the_first_model(empty_session):
         justification="reversible conversion A<->B", references=["PMID:1"],
     )
     assert res["applied"] is True
-    assert res["operation"] == "set_model"
+    assert res["operation"] == "make_changes"
     assert empty_session.has_model() is True
     assert _species(empty_session) == {"A", "B"}
     assert _reactions(empty_session) == {"r1", "r2"}
@@ -241,7 +241,7 @@ def test_set_model_replaces_existing_model(session):
     assert session.has_model() is True
     res = O.set_model(session, ONE_REACTION_ANTIMONY, justification="drop the reverse reaction")
     assert res["applied"] is True
-    assert res["operation"] == "set_model"
+    assert res["operation"] == "make_changes"
     assert _reactions(session) == {"r1"}          # r2 gone
     assert "k2" not in _ids(session)              # its orphaned rate constant pruned
 

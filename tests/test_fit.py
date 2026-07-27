@@ -110,12 +110,16 @@ def test_fit_is_a_noop_when_model_unchanged(fit_session):
     assert sess.provenance.current_version == 1
 
 
-def test_fit_simulate_only_with_zero_starts(fit_session):
-    """n_starts=0 simulates without optimising and still snapshots a version."""
-    sess = fit_session
-    res = sess.fit(n_starts=0)
-    assert res["committed"] is True and res["version"] == 1
-    assert res["fit_status"] == "simulate_only"
+def test_zero_starts_is_rejected(fit_session):
+    """n_starts=0 used to mean "simulate without optimising", which snapshotted a VERSION whose
+    parameters were never optimised — it recorded whatever the nominal values happened to be and
+    then competed on BIC against versions that were actually fit. Every change is scored now, so
+    a count below 1 is refused rather than quietly producing an unscored version."""
+    from petab_mcp.errors import ValidationError
+
+    with pytest.raises(ValidationError, match=">= 1"):
+        fit_session.fit(n_starts=0)
+    assert fit_session.provenance.current_version == 0
 
 
 # -- the residual-structure verdict rides on the fit result (issue #113) ------

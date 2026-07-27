@@ -31,7 +31,7 @@ def test_problem_hash_tracks_parameter_table(session):
 
     # and the edit event makes that visible: model hash steady, problem hash moved
     ev = next(e for e in reversed(session.provenance.recent_events(0))
-              if e.get("operation") == "change_parameters")
+              if e.get("operation") == "make_changes")
     assert ev["model_hash_before"] == ev["model_hash_after"]
     assert ev["problem_hash_before"] != ev["problem_hash_after"]
 

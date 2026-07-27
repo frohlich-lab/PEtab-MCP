@@ -108,9 +108,7 @@ def test_tools_registered(tmp_path):
     expected = {
         "describe_problem", "list_observables", "list_conditions", "get_measurements",
         "get_model", "get_model_structure",
-        "set_model",
-        "change_parameters",
-        "fit",
+        "make_changes",
         "get_parameters",
         "get_fit_summary", "get_fit_diagnosis", "get_run_timing", "query_data", "list_data_tables",
         "get_fitting_log",
@@ -127,9 +125,11 @@ def test_tools_registered(tmp_path):
     # could act on. The underlying validation.validate_problem() is unchanged and
     # still gates every commit.
     assert not ({"validate_problem", "sync_parameters"} & names)
-    # the incremental structural tools are not registered — structure is edited via set_model
+    # the incremental structural tools are not registered — structure is edited via make_changes
     assert not ({"add_reaction", "change_rate_law", "remove_reaction"} & names)
-    # edits are fit-free; `fit` is the single tool that fits — no other manual fit/score/tune tools
+    # `make_changes` is the single editor AND the only thing that fits: there is no fit-free edit
+    # and no standalone fit, so a change and its score cannot come apart.
+    assert not ({"set_model", "change_parameters", "fit"} & names)
     assert not ({"simulate", "evaluate_objective", "optimize", "residual_statistics",
                  "update_parameters", "refit"} & names)
     assert "update_model" not in names and "set_model_parameter" not in names
@@ -168,23 +168,19 @@ def test_describe_and_parameters(tmp_path):
 
 
 def test_edit_then_fit_creates_version_via_tools(tmp_path):
-    # An edit is fit-free (no version); the `fit` tool snapshots the version. auto_fit is off, so
-    # `fit` snapshots a (skipped) version without AMICI — enough to exercise the edit→fit→version
-    # flow and the event log.
+    # One `make_changes` call is one edit AND its fit, snapshotting one version. auto_fit is off,
+    # so the fit is skipped (no AMICI) but still commits — enough to exercise the flow and the
+    # event log, which must record BOTH an edit and a fit event for the single call.
     mcp = _server(tmp_path)
 
     async def go():
-        res = _structured(await mcp.call_tool("set_model", {
+        res = _structured(await mcp.call_tool("make_changes", {
             "antimony": _reauthored(["J: B => D; k3 * B;"]),
             "justification": "B converts to D",
             "references": ["PMID:1"],
         }))
-        assert res["applied"] is True and res["version"] is None and res["pending_fit"] is True
-        # the edit did not create a version
-        assert _structured(await mcp.call_tool("describe_problem", {}))["current_version"] == 0
-
-        fit = _structured(await mcp.call_tool("fit", {}))
-        assert fit["committed"] is True and fit["version"] == 1
+        assert res["applied"] is True and res["committed"] is True and res["version"] == 1
+        assert _structured(await mcp.call_tool("describe_problem", {}))["current_version"] == 1
 
         versions = _structured(await mcp.call_tool("list_versions", {}))
         vlist = versions["result"] if isinstance(versions, dict) and "result" in versions else versions
@@ -198,18 +194,25 @@ def test_edit_then_fit_creates_version_via_tools(tmp_path):
     asyncio.run(go())
 
 
-def test_initial_conditions_report_via_tool(tmp_path):
+def test_the_result_is_the_fit_and_nothing_else(tmp_path):
+    """`make_changes` reports the SCORE, flat, plus whether the change is in place. The edit's own
+    bookkeeping — the reconcile report, the validation report, the parameter diff, the per-species
+    initial-condition account, the echoed justification/references — is not in it: none of it is a
+    score, and all of it would ride on every call into a history nothing prunes. What it dropped
+    is still readable on demand (`get_parameters` annotates each row's role and estimated/fixed
+    status, `get_model_structure` the reconciled model)."""
     mcp = _server(tmp_path)  # auto_fit off -> commit without fitting (no AMICI needed)
 
     async def go():
-        # a reconciling model op's result carries the per-species initial_conditions report
-        res = _structured(await mcp.call_tool("set_model", {
+        res = _structured(await mcp.call_tool("make_changes", {
             "antimony": _reauthored(["J: B => D; k3 * B;"]), "justification": "B converts to D",
         }))
-        ics = {r["species"]: r for r in res["initial_conditions"]}
-        assert {"A", "B", "D"} <= set(ics)
-        assert ics["D"]["newly_added"] is True
-        assert ics["D"]["t0_source"] == "fixed" and ics["D"]["declared_t0_used"] is True
+        assert res["applied"] is True and res["committed"] is True and res["version"] == 1
+        assert not ({"reconcile", "validation", "parameter_diff", "initial_conditions",
+                     "justification", "references", "operation", "pending_fit",
+                     "n_pending_edits", "fit"} & set(res))
+        # the fit's own keys ARE there, at the top level and named as get_fit_summary names them
+        assert {"fit_status", "neg_log_likelihood", "n_estimated", "bic"} <= set(res)
 
     asyncio.run(go())
 
@@ -219,13 +222,13 @@ def test_references_optional_but_justification_required(tmp_path):
 
     async def go():
         # references are now OPTIONAL for model ops: an edit without any still applies
-        ok = _structured(await mcp.call_tool("set_model", {
+        ok = _structured(await mcp.call_tool("make_changes", {
             "antimony": _reauthored(["J: B => D; k3 * B;"]), "justification": "B is degraded to D",
         }))
         assert ok["applied"] is True
 
         # justification is still REQUIRED: an empty one is rejected
-        bad = _structured(await mcp.call_tool("set_model", {
+        bad = _structured(await mcp.call_tool("make_changes", {
             "antimony": _reauthored(["J2: D => E; k4 * D;"]), "justification": "   ",
             "references": [],
         }))
@@ -238,28 +241,45 @@ def test_rejected_operation_is_logged(tmp_path):
     mcp = _server(tmp_path)
 
     async def go():
-        res = _structured(await mcp.call_tool("change_parameters", {
+        res = _structured(await mcp.call_tool("make_changes", {
             "parameters": [{"parameter_id": "A_init", "scale": "log10"}], "justification": "x",
         }))
         assert res["applied"] is False  # A_init lb=0 -> log10 invalid
         errs = _structured(await mcp.call_tool("get_errors", {}))
         elist = errs["result"] if isinstance(errs, dict) and "result" in errs else errs
-        assert any(e["tool"] == "change_parameters" for e in elist)
+        assert any(e["tool"] == "make_changes" for e in elist)
 
     asyncio.run(go())
 
 
 def test_negative_n_starts_rejected(tmp_path):
-    # n_starts moved from the (now fit-free) edits to the `fit` tool; a negative value is rejected
-    # there, before any optimisation, and creates no version.
+    # n_starts is validated before the edit applies, so a bad value is a pure no-op: no edit,
+    # no version.
     mcp = _server(tmp_path)
 
     async def go():
-        res = _structured(await mcp.call_tool("fit", {"n_starts": -1}))
-        assert res["committed"] is False
+        res = _structured(await mcp.call_tool("make_changes", {
+            "antimony": _reauthored(["J: B => D; k3 * B;"]), "justification": "x",
+            "n_starts": -1,
+        }))
+        assert res["applied"] is False
         assert "n_starts" in res["error"]
         cur = _structured(await mcp.call_tool("describe_problem", {}))
-        assert cur["current_version"] == 0
+        assert cur["current_version"] == 0 and cur["has_unfit_edits"] is False
+
+    asyncio.run(go())
+
+
+def test_a_change_that_changes_nothing_is_rejected(tmp_path):
+    # `antimony` and `parameters` are both optional, but not both absent: there would be nothing
+    # to score, and the call would still burn a fit.
+    mcp = _server(tmp_path)
+
+    async def go():
+        res = _structured(await mcp.call_tool("make_changes", {"justification": "nothing"}))
+        assert res["applied"] is False
+        assert "antimony" in res["error"] and "parameters" in res["error"]
+        assert _structured(await mcp.call_tool("describe_problem", {}))["current_version"] == 0
 
     asyncio.run(go())
 
@@ -351,45 +371,42 @@ def test_query_data_static_tables(tmp_path):
     asyncio.run(go())
 
 
-def test_edit_then_fit_via_tools_multi_edit(tmp_path):
-    # Several fit-free edits collapse into ONE version at the `fit` call (the old batch use-case,
-    # now the default). auto_fit off so `fit` snapshots without AMICI.
+def test_a_re_author_and_its_bounds_are_one_edit_and_one_version(tmp_path):
+    # A structural change and the bounds it needs are ONE call and therefore ONE version — the
+    # use-case the old edit/edit/fit sequence served, minus the chance of leaving either half
+    # unscored. auto_fit off so the fit snapshots without AMICI.
     mcp = _server(tmp_path)
 
     async def go():
-        e1 = _structured(await mcp.call_tool("set_model", {
-            "antimony": _reauthored(["J: B => D; k3 * B;"]), "justification": "x",
-            "references": ["PMID:1"]}))
-        assert e1["applied"] is True
-        e2 = _structured(await mcp.call_tool("change_parameters", {
+        res = _structured(await mcp.call_tool("make_changes", {
+            "antimony": _reauthored(["J: B => D; k3 * B;"]),
             "parameters": [{"parameter_id": "k1", "lower_bound": 1e-2, "upper_bound": 1e2}],
-            "justification": "tighter"}))
-        assert e2["applied"] is True and e2["n_pending_edits"] == 2
+            "justification": "x", "references": ["PMID:1"]}))
+        assert res["applied"] is True and res["version"] == 1
         cur = _structured(await mcp.call_tool("describe_problem", {}))
-        assert cur["current_version"] == 0 and cur["has_unfit_edits"] is True  # no version yet
-        fit = _structured(await mcp.call_tool("fit", {}))
-        assert fit["version"] == 1
-        # the fit event records the two edits it scored
+        assert cur["current_version"] == 1 and cur["has_unfit_edits"] is False
+        # both halves are recorded as ONE edit, and the fit event says it scored exactly that one
         prov = _structured(await mcp.call_tool("get_provenance", {}))
         plist = prov["result"] if isinstance(prov, dict) and "result" in prov else prov
+        edit_ev = [e for e in plist if e["type"] == "edit"][-1]
+        assert edit_ev["operation"] == "make_changes"
         fit_ev = [e for e in plist if e["type"] == "fit"][-1]
-        assert fit_ev["n_edits"] == 2
+        assert fit_ev["n_edits"] == 1
 
     asyncio.run(go())
 
 
-def test_set_model_reauthors_when_model_exists_via_tool(tmp_path):
-    # set_model is NOT refused on an existing model — it re-authors it wholesale as a fit-free edit.
+def test_a_re_author_is_not_refused_when_a_model_exists(tmp_path):
+    # A re-author is NOT refused on an existing model — it replaces it wholesale.
     mcp = _server(tmp_path)
 
     async def go():
         desc = _structured(await mcp.call_tool("describe_problem", {}))
         assert desc["model_initialized"] is True
-        # A wholesale re-author applies as an edit (no version until fit).
-        res = _structured(await mcp.call_tool("set_model", {
+        res = _structured(await mcp.call_tool("make_changes", {
             "antimony": _ONE_REACTION_ANTIMONY, "justification": "re-author", "references": ["PMID:1"],
         }))
-        assert res["applied"] is True and res["version"] is None
+        assert res["applied"] is True
         struct = _structured(await mcp.call_tool("get_model_structure", {}))
         assert {r["id"] for r in struct["reactions"]} == {"r1"}  # the edit took effect
         # (the fit-time de-dup no-op for an identical model is covered in test_fit.py)
@@ -404,7 +421,7 @@ def test_restore_version_tool_registered_and_restores(tmp_path):
 
     async def go():
         # re-author to a one-reaction model (v1), then restore the original reversible v0
-        await mcp.call_tool("set_model", {
+        await mcp.call_tool("make_changes", {
             "antimony": _ONE_REACTION_ANTIMONY, "justification": "drop r2", "references": ["PMID:1"]})
         struct = _structured(await mcp.call_tool("get_model_structure", {}))
         assert {r["id"] for r in struct["reactions"]} == {"r1"}
@@ -416,7 +433,7 @@ def test_restore_version_tool_registered_and_restores(tmp_path):
     asyncio.run(go())
 
 
-def test_set_model_builds_via_tool(tmp_path):
+def test_make_changes_builds_the_first_model_via_tool(tmp_path):
     mcp = _empty_model_server(tmp_path)
 
     async def go():
@@ -424,12 +441,12 @@ def test_set_model_builds_via_tool(tmp_path):
         assert desc["model_initialized"] is False
         assert desc["n_reactions"] == 0
 
-        # set_model builds the first model from Antimony when the problem ships model-less
-        res = _structured(await mcp.call_tool("set_model", {
+        # `antimony` builds the first model when the problem ships model-less
+        res = _structured(await mcp.call_tool("make_changes", {
             "antimony": _REVERSIBLE_ANTIMONY,
             "justification": "reversible conversion", "references": ["PMID:1"],
         }))
-        assert res["applied"] is True and res["version"] is None
+        assert res["applied"] is True
 
         desc2 = _structured(await mcp.call_tool("describe_problem", {}))
         assert desc2["model_initialized"] is True  # the edit built the working model
@@ -510,18 +527,15 @@ def test_fit_tools(tmp_path):
             "query_data", {"sql": "SELECT * FROM simulations", "max_rows": 2}))
         assert capped["row_count"] == 2 and capped["truncated"] is True
 
-        # a fit-free edit followed by `fit`: the fit result carries the unified fit block + a
-        # fitted version (n_starts now lives on `fit`, not the edit).
-        edit = _structured(await mcp.call_tool("change_parameters", {
+        # a bounds change: the result carries the unified fit block nested under `fit`, plus a
+        # fitted version.
+        res = _structured(await mcp.call_tool("make_changes", {
             "parameters": [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
-            "justification": "widen bounds",
+            "justification": "widen bounds", "n_starts": 2,
         }))
-        assert edit["applied"] is True and edit["version"] is None
-        res = _structured(await mcp.call_tool("fit", {"n_starts": 2}))
-        assert res["committed"] is True
+        assert res["applied"] is True and res["committed"] is True and res["version"] == 1
         assert res["fit_status"] == "fit"
         assert res["neg_log_likelihood"] is not None
-        assert res["version"] == 1
         assert res["improvement"]["is_new_best"] is not None
         # the compact residual-structure verdict rides on the fit result (issue #113), so the
         # agent doesn't spend a get_fit_diagnosis call to learn its model's form is incomplete —

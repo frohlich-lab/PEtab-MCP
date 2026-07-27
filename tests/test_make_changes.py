@@ -1,13 +1,16 @@
-"""Optional bundled parameter changes + fit on the editors (issue #114).
+"""``make_changes``: the single editor, and the fit it always runs.
 
-The lead's step budget is dominated by the ``set_model -> change_parameters -> fit`` cycle, which
-is almost always one logical action. ``set_model(parameters=[...], fit=True)`` (and
-``change_parameters(..., fit=True)``) collapse it into one call — WITHOUT re-coupling editing and
-fitting: an unbundled call behaves exactly as before (issue #81).
+The lead's step budget used to be dominated by a ``set_model -> change_parameters -> fit``
+cycle that was almost always one logical action, and each seam was a way to leave work
+unscored — an edit nobody fit, an ``n_starts`` on a call that did not fit, a fit of a model
+nobody had changed. ``make_changes`` removes the seams: ``antimony`` and/or ``parameters`` in
+one transaction, then a fit, in one call. There is no fit-free edit and no standalone fit, so
+"applied but never scored" only exists inside a single call, as the failure mode of that call.
 
-The ``parameters=`` transaction is tested directly against a ``PetabSession`` (no engine needed);
-the ``fit=`` bundle is a server-layer concern, so those tests drive the in-process MCP server the
-way ``test_server.py`` does.
+The ``antimony``/``parameters`` transaction is tested directly against a ``PetabSession`` (no
+engine needed) through the two internal operation functions the tool dispatches to; everything
+about the fit is a server-layer concern, so those tests drive the in-process MCP server the way
+``test_server.py`` does.
 """
 
 from __future__ import annotations
@@ -54,8 +57,8 @@ def _records(session):
     return {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
 
 
-# -- set_model(parameters=[...]): one atomic transaction -----------------------
-def test_set_model_with_parameters_applies_both_atomically(session):
+# -- the re-author + parameters transaction ------------------------------------
+def test_a_re_author_and_its_parameters_apply_atomically(session):
     """The re-author AND the bound/scale edits land in ONE edit — one provenance event, one
     pending edit — so the pair costs a single call instead of two."""
     res = O.set_model(
@@ -68,7 +71,8 @@ def test_set_model_with_parameters_applies_both_atomically(session):
     )
     assert res["applied"] is True and res["version"] is None
     assert res["pending_fit"] is True and res["n_pending_edits"] == 1
-    assert "fit" not in res and "committed" not in res  # still a fit-free edit
+    # the EDIT half on its own does not fit; the tool layer adds that (see the server tests below)
+    assert "fit" not in res and "committed" not in res
 
     recs = _records(session)
     assert "k3" in recs  # the re-author took
@@ -77,15 +81,17 @@ def test_set_model_with_parameters_applies_both_atomically(session):
 
     edits = [e for e in session.provenance.recent_events() if e["type"] == "edit"]
     assert len(edits) == 1
-    assert edits[-1]["operation"] == "set_model"
+    # provenance names the TOOL, not the internal function that ran: it is read by the agent,
+    # which has only ever called make_changes.
+    assert edits[-1]["operation"] == "make_changes"
     # the event records both halves of the change
     assert edits[-1]["args"]["parameters"][0]["parameter_id"] == "k1"
     assert edits[-1]["args"]["antimony_chars"] > 0
 
 
-def test_bundled_parameters_can_target_a_newly_introduced_parameter(session):
+def test_parameters_can_target_a_newly_introduced_parameter(session):
     """The parameter edit runs AFTER the reconcile, so it can bound a symbol this very re-author
-    introduced — the whole point of bundling them."""
+    introduced — the whole point of taking both in one call."""
     res = O.set_model(
         session, _antimony("r3: A => ; k3 * A;"),
         justification="bound the new degradation rate",
@@ -96,7 +102,7 @@ def test_bundled_parameters_can_target_a_newly_introduced_parameter(session):
     assert float(recs["k3"]["lowerBound"]) == 1e-4 and float(recs["k3"]["upperBound"]) == 1e1
 
 
-def test_set_model_parameters_rejection_reverts_the_re_author(session):
+def test_a_parameters_rejection_reverts_the_re_author(session):
     """A rejected parameter entry reverts the MODEL too — nothing is half-applied."""
     before_model = session.problem.model.to_sbml_str()
     before_params = _records(session)
@@ -114,7 +120,7 @@ def test_set_model_parameters_rejection_reverts_the_re_author(session):
     assert not [e for e in session.provenance.recent_events() if e["type"] == "edit"]
 
 
-def test_set_model_parameters_entry_for_a_dropped_parameter_is_rejected(session):
+def test_a_parameters_entry_for_a_dropped_parameter_is_rejected(session):
     """An entry naming a parameter the re-author no longer declares fails loudly (the table is
     checked post-reconcile) rather than silently doing nothing."""
     with pytest.raises(ParameterError, match="Unknown parameter id 'k3'"):
@@ -126,25 +132,25 @@ def test_set_model_parameters_entry_for_a_dropped_parameter_is_rejected(session)
     assert "k3" not in _records(session)
 
 
-def test_set_model_without_parameters_is_unchanged(session):
-    """The default path is byte-identical to before: no parameter edit, no fit."""
+def test_a_re_author_without_parameters_edits_only_the_model(session):
     res = O.set_model(session, _antimony(), justification="plain re-author")
     assert res["applied"] is True and res["version"] is None and res["pending_fit"] is True
-    assert "fit" not in res
     edits = [e for e in session.provenance.recent_events() if e["type"] == "edit"]
     assert "parameters" not in edits[-1]["args"]
 
 
 @pytest.mark.parametrize("empty", [None, []])
-def test_set_model_empty_parameters_means_no_parameter_edit(session, empty):
+def test_empty_parameters_means_no_parameter_edit(session, empty):
     res = O.set_model(session, _antimony(), justification="no parameter edits", parameters=empty)
     assert res["applied"] is True
     assert "parameters" not in [
         e for e in session.provenance.recent_events() if e["type"] == "edit"][-1]["args"]
 
 
-def test_set_model_rejects_a_malformed_parameters_argument(session):
-    with pytest.raises(OperationError, match="set_model: 'parameters'"):
+def test_a_malformed_parameters_argument_is_rejected(session):
+    """The rejection names `make_changes`, the only thing the caller can have called — the two
+    operation functions are an implementation detail of that one tool."""
+    with pytest.raises(OperationError, match="make_changes: 'parameters'"):
         O.set_model(session, _antimony(), justification="x", parameters={"parameter_id": "k1"})
 
 
@@ -161,7 +167,7 @@ def test_a_non_numeric_bound_is_a_clean_rejection(session, bad):
     assert not session.has_unfit_edits()
 
 
-# -- the fit= bundle (server layer) -------------------------------------------
+# -- the fit the tool always runs (server layer) -------------------------------
 def _server(tmp_path, auto_fit=False):
     return create_server(
         str(YAML_PATH),
@@ -186,97 +192,117 @@ def _listed(result):
     return result["result"] if isinstance(result, dict) and "result" in result else result
 
 
-def test_bundled_call_produces_exactly_one_version(tmp_path):
-    """set_model + parameters + fit as ONE call: one edit event, one fit event, one version."""
+def test_one_call_produces_exactly_one_version(tmp_path):
+    """Re-author + parameters + fit as ONE call: one edit event, one fit event, one version."""
     mcp = _server(tmp_path, auto_fit=True)
-    res = _call(mcp, "set_model", {
+    res = _call(mcp, "make_changes", {
         "antimony": _antimony(),
         "justification": "re-author and retune k1, scored in one call",
         "parameters": [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
-        "fit": True,
         "n_starts": 2,
     })
+    # the fit is the result: flat, not nested, and named as get_fit_summary names it
     assert res["applied"] is True
     assert res["committed"] is True and res["version"] == 1
-    assert res["pending_fit"] is False and res["n_pending_edits"] == 0
-    # the whole fit result is nested, untouched
-    assert res["fit"]["committed"] is True and res["fit"]["version"] == 1
-    assert res["fit"]["neg_log_likelihood"] is not None and res["fit"]["bic"] is not None
+    assert res["neg_log_likelihood"] is not None and res["bic"] is not None
+    assert "fit" not in res
+    # and the edit's own bookkeeping is NOT in it — none of it is a score, and all of it would
+    # ride on every call into a history nothing prunes
+    assert not ({"reconcile", "validation", "parameter_diff", "initial_conditions",
+                 "justification", "references", "operation", "pending_fit",
+                 "n_pending_edits"} & set(res))
 
     head = _head(mcp)
     assert head["current_version"] == 1 and head["has_unfit_edits"] is False
     events = _listed(_call(mcp, "get_provenance", {}))
     assert len([e for e in events if e["type"] == "edit"]) == 1
     assert len([e for e in events if e["type"] == "fit"]) == 1
-    # the one fit scored the one bundled edit
+    # the one fit scored the one edit
     assert [e for e in events if e["type"] == "fit"][-1]["n_edits"] == 1
     recs = {r["parameterId"]: r for r in _listed(_call(mcp, "get_parameters", {}))}
     assert float(recs["k1"]["lowerBound"]) == 1e-3
 
 
-def test_change_parameters_bundled_fit(tmp_path):
-    """The parameters-only retuning scores in one call too."""
+def test_a_parameters_only_call_fits_too(tmp_path):
+    """`antimony` is optional: a retuning with no structural change is still a scored version."""
     mcp = _server(tmp_path, auto_fit=True)
-    res = _call(mcp, "change_parameters", {
+    res = _call(mcp, "make_changes", {
         "parameters": [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
         "justification": "widen k1 and score it",
-        "fit": True,
         "n_starts": 2,
     })
     assert res["applied"] is True and res["committed"] is True and res["version"] == 1
-    assert res["fit"]["bic"] is not None
+    assert res["bic"] is not None
     assert _head(mcp)["has_unfit_edits"] is False
 
 
-def test_bundled_dedup_skip_reports_no_change(tmp_path):
-    """The de-dup still sees the same structure hash through the bundle: re-authoring the
-    identical structure and asking for a fit is a no-op, not a second version."""
+def test_a_call_that_changes_nothing_is_rejected_before_it_fits(tmp_path):
+    """`antimony` and `parameters` are each optional, but not both: with neither there is nothing
+    to score, and the call would still spend a multistart fit."""
     mcp = _server(tmp_path, auto_fit=True)
-    first = _call(mcp, "set_model", {
-        "antimony": _antimony(), "justification": "initial", "fit": True, "n_starts": 2})
+    res = _call(mcp, "make_changes", {"justification": "nothing to do"})
+    assert res["applied"] is False
+    assert "antimony" in res["error"] and "parameters" in res["error"]
+    assert "fit" not in res and "committed" not in res
+    assert _head(mcp)["current_version"] == 0
+
+
+def test_dedup_skip_reports_no_change(tmp_path):
+    """The de-dup still sees the same structure hash: re-authoring the identical structure is a
+    no-op, not a second version."""
+    mcp = _server(tmp_path, auto_fit=True)
+    first = _call(mcp, "make_changes", {
+        "antimony": _antimony(), "justification": "initial", "n_starts": 2})
     assert first["committed"] is True and first["version"] == 1
 
-    again = _call(mcp, "set_model", {
-        "antimony": _antimony(), "justification": "same structure again",
-        "fit": True, "n_starts": 2})
+    again = _call(mcp, "make_changes", {
+        "antimony": _antimony(), "justification": "same structure again", "n_starts": 2})
     assert again["applied"] is True          # the edit itself is always cheap
     assert again["committed"] is False
-    assert again["fit"]["no_change"] is True
-    assert again["fit"]["duplicate_of_version"] == 1
+    assert again["no_change"] is True
+    assert again["duplicate_of_version"] == 1
     assert again["version"] == 1
-    # the no-op consumed the pending edit and created no version
-    assert again["pending_fit"] is False
-    assert _head(mcp)["current_version"] == 1
+    # NOT reverted: the resulting model IS an existing version, byte-identical to it, so there is
+    # nothing unscored to undo — which is why the no-op reports applied: true.
+    head = _head(mcp)
+    assert head["current_version"] == 1 and head["has_unfit_edits"] is False
 
 
-def test_bundled_fit_failure_leaves_the_edit_in_place(tmp_path, monkeypatch):
-    """The error semantics the issue calls out: a bundled call that edits fine but fails to fit
-    keeps the edit (nothing half-applied) and reports the fit failure actionably."""
+def test_a_fit_failure_reverts_the_edit(tmp_path, monkeypatch):
+    """A change is either scored or gone. An edit that applies and then fails to fit is UNDONE —
+    both halves of it, model and parameter table — so the working model is always one a version
+    records, and there is never an edit waiting for a fit that no tool can run."""
     def _boom(self, *a, **k):
         raise ModelUpdateError("boom")
 
     monkeypatch.setattr(PetabSession, "fit", _boom)
     mcp = _server(tmp_path)
+    before = {r["parameterId"]: r for r in _listed(_call(mcp, "get_parameters", {}))}
 
-    res = _call(mcp, "set_model", {
+    res = _call(mcp, "make_changes", {
         "antimony": _antimony("r3: A => ; k3 * A;"),
         "justification": "an edit whose fit blows up",
         "parameters": [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
-        "fit": True,
     })
-    assert res["applied"] is True                 # the edit DID apply
-    assert res["committed"] is False and res["version"] is None
-    assert res["fit"]["committed"] is False and "boom" in res["fit"]["error"]
-    assert res["pending_fit"] is True and res["n_pending_edits"] == 1
-    assert "still in place" in res["message"]
+    assert res["applied"] is False                # applied, then undone -> not in place
+    assert res["committed"] is False and res["version"] == 0
+    assert "boom" in res["error"]
+    assert "REVERTED" in res["message"]
 
-    # the working model keeps the edit, ready to be repaired and re-fit
+    # the model AND the bounds are back where they were
     head = _head(mcp)
-    assert head["has_unfit_edits"] is True and head["current_version"] == 0
-    assert "k3" in {r["parameterId"] for r in _listed(_call(mcp, "get_parameters", {}))}
-    # and the failure is logged like any other fit rejection
+    assert head["has_unfit_edits"] is False and head["current_version"] == 0
+    after = {r["parameterId"]: r for r in _listed(_call(mcp, "get_parameters", {}))}
+    assert "k3" not in after
+    assert float(after["k1"]["lowerBound"]) == float(before["k1"]["lowerBound"])
+    # the failure is logged like any other fit rejection, and the revert is itself in the trace:
+    # the edit really did happen, so the append-only log shows edited-then-reverted rather than
+    # quietly losing the attempt.
     assert any("boom" in (e.get("message") or "")
                for e in _listed(_call(mcp, "get_errors", {})))
+    events = _listed(_call(mcp, "get_provenance", {}))
+    assert [e["type"] for e in events][-2:] == ["edit", "revert"]
+    assert "boom" in events[-1]["reason"]
 
 
 def test_a_refused_fit_forwards_its_own_error_instead_of_prescribing_a_repair(
@@ -292,46 +318,24 @@ def test_a_refused_fit_forwards_its_own_error_instead_of_prescribing_a_repair(
 
     monkeypatch.setattr(PetabSession, "fit", _refuse)
     mcp = _server(tmp_path)
-    res = _call(mcp, "set_model", {
-        "antimony": _antimony(), "justification": "re-author a seen structure", "fit": True})
+    res = _call(mcp, "make_changes", {
+        "antimony": _antimony(), "justification": "re-author a seen structure"})
 
-    assert res["applied"] is True and res["committed"] is False
+    assert res["applied"] is False and res["committed"] is False
     assert "restore_version" in res["message"]          # the refusal's own instruction survives
-    assert "repair the model, and call fit() again" not in res["message"]
-    assert "still in place" in res["message"]           # the edit state is still reported
+    assert "repair the model" not in res["message"]
+    assert "REVERTED" in res["message"]                 # ... and the state is reported
 
 
-def test_rejected_edit_never_fits(tmp_path):
-    """fit=true on an edit that is REJECTED must not run a fit — the result is the plain
-    rejection shape, with no `fit` key to misread."""
+def test_a_rejected_edit_never_fits(tmp_path):
+    """A REJECTED edit must not run a fit — the result is the plain rejection shape, with no `fit`
+    key to misread."""
     mcp = _server(tmp_path)
-    res = _call(mcp, "set_model", {
+    res = _call(mcp, "make_changes", {
         "antimony": _antimony(), "justification": "",  # empty justification is rejected
-        "fit": True,
     })
     assert res["applied"] is False and "fit" not in res and "committed" not in res
     assert _head(mcp)["current_version"] == 0
-
-
-def test_n_starts_without_fit_is_rejected_not_ignored(tmp_path):
-    """An argument that would be silently ignored is a rejection (same principle as the
-    unknown-entry-key guard): n_starts without fit=true means an expected fit that never ran."""
-    mcp = _server(tmp_path)
-    for name, args in (
-        ("set_model", {"antimony": _antimony(), "justification": "x", "n_starts": 4}),
-        ("change_parameters", {
-            "parameters": [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
-            "justification": "x", "n_starts": 4}),
-    ):
-        res = _call(mcp, name, args)
-        assert res["applied"] is False and "n_starts" in res["error"], name
-    # nothing was edited, and the rejections are auditable — including the refused VALUE, so the
-    # log says which argument was wrong rather than only repeating the message
-    assert _head(mcp)["has_unfit_edits"] is False
-    logged = [e for e in _listed(_call(mcp, "get_errors", {}))
-              if "n_starts" in (e.get("message") or "")]
-    assert len(logged) == 2
-    assert all(e["args"] == {"fit": False, "n_starts": 4} for e in logged)
 
 
 def test_the_multistart_default_and_the_starts_actually_used_are_reported(tmp_path):
@@ -343,38 +347,41 @@ def test_the_multistart_default_and_the_starts_actually_used_are_reported(tmp_pa
     assert default == DEFAULT_AUTO_FIT_STARTS
 
     # omitted -> the default was used
-    res = _call(mcp, "set_model", {
-        "antimony": _antimony(), "justification": "score with the default starts", "fit": True})
-    assert res["fit"]["n_starts"] == default
+    res = _call(mcp, "make_changes", {
+        "antimony": _antimony(), "justification": "score with the default starts"})
+    assert res["n_starts"] == default
 
     # given -> exactly that count, not default + n_starts
-    res = _call(mcp, "change_parameters", {
+    res = _call(mcp, "make_changes", {
         "parameters": [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
-        "justification": "score with an explicit count", "fit": True, "n_starts": default + 2})
-    assert res["fit"]["n_starts"] == default + 2
+        "justification": "score with an explicit count", "n_starts": default + 2})
+    assert res["n_starts"] == default + 2
 
 
 def test_a_harder_fit_of_an_unchanged_model_is_not_skipped(tmp_path):
     """The structure hash and the setup signature both ignore the multistart count, so a de-dup
     skip would silently return the WEAKER stored metrics for a deliberate "fit harder". A fit with
     more starts than HEAD's is a genuinely different search and must run; the same or fewer is the
-    redundant refit the de-dup exists to skip."""
+    redundant refit the de-dup exists to skip. Re-authoring the identical structure is how a
+    caller asks for that harder search now — the edit half is cheap, and the fit is the decision."""
     mcp = _server(tmp_path, auto_fit=True)
-    first = _call(mcp, "fit", {"n_starts": 2})
+    same_model = {"antimony": _antimony(), "justification": "fit this structure"}
+
+    first = _call(mcp, "make_changes", {**same_model, "n_starts": 2})
     assert first["committed"] is True and first["n_starts"] == 2
 
     # same count -> still the no-op, and it reports the starts its metrics came from
-    same = _call(mcp, "fit", {"n_starts": 2})
+    same = _call(mcp, "make_changes", {**same_model, "n_starts": 2})
     assert same["no_change"] is True and same["n_starts"] == 2
 
     # more starts -> a real fit, with a warning explaining why it wasn't skipped
-    harder = _call(mcp, "fit", {"n_starts": 4})
+    harder = _call(mcp, "make_changes", {**same_model, "n_starts": 4})
     assert harder["committed"] is True and harder["version"] == 2
     assert harder["n_starts"] == 4
     assert any("multistarts against its 2" in w for w in harder["warnings"])
 
     # fewer starts than the new HEAD -> back to a no-op, not a weaker refit
-    weaker = _call(mcp, "fit", {"n_starts": 3})
+    weaker = _call(mcp, "make_changes", {**same_model, "n_starts": 3})
     assert weaker["no_change"] is True and _head(mcp)["current_version"] == 2
 
 
@@ -384,21 +391,27 @@ def test_a_bad_n_starts_is_rejected_before_the_edit_applies(tmp_path):
     NON-integer never gets this far — the tool schema's `int | None` rejects it outright; a
     negative one parses fine and is what this guard is for.)"""
     mcp = _server(tmp_path)
-    res = _call(mcp, "set_model", {
+    res = _call(mcp, "make_changes", {
         "antimony": _antimony("r3: A => ; k3 * A;"),
-        "justification": "a good edit with a typo'd n_starts", "fit": True, "n_starts": -1})
+        "justification": "a good edit with a typo'd n_starts", "n_starts": -1})
 
     assert res["applied"] is False and "n_starts" in res["error"]
     assert "fit" not in res            # the fit never ran
     head = _head(mcp)
     assert head["has_unfit_edits"] is False and head["current_version"] == 0
     assert "k3" not in {r["parameterId"] for r in _listed(_call(mcp, "get_parameters", {}))}
+    # the rejection is auditable, including the refused VALUE, so the log says which argument was
+    # wrong rather than only repeating the message
+    logged = [e for e in _listed(_call(mcp, "get_errors", {}))
+              if "n_starts" in (e.get("message") or "")]
+    assert [e["args"] for e in logged] == [{"n_starts": -1}]
 
 
 def test_a_fit_that_breaks_after_snapshotting_reports_the_new_version(tmp_path, monkeypatch):
     """The crash path `edit_then_fit` degrades runs PAST the version snapshot, which consumes the
-    pending edits and advances HEAD. Reporting "still in place, call fit() again" there would send
-    the agent to re-fit a model that is already scored, so this case reports where HEAD landed."""
+    pending edits and advances HEAD. Reverting there would throw away a real version, and telling
+    the agent to send the change again would walk it into a de-dup no-op, so this case keeps the
+    change and reports where HEAD landed."""
     real_fit = PetabSession.fit
 
     def _fit_then_break(self, *a, **k):
@@ -408,23 +421,23 @@ def test_a_fit_that_breaks_after_snapshotting_reports_the_new_version(tmp_path, 
     monkeypatch.setattr(PetabSession, "fit", _fit_then_break)
     mcp = _server(tmp_path, auto_fit=True)
 
-    res = _call(mcp, "set_model", {
-        "antimony": _antimony(), "justification": "fit breaks after the snapshot",
-        "fit": True, "n_starts": 2})
+    res = _call(mcp, "make_changes", {
+        "antimony": _antimony(), "justification": "fit breaks after the snapshot", "n_starts": 2})
 
     assert res["applied"] is True and res["committed"] is False
-    assert "late boom" in res["fit"]["error"]
-    # HEAD really did advance, so say so instead of claiming the edit is unscored
-    assert res["pending_fit"] is False
+    assert "late boom" in res["error"]
+    # HEAD really did advance, so say so instead of claiming the change is unscored
     assert res["version"] == 1 == _head(mcp)["current_version"]
-    assert "do NOT re-fit" in res["message"] and "still in place" not in res["message"]
+    assert "do NOT re-send" in res["message"] and "REVERTED" not in res["message"]
+    assert _head(mcp)["has_unfit_edits"] is False
 
 
-def test_head_advancing_is_detected_even_while_the_edits_stay_pending(tmp_path, monkeypatch):
-    """`has_unfit_edits()` is only a PROXY for "a version was created": `session.fit` clears the
-    pending edits several statements after it snapshots, so a failure in that window (an event-log
-    write, say) leaves them pending with HEAD already advanced. The version comparison must still
-    see it, or the agent is told to re-fit an already-scored model."""
+def test_a_stale_pending_edit_against_a_real_version_is_cleared_not_reverted(tmp_path, monkeypatch):
+    """`session.fit` clears the pending edits several statements AFTER it snapshots, so a failure
+    in that window (an event-log write, say) leaves them pending against a version that already
+    records them. Reverting on the pending flag would throw that version away; leaving the flag set
+    would report an unscored edit no call could clear. So HEAD is what decides, and the stale flag
+    is dropped."""
     def _snapshot_then_break(self, *a, **k):
         self._snapshot_version(label="fit", kind="fit", meta={"fit_status": "fit"}, sim=None)
         raise RuntimeError("provenance write failed")   # ... before pending_edits is cleared
@@ -432,44 +445,54 @@ def test_head_advancing_is_detected_even_while_the_edits_stay_pending(tmp_path, 
     monkeypatch.setattr(PetabSession, "fit", _snapshot_then_break)
     mcp = _server(tmp_path)
 
-    res = _call(mcp, "set_model", {
-        "antimony": _antimony(), "justification": "snapshot lands, event log does not",
-        "fit": True})
+    res = _call(mcp, "make_changes", {
+        "antimony": _antimony("r3: A => ; k3 * A;"),
+        "justification": "snapshot lands, event log does not"})
 
     assert res["applied"] is True and res["committed"] is False
-    assert res["pending_fit"] is True          # the edits really are still pending — report that
-    assert res["version"] == 1                 # ... but HEAD moved, and that is what matters here
-    assert "do NOT re-fit" in res["message"]
+    assert res["version"] == 1                 # HEAD moved, and that is what decides
+    assert "do NOT re-send" in res["message"]
+    head = _head(mcp)
+    # the change is still there — it is the version — and nothing is left flagged unscored
+    assert head["current_version"] == 1 and head["has_unfit_edits"] is False
+    assert "k3" in {r["parameterId"] for r in _listed(_call(mcp, "get_parameters", {}))}
 
 
-def test_bundled_fit_crash_is_degraded_to_a_failed_fit(tmp_path, monkeypatch):
-    """An UNEXPECTED exception from the fit must not surface as a failed edit: the edit already
-    applied, so it is reported as a failed fit with the edit left in place."""
+def test_a_fit_crash_is_degraded_to_a_failed_fit(tmp_path, monkeypatch):
+    """An UNEXPECTED exception from the fit must not escape as a raw tool error: `run_fit`
+    re-raises anything that is not a PetabMcpError, and letting that out would surface the call as
+    a transport-level failure rather than a result the agent can read. It is degraded to a failed
+    fit — which then takes the same revert path as any other."""
     def _crash(self, *a, **k):
         raise RuntimeError("kaboom")
 
     monkeypatch.setattr(PetabSession, "fit", _crash)
     mcp = _server(tmp_path)
 
-    res = _call(mcp, "set_model", {
+    res = _call(mcp, "make_changes", {
         "antimony": _antimony("r3: A => ; k3 * A;"),
-        "justification": "an edit whose fit crashes", "fit": True})
-    assert res["applied"] is True and res["committed"] is False
-    assert "kaboom" in res["fit"]["error"]
-    assert _head(mcp)["has_unfit_edits"] is True
+        "justification": "an edit whose fit crashes"})
+    assert res["applied"] is False and res["committed"] is False
+    assert "kaboom" in res["error"]
+    head = _head(mcp)
+    assert head["has_unfit_edits"] is False and head["current_version"] == 0
 
 
-def test_unbundled_result_shape_unchanged(tmp_path):
-    """fit defaults to false: both editors return exactly the fit-free edit shape."""
+def test_there_is_no_way_to_edit_without_fitting(tmp_path):
+    """The invariant the collapse buys, asserted directly: EVERY call carries a committed verdict
+    and leaves no unscored edit — whether it succeeds, is rejected before it applies, or applies
+    and is then reverted. A future `fit=false`-shaped escape hatch — an argument, a default, a
+    second tool — brings back the state this removed, an edit nobody scored."""
     mcp = _server(tmp_path)
-    for name, args in (
-        ("set_model", {"antimony": _antimony(), "justification": "plain edit"}),
-        ("change_parameters", {
-            "parameters": [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
-            "justification": "plain edit"}),
+    for args in (
+        {"antimony": _antimony(), "justification": "structural"},
+        {"parameters": [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
+         "justification": "bounds only"},
+        {"antimony": "not antimony at all", "justification": "rejected outright"},
+        {"justification": "nothing to change"},
     ):
-        res = _call(mcp, name, args)
-        assert res["applied"] is True, name
-        assert res["version"] is None and res["pending_fit"] is True, name
-        assert "fit" not in res and "committed" not in res, name
-    assert _head(mcp)["current_version"] == 0
+        res = _call(mcp, "make_changes", args)
+        assert "applied" in res, args
+        if res["applied"]:
+            assert "committed" in res, args
+        assert _head(mcp)["has_unfit_edits"] is False, args
