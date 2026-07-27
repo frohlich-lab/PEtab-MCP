@@ -391,9 +391,6 @@ def test_set_model_reauthors_when_model_exists_via_tool(tmp_path):
 def test_restore_version_tool_registered_and_restores(tmp_path):
     # restore_version -> rollback_to restores a prior version and re-simulates it, so it needs
     # the engine (AMICI). The engine-free restore behaviour is covered in test_dedup.
-    import pytest
-
-    pytest.importorskip("amici", reason="AMICI not installed; skipping restore_version run")
     mcp = _server(tmp_path)
 
     async def go():
@@ -463,9 +460,6 @@ def test_get_fitting_log(tmp_path):
 
 def test_fit_tools(tmp_path):
     import pytest
-
-    pytest.importorskip("amici", reason="AMICI not installed; skipping fit-tool run")
-    pytest.importorskip("pypesto", reason="pyPESTO not installed; skipping fit-tool run")
     mcp = _server(tmp_path, auto_fit=True)
 
     async def go():

@@ -20,16 +20,10 @@ def test_filtered_measurements_no_spurious_id(session):
     assert all("id" not in r for r in recs)  # no positional-offset id leaks in
 
 
-def test_validation_reports_messages(session):
-    from petab_mcp.model import _build_model
+def test_validation_reports_messages(session, broken_model):
     from petab_mcp.validation import validate_problem
 
-    session.problem.model = _build_model(
-        "model conversion_reaction\n species A = 1;\n k1 = 0.5;\n"
-        " r1: A => ; k1 * A;\nend",
-        "antimony",
-        "conversion_reaction",
-    )
+    session.problem.model = broken_model
     report = validate_problem(session.problem)
     assert report["valid"] is False
     assert report["n_errors"] >= 1

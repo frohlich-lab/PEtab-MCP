@@ -13,8 +13,6 @@ from __future__ import annotations
 
 import pytest
 
-pytest.importorskip("pypesto", reason="pyPESTO not installed")
-
 from petab_mcp.engine import _objective_amici_model  # noqa: E402
 
 

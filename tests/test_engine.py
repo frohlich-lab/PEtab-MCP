@@ -3,8 +3,6 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-pytest.importorskip("amici", reason="AMICI not installed; skipping simulation tests")
-
 
 def test_evaluate_objective(engine):
     obj = engine.evaluate_objective()
@@ -107,7 +105,6 @@ def test_simulate_after_operation_recompiles(engine, session, reauthor_toy):
 
 
 def test_fit_and_simulate_improves_fit(fit_session):
-    pytest.importorskip("pypesto", reason="pyPESTO not installed")
     from petab_mcp import fitting as F
 
     engine = fit_session.engine
@@ -123,7 +120,6 @@ def test_fit_and_simulate_improves_fit(fit_session):
 
 
 def test_fit_records_optimization_trace(fit_session):
-    pytest.importorskip("pypesto", reason="pyPESTO not installed")
     from petab_mcp import fitting as F
 
     F.fit_and_simulate(fit_session, fit_session.engine, do_fit=True, n_starts=3)
@@ -143,7 +139,6 @@ def test_fit_records_optimization_trace(fit_session):
 
 
 def test_fit_skip_reuses_cache(fit_session):
-    pytest.importorskip("pypesto", reason="pyPESTO not installed")
     from petab_mcp import fitting as F
 
     r1 = F.fit_and_simulate(fit_session, fit_session.engine, do_fit=True, n_starts=2)
@@ -164,7 +159,6 @@ def test_fit_skip_reuses_cache(fit_session):
 
 
 def test_fit_tracks_improvement_vs_versions(fit_session):
-    pytest.importorskip("pypesto", reason="pyPESTO not installed")
     from petab_mcp import operations as O
 
     # edits are fit-free; `fit` scores them and tracks improvement across the fitted versions
@@ -193,9 +187,10 @@ def test_model_less_problem_does_not_segfault(session, engine):
     AMICI segfaults the server (blasi's 0/5 sweep failure). The engine must refuse it and the
     simulate path must degrade gracefully, WITHOUT invoking AMICI at all (so this test needs no
     compile)."""
+    from petab.v1.models.sbml_model import SbmlModel
+
     from petab_mcp import fitting
     from petab_mcp.errors import ModelUpdateError
-    from petab_mcp.model import SbmlModel
 
     session.problem.model = SbmlModel.from_antimony("model m\nend")
     assert not session.has_model()

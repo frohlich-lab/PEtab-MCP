@@ -12,8 +12,6 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("petab", reason="petab_mcp dependency")
-
 from petab_mcp.constants import NOISE_SIGMA_COLLAPSE_FRACTION  # noqa: E402
 from petab_mcp.fitting import (  # noqa: E402
     NOISE_SIGMA_COLLAPSED_ADVICE,

@@ -189,8 +189,10 @@ def decide(
     family = _min_bic_entry(matches)
     best = _min_bic_entry(registry)
     if family is not None and best is not None:
+        # Both are non-None: _min_bic_entry only ever returns an entry whose bic already passed
+        # finite_float, so no second None-check is needed here.
         fb, gb = finite_float(family["bic"]), finite_float(best["bic"])
-        if fb is not None and gb is not None and fb - gb > WORSE_BIC_MARGIN:
+        if fb - gb > WORSE_BIC_MARGIN:
             warnings.append(
                 f"This structure family previously scored bic≈{fb:.1f}, {fb - gb:.1f} WORSE than "
                 f"the best model so far (bic≈{gb:.1f}, v{best.get('version')}). Revisiting it is "

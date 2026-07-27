@@ -336,28 +336,33 @@ def test_fit_diagnosis_flags_systematic_bias(session):
     assert out["residual_structure"]["low_power"] is False  # 10 points -> powered
 
 
-# -- residual_structure_flagged: the leaner per-commit structure verdict (session plateau gate) --
-def test_residual_structure_flagged_true_on_systematic_bias(session):
+# -- the bare structure boolean the session's plateau-adequacy gate consumes ---------------
+# `PetabSession.fit` derives it as bool(rollup["flagged_observables"]) rather than calling a
+# second helper; these pin that expression against fit_diagnosis's own flagged set.
+def _flagged(session) -> bool:
+    return bool(data_access.residual_structure_rollup(session)["flagged_observables"])
+
+def test_structure_flag_true_on_systematic_bias(session):
     """A one-sided residual series is flagged, and the leaner helper's verdict equals fit_diagnosis's
     own flagged set — pinning the two definitions together so the per-commit gate can't drift."""
     session.simulation = {"records":
                           [_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0)
                            for t in range(10)]}
-    assert data_access.residual_structure_flagged(session) is True
-    assert data_access.residual_structure_flagged(session) is bool(
+    assert _flagged(session) is True
+    assert _flagged(session) is bool(
         data_access.fit_diagnosis(session)["residual_structure"]["flagged_observables"])
 
 
-def test_residual_structure_flagged_false_without_simulation(session):
+def test_structure_flag_false_without_simulation(session):
     """No committed simulation -> empty frame -> not flagged (the gate must never crash on it)."""
-    assert data_access.residual_structure_flagged(session) is False
+    assert _flagged(session) is False
 
 
-def test_residual_structure_flagged_false_when_no_weighted_residuals(session):
+def test_structure_flag_false_when_no_weighted_residuals(session):
     """Records exist but carry no weighted residual (unfitted / non-evaluable noise) -> not flagged,
     matching fit_diagnosis, which reports no residual structure for the same input."""
     session.simulation = {"records": [_rec("o", "c", 0.0, 1.0, float("nan"), None, None, None)]}
-    assert data_access.residual_structure_flagged(session) is False
+    assert _flagged(session) is False
     # fit_diagnosis short-circuits here, but still carries the (unavailable) verdict — the key is
     # part of its contract, so a caller never has to guard for its absence.
     diag = data_access.fit_diagnosis(session)
@@ -365,11 +370,11 @@ def test_residual_structure_flagged_false_when_no_weighted_residuals(session):
     assert not diag["residual_structure"]["flagged_observables"]
 
 
-def test_residual_structure_flagged_agrees_with_fit_diagnosis_on_mixed(session):
+def test_structure_flag_agrees_with_fit_diagnosis_on_mixed(session):
     """On the shared mixed record set (few points -> underpowered -> not flagged), the leaner
     helper's boolean equals fit_diagnosis's flagged verdict."""
     session.simulation = {"records": SIM_RECORDS}
-    assert data_access.residual_structure_flagged(session) is bool(
+    assert _flagged(session) is bool(
         data_access.fit_diagnosis(session)["residual_structure"]["flagged_observables"])
 
 
@@ -419,7 +424,7 @@ def test_residual_structure_rollup_never_raises(session, monkeypatch):
                         lambda _s: (_ for _ in ()).throw(RuntimeError("boom")))
     out = data_access.residual_structure_rollup(session)
     assert out["flagged_observables"] == [] and out["low_power"] is True
-    assert data_access.residual_structure_flagged(session) is False
+    assert _flagged(session) is False
 
 
 def test_residual_structure_rollup_agrees_with_fit_diagnosis_on_several_flagged(session):

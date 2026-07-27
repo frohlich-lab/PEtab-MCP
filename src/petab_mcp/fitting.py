@@ -109,6 +109,14 @@ def _default_fit_workers() -> int:
 # whether the value comes from the shared default or the export.
 FIT_N_WORKERS = _env_int("PETAB_MCP_FIT_N_WORKERS", _default_fit_workers())
 
+# The multistart's RNG seed and optimizer. Both were once threaded through fit_and_simulate ->
+# _run_fit -> fit_fingerprint as parameters, but no caller ever passed either, and the fit's own
+# log line hard-codes "optimizer=fides" — so they were configurable in signature only. They stay
+# named constants because both are part of the fit-cache key below: changing either invalidates
+# every cached fit, which is correct but should be a deliberate act.
+FIT_SEED = 0
+FIT_OPTIMIZER = "fides"
+
 
 def _fides_maxtime_options() -> dict[str, Any]:
     """``{fides.Options.MAXTIME: FIT_PER_START_TIMEOUT_S}`` when this ``fides`` exposes ``MAXTIME``,
@@ -168,14 +176,13 @@ def _fitted_values(x_names, x_values, free_indices, parameter_df) -> dict[str, f
     return fitted
 
 
-def fit_fingerprint(
-    sbml_str: str, parameter_df, n_starts: int, seed: int = 0, optimizer: str = "fides"
-) -> str:
+def fit_fingerprint(sbml_str: str, parameter_df, n_starts: int) -> str:
     """Identity of an *estimation problem* — the key under which a fit is cached/reused.
 
     A multistart fit's result is determined by the model, the estimation setup (bounds,
     scale, which parameters are estimated, and the fixed parameters' values), the number of
-    starts, the seed, and the optimizer — but NOT by an estimated parameter's ``nominalValue``
+    starts, and the (fixed) seed and optimizer — but NOT by an estimated parameter's
+    ``nominalValue``
     (that is a starting guess the multistart optimizer does not use). Those starting values
     are therefore blanked out so the key is stable across the fit (which overwrites them with
     the optimum), letting a later commit of the same estimation problem reuse the result.
@@ -189,7 +196,8 @@ def fit_fingerprint(
         except (TypeError, ValueError):  # non-numeric estimate column -> hash it as-is
             pass
     payload = "\n".join(
-        [sbml_str, parameter_df_to_tsv(df), f"n_starts={n_starts};seed={seed};optimizer={optimizer}"]
+        [sbml_str, parameter_df_to_tsv(df),
+         f"n_starts={n_starts};seed={FIT_SEED};optimizer={FIT_OPTIMIZER}"]
     )
     return sha16(payload)
 
@@ -496,7 +504,7 @@ def problem_x_from_nominal(problem, parameter_df) -> list[float]:
     return [full[i] for i in free]
 
 
-def _run_fit(session, engine, n_starts: int, seed: int = 0) -> dict[str, Any]:
+def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     """Estimate the free parameters with pyPESTO and write the best fit back.
 
     Writes the best start's (unscaled) values into ``nominalValue``. Returns the fit's
@@ -511,7 +519,7 @@ def _run_fit(session, engine, n_starts: int, seed: int = 0) -> dict[str, Any]:
     from .engine import _ensure_swig_on_path
 
     _ensure_swig_on_path()
-    np.random.seed(seed)  # best-effort determinism for start-point sampling
+    np.random.seed(FIT_SEED)  # best-effort determinism for start-point sampling
 
     log = session.logger
     # objective at the current nominal values, for improvement tracking
@@ -527,7 +535,7 @@ def _run_fit(session, engine, n_starts: int, seed: int = 0) -> dict[str, Any]:
     # cache is keyed on the problem identity (model + bounds/scale/estimate + fixed values +
     # n_starts + seed), so a hit is a genuinely equivalent fit. We still simulate below, so
     # only the (expensive) multistart optimization is skipped.
-    fitkey = fit_fingerprint(session.model_sbml(), session.problem.parameter_df, n_starts, seed)
+    fitkey = fit_fingerprint(session.model_sbml(), session.problem.parameter_df, n_starts)
     if getattr(session, "fit_cache", True):
         cached = _load_fit_cache(session, fitkey)
         if cached is not None:
@@ -559,7 +567,7 @@ def _run_fit(session, engine, n_starts: int, seed: int = 0) -> dict[str, Any]:
     workers = getattr(pp_engine, "n_procs", 1) or 1
     log.info(
         "fit: start optimizer=fides n_starts=%d workers=%d seed=%d n_free=%d sbml=%s "
-        "objective_before=%s", n_starts, workers, seed, n_free, session.sbml_hash(),
+        "objective_before=%s", n_starts, workers, FIT_SEED, n_free, session.sbml_hash(),
         _fmt(objective_before),
     )
     # Fides: a Newton trust-region optimizer that exploits AMICI's sensitivities; more
@@ -718,9 +726,7 @@ def _reconcile_objective(session, fit: dict[str, Any] | None,
     return nll_opt, None
 
 
-def fit_and_simulate(
-    session, engine, *, do_fit: bool, n_starts: int, seed: int = 0
-) -> dict[str, Any]:
+def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[str, Any]:
     """Fit (optional) and simulate, storing the result on ``session.simulation``.
 
     ``do_fit`` runs the optimiser first (writing fitted ``nominalValue``s); either way a
@@ -735,7 +741,7 @@ def fit_and_simulate(
     ``session.optimization`` (``None`` on a simulate-only pass).
     """
     with session.lock:
-        fit = _run_fit(session, engine, n_starts, seed) if do_fit else None
+        fit = _run_fit(session, engine, n_starts) if do_fit else None
         sim = engine.residuals()
         records = sim["records"]
         nllh, nll_note = _reconcile_objective(session, fit, sim)

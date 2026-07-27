@@ -48,9 +48,6 @@ class Skill:
     text: str                       # full SKILL.md, as authored
     files: dict[str, str] = field(default_factory=dict)  # relative path -> content
 
-    def matches(self, key: str) -> bool:
-        return key in (self.name, self.slug)
-
     def summary(self) -> dict[str, object]:
         # The resource URI uses the directory `slug` (a safe path segment), not the
         # free-text frontmatter `name`, which may contain spaces or other characters

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from petab.v1.models.sbml_model import SbmlModel
 
 from .errors import ModelUpdateError
 
@@ -23,19 +22,6 @@ def get_model(session, fmt: str = "antimony") -> str:
         return session.model.to_antimony()
     if fmt == "sbml":
         return session.model.to_sbml_str()
-    raise ModelUpdateError(f"Unknown model format {fmt!r}; use one of {MODEL_FORMATS}.")
-
-
-def _build_model(text: str, fmt: str, model_id: str | None) -> SbmlModel:
-    """Build an ``SbmlModel`` from Antimony/SBML text (used by tests/loaders)."""
-    fmt = fmt.lower()
-    try:
-        if fmt == "antimony":
-            return SbmlModel.from_antimony(text, model_id=model_id)
-        if fmt == "sbml":
-            return SbmlModel.from_string(text, model_id=model_id)
-    except Exception as exc:
-        raise ModelUpdateError(f"Failed to parse {fmt} model: {exc}") from exc
     raise ModelUpdateError(f"Unknown model format {fmt!r}; use one of {MODEL_FORMATS}.")
 
 

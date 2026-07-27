@@ -5,7 +5,9 @@ Under ``<store_root>/`` (default ``<problem_dir>/.petab_mcp``):
 * ``provenance.jsonl`` — append-only event log (edits, fits, rollbacks, resets). Each
   event carries a UTC timestamp.
 * ``versions/vN/`` — a snapshot of the mutable model state at version N: ``model.ant``
-  (the canonical Antimony) and ``parameters.json`` (the parameter-table records), plus
+  (the canonical Antimony) and ``parameters.tsv`` (the parameter table, as a PEtab TSV --
+  ``_read_parameter_df`` still reads a legacy ``parameters.json`` written before the
+  switch), plus
   ``meta.json`` (label, kind, parent, timestamp). A fitted version also carries
   ``simulations.json`` (the measured-vs-simulated dataframe + residuals), ``optimization.json``
   (the pyPESTO per-start + per-iteration trace records), and ``pypesto_result.hdf5`` (the

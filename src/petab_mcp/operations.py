@@ -172,7 +172,6 @@ def _commit_change(
     justification: str,
     references: list[str] | None,
     *,
-    model_edit: Callable[[Any], Any] | None = None,
     model_build: Callable[[], tuple[Any, Any]] | None = None,
     param_edit: Callable[[Any], Any] | None = None,
     # References are optional (only a non-empty justification is required); every caller passes
@@ -182,11 +181,11 @@ def _commit_change(
 ) -> dict[str, Any]:
     """Apply one model/parameter edit to the working model — WITHOUT fitting or versioning.
 
-    ``model_edit(sbml_model)`` edits a *clone* of the model (triggers reconcile);
     ``model_build()`` returns a brand-new ``(SbmlModel, apply_result)`` that *replaces*
-    the model wholesale (used to zero-shot a model when none exists — also reconciled);
-    ``param_edit(problem)`` edits the parameter table in place. A ``param_edit`` may accompany a
-    model build/edit (``set_model(parameters=[...])``, issue #114): both then land in the SAME
+    the model wholesale (both re-authoring an existing model and zero-shotting one when none
+    exists — reconciled either way); ``param_edit(problem)`` edits the parameter table in place.
+    A ``param_edit`` may accompany a
+    model build (``set_model(parameters=[...])``, issue #114): both then land in the SAME
     transaction — the parameter edit runs AFTER the reconcile, so it can target a parameter the
     re-author just introduced, and a rejected entry reverts the re-author too. On any failure the
     model and parameter table are reverted so an edit is atomic.
@@ -198,12 +197,16 @@ def _commit_change(
     provenance event; call ``fit`` to score the assembled model. Returns ``applied: true`` with the
     reconcile/validation/warnings — but no fit metrics, since no fit ran.
     """
-    if model_build is not None and model_edit is not None:
-        raise ValueError("_commit_change takes at most one of model_build, model_edit.")
-    if model_build is None and model_edit is None and param_edit is None:
+    # Neither of today's two callers can trip this, but the guard is not about them: with both
+    # callbacks None the body below applies NOTHING and still records a pending edit plus an
+    # `edit` event in the append-only provenance log. A silent no-op in the audit trail is the
+    # one failure this layer must not produce, so the contract the docstring states is enforced
+    # rather than assumed. (The old companion guard, "at most one of model_build/model_edit", is
+    # gone for good — `model_edit` is no longer a parameter.)
+    if model_build is None and param_edit is None:
         raise ValueError(
-            "_commit_change requires at least one callback: a model_build OR a model_edit "
-            "(optionally with a param_edit), or a param_edit on its own."
+            "_commit_change requires at least one callback: a model_build (optionally with a "
+            "param_edit), or a param_edit on its own."
         )
     if not isinstance(justification, str) or not justification.strip():
         raise OperationError("A non-empty justification is required for this operation.")
@@ -219,11 +222,6 @@ def _commit_change(
             apply_result: Any = None
             if model_build is not None:
                 candidate, apply_result = model_build()
-                session.problem.model = candidate
-                recon = R.reconcile(session.problem)
-            elif model_edit is not None:
-                candidate = SbmlModel.from_string(old_sbml, model_id=old_model.model_id)
-                apply_result = model_edit(candidate.sbml_model)
                 session.problem.model = candidate
                 recon = R.reconcile(session.problem)
             else:
@@ -771,7 +769,7 @@ def change_parameters(
 # -- bundled edit + fit (issue #114) ---------------------------------------
 def bundle_result(
     session, edit_result: dict[str, Any], fit_result: dict[str, Any],
-    head_before: int | None = None,
+    head_before: int,
 ) -> dict[str, Any]:
     """Merge an edit result and the fit result of a bundled ``fit=true`` call.
 
@@ -811,7 +809,7 @@ def bundle_result(
             f"{fit_result.get('duplicate_of_version')}, so its stored metrics stand (see `fit`). "
             "Make a genuinely different change, or restore_version(n) to go back."
         )
-    elif head_before is not None and head_now != head_before:
+    elif head_now != head_before:
         # The fit broke only AFTER snapshotting, so HEAD moved: report where it landed rather than
         # asking for a re-fit that would be a de-dup no-op against the version just created.
         version = version if version is not None else head_now

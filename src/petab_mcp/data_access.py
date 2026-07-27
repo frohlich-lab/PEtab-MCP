@@ -450,14 +450,6 @@ def residual_flag(structure: dict[str, Any]) -> bool | None:
     return bool(structure.get("flagged_observables"))
 
 
-def residual_structure_flagged(session) -> bool:
-    """True if the current fit's residuals show significant structure in ANY observable — the bare
-    boolean the session's plateau-adequacy gate consumes. See :func:`residual_structure_rollup`,
-    which this wraps; a caller that needs BOTH forms should call the rollup once and derive the
-    bool from it rather than calling both (the commit path in ``PetabSession.fit`` does)."""
-    return bool(residual_structure_rollup(session)["flagged_observables"])
-
-
 # p-value at/below which a residual-structure test is called significant in the rolled-up
 # verdict (the per-test p-values are always reported raw, so a caller can judge for itself).
 _STRUCTURE_ALPHA = 0.05

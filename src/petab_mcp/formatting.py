@@ -61,9 +61,10 @@ def _clean(value: Any) -> Any:
 def df_to_records(df: "pd.DataFrame | None") -> list[dict[str, Any]]:
     """Convert a DataFrame (or ``None``) to a list of cleaned record dicts.
 
-    The DataFrame index is preserved under an ``id`` key when it is named or
-    carries meaningful labels (petab tables are typically indexed by their
-    primary-key id).
+    A NAMED index is preserved under its own name (petab tables are indexed by their
+    primary-key id — ``observableId``, ``conditionId``, ``parameterId``). An unnamed index
+    carries only positional offsets and is dropped, so boolean-filtering a measurement table
+    cannot leak a spurious id field.
     """
     if df is None or len(df) == 0:
         return []
@@ -77,7 +78,7 @@ def df_to_records(df: "pd.DataFrame | None") -> list[dict[str, Any]]:
     for idx, row in df.iterrows():
         record: dict[str, Any] = {}
         if use_index:
-            record[index_name or "id"] = _clean(idx)
+            record[index_name] = _clean(idx)
         for col, val in row.items():
             record[str(col)] = _clean(val)
         records.append(record)

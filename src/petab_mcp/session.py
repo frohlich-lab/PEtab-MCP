@@ -25,7 +25,9 @@ from .constants import (
     PLATEAU_MIN_BIC_GAIN,
     PLATEAU_WINDOW,
 )
+from .data_access import residual_flag, residual_structure_rollup
 from .errors import ModelUpdateError, PetabMcpError, ValidationError
+from .fitting import noise_sigma_collapsed, noise_sigma_inflated
 from .parameters import problem_fingerprint, sha16
 from .provenance import ProvenanceStore
 from .references import EutilsReferenceResolver
@@ -58,7 +60,7 @@ _UNSCORED_STALL_ADVICE = (
 )
 
 # Appended to the structural nudge when the best model's chi2 GoF only looks adequate because an
-# ESTIMATED noise sigma inflated to absorb the misfit (see _noise_sigma_inflated / constants.
+# ESTIMATED noise sigma inflated to absorb the misfit (see fitting.noise_sigma_inflated / constants.
 # NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD). The chi2 GoF test is then powerless — it rescales to
 # whatever sigma makes chi2/dof ~= 1 — so an underfit model reads as "adequate" and the run would
 # stop early on it. The fix is mechanistic, not noise-side.
@@ -80,15 +82,6 @@ _SIGMA_COLLAPSED_ADVICE = (
 )
 
 
-def _noise_sigma_inflated(report: "dict[str, Any] | None") -> bool:
-    """Whether any estimated noise sigma is inflated past its data-driven cap (the noise absorbing
-    model misfit, so a passing chi2 GoF is not genuine adequacy). Delegates to the single source of
-    truth — :func:`fitting.noise_sigma_inflated` — so the plateau-adequacy gate here and the judge's
-    success gate can never drift on what "inflated" means."""
-    from . import fitting
-    return fitting.noise_sigma_inflated(report)
-
-
 def _noise_sigma_assessable(report: "dict[str, Any] | None") -> bool:
     """Whether ANY entry in a noise_sigma_report was actually assessable — i.e. carries a usable
     ``fraction_of_data_std``. An entry whose observable std can't be computed is reported with
@@ -98,31 +91,6 @@ def _noise_sigma_assessable(report: "dict[str, Any] | None") -> bool:
         return False
     return any(isinstance(e, dict) and isinstance(e.get("fraction_of_data_std"), (int, float))
                for e in report.values())
-
-
-def _noise_sigma_collapsed(report: "dict[str, Any] | None") -> bool:
-    """Whether any estimated noise sigma is fitted implausibly small (overfitting the noise).
-    Delegates to :func:`fitting.noise_sigma_collapsed` — the same definition the judge's success
-    gate uses — so a model the judge would reject for a collapsed sigma is also NOT counted adequate
-    here, instead of plateau-stopping and then being rejected downstream."""
-    from . import fitting
-    return fitting.noise_sigma_collapsed(report)
-
-
-def _residual_structure_of(session: "PetabSession") -> "dict[str, Any]":
-    """The compact residual-structure verdict of the session's CURRENT simulation — the same
-    ``{flagged_observables, low_power, summary}`` rollup ``get_fit_diagnosis`` reports. Delegates to
-    :func:`data_access.residual_structure_rollup` (best-effort: never raises), the single source of
-    truth, so what the fit result says and what the adequacy gate acts on can never disagree."""
-    from . import data_access
-    return data_access.residual_structure_rollup(session)
-
-
-def _residual_flag_of(structure: "dict[str, Any]") -> "bool | None":
-    """The bare flag to RECORD for a verdict — ``None`` when the tests could not run, so an
-    untested fit is never stored as a clean bill of health. See :func:`data_access.residual_flag`."""
-    from . import data_access
-    return data_access.residual_flag(structure)
 
 
 class PetabSession:
@@ -625,9 +593,9 @@ class PetabSession:
         report = fitsim.get("noise_sigma_report")
         sigma_estimated = fitsim.get("noise_sigma_estimated", bool(report))
         sig_inflated = (fitsim["noise_sigma_inflated"] if "noise_sigma_inflated" in fitsim
-                        else _noise_sigma_inflated(report))
+                        else noise_sigma_inflated(report))
         sig_collapsed = (fitsim["noise_sigma_collapsed"] if "noise_sigma_collapsed" in fitsim
-                         else _noise_sigma_collapsed(report))
+                         else noise_sigma_collapsed(report))
         sig_assessable = (fitsim["noise_sigma_assessable"] if "noise_sigma_assessable" in fitsim
                           else _noise_sigma_assessable(report))
         sigma_implausible = bool(sigma_estimated and (sig_inflated or sig_collapsed))
@@ -728,14 +696,13 @@ class PetabSession:
             )
             if self.best_sigma_estimated and self.best_sigma_assessable:
                 best_adequate = not (self.best_sigma_inflated or self.best_sigma_collapsed)
-            elif self.best_sigma_estimated:
-                # Estimated sigma we could NOT assess (every entry status "unknown" — e.g. the
-                # observable's std is uncomputable, or its noise formula is composite). Both sigma
-                # predicates fail open to False, so `not (False or False)` would declare the model
-                # adequate on NO evidence at all, skipping the chi2 branch too and leaving the run
-                # with zero adequacy test. Fall back to the (weak, but real) GoF instead.
-                best_adequate = gof_adequate
             else:
+                # Either no estimated sigma at all, or one we could NOT assess (every entry status
+                # "unknown" — e.g. the observable's std is uncomputable, or its noise formula is
+                # composite). In the unassessable case both sigma predicates fail open to False, so
+                # `not (False or False)` would declare the model adequate on NO evidence at all,
+                # skipping the chi2 branch too and leaving the run with zero adequacy test. Either
+                # way, fall back to the (weak, but real) GoF.
                 best_adequate = gof_adequate
             # ...AND the residuals must not still show significant STRUCTURE. The sign/runs tests
             # survive estimated sigmas (unlike chi2 GoF), so a best model that fits the magnitude but
@@ -810,7 +777,7 @@ class PetabSession:
         self.pending_edits.append(
             {"operation": operation, "args": args, "justification": justification})
 
-    def _fit_dedup(self, starts: int | None = None) -> tuple[dict[str, Any], str]:
+    def _fit_dedup(self, starts: int) -> tuple[dict[str, Any], str]:
         """Decide what an explicit `fit` should do with the current working model (see :mod:`dedup`).
 
         The de-dup gates the FIT — the expensive step. Returns ``(decision, fit_key)`` where
@@ -866,9 +833,10 @@ class PetabSession:
         # ... nor when this fit would search HARDER than HEAD's did. The structure hash and the
         # setup signature both ignore the multistart count, so without this an explicit
         # `fit(n_starts=10*default)` on an unchanged model would return HEAD's weaker stored
-        # metrics as if it had run. `None` (a HEAD from before n_starts was recorded, or a
-        # rollback snapshot) is unknown, not smaller, so it keeps the skip.
-        if decision["action"] == "skip" and starts is not None:
+        # metrics as if it had run. A HEAD from before n_starts was recorded (or a rollback
+        # snapshot) has no `n_starts` at all, which is unknown rather than smaller, so the
+        # isinstance check below keeps the skip.
+        if decision["action"] == "skip":
             head_starts = head_meta.get("n_starts")
             if isinstance(head_starts, int) and starts > head_starts:
                 decision = {
@@ -968,8 +936,8 @@ class PetabSession:
             # flagging structured residuals). Must run BEFORE _snapshot_version so the version meta
             # can carry the flag; safe here since _auto_fit_and_improvement already set
             # self.simulation, which is what the diagnosis reads.
-            fitsim["residual_structure"] = _residual_structure_of(self)
-            fitsim["residual_flagged"] = _residual_flag_of(fitsim["residual_structure"])
+            fitsim["residual_structure"] = residual_structure_rollup(self)
+            fitsim["residual_flagged"] = residual_flag(fitsim["residual_structure"])
             version = self._snapshot_version(
                 label="fit",
                 kind="fit",
@@ -997,8 +965,8 @@ class PetabSession:
             _nsr = fitting.noise_sigma_report(self.problem, fitsim.get("fitted_parameters"))
             fitsim["noise_sigma_report"] = _nsr
             fitsim["noise_sigma_estimated"] = bool(_nsr)
-            fitsim["noise_sigma_inflated"] = _noise_sigma_inflated(_nsr)
-            fitsim["noise_sigma_collapsed"] = _noise_sigma_collapsed(_nsr)
+            fitsim["noise_sigma_inflated"] = noise_sigma_inflated(_nsr)
+            fitsim["noise_sigma_collapsed"] = noise_sigma_collapsed(_nsr)
             fitsim["noise_sigma_assessable"] = _noise_sigma_assessable(_nsr)
             # NOTE: fitsim["residual_flagged"] is already set above from the SAME rollup, as the
             # TRI-STATE bool|None (None = the sign/runs tests could not run at all). Do not
@@ -1049,8 +1017,8 @@ class PetabSession:
         self.pending_edits = []
         from . import fitting
 
-        structure = _residual_structure_of(self)
-        flag = _residual_flag_of(structure)
+        structure = residual_structure_rollup(self)
+        flag = residual_flag(structure)
         # Mirror the scalar fit keys a real fit returns (fit_status/n_starts/nll/chi2/bic), so a
         # caller that reads them off the result doesn't hit a missing key on a no-op; `no_change:
         # true` and the thinner shape (no per-point/per-parameter block) still distinguish it. Full
@@ -1097,7 +1065,7 @@ class PetabSession:
             nllh = sim.get("neg_log_likelihood") if sim else None
             # Verdict of the RESTORED state, so the fit block reads the same everywhere and the
             # agent restoring a prior best sees its structure verdict without a follow-up call.
-            structure = _residual_structure_of(self)
+            structure = residual_structure_rollup(self)
             if sim is not None:
                 sim["residual_structure"] = structure
             new_version = self._snapshot_version(
@@ -1108,7 +1076,7 @@ class PetabSession:
                 # model would be wrongly skipped or wrongly re-run.
                 meta={"rolled_back_to": version, "justification": justification,
                       "fit_status": (sim or {}).get("status"), "neg_log_likelihood": nllh,
-                      "residual_flagged": _residual_flag_of(structure)},
+                      "residual_flagged": residual_flag(structure)},
                 sim=sim,
             )
             self.provenance.append_event(
@@ -1154,7 +1122,7 @@ class PetabSession:
             self.apply_version(0)
             sim = self._restore_or_simulate()
             nllh = sim.get("neg_log_likelihood") if sim else None
-            structure = _residual_structure_of(self)
+            structure = residual_structure_rollup(self)
             if sim is not None:
                 sim["residual_structure"] = structure
             new_version = self._snapshot_version(
@@ -1164,7 +1132,7 @@ class PetabSession:
                 # de-dup treats a reset HEAD as not-a-real-fit and a following fit runs.
                 meta={"reset_to": 0, "fit_status": (sim or {}).get("status"),
                       "neg_log_likelihood": nllh,
-                      "residual_flagged": _residual_flag_of(structure)},
+                      "residual_flagged": residual_flag(structure)},
                 sim=sim,
             )
             self.provenance.append_event(
