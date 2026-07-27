@@ -622,7 +622,7 @@ def sigma_noise_coordinate(problem, pid: str, rows=None) -> str | None:
     return None
 
 
-def sigma_data_std(problem, pid: str) -> float | None:
+def sigma_data_std(problem, pid: str, fitted_values=None) -> float | None:
     """Measurement std of the observable(s) whose noise sigma parameter ``pid`` models — computed
     ON THE OBSERVABLE'S ESTIMATION SCALE, so it is dimensionally comparable to the fitted sigma.
 
@@ -633,6 +633,26 @@ def sigma_data_std(problem, pid: str) -> float | None:
     magnitude. ``None`` if ``pid`` isn't a resolvable sigma, or there's too little data, or the
     observables it covers mix transformations (no single comparable scale — fail open rather than
     judge on the wrong one).
+
+    When an observable carries a per-gel AMPLITUDE (see :func:`_observable_amplitude`), its
+    measurements are divided by that gain BEFORE pooling and before any log transform. Pooling the
+    raw values instead would count the BETWEEN-GEL gain differences as data spread: on fiedler that
+    inflates the pERK std from 0.096 to 0.688 (~7x), which is not noise the sigma has to cover.
+    Dividing in linear space is what makes it a pure normalisation — under log it is a per-gel
+    offset, so the shift cancels the same way while the within-gel spread is untouched.
+
+    KNOWN TRADE-OFF, do not "fix" one half without the other. Normalising by the FIT's gains is what
+    makes the sd/spread ratio invariant under a legitimate gain/sigma re-split (fiedler: gains x10
+    with sigma /10 leaves the fraction at 0.469619 exactly), and that invariance is the whole point.
+    The price is that the denominator is no longer a property of the measurements alone: gains that
+    do NOT match the data's gel structure scatter y/gain and inflate the pooled std, which raises the
+    cap. Constructed case — gains {1, 0.001} where the truth is {1, 10} — lifts the std from 1.118 to
+    14790 and lets a sigma 10,000x the truth read "ok". It is not a free win for an agent, since
+    gains also enter the observable formula, so distorting them wrecks the mean fit and the run
+    fails on BIC instead; but the sigma gate alone does not catch it. Using NOMINAL gains would close
+    that hole and reopen the bigger one: any honest fit whose gains land away from nominal would then
+    be judged in a coordinate its sigma is not expressed in. There is no fit-independent choice that
+    keeps the invariance — the normaliser is a fitted quantity by construction.
     """
     rows = _measurement_rows_for_sigma(problem, pid)
     if rows is None or rows.empty:
@@ -640,14 +660,70 @@ def sigma_data_std(problem, pid: str) -> float | None:
     coordinate = sigma_noise_coordinate(problem, pid, rows)
     if coordinate is None:
         return None  # mixed scales -> no single meaningful reference; don't flag
-    values = _transform_values(rows[MEASUREMENT].dropna().astype(float), coordinate)
+    normalised = _gain_normalised_series(problem, pid, rows, fitted_values)
+    if normalised is None:
+        return None
+    import numpy as np
+
+    values = (np.concatenate(normalised) if normalised
+              else np.asarray([], dtype=float))
+    values = _transform_values(values, coordinate)
     if len(values) < 2:
         return None
     std = float(values.std(ddof=0))
     return std if std > 0 else None
 
 
-def sigma_difference_noise_estimate(problem, pid: str) -> float | None:
+def _gain_normalised_series(problem, pid: str, rows, fitted_values=None):
+    """``[array_of_measurements_per_observable]`` with each observable's per-gel AMPLITUDE divided
+    out (see :func:`_observable_amplitude`), or ``None`` if the covered observables cannot be put on
+    one coordinate.
+
+    THE single place a gain is resolved for the data side, so every consumer of the measurements
+    (:func:`sigma_data_std`, :func:`sigma_difference_noise_estimate`) lands in the same coordinate as
+    :func:`sigma_effective_value`. Splitting this across call sites is what let the pooled std and
+    the difference-based estimate drift into different coordinates.
+
+    An observable with NO amplitude normalises by 1.0 — it is ALREADY on the common coordinate, and
+    conflating that with an amplitude that would not reduce to a number (both "no gain value") made
+    a sigma shared by a gained and an ungained observable bail out and take the whole gate dark.
+    Only a gain that is PRESENT but unresolvable forces ``None``, because that one really would pool
+    two coordinates.
+    """
+    gains = _gain_normalised_gains(problem, pid, rows, fitted_values)
+    if gains is None:
+        return None
+    if OBSERVABLE_ID not in rows.columns:
+        return [rows[MEASUREMENT].dropna().astype(float).to_numpy()]
+    return [sub[MEASUREMENT].dropna().astype(float).to_numpy() / gains.get(str(oid), 1.0)
+            for oid, sub in rows.groupby(OBSERVABLE_ID, sort=False)]
+
+
+def _gain_normalised_gains(problem, pid: str, rows, fitted_values=None):
+    """``{observable_id: gain}`` for the observables ``rows`` covers — 1.0 where there is no
+    amplitude — or ``None`` if any PRESENT amplitude will not reduce to a number.
+
+    See :func:`_gain_normalised_series` for why "no amplitude" must map to 1.0 rather than share the
+    ``None`` that means "unresolvable".
+    """
+    if rows is None or rows.empty or OBSERVABLE_ID not in rows.columns:
+        return {}
+    out: dict[str, float] = {}
+    for oid, sub in rows.groupby(OBSERVABLE_ID, sort=False):
+        resolved = _noise_expr_and_observable(problem, pid, sub)
+        amplitude = (None if resolved is None
+                     else _observable_amplitude(problem, str(oid), resolved[0]))
+        if amplitude is None:
+            out[str(oid)] = 1.0
+            continue
+        gain = _amplitude_value(problem, amplitude, fitted_values)
+        if gain is None:
+            return None
+        out[str(oid)] = gain
+    return out
+
+
+def sigma_difference_noise_estimate(problem, pid: str, fitted_values=None) -> float | None:
     """A MODEL-FREE estimate of ``pid``'s noise level, from successive differences of adjacent
     measurements (the Rice 1984 difference-based variance estimator):
 
@@ -696,13 +772,23 @@ def sigma_difference_noise_estimate(problem, pid: str) -> float | None:
         return None
     import numpy as np
 
+    # Differences are taken on the SAME amplitude-normalised coordinate the fitted sigma is reported
+    # in (see _gain_normalised_series). Differencing the RAW measurements while `effective_sigma` is
+    # normalised puts `fitted_over_data_noise` out by the gel gain — on fiedler's sigma_pMek that is
+    # ~0.003 instead of ~1, i.e. this model-free yardstick would tell a correct model its noise is
+    # ~300x too small, and inflating on that advice then trips the (correctly normalised) gate.
+    gains = _gain_normalised_gains(problem, pid, rows, fitted_values)
+    if gains is None:
+        return None
     group_cols = [c for c in ("observableId", "simulationConditionId") if c in rows.columns]
     grouped = rows.groupby(group_cols, sort=False) if group_cols else [(None, rows)]
     squares: list[float] = []
     for _key, series in grouped:
         if "time" in series.columns:
             series = series.sort_values("time")
-        values = _transform_values(series[MEASUREMENT].dropna().astype(float), coordinate)
+        raw = series[MEASUREMENT].dropna().astype(float)
+        oid = series[OBSERVABLE_ID].iloc[0] if OBSERVABLE_ID in series.columns and len(series) else None
+        values = _transform_values(raw / gains.get(str(oid), 1.0), coordinate)
         values = np.asarray(values, dtype=float)
         if len(values) >= 3:  # need at least two differences for a usable mean
             squares.extend(np.diff(values) ** 2)
@@ -766,6 +852,95 @@ def _noise_expr_and_observable(problem, pid: str, rows):
         level = next((c for c in candidates if c in free), candidates[0])
         return expr, level, observable_id
     except Exception:  # noqa: BLE001 - advisory scale only
+        return None
+
+
+def _observable_amplitude(problem, observable_id: str, noise_expr):
+    """The multiplicative AMPLITUDE of ``observable_id`` — a factor appearing in BOTH the observable
+    formula and the noise formula (fiedler's per-gel ``s_pErk_20140430_gel1``) — as a sympy
+    expression, or ``None`` when the observable has no such dual-role factor (the usual case).
+
+    Such a factor is a nuisance gain of the ASSAY, not of the noise: the gel multiplies signal and
+    measurement error alike, so both the sd (``a*sigma``) and the data carry it. It therefore cancels
+    from the only quantity the plausibility gate uses — the dimensionless sd/spread ratio — and the
+    honest way to compute that ratio is in the coordinate where it has already cancelled. Dividing it
+    out is what lets a sigma SHARED across gels be summarised at all: without it each gel implies its
+    own effective sd, they disagree, and :func:`_per_observable_agreement` fails open (fiedler's
+    ``noise_sigma_effective`` was ``{}``).
+
+    Requires exactly ONE such symbol, dividing BOTH formulas multiplicatively; anything else returns
+    ``None`` so callers fail open instead of normalising by a factor that isn't a pure gain.
+    """
+    odf = getattr(problem, "observable_df", None)
+    if odf is None or OBSERVABLE_FORMULA not in odf.columns:
+        return None
+    try:
+        import sympy as sp
+
+        scaling = observable_scaling_ids(problem)
+        candidates = sorted((s for s in noise_expr.free_symbols if str(s) in scaling), key=str)
+        if len(candidates) != 1:
+            return None
+        amplitude = candidates[0]
+        # A pure gain divides the sd exactly: sd/a must not mention a. (sqrt(a**2 + s**2) would.)
+        if amplitude in sp.simplify(noise_expr / amplitude).free_symbols:
+            return None
+        # ...and it must scale the OBSERVABLE the same way, or dividing the measurements by it does
+        # not put the gels on a common coordinate. The observable names it through its own
+        # `observableParameter{i}_` placeholder, so compare against the measurement-table override.
+        # Symbols are compared BY NAME from here on: petab builds its formulas with `real=True`
+        # assumptions while a plain `sympify` does not, and `Symbol(x) != Symbol(x, real=True)`, so
+        # identity matching silently no-ops the substitution and reports "no amplitude" for every
+        # observable that has one.
+        obs_expr = sp.sympify(str(odf.loc[observable_id, OBSERVABLE_FORMULA]))
+        mdf = getattr(problem, "measurement_df", None)
+        if mdf is None or OBSERVABLE_PARAMETERS not in mdf.columns:
+            return None
+        cells = set(mdf.loc[mdf[OBSERVABLE_ID] == observable_id,
+                            OBSERVABLE_PARAMETERS].dropna().astype(str))
+        if len(cells) != 1:
+            return None
+        from petab.v1 import split_parameter_replacement_list
+        by_name = {str(s): s for s in obs_expr.free_symbols}
+        obs_expr = obs_expr.subs({
+            by_name[key]: (sp.Symbol(str(v), real=True) if isinstance(v, str) else v)
+            for i, v in enumerate(split_parameter_replacement_list(next(iter(cells))))
+            if (key := f"observableParameter{i + 1}_{observable_id}") in by_name})
+        obs_names = {str(s) for s in obs_expr.free_symbols}
+        if str(amplitude) not in obs_names:
+            return None
+        if str(amplitude) in {str(s) for s in sp.simplify(obs_expr / amplitude).free_symbols}:
+            return None
+        return amplitude
+    except Exception:  # noqa: BLE001 - advisory scale only
+        return None
+
+
+def _amplitude_value(problem, amplitude, fitted_values=None) -> float | None:
+    """``amplitude`` as a number, preferring THIS fit's value over the table's nominal (the agent's
+    own gel gains are what its measurements were scaled by). ``None`` if it won't reduce."""
+    try:
+        import sympy as sp
+
+        subs = {}
+        pdf = getattr(problem, "parameter_df", None)
+        if pdf is not None and NOMINAL_VALUE in pdf.columns:
+            for name in pdf.index:
+                try:
+                    subs[sp.Symbol(str(name), real=True)] = float(pdf.loc[name, NOMINAL_VALUE])
+                except (TypeError, ValueError):
+                    continue
+        for name, value in (fitted_values or {}).items():
+            try:
+                subs[sp.Symbol(str(name), real=True)] = float(value)
+            except (TypeError, ValueError):
+                continue
+        value = sp.simplify(amplitude.subs(subs))
+        if value.free_symbols:
+            return None
+        result = float(value)
+        return result if math.isfinite(result) and result != 0 else None
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -846,6 +1021,15 @@ def sigma_effective_value(problem, pid: str, fitted: float,
     of variation, which is the sd in log space, matching the coordinate
     :func:`sigma_noise_coordinate` reports for that form. ``None`` when the form is not one of the
     two summarisable cases, or the expression will not reduce to a number.
+
+    A per-gel AMPLITUDE is divided out (see :func:`_observable_amplitude`), so what comes back is
+    the sd in the amplitude-normalised coordinate — which is what makes it a SINGLE number when one
+    sigma is shared by gels of differing gain, and what makes it comparable to
+    :func:`sigma_data_std`, measured in the same coordinate. Note this is a deliberate choice of
+    coordinate, not "the sd in measurement units": the gain cancels from the sd/spread RATIO the
+    gate uses, so the ratio is unaffected, but two models that split the same fit differently
+    between gain and sigma report different values here. For fiedler the amplitude is an exact
+    divisor of the formula, so the normalised value coincides with the raw sigma.
     """
     rows = _measurement_rows_for_sigma(problem, pid)
     if rows is None or rows.empty:
@@ -879,6 +1063,16 @@ def sigma_effective_value(problem, pid: str, fitted: float,
         # For proportional noise divide out the observable FIRST, so the result is the cv and no
         # value of y is needed at all; additive noise is already independent of y.
         target = sp.simplify(expr / y) if form == "proportional" else expr
+        # Report the sd in the AMPLITUDE-NORMALISED coordinate sigma_data_std measures in, so a
+        # per-gel gain cancels (see _observable_amplitude). Divide only if the amplitude SURVIVES
+        # into `target`: for proportional noise, dividing by `y` above may already have removed it
+        # (when `y` is the observable, which carries the gain) or may not (when `y` resolved to the
+        # underlying species, which does not), and keying off the noise FORM instead of the actual
+        # expression got that wrong in both directions — it left the gain in for a proportional
+        # formula naming the species, so a correct fit read `inflated` by exactly the gain.
+        amplitude = _observable_amplitude(problem, _obs, expr)
+        if amplitude is not None and amplitude in target.free_symbols:
+            target = sp.simplify(target / amplitude)
         value = sp.simplify(target.subs(subs))
         if value.free_symbols:  # an unresolved symbol -> we do not guess, we fail open
             return None
@@ -890,6 +1084,7 @@ def sigma_effective_value(problem, pid: str, fitted: float,
     return _per_observable_agreement(problem, pid, rows, _value)
 def sigma_upper_bound_cap(
     problem, pid: str, max_fraction: float = NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD,
+    fitted_values=None, data_std: float | None = None,
 ) -> float | None:
     """Data-driven upper-bound cap for noise-sigma parameter ``pid``: ``max_fraction`` times
     :func:`sigma_data_std`. ``None`` if that std can't be computed — callers must not
@@ -900,7 +1095,10 @@ def sigma_upper_bound_cap(
     "pass" a chi2 goodness-of-fit check by simply inflating sigma until residuals fit inside
     it. See ``NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD``.
     """
-    std = sigma_data_std(problem, pid)
+    # `data_std` lets a caller that already computed the std reuse it — the amplitude resolution
+    # behind it costs real sympy work (see _observable_amplitude), and noise_sigma_report would
+    # otherwise pay for it twice per sigma. The cap FORMULA stays here, so it cannot drift.
+    std = sigma_data_std(problem, pid, fitted_values) if data_std is None else data_std
     return max_fraction * std if std is not None else None
 
 

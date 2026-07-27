@@ -913,7 +913,10 @@ def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[st
             value = float(value)
         except (TypeError, ValueError):
             continue
-        data_std = R.sigma_data_std(problem, pid)
+        # Pass the fit: a per-gel amplitude is normalised out with THIS fit's gains
+        # (see reconcile._observable_amplitude), so both sides of the ratio below use
+        # the same coordinate.
+        data_std = R.sigma_data_std(problem, pid, fitted)
         # Compare the EFFECTIVE sd (the noiseFormula evaluated at this value) against a data std
         # taken on the SAME estimation scale — not the bare parameter against the raw linear std.
         # A proportional/CV parameter and a log-space sd are both dimensionally incomparable to the
@@ -924,11 +927,12 @@ def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[st
         # the model and any ground truth, unlike the marginal-std band. Advisory and biased UPWARD
         # (see sigma_difference_noise_estimate): fitted >> estimate is strong evidence of inflation;
         # fitted << estimate is only weak evidence of collapse.
-        data_noise = R.sigma_difference_noise_estimate(problem, pid)
+        data_noise = R.sigma_difference_noise_estimate(problem, pid, fitted)
         entry = {
             "fitted": value,
             "effective_sigma": effective,
-            "upper_bound_cap": R.sigma_upper_bound_cap(problem, pid),
+            "upper_bound_cap": R.sigma_upper_bound_cap(problem, pid, fitted_values=fitted,
+                                                      data_std=data_std),
             "data_std": data_std,
             "fraction_of_data_std": (effective / data_std)
                                     if (data_std and effective is not None) else None,
@@ -940,7 +944,12 @@ def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[st
         # collapsed use (single source of truth, so the agent-facing status can't drift from the
         # gate that fails the run). "unknown" when the observable's std can't be computed (data_std
         # None -> nothing to assess against): report that honestly rather than a reassuring "ok".
-        if data_std is None:
+        if data_std is None or effective is None:
+            # Either half missing means there is no dimensionally valid comparison to make: no std
+            # to judge against, or a noiseFormula that would not reduce to a number. Both are
+            # "unknown", NOT the reassuring "ok" the predicates below would fall through to — they
+            # return False on a None, which reads as "assessed and fine" (see _entry_inflated,
+            # which already documents this entry as unknown rather than inflated).
             entry["status"] = "unknown"
         elif _entry_inflated(entry):
             entry["status"] = "inflated"     # noise absorbing model misfit

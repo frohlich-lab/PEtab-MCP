@@ -471,6 +471,13 @@ def _warn_sigma_bound_widening(problem, parameter_id: str, upper_bound: float) -
         return None
     if not R.is_parameter_estimated(problem, parameter_id):
         return None
+    # No fit is in hand at bound-edit time, so a per-gel amplitude resolves from the table's
+    # NOMINAL gains while the commit-time report resolves it from the fit (see
+    # reconcile.sigma_data_std). The two caps therefore differ by fitted-gain/nominal-gain on a
+    # problem with gains, and this one goes None (advisory silently off) if such a gain has no
+    # nominal at all. Left as-is deliberately: this is an ADVISORY warning, not the gate, so it
+    # fails open by design, and the alternative — threading a stale previous fit in here — would
+    # make the advice depend on which fit last ran.
     cap = R.sigma_upper_bound_cap(problem, parameter_id)
     if cap is None or float(upper_bound) <= cap:
         return None

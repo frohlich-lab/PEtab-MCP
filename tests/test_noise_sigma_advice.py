@@ -85,12 +85,12 @@ def test_report_status_per_entry_including_unknown(monkeypatch):
     cap = {"inf": 0.1, "col": 0.5, "fine": 0.1, "unk": None}
     monkeypatch.setattr(R, "is_parameter_estimated", lambda p, pid: True)
     monkeypatch.setattr(R, "plausibility_sigma_ids", lambda problem: set(data_std))
-    monkeypatch.setattr(R, "sigma_data_std", lambda p, pid: data_std[pid])
-    monkeypatch.setattr(R, "sigma_upper_bound_cap", lambda p, pid: cap[pid])
+    monkeypatch.setattr(R, "sigma_data_std", lambda p, pid, fitted_values=None: data_std[pid])
+    monkeypatch.setattr(R, "sigma_upper_bound_cap", lambda p, pid, max_fraction=None, fitted_values=None, data_std=None: cap[pid])
     # bare (non-proportional) noise model: the effective sd IS the fitted value
     monkeypatch.setattr(R, "sigma_effective_value",
                         lambda p, pid, fitted, fitted_values=None: fitted)
-    monkeypatch.setattr(R, "sigma_difference_noise_estimate", lambda p, pid: None)
+    monkeypatch.setattr(R, "sigma_difference_noise_estimate", lambda p, pid, fitted_values=None: None)
     monkeypatch.setattr(R, "is_parameter_estimated", lambda p, pid: True)
     monkeypatch.setattr(R, "plausibility_sigma_ids", lambda problem: set(data_std))
     rep = noise_sigma_report(object(), {"inf": 0.5, "col": NOISE_SIGMA_COLLAPSE_FRACTION / 10,
@@ -247,11 +247,11 @@ def test_difference_noise_estimate_is_advisory_only(monkeypatch):
     cumulative series, so it must not be load-bearing)."""
     import petab_mcp.reconcile as R
     monkeypatch.setattr(R, "noise_sigma_ids", lambda problem: {"s"})
-    monkeypatch.setattr(R, "sigma_data_std", lambda p, pid: 1.0)
-    monkeypatch.setattr(R, "sigma_upper_bound_cap", lambda p, pid: 0.75)
+    monkeypatch.setattr(R, "sigma_data_std", lambda p, pid, fitted_values=None: 1.0)
+    monkeypatch.setattr(R, "sigma_upper_bound_cap", lambda p, pid, max_fraction=None, fitted_values=None, data_std=None: 0.75)
     monkeypatch.setattr(R, "sigma_effective_value",
                         lambda p, pid, fitted, fitted_values=None: fitted)
-    monkeypatch.setattr(R, "sigma_difference_noise_estimate", lambda p, pid: 1e6)  # absurd
+    monkeypatch.setattr(R, "sigma_difference_noise_estimate", lambda p, pid, fitted_values=None: 1e6)  # absurd
     monkeypatch.setattr(R, "is_parameter_estimated", lambda p, pid: True)
     monkeypatch.setattr(R, "plausibility_sigma_ids", lambda problem: {"s"})
     rep = noise_sigma_report(object(), {"s": 0.4})               # plausible: 0.4 of a 1.0 std
@@ -324,3 +324,212 @@ def test_composite_formula_multiplies_both_factors():
                        index=pd.Index(["scale", "sd_o"], name="parameterId"))
     p = petab.Problem(observable_df=obs, measurement_df=meas, parameter_df=pdf)
     assert R.sigma_effective_value(p, "sd_o", 0.25) == pytest.approx(1.0)   # 4.0 * 0.25
+
+
+# --- a per-gel AMPLITUDE in the noise formula (fiedler) --------------------------------------
+def _two_gel_problem(noise_formula="noiseParameter1_{o}*noiseParameter2_{o}",
+                     gains=(1.0, 10.0), sigma=0.1, base=(1.0, 2.0, 3.0, 4.0)):
+    """A fiedler-shaped problem: ONE sigma shared by two observables ("gels") whose measurements
+    carry different multiplicative gains, each gain naming itself in BOTH the observable and the
+    noise overrides. The underlying signal is identical, so everything that differs between the two
+    observables is the gain — which is exactly what must NOT be read as data spread."""
+    import pandas as pd
+    import petab.v1 as petab
+    obs_rows, meas_rows = [], []
+    for i, gain in enumerate(gains, start=1):
+        oid = f"o{i}"
+        obs_rows.append({"observableId": oid, "observableFormula": f"x * observableParameter1_{oid}",
+                         "observableTransformation": "lin",
+                         "noiseFormula": noise_formula.format(o=oid)})
+        for t, value in enumerate(base):
+            meas_rows.append({"observableId": oid, "simulationConditionId": "c", "time": t,
+                              "measurement": value * gain,
+                              "observableParameters": f"s{i}", "noiseParameters": f"s{i};sigma"})
+    par = pd.DataFrame({
+        "parameterId": [f"s{i}" for i in range(1, len(gains) + 1)] + ["sigma"],
+        "parameterScale": ["log10"] * (len(gains) + 1),
+        "lowerBound": [1e-5] * (len(gains) + 1), "upperBound": [1e5] * (len(gains) + 1),
+        "nominalValue": list(gains) + [sigma], "estimate": [1] * (len(gains) + 1),
+    }).set_index("parameterId")
+    return petab.Problem(observable_df=pd.DataFrame(obs_rows).set_index("observableId"),
+                         measurement_df=pd.DataFrame(meas_rows), parameter_df=par)
+
+
+def test_a_shared_sigma_with_per_gel_gains_is_summarisable():
+    """Before this fix each gel implied its OWN effective sd (gain*sigma), the per-observable values
+    disagreed, and the whole entry failed open — fiedler's `noise_sigma_effective` was `{}` and its
+    sigmas were reported 'ok' on no evidence at all."""
+    from petab_mcp import reconcile as R
+    # NEITHER gain is 1.0, deliberately: with a leading gain of 1.0 the expected value coincides
+    # with gel 1's UN-normalised sd, so "return the first observable's result" would also pass and
+    # the assertion would not distinguish the fix from dropping the agreement requirement.
+    p = _two_gel_problem(gains=(2.0, 10.0), sigma=0.1)
+    fitted = {"s1": 2.0, "s2": 10.0, "sigma": 0.1}
+    # The gain divides out, so the sd in the normalised coordinate IS the raw sigma — one number
+    # for both gels, where the un-normalised formula gives 0.2 and 1.0.
+    assert R.sigma_effective_value(p, "sigma", 0.1, fitted_values=fitted) == pytest.approx(0.1)
+
+
+def test_the_gain_is_divided_out_of_the_data_std_too():
+    """Both sides of the ratio must live in the same coordinate. Pooling the RAW measurements counts
+    the between-gel gain difference as spread (on fiedler: 0.096 -> 0.688, ~7x), which is not noise
+    the sigma has to cover, so the sigma reads far more plausible than it is."""
+    from petab_mcp import reconcile as R
+    p = _two_gel_problem(gains=(1.0, 10.0))
+    fitted = {"s1": 1.0, "s2": 10.0, "sigma": 0.1}
+    normalised = R.sigma_data_std(p, "sigma", fitted)
+    # Both gels normalise back onto the SAME underlying series, so the pooled std equals that
+    # series' own std — the gain contributes nothing.
+    import numpy as np
+    assert normalised == pytest.approx(float(np.std([1.0, 2.0, 3.0, 4.0], ddof=0)))
+    # Sanity: the un-normalised pooling really is much larger, i.e. this test would fail loudly.
+    raw = float(np.std([1.0, 2.0, 3.0, 4.0] + [10.0, 20.0, 30.0, 40.0], ddof=0))
+    assert raw > 3 * normalised
+
+
+def test_a_gain_that_is_not_a_pure_multiplier_fails_open():
+    """Normalising is only valid for a factor that scales signal and noise ALIKE. A noise formula
+    where the gel factor enters non-multiplicatively (sqrt(s^2 + sigma^2)) has no such coordinate,
+    so the amplitude must be refused rather than divided out anyway."""
+    from petab_mcp import reconcile as R
+    p = _two_gel_problem(noise_formula="sqrt(noiseParameter1_{o}^2 + noiseParameter2_{o}^2)")
+    rows = R._measurement_rows_for_sigma(p, "sigma")
+    sub = rows[rows["observableId"] == "o1"]
+    expr = R._noise_expr_and_observable(p, "sigma", sub)[0]
+    assert R._observable_amplitude(p, "o1", expr) is None
+
+
+def test_an_unevaluable_sigma_is_unknown_not_ok():
+    """A fresh entry whose noiseFormula would not reduce to a number has no dimensionally valid
+    comparison to make. The inflated/collapsed predicates both return False on a None, so falling
+    through to 'ok' would report 'assessed and fine' about something never assessed."""
+    from petab_mcp import reconcile as R
+    from petab_mcp.fitting import _entry_collapsed, _entry_inflated, noise_sigma_report
+    entry = {"fitted": 3.0, "effective_sigma": None, "upper_bound_cap": 0.5,
+             "data_std": 1.0, "fraction_of_data_std": None}
+    assert not _entry_inflated(entry) and not _entry_collapsed(entry)  # both silent...
+    # ...so the STATUS is what has to carry it. Assert on the real report: an unevaluable formula
+    # (effective None) with a perfectly good data_std must not read "ok".
+    p = _two_gel_problem(gains=(2.0, 10.0))
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(R, "sigma_effective_value", lambda *a, **kw: None)
+        report = noise_sigma_report(p, {"s1": 2.0, "s2": 10.0, "sigma": 0.1})
+        assert report["sigma"]["data_std"] is not None      # the OTHER half is assessable
+        assert report["sigma"]["status"] == "unknown", report["sigma"]
+    finally:
+        monkeypatch.undo()
+
+
+def test_partial_gain_resolution_does_not_pool_two_coordinates():
+    """If only SOME observables' gains resolve, normalising just those pools normalised values with
+    un-normalised ones — a std over two different coordinates. That is worse than not normalising at
+    all, because nothing about the resulting number looks wrong. Fail open instead."""
+    from petab_mcp import reconcile as R
+    p = _two_gel_problem(gains=(1.0, 10.0))
+    # o2's gain becomes unresolvable: drop its nominal so neither the table nor the fit supplies it.
+    p.parameter_df.loc["s2", "nominalValue"] = float("nan")
+    assert R.sigma_data_std(p, "sigma", {"s1": 1.0, "sigma": 0.1}) is None
+    # ...and with it supplied, the same problem DOES resolve — so the None above is the guard
+    # firing, not the fixture being broken.
+    assert R.sigma_data_std(p, "sigma", {"s1": 1.0, "s2": 10.0, "sigma": 0.1}) is not None
+
+
+def test_the_report_wires_the_cap_to_the_fraction_it_reports():
+    """Pin the ARGUMENT WIRING of the cap, which no stubbed test can see: `sigma_upper_bound_cap`
+    takes `max_fraction` third and `data_std` fifth, so passing the std positionally would compute
+    `data_std * data_std` instead of `0.75 * data_std` and silently stop the inflation gate firing.
+    Asserting the identity through the real path is what catches that."""
+    from petab_mcp.constants import NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD as CAP
+    from petab_mcp.fitting import noise_sigma_report
+    p = _two_gel_problem(gains=(2.0, 10.0))
+    entry = noise_sigma_report(p, {"s1": 2.0, "s2": 10.0, "sigma": 0.1})["sigma"]
+    assert entry["upper_bound_cap"] == pytest.approx(CAP * entry["data_std"])
+    assert entry["fraction_of_data_std"] == pytest.approx(
+        entry["effective_sigma"] / entry["data_std"])
+
+
+def _gain_and_ungained_problem():
+    """One sigma shared by a GAINED observable and an ungained one — blasi's shape (a single sigma
+    over many observables), where only some carry a gel scale."""
+    import pandas as pd
+    import petab.v1 as petab
+    obs = pd.DataFrame([
+        {"observableId": "o1", "observableFormula": "x * observableParameter1_o1",
+         "observableTransformation": "lin",
+         "noiseFormula": "noiseParameter1_o1*noiseParameter2_o1"},
+        {"observableId": "o2", "observableFormula": "z", "observableTransformation": "lin",
+         "noiseFormula": "noiseParameter1_o2"},
+    ]).set_index("observableId")
+    rows = []
+    for t, v in enumerate([1.0, 2.0, 3.0, 4.0]):
+        rows.append({"observableId": "o1", "simulationConditionId": "c", "time": t,
+                     "measurement": v * 2, "observableParameters": "s1",
+                     "noiseParameters": "s1;sigma"})
+        rows.append({"observableId": "o2", "simulationConditionId": "c", "time": t,
+                     "measurement": v, "observableParameters": None,
+                     "noiseParameters": "sigma"})
+    par = pd.DataFrame({"parameterId": ["s1", "sigma"], "parameterScale": ["log10"] * 2,
+                        "lowerBound": [1e-5] * 2, "upperBound": [1e5] * 2,
+                        "nominalValue": [2.0, 0.1], "estimate": [1, 1]}).set_index("parameterId")
+    return petab.Problem(observable_df=obs, measurement_df=pd.DataFrame(rows), parameter_df=par)
+
+
+def test_an_ungained_observable_does_not_take_the_gate_dark():
+    """"This observable has no amplitude" (already on the common coordinate, gain 1) must not be
+    conflated with "this amplitude will not reduce to a number". Conflating them made a sigma shared
+    by a gained and an ungained observable return None, so the entry read 'unknown', the
+    inflated/collapsed predicates could never fire, and the bound-widening advisory short-circuited
+    on a None cap — the whole gate off, for a problem shape nothing is wrong with."""
+    from petab_mcp import reconcile as R
+    p = _gain_and_ungained_problem()
+    assert R.sigma_data_std(p, "sigma", {"s1": 2.0, "sigma": 0.1}) is not None
+    assert R.sigma_upper_bound_cap(p, "sigma", fitted_values={"s1": 2.0, "sigma": 0.1}) is not None
+
+
+def test_a_proportional_gain_is_normalised_out_of_both_sides():
+    """The two sides of the ratio must be normalised under the same rule. Keying the division off
+    the noise FORM (additive only) while the data side divided for every form left the gain in the
+    numerator for a proportional formula naming the gain, so an unchanged noise level read as
+    `inflated` by exactly the gain."""
+    import pandas as pd
+    import petab.v1 as petab
+    from petab_mcp import reconcile as R
+
+    def build(s1):
+        obs = pd.DataFrame([{
+            "observableId": "o1", "observableFormula": "x * observableParameter1_o1",
+            "observableTransformation": "lin",
+            "noiseFormula": "noiseParameter1_o1*noiseParameter2_o1*o1"}]).set_index("observableId")
+        rows = [{"observableId": "o1", "simulationConditionId": "c", "time": t,
+                 "measurement": v * s1, "observableParameters": "s1",
+                 "noiseParameters": "s1;cv"} for t, v in enumerate([1.0, 2.0, 3.0, 4.0])]
+        par = pd.DataFrame({"parameterId": ["s1", "cv"], "parameterScale": ["log10"] * 2,
+                            "lowerBound": [1e-5] * 2, "upperBound": [1e5] * 2,
+                            "nominalValue": [s1, 0.1], "estimate": [1, 1]}).set_index("parameterId")
+        return petab.Problem(observable_df=obs, measurement_df=pd.DataFrame(rows), parameter_df=par)
+
+    fractions = []
+    for s1 in (1.0, 10.0):  # identical underlying data and noise level, different gel gain
+        p = build(s1)
+        fit = {"s1": s1, "cv": 0.1}
+        fractions.append(R.sigma_effective_value(p, "cv", 0.1, fitted_values=fit)
+                         / R.sigma_data_std(p, "cv", fit))
+    assert fractions[0] == pytest.approx(fractions[1]), fractions
+
+
+def test_the_difference_estimate_shares_the_sigma_coordinate():
+    """`fitted_over_data_noise` divides the (normalised) effective sigma by this estimate, so the
+    estimate must difference the NORMALISED measurements too. Differencing raw values while the
+    numerator is normalised put the ratio out by the gel gain — advising a correct model that its
+    noise is orders of magnitude too small."""
+    from petab_mcp import reconcile as R
+    p = _two_gel_problem(gains=(2.0, 10.0), sigma=0.1)
+    fit = {"s1": 2.0, "s2": 10.0, "sigma": 0.1}
+    estimate = R.sigma_difference_noise_estimate(p, "sigma", fit)
+    # The two gels normalise onto the SAME underlying series, so the estimate is that series' own
+    # difference-based noise — it must not scale with the gains.
+    doubled = R.sigma_difference_noise_estimate(
+        _two_gel_problem(gains=(4.0, 20.0), sigma=0.1), "sigma",
+        {"s1": 4.0, "s2": 20.0, "sigma": 0.1})
+    assert estimate == pytest.approx(doubled), (estimate, doubled)
