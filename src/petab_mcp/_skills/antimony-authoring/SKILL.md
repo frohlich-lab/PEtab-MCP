@@ -1,167 +1,80 @@
 ---
 name: antimony-authoring
 description: >-
-  Use when writing the Antimony model string for petab-mcp's set_model —
-  the syntax essentials, the SBML↔PEtab reconcile
-  contract the server applies afterwards, the naming rules that avoid AMICI code-generation
-  clashes, and the recurring parse/lint/reconcile failure modes with their fixes. Read this
-  before authoring or editing a model so a set_model call commits instead of being rejected.
-  A living reference: extend the "Known failure modes" list as new ones surface.
+  Read before writing an Antimony model string. The syntax and naming mistakes that make an
+  Antimony model fail to parse, fail to compile under AMICI, or silently fit wrong — expecting
+  the arrow to supply a reverse flux, hard-coded exponents, reserved single-letter names,
+  typos that become parameters.
 ---
 
-# Authoring Antimony for petab-mcp
+# Writing Antimony that works
 
-The model is authored in **Antimony** — a compact text language for SBML. You pass a whole
-Antimony string to `set_model` (build or re-author). This skill is about writing Antimony
-the server will **accept** on the first try: the goal is to spend the model-building loop on
-*mechanism*, not on fixing parse errors. Most model-definition failures come from a handful of
-avoidable mistakes catalogued below.
-
-## Minimal template
+Antimony is a text language for SBML. These are the mistakes that actually bite; everything
+else about the syntax is guessable.
 
 ```
 model my_model
-  compartment cell = 1;            // at least one compartment
-  species A in cell;               // every species lives in a compartment
-  species B in cell;
-  A = 1.0;                         // initial amount/concentration (a number or a *_init param)
-  B = 0.0;
-  kf = 0.1;                        // parameters are plain assignments
-  kr = 0.05;
-  r1: A -> B; kf * A - kr * B;     // ONE reversible reaction: net rate = forward - reverse
+  compartment cell = 1;         // at least one, and every species lives in one
+  species A in cell; species B in cell;
+  A = 1.0; B = 0.0;             // initial values
+  kf = 0.1; kr = 0.05;          // parameters are plain assignments
+  r1: A -> B; kf*A - kr*B;      // ONE reversible reaction: net = forward - reverse
 end
 ```
 
-- Wrap everything in `model <id> … end`. The `<id>` names the model (it wins over any
-  placeholder id from a model-less load).
-- Use `->` for reactions and **prefer reversible reactions**: write a *single* reaction whose
-  rate law carries both directions — a net `forward - reverse` term, e.g.
-  `r1: A -> B; kf*A - kr*B` — rather than splitting a reversible step into two one-way
-  reactions. A reaction **must** have a rate law after the `;`, and the dynamics come *entirely*
-  from that rate law: the arrow adds no flux of its own (reactions are created as
-  `reversible=false`; `->` and `=>` are equivalent there), so express reversibility
-  in the rate law, not the arrow. Use a forward-only law (`kf*A`) only for a genuinely one-way
-  step — synthesis, degradation, an effectively irreversible catalytic step.
-- `^` is exponentiation (`p^2`), `*` `/` `+` `-` as usual. Rate laws are ordinary algebra over
-  species and parameters.
-- An empty/degradation reaction has no product: `deg: A -> ; kdeg * A;`. A synthesis has no
-  reactant: `syn: -> A; ksyn;`.
+## The arrow carries no flux — the rate law is the whole ODE
 
-## What the server does after you author (the reconcile contract)
+A reaction contributes **exactly** its rate law and nothing else. The arrow says which species
+the rate is added to and subtracted from; it supplies no flux of its own.
 
-`set_model` and the edits don't just parse the Antimony — they **reconcile** it with the PEtab
-parameter table, then **lint** and **fit**. Author with this in mind:
+`->` and `=>` differ only in the SBML `reversible` flag they set (`->` sets it true, `=>`
+false). That flag is metadata — it changes no dynamics, and both arrows fit identically — but
+a structure view will report it, so do not read `reversible: true` as "the reverse is handled".
 
-- **Every species gets a parametric initial condition, ESTIMATED by default.** The server rewrites
-  `A = 5.0` into `A = A_init` with `A_init` added to the parameter table, and the fit refines it (a
-  declared t=0 is only a starting guess) — EXCEPT an IC of exactly `0` (empty pool) or exactly `1`
-  (unit normalization), which stay FIXED, and **a parameter the problem ships FIXED in the parameter
-  table** (a literature baseline): reference it by NAME as the IC and it stays fixed. You may write
-  `A = A_init; A_init = 5.0;` yourself, but you don't have to. **Antimony cannot say "estimate this
-  initial condition"** — the declared number is only the t=0 *value*; whether it is fitted is a
-  parameter-table property, not model text. So writing the IC under a different name (`A_init`,
-  `A_basal`, `p0_A`, a literal, an assignment rule) never changes whether it's estimated — they all
-  reconcile identically, so **don't re-author trying to change an IC's estimate status.** Every
-  commit returns an **`initial_conditions`** block reporting, per species, whether its t=0 is `fixed`
-  (declared value used), `estimated` (the fit sets it), or `condition_table` (set per condition) —
-  read it to see the mode instead of guessing.
-- **New rate-law symbols become estimated parameters.** Any name in a rate law that isn't a
-  species or an existing table parameter is created as a new parameter (log10 scale,
-  `estimate = 1`). This is how you introduce a new kinetic constant — just use it in the rate
-  law (e.g. adding `Ki` in `Vmax*S/(Km+S+S^2/Ki)` creates `Ki` as an estimated parameter).
-- **Orphans are pruned.** A species or parameter no longer used by any reaction is dropped —
-  including, on a whole-model `set_model`, its fitted value. `set_model` warns when it drops a
-  previously-*estimated* parameter.
-- **Fixed/known parameters are preserved** as long as something references them: the
-  observation noise `sigma_*` (referenced by an observable's noiseFormula) and any parameter a
-  condition column sets stay in the table even if no rate law mentions them.
+So a reverse flux exists only if you write one. `r1: A -> B; kf*A` is one-way — declaring the
+reaction "reversible" does not add a `kr*B` term. Write the reverse explicitly, either as a net
+rate law or as a second reaction:
 
-## Parametrise kinetic constants — no magic numbers
+```
+r1: A -> B; kf*A - kr*B          // one reaction, net rate — compact
+r1: A -> B; kf*A                 // or two reactions — identical dynamics
+r2: B -> A; kr*B
+```
 
-Every **kinetic or physical quantity** in a rate law must be a NAMED parameter, never a bare
-numeric literal: rates, thresholds, amplitudes, basal levels, and — especially —
-**exponents** (Hill / cooperativity coefficients). A hard-coded number is *fixed*: the fit
-cannot touch it, so if your guess is wrong the model can never correct it.
+Both give `dA/dt = -kf*A + kr*B`. Prefer the single net rate law because it keeps the reverse
+term visible next to the forward one and costs one reaction instead of two — not because the
+split form behaves differently. It doesn't.
 
-- **Bad:** `prod: -> x1; 10 * K^2 / (K^2 + x3^2);` — the `10` (max rate) and both `2`s (the
-  Hill exponent) are hard-coded and un-estimable.
-- **Good:** `prod: -> x1; alpha * K^n_hill / (K^n_hill + x3^n_hill);` — `alpha`, `K`, `n_hill`
-  are named, so each is created as an estimated parameter (and because `n_hill` sits in an
-  exponent, the server auto-assigns it a *linear* scale with tight bounds — see the
-  petab-model-building skill).
-- **Exception — structural constants stay literal.** Stoichiometric coefficients (`2 A -> B`)
-  and the `1` in a Hill / Michaelis–Menten denominator (`.../(1 + ...)`) are part of the
-  functional *form*, not tunable quantities; leave those as numbers.
+Use a forward-only law only for a genuinely one-way step: synthesis, degradation, an
+effectively irreversible catalytic step.
 
-A hard-coded exponent is the costly one: `x^4` silently pins the cooperativity at 4, and no
-amount of fitting can move it (a repressilator run hard-coded `^4` and could not fit the
-data). Name it and let it be estimated.
+## Every kinetic quantity must be a NAMED parameter
 
-## Naming rules (avoid these — they cause hard-to-read failures)
+A bare number in a rate law is frozen — the fit cannot touch it, so a wrong guess can never be
+corrected.
 
-- **Do NOT use single-letter parameter names that AMICI reserves for code generation** — in
-  particular `h` (its event/Heaviside vector) and `e` (Euler's number); `t` is time. Use
-  descriptive multi-letter names (`handling`, `attack`, `efficiency`), *not* `h`, `e`, `a`.
-  This is a silent code-generation clash, not a clean parse error, so it is worth avoiding up
-  front. (Single-letter *species* like `A`, `B`, `X`, `Y`, `S`, `P` are fine.)
-- **Match the experimental design's names.** If a condition column sets a species' initial
-  value (e.g. a dose column `S`), your species **must** be named `S` for the doses to apply;
-  a mismatch surfaces as a petab-lint "missing entity" error. Likewise use the observable
-  formulas' species names.
-- **Never put a `sigma_*` (observation noise) or `*_init` (initial-condition) parameter into a
-  rate law.** They belong to the noise / experimental model, not the kinetics; folding one
-  into a rate law is a modelling error even if it parses.
-- Declare (or deliberately introduce, per the reconcile contract) every symbol a rate law
-  uses. An accidental typo becomes a new estimated parameter rather than an error — read the
-  result's `parameter_diff.added` to catch that.
+- Wrong: `prod: -> x1; 10 * K^2/(K^2 + x3^2)` — the max rate and both exponents are hard-coded.
+- Right: `prod: -> x1; alpha * K^n/(K^n + x3^n)` — `alpha`, `K`, `n` are named and estimable.
 
-## The author → lint → fix loop
+**Exponents are the costly case.** `x^4` pins cooperativity at 4 forever. Name it.
 
-`set_model` is atomic: it parses, reconciles, lints, and fits, and **reverts on any failure**
-so a bad author changes nothing. On rejection the result has `committed: false` with `error`
-(and often `issues`). Read it and fix:
+Only *structural* constants stay literal: stoichiometric coefficients (`2 A -> B`) and the `1`
+in a Hill/Michaelis–Menten denominator. Stoichiometry must be a literal — a parameter there is
+frozen to a constant and dropped.
 
-- *"Failed to parse antimony model: …"* — a syntax error (missing `;`, a reaction with no rate
-  law, an unbalanced expression, a species not in a compartment). Fix the fragment named in
-  the message.
-- *petab-lint "… missing entity"* / *"observable/condition references X"* — the model doesn't
-  declare a species/parameter the fixed design needs. Add it (usually a species name you
-  renamed or dropped).
-- *an SBML-consistency `issue` (`check: sbml:…`)* — libsbml flagged a structural problem in the
-  model (a dangling reference, invalid MathML, an overdetermined system). Read the message and
-  fix the offending construct. (Unit-consistency is *not* checked — these models are unit-less
-  by design.)
-- *"the model was accepted by validation but could not be compiled/fit: …"* — the model is
-  valid SBML but AMICI cannot generate code for it; the classic cause is a reserved-name clash
-  (single-letter `h`/`e`). Rename to multi-letter parameters and retry.
-- A fit that commits but is statistically inadequate (`reduced_chi2 ≫ 1`, tiny
-  `chi2_gof_pvalue`) is **not** an authoring failure — that is a *mechanism* problem for the
-  model-building loop, not this skill.
+## Naming
 
-Prefer to fix and re-`set_model` the whole coherent model rather than patching with many small
-edits when the structure itself is what changed.
+- **Never** use `h` or `e` as parameter names — AMICI reserves them for code generation
+  (`h` is the event/Heaviside vector, `e` is Euler's number) and the clash surfaces as a
+  confusing compile failure, not a parse error. `t` is time. Use multi-letter names.
+  Single-letter *species* (`A`, `S`, `P`) are fine.
+- Match the names the problem already uses. A species driven by a condition-table column, or
+  read by an observable formula, must be spelled exactly as that table spells it.
+- **A typo becomes a new parameter, not an error.** `kf*A` mistyped as `kF*A` silently creates
+  `kF`. Check what was added after an edit.
 
-## Known failure modes (living list — append as new ones are seen)
+## Other syntax worth knowing
 
-- Single-letter kinetic parameter (`h`, `e`, `a`) → AMICI code-generation clash. Fix:
-  multi-letter names.
-- Substrate/species name not matching a condition dose column → doses silently not applied /
-  lint "missing entity". Fix: name the species exactly as the condition column.
-- Reaction line without a rate law (`J: A -> B;`) → parse error. Fix: add `; <rate>`.
-- A reversible step split into two opposing one-way reactions, or written with a forward-only
-  rate law where the reverse flux matters → the model can't relax back toward equilibrium and
-  the fit fights the missing reverse term. Fix: use a *single* reversible reaction with a net
-  `forward - reverse` rate law (`J: A -> B; kf*A - kr*B`). (The arrow itself is inert — reactions
-  are created `reversible=false` and the ODE is the rate law — so reversibility must live in the
-  rate law.)
-- Dropping a needed kinetic parameter on a whole-model `set_model` re-author → its fitted value
-  is lost (see the `warnings`). Fix: re-declare it in the Antimony if it was unintended.
-- Hard-coded numeric constant in a rate law — a rate, threshold, or (worst) an exponent like
-  `^4` → the quantity is fixed and un-estimable, so a wrong guess can never be corrected by the
-  fit. Fix: replace the literal with a named parameter (structural constants — stoichiometry,
-  the `1` in a Hill/MM denominator — excepted).
-- Re-authoring a model repeatedly to make an initial condition estimable — trying `A_init`,
-  `A_basal`, `p0_A`, a literal, then an assignment rule → every scheme reconciles to the same
-  *fixed* `A_init` and the fit is identical each time (the NLL never moves). Antimony has no
-  estimate-status syntax, and whether ICs are estimated is a fixed per-scenario setting. Fix: stop
-  re-authoring; read the commit's `initial_conditions` report to see each IC's actual status.
+- A reaction **must** have a rate law: `J: A -> B;` alone is a parse error.
+- Degradation has no product: `deg: A -> ; kdeg*A`. Synthesis has no reactant: `syn: -> A; ksyn`.
+- `^` is exponentiation. Rate laws are ordinary algebra over species and parameters.

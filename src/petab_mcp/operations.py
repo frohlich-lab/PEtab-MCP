@@ -414,7 +414,7 @@ def set_model(
 
     op_args: dict[str, Any] = {"antimony_chars": len(antimony)}
     if normalized:
-        op_args["changes"] = _changes_arg(normalized)
+        op_args["parameters"] = _parameters_arg(normalized)
     result = _commit_change(
         session, "set_model", op_args, justification, references,
         model_build=build,
@@ -576,8 +576,7 @@ def _reject_repeated_widening(
     fit gain. A parameter pinned at a bound with a flat / collinear FIM direction (see
     ``get_identifiability``) is UNIDENTIFIABLE, not under-explored: each widening just lets the
     optimum slide to the new edge and re-pin, chasing the search space toward infinity for ~0 BIC
-    (armistead widened one rate 4x this way before fixing it). The skill says widen at most once;
-    this is the hard backstop. It applies to NOISE SIGMAS TOO: they used to be exempt because
+    This is the hard backstop behind the widen-at-most-once guidance on the tool itself. It applies to NOISE SIGMAS TOO: they used to be exempt because
     ``_reject_sigma_bound_widening`` rejected them on a stricter data-driven cap, but that cap is
     now only advisory (:func:`_warn_sigma_bound_widening`, #118 — it compares against the marginal
     data std, which no fixed band can hold), so exempting them here would leave the one parameter
@@ -619,9 +618,9 @@ def _reject_repeated_widening(
 
 
 def _normalize_parameter_changes(
-    changes: list[dict[str, Any]], label: str = "change_parameters", arg: str = "changes",
+    changes: list[dict[str, Any]], label: str = "change_parameters", arg: str = "parameters",
 ) -> list[dict[str, Any]]:
-    """Validate + normalize a ``changes`` list into ``{parameter_id, lower_bound, upper_bound,
+    """Validate + normalize a ``parameters`` list into ``{parameter_id, lower_bound, upper_bound,
     scale}`` entries (missing fields as ``None``), raising :class:`OperationError` on anything
     malformed. Shared by ``change_parameters`` and ``set_model(parameters=[...])`` so both paths
     enforce exactly the same entry contract (issue #114); ``label`` names the offending argument
@@ -737,20 +736,23 @@ def _parameter_edit(session, normalized: list[dict[str, Any]]) -> Callable[[Any]
     return edit
 
 
-def _changes_arg(normalized: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The normalized entries as they go into the provenance event args (``None``s dropped)."""
+def _parameters_arg(normalized: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The normalized entries as they go into the provenance event args (``None``s dropped).
+
+    Recorded under the same key both editors accept (``parameters``), so a provenance event reads
+    back as the call that produced it."""
     return [{k: v for k, v in c.items() if v is not None} for c in normalized]
 
 
 def change_parameters(
     session,
-    changes: list[dict[str, Any]],
+    parameters: list[dict[str, Any]],
     justification: str,
     references: list[str] | None = None,
 ) -> dict[str, Any]:
     """Batch-edit the bounds and/or scale of one or more parameters in ONE atomic edit.
 
-    ``changes`` is a non-empty list of per-parameter dicts, each naming ``parameter_id`` and any
+    ``parameters`` is a non-empty list of per-parameter dicts, each naming ``parameter_id`` and any
     of ``lower_bound`` / ``upper_bound`` (a bound edit — give BOTH or neither) and ``scale``
     ('lin'|'log'|'log10'). Group everything that belongs to one coherent retuning into a single
     call, then ``fit`` once to score it. Every per-parameter backstop still applies (a re-pinned
@@ -758,9 +760,9 @@ def change_parameters(
     whole batch is atomic, one rejected entry reverts ALL of them and nothing changes. An EDIT:
     mutates the parameter table but does NOT fit — the ``fit`` tool's optional ``fit=true`` bundle
     (issue #114) is wired at the server layer, not here."""
-    normalized = _normalize_parameter_changes(changes)
+    normalized = _normalize_parameter_changes(parameters)
     return _commit_change(
-        session, "change_parameters", {"changes": _changes_arg(normalized)},
+        session, "change_parameters", {"parameters": _parameters_arg(normalized)},
         justification, references,
         param_edit=_parameter_edit(session, normalized), require_references=False,
     )

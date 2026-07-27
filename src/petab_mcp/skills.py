@@ -3,12 +3,13 @@
 A *skill* is a directory that documents how to use this server's tools. It contains
 a ``SKILL.md`` file with a small YAML-style frontmatter block (``name`` and
 ``description``) followed by a markdown body, plus any number of supporting files
-(e.g. ``tools.md``) alongside it. The skills ship inside the package::
+alongside it. The skills ship inside the package::
 
     src/petab_mcp/_skills/
       petab-model-building/
         SKILL.md
-        tools.md
+      antimony-authoring/
+        SKILL.md
 
 Because ``_skills`` lives next to this module it is found identically from a source
 checkout and an installed wheel.
@@ -168,6 +169,36 @@ def default_skills_dir() -> Path | None:
     return None
 
 
+def skill_texts(skills_dir: str | Path | None = None) -> dict[str, str]:
+    """Every bundled skill as ``{name: full text}``, support files included.
+
+    A skill is *instructions*, not reference docs: the modeling lead is told to read them before
+    authoring. So a change here changes what an agent is told, exactly like editing a prompt —
+    which is why the harness versions these alongside ``prompt_version`` and registers them in
+    Phoenix (see ``petab_harness.experiments``).
+    """
+    skills = load_skills(skills_dir or default_skills_dir())
+    out: dict[str, str] = {}
+    for skill in skills:
+        parts = [skill.text] + [skill.files[f] for f in sorted(skill.files)]
+        out[skill.name] = "\n".join(parts)
+    return out
+
+
+def skills_version(skills_dir: str | Path | None = None) -> str:
+    """A stable 12-char content hash over every bundled skill — the *skills version*.
+
+    Same framing scheme as ``petab_harness.prompts.prompt_version`` (sorted name, NUL, text),
+    kept separate rather than folded into it: ``prompts.py`` is deliberately dependency-free and
+    must not read this package's files, and two numbers say WHICH surface moved.
+    """
+    import hashlib
+
+    texts = skill_texts(skills_dir)
+    payload = "".join(f"{name}\x00{texts[name]}\x00" for name in sorted(texts))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+
+
 def register_skills(mcp, skills: list[Skill]) -> list[Skill]:
     """Register ``list_skills``/``get_skill`` tools and ``petab://skills`` resources.
 
@@ -204,8 +235,8 @@ def register_skills(mcp, skills: list[Skill]) -> list[Skill]:
     def get_skill(name: str, file: str | None = None) -> str:
         """Return a skill's SKILL.md, or one of its supporting files.
 
-        `name` is the skill name from `list_skills`. Pass `file` (e.g. "tools.md")
-        to fetch a supporting file listed in that skill's `files`.
+        `name` is the skill name from `list_skills`. Pass `file` to fetch a supporting file
+        listed in that skill's `files`.
         """
         skill = _find(name)
         if file is None:

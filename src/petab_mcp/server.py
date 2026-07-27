@@ -6,15 +6,15 @@ Tool groups:
   ``list_conditions``, ``get_measurements``
 * model (constrained operations): ``set_model`` (author/replace the whole model),
   ``change_parameters`` (batched bound/scale edits; requires a justification;
-  references optional), plus read-only ``get_model``, ``get_model_structure``, ``validate_problem``
-* parameters (read-only + reconcile): ``get_parameters``, ``sync_parameters``
+  references optional), plus read-only ``get_model``, ``get_model_structure``
+* parameters (read-only): ``get_parameters``
 * fit + simulation: edits are **fit-free**; the dedicated ``fit`` tool fits the free
   parameters, simulates, and snapshots the version. Read the
   score with ``get_fit_summary`` (metrics only), query the data (PEtab tables + simulation
   dataframe + residuals + pyPESTO traces) with SQL via ``query_data`` / ``list_data_tables``,
   and inspect the optimizer numerics with ``get_fitting_log`` (the pyPESTO/Fides log)
 * provenance/versions/errors: ``get_provenance``, ``get_errors``, ``list_versions``,
-  ``get_version``, ``diff_versions``, ``rollback_to``, ``current_version``
+  ``get_version``, ``diff_versions``, ``restore_version``, ``get_progress``
 * session: ``reset``
 * skills (tool-usage documentation, bundled under ``_skills/``): ``list_skills``,
   ``get_skill``
@@ -46,70 +46,39 @@ from . import logging_setup
 from . import model as model_mod
 from . import operations as ops_mod
 from . import parameters as param_mod
-from . import reconcile as reconcile_mod
 from . import skills as skills_mod
 from .constants import DEFAULT_AUTO_FIT_STARTS
 from .engine import AmiciEngine
 from .errors import PetabMcpError, ValidationError
 from .formatting import df_to_records, summarize_measurements
 from .session import PetabSession
-from .validation import validate_problem as _validate_problem
 
+# Deliberately SHORT. These instructions are re-sent to the client on every turn, and each
+# tool's own description is the canonical contract for its arguments and returns — restating
+# them here bought a third copy to keep in sync, not clarity. This states only what a caller
+# cannot learn from any single tool's description: the shape of the problem, the invariants
+# that span tools, and where the full workflow lives.
 SERVER_INSTRUCTIONS = (
     "Interact with a fixed PEtab v1 estimation problem. The experimental design "
-    "(measurements, conditions, observables) is read-only. If the problem ships WITHOUT a "
-    "model (`describe_problem` reports `model_initialized: false`), author the whole "
-    "model from Antimony with `set_model` (justification + references). `set_model` also "
-    "re-authors an existing model wholesale. It requires a non-empty "
-    "justification (references are optional, PubMed-validated if given) and automatically "
-    "keeps the SBML model and PEtab parameter table consistent (parametric initial "
-    "conditions). Every species gets a parametric initial condition, ESTIMATED by default (a "
-    "declared t=0 is only a starting guess the fit refines) — EXCEPT an IC of exactly 0 (an empty "
-    "pool) or exactly 1 (a unit normalization), which stay fixed, and a shipped known-constant IC "
-    "(a literature baseline provided in the parameter table, e.g. a fixed initial count) that "
-    "ships fixed: reference it by NAME and it stays fixed. Each edit returns an "
-    "`initial_conditions` block reporting whether every "
-    "species' t=0 is fixed (declared value used), estimated (the fit sets it), or set per "
-    "condition. Antimony cannot declare estimate status, so re-naming an initial condition in the "
-    "model never changes whether it is fitted — read the report instead of guessing. Parameter "
-    "scales and "
-    "bounds are changed through justified edits "
-    "(`change_parameters`, one batched call carrying a list of per-parameter bound/scale "
-    "changes); parameter *values* are set "
-    "only by the fit, not by hand. EDITS ARE FIT-FREE BY DEFAULT: `set_model` and the edits mutate "
-    "the working model but do NOT fit and do NOT create a version — `describe_problem` reports "
-    "`has_unfit_edits: true` until you score it. A single coherent change is best made as ONE "
-    "call: `set_model(antimony, justification, parameters=[...], fit=true)` applies the re-author "
-    "and the bound/scale edits atomically and scores them, snapshotting one version (the fit "
-    "result is nested under `fit`); `change_parameters(..., fit=true)` does the same for a "
-    "parameters-only retuning. Leave them unbundled when a change spans several edits: assemble "
-    "it, then call `fit` "
-    "ONCE: it fits the free parameters with a pyPESTO multistart, simulates, and snapshots the "
-    "single version carrying the fitted parameters, the fit metrics (neg_log_likelihood, chi2, "
-    "improvement vs prior versions), and a simulation dataframe. `n_starts` (on `fit` or on a "
-    "bundled edit) REPLACES the server's configured multistart count — `describe_problem` reports "
-    "it as `fit_n_starts_default` — so pass it only to go ABOVE that number; below it fits LESS "
-    "hard than omitting it, and 0 simulates without optimising. Every fit result reports the "
-    "`n_starts` it actually ran with. "
-    "`fit` de-duplicates: it skips the refit and "
-    "returns the stored metrics when the working model is byte-identical to the current version "
-    "(unless the new fit asks for MORE multistarts than that version used, which does run). "
-    "Check the score "
-    "cheaply with `get_fit_summary` (metrics only). Diagnose the fit with SQL: `query_data` "
-    "runs DuckDB queries over a disposable copy of the PEtab tables (`measurements`, `conditions`, "
-    "`observables`, `parameters`), the `simulations` dataframe (measurement vs simulation "
-    "with per-point `residual`, `residual_weighted`, and `noise`), and the last fit's pyPESTO "
-    "multistart (`optimization_starts`, `optimization_trace`) — compute any residual "
-    "breakdown, worst-fit points, bias/time-trend check, or convergence diagnostic you need "
-    "(call `list_data_tables` for the schema). `get_fitting_log` exposes the pyPESTO/Fides "
-    "optimizer log (multistart convergence, parameters pinned at bounds, ill-conditioning) for "
-    "numerical diagnosis. Every change is versioned and logged: rank versions by fit with "
-    "`list_versions` / `diff_versions` (which reports the neg-log-likelihood delta); inspect "
-    "with `get_provenance`; errors via `get_errors`; revert with `rollback_to` or `reset`. To go "
-    "BACK to an earlier model, use `restore_version(n)` — it restores that version's stored fit "
-    "without recompiling/refitting; do NOT re-author an earlier model with `set_model` and `fit` "
-    "(that just refits to the same result and appends a duplicate — `fit` warns on, then refuses, "
-    "a re-authored structure it has already seen)."
+    "(measurements, conditions, observables) is READ-ONLY — no tool mutates it. "
+    "`set_model` is the SINGLE model editor: it authors the whole model in Antimony, both "
+    "building the first one (when `describe_problem` reports `model_initialized: false`) and "
+    "re-authoring an existing one wholesale. Every model/parameter operation requires a "
+    "non-empty justification (references optional, PubMed-validated if given), and the server "
+    "automatically reconciles the SBML model with the PEtab parameter table after each — new "
+    "rate-law symbols become estimated parameters, new species get a parametric initial "
+    "condition, orphans are pruned. Parameter BOUNDS and SCALE are changed through "
+    "`change_parameters`; parameter VALUES are set only by a fit, never by hand. "
+    "EDITS ARE FIT-FREE BY DEFAULT: they mutate the working model but do NOT fit and do NOT "
+    "create a version (`describe_problem` reports `has_unfit_edits: true` until you score "
+    "it). Make each coherent change ONE call — "
+    "`set_model(antimony, justification, parameters=[...], fit=true)` applies the re-author "
+    "and its bound/scale edits atomically and scores them as one version; leave them "
+    "unbundled only when a change spans several edits, then call `fit` once. A version IS a "
+    "fit snapshot, and everything is logged: audit with `list_versions` / `diff_versions` / "
+    "`get_provenance` / `get_errors`. To go BACK to an earlier model use `restore_version(n)` "
+    "— it reuses that version's stored fit — rather than re-authoring it, which recompiles, "
+    "refits to the same result, and appends a duplicate."
 )
 
 # Appended to the instructions only when skills are actually registered, so clients
@@ -417,18 +386,19 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
 
     @mcp.tool()
     def change_parameters(
-        changes: list[dict[str, Any]], justification: str,
+        parameters: list[dict[str, Any]], justification: str,
         references: list[str] | None = None,
         fit: bool = False,
         n_starts: int | None = None,
     ) -> dict[str, Any]:
         """Batch-edit the bounds and/or scale of one or more parameters in ONE atomic call.
 
-        `changes` is a non-empty list of per-parameter entries, each with `parameter_id` and any
-        of `lower_bound` / `upper_bound` (a bound edit — give BOTH or neither) and `scale`
-        ('lin'|'log'|'log10'). Group everything belonging to one coherent retuning into a single
-        call (one `justification` for the batch), and pass `fit=true` (see `set_model` for
-        `n_starts`, which is REJECTED without `fit=true` rather than ignored)
+        `parameters` is a non-empty list of per-parameter entries, each with `parameter_id` and
+        any of `lower_bound` / `upper_bound` (a bound edit — give BOTH or neither) and `scale`
+        ('lin'|'log'|'log10') — the SAME argument name and entry shape `set_model` takes, so a
+        retuning moves between the two calls unchanged. Group everything belonging to one coherent
+        retuning into a single call (one `justification` for the batch), and pass `fit=true` (see
+        `set_model` for `n_starts`, which is REJECTED without `fit=true` rather than ignored)
         to score the retuning in the SAME call — the bundled result nests the whole fit result
         under `fit` and mirrors `version`/`committed` at the top level. If the edit applies but the
         fit FAILS the edit stays in place (`applied: true`, `committed: false`, `fit.error`).
@@ -437,9 +407,11 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         that a bound/scale change that belongs WITH a re-author is better passed to
         `set_model(parameters=[...])` as one call.
 
-        Atomic: if any entry is rejected the WHOLE batch reverts. Each bound entry REJECTS a
-        widening past an ESTIMATED noise-sigma's data-driven cap, and REJECTS a THIRD widening of
-        a still-pinned parameter whose last widening bought a negligible BIC gain — a parameter
+        Atomic: if any entry is rejected the WHOLE batch reverts. Widening an ESTIMATED
+        noise-sigma's upper bound past its data-driven cap is ADVISORY — it returns a `warnings`
+        entry pointing at `get_fit_diagnosis`, it does NOT reject. What IS rejected is a THIRD
+        widening of a still-pinned parameter whose last widening bought a negligible BIC gain — a
+        parameter
         re-pinning at a bound with a flat/collinear FIM direction (see `get_identifiability`) is
         unidentifiable, not under-explored, so remove its reaction or use its limiting
         (irreversible/instantaneous) form instead of widening again; if neither is possible, leave
@@ -451,20 +423,11 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         with session.lock:  # see set_model: one critical section for the bundled edit + fit
             result = ctx.run_operation(
                 "change_parameters", ops_mod.change_parameters,
-                session, changes, justification, references,
+                session, parameters, justification, references,
             )
             if not fit or not result.get("applied"):
                 return result
             return ctx.edit_then_fit(result, n_starts, justification)
-
-    @mcp.tool()
-    def validate_problem() -> dict[str, Any]:
-        """Lint the current problem (model + tables) and report issues."""
-        try:
-            protected_fixed = session.protected_fixed_parameter_ids()
-        except Exception:  # noqa: BLE001 - the role check is best-effort; lint still runs
-            protected_fixed = None
-        return _validate_problem(session.problem, protected_fixed_ids=protected_fixed)
 
 
 # -------------------------------------------------------------- parameter tools
@@ -489,25 +452,10 @@ def _register_parameter_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         introducing your own.
 
         Values (`nominalValue`) are set by the automatic fit on commit; adjust bounds and
-        scale through `change_parameters` (one batched call: a `changes` list whose entries
+        scale through `change_parameters` (one batched call: a `parameters` list whose entries
         each carry `lower_bound`/`upper_bound` and/or `scale` for a parameter).
         """
         return param_mod.parameters_to_records(session.problem)
-
-    @mcp.tool()
-    def sync_parameters(policy: str = "report") -> dict[str, Any]:
-        """Reconcile the parameter table with the model ('report' or 'add').
-
-        `report` lists model params missing from the table and orphaned table rows without
-        changing anything; `add` runs the same full reconcile the commit pipeline does —
-        adding the missing params (with initial-condition/exponent/scale handling) and
-        removing the orphans.
-        """
-        def run() -> dict[str, Any]:
-            with session.lock:
-                return reconcile_mod.sync_parameters(session.problem, policy)
-
-        return ctx.run("sync_parameters", run, {"policy": policy})
 
 
 # ------------------------------------------------------- fit + simulation tools
@@ -797,12 +745,12 @@ def _register_provenance_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         return ctx.run("diff_versions", lambda: session.provenance.diff_versions(from_version, to_version),
                        {"from": from_version, "to": to_version})
 
-    @mcp.tool()
-    def rollback_to(version: int, justification: str = "") -> dict[str, Any]:
-        """Revert the working model + parameters to a prior version (appends a new version)."""
-        return ctx.run("rollback_to", lambda: session.rollback_to(version, justification or None),
-                       {"version": version})
-
+    # NOTE: `rollback_to` and `current_version` are deliberately NOT exposed as tools.
+    # `restore_version` IS `rollback_to` (session.restore_version delegates to it) under the name
+    # that reads correctly for the going-back workflow, and `describe_problem` already returns
+    # `current_version` / `has_unfit_edits` / `n_pending_edits`. Two tools for one operation cost
+    # a JSON schema in every client's context on every turn and a second docstring to keep in
+    # sync — which is how they drifted apart in the first place. Both session methods remain.
     @mcp.tool()
     def restore_version(version: int, justification: str = "") -> dict[str, Any]:
         """Bring a prior version's model + parameters back as the working state, WITHOUT refitting.
@@ -813,17 +761,10 @@ def _register_provenance_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         version (and `set_model` will warn, then refuse, once it detects the repeat), whereas this
         reuses the existing fit and records a clean restore. Find the target with `list_versions`
         (pick the lowest-bic / is_new_best version), then `restore_version(v)`. Appends a new
-        version, like `rollback_to` (of which this is the aptly-named equivalent)."""
+        version rather than erasing history, so a restore is itself auditable."""
         return ctx.run("restore_version",
                        lambda: session.restore_version(version, justification or None),
                        {"version": version})
-
-    @mcp.tool()
-    def current_version() -> dict[str, Any]:
-        """Return the current (HEAD) version number and whether the working model has unfit edits."""
-        return {"version": session.provenance.current_version,
-                "has_unfit_edits": session.has_unfit_edits(),
-                "n_pending_edits": len(session.pending_edits)}
 
     @mcp.tool()
     def get_progress() -> dict[str, Any]:

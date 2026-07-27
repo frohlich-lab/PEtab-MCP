@@ -79,7 +79,7 @@ def test_set_model_with_parameters_applies_both_atomically(session):
     assert len(edits) == 1
     assert edits[-1]["operation"] == "set_model"
     # the event records both halves of the change
-    assert edits[-1]["args"]["changes"][0]["parameter_id"] == "k1"
+    assert edits[-1]["args"]["parameters"][0]["parameter_id"] == "k1"
     assert edits[-1]["args"]["antimony_chars"] > 0
 
 
@@ -132,14 +132,14 @@ def test_set_model_without_parameters_is_unchanged(session):
     assert res["applied"] is True and res["version"] is None and res["pending_fit"] is True
     assert "fit" not in res
     edits = [e for e in session.provenance.recent_events() if e["type"] == "edit"]
-    assert "changes" not in edits[-1]["args"]
+    assert "parameters" not in edits[-1]["args"]
 
 
 @pytest.mark.parametrize("empty", [None, []])
 def test_set_model_empty_parameters_means_no_parameter_edit(session, empty):
     res = O.set_model(session, _antimony(), justification="no parameter edits", parameters=empty)
     assert res["applied"] is True
-    assert "changes" not in [
+    assert "parameters" not in [
         e for e in session.provenance.recent_events() if e["type"] == "edit"][-1]["args"]
 
 
@@ -175,6 +175,12 @@ def _call(mcp, name, args):
     return asyncio.run(mcp.call_tool(name, args))[1]  # (content_blocks, structured_result)
 
 
+def _head(mcp):
+    """HEAD version + pending-edit state. There is no `current_version` tool — everything it
+    returned lives on `describe_problem` (only the version key is named differently)."""
+    return _call(mcp, "describe_problem", {})
+
+
 def _listed(result):
     """FastMCP wraps a list return in {"result": [...]}."""
     return result["result"] if isinstance(result, dict) and "result" in result else result
@@ -197,8 +203,8 @@ def test_bundled_call_produces_exactly_one_version(tmp_path):
     assert res["fit"]["committed"] is True and res["fit"]["version"] == 1
     assert res["fit"]["neg_log_likelihood"] is not None and res["fit"]["bic"] is not None
 
-    head = _call(mcp, "current_version", {})
-    assert head["version"] == 1 and head["has_unfit_edits"] is False
+    head = _head(mcp)
+    assert head["current_version"] == 1 and head["has_unfit_edits"] is False
     events = _listed(_call(mcp, "get_provenance", {}))
     assert len([e for e in events if e["type"] == "edit"]) == 1
     assert len([e for e in events if e["type"] == "fit"]) == 1
@@ -212,14 +218,14 @@ def test_change_parameters_bundled_fit(tmp_path):
     """The parameters-only retuning scores in one call too."""
     mcp = _server(tmp_path, auto_fit=True)
     res = _call(mcp, "change_parameters", {
-        "changes": [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
+        "parameters": [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
         "justification": "widen k1 and score it",
         "fit": True,
         "n_starts": 2,
     })
     assert res["applied"] is True and res["committed"] is True and res["version"] == 1
     assert res["fit"]["bic"] is not None
-    assert _call(mcp, "current_version", {})["has_unfit_edits"] is False
+    assert _head(mcp)["has_unfit_edits"] is False
 
 
 def test_bundled_dedup_skip_reports_no_change(tmp_path):
@@ -240,7 +246,7 @@ def test_bundled_dedup_skip_reports_no_change(tmp_path):
     assert again["version"] == 1
     # the no-op consumed the pending edit and created no version
     assert again["pending_fit"] is False
-    assert _call(mcp, "current_version", {})["version"] == 1
+    assert _head(mcp)["current_version"] == 1
 
 
 def test_bundled_fit_failure_leaves_the_edit_in_place(tmp_path, monkeypatch):
@@ -265,8 +271,8 @@ def test_bundled_fit_failure_leaves_the_edit_in_place(tmp_path, monkeypatch):
     assert "still in place" in res["message"]
 
     # the working model keeps the edit, ready to be repaired and re-fit
-    head = _call(mcp, "current_version", {})
-    assert head["has_unfit_edits"] is True and head["version"] == 0
+    head = _head(mcp)
+    assert head["has_unfit_edits"] is True and head["current_version"] == 0
     assert "k3" in {r["parameterId"] for r in _listed(_call(mcp, "get_parameters", {}))}
     # and the failure is logged like any other fit rejection
     assert any("boom" in (e.get("message") or "")
@@ -304,7 +310,7 @@ def test_rejected_edit_never_fits(tmp_path):
         "fit": True,
     })
     assert res["applied"] is False and "fit" not in res and "committed" not in res
-    assert _call(mcp, "current_version", {})["version"] == 0
+    assert _head(mcp)["current_version"] == 0
 
 
 def test_n_starts_without_fit_is_rejected_not_ignored(tmp_path):
@@ -314,14 +320,14 @@ def test_n_starts_without_fit_is_rejected_not_ignored(tmp_path):
     for name, args in (
         ("set_model", {"antimony": _antimony(), "justification": "x", "n_starts": 4}),
         ("change_parameters", {
-            "changes": [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
+            "parameters": [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
             "justification": "x", "n_starts": 4}),
     ):
         res = _call(mcp, name, args)
         assert res["applied"] is False and "n_starts" in res["error"], name
     # nothing was edited, and the rejections are auditable — including the refused VALUE, so the
     # log says which argument was wrong rather than only repeating the message
-    assert _call(mcp, "current_version", {})["has_unfit_edits"] is False
+    assert _head(mcp)["has_unfit_edits"] is False
     logged = [e for e in _listed(_call(mcp, "get_errors", {}))
               if "n_starts" in (e.get("message") or "")]
     assert len(logged) == 2
@@ -343,7 +349,7 @@ def test_the_multistart_default_and_the_starts_actually_used_are_reported(tmp_pa
 
     # given -> exactly that count, not default + n_starts
     res = _call(mcp, "change_parameters", {
-        "changes": [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
+        "parameters": [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
         "justification": "score with an explicit count", "fit": True, "n_starts": default + 2})
     assert res["fit"]["n_starts"] == default + 2
 
@@ -369,7 +375,7 @@ def test_a_harder_fit_of_an_unchanged_model_is_not_skipped(tmp_path):
 
     # fewer starts than the new HEAD -> back to a no-op, not a weaker refit
     weaker = _call(mcp, "fit", {"n_starts": 3})
-    assert weaker["no_change"] is True and _call(mcp, "current_version", {})["version"] == 2
+    assert weaker["no_change"] is True and _head(mcp)["current_version"] == 2
 
 
 def test_a_bad_n_starts_is_rejected_before_the_edit_applies(tmp_path):
@@ -384,8 +390,8 @@ def test_a_bad_n_starts_is_rejected_before_the_edit_applies(tmp_path):
 
     assert res["applied"] is False and "n_starts" in res["error"]
     assert "fit" not in res            # the fit never ran
-    head = _call(mcp, "current_version", {})
-    assert head["has_unfit_edits"] is False and head["version"] == 0
+    head = _head(mcp)
+    assert head["has_unfit_edits"] is False and head["current_version"] == 0
     assert "k3" not in {r["parameterId"] for r in _listed(_call(mcp, "get_parameters", {}))}
 
 
@@ -410,7 +416,7 @@ def test_a_fit_that_breaks_after_snapshotting_reports_the_new_version(tmp_path, 
     assert "late boom" in res["fit"]["error"]
     # HEAD really did advance, so say so instead of claiming the edit is unscored
     assert res["pending_fit"] is False
-    assert res["version"] == 1 == _call(mcp, "current_version", {})["version"]
+    assert res["version"] == 1 == _head(mcp)["current_version"]
     assert "do NOT re-fit" in res["message"] and "still in place" not in res["message"]
 
 
@@ -450,7 +456,7 @@ def test_bundled_fit_crash_is_degraded_to_a_failed_fit(tmp_path, monkeypatch):
         "justification": "an edit whose fit crashes", "fit": True})
     assert res["applied"] is True and res["committed"] is False
     assert "kaboom" in res["fit"]["error"]
-    assert _call(mcp, "current_version", {})["has_unfit_edits"] is True
+    assert _head(mcp)["has_unfit_edits"] is True
 
 
 def test_unbundled_result_shape_unchanged(tmp_path):
@@ -459,11 +465,11 @@ def test_unbundled_result_shape_unchanged(tmp_path):
     for name, args in (
         ("set_model", {"antimony": _antimony(), "justification": "plain edit"}),
         ("change_parameters", {
-            "changes": [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
+            "parameters": [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
             "justification": "plain edit"}),
     ):
         res = _call(mcp, name, args)
         assert res["applied"] is True, name
         assert res["version"] is None and res["pending_fit"] is True, name
         assert "fit" not in res and "committed" not in res, name
-    assert _call(mcp, "current_version", {})["version"] == 0
+    assert _head(mcp)["current_version"] == 0

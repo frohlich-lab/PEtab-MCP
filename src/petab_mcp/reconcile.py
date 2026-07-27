@@ -45,7 +45,6 @@ from .constants import (
     EXPONENT_UPPER_BOUND,
     NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD,
 )
-from .errors import ParameterError
 from .parameters import _default_bounds
 
 # Leading (?<![\w.]) so a digit-glued run is never read as an identifier: the `e5` in `1e5`
@@ -1318,8 +1317,8 @@ def sync_parameter_table(problem) -> dict[str, list[str]]:
         else:
             # A generic rate constant: estimate on log10 when the nominal is positive (the usual
             # case for a kinetic parameter). A non-positive nominal cannot live on a log scale,
-            # so fall back to linear — mirroring the guard in parameters.sync_parameters and
-            # avoiding an invalid log10 row (non-positive bound) that the lint would then reject.
+            # so fall back to linear, avoiding an invalid log10 row (a non-positive bound) that
+            # the lint would then reject.
             lb, ub = _default_bounds(value)
             try:
                 positive = value is not None and float(value) > 0
@@ -1354,46 +1353,3 @@ def reconcile(problem) -> dict[str, Any]:
     return {"pruned": pruned, "parameters": synced}
 
 
-# -- manual parameter-table sync (the `sync_parameters` tool) ---------------
-def parameter_sync_diff(problem) -> dict[str, Any]:
-    """What a parameter-table sync would change, WITHOUT mutating anything.
-
-    Keyed the same way as :func:`sync_parameter_table` (petab's
-    ``get_valid_parameters_for_parameter_table`` — every model parameter except rule targets):
-
-    * ``model_only`` — model parameters missing from the table (a sync would ADD these);
-    * ``table_only`` — orphaned table rows: not backed by a model parameter AND not referenced
-      by the fixed observable/noise/condition tables (a sync would REMOVE these). Rows the
-      fixed tables reference (e.g. ``sigma_*``) are kept and never listed here.
-    """
-    valid = set(problem.model.get_valid_parameters_for_parameter_table())
-    # A condition-table column is set per condition, not a parameter-table row (PEtab forbids it
-    # there), so `sync_parameter_table` excludes these from its adds — mirror that here, or the
-    # report claims a sync would add e.g. `dose` while `add` correctly leaves it out.
-    valid -= condition_column_symbols(problem)
-    table_ids = set(problem.parameter_df.index)
-    keep_table = table_referenced_symbols(problem)
-    orphans = table_ids - valid - keep_table
-    return {
-        "in_sync": valid.issubset(table_ids) and not orphans,
-        "model_only": sorted(valid - table_ids),
-        "table_only": sorted(orphans),
-    }
-
-
-def sync_parameters(problem, policy: str = "report") -> dict[str, Any]:
-    """Reconcile the parameter table with the model ('report' or 'add').
-
-    ``'report'`` returns :func:`parameter_sync_diff` and changes nothing. ``'add'`` runs the
-    SAME :func:`sync_parameter_table` the commit pipeline runs — adding rows for model
-    parameters missing from the table (with the initial-condition / Hill-exponent / scale
-    handling) AND removing orphaned rows — so the manual tool and the automatic commit path
-    reconcile identically. Returns ``{policy, added, removed, diff}``.
-    """
-    if policy == "report":
-        return {"policy": policy, "added": [], "removed": [], "diff": parameter_sync_diff(problem)}
-    if policy == "add":
-        synced = sync_parameter_table(problem)
-        return {"policy": policy, "added": synced["added"], "removed": synced["removed"],
-                "diff": parameter_sync_diff(problem)}
-    raise ParameterError(f"Unknown sync policy {policy!r}; use 'report' or 'add'.")

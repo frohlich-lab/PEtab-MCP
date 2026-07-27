@@ -69,9 +69,8 @@ def test_bundled_skill_loads():
     assert "petab-model-building" in names
     skill = next(s for s in skills if s.name == "petab-model-building")
     assert skill.description  # non-empty description from frontmatter
-    assert "tools.md" in skill.files
     assert "SKILL.md" not in skill.files  # SKILL.md is the body, not a support file
-    assert "set_model" in skill.text
+    assert "observation model" in skill.text
 
 
 def test_default_skills_dir_finds_bundled_skills():
@@ -164,12 +163,8 @@ def test_list_and_get_skill_tools(tmp_path):
         body = _unwrap(_structured(await mcp.call_tool(
             "get_skill", {"name": "petab-model-building"}
         )))
-        assert "Working a PEtab problem" in body
+        assert "PEtab semantics" in body
 
-        support = _unwrap(_structured(await mcp.call_tool(
-            "get_skill", {"name": "petab-model-building", "file": "tools.md"}
-        )))
-        assert "tool & resource catalog" in support
 
     asyncio.run(go())
 
