@@ -432,6 +432,22 @@ def _model_math_names(sm) -> set[str]:
     return names
 
 
+def _rule_target_symbols(sm) -> set[str]:
+    """Ids assigned by an assignment- or rate-rule — the quantities the MODEL computes.
+
+    PEtab forbids these in the parameter table (they are not free parameters), and mirrors that in
+    ``get_valid_parameters_for_parameter_table``. Kept as its own helper because
+    :func:`input_species` needs the same set narrowed to species, while the parameter-table sync
+    needs it un-narrowed.
+    """
+    out: set[str] = set()
+    for i in range(sm.getNumRules()):
+        rule = sm.getRule(i)
+        if rule.isSetVariable() and (rule.isAssignment() or rule.isRate()):
+            out.add(rule.getVariable())
+    return out
+
+
 def input_species(sm) -> set[str]:
     """Species that are model INPUTS / forcing terms rather than free dynamic states: held
     constant, on the boundary, or driven by an assignment- or rate-rule (a forcing function).
@@ -1461,6 +1477,17 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
     ic_params = _ic_parameter_ids(sm)
     exp_params = _exponent_symbols(sm)  # cooperativity/Hill exponents -> lin scale, tight bounds
     keep_table = table_referenced_symbols(problem)  # observable/noise params etc.
+    # ...but NOT a symbol PEtab forbids outright. An assignment-/rate-rule TARGET is computed by
+    # the model, so petab's own get_valid_parameters_for_parameter_table excludes it (its
+    # `disallowed_set` is exactly the rule variables) and lint rejects the problem if it appears:
+    # "… is not allowed to occur in the parameters table". `keep_table` was overriding that
+    # exclusion whenever an observable formula happened to reference the same symbol — the normal
+    # shape for a rule-computed readout — so the row survived the sync and the whole edit was
+    # refused. Measured on one sweep: this was the single largest refusal cause, 85 rejections on
+    # `prevalence` alone (an assignment-rule target read by an observable), plus IR1in/IR2in/
+    # Deaths/Cumulative_cases in the same shape. The agent's model was legal; the sync produced a
+    # table petab forbids, so the fix belongs here and not in the model text.
+    keep_table -= _rule_target_symbols(sm)
 
     added, removed = [], []
 

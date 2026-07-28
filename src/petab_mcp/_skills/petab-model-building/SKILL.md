@@ -52,6 +52,31 @@ So:
 - Whether an **initial condition** is estimated is likewise a table property. Renaming it in the
   model — `A_init`, `A_basal`, `p0_A` — changes nothing.
 
+## What may NOT be a parameter-table row
+
+You do not write that table — it is synced from the model. Two kinds of symbol are forbidden in
+it, and a problem carrying one is rejected outright:
+
+- **A quantity the model computes**: the target of an assignment or rate rule (`prevalence :=
+  I/N;`). It is not a free parameter, so PEtab excludes it.
+- **A condition-table column**: an input supplied per condition, not fitted.
+
+Both are handled by the sync, so you do not act on them — but do not *expect* a rule-computed
+quantity to appear in the table, and do not add a row for one.
+
+Observable/noise symbols are the opposite case: a `sigma_*` or scaling factor **belongs** in the
+table (only the `observableParameter1_*` placeholders do not). Keep them out of the mechanism,
+not out of the table.
+
+If a rejection names **Missing** or **Extraneous** parameters, the model and the tables disagree
+about a NAME — usually one you renamed on one side only.
+
+## Initial assignments refer to things that already exist
+
+`A = A_init;` becomes an SBML `<initialAssignment>`. Its target must be a **declared** species,
+compartment or parameter — and it may not also be the variable of an **assignment rule**: give a
+quantity an initial value *or* compute it with a rule, never both.
+
 ## A fitted value is linear, whatever the scale
 
 `parameterScale` is commonly `log10`. Bounds are given on that scale, but `nominalValue` and

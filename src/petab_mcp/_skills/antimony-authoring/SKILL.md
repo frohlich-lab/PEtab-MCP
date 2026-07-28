@@ -3,8 +3,10 @@ name: antimony-authoring
 description: >-
   Read before writing an Antimony model string. The syntax and naming mistakes that make an
   Antimony model fail to parse, fail to compile under AMICI, or silently fit wrong — expecting
-  the arrow to supply a reverse flux, hard-coded exponents, reserved single-letter names,
-  typos that become parameters.
+  the arrow to supply a reverse flux, hard-coded exponents, typos that become parameters, and
+  the syntax that actually gets edits rejected: the rate law separator, declaration keywords
+  Antimony does not have, `<->`, `2*X` stoichiometry, and names already taken by a built-in
+  function or reserved by AMICI.
 ---
 
 # Writing Antimony that works
@@ -78,3 +80,34 @@ frozen to a constant and dropped.
 - A reaction **must** have a rate law: `J: A -> B;` alone is a parse error.
 - Degradation has no product: `deg: A -> ; kdeg*A`. Synthesis has no reactant: `syn: -> A; ksyn`.
 - `^` is exponentiation. Rate laws are ordinary algebra over species and parameters.
+
+## Parse errors that actually happen
+
+Antimony names the unexpected token, not the rule
+you broke, so recognise them by shape.
+
+- **The rate law follows a `;`, never a `:`.** The colon only ends the reaction *name*.
+  Wrong: `R1: S -> E : foi;` — Right: `R1: S -> E; foi;`
+- **`param` is not a keyword** (nor `parameter`). A parameter is a plain assignment.
+  Wrong: `param S_on = 1.0;` — Right: `S_on = 1.0;`
+  (`species`, `compartment`, `var` and `const` ARE real keywords — do not strip those.)
+- **There is no `<->` arrow.** Only `->` and `=>`. A reversible step is a net rate law
+  (see above). Wrong: `v: E + S <-> ES; ...` — Right: `v: E + S -> ES; k1*E*S - k_1*ES`
+- **Stoichiometry is a space, not a `*`.** Wrong: `R: P -> 2*P;` — Right: `R: P -> 2 P;`
+- **Reactants and products are species lists, not expressions.** Wrong:
+  `v: (RAF_total - pRaf) -> pRaf;` — put the algebra in the rate law:
+  `v: Raf -> pRaf; kact*(RAF_total - pRaf)`
+- **Compartment placement is its own statement.** Wrong: `X = 3.64 in cell;` — Right:
+  `species X in cell; X = 3.64;`
+
+## Names that are already taken
+
+Beyond the AMICI-reserved `h`/`e`/`t` above, Antimony refuses a name that is a **built-in
+function**. Verified rejected: `gamma`, `log`, `exp`, `sin`, `abs`, `delay`, `piecewise`. The
+error reads `syntax error, unexpected name of an existing function`, which does not sound like a
+name clash at all. `gamma` is the one that bites in practice — it is a natural name for a decay
+or recovery rate.
+
+Prefix or qualify instead: `gamma_deg`, `k_gamma`, `decay_rate`.
+
+Do not over-correct: `alpha`, `beta` and `kappa` are ordinary identifiers and are fine.

@@ -52,6 +52,65 @@ _AMICI_RESERVED_HINTS = {
 }
 _AMICI_RESERVED_RE = re.compile(r"amici_([A-Za-z]\w?)\b")
 
+#: Signatures of a BUILD-environment failure rather than a modelling one. These are BUILD-CONTEXT
+#: tokens only. The first version of this matched `No such file or directory` and `Permission
+#: denied` anywhere in the text, which caught fit-time OSErrors (a pruned scratch dir, a missing
+#: pyPESTO results.h5) and told the agent not to re-author a model that WAS the problem.
+_TOOLCHAIN_RE = re.compile(
+    r"fatal error:|"                          # a compiler hard-stop, e.g. a missing <span>
+    r"Failed building the model extension|"
+    r"build_ext|setup\.py|"                   # the OUTER exception AMICI actually re-raises
+    r"\bcmake\b|\bninja\b|\bswig\b|"
+    # Signatures of a compiler/host problem, NOT of bad generated code. Kept specific on purpose:
+    # a model-caused codegen error ("'foo' was not declared") must stay on the ill-posed path, so
+    # a bare `error:` is deliberately absent.
+    r"unrecognized command line option|command not found|"
+    r"No CMAKE_[A-Z_]+_COMPILER could be found|is not a full path to an existing compiler tool",
+    re.IGNORECASE,
+)
+
+
+def _build_output_tail(exc: BaseException, max_lines: int = 25) -> str:
+    """The compiler/cmake diagnostic a failed build actually produced, or ``""``.
+
+    AMICI runs the build with ``stdout=PIPE, stderr=STDOUT`` and, on failure, prints ``e.output``
+    and re-raises. So ``str(exc)`` is only ever the useless wrapper
+    (``Command '[...]' returned non-zero exit status 1.``) while the REAL cause — the missing
+    header, the link error, the cmake refusal — sits on the exception object and never reached
+    anyone reading the rejection. Losing it cost several rounds of diagnosing a CI failure from
+    the wrapper alone; surfacing the tail makes a build failure self-diagnosing wherever the
+    message lands (agent, result.json, test log).
+
+    The TAIL, because a compiler dumps pages of progress before the error that stopped it.
+    """
+    for candidate in (exc, exc.__cause__, exc.__context__):
+        output = getattr(candidate, "output", None) or getattr(candidate, "stderr", None)
+        if not output:
+            continue
+        if isinstance(output, bytes):
+            output = output.decode("utf-8", "replace")
+        lines = [ln for ln in str(output).splitlines() if ln.strip()]
+        if lines:
+            return "\n".join(lines[-max_lines:])
+    return ""
+
+
+def _is_toolchain_failure(exc: Exception) -> bool:
+    """Whether a compile/fit failure is the HOST's fault rather than the model's.
+
+    Two signals, because the text alone is not enough. AMICI catches the inner ``cmake`` error,
+    PRINTS the compiler diagnostics, and re-raises the OUTER ``CalledProcessError`` — whose text is
+    just ``Command '[<py>, '.../setup.py', 'build_ext', ...]' returned non-zero exit status 1.``
+    with no compiler wording at all. Matching prose alone therefore missed the very failure this
+    was written for (a GCC 8.5 `<span>` build), which is why the TYPE is checked first: a build is
+    the only thing here that shells out, so a CalledProcessError IS a build failure.
+    """
+    import subprocess
+
+    if isinstance(exc, subprocess.CalledProcessError):
+        return True
+    return bool(_TOOLCHAIN_RE.search(str(exc)))
+
 
 def _compile_fit_failure_message(exc: Exception) -> str:
     """Turn an AMICI/pyPESTO compile-or-fit failure into an actionable rejection message.
@@ -75,11 +134,28 @@ def _compile_fit_failure_message(exc: Exception) -> str:
             f"it everywhere it appears in the Antimony (e.g. '{name}' -> '{suggest}') and "
             "re-author with make_changes — the model structure itself may well be fine."
         )
+    tail = _build_output_tail(exc)
+    if _is_toolchain_failure(exc) or (tail and _TOOLCHAIN_RE.search(tail)):
+        # A BUILD failure, not a modelling one. Blaming the model here is actively harmful: the
+        # agent's only lever is make_changes, so it rewrites a correct model and the real cause —
+        # a compiler, cmake, swig or disk problem on the host — never gets looked at. The C++20
+        # case cost exactly that (a missing `<span>` from GCC 8.5 was read as an ill-posed ODE,
+        # and later as "pre-existing environment breakage", before anyone read the cmake log).
+        return (
+            f"the model could not be BUILT, which is a toolchain problem on this host rather "
+            f"than a problem with the model: {exc}. Do not re-author the model — it passed "
+            "validation. Check the build environment: a C++20-capable compiler (AMICI's "
+            "generated code includes <span>, so GCC >= 10 / a conda compiler is required, and "
+            "CC/CXX must BOTH point at it), cmake/ninja/swig on PATH, and free space plus write "
+            "permission on the build directory."
+            + (f"\n\nWhat the build actually reported:\n{tail}" if tail else "")
+        )
     return (
         f"the model passed validation but could not be compiled/fit: {exc}. This usually means "
         "it is ill-posed for estimation — an unstable or non-integrable ODE, or a rate law the "
         "solver cannot handle. Re-check that the simulated trajectories stay bounded and the "
         "initial conditions are sane, then re-author with make_changes."
+        + (f"\n\nWhat the build actually reported:\n{tail}" if tail else "")
     )
 
 
