@@ -51,6 +51,60 @@ from .parameters import _default_bounds
 # and the `e` in `2.5e-3` (scientific-notation exponents) stay part of their numeric literal.
 _IDENT_RE = re.compile(r"(?<![\w.])[A-Za-z_]\w*")
 
+#: The t=0 value every SEEDED species is declared at (see :func:`seed_model_antimony`).
+#:
+#: The value is arbitrary and identical for every problem — it carries no information, and the
+#: multistart ignores a nominal value anyway — but it may not be 0 or 1. Those two are the
+#: leak-free conventions :func:`sync_parameter_table` holds an initial condition FIXED at (an
+#: empty pool / a unit normalization), and reconcile never re-touches a row once it exists. A
+#: seed at 0 would therefore mint a FIXED-at-0 `<species>_init` for every seeded species and
+#: freeze its initial condition for the rest of the run — silently reinstating the frozen-IC trap
+#: of issue #90, on exactly the species the caller is about to build a mechanism around. Any
+#: other positive value lands on the ordinary path: estimated, on log10.
+SEED_INITIAL_VALUE = 0.1
+
+# PEtab's per-observable placeholders, substituted from the measurement table at import time.
+_PLACEHOLDER_RE = re.compile(r"(?:observable|noise)Parameter\d+_\w+")
+
+# Antimony GRAMMAR keywords: `species species;` does not parse, so an entity with one of these
+# ids cannot be declared. Determined by probing libantimony, not from a spec — and pinned that
+# way by test_seed_model.test_the_reserved_word_list_matches_libantimony, so a libantimony
+# release that adds or drops a keyword is caught rather than silently mis-filtered.
+#
+# It covers the grammar ONLY. The other family of unusable ids — MathML's reserved constants
+# (`time`, `pi`, `avogadro`, `exponentiale`, `true`/`false`, `inf`/`nan`) — is NOT listed here
+# because :func:`_declarable_id` asks libSBML about those instead of keeping a second list that
+# could drift out of step with the first.
+_ANTIMONY_RESERVED = frozenset({
+    "DNA", "after", "at", "compartment", "const", "delete", "end", "event", "ext", "formula",
+    "function", "gene", "has", "import", "in", "is", "model", "operator", "reaction", "species",
+    "substanceOnly", "unit", "var",
+})
+
+
+def _declarable_id(sid: str) -> bool:
+    """Whether ``sid`` can be DECLARED as a model entity in the seed.
+
+    Two ways an id is unusable, and each is answered by whoever actually knows:
+
+    * it is a MathML reserved constant — libSBML decides. An L3 formula parses a plain
+      identifier to ``AST_NAME``; every reserved name gets its own node type instead (``time`` is
+      ``AST_NAME_TIME``, ``pi``/``avogadro``/``exponentiale`` are constants, ``true``/``false``
+      are booleans, ``inf``/``nan`` are numeric literals). Declaring one is either rejected or
+      silently means something other than a species.
+    * it is an Antimony grammar keyword — :data:`_ANTIMONY_RESERVED`.
+
+    This replaces a ``keyword.iskeyword`` test, which was the wrong language's reserved list in
+    both directions: it rejected ``lambda``, a perfectly legal SBML/Antimony id (so the seed
+    would omit a species its observables reference, fail to lint, and silently fall back to the
+    broken empty skeleton), while passing ``species`` and ``compartment``, which really are
+    unusable.
+    """
+    if not sid.isidentifier() or sid in _ANTIMONY_RESERVED:
+        return False
+    ast = libsbml.parseL3Formula(sid)
+    return ast is not None and ast.getType() == libsbml.AST_NAME
+
 
 # -- symbol helpers --------------------------------------------------------
 def _ast_names(math) -> set[str]:
@@ -130,6 +184,118 @@ def formula_symbols(formula: Any) -> set[str]:
         except (TypeError, ValueError):
             return set()
     return set(_IDENT_RE.findall(str(formula)))
+
+
+def formula_identifiers(formula: Any) -> set[str]:
+    """Identifiers a formula REFERENCES, parsed rather than pattern-matched.
+
+    :func:`formula_symbols` is a regex scan, which is right where a superset is harmless (the
+    keep/prune sets) but wrong where each name becomes a model ENTITY: it cannot tell the symbol
+    ``P`` in ``log10(P)`` from the function name ``log10``, so seeding a model from it would
+    declare a species called ``log10``. libSBML's L3 parser resolves that — a function call is an
+    ``AST_FUNCTION_*`` node and ``time`` is ``AST_NAME_TIME``, so neither is collected — and an
+    unresolvable symbol still parses fine, which is exactly the case here (the names do not exist
+    in any model yet).
+
+    Falls back to :func:`formula_symbols` when the formula will not parse, so a malformed cell
+    degrades to the old over-approximation instead of silently contributing nothing.
+    """
+    if formula is None:
+        return set()
+    text = str(formula) if isinstance(formula, str) else None
+    if text is None:
+        if not formula_symbols(formula):  # non-string, non-finite cell -> nothing to parse
+            return set()
+        text = str(formula)
+    ast = libsbml.parseL3Formula(text)
+    if ast is None:
+        return formula_symbols(formula)
+    return _ast_names(ast)
+
+
+def seed_model_antimony(problem) -> str | None:
+    """A CONTENT-FREE but VALID initial model for a problem that ships without one, or ``None``
+    when the fixed tables name nothing to declare.
+
+    A problem that ships model-less otherwise starts as a bare ``model model / end`` skeleton,
+    and that skeleton is not a neutral placeholder — it is a *broken* PEtab problem (its
+    observables reference entities no model defines) that AMICI's SBML import SEGFAULTS on,
+    taking the server process with it. Every downstream guard exists to keep that one state
+    unreachable. Making the initial model VALID instead removes the state, so v0 is an ordinary,
+    restorable, simulatable version like any other.
+
+    What it declares, and why that leaks nothing: one SPECIES per identifier the observable
+    formulas name, plus each condition-table column (a per-condition target must be a model
+    entity or petab's lint rejects the problem). Both tables are read-only and already fully
+    visible through ``list_observables`` / ``list_conditions``, so the seed only restates what
+    the caller can already read.
+
+    Nothing else. In particular it does NOT declare the problem's other parameter-table rows.
+    It used to, because petab lints a row no model declares as an "extraneous parameter" — but
+    that put a pile of parameters the caller never authored into ``get_model``, reading as
+    structure the seed does not have. They are simply pruned at v0 instead; what made that safe
+    is that :func:`sync_parameter_table` RESTORES a shipped row when the caller's model
+    reintroduces the parameter, so the shipped bounds/scale/priors come back with it rather than
+    being replaced by defaults.
+
+    NO reactions and NO rules, deliberately: the seed has no dynamics, which is what keeps it
+    content-free (the mechanism is the thing the caller must author) and what makes
+    ``model_authored`` a meaningful flag.
+
+    Species are seeded at :data:`SEED_INITIAL_VALUE`, and the seed is then RECONCILED like any
+    other model — same parametric ICs, same table sync (see
+    :meth:`session.PetabSession._seed_initial_model` for the one thing that pass does
+    differently).
+
+    Each id is declared with an explicit ``species`` statement. Antimony infers a bare
+    ``B = 0.1;`` to be a PARAMETER — it only promotes a symbol to a species when a reaction uses
+    it, and the seed deliberately has no reactions — which would leave the observable formulas
+    referencing a parameter and the whole seed pointless.
+    """
+    ids: set[str] = set()
+    odf = getattr(problem, "observable_df", None)
+    if odf is not None and OBSERVABLE_FORMULA in odf.columns:
+        for value in odf[OBSERVABLE_FORMULA]:
+            ids |= formula_identifiers(value)
+    # A condition-table column is a per-condition target; petab requires it to be a model entity,
+    # so the seed has to declare it too or v0 does not lint.
+    ids |= condition_column_symbols(problem)
+    pdf = getattr(problem, "parameter_df", None)
+    rows = {str(p) for p in getattr(pdf, "index", [])}
+
+    def _declarable(sid: str) -> bool:
+        # `observableParameter1_<obsId>` / `noiseParameter1_<obsId>` are PEtab PLACEHOLDERS, not
+        # entities: petab substitutes each from the measurement table's observableParameters /
+        # noiseParameters column at import, and whatever it resolves to (a scaling factor, a
+        # sigma) already has its own parameter-table row. Declaring the placeholder itself would
+        # invent a state the real model never has.
+        return _declarable_id(sid) and not _PLACEHOLDER_RE.fullmatch(sid)
+
+    # A symbol with a parameter-table row is a parameter, not a species — the table is the
+    # authority on what it IS, and minting a species for it would collide with its own row.
+    species = sorted(sid for sid in ids - rows if _declarable(sid))
+    if not species:
+        return None
+
+    body = "\n".join(f"  species {sid};\n  {sid} = {SEED_INITIAL_VALUE:g};" for sid in species)
+    return f"model petab_mcp_seed\n{body}\nend"
+
+
+def has_dynamics(sm) -> bool:
+    """Whether the model can MOVE: it has at least one reaction, or a rate/assignment rule.
+
+    The single definition of "a mechanism has been authored", shared by three places that must
+    agree or the invariant they form comes apart: ``session.model_authored`` (what
+    ``describe_problem`` reports), the ``make_changes`` guard that REFUSES to commit a model
+    without dynamics, and :func:`validation._unused_condition_target_issues` (which asks a
+    question only a mechanism can answer). Because the guard refuses exactly what this returns
+    False for, a dynamics-free model can only ever be the content-free seed — never something a
+    caller authored.
+
+    Initial assignments deliberately do NOT count: reconcile gives every species a parametric IC,
+    so counting them would make any bag of species look like a mechanism.
+    """
+    return sm.getNumReactions() > 0 or sm.getNumRules() > 0
 
 
 def species_ids(sm) -> set[str]:
@@ -454,8 +620,14 @@ ROLE_KINETIC = "kinetic"
 ROLE_CONSTANT = "constant"
 
 
-def parameter_roles(problem) -> dict[str, str]:
+def parameter_roles(problem, extra_ids=()) -> dict[str, str]:
     """Best-effort role for every parameter-table id — ``{parameter_id: role}``.
+
+    ``extra_ids`` are classified alongside the table's own rows. Used for the parameters a
+    problem SHIPS that the current model does not declare (see
+    :func:`parameters.parameters_to_records`): they are absent from the table, but the caller
+    still has to be told what they are. Every rule below reads the fixed tables or the model, so
+    it applies to an id whether or not it currently has a row.
 
     The role names what the parameter *is* (in priority order): a NOISE sigma or an
     observable SCALING/offset factor (the fixed observation model, resolved through the
@@ -477,7 +649,7 @@ def parameter_roles(problem) -> dict[str, str]:
     model_math = _model_math_names(sm) if sm is not None else set()
 
     roles: dict[str, str] = {}
-    for raw in problem.parameter_df.index:
+    for raw in [*problem.parameter_df.index, *extra_ids]:
         pid = str(raw)
         if pid in sigmas:
             roles[pid] = ROLE_NOISE_SIGMA
@@ -1257,9 +1429,20 @@ def _ic_parameter_ids(sm) -> set[str]:
     return ic
 
 
-def sync_parameter_table(problem) -> dict[str, list[str]]:
+def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
     """Add rows for new model parameters; remove rows for parameters gone from the model
     (keeping observable/noise parameters). Returns the add/remove diff.
+
+    ``shipped`` is the parameter table the PROBLEM shipped with
+    (:attr:`session.PetabSession.shipped_parameter_df`). A parameter being added that appears
+    there gets its SHIPPED row back — bounds, scale, estimate, and any ``objectivePrior*``
+    columns — instead of the defaults derived below. That matters because a row can leave the
+    table and come back: the content-free seed declares no mechanism, so every kinetic and
+    initial-condition row a zero-shot problem ships is pruned at v0 and re-added by the caller's
+    first authoring. Minting defaults there would quietly replace the shipped search space, and
+    DROP a shipped prior — which for a benchmark example is the difference between the candidate
+    and the reference being fit against the same objective or not (only schwen ships priors, on
+    its two receptor initial levels, and they are meant to apply to both).
 
     Initial conditions are ESTIMATED by default -- a declared t=0 is only a guess and must never
     be silently frozen (issue #90). Two leak-free VALUE conventions stay FIXED: an IC of exactly
@@ -1281,7 +1464,16 @@ def sync_parameter_table(problem) -> dict[str, list[str]]:
 
     added, removed = [], []
 
+    shipped_ids = set(getattr(shipped, "index", []))
     for pid in sorted(valid - table_ids):
+        if pid in shipped_ids:
+            # The problem defined this parameter; reintroducing it restores that definition
+            # rather than guessing a new one. Column-by-column so the target table gains any
+            # column the shipped row carries (a prior) that it does not have yet.
+            for col, cell in shipped.loc[pid].items():
+                problem.parameter_df.loc[pid, col] = cell
+            added.append(pid)
+            continue
         value = problem.model.get_parameter_value(pid)
         if pid in ic_params:
             # Initial conditions are ESTIMATED by default (issue #90): a declared t=0 is only a
@@ -1339,17 +1531,23 @@ def sync_parameter_table(problem) -> dict[str, list[str]]:
     return {"added": added, "removed": removed}
 
 
-def reconcile(problem) -> dict[str, Any]:
+def reconcile(problem, shipped=None) -> dict[str, Any]:
     """Full reconciliation after a structural edit: prune, parametric ICs, table sync.
 
     Initial conditions are estimated by default (fixed only at 0 or 1; see
-    :func:`sync_parameter_table`)."""
+    :func:`sync_parameter_table`). ``shipped`` is the problem's original parameter table, so a
+    row the model reintroduces comes back as the problem defined it — see
+    :func:`sync_parameter_table`.
+
+    Runs unchanged on the content-free seed: it needs no special pass, because a shipped row it
+    prunes is restored the moment the caller's model declares that parameter.
+    """
     sm = problem.model.sbml_model
     pruned = prune_orphans(problem)
     # Species whose IC is set per-condition (a condition-table column) are driven by the condition
     # table, not estimated — skip parametrising them (see ensure_parametric_initial_conditions).
     ensure_parametric_initial_conditions(sm, skip_species=condition_column_symbols(problem))
-    synced = sync_parameter_table(problem)
+    synced = sync_parameter_table(problem, shipped=shipped)
     return {"pruned": pruned, "parameters": synced}
 
 

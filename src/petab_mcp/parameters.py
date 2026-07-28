@@ -77,9 +77,9 @@ def parameter_df_to_records(df) -> list[dict[str, Any]]:
     return [_param_record(df, pid) for pid in df.index]
 
 
-def parameters_to_records(problem) -> list[dict[str, Any]]:
+def parameters_to_records(problem, shipped=None) -> list[dict[str, Any]]:
     """Return the problem's parameter table as JSON-friendly records, each annotated with its
-    ``role`` and its ``status`` ("estimated" / "fixed").
+    ``role``, its ``status`` ("estimated" / "fixed") and ``in_model``.
 
     The ``role`` (see :func:`reconcile.parameter_roles`) tells a mechanistic KINETIC constant
     apart from an observation-model factor (a scaling/offset or noise sigma), an initial
@@ -88,11 +88,28 @@ def parameters_to_records(problem) -> list[dict[str, Any]]:
     so a scaling factor isn't repurposed as a rate constant, and a known constant is used as the
     fixed parameter the problem ships rather than spent as an estimated (k-counting) one. The
     estimated/fixed status is set by the shipped table and reconcile, not toggled by hand.
+
+    ``shipped`` is the parameter table the PROBLEM shipped with
+    (:attr:`session.PetabSession.shipped_parameter_df`). Any row there that the current model
+    does not declare is appended with ``in_model: false``, carrying the values the problem gave
+    it. Those rows are NOT in the live parameter table — PEtab has no place for a parameter no
+    model uses, so reconcile prunes them — but they are still parameters the problem HANDED the
+    caller, and a zero-shot run starts with every one of them pruned (the content-free seed
+    declares no mechanism). Without this they would be invisible until the caller happened to
+    guess the name: it could not see the constants it is required to build on, nor the ones it
+    is required to keep declared. Re-declaring such a parameter in the model restores exactly
+    the row shown here (see :func:`reconcile.sync_parameter_table`).
     """
     from .reconcile import parameter_roles  # lazy: reconcile imports from this module
 
-    roles = parameter_roles(problem)
-    records = parameter_df_to_records(problem.parameter_df)
+    current = set(problem.parameter_df.index)
+    absent = [pid for pid in getattr(shipped, "index", []) if pid not in current]
+    roles = parameter_roles(problem, extra_ids=absent)
+    records = [{**r, "in_model": True}
+               for r in parameter_df_to_records(problem.parameter_df)]
+    if absent:
+        records += [{**r, "in_model": False}
+                    for r in parameter_df_to_records(shipped.loc[absent])]
     for rec in records:
         pid = str(rec.get(PARAMETER_ID))
         rec["role"] = roles.get(pid)

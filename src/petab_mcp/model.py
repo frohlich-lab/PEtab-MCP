@@ -26,10 +26,23 @@ def get_model(session, fmt: str = "antimony") -> str:
 
 
 def model_structure(session) -> dict[str, Any]:
-    """Structured view of the current model via libsbml."""
+    """Structured view of the current model via libsbml.
+
+    Also carries the per-species INITIAL-CONDITION account (see
+    :func:`reconcile.initial_conditions_report`): whether each species' declared t=0 is used
+    (fixed), fitted (estimated), or overridden per-condition. That account used to ride on every
+    edit result until the result became just the fit, which left it computed but unreachable —
+    and it is the only place two facts appear at all: which IC parameter belongs to which
+    species, and which species are driven by a condition column (those have no parameter row, so
+    `get_parameters` cannot show them). It lives here, on an on-demand read, rather than on every
+    call.
+    """
+    from . import reconcile as R
+
     sm = session.model.sbml_model
     return {
         "model_id": session.model.model_id,
+        "initial_conditions": R.initial_conditions_report(session.problem),
         "compartments": [sm.getCompartment(i).getId() for i in range(sm.getNumCompartments())],
         "species": [sm.getSpecies(i).getId() for i in range(sm.getNumSpecies())],
         "parameters": list(session.model.get_parameter_ids()),

@@ -107,15 +107,23 @@ class PetabSession:
         if not self.yaml_path.is_file():
             raise FileNotFoundError(f"PEtab YAML not found: {self.yaml_path}")
         self.problem: Problem = Problem.from_yaml(str(self.yaml_path))
+        # The parameter table exactly as the problem SHIPPED it, captured before anything can
+        # touch it — the reference for "which constants did the problem fix?" (see
+        # `protected_fixed_parameter_ids`). It used to be read back from version 0, which was the
+        # same thing only for as long as v0 was a verbatim snapshot of the load; the content-free
+        # seed reconciles v0, and a durable resume replaces the working table wholesale. Reading
+        # the YAML's own table is true on every process start, resume included, because
+        # `Problem.from_yaml` above always re-reads the shipped `parameters.tsv`.
+        self.shipped_parameter_df = self.problem.parameter_df.copy(deep=True)
 
         # Antimony is the canonical model form: prefer a model.ant next to the YAML.
         ant_file = self.yaml_path.parent / "model.ant"
         if ant_file.is_file():
             self._set_model_from_antimony(ant_file.read_text(encoding="utf-8"))
         elif self.problem.model is None:
-            # No Antimony source and no SBML in the YAML: start from an empty model so
-            # the working object always exists. The model is "uninitialized" (see
-            # `has_model`) until the agent authors one via the `set_model` operation.
+            # No Antimony source and no SBML in the YAML: start from an empty model so the
+            # working object always exists. `_seed_initial_model` below replaces it with a
+            # content-free but VALID one; the empty skeleton survives only if seeding fails.
             self._set_model_from_antimony("model model\nend")
 
         self.lock = threading.RLock()
@@ -155,7 +163,8 @@ class PetabSession:
 
         # Cumulative server-side timing for this run, split so the two very different costs
         # are legible: `compile_seconds` is AMICI model BUILD time (the one-time C++ compile
-        # per unique structure — engine `_get_model` and pyPESTO's own build), `fit_seconds`
+        # per unique structure — ONE build now, made by `fitting.estimation_problem` and shared
+        # by the fit and every objective evaluation), `fit_seconds`
         # is pyPESTO OPTIMIZATION time (the recurring multistart `minimize`). Both accumulate
         # only when work actually happens (a compile/fit cache hit adds nothing), and every
         # write is under `self.lock` (fits/sims already hold it). Read via `get_run_timing`.
@@ -214,6 +223,9 @@ class PetabSession:
         self._fit_attempts: dict[str, int] = {}
 
         if self.provenance.current_version < 0:
+            # Make v0 a VALID model before snapshotting it — the empty skeleton is the one state
+            # nothing downstream can survive (see `_seed_initial_model`).
+            self._seed_initial_model()
             # Route through _snapshot_version (not the store directly) so the initial version also
             # carries a structure_hash in its meta — otherwise v0 would be invisible to the de-dup
             # registry and a re-author of the initial model wouldn't be recognised as a revisit.
@@ -225,6 +237,83 @@ class PetabSession:
             # ...and seed the best-BIC checkpoint from the prior events, so the first commit after
             # a resume is judged against the run's real best rather than treated as a free new best.
             self._seed_progress_from_provenance()
+
+    def _seed_initial_model(self) -> None:
+        """Replace a model-less problem's empty skeleton with a CONTENT-FREE but VALID model.
+
+        The empty skeleton is not a neutral "no model yet" placeholder: it is a broken PEtab
+        problem whose observables reference entities nothing defines, and AMICI's SBML import
+        SEGFAULTS on it — killing the server process, which no caller can catch or degrade. Every
+        path that touches AMICI therefore had to be guarded against reaching it, and v0 could not
+        be restored at all.
+
+        Seeding removes the state instead of guarding it. :func:`reconcile.seed_model_antimony`
+        declares one species per identifier the FIXED tables already name and nothing else — no
+        reactions, no rules — so v0 becomes importable, simulatable and restorable while carrying
+        no mechanism (see that function for why this leaks nothing). ``model_authored`` stays
+        False until a ``make_changes`` call adds actual dynamics, so the zero-shot contract is
+        unchanged.
+
+        The seed is RECONCILED exactly like any other model — no special pass. It declares no
+        mechanism, so the kinetic and initial-condition rows a zero-shot problem ships are pruned
+        at v0; that is safe because :func:`reconcile.sync_parameter_table` RESTORES a shipped row
+        the moment the caller's model reintroduces that parameter, bounds and priors intact.
+
+        It then LINTS, under the same rules every edit is held to, and a failure RAISES. It
+        deliberately does not degrade to the empty skeleton: that state is the one nothing
+        downstream survives (AMICI's SBML import segfaults on it, killing the process), and
+        leaving it reachable is what forced a ``has_model()`` check into every path that touches
+        AMICI. Refusing to construct instead means a problem whose fixed tables cannot produce a
+        valid model fails at startup, naming the lint errors, rather than starting and dying
+        later with no traceback — and it is what makes "there is always a model" a real
+        invariant rather than an expectation.
+        """
+        if self.has_model():
+            return
+        from . import reconcile as R
+        from .validation import validate_problem
+
+        antimony = R.seed_model_antimony(self.problem)
+        if antimony is None:
+            raise ValidationError(
+                "this problem ships without a model, and its fixed tables name nothing that "
+                "could be declared as one: no observable formula references an entity, no "
+                "condition column names a target, and the parameter table is empty. There is "
+                "nothing to simulate and nothing an initial model could be built from."
+            )
+        try:
+            self._set_model_from_antimony(antimony)
+            R.reconcile(self.problem, shipped=self.shipped_parameter_df)
+        except Exception as exc:
+            raise ValidationError(
+                f"could not build a valid initial model for this model-less problem "
+                f"({type(exc).__name__}: {exc}). The seed is generated from the fixed "
+                "observable/condition/parameter tables, so this means those tables name "
+                "something that cannot be declared as a model entity."
+            ) from exc
+        # The invariant is ENFORCED here, not assumed. The seed can lint perfectly and still
+        # declare no SPECIES — a problem whose observable formulas are all constants names no
+        # entity, so only the parameter rows get declared — which lands right back in the state
+        # this method exists to remove. Nothing downstream would notice until AMICI segfaulted
+        # on it, so check the predicate itself rather than trusting the construction.
+        if not self.has_model():
+            raise ValidationError(
+                "this problem ships without a model and none can be built from its fixed tables: "
+                "no observable formula references a model entity and no condition column names a "
+                "target, so there are no species to simulate. Nothing here can be fit."
+            )
+        report = validate_problem(self.problem)
+        if not report["valid"]:
+            raise ValidationError(
+                "the initial model generated for this model-less problem does not validate, so "
+                "the problem cannot be worked on: its fixed tables and the model they imply are "
+                "inconsistent.",
+                issues=[i["message"] for i in report["issues"]
+                        if i["level"] in ("error", "critical")],
+            )
+        self.logger.info(
+            "seeded a content-free initial model: %d species, no reactions",
+            self.model.sbml_model.getNumSpecies())
 
     def _seed_progress_from_provenance(self) -> None:
         """Seed ``best_bic`` / ``best_version`` / ``best_nll`` from prior events (durable resume).
@@ -275,18 +364,47 @@ class PetabSession:
         return self.problem.model
 
     def has_model(self) -> bool:
-        """Whether a model has been *initialized* (has any species or reactions).
+        """Whether there is a model at all (any species or reactions).
 
-        A freshly loaded problem with no Antimony/SBML source carries an empty model
-        skeleton; ``set_model`` authors the real model into it (and can re-author it later).
-        Reported as ``model_initialized`` by ``describe_problem``; ``set_model`` works whether or
-        not it is True (it builds the first model when it is False).
+        THIS IS NOT THE ZERO-SHOT FLAG — use :meth:`model_authored` for that. A model-less
+        problem is SEEDED at construction with a content-free but valid model (see
+        :meth:`_seed_initial_model`), so this is normally True from the first moment, including
+        for a zero-shot problem that has authored nothing.
+
+        In fact this is now an INVARIANT rather than a question: it is True for the whole life of
+        every session. A problem that ships a model has one; a problem that does not is seeded
+        with one, and :meth:`_seed_initial_model` REFUSES TO CONSTRUCT the session if it cannot
+        be (including the case where the seed lints but declares no species). ``make_changes``
+        then refuses to commit a model without dynamics, so nothing can take it away again.
+
+        That is what removed the ``has_model()`` checks that used to sit in ``fit``,
+        ``ensure_simulation``, ``_restore_or_simulate`` and ``identifiability``. They existed for
+        one state — the empty skeleton — which AMICI's SBML import segfaults on, taking the
+        server process with it where no caller can catch or degrade. Making the state
+        unreachable is what let every one of them go; the two call sites left are the seeding
+        path itself, which establishes the invariant rather than defending against it.
         """
         model = self.problem.model
         if model is None:
             return False
         sm = model.sbml_model
         return sm.getNumReactions() > 0 or sm.getNumSpecies() > 0
+
+    def model_authored(self) -> bool:
+        """Whether a MECHANISM has been authored — the zero-shot flag, reported as
+        ``model_authored`` by ``describe_problem``.
+
+        True once the model has dynamics: at least one reaction, or a rate/assignment rule. The
+        content-free seed (:meth:`_seed_initial_model`) has neither by construction, so it reads
+        False exactly as the old empty skeleton did, and ``make_changes`` refuses to commit a
+        model that would leave it False (nothing to simulate is nothing to score). So this flips
+        exactly once, on the first successful authoring call, which is what the harness preflight,
+        the driver's no-model guard and the judge all key on.
+        """
+        from . import reconcile as R
+
+        model = self.problem.model
+        return model is not None and R.has_dynamics(model.sbml_model)
 
     def model_sbml(self) -> str:
         return self.model.to_sbml_str()
@@ -317,12 +435,13 @@ class PetabSession:
         be freed *or* removed: validation rejects a commit that turns one estimated or drops it
         from the model (see ``validation._fixed_constant_role_issues``).
 
-        Derived from the initial (v0) problem and cached — the shipped design never changes.
+        Derived from the SHIPPED parameter table (``shipped_parameter_df``, captured at load)
+        and cached — the shipped design never changes.
         EXCLUDED (each has its own handling, so neither is "protected"):
 
         * initial-condition parameters — removed legitimately when their species is removed;
-          detected from the v0 model, with an ``*_init`` name fallback for a model-less v0 whose
-          empty model can't classify them;
+          detected from the v0 model, with an ``*_init`` name fallback for the parameters a
+          zero-shot v0 (an empty skeleton, or a content-free seed) cannot classify;
         * observation-model factors (noise sigmas, observable scaling/offset) — pinned by the
           fixed observable/measurement tables and given their own estimation paths.
         """
@@ -336,11 +455,8 @@ class PetabSession:
 
         from . import reconcile as R
 
-        try:
-            ref_df = self.provenance.get_parameter_df(0)
-        except Exception:  # no v0 yet (shouldn't happen post-init) — nothing to protect
-            return set()
-        if ESTIMATE not in getattr(ref_df, "columns", []):
+        ref_df = self.shipped_parameter_df
+        if ref_df is None or ESTIMATE not in getattr(ref_df, "columns", []):
             return set()
 
         def _is_fixed(value: Any) -> bool:
@@ -374,7 +490,11 @@ class PetabSession:
         sm = self.model.sbml_model
         return {
             "model_id": self.model.model_id,
-            "model_initialized": self.has_model(),
+            # Has a MECHANISM been authored? False for a problem that ships without one, whose
+            # initial version is a content-free seed (species only, no dynamics) rather than the
+            # broken empty skeleton it used to be. Replaces `model_initialized`, which since the
+            # seed is True from construction and no longer answers the question anyone asked.
+            "model_authored": self.model_authored(),
             "n_species": int(sm.getNumSpecies()),
             "n_reactions": int(sm.getNumReactions()),
             "n_model_parameters": int(sm.getNumParameters()),
@@ -888,10 +1008,6 @@ class PetabSession:
         from .operations import _compile_fit_failure_message
 
         with self.lock:
-            if not self.has_model():
-                raise ModelUpdateError(
-                    "there is no model to fit yet — author one with make_changes first.")
-
             # Validate n_starts BEFORE the de-dup so a rejected value never counts toward the
             # identical-fit loop guard (which is only bumped once we commit to a real fit below).
             n_starts = self._coerce_n_starts(n_starts)
@@ -1062,6 +1178,13 @@ class PetabSession:
 
         Restores the target version's stored simulation dataframe (no refit — this is a
         restoration, not a new model); simulate-only fallback if that version lacks one.
+
+        EVERY version is restorable, v0 included. That is a property of the initial model being
+        VALID (see :meth:`_seed_initial_model`): v0 is either the model the problem shipped or a
+        content-free seed, never the broken empty skeleton, so going back to it lands on
+        something that simulates like any other version. Restoring v0 on a zero-shot problem is
+        the legitimate "throw my mechanism away and start over" move, and it leaves
+        ``model_authored`` False again, exactly as at construction.
         """
         from . import fitting
 
@@ -1121,7 +1244,12 @@ class PetabSession:
 
     # -- lifecycle ---------------------------------------------------------
     def reset(self) -> dict[str, Any]:
-        """Revert model + parameters to the initial version (v0)."""
+        """Revert model + parameters to the initial version (v0).
+
+        Safe on a zero-shot problem because v0 is the content-free SEED rather than the empty
+        skeleton (see :meth:`_seed_initial_model`): resetting lands on a model that simulates,
+        with ``model_authored`` back to False.
+        """
         from . import fitting
 
         with self.lock:

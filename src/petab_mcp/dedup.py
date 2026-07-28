@@ -148,8 +148,10 @@ def decide(
     """
     # (d) An identical structure fit too many times cannot change anything — stop the loop.
     if prior_attempts >= MAX_IDENTICAL_REAUTHORS:
+        # `prior_attempts` fits actually RAN; this call is the one being refused, so it is not
+        # among them (saying "fit N+1 times now" claimed a fit that never happened).
         return {"action": "terminate", "message": (
-            f"This same model structure has been fit {prior_attempts + 1} times now. Re-fitting an "
+            f"This same model structure has already been fit {prior_attempts} times. Re-fitting an "
             "identical structure recompiles and refits to the SAME result — it cannot improve the "
             "fit. Stop re-fitting it: if this is your best model it is already committed, so go "
             "back to it with restore_version(n) (use list_versions to find the best-bic version), "

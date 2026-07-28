@@ -41,6 +41,7 @@ from . import data_access as data_mod
 from . import fitting as fitting_mod
 from . import identifiability as identifiability_mod
 from . import logging_setup
+from . import messages as msg_mod
 from . import model as model_mod
 from . import operations as ops_mod
 from . import parameters as param_mod
@@ -124,7 +125,8 @@ class _Ctx:
         except PetabMcpError as exc:
             self.log_error(op_name, {"args": [self.short(a) for a in args if isinstance(a, (str, int, float, list))]}, exc)
             self.session.logger.warning("operation %s rejected: %s", op_name, exc)
-            out = {"applied": False, "error": str(exc)}
+            out = {"applied": False, "error": str(exc),
+                   "messages": msg_mod.errors_from_exception(msg_mod.SOURCE_EDIT, exc)}
             if getattr(exc, "issues", None):
                 out["issues"] = exc.issues
             return out
@@ -145,7 +147,8 @@ class _Ctx:
         except PetabMcpError as exc:
             self.log_error("fit", args or {}, exc)
             self.session.logger.warning("fit rejected: %s", exc)
-            out = {"committed": False, "error": str(exc)}
+            out = {"committed": False, "error": str(exc),
+                   "messages": msg_mod.errors_from_exception(msg_mod.SOURCE_FIT, exc)}
             if getattr(exc, "issues", None):
                 out["issues"] = exc.issues
             return out
@@ -187,9 +190,11 @@ class _Ctx:
                 {"n_starts": n_starts},
             )
         except Exception as exc:  # noqa: BLE001 - already logged by run_fit; see the docstring
+            crashed = f"the edit applied but the fit crashed unexpectedly: {exc}"
             fit_result = {
                 "committed": False,
-                "error": f"the edit applied but the fit crashed unexpectedly: {exc}",
+                "error": crashed,
+                "messages": [msg_mod.error(msg_mod.SOURCE_FIT, crashed)],
             }
         snapshotted = self.session.provenance.current_version != head_before
         scored = (
@@ -222,7 +227,8 @@ class _Ctx:
         exc = ops_mod.OperationError(message)
         self.log_error(op_name, {k: self.short(v) for k, v in (args or {}).items()}, exc)
         self.session.logger.warning("operation %s rejected: %s", op_name, exc)
-        return {"applied": False, "error": message}
+        return {"applied": False, "error": message,
+                "messages": [msg_mod.error(msg_mod.SOURCE_TOOL, message)]}
 
     def check_n_starts(self, op_name: str, n_starts: int | None) -> dict[str, Any] | None:
         """Validate ``n_starts`` BEFORE the edit runs; a rejection dict or None.
@@ -330,7 +336,17 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
 
     @mcp.tool()
     def get_model_structure() -> dict[str, Any]:
-        """Structured view of the model: species, parameters, reactions."""
+        """Structured view of the model: species, parameters, reactions — plus the per-species
+        `initial_conditions` account.
+
+        Each initial-condition entry reports whether that species' declared t=0 actually governs
+        the simulated state: `t0_source` is `fixed` (the declared value is used), `estimated` (the
+        fit sets it — the DEFAULT, so a declared t=0 is only a starting guess) or
+        `condition_table` (a condition column overrides it per condition), with `ic_parameter`
+        naming the parameter that carries it. Read it to check whether a t=0 you meant to pin
+        actually took, and to see which species are driven per-condition — those have no
+        parameter-table row at all, so `get_parameters` cannot show them.
+        """
         return model_mod.model_structure(session)
 
     @mcp.tool()
@@ -344,7 +360,7 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         """Change the model and/or its parameter search space, then FIT and snapshot a version.
 
         The single editor. Give `antimony` to author the WHOLE model (it builds the first model
-        when the problem ships model-less — `describe_problem` → `model_initialized: false` — and
+        when the problem ships model-less — `describe_problem` → `model_authored: false` — and
         re-authors/replaces an existing one wholesale, so every structural change is one coherent
         re-author). Give `parameters` to set estimation BOUNDS and/or SCALE: a list of
         `{parameter_id, lower_bound?, upper_bound?, scale?}` entries, applied atomically AFTER the
@@ -365,16 +381,24 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         applied or reverted because the fit failed; `error`/`issues` says which. Then `committed`:
         `true` → a version exists, read `bic`; `false` with `no_change` → the change applied but
         this structure already IS a version, so change something else or `restore_version(n)`.
-        Nothing else rides on the result: the reconcile/validation reports, the parameter diff and
-        the initial-condition account are not a score, so read them on demand through
-        `get_model_structure` / `get_parameters` instead of on every call.
+        Nothing else rides on the result: the reconcile/validation reports and the parameter diff
+        are not a score, so read the reconciled model on demand through `get_model_structure`
+        (which also carries the per-species initial-condition account) or `get_parameters`.
 
-        REJECTS a re-author that drops a shipped-FIXED constant, or brings one back estimated, or
-        leaves a condition-table target unused, or wires an observation-model symbol (a scaling
-        factor / noise sigma) into a rate law. Warns if a previously-estimated parameter is
-        dropped. Widening an ESTIMATED noise sigma past its data-driven cap is advisory (a
-        warning, not a rejection); a THIRD widening of a still-pinned parameter is rejected — such
-        a parameter is unidentifiable, not under-explored (see `get_identifiability`).
+        `messages` is the call's whole diagnostic stack, in pipeline order: every warning and the
+        error that stopped it, each tagged `level` ("error"/"warning") and `source` —
+        "make_changes" (an argument refused before anything ran), "edit", "validation" (the
+        PEtab/SBML lint), or "fit". Read it to see EVERYTHING the call had to say; `warnings` is
+        just its warning texts, and `error` just the last error.
+
+        REJECTS an EMPTY model (no species and no reactions — nothing to simulate or fit; this
+        includes an Antimony whose species all prune away as orphans), a re-author that drops a
+        shipped-FIXED constant, or brings one back estimated, or leaves a condition-table target
+        unused, or wires an observation-model symbol (a scaling factor / noise sigma) into a rate
+        law. Warns if a previously-estimated parameter is dropped. Widening an ESTIMATED noise
+        sigma past its data-driven cap is advisory (a warning, not a rejection); a THIRD widening
+        of a still-pinned parameter is rejected — such a parameter is unidentifiable, not
+        under-explored (see `get_identifiability`).
 
         To go BACK to an earlier model use `restore_version(n)`, never a re-author: that
         recompiles, refits to the same result, and appends a duplicate.
@@ -431,11 +455,22 @@ def _register_parameter_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         model keeps declaring it — so build on the constants the problem ships fixed rather than
         introducing your own.
 
+        `in_model` says whether the parameter is currently DECLARED by your model. A row with
+        `in_model: false` is one the PROBLEM ships that your model does not use yet — on a
+        zero-shot build that is every shipped kinetic / initial-condition parameter, since there
+        is no mechanism to reference them. They are shown because they were handed to you: they
+        are the constants you may build on, and a shipped-FIXED one must stay declared or the
+        change is rejected. Declare the name in your Antimony and the row comes back exactly as
+        shown here — its bounds, scale, estimated/fixed status and any prior — so re-introducing
+        a shipped parameter never costs you its definition. (`query_data`'s `parameters` table is
+        the LIVE table only, so a count there is the real estimation problem.)
+
         Values (`nominalValue`) are set by the automatic fit on commit; adjust bounds and
         scale through `make_changes` (one batched call: a `parameters` list whose entries
         each carry `lower_bound`/`upper_bound` and/or `scale` for a parameter).
         """
-        return param_mod.parameters_to_records(session.problem)
+        return param_mod.parameters_to_records(
+            session.problem, shipped=session.shipped_parameter_df)
 
 
 # ------------------------------------------------------- fit + simulation tools
@@ -494,8 +529,9 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         """Cumulative server-side timing for this run, split by cost kind.
 
         `{compile_seconds, fit_seconds, n_compiles, n_fits}`. `compile_seconds` is the AMICI
-        model-BUILD time (the one-time C++ compile per unique structure — the engine's build
-        plus pyPESTO's own); `fit_seconds` is the pyPESTO multistart OPTIMIZATION time. Both
+        model-BUILD time (the one-time C++ compile per unique structure — ONE build, shared by
+        the fit and every objective evaluation); `fit_seconds` is the pyPESTO multistart
+        OPTIMIZATION time. Both
         accumulate only when work actually happens, so a compile/fit cache hit adds nothing.
         These are server-side wall times (a breakdown of the heavy compute), distinct from the
         client's `compute_seconds` tool-busy measure, which also covers reads/SQL.
@@ -760,7 +796,8 @@ def _register_resources(mcp: FastMCP, ctx: _Ctx) -> None:
 
     @mcp.resource("petab://parameters")
     def _res_parameters() -> str:
-        return json.dumps(param_mod.parameters_to_records(session.problem), indent=2)
+        return json.dumps(param_mod.parameters_to_records(
+            session.problem, shipped=session.shipped_parameter_df), indent=2)
 
     @mcp.resource("petab://provenance")
     def _res_provenance() -> str:
@@ -818,7 +855,7 @@ def create_server(
         resolver=resolver,
     )
     engine = AmiciEngine(session, build_root=build_root)
-    # Wire the engine so the `fit` tool can fit + simulate.
+    # Wire the engine so the fit `make_changes` runs can fit + simulate.
     session.engine = engine
     session.auto_fit = auto_fit
     session.auto_fit_starts = auto_fit_starts

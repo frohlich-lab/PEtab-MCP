@@ -446,8 +446,8 @@ def estimation_problem(session, engine):
 
     h = session.sbml_hash()
     # Charge the (one-time) model build to the compile bucket only the FIRST time a structure
-    # is seen, mirroring the engine's own `_models` guard: rebuilding the pyPESTO problem for a
-    # changed parameter table reuses the compiled module and must not count as a compile.
+    # is seen: rebuilding the pyPESTO problem for a changed parameter table reuses the compiled
+    # module and must not count as a compile.
     first_build = h not in engine._pypesto_hashes
     t0 = time.perf_counter()
     importer_kwargs = engine.pypesto_importer_kwargs(h)
@@ -793,13 +793,6 @@ def ensure_simulation(session, engine) -> dict[str, Any] | None:
     Used at cold start (no commit yet) and after a failed fit, so the stats tools always
     have a dataframe to read without re-simulating on every call.
     """
-    # A model-less problem (zero-shot, before any set_model) has nothing to simulate — and
-    # handing its empty model to AMICI segfaults the server (see AmiciEngine._get_model). Skip
-    # simulation entirely and leave session.simulation empty; fit_summary reads `... or {}` and
-    # reports None metrics, which the judge scores as a clean "no valid fit" rather than crashing.
-    if not session.has_model():
-        session.simulation = None
-        return None
     sim = getattr(session, "simulation", None)
     if sim is None or not sim.get("records"):
         fit_and_simulate(session, engine, do_fit=False, n_starts=0)

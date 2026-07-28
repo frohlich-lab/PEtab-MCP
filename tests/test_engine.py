@@ -3,6 +3,8 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from pathlib import Path
+
 
 def test_evaluate_objective(engine):
     obj = engine.evaluate_objective()
@@ -182,30 +184,39 @@ def test_fit_tracks_improvement_vs_versions(fit_session):
     assert imp2["improvement_vs_best_prior"] is not None
 
 
-def test_model_less_problem_does_not_segfault(session, engine):
-    """A zero-shot problem before any set_model has no species; handing its empty model to
-    AMICI segfaults the server (blasi's 0/5 sweep failure). The engine must refuse it and the
-    simulate path must degrade gracefully, WITHOUT invoking AMICI at all (so this test needs no
-    compile)."""
-    from petab.v1.models.sbml_model import SbmlModel
+def test_a_problem_that_cannot_be_seeded_refuses_to_load(tmp_path):
+    """The empty model is UNREACHABLE, not guarded. AMICI's SBML import segfaults on it — a
+    process kill no `except` can catch — so every path that touches AMICI used to carry a
+    `has_model()` check. Those are gone: a model-less problem is seeded with a valid model, and
+    if it cannot be, the session REFUSES TO CONSTRUCT rather than starting in the one state
+    nothing downstream survives. A problem whose observables name nothing declarable is the
+    case: there is no model the fixed tables could imply."""
+    import shutil
 
-    from petab_mcp import fitting
-    from petab_mcp.errors import ModelUpdateError
+    import libsbml
 
-    session.problem.model = SbmlModel.from_antimony("model m\nend")
-    assert not session.has_model()
+    from petab_mcp.errors import ValidationError
+    from petab_mcp.references import StubReferenceResolver
+    from petab_mcp.session import PetabSession
 
-    # _get_model refuses rather than handing an empty model to AMICI (which would SIGSEGV).
-    with pytest.raises(ModelUpdateError):
-        engine._get_model()
+    data = Path(__file__).parent / "data" / "toy_v1"
+    work = tmp_path / "unseedable"
+    work.mkdir()
+    for name in ("problem.yaml", "conditions.tsv", "measurements.tsv", "parameters.tsv"):
+        shutil.copy(data / name, work / name)
+    # An observable whose formula is a bare NUMBER references no entity, so nothing can be
+    # declared from it; the parameter table's rows all resolve through the noise formula.
+    (work / "observables.tsv").write_text(
+        "observableId\tobservableFormula\tnoiseFormula\nobs_B\t1.0\tsigma_B\n", encoding="utf-8")
+    doc = libsbml.SBMLDocument(3, 2)
+    model = doc.createModel()
+    model.setId("conversion_reaction")
+    model.setMetaId("conversion_reaction")
+    libsbml.writeSBMLToFile(doc, str(work / "conversion_reaction.xml"))
 
-    # ensure_simulation short-circuits (no AMICI import) and leaves no simulation.
-    assert fitting.ensure_simulation(session, engine) is None
-
-    # fit_summary returns cleanly with None metrics — the judge scores this as "no valid fit".
-    fs = fitting.fit_summary(session, engine)
-    assert fs.get("neg_log_likelihood") is None
-    assert fs.get("bic") is None
+    with pytest.raises(ValidationError):
+        PetabSession(str(work / "problem.yaml"), provenance_dir=str(tmp_path / "prov"),
+                     resolver=StubReferenceResolver())
 
 
 def test_fit_objective_and_reported_nll_are_the_same_number(fit_session):
@@ -264,3 +275,59 @@ def test_one_amici_build_per_structure(fit_session):
     # AggregatedObjective, is covered without a compile in tests/test_objective_amici_model.py.
     from petab_mcp.engine import _objective_amici_model
     assert _objective_amici_model(problem.objective) is not None
+
+
+# -- pre-import model dump ----------------------------------------------------
+
+
+def _log_text(session) -> str:
+    """The human-readable log this session writes (``<store>/petab_mcp.log``)."""
+    for handler in session.logger.handlers:
+        handler.flush()
+    return (Path(session.provenance.root) / "petab_mcp.log").read_text(encoding="utf-8")
+
+
+def test_the_model_is_dumped_before_the_amici_import(engine, session):
+    """AMICI's SBML import + C++ codegen can kill the process outright — a segfault-class
+    failure that raises nothing and leaves no traceback, so the client just sees the connection
+    drop. The only forensic trail is a dump written BEFORE the import call; a blasi sweep run
+    died exactly this way with no record of which model did it.
+
+    `pypesto_importer_kwargs` is the choke point: both build sites (the fit and the FIM)
+    construct their importer on the next line, so dumping here covers every AMICI build without
+    a second hook.
+    """
+    engine.pypesto_importer_kwargs()
+
+    text = _log_text(session)
+    assert "AMICI import starting" in text
+    assert session.sbml_hash() in text
+    assert "k1*A" in text  # the actual model, not just a hash
+
+
+def test_the_pre_import_dump_is_written_once_per_structure(engine, session, reauthor_toy):
+    """Once per STRUCTURE, not once per fit. Only a build can crash, and a re-fit or a
+    bounds-only edit rebuilds the pyPESTO problem while reusing the compiled module — dumping
+    per call would bury the log under re-prints of an already-recorded model."""
+    engine.pypesto_importer_kwargs()
+    engine.pypesto_importer_kwargs()
+    engine.pypesto_importer_kwargs(session.sbml_hash())
+    assert _log_text(session).count("AMICI import starting") == 1
+
+    reauthor_toy(session, ["J: B => D; k3 * B;"], justification="B to D")
+    engine.pypesto_importer_kwargs()  # new structure -> a new build -> a new dump
+    text = _log_text(session)
+    assert text.count("AMICI import starting") == 2
+    assert "k3*B" in text
+
+
+def test_a_failing_dump_never_blocks_the_build(engine, session, monkeypatch):
+    """Diagnostics must not become the outage. A model that will not round-trip to Antimony
+    still has to be handed to AMICI — and is still worth recording by hash."""
+    def _boom():
+        raise RuntimeError("antimony round-trip failed")
+    monkeypatch.setattr(session.problem.model, "to_antimony", _boom)
+
+    kwargs = engine.pypesto_importer_kwargs()
+    assert kwargs["model_name"] == f"petab_mcp_pp_{session.sbml_hash()}"
+    assert "model dump unavailable" in _log_text(session)

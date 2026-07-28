@@ -29,6 +29,7 @@ from typing import Any, Callable
 from petab.v1.C import LOWER_BOUND, UPPER_BOUND
 from petab.v1.models.sbml_model import SbmlModel
 
+from . import messages as M
 from . import reconcile as R
 from .constants import NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD, WIDENING_NEGLIGIBLE_BIC_GAIN
 from .errors import ModelUpdateError, PetabMcpError, ValidationError
@@ -226,7 +227,36 @@ def _commit_change(
             if model_build is not None:
                 candidate, apply_result = model_build()
                 session.problem.model = candidate
-                recon = R.reconcile(session.problem)
+                recon = R.reconcile(
+                    session.problem, shipped=getattr(session, "shipped_parameter_df", None))
+                # An EMPTY model is refused rather than committed — where "empty" is the same
+                # predicate `model_authored` reports: no species at all, or no DYNAMICS (neither
+                # a reaction nor a rate/assignment rule). Both are unscoreable, and the first is
+                # actively dangerous: AMICI's SBML import segfaults on a model with no entities
+                # whose observables reference undefined symbols, killing the server process, so
+                # nothing downstream gets to reject it gracefully. Refusing here is also what
+                # keeps `model_authored` meaningful — it can only ever go False -> True, on the
+                # first call that commits real dynamics, never back again.
+                #
+                # The check runs AFTER the reconcile: a model can arrive non-empty and be pruned
+                # to nothing (every species unreferenced by any reaction, rule, IC or fixed
+                # table), and re-authoring the content-free seed lands here too. Only an
+                # authoring call is checked — a parameters-only edit cannot change the model.
+                if not session.model_authored():
+                    raise ValidationError(
+                        f"Operation {op!r} rejected: the resulting model has no DYNAMICS — "
+                        f"{session.model.sbml_model.getNumSpecies()} species, no reactions and "
+                        "no rate/assignment rules, so every state stays at its initial value and "
+                        "there is nothing to fit.",
+                        issues=[
+                            "Author the mechanism itself: at least one reaction (`A -> B; k*A`) "
+                            "or a rate/assignment rule that changes a species over time. An "
+                            "Antimony string that only DECLARES species and parameters — or "
+                            "whose species all prune away as orphans (unused by any reaction, "
+                            "rule, initial assignment, or the observable/condition tables) — "
+                            "reconciles to a model that cannot move."
+                        ],
+                    )
             else:
                 recon = None
             if param_edit is not None:
@@ -273,6 +303,13 @@ def _commit_change(
                         if isinstance(apply_result, dict) else None):
             if isinstance(_source, dict):
                 warnings = warnings + [w for w in (_source.get("warnings") or []) if w]
+        # The edit's half of the message stack (see :mod:`messages`). The lint's WARNING-level
+        # findings join it here: they used to live only inside the `validation` report, which the
+        # result no longer carries, so they were reaching nobody at all.
+        edit_messages = M.warnings_from(M.SOURCE_EDIT, warnings) + M.warnings_from(
+            M.SOURCE_VALIDATION,
+            [i["message"] for i in report["issues"] if i.get("level") == "warning"],
+        )
         param_diff = {
             "added": recon["parameters"]["added"] if recon else [],
             "removed": recon["parameters"]["removed"] if recon else [],
@@ -281,13 +318,11 @@ def _commit_change(
         # Per-species initial-condition account: for every species, whether its declared t=0
         # is FIXED (survives into the simulated t=0 state), ESTIMATED (the fit sets it), or
         # overridden per-condition — so the caller can see immediately whether a t=0 fix took,
-        # instead of guessing IC naming schemes that all fit identically (issue #57). Computed
-        # whenever a model exists (cheap, analytic); `newly_added` marks ICs this op introduced.
-        initial_conditions = (
-            R.initial_conditions_report(session.problem, added=set(param_diff["added"]))
-            if session.has_model()
-            else []
-        )
+        # instead of guessing IC naming schemes that all fit identically (issue #57). Cheap and
+        # analytic; `newly_added` marks the ICs this op introduced. Unconditional — there is
+        # always a model (see `session.has_model`).
+        initial_conditions = R.initial_conditions_report(
+            session.problem, added=set(param_diff["added"]))
         # Log the edit (no version — versions are fit snapshots, see `fit`) and mark it pending.
         event = session.provenance.append_event({
             "type": "edit",
@@ -318,6 +353,7 @@ def _commit_change(
         "justification": justification,
         "validation": report,
         "warnings": warnings,
+        "messages": edit_messages,
         "parameter_diff": param_diff,
         "pending_fit": True,
         "n_pending_edits": n_pending,
@@ -338,7 +374,7 @@ def set_model(
 ) -> dict[str, Any]:
     """Author the WHOLE model from Antimony — the structural edit path of ``make_changes``.
 
-    This BUILDS the first model when the problem ships model-less (``model_initialized:
+    This BUILDS the first model when the problem ships model-less (``model_authored:
     false``) AND re-authors/replaces an existing model wholesale. Every structural change — adding
     or removing a reaction, changing a rate law — is made by re-authoring the whole model in one
     coherent step. Like every edit it reconciles SBML↔PEtab (parametric ICs + parameter-table
@@ -431,10 +467,11 @@ def set_model(
     removed = ((result.get("reconcile") or {}).get("parameters") or {}).get("removed") or []
     dropped = sorted(p for p in removed if str(p) in prior_estimated)
     if dropped:
-        result["warnings"] = list(result.get("warnings") or []) + [
-            f"the re-author dropped previously-estimated parameter(s) {dropped}: their fitted "
-            "values are gone. Re-declare them in the Antimony if that was unintended."
-        ]
+        note = (f"the re-author dropped previously-estimated parameter(s) {dropped}: their fitted "
+                "values are gone. Re-declare them in the Antimony if that was unintended.")
+        result["warnings"] = list(result.get("warnings") or []) + [note]
+        result["messages"] = list(result.get("messages") or []) + [
+            M.warning(M.SOURCE_EDIT, note)]
     return result
 
 
@@ -778,11 +815,20 @@ def working_state(session) -> dict[str, Any]:
     rollback is inside the edit. This snapshot covers the step after it: the fit. Holds the model
     OBJECT (an edit replaces the reference rather than mutating it) plus a deep copy of the
     parameter table, and the pending-edit count to trim back to.
+
+    It also holds the last fit's ``simulation`` / ``optimization`` payloads. Those are what
+    ``get_fit_summary`` and every residual/diagnostic read report, and ``fit_and_simulate``
+    REBINDS them (it does not mutate the old dicts), so keeping the references is enough to put
+    the score back where it belongs. Without them a fit that ran and then failed to snapshot
+    would leave the reverted-away candidate's metrics on the session, attributed to the restored
+    model — the split state the all-or-nothing rule exists to prevent.
     """
     with session.lock:
         return {
             "model": session.problem.model,
             "parameters": session.problem.parameter_df.copy(deep=True),
+            "simulation": session.simulation,
+            "optimization": session.optimization,
             "n_pending_edits": len(session.pending_edits),
         }
 
@@ -797,12 +843,20 @@ def revert_working_state(session, snapshot: dict[str, Any], reason: str) -> None
 
     The `edit` event is NOT erased — the log is append-only and the edit really did happen. A
     ``revert`` event is appended after it, so the trace reads: edited, fit failed, reverted.
+
+    The last fit's ``simulation``/``optimization`` go back too. A fit that got far enough to
+    simulate before failing (a snapshot or event-log write that raised afterwards) has already
+    overwritten both, so restoring only the model would leave ``get_fit_summary`` — and the
+    residual diagnostics, the SQL ``simulations`` table and the multistart traces — describing a
+    candidate that is no longer the working model.
     """
     with session.lock:
         before = session.problem.model.to_sbml_str()
         before_params = session.problem.parameter_df
         session.problem.model = snapshot["model"]
         session.problem.parameter_df = snapshot["parameters"]
+        session.simulation = snapshot["simulation"]
+        session.optimization = snapshot["optimization"]
         del session.pending_edits[snapshot["n_pending_edits"]:]
         session.provenance.append_event({
             "type": "revert",
@@ -828,12 +882,15 @@ def clear_scored_edits(session, snapshot: dict[str, Any]) -> None:
         del session.pending_edits[snapshot["n_pending_edits"]:]
 
 
-# Keys of the edit half that survive into a `make_changes` result. Everything else the edit
-# produces — the reconcile report, the validation report, the parameter diff, the initial-condition
-# account, the echoed justification/references, the pending-edit counters — is dropped: it rides on
-# EVERY call, into a history nothing prunes, and none of it is a score. What the agent decides on is
-# the fit, so the fit is the result.
-_EDIT_KEYS_KEPT = ("warnings",)
+# Keys of the edit half that survive into a `make_changes` result: its DIAGNOSTICS, which are
+# merged with the fit's below. Everything else the edit produces — the reconcile report, the
+# validation report, the parameter diff, the initial-condition account, the echoed
+# justification/references, the pending-edit counters — is dropped: it rides on EVERY call, into a
+# history nothing prunes, and none of it is a score. What the agent decides on is the fit, so the
+# fit is the result. (The dropped reports are readable on demand: `get_model_structure` carries the
+# reconciled model AND the per-species initial-condition account, `get_parameters` each row's role
+# and estimated/fixed status.)
+_EDIT_KEYS_KEPT = ("warnings", "messages")
 
 
 def bundle_result(
@@ -853,6 +910,12 @@ def bundle_result(
     agent never has to reason about a half-done state. ``committed`` is the separate question of
     whether a VERSION was created; the two differ only for the de-dup no-op, where the change is
     in place but is byte-identical to an existing version.
+
+    Both halves' diagnostics are merged into ONE ordered ``messages`` stack (see :mod:`messages`) —
+    the edit's advisories and lint warnings first, then the fit's — so a caller reads every
+    warning and the error that stopped the call from a single place, each tagged with the step it
+    came from. ``warnings`` is kept as the flat list of warning texts it has always been, derived
+    from that stack so the two cannot disagree.
 
     On a failure the message does NOT prescribe a fix, it forwards ``error`` — because that error
     is not always "the model is broken". The identical-structure loop guard reaches the same
@@ -901,14 +964,25 @@ def bundle_result(
             "assuming the model is broken: it says whether to fix the change and send it again, "
             "or to stop re-sending this structure and go back with restore_version(n)."
         )
-    warnings = list(edit_result.get("warnings") or []) + list(fit_result.get("warnings") or [])
+    # Pipeline order: the edit's messages, then the fit's. `run_fit` / `edit_then_fit` already
+    # shape a rejected fit as error entries; a fit that RAN reports its advisories as the flat
+    # `warnings` the de-dup produces, so both shapes are folded in here.
+    messages = (
+        list(edit_result.get("messages") or [])
+        + list(fit_result.get("messages") or [])
+        + M.warnings_from(M.SOURCE_FIT, fit_result.get("warnings"))
+    )
     result = {
         **{k: edit_result[k] for k in _EDIT_KEYS_KEPT if k in edit_result},
-        **{k: v for k, v in fit_result.items() if k not in ("committed", "version", "warnings")},
+        **{k: v for k, v in fit_result.items()
+           if k not in ("committed", "version", "warnings", "messages")},
         "applied": applied,
         "committed": committed,
         "version": version,
-        "warnings": warnings,
+        "messages": messages,
+        # Derived from the stack, so the flat list every existing caller reads can never drift
+        # from it (see messages.texts).
+        "warnings": M.texts(messages, M.LEVEL_WARNING),
         "message": message,
     }
     return result

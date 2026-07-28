@@ -26,6 +26,7 @@ from petab.v1.C import CONDITION_ID, CONDITION_NAME, ESTIMATE
 from .reconcile import (
     _model_math_names,
     _reaction_species,
+    has_dynamics,
     observation_model_symbols,
     parameter_ids,
     species_ids,
@@ -39,6 +40,23 @@ _SBML_SILENCED_CATEGORIES = (
     "LIBSBML_CAT_SBO_CONSISTENCY",
 )
 _SBML_MSG_CAP = 300  # keep a single SBML message from bloating the (re-sent) tool result
+
+
+# petab lint records that say nothing about THIS problem. Its "Visualization table not
+# available. Skipping." is emitted at WARNING on every single lint of a problem without the
+# optional visualization table — which is every problem this server handles — so promoting it
+# would put a fixed, unactionable string on the `warnings` of EVERY make_changes result, into a
+# history nothing prunes. Dropped at the capture site so it reaches neither `issues` nor the
+# warning COUNT, and therefore no consumer.
+_LINT_NOISE = ("Visualization table not available",)
+
+
+def _is_lint_noise(record: logging.LogRecord) -> bool:
+    try:
+        message = record.getMessage()
+    except Exception:  # noqa: BLE001 - a record we cannot render is not noise we can recognise
+        return False
+    return any(fragment in message for fragment in _LINT_NOISE)
 
 
 class _CaptureHandler(logging.Handler):
@@ -212,11 +230,19 @@ def _unused_condition_target_issues(problem) -> list[dict[str, Any]]:
     Only targets that ARE model entities are checked (a target absent from the model is a
     different error petab lint already reports). Best-effort: no condition table / no model
     yields no issues.
+
+    A model with NO DYNAMICS is skipped entirely. The question here — "does the authored
+    mechanism consume each condition-table quantity?" — presupposes a mechanism; against a model
+    that cannot move, every target is trivially unused and the check would reject the
+    content-free seed (see :func:`reconcile.seed_model_antimony`) and, worse, every later
+    parameters-only edit made while the seed is still the working model. This cannot become a
+    loophole: ``make_changes`` refuses to commit a model without dynamics, using this very
+    predicate, so anything a caller actually authors is checked.
     """
     cdf = getattr(problem, "condition_df", None)
     model = getattr(problem, "model", None)
     sm = model.sbml_model if model is not None else None
-    if cdf is None or sm is None:
+    if cdf is None or sm is None or not has_dynamics(sm):
         return []
 
     used = _model_math_names(sm) | _reaction_species(sm) | observation_model_symbols(problem)
@@ -411,8 +437,9 @@ def validate_problem(problem, protected_fixed_ids=None) -> dict[str, Any]:
     ``protected_fixed_ids`` (the shipped-fixed mechanistic/structural constants, from
     :meth:`session.PetabSession.protected_fixed_parameter_ids`) enables the role check that
     rejects removing or estimating one (see :func:`_fixed_constant_role_issues`); omit it to
-    skip that check. The condition-target check (see :func:`_unused_condition_target_issues`)
-    always runs — it needs no reference.
+    skip that check. The condition-target check (see
+    :func:`_unused_condition_target_issues`) always runs — it needs no reference, and it
+    self-skips the one case it cannot answer (a model with no dynamics).
     """
     logger = logging.getLogger("petab")
     handler = _CaptureHandler()
@@ -425,17 +452,18 @@ def validate_problem(problem, protected_fixed_ids=None) -> dict[str, Any]:
         logger.removeHandler(handler)
         logger.setLevel(prev_level)
 
+    records = [r for r in handler.records if not _is_lint_noise(r)]
     issues = [
         {
             "level": rec.levelname.lower(),
             "message": rec.getMessage(),
             "check": rec.name,
         }
-        for rec in handler.records
+        for rec in records
         if rec.levelno >= logging.WARNING
     ]
-    n_errors = sum(1 for r in handler.records if r.levelno >= logging.ERROR)
-    n_warnings = sum(1 for r in handler.records if r.levelno == logging.WARNING)
+    n_errors = sum(1 for r in records if r.levelno >= logging.ERROR)
+    n_warnings = sum(1 for r in records if r.levelno == logging.WARNING)
 
     sbml_issues = _sbml_consistency_issues(problem)
     issues += sbml_issues

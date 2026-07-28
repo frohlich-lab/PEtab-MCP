@@ -15,12 +15,13 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
-import time
 from pathlib import Path
 from typing import Any
 
 from petab.v1.C import (
     LIN,
+    LOG,
+    LOG10,
     MEASUREMENT,
     OBSERVABLE_ID,
     OBSERVABLE_TRANSFORMATION,
@@ -44,6 +45,33 @@ def _ensure_swig_on_path() -> None:
             os.environ["PATH"] = str(cand) + os.pathsep + os.environ.get("PATH", "")
     except Exception:  # best-effort; AMICI will error clearly if still missing
         pass
+
+
+#: The observable transformations PEtab defines; anything else means ``lin``.
+_TRANSFORMATIONS = (LIN, LOG, LOG10)
+
+
+def _observable_transformation(observable_df, obs_id) -> str:
+    """``lin``/``log``/``log10`` for ``obs_id``, defaulting to ``lin``.
+
+    ``observableTransformation`` is an OPTIONAL per-row column, so a table that has the column
+    but leaves a row blank yields ``NaN`` — and ``NaN`` is truthy, so the obvious
+    ``.get(col, LIN) or LIN`` did NOT fall back. ``petab.scale`` then raised on it, the caller's
+    broad ``except`` swallowed that, and EVERY point silently lost its weighted residual: chi2
+    fell back to AMICI's own vector so the score still looked fine, while ``get_fit_diagnosis``
+    reported "no weighted residuals available", the sign/runs residual-structure tests never ran,
+    and the ``simulations`` table's residual columns were all NULL. Normalising the way
+    :func:`reconcile._observable_transformations` already does keeps the two agreeing, and also
+    absorbs an unrecognised string rather than turning it into the same silent outage.
+    """
+    try:
+        if obs_id not in observable_df.index:
+            return LIN
+        value = observable_df.loc[obs_id].get(OBSERVABLE_TRANSFORMATION, LIN)
+    except Exception:  # noqa: BLE001 - a duplicate/absent index must not cost the residual
+        return LIN
+    text = str(value).strip().lower()
+    return text if text in _TRANSFORMATIONS else LIN
 
 
 def _objective_amici_model(objective):
@@ -83,118 +111,73 @@ class AmiciEngine:
             else Path(tempfile.gettempdir()) / "petab_mcp_amici"
         )
         self.build_root.mkdir(parents=True, exist_ok=True)
-        self._models: dict[str, Any] = {}
-        # SBML hashes pyPESTO has already built a problem for this run. Mirrors ``_models``
-        # for the engine's own build: it lets the fitter charge the (one-time) pyPESTO model
-        # build to ``compile_seconds`` only the FIRST time a structure is seen, so a re-fit of
-        # the same structure (a parameter-only edit) doesn't over-count compiles.
+        # SBML hashes pyPESTO has already built a problem for this run: it lets the fitter charge
+        # the (one-time) model build to ``compile_seconds`` only the FIRST time a structure is
+        # seen, so a re-fit of the same structure (a parameter-only edit) doesn't over-count
+        # compiles.
         self._pypesto_hashes: set[str] = set()
+        # SBML hashes already written to the log by :meth:`_log_pending_import`.
+        self._dumped_hashes: set[str] = set()
 
     def pypesto_importer_kwargs(self, sbml_hash: str | None = None) -> dict[str, str]:
         """Output kwargs for a pyPESTO ``PetabImporter``, keyed on the model's SBML hash so
-        pyPESTO's own compiled module is cached/reused per structure (mirroring ``_models``).
+        pyPESTO's own compiled module is cached/reused per structure.
 
         Shared by the fit (:mod:`fitting`) and the FIM (:mod:`identifiability`) so the
         output-folder / model-name convention lives in one place. Pass ``sbml_hash`` when the
         caller already computed it (avoids re-hashing); otherwise it is read from the session.
+
+        Both callers construct the importer on the very next line, which makes this the one
+        choke point every AMICI build passes through — so it is also where the pre-import model
+        dump is emitted (:meth:`_log_pending_import`).
         """
         h = sbml_hash or self.session.sbml_hash()
+        self._log_pending_import(h)
         return {
             "output_folder": str(self.build_root / f"pypesto_{h}"),
             "model_name": f"petab_mcp_pp_{h}",
         }
 
-    # -- compilation cache -------------------------------------------------
-    def _get_model(self):
-        _ensure_swig_on_path()
-        # AMICI's SBML import SEGFAULTS (SIGSEGV, killing the whole server process) on a
-        # model-less problem — an empty model whose observables reference undefined output
-        # parameters, i.e. a zero-shot problem before any set_model. Refuse to hand such a model
-        # to AMICI: raise a clean, actionable error instead of a hard crash. (blasi went 0/5 in a
-        # sweep because a get_fit_summary/simulate on its model-less state crashed the server; the
-        # simulate paths also short-circuit on has_model() — see fitting.ensure_simulation — so
-        # this is the defense-in-depth backstop for any caller.)
-        if not self.session.has_model():
-            from .errors import ModelUpdateError
+    def _log_pending_import(self, sbml_hash: str) -> None:
+        """Dump the exact model about to be handed to AMICI, BEFORE the import call.
 
-            raise ModelUpdateError(
-                "No model to simulate or fit: the problem has no species/reactions yet. Build a "
-                "model with make_changes before requesting a simulation, fit, or fit summary."
+        AMICI's SBML import + C++ codegen can hard-crash the process (a segfault-class failure in
+        libsbml/codegen on a pathological model) that no Python exception can catch and that
+        leaves no traceback — the MCP client just sees the connection drop (``httpx.ReadError``).
+        When that happens this INFO line is the last thing in ``server.log`` and pinpoints the
+        offending model; a blasi sweep run died exactly this way with no record of the culprit.
+
+        Emitted once per SBML hash, so it costs one write per STRUCTURE rather than per fit: a
+        re-fit or a bounds-only edit rebuilds the pyPESTO problem but reuses the compiled module,
+        and only a build can crash. Recording the hash before logging (not after) means a crash
+        *inside* the logging call still can't put this on a retry loop.
+
+        Wrapped whole in a broad guard: this is best-effort diagnostics and must NEVER block a
+        build — a throwing libsbml accessor or an un-round-trippable model would otherwise do so.
+        """
+        log = getattr(self.session, "logger", None)
+        if log is None or sbml_hash in self._dumped_hashes:
+            return
+        self._dumped_hashes.add(sbml_hash)
+        try:
+            sm = self.session.problem.model.sbml_model
+            ant = self.session.problem.model.to_antimony()
+            log.info(
+                "AMICI import starting (sbml_hash=%s, species=%d, reactions=%d); if the server "
+                "process dies during this import with no traceback, THIS is the model that "
+                "crashed it:\n%s",
+                sbml_hash, sm.getNumSpecies(), sm.getNumReactions(), ant,
             )
-        h = self.session.sbml_hash()
-        if h not in self._models:
-            # Time the model BUILD (compile/import). This runs once per unique SBML hash —
-            # every later call for the same hash is a dict hit and adds nothing — and is
-            # always under `session.lock` (callers simulate/evaluate under it), so the
-            # accumulator write is safe. See `PetabSession.compile_seconds`.
-            _compile_t0 = time.perf_counter()
-            from amici.importers.petab.v1 import import_petab_problem
+        except Exception:  # noqa: BLE001 - diagnostic only, never block the build
+            log.info("AMICI import starting (sbml_hash=%s); model dump unavailable", sbml_hash)
 
-            build_dir = self.build_root / f"m_{h}"
-
-            # Dump the exact model about to be handed to AMICI *before* the import call. AMICI's
-            # SBML import + C++ codegen can hard-crash the process (a segfault-class failure in
-            # libsbml/codegen on a pathological model) that no Python exception can catch and that
-            # leaves no traceback — the MCP client just sees the connection drop (httpx.ReadError).
-            # When that happens, this INFO line is the last thing in server.log and pinpoints the
-            # offending model. Only logged on a fresh build (once per SBML hash), so it is not
-            # noisy. (A blasi sweep run died exactly this way with no record of the culprit model.)
-            # Wrapped whole in a broad guard: this is best-effort diagnostics and must NEVER block
-            # the build (a missing sbml_model or a throwing libsbml accessor would otherwise do so).
-            log = getattr(self.session, "logger", None)
-            if log is not None:
-                try:
-                    sm = self.session.problem.model.sbml_model
-                    ant = self.session.problem.model.to_antimony()
-                    log.info(
-                        "AMICI import starting (sbml_hash=%s, species=%d, reactions=%d); if the "
-                        "server process dies during this import with no traceback, THIS is the "
-                        "model that crashed it:\n%s",
-                        h, sm.getNumSpecies(), sm.getNumReactions(), ant,
-                    )
-                except Exception:  # noqa: BLE001 - diagnostic only, never block the build
-                    log.info("AMICI import starting (sbml_hash=%s); model dump unavailable", h)
-
-            # compile_=None reuses an already-compiled build for this SBML hash
-            # (recompiling a module already imported in-process would fail). A
-            # COMPLETE hash-keyed build is always valid: identical SBML + fixed
-            # tables map to an identical compiled model. Two failure modes poison
-            # a hash for every future run (the dir lives outside work/, so
-            # cleanup() never clears it):
-            #   1. a build interrupted mid-compile (a killed run, a crash) leaves
-            #      `build_dir` non-empty but not importable; compile_=None then
-            #      refuses with AMICI's "Cannot compile to <dir>: not empty";
-            #   2. a COMPLETE build that no longer imports (an AMICI/Python ABI
-            #      change, a corrupt/half-written extension), which raises an
-            #      ImportError at load time.
-            # Recover from either by wiping the build and forcing a fresh compile
-            # once (compile_=True — the recovery is a rebuild, not a reuse).
-            try:
-                self._models[h] = import_petab_problem(
-                    self.session.problem,
-                    output_dir=str(build_dir),
-                    model_name=f"petab_mcp_{h}",
-                    compile_=None,
-                )
-            except (ValueError, ImportError) as exc:
-                # For a ValueError, match AMICI's specific "output dir not empty"
-                # failure so an unrelated ValueError still surfaces; an ImportError
-                # (a complete-but-unloadable build) always warrants a rebuild.
-                if isinstance(exc, ValueError):
-                    msg = str(exc)
-                    if "Cannot compile to" not in msg or "not empty" not in msg:
-                        raise
-                shutil.rmtree(build_dir, ignore_errors=True)
-                build_dir.mkdir(parents=True, exist_ok=True)
-                self._models[h] = import_petab_problem(
-                    self.session.problem,
-                    output_dir=str(build_dir),
-                    model_name=f"petab_mcp_{h}",
-                    compile_=True,
-                )
-            self.session.compile_seconds += time.perf_counter() - _compile_t0
-            self.session.n_compiles += 1
-        return self._models[h]
+    # NOTE: there is no compile cache here any more. This class used to build its OWN AMICI
+    # model (`_get_model`, keyed by SBML hash) alongside the one pyPESTO builds for the fit —
+    # two full C++ builds of one structure. Unifying every likelihood evaluation onto
+    # `fitting.estimation_problem` (see its docstring) left that second build unused, so it is
+    # gone: the AMICI model now comes off the pyPESTO objective (`_objective_amici_model`),
+    # and pyPESTO caches its own compiled module under `pypesto_importer_kwargs` — which is also
+    # where the pre-import dump `_get_model` used to emit now lives.
 
     # -- public API --------------------------------------------------------
     @staticmethod
@@ -377,10 +360,7 @@ class AmiciEngine:
             from petab.v1 import scale as petab_scale
             from petab.v1.calculate import evaluate_noise_formula
 
-            obs_id = row.get(OBSERVABLE_ID)
-            trafo = LIN
-            if obs_id in observable_df.index:
-                trafo = observable_df.loc[obs_id].get(OBSERVABLE_TRANSFORMATION, LIN) or LIN
+            trafo = _observable_transformation(observable_df, row.get(OBSERVABLE_ID))
             noise = float(evaluate_noise_formula(row, noise_formulas, parameter_df, s))
             if noise == 0.0:
                 return noise, None

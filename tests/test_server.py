@@ -402,7 +402,7 @@ def test_a_re_author_is_not_refused_when_a_model_exists(tmp_path):
 
     async def go():
         desc = _structured(await mcp.call_tool("describe_problem", {}))
-        assert desc["model_initialized"] is True
+        assert desc["model_authored"] is True
         res = _structured(await mcp.call_tool("make_changes", {
             "antimony": _ONE_REACTION_ANTIMONY, "justification": "re-author", "references": ["PMID:1"],
         }))
@@ -438,7 +438,7 @@ def test_make_changes_builds_the_first_model_via_tool(tmp_path):
 
     async def go():
         desc = _structured(await mcp.call_tool("describe_problem", {}))
-        assert desc["model_initialized"] is False
+        assert desc["model_authored"] is False
         assert desc["n_reactions"] == 0
 
         # `antimony` builds the first model when the problem ships model-less
@@ -449,7 +449,7 @@ def test_make_changes_builds_the_first_model_via_tool(tmp_path):
         assert res["applied"] is True
 
         desc2 = _structured(await mcp.call_tool("describe_problem", {}))
-        assert desc2["model_initialized"] is True  # the edit built the working model
+        assert desc2["model_authored"] is True  # the edit built the working model
         assert desc2["n_reactions"] == 2
 
     asyncio.run(go())

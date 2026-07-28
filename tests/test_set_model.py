@@ -125,9 +125,13 @@ def _ids(session):
 
 
 # -- fresh problem: no model initialized -----------------------------------
-def test_empty_problem_has_no_model(empty_session):
-    assert empty_session.has_model() is False
-    # the initial version is still snapshotted (an empty model)
+def test_empty_problem_has_no_authored_model(empty_session):
+    """A problem that ships model-less is SEEDED with a content-free model (see
+    test_seed_model.py), so there is something to simulate from the start — but nothing has been
+    authored, which is the flag everything downstream keys on."""
+    assert empty_session.model_authored() is False
+    assert empty_session.has_model() is True
+    # the initial version is still snapshotted
     assert empty_session.provenance.current_version == 0
 
 
@@ -176,7 +180,7 @@ def test_set_model_rejects_unparseable_antimony(empty_session):
         O.set_model(empty_session, "this is not antimony {{{", justification="x",
                     references=["PMID:1"])
     # a failed author leaves the problem model-less (atomic revert)
-    assert empty_session.has_model() is False
+    assert empty_session.model_authored() is False
 
 
 # A model that (incorrectly) writes a declared parameter as a product stoichiometry coefficient.
@@ -205,7 +209,7 @@ def test_set_model_rejects_parametric_stoichiometry(empty_session):
         O.set_model(empty_session, PARAMETRIC_STOICH_ANTIMONY, justification="burst amplification")
     assert any("N_burst" in issue for issue in (exc.value.issues or [])), exc.value.issues
     # Rejected up front — the problem is left model-less (nothing was built or committed).
-    assert empty_session.has_model() is False
+    assert empty_session.model_authored() is False
 
 
 def test_set_model_rejects_same_symbol_stoichiometry_on_both_sides(empty_session):
@@ -221,7 +225,7 @@ def test_set_model_rejects_same_symbol_stoichiometry_on_both_sides(empty_session
     with pytest.raises(ValidationError) as exc:
         O.set_model(empty_session, both_sides, justification="cooperative conversion")
     assert any("stoichiometry" in issue.lower() for issue in (exc.value.issues or [])), exc.value.issues
-    assert empty_session.has_model() is False
+    assert empty_session.model_authored() is False
 
 
 def test_can_reauthor_after_set_model(empty_session):

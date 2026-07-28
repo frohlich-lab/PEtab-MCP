@@ -50,9 +50,16 @@ def test_zero_estimated_params_guard(session):
         session._auto_fit_and_improvement(n_starts=1)
 
 
-def test_fit_without_a_model_is_rejected(empty_session):
-    with pytest.raises(ModelUpdateError, match="no model to fit"):
-        empty_session.fit()
+def test_a_seeded_problem_always_has_a_model(empty_session):
+    """`fit` used to refuse when there was no model. It no longer needs to: a model-less problem
+    is seeded with a valid one at construction, so there IS always a model — and a problem that
+    cannot be seeded never gets this far, it fails to construct (see test_engine).
+
+    Having a model is not the same as having something to estimate: this fixture ships every
+    parameter fixed, so the seed's n_estimated is 0 and a fit of it would be refused by the
+    zero-estimated-params guard above — on its own terms, with its own message."""
+    assert empty_session.has_model() is True
+    assert empty_session.model_authored() is False
 
 
 # -- fit: fit + snapshot + clear pending (needs the engine) -------------------

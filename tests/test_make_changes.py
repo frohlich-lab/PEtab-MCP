@@ -496,3 +496,71 @@ def test_there_is_no_way_to_edit_without_fitting(tmp_path):
         if res["applied"]:
             assert "committed" in res, args
         assert _head(mcp)["has_unfit_edits"] is False, args
+
+
+# -- the message stack ---------------------------------------------------------
+
+
+def test_the_message_stack_carries_the_edit_and_the_fit_together(tmp_path):
+    """One call runs two steps that can each warn, and they used to report through different
+    channels — the edit's advisories into a flat `warnings`, a failure into `error`. `messages` is
+    the single ordered stack: every entry tagged with its level and the step it came from, and
+    `warnings` derived from it so the two cannot drift."""
+    mcp = _server(tmp_path, auto_fit=True)
+    _call(mcp, "make_changes", {
+        "antimony": _antimony(), "justification": "initial", "n_starts": 2})
+    # A re-author that drops a previously-estimated parameter warns — the edit half's advisory.
+    res = _call(mcp, "make_changes", {
+        "antimony": _BASE.format(extra="").replace("  k2 = 0.1;\n", "")
+                        .replace("  r2: B => A; k2 * B;\n", ""),
+        "justification": "drop the reverse reaction", "n_starts": 2})
+
+    stack = res["messages"]
+    assert all({"level", "source", "message"} <= set(m) for m in stack)
+    assert all(m["level"] in ("error", "warning") for m in stack)
+    assert any(m["source"] == "edit" and "k2" in m["message"] for m in stack), stack
+    # the flat list every existing caller reads is DERIVED from the stack, so they cannot drift
+    assert res["warnings"] == [m["message"] for m in stack if m["level"] == "warning"]
+
+
+def test_a_rejected_change_reports_the_error_on_the_stack(tmp_path):
+    """A rejection is an `error` entry, sourced to the step that produced it — so a caller reads
+    one place whether the call warned, failed, or both."""
+    mcp = _server(tmp_path, auto_fit=True)
+    res = _call(mcp, "make_changes", {"justification": "nothing to do"})
+    assert res["applied"] is False
+    assert [(m["level"], m["source"]) for m in res["messages"]] == [("error", "make_changes")]
+    assert res["messages"][0]["message"] == res["error"]
+
+
+def test_a_failed_fit_puts_its_error_on_the_stack(tmp_path, monkeypatch):
+    """The fit half's failure is sourced to `fit`, next to whatever the edit half already said."""
+    def _boom(self, *a, **k):
+        raise ModelUpdateError("boom")
+
+    monkeypatch.setattr(PetabSession, "fit", _boom)
+    mcp = _server(tmp_path)
+    res = _call(mcp, "make_changes", {
+        "antimony": _antimony("r3: A => ; k3 * A;"), "justification": "an edit whose fit fails"})
+    assert res["applied"] is False
+    errors = [m for m in res["messages"] if m["level"] == "error"]
+    assert [m["source"] for m in errors] == ["fit"]
+    assert "boom" in errors[0]["message"]
+
+
+# -- empty models --------------------------------------------------------------
+
+
+def test_a_model_with_no_dynamics_is_rejected(tmp_path):
+    """Nothing to simulate is nothing to score — and an empty model segfaults AMICI's importer,
+    a crash no caller can catch. Refused before it can be committed."""
+    mcp = _server(tmp_path, auto_fit=True)
+    res = _call(mcp, "make_changes", {
+        "antimony": "model m\n  species A;\n  A = 1;\nend",
+        "justification": "declare a species but no reaction"})
+    assert res["applied"] is False
+    assert "no DYNAMICS" in res["error"]
+    assert any(m["level"] == "error" for m in res["messages"])
+    # ...and the working model is untouched
+    head = _head(mcp)
+    assert head["current_version"] == 0 and head["model_authored"] is True
