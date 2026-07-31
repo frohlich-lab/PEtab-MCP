@@ -197,6 +197,58 @@ def test_ic_unit_normalization_stays_fixed():
     assert pdf.loc["O_init", ESTIMATE] == 0             # empty pool -> FIXED
 
 
+def test_ic_convention_fixes_a_pre_existing_estimated_row():
+    """The {0,1}->FIXED IC convention must reach a `<sid>_init` row that ALREADY EXISTS as an
+    estimated seed artifact, not only a freshly-added one.
+
+    A model-less problem is seeded with a content-free model whose species come from the
+    observables; reconcile parametrises their ICs into ESTIMATED `<sid>_init` rows (nominal 0.1).
+    When the agent then authors the real mechanism with the SAME state names, those rows are
+    already in the table, so the add-loop (which only reaches `valid - table_ids`) skips them and
+    the value-based convention never runs — leaving a 0/1 IC spuriously ESTIMATED and
+    structurally non-identifiable (blasi's 16 steady-state acetylation states; the agent has no
+    tool to fix them, since a parameters-arg edit sets bounds/scale only). Reconcile must re-derive
+    the FIXED convention for such a row.
+    """
+    import pandas as pd
+    import petab.v1 as petab
+    from petab.v1.C import (ESTIMATE, LIN, LOG10, LOWER_BOUND, NOMINAL_VALUE, PARAMETER_ID,
+                            PARAMETER_SCALE, UPPER_BOUND)
+
+    ant = (
+        "model seed_collision\n"
+        "  compartment c = 1;\n"
+        "  species R in c; species O in c; species G in c;\n"
+        "  R = 1.0; O = 0.0; G = 2.5;\n"        # R unit-norm, O empty pool, G a positive guess
+        "  k1 = 0.3;\n"
+        "  r1: R -> O; k1 * R;\n"
+        "  r2: O -> G; k1 * O;\n"
+        "end\n"
+    )
+    prob = petab.Problem(model=SbmlModel.from_antimony(ant))
+    # Mint the SBML <sid>_init parameters, then PRE-POPULATE the table with estimated seed rows
+    # (nominal 0.1, estimate 1) — exactly the leftover a content-free seed of R/O/G would leave.
+    R.ensure_parametric_initial_conditions(prob.model.sbml_model)
+    rows = {pid: [LOG10, 1e-4, 1e4, 0.1, 1] for pid in ("R_init", "O_init", "G_init")}
+    prob.parameter_df = pd.DataFrame.from_dict(
+        rows, orient="index",
+        columns=[PARAMETER_SCALE, LOWER_BOUND, UPPER_BOUND, NOMINAL_VALUE, ESTIMATE],
+    ).rename_axis(PARAMETER_ID)
+
+    R.reconcile(prob)
+    pdf = prob.parameter_df
+    # R == 1.0 (unit normalization) and O == 0.0 (empty pool): both re-derived to FIXED at their
+    # model value, NOT left estimated at the seed's 0.1.
+    assert pdf.loc["R_init", ESTIMATE] == 0
+    assert pdf.loc["R_init", PARAMETER_SCALE] == LIN
+    assert abs(pdf.loc["R_init", NOMINAL_VALUE] - 1.0) < 1e-9
+    assert pdf.loc["O_init", ESTIMATE] == 0
+    assert abs(pdf.loc["O_init", NOMINAL_VALUE] - 0.0) < 1e-9
+    # G == 2.5 (a positive guess, not 0/1) stays ESTIMATED — the convention only FIXES 0/1, and a
+    # legitimately-estimated IC's fitted nominal must never be clobbered.
+    assert pdf.loc["G_init", ESTIMATE] == 1
+
+
 def test_condition_column_species_ic_not_parametrised():
     """A species whose initial value is set PER CONDITION by a condition-table column (a PEtab
     species-initial override, e.g. armistead's per-genotype metabolite baselines) is driven by the

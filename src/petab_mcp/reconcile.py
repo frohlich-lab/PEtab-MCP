@@ -1551,6 +1551,37 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
         problem.parameter_df.loc[pid, ESTIMATE] = estimate
         added.append(pid)
 
+    # Enforce the leak-free {0,1} IC-fix convention on IC rows that ALREADY EXIST — the add-loop
+    # above only reaches params in `valid - table_ids`, so an IC parameter that was in the table
+    # before this sync never gets the value-based treatment. That is not hypothetical: a model-less
+    # problem is seeded with a content-free model whose species come from the observables, and
+    # reconcile parametrises their ICs into ESTIMATED `<sid>_init` rows (nominal 0.1). When the
+    # agent then authors the real mechanism using the SAME state names (e.g. blasi's 16 acetylation
+    # states x_0ac..x_4ac), those seed rows are already present, so the {0,1}->FIXED convention was
+    # SILENTLY SKIPPED and every steady-state IC stayed estimated — 16 structurally non-identifiable
+    # free parameters the agent has no tool to remove (a parameters-arg edit sets bounds/scale only,
+    # never estimate). Re-derive the FIXED convention here for a non-shipped IC row whose current
+    # model value is exactly 0 (empty pool) or 1 (unit normalization); a shipped row is left as the
+    # problem defined it, and an IC with any other value stays estimated (its fitted nominal, which
+    # we must not clobber, is never exactly 0 or 1).
+    for pid in sorted((ic_params & table_ids) - shipped_ids):
+        if pid not in problem.parameter_df.index:
+            continue
+        try:
+            v0 = float(problem.model.get_parameter_value(pid))
+        except (TypeError, ValueError):
+            continue
+        if v0 == 0.0 or v0 == 1.0:
+            cur = problem.parameter_df.loc[pid, ESTIMATE]
+            try:
+                already_fixed = int(float(cur)) == 0
+            except (TypeError, ValueError):
+                already_fixed = False
+            if not already_fixed:
+                problem.parameter_df.loc[pid, PARAMETER_SCALE] = LIN
+                problem.parameter_df.loc[pid, NOMINAL_VALUE] = v0
+                problem.parameter_df.loc[pid, ESTIMATE] = 0
+
     for pid in sorted(table_ids - valid - keep_table):
         problem.parameter_df = problem.parameter_df.drop(index=pid)
         removed.append(pid)
