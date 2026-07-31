@@ -34,7 +34,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 from petab.v1.C import OBSERVABLE_ID, SIMULATION_CONDITION_ID
 
 from . import data_access as data_mod

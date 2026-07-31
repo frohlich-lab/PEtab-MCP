@@ -99,7 +99,7 @@ _ONE_REACTION_ANTIMONY = (
 
 
 def _structured(result):
-    return result[1]  # FastMCP.call_tool -> (content_blocks, structured_result)
+    return result.structured_content  # FastMCP.call_tool -> ToolResult(content, structured_content)
 
 
 def test_tools_registered(tmp_path):

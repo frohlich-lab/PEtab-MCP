@@ -178,7 +178,7 @@ def _server(tmp_path, auto_fit=False):
 
 
 def _call(mcp, name, args):
-    return asyncio.run(mcp.call_tool(name, args))[1]  # (content_blocks, structured_result)
+    return asyncio.run(mcp.call_tool(name, args)).structured_content  # ToolResult.structured_content
 
 
 def _head(mcp):

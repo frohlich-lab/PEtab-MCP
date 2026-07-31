@@ -15,7 +15,7 @@ YAML_PATH = Path(__file__).parent / "data" / "toy_v1" / "problem.yaml"
 
 
 def _structured(result):
-    return result[1]  # FastMCP.call_tool -> (content_blocks, structured_result)
+    return result.structured_content  # FastMCP.call_tool -> ToolResult(content, structured_content)
 
 
 def _unwrap(result):
@@ -149,7 +149,7 @@ def test_skills_resource_registered(tmp_path):
     mcp = _server(tmp_path)
     uris = {str(r.uri) for r in asyncio.run(mcp.list_resources())}
     assert any("petab://skills" in u for u in uris)
-    templates = {str(t.uriTemplate) for t in asyncio.run(mcp.list_resource_templates())}
+    templates = {str(t.uri_template) for t in asyncio.run(mcp.list_resource_templates())}
     assert "petab://skills/{name}" in templates
 
 
@@ -189,7 +189,7 @@ def test_read_skill_resource(tmp_path):
     mcp = _server(tmp_path)
 
     async def go():
-        contents = list(await mcp.read_resource("petab://skills/petab-model-building"))
+        contents = (await mcp.read_resource("petab://skills/petab-model-building")).contents
         assert "petab-model-building" in contents[0].content
 
     asyncio.run(go())
