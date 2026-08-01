@@ -112,7 +112,7 @@ def _pdf(rows):
     return pd.DataFrame(rows).set_index("parameterId")
 
 
-def test_fit_fingerprint_ignores_estimated_start_but_not_fixed():
+def test_fit_fingerprint_covers_every_starting_value():
     base = _pdf([
         {"parameterId": "k", "estimate": 1, "nominalValue": 1.0,
          "lowerBound": 1e-3, "upperBound": 1e3},
@@ -122,12 +122,14 @@ def test_fit_fingerprint_ignores_estimated_start_but_not_fixed():
     key = fitting.fit_fingerprint("model", base, 5)
     assert len(key) == 16
 
-    # the ESTIMATED parameter's starting value is not part of the fit identity
+    # An ESTIMATED parameter's starting value IS part of the fit identity: half the multistart is
+    # warm-started from it (see fitting.warm_start_guesses), so the same structure fitted from two
+    # different parents is two different optimizations and must not share one cached result.
     est_moved = base.copy()
     est_moved.loc["k", "nominalValue"] = 42.0
-    assert fitting.fit_fingerprint("model", est_moved, 5) == key
+    assert fitting.fit_fingerprint("model", est_moved, 5) != key
 
-    # but a FIXED parameter's value is (it enters the objective)
+    # ...as is a FIXED parameter's value (it enters the objective)
     fixed_moved = base.copy()
     fixed_moved.loc["s", "nominalValue"] = 0.2
     assert fitting.fit_fingerprint("model", fixed_moved, 5) != key

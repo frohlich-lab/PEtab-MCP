@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 import pytest
+from petab.v1.C import NOMINAL_VALUE
 
 from pathlib import Path
 
@@ -141,20 +142,32 @@ def test_fit_records_optimization_trace(fit_session):
 
 
 def test_fit_skip_reuses_cache(fit_session):
+    """The cache serves a fit of the identical estimation problem — which now includes the
+    STARTING values, since half the multistart is warm-started from them (see
+    fitting.warm_start_guesses). A refit after the fit moved the nominal values is therefore a
+    different optimization and correctly misses."""
     from petab_mcp import fitting as F
 
+    before = fit_session.problem.parameter_df[NOMINAL_VALUE].copy()
     r1 = F.fit_and_simulate(fit_session, fit_session.engine, do_fit=True, n_starts=2)
     assert fit_session.last_fit_cache_hit is False  # first fit: cache miss, ran the optimizer
 
-    # the SAME estimation problem (model/bounds/estimate/n_starts unchanged) is served from
-    # the cache — the optimizer is skipped, but the fitted values + objective still match.
+    # A repeat from the SAME start point (the fit's write-back rewound) is served from the cache:
+    # the optimizer is skipped, but the fitted values + objective still match.
+    fit_session.problem.parameter_df[NOMINAL_VALUE] = before
     r2 = F.fit_and_simulate(fit_session, fit_session.engine, do_fit=True, n_starts=2)
     assert fit_session.last_fit_cache_hit is True
     for k, v in r1["fitted_parameters"].items():
         assert r2["fitted_parameters"][k] == pytest.approx(v)
     assert r2["neg_log_likelihood"] == pytest.approx(r1["neg_log_likelihood"], rel=1e-6)
 
+    # The write-back moved the starting values, so the next fit warm-starts somewhere else: a
+    # miss, not a stale hit. (The `fit` tool's de-dup refuses this refit before it gets here.)
+    F.fit_and_simulate(fit_session, fit_session.engine, do_fit=True, n_starts=2)
+    assert fit_session.last_fit_cache_hit is False
+
     # disabling the cache forces a real re-fit
+    fit_session.problem.parameter_df[NOMINAL_VALUE] = before
     fit_session.fit_cache = False
     F.fit_and_simulate(fit_session, fit_session.engine, do_fit=True, n_starts=2)
     assert fit_session.last_fit_cache_hit is False

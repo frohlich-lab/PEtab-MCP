@@ -24,7 +24,6 @@ import time
 from typing import Any
 
 from petab.v1.C import (
-    ESTIMATE,
     LIN,
     LOG,
     LOG10,
@@ -42,7 +41,7 @@ from .constants import (
     PARAMETER_AT_BOUND_RELATIVE_TOL,
 )
 from .formatting import finite_float as _flt
-from .parameters import estimated_mask, parameter_df_to_tsv, sha16
+from .parameters import parameter_df_to_tsv, sha16
 
 # pyPESTO's parameter-table column that tags an inner (hierarchical) parameter.
 _PARAMETER_TYPE_COL = "parameterType"
@@ -118,6 +117,26 @@ FIT_N_WORKERS = _env_int("PETAB_MCP_FIT_N_WORKERS", _default_fit_workers())
 FIT_SEED = 0
 FIT_OPTIMIZER = "fides"
 
+# -- warm starts (see `warm_start_guesses`) ---------------------------------
+# Fraction of the multistart re-entered at the PREVIOUS fit's optima — its best one (which the
+# write-back left in the nominal values) and then its other converged basins, each remapped onto
+# this problem's parameter vector. For a NESTED edit (a new parameter added at a neutral value)
+# the best one reproduces the parent's likelihood exactly, so a fit that starts there cannot
+# converge WORSE than its parent unless the added structure genuinely cannot help. That is the
+# whole point: an "adding this term made the fit worse" result is otherwise indistinguishable
+# from an under-converged multistart that never found the parent's basin (see :mod:`nesting`),
+# and the panel has read the latter as the former. Re-entering the OTHER basins matters for the
+# same reason one notch down: they are the local optima the parent's own multistart paid to find,
+# and an additive edit does not destroy them.
+# The other half stays FRESH random: an added parameter can create new local optima that none of
+# the parent's basins contain, and only an unbiased sample finds those.
+WARM_START_FRACTION = 0.5
+# Spread of the FALLBACK warm starts, as a fraction of each parameter's box width in ESTIMATION
+# scale. Used only to fill the warm budget when the previous fit cannot supply enough DISTINCT
+# optima — the run's first fit, or a multistart that converged everything to one point — so the
+# warm half explores that point's neighbourhood instead of re-running one optimization N times.
+WARM_START_JITTER = 0.05
+
 
 def _fides_maxtime_options() -> dict[str, Any]:
     """``{fides.Options.MAXTIME: FIT_PER_START_TIMEOUT_S}`` when this ``fides`` exposes ``MAXTIME``,
@@ -180,24 +199,24 @@ def _fitted_values(x_names, x_values, free_indices, parameter_df) -> dict[str, f
 def fit_fingerprint(sbml_str: str, parameter_df, n_starts: int) -> str:
     """Identity of an *estimation problem* — the key under which a fit is cached/reused.
 
-    A multistart fit's result is determined by the model, the estimation setup (bounds,
-    scale, which parameters are estimated, and the fixed parameters' values), the number of
-    starts, and the (fixed) seed and optimizer — but NOT by an estimated parameter's
-    ``nominalValue``
-    (that is a starting guess the multistart optimizer does not use). Those starting values
-    are therefore blanked out so the key is stable across the fit (which overwrites them with
-    the optimum), letting a later commit of the same estimation problem reuse the result.
+    A multistart fit's result is determined by the model, the estimation setup (bounds, scale,
+    which parameters are estimated, and the parameters' values), the number of starts, and the
+    (fixed) seed and optimizer.
+
+    The estimated parameters' ``nominalValue`` USED to be blanked out here, on the grounds that a
+    starting guess is not something the multistart optimizer reads. That stopped being true when
+    half the starts became WARM (see :func:`warm_start_guesses`): the nominal values now decide
+    where those starts begin, so two fits of the same structure from different parents are
+    genuinely different optimizations and must not collide on one cache key.
+
+    What un-blanking costs: the key is computed BEFORE the fit (pre-fit nominals) and the fit
+    then writes the optimum back, so a refit of the same structure from its own optimum — and a
+    durable resume, which restores the stored POST-fit table — now miss. What it still serves is
+    the case that matters, rollback-then-re-author: restoring a version rewinds the nominal
+    values, so re-authoring the same child edit reproduces the pre-fit table exactly and hits.
     """
-    df = parameter_df
-    if ESTIMATE in df.columns and NOMINAL_VALUE in df.columns:
-        df = df.copy()
-        try:
-            estimated = estimated_mask(df)
-            df.loc[estimated, NOMINAL_VALUE] = float("nan")
-        except (TypeError, ValueError):  # non-numeric estimate column -> hash it as-is
-            pass
     payload = "\n".join(
-        [sbml_str, parameter_df_to_tsv(df),
+        [sbml_str, parameter_df_to_tsv(parameter_df),
          f"n_starts={n_starts};seed={FIT_SEED};optimizer={FIT_OPTIMIZER}"]
     )
     return sha16(payload)
@@ -487,6 +506,20 @@ def problem_x_from_nominal(problem, parameter_df) -> list[float]:
     :func:`estimation_problem` caches on ``session.problem_hash()``, which changes whenever any
     parameter's value/bounds/scale/estimate does, forcing a rebuild.
     """
+    full = problem_x_full_from_nominal(problem, parameter_df)
+    free = getattr(problem, "x_free_indices", None)
+    if free is None:
+        return full
+    return [full[i] for i in free]
+
+
+def problem_x_full_from_nominal(problem, parameter_df) -> list[float]:
+    """The FULL (``dim_full``) scaled parameter vector for the current ``nominalValue``s — fixed
+    parameters included, in ``problem.x_names`` order.
+
+    The shape pyPESTO's ``x_guesses`` wants (see :func:`warm_start_guesses`);
+    :func:`problem_x_from_nominal` reduces it to the free coordinates an objective takes.
+    """
     from petab.v1.parameters import scale as petab_scale
 
     full: list[float] = []
@@ -499,10 +532,158 @@ def problem_x_from_nominal(problem, parameter_df) -> list[float]:
             full.append(float(fixed.get(len(full), 0.0)))
             continue
         full.append(float(petab_scale(val, sc)))
-    free = getattr(problem, "x_free_indices", None)
-    if free is None:
-        return full
-    return [full[i] for i in free]
+    return full
+
+
+def previous_optima(problem, optimization: dict[str, Any] | None, x0) -> list[list[float]]:
+    """The PREVIOUS fit's per-start optima, remapped onto this problem's parameter vector and
+    ranked best-first — the raw material for the warm starts.
+
+    ``optimization`` is a :func:`_optimization_payload` dict (``session.optimization``), whose
+    ``starts`` are already sorted by objective (rank 0 = best) and carry the full scaled vector
+    ``x`` in ``x_names`` order. Each is remapped rather than used as-is: the previous model has a
+    DIFFERENT parameter vector — that is the point of the edit — so a shared parameter is carried
+    across (through LINEAR, since the two problems can scale it differently: a hierarchical
+    problem forces its sigmas to a linear scale) and anything the previous fit did not have keeps
+    its value from ``x0``, the current nominal point. For an additive edit that means every
+    previous local optimum is re-entered with the new parameter at its neutral value.
+
+    Returns ``[]`` when there is no usable previous fit: no payload (the run's first fit), or one
+    written before ``x_names``/``x_scales`` were recorded — remapping without the scales would
+    silently mix log10 and linear coordinates, which is worse than not warm-starting at all.
+    Starts whose objective or vector is non-finite are dropped: a failed start is not a basin.
+    """
+    from petab.v1.parameters import scale as petab_scale
+    from petab.v1.parameters import unscale
+
+    starts = (optimization or {}).get("starts") or []
+    prev_names = (optimization or {}).get("x_names")
+    prev_scales = (optimization or {}).get("x_scales")
+    if not starts or not prev_names or not prev_scales:
+        return []
+    # Where each shared parameter sits in the previous vector, and the two scales to convert
+    # between. Built once: the same map serves every start.
+    cur_index = {name: i for i, name in enumerate(problem.x_names)}
+    shared = [
+        (cur_index[name], j, str(prev_scales[j]), str(problem.x_scales[cur_index[name]]))
+        for j, name in enumerate(prev_names)
+        if name in cur_index and j < len(prev_scales)
+    ]
+    if not shared:
+        return []
+
+    out: list[list[float]] = []
+    for start in starts:
+        xs = start.get("x")
+        if not xs or _flt(start.get("fval")) is None:
+            continue
+        point = list(x0)
+        try:
+            for cur_i, prev_j, prev_sc, cur_sc in shared:
+                value = _flt(xs[prev_j])
+                if value is None:
+                    raise ValueError("non-finite coordinate")
+                point[cur_i] = float(petab_scale(unscale(value, prev_sc), cur_sc))
+        except (IndexError, KeyError, TypeError, ValueError):
+            continue  # a malformed/short vector is one unusable start, not a broken fit
+        out.append(point)
+    return out
+
+
+def warm_start_guesses(problem, parameter_df, n_starts: int, optimization=None):
+    """``WARM_START_FRACTION`` of the multistart's start points, seeded from the PREVIOUS fit.
+    Returns a ``(n_warm, dim_full)`` array — pyPESTO fills the first ``n_warm`` starts from it
+    and samples the remaining ``n_starts - n_warm`` freshly.
+
+    Start 0 is the current nominal point: the previous fit's BEST optimum (``_run_fit`` writes it
+    back) with any newly-introduced parameter at its neutral value. For a nested edit that point
+    reproduces the parent's likelihood exactly, so the fit cannot end up worse than its parent
+    unless the added structure truly does not help — which is what makes "adding this term made
+    the fit worse" a readable result instead of a coin flip between a real answer and a search
+    that never found the parent's basin (see :mod:`nesting`).
+
+    Starts 1..n_warm-1 are the previous multistart's OTHER optima, best-first (see
+    :func:`previous_optima`), deduplicated against each other. Those are real, converged basins
+    of the parent likelihood — under an additive edit they stay basins — so re-entering them is a
+    far better use of the warm half than perturbing one point at random. Only when the previous
+    fit cannot supply enough distinct optima (the run's first fit, or a multistart that converged
+    everything to one point) is the remainder filled by jittering start 0 (Gaussian,
+    ``WARM_START_JITTER`` of each box's width in estimation scale), so the warm/fresh split still
+    holds. Every start is clipped into the box.
+
+    Deterministic: jitter is drawn from a private ``default_rng(FIT_SEED)``, so it neither
+    depends on nor perturbs the global stream pyPESTO samples its fresh starts from.
+
+    Returns an empty ``(0, dim_full)`` array when there is nothing to warm-start from
+    (``n_starts < 2``, no free parameters, or a free parameter with no usable nominal value),
+    which pyPESTO treats as "sample every start".
+    """
+    import numpy as np
+
+    dim_full = len(problem.x_names)
+    free_idx = getattr(problem, "x_free_indices", None)
+    # `None` means an all-free problem; an EMPTY list means an all-FIXED one. Collapsing the two
+    # (a plain `or` falls back on both) would warm-start a problem with nothing to estimate.
+    free = list(range(dim_full)) if free_idx is None else list(free_idx)
+    n_warm = int(n_starts * WARM_START_FRACTION)
+    if n_warm < 1 or not free:
+        return np.zeros((0, dim_full))
+    # Every FREE parameter needs a usable nominal value. Where one is missing,
+    # `problem_x_full_from_nominal` substitutes pyPESTO's own (0.0 for a free coordinate) — a
+    # meaningless start point, so fall back to a wholly fresh sample instead.
+    if any(n not in parameter_df.index or _flt(parameter_df.loc[n, NOMINAL_VALUE]) is None
+           for n in (problem.x_names[i] for i in free)):
+        return np.zeros((0, dim_full))
+
+    x0 = np.asarray(problem_x_full_from_nominal(problem, parameter_df), dtype=float)
+    # Only the FREE coordinates have to be finite: pyPESTO re-inserts its own `x_fixed_vals` for
+    # the fixed ones, so a fixed parameter that scales to -inf (nominalValue 0 on log10) never
+    # reaches the optimizer and must not disable warm starts for the parameters that do.
+    if not np.all(np.isfinite(x0[free])):
+        return np.zeros((0, dim_full))
+    # Bounds are free-space vectors (pyPESTO drops the fixed coordinates), so clipping (and the
+    # jitter fallback) happen on the free sub-vector and are written back into the full one.
+    lb = np.asarray(problem.lb, dtype=float)
+    ub = np.asarray(problem.ub, dtype=float)
+
+    def _clipped(point):
+        row = np.asarray(point, dtype=float)
+        row[free] = np.clip(row[free], lb, ub)
+        return row
+
+    # Start 0 (the previous best + neutral new parameters) then the previous fit's other optima,
+    # best-first. Deduplicated on the FREE coordinates: a multistart that converged many starts to
+    # the same optimum would otherwise spend the warm half re-running one optimization. Compared
+    # after clipping, so two points that differ only outside the box count as one.
+    seen: set[tuple] = set()
+    guesses: list = []
+    for point in [x0, *previous_optima(problem, optimization, x0)]:
+        row = _clipped(point)
+        if not np.all(np.isfinite(row[free])):
+            continue
+        key = tuple(np.round(row[free], 9))
+        if key in seen:
+            continue
+        seen.add(key)
+        guesses.append(row)
+        if len(guesses) == n_warm:
+            break
+
+    if len(guesses) < n_warm:
+        # Not enough distinct previous optima — scatter around start 0 to fill the warm budget.
+        rng = np.random.default_rng(FIT_SEED)
+        # An unbounded coordinate has no box width to scale by, and `inf * normal()` would put
+        # inf/NaN start points in front of the optimizer (clipping to an infinite bound leaves
+        # them there). Give those coordinates zero spread: their warm starts stay at the nominal
+        # value, which is at least feasible.
+        width = ub - lb
+        spread = WARM_START_JITTER * np.where(np.isfinite(width), width, 0.0)
+        base = guesses[0][free]
+        while len(guesses) < n_warm:
+            row = np.array(guesses[0])
+            row[free] = np.clip(base + rng.normal(0.0, 1.0, size=len(free)) * spread, lb, ub)
+            guesses.append(row)
+    return np.asarray(guesses)
 
 
 def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
@@ -566,10 +747,24 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     # matches the real wall-clock — see petab_harness/fit_budget.py.
     pp_engine = _fit_engine(n_starts)
     workers = getattr(pp_engine, "n_procs", 1) or 1
+    # WARM STARTS: seed half the multistart from the PREVIOUS fit — its best optimum (which the
+    # write-back left in the nominal values) plus its other converged optima, remapped onto this
+    # problem — so a nested edit's fit begins at points that already reproduce its parent's
+    # likelihood, and a worse result means the structure, not the search (see
+    # `warm_start_guesses` and :mod:`nesting`). `session.optimization` still holds that previous
+    # fit here; `fit_and_simulate` replaces it only after this returns, and a rollback restores
+    # the version's own. Skipped when the nominal point has no finite objective: an unstable
+    # model there has nothing worth starting from, and the fresh sample is the only way in.
+    # `problem` is cached on the engine, so ALWAYS assign — an empty array clears guesses left by
+    # a previous fit rather than silently reusing them.
+    guesses = (warm_start_guesses(problem, session.problem.parameter_df, n_starts,
+                                  optimization=getattr(session, "optimization", None))
+               if objective_before is not None else np.zeros((0, len(problem.x_names))))
+    problem.x_guesses_full = guesses
     log.info(
-        "fit: start optimizer=fides n_starts=%d workers=%d seed=%d n_free=%d sbml=%s "
-        "objective_before=%s", n_starts, workers, FIT_SEED, n_free, session.sbml_hash(),
-        _fmt(objective_before),
+        "fit: start optimizer=fides n_starts=%d warm_starts=%d workers=%d seed=%d n_free=%d "
+        "sbml=%s objective_before=%s", n_starts, len(guesses), workers, FIT_SEED, n_free,
+        session.sbml_hash(), _fmt(objective_before),
     )
     # Fides: a Newton trust-region optimizer that exploits AMICI's sensitivities; more
     # robust than the default L-BFGS-B on stiff ODE likelihoods. Its per-iteration logging
@@ -654,6 +849,10 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     )
     optimization = _optimization_payload(result)
     optimization["x_names"] = list(problem.x_names)  # column order for each start's "x"
+    # ...and the scale each of those coordinates is expressed on, so the NEXT fit can remap these
+    # optima onto its own (differently-parameterised, possibly differently-scaled) vector and
+    # re-enter them as warm starts. See `previous_optima`.
+    optimization["x_scales"] = [str(s) for s in problem.x_scales]
     optimization["result_file"] = _write_pypesto_result(session, result, session.problem_hash())
     # Cache this fit under the estimation-problem key so an identical future commit can reuse
     # it instead of re-optimizing (see `fit_fingerprint` / the cache check above).
@@ -1118,6 +1317,14 @@ def fit_summary(session, engine) -> dict[str, Any]:
     # since then; flag it so a caller never mistakes a stale score for the edited model's score.
     # `version` above is the version these metrics belong to; call `fit` to score the working model.
     out["has_unfit_edits"] = session.has_unfit_edits()
+    # The run's OUTSTANDING invalid "does adding structure help?" experiment, if any (see
+    # :mod:`nesting`): a commit that gained parameters yet fit WORSE than its parent, which for a
+    # nested model is impossible. Sticky across the rollback that usually follows, so the harness
+    # finish gate can surface it at the ARM step and a finish cannot rest on that comparison.
+    # ABSENT when there is none — an omitted key must read as "nothing outstanding".
+    _invalid = getattr(session, "invalid_comparison", None)
+    if _invalid:
+        out["invalid_comparison"] = _invalid
     return out
 
 
@@ -1373,4 +1580,9 @@ def build_optimization_payload_for_version(
         "starts": payload.get("starts"),
         "trace": payload.get("trace"),
         "result_file": payload.get("result_file"),
+        # Without these a rollback restores the per-start optima with no way to read them: the
+        # `x` vectors are positional. Rollback-then-re-author is exactly the path where reusing
+        # them as warm starts matters most (see `previous_optima`).
+        "x_names": payload.get("x_names"),
+        "x_scales": payload.get("x_scales"),
     }

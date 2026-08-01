@@ -158,7 +158,11 @@ class ProvenanceStore:
 
     @staticmethod
     def _write_optimization(vdir: Path, optimization: dict[str, Any]) -> None:
-        persist = {k: optimization.get(k) for k in ("n_starts", "starts", "trace")}
+        persist = {k: optimization.get(k)
+                   # x_names/x_scales label each start's positional `x` vector; without them a
+                   # restored version's per-start optima cannot be read back (see
+                   # fitting.previous_optima, which warm-starts the next fit from them).
+                   for k in ("n_starts", "starts", "trace", "x_names", "x_scales")}
         (vdir / "optimization.json").write_text(json.dumps(persist, indent=2), encoding="utf-8")
         result_file = optimization.get("result_file")
         if result_file:
@@ -189,6 +193,11 @@ class ProvenanceStore:
     def get_parameter_df(self, n: int):
         """Read a version's parameter table back as a DataFrame (index = ``parameterId``)."""
         return self._read_parameter_df(self._version_dir(n))
+
+    def get_model_antimony(self, n: int) -> str:
+        """Read a version's ``model.ant`` ONLY — cheap, unlike :meth:`get_version`, which also
+        pulls the (large) per-point simulation and optimization blobs."""
+        return (self._version_dir(n) / "model.ant").read_text(encoding="utf-8")
 
     @staticmethod
     def _read_parameter_df(vdir: Path):

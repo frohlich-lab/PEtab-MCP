@@ -215,6 +215,15 @@ class PetabSession:
         self.best_sigma_assessable: bool = False
         self.op_history: list[dict[str, Any]] = []
 
+        # The run's OUTSTANDING invalid "does adding structure help?" experiment (see
+        # :mod:`nesting` and `_check_nesting_vs_parent`): a commit that gained parameters yet fit
+        # WORSE than its parent, which for a nested model is impossible — so the comparison cannot
+        # support "the added structure does not help". Sticky across a rollback (the botched
+        # variant is usually rolled back immediately, and HEAD's meta then carries nothing), so
+        # `fit_summary` can hand it to the harness finish gate. Cleared by a later commit that adds
+        # parameters WITHOUT worsening the nll — a comparison that CAN answer the question.
+        self.invalid_comparison: str | None = None
+
         # De-duplication memory for identical fits (see :mod:`dedup` and issue #59): how many times
         # each *identical* estimation problem has been handed to `fit` this run, keyed by structure
         # fingerprint + estimation setup (see `dedup.reauthor_key`) so that only truly identical
@@ -323,9 +332,17 @@ class PetabSession:
         are within-run heuristics whose exact sequence isn't reconstructed. Best-effort: events
         written before ``bic`` was recorded simply don't seed. Called under construction, so no
         lock is needed.
+
+        Also restores ``invalid_comparison`` from the LAST fit event that recorded it — the
+        run's outstanding invalid does-adding-structure-help experiment, which the finish gate
+        reads. It is deliberately not derived from the per-commit ``nesting_advisory`` fields: a
+        later valid additive experiment clears the flag without writing an advisory of its own,
+        so replaying advisories alone would resurrect one already superseded.
         """
         try:
             for ev in self.provenance.recent_events(0):
+                if "invalid_comparison" in ev:
+                    self.invalid_comparison = ev.get("invalid_comparison")
                 bic = ev.get("bic")
                 if bic is None:
                     continue
@@ -677,6 +694,72 @@ class PetabSession:
         if sim is not None and sim.get("n_estimated") is None:
             sim["n_estimated"] = int(self.problem.n_estimated)
         return sim
+
+    # -- nesting check on a fresh commit -----------------------------------
+    def _check_nesting_vs_parent(
+        self, fitsim: dict[str, Any], child_model_ant: str, is_new_best: bool = False,
+    ) -> str | None:
+        """Advisory for a commit that gained parameters yet fits WORSE than its parent.
+
+        See :mod:`nesting`: for a NESTED model the ML nll cannot rise when a parameter is added,
+        so "k up AND nll up" means the edit displaced a term or the optimizer under-converged —
+        either way the agent must not read the worse score as "the added structure does not
+        help". Advisory only; the commit is never blocked.
+
+        Also maintains ``self.invalid_comparison`` — the run's outstanding invalid
+        does-adding-structure-help experiment, which the harness finish gate surfaces at the ARM
+        step (via ``fit_summary``) so a finish cannot rest on one. Two things clear it: a later
+        commit that adds parameters WITHOUT worsening the nll (the experiment, redone properly),
+        and a later NEW BEST — the note exists to stop a finish resting on the botched
+        comparison, and a run that has since found a strictly better model is resting on that
+        instead. Without the second path the flag would stick for the rest of any run that
+        pivots to SIMPLIFYING after the botched experiment, since no later commit raises k.
+
+        Called from ``fit`` while holding ``self.lock``, BEFORE the snapshot, so
+        ``provenance.current_version`` is still the parent. Best-effort: ANY failure in here —
+        the parent read, the child's parameter table, the comparison itself — leaves the payload
+        advisory-free rather than failing a commit whose fit has already run.
+        """
+        from . import nesting
+        from .parameters import estimated_ids
+
+        parent_version = self.provenance.current_version
+        if parent_version < 0:
+            return None
+        try:
+            parent_meta = self.provenance.get_meta(parent_version)
+            parent_df = self.provenance.get_parameter_df(parent_version)
+            parent_ids = estimated_ids(parent_df)
+            parent = {
+                "version": parent_version,
+                "n_estimated": len(parent_ids),
+                "neg_log_likelihood": parent_meta.get("neg_log_likelihood"),
+                "estimated_ids": parent_ids,
+                # LAZY: the Antimony is read only to name a displaced parameter, i.e. only once
+                # the advisory has already fired. The overwhelming majority of commits improve
+                # the nll and never resolve it, so the common path stays off model.ant.
+                "model": lambda: self.provenance.get_model_antimony(parent_version),
+            }
+            child_ids = estimated_ids(self.problem.parameter_df)
+            child = {
+                # Count the estimate=1 ROWS on both sides so the two k's are commensurable;
+                # fitsim's n_estimated can also carry analytically-profiled inner parameters the
+                # parent's stored table never had, which would fake a rise.
+                "n_estimated": len(child_ids),
+                "neg_log_likelihood": fitsim.get("neg_log_likelihood"),
+                "estimated_ids": child_ids,
+                "model": child_model_ant,
+            }
+            advisory = nesting.nesting_advisory(parent, child)
+            valid = advisory is None and nesting.valid_added_parameter_experiment(parent, child)
+        except Exception:  # noqa: BLE001 - advisory only; never fail a commit over it
+            self.logger.warning("nesting check failed; committing without it", exc_info=True)
+            return None
+        if advisory is not None:
+            self.invalid_comparison = advisory
+        elif valid or is_new_best:
+            self.invalid_comparison = None
+        return advisory
 
     # -- early-stop chain --------------------------------------------------
     def record_fit_progress(
@@ -1059,9 +1142,17 @@ class PetabSession:
             # self.simulation, which is what the diagnosis reads.
             fitsim["residual_structure"] = residual_structure_rollup(self)
             fitsim["residual_flagged"] = residual_flag(fitsim["residual_structure"])
+            # Is this variant actually NESTED in the version it will be compared against? Must run
+            # BEFORE _snapshot_version, while provenance.current_version is still the parent. The
+            # Antimony is serialized once and handed to both the check (which diffs parameter
+            # references against the parent's model.ant) and the snapshot.
+            child_model_ant = self.model.to_antimony()
+            nesting_advisory = self._check_nesting_vs_parent(
+                fitsim, child_model_ant, is_new_best=bool(improvement.get("is_new_best")))
             version = self._snapshot_version(
                 label="fit",
                 kind="fit",
+                model_ant=child_model_ant,
                 meta={"staged_edits": staged, "n_edits": len(staged),
                       # Recorded so a later fit can tell whether it would search HARDER than this
                       # one did (see `_fit_dedup`) — the structure/setup hashes both ignore it.
@@ -1069,6 +1160,7 @@ class PetabSession:
                       "fit_status": fitsim.get("status"), "neg_log_likelihood": nllh,
                       "chi2": fitsim.get("chi2"), "chi2_gof_pvalue": gof_pvalue,
                       "residual_flagged": fitsim["residual_flagged"],
+                      "nesting_advisory": nesting_advisory,
                       "fitted_parameters": fitsim.get("fitted_parameters"), **improvement},
                 sim=fitsim,
             )
@@ -1104,6 +1196,13 @@ class PetabSession:
                  "noise_sigma_collapsed": fitsim["noise_sigma_collapsed"],
                  "residual_flagged": fitsim["residual_flagged"],
                  "noise_sigma_assessable": fitsim["noise_sigma_assessable"],
+                 "nesting_advisory": nesting_advisory,
+                 # The OUTSTANDING flag as it stands after this commit (this fit's advisory, an
+                 # earlier one this fit did not clear, or None). `nesting_advisory` alone cannot
+                 # reconstruct it on a durable resume: it says what THIS commit found, not
+                 # whether a later valid experiment has since superseded it. See
+                 # `_seed_progress_from_provenance`.
+                 "invalid_comparison": self.invalid_comparison,
                  "fitted_parameters": fitsim.get("fitted_parameters"), **improvement}
             )
             # Record this as an early-stop-chain op only when a real fit ran (simulate-only passes
@@ -1115,6 +1214,10 @@ class PetabSession:
         return {"committed": True, "version": version, "warnings": warnings,
                 "event_timestamp": event["timestamp"],
                 "progress": self.progress_report(),
+                # ABSENT when the variant is a clean nested extension — like `noise_sigma_advice`,
+                # this key rides on every fit and is re-sent in the agent's history each turn
+                # (PR #23), so it is one line only when there is something to say.
+                **({"nesting_advisory": nesting_advisory} if nesting_advisory else {}),
                 **fitting.fit_result_block(
                     fitsim, improvement, self.problem.parameter_df, problem=self.problem)}
 
