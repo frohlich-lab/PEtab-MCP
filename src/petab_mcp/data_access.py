@@ -29,6 +29,7 @@ itself prevent. Results come back as plain JSON records.
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 
 from petab.v1.C import (
@@ -306,9 +307,13 @@ def fit_diagnosis(session, worst_n: int = 8) -> dict[str, Any]:
                 "residual_structure": _unavailable_structure()}
     d = df[df["residual_weighted"].notna()].copy()
     if d.empty:
+        # The magnitude table needs weighted residuals, but the REPLICATE arm does not (see
+        # residual_structure_rollup): hand the verdict to the shared builder rather than declaring
+        # nothing tested, or a collapsed/unevaluable sigma would switch off the one arm that catches
+        # it. `sims=df` so this does not rebuild every PEtab frame a second time.
         return {"status": "no weighted residuals available (unfitted or non-evaluable noise)",
                 "per_observable": [], "worst_points": [],
-                "residual_structure": _unavailable_structure()}
+                "residual_structure": residual_structure_rollup(session, sims=df)}
     d["_rw"] = d["residual_weighted"].astype(float)
 
     per_observable = []
@@ -338,8 +343,16 @@ def fit_diagnosis(session, worst_n: int = 8) -> dict[str, Any]:
 
     # Rolled up from the per-observable verdicts ALREADY computed above — no second pass of the
     # sign/runs tests. Shares its builder with residual_structure_rollup (which the fit path calls
-    # directly), so the two can never drift apart.
-    structure = _rollup_structure((o["observable_id"], o) for o in per_observable)
+    # directly), so the two can never drift apart. The replicate arm is per DESIGN POINT rather than
+    # per observable, so it is computed once here instead of coming out of per_observable.
+    structure = _rollup_structure(((o["observable_id"], o) for o in per_observable),
+                                  replicate_lof=_replicate_lof(session, df))
+    # Keep the per-observable rows consistent with the rolled-up verdict. The replicate arm flags a
+    # DESIGN POINT, not a series, so an observable it condemns would otherwise read
+    # structure_flag: false here while appearing in flagged_observables above.
+    for o in per_observable:
+        if o["observable_id"] in structure["flagged_observables"]:
+            o["structure_flag"] = True
 
     # Noise-model plausibility, echoed here too (the agent reads this tool to see WHERE the fit is
     # off): an inflated/collapsed ESTIMATED sigma means a good BIC is not genuine adequacy — the fix
@@ -362,8 +375,8 @@ def fit_diagnosis(session, worst_n: int = 8) -> dict[str, Any]:
         "worst_points": worst_points,       # bounded: <= worst_n rows
         "noise_sigma": noise_sigma,         # {} if no estimated sigma/fit; else {report, advice} (advice None when plausible)
         # The residual-structure verdict, rolled up: which observables show a significant
-        # sign-test bias or runs-test time trend (p < 0.05), and whether the tests are
-        # underpowered at this sample size (so "nothing flagged" is weak, not reassuring).
+        # sign-test bias, runs-test time trend (p < 0.05) or replicate lack-of-fit, and whether the
+        # tests are underpowered at this sample size (so "nothing flagged" is weak, not reassuring).
         # The `fit` result carries this SAME rollup (see residual_structure_rollup), so calling
         # this tool is only needed for the per-observable table and worst_points below.
         "residual_structure": structure,
@@ -372,74 +385,422 @@ def fit_diagnosis(session, worst_n: int = 8) -> dict[str, Any]:
                  "sign_test / runs_test detect bias and time trend from residual SIGNS, so they "
                  "still work when estimated noise sigmas flatten chi2/reduced_chi2 — but are "
                  "underpowered on few points (low_power), so read a non-significant result as "
-                 "weak, not as a pass. For a full breakdown or the optimizer log, delegate to "
-                 "an analyst."),
+                 "weak, not as a pass. replicate_lack_of_fit is the powered arm where design "
+                 "points REPEAT: it measures each prediction against that point's own replicate "
+                 "scatter, so no sigma can flatten it. For a full breakdown or the optimizer log, "
+                 "delegate to an analyst."),
     }
 
 
 _STRUCTURE_UNAVAILABLE = "residual-structure tests unavailable (no weighted residuals yet)."
 
 
-def residual_structure_rollup(session) -> dict[str, Any]:
+def residual_structure_rollup(session, sims=None) -> dict[str, Any]:
     """The current fit's residual-structure verdict, rolled up — the SAME
-    ``{flagged_observables, low_power, summary}`` shape :func:`fit_diagnosis` returns under its
-    ``residual_structure`` key, so one key name never means two shapes.
+    ``{flagged_observables, low_power, summary, replicate_lack_of_fit}`` shape
+    :func:`fit_diagnosis` returns under its ``residual_structure`` key, so one key name never means
+    two shapes.
 
-    Which observables show significant residual STRUCTURE (sign/runs tests) — a
-    form-incompleteness signal that SURVIVES estimated noise sigmas (unlike chi2 GoF, which a free
-    sigma rescales to look adequate). Computed on every commit to feed the session's
-    plateau-adequacy gate, and returned on the ``fit`` result so the agent gets the verdict without
-    spending a separate ``get_fit_diagnosis`` call (see issue #113).
+    Which observables show significant residual STRUCTURE — a form-incompleteness signal that
+    SURVIVES estimated noise sigmas (unlike chi2 GoF, which a free sigma rescales to look adequate).
+    THREE tests, all feeding the one ``flagged_observables`` list the session's plateau-adequacy gate
+    already consumes:
 
-    Computes ONLY the per-observable sign/runs verdict — it skips fit_diagnosis's magnitude
-    aggregations and worst-points sort, since this runs on every fit. Best-effort: no simulation,
-    no weighted residuals, or any diagnostic failure degrades to a well-formed
-    "tests unavailable" dict, so the gate is never blocked and the agent never hits a missing key.
+    * the sign test and the runs test, per observable, over the points WITHIN a residual series;
+    * the replicate lack-of-fit test, per replicated design point, ACROSS that point's own
+      replicates (:func:`_replicate_lof`) — the axis the sign tests cannot reach when a design point
+      IS an observable (blasi: one steady-state condition, so every series has length 1).
+
+    Computed on every commit, and returned on the ``fit`` result so the agent gets the verdict
+    without spending a separate ``get_fit_diagnosis`` call (see issue #113). Computes ONLY the
+    verdict — it skips fit_diagnosis's magnitude aggregations and worst-points sort. ``sims`` is the
+    simulations frame when the caller already built one. Best-effort: no simulation, or any
+    diagnostic failure, degrades to a well-formed "tests unavailable" dict, so the gate is never
+    blocked and the agent never hits a missing key.
     """
     try:
-        df = _frames(session)["simulations"]
+        df = _frames(session)["simulations"] if sims is None else sims
         if df is None or df.empty:
             return _unavailable_structure()
-        d = df[df["residual_weighted"].notna()]
-        if d.empty:
-            return _unavailable_structure()
-        verdicts = [(_clean(obs), _safe_residual_structure(g)) for obs, g in
-                    d.groupby("observable_id")]
     except Exception:  # noqa: BLE001 - advisory; a diagnostic failure must not affect the fit/gate
         return _unavailable_structure()
-    return _rollup_structure(verdicts)
+    # The replicate arm runs FIRST and OUTSIDE the residual_weighted gate below. z_i is built from
+    # each design point's own replicate scatter and the raw prediction, so it needs no sigma at all —
+    # and gating it behind the sigma-DERIVED residual_weighted column switched it off in exactly the
+    # cases it exists for: engine._weighted_residual leaves the whole column NaN both when the noise
+    # formula will not evaluate and when the evaluated sd is 0.0, a COLLAPSED sigma.
+    lof = _replicate_lof(session, df)
+    try:
+        d = df[df["residual_weighted"].notna()]
+        # The sign/runs arm keeps taking its rows from the SAME filter fit_diagnosis's magnitude
+        # table uses, so the two builders cannot roll up different inputs.
+        verdicts = ([] if d.empty else
+                    [(_clean(obs), _safe_residual_structure(g)) for obs, g in
+                     d.groupby("observable_id")])
+    except Exception:  # noqa: BLE001 - advisory; never fail the fit on a diagnostic
+        verdicts = []
+    if not verdicts and not lof.get("available"):
+        return _unavailable_structure()   # nothing was tested at all — NOT a clean bill
+    return _rollup_structure(verdicts, replicate_lof=lof)
 
 
-def _rollup_structure(verdicts) -> dict[str, Any]:
-    """Roll ``(observable_id, verdict)`` pairs up into the reported verdict. The single builder
-    behind BOTH :func:`fit_diagnosis`'s ``residual_structure`` key and
-    :func:`residual_structure_rollup`, so the shape and the rules stay identical; each caller
-    passes the per-observable verdicts it has already computed."""
+def _rollup_structure(verdicts, replicate_lof: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Roll ``(observable_id, verdict)`` pairs plus the replicate lack-of-fit arm up into the
+    reported verdict. The single builder behind BOTH :func:`fit_diagnosis`'s ``residual_structure``
+    key and :func:`residual_structure_rollup`, so the shape and the rules stay identical; each
+    caller passes the per-observable verdicts (and the one replicate arm) it has already computed."""
+    from . import residual_tests as rt
+
     pairs = list(verdicts)
+    lof = replicate_lof or _lof_payload(rt.replicate_lof_unavailable())
     # SORTED, so the verdict does not depend on the caller's iteration order: fit_diagnosis rolls
     # up a chi2-ranked per_observable while residual_structure_rollup walks groupby order, and the
     # two must agree exactly (both the list and the summary string built from it) whenever more
     # than one observable is flagged. The chi2 RANKING lives in per_observable, not here.
-    flagged = sorted(obs for obs, v in pairs if v.get("structure_flag"))
+    # UNION over the three tests: the replicate test names the design points it condemns, mapped back to
+    # their observables, so a lack-of-fit finding lands in the SAME list the plateau-adequacy gate
+    # already reads (PR #111) — no new gate, no new wiring.
+    flagged = sorted({obs for obs, v in pairs if v.get("structure_flag")}
+                     | set(lof.get("flagged_observables") or ()))
     # Low power is only a concern where nothing was flagged: a flagged observable already found
     # its structure, so its tests being underpowered elsewhere (e.g. a runs test made undefined by
     # an all-one-sign series that the sign test still flagged) is moot. This flag exists to warn
     # that "nothing flagged" is weak evidence, so it must reflect only the unflagged,
     # underpowered observables.
-    low_power = any(v.get("structure_low_power") and not v.get("structure_flag")
-                    for _obs, v in pairs)
+    #
+    # ...and it is cleared for an observable the replicate arm COVERED: there the deviation was
+    # tested against the point's own scatter on df_i >= 2 over >= 3 points, which is real power, so
+    # an unflagged verdict is a genuine pass rather than "we could not tell". Only for the covered
+    # ones — clearing it globally as soon as ANY arm ran asserted sign-randomness for observables
+    # with no replicates at all, and that over-claim reaches result.json
+    # (runner.scoring._residual_structure_fields) and the armed finish gate.
+    #
+    # KNOWN LIMIT, accepted: ``covered`` is per OBSERVABLE while the sign/runs tests are per SERIES,
+    # so an observable with one replicated condition and one single-measurement condition is credited
+    # on the replicated one. Bounded, and the summary now names which observables the sign/runs arm
+    # was underpowered for and which points the replicate arm actually tested, so the two claims can
+    # be told apart. Not reachable on the 16 benchmark examples (no example mixes a replicated and a
+    # non-replicated condition within one observable).
+    covered = set(lof.get("covered_observables") or ())
+    weak = sorted(obs for obs, v in pairs
+                  if v.get("structure_low_power") and not v.get("structure_flag")
+                  and obs not in covered)
+    low_power = bool(weak)
     return {"flagged_observables": flagged, "low_power": low_power,
-            "summary": _structure_summary(flagged, low_power)}
+            "summary": _structure_summary(flagged, low_power, lof, sign_runs_tested=bool(pairs),
+                                          # NAMED only where the replicate arm claims a pass for
+                                          # OTHER observables, which is the only case where the two
+                                          # halves of the summary contradict each other. With nothing
+                                          # covered there is no competing claim to disambiguate, and
+                                          # naming every underpowered observable would put a list of
+                                          # them on every fit (fiedler's 22: a 134 -> 1053 char
+                                          # summary, forever, to say what `low_power` already says).
+                                          low_power_observables=weak if covered else []),
+            "replicate_lack_of_fit": _lof_reported(lof)}
 
 
 def _unavailable_structure() -> dict[str, Any]:
     """The degraded rollup: well-formed, and honest that nothing was tested (NOT a clean bill)."""
+    from . import residual_tests as rt
+
     return {"flagged_observables": [], "low_power": True,
-            "summary": _STRUCTURE_UNAVAILABLE}
+            "summary": _STRUCTURE_UNAVAILABLE,
+            "replicate_lack_of_fit": _lof_reported(_lof_payload(rt.replicate_lof_unavailable()))}
+
+
+# -- the replicate lack-of-fit arm ---------------------------------------------------------------
+# Assembly only: the STATISTIC lives in residual_tests.replicate_lack_of_fit and the PEtab-shaped
+# plumbing (which rows are one design point, and the coordinate their noise is additive on) in
+# reconcile.replicate_pure_error_points. This layer joins the two, per noise parameter, and turns
+# the result into the compact agent-facing verdict.
+
+
+#: Keys the ROLLUP consumes that must never ride on a fit result: the unbounded per-point and
+#: per-observable label lists, and the advice line the summary already carries. Carrying any of them
+#: twice would cost ~700 bytes on every fit — and the fit result is re-sent in the agent's history on
+#: every later turn (PR #23 cut ~40% of the per-call prompt by trimming exactly this duplication).
+#: Named in ONE place, and applied at both projections, so a key added to the verdict cannot leak
+#: into the payload by being forgotten at the second.
+_LOF_ROLLUP_ONLY_KEYS = ("flagged", "tested", "flagged_observables", "covered_observables",
+                         "advice")
+
+
+def _lof_payload(verdict: dict[str, Any], observables=(), advice: str | None = None,
+                 covered=()) -> dict[str, Any]:
+    """The replicate arm's verdict: the statistic's own keys with the (unbounded) label lists replaced
+    by a count, plus the observables it condemns, the observables it COVERED, and — only when it
+    flagged — the advice line. One projection for every path, so the shape can't differ between a
+    flagged fit, a passing fit and an unavailable arm. The extra keys are consumed by
+    :func:`_rollup_structure` (into the rollup's own list, its ``low_power`` decision and its
+    summary) and stripped from what rides on the fit result.
+
+    Observable ids are coerced to ``str`` as a belt-and-braces invariant, not as the fix for the
+    TypeError ``sorted({None, 'obs_A'})`` used to raise: the merge already substitutes a point's own
+    label for a missing observableId, so nothing None-bearing can reach here through it. This keeps
+    the guarantee local for the other two call sites and for any future one."""
+    out = {k: v for k, v in verdict.items() if k not in _LOF_ROLLUP_ONLY_KEYS}
+    out.pop("untested_status", None)
+    out["n_flagged"] = len(verdict.get("flagged") or ())
+    # Only the MERGE knows about sibling arms, so the key is set here for every path — but OMITTED
+    # when there is nothing to report, like `advice` below. A null on all 16 examples' fits (13 of
+    # them cannot have a sibling family at all) is 25 bytes of the per-fit payload PR #23 exists to
+    # keep small; every consumer reads it with .get().
+    if verdict.get("untested_status"):
+        out["untested_status"] = verdict["untested_status"]
+    out["flagged_observables"] = sorted(str(obs) for obs in observables)
+    out["covered_observables"] = sorted(str(obs) for obs in covered)
+    if advice:
+        out["advice"] = advice
+    return out
+
+
+def _lof_reported(lof: dict[str, Any]) -> dict[str, Any]:
+    """The part of the arm that RIDES ON A FIT: the numbers plus at most
+    ``REPLICATE_LOF_MAX_REPORTED_POINTS`` named points, never a full table (see
+    ``constants.REPLICATE_LOF_MAX_REPORTED_POINTS`` and ``_LOF_ROLLUP_ONLY_KEYS``)."""
+    return {k: v for k, v in lof.items() if k not in _LOF_ROLLUP_ONLY_KEYS}
+
+
+def _replicate_lof(session, sims=None) -> dict[str, Any]:
+    """The replicate lack-of-fit verdict for the current fit, across every noise parameter.
+
+    Per noise parameter (never across — each has its own coordinate, and pooling two families would
+    also inflate the multiple-testing correction), the replicated design points come from
+    :func:`reconcile.replicate_pure_error_points` with the simulation records supplying the
+    prediction, and :func:`residual_tests.replicate_lack_of_fit` supplies the verdict. The arms are
+    then merged into one.
+
+    Best-effort throughout, in this module's style: anything unresolvable fails OPEN to a
+    NO-EVIDENCE verdict (never a pass, and never an exception) — this feeds the plateau-adequacy
+    gate, and a diagnostic must not be able to block a fit.
+
+    ``sims`` is the ``simulations`` frame when the caller already built one (both callers have), so
+    this does not rebuild every PEtab frame a second time on a path that runs on every commit.
+    """
+    from . import reconcile as R
+    from . import residual_tests as rt
+
+    try:
+        problem = session.problem
+        if sims is None:
+            sims = _frames(session)["simulations"]
+        if sims is None or sims.empty:
+            return _lof_payload(rt.replicate_lof_unavailable())
+        # The records use this module's snake_case column names; reconcile speaks PEtab's.
+        frame = sims.rename(columns={"observable_id": OBSERVABLE_ID,
+                                     "condition_id": SIMULATION_CONDITION_ID, "time": TIME})
+        fitted = (getattr(session, "simulation", None) or {}).get("fitted_parameters")
+        n_structural = _n_estimated_structural(problem)
+        verdicts: list[dict[str, Any]] = []
+        label_observable: dict[str, Any] = {}
+        # Each family's points are resolved first so the LABELS can be decided across all of them.
+        # Deciding them within a family made two DISTINCT design points of one observable, owned by
+        # different noise parameters (a per-row noiseParameters split), each the only point of its own
+        # family — so both printed as the bare observable id and the agent was shown one name twice
+        # with nothing to tell the points apart.
+        #
+        # This is also where the per-design-point pure error is computed a second time per fit: the
+        # pooled noise floor (fitting.noise_sigma_report) calls the same function on the MEASUREMENT
+        # table while this call groups the simulation subset, so there is no one result to share. The
+        # duplicated prelude was dominated by resolving the noise-formula gains, which reconcile now
+        # memoises on the observable table's TEXT (measured per sigma, gain resolution: blasi 35.8 ->
+        # 5.8 ms, schwen/std 54.3 -> 10.9 ms; the whole call blasi 40.8 -> 11.2 ms). What is left to
+        # duplicate is single-digit ms per sigma against a multistart fit's seconds, so the remaining
+        # redundancy is not worth a (problem, pid, fitted) cache: the measurement table is rewritten
+        # between the two calls whenever the agent re-authors, and a stale row set feeding a stop gate
+        # is a worse failure than the cost.
+        resolved = [(pid, R.replicate_pure_error_points(problem, pid, fitted, simulations=frame))
+                    for pid in _noise_parameter_ids(problem)]
+        per_observable = Counter(p.get("observable_id")
+                                 for _, pts in resolved if pts for p in pts)
+        for pid, points in resolved:
+            if points is None:
+                # Unresolvable rows/coordinate/gain for this sigma. Recorded as an explicit
+                # NO-EVIDENCE arm rather than skipped, so that if a SIBLING sigma passes the merge
+                # still reports that this family was never tested (see _merge_lof_verdicts).
+                verdicts.append(rt.replicate_lof_unavailable())
+                continue
+            labelled = _labelled_points(points, per_observable)
+            label_observable.update({p["label"]: p["observable_id"] for p in labelled})
+            verdicts.append(rt.replicate_lack_of_fit(labelled, n_structural=n_structural))
+        return _merge_lof_verdicts(verdicts, label_observable)
+    except Exception:  # noqa: BLE001 - advisory; a diagnostic failure must not affect the fit/gate
+        return _lof_payload(rt.replicate_lof_unavailable())
+
+
+def _noise_parameter_ids(problem) -> list[str]:
+    """The REAL noise parameters to scope the arm by, sorted.
+
+    ``plausibility_sigma_ids`` also yields the ``noiseParameter1_<obsId>`` PLACEHOLDER symbols of
+    every noiseFormula (blasi: 16 of them beside the one real ``sigma``), and each placeholder
+    resolves to exactly one observable — so scoping by them would split blasi's single 15-point
+    family into 16 one-point families, none of which can be tested. Intersecting with the parameter
+    table is what ``fitting.noise_sigma_report`` does (against the fitted values) for the same
+    reason."""
+    from . import reconcile as R
+
+    ids = R.plausibility_sigma_ids(problem)
+    df = getattr(problem, "parameter_df", None)
+    if df is not None:
+        ids = ids & {str(pid) for pid in df.index}
+    return sorted(ids)
+
+
+def _labelled_points(points: list[dict[str, Any]],
+                     per_observable: "Counter[Any] | None" = None) -> list[dict[str, Any]]:
+    """Give each replicated design point a short unique label for the agent-facing payload: the bare
+    observable id where that observable has only one replicated point (blasi's 15 steady-state
+    points), qualified by condition and time otherwise.
+
+    ``per_observable`` is the point count per observable across EVERY noise family, so a label is
+    unique in the merged verdict and not merely within its own family (:func:`_replicate_lof` builds
+    it); it falls back to this family's own counts."""
+    per_observable = (Counter(p.get("observable_id") for p in points)
+                      if per_observable is None else per_observable)
+    out = []
+    for p in points:
+        obs = p.get("observable_id")
+        label = (str(obs) if per_observable[obs] == 1
+                 else f"{obs}[{_clean(p.get('condition_id'))}, t={_clean(p.get('time'))}]")
+        out.append({**p, "label": label})
+    return out
+
+
+#: The two NO-EVIDENCE statuses whose absence is unremarkable and PERMANENT — a property of the
+#: problem's tables, not of the fit, so prose about them would be a per-fit tax forever (13 of the
+#: 16 benchmark examples are one of these; measured: 9 with no repeated design point at all, 4 whose
+#: noiseFormula is a placeholder over NUMERIC noiseParameters cells and which also have 0 replicated
+#: design points). ONE source of truth for both places the policy applies: the summary line stays
+#: silent for them, and the merge never hedges a sibling's verdict against them.
+_LOF_SILENT_STATUSES = ("no_replicated_points", "no_noise_parameter")
+
+#: Unavailable statuses, most informative first — a merge keeps the one that says the most about WHY
+#: the arm could not run (armistead's vacuous saturation over blasi-style "no replicates at all").
+#: The catch-all ``unavailable`` outranks BOTH silent statuses even though it names the least: it is
+#: the only status that reports a real, fixable failure on a problem that DOES have replicates, and
+#: ranking it last let a benign sibling silence it — one sigma resolving to zero replicated points
+#: hid another whose observables mix lin and log, and the merged verdict said nothing at all.
+_LOF_STATUS_PRIORITY = ("vacuous", "too_few_usable_points", "replicates_too_thin",
+                        "unavailable") + _LOF_SILENT_STATUSES
+
+
+def _merge_lof_verdicts(verdicts: list[dict[str, Any]], label_observable: dict[str, Any]
+                        ) -> dict[str, Any]:
+    """Merge the per-noise-parameter arms into one verdict. Flagged points union (each mapped back
+    to its observable, so the existing gate picks them up), and the reported worst points are the
+    worst ACROSS arms — still capped.
+
+    An arm that could NOT run is not dropped: its status survives as ``untested_status``, because a
+    merge that kept only the available arms reported a bare "pass" for a problem where one family was
+    tested and another was never looked at (armistead, on every fit: three families of 4 points pass
+    while sd_S1P_obs's 2 points are too few to test). Only for a status the summary is willing to
+    SPEAK about, though (see ``_LOF_SILENT_STATUSES``): hedging a real pass against a family that has
+    no replicated design points at all says nothing — there is nothing there that could not be
+    tested."""
+    from . import residual_tests as rt
+    from .constants import REPLICATE_LOF_MAX_REPORTED_POINTS
+
+    def _worst_status(vs):
+        return min(vs, key=lambda v: _LOF_STATUS_PRIORITY.index(v["status"])
+                   if v["status"] in _LOF_STATUS_PRIORITY else len(_LOF_STATUS_PRIORITY))
+
+    available = [v for v in verdicts if v.get("available")]
+    untested = [v for v in verdicts if not v.get("available")]
+    if not available:
+        if not verdicts:
+            # No noise family to scope the arm by at all — the whole loop never ran. Its own status,
+            # not the catch-all: a numeric noiseFormula is fixed DATA, so there is nothing for a
+            # re-author to resolve, and with a FIXED sigma the chi2 GoF this arm exists to backstop
+            # is not blind in the first place (bruno, crauste, fujita, rahman — which also have no
+            # replicated design point between them).
+            return _lof_payload(rt.replicate_lof_unavailable("no_noise_parameter"))
+        worst = _worst_status(untested)
+        return _lof_payload(rt.replicate_lof_unavailable(worst["status"],
+                                                        n_points=worst["n_points"]))
+    flagged = [label for v in available for label in v["flagged"]]
+    points = sorted((p for v in available for p in v["points"]),
+                    key=lambda p: abs(p["z"]), reverse=True)[:REPLICATE_LOF_MAX_REPORTED_POINTS]
+    merged = {
+        "available": True,
+        "status": "flagged" if flagged else "pass",
+        "n_points": sum(v["n_points"] for v in available),
+        "alpha": available[0]["alpha"],
+        "flagged": flagged,
+        "tested": [label for v in available for label in v["tested"]],
+        "max_abs_z": max(v["max_abs_z"] for v in available),
+        "min_p_holm": min(v["min_p_holm"] for v in available),
+        "points": points,
+        # The most informative reason among the arms that produced NO EVIDENCE, so a partial pass
+        # cannot read as a whole one. None when every arm ran — and also when the only arms that did
+        # not run are the silent ones, which have no untested points to hedge about.
+        "untested_status": _untested_status(untested, _worst_status),
+    }
+    # `or label` (not a two-argument get): a point whose rows carry no observableId maps to None, and
+    # falling back to its LABEL gives the agent a real string to act on instead of the literal
+    # "None" — and keeps the flag, which sorting a {None, str} set used to destroy.
+    observables = {label_observable.get(label) or label for label in flagged}
+    return _lof_payload(merged, observables,
+                        advice=_replicate_lof_advice(merged) if flagged else None,
+                        covered={label_observable.get(label) or label
+                                 for label in merged["tested"]})
+
+
+def _untested_status(untested: list[dict[str, Any]], worst_status) -> str | None:
+    """The reason a SIBLING family went untested, or ``None`` when there is nothing to say.
+
+    Only statuses the summary line speaks about qualify: a family whose status is one of
+    ``_LOF_SILENT_STATUSES`` has no replicated design points (or no sigma) in it, so "a further
+    family could NOT be tested" would hedge a real pass against an empty set."""
+    speaking = [v for v in untested if v["status"] not in _LOF_SILENT_STATUSES]
+    return worst_status(speaking)["status"] if speaking else None
+
+
+def _replicate_lof_advice(verdict: dict[str, Any]) -> str:
+    """The agent-facing line. Names the worst points and their deviation in units of the point's OWN
+    replicate scatter, and says what to do about it. Deliberately says nothing about the reference
+    model — no delta_bic, no parameter-count target — since the agent must not be able to read the
+    answer off a diagnostic."""
+    named = "; ".join(f"{p['label']} {p['z']:+.1f}" for p in verdict["points"][:3])
+    return (
+        f"Replicate lack-of-fit: {len(verdict['flagged'])} of {verdict['n_points']} replicated "
+        f"design points sit further from the model than their OWN replicate scatter allows, in "
+        f"multiples of that point's standard error ({named}; Holm p {verdict['min_p_holm']:.3g} at "
+        f"alpha {verdict['alpha']}). "
+        "That is missing STRUCTURE at those specific points, not noise: no parameter value within "
+        "this model's form can reach them, and a larger sigma cannot help because the yardstick is "
+        "the replicates themselves. "
+        "Add the mechanism those points need — they are where the form is wrong — and re-fit."
+    )
+
+
+def _n_estimated_structural(problem) -> int | None:
+    """Estimated parameters MINUS the noise sigmas: the structural degrees of freedom the replicate
+    arm's vacuous guard compares against a family's replicated-point count (armistead: 10 structural
+    against families of 4 points, so a fitted model there can zero every deviation). ``None`` when
+    the parameter table cannot answer, which leaves the guard off rather than guessing.
+
+    Subtracts the SAME set :func:`_noise_parameter_ids` scopes the arm by — ``plausibility_sigma_ids``,
+    i.e. the noise symbols that are not ALSO observable-scaling factors. Subtracting the wider
+    ``noise_sigma_ids`` here left the dual-role symbols (fiedler's eight per-gel ``s_pMek_*``, in both
+    noiseParameters and observableParameters) in NEITHER set: excluded from the noise families the arm
+    iterates AND from the structural count, though they move the PREDICTION, which is exactly the
+    flexibility this guard weighs."""
+    from . import reconcile as R
+
+    df = getattr(problem, "parameter_df", None)
+    if df is None or ESTIMATE not in getattr(df, "columns", []):
+        return None
+    try:
+        sigmas = R.plausibility_sigma_ids(problem)
+        return sum(1 for pid in df.index
+                   if str(pid) not in sigmas and R.is_parameter_estimated(problem, str(pid)))
+    except Exception:  # noqa: BLE001 - advisory; leave the guard off rather than fail the diagnosis
+        return None
 
 
 def residual_flag(structure: dict[str, Any]) -> bool | None:
-    """The bare structure flag of a rollup, or ``None`` when the tests could not run at all.
+    """The bare structure flag of a rollup, or ``None`` when NEITHER arm could run — not merely the
+    sign/runs tests, which a collapsed sigma silences on its own while the replicate arm still runs.
 
     The distinction matters wherever the flag is RECORDED (the version meta, the fit event): an
     unavailable verdict flags nothing, but recording that as ``False`` would turn "untested" into a
@@ -453,6 +814,11 @@ def residual_flag(structure: dict[str, Any]) -> bool | None:
 # p-value at/below which a residual-structure test is called significant in the rolled-up
 # verdict (the per-test p-values are always reported raw, so a caller can judge for itself).
 _STRUCTURE_ALPHA = 0.05
+
+# At most this many underpowered observables are NAMED in the summary (the rest as a count): the
+# summary rides on every fit, and the names are there to separate a low-power claim from the
+# replicate arm's pass — three is enough to tell the two apart.
+_MAX_NAMED_LOW_POWER = 3
 
 
 def _safe_residual_structure(group) -> dict[str, Any]:
@@ -530,12 +896,96 @@ def _round_p(p: float | None) -> float | None:
     return None if p is None else round(float(p), 4)
 
 
-def _structure_summary(flagged: list[str], low_power: bool) -> str:
+def _structure_summary(flagged: list[str], low_power: bool,
+                       lof: dict[str, Any] | None = None,
+                       sign_runs_tested: bool = True,
+                       low_power_observables: list[str] | None = None) -> str:
     if flagged:
-        return (f"systematic residual structure in {', '.join(flagged)} "
-                f"(sign-test bias or runs-test time trend, p < {_STRUCTURE_ALPHA}) — "
-                "the model's FORM is missing something for those observables.")
-    if low_power:
-        return ("no significant residual structure, but the tests are UNDERPOWERED at this "
-                "sample size — this is weak evidence of adequacy, not a pass.")
-    return "no significant residual structure detected (residuals look sign-random)."
+        # The parenthetical names only tests that actually RAN: quoting a p < 0.05 threshold for the
+        # sign/runs tests while the same summary says they could not run (a collapsed sigma leaves no
+        # weighted residual, and the replicate arm flags anyway) attributes the finding to a test
+        # that produced no p at all.
+        how = ("replicate lack-of-fit" if not sign_runs_tested else
+               f"sign-test bias or runs-test time trend, p < {_STRUCTURE_ALPHA}, or replicate "
+               "lack-of-fit")
+        head = (f"systematic residual structure in {', '.join(flagged)} ({how}) — the model's FORM "
+                "is missing something for those observables.")
+    elif not sign_runs_tested:
+        # Reached when the residuals carry no weighted value at all (an unevaluable or collapsed
+        # sigma) while the replicate arm still ran. Saying "residuals look sign-random" there would
+        # assert a test that never happened.
+        head = ("the sign and runs tests could not run (no weighted residuals), so nothing is known "
+                "about bias or time trend.")
+    elif low_power:
+        # NAMED, and attributed to the sign/runs arm alone, because the replicate line that follows
+        # may report a genuine pass for the observables it covered: a blanket "the tests are
+        # UNDERPOWERED at this sample size" beside "this arm IS powered, so that is a pass" is a flat
+        # contradiction the agent cannot resolve (armistead, on every fit: three observables covered,
+        # S1P_obs's family too small to test).
+        named = (low_power_observables or [])[:_MAX_NAMED_LOW_POWER]
+        rest = len(low_power_observables or []) - len(named)
+        where = (f" for {', '.join(named)}{f' (+{rest} more)' if rest else ''}" if named else "")
+        head = (f"no significant residual structure, but the sign/runs tests are UNDERPOWERED{where} "
+                f"at this sample size — that is weak evidence of adequacy{' there' if where else ''}"
+                ", not a pass.")
+    else:
+        head = "no significant residual structure detected (residuals look sign-random)."
+    tail = _replicate_lof_line(lof or {})
+    return f"{head} {tail}" if tail else head
+
+
+def _replicate_lof_line(lof: dict[str, Any]) -> str:
+    """The replicate arm's one line for the summary, or ``""``.
+
+    Silent for the two statuses whose absence is unremarkable and PERMANENT — no repeated design
+    point at all, and no noise parameter to scope the arm by (``_LOF_SILENT_STATUSES``; 13 of the 16
+    benchmark examples, where the structured keys already carry ``available: false`` plus the reason
+    and prose would be a per-fit tax on every one of them, forever). Every other status speaks: a
+    real pass, a flag, or the specific reason the arm could not be run — including the catch-all
+    ``unavailable``, which used to be silent too and so hid real failures on problems that DO have
+    replicates.
+    """
+    status = lof.get("status")
+    if status in _LOF_SILENT_STATUSES:
+        return ""
+    # Whatever the arm DID test, it may not be read as a whole verdict while another family of the
+    # same problem went untested. Live on armistead every fit: three noise families of 4 replicated
+    # points are tested, sd_S1P_obs's 2 points are `too_few_usable_points`, and without this the
+    # 12-point pass read as a whole-problem pass.
+    partial = ""
+    if lof.get("untested_status"):
+        partial = (f" A further family of replicated design points could NOT be tested "
+                   f"({lof['untested_status']}), so this says nothing about those points.")
+    # STATUS first, and only then `available`: `advice` is one of the rollup-only keys stripped from
+    # what rides on a fit (_LOF_ROLLUP_ONLY_KEYS), so dispatching on its presence turned a stripped
+    # FLAGGED verdict into "that is a pass" — inverting the finding for any caller that summarises
+    # the projection rather than the merge.
+    if status == "flagged":
+        return (lof.get("advice") or
+                (f"replicate lack-of-fit: {lof.get('n_flagged', 0)} of {lof['n_points']} replicated "
+                 f"design points sit further from the model than their OWN replicate scatter allows "
+                 f"(worst {lof['max_abs_z']} SE, Holm p {lof['min_p_holm']}) — missing STRUCTURE at "
+                 "those points, which no sigma can absorb.")) + partial
+    if lof.get("available"):
+        return (f"replicate lack-of-fit: none over {lof['n_points']} replicated design points "
+                f"(worst {lof['max_abs_z']} SE of its own replicate scatter) — this arm IS powered, "
+                "so that is a pass rather than weak evidence for the points it tested." + partial)
+    if status == "replicates_too_thin":
+        return ("replicate lack-of-fit: NO EVIDENCE — the repeated design points have only one "
+                "degree of freedom each, too thin to be a yardstick.")
+    if status == "too_few_usable_points":
+        return ("replicate lack-of-fit: NO EVIDENCE — too few usable replicated design points to "
+                "test.")
+    if status == "vacuous":
+        return ("replicate lack-of-fit: NO EVIDENCE — this model has as many estimated structural "
+                "parameters as there are replicated design points, so the test would measure its "
+                "flexibility, not its form.")
+    # The catch-all, and it no longer covers "there is no noise parameter at all" — that has its own
+    # SILENT status. What is left is a sigma that exists and still would not resolve: its observables
+    # mix lin and log so there is no single coordinate, a gain will not reduce to a number, no
+    # prediction was constant across a point's replicates, or the diagnostic itself raised. Every one
+    # of those is a real, fixable failure on a problem that may well HAVE replicates, so it speaks:
+    # an untested arm read as a pass is the more expensive mistake.
+    return ("replicate lack-of-fit: NO EVIDENCE — the arm could not be run for this problem's noise "
+            "parameter (no single noise coordinate for its observables, an unresolvable amplitude, "
+            "or no constant prediction across a design point's replicates).")

@@ -1003,36 +1003,213 @@ def sigma_replicate_noise_estimate(problem, pid: str, fitted_values=None) -> flo
     than ``NOISE_SIGMA_REPLICATE_MIN_DOF`` pooled replicate residuals (most benchmark problems are
     single-measurement time series). The caller then falls back to the difference-based estimate.
     """
+    points = replicate_pure_error_points(problem, pid, fitted_values)
+    if points is None:
+        return None
+    # POOLING the per-point sums of squares is what makes this one number: sum ssq_i / sum df_i. The
+    # per-point (n_i, s_i, df_i) it pools are exposed by that function for the lack-of-fit arm, which
+    # asks the other question — is the PREDICTION further from a point than that point's own scatter
+    # allows (see residual_tests.replicate_lack_of_fit).
+    #
+    # This is the SAME estimator as before the split, but not bit-for-bit the same number: fsum adds
+    # exactly where the old inline loop accumulated sequentially, which moves 4 of the 6 floors the
+    # benchmark suite has by 1-2 ULP (blasi 0.2579081404095943 -> 0.25790814040959437). Measured
+    # across all 16 examples, and kept: the new arithmetic is the more accurate one, and a 1e-16 shift
+    # cannot move a ratio the inflation gate reads at 1.5 (the run that motivated this arm sat 0.0024
+    # away). Anything comparing recorded floors across that boundary should compare with a tolerance.
+    ssq = math.fsum(p["ssq"] for p in points)
+    dof = sum(p["df"] for p in points)
+    if dof < NOISE_SIGMA_REPLICATE_MIN_DOF:
+        return None
+    estimate = math.sqrt(ssq / dof)
+    return estimate if estimate > 0 else None
+
+
+def replicate_pure_error_points(problem, pid: str, fitted_values=None, simulations=None):
+    """The PER-DESIGN-POINT pure error behind :func:`sigma_replicate_noise_estimate`'s single pooled
+    number — and, when ``simulations`` is given, the model's prediction at each of those points on
+    the SAME coordinate.
+
+    One entry per design point measured MORE THAN ONCE (rows sharing observable, condition and
+    time), each ``{observable_id, condition_id, time, n, df, ybar, s, ssq, prediction}`` on the
+    noise-additive, amplitude-normalised coordinate (see :func:`sigma_noise_coordinate` /
+    :func:`_gain_normalised_gains`) — so ``(ybar - prediction) / (s / sqrt(n))`` is a deviation in
+    units of that point's OWN replicate scatter and never touches the fitted sigma at all. Points
+    measured once carry no scatter and are omitted; a problem without repeats yields ``[]`` (only 3
+    of the 16 benchmark examples have any — see BENCHMARK_NOTES).
+
+    ``simulations`` is the session's per-measurement simulation frame renamed to the PEtab column
+    names (``data_access._replicate_lof`` does that); it carries one row per MEASUREMENT, so
+    the replicate grouping is identical either way. ``prediction`` is ``None`` when no frame is
+    passed, or when the simulated value is not CONSTANT across a point's replicates — the one thing
+    that would mean the group is not a single design point after all (a ``time`` the records could
+    not represent, say, since they store only finite floats).
+
+    ``None`` — not ``[]`` — when the rows, the coordinate or the gains cannot be resolved: that is
+    "unknown", not "no replicates", and every caller must fail open on it.
+    """
     rows = _measurement_rows_for_sigma(problem, pid)
     if rows is None or rows.empty or MEASUREMENT not in rows.columns or "time" not in rows.columns:
         return None
     coordinate = sigma_noise_coordinate(problem, pid, rows)
     if coordinate is None:
         return None
-    import numpy as np
-
     gains = _gain_normalised_gains(problem, pid, rows, fitted_values)
     if gains is None:
         return None
-    ssq = 0.0
-    dof = 0
+    if simulations is not None:
+        # Restrict the simulation records to the DESIGN POINTS `pid` actually covers: the noise
+        # scoping is per PARAMETER, and mixing two sigmas' points into one family would both cross
+        # coordinates and inflate the multiple-testing correction. Scoping by observable ID alone was
+        # not enough — `_measurement_rows_for_sigma` also scopes by the per-ROW `noiseParameters`
+        # override, so two sigmas governing different rows of ONE observable each got all of that
+        # observable's points: every count doubled, the reported points came back duplicated, and
+        # each arm applied its own gain and coordinate to rows the other sigma governs.
+        if OBSERVABLE_ID not in getattr(simulations, "columns", []) \
+                or MEASUREMENT not in simulations.columns or "time" not in simulations.columns:
+            return None
+        covered = set(_design_point_keys(rows))
+        rows = simulations[[key in covered for key in _design_point_keys(simulations)]]
+        if rows.empty:
+            return []
+
+    import numpy as np
+
+    from . import residual_tests as rt
+
+    out: list[dict[str, Any]] = []
     # Group by the full design point INCLUDING time: rows sharing (observable, condition, time) are
     # replicates of one true value, so their spread is pure noise. A single-measurement design point
-    # (n_g = 1) contributes nothing — which is why a time series without repeats yields dof 0 -> None.
+    # (n_g = 1) contributes nothing — which is why a time series without repeats yields no points.
+    # dropna only for the MEASUREMENT table. The simulation records store only FINITE floats, so
+    # blasi's steady-state `time = inf` arrives as None and every one of its 15 design points would
+    # be dropped — hence dropna=False there. On the measurement table a blank
+    # observable/condition/time cell is genuinely missing data, and pooling every such row into ONE
+    # NaN-keyed group makes its BETWEEN-point spread read as within-point noise: that silently moves
+    # the pooled floor `sigma_replicate_noise_estimate` hands the 1.5 inflation gate (a two-row toy
+    # case moved it 0.0129 -> 22.36), so those rows stay dropped, exactly as before this split. THIS
+    # is the rule for what a design point IS; `_design_point_keys` below normalises a missing time only
+    # to MATCH the two frames, and never makes a NaN-keyed row into a design point.
     group_cols = [c for c in ("observableId", "simulationConditionId", "time") if c in rows.columns]
-    for _key, series in rows.groupby(group_cols, sort=False):
+    for _key, series in rows.groupby(group_cols, sort=False, dropna=simulations is None):
         oid = series[OBSERVABLE_ID].iloc[0] if OBSERVABLE_ID in series.columns and len(series) else None
-        v = _transform_values(series[MEASUREMENT].dropna().astype(float) / gains.get(str(oid), 1.0),
-                              coordinate)
+        gain = gains.get(str(oid), 1.0)
+        v = _transform_values(series[MEASUREMENT].dropna().astype(float) / gain, coordinate)
         v = np.asarray(v, dtype=float)
         v = v[np.isfinite(v)]
-        if len(v) >= 2:
-            ssq += float(((v - v.mean()) ** 2).sum())
-            dof += len(v) - 1
-    if dof < NOISE_SIGMA_REPLICATE_MIN_DOF:
+        pure = rt.replicate_pure_error(v.tolist())
+        if pure is None:
+            continue
+        out.append({
+            "observable_id": None if oid is None else str(oid),
+            "condition_id": _first_value(series, "simulationConditionId"),
+            "time": _first_value(series, "time"),
+            "n": pure["n"], "df": pure["df"], "ssq": pure["ssq"],
+            "ybar": pure["mean"], "s": pure["sd"],
+            "prediction": _constant_prediction(series, gain, coordinate),
+        })
+    return out
+
+
+def _design_point_keys(frame) -> list[tuple]:
+    """One hashable ``(observable, condition, time)`` key per row of ``frame`` — used ONLY to match
+    rows of the MEASUREMENT table against rows of the SIMULATION records, never to decide what counts
+    as a design point (the ``groupby`` above does that, and it still DROPS NaN keys on the measurement
+    table; see its comment).
+
+    For matching, a non-finite or missing time collapses to ``None`` on both sides, because the
+    simulation records store only finite floats (blasi's steady-state ``time = inf`` arrives as None)
+    and because a NaN would never compare equal to itself anyway. A missing column contributes
+    ``None``, so a frame without a condition column still matches one whose condition is blank. A
+    measurement row with a blank time therefore contributes a key here and is still excluded from the
+    pooled floor — scoping wider than the grouping is the fail-open direction: it can only admit
+    simulation rows that the grouping then declines to make a design point out of.
+    """
+    def _label(value):
+        return None if value is None or value != value else str(value)
+
+    def _time(value):
+        try:
+            t = float(value)
+        except (TypeError, ValueError):
+            return None
+        return t if math.isfinite(t) else None
+
+    n = len(frame)
+    columns = getattr(frame, "columns", [])
+    obs = frame[OBSERVABLE_ID] if OBSERVABLE_ID in columns else [None] * n
+    cond = frame["simulationConditionId"] if "simulationConditionId" in columns else [None] * n
+    time = frame["time"] if "time" in columns else [None] * n
+    return [(_label(o), _label(c), _time(t)) for o, c, t in zip(obs, cond, time)]
+
+
+def _first_value(series, column: str):
+    """The first value of ``column`` in a design point's rows (they share it by construction), or
+    ``None`` when the column is absent."""
+    if column not in getattr(series, "columns", []) or not len(series):
         return None
-    estimate = float(np.sqrt(ssq / dof))
-    return estimate if estimate > 0 else None
+    value = series[column].iloc[0]
+    return None if value != value else value  # NaN -> None
+
+
+def _constant_prediction(series, gain: float, coordinate: str):
+    """The model's prediction for one design point, on the noise coordinate, or ``None``.
+
+    Amplitude-normalised by the SAME gain as the measurements (a per-gel factor multiplies signal
+    and noise alike, so it has to cancel from both sides), and returned only when the simulated
+    value is constant across the point's replicates — replicates of one design point share one
+    prediction by construction, so a spread means the grouping is not a design point and the honest
+    answer is "unknown".
+    """
+    if "simulation" not in getattr(series, "columns", []):
+        return None
+    import numpy as np
+
+    v = _transform_values(series["simulation"].dropna().astype(float) / gain, coordinate)
+    v = np.asarray(v, dtype=float)
+    v = v[np.isfinite(v)]
+    if not len(v) or not bool(np.allclose(v, v[0], rtol=1e-9, atol=0.0)):
+        return None
+    return float(v[0])
+
+
+#: Symbolic noiseFormulas by the observable table's TEXT (see :func:`_symbolic_noise_formulas`).
+#: Small and bounded: one entry per distinct table, and only the most recent few are kept.
+_NOISE_FORMULA_CACHE: dict[tuple, dict] = {}
+_NOISE_FORMULA_CACHE_MAX = 8
+
+
+def _symbolic_noise_formulas(odf) -> dict:
+    """``{observable_id: sympy_expr}`` for the whole observable table, memoised on its CONTENT.
+
+    ``petab.get_symbolic_noise_formulas`` re-parses EVERY noiseFormula in the table through the antlr
+    PEtab-math grammar, and :func:`_noise_expr_and_observable` needs it once per OBSERVABLE — so a
+    family covering an n-observable table paid n*n parses on every gain resolution, which is why
+    :func:`_gain_normalised_gains` dominated both the replicate lack-of-fit arm and the pooled noise
+    floor. Measured per sigma on this machine, gain resolution / whole
+    :func:`replicate_pure_error_points` call: blasi (16 observables, 256 parses) 35.8 -> 5.8 ms of
+    40.8 -> 11.2 ms; schwen/std (22 observables) 54.3 -> 10.9 ms of 88.6 -> 42.4 ms; armistead 1.4 ->
+    0.75 ms of 4.7 -> 3.0 ms. Both consumers run once per sigma per fit, so a two-sigma problem paid
+    it four times.
+
+    Keyed on the ids and formula TEXT, never on the frame's identity: the agent re-authors the
+    observable table mid-session, and an ``id()``-keyed cache would be free to serve a stale
+    expression for a rewritten formula. Building the key costs one tuple of strings; a miss costs what
+    the call always cost. sympy expressions are immutable and every caller ``.subs()`` into a new one,
+    so sharing them is safe.
+    """
+    from petab.v1.calculate import get_symbolic_noise_formulas
+
+    try:
+        key = (tuple(str(i) for i in odf.index),
+               tuple(str(v) for v in odf[NOISE_FORMULA]))
+    except Exception:  # noqa: BLE001 - unkeyable table: just don't cache it
+        return get_symbolic_noise_formulas(odf)
+    if key not in _NOISE_FORMULA_CACHE:
+        if len(_NOISE_FORMULA_CACHE) >= _NOISE_FORMULA_CACHE_MAX:
+            _NOISE_FORMULA_CACHE.clear()
+        _NOISE_FORMULA_CACHE[key] = get_symbolic_noise_formulas(odf)
+    return _NOISE_FORMULA_CACHE[key]
 
 
 def _noise_expr_and_observable(problem, pid: str, rows):
@@ -1062,9 +1239,8 @@ def _noise_expr_and_observable(problem, pid: str, rows):
     try:
         import sympy as sp
         from petab.v1 import split_parameter_replacement_list
-        from petab.v1.calculate import get_symbolic_noise_formulas
 
-        expr = get_symbolic_noise_formulas(odf).get(observable_id)
+        expr = _symbolic_noise_formulas(odf).get(observable_id)
         if expr is None:
             return None
         overrides = {}

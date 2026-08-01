@@ -541,7 +541,7 @@ def test_fit_tools(tmp_path):
         # agent doesn't spend a get_fit_diagnosis call to learn its model's form is incomplete —
         # but the DETAIL behind it deliberately does not, or it would ride on every fit.
         assert set(res["residual_structure"]) == {
-            "flagged_observables", "low_power", "summary"}
+            "flagged_observables", "low_power", "summary", "replicate_lack_of_fit"}
         assert "per_observable" not in res and "worst_points" not in res
         diag = _structured(await mcp.call_tool("get_fit_diagnosis", {}))
         assert diag["residual_structure"] == res["residual_structure"]

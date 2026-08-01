@@ -579,7 +579,8 @@ def _warn_sigma_bound_widening(problem, parameter_id: str, upper_bound: float) -
     true models' own sigmas span ~0.0004-0.59 of that std, so any band wide enough to be safe is
     too wide to be decisive. On a real problem there is no reference to check it against, so a hard
     rejection could block a legitimate edit with no recourse. The load-bearing evidence for "sigma
-    is absorbing misfit" is the RESIDUAL STRUCTURE (sign/runs tests in get_fit_diagnosis), which is
+    is absorbing misfit" is the RESIDUAL STRUCTURE (get_fit_diagnosis's verdict: the sign/runs tests
+    plus the replicate lack-of-fit test), which is
     transform-invariant and needs no ground truth — this warning just points at it."""
     if parameter_id not in R.plausibility_sigma_ids(problem):
         return None
@@ -610,8 +611,9 @@ def _warn_sigma_bound_widening(problem, parameter_id: str, upper_bound: float) -
         f"{cap:.6g} ({NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD:.0%} of this observable's measurement "
         "std, on the scale its noise is additive on). A sigma free to grow can make an "
         "under-mechanistic model look statistically adequate. This is ADVISORY — check "
-        "get_fit_diagnosis: if the residual sign/runs tests flag structure, the mechanism is "
-        "missing something and widening the noise will only hide it."
+        "get_fit_diagnosis: if its residual-structure verdict flags an observable (sign/runs tests, "
+        "or a replicated design point the model cannot reach), the mechanism is missing something "
+        "and widening the noise will only hide it."
     )
 
 

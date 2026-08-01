@@ -68,7 +68,8 @@ _SIGMA_INFLATED_ADVICE = (
     " NOTE: the best model's fit only looks statistically adequate because its ESTIMATED noise "
     "sigma is inflated above its data-driven cap, absorbing the misfit — the chi2 goodness-of-fit "
     "is not real adequacy here. Do NOT widen or lean on the noise; fix the mechanism so the "
-    "residuals shrink at a plausible sigma (the residual sign/runs tests still flag the structure)."
+    "residuals shrink at a plausible sigma (get_fit_diagnosis's residual-structure verdict still "
+    "flags the structure)."
 )
 
 # The other tail: the best model's ESTIMATED noise sigma collapsed implausibly small, so the fit
@@ -204,8 +205,9 @@ class PetabSession:
         # ...and collapsed (fitted implausibly small = overfitting the noise). Estimated-sigma
         # adequacy requires NEITHER inflated NOR collapsed, matching the judge's success gate.
         self.best_sigma_collapsed: bool = False
-        # The best model's residual-structure flag (sign/runs tests, which survive estimated sigmas
-        # unlike chi2 GoF). A structurally-mis-specified best model is NOT adequate regardless of the
+        # The best model's residual-structure flag (the sign/runs tests and the replicate lack-of-fit
+        # test, all of which survive estimated sigmas unlike chi2 GoF — see
+        # data_access.residual_structure_rollup). A structurally-mis-specified best model is NOT adequate regardless of the
         # noise model, so a run whose residuals stay structured keeps searching instead of
         # plateau-stopping early (sneyd: underfits stopped as "adequate" while flagging residuals).
         self.best_residual_flagged: bool = False
@@ -913,9 +915,12 @@ class PetabSession:
                 # skipping the chi2 branch too and leaving the run with zero adequacy test. Either
                 # way, fall back to the (weak, but real) GoF.
                 best_adequate = gof_adequate
-            # ...AND the residuals must not still show significant STRUCTURE. The sign/runs tests
-            # survive estimated sigmas (unlike chi2 GoF), so a best model that fits the magnitude but
-            # is systematically biased/trended has an incomplete FORM — not adequate, so the run keeps
+            # ...AND the residuals must not still show significant STRUCTURE. Every test behind that
+            # flag survives estimated sigmas (unlike chi2 GoF): the sign/runs tests read only residual
+            # SIGNS, and the replicate lack-of-fit test measures each prediction against its design
+            # point's OWN replicate scatter. So a best model that fits the magnitude but is
+            # systematically biased/trended — or that cannot reach a replicated design point at all —
+            # has an incomplete FORM — not adequate, so the run keeps
             # searching rather than plateau-stopping (sneyd: underfits that stopped as "adequate" with
             # a plausible sigma while flagging structured residuals). A genuinely-better-than-truth
             # model can still flag residuals (irreducible data structure); it simply forgoes the early
@@ -1072,8 +1077,9 @@ class PetabSession:
         server default (and must be >= 1); ``justification`` is optional.
 
         The result also carries the two adequacy verdicts this method computes anyway for the
-        plateau-adequacy gate: ``residual_structure`` (the compact sign/runs verdict on whether the
-        model's FORM is still incomplete) and the noise-model verdict
+        plateau-adequacy gate: ``residual_structure`` (the compact residual-structure verdict on
+        whether the model's FORM is still incomplete — the sign/runs tests plus the replicate
+        lack-of-fit test) and the noise-model verdict
         (``noise_sigma_inflated``/``noise_sigma_collapsed`` + advice). Returning them saves the
         caller a separate ``get_fit_summary``/``get_fit_diagnosis`` round-trip; ``get_fit_diagnosis``
         remains the way to get the per-observable table and worst points behind the verdict, and
@@ -1130,7 +1136,8 @@ class PetabSession:
             gof_pvalue = fitting.goodness_of_fit(
                 nllh, fitsim.get("chi2"), fitsim.get("n_estimated"),
                 fitsim.get("n_data_points")).get("chi2_gof_pvalue")
-            # Residual-structure verdict of THIS fit (sign/runs tests survive estimated sigmas),
+            # Residual-structure verdict of THIS fit (the sign/runs tests and the replicate
+            # lack-of-fit test, all of which survive estimated sigmas),
             # computed ONCE here and stashed on fitsim like the noise flags below. Three consumers:
             # the compact rollup rides on the fit RESULT so the agent doesn't spend a
             # get_fit_diagnosis call to learn its model's form is still incomplete (issue #113);
@@ -1182,7 +1189,9 @@ class PetabSession:
             fitsim["noise_sigma_collapsed"] = noise_sigma_collapsed(_nsr)
             fitsim["noise_sigma_assessable"] = _noise_sigma_assessable(_nsr)
             # NOTE: fitsim["residual_flagged"] is already set above from the SAME rollup, as the
-            # TRI-STATE bool|None (None = the sign/runs tests could not run at all). Do not
+            # TRI-STATE bool|None (None = NEITHER arm could run — not merely the sign/runs tests: a
+            # collapsed or unevaluable sigma leaves no weighted residual, and the replicate
+            # lack-of-fit test needs none, so it can still return a definite True/False there). Do not
             # recompute it here: that both duplicated the residual pass and coerced None -> False,
             # so the version meta recorded null while the fit event recorded false for one fit, and
             # a resumed run restored "residuals verified clean" for a model never tested.

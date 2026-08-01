@@ -507,7 +507,7 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         at-bound parameter (masking a mechanism problem behind inflated noise); `make_changes`
         WARNS (does not reject) when widening a sigma past it. The decisive, ground-truth-free
         evidence that a sigma is absorbing misfit is structured residuals — check
-        `get_fit_diagnosis`'s sign/runs tests. Each entry also reports `data_noise_estimate`, a
+        `get_fit_diagnosis`'s `residual_structure` verdict. Each entry also reports `data_noise_estimate`, a
         MODEL-FREE noise level from successive measurement differences, and
         `fitted_over_data_noise` — purely ADVISORY (nothing gates on them). That estimate is biased
         HIGH (it counts whatever the mean does between samples as noise), so a fitted sigma far
@@ -643,13 +643,22 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         you need the detail behind it (which points, how big, which observable carries the chi2),
         not to ask whether the residuals are structured.
 
-        The sign/runs tests exist BECAUSE `chi2`/`reduced_chi2`/`chi2_gof_pvalue` are
+        These tests exist BECAUSE `chi2`/`reduced_chi2`/`chi2_gof_pvalue` are
         uninformative when the noise sigmas are ESTIMATED (a free sigma inflates to absorb
-        misfit, so magnitude scores pin near their null however wrong the FORM is). Reading only
-        residual SIGNS, these still detect a systematic bias or drift the magnitude scores miss.
-        They have low power on few points, though: treat `low_power` non-significant results as
-        weak evidence, NOT a pass, and never as a hard finish gate. Use this to locate a poor
-        fit cheaply; for a full custom breakdown use `query_data`, for the optimizer log
+        misfit, so magnitude scores pin near their null however wrong the FORM is). Three tests round
+        it, all immune to the sigma:
+
+        * `sign_test` / `runs_test` read only residual SIGNS, so they still detect a systematic bias
+          or drift. They have low power on few points: treat a `low_power` non-significant result as
+          weak evidence, NOT a pass.
+        * `residual_structure.replicate_lack_of_fit` is the POWERED arm wherever design points
+          REPEAT — each prediction against that point's own replicate scatter, so no sigma can
+          flatten it. `available: false` there means NO EVIDENCE (read `status` for why), never a
+          pass; a flagged point means no parameter value in the current form can reach it.
+
+        All three feed the one `residual_structure.flagged_observables` list, and a flagged list blocks
+        the run's early plateau stop — so this is a real stop condition, not just advice. Use this to
+        locate a poor fit cheaply; for a full custom breakdown use `query_data`, for the optimizer log
         `get_fitting_log`. The simulation dataframe is generated on demand if no commit has
         produced one yet.
         """

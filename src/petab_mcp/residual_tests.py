@@ -1,4 +1,5 @@
-"""Sign-based residual-structure tests: the sign test and the Wald–Wolfowitz runs test.
+"""Residual-structure tests: the sign test, the Wald–Wolfowitz runs test, and the replicate
+lack-of-fit test.
 
 These answer "do the residuals still show systematic structure?" — the half of the
 fit-adequacy question the magnitude-based scores (``reduced_chi2``, the χ² GoF p-value,
@@ -21,17 +22,38 @@ no answer leak).
   because the usual normal approximation is invalid at the handful of points per series these
   benchmarks have.
 
-Everything here is pure numeric code over a list of residuals; :mod:`petab_mcp.data_access`
-feeds it the per-point residuals and surfaces the results through ``get_fit_diagnosis``. The
-results are ADVISORY diagnostics for the agent, deliberately not wired into any automated
-gate: at these sample sizes the tests have low power, so a non-significant result is weak
-evidence and is flagged as such rather than treated as a pass.
+* **Replicate lack-of-fit** — where a design point was measured SEVERAL times, its replicates
+  differ by noise alone, so their scatter is a model-free yardstick for how far the prediction is
+  allowed to sit from the data: ``z_i = (ybar_i - f_i) / (s_i / sqrt(n_i))``. This is the axis the
+  two sign-based tests cannot reach on a steady-state problem, where a design point IS an
+  observable and every series has length 1 (see :func:`replicate_lack_of_fit`).
+
+Everything here is pure numeric code over lists of numbers; :mod:`petab_mcp.data_access`
+feeds it the per-point residuals (and :mod:`petab_mcp.reconcile` the per-point replicate
+statistics, on the coordinate where the noise is additive) and surfaces the results through
+``get_fit_diagnosis`` and the ``fit`` result's ``residual_structure`` verdict.
+
+ALL THREE TESTS FEED THE SESSION'S PLATEAU-ADEQUACY GATE, through the one ``flagged_observables``
+list ``session.py`` reads via ``data_access.residual_flag`` — the sign/runs tests have fed it since
+PR #111 (the sneyd case: underfits that plateau-stopped as "adequate" with a plausible sigma while
+flagging structured residuals), and the replicate test joins the same list rather than adding a gate.
+So loosening any alpha here loosens a STOP CONDITION; none of this is merely advisory. What differs
+is POWER, not consequence: at these sample sizes the sign/runs tests are weak, so a non-significant
+result there is reported as ``low_power`` rather than as a pass, while the replicate test has real
+power wherever design points repeat (and reports NO EVIDENCE where they do not).
 """
 
 from __future__ import annotations
 
 import math
 from typing import Any
+
+from .constants import (
+    REPLICATE_LOF_ALPHA,
+    REPLICATE_LOF_MAX_REPORTED_POINTS,
+    REPLICATE_LOF_MIN_DF,
+    REPLICATE_LOF_MIN_POINTS,
+)
 
 #: Below this many usable points a series/observable has too little power for the p-value to
 #: mean much; results are still returned but flagged ``low_power`` so a caller does not read a
@@ -173,3 +195,218 @@ def fisher_combine(pvalues: list[float]) -> float | None:
         return float(_chi2.sf(stat, dof))
     except Exception:  # pragma: no cover - scipy always present via pypesto
         return None
+
+
+# -- replicate lack-of-fit -----------------------------------------------------------------
+
+
+def student_t_two_sided_p(t: float, df: float) -> float | None:
+    """``P(|T| >= |t|)`` for ``T ~ Student-t(df)``.
+
+    Student-t and not a normal tail because ``df_i = n_i - 1`` is a handful here (blasi 11-17,
+    armistead 3-4): the sd in the denominator is estimated from the very replicates being tested, and
+    a normal tail would over-state the significance of every point. ``None`` on a non-finite ``t`` or
+    ``df < 1`` (fail open — a diagnostic must never manufacture a verdict from bad input).
+
+    scipy, not a hand-rolled incomplete beta: the binomial and runs tails above are hand-rolled to
+    keep this module scipy-free, but that premise does not hold — importing :mod:`petab_mcp` at all
+    already puts ``scipy.stats`` in ``sys.modules`` (via pypesto), so no import was ever saved on any
+    path and 85 lines of Numerical-Recipes continued fraction bought nothing. (NOT because
+    :func:`fisher_combine` imports ``scipy.stats.chi2`` on the same per-fit path: it returns before
+    that import whenever it has a single p-value, which is blasi, and on a collapsed sigma the
+    sign/runs tests do not run at all.) Degrades to ``None`` if the import ever fails, like
+    fisher_combine.
+    """
+    try:
+        t = float(t)
+        df = float(df)
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(t) and math.isfinite(df)) or df < 1:
+        return None
+    if t == 0.0:
+        return 1.0
+    try:
+        from scipy.stats import t as _t
+
+        return float(2.0 * _t.sf(abs(t), df))
+    except Exception:  # pragma: no cover - scipy always present via pypesto
+        return None
+
+
+def holm_adjusted(pvalues: list[float]) -> list[float]:
+    """Holm–Bonferroni step-down adjusted p-values, in the INPUT order.
+
+    ``p_adj`` for the k-th smallest of ``m`` p-values is ``(m-k)·p``, then made monotone
+    non-decreasing along the sorted order and capped at 1. Holm rather than plain Bonferroni
+    because the question is "is ANY replicated point off?" across a family of up to ~150 points,
+    where Bonferroni on the minimum alone throws away the rest of the family; and rather than a
+    false-discovery rule because the consumer is a GATE — one flagged point blocks a plateau stop,
+    so the error that matters is the family-wise one.
+    """
+    ps = [float(p) for p in pvalues]
+    m = len(ps)
+    out = [1.0] * m
+    running = 0.0
+    for rank, i in enumerate(sorted(range(m), key=lambda j: ps[j])):
+        running = max(running, min(1.0, (m - rank) * ps[i]))
+        out[i] = running
+    return out
+
+
+def replicate_pure_error(values: list[float]) -> dict[str, Any] | None:
+    """Pure error of ONE design point's replicates: ``{n, mean, sd, df, ssq}``.
+
+    ``sd`` is the sample sd (``ddof = 1``) and ``ssq`` the raw sum of squared deviations, both kept
+    because the pooled floor sums ``ssq``/``df`` while the per-point test needs ``sd``. ``None``
+    below two finite values — a point measured once has no scatter of its own.
+    """
+    vals: list[float] = []
+    for v in values:
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(f):
+            vals.append(f)
+    n = len(vals)
+    if n < 2:
+        return None
+    mean = math.fsum(vals) / n
+    ssq = math.fsum((v - mean) ** 2 for v in vals)
+    return {"n": n, "mean": mean, "sd": math.sqrt(ssq / (n - 1)), "df": n - 1, "ssq": ssq}
+
+
+def _sig3(value: float | None) -> float | None:
+    """``value`` to 3 significant digits (the reported precision; the FLAG is always decided on the
+    unrounded number)."""
+    return None if value is None else float(f"{float(value):.3g}")
+
+
+def replicate_lack_of_fit(
+    points: list[dict[str, Any]],
+    *,
+    n_structural: int | None = None,
+    alpha: float = REPLICATE_LOF_ALPHA,
+    min_df: int = REPLICATE_LOF_MIN_DF,
+    min_points: int = REPLICATE_LOF_MIN_POINTS,
+    max_reported: int = REPLICATE_LOF_MAX_REPORTED_POINTS,
+) -> dict[str, Any]:
+    """Per-design-point lack-of-fit against each point's OWN replicate scatter.
+
+    ``points`` are the replicated design points of ONE noise parameter, each a mapping
+    ``{label, n, ybar, s, prediction}`` on the coordinate where that parameter's noise is additive
+    (:func:`petab_mcp.reconcile.replicate_pure_error_points` builds them). Per point::
+
+        se_i = s_i / sqrt(n_i)        z_i = (ybar_i - f_i) / se_i        df_i = n_i - 1
+
+    and ``p_i`` is the two-sided Student-t tail on ``df_i``, Holm-adjusted across the family. A
+    point whose adjusted p falls below ``alpha`` is FLAGGED: the model cannot reach that point no
+    matter how its parameters move, which is missing STRUCTURE, not noise.
+
+    Why this arm exists and why it is scoped this way is in ``constants.REPLICATE_LOF_ALPHA``. The
+    guards, each with the benchmark example that forces it:
+
+    * ``min_df`` — a point needs df_i >= 2 (schwen: 126 points, every n_i = 2, technical replicates
+      of a calibration whose reference sigma is 7.8x their pure error).
+    * ``min_points`` — fewer than 3 usable points and there is no family to correct over.
+    * ``n_structural`` — SKIPPED as vacuous once the estimated structural parameter count reaches
+      the number of usable points, where a flexible enough fit can drive every ``z_i`` to 0 and the
+      test measures flexibility, not form. The comparison is deliberately ASYMMETRIC: ``n_structural``
+      is a WHOLE-MODEL count (``data_access._n_estimated_structural`` over the parameter table) while
+      the point count is this ONE family's, because every estimated parameter is free to move this
+      family's predictions, and no per-family split of them exists. armistead is the case: its four
+      noise parameters carry 4 replicated points each (sd_Cer_obs, sd_Sphinga_obs, sd_Sphingo_obs, at
+      df 3) and 2 (sd_S1P_obs, df 4) against 10 estimated structural parameters, so the guard fires on
+      the three 4-point families and ``min_points`` already excludes the fourth. The asymmetry is what
+      excludes it, and it errs toward NO EVIDENCE, which is the safe direction here.
+    * anything non-finite or missing is DROPPED, and an empty family reports NO EVIDENCE
+      (``available: False``) — never a pass.
+
+    The verdict is a fixed shape whatever happens (a consumer reads it off every fit result, so a
+    missing key would be a KeyError): ``{available, status, n_points, alpha, flagged, tested,
+    max_abs_z, min_p_holm, points}``. ``points`` are the ``max_reported`` worst FLAGGED points —
+    only flagged ones, because the advice built from them tells the agent that is where the form is
+    wrong, and a point the model already reproduces is not. ``tested`` names every point that
+    entered the test, which is how the assembler knows which observables a passing arm may be
+    credited for (:func:`petab_mcp.data_access._rollup_structure`); it is stripped before the
+    verdict rides on a fit result, where only the bounded ``points`` list may go.
+    """
+    usable: list[dict[str, Any]] = []
+    # Counted so that "nothing to test" can name WHICH kind of nothing it was — each unavailable
+    # status has to mean exactly one thing (see replicate_lof_unavailable).
+    n_replicated = 0   # design points measured more than once at all
+    n_thin = 0         # ...of those, the ones below min_df (schwen's every-n_i-is-2)
+    for p in points or []:
+        try:
+            n = int(p["n"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if n < 2:
+            continue
+        n_replicated += 1
+        if n - 1 < min_df:
+            n_thin += 1
+            continue
+        try:
+            ybar = float(p["ybar"])
+            s = float(p["s"])
+            f = float(p["prediction"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not (math.isfinite(ybar) and math.isfinite(f) and math.isfinite(s)) or s <= 0:
+            continue
+        z = (ybar - f) / (s / math.sqrt(n))
+        pv = student_t_two_sided_p(z, n - 1)
+        if pv is None:
+            continue
+        usable.append({"label": p.get("label"), "n": n, "df": n - 1, "z": z, "p": pv})
+
+    if not usable:
+        if n_replicated == 0:
+            return replicate_lof_unavailable("no_replicated_points", alpha)
+        if n_thin == n_replicated:
+            return replicate_lof_unavailable("replicates_too_thin", alpha)
+        # Replicated, thick enough, and still not testable: no prediction, or a non-finite input.
+        return replicate_lof_unavailable("unavailable", alpha)
+    if len(usable) < min_points:
+        return replicate_lof_unavailable("too_few_usable_points", alpha, n_points=len(usable))
+    if n_structural is not None and n_structural >= len(usable):
+        return replicate_lof_unavailable("vacuous", alpha, n_points=len(usable))
+
+    for point, p_holm in zip(usable, holm_adjusted([u["p"] for u in usable])):
+        point["p_holm"] = p_holm
+    flagged = [u["label"] for u in usable if u["p_holm"] < alpha]
+    worst = sorted(usable, key=lambda u: abs(u["z"]), reverse=True)
+    # Reported points are the worst FLAGGED ones. Taking the worst of the whole family instead made
+    # the advice name PASSING points as "where the form is wrong" whenever fewer than max_reported
+    # points were flagged — with one flag among four, three points at z = 0 were listed as
+    # mechanisms to add.
+    named = [u for u in worst if u["p_holm"] < alpha][:max_reported]
+    return {
+        "available": True,
+        "status": "flagged" if flagged else "pass",
+        "n_points": len(usable),
+        "alpha": alpha,
+        "flagged": sorted(str(label) for label in flagged),
+        "tested": [u["label"] for u in usable],
+        # z to 3 decimals (not 3 significant digits): a worst point at 17.976 and one at 18.0 read
+        # the same to 3 s.f., and this number is the one a regression pins.
+        "max_abs_z": round(abs(worst[0]["z"]), 3),
+        "min_p_holm": _sig3(min(u["p_holm"] for u in usable)),
+        "points": [{"label": u["label"], "n": u["n"], "z": round(u["z"], 3),
+                    "p_holm": _sig3(u["p_holm"])}
+                   for u in named],
+    }
+
+
+def replicate_lof_unavailable(status: str = "unavailable",
+                              alpha: float = REPLICATE_LOF_ALPHA,
+                              n_points: int = 0) -> dict[str, Any]:
+    """The degraded verdict: the same keys, and honest that the arm produced NO EVIDENCE — which a
+    consumer must be able to tell apart from a pass (an empty ``flagged`` alone reads as adequacy).
+    An arm that could not run tested NOTHING, so ``tested`` is empty and no observable may be
+    credited with a pass on its account.
+    """
+    return {"available": False, "status": status, "n_points": n_points, "alpha": alpha,
+            "flagged": [], "tested": [], "max_abs_z": None, "min_p_holm": None, "points": []}

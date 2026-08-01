@@ -1211,8 +1211,9 @@ def noise_sigma_collapsed(report: "dict[str, Any] | None") -> bool:
 NOISE_SIGMA_INFLATED_ADVICE = (
     "an ESTIMATED noise sigma is inflated above its data-driven cap, absorbing the model misfit — "
     "the chi2 goodness-of-fit is not genuine adequacy here. Do NOT widen or lean on the noise; fix "
-    "the mechanism so the residuals shrink at a plausible sigma (the residual sign/runs tests still "
-    "flag the structure). A fit resting on an inflated sigma will NOT be accepted as finished."
+    "the mechanism so the residuals shrink at a plausible sigma (get_fit_diagnosis's "
+    "residual-structure verdict still flags the structure). A fit resting on an inflated sigma will "
+    "NOT be accepted as finished."
 )
 NOISE_SIGMA_COLLAPSED_ADVICE = (
     "an ESTIMATED noise sigma has collapsed far below the data's own variability — the fit is "
@@ -1501,10 +1502,12 @@ def fit_result_block(
         # adequacy gate and this block cannot disagree; computed here for the paths that don't
         # stash one (rollback/reset).
         **noise_sigma_block(problem, fitted, report=fitsim.get("noise_sigma_report")),
-        # The COMPACT residual-structure verdict only — which observables show significant
-        # sign/runs structure, plus a one-line summary. Deliberately not the per-observable table
-        # or worst_points: those would ride on EVERY fit result and pile up in the agent's re-sent
-        # history, so they stay behind get_fit_diagnosis (issue #113).
+        # The COMPACT residual-structure verdict only — which observables the sign/runs tests or the
+        # replicate lack-of-fit test flag, a one-line summary, and the bounded replicate verdict
+        # (`replicate_lack_of_fit`: the counts plus at most REPLICATE_LOF_MAX_REPORTED_POINTS named
+        # points). Deliberately not the per-observable table or worst_points: those would ride on
+        # EVERY fit result and pile up in the agent's re-sent history, so they stay behind
+        # get_fit_diagnosis (issue #113).
         "residual_structure": fitsim.get("residual_structure"),
     }
     block.update(goodness_of_fit(nll, chi2, k, n))

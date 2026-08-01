@@ -473,3 +473,22 @@ def test_input_species_flags_const_boundary_and_rule_driven():
     assert "I" in inputs                        # const species -> a held input
     assert "F" in inputs                        # assignment-rule-driven -> a forcing term
     assert "X" not in inputs                    # a free dynamic state, not an input
+
+
+def test_symbolic_noise_formulas_are_memoised_on_the_TABLE_TEXT(session):
+    """``petab.get_symbolic_noise_formulas`` parses the WHOLE observable table, and the gain
+    resolution needs it once per OBSERVABLE — an n-observable table paid n*n antlr parses on every
+    call, which dominated what both the replicate lack-of-fit arm and the pooled noise floor spend
+    resolving gains (measured per sigma: blasi 35.8 -> 5.8 ms). The cache is keyed on the formulas' TEXT
+    and not on the frame's identity, because the agent RE-AUTHORS the observable table mid-session
+    and a stale expression would feed a stop gate."""
+    odf = session.problem.observable_df
+    first = R._symbolic_noise_formulas(odf)
+    assert R._symbolic_noise_formulas(odf) is first        # same text -> same object, no re-parse
+    odf.loc["obs_B", "noiseFormula"] = "sigma_B * B"       # re-authored
+    rewritten = R._symbolic_noise_formulas(odf)
+    assert rewritten is not first
+    assert str(rewritten["obs_B"]) != str(first["obs_B"])
+    # ...and a table this cache has never seen is parsed rather than borrowed from a stale neighbour
+    assert R._symbolic_noise_formulas(odf.assign(noiseFormula="sigma_B"))["obs_B"] == \
+        first["obs_B"]

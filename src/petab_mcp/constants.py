@@ -129,6 +129,73 @@ NOISE_SIGMA_INFLATION_RATIO = 1.5
 # Below this the estimate is too noisy; the gate falls back to the (conservative) data-std cap only.
 NOISE_SIGMA_REPLICATE_MIN_DOF = 6
 
+# -- replicate lack-of-fit (the residual arm of the structure verdict) -------
+# The SAME repeated design points, used the other way round: instead of pooling their scatter into
+# one floor to judge sigma against, ask per point whether the PREDICTION sits further from the data
+# than that point's OWN scatter allows —
+#     z_i = (ybar_i - f_i) / (s_i / sqrt(n_i))   on the noise-additive coordinate.
+# This is the axis blasi's early finish hid behind. The chi2 GoF p-value cannot see it (with one
+# shared sigma at its ML value chi2 == n identically, so the p-value is a function of (n, k) alone:
+# 252 for the true model AND for a 6-parameter run 194 BIC worse), the sign/runs tests cannot see it
+# (a single steady-state condition makes every per-observable series length 1 — n=1, p=1.0,
+# undefined runs test), and the inflation ratio above barely separates them (1.4759 vs 1.5). z_i
+# separates by 5.3x on max|z| (truth 3.393 vs run 17.976) and 41x on sum z_i^2, and because it uses
+# only s_i it is EXACTLY invariant to the ML vs RSS/(n-k) sigma convention — which the ratio is not.
+#
+# Per-point two-sided Student-t p on df_i = n_i - 1, HOLM-adjusted across the replicated points of
+# ONE noise parameter, flagged below this alpha. 0.01, NOT 0.05: blasi's TRUE model lands at Holm
+# p = 0.0519, so a 5% rule is a coin flip that would deadlock the example about half the time (its
+# MC-calibrated 5% critical value for max|z| is 3.97 against the truth's 3.393 — 15% headroom). At
+# 0.01 the truth keeps 2.2x headroom (MC crit 5.26) while the run is flagged at 2.55e-11, and that
+# margin also absorbs the naive Holm null being ~2x anti-conservative versus the MC one — so no
+# Monte-Carlo calibration is needed at runtime.
+#
+# NOT a variance-ratio F test: the shared-sigma fit weights by diag(n_i) while sum z_i^2 weights by
+# diag(n_i / s_i^2), so the projection is OBLIQUE and removes almost no df (exact E[T|H0] = 13.60 at
+# m = 15 with rank J = 8, not m - p = 7). Dividing by m - p inflates F by up to 2.14x and
+# MANUFACTURES a rejection of blasi's true model at p = 0.0016. Per-point Holm needs no df bookkeeping
+# at all, which is why it is the rule here.
+#
+# READ THE MARGINS ABOVE AS A FLOOR, NOT AS CALIBRATION. Every one of them assumes the n_i replicates
+# of a point are independent draws, and on blasi they are NOT: rows 1-12 and 13-18 of each design
+# point are two experimental blocks (the three n_i = 12 observables stop exactly at row 12; Welch per
+# observable, Fisher chi2 = 54.67 on 24 df, p = 3.5e-4; 12 of 14 shifts share a sign, with the
+# abundant 0ac moving down while every minor state moves up — one compositional degree of freedom,
+# not noise). Within-block variance is 0.044704 against a naive within-point 0.0665166, so s_i/sqrt(n_i)
+# understates se(ybar_i) by a median 2.19x and by 10.3x at observable_0ac; block-aware, the truth's
+# excess-variance ratio falls 3.330 -> 0.339 and the failing run's 98.5 -> 13.4. That bias runs the SAFE
+# way here — it inflates every z_i, so the truth looks worse than it is and still clears 0.01 — but it
+# means these p-values are not exact, and a future tightening toward 0.05 has less headroom than the
+# numbers above suggest. Holm survives it for a different reason: it controls FWER under ARBITRARY
+# dependence, which matters because the z_i are strongly correlated (blasi's states sum to 1; top
+# eigenvalue 6.2 of 15) — a Fisher combine or a sum-of-squares aggregate would NOT be valid here.
+# Nothing corrects for the blocks on purpose: block membership exists only in measurement ROW ORDER,
+# which PEtab gives no meaning, so no shipped code may read it. Subtracting within-point block means
+# would move the pooled floor 0.257908 -> 0.248610 and put the failing run at 1.5311, tripping the
+# inflation ratio above — worth knowing, not worth depending on row order for.
+REPLICATE_LOF_ALPHA = 0.01
+
+# A design point's own scatter is only a usable yardstick from this many degrees of freedom
+# (df_i = n_i - 1) up. 2 EXCLUDES schwen, whose 126 replicated points ALL have n_i = 2: those are
+# technical replicates of a bound-railed insulin-ELISA calibration whose reference sigma is 7.8x
+# their pure error, so a pure-error test there rejects schwen's OWN true model (pooled lack-of-fit
+# F = 156.2 on (98, 126), p = 1e-100). One df also cannot tell a real deviation from a lucky pair,
+# and Levene/Bartlett are degenerate there (see BENCHMARK_NOTES).
+REPLICATE_LOF_MIN_DF = 2
+
+# Below this many usable replicated points the Holm family is too small to conclude anything, so the
+# arm reports NO EVIDENCE rather than a pass. 3 is the smallest count at which a single flagged point
+# survives a Holm correction at alpha 0.01 without needing an absurd |z|.
+REPLICATE_LOF_MIN_POINTS = 3
+
+# At most this many of the worst FLAGGED points (by |z|) ride on a fit result — flagged only, since
+# the advice built from them tells the agent that is where the form is wrong, and a point the model
+# already reproduces is not one of those. The verdict is re-sent in the agent's history on EVERY
+# subsequent turn (PR #23 cut ~40% of the per-call prompt by trimming exactly this kind of payload),
+# so the arm emits a one-line verdict plus a handful of NAMED points — never the full table (blasi
+# would be 15 rows per fit, forever).
+REPLICATE_LOF_MAX_REPORTED_POINTS = 5
+
 # -- reference-sigma comparison (the judge's preferred noise check, #118) ----
 # When reference.json records the TRUE model's own fitted noise sigmas, the judge compares a
 # candidate's sigma to those instead of to a fraction of the marginal data std — the dimensionally

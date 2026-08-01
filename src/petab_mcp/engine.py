@@ -59,7 +59,8 @@ def _observable_transformation(observable_df, obs_id) -> str:
     ``.get(col, LIN) or LIN`` did NOT fall back. ``petab.scale`` then raised on it, the caller's
     broad ``except`` swallowed that, and EVERY point silently lost its weighted residual: chi2
     fell back to AMICI's own vector so the score still looked fine, while ``get_fit_diagnosis``
-    reported "no weighted residuals available", the sign/runs residual-structure tests never ran,
+    reported "no weighted residuals available", the sign/runs tests never ran (the replicate
+    lack-of-fit test needs no sigma and does still run — see ``data_access.residual_structure_rollup``),
     and the ``simulations`` table's residual columns were all NULL. Normalising the way
     :func:`reconcile._observable_transformations` already does keeps the two agreeing, and also
     absorbs an unrecognised string rather than turning it into the same silent outage.

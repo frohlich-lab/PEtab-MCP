@@ -140,10 +140,14 @@ def test_fit_returns_the_compact_residual_structure_verdict(fit_session):
     res = sess.fit(n_starts=2)
 
     rs = res["residual_structure"]
-    assert set(rs) == {"flagged_observables", "low_power", "summary"}
+    assert set(rs) == {"flagged_observables", "low_power", "summary", "replicate_lack_of_fit"}
     assert isinstance(rs["flagged_observables"], list)
     assert isinstance(rs["low_power"], bool)
     assert rs["summary"]
+    # The toy problem measures each design point ONCE, so the replicate arm has nothing to test —
+    # and must say so rather than contributing a silent pass.
+    assert rs["replicate_lack_of_fit"]["available"] is False
+    assert rs["replicate_lack_of_fit"]["status"] == "no_replicated_points"
     # It is the SAME rollup get_fit_diagnosis reports — that equality is the whole point: the
     # follow-up call is redundant, not merely similar.
     assert rs == data_access.fit_diagnosis(sess)["residual_structure"]
@@ -180,7 +184,8 @@ def test_restore_version_carries_the_verdict_too(fit_session):
     sess = fit_session
     sess.fit(n_starts=2)
     out = sess.restore_version(1)
-    assert set(out["residual_structure"]) == {"flagged_observables", "low_power", "summary"}
+    assert set(out["residual_structure"]) == {"flagged_observables", "low_power", "summary",
+                                             "replicate_lack_of_fit"}
 
 
 def test_untested_residuals_are_recorded_as_unknown_not_as_clean(session, monkeypatch):
