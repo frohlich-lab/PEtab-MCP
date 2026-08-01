@@ -244,9 +244,47 @@ def test_ic_convention_fixes_a_pre_existing_estimated_row():
     assert abs(pdf.loc["R_init", NOMINAL_VALUE] - 1.0) < 1e-9
     assert pdf.loc["O_init", ESTIMATE] == 0
     assert abs(pdf.loc["O_init", NOMINAL_VALUE] - 0.0) < 1e-9
+    # Bounds are re-derived to BRACKET the fixed nominal (as the add-loop does), NOT left at the
+    # stale positive-log10 seed bounds — so the empty pool's 0.0 is not below its own lowerBound.
+    for pid, v in (("R_init", 1.0), ("O_init", 0.0)):
+        assert pdf.loc[pid, LOWER_BOUND] <= v <= pdf.loc[pid, UPPER_BOUND]
     # G == 2.5 (a positive guess, not 0/1) stays ESTIMATED — the convention only FIXES 0/1, and a
     # legitimately-estimated IC's fitted nominal must never be clobbered.
     assert pdf.loc["G_init", ESTIMATE] == 1
+
+
+def test_ic_convention_does_not_fix_a_compound_expression_participant():
+    """The pre-existing-row {0,1}->FIXED pass is restricted to DIRECT ICs (`<sid> = <param>`). A
+    participant of a COMPOUND parametric IC (`r2 = a*b`) valued exactly 1 is a fold/normalisation
+    seed the author means to ESTIMATE, not a unit-normalisation IC to fix — so it must be left
+    estimated even though its value is 1.0 and it is (via the compound expression) an IC param."""
+    import pandas as pd
+    import petab.v1 as petab
+    from petab.v1.C import (ESTIMATE, LOG10, LOWER_BOUND, NOMINAL_VALUE, PARAMETER_ID,
+                            PARAMETER_SCALE, UPPER_BOUND)
+
+    ant = (
+        "model ic_compound_unit\n"
+        "  compartment c = 1;\n"
+        "  species r2 in c;\n"
+        "  r2 = a * b;\n"                       # a, b appear ONLY in a compound IC expression
+        "  a = 2.0; b = 1.0;\n"                 # b == 1.0 would be a unit-norm IC if it were direct
+        "  koff = 0.1;\n"
+        "  deg2: r2 -> ; koff * r2;\n"
+        "end\n"
+    )
+    prob = petab.Problem(model=SbmlModel.from_antimony(ant))
+    R.ensure_parametric_initial_conditions(prob.model.sbml_model)
+    rows = {pid: [LOG10, 1e-4, 1e4, val, 1] for pid, val in (("a", 2.0), ("b", 1.0))}
+    prob.parameter_df = pd.DataFrame.from_dict(
+        rows, orient="index",
+        columns=[PARAMETER_SCALE, LOWER_BOUND, UPPER_BOUND, NOMINAL_VALUE, ESTIMATE],
+    ).rename_axis(PARAMETER_ID)
+
+    R.reconcile(prob)
+    pdf = prob.parameter_df
+    assert pdf.loc["b", ESTIMATE] == 1                  # NOT fixed despite value 1.0 (compound part)
+    assert pdf.loc["a", ESTIMATE] == 1
 
 
 def test_condition_column_species_ic_not_parametrised():

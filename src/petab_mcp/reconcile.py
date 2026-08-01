@@ -1445,6 +1445,22 @@ def _ic_parameter_ids(sm) -> set[str]:
     return ic
 
 
+def _direct_ic_parameter_ids(sm) -> set[str]:
+    """IC parameters that are the SOLE symbol of a species initialAssignment (`<sid> = <param>` —
+    the shape `_set_parametric_ic` and an author's own `A = A_init` produce): a directly settable
+    initial condition. Excludes participants of a COMPOUND expression (`Rec = ini_R1*ini_R2fold`),
+    which the {0,1} value convention must NOT fix individually — a participant valued 1 there is a
+    fold/normalisation seed the author means to estimate, not a fixed unit-normalisation IC."""
+    ic: set[str] = set()
+    for i in range(sm.getNumInitialAssignments()):
+        ia = sm.getInitialAssignment(i)
+        if sm.getSpecies(ia.getSymbol()) is not None:
+            names = _ast_names(ia.getMath())
+            if len(names) == 1:
+                ic |= names
+    return ic
+
+
 def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
     """Add rows for new model parameters; remove rows for parameters gone from the model
     (keeping observable/noise parameters). Returns the add/remove diff.
@@ -1563,8 +1579,10 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
     # never estimate). Re-derive the FIXED convention here for a non-shipped IC row whose current
     # model value is exactly 0 (empty pool) or 1 (unit normalization); a shipped row is left as the
     # problem defined it, and an IC with any other value stays estimated (its fitted nominal, which
-    # we must not clobber, is never exactly 0 or 1).
-    for pid in sorted((ic_params & table_ids) - shipped_ids):
+    # we must not clobber, is never exactly 0 or 1). Restricted to DIRECT ICs (`<sid> = <param>`):
+    # a participant of a COMPOUND parametric IC (`Rec = ini_R1*ini_R2fold`) valued 1 is a fold /
+    # normalisation seed to estimate, not a unit-normalisation IC to fix.
+    for pid in sorted((_direct_ic_parameter_ids(sm) & table_ids) - shipped_ids):
         if pid not in problem.parameter_df.index:
             continue
         try:
@@ -1578,7 +1596,13 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
             except (TypeError, ValueError):
                 already_fixed = False
             if not already_fixed:
+                # Re-derive bounds to bracket the new nominal (exactly as the add-loop does via
+                # _default_bounds) — otherwise the stale positive-log10 seed bounds are left, so an
+                # empty-pool IC ends fixed at 0.0 with a lowerBound of 1e-4 ABOVE it.
+                lb, ub = _default_bounds(v0)
                 problem.parameter_df.loc[pid, PARAMETER_SCALE] = LIN
+                problem.parameter_df.loc[pid, LOWER_BOUND] = lb
+                problem.parameter_df.loc[pid, UPPER_BOUND] = ub
                 problem.parameter_df.loc[pid, NOMINAL_VALUE] = v0
                 problem.parameter_df.loc[pid, ESTIMATE] = 0
 
