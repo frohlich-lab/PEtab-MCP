@@ -995,8 +995,8 @@ def bundle_result(
 
     On a failure the message does NOT prescribe a fix, it forwards ``error`` — because that error
     is not always "the model is broken". The identical-structure loop guard reaches the same
-    branch, and its message says the opposite (stop re-sending this structure, go back with
-    ``restore_version(n)``); a top-level "repair it and try again" would send the agent straight
+    branch, and its message says the opposite (stop re-sending this structure, make a genuinely
+    different change); a top-level "repair it and try again" would send the agent straight
     back into the loop the guard exists to break, and the agent reads the message first.
 
     Whether a version was created is decided by comparing HEAD against ``head_before``, NOT by
@@ -1017,7 +1017,7 @@ def bundle_result(
         message = (
             "Change applied, but the fit was a no-op: the resulting model is identical to version "
             f"{fit_result.get('duplicate_of_version')}, so its stored metrics stand. Make a "
-            "genuinely different change, or restore_version(n) to go back."
+            "genuinely different change; that version is kept and scored regardless."
         )
     elif snapshotted:
         # The fit broke only AFTER snapshotting, so HEAD moved: report where it landed rather than
@@ -1038,7 +1038,7 @@ def bundle_result(
             f"unchanged, still version {head_now}, and nothing is left half-done. The fit "
             f"reported: {fit_result.get('error') or 'no error message'} — ACT ON THAT rather than "
             "assuming the model is broken: it says whether to fix the change and send it again, "
-            "or to stop re-sending this structure and go back with restore_version(n)."
+            "or to stop re-sending this structure and make a genuinely different change instead."
         )
     # Pipeline order: the edit's messages, then the fit's. `run_fit` / `edit_then_fit` already
     # shape a rejected fit as error entries; a fit that RAN reports its advisories as the flat

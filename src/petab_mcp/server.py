@@ -68,8 +68,8 @@ SERVER_INSTRUCTIONS = (
     "FITS and snapshots a version. There is no fit-free edit and no separate fit call: one "
     "call is one coherent change, scored once. Parameter VALUES come only from that fit, never "
     "by hand. Everything is logged: audit with `list_versions` / `diff_versions` / "
-    "`get_provenance` / `get_errors`. To go BACK to an earlier model use `restore_version(n)` "
-    "— it reuses that version's stored fit — rather than re-authoring it, which recompiles, "
+    "`get_provenance` / `get_errors`. Every fitted version is kept and the run is scored on the "
+    "best-bic one regardless, so re-authoring an earlier structure to go back only recompiles, "
     "refits to the same result, and appends a duplicate."
 )
 
@@ -380,7 +380,7 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         flags. Read `applied`: `false` → the change is NOT in the model, either rejected before it
         applied or reverted because the fit failed; `error`/`issues` says which. Then `committed`:
         `true` → a version exists, read `bic`; `false` with `no_change` → the change applied but
-        this structure already IS a version, so change something else or `restore_version(n)`.
+        this structure already IS a version, so change something else.
         Nothing else rides on the result: the reconcile/validation reports and the parameter diff
         are not a score, so read the reconciled model on demand through `get_model_structure`
         (which also carries the per-species initial-condition account) or `get_parameters`.
@@ -400,8 +400,8 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         of a still-pinned parameter is rejected — such a parameter is unidentifiable, not
         under-explored (see `get_identifiability`).
 
-        To go BACK to an earlier model use `restore_version(n)`, never a re-author: that
-        recompiles, refits to the same result, and appends a duplicate.
+        Every fitted version is kept and the run is scored on the best-bic one regardless, so
+        re-authoring an earlier structure to go back only recompiles and refits to the same result.
         """
         if not antimony and not parameters:
             return ctx.reject_operation(

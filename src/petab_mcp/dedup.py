@@ -9,7 +9,7 @@ recompile+fit, decides whether to
 
 * **skip** a no-op fit (byte-identical to the current version) — no fit, no new version;
 * **warn** when revisiting a structure already in the history, or a family whose best BIC was
-  materially worse than the best model so far (and point at ``restore_version(n)``);
+  materially worse than the best model so far (the best model is kept and scored regardless);
 * **terminate** an identical-fit loop after a few repeats (they cannot change anything).
 
 The heavy lifting is the pure :func:`decide` — it takes fingerprints + a small registry of
@@ -27,9 +27,9 @@ from .parameters import estimated_ids
 
 # The same structure may be authored at most this many times before ``set_model`` refuses
 # further identical re-authors: an identical structure recompiles + refits to the SAME result
-# and cannot improve the fit, so a run that keeps emitting it is stuck. The way out is
-# ``restore_version(n)`` (if it is the best model, it is already committed) or a genuinely
-# different structural change — both of which reset this loop.
+# and cannot improve the fit, so a run that keeps emitting it is stuck. The way out is a
+# genuinely different structural change; the best model is kept and scored regardless, so there
+# is nothing to go back to.
 MAX_IDENTICAL_REAUTHORS = 3
 
 # Warn when re-authoring a structure family whose best (lowest) BIC was at least this much
@@ -153,9 +153,8 @@ def decide(
         return {"action": "terminate", "message": (
             f"This same model structure has already been fit {prior_attempts} times. Re-fitting an "
             "identical structure recompiles and refits to the SAME result — it cannot improve the "
-            "fit. Stop re-fitting it: if this is your best model it is already committed, so go "
-            "back to it with restore_version(n) (use list_versions to find the best-bic version), "
-            "or make a genuinely different structural change and fit THAT."
+            "fit. Stop re-fitting it: your best model is kept and scored regardless (see "
+            "list_versions), so make a genuinely different structural change and fit THAT."
         )}
 
     # (a) Byte-identical to the current HEAD (same structure AND same estimation setup): nothing
@@ -168,8 +167,8 @@ def decide(
             "message": (
                 f"This model is identical to the current version (v{head_version}); the fit was "
                 "not re-run (its metrics are unchanged — see get_fit_summary). To improve the fit, "
-                "change the STRUCTURE and fit again; to go back to an earlier model, use "
-                "restore_version(n)."
+                "change the STRUCTURE and fit again; an earlier model you already committed is "
+                "kept and scored regardless."
             ),
         }
 
@@ -181,11 +180,10 @@ def decide(
         v for r in matches if (v := r.get("version")) is not None and v != head_version
     )
     if prior_versions:
-        latest = prior_versions[-1]
         warnings.append(
-            f"This model structure was already committed at version(s) {prior_versions}. "
-            f"restore_version({latest}) brings that model back without recompiling or refitting; "
-            "re-fitting it just creates a duplicate."
+            f"This model structure was already committed at version(s) {prior_versions} and is "
+            "kept and scored regardless; re-fitting it just creates a duplicate — make a genuinely "
+            "different change instead."
         )
     # (b) The structure family already scored materially worse than the best model so far.
     family = _min_bic_entry(matches)
@@ -198,7 +196,7 @@ def decide(
             warnings.append(
                 f"This structure family previously scored bic≈{fb:.1f}, {fb - gb:.1f} WORSE than "
                 f"the best model so far (bic≈{gb:.1f}, v{best.get('version')}). Revisiting it is "
-                f"unlikely to beat the best — consider restore_version({best.get('version')}) or a "
-                "different structure."
+                f"unlikely to beat the best (v{best.get('version')} is kept and scored regardless) "
+                "— try a different structure."
             )
     return {"action": "proceed", "warnings": warnings}

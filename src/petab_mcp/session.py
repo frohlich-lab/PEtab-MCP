@@ -1000,9 +1000,8 @@ class PetabSession:
         current fitted version the refit is skipped and the stored metrics are returned
         (``committed: false, no_change: true``) — unless this fit runs MORE multistarts than that
         version did, which is a more thorough search and does run; a structure revisited from
-        history warns to use
-        ``restore_version(n)``; and the same structure fitted too many times is refused, to break an
-        unproductive loop.
+        history warns that it is already committed and scored; and the same structure fitted too
+        many times is refused, to break an unproductive loop.
         """
         from . import fitting
         from .operations import _compile_fit_failure_message

@@ -122,7 +122,7 @@ def test_decide_skips_identical_head():
                  head_version=3, registry=_reg((3, "X", 1.0)), prior_attempts=1)
     assert d["action"] == "skip"
     assert d["duplicate_of"] == 3
-    assert "restore_version" in d["message"]
+    assert "kept and scored" in d["message"]
 
 
 def test_decide_no_skip_when_setup_differs():
@@ -137,14 +137,14 @@ def test_decide_terminates_after_repeated_reauthors():
                  head_version=5, registry=_reg((5, "Y", 1.0)),
                  prior_attempts=D.MAX_IDENTICAL_REAUTHORS)
     assert d["action"] == "terminate"
-    assert "restore_version" in d["message"]
+    assert "kept and scored" in d["message"]
 
 
 def test_decide_warns_on_revisiting_prior_version():
     d = D.decide(structure_hash="X", head_structure_hash="Y", same_setup=False,
                  head_version=2, registry=_reg((1, "X", 1.0), (2, "Y", 1.0)), prior_attempts=1)
     assert d["action"] == "proceed"
-    assert any("restore_version(1)" in w for w in d["warnings"])
+    assert any("version(s) [1]" in w for w in d["warnings"])
 
 
 def test_decide_warns_on_worse_family():

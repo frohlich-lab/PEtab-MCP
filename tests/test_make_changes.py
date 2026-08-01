@@ -308,13 +308,13 @@ def test_a_fit_failure_reverts_the_edit(tmp_path, monkeypatch):
 def test_a_refused_fit_forwards_its_own_error_instead_of_prescribing_a_repair(
         tmp_path, monkeypatch):
     """The identical-structure loop guard lands in the same "not scored" branch as a broken model,
-    but its error says the OPPOSITE (stop re-fitting, restore_version(n)). The top-level message
+    but its error says the OPPOSITE (stop re-fitting, make a different change). The top-level message
     must forward that rather than tell the agent to repair and re-fit — the agent reads the message
     first, and "re-fit" walks straight back into the loop the guard exists to break."""
     def _refuse(self, *a, **k):
         raise ModelUpdateError(
             "This same model structure has been fit 4 times now. Stop re-fitting it: "
-            "go back to it with restore_version(n).")
+            "make a genuinely different change.")
 
     monkeypatch.setattr(PetabSession, "fit", _refuse)
     mcp = _server(tmp_path)
@@ -322,7 +322,7 @@ def test_a_refused_fit_forwards_its_own_error_instead_of_prescribing_a_repair(
         "antimony": _antimony(), "justification": "re-author a seen structure"})
 
     assert res["applied"] is False and res["committed"] is False
-    assert "restore_version" in res["message"]          # the refusal's own instruction survives
+    assert "genuinely different change" in res["message"]  # the refusal's own instruction survives
     assert "repair the model" not in res["message"]
     assert "REVERTED" in res["message"]                 # ... and the state is reported
 
