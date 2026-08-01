@@ -8,9 +8,12 @@ collapsed predicates themselves are covered in test_result_fields; this pins the
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pytest
+
+from petab_mcp import residual_tests as rt  # noqa: E402
 
 from petab_mcp.constants import NOISE_SIGMA_COLLAPSE_FRACTION  # noqa: E402
 from petab_mcp.fitting import (  # noqa: E402
@@ -42,55 +45,100 @@ def test_inflated_advice():
 
 
 def _ratio_entry(ratio, method, fitted=0.5, cap=10.0):
-    # cap high (fitted < cap) so the data-std cap arm never fires -> isolates the ratio arm.
+    # cap high (fitted < cap) so the data-std cap arm never fires -> the ratio is the ONLY signal.
     return {"effective_sigma": fitted, "upper_bound_cap": cap, "data_std": 1.0,
             "fraction_of_data_std": 0.05, "fitted_over_data_noise": ratio,
             "data_noise_method": method}
 
 
-def test_replicate_ratio_gate_flags_inflation_below_the_loose_cap():
-    from petab_mcp.constants import NOISE_SIGMA_INFLATION_RATIO
-    # A REPLICATE (pure-error) floor is trustworthy, so a fitted sigma well above it is inflated even
-    # while below the far-looser data-std cap — the case the cap alone misses (blasi's gaming runs).
-    assert _entry_inflated(_ratio_entry(NOISE_SIGMA_INFLATION_RATIO + 0.3, "replicate")) is True
-    # advice IS produced for a replicate inflation (its quantified content is pinned separately, in
-    # test_replicate_inflation_advice_is_quantified_and_reliable).
-    assert noise_sigma_advice({"s": _ratio_entry(2.4, "replicate")}) is not None
+@pytest.mark.parametrize("ratio", [0.98, 1.476, 2.4, 7.83, 100.0])
+def test_the_pure_error_ratio_never_gates_however_large(ratio):
+    """No ratio against a noise FLOOR is an inflation verdict — not even against the unbiased
+    replicate (pure-error) one (the arm #140 added is gone; see fitting._entry_inflated).
+
+    The FORM is what is wrong, so this spans the measured range instead of bracketing a threshold:
+    0.98 is blasi's TRUE model, 1.476 a decisively wrong blasi run (ΔBIC +194) that the shipped 1.5
+    was ALSO silent on, 2.4 a blasi noise-gaming run, 7.83 schwen's own REFERENCE. No constant
+    separates those; the per-design-point lack-of-fit test does (see below).
+    """
+    for method in ("replicate", "difference"):
+        assert _entry_inflated(_ratio_entry(ratio, method)) is False, method
+        assert noise_sigma_advice({"s": _ratio_entry(ratio, method)}) is None, method
 
 
-def test_replicate_ratio_gate_passes_a_reference_quality_fit():
-    # ratio ~1 (fitted sigma ~= the replicate noise floor) is a good fit -> not flagged.
-    assert _entry_inflated(_ratio_entry(0.98, "replicate")) is False
-    assert noise_sigma_advice({"s": _ratio_entry(0.98, "replicate")}) is None
+# --- where the deleted arm's coverage went (#140 -> here) -------------------------------------
+# The two blasi runs #140 was written for. Each is (label, n_structural, sigma/pure-error ratio,
+# [(n_i, z_i) per replicated design point]) with z_i = (ȳ_i - f_i)/(s_i/√n_i). Both sat at 0.28/0.38
+# of the data-std cap, so the deleted ratio arm was their ONLY guard. n_i/s_i are model-free (blasi's
+# measurements.tsv); z_i is reconstructed from each run's recorded mean_weighted_residual × its
+# fitted sigma (exact: one design point per observable, one shared sigma). Literals because
+# examples/_runs_archive is gitignored. #144's own tests already cover the ΔBIC +194 run and the
+# truth from their real predictions — these two are this change's obligation, not that one's.
+_ARCHIVED_BLASI_GAMING_RUNS = [
+    ("0a19fa0c k=6 ΔBIC +437", 5, 2.414,
+     [(18, -48.847), (18, -36.338), (18, 14.389), (12, -9.512), (18, 9.518), (18, -17.379),
+      (18, -10.129), (18, -12.232), (12, 0.015), (18, -0.713), (18, -0.206), (18, 40.836),
+      (12, 4.916), (18, 0.848), (18, -8.477)]),
+    ("52a4101b k=23 ΔBIC +386", 22, 1.812,
+     [(12, -6.113), (18, 6.602), (18, 75.441), (18, -5.277), (18, 6.554), (18, 2.219),
+      (12, -2.333), (18, 6.467), (18, 12.322), (18, -9.410), (18, -5.639), (18, -11.513),
+      (18, -0.827), (12, -4.037), (18, 1.184)]),
+]
 
 
-def test_difference_floor_ratio_is_not_trusted():
-    # The biased difference-based floor collides with legitimate references, so a high ratio THERE is
-    # not flagged (only the conservative cap can) — schwen/oliveira must never trip on it.
-    assert _entry_inflated(_ratio_entry(7.8, "difference")) is False
-    assert noise_sigma_advice({"s": _ratio_entry(7.8, "difference")}) is None
+def _lof_points(points):
+    """The measured deviations as a lack-of-fit family: s = 1 and ȳ_i - f_i = z_i/√n_i reproduce each
+    z_i exactly, so the statistic is pinned on real numbers without the archived models."""
+    return [{"label": f"point{i}", "n": n, "ybar": z / math.sqrt(n), "s": 1.0, "prediction": 0.0}
+            for i, (n, z) in enumerate(points)]
+
+
+def test_the_replicate_lof_arm_condemns_the_run_the_ratio_arm_was_written_for():
+    """ΔBIC +437 at k=6: Holm p 1.5e-18 against alpha 0.01 — eighteen orders of magnitude, where the
+    deleted ratio arm had it at 2.41 against a 1.5 threshold. This is the coverage transfer."""
+    label, n_structural, _ratio, points = _ARCHIVED_BLASI_GAMING_RUNS[0]
+    out = rt.replicate_lack_of_fit(_lof_points(points), n_structural=n_structural)
+    assert out["available"] is True and out["status"] == "flagged", label
+    assert out["max_abs_z"] == pytest.approx(48.85, abs=0.01)
+    assert out["min_p_holm"] < rt.REPLICATE_LOF_ALPHA
+    assert out["min_p_holm"] == pytest.approx(1.51e-18, rel=1e-2)
+
+
+def test_the_other_one_is_the_parsimony_gate_s_and_the_arm_says_so():
+    """ΔBIC +386 at k=23 does NOT transfer to this arm, and must not be assumed to: 22 structural
+    parameters against 15 usable design points trips the vacuity guard, so the verdict is NO
+    EVIDENCE (available False), not a pass.
+
+    That is the correct handoff rather than a hole. blasi's data are 15 distinct design points, so a
+    model with 22 structural parameters has a Jacobian of rank <= 15 and a rank-DEFICIENT FIM by
+    construction — which is the finish gate's parsimony refusal (#135), aimed at exactly this and
+    landed 2026-08-01, three hours AFTER this run. Both this guard and that gate turn on the same
+    condition (n_structural >= n_points), which is what makes the pair complete. What the deleted
+    ratio arm contributed here was a second-best proxy ("your noise is 1.8x the floor") for a
+    diagnosis that is really "you have 22 parameters for 15 points"."""
+    label, n_structural, _ratio, points = _ARCHIVED_BLASI_GAMING_RUNS[1]
+    out = rt.replicate_lack_of_fit(_lof_points(points), n_structural=n_structural)
+    assert out["available"] is False and out["status"] == "vacuous", label
+    assert out["flagged"] == [] and out["tested"] == []      # no evidence, and no observable passed
+    # ... and it is ONLY the parameter count: the same points at a parsimonious k are condemned.
+    assert rt.replicate_lack_of_fit(_lof_points(points), n_structural=6)["status"] == "flagged"
 
 
 def test_data_std_cap_still_flags_independent_of_method():
     # The pre-existing cap arm is untouched: fitted above its data-std cap is inflated whatever the
     # noise-estimate method (or absence of a ratio).
     assert _entry_inflated(_ratio_entry(1.0, "difference", fitted=20.0, cap=10.0)) is True
+    assert _entry_inflated(_ratio_entry(1.0, "replicate", fitted=20.0, cap=10.0)) is True
     assert _entry_inflated(_entry(0.5, 0.1, 2.5)) is True
-
-
-def test_replicate_inflation_advice_is_quantified_and_reliable():
-    from petab_mcp.fitting import NOISE_SIGMA_INFLATED_ADVICE
-    a = noise_sigma_advice({"s": _ratio_entry(2.4, "replicate")})
-    # the stronger, quantified message: names the ratio + that the floor is a measured pure-error one
-    assert a is not None and "2.4x" in a and "PURE-ERROR" in a and "will NOT be accepted" in a
-    assert a != NOISE_SIGMA_INFLATED_ADVICE   # NOT the generic cap-based string
 
 
 def test_cap_only_inflation_uses_the_generic_advice():
     from petab_mcp.fitting import NOISE_SIGMA_INFLATED_ADVICE
-    # inflated via the data-std cap on a DIFFERENCE floor -> no reliable ratio to quote -> generic.
-    assert noise_sigma_advice({"s": _ratio_entry(1.0, "difference", fitted=20.0, cap=10.0)}) \
-        == NOISE_SIGMA_INFLATED_ADVICE
+    # The cap arm is the only inflation arm, so it is also the only advice: one string, whatever
+    # noise floor the report happens to carry.
+    for method in ("difference", "replicate"):
+        assert noise_sigma_advice({"s": _ratio_entry(2.4, method, fitted=20.0, cap=10.0)}) \
+            == NOISE_SIGMA_INFLATED_ADVICE, method
 
 
 def test_collapsed_advice():
@@ -196,15 +244,18 @@ def test_proportional_noise_parameter_is_scaled_by_the_observable_magnitude():
 
 
 # --- the truth must pass its own gate (the check that would have caught #118) ---------------
-# Empty: the truth now passes its own gate on EVERY example. oliveira cleared once the gate
-# stopped judging FIXED sigmas (its two ship estimate=0, so no fit can move them), and perelson
-# cleared once this test began reading the truth from the reference FIT rather than from a
-# parameters.tsv nominalValue that is a linear placeholder (1e5) for a log10-space sd.
-# schwen's published reference UNDER-FITS its Insulin replicates ~7.8x — its ELISA calibration
-# rails at bounds (km_nExpID*=1e8, scaleElisa/fragments=1.0; see BENCHMARK_NOTES "schwen"), so the
-# TRUE model legitimately trips the new replicate-ratio inflation gate. That is a reference-quality
-# flag on a genuinely mediocre benchmark, not a gate error.
-_TRUTH_KNOWN_FAILURES: set[str] = {"schwen"}
+# There is no known-failures set and no xfail: the truth passes its own gate on EVERY example, and
+# it must stay that way. The three that once needed excusing are all gone for a REASON, not by
+# retuning — oliveira cleared once the gate stopped judging FIXED sigmas (its two ship estimate=0,
+# so no fit can move them); perelson cleared once this test began reading the truth from the
+# reference FIT rather than a parameters.tsv nominalValue that is a linear placeholder (1e5) for a
+# log10-space sd; and schwen cleared when #140's replicate-ratio arm was deleted. That arm flagged
+# schwen's own published reference (sigma 0.187 vs a 0.024 pure-error floor = 7.83x, on 126
+# replicated points) because schwen's replicates are n_i = 2 TECHNICAL duplicates whose scatter
+# understates the real noise ~8x.
+#
+# So do NOT re-introduce an excuse list to accommodate a threshold: a gate that condemns a
+# data-generating model is a gate with the wrong FORM, and the excuse would hide exactly that.
 
 
 _EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
@@ -262,11 +313,8 @@ def test_ground_truth_passes_its_own_plausibility_gate(yaml_path):
              for i in ids}
     report = F.noise_sigma_report(problem, truth)
     flagged = F.noise_sigma_inflated(report) or F.noise_sigma_collapsed(report)
-    if example in _TRUTH_KNOWN_FAILURES and flagged:
-        # Conditional, NOT an imperative pytest.xfail(): an unconditional call raises before the
-        # assert and can never XPASS, so a real fix would leave the suite green and the stale entry
-        # would sit here forever with whatever diagnosis it was written with.
-        pytest.xfail(f"{example}: known ground-truth/gate limitation (see #118)")
+    # NO xfail escape hatch, by design — see the note above the test. Every example passes, and an
+    # excused one would be a gate condemning a data-generating model.
     assert not flagged, f"{example}: ground truth flagged -> " + str(
         {k: v.get("fraction_of_data_std") for k, v in report.items()})
 

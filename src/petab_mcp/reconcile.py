@@ -996,8 +996,13 @@ def sigma_replicate_noise_estimate(problem, pid: str, fitted_values=None) -> flo
     NOR the smoothness assumption that biases :func:`sigma_difference_noise_estimate` — it is the
     classical UNBIASED pure error. Computed on the same amplitude-normalised, noise-additive
     coordinate as the fitted sigma (see :func:`_gain_normalised_gains` / :func:`sigma_noise_coordinate`),
-    so ``fitted_over_data_noise`` against it is a dimensionally sound inflation signal, unlike the
-    biased difference-based ratio (which collides with legitimate references — see BENCHMARK_NOTES).
+    so ``fitted_over_data_noise`` against it is at least dimensionally sound, unlike the biased
+    difference-based ratio.
+
+    ADVISORY: the RATIO against this floor gates nothing (the #140 arm that did is gone — see
+    ``fitting._entry_inflated``); #144's per-design-point test keeps each point's
+    ``n_i - 1`` df instead. Still worth REPORTING: the only model-free yardstick here that is not
+    biased upward.
 
     Returns ``None`` when the data cannot supply it: no time column to identify replicates, or fewer
     than ``NOISE_SIGMA_REPLICATE_MIN_DOF`` pooled replicate residuals (most benchmark problems are
