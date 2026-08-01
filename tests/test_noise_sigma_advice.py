@@ -41,6 +41,58 @@ def test_inflated_advice():
     assert "inflated" in a and "will NOT be accepted" in a
 
 
+def _ratio_entry(ratio, method, fitted=0.5, cap=10.0):
+    # cap high (fitted < cap) so the data-std cap arm never fires -> isolates the ratio arm.
+    return {"effective_sigma": fitted, "upper_bound_cap": cap, "data_std": 1.0,
+            "fraction_of_data_std": 0.05, "fitted_over_data_noise": ratio,
+            "data_noise_method": method}
+
+
+def test_replicate_ratio_gate_flags_inflation_below_the_loose_cap():
+    from petab_mcp.constants import NOISE_SIGMA_INFLATION_RATIO
+    # A REPLICATE (pure-error) floor is trustworthy, so a fitted sigma well above it is inflated even
+    # while below the far-looser data-std cap — the case the cap alone misses (blasi's gaming runs).
+    assert _entry_inflated(_ratio_entry(NOISE_SIGMA_INFLATION_RATIO + 0.3, "replicate")) is True
+    # advice IS produced for a replicate inflation (its quantified content is pinned separately, in
+    # test_replicate_inflation_advice_is_quantified_and_reliable).
+    assert noise_sigma_advice({"s": _ratio_entry(2.4, "replicate")}) is not None
+
+
+def test_replicate_ratio_gate_passes_a_reference_quality_fit():
+    # ratio ~1 (fitted sigma ~= the replicate noise floor) is a good fit -> not flagged.
+    assert _entry_inflated(_ratio_entry(0.98, "replicate")) is False
+    assert noise_sigma_advice({"s": _ratio_entry(0.98, "replicate")}) is None
+
+
+def test_difference_floor_ratio_is_not_trusted():
+    # The biased difference-based floor collides with legitimate references, so a high ratio THERE is
+    # not flagged (only the conservative cap can) — schwen/oliveira must never trip on it.
+    assert _entry_inflated(_ratio_entry(7.8, "difference")) is False
+    assert noise_sigma_advice({"s": _ratio_entry(7.8, "difference")}) is None
+
+
+def test_data_std_cap_still_flags_independent_of_method():
+    # The pre-existing cap arm is untouched: fitted above its data-std cap is inflated whatever the
+    # noise-estimate method (or absence of a ratio).
+    assert _entry_inflated(_ratio_entry(1.0, "difference", fitted=20.0, cap=10.0)) is True
+    assert _entry_inflated(_entry(0.5, 0.1, 2.5)) is True
+
+
+def test_replicate_inflation_advice_is_quantified_and_reliable():
+    from petab_mcp.fitting import NOISE_SIGMA_INFLATED_ADVICE
+    a = noise_sigma_advice({"s": _ratio_entry(2.4, "replicate")})
+    # the stronger, quantified message: names the ratio + that the floor is a measured pure-error one
+    assert a is not None and "2.4x" in a and "PURE-ERROR" in a and "will NOT be accepted" in a
+    assert a != NOISE_SIGMA_INFLATED_ADVICE   # NOT the generic cap-based string
+
+
+def test_cap_only_inflation_uses_the_generic_advice():
+    from petab_mcp.fitting import NOISE_SIGMA_INFLATED_ADVICE
+    # inflated via the data-std cap on a DIFFERENCE floor -> no reliable ratio to quote -> generic.
+    assert noise_sigma_advice({"s": _ratio_entry(1.0, "difference", fitted=20.0, cap=10.0)}) \
+        == NOISE_SIGMA_INFLATED_ADVICE
+
+
 def test_collapsed_advice():
     frac = NOISE_SIGMA_COLLAPSE_FRACTION / 2
     a = noise_sigma_advice({"s": _entry(frac, 0.5, frac)})  # fraction below floor
@@ -89,6 +141,7 @@ def test_report_status_per_entry_including_unknown(monkeypatch):
     monkeypatch.setattr(R, "sigma_effective_value",
                         lambda p, pid, fitted, fitted_values=None: fitted)
     monkeypatch.setattr(R, "sigma_difference_noise_estimate", lambda p, pid, fitted_values=None: None)
+    monkeypatch.setattr(R, "sigma_replicate_noise_estimate", lambda p, pid, fitted_values=None: None)
     monkeypatch.setattr(R, "is_parameter_estimated", lambda p, pid: True)
     monkeypatch.setattr(R, "plausibility_sigma_ids", lambda problem: set(data_std))
     rep = noise_sigma_report(object(), {"inf": 0.5, "col": NOISE_SIGMA_COLLAPSE_FRACTION / 10,
@@ -147,7 +200,11 @@ def test_proportional_noise_parameter_is_scaled_by_the_observable_magnitude():
 # stopped judging FIXED sigmas (its two ship estimate=0, so no fit can move them), and perelson
 # cleared once this test began reading the truth from the reference FIT rather than from a
 # parameters.tsv nominalValue that is a linear placeholder (1e5) for a log10-space sd.
-_TRUTH_KNOWN_FAILURES: set[str] = set()
+# schwen's published reference UNDER-FITS its Insulin replicates ~7.8x — its ELISA calibration
+# rails at bounds (km_nExpID*=1e8, scaleElisa/fragments=1.0; see BENCHMARK_NOTES "schwen"), so the
+# TRUE model legitimately trips the new replicate-ratio inflation gate. That is a reference-quality
+# flag on a genuinely mediocre benchmark, not a gate error.
+_TRUTH_KNOWN_FAILURES: set[str] = {"schwen"}
 
 
 _EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
@@ -250,6 +307,7 @@ def test_difference_noise_estimate_is_advisory_only(monkeypatch):
     monkeypatch.setattr(R, "sigma_effective_value",
                         lambda p, pid, fitted, fitted_values=None: fitted)
     monkeypatch.setattr(R, "sigma_difference_noise_estimate", lambda p, pid, fitted_values=None: 1e6)  # absurd
+    monkeypatch.setattr(R, "sigma_replicate_noise_estimate", lambda p, pid, fitted_values=None: None)  # no replicates -> fall back to difference
     monkeypatch.setattr(R, "is_parameter_estimated", lambda p, pid: True)
     monkeypatch.setattr(R, "plausibility_sigma_ids", lambda problem: {"s"})
     rep = noise_sigma_report(object(), {"s": 0.4})               # plausible: 0.4 of a 1.0 std

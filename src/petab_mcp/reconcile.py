@@ -44,6 +44,7 @@ from .constants import (
     EXPONENT_LOWER_BOUND,
     EXPONENT_UPPER_BOUND,
     NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD,
+    NOISE_SIGMA_REPLICATE_MIN_DOF,
 )
 from .parameters import _default_bounds
 
@@ -982,6 +983,55 @@ def sigma_difference_noise_estimate(problem, pid: str, fitted_values=None) -> fl
     if len(squares) < 2:
         return None
     estimate = float(np.sqrt(float(np.mean(squares)) / 2.0))
+    return estimate if estimate > 0 else None
+
+
+def sigma_replicate_noise_estimate(problem, pid: str, fitted_values=None) -> float | None:
+    """The PURE-ERROR noise estimate for ``pid``: the pooled standard deviation WITHIN design points
+    that were measured more than once (same observable, condition and time).
+
+        sigma^2 = sum_g sum_i (y_gi - mean_g)^2 / sum_g (n_g - 1)
+
+    Two measurements at the SAME design point differ by noise alone, so this needs NEITHER a model
+    NOR the smoothness assumption that biases :func:`sigma_difference_noise_estimate` — it is the
+    classical UNBIASED pure error. Computed on the same amplitude-normalised, noise-additive
+    coordinate as the fitted sigma (see :func:`_gain_normalised_gains` / :func:`sigma_noise_coordinate`),
+    so ``fitted_over_data_noise`` against it is a dimensionally sound inflation signal, unlike the
+    biased difference-based ratio (which collides with legitimate references — see BENCHMARK_NOTES).
+
+    Returns ``None`` when the data cannot supply it: no time column to identify replicates, or fewer
+    than ``NOISE_SIGMA_REPLICATE_MIN_DOF`` pooled replicate residuals (most benchmark problems are
+    single-measurement time series). The caller then falls back to the difference-based estimate.
+    """
+    rows = _measurement_rows_for_sigma(problem, pid)
+    if rows is None or rows.empty or MEASUREMENT not in rows.columns or "time" not in rows.columns:
+        return None
+    coordinate = sigma_noise_coordinate(problem, pid, rows)
+    if coordinate is None:
+        return None
+    import numpy as np
+
+    gains = _gain_normalised_gains(problem, pid, rows, fitted_values)
+    if gains is None:
+        return None
+    ssq = 0.0
+    dof = 0
+    # Group by the full design point INCLUDING time: rows sharing (observable, condition, time) are
+    # replicates of one true value, so their spread is pure noise. A single-measurement design point
+    # (n_g = 1) contributes nothing — which is why a time series without repeats yields dof 0 -> None.
+    group_cols = [c for c in ("observableId", "simulationConditionId", "time") if c in rows.columns]
+    for _key, series in rows.groupby(group_cols, sort=False):
+        oid = series[OBSERVABLE_ID].iloc[0] if OBSERVABLE_ID in series.columns and len(series) else None
+        v = _transform_values(series[MEASUREMENT].dropna().astype(float) / gains.get(str(oid), 1.0),
+                              coordinate)
+        v = np.asarray(v, dtype=float)
+        v = v[np.isfinite(v)]
+        if len(v) >= 2:
+            ssq += float(((v - v.mean()) ** 2).sum())
+            dof += len(v) - 1
+    if dof < NOISE_SIGMA_REPLICATE_MIN_DOF:
+        return None
+    estimate = float(np.sqrt(ssq / dof))
     return estimate if estimate > 0 else None
 
 

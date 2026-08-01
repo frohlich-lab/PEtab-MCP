@@ -115,6 +115,20 @@ NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD = 0.75
 # so both agree on "collapsed".
 NOISE_SIGMA_COLLAPSE_FRACTION = 0.01
 
+# -- replicate (pure-error) inflation gate -----------------------------------
+# Where measurements REPEAT at the same (observable, condition, time), their scatter is pure noise —
+# an UNBIASED, model-free floor (reconcile.sigma_replicate_noise_estimate). Unlike the successive-
+# difference estimate (biased, and it collides with legitimate references — see BENCHMARK_NOTES),
+# this floor is trustworthy, so where it exists the gate flags a fitted sigma exceeding it by more
+# than this factor: the noise is absorbing model misfit, not measuring it. Calibrated on the pure-
+# error ratio of each TRUE model: good references sit at ~0.8-1.0 (blasi 0.98, armistead 0.82-0.95),
+# while blasi's noise-gaming runs sit at 1.8-2.4 — so 1.5 separates them with margin on both sides.
+# (schwen ~7.8 / oliveira flag their OWN reference-quality problems, not the gate's — see BENCHMARK_NOTES.)
+NOISE_SIGMA_INFLATION_RATIO = 1.5
+# Minimum pooled replicate degrees of freedom to TRUST the pure-error floor for the ratio gate above.
+# Below this the estimate is too noisy; the gate falls back to the (conservative) data-std cap only.
+NOISE_SIGMA_REPLICATE_MIN_DOF = 6
+
 # -- reference-sigma comparison (the judge's preferred noise check, #118) ----
 # When reference.json records the TRUE model's own fitted noise sigmas, the judge compares a
 # candidate's sigma to those instead of to a fraction of the marginal data std — the dimensionally

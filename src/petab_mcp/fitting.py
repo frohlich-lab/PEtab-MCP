@@ -38,6 +38,7 @@ from . import reconcile as _reconcile
 from .constants import (
     NEW_BEST_MIN_DELTA_BIC,
     NOISE_SIGMA_COLLAPSE_FRACTION,
+    NOISE_SIGMA_INFLATION_RATIO,
     PARAMETER_AT_BOUND_RELATIVE_TOL,
 )
 from .formatting import finite_float as _flt
@@ -866,9 +867,23 @@ def _entry_inflated(entry: "dict[str, Any]") -> bool:
         eff = entry.get("fitted")
     cap = entry.get("upper_bound_cap")
     try:
-        return eff is not None and cap is not None and float(eff) > float(cap)
+        cap_exceeded = eff is not None and cap is not None and float(eff) > float(cap)
     except (TypeError, ValueError):
-        return False
+        cap_exceeded = False
+    # LESS CONSERVATIVE where we can afford to be: when the noise floor is a RELIABLE replicate
+    # (pure-error) estimate, also flag a fitted sigma that exceeds it by more than
+    # NOISE_SIGMA_INFLATION_RATIO — a many-fold gap is the noise absorbing model misfit, and the
+    # data-std cap is far too loose to catch it (blasi's noise-gaming runs sat at 0.4x the cap). The
+    # ratio is trusted ONLY on a replicate floor: the difference-based floor is biased and collides
+    # with legitimate references (see BENCHMARK_NOTES), so there the conservative cap alone stands.
+    ratio = entry.get("fitted_over_data_noise")
+    try:
+        ratio_exceeded = (entry.get("data_noise_method") == "replicate"
+                          and ratio is not None
+                          and float(ratio) > NOISE_SIGMA_INFLATION_RATIO)
+    except (TypeError, ValueError):
+        ratio_exceeded = False
+    return cap_exceeded or ratio_exceeded
 
 
 def _entry_collapsed(entry: "dict[str, Any]") -> bool:
@@ -922,11 +937,18 @@ def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[st
         # raw std, which used to flag correct models by orders of magnitude (see sigma_data_std /
         # sigma_effective_value).
         effective = R.sigma_effective_value(problem, pid, value, fitted_values=fitted)
-        # A MODEL-FREE noise yardstick from successive measurement differences — independent of both
-        # the model and any ground truth, unlike the marginal-std band. Advisory and biased UPWARD
-        # (see sigma_difference_noise_estimate): fitted >> estimate is strong evidence of inflation;
-        # fitted << estimate is only weak evidence of collapse.
-        data_noise = R.sigma_difference_noise_estimate(problem, pid, fitted)
+        # A MODEL-FREE noise yardstick, independent of both the model and any ground truth. Prefer
+        # the UNBIASED replicate (pure-error) estimate — the pooled scatter within repeated design
+        # points — wherever the data supplies enough of them; fall back to the biased-upward
+        # successive-difference estimate otherwise. `method` is recorded because the inflation gate
+        # only trusts the RATIO against a REPLICATE floor: the difference floor is biased and collides
+        # with legitimate references (schwen/oliveira — see BENCHMARK_NOTES), so on it the gate keeps
+        # to the conservative data-std cap.
+        data_noise = R.sigma_replicate_noise_estimate(problem, pid, fitted)
+        data_noise_method = "replicate"
+        if data_noise is None:
+            data_noise = R.sigma_difference_noise_estimate(problem, pid, fitted)
+            data_noise_method = "difference"
         entry = {
             "fitted": value,
             "effective_sigma": effective,
@@ -936,6 +958,7 @@ def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[st
             "fraction_of_data_std": (effective / data_std)
                                     if (data_std and effective is not None) else None,
             "data_noise_estimate": data_noise,
+            "data_noise_method": data_noise_method,
             "fitted_over_data_noise": (effective / data_noise)
                                       if (data_noise and effective is not None) else None,
         }
@@ -998,6 +1021,17 @@ NOISE_SIGMA_COLLAPSED_ADVICE = (
     "parsimonious mechanism at a plausible sigma rather than one that drives the residuals to ~0. "
     "A fit resting on a collapsed sigma will NOT be accepted as finished."
 )
+# When the inflation is measured against a RELIABLE replicate (pure-error) floor — the scatter of
+# REPEATED measurements, not the looser data-std cap — the agent gets this stronger, QUANTIFIED
+# message: the floor is measured (not assumed), so the misfit is real and demands a mechanism fix.
+NOISE_SIGMA_REPLICATE_INFLATED_TMPL = (
+    "an ESTIMATED noise sigma is inflated to ~{ratio:.1f}x the PURE-ERROR noise floor — the scatter "
+    "of REPEATED measurements at the same design point, a reliable MODEL-FREE measure of the true "
+    "measurement noise (not the looser data-std cap). So the model is leaving residuals ~{ratio:.1f}x "
+    "the actual noise: a firm, quantified signal that the MECHANISM is missing something, not a soft "
+    "heuristic. Fix the mechanism so the residuals shrink toward that floor; do NOT widen or lean on "
+    "the sigma. A fit resting on an inflated sigma will NOT be accepted as finished."
+)
 
 
 def noise_sigma_advice_for(inflated: bool, collapsed: bool) -> str | None:
@@ -1011,9 +1045,32 @@ def noise_sigma_advice_for(inflated: bool, collapsed: bool) -> str | None:
     return None
 
 
+def _worst_replicate_inflation(report: "dict[str, Any] | None"):
+    """``(pid, ratio)`` for the estimated sigma most inflated over a RELIABLE replicate (pure-error)
+    floor, or ``None`` if none is inflated on such a floor. Lets the advice QUOTE the ratio and state
+    that the floor is measured (not the loose data-std cap), so the agent treats a replicate-backed
+    inflation as the firm, actionable signal it is."""
+    if not isinstance(report, dict):
+        return None
+    worst = None
+    for pid, e in report.items():
+        if not isinstance(e, dict) or e.get("data_noise_method") != "replicate" or not _entry_inflated(e):
+            continue
+        ratio = e.get("fitted_over_data_noise")
+        if isinstance(ratio, (int, float)) and not isinstance(ratio, bool) \
+                and (worst is None or ratio > worst[1]):
+            worst = (pid, float(ratio))
+    return worst
+
+
 def noise_sigma_advice(report: "dict[str, Any] | None") -> str | None:
     """Concise agent-facing advice for an implausible noise model, or ``None`` when the fit's
-    estimated sigmas are plausible (for callers that only have the report, e.g. get_fit_diagnosis)."""
+    estimated sigmas are plausible. A replicate-backed inflation gets the stronger, QUANTIFIED
+    message (the noise floor is measured from repeats, so the misfit is real and requires action);
+    everything else falls back to the generic cap/collapse advice."""
+    repl = _worst_replicate_inflation(report)
+    if repl is not None:
+        return NOISE_SIGMA_REPLICATE_INFLATED_TMPL.format(ratio=repl[1])
     return noise_sigma_advice_for(noise_sigma_inflated(report), noise_sigma_collapsed(report))
 
 
@@ -1054,7 +1111,7 @@ def fit_summary(session, engine) -> dict[str, Any]:
     _collapsed = noise_sigma_collapsed(_report)
     out["noise_sigma_inflated"] = _inflated
     out["noise_sigma_collapsed"] = _collapsed
-    _advice = noise_sigma_advice_for(_inflated, _collapsed)
+    _advice = noise_sigma_advice(_report)  # report-based: quotes the replicate ratio when reliable
     if _advice is not None:
         out["noise_sigma_advice"] = _advice
     # These metrics are the LAST fit's. Edits are fit-free, so the working model can have moved on
@@ -1271,7 +1328,7 @@ def noise_sigma_block(
         "noise_sigma_inflated": inflated,
         "noise_sigma_collapsed": collapsed,
     }
-    advice = noise_sigma_advice_for(inflated, collapsed)
+    advice = noise_sigma_advice(report)  # report-based: quotes the replicate ratio when reliable
     if advice is not None:
         block["noise_sigma_advice"] = advice
     return block
