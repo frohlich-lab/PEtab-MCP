@@ -4,8 +4,8 @@ description: >-
   Read before building or fitting a PEtab parameter-estimation problem. The PEtab semantics
   that are easy to get wrong: which symbols belong to the observation model and must stay out
   of the mechanism, how the condition table drives the model, what the parameter table decides
-  (and what model text cannot), why a fitted value is linear on a log10 scale, and why
-  goodness-of-fit is meaningless when the noise sigmas are estimated.
+  (and what model text cannot), why a fitted value is linear on a log10 scale, why steady-state
+  data cannot pin initial conditions, and why goodness-of-fit is meaningless when sigmas are fit.
 ---
 
 # PEtab semantics that trip up model building
@@ -20,11 +20,10 @@ Symbols resolved through the **observable** or **noise** formulas — or through
 table's `observableParameters` / `noiseParameters` columns — are scaling factors and noise
 sigmas. They describe how the readout relates to the state, not how the system evolves.
 
-**Never put one in a reaction, rule, or initial assignment.** Doing so lets a model reach an
-adequate-looking fit by repurposing part of the fixed observation model instead of introducing
-the kinetic parameter the mechanism actually needs — a model that is severely
-under-mechanistic while looking fine on its own metrics. Introduce your own parameter for a
-rate, always.
+**Never put one in a reaction, rule, or initial assignment.** That lets a model fake an adequate
+fit by repurposing the fixed observation model instead of the kinetic parameter the mechanism
+needs — under-mechanistic but fine on its own metrics. Always introduce your own parameter for a
+rate.
 
 ## The condition table drives the model
 
@@ -61,12 +60,12 @@ it, and a problem carrying one is rejected outright:
   I/N;`). It is not a free parameter, so PEtab excludes it.
 - **A condition-table column**: an input supplied per condition, not fitted.
 
-Both are handled by the sync, so you do not act on them — but do not *expect* a rule-computed
-quantity to appear in the table, and do not add a row for one.
+The sync handles both — don't add a row for a rule-computed quantity, and don't expect one to
+appear.
 
 Observable/noise symbols are the opposite case: a `sigma_*` or scaling factor **belongs** in the
-table (only the `observableParameter1_*` placeholders do not). Keep them out of the mechanism,
-not out of the table.
+table (only `observableParameter1_*` placeholders don't) — keep them out of the mechanism, not the
+table.
 
 If a rejection names **Missing** or **Extraneous** parameters, the model and the tables disagree
 about a NAME — usually one you renamed on one side only.
@@ -77,6 +76,13 @@ about a NAME — usually one you renamed on one side only.
 compartment or parameter — and it may not also be the variable of an **assignment rule**: give a
 quantity an initial value *or* compute it with a rule, never both.
 
+## Steady-state data can't identify ICs or the rate scale
+
+With all measurement times `inf` (steady state), only the equilibrium is fit — it ignores where
+you started and is unchanged by scaling every rate. So initial conditions and the absolute rate
+scale are unidentifiable: give each species its physical start (`x_0 = 1`, rest `0`; a 0/1 value
+is held fixed) instead of estimating it, and keep the one fixed rate as the scale.
+
 ## A fitted value is linear, whatever the scale
 
 `parameterScale` is commonly `log10`. Bounds are given on that scale, but `nominalValue` and
@@ -84,14 +90,11 @@ the fitted value are **linear** numbers, never their log10 coordinates. Reading 
 as "10⁻³ on a log scale" is a factor-of-1000 error, and it is the usual reason a parameter is
 wrongly declared pathological.
 
-A parameter that must stay positive (a rate) suits `log10`. A **fraction, efficiency, or
-bounded multiplier** does not: on a wide log10 box it drifts to physically meaningless values —
-an inhibition fraction above 1 that flips a rate negative. Put those on a linear scale with
-bounds that keep them physical.
-
-Exponents (Hill / cooperativity coefficients) belong on a **linear** scale with tight bounds
-(≈1–8). On a wide log10 scale an exponent fits to a huge value — a near-step function that
-makes the ODE stiff and stalls the fit.
+A rate (must stay positive) suits `log10`. A **fraction, efficiency, or bounded multiplier** does
+not — on a wide log10 box it drifts past its physical range (an inhibition fraction above 1 flips
+a rate negative); put those on a linear scale with physical bounds. Exponents (Hill /
+cooperativity) also belong on a **linear** scale with tight bounds (≈1–8): on log10 they fit to a
+huge value — a near-step function that makes the ODE stiff and stalls the fit.
 
 ## Estimated noise sigmas make goodness-of-fit meaningless
 
@@ -100,8 +103,7 @@ If a `sigma_*` parameter has `estimate=1`, the fit inflates it to absorb the res
 fine no matter how wrong the mechanism is — they measure the fitted noise level, not the
 mechanism. Widening or freeing such a sigma "improves" them for the same empty reason.
 
-What still carries information is the residual **structure**: a systematic per-observable bias,
-or a trend of the residuals with time. Sign-based tests (sign test, runs test) survive because
-they ignore magnitude. Read that structure on the **raw** residual, not the noise-weighted one —
+What still carries information is the residual **structure** — a per-observable bias or a trend
+with time. Sign/runs tests survive because they ignore magnitude. Read it on the **raw** residual:
 dividing by an inflated sigma shrinks every weighted residual toward zero, so the weighted view
 looks adequate by construction.

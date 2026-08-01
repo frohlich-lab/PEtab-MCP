@@ -6,7 +6,7 @@ description: >-
   the arrow to supply a reverse flux, hard-coded exponents, typos that become parameters, and
   the syntax that actually gets edits rejected: the rate law separator, declaration keywords
   Antimony does not have, `<->`, `2*X` stoichiometry, and names already taken by a built-in
-  function or reserved by AMICI.
+  function or reserved by AMICI. Also why a parameter can read back as `name = ;`.
 ---
 
 # Writing Antimony that works
@@ -80,6 +80,12 @@ frozen to a constant and dropped.
 - A reaction **must** have a rate law: `J: A -> B;` alone is a parse error.
 - Degradation has no product: `deg: A -> ; kdeg*A`. Synthesis has no reactant: `syn: -> A; ksyn`.
 - `^` is exponentiation. Rate laws are ordinary algebra over species and parameters.
+
+## A parameter can read back as `name = ;`
+
+A parameter with no SBML value serializes to Antimony as `name = ;` (empty right-hand side) — how
+an estimated parameter whose value lives in the PEtab parameter table round-trips. Not corruption
+(it re-parses), not zero; the value is in the table, not the model text.
 
 ## Parse errors that actually happen
 

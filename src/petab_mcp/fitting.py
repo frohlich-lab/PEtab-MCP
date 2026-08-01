@@ -73,14 +73,14 @@ def _env_int(name: str, default: int) -> int:
 
 
 # Per-start wall-clock cap for a single Fides optimization start (seconds; env
-# PETAB_MCP_FIT_PER_START_TIMEOUT, default 60). Fides defaults MAXTIME to inf, so one stiff start
+# PETAB_MCP_FIT_PER_START_TIMEOUT, default 180). Fides defaults MAXTIME to inf, so one stiff start
 # can run unbounded and out-idle the MCP transport, which the harness then mistakes for a hang.
 # Bounding each start makes a full multistart fit's worst-case duration finite and predictable,
 # which the harness sizes its sse_read_timeout + stall watchdog to (see
 # petab_harness/fit_budget.py). The harness exports its own resolved values onto this server's environment, so
 # both sides use the SAME cap + worker count. Kept generous — Fides returns best-so-far for a
 # capped start, so too tight a cap would silently degrade fit quality.
-FIT_PER_START_TIMEOUT_S = _env_float("PETAB_MCP_FIT_PER_START_TIMEOUT", 60.0)
+FIT_PER_START_TIMEOUT_S = _env_float("PETAB_MCP_FIT_PER_START_TIMEOUT", 180.0)
 
 
 def _default_fit_workers() -> int:
