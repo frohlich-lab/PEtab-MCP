@@ -40,7 +40,14 @@ flagging structured residuals), and the replicate test joins the same list rathe
 So loosening any alpha here loosens a STOP CONDITION; none of this is merely advisory. What differs
 is POWER, not consequence: at these sample sizes the sign/runs tests are weak, so a non-significant
 result there is reported as ``low_power`` rather than as a pass, while the replicate test has real
-power wherever design points repeat (and reports NO EVIDENCE where they do not).
+power wherever design points repeat AND enough LACK-OF-FIT degrees of freedom remain after the fit
+(:func:`lof_power`: below ``REPLICATE_LOF_MIN_LOF_DF`` of them a PASS is reported ``weak``, and with
+none left — or with no replicated design points at all — the arm reports NO EVIDENCE). That df is a
+WHOLE-PROBLEM count — replicated points add across noise families while the structural parameters
+are shared — so :func:`replicate_lack_of_fit` here judges NO df at all: it tests one family's points
+and ``data_access._merge_lof_verdicts`` applies :func:`lof_power` once, to the pooled total. It is
+the FLAG that gates, on all three tests; ``weak`` and ``low_power`` are advisory qualifications of a
+non-flag, read by the prose and by result.json and by no stop condition.
 """
 
 from __future__ import annotations
@@ -52,6 +59,7 @@ from .constants import (
     REPLICATE_LOF_ALPHA,
     REPLICATE_LOF_MAX_REPORTED_POINTS,
     REPLICATE_LOF_MIN_DF,
+    REPLICATE_LOF_MIN_LOF_DF,
     REPLICATE_LOF_MIN_POINTS,
 )
 
@@ -277,6 +285,51 @@ def replicate_pure_error(values: list[float]) -> dict[str, Any] | None:
     return {"n": n, "mean": mean, "sd": math.sqrt(ssq / (n - 1)), "df": n - 1, "ssq": ssq}
 
 
+def lof_power(n_points: int, n_structural: int | None,
+              min_lof_df: int | None = None) -> tuple[int | None, str]:
+    """``(lof_df, band)``: how much a replicate lack-of-fit PASS over ``n_points`` replicated design
+    points is worth against ``n_structural`` estimated structural parameters.
+
+    THE one owner of the lack-of-fit-df rule — one function, one threshold comparison, one place the
+    default ``REPLICATE_LOF_MIN_LOF_DF`` is read. The rule lived in two code paths before (the
+    per-family statistic and the merge) computing it from two different point counts, so the arm and
+    the payload the lead was shown could disagree about the same pass; and the merge's copy read the
+    module constant, discarding a caller's ``min_lof_df=`` override.
+
+    ``lof_df = n_points - n_structural`` is what a pass is worth: a fit with nearly as many free
+    structural parameters as replicated points can place its predictions on the replicate means in
+    all but a few directions WHATEVER its form, so small |z| there is mostly flexibility. The band:
+
+    * ``"unknown"`` — no structural count (``n_structural`` None), so the df cannot be computed. NOT
+      the same as powered: the caller must claim no power it cannot show (``data_access``' prose says
+      the pass could not be weighed, and credits no coverage for it).
+    * ``"vacuous"`` — ``lof_df <= 0``: at saturation nothing was tested at all, so the arm reports NO
+      EVIDENCE (``available: False``) rather than a pass.
+    * ``"weak"`` — ``0 < lof_df < min_lof_df``: a PASS is real but thin evidence, reported ``weak``.
+      A FLAG stands unchanged at this band and at any df — a point beyond what its own replicate
+      scatter allows, after the fit had its way, is real evidence however few directions remain.
+      Do NOT make these UNAVAILABLE instead: that converts legitimate flags on small
+      families into no evidence, a worse error than the one it fixed.
+    * ``"powered"`` — a pass worth reporting as one (and the only band that credits coverage).
+
+    ``n_points`` is the POOLED count over every noise family that could be tested, and
+    ``n_structural`` a WHOLE-MODEL count subtracted ONCE: the design points ADD across families
+    (each has its own set of them) while every estimated parameter is free to move every family's
+    predictions, and no per-family split of them exists. Applying this per family instead both
+    understated the df (two families of 15 points at 14 structural reported 2, not 30 - 14 = 16) and
+    called armistead's three 4-point families vacuous one by one, telling the lead the model "has as
+    many estimated structural parameters as there are replicated design points" of 12 points against
+    10 — a sentence that was simply false.
+    """
+    min_lof_df = REPLICATE_LOF_MIN_LOF_DF if min_lof_df is None else min_lof_df
+    if n_structural is None:
+        return None, "unknown"
+    lof_df = n_points - n_structural
+    if lof_df <= 0:
+        return lof_df, "vacuous"
+    return lof_df, "weak" if lof_df < min_lof_df else "powered"
+
+
 def _sig3(value: float | None) -> float | None:
     """``value`` to 3 significant digits (the reported precision; the FLAG is always decided on the
     unrounded number)."""
@@ -286,7 +339,6 @@ def _sig3(value: float | None) -> float | None:
 def replicate_lack_of_fit(
     points: list[dict[str, Any]],
     *,
-    n_structural: int | None = None,
     alpha: float = REPLICATE_LOF_ALPHA,
     min_df: int = REPLICATE_LOF_MIN_DF,
     min_points: int = REPLICATE_LOF_MIN_POINTS,
@@ -310,22 +362,33 @@ def replicate_lack_of_fit(
     * ``min_df`` — a point needs df_i >= 2 (schwen: 126 points, every n_i = 2, technical replicates
       of a calibration whose reference sigma is 7.8x their pure error).
     * ``min_points`` — fewer than 3 usable points and there is no family to correct over.
-    * ``n_structural`` — SKIPPED as vacuous once the estimated structural parameter count reaches
-      the number of usable points, where a flexible enough fit can drive every ``z_i`` to 0 and the
-      test measures flexibility, not form. The comparison is deliberately ASYMMETRIC: ``n_structural``
-      is a WHOLE-MODEL count (``data_access._n_estimated_structural`` over the parameter table) while
-      the point count is this ONE family's, because every estimated parameter is free to move this
-      family's predictions, and no per-family split of them exists. armistead is the case: its four
-      noise parameters carry 4 replicated points each (sd_Cer_obs, sd_Sphinga_obs, sd_Sphingo_obs, at
-      df 3) and 2 (sd_S1P_obs, df 4) against 10 estimated structural parameters, so the guard fires on
-      the three 4-point families and ``min_points`` already excludes the fourth. The asymmetry is what
-      excludes it, and it errs toward NO EVIDENCE, which is the safe direction here.
     * anything non-finite or missing is DROPPED, and an empty family reports NO EVIDENCE
       (``available: False``) — never a pass.
 
-    The verdict is a fixed shape whatever happens (a consumer reads it off every fit result, so a
-    missing key would be a KeyError): ``{available, status, n_points, alpha, flagged, tested,
-    max_abs_z, min_p_holm, points}``. ``points`` are the ``max_reported`` worst FLAGGED points —
+    NO lack-of-fit-df judgement happens here, on purpose. How much a pass is worth is
+    ``pooled points - n_structural`` (:func:`lof_power`), and neither operand is knowable from ONE
+    family: the replicated points add across noise families while the structural count is a
+    whole-model property of the parameter table. So the arm reports what it tested and
+    ``data_access._merge_lof_verdicts`` applies :func:`lof_power` ONCE, to the pooled total — which
+    is also where ``vacuous`` (df <= 0, nothing tested at all) and ``weak`` (a thin pass) are
+    decided. Judging it here as well was two owners of one rule computing it from two different
+    point counts: they disagreed on 22 of 48 measured (families x points x parameters) cells, and
+    the per-family version called armistead's three 4-point families vacuous one at a time — NO
+    EVIDENCE, with a summary line claiming as many parameters as replicated points, for 12 pooled
+    points against 10 parameters (pooled df 2, a thin pass but a real test).
+
+    The verdict is a fixed shape whatever happens — EVERY key on EVERY path, including the skipped
+    ones, because the assembler reads them off each arm and a missing key would be a KeyError:
+    ``{available, status, n_points, alpha, flagged, tested, max_abs_z, min_p_holm, points}``. Keep
+    this list complete when adding a key: an assembler that REBUILDS the verdict from a list like
+    it and silently dropped ``lof_df``/``weak``, which left the summary claiming "this arm IS
+    powered" on a df = 1 pass through three blasi runs.
+
+    Fixed shape HERE, not on the wire: what rides on a fit result is a projection of the MERGED
+    verdict (``data_access._lof_payload``), and that one omits every key with nothing to say — this
+    verdict's shape is the assembler's contract, not the agent's payload.
+
+    ``points`` are the ``max_reported`` worst FLAGGED points —
     only flagged ones, because the advice built from them tells the agent that is where the form is
     wrong, and a point the model already reproduces is not. ``tested`` names every point that
     entered the test, which is how the assembler knows which observables a passing arm may be
@@ -371,8 +434,6 @@ def replicate_lack_of_fit(
         return replicate_lof_unavailable("unavailable", alpha)
     if len(usable) < min_points:
         return replicate_lof_unavailable("too_few_usable_points", alpha, n_points=len(usable))
-    if n_structural is not None and n_structural >= len(usable):
-        return replicate_lof_unavailable("vacuous", alpha, n_points=len(usable))
 
     for point, p_holm in zip(usable, holm_adjusted([u["p"] for u in usable])):
         point["p_holm"] = p_holm
@@ -386,6 +447,8 @@ def replicate_lack_of_fit(
     return {
         "available": True,
         "status": "flagged" if flagged else "pass",
+        # The pooled count the df is computed from is the SUM of these over the arms that ran, so
+        # this is the only df input the arm owns (see lof_power).
         "n_points": len(usable),
         "alpha": alpha,
         "flagged": sorted(str(label) for label in flagged),
@@ -407,6 +470,11 @@ def replicate_lof_unavailable(status: str = "unavailable",
     consumer must be able to tell apart from a pass (an empty ``flagged`` alone reads as adequacy).
     An arm that could not run tested NOTHING, so ``tested`` is empty and no observable may be
     credited with a pass on its account.
+
+    ``vacuous`` is one of these and is raised by the ASSEMBLER, from the pooled df (:func:`lof_power`),
+    not from inside the statistic — see :func:`replicate_lack_of_fit`.
     """
+    # Every key of the available path, so the verdict has ONE shape whatever happened: the assembler
+    # reads them off each arm and a missing key would be a KeyError.
     return {"available": False, "status": status, "n_points": n_points, "alpha": alpha,
             "flagged": [], "tested": [], "max_abs_z": None, "min_p_holm": None, "points": []}

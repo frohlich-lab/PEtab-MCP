@@ -385,10 +385,11 @@ def fit_diagnosis(session, worst_n: int = 8) -> dict[str, Any]:
                  "sign_test / runs_test detect bias and time trend from residual SIGNS, so they "
                  "still work when estimated noise sigmas flatten chi2/reduced_chi2 — but are "
                  "underpowered on few points (low_power), so read a non-significant result as "
-                 "weak, not as a pass. replicate_lack_of_fit is the powered arm where design "
-                 "points REPEAT: it measures each prediction against that point's own replicate "
-                 "scatter, so no sigma can flatten it. For a full breakdown or the optimizer log, "
-                 "delegate to an analyst."),
+                 "weak, not as a pass. replicate_lack_of_fit measures each prediction against that "
+                 "design point's own replicate scatter where points REPEAT, so no sigma can flatten "
+                 "it — as far as its lof_df (replicated points MINUS your estimated structural "
+                 "parameters) goes: a pass with weak: true, or with no lof_df, certifies nothing. "
+                 "For a full breakdown or the optimizer log, delegate to an analyst."),
     }
 
 
@@ -469,8 +470,9 @@ def _rollup_structure(verdicts, replicate_lof: dict[str, Any] | None = None) -> 
     # underpowered observables.
     #
     # ...and it is cleared for an observable the replicate arm COVERED: there the deviation was
-    # tested against the point's own scatter on df_i >= 2 over >= 3 points, which is real power, so
-    # an unflagged verdict is a genuine pass rather than "we could not tell". Only for the covered
+    # tested against the point's own scatter on df_i >= 2 over >= 3 points, with lack-of-fit
+    # directions to spare (`_merge_lof_verdicts` credits coverage only from a POWERED band), so an
+    # unflagged verdict is a genuine pass rather than "we could not tell". Only for the covered
     # ones — clearing it globally as soon as ANY arm ran asserted sign-randomness for observables
     # with no replicates at all, and that over-claim reaches result.json
     # (runner.scoring._residual_structure_fields) and the armed finish gate.
@@ -481,6 +483,11 @@ def _rollup_structure(verdicts, replicate_lof: dict[str, Any] | None = None) -> 
     # was underpowered for and which points the replicate arm actually tested, so the two claims can
     # be told apart. Not reachable on the 16 benchmark examples (no example mixes a replicated and a
     # non-replicated condition within one observable).
+    # An arm with too few lack-of-fit directions to certify anything on its own axis credits NO
+    # coverage, so it cannot stand in for the sign/runs tests being underpowered — decided once, in
+    # `_merge_lof_verdicts`, where the df and the threshold live (an empty `covered_observables`
+    # arrives here). Re-testing `weak` here instead would have missed the FLAGGED low-df arm, whose
+    # `weak` is False by construction.
     covered = set(lof.get("covered_observables") or ())
     weak = sorted(obs for obs, v in pairs
                   if v.get("structure_low_power") and not v.get("structure_flag")
@@ -515,7 +522,7 @@ def _unavailable_structure() -> dict[str, Any]:
 # the result into the compact agent-facing verdict.
 
 
-#: Keys the ROLLUP consumes that must never ride on a fit result: the unbounded per-point and
+#: Keys the ASSEMBLER consumes that must never ride on a fit result: the unbounded per-point and
 #: per-observable label lists, and the advice line the summary already carries. Carrying any of them
 #: twice would cost ~700 bytes on every fit — and the fit result is re-sent in the agent's history on
 #: every later turn (PR #23 cut ~40% of the per-call prompt by trimming exactly this duplication).
@@ -524,29 +531,43 @@ def _unavailable_structure() -> dict[str, Any]:
 _LOF_ROLLUP_ONLY_KEYS = ("flagged", "tested", "flagged_observables", "covered_observables",
                          "advice")
 
+#: ...and the keys DROPPED from a fit payload when they have nothing to say, so that the same
+#: question is not settled per key. `lof_df` and `weak` are absent together wherever the df could not
+#: be counted (an UNKNOWN structural count) and `weak` alone wherever there is nothing to qualify, so
+#: absence never has to be told apart from a null: every consumer reads them with ``.get()``.
+#: `lof_df` is never 0 on an available arm (df <= 0 is `vacuous`, which is not available), so dropping
+#: on falsy cannot hide a real count.
+#: Measured, so the next reader does not have to guess whether this pays: the arm's payload on a fit
+#: is 15-31 bytes smaller than carrying the nulls (184 -> 153 on the 13 examples that cannot run it,
+#: which is the case that repeats on every fit forever — PR #23), against ~27 more in the summary
+#: where the arm PASSES, because the powered sentence now names the df it rests on.
+_LOF_OMIT_WHEN_EMPTY_KEYS = ("lof_df", "weak", "untested_status")
+
 
 def _lof_payload(verdict: dict[str, Any], observables=(), advice: str | None = None,
                  covered=()) -> dict[str, Any]:
     """The replicate arm's verdict: the statistic's own keys with the (unbounded) label lists replaced
     by a count, plus the observables it condemns, the observables it COVERED, and — only when it
-    flagged — the advice line. One projection for every path, so the shape can't differ between a
-    flagged fit, a passing fit and an unavailable arm. The extra keys are consumed by
-    :func:`_rollup_structure` (into the rollup's own list, its ``low_power`` decision and its
-    summary) and stripped from what rides on the fit result.
+    flagged — the advice line. ONE projection for every path, so no caller can build a shape of its
+    own. The extra keys are consumed by :func:`_rollup_structure` (into the rollup's own list, its
+    ``low_power`` decision and its summary) and stripped from what rides on the fit result.
+
+    The shape is a fixed CORE plus named optional keys, which is a different policy from the
+    statistic's (every key on every path — that verdict is the assembler's contract, and rebuilding
+    it from a stale key list is how ``lof_df``/``weak`` were dropped last time). The core is what the
+    statistic emits minus ``_LOF_ROLLUP_ONLY_KEYS``; the optional keys are
+    ``_LOF_OMIT_WHEN_EMPTY_KEYS``, dropped when they have nothing to say, plus ``advice``, which is
+    not part of the verdict at all — the assembler passes it in, and only on a flag. Two names, one
+    rule each, and the shape test pins the result of both.
 
     Observable ids are coerced to ``str`` as a belt-and-braces invariant, not as the fix for the
     TypeError ``sorted({None, 'obs_A'})`` used to raise: the merge already substitutes a point's own
     label for a missing observableId, so nothing None-bearing can reach here through it. This keeps
     the guarantee local for the other two call sites and for any future one."""
-    out = {k: v for k, v in verdict.items() if k not in _LOF_ROLLUP_ONLY_KEYS}
-    out.pop("untested_status", None)
+    out = {k: v for k, v in verdict.items()
+           if k not in _LOF_ROLLUP_ONLY_KEYS
+           and not (k in _LOF_OMIT_WHEN_EMPTY_KEYS and not v)}
     out["n_flagged"] = len(verdict.get("flagged") or ())
-    # Only the MERGE knows about sibling arms, so the key is set here for every path — but OMITTED
-    # when there is nothing to report, like `advice` below. A null on all 16 examples' fits (13 of
-    # them cannot have a sibling family at all) is 25 bytes of the per-fit payload PR #23 exists to
-    # keep small; every consumer reads it with .get().
-    if verdict.get("untested_status"):
-        out["untested_status"] = verdict["untested_status"]
     out["flagged_observables"] = sorted(str(obs) for obs in observables)
     out["covered_observables"] = sorted(str(obs) for obs in covered)
     if advice:
@@ -622,8 +643,10 @@ def _replicate_lof(session, sims=None) -> dict[str, Any]:
                 continue
             labelled = _labelled_points(points, per_observable)
             label_observable.update({p["label"]: p["observable_id"] for p in labelled})
-            verdicts.append(rt.replicate_lack_of_fit(labelled, n_structural=n_structural))
-        return _merge_lof_verdicts(verdicts, label_observable)
+            verdicts.append(rt.replicate_lack_of_fit(labelled))
+        # n_structural goes to the MERGE, not to each arm: it is one whole-model count against the
+        # POOLED points of every family (rt.lof_power).
+        return _merge_lof_verdicts(verdicts, label_observable, n_structural=n_structural)
     except Exception:  # noqa: BLE001 - advisory; a diagnostic failure must not affect the fit/gate
         return _lof_payload(rt.replicate_lof_unavailable())
 
@@ -680,15 +703,25 @@ _LOF_SILENT_STATUSES = ("no_replicated_points", "no_noise_parameter")
 #: the only status that reports a real, fixable failure on a problem that DOES have replicates, and
 #: ranking it last let a benign sibling silence it — one sigma resolving to zero replicated points
 #: hid another whose observables mix lin and log, and the merged verdict said nothing at all.
-_LOF_STATUS_PRIORITY = ("vacuous", "too_few_usable_points", "replicates_too_thin",
-                        "unavailable") + _LOF_SILENT_STATUSES
+_LOF_STATUS_PRIORITY = ("vacuous", "too_few_usable_points",
+                        "replicates_too_thin", "unavailable") + _LOF_SILENT_STATUSES
 
 
-def _merge_lof_verdicts(verdicts: list[dict[str, Any]], label_observable: dict[str, Any]
+def _merge_lof_verdicts(verdicts: list[dict[str, Any]], label_observable: dict[str, Any],
+                        n_structural: int | None = None, min_lof_df: int | None = None
                         ) -> dict[str, Any]:
     """Merge the per-noise-parameter arms into one verdict. Flagged points union (each mapped back
     to its observable, so the existing gate picks them up), and the reported worst points are the
     worst ACROSS arms — still capped.
+
+    THIS is where the lack-of-fit degrees of freedom are decided, because this is the only place that
+    knows the POOLED point count: ``n_structural`` (the whole-model estimated-structural count from
+    :func:`_n_estimated_structural`) is subtracted ONCE from the total the arms tested, and
+    ``rt.lof_power`` turns that into the band. Per family it was neither — total points minus F times
+    the shared parameters — which understated the df of a multi-sigma problem and refused
+    armistead's three 4-point families one at a time as vacuous, on a pooled count that leaves 2
+    directions. ``min_lof_df`` overrides the threshold for a caller that wants a different bar; the
+    default lives in ``rt.lof_power`` alone.
 
     An arm that could NOT run is not dropped: its status survives as ``untested_status``, because a
     merge that kept only the available arms reported a bare "pass" for a problem where one family was
@@ -717,19 +750,44 @@ def _merge_lof_verdicts(verdicts: list[dict[str, Any]], label_observable: dict[s
         worst = _worst_status(untested)
         return _lof_payload(rt.replicate_lof_unavailable(worst["status"],
                                                         n_points=worst["n_points"]))
+    n_points = sum(v["n_points"] for v in available)
+    lof_df, power = rt.lof_power(n_points, n_structural, min_lof_df)
+    if power == "vacuous":
+        # Saturation, on the POOLED count: no direction left to disagree in, so nothing was tested —
+        # including the flags, which a fit that flexible could have placed anywhere. NO EVIDENCE is
+        # the fail-open reading, and the one the arm gave before the df moved here.
+        return _lof_payload(rt.replicate_lof_unavailable("vacuous", available[0]["alpha"],
+                                                         n_points=n_points))
     flagged = [label for v in available for label in v["flagged"]]
     points = sorted((p for v in available for p in v["points"]),
                     key=lambda p: abs(p["z"]), reverse=True)[:REPLICATE_LOF_MAX_REPORTED_POINTS]
     merged = {
         "available": True,
         "status": "flagged" if flagged else "pass",
-        "n_points": sum(v["n_points"] for v in available),
+        "n_points": n_points,
         "alpha": available[0]["alpha"],
         "flagged": flagged,
         "tested": [label for v in available for label in v["tested"]],
         "max_abs_z": max(v["max_abs_z"] for v in available),
         "min_p_holm": min(v["min_p_holm"] for v in available),
         "points": points,
+        # Carrying these two through the merge is what makes the weak wording reach the agent: an
+        # assembler that rebuilds the verdict from a fixed key list drops them silently, and the
+        # "this arm IS powered" line then fires on a df = 1 pass.
+        #
+        # WHERE THE df BAND GOES, so nobody has to guess: the summary prose (_replicate_lof_line),
+        # the coverage credit just below (which keys on the BAND, not on `weak` — see there), and
+        # result.json (runner.scoring._residual_structure_fields, plus the history CSV's lof_*
+        # columns). NO stop condition reads either — `residual_flag` keys on `flagged_observables`,
+        # `petab_mcp.session`'s plateau stop on `best_residual_flagged`, and
+        # `petab_harness.agent.finish_gate` on `available` + `n_flagged` — so a weak pass still clears
+        # every gate a powered one does, deliberately: the arm is advisory here, and the lead is an
+        # LLM that reads the prose, so the wording IS the mechanism.
+        "lof_df": lof_df,
+        # A pass carried by too few lack-of-fit directions to mean much; never set on a FLAG, which is
+        # conclusive however few directions remain. Absent (not False) when the df is UNKNOWN — see
+        # _replicate_lof_line, which claims no power there either.
+        "weak": bool(not flagged and power == "weak"),
         # The most informative reason among the arms that produced NO EVIDENCE, so a partial pass
         # cannot read as a whole one. None when every arm ran — and also when the only arms that did
         # not run are the silent ones, which have no untested points to hedge about.
@@ -739,10 +797,17 @@ def _merge_lof_verdicts(verdicts: list[dict[str, Any]], label_observable: dict[s
     # falling back to its LABEL gives the agent a real string to act on instead of the literal
     # "None" — and keeps the flag, which sorting a {None, str} set used to destroy.
     observables = {label_observable.get(label) or label for label in flagged}
+    # COVERAGE is credited only by a POWERED arm, whether or not it flagged — the band, not `weak`.
+    # Keying it on `weak` (which is forced False as soon as anything flagged) let a df = 1 arm that
+    # flagged obs_A certify obs_B as sign-random on the strength of the same arm the summary calls too
+    # flexible to mean anything. An UNKNOWN df certifies nothing either: this credit CLEARS
+    # `low_power` for the observables it names, which is a positive claim, and "we could not count the
+    # directions" is not evidence for it.
+    covered = ({label_observable.get(label) or label for label in merged["tested"]}
+               if power == "powered" else set())
     return _lof_payload(merged, observables,
                         advice=_replicate_lof_advice(merged) if flagged else None,
-                        covered={label_observable.get(label) or label
-                                 for label in merged["tested"]})
+                        covered=covered)
 
 
 def _untested_status(untested: list[dict[str, Any]], worst_status) -> str | None:
@@ -775,9 +840,11 @@ def _replicate_lof_advice(verdict: dict[str, Any]) -> str:
 
 def _n_estimated_structural(problem) -> int | None:
     """Estimated parameters MINUS the noise sigmas: the structural degrees of freedom the replicate
-    arm's vacuous guard compares against a family's replicated-point count (armistead: 10 structural
-    against families of 4 points, so a fitted model there can zero every deviation). ``None`` when
-    the parameter table cannot answer, which leaves the guard off rather than guessing.
+    arm's df guard subtracts ONCE from the POOLED replicated-point count of every noise family
+    (``rt.lof_power``; armistead: 10 structural against 3 families of 4 points, so 2 lack-of-fit
+    directions survive its fit). ``None`` when the parameter table cannot answer — which does not
+    turn the guard off but makes the arm's power UNKNOWN: no coverage credit, and the summary says
+    the pass could not be weighed rather than calling it powered.
 
     Subtracts the SAME set :func:`_noise_parameter_ids` scopes the arm by — ``plausibility_sigma_ids``,
     i.e. the noise symbols that are not ALSO observable-scaling factors. Subtracting the wider
@@ -919,9 +986,9 @@ def _structure_summary(flagged: list[str], low_power: bool,
     elif low_power:
         # NAMED, and attributed to the sign/runs arm alone, because the replicate line that follows
         # may report a genuine pass for the observables it covered: a blanket "the tests are
-        # UNDERPOWERED at this sample size" beside "this arm IS powered, so that is a pass" is a flat
-        # contradiction the agent cannot resolve (armistead, on every fit: three observables covered,
-        # S1P_obs's family too small to test).
+        # UNDERPOWERED at this sample size" beside "this arm IS powered (N lack-of-fit degrees of
+        # freedom remain), so that is a pass" is a flat contradiction the agent cannot resolve
+        # (armistead, on every fit: three observables covered, S1P_obs's family too small to test).
         named = (low_power_observables or [])[:_MAX_NAMED_LOW_POWER]
         rest = len(low_power_observables or []) - len(named)
         where = (f" for {', '.join(named)}{f' (+{rest} more)' if rest else ''}" if named else "")
@@ -967,9 +1034,30 @@ def _replicate_lof_line(lof: dict[str, Any]) -> str:
                  f"(worst {lof['max_abs_z']} SE, Holm p {lof['min_p_holm']}) — missing STRUCTURE at "
                  "those points, which no sigma can absorb.")) + partial
     if lof.get("available"):
-        return (f"replicate lack-of-fit: none over {lof['n_points']} replicated design points "
-                f"(worst {lof['max_abs_z']} SE of its own replicate scatter) — this arm IS powered, "
-                "so that is a pass rather than weak evidence for the points it tested." + partial)
+        head = (f"replicate lack-of-fit: none over {lof['n_points']} replicated design points "
+                f"(worst {lof['max_abs_z']} SE of its own replicate scatter)")
+        # How much that pass is worth depends on how many directions were left to fail in. A fit
+        # with almost as many structural parameters as replicated points can place its predictions
+        # on the replicate means in all but a few directions whatever its form, so small z there is
+        # mostly FLEXIBILITY, and calling it powered endorses a model on the strength of its own
+        # flexibility (see constants.REPLICATE_LOF_MIN_LOF_DF).
+        if lof.get("weak"):
+            return (f"{head}, but only {lof.get('lof_df')} lack-of-fit degree(s) of freedom remain "
+                    "— nearly as many estimated structural parameters as replicated points, so this "
+                    "is WEAK evidence of form rather than a pass: a fit that flexible can reach "
+                    "those points whatever its mechanism." + partial)
+        # ...and where the df could not be counted at all, the pass CANNOT be called powered either:
+        # `lof_df` is absent on an available arm only when the parameter table would not yield a
+        # structural count (_n_estimated_structural), and an uncounted direction is not a spare one.
+        # Claiming power here is the same over-claim as claiming it at df = 1, one step further from
+        # the evidence.
+        if lof.get("lof_df") is None:
+            return (f"{head}, but the estimated structural parameters could not be counted, so how "
+                    "many lack-of-fit directions this pass rests on is UNKNOWN — read it as weak "
+                    "evidence for the points it tested." + partial)
+        return (f"{head} — this arm IS powered ({lof['lof_df']} lack-of-fit degrees of freedom "
+                "remain), so that is a pass rather than weak evidence for the points it tested."
+                + partial)
     if status == "replicates_too_thin":
         return ("replicate lack-of-fit: NO EVIDENCE — the repeated design points have only one "
                 "degree of freedom each, too thin to be a yardstick.")
@@ -977,9 +1065,12 @@ def _replicate_lof_line(lof: dict[str, Any]) -> str:
         return ("replicate lack-of-fit: NO EVIDENCE — too few usable replicated design points to "
                 "test.")
     if status == "vacuous":
-        return ("replicate lack-of-fit: NO EVIDENCE — this model has as many estimated structural "
-                "parameters as there are replicated design points, so the test would measure its "
-                "flexibility, not its form.")
+        # "at least as many", and counted over ALL the replicated design points this problem has:
+        # said of one noise family at a time this sentence was simply false for a problem whose
+        # families add up (armistead: 12 points against 10 parameters).
+        return ("replicate lack-of-fit: NO EVIDENCE — this model has at least as many estimated "
+                f"structural parameters as it has replicated design points ({lof.get('n_points')}), "
+                "so the test would measure its flexibility, not its form.")
     # The catch-all, and it no longer covers "there is no noise parameter at all" — that has its own
     # SILENT status. What is left is a sigma that exists and still would not resolve: its observables
     # mix lin and log so there is no single coordinate, a gain will not reduce to a number, no

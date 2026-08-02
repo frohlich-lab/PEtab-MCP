@@ -97,7 +97,7 @@ def test_the_replicate_lof_arm_condemns_the_run_the_ratio_arm_was_written_for():
     """ΔBIC +437 at k=6: Holm p 1.5e-18 against alpha 0.01 — eighteen orders of magnitude, where the
     deleted ratio arm had it at 2.41 against a 1.5 threshold. This is the coverage transfer."""
     label, n_structural, _ratio, points = _ARCHIVED_BLASI_GAMING_RUNS[0]
-    out = rt.replicate_lack_of_fit(_lof_points(points), n_structural=n_structural)
+    out = rt.replicate_lack_of_fit(_lof_points(points))
     assert out["available"] is True and out["status"] == "flagged", label
     assert out["max_abs_z"] == pytest.approx(48.85, abs=0.01)
     assert out["min_p_holm"] < rt.REPLICATE_LOF_ALPHA
@@ -115,13 +115,20 @@ def test_the_other_one_is_the_parsimony_gate_s_and_the_arm_says_so():
     landed 2026-08-01, three hours AFTER this run. Both this guard and that gate turn on the same
     condition (n_structural >= n_points), which is what makes the pair complete. What the deleted
     ratio arm contributed here was a second-best proxy ("your noise is 1.8x the floor") for a
-    diagnosis that is really "you have 22 parameters for 15 points"."""
+    diagnosis that is really "you have 22 parameters for 15 points".
+
+    Asserted on the MERGE, which is where the vacuity guard lives now: blasi has one noise family, so
+    its pooled point count is that family's, but the count the parameters are subtracted from is a
+    whole-problem one (data_access._merge_lof_verdicts)."""
+    from petab_mcp import data_access
+
     label, n_structural, _ratio, points = _ARCHIVED_BLASI_GAMING_RUNS[1]
-    out = rt.replicate_lack_of_fit(_lof_points(points), n_structural=n_structural)
+    arm = rt.replicate_lack_of_fit(_lof_points(points))
+    out = data_access._merge_lof_verdicts([arm], {}, n_structural=n_structural)
     assert out["available"] is False and out["status"] == "vacuous", label
-    assert out["flagged"] == [] and out["tested"] == []      # no evidence, and no observable passed
+    assert out["n_flagged"] == 0 and out["covered_observables"] == []   # no evidence, nothing passed
     # ... and it is ONLY the parameter count: the same points at a parsimonious k are condemned.
-    assert rt.replicate_lack_of_fit(_lof_points(points), n_structural=6)["status"] == "flagged"
+    assert data_access._merge_lof_verdicts([arm], {}, n_structural=6)["status"] == "flagged"
 
 
 def test_data_std_cap_still_flags_independent_of_method():

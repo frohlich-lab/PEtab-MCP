@@ -180,9 +180,44 @@ REPLICATE_LOF_ALPHA = 0.01
 REPLICATE_LOF_MIN_DF = 2
 
 # Below this many usable replicated points the Holm family is too small to conclude anything, so the
-# arm reports NO EVIDENCE rather than a pass. 3 is the smallest count at which a single flagged point
+# arm reports NO EVIDENCE either way. 3 is the smallest count at which a single flagged point
 # survives a Holm correction at alpha 0.01 without needing an absurd |z|.
+#
+# This is the floor for a FAMILY to be testable at all, not the threshold for a pass —
+# REPLICATE_LOF_MIN_LOF_DF below is that, and it subtracts the estimated structural parameters from
+# the POOLED points of every family. So a 3-point family can FLAG, and a problem whose 3-point
+# families add up can still pass un-weak; a lone one against any real model cannot. The two numbers
+# being equal is a coincidence of 3 being small, not a shared meaning.
 REPLICATE_LOF_MIN_POINTS = 3
+
+# Lack-of-fit degrees of freedom (POOLED usable points MINUS the whole-model structural parameter
+# count, subtracted once — residual_tests.lof_power) below which a PASS is too weak to report as one.
+# A FLAG is unaffected and stands at any df: a point that deviates by more than its own replicate
+# noise allows AFTER fitting is real evidence however few df remain.
+#
+# The asymmetry is the whole point. Refusing only at exact saturation (df <= 0) lets df = 1 report a
+# pass, and a summary calling that "powered" endorses a model on the strength of its own flexibility.
+# Note what df = 1 does and does NOT mean, taking blasi as the worked case: its 16 states sum to 1, so
+# the data occupy 15 dimensions and 14 structural
+# parameters trace at most a 14-dimensional manifold in them. The fit can zero 14 of the deviations
+# but NOT the 15th, so max|z| = 0.107 in the remaining direction is genuine evidence — one degree of
+# freedom of it. Weak, not absent. What was wrong was calling it powered, not testing at all.
+#
+# 3 is where a pass starts carrying enough directions to mean something, and it leaves the cases that
+# matter untouched: blasi's TRUE model has 8-9 structural parameters over those 15 points (df 6-7) and
+# the under-parameterised run that motivated this arm had 6-7 (df 8-9).
+#
+# It also raises the bar for a POWERED pass above REPLICATE_LOF_MIN_POINTS above: a family needs
+# min_points to be testable at all AND the problem needs min_lof_df spare directions for its pass to
+# stand un-weak.
+#
+# ADVISORY, and only that. The df BAND reaches the summary prose the lead reads, result.json (plus
+# the history CSV's lof_* columns) and the coverage credit that clears `low_power` — that last one
+# keys on the band, since `weak` is False on a flag by construction. NO stop condition consumes any
+# of it: a weak pass clears the plateau stop and the finish gate exactly as a powered one does. That
+# is deliberate (the objective and the judge stay as published); the lead is an LLM reading the
+# prose, so here the wording IS the mechanism.
+REPLICATE_LOF_MIN_LOF_DF = 3
 
 # At most this many of the worst FLAGGED points (by |z|) ride on a fit result — flagged only, since
 # the advice built from them tells the agent that is where the form is wrong, and a point the model

@@ -651,10 +651,14 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         * `sign_test` / `runs_test` read only residual SIGNS, so they still detect a systematic bias
           or drift. They have low power on few points: treat a `low_power` non-significant result as
           weak evidence, NOT a pass.
-        * `residual_structure.replicate_lack_of_fit` is the POWERED arm wherever design points
-          REPEAT — each prediction against that point's own replicate scatter, so no sigma can
-          flatten it. `available: false` there means NO EVIDENCE (read `status` for why), never a
-          pass; a flagged point means no parameter value in the current form can reach it.
+        * `residual_structure.replicate_lack_of_fit` measures each prediction against that design
+          point's OWN replicate scatter wherever points REPEAT, so no sigma can flatten it. Read its
+          `lof_df` (replicated points MINUS your estimated structural parameters), not the status
+          alone: `available: false` is NO EVIDENCE (see `status`), never a pass; a flagged point
+          means no parameter value in your current form can reach it, and that is conclusive at any
+          `lof_df`; but a pass carrying `weak: true`, or carrying no `lof_df` at all, certifies
+          nothing — a fit with nearly as many free parameters as points reaches them whatever its
+          mechanism.
 
         All three feed the one `residual_structure.flagged_observables` list, and a flagged list blocks
         the run's early plateau stop — so this is a real stop condition, not just advice. Use this to

@@ -249,21 +249,34 @@ def test_replicate_lof_unavailable_below_three_points():
 
 
 def test_replicate_lof_vacuous_when_the_fit_can_zero_every_point():
-    """armistead, at the scope the arm actually runs at — PER NOISE PARAMETER. Its four families
-    are sd_Cer_obs, sd_Sphinga_obs and sd_Sphingo_obs with 4 replicated points each (df 3) and
-    sd_S1P_obs with 2 (df 4), against 10 estimated structural parameters. So the guard fires on each
-    4-point family and sd_S1P_obs is below min_points anyway — armistead is excluded, which is the
-    point. Where the parameters can reach every point of a family, an unflagged verdict measures
-    flexibility, not form."""
-    points = [_z_point(f"p{i}", 0.1) for i in range(4)]
-    out = rt.replicate_lack_of_fit(points, n_structural=10)
+    """Saturation is a property of the PROBLEM, not of one noise family, so the guard is applied
+    once — by the assembler, to the pooled point count (data_access._merge_lof_verdicts, which is
+    the only caller that knows every family).
+
+    armistead is why. Its four families are sd_Cer_obs, sd_Sphinga_obs and sd_Sphingo_obs with 4
+    replicated points each (df 3) and sd_S1P_obs with 2 (df 4), against 10 estimated structural
+    parameters. Per family, each 4-point arm looked saturated and the whole example reported NO
+    EVIDENCE with a summary line claiming as many parameters as replicated points — of 12 pooled
+    points against 10, which leaves 2 lack-of-fit directions and a (thin) real test."""
+    from petab_mcp import data_access
+
+    def arms(n_points, families=1):
+        return [rt.replicate_lack_of_fit([_z_point(f"f{f}p{i}", 0.1) for i in range(n_points)])
+                for f in range(families)]
+
+    armistead = data_access._merge_lof_verdicts(arms(4, families=3), {}, n_structural=10)
+    assert armistead["available"] is True and armistead["n_points"] == 12
+    assert armistead["lof_df"] == 2 and armistead["weak"] is True
+    # ...while a family that really is outnumbered by the parameters tests nothing: 4 points, 10
+    # structural, no siblings to pool with.
+    out = data_access._merge_lof_verdicts(arms(4), {}, n_structural=10)
     assert out["available"] is False and out["status"] == "vacuous" and out["n_points"] == 4
     # It is the COUNT that decides, not the example: one more point than there are structural
     # parameters and the family carries information again (blasi: 15 points, 8-9 structural).
-    assert rt.replicate_lack_of_fit(
-        [_z_point(f"p{i}", 0.1) for i in range(11)], n_structural=10)["available"] is True
-    # an unknown parameter count leaves the guard OFF rather than guessing
-    assert rt.replicate_lack_of_fit(points, n_structural=None)["available"] is True
+    assert data_access._merge_lof_verdicts(arms(11), {}, n_structural=10)["available"] is True
+    # an unknown parameter count cannot make the test vacuous — it makes its POWER unknown
+    unknown = data_access._merge_lof_verdicts(arms(4), {}, n_structural=None)
+    assert unknown["available"] is True and "lof_df" not in unknown
 
 
 def test_replicate_lof_fails_open_on_unusable_points():
