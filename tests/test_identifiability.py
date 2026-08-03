@@ -116,3 +116,247 @@ def test_identifiability_fim_less_fallback_tolerates_nan_estimate(session):
     ids = {p["id"] for p in out["parameters"]}
     assert "k1" not in ids   # NaN estimate treated as not-estimated
     assert "k2" in ids       # the remaining estimated parameter is still listed
+
+
+# -- merge candidates: which pairs could take ONE SHARED value --------------
+def test_merge_cost_is_exact_for_a_quadratic():
+    """The statistic is (c@theta)^2 / (2 c@inv(H)@c) with c = e_i - e_j, so for a quadratic objective
+    the prediction is not an approximation and can be asserted exactly."""
+    import numpy as np
+
+    from petab_mcp.identifiability import merge_candidates
+
+    # H = I, theta = (1, 0): c@theta = 1, c@inv(H)@c = 2 -> cost 1/4
+    rep = merge_candidates(np.eye(2), ["a", "b"], [1.0, 0.0])
+    assert rep["ties"][0]["dnll"] == 0.25
+    assert rep["ties"][0]["move_scaled"] == 0.5   # both meet in the middle of the gap they close
+    # H = 2I, theta = (3, 1): c@theta = 2, c@inv(H)@c = 1 -> cost 2
+    rep = merge_candidates(2 * np.eye(2), ["a", "b"], [3.0, 1.0])
+    assert rep["ties"][0]["dnll"] == 2.0
+    # two parameters already equal are free to tie, whatever the curvature
+    rep = merge_candidates(np.eye(2) * 7, ["a", "b"], [1.5, 1.5])
+    assert rep["ties"][0]["dnll"] == 0.0
+
+
+def test_merge_candidates_rank_the_cheap_tie_first_and_price_it():
+    """A near-collinear pair at nearly equal values is the cheap merge; the expensive one is the pair
+    the data pins apart. The BIC price is ln(n)/2 — what dropping one parameter has to beat."""
+    import math
+
+    import numpy as np
+
+    from petab_mcp.identifiability import merge_candidates
+
+    H = np.array([[100.0, 99.0, 0.0], [99.0, 100.0, 0.0], [0.0, 0.0, 100.0]])
+    theta = [1.0, 1.02, 3.0]           # a,b nearly equal and collinear; c far away
+    rep = merge_candidates(H, ["a", "b", "c"], theta, n_data=252)
+    assert rep["ties"][0]["parameters"] == ["a", "b"]
+    assert rep["bic_price_nll"] == round(math.log(252) / 2, 3)
+    assert rep["ties"][0]["merge_improves_bic"] is True          # cheaper than the parameter it drops
+    assert rep["ties"][-1]["merge_improves_bic"] is False        # the data pins these apart
+    assert rep["n_merges_improving_bic"] == 1
+
+
+def test_merge_flag_and_dbic_agree_with_each_other():
+    """The row's subject is the MERGE: `merge_improves_bic` is true exactly when `dbic` is negative.
+    A flag whose sense the reader has to derive gets read backwards — an agent selecting the true
+    rows would merge every pair the data separates and skip every free one."""
+    import math
+
+    import numpy as np
+
+    from petab_mcp.identifiability import merge_candidates
+
+    # H = I so c@inv(H)@c = 2 and the cost is (theta_a - theta_b)^2 / 4: pick the gap for each side.
+    expensive = merge_candidates(np.eye(2), ["a", "b"], [math.sqrt(40.0), 0.0], n_data=252)["ties"][0]
+    assert expensive["dnll"] == 10.0 and expensive["dbic"] > 0
+    assert expensive["merge_improves_bic"] is False              # +14.5 bic: do NOT merge
+
+    free = merge_candidates(np.eye(2), ["a", "b"], [math.sqrt(4 * 0.022), 0.0], n_data=252)["ties"][0]
+    assert free["dnll"] == 0.022 and free["dbic"] < 0
+    assert free["merge_improves_bic"] is True                    # -5.5 bic: merge it
+
+
+def test_a_singular_fim_prices_its_free_merge_at_zero_and_first():
+    """The case the whole report exists for. Where H is singular ALONG the merge direction the data
+    never determined it, so tying the pair is FREE — inv(H) diverges there and the cost vanishes.
+    A pseudo-inverse inverts that limit (1/lambda -> 0 for the truncated eigenvalue), collapsing the
+    denominator to a rounding artifact and pricing the one free merge at ~1e17, ranked LAST."""
+    import numpy as np
+
+    from petab_mcp.identifiability import merge_candidates
+
+    # a,b exactly collinear (the rank_deficient state fim_info already reports); c determined. Listed
+    # c FIRST so the free merge is the LAST pair enumerated: "ranked first" must be the cost talking,
+    # not the parameter order — three rows that all display 0.0 make index order look like a ranking.
+    H = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 1.0], [0.0, 1.0, 1.0]])
+    rep = merge_candidates(H, ["c", "a", "b"], [100.0, 1.0, 3.0], n_data=252)
+    assert rep["ties"][0]["parameters"] == ["a", "b"]            # ranked FIRST, not last
+    assert rep["ties"][0]["dnll"] == 0.0 and rep["ties"][0]["merge_improves_bic"] is True
+    # tying c to either of them is free too — the flat direction pays for it — but only by moving a
+    # parameter the whole 99 there, and that is what ranks the collinear pair above them: among ties
+    # the price cannot separate, the writable edit is the one with the smaller move.
+    assert rep["ties"][0]["move_scaled"] == 1.0                  # half the gap it closes
+    assert all(t["dnll"] == 0.0 and t["move_scaled"] > 90 for t in rep["ties"][1:])
+
+    # and with no curvature anywhere every tie is free, not unreportable
+    flat = merge_candidates(np.zeros((2, 2)), ["a", "b"], [1.0, 2.0], n_data=252)
+    assert flat["ties"][0]["dnll"] == 0.0
+
+
+def _flat_along(w, lams=(90.0, 30.0, 10.0)):
+    """A 4x4 FIM with one EXACT null direction whose overlap with ``e_a - e_b`` is ~``w``: the knob
+    that decides how much of the merge the data never determined."""
+    raw = np.array([w / 2.0, -w / 2.0, 1.0, 1.0])
+    u = raw / np.linalg.norm(raw)
+    q, _ = np.linalg.qr(np.column_stack([u, np.eye(4)[:, 1:]]))
+    b = q[:, 1:] * np.sign(q[:, 0] @ u)        # an orthonormal basis of everything BUT u
+    return (b * np.array(lams)) @ b.T
+
+
+def test_the_merge_price_is_continuous_as_a_direction_goes_flat():
+    """No threshold on an eigenvector component may decide a verdict. Truncating the flat direction
+    (a pinv) prices the free merge at ~1e17; truncating the pair's COMPONENT in it instead — testing
+    it against any floor — moves the same cliff rather than removing it, so a merge whose honest
+    cost is 0 still lands last in the list, flagged do-not-merge, one rounding step away from free."""
+    from petab_mcp.identifiability import merge_candidates
+
+    def price(w):
+        rep = merge_candidates(_flat_along(w), list("abcd"), [1.0, 3.0, 2.0, 2.5], n_data=252)
+        return next(t for t in rep["ties"] if t["parameters"] == ["a", "b"])
+
+    determined = price(0.0)["dnll"]                    # c wholly inside what the data pinned down
+    assert determined == 18.0
+    prices = [price(w)["dnll"] for w in (0.7071, 1e-2, 1e-3, 1e-4, 1e-5)]
+    assert prices == sorted(prices)                    # less overlap with the flat direction, dearer
+    assert all(p <= determined for p in prices)        # ...and never dearer than no overlap at all
+    for cheap, dear in zip(prices[1:], prices[2:]):    # a DECADE of overlap is two orders of price
+        assert dear <= 150 * cheap, (cheap, dear)      # no cliff: this ratio was 1.2 million
+
+    # the cheap end of that ramp is cheap because the optimum wanders down the flat direction, and
+    # the row says how far: a merge that needs a move of 20000 is not an edit that survives a refit.
+    nearly_free = price(1e-4)
+    assert nearly_free["merge_improves_bic"] is True and nearly_free["move_scaled"] > 1e4
+    assert price(0.7071)["move_scaled"] < 5             # ...where a real overlap needs none
+
+
+def test_merge_candidates_only_offers_ties_within_a_role():
+    """Nothing mathematically stops tying a kinetic rate to a noise sigma, and the arithmetic would
+    call it free — but it is not a model edit anyone would write. An UNKNOWN role is not a role: two
+    parameters missing from the table must not match each other."""
+    import numpy as np
+
+    from petab_mcp.identifiability import merge_candidates
+
+    names = ["k1", "k2", "sigma"]
+    roles = {"k1": "kinetic", "k2": "kinetic", "sigma": "noise_sigma"}
+    rep = merge_candidates(np.eye(3), names, [1.0, 1.0, 1.0], roles=roles)
+    assert rep["n_ties_priced"] == 1                            # k1=k2 only, not either with sigma
+    assert rep["ties"][0]["parameters"] == ["k1", "k2"]
+
+    assert rep["n_ties_skipped"] == {"role_mismatch": 2}         # and it says so, by reason
+
+    # k2 and sigma are both absent from the table: unknown == unknown is not a match, and k1=k2
+    # (whose roles cannot be compared) is not offered either. "I cannot tell" is not "they differ".
+    partial = merge_candidates(np.eye(3), names, [1.0, 1.0, 1.0], roles={"k1": "kinetic"})
+    assert partial["ties"] == [] and partial["n_ties_skipped"] == {"role_unknown": 3}
+
+    # no role table at all: the offers widen, and the payload SAYS so rather than pretending
+    off = merge_candidates(np.eye(3), names, [1.0, 1.0, 1.0])
+    assert off["n_ties_priced"] == 3 and "role" in off["filters_off"]
+
+
+def test_merge_candidates_refuse_pairs_they_cannot_price_honestly():
+    """Fail closed. Across parameterScales the equality is meaningless (`log10(k_a) == k_b` is not
+    an edit anyone writes), and at a bound the quadratic's interior-stationary-point assumption is
+    gone, so the cost would be UNDERSTATED and the pair offered as near-free."""
+    import numpy as np
+
+    from petab_mcp.identifiability import merge_candidates
+
+    names, roles = ["k_a", "k_b"], {"k_a": "kinetic", "k_b": "kinetic"}
+    mixed = merge_candidates(np.eye(2), names, [1.0, 1.0], scales=["log10", "lin"], roles=roles)
+    assert mixed["ties"] == [] and mixed["n_ties_skipped"] == {"scale_mismatch": 1}
+    same = merge_candidates(np.eye(2), names, [1.0, 1.0], scales=["log10", "log10"], roles=roles)
+    assert same["n_ties_priced"] == 1 and same["filters_off"] == ["at_bound"]
+
+    unusable = merge_candidates(np.eye(2), names, [1.0, 1.0], scales=[float("nan")] * 2, roles=roles)
+    assert unusable["n_ties_skipped"] == {"scale_unknown": 1}   # unverifiable is not a match either
+
+    pinned = merge_candidates(np.eye(2), names, [1.0, 1.0], at_bound=[True, False], roles=roles)
+    assert pinned["ties"] == [] and pinned["n_ties_skipped"] == {"at_bound": 1}
+
+
+def test_merge_candidates_rank_free_ties_by_cost_not_enumeration_order():
+    """Ranking on the rounded number would leave the cheapest merges in whatever order the loop
+    happened to visit them, and a cost rounded to 0.0 reads as "the data never determined this"
+    when it was 4e-4 — so a positive cost keeps a digit instead of collapsing."""
+    import numpy as np
+
+    from petab_mcp.identifiability import merge_candidates
+
+    # H = I: cost is (theta_i - theta_j)^2 / 4, so d=c is the cheapest pair and a=b the dearest,
+    # and enumeration order (a,b) first is exactly backwards.
+    theta = [0.0, 0.04, 0.0283, 0.02]
+    rep = merge_candidates(np.eye(4), ["a", "b", "c", "d"], theta, top_n=6)
+    assert [t["parameters"] for t in rep["ties"]][:2] == [["c", "d"], ["b", "c"]]
+    assert rep["ties"][-1]["parameters"] == ["a", "b"]
+    assert [t["dnll"] for t in rep["ties"]] == [2e-05, 3e-05, 0.0001, 0.0001, 0.0002, 0.0004]
+
+
+def test_merge_candidates_is_bounded_and_degrades_quietly():
+    """It rides in a tool payload, so the list is capped, the JSON stays Inf-free, and a shape it
+    cannot use is None rather than an exception — this is advisory next to a fit."""
+    import json
+
+    import numpy as np
+
+    from petab_mcp.identifiability import merge_candidates
+
+    rep = merge_candidates(np.eye(8), [f"p{i}" for i in range(8)], list(range(8)), top_n=3)
+    assert len(rep["ties"]) == 3 and rep["n_ties_priced"] == 28
+    assert merge_candidates(np.eye(1), ["only"], [1.0]) is None          # nothing to tie
+    assert merge_candidates(np.eye(2), ["a", "b"], [float("nan"), 1.0]) is None
+    # a mis-sized filter table is unusable input like any other, not an IndexError out of the tool
+    assert merge_candidates(np.eye(3), list("abc"), [1.0, 2.0, 3.0], scales=["log10"] * 2) is None
+    assert merge_candidates(np.eye(3), list("abc"), [1.0, 2.0, 3.0], at_bound=[False]) is None
+    assert merge_candidates(np.eye(2), ["a", "b"], [1.0, 2.0], n_data=-5)["ties"]  # no ln of -5
+    # curving DOWN is not a minimum, so no pair has a constrained-optimum cost to report
+    assert merge_candidates(np.diag([4.0, -4.0]), ["a", "b"], [1.0, 2.0]) is None
+
+    # a cost that overflows a double is not a candidate; `Infinity` is not valid strict JSON, and
+    # 2*dnll is what goes in dbic — a cost half the double ceiling overflows one line later
+    for th in ([1e150, -1e150], [2e104, 0.0]):
+        huge = merge_candidates(1e100 * np.eye(2), ["a", "b"], th, n_data=252)
+        assert huge["ties"] == [] and huge["n_ties_skipped"] == {"cost_not_finite": 1}
+        json.dumps(huge, allow_nan=False)
+
+
+def test_stats_core_passes_scale_and_at_bound_to_the_merge_report():
+    """The filters are only worth anything if the assembly path supplies them: `params_meta`
+    carries both at the call site."""
+    fim = np.array([[100.0, 99.0], [99.0, 100.0]])
+    meta = _meta("a", "b", est_scaled=1.0)
+    meta[1]["estimate_scaled"] = 1.02
+    assert _identifiability_stats(meta, fim, {}, n_data=252)["merge_candidates"]["n_ties_priced"] == 1
+
+    meta[0]["at_bound"] = True
+    pinned = _identifiability_stats(meta, fim, {}, n_data=252)["merge_candidates"]
+    assert pinned["ties"] == [] and pinned["n_ties_skipped"] == {"at_bound": 1}
+
+    meta[0]["at_bound"] = False
+    meta[0]["scale"] = "lin"
+    mixed = _identifiability_stats(meta, fim, {}, n_data=252)["merge_candidates"]
+    assert mixed["ties"] == [] and mixed["n_ties_skipped"] == {"scale_mismatch": 1}
+
+
+def test_roles_are_not_computed_when_there_is_no_fim(session, monkeypatch):
+    """merge_candidates is the only consumer of the role table and needs the FIM, so on the
+    FIM-less path the whole-model walk would be built and discarded."""
+    import petab_mcp.reconcile as reconcile
+
+    calls = []
+    monkeypatch.setattr(reconcile, "parameter_roles",
+                        lambda *a, **kw: calls.append(1) or {})
+    out = identifiability(session, engine=None)
+    assert out["merge_candidates"] is None and calls == []

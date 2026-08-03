@@ -690,8 +690,9 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         (at_bound / poorly_constrained / collinear / flat_direction / multistart_unstable): drop
         its term, take its limiting (irreversible/instantaneous) form, or MERGE a collinear pair
         into one parameter — all model edits (there is no value/`estimate` tool). If none applies
-        cleanly, leave the parameter as is rather than hard-code a value. Bounded output; needs a
-        fitted model. Read se/correlations together with multistart_std — the FIM is local.
+        cleanly, leave the parameter as is rather than hard-code a value. `merge_candidates` prices
+        the ONE-SHARED-VALUE tie per pair (:func:`petab_mcp.identifiability.merge_candidates`).
+        Bounded output; needs a fitted model. Read se/correlations with multistart_std — FIM is local.
         """
         def run() -> dict[str, Any]:
             return identifiability_mod.identifiability(session, engine, top_n=top_n)

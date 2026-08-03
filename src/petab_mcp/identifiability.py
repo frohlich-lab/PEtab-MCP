@@ -40,6 +40,8 @@ def _identifiability_stats(
     flat_rel: float = 1e-3,
     se_unconstrained: float = 1.0,
     spread_unstable: float = 0.5,
+    roles: dict[str, str] | None = None,
+    n_data: int | None = None,
 ) -> dict[str, Any]:
     """Pure statistics core (no pyPESTO/AMICI). ``params_meta`` is one dict per estimated
     parameter — ``{id, scale, estimate, estimate_scaled, at_bound}`` — in the SAME order as the
@@ -145,6 +147,19 @@ def _identifiability_stats(
             candidates.append({"id": pid, "n_flags": len(reasons), "reasons": reasons})
     candidates.sort(key=lambda d: -d["n_flags"])
 
+    # Which pairs could take ONE shared value — the move flat_directions cannot express (it names
+    # the members of a poorly determined combination, not which TIE is cheap). Same FIM, no extra
+    # simulation. scale and at_bound go with it: both decide whether a pair can be priced honestly.
+    merges = None
+    if fim is not None:
+        theta = [p.get("estimate_scaled") for p in params_meta]
+        if all(t is not None for t in theta):
+            merges = merge_candidates(
+                fim, names, theta,
+                scales=[p.get("scale") for p in params_meta],
+                at_bound=[per[n]["at_bound"] for n in names],
+                roles=roles, n_data=n_data, top_n=top_n)
+
     method = ("fim+multistart" if fim is not None and spread else
               "fim" if fim is not None else
               "multistart" if spread else "none")
@@ -158,13 +173,16 @@ def _identifiability_stats(
         "partial_correlations": partials,
         "flat_directions": flat_directions[:top_n],
         "candidates": candidates[:12],
+        "merge_candidates": merges,
         "notes": ("FIM is a LOCAL linearization of uncertainty — read se/correlations together "
                   "with multistart_std (a model-free spread) and flat_directions (the actual "
                   "non-identifiable parameter combinations). High |r|≈1, large fold_uncertainty, "
                   "at_bound, or a flat direction all mark a parameter as a simplification "
                   "candidate: remove its term, take its limiting (irreversible/instantaneous) "
-                  "form, or merge a collinear pair into one parameter (e.g. a ratio/product) — "
-                  "all MODEL edits. If none fits cleanly, leave it: there is no value/estimate "
+                  "form, or merge a collinear pair into one parameter — all MODEL edits. "
+                  "`merge_candidates` prices the ONE-SHARED-VALUE form of that merge, cheapest "
+                  "first, with the parameter move each tie would take. "
+                  "If none fits cleanly, leave it: there is no value/estimate "
                   "tool, and a hard-coded literal is a magic number; values come only from the fit."),
     }
 
@@ -261,6 +279,164 @@ def _multistart_spread(session, free_names: list[str]) -> dict[str, Any]:
     return out
 
 
+def _measurement_count(session) -> int | None:
+    """Number of measurement rows — the ``n`` in BIC's ``k*ln(n)`` penalty, so a tie's cost can be
+    compared against what BIC charges for the parameter it would remove."""
+    try:
+        n = len(session.problem.measurement_df)
+        return n or None
+    except Exception:  # noqa: BLE001 - no table: report the ties without a price
+        return None
+
+
+def _scale_key(s) -> str:
+    """A parameterScale normalised for comparison; ``""`` for anything unusable (NaN, missing)."""
+    return s.strip().lower() if isinstance(s, str) else ""
+
+
+def _cost_nll(x: float) -> float:
+    """A cost as DISPLAYED. Three decimals reads against the ln(n)/2 charge, but rounding a positive
+    cost to 0.0 would print a direction the data never determined and a 4e-4 tie as the same row;
+    below 1e-9 nll there is nothing left to tell apart."""
+    r = round(x, 3)
+    return r if r else (float(f"{x:.1g}") if x > 1e-9 else 0.0)
+
+
+def merge_candidates(fim, names, theta, *, scales=None, at_bound=None, roles=None,
+                     n_data=None, top_n=6):
+    """Which pairs of estimated parameters could take ONE SHARED VALUE, and what that would cost.
+
+    The question ``flat_directions`` does not answer: it names the members of a poorly determined
+    combination, not which TIE is cheap, and those are different projections of the same matrix.
+
+    What is priced is exactly ``theta_i == theta_j`` on the estimation scale — the edit that deletes
+    one parameter by making the two the same symbol. It is not a substitution that replaces the pair
+    with one derived quantity: that constrains a different direction and costs something else.
+    Under the local quadratic the rest of this module assumes, imposing ``c @ theta = 0`` on the
+    optimum costs
+
+        dnll = (c @ theta)**2 / (2 * c @ inv(H) @ c)
+
+    and the shared-value merge is ``c = e_i - e_j``.
+
+    ``inv(H)`` runs through the eigendecomposition with the eigenvalues CLAMPED at numpy's rank
+    tolerance, not truncated by a pseudo-inverse, because truncation inverts the limit on the case
+    that matters most. Where H is flat along ``c`` the data never determined that direction:
+    ``c @ inv(H) @ c`` diverges and the tie is FREE. A pinv sets ``1/lambda`` to 0 there instead of
+    infinity, which collapses the denominator to a rounding artifact and prices the one free merge
+    as the most expensive in the report. Clamping keeps the price continuous in H and in the pair's
+    overlap with the flat direction, so no threshold on an eigenvector component decides a verdict.
+
+    ``move_scaled`` is how far the furthest parameter has to travel, on the estimation scale, to
+    reach that constrained optimum. Read it against the gap the tie closes: a near-free price bought
+    with a move of many decades is the quadratic running off down a flat direction rather than an
+    edit that will survive a refit.
+
+    A pair is offered only when the merge is an edit someone could write and this quadratic can
+    price it honestly — same ROLE (nothing stops the arithmetic tying a rate to a noise sigma),
+    same parameterScale (``log10(k_a) == k_b`` is not an equality anyone means), and neither member
+    AT A BOUND (the expansion assumes an interior stationary point, so a pinned parameter's cost
+    would be understated). Each filter needs its table: whichever the caller leaves out is named in
+    ``filters_off``, and every pair a filter refused is counted by reason in ``n_ties_skipped``, so
+    that "no free tie exists" and "the free tie was suppressed" read differently. The ranked list is
+    truncated to ``top_n``.
+
+    Read as a SCREEN. The quadratic is local: it separates cheap ties from expensive ones, but a
+    single price can be off by a factor in EITHER direction, so BIC adjudicates the refit that
+    follows a merge.
+    """
+    import numpy as np
+
+    H = np.asarray(fim, dtype=float)
+    th = np.asarray(theta, dtype=float)
+    k = len(names)
+    if k < 2 or H.shape != (k, k) or not np.isfinite(H).all() or not np.isfinite(th).all():
+        return None
+    if any(t is not None and len(t) != k for t in (scales, at_bound)):
+        return None  # module-public: a mis-sized table is None like every other unusable input
+    evals, evecs = np.linalg.eigh(H)  # the FIM is symmetric by construction
+    eps = float(np.finfo(float).eps)
+    emax = float(np.abs(evals).max(initial=0.0))
+    # numpy's own rank tolerance — the scale at which an eigenvalue stops being distinguishable from
+    # zero. Floored at `tiny` so a FIM with no curvature at all still inverts to "nothing is
+    # determined" instead of dividing by zero.
+    tol = max(k * eps * emax, float(np.finfo(float).tiny))
+    if evals.min(initial=0.0) < -math.sqrt(eps) * emax:
+        # Curving DOWN by more than the sensitivity solve's own accuracy: the point is not a
+        # minimum, so no pair has a constrained-optimum cost. Refuse rather than price it.
+        return None
+    Hinv = (evecs / np.maximum(evals, tol)) @ evecs.T
+    d = np.diag(Hinv)
+    curv = d[:, None] + d[None, :] - 2.0 * Hinv   # c @ inv(H) @ c for every c = e_i - e_j at once
+    gap = th[:, None] - th[None, :]               # c @ theta likewise
+
+    price = round(math.log(n_data) / 2.0, 3) if n_data and n_data > 0 else None
+    ties: list[dict[str, Any]] = []
+    skipped: dict[str, int] = {}
+
+    def _skip(reason):
+        skipped[reason] = skipped.get(reason, 0) + 1
+
+    for i in range(k):
+        for j in range(i + 1, k):
+            # Each filter FAILS CLOSED, and says which way it closed: "these two differ" is a claim
+            # about the pair, "this one is unknown" is a claim about the table, and a reader acts on
+            # them differently.
+            if roles is not None:
+                ri, rj = roles.get(names[i]), roles.get(names[j])
+                if not (ri and rj):
+                    _skip("role_unknown")
+                    continue
+                if ri != rj:
+                    _skip("role_mismatch")
+                    continue
+            if scales is not None:
+                si, sj = _scale_key(scales[i]), _scale_key(scales[j])
+                if not (si and sj):
+                    _skip("scale_unknown")
+                    continue
+                if si != sj:
+                    _skip("scale_mismatch")
+                    continue
+            if at_bound is not None and (at_bound[i] or at_bound[j]):
+                _skip("at_bound")
+                continue
+            with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+                exact = float(gap[i, j] ** 2 / (2.0 * curv[i, j]))
+                # the constrained optimum is -(c@theta) inv(H) c / (c@inv(H)@c); report its
+                # largest component, the move the panel would have to believe.
+                move = float(abs(gap[i, j]) * np.abs(Hinv[:, i] - Hinv[:, j]).max() / curv[i, j])
+            # 2*dnll is the BIC charge, so a cost within a factor of two of the double ceiling is
+            # `Infinity` in the payload — not valid strict JSON, and not a merge candidate either.
+            if not (math.isfinite(2.0 * exact) and math.isfinite(move)):
+                _skip("cost_not_finite")
+                continue
+            dnll = _cost_nll(exact)
+            row = {"parameters": [names[i], names[j]], "dnll": dnll,
+                   "move_scaled": round(move, 3)}
+            if price is not None:
+                # Both read off the DISPLAYED cost and price, so the row agrees with itself:
+                # dbic < 0 exactly when merge_improves_bic is true.
+                row["dbic"] = round(2.0 * (dnll - price), 3)
+                row["merge_improves_bic"] = dnll < price
+            ties.append(row)
+    # Cheapest first, and among the ties the price cannot separate — the ones the data left
+    # undetermined, all of them free — the smallest move first, since that is what decides which of
+    # them is a writable edit. Both keys are on the row, so the order can be checked by reading it.
+    ties.sort(key=lambda r: (r["dnll"], r["move_scaled"]))
+    out: dict[str, Any] = {"ties": ties[:top_n], "n_ties_priced": len(ties)}
+    if skipped:
+        out["n_ties_skipped"] = dict(sorted(skipped.items()))
+    off = [n for n, table in (("role", roles), ("scale", scales), ("at_bound", at_bound))
+           if table is None]
+    if off:  # nothing refused these pairs, so merges nobody could write are in the list too
+        out["filters_off"] = off
+    if price is not None:
+        out["bic_price_nll"] = price
+        out["n_merges_improving_bic"] = sum(1 for r in ties if r["merge_improves_bic"])
+    return out
+
+
 def identifiability(session, engine=None, *, top_n: int = 8, corr_threshold: float = 0.9) -> dict[str, Any]:
     """Parameter-identifiability diagnosis of the current fit — which estimated parameters are
     unconstrained or trade off (the basis for model simplification). Combines the FIM (SE +
@@ -314,5 +490,17 @@ def identifiability(session, engine=None, *, top_n: int = 8, corr_threshold: flo
         })
 
     spread = _multistart_spread(session, free_names)
+    # Roles keep the merge offers to edits a modeller would actually write: nothing mathematically
+    # stops tying a kinetic rate to an observable scaling, and the arithmetic will call it free.
+    # merge_candidates is their only consumer and needs the FIM, so without one this whole-model
+    # walk would be discarded unused.
+    roles = None
+    if fim is not None:
+        try:
+            from .reconcile import parameter_roles
+            roles = parameter_roles(session.problem)
+        except Exception:  # noqa: BLE001 - advisory; the payload says the filter is off
+            roles = None
     return _identifiability_stats(params_meta, fim, spread,
-                                  top_n=top_n, corr_threshold=corr_threshold)
+                                  top_n=top_n, corr_threshold=corr_threshold,
+                                  roles=roles, n_data=_measurement_count(session))
