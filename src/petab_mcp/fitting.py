@@ -108,11 +108,8 @@ def _default_fit_workers() -> int:
 # whether the value comes from the shared default or the export.
 FIT_N_WORKERS = _env_int("PETAB_MCP_FIT_N_WORKERS", _default_fit_workers())
 
-# The multistart's RNG seed and optimizer. Both were once threaded through fit_and_simulate ->
-# _run_fit -> fit_fingerprint as parameters, but no caller ever passed either, and the fit's own
-# log line hard-codes "optimizer=fides" — so they were configurable in signature only. They stay
-# named constants because both are part of the fit-cache key below: changing either invalidates
-# every cached fit, which is correct but should be a deliberate act.
+# The multistart's RNG seed and optimizer. Named constants rather than parameters: the fit's own
+# log line hard-codes "optimizer=fides", so a signature knob would be configurable in name only.
 FIT_SEED = 0
 FIT_OPTIMIZER = "fides"
 
@@ -193,57 +190,6 @@ def _fitted_values(x_names, x_values, free_indices, parameter_df) -> dict[str, f
         if name in parameter_df.index:
             fitted[name] = float(unscale(float(x_values[i]), parameter_df.loc[name, PARAMETER_SCALE]))
     return fitted
-
-
-def fit_fingerprint(sbml_str: str, parameter_df, n_starts: int) -> str:
-    """Identity of an *estimation problem* — the key under which a fit is cached/reused.
-
-    A multistart fit's result is determined by the model, the estimation setup (bounds, scale,
-    which parameters are estimated, and the parameters' values), the number of starts, and the
-    (fixed) seed and optimizer.
-
-    The estimated parameters' ``nominalValue`` USED to be blanked out here, on the grounds that a
-    starting guess is not something the multistart optimizer reads. That stopped being true when
-    half the starts became WARM (see :func:`warm_start_guesses`): the nominal values now decide
-    where those starts begin, so two fits of the same structure from different parents are
-    genuinely different optimizations and must not collide on one cache key.
-
-    What un-blanking costs: the key is computed BEFORE the fit (pre-fit nominals) and the fit
-    then writes the optimum back, so a refit of the same structure from its own optimum — and a
-    durable resume, which restores the stored POST-fit table — now miss. What it still serves is
-    the case that matters, rollback-then-re-author: restoring a version rewinds the nominal
-    values, so re-authoring the same child edit reproduces the pre-fit table exactly and hits.
-    """
-    payload = "\n".join(
-        [sbml_str, parameter_df_to_tsv(parameter_df),
-         f"n_starts={n_starts};seed={FIT_SEED};optimizer={FIT_OPTIMIZER}"]
-    )
-    return sha16(payload)
-
-
-def _fit_cache_path(session, fitkey: str):
-    return session.provenance.root / "cache" / f"fit_{fitkey}.json"
-
-
-def _load_fit_cache(session, fitkey: str) -> dict[str, Any] | None:
-    """Return a cached fit for this estimation problem, or ``None``. Never raises."""
-    try:
-        path = _fit_cache_path(session, fitkey)
-        if path.is_file():
-            return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001 - a corrupt/unreadable cache entry just forces a re-fit
-        session.logger.warning("could not read fit cache %s", fitkey, exc_info=True)
-    return None
-
-
-def _save_fit_cache(session, fitkey: str, entry: dict[str, Any]) -> None:
-    """Persist a fit under its estimation-problem key. Best-effort; never raises."""
-    try:
-        path = _fit_cache_path(session, fitkey)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"fitkey": fitkey, **entry}, indent=2), encoding="utf-8")
-    except Exception:  # noqa: BLE001 - failing to cache must never fail a fit
-        session.logger.warning("could not write fit cache %s", fitkey, exc_info=True)
 
 
 def _apply_fitted(session, fitted: dict[str, float]) -> None:
@@ -712,26 +658,6 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     # `_compile_fit_failure_message`, tell the agent its model is ill-posed for estimation.
     objective_before = _flt(engine.evaluate_objective()["neg_log_likelihood"])
 
-    # Reuse a previous fit of this exact estimation problem instead of re-optimizing: the
-    # cache is keyed on the problem identity (model + bounds/scale/estimate + fixed values +
-    # n_starts + seed), so a hit is a genuinely equivalent fit. We still simulate below, so
-    # only the (expensive) multistart optimization is skipped.
-    fitkey = fit_fingerprint(session.model_sbml(), session.problem.parameter_df, n_starts)
-    if getattr(session, "fit_cache", True):
-        cached = _load_fit_cache(session, fitkey)
-        if cached is not None:
-            _apply_fitted(session, cached.get("fitted") or {})
-            session.last_fit_cache_hit = True
-            opt = {"n_starts": cached.get("n_starts"), "starts": [], "trace": [],
-                   **(cached.get("optimization") or {}),
-                   "result_file": cached.get("result_file")}
-            log.info("fit: cache hit fitkey=%s nllh=%s (optimizer skipped)",
-                     fitkey, _fmt(cached.get("neg_log_likelihood")))
-            return {"fitted": cached.get("fitted") or {},
-                    "neg_log_likelihood": cached.get("neg_log_likelihood"),
-                    "objective_before": objective_before, "optimization": opt}
-    session.last_fit_cache_hit = False
-
     # The SAME problem the engine evaluates the objective against (see estimation_problem):
     # one AMICI model, one solver, one notion of this model's likelihood.
     problem, inner_scales = estimation_problem(session, engine)
@@ -757,7 +683,7 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     # `problem` is cached on the engine, so ALWAYS assign — an empty array clears guesses left by
     # a previous fit rather than silently reusing them.
     guesses = (warm_start_guesses(problem, session.problem.parameter_df, n_starts,
-                                  optimization=getattr(session, "optimization", None))
+                                  optimization=session.optimization)
                if objective_before is not None else np.zeros((0, len(problem.x_names))))
     problem.x_guesses_full = guesses
     log.info(
@@ -853,17 +779,6 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     # re-enter them as warm starts. See `previous_optima`.
     optimization["x_scales"] = [str(s) for s in problem.x_scales]
     optimization["result_file"] = _write_pypesto_result(session, result, session.problem_hash())
-    # Cache this fit under the estimation-problem key so an identical future commit can reuse
-    # it instead of re-optimizing (see `fit_fingerprint` / the cache check above).
-    if getattr(session, "fit_cache", True):
-        _save_fit_cache(session, fitkey, {
-            "n_starts": n_starts,
-            "fitted": fitted,
-            "neg_log_likelihood": nllh,
-            "optimization": {k: optimization.get(k)
-                             for k in ("n_starts", "starts", "trace", "x_names")},
-            "result_file": optimization.get("result_file"),
-        })
     return {"fitted": fitted, "neg_log_likelihood": nllh, "objective_before": objective_before,
             "optimization": optimization}
 
@@ -987,12 +902,16 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
 
 
 def ensure_simulation(session, engine) -> dict[str, Any] | None:
-    """Populate ``session.simulation`` with a simulate-only pass if it is empty.
+    """Populate ``session.simulation`` with a simulate-only pass if it is empty, once a mechanism
+    has been authored.
 
-    Used at cold start (no commit yet) and after a failed fit, so the stats tools always
-    have a dataframe to read without re-simulating on every call.
+    An unauthored model has nothing to simulate: the content-free seed has no dynamics, so it
+    would simulate to constants and read as a finite likelihood. Returns ``None`` there; callers
+    handle it (``data_access._frames`` builds an empty-but-typed table).
     """
-    sim = getattr(session, "simulation", None)
+    if not session.model_authored():
+        return session.simulation
+    sim = session.simulation
     if sim is None or not sim.get("records"):
         fit_and_simulate(session, engine, do_fit=False, n_starts=0)
     return session.simulation
@@ -1238,10 +1157,14 @@ def fit_summary(session, engine) -> dict[str, Any]:
     Ensures a simulation dataframe exists, then returns ``{status, neg_log_likelihood, chi2,
     n_data_points, fitted_parameters, parameter_scales, version}`` plus the complexity-
     penalised :func:`goodness_of_fit` scores, ``parameters_at_bound`` (see
-    :func:`parameters_at_bound`), and ``noise_sigma_report`` (see :func:`noise_sigma_report`).
+    :func:`parameters_at_bound`), ``noise_sigma_report`` (see :func:`noise_sigma_report`), and
+    ``residual_structure`` (see :func:`data_access.residual_structure_rollup`).
     ``k`` uses ``n_estimated`` (well-defined even on a simulate-only pass). Pairs fitted values
     with their estimation scale even when a restored/rollback payload lacks the map, so a linear
     value is never misread as a log10 one.
+
+    Both adequacy verdicts ride on this read: it is the score read for every caller that did not
+    run the fit — the analysts, the harness finish gate, the final scoring.
     """
     sim = ensure_simulation(session, engine) or {}
     out = {k: sim.get(k) for k in (
@@ -1250,10 +1173,8 @@ def fit_summary(session, engine) -> dict[str, Any]:
         "fitted_parameters", "parameter_scales", "version",
     )}
     pdf = session.problem.parameter_df
-    if out.get("fitted_parameters") and not out.get("parameter_scales"):
-        out["parameter_scales"] = {
-            pid: str(pdf.loc[pid, PARAMETER_SCALE])
-            for pid in out["fitted_parameters"] if pid in pdf.index}
+    out["parameter_scales"] = _parameter_scales_for(
+        out.get("fitted_parameters"), out.get("parameter_scales"), pdf)
     out.update(goodness_of_fit(
         sim.get("neg_log_likelihood"), sim.get("chi2"),
         int(session.problem.n_estimated), sim.get("n_data_points"),
@@ -1271,16 +1192,16 @@ def fit_summary(session, engine) -> dict[str, Any]:
     _advice = noise_sigma_advice(_report)  # report-based: quotes the replicate ratio when reliable
     if _advice is not None:
         out["noise_sigma_advice"] = _advice
-    # These metrics are the LAST fit's. Edits are fit-free, so the working model can have moved on
-    # since then; flag it so a caller never mistakes a stale score for the edited model's score.
-    # `version` above is the version these metrics belong to; call `fit` to score the working model.
-    out["has_unfit_edits"] = session.has_unfit_edits()
+    # Cheap: the rollup reads the STORED records, no re-simulation. Lazy — data_access imports us.
+    from .data_access import residual_structure_rollup
+
+    out["residual_structure"] = residual_structure_rollup(session, sims=None)
     # The run's OUTSTANDING invalid "does adding structure help?" experiment, if any (see
     # :mod:`nesting`): a commit that gained parameters yet fit WORSE than its parent, which for a
     # nested model is impossible. Sticky across the rollback that usually follows, so the harness
     # finish gate can surface it at the ARM step and a finish cannot rest on that comparison.
     # ABSENT when there is none — an omitted key must read as "nothing outstanding".
-    _invalid = getattr(session, "invalid_comparison", None)
+    _invalid = session.invalid_comparison
     if _invalid:
         out["invalid_comparison"] = _invalid
     return out
@@ -1299,8 +1220,8 @@ def compute_improvement(
     "positive evidence" bar), so a raw nll drop bought by an extra parameter that actually RAISES
     BIC does NOT count, and neither does a 1e-6 noise-floor twitch.
 
-    The reference is the session's best-BIC CHECKPOINT (``best_bic`` / ``best_version`` /
-    ``best_nll``), set on the previous new best — not the raw running minimum. Comparing against
+    The reference is the session's best-BIC :class:`~petab_mcp.session.Checkpoint`, set on the
+    previous new best — not the raw running minimum. Comparing against
     the checkpoint is what lets a slow, steady BIC creep of < ``NEW_BEST_MIN_DELTA_BIC`` per op
     still register a new best once it CUMULATIVELY clears the bar, instead of starving the streak
     while the fit genuinely improves. Must be called BEFORE :meth:`session.record_fit_progress`
@@ -1315,9 +1236,10 @@ def compute_improvement(
     # A non-finite checkpoint is no checkpoint: treat it as absent so a session that somehow
     # acquired one (a legacy provenance seed, a version written before goodness_of_fit
     # rejected non-finite scores) recovers on its next fit instead of staying locked out.
-    best_prior_bic = _flt(getattr(session, "best_bic", None))
-    best_prior_version = getattr(session, "best_version", None)
-    best_prior_nllh = getattr(session, "best_nll", None)
+    _best = session.best
+    best_prior_bic = _flt(_best.bic) if _best else None
+    best_prior_version = _best.version if _best else None
+    best_prior_nllh = _best.nll if _best else None
 
     self_improvement = None
     if objective_before is not None and nllh is not None:
@@ -1397,15 +1319,34 @@ def goodness_of_fit(
     return out
 
 
+def _parameter_scales_for(fitted, stored, parameter_df) -> "dict[str, str] | None":
+    """Each fitted parameter's ESTIMATION scale, preferring the payload's own map.
+
+    A payload restored from a version carries no map; the live table is exact there, since
+    ``apply_version`` has just made it that version's.
+
+    ``None`` rather than an empty map when nothing resolves: a caller testing ``is None`` would
+    read ``{}`` as a valid answer and treat every linear value as a known scale, which is the
+    misreading this pairing exists to prevent.
+    """
+    if not fitted or stored:
+        return stored
+    if parameter_df is None:
+        return None
+    derived = {pid: str(parameter_df.loc[pid, PARAMETER_SCALE])
+               for pid in fitted if pid in parameter_df.index}
+    return derived or None
+
+
 def fit_result_block(
     fitsim: dict[str, Any] | None, improvement: dict[str, Any] | None = None,
     parameter_df: Any = None, problem: Any = None,
 ) -> dict[str, Any]:
-    """The fit fields every fit-bearing result returns (``fit``, rollback, reset).
+    """The fit fields every fit-bearing result returns (a fit, and a restore).
 
     Keeps the tool-result shape identical across those paths so an agent reads the same
     keys everywhere. ``fitsim`` is a :func:`fit_and_simulate` payload (or the restored
-    simulation for rollback/reset); ``improvement`` is the :func:`compute_improvement` dict.
+    simulation for a restore); ``improvement`` is the :func:`compute_improvement` dict.
     Beyond the raw nll/chi2 it also carries the complexity-penalised
     :func:`goodness_of_fit` scores (bic/aic/reduced_chi2/gof p-value) so the agent can see
     when the fit is already at the noise floor and stop adding parameters,
@@ -1452,12 +1393,13 @@ def fit_result_block(
         # fitted_parameters: LINEAR (unscaled) values; parameter_scales: each one's estimation
         # scale (lin/log10). Kept side by side so a linear value is never misread as a log10 one.
         "fitted_parameters": fitted,
-        "parameter_scales": fitsim.get("parameter_scales"),
+        "parameter_scales": _parameter_scales_for(fitted, fitsim.get("parameter_scales"),
+                                                  parameter_df),
         "improvement": improvement or None,
         "parameters_at_bound": parameters_at_bound(fitted, parameter_df),
         # Prefer the report PetabSession.fit already computed and stashed, so the event, the
         # adequacy gate and this block cannot disagree; computed here for the paths that don't
-        # stash one (rollback/reset).
+        # stash one (a restore).
         **noise_sigma_block(problem, fitted, report=fitsim.get("noise_sigma_report")),
         # The COMPACT residual-structure verdict only — which observables the sign/runs tests or the
         # replicate lack-of-fit test flag, a one-line summary, and the bounded replicate verdict

@@ -127,8 +127,7 @@ def test_cause_left_open_when_no_parameter_can_be_named():
 # --- the session wiring: read the parent from the version store ----------------------------
 def _snapshot_parent(session, nll):
     """Snapshot the current working state as a fitted parent version carrying ``nll``."""
-    return session._snapshot_version(
-        label="fit", kind="fit", meta={"neg_log_likelihood": nll}, sim=None)
+    return session._snapshot_version(meta={"neg_log_likelihood": nll}, sim=None)
 
 
 def test_session_flags_a_worse_fit_that_freed_another_parameter(session):

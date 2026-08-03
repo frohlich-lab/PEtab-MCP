@@ -22,18 +22,22 @@ def test_batch_api_removed(session):
     fit-free, so batching is obsolete."""
     for name in ("begin_batch", "commit_batch", "abort_batch", "batch_active", "staged"):
         assert not hasattr(session, name), name
-    assert hasattr(session, "fit") and hasattr(session, "pending_edits")
+    assert hasattr(session, "fit")
+    # ...and so is the pending-edit state that replaced batching: `make_changes` fits on every
+    # call, so an edit is never waiting to be scored and there is nothing to track.
+    for name in ("pending_edits", "has_unfit_edits", "record_edit", "note_fit_attempt"):
+        assert not hasattr(session, name), name
 
 
-# -- edits are fit-free -------------------------------------------------------
-def test_edit_marks_pending_without_versioning(session):
-    assert not session.has_unfit_edits()
+# -- the edit half on its own creates no version ------------------------------
+def test_the_edit_half_creates_no_version(session):
+    """The edit half mutates the working model and returns what it changed; the fit versions it."""
     res = O.change_parameters(
         session, [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
         justification="widen")
     assert res["applied"] is True and res["version"] is None
-    assert session.has_unfit_edits() and res["n_pending_edits"] == 1
-    assert session.provenance.current_version == 0  # no version created by an edit
+    assert res["staged_edit"]["justification"] == "widen"
+    assert session.provenance.current_version == -1  # no version created by an edit
 
 
 # -- the zero-estimated-params guard (was in test_batch) ----------------------
@@ -62,22 +66,19 @@ def test_a_seeded_problem_always_has_a_model(empty_session):
     assert empty_session.model_authored() is False
 
 
-# -- fit: fit + snapshot + clear pending (needs the engine) -------------------
+# -- fit: fit + snapshot (needs the engine) -----------------------------------
 def test_fit_scores_edits_and_snapshots_a_version(fit_session):
     sess = fit_session
-    O.change_parameters(
+    edit = O.change_parameters(
         sess, [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
         justification="widen")
-    assert sess.has_unfit_edits()
 
-    res = sess.fit(n_starts=2)
+    res = sess.fit(n_starts=2, staged_edits=[edit["staged_edit"]])
     assert res["committed"] is True
-    assert res["version"] == 1
+    assert res["version"] == 0
     assert res["neg_log_likelihood"] is not None and res["bic"] is not None
     assert "progress" in res
-    # the pending edit was consumed by the fit
-    assert not sess.has_unfit_edits()
-    assert sess.provenance.current_version == 1
+    assert sess.provenance.current_version == 0
     versions = sess.provenance.list_versions()
     assert versions[-1]["kind"] == "fit"
     # the fit event lists the edits it scored
@@ -92,12 +93,12 @@ def test_fit_is_a_noop_when_model_unchanged(fit_session):
 
     sess = fit_session
     first = sess.fit(n_starts=2)
-    assert first["committed"] is True and first["version"] == 1
+    assert first["committed"] is True and first["version"] == 0
 
     again = sess.fit(n_starts=2)
     assert again["committed"] is False
     assert again["no_change"] is True
-    assert again["duplicate_of_version"] == 1
+    assert again["duplicate_of_version"] == 0
     assert again["neg_log_likelihood"] == pytest.approx(first["neg_log_likelihood"])
     # the structure verdict comes back on the no-op too: every doc tells the agent to read it off
     # the fit result, so the de-duplicated shape must not be the one that lacks it. The state is
@@ -112,9 +113,9 @@ def test_fit_is_a_noop_when_model_unchanged(fit_session):
     assert again.get("noise_sigma_advice") == first.get("noise_sigma_advice")
     # plus the duplicate version's stored flag, mirrored like the other scalar meta keys
     assert again["residual_flagged"] == data_access.residual_flag(first["residual_structure"])
-    assert again["residual_flagged"] == sess.provenance.get_meta(1)["residual_flagged"]
+    assert again["residual_flagged"] == sess.provenance.get_meta(0)["residual_flagged"]
     # no churn: no new version was created by the no-op fit
-    assert sess.provenance.current_version == 1
+    assert sess.provenance.current_version == 0
 
 
 def test_zero_starts_is_rejected(fit_session):
@@ -126,7 +127,7 @@ def test_zero_starts_is_rejected(fit_session):
 
     with pytest.raises(ValidationError, match=">= 1"):
         fit_session.fit(n_starts=0)
-    assert fit_session.provenance.current_version == 0
+    assert fit_session.provenance.current_version == -1
 
 
 # -- the residual-structure verdict rides on the fit result (issue #113) ------
@@ -183,7 +184,7 @@ def test_restore_version_carries_the_verdict_too(fit_session):
     call."""
     sess = fit_session
     sess.fit(n_starts=2)
-    out = sess.restore_version(1)
+    out = sess.restore_version(0)
     assert set(out["residual_structure"]) == {"flagged_observables", "low_power", "summary",
                                              "replicate_lack_of_fit"}
 
@@ -235,6 +236,28 @@ def test_a_real_fit_populates_the_noise_sigma_verdict(fit_session):
     assert ev["noise_sigma_collapsed"] == res["noise_sigma_collapsed"]
 
 
+def test_get_fit_summary_carries_the_residual_structure_verdict(fit_session):
+    """Regression: the finish gate reads `residual_structure` off get_fit_summary, whose key
+    whitelist omitted it, so its replicate lack-of-fit refusal could never fire."""
+    from petab_mcp import fitting
+
+    sess = fit_session
+    fit_res = sess.fit(n_starts=2)
+    summary = fitting.fit_summary(sess, sess.engine)
+
+    assert "residual_structure" in summary, (
+        "get_fit_summary must carry the residual-structure verdict — the finish gate reads it here"
+    )
+    rs = summary["residual_structure"]
+    assert isinstance(rs, dict) and "summary" in rs
+    # Same shape the fit result reports, so one key name never means two things.
+    assert set(rs) == set(fit_res["residual_structure"])
+    # The replicate arm must be present and self-describing, since that is the one the gate keys
+    # on: it reads `.get("available")` and `.get("n_flagged")`.
+    assert "replicate_lack_of_fit" in rs
+    assert "available" in rs["replicate_lack_of_fit"]
+
+
 def test_the_noop_carries_an_implausible_noise_verdict(fit_session):
     """The case the omission would have hidden: when the duplicate version's noise model IS
     implausible, the de-duplicated fit must say so — including the advice string, which is the
@@ -258,3 +281,21 @@ def test_the_noop_carries_an_implausible_noise_verdict(fit_session):
     assert again["noise_sigma_collapsed"] == first["noise_sigma_collapsed"]
     assert again["noise_sigma_inflated"] == first["noise_sigma_inflated"]
     assert again["noise_sigma_advice"] == first["noise_sigma_advice"]
+
+
+def test_a_restored_fit_reports_parameter_scales(fit_session):
+    """Regression: a restored payload carries no scale map, and fit_result_block read it straight
+    off the payload — returning linear values beside `parameter_scales: None`."""
+    sess = fit_session
+    sess.fit(n_starts=2)                                   # v0: a real fit, payload persisted
+    O.change_parameters(
+        sess, [{"parameter_id": "k1", "lower_bound": 1e-4, "upper_bound": 1e4}],
+        justification="widen so the next fit is not a de-dup no-op")
+    sess.fit(n_starts=2)                                   # v1, so v0 is a genuine restore target
+    restored = sess.restore_version(0)
+
+    assert restored["fitted_parameters"], "v0's stored fit must come back with values"
+    scales = restored["parameter_scales"]
+    assert scales, "a restored fit must carry the scale map, not None beside linear values"
+    assert set(scales) == set(restored["fitted_parameters"])
+    assert all(v in ("lin", "log", "log10") for v in scales.values())

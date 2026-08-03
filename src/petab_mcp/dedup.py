@@ -86,11 +86,12 @@ def reauthor_key(structure_hash: str, parameter_df) -> str:
 
 
 def build_registry(session) -> list[dict[str, Any]]:
-    """Prior committed versions as ``{version, structure_hash, neg_log_likelihood, bic}`` dicts,
+    """Prior FITTED versions as ``{version, structure_hash, neg_log_likelihood, bic}`` dicts,
     read from each version's stored meta.
 
-    Versions written before the ``structure_hash`` field existed are skipped — they simply do
-    not participate in de-duplication. Never raises: bookkeeping must not break a commit.
+    Every version is a fit, so every version competes. Versions written before the
+    ``structure_hash`` field existed are skipped — they simply do not participate in
+    de-duplication. Never raises: bookkeeping must not break a commit.
     """
     registry: list[dict[str, Any]] = []
     try:

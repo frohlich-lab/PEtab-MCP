@@ -12,13 +12,10 @@ Every edit:
 2. applies a structural edit to a *copy* of the model (libsbml);
 3. reconciles SBML↔PEtab (parametric ICs, parameter-table sync, orphan pruning);
 4. lints the candidate — on any failure the edit is reverted (atomic);
-5. logs a provenance ``edit`` event and records the change as *pending a fit*.
+5. logs a provenance ``edit`` event.
 
-An edit function on its own mutates the working model but does NOT fit and does NOT create a
-version (issue #81). Fitting is the separate step that scores the assembled working model —
-it fits, simulates, and snapshots the single version that records the fitted values, fit
-metrics, and simulation dataframe. Nothing exposes the two halves independently: ``make_changes``
-always runs both, so an unscored edit is only ever a transient state inside one call.
+``make_changes`` always runs an edit and then the fit, so an unscored edit is only ever a
+transient state inside one call.
 """
 
 from __future__ import annotations
@@ -33,7 +30,7 @@ from . import messages as M
 from . import reconcile as R
 from .constants import NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD, WIDENING_NEGLIGIBLE_BIC_GAIN
 from .errors import ModelUpdateError, PetabMcpError, ValidationError
-from .parameters import estimated_mask, problem_fingerprint, sha16
+from .parameters import estimated_mask
 from .references import resolve_references
 from .validation import (
     frozen_parametric_stoichiometry_issues,
@@ -270,19 +267,13 @@ def _commit_change(
     re-author just introduced, and a rejected entry reverts the re-author too. On any failure the
     model and parameter table are reverted so an edit is atomic.
 
-    Issue #81 decoupled editing from fitting: an edit mutates the working model and reconciles +
-    validates it, but does NOT fit and does NOT snapshot a version — the explicit ``fit`` tool does
-    both (fit + version), and the structure-level de-duplication (issue #59) moved there too. The
-    edit is recorded as a *pending edit* (:meth:`session.record_edit`) and logged as an ``edit``
-    provenance event; call ``fit`` to score the assembled model. Returns ``applied: true`` with the
-    reconcile/validation/warnings — but no fit metrics, since no fit ran.
+    Applies and reconciles + validates; the caller scores it (:meth:`session.PetabSession.fit`,
+    which also carries the structure-level de-duplication). Returns ``applied: true`` with the
+    reconcile/validation/warnings and no fit metrics.
     """
-    # Neither of today's two callers can trip this, but the guard is not about them: with both
-    # callbacks None the body below applies NOTHING and still records a pending edit plus an
-    # `edit` event in the append-only provenance log. A silent no-op in the audit trail is the
-    # one failure this layer must not produce, so the contract the docstring states is enforced
-    # rather than assumed. (The old companion guard, "at most one of model_build/model_edit", is
-    # gone for good — `model_edit` is no longer a parameter.)
+    # Neither of today's two callers can trip this, but with both callbacks None the body applies
+    # NOTHING and still appends an `edit` event to the append-only log. A silent no-op in the
+    # audit trail is the one failure this layer must not produce.
     if model_build is None and param_edit is None:
         raise ValueError(
             "_commit_change requires at least one callback: a model_build (optionally with a "
@@ -294,7 +285,6 @@ def _commit_change(
 
     with session.lock:
         old_model = session.problem.model
-        old_sbml = old_model.to_sbml_str()
         old_species = set(R.species_ids(old_model.sbml_model))
         old_params = session.problem.parameter_df.copy(deep=True)
 
@@ -304,7 +294,7 @@ def _commit_change(
                 candidate, apply_result = model_build()
                 session.problem.model = candidate
                 recon = R.reconcile(
-                    session.problem, shipped=getattr(session, "shipped_parameter_df", None))
+                    session.problem, shipped=session.shipped_parameter_df)
                 # An EMPTY model is refused rather than committed — where "empty" is the same
                 # predicate `model_authored` reports: no species at all, or no DYNAMICS (neither
                 # a reaction nor a rate/assignment rule). Both are unscoreable, and the first is
@@ -366,7 +356,6 @@ def _commit_change(
             session.problem.parameter_df = old_params
             raise
 
-        new_sbml = session.problem.model.to_sbml_str()  # serialize once; reused for both hashes
         warnings = (_parsimony_warnings(session.problem, old_species) if recon is not None else [])
         # Warnings raised by the edit callback itself (e.g. change_parameters' advisory sigma cap)
         # must reach the CALLER, not just the provenance log — an advisory nobody reads is the same
@@ -399,7 +388,9 @@ def _commit_change(
         # always a model (see `session.has_model`).
         initial_conditions = R.initial_conditions_report(
             session.problem, added=set(param_diff["added"]))
-        # Log the edit (no version — versions are fit snapshots, see `fit`) and mark it pending.
+        # Log the edit. No version — versions are fit snapshots (see `session.fit`). Written
+        # before the fit so a change that fails to score still leaves a trace, and because
+        # `references` (resolved PubMed metadata) lives nowhere else.
         event = session.provenance.append_event({
             "type": "edit",
             "operation": op,
@@ -409,15 +400,7 @@ def _commit_change(
             "references": resolved,
             "parameter_diff": param_diff,
             "warnings": warnings,
-            "model_hash_before": sha16(old_sbml),
-            "model_hash_after": sha16(new_sbml),
-            # Problem hash = model + parameter table, so a parameter-only edit (bounds/scale)
-            # is reflected here even though the two model hashes above are identical.
-            "problem_hash_before": problem_fingerprint(old_sbml, old_params),
-            "problem_hash_after": problem_fingerprint(new_sbml, session.problem.parameter_df),
         })
-        session.record_edit(op, op_args, justification)
-        n_pending = len(session.pending_edits)
 
     return {
         "applied": True,
@@ -431,14 +414,11 @@ def _commit_change(
         "warnings": warnings,
         "messages": edit_messages,
         "parameter_diff": param_diff,
-        "pending_fit": True,
-        "n_pending_edits": n_pending,
         "event_timestamp": event["timestamp"],
-        "message": (
-            "Edit applied to the working model but NOT yet scored — no fit ran and no version was "
-            "created. Make any further edits that belong to this change, then call fit() to fit the "
-            "free parameters, snapshot a version, and get the fit metrics."
-        ),
+        # What this edit was, for `session.fit` to record on the fit event. Passed forward rather
+        # than parked on the session: the change and its score are one call, so there is no
+        # unscored-edit state for the fit to read back.
+        "staged_edit": {"operation": op, "args": op_args, "justification": justification},
     }
 
 
@@ -454,10 +434,8 @@ def set_model(
     false``) AND re-authors/replaces an existing model wholesale. Every structural change — adding
     or removing a reaction, changing a rate law — is made by re-authoring the whole model in one
     coherent step. Like every edit it reconciles SBML↔PEtab (parametric ICs + parameter-table
-    sync) and lints, reverting on failure so a bad (re-)author changes nothing — but it does NOT
-    fit and does NOT create a version (issue #81); the caller scores it. De-duplication of an
-    identical structure is applied by the FIT (issue #59), not here, so an identical structure is
-    only fit once.
+    sync) and lints, reverting on failure so a bad (re-)author changes nothing; the caller scores
+    it, and the de-duplication that keeps an identical structure from being fit twice lives there.
 
     Because the whole model is replaced, reconcile drops the parameter-table rows of any
     parameter the new model no longer declares. That silently discards a previously-fitted
@@ -624,7 +602,7 @@ def _pinned_side(session, problem, parameter_id: str) -> str | None:
     ``None`` (no block) whenever there is no fit to judge against."""
     from . import fitting
 
-    fitted = (getattr(session, "simulation", None) or {}).get("fitted_parameters")
+    fitted = (session.simulation or {}).get("fitted_parameters")
     if not fitted:
         return None
     for flag in fitting.parameters_at_bound(fitted, problem.parameter_df):
@@ -650,9 +628,7 @@ def _widening_history(session, parameter_id: str, side: str) -> tuple[int, float
       version's ``neg_log_likelihood`` is missing (e.g. a simulate-only commit).
 
     Needs no extra per-session state; ``None``/``0`` whenever the history can't be read."""
-    prov = getattr(session, "provenance", None)
-    if prov is None:
-        return 0, None
+    prov = session.provenance
     bound_col = UPPER_BOUND if side == "upper" else LOWER_BOUND
     try:
         metas = prov.list_versions()
@@ -668,8 +644,13 @@ def _widening_history(session, parameter_id: str, side: str) -> tuple[int, float
 
     count = 0
     last_gain: float | None = None
-    prev_bound: float | None = None
     prev_nllh: float | None = None
+    # Anchor on the table the problem SHIPPED, so the walk sees a transition into the first
+    # version instead of consuming it to establish a baseline.
+    try:
+        prev_bound = float(session.shipped_parameter_df.loc[parameter_id, bound_col])
+    except Exception:  # noqa: BLE001 - parameter not in the shipped table
+        prev_bound = None
     for v in sorted(nllh_by_version):
         try:
             bound = float(prov.get_parameter_df(v).loc[parameter_id, bound_col])
@@ -889,17 +870,15 @@ def change_parameters(
 def working_state(session) -> dict[str, Any]:
     """Snapshot the working state an edit mutates, so it can be undone AFTER the fact.
 
-    ``_commit_change`` already reverts an edit that fails its own reconcile/lint, but that
-    rollback is inside the edit. This snapshot covers the step after it: the fit. Holds the model
-    OBJECT (an edit replaces the reference rather than mutating it) plus a deep copy of the
-    parameter table, and the pending-edit count to trim back to.
+    ``_commit_change`` reverts an edit that fails its own reconcile/lint; this snapshot covers the
+    step after it, the fit. Holds the model OBJECT (an edit replaces the reference rather than
+    mutating it) plus a deep copy of the parameter table.
 
-    It also holds the last fit's ``simulation`` / ``optimization`` payloads. Those are what
-    ``get_fit_summary`` and every residual/diagnostic read report, and ``fit_and_simulate``
-    REBINDS them (it does not mutate the old dicts), so keeping the references is enough to put
-    the score back where it belongs. Without them a fit that ran and then failed to snapshot
-    would leave the reverted-away candidate's metrics on the session, attributed to the restored
-    model — the split state the all-or-nothing rule exists to prevent.
+    It also holds the last fit's ``simulation`` / ``optimization`` payloads — what
+    ``get_fit_summary`` and every residual/diagnostic read report. ``fit_and_simulate`` REBINDS
+    them rather than mutating, so keeping the references restores the score with the model;
+    otherwise a fit that ran and then failed to snapshot would leave the reverted-away
+    candidate's metrics attributed to the restored model.
     """
     with session.lock:
         return {
@@ -907,67 +886,39 @@ def working_state(session) -> dict[str, Any]:
             "parameters": session.problem.parameter_df.copy(deep=True),
             "simulation": session.simulation,
             "optimization": session.optimization,
-            "n_pending_edits": len(session.pending_edits),
         }
 
 
 def revert_working_state(session, snapshot: dict[str, Any], reason: str) -> None:
     """Undo an applied edit whose fit did not produce a version, and log the revert.
 
-    The invariant this exists for: a change is either scored or gone. Leaving an unscored edit in
-    place put the working model into a state nothing had verified — the agent's next call built on
-    an unknown baseline, `describe_problem` reported `has_unfit_edits: true` with no tool that
-    could clear it, and the finish gate blocked on it.
+    The invariant: a change is either scored or gone, so the working model is never a state
+    nothing verified. The `edit` event is not erased — the log is append-only and the edit did
+    happen — a ``revert`` event is appended after it.
 
-    The `edit` event is NOT erased — the log is append-only and the edit really did happen. A
-    ``revert`` event is appended after it, so the trace reads: edited, fit failed, reverted.
-
-    The last fit's ``simulation``/``optimization`` go back too. A fit that got far enough to
-    simulate before failing (a snapshot or event-log write that raised afterwards) has already
-    overwritten both, so restoring only the model would leave ``get_fit_summary`` — and the
-    residual diagnostics, the SQL ``simulations`` table and the multistart traces — describing a
+    The last fit's ``simulation``/``optimization`` go back too: a fit that simulated before
+    failing has already overwritten both, and restoring only the model would leave
+    ``get_fit_summary``, the residual diagnostics and the SQL ``simulations`` table describing a
     candidate that is no longer the working model.
     """
     with session.lock:
-        before = session.problem.model.to_sbml_str()
-        before_params = session.problem.parameter_df
         session.problem.model = snapshot["model"]
         session.problem.parameter_df = snapshot["parameters"]
         session.simulation = snapshot["simulation"]
         session.optimization = snapshot["optimization"]
-        del session.pending_edits[snapshot["n_pending_edits"]:]
         session.provenance.append_event({
             "type": "revert",
             "operation": "make_changes",
             "reason": reason,
-            "model_hash_before": sha16(before),
-            "model_hash_after": sha16(session.problem.model.to_sbml_str()),
-            "problem_hash_before": problem_fingerprint(before, before_params),
-            "problem_hash_after": problem_fingerprint(
-                session.problem.model.to_sbml_str(), session.problem.parameter_df),
         })
 
 
 
-def clear_scored_edits(session, snapshot: dict[str, Any]) -> None:
-    """Drop pending edits that a snapshotted version already records, leaving the model alone.
-
-    The counterpart to :func:`revert_working_state` for the case where the version DID get
-    created: the change is scored, so the pending flag is stale bookkeeping rather than an
-    unscored edit, and undoing the model would throw away a version.
-    """
-    with session.lock:
-        del session.pending_edits[snapshot["n_pending_edits"]:]
-
-
-# Keys of the edit half that survive into a `make_changes` result: its DIAGNOSTICS, which are
-# merged with the fit's below. Everything else the edit produces — the reconcile report, the
-# validation report, the parameter diff, the initial-condition account, the echoed
-# justification/references, the pending-edit counters — is dropped: it rides on EVERY call, into a
-# history nothing prunes, and none of it is a score. What the agent decides on is the fit, so the
-# fit is the result. (The dropped reports are readable on demand: `get_model_structure` carries the
-# reconciled model AND the per-species initial-condition account, `get_parameters` each row's role
-# and estimated/fixed status.)
+# Keys of the edit half that survive into a `make_changes` result: its DIAGNOSTICS, merged with
+# the fit's below. Everything else the edit produces is dropped — it rides on EVERY call into a
+# history nothing prunes, and none of it is a score. Readable on demand instead:
+# `get_model_structure` carries the reconciled model and the initial-condition account,
+# `get_parameters` each row's role and status.
 _EDIT_KEYS_KEPT = ("warnings", "messages")
 
 
@@ -1001,10 +952,8 @@ def bundle_result(
     different change); a top-level "repair it and try again" would send the agent straight
     back into the loop the guard exists to break, and the agent reads the message first.
 
-    Whether a version was created is decided by comparing HEAD against ``head_before``, NOT by
-    ``has_unfit_edits()``. They usually agree, but ``session.fit`` clears the pending edits several
-    statements after it snapshots — an event-log write failure in that window leaves the edits
-    pending with HEAD already advanced, and the proxy would then claim nothing was scored.
+    Whether a version was created is decided by comparing HEAD against ``head_before`` — the only
+    signal that survives a failure between the snapshot and the end of ``session.fit``.
     """
     committed = bool(fit_result.get("committed"))
     no_change = bool(fit_result.get("no_change"))

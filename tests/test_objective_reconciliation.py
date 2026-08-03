@@ -24,10 +24,13 @@ from petab_mcp import fitting
 
 
 class _Session:
-    """Just enough session for _reconcile_objective (it only logs)."""
+    """Just enough session for _reconcile_objective (which only logs) and compute_improvement,
+    which reads the best-BIC checkpoint. Spelled out rather than left to a getattr default in
+    production code: a fake that omits state the real session always has lets a typo pass."""
 
     def __init__(self):
         self.logger = logging.getLogger("test_objective_reconciliation")
+        self.best = None
 
 
 @pytest.fixture

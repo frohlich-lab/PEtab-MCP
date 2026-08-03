@@ -70,7 +70,7 @@ def test_a_re_author_and_its_parameters_apply_atomically(session):
         ],
     )
     assert res["applied"] is True and res["version"] is None
-    assert res["pending_fit"] is True and res["n_pending_edits"] == 1
+    assert res["staged_edit"]["operation"] == "make_changes"
     # the EDIT half on its own does not fit; the tool layer adds that (see the server tests below)
     assert "fit" not in res and "committed" not in res
 
@@ -116,7 +116,6 @@ def test_a_parameters_rejection_reverts_the_re_author(session):
 
     assert session.problem.model.to_sbml_str() == before_model
     assert _records(session) == before_params
-    assert not session.has_unfit_edits()
     assert not [e for e in session.provenance.recent_events() if e["type"] == "edit"]
 
 
@@ -134,7 +133,7 @@ def test_a_parameters_entry_for_a_dropped_parameter_is_rejected(session):
 
 def test_a_re_author_without_parameters_edits_only_the_model(session):
     res = O.set_model(session, _antimony(), justification="plain re-author")
-    assert res["applied"] is True and res["version"] is None and res["pending_fit"] is True
+    assert res["applied"] is True and res["version"] is None
     edits = [e for e in session.provenance.recent_events() if e["type"] == "edit"]
     assert "parameters" not in edits[-1]["args"]
 
@@ -164,7 +163,7 @@ def test_a_non_numeric_bound_is_a_clean_rejection(session, bad):
         O.set_model(
             session, _antimony(), justification="x",
             parameters=[{"parameter_id": "k1", "lower_bound": bad, "upper_bound": 1e3}])
-    assert not session.has_unfit_edits()
+    assert not [e for e in session.provenance.recent_events() if e["type"] == "edit"]
 
 
 # -- the fit the tool always runs (server layer) -------------------------------
@@ -203,17 +202,16 @@ def test_one_call_produces_exactly_one_version(tmp_path):
     })
     # the fit is the result: flat, not nested, and named as get_fit_summary names it
     assert res["applied"] is True
-    assert res["committed"] is True and res["version"] == 1
+    assert res["committed"] is True and res["version"] == 0
     assert res["neg_log_likelihood"] is not None and res["bic"] is not None
     assert "fit" not in res
     # and the edit's own bookkeeping is NOT in it — none of it is a score, and all of it would
     # ride on every call into a history nothing prunes
     assert not ({"reconcile", "validation", "parameter_diff", "initial_conditions",
-                 "justification", "references", "operation", "pending_fit",
-                 "n_pending_edits"} & set(res))
+                 "justification", "references", "operation", "staged_edit"} & set(res))
 
     head = _head(mcp)
-    assert head["current_version"] == 1 and head["has_unfit_edits"] is False
+    assert head["current_version"] == 0
     events = _listed(_call(mcp, "get_provenance", {}))
     assert len([e for e in events if e["type"] == "edit"]) == 1
     assert len([e for e in events if e["type"] == "fit"]) == 1
@@ -231,9 +229,8 @@ def test_a_parameters_only_call_fits_too(tmp_path):
         "justification": "widen k1 and score it",
         "n_starts": 2,
     })
-    assert res["applied"] is True and res["committed"] is True and res["version"] == 1
+    assert res["applied"] is True and res["committed"] is True and res["version"] == 0
     assert res["bic"] is not None
-    assert _head(mcp)["has_unfit_edits"] is False
 
 
 def test_a_call_that_changes_nothing_is_rejected_before_it_fits(tmp_path):
@@ -244,7 +241,7 @@ def test_a_call_that_changes_nothing_is_rejected_before_it_fits(tmp_path):
     assert res["applied"] is False
     assert "antimony" in res["error"] and "parameters" in res["error"]
     assert "fit" not in res and "committed" not in res
-    assert _head(mcp)["current_version"] == 0
+    assert _head(mcp)["current_version"] == -1
 
 
 def test_dedup_skip_reports_no_change(tmp_path):
@@ -253,19 +250,19 @@ def test_dedup_skip_reports_no_change(tmp_path):
     mcp = _server(tmp_path, auto_fit=True)
     first = _call(mcp, "make_changes", {
         "antimony": _antimony(), "justification": "initial", "n_starts": 2})
-    assert first["committed"] is True and first["version"] == 1
+    assert first["committed"] is True and first["version"] == 0
 
     again = _call(mcp, "make_changes", {
         "antimony": _antimony(), "justification": "same structure again", "n_starts": 2})
     assert again["applied"] is True          # the edit itself is always cheap
     assert again["committed"] is False
     assert again["no_change"] is True
-    assert again["duplicate_of_version"] == 1
-    assert again["version"] == 1
+    assert again["duplicate_of_version"] == 0
+    assert again["version"] == 0
     # NOT reverted: the resulting model IS an existing version, byte-identical to it, so there is
     # nothing unscored to undo — which is why the no-op reports applied: true.
     head = _head(mcp)
-    assert head["current_version"] == 1 and head["has_unfit_edits"] is False
+    assert head["current_version"] == 0
 
 
 def test_a_fit_failure_reverts_the_edit(tmp_path, monkeypatch):
@@ -285,13 +282,13 @@ def test_a_fit_failure_reverts_the_edit(tmp_path, monkeypatch):
         "parameters": [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
     })
     assert res["applied"] is False                # applied, then undone -> not in place
-    assert res["committed"] is False and res["version"] == 0
+    assert res["committed"] is False and res["version"] == -1
     assert "boom" in res["error"]
     assert "REVERTED" in res["message"]
 
     # the model AND the bounds are back where they were
     head = _head(mcp)
-    assert head["has_unfit_edits"] is False and head["current_version"] == 0
+    assert head["current_version"] == -1
     after = {r["parameterId"]: r for r in _listed(_call(mcp, "get_parameters", {}))}
     assert "k3" not in after
     assert float(after["k1"]["lowerBound"]) == float(before["k1"]["lowerBound"])
@@ -335,7 +332,7 @@ def test_a_rejected_edit_never_fits(tmp_path):
         "antimony": _antimony(), "justification": "",  # empty justification is rejected
     })
     assert res["applied"] is False and "fit" not in res and "committed" not in res
-    assert _head(mcp)["current_version"] == 0
+    assert _head(mcp)["current_version"] == -1
 
 
 def test_the_multistart_default_and_the_starts_actually_used_are_reported(tmp_path):
@@ -376,13 +373,13 @@ def test_a_harder_fit_of_an_unchanged_model_is_not_skipped(tmp_path):
 
     # more starts -> a real fit, with a warning explaining why it wasn't skipped
     harder = _call(mcp, "make_changes", {**same_model, "n_starts": 4})
-    assert harder["committed"] is True and harder["version"] == 2
+    assert harder["committed"] is True and harder["version"] == 1
     assert harder["n_starts"] == 4
     assert any("multistarts against its 2" in w for w in harder["warnings"])
 
     # fewer starts than the new HEAD -> back to a no-op, not a weaker refit
     weaker = _call(mcp, "make_changes", {**same_model, "n_starts": 3})
-    assert weaker["no_change"] is True and _head(mcp)["current_version"] == 2
+    assert weaker["no_change"] is True and _head(mcp)["current_version"] == 1
 
 
 def test_a_bad_n_starts_is_rejected_before_the_edit_applies(tmp_path):
@@ -398,7 +395,7 @@ def test_a_bad_n_starts_is_rejected_before_the_edit_applies(tmp_path):
     assert res["applied"] is False and "n_starts" in res["error"]
     assert "fit" not in res            # the fit never ran
     head = _head(mcp)
-    assert head["has_unfit_edits"] is False and head["current_version"] == 0
+    assert head["current_version"] == -1
     assert "k3" not in {r["parameterId"] for r in _listed(_call(mcp, "get_parameters", {}))}
     # the rejection is auditable, including the refused VALUE, so the log says which argument was
     # wrong rather than only repeating the message
@@ -415,7 +412,7 @@ def test_a_fit_that_breaks_after_snapshotting_reports_the_new_version(tmp_path, 
     real_fit = PetabSession.fit
 
     def _fit_then_break(self, *a, **k):
-        real_fit(self, *a, **k)          # snapshots the version and clears the pending edits
+        real_fit(self, *a, **k)          # snapshots the version
         raise RuntimeError("late boom")  # ... then breaks, as a result-block bug would
 
     monkeypatch.setattr(PetabSession, "fit", _fit_then_break)
@@ -427,20 +424,16 @@ def test_a_fit_that_breaks_after_snapshotting_reports_the_new_version(tmp_path, 
     assert res["applied"] is True and res["committed"] is False
     assert "late boom" in res["error"]
     # HEAD really did advance, so say so instead of claiming the change is unscored
-    assert res["version"] == 1 == _head(mcp)["current_version"]
+    assert res["version"] == 0 == _head(mcp)["current_version"]
     assert "do NOT re-send" in res["message"] and "REVERTED" not in res["message"]
-    assert _head(mcp)["has_unfit_edits"] is False
 
 
-def test_a_stale_pending_edit_against_a_real_version_is_cleared_not_reverted(tmp_path, monkeypatch):
-    """`session.fit` clears the pending edits several statements AFTER it snapshots, so a failure
-    in that window (an event-log write, say) leaves them pending against a version that already
-    records them. Reverting on the pending flag would throw that version away; leaving the flag set
-    would report an unscored edit no call could clear. So HEAD is what decides, and the stale flag
-    is dropped."""
+def test_a_snapshot_that_lands_before_the_failure_is_kept_not_reverted(tmp_path, monkeypatch):
+    """A failure after the snapshot must not throw the version away: HEAD decides whether the
+    change was scored, and there is no second signal to disagree with it."""
     def _snapshot_then_break(self, *a, **k):
-        self._snapshot_version(label="fit", kind="fit", meta={"fit_status": "fit"}, sim=None)
-        raise RuntimeError("provenance write failed")   # ... before pending_edits is cleared
+        self._snapshot_version(meta={"fit_status": "fit"}, sim=None)
+        raise RuntimeError("provenance write failed")   # ... after the version is on disk
 
     monkeypatch.setattr(PetabSession, "fit", _snapshot_then_break)
     mcp = _server(tmp_path)
@@ -450,11 +443,11 @@ def test_a_stale_pending_edit_against_a_real_version_is_cleared_not_reverted(tmp
         "justification": "snapshot lands, event log does not"})
 
     assert res["applied"] is True and res["committed"] is False
-    assert res["version"] == 1                 # HEAD moved, and that is what decides
+    assert res["version"] == 0                 # HEAD moved, and that is what decides
     assert "do NOT re-send" in res["message"]
     head = _head(mcp)
     # the change is still there — it is the version — and nothing is left flagged unscored
-    assert head["current_version"] == 1 and head["has_unfit_edits"] is False
+    assert head["current_version"] == 0
     assert "k3" in {r["parameterId"] for r in _listed(_call(mcp, "get_parameters", {}))}
 
 
@@ -475,14 +468,17 @@ def test_a_fit_crash_is_degraded_to_a_failed_fit(tmp_path, monkeypatch):
     assert res["applied"] is False and res["committed"] is False
     assert "kaboom" in res["error"]
     head = _head(mcp)
-    assert head["has_unfit_edits"] is False and head["current_version"] == 0
+    assert head["current_version"] == -1
 
 
 def test_there_is_no_way_to_edit_without_fitting(tmp_path):
     """The invariant the collapse buys, asserted directly: EVERY call carries a committed verdict
-    and leaves no unscored edit — whether it succeeds, is rejected before it applies, or applies
-    and is then reverted. A future `fit=false`-shaped escape hatch — an argument, a default, a
-    second tool — brings back the state this removed, an edit nobody scored."""
+    and leaves the working model EQUAL to a stored version — whether it succeeds, is rejected
+    before it applies, or applies and is then reverted. A future `fit=false`-shaped escape hatch —
+    an argument, a default, a second tool — brings back the state this removed, an edit nobody
+    scored.
+
+    Checked by comparing the LIVE model against HEAD's stored model."""
     mcp = _server(tmp_path)
     for args in (
         {"antimony": _antimony(), "justification": "structural"},
@@ -495,7 +491,10 @@ def test_there_is_no_way_to_edit_without_fitting(tmp_path):
         assert "applied" in res, args
         if res["applied"]:
             assert "committed" in res, args
-        assert _head(mcp)["has_unfit_edits"] is False, args
+        # ...and the working model IS a stored version, not an unscored intermediate state
+        head = _call(mcp, "describe_problem", {})["current_version"]
+        stored = _call(mcp, "get_version", {"version": head})["model_antimony"]
+        assert _call(mcp, "get_model", {})["result"] == stored, args
 
 
 # -- the message stack ---------------------------------------------------------
@@ -563,4 +562,4 @@ def test_a_model_with_no_dynamics_is_rejected(tmp_path):
     assert any(m["level"] == "error" for m in res["messages"])
     # ...and the working model is untouched
     head = _head(mcp)
-    assert head["current_version"] == 0 and head["model_authored"] is True
+    assert head["current_version"] == -1 and head["model_authored"] is True

@@ -141,36 +141,19 @@ def test_fit_records_optimization_trace(fit_session):
     assert fit_session.optimization is None
 
 
-def test_fit_skip_reuses_cache(fit_session):
-    """The cache serves a fit of the identical estimation problem — which now includes the
-    STARTING values, since half the multistart is warm-started from them (see
-    fitting.warm_start_guesses). A refit after the fit moved the nominal values is therefore a
-    different optimization and correctly misses."""
+def test_a_fit_leaves_usable_warm_starts_for_the_next_one(fit_session):
+    """`previous_optima` needs BOTH x_names and x_scales, or it returns [] and the next fit loses
+    its warm starts."""
     from petab_mcp import fitting as F
 
-    before = fit_session.problem.parameter_df[NOMINAL_VALUE].copy()
-    r1 = F.fit_and_simulate(fit_session, fit_session.engine, do_fit=True, n_starts=2)
-    assert fit_session.last_fit_cache_hit is False  # first fit: cache miss, ran the optimizer
-
-    # A repeat from the SAME start point (the fit's write-back rewound) is served from the cache:
-    # the optimizer is skipped, but the fitted values + objective still match.
-    fit_session.problem.parameter_df[NOMINAL_VALUE] = before
-    r2 = F.fit_and_simulate(fit_session, fit_session.engine, do_fit=True, n_starts=2)
-    assert fit_session.last_fit_cache_hit is True
-    for k, v in r1["fitted_parameters"].items():
-        assert r2["fitted_parameters"][k] == pytest.approx(v)
-    assert r2["neg_log_likelihood"] == pytest.approx(r1["neg_log_likelihood"], rel=1e-6)
-
-    # The write-back moved the starting values, so the next fit warm-starts somewhere else: a
-    # miss, not a stale hit. (The `fit` tool's de-dup refuses this refit before it gets here.)
     F.fit_and_simulate(fit_session, fit_session.engine, do_fit=True, n_starts=2)
-    assert fit_session.last_fit_cache_hit is False
+    opt = fit_session.optimization
+    assert opt and opt["starts"]
+    assert opt.get("x_names") and opt.get("x_scales")
+    assert len(opt["x_names"]) == len(opt["x_scales"])
 
-    # disabling the cache forces a real re-fit
-    fit_session.problem.parameter_df[NOMINAL_VALUE] = before
-    fit_session.fit_cache = False
-    F.fit_and_simulate(fit_session, fit_session.engine, do_fit=True, n_starts=2)
-    assert fit_session.last_fit_cache_hit is False
+    x0 = [0.0] * len(opt["x_names"])
+    assert F.previous_optima(F.estimation_problem(fit_session, fit_session.engine)[0], opt, x0)
 
 
 def test_fit_tracks_improvement_vs_versions(fit_session):

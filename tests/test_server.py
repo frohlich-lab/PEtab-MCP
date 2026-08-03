@@ -113,13 +113,13 @@ def test_tools_registered(tmp_path):
         "get_fit_summary", "get_fit_diagnosis", "get_run_timing", "query_data", "list_data_tables",
         "get_fitting_log",
         "get_provenance", "list_versions", "get_version", "diff_versions",
-        "restore_version", "get_progress", "reset",
+        "restore_version", "get_progress",
     }
     assert expected <= names
     # `rollback_to` and `current_version` are NOT tools: restore_version IS rollback_to under the
     # name the going-back workflow uses, and describe_problem already returns current_version /
-    # has_unfit_edits / n_pending_edits. One operation, one tool schema.
-    assert not ({"rollback_to", "current_version"} & names)
+    # One operation, one tool schema.
+    assert not ({"rollback_to", "current_version", "reset"} & names)
     # `validate_problem` and `sync_parameters` were dead weight: every edit already
     # runs the same lint and the same reconcile, so neither told a caller anything it
     # could act on. The underlying validation.validate_problem() is unchanged and
@@ -158,7 +158,7 @@ def test_describe_and_parameters(tmp_path):
         desc = _structured(await mcp.call_tool("describe_problem", {}))
         assert desc["n_measurements"] == 6
         assert desc["free_parameters"] == ["k1", "k2"]
-        assert desc["current_version"] == 0
+        assert desc["current_version"] == -1
 
         params = _structured(await mcp.call_tool("get_parameters", {}))
         recs = params["result"] if isinstance(params, dict) and "result" in params else params
@@ -179,12 +179,12 @@ def test_edit_then_fit_creates_version_via_tools(tmp_path):
             "justification": "B converts to D",
             "references": ["PMID:1"],
         }))
-        assert res["applied"] is True and res["committed"] is True and res["version"] == 1
-        assert _structured(await mcp.call_tool("describe_problem", {}))["current_version"] == 1
+        assert res["applied"] is True and res["committed"] is True and res["version"] == 0
+        assert _structured(await mcp.call_tool("describe_problem", {}))["current_version"] == 0
 
         versions = _structured(await mcp.call_tool("list_versions", {}))
         vlist = versions["result"] if isinstance(versions, dict) and "result" in versions else versions
-        assert {v["version"] for v in vlist} == {0, 1}
+        assert {v["version"] for v in vlist} == {0}
 
         prov = _structured(await mcp.call_tool("get_provenance", {}))
         plist = prov["result"] if isinstance(prov, dict) and "result" in prov else prov
@@ -207,10 +207,10 @@ def test_the_result_is_the_fit_and_nothing_else(tmp_path):
         res = _structured(await mcp.call_tool("make_changes", {
             "antimony": _reauthored(["J: B => D; k3 * B;"]), "justification": "B converts to D",
         }))
-        assert res["applied"] is True and res["committed"] is True and res["version"] == 1
+        assert res["applied"] is True and res["committed"] is True and res["version"] == 0
         assert not ({"reconcile", "validation", "parameter_diff", "initial_conditions",
-                     "justification", "references", "operation", "pending_fit",
-                     "n_pending_edits", "fit"} & set(res))
+                     "justification", "references", "operation", "staged_edit",
+                     "fit"} & set(res))
         # the fit's own keys ARE there, at the top level and named as get_fit_summary names them
         assert {"fit_status", "neg_log_likelihood", "n_estimated", "bic"} <= set(res)
 
@@ -265,7 +265,7 @@ def test_negative_n_starts_rejected(tmp_path):
         assert res["applied"] is False
         assert "n_starts" in res["error"]
         cur = _structured(await mcp.call_tool("describe_problem", {}))
-        assert cur["current_version"] == 0 and cur["has_unfit_edits"] is False
+        assert cur["current_version"] == -1
 
     asyncio.run(go())
 
@@ -279,7 +279,7 @@ def test_a_change_that_changes_nothing_is_rejected(tmp_path):
         res = _structured(await mcp.call_tool("make_changes", {"justification": "nothing"}))
         assert res["applied"] is False
         assert "antimony" in res["error"] and "parameters" in res["error"]
-        assert _structured(await mcp.call_tool("describe_problem", {}))["current_version"] == 0
+        assert _structured(await mcp.call_tool("describe_problem", {}))["current_version"] == -1
 
     asyncio.run(go())
 
@@ -382,9 +382,9 @@ def test_a_re_author_and_its_bounds_are_one_edit_and_one_version(tmp_path):
             "antimony": _reauthored(["J: B => D; k3 * B;"]),
             "parameters": [{"parameter_id": "k1", "lower_bound": 1e-2, "upper_bound": 1e2}],
             "justification": "x", "references": ["PMID:1"]}))
-        assert res["applied"] is True and res["version"] == 1
+        assert res["applied"] is True and res["version"] == 0
         cur = _structured(await mcp.call_tool("describe_problem", {}))
-        assert cur["current_version"] == 1 and cur["has_unfit_edits"] is False
+        assert cur["current_version"] == 0
         # both halves are recorded as ONE edit, and the fit event says it scored exactly that one
         prov = _structured(await mcp.call_tool("get_provenance", {}))
         plist = prov["result"] if isinstance(prov, dict) and "result" in prov else prov
@@ -420,7 +420,12 @@ def test_restore_version_tool_registered_and_restores(tmp_path):
     mcp = _server(tmp_path)
 
     async def go():
-        # re-author to a one-reaction model (v1), then restore the original reversible v0
+        # score the reversible model as v0, re-author to one reaction (v1), then restore v0
+        await mcp.call_tool("make_changes", {
+            "antimony": _REVERSIBLE_ANTIMONY, "justification": "score the reversible model",
+            "references": ["PMID:1"]})
+        struct = _structured(await mcp.call_tool("get_model_structure", {}))
+        assert {r["id"] for r in struct["reactions"]} == {"r1", "r2"}
         await mcp.call_tool("make_changes", {
             "antimony": _ONE_REACTION_ANTIMONY, "justification": "drop r2", "references": ["PMID:1"]})
         struct = _structured(await mcp.call_tool("get_model_structure", {}))
@@ -451,6 +456,32 @@ def test_make_changes_builds_the_first_model_via_tool(tmp_path):
         desc2 = _structured(await mcp.call_tool("describe_problem", {}))
         assert desc2["model_authored"] is True  # the edit built the working model
         assert desc2["n_reactions"] == 2
+
+    asyncio.run(go())
+
+
+def test_an_unauthored_model_has_no_score_to_finish_on(tmp_path):
+    """Regression: the seed simulates to constants, so get_fit_summary reported a finite nll and
+    bic before anything was authored — which is the finish gate's whole admission test."""
+    mcp = _empty_model_server(tmp_path)
+
+    async def go():
+        assert _structured(await mcp.call_tool("describe_problem", {}))["model_authored"] is False
+
+        fit = _structured(await mcp.call_tool("get_fit_summary", {}))
+        assert fit.get("neg_log_likelihood") is None, "the seed is not a fit"
+        assert fit.get("bic") is None, "and it must not offer a score to finish on"
+
+        # the static tables stay queryable — the simulations table is empty but TYPED
+        tables = _structured(await mcp.call_tool("list_data_tables", {}))["tables"]
+        by_name = {t["table"]: t for t in tables}
+        assert by_name["simulations"]["n_rows"] == 0
+        assert by_name["measurements"]["n_rows"] > 0
+
+        # ...and once a mechanism IS authored, the score comes back
+        await mcp.call_tool("make_changes", {
+            "antimony": _REVERSIBLE_ANTIMONY, "justification": "reversible conversion"})
+        assert _structured(await mcp.call_tool("describe_problem", {}))["model_authored"] is True
 
     asyncio.run(go())
 
@@ -533,7 +564,7 @@ def test_fit_tools(tmp_path):
             "parameters": [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
             "justification": "widen bounds", "n_starts": 2,
         }))
-        assert res["applied"] is True and res["committed"] is True and res["version"] == 1
+        assert res["applied"] is True and res["committed"] is True and res["version"] == 0
         assert res["fit_status"] == "fit"
         assert res["neg_log_likelihood"] is not None
         assert res["improvement"]["is_new_best"] is not None
@@ -547,6 +578,9 @@ def test_fit_tools(tmp_path):
         assert diag["residual_structure"] == res["residual_structure"]
         assert diag["per_observable"] and "worst_points" in diag
         # diff_versions now reports the fit delta between versions
+        await mcp.call_tool("make_changes", {
+            "antimony": _ONE_REACTION_ANTIMONY, "justification": "a second scored version",
+            "n_starts": 2})
         d = _structured(await mcp.call_tool("diff_versions", {"from_version": 0, "to_version": 1}))
         assert "fit" in d and "neg_log_likelihood_delta" in d["fit"]
 

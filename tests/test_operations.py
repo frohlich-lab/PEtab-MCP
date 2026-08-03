@@ -53,17 +53,18 @@ def test_commit_change_refuses_a_no_op_edit(session):
     always passes param_edit), so the guard is unreachable today and was briefly removed as dead
     code. It is not: without it, both callbacks None falls straight through to the recording
     step, applying nothing but still appending an `edit` event to the append-only provenance log
-    and marking the session as having unfit edits. A no-op entry in an audit trail is worse than
-    a crash, so the contract the docstring states is enforced, and the log must stay untouched.
+    step, applying nothing but still appending an `edit` event to the append-only provenance log.
+    A no-op entry in an audit trail is worse than a crash, so the contract the docstring states is
+    enforced, and the log must stay untouched.
     """
     before_events = len(session.provenance.recent_events(limit=1000))
-    before_pending = session.has_unfit_edits()
+    before_version = session.provenance.current_version
 
     with pytest.raises(ValueError, match="at least one callback"):
         O._commit_change(session, "bogus_op", {}, "a justification", None)
 
     assert len(session.provenance.recent_events(limit=1000)) == before_events
-    assert session.has_unfit_edits() == before_pending
+    assert session.provenance.current_version == before_version
 
 
 def test_references_optional_for_model_ops(session):

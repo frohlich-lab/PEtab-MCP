@@ -132,7 +132,7 @@ def test_empty_problem_has_no_authored_model(empty_session):
     assert empty_session.model_authored() is False
     assert empty_session.has_model() is True
     # the initial version is still snapshotted
-    assert empty_session.provenance.current_version == 0
+    assert empty_session.provenance.current_version == -1
 
 
 def test_set_model_builds_the_first_model(empty_session):

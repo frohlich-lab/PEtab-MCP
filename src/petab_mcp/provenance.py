@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import logging
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -112,6 +113,19 @@ class ProvenanceStore:
     def _set_head(self, n: int) -> None:
         self.head_path.write_text(str(n))
 
+    @property
+    def last_version(self) -> int:
+        """The highest version number on disk, or -1. HEAD can point at an EARLIER version — a
+        restore moves it back — so this, not HEAD, is what the next snapshot counts from."""
+        vdirs = [int(d.name[1:]) for d in self.versions_dir.glob("v*")
+                 if d.is_dir() and d.name[1:].isdigit()]
+        return max(vdirs, default=-1)
+
+    def set_head(self, n: int) -> None:
+        """Point HEAD at an existing version without appending a new one."""
+        self._version_dir(n)          # raises UnknownEntityError if absent
+        self._set_head(n)
+
     # -- versions ----------------------------------------------------------
     def snapshot_version(
         self,
@@ -124,7 +138,7 @@ class ProvenanceStore:
         simulation: dict[str, Any] | None = None,
         optimization: dict[str, Any] | None = None,
     ) -> int:
-        n = self.current_version + 1
+        n = self.last_version + 1
         vdir = self.versions_dir / f"v{n}"
         vdir.mkdir(parents=True, exist_ok=True)
         (vdir / "model.ant").write_text(model_ant, encoding="utf-8")
@@ -239,12 +253,31 @@ class ProvenanceStore:
         }
 
     def list_versions(self) -> list[dict[str, Any]]:
+        """Every version's stored ``meta.json``, oldest first.
+
+        An entry that is unreadable, malformed, or not a JSON OBJECT is skipped and logged, not
+        returned: callers iterate the result and call ``.get`` on each element without guarding,
+        and a raise there escapes into the commit path. Callers also degrade a raise from this
+        method to an empty list, which would silently disable de-duplication and the
+        repeated-widening backstop. Skipping per file degrades proportionally.
+        """
         out = []
         # Only ``v<int>`` directories are versions; skip any stray ``v*`` entry (a leftover temp
         # dir, an editor artefact) so `int(name[1:])` can't raise and break version listing.
         vdirs = [d for d in self.versions_dir.glob("v*") if d.is_dir() and d.name[1:].isdigit()]
         for vdir in sorted(vdirs, key=lambda p: int(p.name[1:])):
-            meta = json.loads((vdir / "meta.json").read_text())
+            try:
+                meta = json.loads((vdir / "meta.json").read_text())
+            except (OSError, ValueError):
+                logging.getLogger("petab_mcp").warning(
+                    "version %s has an unreadable meta.json; excluded from the version listing",
+                    vdir.name, exc_info=True)
+                continue
+            if not isinstance(meta, dict):
+                logging.getLogger("petab_mcp").warning(
+                    "version %s has a meta.json that is not a JSON object (%s); excluded from "
+                    "the version listing", vdir.name, type(meta).__name__)
+                continue
             out.append(meta)
         return out
 

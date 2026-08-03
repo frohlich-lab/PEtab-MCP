@@ -156,8 +156,8 @@ class AmiciEngine:
         Wrapped whole in a broad guard: this is best-effort diagnostics and must NEVER block a
         build — a throwing libsbml accessor or an un-round-trippable model would otherwise do so.
         """
-        log = getattr(self.session, "logger", None)
-        if log is None or sbml_hash in self._dumped_hashes:
+        log = self.session.logger
+        if sbml_hash in self._dumped_hashes:
             return
         self._dumped_hashes.add(sbml_hash)
         try:

@@ -21,6 +21,18 @@ from petab_mcp.constants import (
 )
 
 
+def _checkpoint(*, bic, version, nll, **over):
+    """A best-BIC checkpoint seeded directly, as record_fit_progress would adopt one."""
+    from petab_mcp.session import Checkpoint
+
+    fields = dict(version=version, bic=bic, nll=nll, gof_pvalue=None, sigma_estimated=False,
+                  sigma_inflated=False, sigma_collapsed=False, sigma_assessable=False,
+                  residual_flagged=False)
+    fields.update(over)
+    return Checkpoint(**fields)
+
+
+
 def _fitsim(nll: float, chi2: float, *, n: int = 20, k: int = 2) -> dict:
     """A minimal ``fit_and_simulate``-shaped payload for a genuine fit."""
     return {"status": "fit", "neg_log_likelihood": nll, "chi2": chi2,
@@ -38,7 +50,7 @@ def test_is_new_best_tracks_bic_effect_size(session):
     assert first["bic"] is not None
 
     # Seed the best-BIC checkpoint at that fit's BIC (as record_fit_progress would).
-    session.best_bic, session.best_version, session.best_nll = first["bic"], 1, -50.0
+    session.best = _checkpoint(bic=first["bic"], version=1, nll=-50.0)
 
     # BIC = k·ln(n) + 2·nll, so at fixed k,n a ΔBIC of X needs a ΔNLL of X/2. A sub-threshold BIC
     # improvement (< NEW_BEST_MIN_DELTA_BIC) is NOT a new best, even though nll strictly dropped.
@@ -68,8 +80,8 @@ def test_is_new_best_tracks_bic_effect_size(session):
 def test_is_new_best_rejects_nll_gain_that_worsens_bic(session):
     """The whole point of gating on BIC not nll: a fit that lowers nll but adds parameters that
     RAISE BIC is not a new best."""
-    session.best_bic = fitting.goodness_of_fit(-50.0, 18.0, 2, 20)["bic"]  # checkpoint at k=2
-    session.best_version, session.best_nll = 1, -50.0
+    session.best = _checkpoint(                       # checkpoint at k=2
+        bic=fitting.goodness_of_fit(-50.0, 18.0, 2, 20)["bic"], version=1, nll=-50.0)
     # nll improves (-50 -> -51) but k jumps 2 -> 5: BIC = k·ln(20)+2·nll gets WORSE.
     fs = _fitsim(-51.0, 18.0, k=5)
     imp = fitting.compute_improvement(session, nllh=-51.0, objective_before=-50.0, fitsim=fs)
@@ -140,7 +152,7 @@ def test_inflated_sigma_blocks_the_adequate_plateau_stop(session):
         session.record_fit_progress(v, _fitsim_inflated_sigma(-50.0, 18.0), {"is_new_best": False})
     p = session.progress_report()
     assert p["best_gof_pvalue"] is not None and p["best_gof_pvalue"] >= 0.05  # GoF LOOKS adequate
-    assert session.best_sigma_inflated is True                                # but sigma inflated
+    assert session.best.sigma_inflated is True                                # but sigma inflated
     assert p["bic_improvement_over_last_n"] == pytest.approx(0.0)             # and BIC is flat
     assert p["should_stop"] is False                                          # -> no plateau stop
 
@@ -158,7 +170,7 @@ def test_estimated_sigma_not_inflated_is_adequate_without_gof(session):
         session.record_fit_progress(v, _fs(), {"is_new_best": False})
     p = session.progress_report()
     assert p["best_gof_pvalue"] is not None and p["best_gof_pvalue"] < 0.05  # GoF WOULD reject
-    assert session.best_sigma_estimated is True and session.best_sigma_inflated is False
+    assert session.best.sigma_estimated is True and session.best.sigma_inflated is False
     assert p["should_stop"] is True                                          # adequate anyway
     assert "plateau" in p["stop_reason"].lower() and "chi2 gof" not in p["stop_reason"].lower()
 
@@ -199,7 +211,7 @@ def test_sigma_gamed_improvement_does_not_reset_the_streak(session):
         session.record_fit_progress(v, _fitsim_inflated_sigma(-50.0 - i, 18.0),
                                     {"is_new_best": True})
     p = session.progress_report()
-    assert session.best_version is not None and session.best_sigma_inflated is True  # gamed best kept
+    assert session.best is not None and session.best.sigma_inflated is True  # gamed best kept
     assert p["non_improving_streak"] == NON_IMPROVING_STREAK_CAP  # gamed bests never reset it
     assert p["should_stop"] is True                             # -> trips the streak cap
 
@@ -213,13 +225,13 @@ def test_gamed_fit_does_not_overwrite_a_plausible_best_checkpoint(session):
     plausible["noise_sigma_report"] = {"sigma": {"fitted": 0.05, "upper_bound_cap": 0.1,
                                                  "data_std": 0.2, "fraction_of_data_std": 0.25}}
     session.record_fit_progress(1, plausible, {"is_new_best": True})
-    best_v, best_bic = session.best_version, session.best_bic
-    assert best_v == 1 and session.best_sigma_inflated is False
+    best_v, best_bic = session.best.version, session.best.bic
+    assert best_v == 1 and session.best.sigma_inflated is False
     # A later fit with STRICTLY LOWER BIC (nll -80 < -50) but an inflated sigma must NOT take over.
     session.record_fit_progress(2, _fitsim_inflated_sigma(-80.0, 18.0), {"is_new_best": True})
-    assert session.best_version == best_v            # plausible checkpoint preserved...
-    assert session.best_bic == best_bic
-    assert session.best_sigma_inflated is False       # ...best is still the plausible model
+    assert session.best.version == best_v            # plausible checkpoint preserved...
+    assert session.best.bic == best_bic
+    assert session.best.sigma_inflated is False       # ...best is still the plausible model
 
 
 def test_a_plausible_new_best_after_gaming_resets_the_streak(session):
@@ -254,8 +266,8 @@ def test_flagged_residual_structure_blocks_the_adequate_plateau_stop(session):
     for v in range(2, 2 + PLATEAU_WINDOW):
         session.record_fit_progress(v, _fs_plausible_sigma_flagged(True), {"is_new_best": False})
     p = session.progress_report()
-    assert session.best_sigma_estimated is True and session.best_sigma_inflated is False
-    assert session.best_residual_flagged is True
+    assert session.best.sigma_estimated is True and session.best.sigma_inflated is False
+    assert session.best.residual_flagged is True
     assert p["bic_improvement_over_last_n"] == pytest.approx(0.0)  # BIC is flat...
     assert p["should_stop"] is False                              # ...but residual structure blocks it
 
@@ -267,7 +279,7 @@ def test_unflagged_residual_still_plateau_stops(session):
     for v in range(2, 2 + PLATEAU_WINDOW):
         session.record_fit_progress(v, _fs_plausible_sigma_flagged(False), {"is_new_best": False})
     p = session.progress_report()
-    assert session.best_residual_flagged is False
+    assert session.best.residual_flagged is False
     assert p["should_stop"] is True and "plateau" in p["stop_reason"].lower()
 
 
@@ -290,8 +302,8 @@ def test_collapsed_sigma_blocks_the_adequate_plateau_stop(session):
     for v in range(2, 2 + PLATEAU_WINDOW):
         session.record_fit_progress(v, _fitsim_collapsed_sigma(-50.0, 18.0), {"is_new_best": False})
     p = session.progress_report()
-    assert session.best_sigma_estimated is True and session.best_sigma_collapsed is True
-    assert session.best_sigma_inflated is False
+    assert session.best.sigma_estimated is True and session.best.sigma_collapsed is True
+    assert session.best.sigma_inflated is False
     assert p["should_stop"] is False
 
 
@@ -402,12 +414,16 @@ def test_nan_first_fit_does_not_become_the_checkpoint(session):
 
 
 def test_improving_fits_are_never_locked_out_by_a_poisoned_checkpoint(session):
-    """Belt-and-braces: even if a NaN reaches best_bic, later fits must still be comparable.
+    """A NaN can never become the checkpoint, and fits after an unscoreable one still register.
 
-    This is the exact shape of the lost run — a NaN checkpoint followed by fits at BIC 580,
-    569 and 519 — none of which could register under the old comparison.
+    This is the exact shape of the lost run — an unscoreable fit followed by fits at BIC 580,
+    569 and 519 — none of which could register under the old comparison. The NaN is now refused
+    by `Checkpoint` itself, so the poisoned state is unconstructible rather than survivable.
     """
-    session.best_bic, session.best_version, session.best_nll = float("nan"), 1, float("nan")
+    with pytest.raises(ValueError, match="real number"):
+        _checkpoint(bic=float("nan"), version=1, nll=float("nan"))
+    # An unscoreable fit leaves no checkpoint at all, which is the state the run recovers from.
+    session.best = None
     for bic_target in (580.97, 569.19, 519.86):
         # BIC = k·ln(n) + 2·nll  =>  nll = (bic - k·ln(n)) / 2
         import math
@@ -416,7 +432,7 @@ def test_improving_fits_are_never_locked_out_by_a_poisoned_checkpoint(session):
         imp = fitting.compute_improvement(session, nllh=nll, objective_before=8377.0, fitsim=fs)
         assert imp["is_new_best"] is True, f"BIC {bic_target} must be able to beat a NaN"
         session.record_fit_progress(2, fs, imp)
-        assert session.best_bic == pytest.approx(bic_target)
+        assert session.best.bic == pytest.approx(bic_target)
 
 
 def test_stall_without_any_checkpoint_reports_an_evaluation_failure(session):
@@ -451,7 +467,7 @@ def test_fixed_sigma_overfit_is_not_adequate(session):
     for v in range(2, 2 + PLATEAU_WINDOW):
         session.record_fit_progress(v, fs, {"is_new_best": False})
     p = session.progress_report()
-    assert session.best_sigma_estimated is False
+    assert session.best.sigma_estimated is False
     assert p["best_gof_pvalue"] > 0.99          # would pass a one-sided `>= 0.05` test
     assert p["should_stop"] is False            # ...but the two-sided gate blocks the stop
 

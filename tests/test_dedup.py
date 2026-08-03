@@ -179,16 +179,17 @@ def test_decide_handles_numpy_bic_scalars():
 def test_set_model_reauthor_is_a_fit_free_edit(session):
     """Re-authoring the current structure is now a plain fit-free edit — it APPLIES (no dedup,
     no fit, no version at edit time); the de-dup that skips an identical model happens at fit."""
-    assert session.provenance.current_version == 0
+    assert session.provenance.current_version == -1
     res = O.set_model(session, REVERSIBLE_OTHER_VALUES, justification="same structure again")
     assert res["applied"] is True
-    assert res["version"] is None and res["pending_fit"] is True
+    assert res["version"] is None
     # no version is snapshotted by an edit
-    assert session.provenance.current_version == 0
+    assert session.provenance.current_version == -1
 
 
-def test_restore_version_goes_back_without_dedup(session):
+def test_restore_version_goes_back_without_dedup(session, reauthor_toy):
     """restore_version is the cheap way back — it restores a prior model and is not a re-author."""
+    reauthor_toy(session)                       # v0: the reversible structure, scored
     O.set_model(session, ONE_REACTION, justification="drop r2")
     assert {session.model.sbml_model.getReaction(i).getId()
             for i in range(session.model.sbml_model.getNumReactions())} == {"r1"}

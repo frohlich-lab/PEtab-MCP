@@ -177,11 +177,11 @@ def _frames(session) -> dict[str, Any]:
         ),
     }
 
-    sim = getattr(session, "simulation", None) or {}
+    sim = session.simulation or {}
     records = sim.get("records") or []
     frames["simulations"] = pd.DataFrame(records, columns=SIMULATION_COLUMNS)
 
-    opt = getattr(session, "optimization", None) or {}
+    opt = session.optimization or {}
     frames["optimization_starts"] = pd.DataFrame(
         opt.get("starts") or [], columns=OPTIMIZATION_START_COLUMNS
     )
@@ -361,7 +361,7 @@ def fit_diagnosis(session, worst_n: int = 8) -> dict[str, Any]:
     noise_sigma: dict[str, Any] = {}
     try:
         from . import fitting
-        _fit = (getattr(session, "simulation", None) or {}).get("fitted_parameters")
+        _fit = (session.simulation or {}).get("fitted_parameters")
         _rep = fitting.noise_sigma_report(session.problem, _fit)
         if _rep:
             noise_sigma = {"report": _rep, "advice": fitting.noise_sigma_advice(_rep)}
@@ -610,7 +610,7 @@ def _replicate_lof(session, sims=None) -> dict[str, Any]:
         # The records use this module's snake_case column names; reconcile speaks PEtab's.
         frame = sims.rename(columns={"observable_id": OBSERVABLE_ID,
                                      "condition_id": SIMULATION_CONDITION_ID, "time": TIME})
-        fitted = (getattr(session, "simulation", None) or {}).get("fitted_parameters")
+        fitted = (session.simulation or {}).get("fitted_parameters")
         n_structural = _n_estimated_structural(problem)
         verdicts: list[dict[str, Any]] = []
         label_observable: dict[str, Any] = {}

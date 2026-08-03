@@ -13,7 +13,6 @@ Tool groups:
   and the optimizer numerics with ``get_fitting_log`` (the pyPESTO/Fides log)
 * provenance/versions/errors: ``get_provenance``, ``get_errors``, ``list_versions``,
   ``get_version``, ``diff_versions``, ``restore_version``, ``get_progress``
-* session: ``reset``
 * skills (tool-usage documentation, bundled under ``_skills/``): ``list_skills``,
   ``get_skill``
 
@@ -172,21 +171,20 @@ class _Ctx:
 
         Then the all-or-nothing rule: if no version was created, the edit is UNDONE (``before`` is
         the :func:`operations.working_state` snapshot taken before it applied). A change is either
-        scored or gone — an edit left in place unscored is a working model nothing has verified,
-        which the next call then builds on, and which no tool can clear now that there is no
-        standalone fit.
+        scored or gone, so the working model is never a state nothing has verified.
 
         The de-dup no-op is not a failure and is not reverted: the resulting model IS an existing
         version, byte-identical to it, so there is nothing unscored to undo.
         """
-        # HEAD before the fit, so we can tell whether a version was actually created instead of
-        # inferring it from the pending-edit flag: `session.fit` clears the pending edits several
-        # statements after it snapshots, and a failure in that window leaves them pending with
-        # HEAD already advanced.
+        # HEAD before the fit — the only signal for "was a version created" that survives a
+        # failure between the snapshot and the end of `session.fit`.
         head_before = self.session.provenance.current_version
         try:
             fit_result = self.run_fit(
-                lambda: self.session.fit(n_starts=n_starts, justification=justification or None),
+                lambda: self.session.fit(
+                    n_starts=n_starts, justification=justification or None,
+                    staged_edits=[edit_result["staged_edit"]]
+                    if edit_result.get("staged_edit") else None),
                 {"n_starts": n_starts},
             )
         except Exception as exc:  # noqa: BLE001 - already logged by run_fit; see the docstring
@@ -205,13 +203,6 @@ class _Ctx:
                 self.session, before,
                 f"the fit produced no version: {fit_result.get('error') or 'no error message'}",
             )
-        elif snapshotted and self.session.has_unfit_edits():
-            # `session.fit` clears the pending edits several statements AFTER it snapshots, so a
-            # failure in that window (an event-log write, say) leaves them pending against a
-            # version that already records them. Clear them rather than revert: the change IS
-            # scored, and leaving the flag set would make `describe_problem` report an unscored
-            # edit that no call could clear.
-            ops_mod.clear_scored_edits(self.session, before)
         return ops_mod.bundle_result(self.session, edit_result, fit_result, head_before)
 
     def reject_operation(
@@ -488,7 +479,8 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         `reduced_chi2`/`chi2_gof_pvalue` are only meaningful with a KNOWN noise level: when the
         observable noise sigmas are ESTIMATED, chi2 pins near `n_data_points` by construction, so
         reduced_chi2 ≈ 1 and its p-value are uninformative — do not use them as a fit-adequacy
-        gate (judge adequacy from residual STRUCTURE instead, e.g. `get_fit_diagnosis`).
+        gate (judge adequacy from residual STRUCTURE instead — the `residual_structure` verdict
+        rides on this result, same shape `get_fit_diagnosis` returns it in).
         `fitted_parameters` are LINEAR
         (unscaled) values; `parameter_scales` gives each one's estimation scale (lin/log10) —
         a fitted value is the linear number, never its log10 coordinate. `parameters_at_bound`
@@ -506,8 +498,9 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         it's at bound — a sigma approaching that reference is quietly doing the same thing as an
         at-bound parameter (masking a mechanism problem behind inflated noise); `make_changes`
         WARNS (does not reject) when widening a sigma past it. The decisive, ground-truth-free
-        evidence that a sigma is absorbing misfit is structured residuals — check
-        `get_fit_diagnosis`'s `residual_structure` verdict. Each entry also reports `data_noise_estimate`, a
+        evidence that a sigma is absorbing misfit is structured residuals — read the
+        `residual_structure` verdict on THIS result (`get_fit_diagnosis` carries the per-observable
+        table and worst points behind it). Each entry also reports `data_noise_estimate`, a
         MODEL-FREE noise level from successive measurement differences, and
         `fitted_over_data_noise` — purely ADVISORY (nothing gates on them). That estimate is biased
         HIGH (it counts whatever the mean does between samples as noise), so a fitted sigma far
@@ -706,7 +699,7 @@ def _register_provenance_tools(mcp: FastMCP, ctx: _Ctx) -> None:
 
     @mcp.tool()
     def get_provenance(limit: int = 50) -> list[dict[str, Any]]:
-        """Return the most recent provenance events (edits, fits, rollbacks, resets)."""
+        """Return the most recent provenance events (edits, fits, rollbacks)."""
         return session.provenance.recent_events(limit)
 
     @mcp.tool()
@@ -718,7 +711,7 @@ def _register_provenance_tools(mcp: FastMCP, ctx: _Ctx) -> None:
     def list_versions() -> list[dict[str, Any]]:
         """List all model versions (fit snapshots) with kind/label/timestamp and fit metrics
         (neg_log_likelihood, chi2, bic, is_new_best) — use it to rank versions by BIC and find
-        the best-scoring one. Every version is a fit snapshot (or the `initial`/`rollback`/`reset`
+        the best-scoring one. Every version is a fit snapshot (or the `rollback`
         snapshots); `is_new_best` tracks BIC (gated on a minimum effect size)."""
         return session.provenance.list_versions()
 
@@ -735,12 +728,8 @@ def _register_provenance_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         return ctx.run("diff_versions", lambda: session.provenance.diff_versions(from_version, to_version),
                        {"from": from_version, "to": to_version})
 
-    # NOTE: `rollback_to` and `current_version` are deliberately NOT exposed as tools.
-    # `restore_version` IS `rollback_to` (session.restore_version delegates to it) under the name
-    # that reads correctly for the going-back workflow, and `describe_problem` already returns
-    # `current_version` / `has_unfit_edits` / `n_pending_edits`. Two tools for one operation cost
-    # a JSON schema in every client's context on every turn and a second docstring to keep in
-    # sync — which is how they drifted apart in the first place. Both session methods remain.
+    # NOTE: `current_version` is not a tool — `describe_problem` already returns it. A second tool
+    # costs a JSON schema in every client's context on every turn and a docstring to keep in sync.
     @mcp.tool()
     def restore_version(version: int, justification: str = "") -> dict[str, Any]:
         """Bring a prior version's model + parameters back as the working state, WITHOUT refitting.
@@ -772,16 +761,6 @@ def _register_provenance_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         interaction order), not re-fit or widen the same one.
         """
         return session.progress_report()
-
-
-# ---------------------------------------------------------------- session tools
-def _register_session_tools(mcp: FastMCP, ctx: _Ctx) -> None:
-    session = ctx.session
-
-    @mcp.tool()
-    def reset() -> dict[str, Any]:
-        """Revert model and parameters to the initial version (v0)."""
-        return ctx.run("reset", session.reset)
 
 
 # --------------------------------------------------------------------- resources
@@ -888,7 +867,6 @@ def create_server(
     _register_parameter_tools(mcp, ctx)
     _register_fit_tools(mcp, ctx)
     _register_provenance_tools(mcp, ctx)
-    _register_session_tools(mcp, ctx)
     _register_resources(mcp, ctx)
     # Register the skills loaded above as `list_skills`/`get_skill` tools plus
     # `petab://skills` resources (no-op when no skills were found).

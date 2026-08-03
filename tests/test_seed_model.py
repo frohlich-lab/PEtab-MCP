@@ -115,19 +115,16 @@ def test_shipped_fixed_constants_are_still_protected(seeded):
     assert seeded.protected_fixed_parameter_ids() == set()
 
 
-# -- v0 is an ordinary version ------------------------------------------------
+# -- the seed is working state, not a version ---------------------------------
 
 
-def test_v0_is_snapshotted_and_restorable(seeded):
-    """The reason the seed exists: v0 is a normal version again. Restoring it is the legitimate
-    "throw the mechanism away and start over" move, and it leaves model_authored false."""
-    assert seeded.provenance.current_version == 0
-    stored = seeded.provenance.get_version(0)
-    assert "B" in stored["model_antimony"]
-
-    out = seeded.rollback_to(0)  # no engine wired: restores without simulating
-    assert out["rolled_back_to"] == 0
+def test_the_seed_is_working_state_not_a_version(seeded):
+    """The seed is valid and simulatable from construction, but it is not a version."""
+    assert seeded.provenance.current_version == -1
+    assert seeded.provenance.list_versions() == []
+    assert seeded.has_model() is True
     assert seeded.model_authored() is False
+    assert "B" in seeded.model.to_antimony()
 
 
 def test_a_model_with_no_dynamics_is_refused(seeded):

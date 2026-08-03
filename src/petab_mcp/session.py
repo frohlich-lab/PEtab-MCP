@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 import threading
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Any
 
 from petab.v1 import Problem
@@ -94,6 +95,46 @@ def _noise_sigma_assessable(report: "dict[str, Any] | None") -> bool:
                for e in report.values())
 
 
+@dataclass(frozen=True)
+class Checkpoint:
+    """The best-BIC fitted model so far — the version the judge restores and scores, and the
+    reference :func:`fitting.compute_improvement` gates the next fit against.
+
+    One object rather than nine attributes because the nine are only ever meaningful together:
+    a checkpoint is adopted or it is not. Adopting one used to be eight sequential assignments,
+    and reconstructing one on a durable resume eight more — two places to keep in step whenever
+    the adequacy gate grew a term.
+
+    ``bic`` is finite by construction (see :meth:`PetabSession.record_fit_progress`): a NaN
+    checkpoint can never be beaten, because every later ``bic < NaN`` is False.
+    """
+
+    version: int
+    bic: float
+    nll: float | None
+    gof_pvalue: float | None
+    sigma_estimated: bool
+    sigma_inflated: bool
+    sigma_collapsed: bool
+    sigma_assessable: bool
+    residual_flagged: bool
+
+    def __post_init__(self) -> None:
+        if self.bic is None or not math.isfinite(self.bic):
+            raise ValueError(
+                f"a checkpoint's bic must be a real number, got {self.bic!r}: a non-finite one "
+                "can never be beaten, because every later `bic < NaN` is False.")
+
+    @property
+    def sigma_plausible(self) -> bool:
+        """Whether the noise model is defensible — the judge's success gate in one place.
+
+        True for a FIXED sigma (nothing was fitted, so nothing can be gamed), which is what lets
+        a fixed-noise checkpoint resist being displaced by a lower-BIC gamed one.
+        """
+        return not (self.sigma_inflated or self.sigma_collapsed)
+
+
 class PetabSession:
     """Holds the working problem, provenance store, and reference resolver."""
 
@@ -139,26 +180,17 @@ class PetabSession:
         # the agent must neither free nor remove. Derived once from the initial (v0) problem and
         # cached (the shipped design never changes); see `protected_fixed_parameter_ids`.
         self._protected_fixed_ids: set[str] | None = None
+        # The model as first constructed (shipped or seeded), for classifying author-named
+        # initial-condition parameters in `_compute_protected_fixed_ids`.
+        self._initial_model_antimony: str | None = None
 
-        # Uncommitted working-model edits since the last fit. Edits (set_model, reaction/rate-law
-        # edits, parameter bounds/scale) mutate the working model WITHOUT fitting or snapshotting a
-        # version; each records an entry here. The explicit `fit` tool consumes this list: it fits
-        # the working model, snapshots one version, and clears the list. So `pending_edits` non-empty
-        # is exactly "the working model has been edited but not yet scored" (see `has_unfit_edits`).
-        self.pending_edits: list[dict[str, Any]] = []
-
-        # Fit + simulate on the explicit `fit` tool. The engine is wired by the server after
-        # (it needs the session); until then, and in engine-free unit tests, the auto-fit
-        # hook no-ops. `simulation` holds the current per-point simulation dataframe.
+        # The engine is wired by the server after construction (it needs the session); until then,
+        # and in engine-free unit tests, the fit hook no-ops. `simulation` is the current
+        # per-point simulation dataframe.
         self.engine: Any | None = None
         self.simulation: dict[str, Any] | None = None
         # pyPESTO traces/results of the last fit (live diagnostic; not persisted per version).
         self.optimization: dict[str, Any] | None = None
-        # Reuse a cached fit when an identical estimation problem is committed again
-        # (keyed on the problem identity + n_starts/seed); `last_fit_cache_hit` records
-        # whether the most recent fit was served from that cache.
-        self.fit_cache: bool = True
-        self.last_fit_cache_hit: bool | None = None
         self.auto_fit: bool = True
         self.auto_fit_starts: int = DEFAULT_AUTO_FIT_STARTS
 
@@ -177,44 +209,17 @@ class PetabSession:
         # Early-stop chain state (see constants.py). Every genuine fitted commit is recorded as
         # one "op" so the harness can stop a run that has stopped improving and score the BEST
         # model rather than the last-committed one. ``is_new_best`` tracks BIC (see
-        # fitting.compute_improvement), so the checkpoint below IS the version at which the last
-        # (gated) new best fired — one coherent BIC notion drives the flag, the streak, and the
-        # checkpoint:
+        # fitting.compute_improvement), so `best` IS the version at which the last (gated) new best
+        # fired — one coherent BIC notion drives the flag, the streak, and the checkpoint:
         #   * ``non_improving_streak`` — consecutive fitted ops since the last new best; the hard
         #     stall cap fires on it.
-        #   * ``best_version`` / ``best_bic`` / ``best_nll`` / ``best_gof_pvalue`` — the best-BIC
-        #     fitted model so far (the checkpoint the judge restores + scores; also the reference
-        #     compute_improvement gates the next fit against).
+        #   * ``best`` — the best-BIC fitted model so far (see :class:`Checkpoint`).
         #   * ``op_history`` — per-op (version, bic, running best_bic, gof p, is_new_best), used to
         #     surface "best-BIC improvement over the last N ops" and to detect a plateau.
         # All writes happen under ``self.lock`` on the commit path (fits already hold it); reads go
         # through ``progress_report`` which takes the lock for a consistent snapshot.
         self.non_improving_streak: int = 0
-        self.best_version: int | None = None
-        self.best_bic: float | None = None
-        self.best_nll: float | None = None
-        self.best_gof_pvalue: float | None = None
-        # The best model's noise-model status, for the adequacy gate. When the noise sigma is
-        # ESTIMATED the chi2 GoF is uninformative (a free sigma is fit to the residual std, so
-        # chi2/dof ~= 1 by construction), so adequacy omits GoF and judges the sigma's plausibility
-        # instead: best_sigma_inflated (sigma absorbing misfit past its data-driven cap) means NOT
-        # adequate. Fixed-noise problems keep the GoF. (Issue: blasi/sneyd underfits stopped early
-        # as "adequate" on a meaningless GoF.)
-        self.best_sigma_estimated: bool = False
-        self.best_sigma_inflated: bool = False
-        # ...and collapsed (fitted implausibly small = overfitting the noise). Estimated-sigma
-        # adequacy requires NEITHER inflated NOR collapsed, matching the judge's success gate.
-        self.best_sigma_collapsed: bool = False
-        # The best model's residual-structure flag (the sign/runs tests and the replicate lack-of-fit
-        # test, all of which survive estimated sigmas unlike chi2 GoF — see
-        # data_access.residual_structure_rollup). A structurally-mis-specified best model is NOT adequate regardless of the
-        # noise model, so a run whose residuals stay structured keeps searching instead of
-        # plateau-stopping early (sneyd: underfits stopped as "adequate" while flagging residuals).
-        self.best_residual_flagged: bool = False
-        # Whether the best model's estimated sigmas could actually be ASSESSED (at least one entry
-        # has a usable data_std, i.e. status is not "unknown"). Without this, an unassessable sigma
-        # makes both predicates fail open to False and the model reads "adequate" on no evidence.
-        self.best_sigma_assessable: bool = False
+        self.best: Checkpoint | None = None
         self.op_history: list[dict[str, Any]] = []
 
         # The run's OUTSTANDING invalid "does adding structure help?" experiment (see
@@ -234,15 +239,22 @@ class PetabSession:
         self._fit_attempts: dict[str, int] = {}
 
         if self.provenance.current_version < 0:
-            # Make v0 a VALID model before snapshotting it — the empty skeleton is the one state
-            # nothing downstream can survive (see `_seed_initial_model`).
+            # The initial model is WORKING STATE, not a version: every version is a fit, and
+            # nothing has been fit yet. The empty skeleton is the one state nothing downstream can
+            # survive, so it is replaced with a valid one here (see `_seed_initial_model`).
             self._seed_initial_model()
-            # Route through _snapshot_version (not the store directly) so the initial version also
-            # carries a structure_hash in its meta — otherwise v0 would be invisible to the de-dup
-            # registry and a re-author of the initial model wouldn't be recognised as a revisit.
-            self._snapshot_version(label="initial", kind="initial", meta={}, sim=None)
-            self.provenance.append_event({"type": "initial", "version": 0})
+            self._initial_model_antimony = self.model.to_antimony()
         else:
+            # Capture the model the session STARTS from BEFORE `apply_version` swaps in HEAD's:
+            # `_compute_protected_fixed_ids` classifies initial-condition parameters against it,
+            # and HEAD's model declares a different set. A model-less problem still holds only the
+            # empty skeleton here, so regenerate the seed it would have been given — pure with
+            # respect to the fixed tables, which never change.
+            from . import reconcile as R
+
+            self._initial_model_antimony = (
+                self.model.to_antimony() if self.has_model()
+                else R.seed_model_antimony(self.problem))
             # durable resume: restore the working state from the latest version
             self.apply_version(self.provenance.current_version)
             # ...and seed the best-BIC checkpoint from the prior events, so the first commit after
@@ -327,7 +339,7 @@ class PetabSession:
             self.model.sbml_model.getNumSpecies())
 
     def _seed_progress_from_provenance(self) -> None:
-        """Seed ``best_bic`` / ``best_version`` / ``best_nll`` from prior events (durable resume).
+        """Seed the best-BIC :class:`Checkpoint` from prior events (durable resume).
 
         Scans the log for the lowest recorded ``bic`` so ``compute_improvement`` and the streak
         pick up where the last process left off. The streak and ``op_history`` stay reset — they
@@ -353,25 +365,23 @@ class PetabSession:
                 # checkpoint with a NaN that no later fit could beat (see record_fit_progress).
                 if not math.isfinite(bic):
                     continue
-                if self.best_bic is None or bic < self.best_bic:
-                    self.best_bic = bic
-                    self.best_version = ev.get("version")
+                if self.best is None or bic < self.best.bic:
                     nll = ev.get("neg_log_likelihood")
-                    self.best_nll = float(nll) if nll is not None else None
-                    # Seed the checkpoint's adequacy too (persisted in the fit event). Without it
-                    # best_gof_pvalue stays None after a resume, so the best model reads as
-                    # never-adequate and the adequate-plateau stop can't fire (an older event
-                    # written before this field simply leaves it None, as before).
                     gofp = ev.get("chi2_gof_pvalue")
-                    self.best_gof_pvalue = float(gofp) if gofp is not None else None
-                    # Persisted alongside GoF so a resumed best keeps its adequacy verdict; older
-                    # events without the fields default to False (fixed / not inflated), so the
-                    # adequacy gate falls back to the GoF branch exactly as before.
-                    self.best_sigma_estimated = bool(ev.get("noise_sigma_estimated", False))
-                    self.best_sigma_inflated = bool(ev.get("noise_sigma_inflated", False))
-                    self.best_sigma_collapsed = bool(ev.get("noise_sigma_collapsed", False))
-                    self.best_residual_flagged = bool(ev.get("residual_flagged", False))
-                    self.best_sigma_assessable = bool(ev.get("noise_sigma_assessable", False))
+                    # The adequacy verdict is persisted alongside the score, so a resumed best
+                    # keeps it. An older event without these fields reads False (fixed / not
+                    # inflated), which falls back to the GoF branch of the gate.
+                    self.best = Checkpoint(
+                        version=ev.get("version"),
+                        bic=bic,
+                        nll=float(nll) if nll is not None else None,
+                        gof_pvalue=float(gofp) if gofp is not None else None,
+                        sigma_estimated=bool(ev.get("noise_sigma_estimated", False)),
+                        sigma_inflated=bool(ev.get("noise_sigma_inflated", False)),
+                        sigma_collapsed=bool(ev.get("noise_sigma_collapsed", False)),
+                        sigma_assessable=bool(ev.get("noise_sigma_assessable", False)),
+                        residual_flagged=bool(ev.get("residual_flagged", False)),
+                    )
         except Exception:  # noqa: BLE001 - seeding is best-effort; a resume must never fail on it
             self.logger.warning("could not seed best-BIC checkpoint from provenance", exc_info=True)
 
@@ -459,8 +469,8 @@ class PetabSession:
         EXCLUDED (each has its own handling, so neither is "protected"):
 
         * initial-condition parameters — removed legitimately when their species is removed;
-          detected from the v0 model, with an ``*_init`` name fallback for the parameters a
-          zero-shot v0 (an empty skeleton, or a content-free seed) cannot classify;
+          detected from the INITIAL model, with an ``*_init`` name fallback for the parameters a
+          content-free seed cannot classify;
         * observation-model factors (noise sigmas, observable scaling/offset) — pinned by the
           fixed observable/measurement tables and given their own estimation paths.
         """
@@ -489,12 +499,16 @@ class PetabSession:
             return set()
 
         ic: set[str] = {p for p in fixed if p.endswith("_init")}
-        try:  # initial-condition parameters declared by the v0 model (catches author-named ICs)
-            snap = self.provenance.get_version(0)
-            v0_model = SbmlModel.from_antimony(snap["model_antimony"], model_id=None)
-            ic |= {str(x) for x in R._ic_parameter_ids(v0_model.sbml_model)}
-        except Exception:  # best-effort — the *_init fallback above still applies
-            pass
+        if self._initial_model_antimony is not None:
+            try:
+                initial = SbmlModel.from_antimony(self._initial_model_antimony, model_id=None)
+                ic |= {str(x) for x in R._ic_parameter_ids(initial.sbml_model)}
+            except Exception:  # noqa: BLE001 - the *_init name fallback above still applies, and
+                # partial protection beats none: raising here reaches _commit_change's catch, which
+                # passes protected_fixed=None and skips the shipped-constant check altogether.
+                self.logger.warning(
+                    "could not read the initial model's initial-condition parameters; "
+                    "falling back to the *_init name heuristic", exc_info=True)
 
         obs = {str(x) for x in (R.noise_sigma_ids(self.problem) | R.observable_scaling_ids(self.problem))}
         return fixed - ic - obs
@@ -525,12 +539,6 @@ class PetabSession:
             "n_measurements": int(p.n_measurements),
             "n_reactions_detail": [sm.getReaction(i).getId() for i in range(sm.getNumReactions())],
             "current_version": self.provenance.current_version,
-            # Working-model edits (set_model, reaction/rate-law edits, bounds/scale) do NOT fit or
-            # version — the explicit `fit` tool does. `has_unfit_edits` is True when the working
-            # model has been edited since the last fit, so the metrics below (from the last fitted
-            # version) are stale for the working model until `fit` is called.
-            "has_unfit_edits": self.has_unfit_edits(),
-            "n_pending_edits": len(self.pending_edits),
             # The multistart count a fit uses when `n_starts` is omitted. Reported because
             # `n_starts` OVERRIDES it rather than adding to it: without knowing the number, a
             # caller cannot tell whether the value it passes fits harder or (silently) weaker,
@@ -559,20 +567,16 @@ class PetabSession:
             # persisted per version (``None`` for legacy/unfitted versions), so a rollback or
             # durable resume brings them back rather than dropping them.
             self.optimization = snap.get("optimization")
-            # The working model now equals a stored version, so there are no uncommitted edits.
-            self.pending_edits = []
 
     def _snapshot_version(
-        self, *, label: str, kind: str, meta: dict[str, Any],
+        self, *, meta: dict[str, Any],
         sim: dict[str, Any] | None, model_ant: str | None = None,
     ) -> int:
         """Snapshot the current model + parameter table as a new version.
 
-        The single place every commit path (single op, batch, rollback, reset) shares for
-        writing a version: it always attaches the per-version simulation and optimization
-        payloads, so those callers only supply the ``label``/``kind``/``meta`` and the
-        simulation blob ``sim``. ``model_ant`` defaults to the current model's Antimony;
-        pass it when the caller already serialized it, to avoid re-serializing.
+        Every version is a fit, so there is one kind. Attaches the per-version simulation and
+        optimization payloads; callers supply only ``meta`` and the simulation blob. ``model_ant``
+        defaults to the current model's Antimony; pass it when the caller already serialized it.
         """
         from . import fitting
         from .parameters import structure_fingerprint
@@ -591,11 +595,9 @@ class PetabSession:
         if "bic" not in meta:
             nll = (sim or {}).get("neg_log_likelihood")
             fitted = (sim or {}).get("fitted_parameters")
-            # k = n_estimated (the honest BIC complexity count), so a rolled-back / reset version's
-            # bic matches the fitted version it restored: the restored payload is stamped with
-            # n_estimated (see apply_version) and self.problem.n_estimated is authoritative for the
-            # state being snapshotted. len(fitted_parameters) can differ (it omits analytically-
-            # profiled inner params), so it is only a last-resort fallback.
+            # k = n_estimated (the honest BIC complexity count). self.problem.n_estimated is
+            # authoritative for the state being snapshotted; len(fitted_parameters) can differ (it
+            # omits analytically-profiled inner params), so it is only a last-resort fallback.
             k = (sim or {}).get("n_estimated")
             if k is None:
                 try:
@@ -608,8 +610,8 @@ class PetabSession:
         return self.provenance.snapshot_version(
             model_ant=self.model.to_antimony() if model_ant is None else model_ant,
             parameters=self.problem.parameter_df,
-            label=label,
-            kind=kind,
+            label="fit",
+            kind="fit",
             meta=meta,
             simulation=fitting.build_sim_payload_for_version(sim),
             optimization=fitting.build_optimization_payload_for_version(self.optimization),
@@ -658,7 +660,7 @@ class PetabSession:
         # A fit needs at least one free parameter. Catch the zero-estimated case here with a clear,
         # actionable message rather than letting pyPESTO fail cryptically ("'NoneType' object is
         # not iterable") deep in the optimizer.
-        if int(getattr(self.problem, "n_estimated", 0) or 0) == 0:
+        if int(self.problem.n_estimated or 0) == 0:
             raise ModelUpdateError(
                 "the model has NO estimated (free) parameters, so there is nothing to "
                 "fit. Give it at least one free parameter — a new symbol you use in a "
@@ -691,7 +693,7 @@ class PetabSession:
             self.optimization = saved_optimization
         # A payload restored from a stored version predates the n_estimated field; stamp it
         # (from the just-applied version's parameter table) so fit_result_block can still
-        # derive k and report the goodness-of-fit metrics on rollback/reset.
+        # derive k and report the goodness-of-fit metrics on a restore.
         sim = self.simulation
         if sim is not None and sim.get("n_estimated") is None:
             sim["n_estimated"] = int(self.problem.n_estimated)
@@ -769,9 +771,8 @@ class PetabSession:
     ) -> None:
         """Record one genuine fitted commit as an "op" for the early-stop chain.
 
-        Called from the commit paths (single op + batch) *after* a fit ran. Restorations
-        (rollback/reset) and simulate-only passes are NOT ops — the caller only invokes this when
-        a real fit produced this version — so they never perturb the streak or the checkpoint.
+        Called after a fit ran. Restores and simulate-only passes are NOT ops and never perturb
+        the streak or the checkpoint.
         Resets the non-improving streak and adopts this version as the best-BIC checkpoint when
         ``is_new_best`` fires, else increments the streak. Since ``is_new_best`` tracks BIC (see
         :func:`fitting.compute_improvement`), a new best is exactly a new best-BIC checkpoint — the
@@ -816,7 +817,7 @@ class PetabSession:
             # came back non-finite would be adopted as the checkpoint and then never beaten
             # (every later `bic <= NaN - delta` is False). goodness_of_fit already maps
             # non-finite scores to None; this is the belt-and-braces guard at the write site,
-            # so the checkpoint invariant — "best_bic is a real, beatable number" — holds
+            # so the checkpoint invariant — "bic is a real, beatable number" — holds
             # locally no matter how the score was produced.
             usable = bic is not None and math.isfinite(bic)
             # Don't let a sigma-GAMED fit OVERWRITE a currently-plausible best checkpoint: the judge
@@ -826,18 +827,16 @@ class PetabSession:
             # there is no plausible best to protect (best is None, or is itself already gamed), so an
             # all-gamed run still records its lowest-BIC gamed model (the adequacy gate + judge then
             # handle it), keeping the sigma-adequacy gate live rather than dead.
-            best_is_plausible = (self.best_version is not None
-                                 and not (self.best_sigma_inflated or self.best_sigma_collapsed))
+            best_is_plausible = self.best is not None and self.best.sigma_plausible
             if is_new_best and usable and not (sigma_implausible and best_is_plausible):
-                self.best_bic = bic
-                self.best_version = version
-                self.best_nll = nll
-                self.best_gof_pvalue = gof_p
-                self.best_sigma_estimated = sigma_estimated
-                self.best_sigma_inflated = sig_inflated
-                self.best_sigma_collapsed = sig_collapsed
-                self.best_residual_flagged = bool(fitsim.get("residual_flagged", False))
-                self.best_sigma_assessable = sig_assessable
+                self.best = Checkpoint(
+                    version=version, bic=bic, nll=nll, gof_pvalue=gof_p,
+                    sigma_estimated=sigma_estimated,
+                    sigma_inflated=sig_inflated,
+                    sigma_collapsed=sig_collapsed,
+                    sigma_assessable=sig_assessable,
+                    residual_flagged=bool(fitsim.get("residual_flagged", False)),
+                )
                 # A sigma-gamed "improvement" is not genuine progress even when adopted (it can only
                 # be adopted here over an absent/already-gamed best): it does NOT reset the
                 # non-improving streak, so an all-gamed run trips the streak cap instead of burning
@@ -855,7 +854,7 @@ class PetabSession:
             self.op_history.append({
                 "version": version,
                 "bic": bic,
-                "best_bic": self.best_bic,   # running best AFTER this op — for the plateau window
+                "best_bic": self.best.bic if self.best else None,  # running best AFTER this op
                 "gof_pvalue": gof_p,
                 "is_new_best": is_new_best,
             })
@@ -901,12 +900,13 @@ class PetabSession:
             #    lower tail scored rahman runs at chi2/n = 0.016 / 0.051 (p = 0.9999999) as
             #    "adequate". This tail only exists for a fixed sigma: an ESTIMATED sigma absorbs
             #    residual shrinkage into itself, pinning chi2/n at ~1 from below.
+            best = self.best
             gof_adequate = (
-                self.best_gof_pvalue is not None
-                and ADEQUATE_GOF_PVALUE <= self.best_gof_pvalue <= OVERFIT_GOF_PVALUE
+                best is not None and best.gof_pvalue is not None
+                and ADEQUATE_GOF_PVALUE <= best.gof_pvalue <= OVERFIT_GOF_PVALUE
             )
-            if self.best_sigma_estimated and self.best_sigma_assessable:
-                best_adequate = not (self.best_sigma_inflated or self.best_sigma_collapsed)
+            if best is not None and best.sigma_estimated and best.sigma_assessable:
+                best_adequate = best.sigma_plausible
             else:
                 # Either no estimated sigma at all, or one we could NOT assess (every entry status
                 # "unknown" — e.g. the observable's std is uncomputable, or its noise formula is
@@ -930,7 +930,7 @@ class PetabSession:
             # plausible would-pass checkpoint it survives to the judge. (It does NOT make every best
             # plausible: an all-gamed run whose best was never plausible still keeps its gamed best,
             # which the judge then fails on the sigma — as it would have with or without this gate.)
-            if self.best_residual_flagged:
+            if best is not None and best.residual_flagged:
                 best_adequate = False
             stop_reason = None
             if streak >= NON_IMPROVING_STREAK_CAP:
@@ -940,8 +940,8 @@ class PetabSession:
                 )
             elif (best_adequate and bic_gain_over_window is not None
                   and bic_gain_over_window < PLATEAU_MIN_BIC_GAIN):
-                basis = ("estimated noise sigma within its plausible range" if self.best_sigma_estimated
-                         else f"chi2 GoF p={self.best_gof_pvalue:.3g}")
+                basis = ("estimated noise sigma within its plausible range" if best.sigma_estimated
+                         else f"chi2 GoF p={best.gof_pvalue:.3g}")
                 stop_reason = (
                     f"plateau: best model is adequate ({basis}) and "
                     f"best BIC improved by only {bic_gain_over_window:.3g} over the last "
@@ -951,7 +951,7 @@ class PetabSession:
             # produced a usable score, so the fits are failing to evaluate rather than the
             # model's form failing to fit. Telling the agent to change the STRUCTURE there
             # sends it re-authoring models to escape what is actually an evaluation problem.
-            if stop_reason is not None and self.best_version is None:
+            if stop_reason is not None and best is None:
                 stop_reason = f"{stop_reason} {_UNSCORED_STALL_ADVICE}"
             # The structural-inadequacy nudge fires only when a stop coincides with a best model
             # that is NOT adequate — appending "the model's FORM cannot fit" to an adequate stop
@@ -960,37 +960,24 @@ class PetabSession:
                 stop_reason = f"{stop_reason} {_STRUCTURAL_PLATEAU_ADVICE}"
                 # If the inadequacy is a masking noise model, add the matching noise-side warning so
                 # the agent fixes the mechanism instead of leaning on the sigma.
-                if self.best_sigma_inflated:
+                if best is not None and best.sigma_inflated:
                     stop_reason = f"{stop_reason}{_SIGMA_INFLATED_ADVICE}"
-                elif self.best_sigma_collapsed:
+                elif best is not None and best.sigma_collapsed:
                     stop_reason = f"{stop_reason}{_SIGMA_COLLAPSED_ADVICE}"
             return {
                 "n_fitted_ops": n_ops,
                 "non_improving_streak": streak,
                 "streak_cap": NON_IMPROVING_STREAK_CAP,
-                "best_version": self.best_version,
-                "best_bic": self.best_bic,
-                "best_gof_pvalue": self.best_gof_pvalue,
+                "best_version": best.version if best else None,
+                "best_bic": best.bic if best else None,
+                "best_gof_pvalue": best.gof_pvalue if best else None,
                 "bic_improvement_over_last_n": bic_gain_over_window,
                 "plateau_window": PLATEAU_WINDOW,
                 "should_stop": stop_reason is not None,
                 "stop_reason": stop_reason,
             }
 
-    # -- working-model edits + fit -----------------------------------------
-    def has_unfit_edits(self) -> bool:
-        """Whether the working model carries edits made since the last fit (see `pending_edits`)."""
-        return bool(self.pending_edits)
-
-    def record_edit(self, operation: str, args: dict[str, Any], justification: str) -> None:
-        """Log a working-model edit as pending an eventual fit (see `pending_edits`).
-
-        Called from :mod:`operations` after an edit is applied + reconciled + validated. Callers
-        already hold ``self.lock``.
-        """
-        self.pending_edits.append(
-            {"operation": operation, "args": args, "justification": justification})
-
+    # -- fit ---------------------------------------------------------------
     def _fit_dedup(self, starts: int) -> tuple[dict[str, Any], str]:
         """Decide what an explicit `fit` should do with the current working model (see :mod:`dedup`).
 
@@ -1017,9 +1004,9 @@ class PetabSession:
             head_meta = {}
         head_structure_hash = head_meta.get("structure_hash")
         # A "skip" is only safe against a HEAD carrying a REAL optimized fit: a simulate-only or
-        # unfitted (v0) HEAD also records a neg_log_likelihood, so gate on fit_status == "fit"
-        # (stamped by every fit/rollback/reset that restores a real fit) — else a real fit after a
-        # simulate-only one would be wrongly skipped, returning un-optimized metrics.
+        # engine-free HEAD also records a neg_log_likelihood, so gate on fit_status == "fit" —
+        # else a real fit after a simulate-only one would be wrongly skipped, returning
+        # un-optimized metrics.
         head_is_fit = head_meta.get("fit_status") == "fit"
         try:
             head_df = self.provenance.get_parameter_df(head_version)
@@ -1063,18 +1050,23 @@ class PetabSession:
                 }
         return decision, fit_key
 
-    def fit(self, n_starts: int | None = None, justification: str | None = None) -> dict[str, Any]:
+    def fit(self, n_starts: int | None = None, justification: str | None = None,
+            staged_edits: "list[dict[str, Any]] | None" = None) -> dict[str, Any]:
         """Fit the current working model, snapshot a version, and score it.
 
-        The single fitting path: the ``fit`` tool calls this directly, and an editor called with
-        ``fit=true`` (issue #114) routes through it too, so the de-duplication, the snapshot and the
-        metrics are identical either way.
+        The single fitting path. ``make_changes`` applies its change to the working model and then
+        calls this, so one call is one coherent change, scored once, snapshotted as ONE version.
 
-        Edits (``set_model``, reaction/rate-law edits, bounds/scale) mutate the working model
-        without fitting; ``fit`` scores the assembled model: it fits the free parameters, simulates,
-        snapshots ONE version carrying the fitted parameters + metrics + simulation dataframe,
-        records the early-stop-chain op, and clears the pending edits. ``n_starts`` overrides the
-        server default (and must be >= 1); ``justification`` is optional.
+        ``fit`` scores the assembled model: it fits the free parameters, simulates, and snapshots
+        ONE version carrying the fitted parameters + metrics + simulation dataframe, then records
+        the early-stop-chain op. ``n_starts`` overrides the server default (and must be >= 1);
+        ``justification`` is optional. ``staged_edits`` is what the caller changed, recorded on the
+        fit EVENT so the provenance trace names the edit behind each version — it is passed in
+        rather than read off session state, because there is no unscored-edit state to read: the
+        change and its score are one call. It is deliberately NOT written to the version meta,
+        which ``list_versions`` returns verbatim to the agent — a staged edit carries the whole
+        Antimony string, and shipping every version's copy of it into the context each turn cost
+        far more than the label was worth.
 
         The result also carries the two adequacy verdicts this method computes anyway for the
         plateau-adequacy gate: ``residual_structure`` (the compact residual-structure verdict on
@@ -1108,19 +1100,16 @@ class PetabSession:
             if decision["action"] == "terminate":
                 raise ModelUpdateError(decision["message"])
             if decision["action"] == "skip":
-                return self._fit_noop_result(decision)
+                return self._fit_noop_result(decision, staged_edits)
             warnings = decision.get("warnings", [])
             # We are committing to a real fit of this structure — count it toward the loop guard now
             # (a no-op skip / terminate / rejected n_starts above never reaches here, so only genuine
             # fit attempts are counted).
-            self.note_fit_attempt(fit_key)
+            self._fit_attempts[fit_key] = self._fit_attempts.get(fit_key, 0) + 1
 
-            # The fit is the commit. `_auto_fit_and_improvement` raises a clean ModelUpdateError when
-            # the model has no estimated parameters; wrap any OTHER AMICI/pyPESTO failure (a model
-            # that lints clean but cannot be compiled — a reserved-name codegen clash, an unsupported
-            # construct) as a ModelUpdateError so the tool returns committed=false with an actionable
-            # message rather than crashing. The working model is NOT reverted: edits are fit-free, so
-            # a failed fit leaves the edited model in place for the agent to repair and re-fit.
+            # Wrap any AMICI/pyPESTO failure (a model that lints clean but cannot be compiled — a
+            # reserved-name codegen clash, an unsupported construct) as a ModelUpdateError, so the
+            # tool returns committed=false with an actionable message rather than crashing.
             try:
                 fitsim, improvement = self._auto_fit_and_improvement(n_starts)
             except PetabMcpError:
@@ -1128,7 +1117,7 @@ class PetabSession:
             except Exception as exc:  # noqa: BLE001 - surface as a clean, actionable rejection
                 raise ModelUpdateError(_compile_fit_failure_message(exc)) from exc
 
-            staged = list(self.pending_edits)
+            staged = list(staged_edits or [])
             nllh = fitsim.get("neg_log_likelihood")
             # Persist the goodness-of-fit p-value in the fit meta + event so a durable resume can
             # restore the best-BIC checkpoint's adequacy (see _seed_progress_from_provenance);
@@ -1157,11 +1146,8 @@ class PetabSession:
             nesting_advisory = self._check_nesting_vs_parent(
                 fitsim, child_model_ant, is_new_best=bool(improvement.get("is_new_best")))
             version = self._snapshot_version(
-                label="fit",
-                kind="fit",
                 model_ant=child_model_ant,
-                meta={"staged_edits": staged, "n_edits": len(staged),
-                      # Recorded so a later fit can tell whether it would search HARDER than this
+                meta={# Recorded so a later fit can tell whether it would search HARDER than this
                       # one did (see `_fit_dedup`) — the structure/setup hashes both ignore it.
                       "n_starts": fitsim.get("n_starts"),
                       "fit_status": fitsim.get("status"), "neg_log_likelihood": nllh,
@@ -1218,7 +1204,6 @@ class PetabSession:
             # don't move the streak/checkpoint).
             if fitsim.get("status") == "fit":
                 self.record_fit_progress(version, fitsim, improvement)
-            self.pending_edits = []
 
         return {"committed": True, "version": version, "warnings": warnings,
                 "event_timestamp": event["timestamp"],
@@ -1230,159 +1215,87 @@ class PetabSession:
                 **fitting.fit_result_block(
                     fitsim, improvement, self.problem.parameter_df, problem=self.problem)}
 
-    def _fit_noop_result(self, decision: dict[str, Any]) -> dict[str, Any]:
+    def _fit_noop_result(self, decision: dict[str, Any],
+                         staged: "list[dict[str, Any]] | None" = None) -> dict[str, Any]:
         """Short-circuit result for a ``fit`` skipped as byte-identical to the current version.
 
-        No recompile, no fit, no new version — the stored metrics stand. The pending edits (which
-        netted to no change) are cleared and the no-op is logged so the avoided churn stays
-        auditable in the provenance trace.
+        No recompile, no fit, no new version — the stored metrics stand. The no-op is logged so the
+        avoided churn stays auditable in the provenance trace.
+
+        The score is assembled by the SAME builder a real fit uses, over the session's current
+        simulation. That is exact rather than approximate: "no_change" means the working state IS
+        the duplicate version's, so its payload is the one to report. Only ``n_starts`` comes from
+        the stored meta — it records the search that produced these metrics, and this call ran
+        none.
         """
+        from . import fitting
+
         dup_v = decision["duplicate_of"]
         try:
-            meta = self.provenance.get_meta(dup_v)  # meta.json only — the stored fit scalars
-        except Exception:  # noqa: BLE001 - unreadable version: report the no-op without metrics
+            meta = self.provenance.get_meta(dup_v)
+        except Exception:  # noqa: BLE001 - unreadable version: report the no-op without n_starts
             meta = {}
         self.provenance.append_event({
             "type": "fit_noop", "duplicate_of_version": dup_v,
-            "n_edits": len(self.pending_edits),
+            "n_edits": len(staged or []),
         })
         self.logger.info("fit no-op: identical to v%s — skipped recompile+fit+snapshot", dup_v)
-        self.pending_edits = []
-        from . import fitting
 
         structure = residual_structure_rollup(self)
         flag = residual_flag(structure)
-        # Mirror the scalar fit keys a real fit returns (fit_status/n_starts/nll/chi2/bic), so a
-        # caller that reads them off the result doesn't hit a missing key on a no-op; `no_change:
-        # true` and the thinner shape (no per-point/per-parameter block) still distinguish it. Full
-        # per-point detail is unchanged from the duplicate version — read it from that version.
+        sim = dict(self.simulation or {})
+        sim["residual_structure"] = structure
+        sim["n_starts"] = meta.get("n_starts")
         return {
             "committed": False, "no_change": True, "version": dup_v,
             "duplicate_of_version": dup_v, "message": decision.get("message"),
             "warnings": decision.get("warnings", []),
-            # The multistart count the metrics being returned came from — i.e. the DUPLICATE
-            # version's, since this call ran no fit of its own. `None` for a version snapshotted
-            # before n_starts was recorded.
-            "n_starts": meta.get("n_starts"),
-            "fit_status": meta.get("fit_status"),
-            "neg_log_likelihood": meta.get("neg_log_likelihood"),
-            "chi2": meta.get("chi2"), "bic": meta.get("bic"),
-            # BOTH adequacy verdicts, on the same terms a real fit reports them. The noise verdict
-            # cannot be omitted here: its advice key is absent when the noise model is plausible,
-            # so a result carrying none of these keys reads as "plausible" — and the lead has no
-            # get_fit_summary to check against. Computed from the CURRENT state, which is the
-            # duplicate version's by construction.
-            **fitting.noise_sigma_block(
-                self.problem, (self.simulation or {}).get("fitted_parameters")),
-            # The structure verdict too: every doc tells the agent to read it off the fit result,
-            # so a no-op must not be the one shape that lacks it. Recomputed from the CURRENT
-            # simulation, which is exactly the duplicate version's — that identity is what
-            # "no_change" means — rather than read from the meta, which stores only the flag.
-            "residual_structure": structure,
             # Falls back to the stored flag if the tests can't run now; None (never False) when
             # neither is available: "unknown", not a clean bill of health.
             "residual_flagged": (meta.get("residual_flagged") if flag is None else flag),
+            **fitting.fit_result_block(
+                sim, parameter_df=self.problem.parameter_df, problem=self.problem),
         }
 
     def rollback_to(self, version: int, justification: str | None = None) -> dict[str, Any]:
-        """Revert to a prior version, appending a new (auditable) version + event.
+        """Make a stored version the working state and point HEAD at it.
 
-        Restores the target version's stored simulation dataframe (no refit — this is a
-        restoration, not a new model); simulate-only fallback if that version lacks one.
+        No refit and no new version: the target's stored model, parameter table and simulation
+        dataframe come back as they are, and HEAD moves to the version that already holds them.
+        The move is recorded as an event, so the trace still shows it.
 
-        EVERY version is restorable, v0 included. That is a property of the initial model being
-        VALID (see :meth:`_seed_initial_model`): v0 is either the model the problem shipped or a
-        content-free seed, never the broken empty skeleton, so going back to it lands on
-        something that simulates like any other version. Restoring v0 on a zero-shot problem is
-        the legitimate "throw my mechanism away and start over" move, and it leaves
-        ``model_authored`` False again, exactly as at construction.
+        Every version is a fit. HEAD moving BACKWARDS is what keeps that true — appending a
+        rollback version would mint an unfit duplicate of a model that is already stored, and it
+        is why ``snapshot_version`` counts from :attr:`ProvenanceStore.last_version` rather than
+        from HEAD.
         """
         from . import fitting
 
         with self.lock:
             self.apply_version(version)
-            sim = self._restore_or_simulate()
-            nllh = sim.get("neg_log_likelihood") if sim else None
+            self.provenance.set_head(version)
+            restored = self._restore_or_simulate()
+            nllh = restored.get("neg_log_likelihood") if restored else None
             # Verdict of the RESTORED state, so the fit block reads the same everywhere and the
             # agent restoring a prior best sees its structure verdict without a follow-up call.
-            structure = residual_structure_rollup(self)
-            if sim is not None:
-                sim["residual_structure"] = structure
-            new_version = self._snapshot_version(
-                label=f"rollback->v{version}",
-                kind="rollback",
-                # Carry the restored fit's status so the de-dup can tell a rollback of a REAL fit
-                # ("fit") from one of a simulate-only/unfitted version — else re-fitting a restored
-                # model would be wrongly skipped or wrongly re-run.
-                meta={"rolled_back_to": version, "justification": justification,
-                      "fit_status": (sim or {}).get("status"), "neg_log_likelihood": nllh,
-                      "residual_flagged": residual_flag(structure)},
-                sim=sim,
-            )
+            # On a COPY: `_restore_or_simulate` hands back `self.simulation` itself, and the
+            # verdict is a result-only field that the persisted payload does not carry.
+            sim = None
+            if restored is not None:
+                sim = dict(restored)
+                sim["residual_structure"] = residual_structure_rollup(self)
             self.provenance.append_event(
-                {
-                    "type": "rollback",
-                    "rolled_back_to": version,
-                    "version": new_version,
-                    "justification": justification,
-                    "neg_log_likelihood": nllh,
-                }
-            )
-        return {"rolled_back_to": version, "version": new_version,
+                {"type": "rollback", "rolled_back_to": version, "version": version,
+                 "justification": justification, "neg_log_likelihood": nllh})
+        return {"rolled_back_to": version, "version": version,
                 **fitting.fit_result_block(
                     sim, parameter_df=self.problem.parameter_df, problem=self.problem)}
 
     def restore_version(self, version: int, justification: str | None = None) -> dict[str, Any]:
         """Bring a prior version's model + parameters back as the working state (no refit).
 
-        The cheap, correct way to "go back" to an earlier structure — it restores the target
-        version's stored fit instead of recompiling and refitting, and is what ``set_model``'s
-        de-dup guidance points at instead of re-authoring an already-visited model (a re-author
-        recompiles, refits, and appends a byte-identical version; this does none of that). It is
-        exactly :meth:`rollback_to` under a name that reads correctly for that workflow — it
-        appends the same auditable rollback version and event.
+        The cheap way to go back to an earlier structure: it restores that version's stored fit
+        instead of recompiling and refitting.
         """
         return self.rollback_to(version, justification)
 
-    def note_fit_attempt(self, key: str) -> int:
-        """Record a ``fit`` of the estimation problem ``key`` (a structure+setup identity — see
-        :func:`dedup.reauthor_key`), returning the count of PRIOR identical fits this run (0 the
-        first time). Backs the identical-fit loop guard (see :mod:`dedup`). Callers already hold
-        ``self.lock``."""
-        prior = self._fit_attempts.get(key, 0)
-        self._fit_attempts[key] = prior + 1
-        return prior
-
-    # -- lifecycle ---------------------------------------------------------
-    def reset(self) -> dict[str, Any]:
-        """Revert model + parameters to the initial version (v0).
-
-        Safe on a zero-shot problem because v0 is the content-free SEED rather than the empty
-        skeleton (see :meth:`_seed_initial_model`): resetting lands on a model that simulates,
-        with ``model_authored`` back to False.
-        """
-        from . import fitting
-
-        with self.lock:
-            self.apply_version(0)
-            sim = self._restore_or_simulate()
-            nllh = sim.get("neg_log_likelihood") if sim else None
-            structure = residual_structure_rollup(self)
-            if sim is not None:
-                sim["residual_structure"] = structure
-            new_version = self._snapshot_version(
-                label="reset",
-                kind="reset",
-                # Carry the restored sim's status (v0 is unfitted, so "simulate_only"/None) so the
-                # de-dup treats a reset HEAD as not-a-real-fit and a following fit runs.
-                meta={"reset_to": 0, "fit_status": (sim or {}).get("status"),
-                      "neg_log_likelihood": nllh,
-                      "residual_flagged": residual_flag(structure)},
-                sim=sim,
-            )
-            self.provenance.append_event(
-                {"type": "reset", "version": new_version, "neg_log_likelihood": nllh}
-            )
-        return {"reset": True, "version": new_version,
-                **fitting.fit_result_block(
-                    sim, parameter_df=self.problem.parameter_df, problem=self.problem)}

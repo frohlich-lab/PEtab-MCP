@@ -249,7 +249,7 @@ def _multistart_spread(session, free_names: list[str]) -> dict[str, Any]:
     optimization payload's per-start ``x``. Empty when x/x_names were not recorded."""
     import numpy as np
 
-    opt = getattr(session, "optimization", None) or {}
+    opt = session.optimization or {}
     starts = opt.get("starts") or []
     xnames = opt.get("x_names") or []
     if not starts or not xnames:
@@ -446,7 +446,7 @@ def identifiability(session, engine=None, *, top_n: int = 8, corr_threshold: flo
     from petab.v1.parameters import scale
 
     df = session.problem.parameter_df
-    engine = engine or getattr(session, "engine", None)
+    engine = engine or session.engine
 
     # FIM first — its free-parameter order is the canonical order for everything else.
     fim = free_names = None

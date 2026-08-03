@@ -94,23 +94,26 @@ def test_events_appended_and_tailed(tmp_path):
 
 def test_versioning_diff_and_rollback(session, reauthor_toy):
     reauthor_toy(session, ["J: B => D; k3 * B;"], justification="x", references=["PMID:1"])
-    assert session.provenance.current_version == 1
+    assert session.provenance.current_version == 0
 
+    reauthor_toy(session, ["J: B => E; k4 * B;"], justification="y")
     diff = session.provenance.diff_versions(0, 1)
-    assert set(diff["parameter_diff"]["added"]) == {"D_init", "k3"}
-    assert "k3" in diff["model_diff"] or "J" in diff["model_diff"]
+    assert set(diff["parameter_diff"]["added"]) == {"E_init", "k4"}
+    assert set(diff["parameter_diff"]["removed"]) == {"D_init", "k3"}
 
-    # rollback to v0 restores the original model, as a new appended version
+    # rollback to v0 makes it the working state and moves HEAD back onto it — no new version
     out = session.rollback_to(0)
     assert out["rolled_back_to"] == 0
-    assert session.provenance.current_version == 2
+    assert session.provenance.current_version == 0
+    assert len(session.provenance.list_versions()) == 2
     species = {
         session.model.sbml_model.getSpecies(i).getId()
         for i in range(session.model.sbml_model.getNumSpecies())
     }
-    assert species == {"A", "B"}
-    kinds = [v["kind"] for v in session.provenance.list_versions()]
-    assert kinds == ["initial", "fit", "rollback"]
+    assert species == {"A", "B", "D"}
+    # ...and the next fit does not collide with the version HEAD skipped back over
+    reauthor_toy(session, ["J: B => F; k5 * B;"], justification="z")
+    assert session.provenance.current_version == 2
 
 
 def test_durable_resume(yaml_path, tmp_path, reauthor_toy):
@@ -121,7 +124,7 @@ def test_durable_resume(yaml_path, tmp_path, reauthor_toy):
     prov = str(tmp_path / "prov")
     s1 = PetabSession(yaml_path, provenance_dir=prov, resolver=StubReferenceResolver())
     reauthor_toy(s1, ["J: B => D; k3 * B;"], justification="x", references=["PMID:1"])
-    assert s1.provenance.current_version == 1
+    assert s1.provenance.current_version == 0
 
     s2 = PetabSession(yaml_path, provenance_dir=prov, resolver=StubReferenceResolver())
     species = {
@@ -129,3 +132,51 @@ def test_durable_resume(yaml_path, tmp_path, reauthor_toy):
         for i in range(s2.model.sbml_model.getNumSpecies())
     }
     assert "D" in species  # resumed the altered model, not the pristine YAML
+
+
+def test_one_unreadable_meta_does_not_empty_the_version_listing(session, reauthor_toy):
+    """Regression: callers degrade a raise here to an empty list, so one corrupt meta silently
+    switched off de-duplication and the repeated-widening backstop."""
+    reauthor_toy(session, ["J: B => D; k3 * B;"], justification="x")
+    reauthor_toy(session, ["J: B => E; k4 * B;"], justification="y")
+    before = session.provenance.list_versions()
+    assert len(before) >= 2
+
+    (session.provenance.versions_dir / "v0" / "meta.json").write_text("{ not json")
+
+    after = session.provenance.list_versions()
+    assert len(after) == len(before) - 1, "only the corrupt version should drop out"
+    assert 0 not in [m.get("version") for m in after]
+    # ...and the survivors are intact, so de-dup and the widening walk still have history
+    assert [m.get("version") for m in after] == [
+        v for v in (m.get("version") for m in before) if v != 0]
+
+
+def test_a_meta_that_is_not_an_object_is_excluded_too(session, reauthor_toy):
+    """Valid JSON that is not a dict must be skipped, not returned: every caller does `.get` on
+    each element without guarding, so a `None` in the list escapes into the commit path."""
+    from petab_mcp import dedup as D
+
+    reauthor_toy(session, ["J: B => D; k3 * B;"], justification="x")
+    reauthor_toy(session, ["J: B => E; k4 * B;"], justification="y")
+    (session.provenance.versions_dir / "v0" / "meta.json").write_text("null")
+
+    metas = session.provenance.list_versions()
+    assert all(isinstance(m, dict) for m in metas)
+    assert [m["version"] for m in metas] == [1]
+    D.build_registry(session)          # must not raise
+
+
+def test_every_version_is_a_fit(session, reauthor_toy):
+    """A version exists because a fit produced it: the initial model is working state, and a
+    restore moves HEAD rather than appending an unfit duplicate."""
+    reauthor_toy(session, ["J: B => D; k3 * B;"], justification="x")
+    reauthor_toy(session, ["J: B => E; k4 * B;"], justification="y")
+    session.restore_version(0)
+
+    metas = session.provenance.list_versions()
+    assert len(metas) == 2
+    assert {m["kind"] for m in metas} == {"fit"}
+    # every one of them competes on bic; none is excluded as unscored
+    from petab_mcp import dedup as D
+    assert {r["version"] for r in D.build_registry(session)} == {m["version"] for m in metas}

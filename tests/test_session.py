@@ -29,11 +29,12 @@ def test_problem_hash_tracks_parameter_table(session):
     assert session.sbml_hash() == sbml0        # model structure unchanged
     assert session.problem_hash() != prob0     # parameter table changed -> problem changed
 
-    # and the edit event makes that visible: model hash steady, problem hash moved
+    # ...and the edit is on the audit trail. It no longer carries before/after hashes of its own:
+    # nothing read them, and the model is stored per version, so any before/after comparison is
+    # recoverable from the models themselves.
     ev = next(e for e in reversed(session.provenance.recent_events(0))
               if e.get("operation") == "make_changes")
-    assert ev["model_hash_before"] == ev["model_hash_after"]
-    assert ev["problem_hash_before"] != ev["problem_hash_after"]
+    assert ev["type"] == "edit" and ev["justification"] == "widen k1"
 
 
 def test_missing_yaml_raises(tmp_path):
@@ -41,10 +42,11 @@ def test_missing_yaml_raises(tmp_path):
         PetabSession(tmp_path / "nope.yaml", provenance_dir=str(tmp_path / "p"))
 
 
-def test_initial_version_snapshotted(session):
-    assert session.provenance.current_version == 0
-    versions = session.provenance.list_versions()
-    assert versions[0]["kind"] == "initial"
+def test_the_initial_model_is_not_a_version(session):
+    """Nothing is fit at construction, so there are no versions yet."""
+    assert session.provenance.current_version == -1
+    assert session.provenance.list_versions() == []
+    assert session.has_model() is True
 
 
 def _species(session):
@@ -58,8 +60,12 @@ def _reactions(session):
 
 
 def test_rollback_restores_and_copies_optimization(session):
-    # Snapshot a "fitted" v1 carrying optimization traces + a (stand-in) pyPESTO result file,
-    # the way a real fitting commit would. (No engine here, so build it via the store.)
+    # Snapshot a trace-free v0, then a "fitted" v1 carrying optimization traces + a (stand-in)
+    # pyPESTO result file, the way a real fitting commit would. (No engine here, so build them
+    # via the store.)
+    session.provenance.snapshot_version(
+        model_ant=session.model.to_antimony(),
+        parameters=session.problem.parameter_df, label="fit", kind="fit")
     root = session.provenance.root
     result_file = root / "cache" / "pypesto_result_xyz.hdf5"
     result_file.parent.mkdir(parents=True, exist_ok=True)
@@ -78,7 +84,7 @@ def test_rollback_restores_and_copies_optimization(session):
     )
     assert session.provenance.current_version == 1
 
-    # Rolling back to v1 restores its optimization traces onto the session ...
+    # Rolling back to the version carrying traces restores them onto the session ...
     session.rollback_to(1)
     opt = session.optimization
     assert opt is not None and opt["n_starts"] == 2
@@ -88,17 +94,6 @@ def test_rollback_restores_and_copies_optimization(session):
     head = session.provenance.current_version
     assert (session.provenance.versions_dir / f"v{head}" / "pypesto_result.hdf5").is_file()
 
-    # rolling back to the unfitted initial version clears the traces
+    # rolling back to a version with no traces clears them
     session.rollback_to(0)
     assert session.optimization is None
-
-
-def test_reset_reverts_to_v0(session, reauthor_toy):
-    reauthor_toy(session, ["J: B => D; k3 * B;"], justification="test", references=["PMID:1"])
-    assert "D" in _species(session)
-    out = session.reset()
-    assert out["reset"] is True
-    # structurally identical to the initial model (SBML serialization need not be
-    # byte-identical across the Antimony round-trip)
-    assert _species(session) == {"A", "B"}
-    assert _reactions(session) == {"r1", "r2"}

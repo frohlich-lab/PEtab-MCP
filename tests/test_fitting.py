@@ -112,55 +112,6 @@ def _pdf(rows):
     return pd.DataFrame(rows).set_index("parameterId")
 
 
-def test_fit_fingerprint_covers_every_starting_value():
-    base = _pdf([
-        {"parameterId": "k", "estimate": 1, "nominalValue": 1.0,
-         "lowerBound": 1e-3, "upperBound": 1e3},
-        {"parameterId": "s", "estimate": 0, "nominalValue": 0.1,
-         "lowerBound": 1e-3, "upperBound": 1e3},
-    ])
-    key = fitting.fit_fingerprint("model", base, 5)
-    assert len(key) == 16
-
-    # An ESTIMATED parameter's starting value IS part of the fit identity: half the multistart is
-    # warm-started from it (see fitting.warm_start_guesses), so the same structure fitted from two
-    # different parents is two different optimizations and must not share one cached result.
-    est_moved = base.copy()
-    est_moved.loc["k", "nominalValue"] = 42.0
-    assert fitting.fit_fingerprint("model", est_moved, 5) != key
-
-    # ...as is a FIXED parameter's value (it enters the objective)
-    fixed_moved = base.copy()
-    fixed_moved.loc["s", "nominalValue"] = 0.2
-    assert fitting.fit_fingerprint("model", fixed_moved, 5) != key
-
-    # bounds, n_starts, and the model each change the identity
-    bounds = base.copy()
-    bounds.loc["k", "upperBound"] = 1e6
-    assert fitting.fit_fingerprint("model", bounds, 5) != key
-    assert fitting.fit_fingerprint("model", base, 20) != key
-    assert fitting.fit_fingerprint("other model", base, 5) != key
-
-
-def test_fit_cache_roundtrip_and_apply(session):
-    key = "deadbeefdeadbeef"
-    assert fitting._load_fit_cache(session, key) is None  # empty cache
-
-    fitting._save_fit_cache(session, key, {
-        "n_starts": 3,
-        "fitted": {"k1": 0.25},
-        "neg_log_likelihood": -8.0,
-        "optimization": {"n_starts": 3, "starts": [{"start": 0, "fval": 8.0}], "trace": []},
-        "result_file": None,
-    })
-    loaded = fitting._load_fit_cache(session, key)
-    assert loaded["fitkey"] == key and loaded["fitted"] == {"k1": 0.25}
-
-    # _apply_fitted writes the cached values into nominalValue (the fit's effect)
-    fitting._apply_fitted(session, {"k1": 0.25})
-    assert float(session.problem.parameter_df.loc["k1", "nominalValue"]) == 0.25
-
-
 def test_default_fit_workers_prefers_slurm(monkeypatch):
     """_default_fit_workers uses SLURM_CPUS_PER_TASK when set (the cores actually granted)."""
     monkeypatch.setenv("SLURM_CPUS_PER_TASK", "7")
