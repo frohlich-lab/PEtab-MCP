@@ -20,6 +20,7 @@ transient state inside one call.
 
 from __future__ import annotations
 
+import copy
 import re
 from typing import Any, Callable
 
@@ -284,79 +285,91 @@ def _commit_change(
     resolved = resolve_references(session.resolver, references, required=require_references)
 
     with session.lock:
-        old_model = session.problem.model
-        old_species = set(R.species_ids(old_model.sbml_model))
-        old_params = session.problem.parameter_df.copy(deep=True)
+        old_species = set(R.species_ids(session.problem.model.sbml_model))
+        # The edit runs against a CANDIDATE problem, never the live one. Shallow copy (the fixed
+        # measurement/condition/observable tables are read-only and shared, as
+        # `fitting._build_hierarchical_problem` already does) with its own parameter table, since
+        # `reconcile` and `param_edit` rewrite that in place. A rejected edit is then simply a
+        # candidate that is never swapped in — there is no unwind, because nothing was wound.
+        problem = copy.deepcopy(session.problem)
+        # DEEP: nothing is shared with the live problem, so an in-place edit anywhere in the
+        # candidate — the parameter table, or the SBML on the parameters-only path, where no fresh
+        # model replaces it — cannot reach the working problem or the undo snapshot
+        # `working_state` takes. A shallow copy leaves the model object shared, and a mutation
+        # through it lands before any check can reject the edit.
+        model_sbml_before = None if model_build is not None else problem.model.to_sbml_str()
 
-        try:
-            apply_result: Any = None
-            if model_build is not None:
-                candidate, apply_result = model_build()
-                session.problem.model = candidate
-                recon = R.reconcile(
-                    session.problem, shipped=session.shipped_parameter_df)
-                # An EMPTY model is refused rather than committed — where "empty" is the same
-                # predicate `model_authored` reports: no species at all, or no DYNAMICS (neither
-                # a reaction nor a rate/assignment rule). Both are unscoreable, and the first is
-                # actively dangerous: AMICI's SBML import segfaults on a model with no entities
-                # whose observables reference undefined symbols, killing the server process, so
-                # nothing downstream gets to reject it gracefully. Refusing here is also what
-                # keeps `model_authored` meaningful — it can only ever go False -> True, on the
-                # first call that commits real dynamics, never back again.
-                #
-                # The check runs AFTER the reconcile: a model can arrive non-empty and be pruned
-                # to nothing (every species unreferenced by any reaction, rule, IC or fixed
-                # table), and re-authoring the content-free seed lands here too. Only an
-                # authoring call is checked — a parameters-only edit cannot change the model.
-                if not session.model_authored():
-                    raise ValidationError(
-                        f"Operation {op!r} rejected: the resulting model has no DYNAMICS — "
-                        f"{session.model.sbml_model.getNumSpecies()} species, no reactions and "
-                        "no rate/assignment rules, so every state stays at its initial value and "
-                        "there is nothing to fit.",
-                        issues=[
-                            "Author the mechanism itself: at least one reaction (`A -> B; k*A`) "
-                            "or a rate/assignment rule that changes a species over time. An "
-                            "Antimony string that only DECLARES species and parameters — or "
-                            "whose species all prune away as orphans (unused by any reaction, "
-                            "rule, initial assignment, or the observable/condition tables) — "
-                            "reconciles to a model that cannot move."
-                        ],
-                    )
-            else:
-                recon = None
-            if param_edit is not None:
-                # AFTER the reconcile: the parameter table only holds the re-authored model's
-                # parameters once reconcile has run, so a bundled bound edit can target a symbol
-                # this very (re-)author introduced — and an entry naming a parameter the re-author
-                # dropped is rejected loudly instead of silently doing nothing.
-                param_result = param_edit(session.problem)
-                apply_result = (
-                    {"model": apply_result, "parameters": param_result}
-                    if recon is not None else param_result
-                )
-            # A parameter that ships FIXED and is a mechanistic/structural constant (a
-            # conservation total, a known rate) must not be removed or freed by an edit —
-            # validation rejects either. Best-effort: an unreadable v0 yields an empty set.
-            try:
-                protected_fixed = session.protected_fixed_parameter_ids()
-            except Exception:  # noqa: BLE001 - never let the lookup break an edit
-                protected_fixed = None
-            report = validate_problem(session.problem, protected_fixed_ids=protected_fixed)
-            if not report["valid"]:
+        apply_result: Any = None
+        if model_build is not None:
+            candidate, apply_result = model_build()
+            problem.model = candidate
+            recon = R.reconcile(problem, shipped=session.shipped_parameter_df)
+            # An EMPTY model is refused rather than committed — where "empty" is the same
+            # predicate `model_authored` reports: no species at all, or no DYNAMICS (neither
+            # a reaction nor a rate/assignment rule). Both are unscoreable, and the first is
+            # actively dangerous: AMICI's SBML import segfaults on a model with no entities
+            # whose observables reference undefined symbols, killing the server process, so
+            # nothing downstream gets to reject it gracefully. Refusing here is also what
+            # keeps `model_authored` meaningful — it can only ever go False -> True, on the
+            # first call that commits real dynamics, never back again.
+            #
+            # The check runs AFTER the reconcile: a model can arrive non-empty and be pruned
+            # to nothing (every species unreferenced by any reaction, rule, IC or fixed
+            # table), and re-authoring the content-free seed lands here too. Only an
+            # authoring call is checked — a parameters-only edit cannot change the model.
+            if not R.has_dynamics(problem.model.sbml_model):
                 raise ValidationError(
-                    f"Operation {op!r} rejected: the resulting problem is invalid.",
-                    issues=[i["message"] for i in report["issues"]
-                            if i["level"] in ("error", "critical")],
+                    f"Operation {op!r} rejected: the resulting model has no DYNAMICS — "
+                    f"{problem.model.sbml_model.getNumSpecies()} species, no reactions and "
+                    "no rate/assignment rules, so every state stays at its initial value and "
+                    "there is nothing to fit.",
+                    issues=[
+                        "Author the mechanism itself: at least one reaction (`A -> B; k*A`) "
+                        "or a rate/assignment rule that changes a species over time. An "
+                        "Antimony string that only DECLARES species and parameters — or "
+                        "whose species all prune away as orphans (unused by any reaction, "
+                        "rule, initial assignment, or the observable/condition tables) — "
+                        "reconciles to a model that cannot move."
+                    ],
                 )
-        except Exception:
-            # An edit is atomic: on any failure (reconcile, lint) restore the model and
-            # parameter table so nothing changes. No fit runs here — that is the `fit` tool.
-            session.problem.model = old_model
-            session.problem.parameter_df = old_params
-            raise
+        else:
+            recon = None
+        if param_edit is not None:
+            # AFTER the reconcile: the parameter table only holds the re-authored model's
+            # parameters once reconcile has run, so a bundled bound edit can target a symbol
+            # this very (re-)author introduced — and an entry naming a parameter the re-author
+            # dropped is rejected loudly instead of silently doing nothing.
+            param_result = param_edit(problem)
+            apply_result = (
+                {"model": apply_result, "parameters": param_result}
+                if recon is not None else param_result
+            )
+        # A parameters-only call must not change the model: it never runs the reconcile or the
+        # has-dynamics refusal, so a model edit smuggled through it would reach a committed
+        # version unchecked. The live problem is safe either way (the candidate is a deep copy);
+        # this is the operation's contract, not a containment measure.
+        if model_sbml_before is not None and problem.model.to_sbml_str() != model_sbml_before:
+            raise ValidationError(
+                f"Operation {op!r} rejected: a parameters-only edit changed the MODEL, which "
+                "bypasses the SBML<->PEtab reconcile every authoring call runs. Author model "
+                "changes through `antimony`."
+            )
+        # A parameter that ships FIXED and is a mechanistic/structural constant (a
+        # conservation total, a known rate) must not be removed or freed by an edit —
+        # validation rejects either. Best-effort: an unreadable v0 yields an empty set.
+        try:
+            protected_fixed = session.protected_fixed_parameter_ids()
+        except Exception:  # noqa: BLE001 - never let the lookup break an edit
+            protected_fixed = None
+        report = validate_problem(problem, protected_fixed_ids=protected_fixed)
+        if not report["valid"]:
+            raise ValidationError(
+                f"Operation {op!r} rejected: the resulting problem is invalid.",
+                issues=[i["message"] for i in report["issues"]
+                        if i["level"] in ("error", "critical")],
+            )
 
-        warnings = (_parsimony_warnings(session.problem, old_species) if recon is not None else [])
+        warnings = (_parsimony_warnings(problem, old_species) if recon is not None else [])
         # Warnings raised by the edit callback itself (e.g. change_parameters' advisory sigma cap)
         # must reach the CALLER, not just the provenance log — an advisory nobody reads is the same
         # as no guard at all. `recon is None` for every parameter edit, so the parsimony list above
@@ -387,7 +400,7 @@ def _commit_change(
         # analytic; `newly_added` marks the ICs this op introduced. Unconditional — there is
         # always a model (see `session.has_model`).
         initial_conditions = R.initial_conditions_report(
-            session.problem, added=set(param_diff["added"]))
+            problem, added=set(param_diff["added"]))
         # Log the edit. No version — versions are fit snapshots (see `session.fit`). Written
         # before the fit so a change that fails to score still leaves a trace, and because
         # `references` (resolved PubMed metadata) lives nowhere else.
@@ -401,6 +414,13 @@ def _commit_change(
             "parameter_diff": param_diff,
             "warnings": warnings,
         })
+
+        # LAST, once nothing left can raise: the candidate becomes the working problem. Everything
+        # above reads the local `problem`, so the swap has no reason to happen earlier — and every
+        # statement above it (the parsimony walk, the initial-condition report, the event write)
+        # can throw. A throw after the swap would leave the live problem changed while the caller
+        # reports `applied: false`, and `make_changes` returns on that without reverting.
+        session.problem = problem
 
     return {
         "applied": True,
@@ -868,13 +888,14 @@ def change_parameters(
 
 # -- edit + fit, as one all-or-nothing change ------------------------------
 def working_state(session) -> dict[str, Any]:
-    """Snapshot the working state an edit mutates, so it can be undone AFTER the fact.
+    """Snapshot the working state, so a FIT that produces no version can be undone.
 
-    ``_commit_change`` reverts an edit that fails its own reconcile/lint; this snapshot covers the
-    step after it, the fit. Holds the model OBJECT (an edit replaces the reference rather than
-    mutating it) plus a deep copy of the parameter table.
+    A rejected edit needs no unwind — it builds a candidate problem and never swaps it in (see
+    :func:`_commit_change`). This snapshot covers the step after it, the fit: the candidate IS the
+    working problem by then, and a fit that produces no version has to put the old one back.
 
-    It also holds the last fit's ``simulation`` / ``optimization`` payloads — what
+    Holding the problem OBJECT is enough because the edit replaces the reference rather than
+    mutating it. The last fit's ``simulation`` / ``optimization`` payloads come too — what
     ``get_fit_summary`` and every residual/diagnostic read report. ``fit_and_simulate`` REBINDS
     them rather than mutating, so keeping the references restores the score with the model;
     otherwise a fit that ran and then failed to snapshot would leave the reverted-away
@@ -882,8 +903,7 @@ def working_state(session) -> dict[str, Any]:
     """
     with session.lock:
         return {
-            "model": session.problem.model,
-            "parameters": session.problem.parameter_df.copy(deep=True),
+            "problem": session.problem,
             "simulation": session.simulation,
             "optimization": session.optimization,
         }
@@ -902,8 +922,7 @@ def revert_working_state(session, snapshot: dict[str, Any], reason: str) -> None
     candidate that is no longer the working model.
     """
     with session.lock:
-        session.problem.model = snapshot["model"]
-        session.problem.parameter_df = snapshot["parameters"]
+        session.problem = snapshot["problem"]
         session.simulation = snapshot["simulation"]
         session.optimization = snapshot["optimization"]
         session.provenance.append_event({

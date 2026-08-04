@@ -192,18 +192,6 @@ def _fitted_values(x_names, x_values, free_indices, parameter_df) -> dict[str, f
     return fitted
 
 
-def _apply_fitted(session, fitted: dict[str, float]) -> None:
-    """Write cached fitted (linear-scale) values into ``nominalValue`` — the fit's effect."""
-    df = session.problem.parameter_df
-    with session.lock:
-        for name, value in (fitted or {}).items():
-            if name in df.index:
-                try:
-                    df.loc[name, NOMINAL_VALUE] = float(value)
-                except (TypeError, ValueError):
-                    pass
-
-
 def _build_hierarchical_problem(session, importer_kwargs: dict[str, Any]):
     """Best-effort hierarchical pyPESTO problem for ``session``'s current problem.
 

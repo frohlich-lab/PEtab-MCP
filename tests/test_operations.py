@@ -4,6 +4,7 @@ import pytest
 
 from petab_mcp import operations as O
 from petab_mcp import parameters as P
+from petab_mcp.errors import PetabMcpError
 from petab_mcp.operations import OperationError
 
 # The shipped toy model (tests/data/toy_v1/model.ant), used as the base for every re-author.
@@ -404,3 +405,88 @@ def test_edit_records_event_but_no_version(session):
     assert edit["operation"] == "make_changes"
     assert edit["justification"] == "x"
     assert edit["references"][0]["input"] == "PMID:1"
+
+
+def test_a_rejected_edit_never_touches_the_live_problem(session):
+    """The edit builds a CANDIDATE and swaps it in only once everything passes, so a rejection
+    leaves the live problem object — not merely its contents — identical."""
+    before_problem = session.problem
+    before_df = session.problem.parameter_df
+    before_model = session.problem.model
+    before_rows = session.problem.parameter_df.to_dict()
+
+    with pytest.raises(PetabMcpError):
+        O.set_model(session, "model m\n  species Z;\n  Z = 1;\nend", justification="no dynamics")
+
+    assert session.problem is before_problem, "the live problem object was replaced"
+    assert session.problem.parameter_df is before_df, "the live parameter table was replaced"
+    assert session.problem.model is before_model, "the live model was replaced"
+    assert session.problem.parameter_df.to_dict() == before_rows
+
+
+def test_a_successful_edit_swaps_in_a_new_problem_object(session):
+    """The complement: a change that passes replaces the reference rather than mutating in place,
+    which is what makes the snapshot in `working_state` a valid undo."""
+    before_problem = session.problem
+    res = O.change_parameters(
+        session, [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
+        justification="widen")
+    assert res["applied"] is True
+    assert session.problem is not before_problem
+    # nothing is shared with the problem it replaced — a deep copy, so no in-place edit anywhere
+    # in the candidate can reach the object `working_state` snapshots for the undo
+    assert session.problem.parameter_df is not before_problem.parameter_df
+    assert session.problem.model is not before_problem.model
+
+
+def test_a_failure_after_the_edit_applies_still_leaves_the_live_problem_alone(session,
+                                                                              monkeypatch):
+    """The candidate is swapped in only once nothing left can raise.
+
+    The provenance write is the last thing that can fail, and `make_changes` returns on
+    `applied: false` without reverting — so a swap before it would leave the working model
+    carrying a change the caller was told was rejected."""
+    before_problem = session.problem
+
+    def _boom(_event):
+        raise OSError("provenance write failed")
+
+    monkeypatch.setattr(session.provenance, "append_event", _boom)
+    with pytest.raises(OSError):
+        O.change_parameters(
+            session, [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
+            justification="widen")
+
+    assert session.problem is before_problem
+
+
+def test_a_parameters_only_edit_that_touched_the_model_is_refused(session, monkeypatch):
+    """Two things: the live model must be UNTOUCHED (the candidate is a deep copy, so an
+    in-place SBML edit cannot reach it), and the edit must be refused (a parameters-only call
+    skips the reconcile, so a model change through it would reach a version unchecked).
+
+    The refusal alone is not enough — it fires after `param_edit` has run, so with a shared model
+    the mutation had already landed in the working problem."""
+    real = O._parameter_edit
+
+    def _also_mutates_the_model(sess, normalized):
+        inner = real(sess, normalized)
+
+        def edit(problem):
+            out = inner(problem)
+            problem.model.sbml_model.getSpecies(0).setId("mutated_in_place")
+            return out
+        return edit
+
+    before_ids = [session.problem.model.sbml_model.getSpecies(i).getId()
+                  for i in range(session.problem.model.sbml_model.getNumSpecies())]
+
+    monkeypatch.setattr(O, "_parameter_edit", _also_mutates_the_model)
+    with pytest.raises(PetabMcpError, match="changed the MODEL"):
+        O.change_parameters(
+            session, [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
+            justification="widen")
+
+    after_ids = [session.problem.model.sbml_model.getSpecies(i).getId()
+                 for i in range(session.problem.model.sbml_model.getNumSpecies())]
+    assert after_ids == before_ids, "the rejected edit reached the live model"
