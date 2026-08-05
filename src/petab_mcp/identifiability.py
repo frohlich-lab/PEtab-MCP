@@ -1,9 +1,9 @@
 """Parameter-identifiability diagnosis of the current fit.
 
 Which estimated parameters are superfluous? The lead over-parameterises because raw nll/bic
-don't say WHICH parameters are unconstrained or trading off. ``get_identifiability`` (see
-:mod:`petab_mcp.server`) answers that from two cheap, complementary signals at the fitted
-optimum:
+don't say WHICH parameters are unconstrained or trading off. The ``parameters`` section of
+``get_fit_diagnosis`` (see :mod:`petab_mcp.server`) answers that from two cheap, complementary
+signals at the fitted optimum:
 
 * the Fisher Information Matrix (FIM ≈ Hessian of the nllh, from AMICI sensitivities) ->
   per-parameter standard error, marginal + partial correlations, and — via its
@@ -14,9 +14,22 @@ optimum:
 The FIM is a LOCAL linearization and can understate non-identifiability for strongly nonlinear
 models, so the two are meant to be read together. All output is bounded (top-N pairs/directions).
 
+One verdict off that diagnosis rides on EVERY fit result instead of waiting to be asked for:
+:func:`fit_merge_hint` names the cheapest parameter tie whose cost the BIC penalty already pays
+for (see :func:`merge_hint`). It is the same computation the section reports, condensed — a tool
+called once a run cannot inform a decision made every turn.
+
+NOTHING HERE MAY BUILD A MODEL. A diagnosis describes a fit that already happened, and the module
+that fit was compiled with already exists, so every entry point reads the frozen
+:class:`fitting.FitRecord` the fit left behind — its pyPESTO problem, its point, its tables — and
+never re-derives an AMICI output folder from live session state. That is the whole reason the
+record exists; see its docstring for the build a live read used to pay for. A run outlives its
+process, so where there is no record the verdict the fit STORED is re-served instead
+(:func:`fit_diagnosis_block`) — again computing nothing. The working model having moved since is
+reported (``stale``), never re-priced. ``tests/test_diagnosis_never_compiles.py`` holds that line.
+
 Split out of :mod:`petab_mcp.fitting` (which owns fit/simulate orchestration) so this
-analytical subsystem stands on its own; the multistart spread reads
-``session.optimization`` written by the fitter.
+analytical subsystem stands on its own.
 """
 
 from __future__ import annotations
@@ -24,10 +37,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from petab.v1.C import ESTIMATE, NOMINAL_VALUE, PARAMETER_SCALE
-
 from .constants import PARAMETER_AT_BOUND_RELATIVE_TOL
-from .parameters import estimated_mask
 
 
 def _identifiability_stats(
@@ -187,34 +197,28 @@ def _identifiability_stats(
     }
 
 
-def _compute_fim(session, engine):
-    """FIM (≈ Hessian of the nllh) at the current fitted point, in free-scaled parameter space.
+def _compute_fim(record):
+    """FIM (≈ Hessian of the nllh) at the FROZEN fitted point, in the record's free-scaled space.
 
-    Returns ``(fim_ndarray, free_names)`` or ``None`` (best-effort — a missing FIM just drops
-    the correlation half of the diagnosis, leaving the multistart spread)."""
+    Evaluated on ``record.pypesto_problem`` — the very objective the optimizer minimised, whose
+    AMICI module is already imported — so this costs ONE sensitivity evaluation and cannot build
+    anything. There is no importer here, and no hash to resolve: that is the invariant, not an
+    optimisation (see :class:`fitting.FitRecord`).
+
+    On a HIERARCHICAL fit that objective inner-solves the noise sigmas / observable scalings, so
+    its Hessian has only the OUTER coordinates and this is the REDUCED FIM. That is the right
+    object: the inner parameters are shipped by the observation model, so they define no mergeable
+    direction, and every rank statement is made against the FIM's OWN dimension (see
+    :func:`_identifiability_stats`) — never against the session's ``k``, which counts them.
+
+    Returns the ``m×m`` array or ``None`` (best-effort — a missing FIM just drops the correlation
+    half of the diagnosis, leaving the multistart spread)."""
     try:
         import numpy as np
-        import pypesto.petab
-        from petab.v1.parameters import scale
 
-        from .engine import _ensure_swig_on_path
-        _ensure_swig_on_path()
-        importer = pypesto.petab.PetabImporter(
-            session.problem, **engine.pypesto_importer_kwargs()
-        )
-        problem = importer.create_problem()
-        df = session.problem.parameter_df
-        x_full = []
-        for name in problem.x_names:
-            if name in df.index:
-                x_full.append(float(scale(float(df.loc[name, NOMINAL_VALUE]),
-                                          df.loc[name, PARAMETER_SCALE])))
-            else:
-                x_full.append(0.0)
-        free_idx = list(problem.x_free_indices)
-        free_names = [problem.x_names[i] for i in free_idx]
-        x_free = np.asarray(problem.get_reduced_vector(np.asarray(x_full, dtype=float)), dtype=float)
-        mfree = len(free_names)
+        problem = record.pypesto_problem
+        x_free = np.asarray(record.x_free, dtype=float)
+        mfree = len(record.x_names)
 
         def _finite_square(a):
             a = np.asarray(a, dtype=float)
@@ -226,7 +230,7 @@ def _compute_fim(session, engine):
             ret = problem.objective(x_free, sensi_orders=(0, 1, 2), return_dict=True)
             for key in ("hess", "HESS"):
                 if key in ret and _finite_square(ret[key]):
-                    return np.asarray(ret[key], dtype=float), free_names
+                    return np.asarray(ret[key], dtype=float)
         except Exception:  # noqa: BLE001 - order-2 unsupported for this objective; try sres
             pass
         try:
@@ -236,20 +240,20 @@ def _compute_fim(session, engine):
                     sres = np.asarray(ret[key], dtype=float)
                     fim = sres.T @ sres
                     if _finite_square(fim):
-                        return fim, free_names
+                        return fim
         except Exception:  # noqa: BLE001
             pass
         return None
-    except Exception:  # noqa: BLE001 - importer/model build failure; degrade to spread-only
+    except Exception:  # noqa: BLE001 - unevaluable objective; degrade to spread-only
         return None
 
 
-def _multistart_spread(session, free_names: list[str]) -> dict[str, Any]:
-    """Per-parameter spread across near-optimal multistarts (scaled space), from the stored
+def _multistart_spread(optimization, free_names: list[str]) -> dict[str, Any]:
+    """Per-parameter spread across near-optimal multistarts (scaled space), from the FROZEN
     optimization payload's per-start ``x``. Empty when x/x_names were not recorded."""
     import numpy as np
 
-    opt = session.optimization or {}
+    opt = optimization or {}
     starts = opt.get("starts") or []
     xnames = opt.get("x_names") or []
     if not starts or not xnames:
@@ -279,11 +283,11 @@ def _multistart_spread(session, free_names: list[str]) -> dict[str, Any]:
     return out
 
 
-def _measurement_count(session) -> int | None:
+def _measurement_count(problem) -> int | None:
     """Number of measurement rows — the ``n`` in BIC's ``k*ln(n)`` penalty, so a tie's cost can be
     compared against what BIC charges for the parameter it would remove."""
     try:
-        n = len(session.problem.measurement_df)
+        n = len(problem.measurement_df)
         return n or None
     except Exception:  # noqa: BLE001 - no table: report the ties without a price
         return None
@@ -437,70 +441,288 @@ def merge_candidates(fim, names, theta, *, scales=None, at_bound=None, roles=Non
     return out
 
 
-def identifiability(session, engine=None, *, top_n: int = 8, corr_threshold: float = 0.9) -> dict[str, Any]:
-    """Parameter-identifiability diagnosis of the current fit — which estimated parameters are
-    unconstrained or trade off (the basis for model simplification). Combines the FIM (SE +
-    marginal/partial correlations + flat directions) with the multistart spread. Bounded output.
+def fit_record(session):
+    """The frozen record of the fit a diagnosis would describe, or ``None``.
+
+    Every number in this module is a LOCAL expansion around a stationary point: the standard
+    errors, the flat directions and, most sharply, the ONE-SHARED-VALUE merge price
+    (:func:`merge_candidates`), which has no gradient term. Away from an optimum that price does
+    not degrade gracefully, it gets monotonically cheaper — on blasi, the fitted model prices its
+    cheapest tie at 0.001 nll and the same structure at 3x its parameter values at 7e-05 — so an
+    un-fitted point advertises free merges that are not there.
+
+    ``None`` therefore means "no optimum of this process's own to expand around": a run that has
+    authored nothing, an ``auto_fit``-off commit, and a process that RESUMED a run. The last of those
+    still HAS a fit to report on, so it is not left undiagnosed — the fit's own verdict travels with
+    the fit (see :func:`fit_diagnosis_block`) and is re-served from there.
     """
-    from petab.v1.C import LOWER_BOUND, UPPER_BOUND
-    from petab.v1.parameters import scale
+    return getattr(session, "fit_record", None)
 
-    df = session.problem.parameter_df
-    engine = engine or session.engine
 
-    # FIM first — its free-parameter order is the canonical order for everything else.
-    fim = free_names = None
-    if engine is not None:
-        got = _compute_fim(session, engine)
-        if got is not None:
-            fim, free_names = got
-    if free_names is None:  # no FIM: use the estimated params in table order
-        free_names = []
-        if ESTIMATE in df.columns:
-            # `estimate` can be NaN / non-numeric; estimated_mask coerces defensively (a bad cell
-            # yields "not estimated") and here a wholly non-numeric column falls back to none free.
-            try:
-                free_names = [str(i) for i in df.index[estimated_mask(df)]]
-            except (TypeError, ValueError):
-                free_names = []
+def structure_moved(session, structure_hash: str | None) -> bool:
+    """Is the working structure a DIFFERENT one from ``structure_hash``?
 
-    def _scaled(name, col):
-        try:
-            return float(scale(float(df.loc[name, col]), df.loc[name, PARAMETER_SCALE]))
-        except Exception:  # noqa: BLE001 - missing bound/value
-            return None
+    The one staleness question this module asks, of a frozen record and of a stored verdict alike —
+    a COMPARISON, never a rebuild key. STRUCTURE (the reaction network plus the estimated-parameter
+    set) is what decides whether a geometry describes the model in front of the lead. A restore points
+    the working state at another version's model and does move it: the diagnosis then belongs to the
+    last fit, says so, and is not re-priced (pricing the current structure would mean fitting, and
+    building, it).
 
-    params_meta = []
-    for name in free_names:
-        est_s = _scaled(name, NOMINAL_VALUE) if name in df.index else None
-        lb = _scaled(name, LOWER_BOUND) if (name in df.index and LOWER_BOUND in df.columns) else None
-        ub = _scaled(name, UPPER_BOUND) if (name in df.index and UPPER_BOUND in df.columns) else None
+    The de-dup no-op deliberately does NOT move it. It re-authors the same structure with a new
+    starting guess — which is why ``problem_hash`` differs and why no fit ran — so the frozen optimum
+    is still HEAD's, still this structure's, and still the only fit there is to report on. Calling
+    that stale is what silently switched off the parsimony finish gate on the one drift a lead can
+    cause inside a run: the same rank-deficient FIM, refused before the no-op and ignored after it.
+    A table-only drift is reported instead (see :data:`WORKING_TABLE_NOTE`).
+
+    An unknown ``structure_hash`` reads as moved: unable to say the geometry still applies is not the
+    same as saying it does.
+    """
+    if not structure_hash:
+        return True
+    try:
+        from .parameters import structure_fingerprint
+
+        return structure_fingerprint(
+            session.problem.model.sbml_model, session.problem.parameter_df) != structure_hash
+    except Exception:  # noqa: BLE001 - cannot tell: say so rather than claim currency
+        return True
+
+
+def is_stale(session, record) -> bool:
+    """:func:`structure_moved` for a frozen record — has the fit it describes been superseded by a
+    different structure in the working state?"""
+    return structure_moved(session, getattr(record, "structure_hash", None))
+
+
+def working_table_moved(session, record) -> bool:
+    """Has the working PARAMETER TABLE moved since the fit, with the structure intact? (The de-dup
+    no-op's new starting guess, or a bounds edit — worth saying, since the numbers reported are the
+    fit's, not the table's.)"""
+    try:
+        return session.problem_hash() != record.problem_hash
+    except Exception:  # noqa: BLE001 - cannot tell: prefer saying the values may have moved
+        return True
+
+
+#: Why a diagnosis was not computed. Both are reported in the ``available: False`` shape a missing
+#: FIM already produces, so every consumer's existing fail-open path covers them.
+NO_OPTIMUM_NOTE = ("no fitted optimum to diagnose — every number here is a local expansion around "
+                   "one, so none was computed. Commit a model with make_changes (which fits it) "
+                   "and read this again.")
+FAILED_NOTE = ("the parameter diagnosis could not be computed for this fit (see the server log); "
+               "the residual section is unaffected.")
+#: Said when the working model's STRUCTURE has changed since the fit this describes. Reported, never
+#: re-priced: pricing the current structure would mean fitting (and building) it.
+STALE_NOTE = ("this describes the LAST FIT, not the model in front of you — a different structure is "
+              "in the working state now (a restore). Commit the current model with make_changes "
+              "(which fits it) to get its own diagnosis.")
+#: Said when the working parameter TABLE has moved but the structure has not — the de-dup no-op's new
+#: starting guess, or an edit to a bound. The geometry still describes this structure at its fitted
+#: optimum, which is the only fit there is: nothing has been fitted on the table in front of you.
+WORKING_TABLE_NOTE = ("your working parameter table is not the one this fit left (a value, a bound or "
+                      "a scale has changed since), and nothing has been fitted on it: these numbers "
+                      "are the fitted optimum of the SAME structure. A re-authored starting guess in "
+                      "particular is not a fit — it de-duplicated against the committed fit of the "
+                      "identical structure.")
+#: Said on a hierarchical fit, where the objective inner-solves the noise sigmas / observable
+#: scalings and the FIM has no coordinate for them. Stated because their ABSENCE from `parameters`,
+#: `n_estimated` and every priced tie would otherwise read as a bug rather than as the intent.
+INNER_OMITTED_NOTE = ("this fit inner-solved its noise sigmas / observable-scaling factors, so they "
+                      "are not coordinates of this FIM: `n_estimated` here counts the OUTER "
+                      "parameters (fewer than the model's k) and no tie is priced against them. "
+                      "They are shipped by the observation model, so they define no merge you "
+                      "could write anyway.")
+
+
+def unavailable(note: str) -> dict[str, Any]:
+    """The no-diagnosis payload, saying WHY (see :data:`NO_OPTIMUM_NOTE`, :data:`FAILED_NOTE`)."""
+    return {"available": False, "method": "none", "note": note}
+
+
+def _params_meta(record) -> list[dict[str, Any]]:
+    """One ``{id, scale, estimate, estimate_scaled, at_bound}`` per free parameter, off the RECORD.
+
+    The point, its scale and its box all come from the frozen problem, in the FIM's own coordinate
+    order — not from ``parameter_df[nominalValue]``, which an agent edit can move after the fit, and
+    which would then have a diagnosis expanding around a point the fit never reached.
+    """
+    from petab.v1.parameters import unscale
+
+    out = []
+    for i, name in enumerate(record.x_names):
+        est_s = record.x_free[i]
+        sc = record.scales[i]
+        lb = record.lb[i] if i < len(record.lb) else None
+        ub = record.ub[i] if i < len(record.ub) else None
         at_bound = False
-        if est_s is not None and lb is not None and ub is not None and ub > lb:
+        if lb is not None and ub is not None and ub > lb:
             # Same relative tolerance the fit report uses (fitting.parameters_at_bound), so a
             # parameter isn't flagged at-bound by one path and not the other.
             tol = PARAMETER_AT_BOUND_RELATIVE_TOL * (ub - lb)
             at_bound = (est_s - lb) <= tol or (ub - est_s) <= tol
-        params_meta.append({
-            "id": name,
-            "scale": (df.loc[name, PARAMETER_SCALE] if name in df.index else None),
-            "estimate": (float(df.loc[name, NOMINAL_VALUE]) if name in df.index else None),
-            "estimate_scaled": est_s,
-            "at_bound": at_bound,
-        })
+        try:
+            estimate = float(unscale(est_s, sc))
+        except Exception:  # noqa: BLE001 - an unknown scale still has a scaled coordinate
+            estimate = None
+        out.append({"id": name, "scale": sc, "estimate": estimate,
+                    "estimate_scaled": est_s, "at_bound": at_bound})
+    return out
 
-    spread = _multistart_spread(session, free_names)
+
+def identifiability(session, *, top_n: int = 8, corr_threshold: float = 0.9) -> dict[str, Any]:
+    """Parameter-identifiability diagnosis of the last fit — which estimated parameters are
+    unconstrained or trade off (the basis for model simplification). Combines the FIM (SE +
+    marginal/partial correlations + flat directions) with the multistart spread. Bounded output.
+
+    Reads ONLY the frozen :class:`fitting.FitRecord`, or — where this process ran no fit — the verdict
+    the fit that DID run stored beside its score (:func:`stored_diagnosis`). No AMICI output folder is
+    derived from live session state either way, so this cannot compile anything (see the module
+    docstring). ``available: False`` when there is neither; ``stale: True`` when the working structure
+    is no longer the one that was fitted.
+
+    Which source, when both exist, is decided by WHICH FIT the working state is: the record while it
+    describes that structure, and otherwise the stored verdict of the structure now in place — after a
+    restore that is HEAD's own fit, and reporting the last fit's geometry there instead would make the
+    section disagree with the ``merge_hint`` beside the score, which is read from the same store.
+    """
+    record = fit_record(session)
+    if record is None or is_stale(session, record):
+        stored = stored_diagnosis(session)
+        if record is None or stored.get("available"):
+            return stored
+    # FIM first — its free-parameter order is the record's, which is the canonical order here.
+    fim = _compute_fim(record)
+    spread = _multistart_spread(record.optimization, list(record.x_names))
     # Roles keep the merge offers to edits a modeller would actually write: nothing mathematically
     # stops tying a kinetic rate to an observable scaling, and the arithmetic will call it free.
     # merge_candidates is their only consumer and needs the FIM, so without one this whole-model
-    # walk would be discarded unused.
+    # walk would be discarded unused. Walked on the FROZEN problem — the structure that was fitted.
     roles = None
     if fim is not None:
         try:
             from .reconcile import parameter_roles
-            roles = parameter_roles(session.problem)
+            roles = parameter_roles(record.problem)
         except Exception:  # noqa: BLE001 - advisory; the payload says the filter is off
             roles = None
-    return _identifiability_stats(params_meta, fim, spread,
-                                  top_n=top_n, corr_threshold=corr_threshold,
-                                  roles=roles, n_data=_measurement_count(session))
+    out = _identifiability_stats(_params_meta(record), fim, spread,
+                                 top_n=top_n, corr_threshold=corr_threshold,
+                                 roles=roles, n_data=_measurement_count(record.problem))
+    if record.hierarchical:
+        out["inner_parameters_omitted"] = INNER_OMITTED_NOTE
+    if is_stale(session, record):
+        out["stale"] = True
+        out["stale_note"] = STALE_NOTE
+    elif working_table_moved(session, record):
+        out["working_table_note"] = WORKING_TABLE_NOTE
+    return out
+
+
+def merge_hint(diagnosis: "dict[str, Any] | None") -> dict[str, Any] | None:
+    """The one tie worth reporting beside a fit's score: the cheapest ONE-SHARED-VALUE merge whose
+    ``dnll`` is below what BIC charges for the parameter it deletes — or ``None``.
+
+    ``diagnosis`` is an :func:`identifiability` payload, so the hint cannot say anything the
+    section does not: it IS that payload's first ``merge_candidates`` row, minus the detail. Four
+    fields, kept short because this rides on every fit result and is re-sent in the agent's history
+    every later turn: the pair, its cost, ``dbic`` (negative = the merge lowers BIC), and
+    ``move_scaled``. The last one is not decoration — :func:`merge_candidates` prices a
+    ONE-SHARED-VALUE tie and says that price must be read against the move: a hint naming a
+    near-free tie without it invites taking a merge whose parameter travels many decades, which is
+    the quadratic running off down a flat direction rather than an edit that survives a refit.
+
+    ``None`` covers every case the hint has nothing to claim in — no FIM, no priceable pair, or a
+    cheapest tie that does NOT beat the charge — so its ABSENCE is not a certificate of
+    parsimony. Only the section distinguishes those (``n_ties_skipped``, ``filters_off``).
+    """
+    ties = ((diagnosis or {}).get("merge_candidates") or {}).get("ties") or []
+    for row in ties:  # cheapest-first, and priced against one shared ln(n)/2, so this is the best
+        if isinstance(row, dict) and row.get("merge_improves_bic"):
+            return {"parameters": list(row.get("parameters") or ()),
+                    "dnll": row.get("dnll"), "dbic": row.get("dbic"),
+                    "move_scaled": row.get("move_scaled")}
+    return None
+
+
+#: Key under which a fit stashes :func:`fit_diagnosis_block` on its simulation payload. Not part of
+#: any agent-facing payload: the tool serves the diagnosis itself, and the fit result the hint.
+STORED_DIAGNOSIS_KEY = "parameter_diagnosis"
+
+
+def fit_diagnosis_block(session) -> dict[str, Any] | None:
+    """The diagnosis of the fit ``session`` has just frozen, in the form the FIT payload carries it:
+    ``{structure_hash, diagnosis}``. ``None`` when there is nothing to describe.
+
+    This is how the parameter verdict outlives the process that computed it, exactly as the residual
+    verdict does (:func:`data_access.residual_structure_rollup` rides on the same payload, and the
+    payload is snapshotted per version). A run RESUMED in a new process restores HEAD's payload but
+    no :class:`fitting.FitRecord` — the optimizer ran elsewhere — and re-deriving one there means
+    naming an AMICI output folder from live state, which is a full C++ build of a structure that was
+    already built once, under a different SBML serialisation. Storing the verdict removes the need:
+    nothing is recomputed, so nothing can be compiled, and the finish gate's parsimony refusal keeps
+    working across a resume instead of quietly going dark for the rest of the run.
+
+    ``structure_hash`` travels with it because a stored verdict has to be able to say whether it still
+    applies (see :func:`structure_moved`); it is the record's, i.e. the structure that was fitted.
+
+    Best-effort in the strong sense: ANY failure returns ``None``. A parameter-geometry advisory must
+    never fail a commit, so it is guarded here rather than at each call site — and it needs no compile
+    guard, since :func:`identifiability` evaluates the FROZEN problem, which is already built. It runs
+    the whole diagnosis (the FIM is the cost either way: measured at 0.085 s on blasi's k=11, n=252
+    steady-state model, 6% of a single-start fit there) so the stored verdict, the hint on the result
+    and the section the lead reads are one computation at one optimum and cannot disagree.
+    """
+    try:
+        record = fit_record(session)
+        if record is None or is_stale(session, record):
+            return None
+        diagnosis = identifiability(session)
+        if not diagnosis.get("available"):
+            return None
+        return {"structure_hash": record.structure_hash, "diagnosis": diagnosis}
+    except Exception:  # noqa: BLE001 - advisory; a fit is never failed by a diagnostic
+        return None
+
+
+def fit_merge_hint(session) -> dict[str, Any] | None:
+    """:func:`merge_hint` for the fit ``session`` has just frozen, for the fit result to carry —
+    the one row of :func:`fit_diagnosis_block`'s verdict the result has room for."""
+    return merge_hint((fit_diagnosis_block(session) or {}).get("diagnosis"))
+
+
+def stored_diagnosis(session) -> dict[str, Any] | None:
+    """The parameter diagnosis the FIT stored (:func:`fit_diagnosis_block`), re-served for a process
+    that did not run that fit — or the ``available: False`` payload when there is none.
+
+    Nothing is recomputed here: the stale label is re-evaluated against the working structure (the
+    stored one was computed when that structure WAS the working one), and the rest is the fit's own
+    verdict, computed at its own optimum. ``top_n`` therefore has no effect on it — a stored verdict
+    is bounded the way the fit bounded it.
+    """
+    stored = (getattr(session, "simulation", None) or {}).get(STORED_DIAGNOSIS_KEY)
+    diagnosis = stored.get("diagnosis") if isinstance(stored, dict) else None
+    if not isinstance(diagnosis, dict) or not diagnosis.get("available"):
+        return unavailable(NO_OPTIMUM_NOTE)
+    out = {k: v for k, v in diagnosis.items()
+           if k not in ("stale", "stale_note", "working_table_note")}
+    if structure_moved(session, stored.get("structure_hash")):
+        out["stale"] = True
+        out["stale_note"] = STALE_NOTE
+    return out
+
+
+def stored_merge_hint(session) -> dict[str, Any] | None:
+    """The hint the last fit already priced, for a later READ of the same score
+    (:func:`fitting.fit_summary`) to report without pricing a second one — or ``None``.
+
+    Read off the STORED verdict, never recomputed: the score read is the cheapest call in the run and
+    the gate makes it on every finish attempt, so it must not cost a FIM. ``None`` once the STRUCTURE
+    has drifted from the fit that priced it, so a restore does not re-serve another model's tie as if
+    it were this state's — but a de-dup no-op does not drop it: HEAD is still that fit, and the score
+    read beside it is still that fit's score.
+    """
+    diagnosis = stored_diagnosis(session)
+    if not diagnosis.get("available") or diagnosis.get("stale"):
+        return None
+    return merge_hint(diagnosis)

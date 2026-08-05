@@ -199,9 +199,10 @@ def test_rollup_flags_the_observable_from_the_replicate_arm(session):
     assert "Replicate lack-of-fit" in out["summary"] and "obs_B" in out["summary"]
     # ...but never leaks the reference
     assert "delta_bic" not in out["summary"] and "true model" not in out["summary"].lower()
-    # and the per-observable table agrees with the rolled-up verdict rather than contradicting it
+    # and the per-observable table agrees with the rolled-up verdict rather than contradicting it —
+    # the arm flags a DESIGN POINT, so without that marking the row would read structure_flag: false
+    # while its observable sits in flagged_observables
     diag = data_access.fit_diagnosis(session)
-    assert diag["residual_structure"] == out
     assert [o["structure_flag"] for o in diag["per_observable"]] == [True]
 
 
@@ -237,8 +238,8 @@ def test_rollup_reports_no_evidence_rather_than_a_pass_without_replicates(sessio
 
 
 def test_rollup_verdict_shape_is_the_same_on_every_path(session):
-    """One key name, one shape: `fit`, `get_fit_diagnosis` and the degraded "nothing to test" path all
-    carry the same CORE keys, since the agent reads this off a fit result.
+    """One key name, one shape: the fit result and the degraded "nothing to test" path carry the same
+    CORE keys, since the agent reads this off a fit result.
 
     The optional ones are omitted when they have nothing to say, and that is ONE policy for the whole
     verdict (`data_access._LOF_OMIT_WHEN_EMPTY_KEYS`) rather than a judgement per key: `advice` never
@@ -257,7 +258,9 @@ def test_rollup_verdict_shape_is_the_same_on_every_path(session):
     # a FLAG on 3 points against the toy problem's 2 structural parameters: the df is reported, and
     # `weak` is absent because a flag is conclusive however few directions remain
     assert set(rollup["replicate_lack_of_fit"]) == core | {"lof_df"}
-    assert rollup == data_access.fit_diagnosis(session)["residual_structure"]
+    # ...and the verdict is carried ONCE, on the fit result: the diagnosis returns the detail behind
+    # it, never a second copy
+    assert "residual_structure" not in data_access.fit_diagnosis(session)
     # the advice is carried ONCE (in the summary), not duplicated into the payload
     assert "advice" not in rollup["replicate_lack_of_fit"]
 
@@ -332,8 +335,9 @@ def test_rollup_runs_the_replicate_arm_without_any_weighted_residual(session):
     assert out["summary"].startswith("systematic residual structure in obs_B "
                                     "(replicate lack-of-fit)")
     assert "sign-test bias" not in out["summary"]
-    # get_fit_diagnosis's own no-weighted-residuals early return carries the same verdict
-    assert data_access.fit_diagnosis(session)["residual_structure"] == out
+    # get_fit_diagnosis's own no-weighted-residuals early return has no rows and no verdict to
+    # contradict this one — the replicate arm reaches the agent through the fit result
+    assert data_access.fit_diagnosis(session)["per_observable"] == []
 
 
 def test_rollup_does_not_claim_sign_randomness_when_the_sign_tests_could_not_run(session):
@@ -746,8 +750,8 @@ def test_the_weak_marking_reaches_the_summary_through_the_whole_assembly(session
     # ...and a weak pass certifies nothing, so it credits no coverage and low_power survives
     assert out["low_power"] is True
     assert data_access.residual_flag(out) is False       # advisory: it is still not a FLAG
-    # the same verdict on the fit-diagnosis path, which is a second projection of it
-    assert data_access.fit_diagnosis(session)["residual_structure"] == out
+    # ...and no second projection of it on the diagnosis path, where it used to be repeated
+    assert "residual_structure" not in data_access.fit_diagnosis(session)
 
 
 def test_lack_of_fit_df_subtracts_the_shared_parameters_once_across_noise_families():

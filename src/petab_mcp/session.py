@@ -69,7 +69,7 @@ _SIGMA_INFLATED_ADVICE = (
     " NOTE: the best model's fit only looks statistically adequate because its ESTIMATED noise "
     "sigma is inflated above its data-driven cap, absorbing the misfit — the chi2 goodness-of-fit "
     "is not real adequacy here. Do NOT widen or lean on the noise; fix the mechanism so the "
-    "residuals shrink at a plausible sigma (get_fit_diagnosis's residual-structure verdict still "
+    "residuals shrink at a plausible sigma (the fit result's residual_structure verdict still "
     "flags the structure)."
 )
 
@@ -191,6 +191,10 @@ class PetabSession:
         self.simulation: dict[str, Any] | None = None
         # pyPESTO traces/results of the last fit (live diagnostic; not persisted per version).
         self.optimization: dict[str, Any] | None = None
+        # The frozen record of the last fit — its built pyPESTO problem, its optimum, its tables
+        # (see `fitting.FitRecord`). EVERY diagnosis of a fit reads this and nothing live, which is
+        # what makes it impossible for a diagnosis to trigger an AMICI build.
+        self.fit_record: Any | None = None
         self.auto_fit: bool = True
         self.auto_fit_starts: int = DEFAULT_AUTO_FIT_STARTS
 
@@ -1072,10 +1076,12 @@ class PetabSession:
         plateau-adequacy gate: ``residual_structure`` (the compact residual-structure verdict on
         whether the model's FORM is still incomplete — the sign/runs tests plus the replicate
         lack-of-fit test) and the noise-model verdict
-        (``noise_sigma_inflated``/``noise_sigma_collapsed`` + advice). Returning them saves the
-        caller a separate ``get_fit_summary``/``get_fit_diagnosis`` round-trip; ``get_fit_diagnosis``
-        remains the way to get the per-observable table and worst points behind the verdict, and
-        ``get_fit_summary`` the way for a caller that did NOT run the fit to read the same score.
+        (``noise_sigma_inflated``/``noise_sigma_collapsed`` + advice), plus — when there is one —
+        the ``merge_hint`` naming the cheapest parameter tie BIC would pay for. Returning them
+        saves the caller a separate ``get_fit_summary``/``get_fit_diagnosis`` round-trip;
+        ``get_fit_diagnosis`` remains the way to get the detail behind each verdict — the
+        per-observable table and worst points, the per-parameter geometry and every priced tie —
+        and ``get_fit_summary`` the way for a caller that did NOT run the fit to read the score.
 
         Before the (expensive) fit it de-duplicates: if the working model is byte-identical to the
         current fitted version the refit is skipped and the stored metrics are returned
@@ -1084,7 +1090,7 @@ class PetabSession:
         history warns that it is already committed and scored; and the same structure fitted too
         many times is refused, to break an unproductive loop.
         """
-        from . import fitting
+        from . import fitting, identifiability
         from .operations import _compile_fit_failure_message
 
         with self.lock:
@@ -1138,6 +1144,23 @@ class PetabSession:
             # self.simulation, which is what the diagnosis reads.
             fitsim["residual_structure"] = residual_structure_rollup(self)
             fitsim["residual_flagged"] = residual_flag(fitsim["residual_structure"])
+            # The PARAMETERISATION counterpart of that verdict, on the same reasoning: the cheapest
+            # parameter tie BIC would pay for, priced from the FIM at the optimum this fit just
+            # reached (see identifiability.merge_hint). Computed HERE, after
+            # _auto_fit_and_improvement, because that is where the fit record it reads was frozen;
+            # None (and then absent from the result) when there is no such tie or no FIM. ONLY when
+            # an optimizer actually ran: with `auto_fit` off the status is "skipped", the values are
+            # whatever was authored, and no record was frozen — not a point a local expansion may be
+            # taken at (see identifiability.fit_record).
+            # The verdict itself is stashed on the payload beside it (and so snapshotted with the
+            # version), because it must outlive this process: a resumed run restores the payload but
+            # not the in-memory fit record, and recomputing there would mean naming an AMICI build
+            # target from live state — see identifiability.fit_diagnosis_block.
+            if fitsim.get("status") == "fit":
+                block = identifiability.fit_diagnosis_block(self)
+                if block:
+                    fitsim[identifiability.STORED_DIAGNOSIS_KEY] = block
+                fitsim["merge_hint"] = identifiability.merge_hint((block or {}).get("diagnosis"))
             # Is this variant actually NESTED in the version it will be compared against? Must run
             # BEFORE _snapshot_version, while provenance.current_version is still the parent. The
             # Antimony is serialized once and handed to both the check (which diffs parameter
@@ -1245,6 +1268,12 @@ class PetabSession:
         flag = residual_flag(structure)
         sim = dict(self.simulation or {})
         sim["residual_structure"] = structure
+        # Dropped because a fit RESULT speaks for the call that produced it and this call priced
+        # nothing — it did not fit. Popped rather than left alone because `self.simulation` IS the
+        # last fit's payload, hint included. `get_fit_summary` reads the STATE instead, and still
+        # reports the tie: the structure is unchanged (which is why the no-op fired), so HEAD's fit
+        # is still this structure's fit (see identifiability.stored_merge_hint).
+        sim.pop("merge_hint", None)
         sim["n_starts"] = meta.get("n_starts")
         return {
             "committed": False, "no_change": True, "version": dup_v,

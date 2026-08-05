@@ -289,11 +289,10 @@ def test_the_model_is_dumped_before_the_amici_import(engine, session):
     drop. The only forensic trail is a dump written BEFORE the import call; a blasi sweep run
     died exactly this way with no record of which model did it.
 
-    `pypesto_importer_kwargs` is the choke point: both build sites (the fit and the FIM)
-    construct their importer on the next line, so dumping here covers every AMICI build without
-    a second hook.
+    `pypesto_importer_kwargs` is the choke point: the ONE build site (the fit) constructs its
+    importer on the next line, so dumping here covers every AMICI build without a second hook.
     """
-    engine.pypesto_importer_kwargs()
+    engine.pypesto_importer_kwargs(session.sbml_hash())
 
     text = _log_text(session)
     assert "AMICI import starting" in text
@@ -305,13 +304,12 @@ def test_the_pre_import_dump_is_written_once_per_structure(engine, session, reau
     """Once per STRUCTURE, not once per fit. Only a build can crash, and a re-fit or a
     bounds-only edit rebuilds the pyPESTO problem while reusing the compiled module — dumping
     per call would bury the log under re-prints of an already-recorded model."""
-    engine.pypesto_importer_kwargs()
-    engine.pypesto_importer_kwargs()
+    engine.pypesto_importer_kwargs(session.sbml_hash())
     engine.pypesto_importer_kwargs(session.sbml_hash())
     assert _log_text(session).count("AMICI import starting") == 1
 
     reauthor_toy(session, ["J: B => D; k3 * B;"], justification="B to D")
-    engine.pypesto_importer_kwargs()  # new structure -> a new build -> a new dump
+    engine.pypesto_importer_kwargs(session.sbml_hash())  # new structure -> a new build -> a dump
     text = _log_text(session)
     assert text.count("AMICI import starting") == 2
     assert "k3*B" in text
@@ -324,6 +322,36 @@ def test_a_failing_dump_never_blocks_the_build(engine, session, monkeypatch):
         raise RuntimeError("antimony round-trip failed")
     monkeypatch.setattr(session.problem.model, "to_antimony", _boom)
 
-    kwargs = engine.pypesto_importer_kwargs()
+    kwargs = engine.pypesto_importer_kwargs(session.sbml_hash())
     assert kwargs["model_name"] == f"petab_mcp_pp_{session.sbml_hash()}"
     assert "model dump unavailable" in _log_text(session)
+
+
+def test_module_built_asks_for_the_compiled_extension_not_the_folder(session, tmp_path):
+    """The predicate a READ rests on: `ensure_simulation` will simulate a structure whose module
+    exists and refuse one whose does not, because the second costs a C++ build (16 s on the toy) and
+    no read may pay one. A HALF-WRITTEN build must therefore read as absent — the output folder and
+    its generated C++ survive a crashed or interrupted build (see the .amici_build cache), and
+    importing that recompiles from scratch."""
+    from petab_mcp.engine import AmiciEngine
+
+    # a PRIVATE build root: the shared session-scoped one already holds the toy's module
+    engine = AmiciEngine(session, build_root=str(tmp_path / "build"))
+    h = session.sbml_hash()
+    assert engine.module_built(h) is False              # cold build root
+
+    folder = engine.build_root / f"pypesto_{h}"
+    package = folder / f"petab_mcp_pp_{h}"
+    package.mkdir(parents=True)
+    (folder / "wrapfunctions.cpp").write_text("// codegen ran")
+    (package / "__init__.py").write_text("")
+    assert engine.module_built(h) is False              # generated, not built
+
+    (package / f"_petab_mcp_pp_{h}.cpython-312-darwin.so").write_bytes(b"\x00")
+    assert engine.module_built(h) is True
+
+    # ...and what THIS session built is known without going to disk at all
+    other = "0123456789abcdef"
+    assert engine.module_built(other) is False
+    engine._pypesto_hashes.add(other)
+    assert engine.module_built(other) is True

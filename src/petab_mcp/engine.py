@@ -120,24 +120,57 @@ class AmiciEngine:
         # SBML hashes already written to the log by :meth:`_log_pending_import`.
         self._dumped_hashes: set[str] = set()
 
-    def pypesto_importer_kwargs(self, sbml_hash: str | None = None) -> dict[str, str]:
+    def pypesto_importer_kwargs(self, sbml_hash: str) -> dict[str, str]:
         """Output kwargs for a pyPESTO ``PetabImporter``, keyed on the model's SBML hash so
         pyPESTO's own compiled module is cached/reused per structure.
 
-        Shared by the fit (:mod:`fitting`) and the FIM (:mod:`identifiability`) so the
-        output-folder / model-name convention lives in one place. Pass ``sbml_hash`` when the
-        caller already computed it (avoids re-hashing); otherwise it is read from the session.
+        Its ONE caller — :func:`fitting.estimation_problem` — constructs the importer on the very
+        next line, which makes this the one choke point every AMICI build passes through, and so
+        also where the pre-import model dump is emitted (:meth:`_log_pending_import`).
 
-        Both callers construct the importer on the very next line, which makes this the one
-        choke point every AMICI build passes through — so it is also where the pre-import model
-        dump is emitted (:meth:`_log_pending_import`).
+        ``sbml_hash`` is REQUIRED. It used to default to re-reading ``session.sbml_hash()``, and
+        that read is how a DIAGNOSIS came to name an output folder for a structure nothing was
+        built for — a full C++ build to price a model that was never fitted. Nothing may resolve a
+        build target from live state inside the choke point; the fit passes the hash it fitted, and
+        a diagnosis holds its built problem instead (see :class:`fitting.FitRecord`).
         """
-        h = sbml_hash or self.session.sbml_hash()
-        self._log_pending_import(h)
-        return {
-            "output_folder": str(self.build_root / f"pypesto_{h}"),
-            "model_name": f"petab_mcp_pp_{h}",
-        }
+        self._log_pending_import(sbml_hash)
+        folder, model_name = self._module_target(sbml_hash)
+        return {"output_folder": str(folder), "model_name": model_name}
+
+    def _module_target(self, sbml_hash: str) -> tuple[Path, str]:
+        """Where pyPESTO's module for ``sbml_hash`` lives — the naming convention itself, so
+        :meth:`pypesto_importer_kwargs` (which asks for a build there) and :meth:`module_built`
+        (which asks whether one happened) cannot disagree about the location."""
+        return self.build_root / f"pypesto_{sbml_hash}", f"petab_mcp_pp_{sbml_hash}"
+
+    def module_built(self, sbml_hash: str) -> bool:
+        """Is the compiled AMICI module for this structure ALREADY there — i.e. can a problem be
+        constructed for it without codegen and a C++ build?
+
+        This is what lets a READ (a simulate-only pass for a diagnosis) tell "import a module that
+        exists" — hundredths of a second — from "compile a structure nobody has built", which is
+        tens of seconds and which no read may pay (see :func:`fitting.ensure_simulation`).
+
+        Two sources, because a run outlives a process: ``_pypesto_hashes`` for what this session
+        built, and the build root for what an earlier one did. What is looked for on disk is the
+        built ``.so`` inside the model package, not the output folder — a crashed or half-written
+        build leaves the folder and its generated C++ behind, and importing THAT recompiles.
+
+        The disk half is not a resume story, and deliberately not treated as one: a restored model's
+        SBML comes back with its parameter declarations in a different ORDER, so it hashes to a
+        module nobody built even though the same structure sits compiled next to it. That is why the
+        parameter diagnosis of a resumed run is re-served from what the fit stored rather than
+        recomputed (see :func:`identifiability.fit_diagnosis_block`) — this only keeps a READ from
+        paying for the mismatch.
+        """
+        if sbml_hash in self._pypesto_hashes:
+            return True
+        folder, model_name = self._module_target(sbml_hash)
+        try:
+            return any((folder / model_name).glob(f"_{model_name}*.so"))
+        except OSError:  # unreadable build root: assume nothing is built rather than risk a build
+            return False
 
     def _log_pending_import(self, sbml_hash: str) -> None:
         """Dump the exact model about to be handed to AMICI, BEFORE the import call.

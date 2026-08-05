@@ -288,32 +288,42 @@ def run_query(session, sql: str, max_rows: int = 1000) -> dict[str, Any]:
     }
 
 
+#: Why the residual section is empty: there are no per-point records for this model and a READ does
+#: not compile one to make them (see :func:`fitting.ensure_simulation`). Says what to do instead.
+_NO_SIMULATION_STATUS = (
+    "no simulation to diagnose — no fit of this model has produced one, and a read does not compile "
+    "a model to make one. Commit the model with make_changes (which fits it), then read this again."
+)
+
+
 def fit_diagnosis(session, worst_n: int = 8) -> dict[str, Any]:
-    """A COMPACT, size-bounded residual diagnosis of the current fit.
+    """A COMPACT, size-bounded residual diagnosis of the current fit — the ``residuals`` section of
+    ``get_fit_diagnosis``.
 
     Unlike :func:`run_query` (arbitrary SQL, can return the whole dataset), this returns fixed
     aggregations with capped output — one row per observable (weighted χ², mean weighted
     residual = bias, worst |residual|) plus the ``worst_n`` largest-residual points — so a
     caller can see WHERE and HOW a fit is off without pulling the raw per-point data into its
     context. Computed from the last commit's simulation dataframe.
+
+    It does NOT return the rolled-up ``residual_structure`` verdict: that rides on every fit result
+    already (:func:`residual_structure_rollup`), and repeating it here shipped the same ~0.5 kB
+    twice to a caller that has both. The per-observable rows still carry their own sign/runs
+    verdicts — the detail this section exists for — and the observables the rollup flags are marked
+    ``structure_flag`` here too.
+
+    Empty-but-typed, with ``status`` saying why, when there are no per-point records: the model has
+    no simulation and one is not MADE here if that would mean compiling it (see
+    :func:`fitting.ensure_simulation`). An empty ``per_observable`` must not read as a clean bill of
+    health, so the reason travels with it.
     """
-    # The early returns carry residual_structure too (as the "tests unavailable" verdict): the key
-    # is part of this tool's contract and the fit result's, so a caller reading it must never have
-    # to guard for its absence just because there is nothing to diagnose yet.
     df = _frames(session)["simulations"]
     if df is None or df.empty:
-        return {"status": "no simulation yet — commit a model first",
-                "per_observable": [], "worst_points": [],
-                "residual_structure": _unavailable_structure()}
+        return {"status": _NO_SIMULATION_STATUS, "per_observable": [], "worst_points": []}
     d = df[df["residual_weighted"].notna()].copy()
     if d.empty:
-        # The magnitude table needs weighted residuals, but the REPLICATE arm does not (see
-        # residual_structure_rollup): hand the verdict to the shared builder rather than declaring
-        # nothing tested, or a collapsed/unevaluable sigma would switch off the one arm that catches
-        # it. `sims=df` so this does not rebuild every PEtab frame a second time.
         return {"status": "no weighted residuals available (unfitted or non-evaluable noise)",
-                "per_observable": [], "worst_points": [],
-                "residual_structure": residual_structure_rollup(session, sims=df)}
+                "per_observable": [], "worst_points": []}
     d["_rw"] = d["residual_weighted"].astype(float)
 
     per_observable = []
@@ -341,17 +351,25 @@ def fit_diagnosis(session, worst_n: int = 8) -> dict[str, Any]:
         "residual_weighted": round(float(r["_rw"]), 3),
     } for _, r in worst.iterrows()]
 
-    # Rolled up from the per-observable verdicts ALREADY computed above — no second pass of the
-    # sign/runs tests. Shares its builder with residual_structure_rollup (which the fit path calls
-    # directly), so the two can never drift apart. The replicate arm is per DESIGN POINT rather than
-    # per observable, so it is computed once here instead of coming out of per_observable.
-    structure = _rollup_structure(((o["observable_id"], o) for o in per_observable),
-                                  replicate_lof=_replicate_lof(session, df))
     # Keep the per-observable rows consistent with the rolled-up verdict. The replicate arm flags a
     # DESIGN POINT, not a series, so an observable it condemns would otherwise read
-    # structure_flag: false here while appearing in flagged_observables above.
+    # structure_flag: false here while appearing in the verdict's flagged list.
+    #
+    # READ off the verdict the fit already stored on this very frame (session.fit stashes it on the
+    # simulation payload — see residual_structure_rollup), rather than rolling it up again: the
+    # replicate arm re-runs a whole lack-of-fit pass per noise parameter, and this read exists to
+    # report the DETAIL, not to recompute the verdict. Recomputed only when the frame carries none
+    # (a simulate-only or restored payload), and that fallback goes through the SAME builder the fit
+    # path uses, so the two cannot disagree about which observables are flagged.
+    stored = (session.simulation or {}).get("residual_structure")
+    if isinstance(stored, dict):
+        flagged = set(stored.get("flagged_observables") or ())
+    else:
+        flagged = set(_rollup_structure(
+            ((o["observable_id"], o) for o in per_observable),
+            replicate_lof=_replicate_lof(session, df))["flagged_observables"])
     for o in per_observable:
-        if o["observable_id"] in structure["flagged_observables"]:
+        if o["observable_id"] in flagged:
             o["structure_flag"] = True
 
     # Noise-model plausibility, echoed here too (the agent reads this tool to see WHERE the fit is
@@ -374,21 +392,15 @@ def fit_diagnosis(session, worst_n: int = 8) -> dict[str, Any]:
         "per_observable": per_observable,   # bounded: one row per observable
         "worst_points": worst_points,       # bounded: <= worst_n rows
         "noise_sigma": noise_sigma,         # {} if no estimated sigma/fit; else {report, advice} (advice None when plausible)
-        # The residual-structure verdict, rolled up: which observables show a significant
-        # sign-test bias, runs-test time trend (p < 0.05) or replicate lack-of-fit, and whether the
-        # tests are underpowered at this sample size (so "nothing flagged" is weak, not reassuring).
-        # The `fit` result carries this SAME rollup (see residual_structure_rollup), so calling
-        # this tool is only needed for the per-observable table and worst_points below.
-        "residual_structure": structure,
         "hint": ("mean_weighted_residual far from 0 = a systematic over/under-shoot for that "
                  "observable; worst_points show the largest model-vs-data deviations. "
                  "sign_test / runs_test detect bias and time trend from residual SIGNS, so they "
                  "still work when estimated noise sigmas flatten chi2/reduced_chi2 — but are "
                  "underpowered on few points (low_power), so read a non-significant result as "
-                 "weak, not as a pass. replicate_lack_of_fit measures each prediction against that "
-                 "design point's own replicate scatter where points REPEAT, so no sigma can flatten "
-                 "it — as far as its lof_df (replicated points MINUS your estimated structural "
-                 "parameters) goes: a pass with weak: true, or with no lof_df, certifies nothing. "
+                 "weak, not as a pass. The rolled-up verdict over these tests — including the "
+                 "replicate_lack_of_fit arm, whose PASS is worth only its lof_df (replicated points "
+                 "MINUS your estimated structural parameters): weak: true, or no lof_df, certifies "
+                 "nothing — is the residual_structure block on the fit result, not repeated here. "
                  "For a full breakdown or the optimizer log, delegate to an analyst."),
     }
 
@@ -397,10 +409,11 @@ _STRUCTURE_UNAVAILABLE = "residual-structure tests unavailable (no weighted resi
 
 
 def residual_structure_rollup(session, sims=None) -> dict[str, Any]:
-    """The current fit's residual-structure verdict, rolled up — the SAME
-    ``{flagged_observables, low_power, summary, replicate_lack_of_fit}`` shape
-    :func:`fit_diagnosis` returns under its ``residual_structure`` key, so one key name never means
-    two shapes.
+    """The current fit's residual-structure verdict, rolled up:
+    ``{flagged_observables, low_power, summary, replicate_lack_of_fit}``. THE authority on where
+    this verdict is reported: on every fit result and on ``get_fit_summary`` (both score payloads
+    for one fit, assembled by :func:`fitting.fit_result_block`/:func:`fitting.fit_summary`) —
+    and NOT by ``get_fit_diagnosis``, which returns the per-observable detail behind it.
 
     Which observables show significant residual STRUCTURE — a form-incompleteness signal that
     SURVIVES estimated noise sigmas (unlike chi2 GoF, which a free sigma rescales to look adequate).
@@ -413,7 +426,7 @@ def residual_structure_rollup(session, sims=None) -> dict[str, Any]:
       IS an observable (blasi: one steady-state condition, so every series has length 1).
 
     Computed on every commit, and returned on the ``fit`` result so the agent gets the verdict
-    without spending a separate ``get_fit_diagnosis`` call (see issue #113). Computes ONLY the
+    without spending a ``get_fit_diagnosis`` call at all (see issue #113). Computes ONLY the
     verdict — it skips fit_diagnosis's magnitude aggregations and worst-points sort. ``sims`` is the
     simulations frame when the caller already built one. Best-effort: no simulation, or any
     diagnostic failure, degrades to a well-formed "tests unavailable" dict, so the gate is never
@@ -447,9 +460,10 @@ def residual_structure_rollup(session, sims=None) -> dict[str, Any]:
 
 def _rollup_structure(verdicts, replicate_lof: dict[str, Any] | None = None) -> dict[str, Any]:
     """Roll ``(observable_id, verdict)`` pairs plus the replicate lack-of-fit arm up into the
-    reported verdict. The single builder behind BOTH :func:`fit_diagnosis`'s ``residual_structure``
-    key and :func:`residual_structure_rollup`, so the shape and the rules stay identical; each
-    caller passes the per-observable verdicts (and the one replicate arm) it has already computed."""
+    reported verdict. The single builder behind BOTH :func:`residual_structure_rollup` (which
+    reports it) and :func:`fit_diagnosis` (which uses it only to mark its own rows), so the two
+    cannot disagree about which observables are flagged; each caller passes the per-observable
+    verdicts (and the one replicate arm) it has already computed."""
     from . import residual_tests as rt
 
     pairs = list(verdicts)

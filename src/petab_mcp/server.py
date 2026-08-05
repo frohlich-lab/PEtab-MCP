@@ -389,7 +389,7 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         law. Warns if a previously-estimated parameter is dropped. Widening an ESTIMATED noise
         sigma past its data-driven cap is advisory (a warning, not a rejection); a THIRD widening
         of a still-pinned parameter is rejected — such a parameter is unidentifiable, not
-        under-explored (see `get_identifiability`).
+        under-explored (see `get_fit_diagnosis`).
 
         Every fitted version is kept and the run is scored on the best-bic one regardless, so
         re-authoring an earlier structure to go back only recompiles and refits to the same result.
@@ -464,6 +464,30 @@ def _register_parameter_tools(mcp: FastMCP, ctx: _Ctx) -> None:
             session.problem, shipped=session.shipped_parameter_df)
 
 
+#: What each ``get_fit_diagnosis`` ``sections`` value asks for. Two halves of one diagnosis, and the
+#: CHEAP one is the default: the parameter half is several kB on a k=30 model plus a FIM evaluation,
+#: and the payload of every tool call is re-sent in the agent's history on every later turn (PR #23
+#: cut ~40% of the per-call prompt by removing exactly that kind of duplication). It is one argument
+#: away, and the prompt says to ask for it when BIC stalls — which is when it has something to say.
+_DIAGNOSIS_SECTIONS = {
+    "residuals": frozenset({"residuals"}),
+    "parameters": frozenset({"parameters"}),
+    "all": frozenset({"residuals", "parameters"}),
+}
+
+
+def _diagnosis_sections(sections: Any) -> frozenset[str]:
+    """The requested ``get_fit_diagnosis`` sections, or a :class:`ValidationError` naming the
+    choices — a typo must not silently return the default and hide half the diagnosis."""
+    key = sections.strip().lower() if isinstance(sections, str) else sections
+    try:
+        return _DIAGNOSIS_SECTIONS[key]
+    except (KeyError, TypeError):
+        raise ValidationError(
+            f"sections must be one of {sorted(_DIAGNOSIS_SECTIONS)}, got {sections!r}."
+        ) from None
+
+
 # ------------------------------------------------------- fit + simulation tools
 def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
     session = ctx.session
@@ -480,14 +504,15 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         observable noise sigmas are ESTIMATED, chi2 pins near `n_data_points` by construction, so
         reduced_chi2 ≈ 1 and its p-value are uninformative — do not use them as a fit-adequacy
         gate (judge adequacy from residual STRUCTURE instead — the `residual_structure` verdict
-        rides on this result, same shape `get_fit_diagnosis` returns it in).
+        rides on this result, as it does on every fit result; see
+        :func:`data_access.residual_structure_rollup` for where it is and is not reported).
         `fitted_parameters` are LINEAR
         (unscaled) values; `parameter_scales` gives each one's estimation scale (lin/log10) —
         a fitted value is the linear number, never its log10 coordinate. `parameters_at_bound`
         lists any fitted parameter sitting within ~1% of its lower/upper bound (on its own
         estimation scale) — `[]` when none do. Widen at most once; the SAME parameter
         re-pinning after a widening means it is UNIDENTIFIABLE (a flat/collinear FIM direction —
-        confirm with `get_identifiability`), not under-explored, so the optimum is unbounded
+        confirm with `get_fit_diagnosis`), not under-explored, so the optimum is unbounded
         (often an exponent trying to fake a mechanism the model doesn't have). Don't widen or
         flip its scale again — remove its reaction or use its limiting (irreversible/
         instantaneous) form; if neither is possible, leave it pinned (don't hard-code a value —
@@ -622,75 +647,91 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         return ctx.run("query_data", run, {"sql": logged_sql, "max_rows": max_rows})
 
     @mcp.tool()
-    def get_fit_diagnosis(worst_n: int = 8) -> dict[str, Any]:
-        """A COMPACT, size-bounded residual diagnosis of the current fit — where/how it is off.
+    def get_fit_diagnosis(
+        sections: str = "residuals", worst_n: int = 8, top_n: int = 8,
+    ) -> dict[str, Any]:
+        """The COMPACT, size-bounded DETAIL behind the verdicts every fit result already carries —
+        where the fit is off, and which parameters it cannot pin. `sections` picks which half:
+        `"residuals"` (the default), `"parameters"`, or `"all"` — one call, both.
 
-        Fixed aggregations (NOT open SQL): one row per observable with its weighted `chi2`,
-        `mean_weighted_residual` (bias — far from 0 = a systematic over/under-shoot), worst
-        |residual|, and two SIGN-based structure tests — `sign_test` (bias) and `runs_test`
+        COSTS, since the choice is yours, and NEITHER half compiles anything. `residuals` is
+        ~2.0-7.4 kB and 0.01-0.12 s of aggregation over the stored simulation (no new simulation);
+        `parameters` is ~2.4-8.0 kB and at most ONE sensitivity evaluation at the frozen optimum
+        (0.004 s on the toy, 0.04 s on a k=15 steady-state model with 252 points, 0.16 s on a k=15
+        hierarchical one — and ~0.001 s where the fit's own verdict is re-served). It is the SIZE you
+        pay repeatedly: every payload you request is re-sent in your history on every later turn, so
+        ask for `parameters` (or `all`) when BIC has stalled and you need to know WHICH parameters to
+        cut, not by reflex.
+
+        RESIDUALS — fixed aggregations (NOT open SQL): one row per observable with its weighted
+        `chi2`, `mean_weighted_residual` (bias — far from 0 = a systematic over/under-shoot),
+        worst |residual|, and two SIGN-based structure tests, `sign_test` (bias) and `runs_test`
         (time trend / serial correlation), each with a `p` and a `low_power` flag; plus the
-        `worst_n` largest-residual points (measurement vs simulation) and a rolled-up
-        `residual_structure` verdict naming any observable with significant structure.
+        `worst_n` largest-residual points (measurement vs simulation) and the noise-sigma report.
+        Sign-based tests exist BECAUSE `chi2`/`reduced_chi2`/`chi2_gof_pvalue` are uninformative
+        when the noise sigmas are ESTIMATED (a free sigma inflates to absorb misfit, so magnitude
+        scores pin near their null however wrong the FORM is); they read only residual SIGNS, and
+        have low power on few points, so treat a `low_power` non-significant result as weak
+        evidence, NOT a pass. The rolled-up `residual_structure` verdict over them — the one that
+        blocks the run's early plateau stop, replicate lack-of-fit arm included — is NOT repeated
+        here: it rides on the fit result. Call this for which points, how big, which observable
+        carries the chi2 — not to ask WHETHER the residuals are structured.
 
-        That `residual_structure` verdict is ALREADY on every `make_changes` result — call this tool when
-        you need the detail behind it (which points, how big, which observable carries the chi2),
-        not to ask whether the residuals are structured.
+        PARAMETERS (`identifiability`) — which estimated parameters are unconstrained or trade
+        off, i.e. the basis for SIMPLIFYING an over-parameterised model (raw nll/bic say it is too
+        complex, not which parameters to cut). From the Fisher Information Matrix at the optimum:
+        per-parameter standard error + fold_uncertainty, `at_bound`, marginal and partial
+        correlations, and the near-flat eigen-directions (the parameter COMBINATIONS the data
+        cannot pin). Plus the multistart spread — how much each parameter wanders across
+        near-optimal starts, a model-free check — rolled with those flags into a ranked
+        `candidates` list. `merge_candidates` prices the ONE-SHARED-VALUE tie per pair
+        (:func:`petab_mcp.identifiability.merge_candidates`); the fit result already flags the
+        cheapest such tie worth taking as `merge_hint`, and this section is where every priced
+        pair, and every pair a filter refused (`n_ties_skipped`, `filters_off`), is visible.
+        Remedies are MODEL edits (there is no value/`estimate` tool): drop the term, take its
+        limiting (irreversible/instantaneous) form, or give a pair one shared value. Read
+        se/correlations with multistart_std — the FIM is local.
 
-        These tests exist BECAUSE `chi2`/`reduced_chi2`/`chi2_gof_pvalue` are
-        uninformative when the noise sigmas are ESTIMATED (a free sigma inflates to absorb
-        misfit, so magnitude scores pin near their null however wrong the FORM is). Three tests round
-        it, all immune to the sigma:
-
-        * `sign_test` / `runs_test` read only residual SIGNS, so they still detect a systematic bias
-          or drift. They have low power on few points: treat a `low_power` non-significant result as
-          weak evidence, NOT a pass.
-        * `residual_structure.replicate_lack_of_fit` measures each prediction against that design
-          point's OWN replicate scatter wherever points REPEAT, so no sigma can flatten it. Read its
-          `lof_df` (replicated points MINUS your estimated structural parameters), not the status
-          alone: `available: false` is NO EVIDENCE (see `status`), never a pass; a flagged point
-          means no parameter value in your current form can reach it, and that is conclusive at any
-          `lof_df`; but a pass carrying `weak: true`, or carrying no `lof_df` at all, certifies
-          nothing — a fit with nearly as many free parameters as points reaches them whatever its
-          mechanism.
-
-        All three feed the one `residual_structure.flagged_observables` list, and a flagged list blocks
-        the run's early plateau stop — so this is a real stop condition, not just advice. Use this to
-        locate a poor fit cheaply; for a full custom breakdown use `query_data`, for the optimizer log
-        `get_fitting_log`. The simulation dataframe is generated on demand if no commit has
-        produced one yet.
+        For a full custom breakdown use `query_data`, for the optimizer log `get_fitting_log`.
+        NEITHER section ever compiles a model: the residual half simulates on demand only for a model
+        that is already built (else it reports `status` and no rows), and the parameter half describes
+        the LAST FIT — a local expansion around an optimum — so it needs no simulation at all
+        (`available: false` before there is a fit, `stale: true` once a DIFFERENT structure is in the
+        working state).
         """
         def run() -> dict[str, Any]:
-            if session.simulation is None or not session.simulation.get("records"):
+            want = _diagnosis_sections(sections)
+            out: dict[str, Any] = {}
+            if "residuals" in want:
+                if session.simulation is None or not session.simulation.get("records"):
+                    # On demand, and only where that is an integration rather than a C++ build:
+                    # `ensure_simulation` refuses an unbuilt structure, and `fit_diagnosis` then
+                    # returns its empty-but-typed payload with the reason in `status`.
+                    try:
+                        ctx.current_simulation()
+                    except Exception:  # pragma: no cover - defensive; return the empty-fit result
+                        session.logger.warning(
+                            "get_fit_diagnosis: could not generate simulation dataframe",
+                            exc_info=True)
+                out.update(data_mod.fit_diagnosis(session, worst_n))
+            if "parameters" in want:
+                # Guarded, and guarded SEPARATELY: before the two were one tool a FIM failure could
+                # not take the residual half with it, and the caller that pays most for this half
+                # dropping (the judge's result.json block) needs the other one regardless. The
+                # no-fit case is the diagnosis's own answer (`available: false`), not a branch here:
+                # it reads the frozen fit record, so there is no live state left to gate on.
                 try:
-                    ctx.current_simulation()
-                except Exception:  # pragma: no cover - defensive; return the empty-fit result
+                    out["identifiability"] = identifiability_mod.identifiability(
+                        session, top_n=top_n)
+                except Exception:  # noqa: BLE001 - one section must not fail the other
                     session.logger.warning(
-                        "get_fit_diagnosis: could not generate simulation dataframe", exc_info=True
-                    )
-            return data_mod.fit_diagnosis(session, worst_n)
+                        "get_fit_diagnosis: parameter identifiability unavailable", exc_info=True)
+                    out["identifiability"] = identifiability_mod.unavailable(
+                        identifiability_mod.FAILED_NOTE)
+            return out
 
-        return ctx.run("get_fit_diagnosis", run, {"worst_n": worst_n})
-
-    @mcp.tool()
-    def get_identifiability(top_n: int = 8) -> dict[str, Any]:
-        """Parameter-identifiability diagnosis of the current fit — WHICH estimated parameters
-        are unconstrained or trade off, i.e. the basis for SIMPLIFYING an over-parameterised
-        model (raw nll/bic tell you it's too complex, not which parameters to cut). Combines the
-        Fisher Information Matrix at the optimum — per-parameter standard error + fold_uncertainty,
-        marginal and partial correlations, and the near-flat eigen-directions (= non-identifiable
-        parameter COMBINATIONS) — with the multistart spread (how much each parameter wanders
-        across near-optimal starts, a model-free check). Returns a ranked `candidates` list
-        (at_bound / poorly_constrained / collinear / flat_direction / multistart_unstable): drop
-        its term, take its limiting (irreversible/instantaneous) form, or MERGE a collinear pair
-        into one parameter — all model edits (there is no value/`estimate` tool). If none applies
-        cleanly, leave the parameter as is rather than hard-code a value. `merge_candidates` prices
-        the ONE-SHARED-VALUE tie per pair (:func:`petab_mcp.identifiability.merge_candidates`).
-        Bounded output; needs a fitted model. Read se/correlations with multistart_std — FIM is local.
-        """
-        def run() -> dict[str, Any]:
-            return identifiability_mod.identifiability(session, engine, top_n=top_n)
-
-        return ctx.run("get_identifiability", run, {"top_n": top_n})
+        return ctx.run("get_fit_diagnosis", run,
+                       {"sections": sections, "worst_n": worst_n, "top_n": top_n})
 
 
 # ------------------------------------------------------ provenance/version tools

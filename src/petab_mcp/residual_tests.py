@@ -31,7 +31,8 @@ no answer leak).
 Everything here is pure numeric code over lists of numbers; :mod:`petab_mcp.data_access`
 feeds it the per-point residuals (and :mod:`petab_mcp.reconcile` the per-point replicate
 statistics, on the coordinate where the noise is additive) and surfaces the results through
-``get_fit_diagnosis`` and the ``fit`` result's ``residual_structure`` verdict.
+the ``fit`` result's ``residual_structure`` verdict (the per-observable detail behind it goes
+out through ``get_fit_diagnosis``).
 
 ALL THREE TESTS FEED THE SESSION'S PLATEAU-ADEQUACY GATE, through the one ``flagged_observables``
 list ``session.py`` reads via ``data_access.residual_flag`` — the sign/runs tests have fed it since

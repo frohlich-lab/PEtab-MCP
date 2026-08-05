@@ -16,11 +16,13 @@ than being swallowed into a degraded "committed but not fitted" state.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import math
 import os
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from petab.v1.C import (
@@ -40,7 +42,7 @@ from .constants import (
     PARAMETER_AT_BOUND_RELATIVE_TOL,
 )
 from .formatting import finite_float as _flt
-from .parameters import parameter_df_to_tsv, sha16
+from .parameters import parameter_df_to_tsv, sha16, structure_fingerprint
 
 # pyPESTO's parameter-table column that tags an inner (hierarchical) parameter.
 _PARAMETER_TYPE_COL = "parameterType"
@@ -341,7 +343,7 @@ def _optimization_payload(result) -> dict[str, Any]:
             "exitflag": _int(_get(r, "exitflag")),
             "message": str(msg) if msg is not None else None,
             # Full scaled parameter vector at this start's optimum — the raw material for the
-            # multistart-spread identifiability signal (get_identifiability). Order matches the
+            # multistart-spread identifiability signal (:mod:`identifiability`). Order matches the
             # payload's x_names (set by the caller from problem.x_names).
             "x": xlist,
         })
@@ -419,6 +421,95 @@ def estimation_problem(session, engine):
 
     engine._estimation_problem_cache = (key, problem, inner_scales)
     return problem, inner_scales
+
+
+@dataclass(frozen=True)
+class FitRecord:
+    """What was fitted, frozen the moment the optimizer finished — the ONLY thing a diagnosis of
+    that fit may read (see :mod:`identifiability`).
+
+    Every number a diagnosis reports is a local expansion around the optimum of ONE estimation
+    problem, so the diagnosis has to name that problem. Naming it by HASH and resolving the hash
+    from live session state is what let a diagnosis pay an AMICI C++ build: the de-dup no-op
+    re-authors the working SBML into a hash nothing is built for, and the diagnosis then priced —
+    and compiled — a structure that was never fitted. Holding the built ``pypesto_problem`` makes
+    that unreachable rather than merely guarded: there is no hash to resolve, no importer to
+    construct, so no diagnosis path can reach codegen.
+
+    ``problem`` is a DEEP copy of the PEtab problem: the parameters-only edit path reconciles the
+    live SBML in place, so a shallow copy's model could still be moved under a frozen record.
+    ``x_free``/``lb``/``ub`` are the FREE coordinates on the estimation scale — pyPESTO's own,
+    which is the authority (a hierarchical problem re-scales its sigmas), and the space the FIM is
+    expressed in. The fitted point is carried here rather than re-read from
+    ``parameter_df[nominalValue]`` so an agent edit to the table cannot silently move the point a
+    diagnosis expands around.
+
+    The two fingerprints are COMPARISONS only — never keys to rebuild anything with — and they
+    answer different questions, which is why both are here. ``structure_hash``
+    (:func:`parameters.structure_fingerprint`) is the reaction network plus the estimated-parameter
+    set, so it says whether the geometry frozen here still describes the model in front of the
+    lead; a diagnosis is STALE exactly when that moved. ``problem_hash`` also covers the parameter
+    table, so it additionally moves when the working table alone does — which happens on the de-dup
+    no-op, where the same structure is re-authored with a new starting guess and no fit runs. That
+    is not a stale diagnosis: the optimum, the structure and HEAD's fit are all still this record's.
+
+    No AMICI output folder can be named from anything here: the SBML hash is deliberately absent,
+    since it is the one argument :meth:`engine.AmiciEngine.pypesto_importer_kwargs` takes and a
+    record holding it would put a build target back within a diagnosis's reach.
+
+    The optimizer's own stored Hessian is deliberately NOT carried: Fides reports the Hessian of
+    whatever update scheme it ran with, so taking it would change the statistic from problem to
+    problem. The FIM is still evaluated on this frozen objective — one sensitivity evaluation, and
+    nothing to build.
+    """
+
+    pypesto_problem: Any
+    problem: Any
+    structure_hash: str
+    problem_hash: str
+    x_names: tuple[str, ...]
+    x_free: tuple[float, ...]
+    scales: tuple[str, ...]
+    lb: tuple[float, ...]
+    ub: tuple[float, ...]
+    optimization: dict[str, Any] | None
+    hierarchical: bool
+
+
+def freeze_fit(session, problem, best, *, hierarchical: bool,
+               optimization: dict[str, Any] | None) -> FitRecord:
+    """Freeze the fit that just finished into a :class:`FitRecord`.
+
+    Called from :func:`_run_fit` after the write-back, which is the only moment where the built
+    problem, the optimizer's best point and the table it was written into all agree.
+    """
+    import numpy as np
+
+    free = getattr(problem, "x_free_indices", None)
+    idx = list(free) if free is not None else list(range(len(problem.x_names)))
+    # A result's `x` is FULL-dimensional (fixed parameters included) — the same convention
+    # `_fitted_values` reduces — while `problem.lb`/`ub` are already the free ones. Reduce whichever
+    # arrives full so all three tables are in ONE order (idx), which is the FIM's order too.
+    x_full = np.asarray(best["x"], dtype=float)
+    lb = np.asarray(problem.lb, dtype=float)
+    ub = np.asarray(problem.ub, dtype=float)
+    if lb.size != len(idx):
+        lb, ub = lb[idx], ub[idx]
+    return FitRecord(
+        pypesto_problem=problem,
+        problem=copy.deepcopy(session.problem),
+        structure_hash=structure_fingerprint(
+            session.problem.model.sbml_model, session.problem.parameter_df),
+        problem_hash=session.problem_hash(),
+        x_names=tuple(str(problem.x_names[i]) for i in idx),
+        x_free=tuple(float(x_full[i]) for i in idx),
+        scales=tuple(str(problem.x_scales[i]) for i in idx),
+        # pyPESTO's lb/ub are already the REDUCED (free) bounds, in the same order as `idx`.
+        lb=tuple(float(v) for v in lb),
+        ub=tuple(float(v) for v in ub),
+        optimization=optimization,
+        hierarchical=hierarchical,
+    )
 
 
 def problem_x_from_nominal(problem, parameter_df) -> list[float]:
@@ -768,7 +859,11 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     optimization["x_scales"] = [str(s) for s in problem.x_scales]
     optimization["result_file"] = _write_pypesto_result(session, result, session.problem_hash())
     return {"fitted": fitted, "neg_log_likelihood": nllh, "objective_before": objective_before,
-            "optimization": optimization}
+            "optimization": optimization,
+            # Frozen HERE, where the built problem, the optimizer's point and the written-back
+            # table all agree — every later diagnosis of this fit reads only this (see FitRecord).
+            "record": freeze_fit(session, problem, best, hierarchical=hierarchical,
+                                 optimization=optimization)}
 
 
 #: Relative gap between the optimizer's objective and the re-simulated one above which the
@@ -881,6 +976,12 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
         # Optimization traces/results are a live diagnostic of the *last* fit (not persisted
         # per version): set them when a fit ran, clear them on a simulate-only pass.
         session.optimization = fit["optimization"] if fit else None
+        # The frozen record of the fit, for every later diagnosis of it (see FitRecord). A
+        # simulate-only pass does NOT clear it: it produced no optimum of its own, and the record
+        # a diagnosis reads is labelled STALE by comparison rather than thrown away — otherwise a
+        # restore would leave the parameter diagnosis unavailable for the rest of the run.
+        if fit is not None:
+            session.fit_record = fit["record"]
         session.logger.info(
             "fit_and_simulate: status=%s nllh=%s chi2=%s n_points=%s",
             payload["status"], _fmt(payload["neg_log_likelihood"]),
@@ -891,16 +992,32 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
 
 def ensure_simulation(session, engine) -> dict[str, Any] | None:
     """Populate ``session.simulation`` with a simulate-only pass if it is empty, once a mechanism
-    has been authored.
+    has been authored — but NEVER by compiling one.
 
-    An unauthored model has nothing to simulate: the content-free seed has no dynamics, so it
-    would simulate to constants and read as a finite likelihood. Returns ``None`` there; callers
-    handle it (``data_access._frames`` builds an empty-but-typed table).
+    Every READ that wants per-point records comes through here (``get_fit_summary``,
+    ``get_fit_diagnosis``'s residual half, ``query_data``, the ``simulations`` resource), so this is
+    where "no diagnosis may trigger AMICI codegen" is enforced for that half; the parameter half
+    reads a frozen :class:`FitRecord` and has nothing to resolve. Simulating a structure whose module
+    already exists costs an integration (hundredths of a second) and is a legitimate on-demand read.
+    Simulating one nothing has built costs a full C++ build — 16 s on the toy, and it is a build for a
+    structure NOBODY FITTED on the path that reaches here without a simulation: the de-dup no-op
+    re-authors the working SBML, so the read would compile a model the run never scored, to describe
+    a fit that happened on another one.
+
+    Returns ``None`` (no records) in both refusing cases — an unauthored model, whose content-free
+    seed has no dynamics and would simulate to constants that read as a finite likelihood, and an
+    unbuilt structure. Callers already handle it: ``data_access._frames`` builds an empty-but-typed
+    table and :func:`data_access.fit_diagnosis` says which of the two it was.
     """
     if not session.model_authored():
         return session.simulation
     sim = session.simulation
     if sim is None or not sim.get("records"):
+        if not engine.module_built(session.sbml_hash()):
+            session.logger.info(
+                "no simulation for this read: the working structure has no compiled module, and a "
+                "read never pays a build (sbml_hash=%s)", session.sbml_hash())
+            return session.simulation
         fit_and_simulate(session, engine, do_fit=False, n_starts=0)
     return session.simulation
 
@@ -1109,8 +1226,8 @@ def noise_sigma_collapsed(report: "dict[str, Any] | None") -> bool:
 NOISE_SIGMA_INFLATED_ADVICE = (
     "an ESTIMATED noise sigma is inflated above its data-driven cap, absorbing the model misfit — "
     "the chi2 goodness-of-fit is not genuine adequacy here. Do NOT widen or lean on the noise; fix "
-    "the mechanism so the residuals shrink at a plausible sigma (get_fit_diagnosis's "
-    "residual-structure verdict still flags the structure). A fit resting on an inflated sigma will "
+    "the mechanism so the residuals shrink at a plausible sigma (this result's residual_structure "
+    "verdict still flags the structure). A fit resting on an inflated sigma will "
     "NOT be accepted as finished."
 )
 NOISE_SIGMA_COLLAPSED_ADVICE = (
@@ -1184,6 +1301,17 @@ def fit_summary(session, engine) -> dict[str, Any]:
     from .data_access import residual_structure_rollup
 
     out["residual_structure"] = residual_structure_rollup(session, sims=None)
+    # The PARAMETERISATION counterpart, on the same reasoning: the cheapest tie BIC would pay for
+    # (see :func:`identifiability.merge_hint`). It rides on the fit RESULT, which only the caller
+    # that RAN the fit holds — so a caller reading the score afterwards (the analysts, the harness
+    # finish gate, the final scoring) had no way to see it. Re-serving the stored hint costs
+    # nothing: `stored_merge_hint` returns it only while the working problem still IS the one that
+    # priced it, and None otherwise. ABSENT when there is none, like `noise_sigma_advice`.
+    from .identifiability import stored_merge_hint
+
+    _hint = stored_merge_hint(session)
+    if _hint:
+        out["merge_hint"] = _hint
     # The run's OUTSTANDING invalid "does adding structure help?" experiment, if any (see
     # :mod:`nesting`): a commit that gained parameters yet fit WORSE than its parent, which for a
     # nested model is impossible. Sticky across the rollback that usually follows, so the harness
@@ -1347,7 +1475,9 @@ def fit_result_block(
     compact
     ``residual_structure`` verdict the caller stashed on ``fitsim`` (see
     :func:`data_access.residual_structure_rollup`) so the agent learns whether its model's FORM is
-    still incomplete without spending a separate ``get_fit_diagnosis`` call.
+    still incomplete without spending a separate ``get_fit_diagnosis`` call — and, on the same
+    reasoning for the model's PARAMETERISATION, the ``merge_hint`` the caller stashed there (see
+    :func:`identifiability.merge_hint`), present only when a tie is worth taking.
     """
     fitsim = fitsim or {}
     fitted = fitsim.get("fitted_parameters")
@@ -1397,6 +1527,15 @@ def fit_result_block(
         # get_fit_diagnosis (issue #113).
         "residual_structure": fitsim.get("residual_structure"),
     }
+    # The cheapest parameter tie BIC would pay for (see :func:`identifiability.merge_hint`), ABSENT
+    # when there is none — like `noise_sigma_advice` and `nesting_advisory`: this rides on every fit
+    # and is re-sent in the agent's history each turn (PR #23), so it is one line only when there is
+    # something to act on. Only a real fit carries one: a restore and a de-dup no-op ran no
+    # optimizer, so they have no optimum to price a tie at, and the finish gate names any tie still
+    # outstanding at the ARM step (petab_harness.prompts.FINISH_ARMED_MERGE_TMPL) instead.
+    hint = fitsim.get("merge_hint")
+    if hint:
+        block["merge_hint"] = hint
     block.update(goodness_of_fit(nll, chi2, k, n))
     return block
 
@@ -1437,9 +1576,11 @@ def build_sim_payload_for_version(payload: dict[str, Any] | None) -> dict[str, A
     Returns ``None`` when there is nothing worth storing (no per-point records), so old
     version dirs and failed/skipped fits simply carry no simulation file.
     """
+    from .identifiability import STORED_DIAGNOSIS_KEY
+
     if not payload or not payload.get("records"):
         return None
-    return {
+    out = {
         "status": payload.get("status"),
         "neg_log_likelihood": payload.get("neg_log_likelihood"),
         "chi2": payload.get("chi2"),
@@ -1450,6 +1591,15 @@ def build_sim_payload_for_version(payload: dict[str, Any] | None) -> dict[str, A
         "fitted_parameters": payload.get("fitted_parameters"),
         "records": payload.get("records"),
     }
+    # The PARAMETER-GEOMETRY verdict of this fit (see identifiability.fit_diagnosis_block). Persisted
+    # because it cannot be recomputed later without the built problem the optimizer used: a process
+    # that RESUMED the run has no fit record, and re-deriving one there names an AMICI output folder
+    # from live state — a full C++ build. The residual verdict beside it is recomputed instead, from
+    # the records right here. Omitted when absent, so a key present always means a verdict.
+    block = payload.get(STORED_DIAGNOSIS_KEY)
+    if block:
+        out[STORED_DIAGNOSIS_KEY] = block
+    return out
 
 
 def build_optimization_payload_for_version(

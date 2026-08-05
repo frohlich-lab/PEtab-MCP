@@ -577,8 +577,8 @@ def _warn_sigma_bound_widening(problem, parameter_id: str, upper_bound: float) -
     true models' own sigmas span ~0.0004-0.59 of that std, so any band wide enough to be safe is
     too wide to be decisive. On a real problem there is no reference to check it against, so a hard
     rejection could block a legitimate edit with no recourse. The load-bearing evidence for "sigma
-    is absorbing misfit" is the RESIDUAL STRUCTURE (get_fit_diagnosis's verdict: the sign/runs tests
-    plus the replicate lack-of-fit test), which is
+    is absorbing misfit" is the RESIDUAL STRUCTURE (the fit result's residual_structure verdict: the
+    sign/runs tests plus the replicate lack-of-fit test), which is
     transform-invariant and needs no ground truth — this warning just points at it."""
     if parameter_id not in R.plausibility_sigma_ids(problem):
         return None
@@ -608,10 +608,10 @@ def _warn_sigma_bound_widening(problem, parameter_id: str, upper_bound: float) -
         f"WARNING: widening the upperBound of {parameter_id!r} to {upper_bound:.6g} takes it past "
         f"{cap:.6g} ({NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD:.0%} of this observable's measurement "
         "std, on the scale its noise is additive on). A sigma free to grow can make an "
-        "under-mechanistic model look statistically adequate. This is ADVISORY — check "
-        "get_fit_diagnosis: if its residual-structure verdict flags an observable (sign/runs tests, "
+        "under-mechanistic model look statistically adequate. This is ADVISORY — check the fit "
+        "result's residual_structure verdict: if it flags an observable (sign/runs tests, "
         "or a replicated design point the model cannot reach), the mechanism is missing something "
-        "and widening the noise will only hide it."
+        "and widening the noise will only hide it (get_fit_diagnosis has the detail behind it)."
     )
 
 
@@ -693,7 +693,7 @@ def _reject_repeated_widening(
 ) -> None:
     """Refuse a THIRD widening of a parameter that keeps re-pinning to its bound for a negligible
     fit gain. A parameter pinned at a bound with a flat / collinear FIM direction (see
-    ``get_identifiability``) is UNIDENTIFIABLE, not under-explored: each widening just lets the
+    ``get_fit_diagnosis(sections="parameters")``) is UNIDENTIFIABLE, not under-explored: each widening just lets the
     optimum slide to the new edge and re-pin, chasing the search space toward infinity for ~0 BIC
     This is the hard backstop behind the widen-at-most-once guidance on the tool itself. It applies to NOISE SIGMAS TOO: they used to be exempt because
     ``_reject_sigma_bound_widening`` rejected them on a stricter data-driven cap, but that cap is
@@ -727,7 +727,7 @@ def _reject_repeated_widening(
         f"Refusing to widen {parameter_id!r} a {count + 1}th time: it re-pinned at its {side} "
         f"bound after {count} previous widenings for a negligible ~{last_gain:.2g} BIC gain. A "
         "parameter pinned at a bound with a flat/collinear FIM direction (check "
-        "get_identifiability) is UNIDENTIFIABLE, not under-explored — widening chases it toward "
+        "get_fit_diagnosis(sections=\"parameters\")) is UNIDENTIFIABLE, not under-explored — widening chases it toward "
         "infinity while it keeps re-pinning. Instead re-author with make_changes to REMOVE its "
         "reaction or use its LIMITING form (make the reaction irreversible / the step "
         "instantaneous); if neither is possible, LEAVE it pinned — do not widen again or "

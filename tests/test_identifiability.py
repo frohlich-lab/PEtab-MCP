@@ -19,6 +19,49 @@ def _meta(*ids, scale="log10", est_scaled=1.0, at_bound=False):
              "at_bound": at_bound} for i in ids]
 
 
+class _StubObjective:
+    """The one thing ``_compute_fim`` asks a pyPESTO objective for: a Hessian (or an sres to
+    square) at a point. Substituted so the ASSEMBLY around the FIM — the record, the coordinate
+    order, the staleness label — is testable without an AMICI build."""
+
+    def __init__(self, hess=None, sres=None):
+        self.hess, self.sres = hess, sres
+        self.calls: list[tuple] = []
+
+    def __call__(self, x, sensi_orders=(0,), return_dict=False):
+        self.calls.append((tuple(np.asarray(x, float)), sensi_orders))
+        if sensi_orders == (0, 1, 2):
+            if self.hess is None:
+                raise RuntimeError("order-2 sensitivities unsupported for this objective")
+            return {"fval": 1.0, "hess": self.hess}
+        return {"fval": 1.0, "sres": self.sres}
+
+
+class _StubProblem:
+    def __init__(self, objective, x_names):
+        self.objective = objective
+        self.x_names = list(x_names)
+
+
+def _record(session, *, names=("k1", "k2"), x=(0.0, -1.0), hess=None, sres=None,
+            scales=("log10", "log10"), lb=(-4.0, -4.0), ub=(2.0, 2.0),
+            hierarchical=False, optimization=None, structure_hash=None, problem_hash=None):
+    """A :class:`fitting.FitRecord` over the toy problem, with the FIM source stubbed."""
+    from petab_mcp.fitting import FitRecord
+    from petab_mcp.parameters import structure_fingerprint
+
+    return FitRecord(
+        pypesto_problem=_StubProblem(_StubObjective(hess=hess, sres=sres), names),
+        problem=session.problem,
+        structure_hash=structure_hash or structure_fingerprint(
+            session.problem.model.sbml_model, session.problem.parameter_df),
+        problem_hash=problem_hash or session.problem_hash(),
+        x_names=tuple(names), x_free=tuple(x), scales=tuple(scales),
+        lb=tuple(lb), ub=tuple(ub),
+        optimization=optimization, hierarchical=hierarchical,
+    )
+
+
 def test_collinear_pair_flagged_via_singular_fim():
     # a,b perfectly collinear (rank-1 block); c well determined.
     fim = np.array([[1.0, 1.0, 0.0], [1.0, 1.0, 0.0], [0.0, 0.0, 4.0]])
@@ -102,20 +145,15 @@ def test_no_signal_reports_unavailable():
     assert out["candidates"] == []
 
 
-def test_identifiability_fim_less_fallback_tolerates_nan_estimate(session):
-    """The FIM-less fallback (no engine) must not crash when an `estimate` cell is NaN — it
-    coerces NaN to 'not estimated' instead of raising ValueError from int(NaN)."""
-    from petab.v1.C import ESTIMATE
+def test_an_unevaluable_objective_degrades_to_the_spread(session):
+    """A FIM failure drops the correlation half and keeps the rest — the free parameters are the
+    RECORD's either way, so the payload's coordinate list never depends on the FIM succeeding."""
+    session.fit_record = _record(session, hess=None, sres=None)  # neither order works
 
-    df = session.problem.parameter_df
-    df.loc["k1", ESTIMATE] = np.nan  # a NaN estimate flag on a formerly-estimated parameter
+    out = identifiability(session)
 
-    out = identifiability(session, engine=None)  # engine=None -> FIM-less fallback path
-
-    assert isinstance(out, dict) and "available" in out
-    ids = {p["id"] for p in out["parameters"]}
-    assert "k1" not in ids   # NaN estimate treated as not-estimated
-    assert "k2" in ids       # the remaining estimated parameter is still listed
+    assert out["fim"] is None and out["merge_candidates"] is None
+    assert [p["id"] for p in out["parameters"]] == ["k1", "k2"]
 
 
 # -- merge candidates: which pairs could take ONE SHARED value --------------
@@ -358,5 +396,212 @@ def test_roles_are_not_computed_when_there_is_no_fim(session, monkeypatch):
     calls = []
     monkeypatch.setattr(reconcile, "parameter_roles",
                         lambda *a, **kw: calls.append(1) or {})
-    out = identifiability(session, engine=None)
+    session.fit_record = _record(session, hess=None, sres=None)
+    out = identifiability(session)
     assert out["merge_candidates"] is None and calls == []
+
+
+# -- the merge HINT: the one row of this diagnosis that rides on every fit result --------------
+def test_merge_hint_is_the_cheapest_tie_bic_would_pay_for():
+    """A projection of the diagnosis, never a second statistic — so the hint and the section can
+    never name different pairs at the same optimum."""
+    from petab_mcp.identifiability import merge_hint
+
+    fim = np.array([[1e4, 1e4 - 1e-5], [1e4 - 1e-5, 1e4]])   # a near-flat difference direction
+    meta = _meta("a", "b", est_scaled=1.0)
+    meta[1]["estimate_scaled"] = 1.0001
+    diag = _identifiability_stats(meta, fim, {}, n_data=252)
+    row = diag["merge_candidates"]["ties"][0]
+    assert row["merge_improves_bic"] is True
+
+    hint = merge_hint(diag)
+    assert hint == {k: row[k] for k in ("parameters", "dnll", "dbic", "move_scaled")}
+    # `move_scaled` rides along because merge_candidates says the price must be read against it — a
+    # near-free tie bought with a move of many decades is a flat direction, not an edit. Everything
+    # else stays in the section: this is re-sent in history on every later turn.
+    assert set(hint) == {"parameters", "dnll", "dbic", "move_scaled"}
+
+
+def test_merge_hint_is_none_when_nothing_beats_the_charge_or_nothing_is_priced():
+    """ABSENCE therefore means "no cheap tie OR no FIM OR every pair filtered" — which is why the
+    docs must not sell it as a certificate of parsimony."""
+    from petab_mcp.identifiability import merge_hint
+
+    # priced, but the tie costs more than the ln(n)/2 the merged-away parameter would save: two
+    # well-determined parameters two decades apart
+    dear_meta = _meta("a", "b", est_scaled=1.0)
+    dear_meta[1]["estimate_scaled"] = 3.0
+    dear = _identifiability_stats(dear_meta, np.diag([4.0, 4.0]), {}, n_data=252)
+    dear_ties = dear["merge_candidates"]["ties"]
+    assert dear_ties and not any(r["merge_improves_bic"] for r in dear_ties)
+    assert merge_hint(dear) is None
+    # no FIM -> no priced tie at all
+    assert merge_hint(_identifiability_stats(_meta("a", "b"), None, {})) is None
+    # ...and every unusable shape is None rather than an exception: this is read on the fit path
+    assert merge_hint(None) is None and merge_hint({}) is None
+    assert merge_hint({"merge_candidates": {"ties": [{"parameters": ["a", "b"], "dnll": 0.0}]}}) \
+        is None      # no price was computable, so no claim that it beats one
+
+
+def test_fit_merge_hint_never_raises(session, monkeypatch):
+    """The fit path calls this; an advisory that can raise is an advisory that can fail a commit."""
+    import petab_mcp.identifiability as I
+
+    session.fit_record = _record(session)
+    monkeypatch.setattr(I, "identifiability",
+                        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert I.fit_merge_hint(session) is None
+
+
+# -- the frozen fit record: what a diagnosis is allowed to read ---------------------------------
+def test_only_a_frozen_fit_may_be_diagnosed(session):
+    """REGRESSION: the whole module is a local expansion around an optimum — the merge price has no
+    gradient term, so off one it gets monotonically CHEAPER (blasi: 0.001 nll at the fitted optimum,
+    7e-05 at 3x those values) and advertises merges that are not there. With no record there is
+    nothing to expand around, and no fallback may reconstruct a problem from live state: that
+    reconstruction is what paid a 12.5 s AMICI build to price a model nobody had fitted."""
+    import petab_mcp.identifiability as I
+
+    out = identifiability(session)                        # nothing fitted in this session
+    assert out == {"available": False, "method": "none", "note": I.NO_OPTIMUM_NOTE}
+    assert I.fit_merge_hint(session) is None
+    assert I.stored_merge_hint(session) is None
+
+
+def test_the_diagnosed_point_is_the_fits_own_optimum_not_the_live_table(session):
+    """REGRESSION (finding 3 of the review): the FIM used to be taken at
+    `parameter_df[nominalValue]`, so it was the fit's optimum only while the post-fit write-back
+    happened to still be intact. An agent edit to the table must not move the point a diagnosis
+    expands around."""
+    from petab.v1.C import NOMINAL_VALUE
+
+    from petab_mcp.identifiability import _params_meta
+
+    record = _record(session, x=(0.0, -1.0), hess=np.diag([4.0, 4.0]))
+    session.fit_record = record
+    before = identifiability(session)["parameters"]
+
+    session.problem.parameter_df.loc["k1", NOMINAL_VALUE] = 42.0   # an edit after the fit
+    after = identifiability(session)["parameters"]
+
+    assert after == before
+    assert after[0]["estimate"] == pytest.approx(1.0)    # 10**0.0, the FITTED value, not 42.0
+    # ...and the point the quadratic is expanded around is the record's, coordinate for coordinate
+    assert [p["estimate_scaled"] for p in _params_meta(record)] == [0.0, -1.0]
+    # the objective was asked for sensitivities AT that point, not at the edited table's
+    assert record.pypesto_problem.objective.calls[0][0] == (0.0, -1.0)
+
+
+def test_another_structure_in_the_working_state_is_labelled_not_re_priced(session):
+    """A restore points the working state at another version's model, so the geometry in hand
+    describes a structure that is no longer in front of the lead. The diagnosis then belongs to the
+    LAST FIT and says so — re-pricing the current structure would mean building it."""
+    import petab_mcp.identifiability as I
+
+    session.fit_record = _record(session, hess=np.diag([4.0, 4.0]),
+                                structure_hash="another-structure")
+    out = identifiability(session)
+
+    assert out["stale"] is True and out["stale_note"] == I.STALE_NOTE
+    assert out["available"] is True          # still the honest numbers of that earlier fit
+    # ...and nothing rides on the fit RESULT or the score read off another structure's state
+    session.simulation = {I.STORED_DIAGNOSIS_KEY: {"structure_hash": "another-structure",
+                                                  "diagnosis": out}}
+    assert I.stored_merge_hint(session) is None
+    assert I.fit_merge_hint(session) is None
+
+
+def test_a_table_only_drift_keeps_the_verdict_and_says_the_table_moved(session):
+    """REGRESSION: staleness used to compare `problem_hash` (the model AND the parameter table), so
+    the ONE drift a lead can cause inside a run — the de-dup no-op, which re-authors the SAME
+    structure with a new starting guess and therefore runs no fit — read as "this describes another
+    model". That dropped the merge hint from the score read and switched OFF the parsimony finish
+    gate for a rank deficiency the frozen FIM still reported, for the same structure, at HEAD's own
+    fit. The structure is what decides; the moved values are reported."""
+    import petab_mcp.identifiability as I
+
+    session.fit_record = _record(session, x=(1.0, 1.0001), hess=_NEAR_FLAT)
+    undrifted = identifiability(session)
+    session.fit_record = _record(session, x=(1.0, 1.0001), hess=_NEAR_FLAT,
+                                problem_hash="the-fit-before-the-no-op")
+
+    out = identifiability(session)
+    assert {k: v for k, v in out.items() if k != "working_table_note"} == undrifted
+    assert "stale" not in out
+    assert out["working_table_note"] == I.WORKING_TABLE_NOTE
+    # ...and the score read still names the tie the fit priced, since HEAD is still that fit
+    session.simulation = {I.STORED_DIAGNOSIS_KEY: {
+        "structure_hash": session.fit_record.structure_hash, "diagnosis": out}}
+    assert I.stored_merge_hint(session)["parameters"] == ["k1", "k2"]
+
+
+def test_a_process_that_ran_no_fit_serves_the_verdict_the_fit_stored(session):
+    """REGRESSION: a durable RESUME restores HEAD's payload but not the in-memory fit record, so the
+    parameter half went dark for the rest of the run — and the finish gate stopped refusing a
+    rank-deficient model it refuses in-process. Re-deriving a record there is what the invariant
+    forbids: measured on the pre-fix code, a resumed diagnosis paid 19.4 s of AMICI codegen (122 new
+    files under the build root, charged to no clock), because a restored model's SBML is serialised
+    in a different order and hashes to a module nothing has built."""
+    import petab_mcp.identifiability as I
+
+    fitted = identifiability(_fitted(session, x=(1.0, 1.0001), hess=_NEAR_FLAT))
+    resumed = _resumed(session, fitted)
+
+    out = identifiability(resumed)
+    assert out["available"] is True and "stale" not in out
+    assert out["fim"] == fitted["fim"] and out["parameters"] == fitted["parameters"]
+    assert I.stored_merge_hint(resumed)["parameters"] == ["k1", "k2"]
+    # ...and a resume onto a DIFFERENT structure is labelled, not re-priced
+    resumed.simulation[I.STORED_DIAGNOSIS_KEY]["structure_hash"] = "another-structure"
+    assert identifiability(resumed)["stale"] is True
+    assert I.stored_merge_hint(resumed) is None
+
+
+#: A FIM whose DIFFERENCE direction is nearly flat: the state a merge hint exists in (the pair is
+#: free to tie) while every standard error stays finite, so a payload built on it is fully populated.
+_NEAR_FLAT = np.array([[1e4, 1e4 - 1e-5], [1e4 - 1e-5, 1e4]])
+
+
+def _fitted(session, **kw):
+    """``session`` with a frozen record, as the process that ran the fit holds it."""
+    session.fit_record = _record(session, **kw)
+    return session
+
+
+def _resumed(session, diagnosis):
+    """A session in the state a RESUMED process is in: HEAD's payload restored (the stored verdict
+    with it), no fit record, no engine — the fits happened before this process started."""
+    import copy
+
+    from petab_mcp.identifiability import STORED_DIAGNOSIS_KEY
+
+    resumed = copy.copy(session)
+    resumed.fit_record = None
+    resumed.simulation = {
+        "status": "fit",
+        STORED_DIAGNOSIS_KEY: {"structure_hash": session.fit_record.structure_hash,
+                               "diagnosis": copy.deepcopy(diagnosis)},
+    }
+    return resumed
+
+
+def test_a_hierarchical_fits_rank_is_read_against_its_own_dimension(session):
+    """The fit's objective inner-solves the sigmas, so the FIM is REDUCED: it has no sigma
+    coordinate even though the session counts one in `k`. Every rank statement must therefore be
+    made against the FIM's OWN dimension — comparing it with the session's k would read every
+    hierarchical fit as rank-deficient and the finish gate would refuse it."""
+    from petab.v1.C import ESTIMATE
+
+    df = session.problem.parameter_df
+    df.loc["sigma_B", ESTIMATE] = 1                      # k = 3 for the session...
+    assert int(session.problem.n_estimated) == 3
+    # ...while the fit's outer problem carries only k1, k2 (sigma_B was inner-solved)
+    session.fit_record = _record(session, hess=np.diag([4.0, 4.0]), hierarchical=True)
+
+    out = identifiability(session)
+
+    assert out["n_estimated"] == 2 and out["fim"]["n_estimated"] == 2
+    assert out["fim"]["rank"] == 2 and out["fim"]["rank_deficient"] is False
+    assert [p["id"] for p in out["parameters"]] == ["k1", "k2"]
+    # the omission is stated, so it does not read as a bug
+    assert "inner-solved" in out["inner_parameters_omitted"]

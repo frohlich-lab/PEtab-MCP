@@ -296,8 +296,9 @@ def test_fit_diagnosis_empty_without_simulation(session):
     out = data_access.fit_diagnosis(session)
     assert out["per_observable"] == [] and out["worst_points"] == []
     assert "no simulation" in out["status"]
-    # the verdict key is present even here, so reading it never needs an absence guard
-    assert out["residual_structure"] == data_access.residual_structure_rollup(session)
+    # the rolled-up verdict is NOT here — it rides on the fit result, and the degraded path must
+    # not resurrect a second copy of it
+    assert "residual_structure" not in out
 
 
 def test_fit_diagnosis_compact_and_bounded(session):
@@ -315,11 +316,14 @@ def test_fit_diagnosis_compact_and_bounded(session):
     # worst_points bounded to worst_n and ordered by |residual_weighted|
     assert len(out["worst_points"]) == 2
     assert abs(out["worst_points"][0]["residual_weighted"]) == pytest.approx(2.0)
-    # residual-structure tests are attached per observable and rolled up
+    # residual-structure tests are attached PER OBSERVABLE — that is the detail this read exists
+    # for — while the rolled-up verdict over them stays on the fit result (~0.5 kB not shipped
+    # twice to a caller that has both)
     assert "sign_test" in per["obs_A"] and "runs_test" in per["obs_A"]
-    assert "residual_structure" in out
-    # too few points here -> flagged underpowered, so "nothing flagged" is not a pass
-    assert out["residual_structure"]["low_power"] is True
+    assert "residual_structure" not in out
+    # too few points here -> the rollup calls the tests underpowered, so "nothing flagged" is not
+    # a pass; it is read off the fit result's verdict
+    assert data_access.residual_structure_rollup(session)["low_power"] is True
 
 
 def test_fit_diagnosis_flags_systematic_bias(session):
@@ -332,8 +336,9 @@ def test_fit_diagnosis_flags_systematic_bias(session):
     assert row["sign_test"]["n_pos"] == 10 and row["sign_test"]["n_neg"] == 0
     assert row["sign_test"]["p"] is not None and row["sign_test"]["p"] < 0.01
     assert row["structure_flag"] is True
-    assert "obs_A" in out["residual_structure"]["flagged_observables"]
-    assert out["residual_structure"]["low_power"] is False  # 10 points -> powered
+    rollup = data_access.residual_structure_rollup(session)
+    assert "obs_A" in rollup["flagged_observables"]
+    assert rollup["low_power"] is False  # 10 points -> powered
 
 
 # -- the bare structure boolean the session's plateau-adequacy gate consumes ---------------
@@ -343,14 +348,15 @@ def _flagged(session) -> bool:
     return bool(data_access.residual_structure_rollup(session)["flagged_observables"])
 
 def test_structure_flag_true_on_systematic_bias(session):
-    """A one-sided residual series is flagged, and the leaner helper's verdict equals fit_diagnosis's
-    own flagged set — pinning the two definitions together so the per-commit gate can't drift."""
+    """A one-sided residual series is flagged, and the per-observable rows fit_diagnosis returns
+    mark the SAME observable — pinning the two definitions together (they share one builder) so the
+    per-commit gate can't drift from the detail read."""
     session.simulation = {"records":
                           [_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0)
                            for t in range(10)]}
     assert _flagged(session) is True
-    assert _flagged(session) is bool(
-        data_access.fit_diagnosis(session)["residual_structure"]["flagged_observables"])
+    assert _flagged(session) is any(
+        o.get("structure_flag") for o in data_access.fit_diagnosis(session)["per_observable"])
 
 
 def test_structure_flag_false_without_simulation(session):
@@ -363,19 +369,20 @@ def test_structure_flag_false_when_no_weighted_residuals(session):
     matching fit_diagnosis, which reports no residual structure for the same input."""
     session.simulation = {"records": [_rec("o", "c", 0.0, 1.0, float("nan"), None, None, None)]}
     assert _flagged(session) is False
-    # fit_diagnosis short-circuits here, but still carries the (unavailable) verdict — the key is
-    # part of its contract, so a caller never has to guard for its absence.
+    # fit_diagnosis short-circuits here with no rows and no verdict; the (unavailable) verdict is
+    # the fit result's, and the REPLICATE arm reaches it there — a collapsed/unevaluable sigma must
+    # not switch off the one arm that catches it just because this table needs weighted residuals.
     diag = data_access.fit_diagnosis(session)
-    assert diag["residual_structure"] == data_access.residual_structure_rollup(session)
-    assert not diag["residual_structure"]["flagged_observables"]
+    assert diag["per_observable"] == [] and "residual_structure" not in diag
+    assert not data_access.residual_structure_rollup(session)["flagged_observables"]
 
 
 def test_structure_flag_agrees_with_fit_diagnosis_on_mixed(session):
-    """On the shared mixed record set (few points -> underpowered -> not flagged), the leaner
-    helper's boolean equals fit_diagnosis's flagged verdict."""
+    """On the shared mixed record set (few points -> underpowered -> not flagged), the gate's
+    boolean equals what fit_diagnosis's own rows mark."""
     session.simulation = {"records": SIM_RECORDS}
-    assert _flagged(session) is bool(
-        data_access.fit_diagnosis(session)["residual_structure"]["flagged_observables"])
+    assert _flagged(session) is any(
+        o.get("structure_flag") for o in data_access.fit_diagnosis(session)["per_observable"])
 
 
 # -- residual_structure_rollup: the compact verdict returned ON the fit result (issue #113) ------
@@ -390,7 +397,8 @@ def test_residual_structure_rollup_names_the_flagged_observable(session):
     assert out["flagged_observables"] == ["obs_A"]
     assert out["low_power"] is False
     assert "obs_A" in out["summary"]
-    assert out == data_access.fit_diagnosis(session)["residual_structure"]
+    assert [o["observable_id"] for o in data_access.fit_diagnosis(session)["per_observable"]
+            if o.get("structure_flag")] == ["obs_A"]
 
 
 def test_residual_structure_rollup_reports_low_power_on_the_mixed_set(session):
@@ -401,7 +409,8 @@ def test_residual_structure_rollup_reports_low_power_on_the_mixed_set(session):
     assert out["flagged_observables"] == []
     assert out["low_power"] is True
     assert "UNDERPOWERED" in out["summary"]
-    assert out == data_access.fit_diagnosis(session)["residual_structure"]
+    assert not any(o.get("structure_flag")
+                   for o in data_access.fit_diagnosis(session)["per_observable"])
 
 
 @pytest.mark.parametrize(
@@ -428,10 +437,10 @@ def test_residual_structure_rollup_never_raises(session, monkeypatch):
 
 
 def test_residual_structure_rollup_agrees_with_fit_diagnosis_on_several_flagged(session):
-    """The two callers walk the observables in DIFFERENT orders — fit_diagnosis rolls up a
-    chi2-ranked per_observable, the rollup walks groupby order — so with more than one flagged
-    observable the verdict must be order-independent, or `fit` and `get_fit_diagnosis` would
-    disagree on both the list and the summary string built from it."""
+    """The two callers walk the observables in DIFFERENT orders — fit_diagnosis marks a chi2-ranked
+    per_observable, the rollup walks groupby order — so with more than one flagged observable the
+    two must agree on WHICH observables are flagged, or the fit result's verdict and the rows the
+    lead reads next would name different ones."""
     # obs_B carries the larger chi2, so fit_diagnosis ranks it first while groupby yields obs_A
     # first; both one-sided, so both flag.
     records = ([_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)]
@@ -442,8 +451,69 @@ def test_residual_structure_rollup_agrees_with_fit_diagnosis_on_several_flagged(
 
     rollup = data_access.residual_structure_rollup(session)
     assert rollup["flagged_observables"] == ["obs_A", "obs_B"]
-    assert rollup == diag["residual_structure"]
-    assert rollup["summary"] == diag["residual_structure"]["summary"]
+    assert sorted(o["observable_id"] for o in diag["per_observable"]
+                  if o.get("structure_flag")) == rollup["flagged_observables"]
+
+
+def test_the_two_rollup_callers_produce_IDENTICAL_verdicts(session, monkeypatch):
+    """Not merely the same flagged SET: the same ``summary`` and the same ``low_power`` too.
+
+    ``low_power`` is the field that stops "nothing flagged" being read as a pass, and it reaches
+    result.json from BOTH paths — the per-row ``structure_low_power`` from fit_diagnosis's own pass,
+    the rolled-up one from the fit path — so the two diverging is a silent over-claim. The verdicts
+    are captured AT the shared builder, so this pins what each caller actually hands it (the inputs
+    are what could drift now that the builder is shared) rather than a reconstruction of one.
+    """
+    verdicts: list[dict] = []
+    real = data_access._rollup_structure
+    monkeypatch.setattr(data_access, "_rollup_structure",
+                        lambda *a, **kw: verdicts.append(real(*a, **kw)) or verdicts[-1])
+
+    # Two flagged observables reached in DIFFERENT orders per caller (fit_diagnosis marks a
+    # chi2-ranked table, the rollup walks groupby order), one underpowered set, and one with nothing
+    # testable — so both the list and the summary string built from it have to agree.
+    two_flagged = ([_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)]
+                   + [_rec("obs_B", "c0", float(t), 3.0, 0.0, 3.0, 3.0, 1.0) for t in range(10)])
+    for records in ([_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)],
+                    two_flagged,
+                    SIM_RECORDS,
+                    [_rec("o", "c", 0.0, 1.0, float("nan"), None, None, None)]):
+        verdicts.clear()
+        session.simulation = {"records": records}   # no stored verdict -> both paths recompute
+        data_access.residual_structure_rollup(session)
+        data_access.fit_diagnosis(session)
+        if len(verdicts) == 2:      # the degenerate frames short-circuit before the builder
+            assert verdicts[0] == verdicts[1]
+            assert verdicts[0]["summary"] == verdicts[1]["summary"]
+            assert verdicts[0]["low_power"] == verdicts[1]["low_power"]
+
+
+def test_the_stored_verdict_is_reused_rather_than_recomputed(session, monkeypatch):
+    """fit_diagnosis marked its rows by rolling the verdict up AGAIN — a whole replicate
+    lack-of-fit pass per noise parameter — although `session.fit` already stored that rollup on the
+    very frame this reads (`fitsim` IS `session.simulation`). It reads the stored one, and recomputes
+    only when the frame carries none (a simulate-only or restored payload)."""
+    session.simulation = {"records": [_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0)
+                                      for t in range(10)]}
+    stored = data_access.residual_structure_rollup(session)
+    session.simulation["residual_structure"] = stored
+
+    passes: list[int] = []
+    real = data_access._replicate_lof
+    monkeypatch.setattr(data_access, "_replicate_lof",
+                        lambda s, df: passes.append(1) or real(s, df))
+
+    diag = data_access.fit_diagnosis(session)
+    assert [o["observable_id"] for o in diag["per_observable"] if o.get("structure_flag")] == \
+        stored["flagged_observables"]
+    assert passes == []                      # nothing re-tested
+
+    # ...and with no stored verdict it still marks the same rows, by recomputing
+    session.simulation.pop("residual_structure")
+    again = data_access.fit_diagnosis(session)
+    assert [o["observable_id"] for o in again["per_observable"] if o.get("structure_flag")] == \
+        stored["flagged_observables"]
+    assert passes == [1]
 
 
 def test_residual_flag_separates_untested_from_unflagged(session):

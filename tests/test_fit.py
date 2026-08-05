@@ -149,9 +149,9 @@ def test_fit_returns_the_compact_residual_structure_verdict(fit_session):
     # and must say so rather than contributing a silent pass.
     assert rs["replicate_lack_of_fit"]["available"] is False
     assert rs["replicate_lack_of_fit"]["status"] == "no_replicated_points"
-    # It is the SAME rollup get_fit_diagnosis reports — that equality is the whole point: the
-    # follow-up call is redundant, not merely similar.
-    assert rs == data_access.fit_diagnosis(sess)["residual_structure"]
+    # ...and the diagnosis tool does NOT repeat it: one verdict, one place. The detail behind it
+    # (the per-observable rows) is what that call is for.
+    assert "residual_structure" not in data_access.fit_diagnosis(sess)
 
 
 def test_fit_result_omits_the_detailed_diagnosis(fit_session):
@@ -161,6 +161,240 @@ def test_fit_result_omits_the_detailed_diagnosis(fit_session):
     res = fit_session.fit(n_starts=2)
     assert "per_observable" not in res and "worst_points" not in res
     assert "per_observable" not in res["residual_structure"]
+
+
+# -- the merge hint rides on the fit result too -------------------------------
+# Same reasoning as the residual verdict above, for the model's PARAMETERISATION. Measured: across
+# three blasi runs on 3491be9 the identifiability tool was called 3, 0 and 1 times out of 190, 149
+# and 94 tool calls, while the residual verdict — which rides on every fit — was quoted back in the
+# panel's own justifications. The run that came CLOSEST (dBIC +11.6 against a <=10 bar) never called
+# it and had a merge in its own FIM costing 0.001 nll against a 5.53 penalty.
+#: The toy model with k1's STARTING value as a slot — a re-author that moves the SBML hash without
+#: moving the structure fingerprint, i.e. the de-dup no-op that drifts.
+_TOY_WITH_K1 = """model conversion_reaction
+  compartment compartment_ = 1;
+  species A in compartment_;
+  species B in compartment_;
+  A = A_init;
+  B = B_init;
+  A_init = 1.0;
+  B_init = 0.0;
+  k1 = {k1};
+  k2 = 0.1;
+  r1: A => B; k1 * A;
+  r2: B => A; k2 * B;
+end
+"""
+
+
+def _fim_with_tie(a_b_curvature: float):
+    """A 2x2 FIM over the toy problem's (k1, k2): a near-singular difference direction means tying
+    them is nearly free, a well-conditioned one means it is expensive."""
+    import numpy as np
+
+    return np.array([[1.0, 1.0 - a_b_curvature], [1.0 - a_b_curvature, 1.0]]) * 1e4
+
+
+def _stub_fim(monkeypatch, curvature, *, counter=None):
+    """Substitute the ONE part of the diagnosis that evaluates sensitivities, so the TIE is
+    deterministic while everything downstream — the price, the filters, the assembly onto the fit
+    result — is the shipped path. It takes the frozen fit RECORD, whose free names are the toy's
+    (k1, k2), so the stub needs to return only the matrix."""
+    from petab_mcp import identifiability as I
+
+    def _fim(_record):
+        if counter is not None:
+            counter.append(1)
+        return _fim_with_tie(curvature)
+
+    monkeypatch.setattr(I, "_compute_fim", _fim)
+
+
+def test_a_near_free_tie_reaches_the_fit_result_as_a_merge_hint(fit_session, monkeypatch):
+    from petab_mcp import identifiability as I
+
+    sess = fit_session
+    _stub_fim(monkeypatch, 1e-9)
+    res = sess.fit(n_starts=2)
+
+    hint = res["merge_hint"]
+    assert hint["parameters"] == ["k1", "k2"]
+    assert hint["dbic"] < 0                      # the merge lowers BIC — that is why it is here
+    assert hint["dnll"] is not None and hint["dnll"] < abs(hint["dbic"])
+    # ...and it is the cheapest row of the diagnosis's own priced list, not a second statistic —
+    # including `move_scaled`, the field the price has to be read against
+    ties = I.identifiability(sess)["merge_candidates"]["ties"]
+    assert {k: ties[0][k] for k in ("parameters", "dnll", "dbic", "move_scaled")} == hint
+    assert set(hint) == {"parameters", "dnll", "dbic", "move_scaled"}  # ~110 B on every fit
+    # ...and the SCORE read carries the same one, so a caller that did not run the fit (the
+    # analysts, the harness finish gate, the final scoring) sees the tie the lead was shown.
+    from petab_mcp import fitting
+
+    assert fitting.fit_summary(sess, sess.engine)["merge_hint"] == hint
+
+
+def test_no_hint_when_no_tie_beats_the_bic_charge(fit_session, monkeypatch):
+    """ABSENT, not a null verdict — the same convention as noise_sigma_advice and
+    nesting_advisory, so a fit with nothing to say costs nothing."""
+    from petab_mcp import fitting, identifiability as I
+
+    _stub_fim(monkeypatch, 1.0)
+    res = fit_session.fit(n_starts=2)
+    assert "merge_hint" not in res
+    assert "merge_hint" not in fitting.fit_summary(fit_session, fit_session.engine)
+    ties = I.identifiability(fit_session)["merge_candidates"]["ties"]
+    assert ties and not any(r["merge_improves_bic"] for r in ties)
+
+
+def test_a_broken_diagnosis_never_costs_the_fit(fit_session, monkeypatch):
+    """An advisory must not be able to fail a commit: the hint is dropped, the version stands."""
+    from petab_mcp import identifiability as I
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("FIM exploded")
+
+    monkeypatch.setattr(I, "identifiability", _boom)
+    res = fit_session.fit(n_starts=2)
+    assert res["committed"] is True and "merge_hint" not in res
+    assert res["residual_structure"]["summary"]
+
+
+def test_the_no_op_refit_prices_no_tie(fit_session, monkeypatch):
+    """A skipped fit priced nothing, so its RESULT claims no tie — the hint belongs to the call that
+    ran the optimizer. The score read is a read of the STATE, and "no_change" means the state is
+    byte-identical to the fit that priced the hint, so there it stands.
+
+    Also pins that nothing leaks by aliasing: `self.simulation` IS the last fit's payload. That the
+    no-op cannot BUILD anything is the contract in tests/test_diagnosis_never_compiles.py."""
+    from petab_mcp import fitting
+
+    _stub_fim(monkeypatch, 1e-9)
+    sess = fit_session
+    first = sess.fit(n_starts=2)
+    assert "merge_hint" in first
+
+    fims: list[int] = []
+    _stub_fim(monkeypatch, 1e-9, counter=fims)
+    noop = sess.fit(n_starts=2)
+    assert noop["no_change"] is True
+    assert "merge_hint" not in noop and fims == []
+    assert fitting.fit_summary(sess, sess.engine)["merge_hint"] == first["merge_hint"]
+
+
+def test_a_re_authored_no_op_keeps_the_fits_own_verdict(fit_session, monkeypatch):
+    """REGRESSION: the no-op that MATTERS — the same structure re-authored with a different starting
+    value. The structure fingerprint ignores nominal values, which is why the fit is SKIPPED; but the
+    SBML text moves, and staleness used to be judged on the parameter table too, so this state read as
+    "another model's diagnosis". That dropped the tie from the score read and switched the parsimony
+    finish gate off for a rank deficiency the frozen FIM still reported — for the same structure, at
+    HEAD's own fit, which is the only fit there is. The RESULT still claims nothing (this call priced
+    nothing); the STATE still reports the fit it de-duplicated against."""
+    from petab_mcp import fitting, identifiability as I
+    from petab_mcp import operations as O
+
+    _stub_fim(monkeypatch, 1e-9)
+    sess = fit_session
+    first = sess.fit(n_starts=2)
+    assert "merge_hint" in first
+    before = sess.sbml_hash()
+
+    fims: list[int] = []
+    _stub_fim(monkeypatch, 1e-9, counter=fims)
+    O.set_model(sess, _TOY_WITH_K1.format(k1=0.7), justification="same structure, new guess")
+    assert sess.sbml_hash() != before
+    noop = sess.fit(n_starts=2)
+
+    assert noop["no_change"] is True and "merge_hint" not in noop
+    assert fitting.fit_summary(sess, sess.engine)["merge_hint"] == first["merge_hint"]
+    assert fims == []            # ...and nothing was re-priced to say it
+    # the diagnosis stands, and says the working TABLE has moved rather than claiming another model
+    diagnosis = I.identifiability(sess)
+    assert "stale" not in diagnosis
+    assert diagnosis["working_table_note"] == I.WORKING_TABLE_NOTE
+
+
+def test_a_fit_that_never_ran_prices_no_tie(fit_session, monkeypatch):
+    """REGRESSION: with `auto_fit` off the values are whatever was authored, and the merge price is
+    a local expansion at a stationary point — off one it gets monotonically CHEAPER, so it would
+    advertise merges that are not there. That path is also documented as compile-free (57 s of
+    AMICI build measured on the toy problem before this guard)."""
+    fims: list[int] = []
+    _stub_fim(monkeypatch, 1e-9, counter=fims)
+    fit_session.auto_fit = False
+    res = fit_session.fit()
+    assert res["fit_status"] == "skipped"
+    assert "merge_hint" not in res and fims == []
+
+
+def test_the_fim_is_evaluated_on_the_fits_own_problem(fit_session, monkeypatch):
+    """No pyPESTO problem is CONSTRUCTED for a diagnosis at all — it evaluates the one the optimizer
+    minimised, held on the frozen fit record. Construction used to dominate the hint's cost (0.33 s
+    of 0.70 s on schwen, k=30) and, when the working SBML had drifted, came with a full C++ build."""
+    import pypesto.petab
+    from petab.v1.C import UPPER_BOUND
+
+    from petab_mcp import identifiability as I
+
+    sess = fit_session
+    sess.fit(n_starts=2)         # warms the module, leaves an optimum, and prices the hint
+    record = sess.fit_record
+
+    builds: list[int] = []
+    original = pypesto.petab.PetabImporter.create_problem
+
+    def _counted(self, *a, **kw):
+        builds.append(1)
+        return original(self, *a, **kw)
+
+    monkeypatch.setattr(pypesto.petab.PetabImporter, "create_problem", _counted)
+    first = I.identifiability(sess)
+    second = I.identifiability(sess)
+    assert first["fim"] == second["fim"] and first["fim"]["n_estimated"] == 2
+    assert builds == []
+    # ...and a parameter-table write does NOT send it looking for a new problem: it is the FIT's
+    # geometry that is being reported, and the record still holds the problem that produced it.
+    sess.problem.parameter_df.loc["k1", UPPER_BOUND] = 1e4
+    third = I.identifiability(sess)
+    assert builds == [] and third["fim"] == first["fim"]
+    assert third["working_table_note"]            # ...and it says the working table has moved
+    assert sess.fit_record is record
+
+
+def test_a_restore_reports_the_restored_versions_own_tie(fit_session, monkeypatch):
+    """A restore did not fit, so its RESULT claims no tie — the hint belongs to the call that ran the
+    optimizer. The score read afterwards is a read of the STATE, and the state is now that version's
+    fit, so it reports THAT fit's tie: the verdict travels with the version (see
+    identifiability.fit_diagnosis_block), which is also what lets a resumed process report it."""
+    from petab_mcp import fitting
+
+    _stub_fim(monkeypatch, 1e-9)
+    sess = fit_session
+    first = sess.fit(n_starts=2)
+    assert "merge_hint" in first
+    assert "merge_hint" not in sess.restore_version(0)
+    assert fitting.fit_summary(sess, sess.engine)["merge_hint"] == first["merge_hint"]
+
+
+def test_a_restore_diagnoses_the_version_it_restored_not_the_last_fit(fit_session, monkeypatch):
+    """Two sources of one verdict must not be able to name two fits. After a restore, the in-memory
+    record still holds the LAST fit — another structure — while the restored payload carries the fit
+    HEAD now IS; the score read serves that one, so the section has to as well, or the lead is shown a
+    tie for a model it is not looking at."""
+    from petab_mcp import fitting, identifiability as I
+    from petab_mcp import operations as O
+
+    _stub_fim(monkeypatch, 1e-9)
+    sess = fit_session
+    first = sess.fit(n_starts=2)
+    O.set_model(sess, _TOY_WITH_K1.format(k1=0.5).replace(
+        "r2: B => A; k2 * B;", "r2: B => A; k2 * B * B;"), justification="a second structure")
+    sess.fit(n_starts=2)
+    assert sess.fit_record is not None
+
+    sess.restore_version(first["version"])
+    diagnosis = I.identifiability(sess)
+    assert diagnosis["available"] is True and "stale" not in diagnosis
+    assert I.merge_hint(diagnosis) == fitting.fit_summary(sess, sess.engine)["merge_hint"]
 
 
 def test_fit_writes_the_structure_flag_into_the_version_meta(fit_session):

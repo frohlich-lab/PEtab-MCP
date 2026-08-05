@@ -460,6 +460,34 @@ def test_make_changes_builds_the_first_model_via_tool(tmp_path):
     asyncio.run(go())
 
 
+def test_an_unauthored_model_gets_no_parameter_diagnosis(tmp_path):
+    """REGRESSION: the parameter diagnosis of a run that has authored nothing used to answer with a
+    confident FIM of the SEEDED skeleton — ranked candidates, a rank-deficient FIM and merges between
+    initial conditions of a model that does not exist — and paid an AMICI build (12.5 s measured on
+    blasi) for it, while the same payload said "commit a model first". It is a local expansion around
+    an optimum; with no frozen fit to expand around it reports `available: false` and computes
+    nothing."""
+    from petab_mcp import identifiability as ident_mod
+
+    mcp = _empty_model_server(tmp_path)
+    fims: list[int] = []
+    real = ident_mod._compute_fim
+    ident_mod._compute_fim = lambda record: fims.append(1) or real(record)
+
+    async def go():
+        diag = _structured(await mcp.call_tool("get_fit_diagnosis", {"sections": "all"}))
+        assert fims == []            # nothing was computed, so nothing was compiled either
+        ident = diag["identifiability"]
+        assert ident["available"] is False and "no fitted optimum" in ident["note"]
+        assert "fim" not in ident and "merge_candidates" not in ident
+        assert diag["per_observable"] == []
+
+    try:
+        asyncio.run(go())
+    finally:
+        ident_mod._compute_fim = real
+
+
 def test_an_unauthored_model_has_no_score_to_finish_on(tmp_path):
     """Regression: the seed simulates to constants, so get_fit_summary reported a finite nll and
     bic before anything was authored — which is the finish gate's whole admission test."""
@@ -574,9 +602,37 @@ def test_fit_tools(tmp_path):
         assert set(res["residual_structure"]) == {
             "flagged_observables", "low_power", "summary", "replicate_lack_of_fit"}
         assert "per_observable" not in res and "worst_points" not in res
+        # `parameters_at_bound` stays HERE, on every fit result: it is the at-bound signal the lead
+        # acts on (get_parameters carries none), and it costs ~25 bytes when empty.
+        assert "parameters_at_bound" in res
+        # ...and the tool returns the detail, in two sections, WITHOUT a second copy of the verdict.
+        # The DEFAULT is the cheap residual half — the parameter half costs several kB plus a FIM,
+        # and every payload asked for is re-sent in the agent's history on every later turn.
         diag = _structured(await mcp.call_tool("get_fit_diagnosis", {}))
-        assert diag["residual_structure"] == res["residual_structure"]
+        assert "residual_structure" not in diag and "identifiability" not in diag
         assert diag["per_observable"] and "worst_points" in diag
+        both = _structured(await mcp.call_tool("get_fit_diagnosis", {"sections": "all"}))
+        assert both["per_observable"] and both["identifiability"]["n_estimated"] >= 1
+        params_only = _structured(await mcp.call_tool(
+            "get_fit_diagnosis", {"sections": "parameters"}))
+        assert set(params_only) == {"identifiability"}
+        assert params_only["identifiability"] == both["identifiability"]
+        # a typo must not silently hand back half a diagnosis
+        bad = _structured(await mcp.call_tool("get_fit_diagnosis", {"sections": "resid"}))
+        assert bad["ok"] is False and "residuals" in bad["error"]
+        # a FIM failure must not take the residual half with it: before the consolidation these
+        # were two tools, so one could not break the other, and the judge's result.json block (the
+        # only record of whether the replicate arm fired) rides on the residual half.
+        from petab_mcp import identifiability as ident_mod
+        broken = getattr(ident_mod, "identifiability")
+        try:
+            ident_mod.identifiability = lambda *a, **kw: (_ for _ in ()).throw(
+                RuntimeError("FIM exploded"))
+            degraded = _structured(await mcp.call_tool(
+                "get_fit_diagnosis", {"sections": "all"}))
+        finally:
+            ident_mod.identifiability = broken
+        assert degraded["per_observable"] and degraded["identifiability"]["available"] is False
         # diff_versions now reports the fit delta between versions
         await mcp.call_tool("make_changes", {
             "antimony": _ONE_REACTION_ANTIMONY, "justification": "a second scored version",

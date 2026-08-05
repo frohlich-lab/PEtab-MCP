@@ -147,7 +147,7 @@ def estimated_mask(parameter_df) -> Any:
     rule (`fillna(0).astype(float) != 0`) lives in one place and cannot drift. Assumes ``ESTIMATE``
     is a column; may raise ``TypeError``/``ValueError`` on a wholly non-numeric ``estimate``
     column — callers wrap it with their own fallback (``estimated_ids`` treats that as "all free",
-    the FIM fallback and the re-author snapshot treat it as "none free").
+    the re-author snapshot as "none free").
     """
     return parameter_df[ESTIMATE].fillna(0).astype(float) != 0
 
