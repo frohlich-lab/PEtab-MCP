@@ -686,7 +686,7 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         near-optimal starts, a model-free check — rolled with those flags into a ranked
         `candidates` list. `merge_candidates` prices the ONE-SHARED-VALUE tie per pair
         (:func:`petab_mcp.identifiability.merge_candidates`); the fit result already flags the
-        cheapest such tie worth taking as `merge_hint`, and this section is where every priced
+        cheapest few such ties worth taking as `merge_hints`, and this section is where every priced
         pair, and every pair a filter refused (`n_ties_skipped`, `filters_off`), is visible.
         Remedies are MODEL edits (there is no value/`estimate` tool): drop the term, take its
         limiting (irreversible/instantaneous) form, or give a pair one shared value. Read

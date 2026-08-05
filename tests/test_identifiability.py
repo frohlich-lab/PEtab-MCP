@@ -401,11 +401,11 @@ def test_roles_are_not_computed_when_there_is_no_fim(session, monkeypatch):
     assert out["merge_candidates"] is None and calls == []
 
 
-# -- the merge HINT: the one row of this diagnosis that rides on every fit result --------------
-def test_merge_hint_is_the_cheapest_tie_bic_would_pay_for():
-    """A projection of the diagnosis, never a second statistic — so the hint and the section can
+# -- the merge HINTS: the rows of this diagnosis that ride on every fit result -------------------
+def test_merge_hints_are_the_cheapest_ties_bic_would_pay_for():
+    """A projection of the diagnosis, never a second statistic — so the hints and the section can
     never name different pairs at the same optimum."""
-    from petab_mcp.identifiability import merge_hint
+    from petab_mcp.identifiability import merge_hints
 
     fim = np.array([[1e4, 1e4 - 1e-5], [1e4 - 1e-5, 1e4]])   # a near-flat difference direction
     meta = _meta("a", "b", est_scaled=1.0)
@@ -414,18 +414,43 @@ def test_merge_hint_is_the_cheapest_tie_bic_would_pay_for():
     row = diag["merge_candidates"]["ties"][0]
     assert row["merge_improves_bic"] is True
 
-    hint = merge_hint(diag)
-    assert hint == {k: row[k] for k in ("parameters", "dnll", "dbic", "move_scaled")}
+    hints = merge_hints(diag)
+    assert hints == [{k: row[k] for k in ("parameters", "dnll", "dbic", "move_scaled")}]
     # `move_scaled` rides along because merge_candidates says the price must be read against it — a
     # near-free tie bought with a move of many decades is a flat direction, not an edit. Everything
     # else stays in the section: this is re-sent in history on every later turn.
-    assert set(hint) == {"parameters", "dnll", "dbic", "move_scaled"}
+    assert set(hints[0]) == {"parameters", "dnll", "dbic", "move_scaled"}
 
 
-def test_merge_hint_is_none_when_nothing_beats_the_charge_or_nothing_is_priced():
+def test_merge_hints_report_every_tie_the_charge_covers_up_to_the_cap():
+    """One hint per fit taught the lead to merge ONE pair per refit while the rest of the redundancy
+    sat unnamed — and the ties come in groups (blasi's jointly-redundant parameterisation), so the
+    cheapest alone is an arbitrary member of a set. Cheapest-first, and capped because this rides on
+    every fit result and is re-sent in history every later turn."""
+    import petab_mcp.identifiability as I
+
+    # Five parameters at one shared value with a near-singular FIM: every pair ties for free, so the
+    # ranked list is longer than the cap and the cap is what decides the length.
+    k = 5
+    fim = np.full((k, k), 1e4) + np.eye(k) * 1e-5
+    meta = _meta(*"abcde", est_scaled=1.0)
+    diag = _identifiability_stats(meta, fim, {}, n_data=252, top_n=10)
+    ties = diag["merge_candidates"]["ties"]
+    assert sum(1 for r in ties if r["merge_improves_bic"]) > I.MERGE_HINT_LIMIT
+
+    hints = I.merge_hints(diag)
+    assert len(hints) == I.MERGE_HINT_LIMIT == 3
+    # the section's own ranking, truncated — not a re-ranking, and never a row the charge misses
+    assert [h["parameters"] for h in hints] == \
+        [r["parameters"] for r in ties if r["merge_improves_bic"]][:I.MERGE_HINT_LIMIT]
+    assert all(h["dbic"] < 0 for h in hints)
+    assert I.merge_hints(diag, limit=1) == hints[:1]
+
+
+def test_merge_hints_are_none_when_nothing_beats_the_charge_or_nothing_is_priced():
     """ABSENCE therefore means "no cheap tie OR no FIM OR every pair filtered" — which is why the
     docs must not sell it as a certificate of parsimony."""
-    from petab_mcp.identifiability import merge_hint
+    from petab_mcp.identifiability import merge_hints
 
     # priced, but the tie costs more than the ln(n)/2 the merged-away parameter would save: two
     # well-determined parameters two decades apart
@@ -434,23 +459,23 @@ def test_merge_hint_is_none_when_nothing_beats_the_charge_or_nothing_is_priced()
     dear = _identifiability_stats(dear_meta, np.diag([4.0, 4.0]), {}, n_data=252)
     dear_ties = dear["merge_candidates"]["ties"]
     assert dear_ties and not any(r["merge_improves_bic"] for r in dear_ties)
-    assert merge_hint(dear) is None
+    assert merge_hints(dear) is None       # None, never [] — an omitted key, not an empty list
     # no FIM -> no priced tie at all
-    assert merge_hint(_identifiability_stats(_meta("a", "b"), None, {})) is None
+    assert merge_hints(_identifiability_stats(_meta("a", "b"), None, {})) is None
     # ...and every unusable shape is None rather than an exception: this is read on the fit path
-    assert merge_hint(None) is None and merge_hint({}) is None
-    assert merge_hint({"merge_candidates": {"ties": [{"parameters": ["a", "b"], "dnll": 0.0}]}}) \
+    assert merge_hints(None) is None and merge_hints({}) is None
+    assert merge_hints({"merge_candidates": {"ties": [{"parameters": ["a", "b"], "dnll": 0.0}]}}) \
         is None      # no price was computable, so no claim that it beats one
 
 
-def test_fit_merge_hint_never_raises(session, monkeypatch):
+def test_fit_merge_hints_never_raises(session, monkeypatch):
     """The fit path calls this; an advisory that can raise is an advisory that can fail a commit."""
     import petab_mcp.identifiability as I
 
     session.fit_record = _record(session)
     monkeypatch.setattr(I, "identifiability",
                         lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")))
-    assert I.fit_merge_hint(session) is None
+    assert I.fit_merge_hints(session) is None
 
 
 # -- the frozen fit record: what a diagnosis is allowed to read ---------------------------------
@@ -464,8 +489,8 @@ def test_only_a_frozen_fit_may_be_diagnosed(session):
 
     out = identifiability(session)                        # nothing fitted in this session
     assert out == {"available": False, "method": "none", "note": I.NO_OPTIMUM_NOTE}
-    assert I.fit_merge_hint(session) is None
-    assert I.stored_merge_hint(session) is None
+    assert I.fit_merge_hints(session) is None
+    assert I.stored_merge_hints(session) is None
 
 
 def test_the_diagnosed_point_is_the_fits_own_optimum_not_the_live_table(session):
@@ -507,8 +532,8 @@ def test_another_structure_in_the_working_state_is_labelled_not_re_priced(sessio
     # ...and nothing rides on the fit RESULT or the score read off another structure's state
     session.simulation = {I.STORED_DIAGNOSIS_KEY: {"structure_hash": "another-structure",
                                                   "diagnosis": out}}
-    assert I.stored_merge_hint(session) is None
-    assert I.fit_merge_hint(session) is None
+    assert I.stored_merge_hints(session) is None
+    assert I.fit_merge_hints(session) is None
 
 
 def test_a_table_only_drift_keeps_the_verdict_and_says_the_table_moved(session):
@@ -532,7 +557,7 @@ def test_a_table_only_drift_keeps_the_verdict_and_says_the_table_moved(session):
     # ...and the score read still names the tie the fit priced, since HEAD is still that fit
     session.simulation = {I.STORED_DIAGNOSIS_KEY: {
         "structure_hash": session.fit_record.structure_hash, "diagnosis": out}}
-    assert I.stored_merge_hint(session)["parameters"] == ["k1", "k2"]
+    assert [h["parameters"] for h in I.stored_merge_hints(session)] == [["k1", "k2"]]
 
 
 def test_a_process_that_ran_no_fit_serves_the_verdict_the_fit_stored(session):
@@ -550,11 +575,11 @@ def test_a_process_that_ran_no_fit_serves_the_verdict_the_fit_stored(session):
     out = identifiability(resumed)
     assert out["available"] is True and "stale" not in out
     assert out["fim"] == fitted["fim"] and out["parameters"] == fitted["parameters"]
-    assert I.stored_merge_hint(resumed)["parameters"] == ["k1", "k2"]
+    assert [h["parameters"] for h in I.stored_merge_hints(resumed)] == [["k1", "k2"]]
     # ...and a resume onto a DIFFERENT structure is labelled, not re-priced
     resumed.simulation[I.STORED_DIAGNOSIS_KEY]["structure_hash"] = "another-structure"
     assert identifiability(resumed)["stale"] is True
-    assert I.stored_merge_hint(resumed) is None
+    assert I.stored_merge_hints(resumed) is None
 
 
 #: A FIM whose DIFFERENCE direction is nearly flat: the state a merge hint exists in (the pair is

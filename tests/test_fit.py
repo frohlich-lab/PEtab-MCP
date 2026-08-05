@@ -210,14 +210,20 @@ def _stub_fim(monkeypatch, curvature, *, counter=None):
     monkeypatch.setattr(I, "_compute_fim", _fim)
 
 
-def test_a_near_free_tie_reaches_the_fit_result_as_a_merge_hint(fit_session, monkeypatch):
+def test_a_near_free_tie_reaches_the_fit_result_as_a_merge_hint_row(fit_session, monkeypatch):
+    """The result carries a LIST — every tie the BIC charge covers, capped at
+    identifiability.MERGE_HINT_LIMIT — so a lead is never shown one member of a redundant group as
+    if it were the only merge available. This toy has one priceable pair, so the list has one row.
+    """
     from petab_mcp import identifiability as I
 
     sess = fit_session
     _stub_fim(monkeypatch, 1e-9)
     res = sess.fit(n_starts=2)
 
-    hint = res["merge_hint"]
+    hints = res["merge_hints"]
+    assert len(hints) == 1
+    hint = hints[0]
     assert hint["parameters"] == ["k1", "k2"]
     assert hint["dbic"] < 0                      # the merge lowers BIC — that is why it is here
     assert hint["dnll"] is not None and hint["dnll"] < abs(hint["dbic"])
@@ -230,18 +236,18 @@ def test_a_near_free_tie_reaches_the_fit_result_as_a_merge_hint(fit_session, mon
     # analysts, the harness finish gate, the final scoring) sees the tie the lead was shown.
     from petab_mcp import fitting
 
-    assert fitting.fit_summary(sess, sess.engine)["merge_hint"] == hint
+    assert fitting.fit_summary(sess, sess.engine)["merge_hints"] == hints
 
 
-def test_no_hint_when_no_tie_beats_the_bic_charge(fit_session, monkeypatch):
+def test_no_hints_when_no_tie_beats_the_bic_charge(fit_session, monkeypatch):
     """ABSENT, not a null verdict — the same convention as noise_sigma_advice and
     nesting_advisory, so a fit with nothing to say costs nothing."""
     from petab_mcp import fitting, identifiability as I
 
     _stub_fim(monkeypatch, 1.0)
     res = fit_session.fit(n_starts=2)
-    assert "merge_hint" not in res
-    assert "merge_hint" not in fitting.fit_summary(fit_session, fit_session.engine)
+    assert "merge_hints" not in res
+    assert "merge_hints" not in fitting.fit_summary(fit_session, fit_session.engine)
     ties = I.identifiability(fit_session)["merge_candidates"]["ties"]
     assert ties and not any(r["merge_improves_bic"] for r in ties)
 
@@ -255,7 +261,7 @@ def test_a_broken_diagnosis_never_costs_the_fit(fit_session, monkeypatch):
 
     monkeypatch.setattr(I, "identifiability", _boom)
     res = fit_session.fit(n_starts=2)
-    assert res["committed"] is True and "merge_hint" not in res
+    assert res["committed"] is True and "merge_hints" not in res
     assert res["residual_structure"]["summary"]
 
 
@@ -271,14 +277,14 @@ def test_the_no_op_refit_prices_no_tie(fit_session, monkeypatch):
     _stub_fim(monkeypatch, 1e-9)
     sess = fit_session
     first = sess.fit(n_starts=2)
-    assert "merge_hint" in first
+    assert "merge_hints" in first
 
     fims: list[int] = []
     _stub_fim(monkeypatch, 1e-9, counter=fims)
     noop = sess.fit(n_starts=2)
     assert noop["no_change"] is True
-    assert "merge_hint" not in noop and fims == []
-    assert fitting.fit_summary(sess, sess.engine)["merge_hint"] == first["merge_hint"]
+    assert "merge_hints" not in noop and fims == []
+    assert fitting.fit_summary(sess, sess.engine)["merge_hints"] == first["merge_hints"]
 
 
 def test_a_re_authored_no_op_keeps_the_fits_own_verdict(fit_session, monkeypatch):
@@ -295,7 +301,7 @@ def test_a_re_authored_no_op_keeps_the_fits_own_verdict(fit_session, monkeypatch
     _stub_fim(monkeypatch, 1e-9)
     sess = fit_session
     first = sess.fit(n_starts=2)
-    assert "merge_hint" in first
+    assert "merge_hints" in first
     before = sess.sbml_hash()
 
     fims: list[int] = []
@@ -304,8 +310,8 @@ def test_a_re_authored_no_op_keeps_the_fits_own_verdict(fit_session, monkeypatch
     assert sess.sbml_hash() != before
     noop = sess.fit(n_starts=2)
 
-    assert noop["no_change"] is True and "merge_hint" not in noop
-    assert fitting.fit_summary(sess, sess.engine)["merge_hint"] == first["merge_hint"]
+    assert noop["no_change"] is True and "merge_hints" not in noop
+    assert fitting.fit_summary(sess, sess.engine)["merge_hints"] == first["merge_hints"]
     assert fims == []            # ...and nothing was re-priced to say it
     # the diagnosis stands, and says the working TABLE has moved rather than claiming another model
     diagnosis = I.identifiability(sess)
@@ -323,7 +329,7 @@ def test_a_fit_that_never_ran_prices_no_tie(fit_session, monkeypatch):
     fit_session.auto_fit = False
     res = fit_session.fit()
     assert res["fit_status"] == "skipped"
-    assert "merge_hint" not in res and fims == []
+    assert "merge_hints" not in res and fims == []
 
 
 def test_the_fim_is_evaluated_on_the_fits_own_problem(fit_session, monkeypatch):
@@ -370,9 +376,9 @@ def test_a_restore_reports_the_restored_versions_own_tie(fit_session, monkeypatc
     _stub_fim(monkeypatch, 1e-9)
     sess = fit_session
     first = sess.fit(n_starts=2)
-    assert "merge_hint" in first
-    assert "merge_hint" not in sess.restore_version(0)
-    assert fitting.fit_summary(sess, sess.engine)["merge_hint"] == first["merge_hint"]
+    assert "merge_hints" in first
+    assert "merge_hints" not in sess.restore_version(0)
+    assert fitting.fit_summary(sess, sess.engine)["merge_hints"] == first["merge_hints"]
 
 
 def test_a_restore_diagnoses_the_version_it_restored_not_the_last_fit(fit_session, monkeypatch):
@@ -394,7 +400,7 @@ def test_a_restore_diagnoses_the_version_it_restored_not_the_last_fit(fit_sessio
     sess.restore_version(first["version"])
     diagnosis = I.identifiability(sess)
     assert diagnosis["available"] is True and "stale" not in diagnosis
-    assert I.merge_hint(diagnosis) == fitting.fit_summary(sess, sess.engine)["merge_hint"]
+    assert I.merge_hints(diagnosis) == fitting.fit_summary(sess, sess.engine)["merge_hints"]
 
 
 def test_fit_writes_the_structure_flag_into_the_version_meta(fit_session):

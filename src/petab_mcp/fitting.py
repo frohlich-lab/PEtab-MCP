@@ -1301,17 +1301,17 @@ def fit_summary(session, engine) -> dict[str, Any]:
     from .data_access import residual_structure_rollup
 
     out["residual_structure"] = residual_structure_rollup(session, sims=None)
-    # The PARAMETERISATION counterpart, on the same reasoning: the cheapest tie BIC would pay for
-    # (see :func:`identifiability.merge_hint`). It rides on the fit RESULT, which only the caller
+    # The PARAMETERISATION counterpart, on the same reasoning: the cheapest ties BIC would pay for
+    # (see :func:`identifiability.merge_hints`). They ride on the fit RESULT, which only the caller
     # that RAN the fit holds — so a caller reading the score afterwards (the analysts, the harness
-    # finish gate, the final scoring) had no way to see it. Re-serving the stored hint costs
-    # nothing: `stored_merge_hint` returns it only while the working problem still IS the one that
-    # priced it, and None otherwise. ABSENT when there is none, like `noise_sigma_advice`.
-    from .identifiability import stored_merge_hint
+    # finish gate, the final scoring) had no way to see them. Re-serving the stored hints costs
+    # nothing: `stored_merge_hints` returns them only while the working problem still IS the one that
+    # priced them, and None otherwise. ABSENT when there are none, like `noise_sigma_advice`.
+    from .identifiability import stored_merge_hints
 
-    _hint = stored_merge_hint(session)
-    if _hint:
-        out["merge_hint"] = _hint
+    _hints = stored_merge_hints(session)
+    if _hints:
+        out["merge_hints"] = _hints
     # The run's OUTSTANDING invalid "does adding structure help?" experiment, if any (see
     # :mod:`nesting`): a commit that gained parameters yet fit WORSE than its parent, which for a
     # nested model is impossible. Sticky across the rollback that usually follows, so the harness
@@ -1476,8 +1476,8 @@ def fit_result_block(
     ``residual_structure`` verdict the caller stashed on ``fitsim`` (see
     :func:`data_access.residual_structure_rollup`) so the agent learns whether its model's FORM is
     still incomplete without spending a separate ``get_fit_diagnosis`` call — and, on the same
-    reasoning for the model's PARAMETERISATION, the ``merge_hint`` the caller stashed there (see
-    :func:`identifiability.merge_hint`), present only when a tie is worth taking.
+    reasoning for the model's PARAMETERISATION, the ``merge_hints`` the caller stashed there (see
+    :func:`identifiability.merge_hints`), present only when a tie is worth taking.
     """
     fitsim = fitsim or {}
     fitted = fitsim.get("fitted_parameters")
@@ -1527,15 +1527,15 @@ def fit_result_block(
         # get_fit_diagnosis (issue #113).
         "residual_structure": fitsim.get("residual_structure"),
     }
-    # The cheapest parameter tie BIC would pay for (see :func:`identifiability.merge_hint`), ABSENT
-    # when there is none — like `noise_sigma_advice` and `nesting_advisory`: this rides on every fit
-    # and is re-sent in the agent's history each turn (PR #23), so it is one line only when there is
-    # something to act on. Only a real fit carries one: a restore and a de-dup no-op ran no
+    # The cheapest parameter ties BIC would pay for (see :func:`identifiability.merge_hints`), ABSENT
+    # when there are none — like `noise_sigma_advice` and `nesting_advisory`: this rides on every fit
+    # and is re-sent in the agent's history each turn (PR #23), so it is a few lines only when there
+    # is something to act on. Only a real fit carries them: a restore and a de-dup no-op ran no
     # optimizer, so they have no optimum to price a tie at, and the finish gate names any tie still
     # outstanding at the ARM step (petab_harness.prompts.FINISH_ARMED_MERGE_TMPL) instead.
-    hint = fitsim.get("merge_hint")
-    if hint:
-        block["merge_hint"] = hint
+    hints = fitsim.get("merge_hints")
+    if hints:
+        block["merge_hints"] = hints
     block.update(goodness_of_fit(nll, chi2, k, n))
     return block
 

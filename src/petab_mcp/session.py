@@ -1076,8 +1076,8 @@ class PetabSession:
         plateau-adequacy gate: ``residual_structure`` (the compact residual-structure verdict on
         whether the model's FORM is still incomplete — the sign/runs tests plus the replicate
         lack-of-fit test) and the noise-model verdict
-        (``noise_sigma_inflated``/``noise_sigma_collapsed`` + advice), plus — when there is one —
-        the ``merge_hint`` naming the cheapest parameter tie BIC would pay for. Returning them
+        (``noise_sigma_inflated``/``noise_sigma_collapsed`` + advice), plus — when there is any —
+        the ``merge_hints`` naming the cheapest parameter ties BIC would pay for. Returning them
         saves the caller a separate ``get_fit_summary``/``get_fit_diagnosis`` round-trip;
         ``get_fit_diagnosis`` remains the way to get the detail behind each verdict — the
         per-observable table and worst points, the per-parameter geometry and every priced tie —
@@ -1145,10 +1145,10 @@ class PetabSession:
             fitsim["residual_structure"] = residual_structure_rollup(self)
             fitsim["residual_flagged"] = residual_flag(fitsim["residual_structure"])
             # The PARAMETERISATION counterpart of that verdict, on the same reasoning: the cheapest
-            # parameter tie BIC would pay for, priced from the FIM at the optimum this fit just
-            # reached (see identifiability.merge_hint). Computed HERE, after
+            # parameter ties BIC would pay for, priced from the FIM at the optimum this fit just
+            # reached (see identifiability.merge_hints). Computed HERE, after
             # _auto_fit_and_improvement, because that is where the fit record it reads was frozen;
-            # None (and then absent from the result) when there is no such tie or no FIM. ONLY when
+            # None (and then absent from the result) when there is no such tie at all, or no FIM. ONLY when
             # an optimizer actually ran: with `auto_fit` off the status is "skipped", the values are
             # whatever was authored, and no record was frozen — not a point a local expansion may be
             # taken at (see identifiability.fit_record).
@@ -1160,7 +1160,7 @@ class PetabSession:
                 block = identifiability.fit_diagnosis_block(self)
                 if block:
                     fitsim[identifiability.STORED_DIAGNOSIS_KEY] = block
-                fitsim["merge_hint"] = identifiability.merge_hint((block or {}).get("diagnosis"))
+                fitsim["merge_hints"] = identifiability.merge_hints((block or {}).get("diagnosis"))
             # Is this variant actually NESTED in the version it will be compared against? Must run
             # BEFORE _snapshot_version, while provenance.current_version is still the parent. The
             # Antimony is serialized once and handed to both the check (which diffs parameter
@@ -1270,10 +1270,10 @@ class PetabSession:
         sim["residual_structure"] = structure
         # Dropped because a fit RESULT speaks for the call that produced it and this call priced
         # nothing — it did not fit. Popped rather than left alone because `self.simulation` IS the
-        # last fit's payload, hint included. `get_fit_summary` reads the STATE instead, and still
-        # reports the tie: the structure is unchanged (which is why the no-op fired), so HEAD's fit
-        # is still this structure's fit (see identifiability.stored_merge_hint).
-        sim.pop("merge_hint", None)
+        # last fit's payload, hints included. `get_fit_summary` reads the STATE instead, and still
+        # reports the ties: the structure is unchanged (which is why the no-op fired), so HEAD's fit
+        # is still this structure's fit (see identifiability.stored_merge_hints).
+        sim.pop("merge_hints", None)
         sim["n_starts"] = meta.get("n_starts")
         return {
             "committed": False, "no_change": True, "version": dup_v,

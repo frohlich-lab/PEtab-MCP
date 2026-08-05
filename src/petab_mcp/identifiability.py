@@ -15,9 +15,9 @@ The FIM is a LOCAL linearization and can understate non-identifiability for stro
 models, so the two are meant to be read together. All output is bounded (top-N pairs/directions).
 
 One verdict off that diagnosis rides on EVERY fit result instead of waiting to be asked for:
-:func:`fit_merge_hint` names the cheapest parameter tie whose cost the BIC penalty already pays
-for (see :func:`merge_hint`). It is the same computation the section reports, condensed — a tool
-called once a run cannot inform a decision made every turn.
+:func:`fit_merge_hints` names the parameter ties whose cost the BIC penalty already pays for (see
+:func:`merge_hints`). It is the same computation the section reports, condensed — a tool called
+once a run cannot inform a decision made every turn.
 
 NOTHING HERE MAY BUILD A MODEL. A diagnosis describes a fit that already happened, and the module
 that fit was compiled with already exists, so every entry point reads the frozen
@@ -585,7 +585,7 @@ def identifiability(session, *, top_n: int = 8, corr_threshold: float = 0.9) -> 
     Which source, when both exist, is decided by WHICH FIT the working state is: the record while it
     describes that structure, and otherwise the stored verdict of the structure now in place — after a
     restore that is HEAD's own fit, and reporting the last fit's geometry there instead would make the
-    section disagree with the ``merge_hint`` beside the score, which is read from the same store.
+    section disagree with the ``merge_hints`` beside the score, which are read from the same store.
     """
     record = fit_record(session)
     if record is None or is_stale(session, record):
@@ -619,30 +619,50 @@ def identifiability(session, *, top_n: int = 8, corr_threshold: float = 0.9) -> 
     return out
 
 
-def merge_hint(diagnosis: "dict[str, Any] | None") -> dict[str, Any] | None:
-    """The one tie worth reporting beside a fit's score: the cheapest ONE-SHARED-VALUE merge whose
-    ``dnll`` is below what BIC charges for the parameter it deletes — or ``None``.
+#: How many ties ride beside a fit's score. Every one shown is a merge BIC already pays for, so the
+#: cap is not about which ties qualify but about what the score line can carry: this list is re-sent
+#: in the agent's history on every later turn (PR #23). Three is what it takes to stop the caller
+#: merging PIECEMEAL — one pair per fit, a whole refit spent per deleted parameter, when the ties
+#: were priced together and could be taken together.
+MERGE_HINT_LIMIT = 3
 
-    ``diagnosis`` is an :func:`identifiability` payload, so the hint cannot say anything the
-    section does not: it IS that payload's first ``merge_candidates`` row, minus the detail. Four
-    fields, kept short because this rides on every fit result and is re-sent in the agent's history
-    every later turn: the pair, its cost, ``dbic`` (negative = the merge lowers BIC), and
-    ``move_scaled``. The last one is not decoration — :func:`merge_candidates` prices a
-    ONE-SHARED-VALUE tie and says that price must be read against the move: a hint naming a
-    near-free tie without it invites taking a merge whose parameter travels many decades, which is
-    the quadratic running off down a flat direction rather than an edit that survives a refit.
 
-    ``None`` covers every case the hint has nothing to claim in — no FIM, no priceable pair, or a
-    cheapest tie that does NOT beat the charge — so its ABSENCE is not a certificate of
-    parsimony. Only the section distinguishes those (``n_ties_skipped``, ``filters_off``).
+def merge_hints(diagnosis: "dict[str, Any] | None",
+                *, limit: int = MERGE_HINT_LIMIT) -> list[dict[str, Any]] | None:
+    """The ties worth reporting beside a fit's score: up to ``limit`` cheapest ONE-SHARED-VALUE
+    merges whose ``dnll`` is below what BIC charges for the parameter each deletes — or ``None``.
+
+    ``diagnosis`` is an :func:`identifiability` payload, so the hints cannot say anything the
+    section does not: they ARE that payload's ONE-SHARED-VALUE ``merge_candidates`` rows that beat
+    the charge, cheapest first, minus the detail. Four fields each, kept short because this rides on every fit
+    result and is re-sent in the agent's history every later turn: the pair, its cost, ``dbic``
+    (negative = the merge lowers BIC), and ``move_scaled``. The last one is not decoration —
+    :func:`merge_candidates` prices a ONE-SHARED-VALUE tie and says that price must be read against
+    the move: a hint naming a near-free tie without it invites taking a merge whose parameter
+    travels many decades, which is the quadratic running off down a flat direction rather than an
+    edit that survives a refit.
+
+    ALL of them, not just the cheapest, because one hint per fit taught the caller to merge one pair
+    per refit while the rest of the redundancy sat unnamed — and on this problem class the ties come
+    in GROUPS (blasi: a saturated model whose parameters are jointly redundant), so naming one is
+    naming an arbitrary member of a set the caller should be looking at whole.
+
+    Each price is still an INDEPENDENT one, computed for that tie alone at this optimum: the list is
+    not a menu whose ``dbic`` values add up, and two rows SHARING a parameter are one multi-way tie
+    seen twice, not two separable edits. That is the reader's to resolve — the honest thing to
+    report is every tie the charge covers, and BIC adjudicates the refit that follows.
+
+    ``None`` covers every case the list has nothing to claim in — no FIM, no priceable pair, or no
+    tie that beats the charge — so its ABSENCE is not a certificate of parsimony. Only the section
+    distinguishes those (``n_ties_skipped``, ``filters_off``).
     """
     ties = ((diagnosis or {}).get("merge_candidates") or {}).get("ties") or []
-    for row in ties:  # cheapest-first, and priced against one shared ln(n)/2, so this is the best
-        if isinstance(row, dict) and row.get("merge_improves_bic"):
-            return {"parameters": list(row.get("parameters") or ()),
-                    "dnll": row.get("dnll"), "dbic": row.get("dbic"),
-                    "move_scaled": row.get("move_scaled")}
-    return None
+    out = [{"parameters": list(row.get("parameters") or ()),
+            "dnll": row.get("dnll"), "dbic": row.get("dbic"),
+            "move_scaled": row.get("move_scaled")}
+           for row in ties  # cheapest-first, each priced against one shared ln(n)/2
+           if isinstance(row, dict) and row.get("merge_improves_bic")]
+    return out[:limit] or None
 
 
 #: Key under which a fit stashes :func:`fit_diagnosis_block` on its simulation payload. Not part of
@@ -685,10 +705,10 @@ def fit_diagnosis_block(session) -> dict[str, Any] | None:
         return None
 
 
-def fit_merge_hint(session) -> dict[str, Any] | None:
-    """:func:`merge_hint` for the fit ``session`` has just frozen, for the fit result to carry —
-    the one row of :func:`fit_diagnosis_block`'s verdict the result has room for."""
-    return merge_hint((fit_diagnosis_block(session) or {}).get("diagnosis"))
+def fit_merge_hints(session) -> list[dict[str, Any]] | None:
+    """:func:`merge_hints` for the fit ``session`` has just frozen, for the fit result to carry —
+    the rows of :func:`fit_diagnosis_block`'s verdict the result has room for."""
+    return merge_hints((fit_diagnosis_block(session) or {}).get("diagnosis"))
 
 
 def stored_diagnosis(session) -> dict[str, Any] | None:
@@ -712,17 +732,17 @@ def stored_diagnosis(session) -> dict[str, Any] | None:
     return out
 
 
-def stored_merge_hint(session) -> dict[str, Any] | None:
-    """The hint the last fit already priced, for a later READ of the same score
-    (:func:`fitting.fit_summary`) to report without pricing a second one — or ``None``.
+def stored_merge_hints(session) -> list[dict[str, Any]] | None:
+    """The hints the last fit already priced, for a later READ of the same score
+    (:func:`fitting.fit_summary`) to report without pricing them a second time — or ``None``.
 
     Read off the STORED verdict, never recomputed: the score read is the cheapest call in the run and
     the gate makes it on every finish attempt, so it must not cost a FIM. ``None`` once the STRUCTURE
-    has drifted from the fit that priced it, so a restore does not re-serve another model's tie as if
-    it were this state's — but a de-dup no-op does not drop it: HEAD is still that fit, and the score
-    read beside it is still that fit's score.
+    has drifted from the fit that priced them, so a restore does not re-serve another model's ties as
+    if they were this state's — but a de-dup no-op does not drop them: HEAD is still that fit, and the
+    score read beside it is still that fit's score.
     """
     diagnosis = stored_diagnosis(session)
     if not diagnosis.get("available") or diagnosis.get("stale"):
         return None
-    return merge_hint(diagnosis)
+    return merge_hints(diagnosis)
