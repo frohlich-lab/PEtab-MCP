@@ -648,9 +648,12 @@ def merge_hints(diagnosis: "dict[str, Any] | None",
     naming an arbitrary member of a set the caller should be looking at whole.
 
     Each price is still an INDEPENDENT one, computed for that tie alone at this optimum: the list is
-    not a menu whose ``dbic`` values add up, and two rows SHARING a parameter are one multi-way tie
-    seen twice, not two separable edits. That is the reader's to resolve — the honest thing to
-    report is every tie the charge covers, and BIC adjudicates the refit that follows.
+    not a menu whose ``dbic`` values add up. Rows sharing no parameter are separable edits and may be
+    taken together; rows SHARING one are not. What is priced is the ONE SHARED VALUE of a PAIR —
+    :func:`merge_candidates` prices ``theta_i == theta_j`` and no higher-order constraint — so tying
+    three symbols to one value is an unpriced extrapolation whose cost is not the sum of its pairs. Measured on blasi: three pairs each within 0.02 nll of free, collapsed into one
+    symbol, cost +186 bic and reintroduced lack-of-fit. Take the cheapest pair of such a group and
+    refit — the next fit prices what is left, and BIC adjudicates each step.
 
     ``None`` covers every case the list has nothing to claim in — no FIM, no priceable pair, or no
     tie that beats the charge — so its ABSENCE is not a certificate of parsimony. Only the section
