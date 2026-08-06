@@ -1163,9 +1163,24 @@ def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[st
         if data_noise is None:
             data_noise = R.sigma_difference_noise_estimate(problem, pid, fitted)
             data_noise_method = "difference"
+        # How many measurements this sigma is estimated FROM. A sigma is an ML estimate like any
+        # other, and its sampling spread is set by this count: pooled over 100 points a fitted sigma
+        # is pinned within a few percent, over 7 it can land a factor of 3 off the truth by chance
+        # alone. Any reader comparing a fitted sigma against a reference needs the count to know
+        # what a discrepancy is worth (see petab_harness.runner.scoring._reference_sigma_flag).
+        # Best-effort like every other field here: this is the ONE call in the loop that reaches
+        # into the measurement table directly, so a problem without one (or with a shape it cannot
+        # read) must cost the count, not the report. A missing count is a supported state — the
+        # judge's band falls back to its fixed tolerance — while a raise here fails the commit.
+        try:
+            rows = R._measurement_rows_for_sigma(problem, pid)
+            n_points = None if rows is None else int(len(rows))
+        except Exception:  # noqa: BLE001 - advisory metadata; never fail a fit for it
+            n_points = None
         entry = {
             "fitted": value,
             "effective_sigma": effective,
+            "n_points": n_points,
             "upper_bound_cap": R.sigma_upper_bound_cap(problem, pid, fitted_values=fitted,
                                                       data_std=data_std),
             "data_std": data_std,

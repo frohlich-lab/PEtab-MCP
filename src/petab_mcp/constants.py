@@ -232,11 +232,37 @@ REPLICATE_LOF_MAX_REPORTED_POINTS = 5
 # candidate's sigma to those instead of to a fraction of the marginal data std — the dimensionally
 # sound comparison, and the one that doesn't conflate variance the model EXPLAINS with variance it
 # can't (which is why fiedler/oliveira looked "collapsed" at 0.0004-0.0026 of the marginal std).
-# A candidate sigma is implausible when it falls outside
-# [sigma_ref / FACTOR, sigma_ref * FACTOR]. Deliberately generous: a good model that is not
-# literally the truth still has somewhat different residuals, and a sharp test (e.g. the exact
-# chi2 point-null n*s^2/s_ref^2 ~ chi2_{n-k}) rejects legitimate near-misses once n is large.
+#
+# A fitted sigma is an ML estimate, so how far from the reference it may legitimately land is set by
+# how many points it was pooled over: (fitted/reference)^2 ~ F(d_candidate, d_reference). A sigma is
+# implausible only OUTSIDE the central 1-alpha interval of that F, Bonferroni-split across the
+# sigmas tested (see petab_harness.runner.scoring._reference_sigma_flag). alpha matches the
+# replicate lack-of-fit arm's, for the same reason: this decides a run's verdict, so the tail has to
+# be one a legitimate fit essentially never lands in.
+#
+# This WIDENS a fixed tolerance factor of 3, which was the ~99% interval for a sigma with about 7
+# residual df applied to every sigma regardless of its own — far too tight on a small group
+# (brannmark's sigmaYDosR is pooled over 7 dose-response points; at its real df a ratio of 0.25 is a
+# ~1-2% event, and the fixed band called it certain gaming and discarded a run at dBIC -21.65).
+#
+# It does NOT address the other half of that miscalibration: over 100 points a ratio of 2.9 cannot
+# happen by chance, and the union with the fixed factor below still passes it, exactly as before.
+# Tightening there needs a null that admits an honest near-miss — a candidate that is not literally
+# the truth has somewhat larger residuals for reasons that are not sampling noise — which this F is
+# not. Left deliberately.
+# The floor on tolerance, and what the band falls back to where df cannot support anything sharper.
+# It is NOT a ceiling: a small group's sampling band is wider than this, and that width is what the
+# union in scoring._sigma_ratio_band uses. Keeping it means the df-aware band only ever RELAXES this
+# gate — a sigma pooled over hundreds of points has a sampling band tighter than +-20%, and applying
+# that would fail honest near-misses, whose residuals are legitimately somewhat larger than the
+# truth's for reasons that are not sampling noise.
 NOISE_SIGMA_REFERENCE_FACTOR = 3.0
+NOISE_SIGMA_BAND_ALPHA = 0.01
+# Below this many residual degrees of freedom the SAMPLING band is meaningless — with one or two,
+# nothing short of an absurd ratio is distinguishable from noise, so a band computed there is
+# measuring its own threshold rather than the model. The fixed factor above is then applied on its
+# own: the gate stays on (an absurd ratio is still absurd), it just gains no df-awareness.
+NOISE_SIGMA_BAND_MIN_DF = 3.0
 
 # -- repeated-widening backstop ---------------------------------------------
 # A parameter pinned at a bound with a flat / collinear FIM direction is UNIDENTIFIABLE, not
