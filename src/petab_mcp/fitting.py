@@ -1599,6 +1599,17 @@ def build_sim_payload_for_version(payload: dict[str, Any] | None) -> dict[str, A
     block = payload.get(STORED_DIAGNOSIS_KEY)
     if block:
         out[STORED_DIAGNOSIS_KEY] = block
+    # The NOISE-model report of this fit: which sigmas were estimated, what they came out at, and
+    # each one's data-driven cap and fraction of its observable's std. Persisted for the same reason
+    # as the diagnosis above — a later reader cannot reproduce it. Recomputing needs the fitted
+    # values AND the per-observable data spread of the fit that produced them, and the judge, which
+    # is the reader that matters, would otherwise have to RESTORE each version to see it: N restores
+    # that mutate the working state and write N entries into the run's own provenance, to answer a
+    # question the fit already answered. Small (a handful of numbers per sigma) and omitted when
+    # absent, so a key present always means a report.
+    report = payload.get("noise_sigma_report")
+    if report:
+        out["noise_sigma_report"] = report
     return out
 
 
