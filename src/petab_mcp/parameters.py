@@ -285,9 +285,15 @@ def update_parameters(problem, updates: list[dict[str, Any]]) -> dict[str, Any]:
                 df.loc[pid, col] = value
             lb = df.loc[pid, LOWER_BOUND] if LOWER_BOUND in df.columns else None
             ub = df.loc[pid, UPPER_BOUND] if UPPER_BOUND in df.columns else None
-            if lb is not None and ub is not None and float(lb) > float(ub):
+            # `>=`, not `>`: a ZERO-WIDTH box (lb == ub) is a real attempt to "pin" a value, and
+            # it used to slip through here and reach pyPESTO, which raises `lb<ub not fulfilled`
+            # — a message the compile/fit failure path then reads as an ILL-POSED ODE, sending
+            # the agent off to rewrite a model that was fine.
+            if lb is not None and ub is not None and float(lb) >= float(ub):
                 raise ParameterError(
-                    f"Parameter {pid!r}: lower bound {lb} exceeds upper bound {ub}."
+                    f"Parameter {pid!r}: lower bound {lb} is not below upper bound {ub}. A "
+                    "zero-width box does not FIX a parameter — the row stays estimate=1 and the "
+                    "fit then fails outright. Give a real interval that BRACKETS the value."
                 )
     except ParameterError:
         problem.parameter_df = snapshot

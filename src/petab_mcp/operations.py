@@ -505,7 +505,9 @@ def set_model(
                     "coefficient (e.g. on both sides), which Antimony cannot represent.",
                     issues=[i["message"] for i in conflict],
                 ) from exc
-            raise ModelUpdateError(f"Failed to parse antimony model: {exc}") from exc
+            raise ModelUpdateError(
+                f"Failed to parse antimony model: {exc}.{_antimony_parse_hint(antimony, exc)}"
+            ) from exc
         candidate.rel_path = getattr(session.problem.model, "rel_path", None) or "model.xml"
         sm = candidate.sbml_model
         # A parameter written as a reaction stoichiometry coefficient (e.g. `-> N_burst X`) is
@@ -550,6 +552,43 @@ def set_model(
 
 
 # -- public operations: parameters (justification required, references optional) --
+def _antimony_parse_hint(text: str, exc: Exception) -> str:
+    """Echo the offending SOURCE LINE, plus a likely cause when the line's shape is recognisable.
+
+    Antimony reports a line NUMBER and the unexpected token, never the line — so the agent is left
+    matching a bison tail against a model it has to re-read. 267 parse rejections in the August
+    corpus, 11 traces, 4 model families, 7 distinct tails.
+
+    Gated on the source LINE rather than the token, because token→construct is not 1:1:
+    `parameter V_init;` reports "unexpected ';'", which the token alone misdiagnoses. Hints are
+    worded "likely cause" and never as a verdict; the echo alone is useful even when none matches.
+    """
+    m = re.search(r"line (\d+)", str(exc))
+    if not m:
+        return ""
+    lines = text.split("\n")
+    i = int(m.group(1))
+    if not (1 <= i <= len(lines)):
+        return ""
+    src = lines[i - 1].strip()
+    parts = [f" line {i} reads: {src}"]
+    if re.match(r"^(param|parameter)\b", src):
+        parts.append("likely cause: `parameter`/`param` is not an Antimony keyword — a parameter "
+                     "is a plain assignment (`NN = 480;`); a comma list needs a real keyword "
+                     "(`const a = 1, b = 2;`). Keep `species`, `compartment`, `var`, `const`.")
+    elif re.search(r"^\w+\s*:.*;.*\w+\s*=", src):
+        parts.append("likely cause: a rate law is a bare expression and cannot be named — write "
+                     "`R: -> V; k_prod;`, not `R: -> V; v_prod = k_prod;`.")
+    elif re.search(r"(->|=>)", src) and re.search(r"\b\w+\s*\*\s*\w+", src.split(";")[0]):
+        parts.append("likely cause: stoichiometry is a numeric literal separated by a space, not "
+                     "a `*` — and never a parameter. A burst size belongs in the rate law: "
+                     "`r: -> V; NN*delta*I;`.")
+    elif re.match(r"^\w+\s*;", src):
+        parts.append("likely cause: a name on its own is not a declaration — use `species V;`, "
+                     "`var gamma;`, or an assignment `gamma = 0.1;`.")
+    return " ".join(parts)
+
+
 def _require_positive_for_log(problem, parameter_id: str, scale: str) -> None:
     if scale not in ("log", "log10"):
         return
@@ -562,8 +601,30 @@ def _require_positive_for_log(problem, parameter_id: str, scale: str) -> None:
             except (TypeError, ValueError):
                 continue
             if fval == fval and fval <= 0:  # not NaN and non-positive
+                # The bare rejection is the ONE mode in the August trace corpus where the agent
+                # could not recover from the message it was given: it names `nominalValue`, which
+                # no argument can set, so a run alternated this rejection with an unknown-key
+                # rejection 41 times each and spent its whole budget without a single fit. Name
+                # the exits that actually work.
+                if field == "lowerBound":
+                    hint = (" Bounds are LINEAR values, not log10 coordinates: a rate spanning "
+                            "1e-4..1e2 is lower_bound=1e-4, upper_bound=1e2 — never -4/2.")
+                else:
+                    hint = (
+                        " `nominalValue` is not settable here (allowed keys: parameter_id, "
+                        "lower_bound, upper_bound, scale) — a parameter's VALUE comes from the "
+                        "model text or the fit. An initial-condition row is created from the "
+                        "initial value the model declares AT THE MOMENT IT IS FIRST CREATED: 0 "
+                        "(or no initial value) means FIXED at 0, 1 means FIXED at 1, any other "
+                        "positive value means ESTIMATED on log10. A row already created at 0 does "
+                        "NOT re-open when you later declare a positive initial — only a species "
+                        "authored under a DIFFERENT name gets a fresh row. So either drop this "
+                        "scale entry (a species that starts empty is correctly fixed at 0), or "
+                        "author the species under a different name with a positive initial value."
+                    )
                 raise OperationError(
                     f"Cannot use {scale} scale for {parameter_id!r}: {field}={val} must be > 0."
+                    + hint
                 )
 
 

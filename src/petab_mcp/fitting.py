@@ -42,6 +42,7 @@ from .constants import (
     NOISE_SIGMA_COLLAPSE_FRACTION,
     PARAMETER_AT_BOUND_RELATIVE_TOL,
 )
+from .errors import ModelUpdateError
 from .formatting import finite_float as _flt
 from .parameters import parameter_df_to_tsv, sha16, structure_fingerprint
 
@@ -845,6 +846,20 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
         pass
 
     best = result.optimize_result.list[0]
+    # An all-starts-failed multistart leaves `x` as None. Indexing it below raises a bare
+    # TypeError, which _compile_fit_failure_message can only read as an ill-posed ODE — a
+    # confident, WRONG diagnosis that sends the agent to rewrite a structurally fine model.
+    # Caught here at the source rather than by string-matching the TypeError downstream, where
+    # any future None-indexing in the compile/fit path would inherit the same specific text.
+    if best.get("x") is None:
+        raise ModelUpdateError(
+            "the fit produced NO usable optimum: every multistart failed, so the best result "
+            "carries no parameter vector. The objective was non-finite at EVERY start — a "
+            "property of the problem, not the optimizer. Check FIRST whether an observable is "
+            "log-transformed and its simulated value can be 0 or negative at a measured time: a "
+            "species started at exactly 0 and measured at t=0 gives log10(0) = -inf and poisons "
+            "every start. Otherwise look for a non-integrable or stiff ODE."
+        )
     df = session.problem.parameter_df
     nllh = float(best["fval"])
     # Record and write back only the ESTIMATED parameters. pyPESTO's `x`/`x_names` include the

@@ -31,9 +31,10 @@ the real work lives in the ``session`` / ``operations`` / ``fitting`` / ``data_a
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
 
 from fastmcp import FastMCP
+from pydantic import BaseModel, ConfigDict, Field
 from petab.v1.C import OBSERVABLE_ID, SIMULATION_CONDITION_ID
 
 from . import data_access as data_mod
@@ -78,6 +79,58 @@ _SKILLS_INSTRUCTION = (
     " New to this server? Call `list_skills` and read "
     "`get_skill('petab-model-building')` for the full tool-usage workflow."
 )
+
+
+# A TYPED model rather than `dict[str, Any]`, because the JSON schema is the only part of a tool
+# contract a model is actually constrained by — a docstring is prose it may or may not read.
+# Advertised as a bare dict this argument named NONE of its keys, and across the August benchmark
+# runs 527 of 889 `make_changes` calls were rejected for guessing them: `id` for `parameter_id`
+# (484 on its own, the single largest rejection class), plus `lowerBound`, `estimate`,
+# `nominalValue`, `parameterScale`. Five unrelated model families made the same class of mistake,
+# which is the signature of a contract problem rather than a model one.
+#
+# `extra="forbid"` is load-bearing twice: it puts `additionalProperties: false` in the schema (so
+# tool-calling is constrained up front), and it preserves the existing behaviour that a misspelled
+# key is an ERROR rather than silently ignored. `_normalize_parameter_changes` still re-checks all
+# of it server-side — this type narrows what a model is likely to send, it does not replace
+# validation.
+#
+# Keep the class docstring SHORT and model-facing: FastMCP copies it into the tool's JSON schema
+# as this argument's description, so maintainer rationale belongs here in a comment, not there.
+class ParameterChange(BaseModel):
+    """One parameter's estimation bounds and/or scale."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    parameter_id: str = Field(
+        description="id of the parameter to change — an existing row, or one this same call's "
+                    "`antimony` introduces."
+    )
+    lower_bound: float | None = Field(
+        default=None, description="new lower bound of the estimation interval."
+    )
+    upper_bound: float | None = Field(
+        default=None, description="new upper bound of the estimation interval."
+    )
+    scale: Literal["lin", "log", "log10"] | None = Field(
+        default=None, description="PEtab parameterScale. Exactly these three values."
+    )
+
+
+def _parameter_entries(parameters: Any) -> list[dict[str, Any]] | None:
+    """Normalize the tool argument to the plain dicts ``operations`` expects.
+
+    FastMCP hands back :class:`ParameterChange` instances, but tolerate dicts too so a direct
+    in-process caller (the tests, another tool) is not forced to construct the model.
+    ``exclude_none`` keeps "field omitted" and "field sent as null" indistinguishable, which is
+    what the downstream validator already assumes.
+    """
+    if parameters is None:
+        return None
+    return [
+        p.model_dump(exclude_none=True) if isinstance(p, ParameterChange) else p
+        for p in parameters
+    ]
 
 
 class _Ctx:
@@ -344,7 +397,7 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
     def make_changes(
         justification: str,
         antimony: str | None = None,
-        parameters: list[dict[str, Any]] | None = None,
+        parameters: list[ParameterChange] | None = None,
         references: list[str] | None = None,
         n_starts: int | None = None,
     ) -> dict[str, Any]:
@@ -394,6 +447,9 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         Every fitted version is kept and the run is scored on the best-bic one regardless, so
         re-authoring an earlier structure to go back only recompiles and refits to the same result.
         """
+        # To plain dicts before anything else, so every path below (including the rejection
+        # payload) sees the same shape the operations layer does.
+        parameters = _parameter_entries(parameters)
         if not antimony and not parameters:
             return ctx.reject_operation(
                 "make_changes",
@@ -614,6 +670,32 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         `{columns, rows, row_count, truncated}` (capped at `max_rows`, default 50 to keep
         results compact — raise it explicitly for a full dump; prefer aggregations); the
         `simulations` dataframe is generated on demand if no commit has produced one yet.
+
+        TWO NAMING CONVENTIONS, and they do not mix. The PEtab tables keep PEtab's camelCase:
+        `measurements(observableId, simulationConditionId, preequilibrationConditionId, time,
+        measurement, observableParameters, noiseParameters)`, `conditions(conditionId, ...)`,
+        `observables(observableId, ...)`, `parameters(parameterId, ...)`. The DERIVED tables use
+        snake_case: `simulations(observable_id, condition_id, time, ...)` and
+        `optimization_starts` / `optimization_trace`. The measurement table's condition column is
+        `simulationConditionId` — NOT `conditionId` (the `conditions` table's own key) and NOT
+        `condition_id` (that is `simulations`). Do not carry a column list from a `simulations`
+        query onto `measurements`, or the reverse.
+
+        ONE ROW PER GROUP: use DuckDB's aggregates, do not hand-roll them. In a GROUP BY query
+        every selected expression must be an aggregate or a grouping key — a window function
+        (`... OVER (...)`) is per-row and cannot appear there, and aggregates cannot nest.
+        `ORDER BY` goes INSIDE the aggregate's parentheses (`first(measurement ORDER BY time)`);
+        `FILTER` goes OUTSIDE, after the closing paren (`count(*) FILTER (WHERE time > 0)`).
+        Neither may be hung on a scalar function like `log10`.
+          value at earliest / latest time  `arg_min(measurement, time)` / `arg_max(measurement, time)`
+          peak and the time it occurs      `max(measurement)` / `arg_max(time, measurement)`
+          trend                            `regr_slope(measurement, time)`, `corr(time, measurement)`
+          spread                           `stddev_samp` / `var_samp` (there is no `var`)
+          `SELECT observableId, simulationConditionId, count(*) AS n,
+                  arg_min(measurement, time) AS y_at_t0, arg_max(measurement, time) AS y_at_tend,
+                  max(measurement) AS y_peak, arg_max(time, measurement) AS t_peak,
+                  regr_slope(measurement, time) AS slope
+             FROM measurements GROUP BY observableId, simulationConditionId`
 
         Compute whatever residual breakdown you
         need in SQL. Filter to `residual_weighted IS NOT NULL` for residual stats (rows with
