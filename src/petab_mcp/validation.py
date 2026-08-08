@@ -24,6 +24,9 @@ import petab.v1 as petab
 from petab.v1.C import CONDITION_ID, CONDITION_NAME, ESTIMATE
 
 from .reconcile import (
+    _ast_names,
+    condition_column_symbols,
+    noise_sigma_ids,
     _model_math_names,
     _reaction_species,
     has_dynamics,
@@ -113,10 +116,11 @@ def _sbml_consistency_issues(problem) -> list[dict[str, Any]]:
 
 
 def _observation_model_reuse_issues(problem) -> list[dict[str, Any]]:
-    """Hard-error on a model that reuses a fixed observation-model parameter (an
-    observable-scaling factor or noise sigma, resolved through the observable/noise formulas or
-    their measurement-level ``observableParameters``/``noiseParameters`` overrides) as a
-    mechanistic rate constant inside a reaction, rule, or initial assignment.
+    """Flag a model that reuses a fixed observation-model parameter (an observable-scaling factor
+    or noise sigma, resolved through the observable/noise formulas or their measurement-level
+    ``observableParameters``/``noiseParameters`` overrides) as a mechanistic quantity inside a
+    reaction, rule, or initial assignment. Three-way outcome, see below: a hard error for a NOISE
+    SIGMA or for a symbol acting AS a reaction's rate constant, a warning for legitimate reuse.
 
     A benchmark sweep caught exactly this: two independent runs wired the Brannmark scenario's
     four fixed observable-scaling factors directly into their reaction rate laws instead of
@@ -125,26 +129,104 @@ def _observation_model_reuse_issues(problem) -> list[dict[str, Any]]:
     (with help from noise sigmas inflated 20-60x). Gate this at commit time rather than relying
     on an agent to notice: reusing one of these symbols does not "cost" anything on its own
     metrics, so nothing else in the pipeline would catch it.
+
+    Blanket rejection is wrong, because a published problem legitimately reuses these symbols: the
+    SAME physical quantity is often both a model quantity and the observable's normaliser.
+    Bachmann_MSB2011 is the reference case — the receptor/SHP1/STAT5 total abundances
+    (``init_EpoRJAK2``, ``init_SHP1``, ``init_STAT5``) set the initial conditions AND divide the
+    relative pEpoR/pJAK2/tSTAT5 observables, and the CIS/SOCS3 equilibrium constants (``CISEqc``,
+    ``SOCS3Eqc``, ``CISRNAEqc``, ``SOCS3RNAEqc``) scale both the species and their readouts. Making
+    that an error rejects the published mechanism itself, and with it any agent that finds it.
+
+    Restricting the exemption to INITIAL ASSIGNMENTS does not work either: all seven of bachmann's
+    symbols also appear in rate laws, and two of them (``CISRNAEqc``, ``SOCS3RNAEqc``) have no
+    initial assignment at all. Nor does "denominator only" — ``CISEqc`` and ``CISRNAEqc`` appear as
+    numerator factors. What actually separates the two cases is the symbol's ROLE:
+
+    * **noise sigma anywhere in model math** -> error. A sigma has no legitimate mechanistic role,
+      and reusing one only ever buys a looser noise model — the half of the Brannmark failure that
+      masks a wrong mechanism.
+    * **observable-side symbol in a rate law that declares NO parameter of its own** -> error. The
+      symbol is standing in for that reaction's rate constant, which is exactly the Brannmark cheat
+      (``IR => IRp; cell * IR * k_IRP_1Step``) and exactly what "dodging a real kinetic parameter"
+      means.
+    * **anything else** -> warning. A legitimate reuse always sits ALONGSIDE a dedicated rate
+      constant (``CISRNAEqc * CISRNATurn * npSTAT5 * ActD / init_STAT5``), or is confined to an
+      initial assignment or rule.
     """
     sm = problem.model.sbml_model
-    reused = (observation_model_symbols(problem) & parameter_ids(sm)) & _model_math_names(sm)
-    return [
+    obs_symbols = observation_model_symbols(problem)
+    in_math = (obs_symbols & parameter_ids(sm)) & _model_math_names(sm)
+    sigmas = in_math & noise_sigma_ids(problem)
+
+    # A reaction whose rate law uses an observation-model parameter but declares NO dedicated
+    # parameter of its own is the Brannmark cheat: the observation symbol is standing in for the
+    # rate constant. A legitimate reuse always sits ALONGSIDE a real kinetic parameter — every
+    # bachmann rate law that normalises by an abundance still has its own turnover/activation
+    # constant (`CISRNAEqc * CISRNATurn * npSTAT5 * ActD / init_STAT5`; `Epo * EpoRJAK2 *
+    # JAK2ActEpo / (SOCS3 * SOCS3Inh / SOCS3Eqc + 1)`).
+    # Hoisted: parameter_ids walks every SBML parameter, and validate_problem runs on every edit.
+    all_params = parameter_ids(sm)
+    # A condition column is an experimental INPUT (a dose, a switch), not a rate constant the model
+    # supplies, so it must not count as the reaction's "own" parameter — otherwise the Brannmark
+    # cheat escapes simply by multiplying the dose column in: `IR => IRp; cell*IR*k_IRP_1Step*insulin_level`.
+    own_params = all_params - obs_symbols - condition_column_symbols(problem)
+    rate_constant_role: set[str] = set()
+    for i in range(sm.getNumReactions()):
+        kl = sm.getReaction(i).getKineticLaw()
+        if kl is None:
+            continue
+        names = _ast_names(kl.getMath())
+        used_obs = names & in_math
+        if not used_obs:
+            continue
+        if not names & own_params:
+            rate_constant_role |= used_obs
+    issues = [
         {
             "level": "error",
             "message": (
-                f"'{pid}' is a fixed observation-model parameter (an observable-scaling factor "
-                "or noise sigma, resolved through the measurement table's observableParameters/"
-                "noiseParameters or an observable/noise formula) but is ALSO used inside a "
-                "reaction, rule, or initial assignment. Reusing it lets the model dodge "
-                "introducing a real kinetic parameter, and reusing/inflating a noise sigma can "
-                "mask a wrong mechanism behind an artificially loose noise model instead of "
+                f"'{pid}' is a NOISE SIGMA (resolved through an observable's noiseFormula or the "
+                "measurement table's noiseParameters) but is ALSO used inside a reaction, rule, or "
+                "initial assignment. Reusing a sigma as a mechanistic quantity lets a wrong "
+                "mechanism hide behind an artificially loose noise model instead of the sigma "
                 "being estimated as what it actually is. Introduce a SEPARATE, dedicated "
                 "parameter for the reaction instead."
             ),
             "check": "observation_model_reuse",
         }
-        for pid in sorted(reused)
+        for pid in sorted(sigmas)
     ]
+    issues += [
+        {
+            "level": "error",
+            "message": (
+                f"'{pid}' is an observation-model parameter (an observable scaling/offset) and is "
+                "used in a reaction whose rate law declares NO parameter of its own — so it is "
+                "acting AS that reaction's rate constant. Reusing an observation parameter this way "
+                "lets the model dodge introducing a real kinetic parameter. Normalising by such a "
+                "quantity alongside a dedicated rate constant is fine; standing in for one is not. "
+                "Introduce a SEPARATE, dedicated parameter for the reaction."
+            ),
+            "check": "observation_model_reuse",
+        }
+        for pid in sorted(rate_constant_role - sigmas)
+    ]
+    issues += [
+        {
+            "level": "warning",
+            "message": (
+                f"'{pid}' is an observable-scaling/offset parameter that is also used inside a "
+                "reaction, rule, or initial assignment. That is legitimate when it is genuinely "
+                "the same physical quantity on both sides (a total abundance that sets an initial "
+                "condition and normalises a relative readout). It is NOT legitimate as a way to "
+                "avoid introducing a real kinetic parameter — check that this reuse is the former."
+            ),
+            "check": "observation_model_reuse",
+        }
+        for pid in sorted(in_math - sigmas - rate_constant_role)
+    ]
+    return issues
 
 
 def _fixed_constant_role_issues(problem, protected_fixed_ids) -> list[dict[str, Any]]:
@@ -248,6 +330,21 @@ def _unused_condition_target_issues(problem) -> list[dict[str, Any]]:
     used = _model_math_names(sm) | _reaction_species(sm) | observation_model_symbols(problem)
     model_entities = parameter_ids(sm) | species_ids(sm)
     targets = {str(c) for c in cdf.columns} - {CONDITION_ID, CONDITION_NAME}
+    # A column with a SINGLE distinct value across every condition encodes no experimental design:
+    # it cannot make one condition differ from another, so "the conditions don't perturb the model"
+    # simply does not apply and requiring the model to consume it is wrong. Published exports carry
+    # such columns — raimundez's METinh_level is 0 in all 174 conditions because the paper used MET
+    # inhibition for a PREDICTION validated against separate data, not for calibration. Forcing the
+    # agent to wire one in buys a submodule that can never carry flux. petab lint still requires the
+    # target to EXIST as a model entity; this only drops the requirement that it be USED.
+    # Requires MORE THAN ONE condition: with a single condition every column is trivially
+    # constant, yet the column is still the only thing setting that value, so the model should
+    # consume it. The exemption is about a column that cannot DISTINGUISH conditions.
+    if len(cdf) > 1:
+        targets -= {
+            tgt for tgt in targets
+            if tgt in cdf.columns and cdf[tgt].nunique(dropna=False) <= 1
+        }
 
     return [
         {
@@ -473,7 +570,10 @@ def validate_problem(problem, protected_fixed_ids=None) -> dict[str, Any]:
 
     reuse_issues = _observation_model_reuse_issues(problem)
     issues += reuse_issues
-    n_errors += len(reuse_issues)
+    # Only the noise-sigma half is an error; observable-side reuse is a legitimate warning.
+    reuse_errors = [i for i in reuse_issues if i["level"] == "error"]
+    n_errors += len(reuse_errors)
+    n_warnings += sum(1 for i in reuse_issues if i["level"] == "warning")
 
     role_issues = _fixed_constant_role_issues(problem, protected_fixed_ids)
     issues += role_issues
@@ -486,7 +586,7 @@ def validate_problem(problem, protected_fixed_ids=None) -> dict[str, Any]:
     return {
         "valid": (
             (not has_errors) and sbml_errors == 0
-            and not reuse_issues and not role_issues and not condition_issues
+            and not reuse_errors and not role_issues and not condition_issues
         ),
         "n_errors": n_errors,
         "n_warnings": n_warnings,

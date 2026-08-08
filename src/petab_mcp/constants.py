@@ -115,6 +115,17 @@ NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD = 0.75
 # so both agree on "collapsed".
 NOISE_SIGMA_COLLAPSE_FRACTION = 0.01
 
+#: Fewest measurements an observable group needs before its sigma is judged against the data
+#: SPREAD at all. Below this the ratio carries no information: `sigma_data_std` is a POPULATION
+#: std (``ddof=0``), which is the same functional form as the Gaussian MLE for sigma, so as soon as
+#: the model reproduces the group's mean and resolves nothing within it the two are equal BY
+#: CONSTRUCTION and the fraction is 1. bachmann is the case — four of its absolute readouts have
+#: n=3 and every one lands on fraction 0.999994, four different observables agreeing to six
+#: significant figures because it is an identity, not a measurement. The model-free Rice estimator
+#: puts those same four at 0.67-1.09, i.e. unremarkable. Below this many points the gate reports
+#: `status: "unknown"` rather than a verdict it cannot support.
+NOISE_SIGMA_MIN_POINTS = 5
+
 # -- replicate (pure-error) noise floor (REPORTED, never gating) --------------
 # Where measurements REPEAT at the same (observable, condition, time), their scatter is pure noise —
 # an UNBIASED, model-free floor (reconcile.sigma_replicate_noise_estimate), reported per sigma as

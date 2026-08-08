@@ -1311,22 +1311,34 @@ def _observable_amplitude(problem, observable_id: str, noise_expr):
         # identity matching silently no-ops the substitution and reports "no amplitude" for every
         # observable that has one.
         obs_expr = sp.sympify(str(odf.loc[observable_id, OBSERVABLE_FORMULA]))
-        mdf = getattr(problem, "measurement_df", None)
-        if mdf is None or OBSERVABLE_PARAMETERS not in mdf.columns:
-            return None
-        cells = set(mdf.loc[mdf[OBSERVABLE_ID] == observable_id,
-                            OBSERVABLE_PARAMETERS].dropna().astype(str))
-        if len(cells) != 1:
-            return None
-        from petab.v1 import split_parameter_replacement_list
-        by_name = {str(s): s for s in obs_expr.free_symbols}
-        obs_expr = obs_expr.subs({
-            by_name[key]: (sp.Symbol(str(v), real=True) if isinstance(v, str) else v)
-            for i, v in enumerate(split_parameter_replacement_list(next(iter(cells))))
-            if (key := f"observableParameter{i + 1}_{observable_id}") in by_name})
-        obs_names = {str(s) for s in obs_expr.free_symbols}
-        if str(amplitude) not in obs_names:
-            return None
+        if str(amplitude) not in {str(s) for s in obs_expr.free_symbols}:
+            # Not named DIRECTLY by the formula, so it can only reach it through an
+            # `observableParameter{i}_` placeholder resolved from the measurement table (fiedler's
+            # per-gel gain). Resolve and look again.
+            #
+            # The direct case above is not hypothetical: `materialize` FLATTENS any benchmark whose
+            # per-measurement overrides vary within an observable, and flattening writes the
+            # override into the formula and drops the placeholder. isensee's Western readout is
+            # exactly that — `s_pRII_Western * (2*RIIp_2 + ...)` against a noise of
+            # `s_pRII_Western * rho_pRII_Western`, an assay gain on both sides by this function's
+            # own definition. Requiring the placeholder made it undetectable, so the gain was
+            # neither divided out nor carried, and the published sd was judged in a coordinate
+            # matching neither convention.
+            mdf = getattr(problem, "measurement_df", None)
+            if mdf is None or OBSERVABLE_PARAMETERS not in mdf.columns:
+                return None
+            cells = set(mdf.loc[mdf[OBSERVABLE_ID] == observable_id,
+                                OBSERVABLE_PARAMETERS].dropna().astype(str))
+            if len(cells) != 1:
+                return None
+            from petab.v1 import split_parameter_replacement_list
+            by_name = {str(s): s for s in obs_expr.free_symbols}
+            obs_expr = obs_expr.subs({
+                by_name[key]: (sp.Symbol(str(v), real=True) if isinstance(v, str) else v)
+                for i, v in enumerate(split_parameter_replacement_list(next(iter(cells))))
+                if (key := f"observableParameter{i + 1}_{observable_id}") in by_name})
+            if str(amplitude) not in {str(s) for s in obs_expr.free_symbols}:
+                return None
         if str(amplitude) in {str(s) for s in sp.simplify(obs_expr / amplitude).free_symbols}:
             return None
         return amplitude
@@ -1631,7 +1643,13 @@ def prune_orphans(problem) -> dict[str, list[str]]:
     keep = table_referenced_symbols(problem)
     # a species is "used" if it participates in a reaction or is referenced by any
     # model math (kinetic law, rule, initial assignment) — not only reactions.
-    used_species = _reaction_species(sm) | (_model_math_names(sm) & species_ids(sm))
+    # A rule TARGET is never an orphan, for species exactly as for parameters below: deleting it
+    # leaves the rule pointing at a deleted id (invalid SBML) and the whole edit is rejected.
+    # `_model_math_names` walks rule MATH only, so a forcing species driven by a rule that nothing
+    # reads -- the `input_species` shape -- would otherwise be removed out from under its own rule.
+    rule_targets = {sm.getRule(i).getVariable() for i in range(sm.getNumRules())}
+    used_species = (_reaction_species(sm) | (_model_math_names(sm) & species_ids(sm))
+                    | rule_targets)
 
     removed_species: list[str] = []
     for sid in list(species_ids(sm)):
@@ -1648,7 +1666,15 @@ def prune_orphans(problem) -> dict[str, list[str]]:
         sm.removeSpecies(sid)
         removed_species.append(sid)
 
-    keep_names = keep | _model_math_names(sm) | _reaction_species(sm)
+    # A rule's TARGET is assigned by that rule, so it is never an orphan even when nothing reads
+    # it: removing it would leave the rule pointing at a deleted id, which is invalid SBML
+    # ("the value of an <assignmentRule>'s 'variable' must be the identifier of an existing
+    # <compartment>, <species>, <parameter> …") and the whole edit is then rejected. Published
+    # models really do carry such write-only quantities — an inert control compound's gated input
+    # (isensee's `fourABnOH`), or a pass-through alias of a condition column (raimundez's
+    # `FM`/`HM`) — and those rules are also what makes their condition columns count as USED.
+    # `_model_math_names` only walks rule MATH (the right-hand side), so add the targets here.
+    keep_names = keep | _model_math_names(sm) | _reaction_species(sm) | rule_targets
     # keep IC params of remaining species
     for i in range(sm.getNumSpecies()):
         ic = _ic_symbol_for(sm, sm.getSpecies(i).getId())

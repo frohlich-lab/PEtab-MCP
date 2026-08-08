@@ -37,6 +37,7 @@ from petab.v1.C import (
 
 from . import reconcile as _reconcile
 from .constants import (
+    NOISE_SIGMA_MIN_POINTS,
     NEW_BEST_MIN_DELTA_BIC,
     NOISE_SIGMA_COLLAPSE_FRACTION,
     PARAMETER_AT_BOUND_RELATIVE_TOL,
@@ -109,6 +110,28 @@ def _default_fit_workers() -> int:
 # PETAB_MCP_FIT_N_WORKERS onto this server — so the harness's budget matches the real parallelism
 # whether the value comes from the shared default or the export.
 FIT_N_WORKERS = _env_int("PETAB_MCP_FIT_N_WORKERS", _default_fit_workers())
+
+# AMICI absolute integration tolerance for every candidate fit (env PETAB_MCP_FIT_AMICI_ATOL).
+# AMICI's stock 1e-16 is tight enough that on a stiff model the forward-sensitivity solve cannot
+# make progress: the objective VALUE evaluates, the GRADIENT comes back non-finite, and Fides
+# reads +INF at iteration 0 — a start that reports as failed when really the solver could not
+# differentiate there. petab_harness/fit_budget.py keeps the SAME default in FIT_AMICI_ATOL and
+# applies it to the REFERENCE fit; both sides must use one tolerance or the reference and the
+# candidate are optimized against different objectives and ΔBIC stops being a comparison. See
+# that constant for the lucarelli measurement that set the value.
+FIT_AMICI_ATOL = _env_float("PETAB_MCP_FIT_AMICI_ATOL", 1e-10)
+
+
+def _apply_amici_solver_defaults(problem) -> None:
+    """Set :data:`FIT_AMICI_ATOL` on ``problem``'s AMICI solver, in place. Best-effort: a problem
+    whose objective exposes no AMICI solver is left alone rather than raising, since a missing
+    tolerance degrades a fit while a raise here would break every fit path at once. Mirrors
+    ``petab_harness.fit_budget.apply_amici_solver_defaults``."""
+    solver = getattr(getattr(problem, "objective", None), "amici_solver", None)
+    setter = (getattr(solver, "set_absolute_tolerance", None)
+              or getattr(solver, "setAbsoluteTolerance", None))
+    if setter is not None:
+        setter(FIT_AMICI_ATOL)
 
 # The multistart's RNG seed and optimizer. Named constants rather than parameters: the fit's own
 # log line hard-codes "optimizer=fides", so a signature knob would be configurable in name only.
@@ -414,6 +437,8 @@ def estimation_problem(session, engine):
         importer = pypesto.petab.PetabImporter(session.problem, **importer_kwargs)
         problem = importer.create_problem()
         inner_scales = {}
+    # After the branch, so the hierarchical and joint objectives are integrated identically.
+    _apply_amici_solver_defaults(problem)
     if first_build:
         session.compile_seconds += time.perf_counter() - t0
         session.n_compiles += 1
@@ -1167,25 +1192,44 @@ def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[st
         # other, and its sampling spread is set by this count: pooled over 100 points a fitted sigma
         # is pinned within a few percent, over 7 it can land a factor of 3 off the truth by chance
         # alone. Any reader comparing a fitted sigma against a reference needs the count to know
-        # what a discrepancy is worth (see petab_harness.runner.scoring._reference_sigma_flag).
+        # what a discrepancy is worth (see petab_harness.runner.scoring._reference_sigma_flag), and
+        # below NOISE_SIGMA_MIN_POINTS the LOCAL verdict is withheld as degenerate too (see
+        # upper_bound_cap).
+        #
         # Best-effort like every other field here: this is the ONE call in the loop that reaches
         # into the measurement table directly, so a problem without one (or with a shape it cannot
         # read) must cost the count, not the report. A missing count is a supported state — the
         # judge's band falls back to its fixed tolerance — while a raise here fails the commit.
+        #
+        # ``too_few`` is tracked separately rather than derived from ``n_points``, because the two
+        # consumers have to read a missing count differently.
+        # ``_measurement_rows_for_sigma`` returns None both for "no rows back this sigma" and for
+        # "no measurement table at all", and the REPORTED count stays None for either — 0 would
+        # assert a group size we do not have. The local verdict, though, is degenerate whenever no
+        # rows were found, so it is withheld there; an EXCEPTION leaves it exactly as it was, since
+        # an unreadable count is no evidence about the group's size.
         try:
             rows = R._measurement_rows_for_sigma(problem, pid)
             n_points = None if rows is None else int(len(rows))
+            too_few = n_points is None or n_points < NOISE_SIGMA_MIN_POINTS
         except Exception:  # noqa: BLE001 - advisory metadata; never fail a fit for it
             n_points = None
+            too_few = False
         entry = {
             "fitted": value,
             "effective_sigma": effective,
             "n_points": n_points,
-            "upper_bound_cap": R.sigma_upper_bound_cap(problem, pid, fitted_values=fitted,
-                                                      data_std=data_std),
+            # Both verdict inputs are withheld when the group is too small: _entry_inflated keys
+            # on upper_bound_cap and _entry_collapsed on fraction_of_data_std, so nulling only one
+            # would leave the other still flagging on a degenerate comparison. data_std and the
+            # Rice estimate below are still REPORTED — the numbers are informative, the verdict
+            # is not. The real bound cap (reconcile.sigma_upper_bound_cap, used when bounds are
+            # actually set) is untouched by this; only the gate's view of it is.
+            "upper_bound_cap": None if too_few else R.sigma_upper_bound_cap(
+                problem, pid, fitted_values=fitted, data_std=data_std),
             "data_std": data_std,
-            "fraction_of_data_std": (effective / data_std)
-                                    if (data_std and effective is not None) else None,
+            "fraction_of_data_std": None if too_few else (
+                (effective / data_std) if (data_std and effective is not None) else None),
             "data_noise_estimate": data_noise,
             "data_noise_method": data_noise_method,
             "fitted_over_data_noise": (effective / data_noise)
@@ -1195,7 +1239,9 @@ def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[st
         # collapsed use (single source of truth, so the agent-facing status can't drift from the
         # gate that fails the run). "unknown" when the observable's std can't be computed (data_std
         # None -> nothing to assess against): report that honestly rather than a reassuring "ok".
-        if data_std is None or effective is None:
+        if too_few:
+            entry["status"] = "unknown"
+        elif data_std is None or effective is None:
             # Either half missing means there is no dimensionally valid comparison to make: no std
             # to judge against, or a noiseFormula that would not reduce to a number. Both are
             # "unknown", NOT the reassuring "ok" the predicates below would fall through to — they
