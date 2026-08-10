@@ -951,6 +951,19 @@ class PetabSession:
                     f"best BIC improved by only {bic_gain_over_window:.3g} over the last "
                     f"{PLATEAU_WINDOW} ops (< {PLATEAU_MIN_BIC_GAIN})."
                 )
+            # There is deliberately NO hard cap on total fitted ops. One was added and removed: it
+            # is not redundant with the streak cap above (that resets on every new best, so 73 of
+            # 333 clean runs in the Aug 8-10 sweep passed 20 fits anyway, consuming 43% of all fits,
+            # and the streak cap accounted for only 15 of them) -- but it bought compute at the cost
+            # of ~1.8% of passes, and it charged that cost UNEVENLY, against exactly the models that
+            # explore longer. On a benchmark whose purpose is measuring capability that is the wrong
+            # trade: it is a harness artifact biasing the comparison, in the same family as the
+            # reconcile bugs and the sigma gate. The compute case was also weaker than it looked --
+            # of the 32 passers among those 73 long runs only ~4 crossed the bar after fit 20, so
+            # the reclaimed fits were mostly runs that had already won and were harmlessly polishing.
+            # If cost ever needs bounding, bound it in the SWEEP (wall time, task count), not in the
+            # scoring path where it silently changes what is measured.
+            #
             # A stall with NO checkpoint at all is a different diagnosis: nothing has ever
             # produced a usable score, so the fits are failing to evaluate rather than the
             # model's form failing to fit. Telling the agent to change the STRUCTURE there
@@ -1168,19 +1181,6 @@ class PetabSession:
             child_model_ant = self.model.to_antimony()
             nesting_advisory = self._check_nesting_vs_parent(
                 fitsim, child_model_ant, is_new_best=bool(improvement.get("is_new_best")))
-            version = self._snapshot_version(
-                model_ant=child_model_ant,
-                meta={# Recorded so a later fit can tell whether it would search HARDER than this
-                      # one did (see `_fit_dedup`) — the structure/setup hashes both ignore it.
-                      "n_starts": fitsim.get("n_starts"),
-                      "fit_status": fitsim.get("status"), "neg_log_likelihood": nllh,
-                      "chi2": fitsim.get("chi2"), "chi2_gof_pvalue": gof_pvalue,
-                      "residual_flagged": fitsim["residual_flagged"],
-                      "nesting_advisory": nesting_advisory,
-                      "fitted_parameters": fitsim.get("fitted_parameters"), **improvement},
-                sim=fitsim,
-            )
-            fitsim["version"] = version
             # Noise-sigma report + flags computed ONCE here and stashed on fitsim, so this event,
             # the checkpoint update in record_fit_progress (below) and the returned fit block all
             # read the SAME verdict instead of recomputing (or disagreeing).
@@ -1191,8 +1191,40 @@ class PetabSession:
             # the event, in the best-BIC checkpoint and in the plateau-adequacy gate, disabling the
             # implausible-sigma checks entirely. The unit tests inject the key into a synthetic
             # fitsim and call record_fit_progress directly, so they never caught it.
+            #
+            # Computed BEFORE the snapshot so it can go INTO the version meta: the judge applies a
+            # hidden sigma-plausibility gate to the final model (judge.py:328) that can fail a run
+            # which beat the BIC bar, and with no per-version report stored there was no way to ask
+            # afterwards which versions would have cleared it. That is not hypothetical -- it
+            # silently failed 17 of 20 fiedler runs in the Aug 8-10 sweep (best dBIC -28.8, while
+            # the single scored pass was +0.50), and diagnosing it required re-deriving the report
+            # from the reference by hand. Storing it makes the gate auditable per version.
             _nsr = fitting.noise_sigma_report(self.problem, fitsim.get("fitted_parameters"))
+            # Onto `fitsim` BEFORE the snapshot, not after. `_snapshot_version` evaluates
+            # `fitting.build_sim_payload_for_version(sim)` eagerly in its argument list, and that
+            # function copies `noise_sigma_report` only IF PRESENT -- so assigning it afterwards
+            # (as this did) left every version's simulations.json without one. That silently
+            # disabled judge._sigma_flagged, which reads
+            # `get_version(...)["simulation"]["noise_sigma_report"]`, so the "score the best model
+            # that could pass" scan (#155) degraded to plain best-BIC for every run since it landed:
+            # it could never find a gate-clean earlier version because it could never see a report.
             fitsim["noise_sigma_report"] = _nsr
+            version = self._snapshot_version(
+                model_ant=child_model_ant,
+                meta={# Recorded so a later fit can tell whether it would search HARDER than this
+                      # one did (see `_fit_dedup`) — the structure/setup hashes both ignore it.
+                      "n_starts": fitsim.get("n_starts"),
+                      "fit_status": fitsim.get("status"), "neg_log_likelihood": nllh,
+                      "chi2": fitsim.get("chi2"), "chi2_gof_pvalue": gof_pvalue,
+                      "residual_flagged": fitsim["residual_flagged"],
+                      "nesting_advisory": nesting_advisory,
+                      "noise_sigma_report": _nsr,
+                      "noise_sigma_inflated": noise_sigma_inflated(_nsr),
+                      "noise_sigma_collapsed": noise_sigma_collapsed(_nsr),
+                      "fitted_parameters": fitsim.get("fitted_parameters"), **improvement},
+                sim=fitsim,
+            )
+            fitsim["version"] = version
             fitsim["noise_sigma_estimated"] = bool(_nsr)
             fitsim["noise_sigma_inflated"] = noise_sigma_inflated(_nsr)
             fitsim["noise_sigma_collapsed"] = noise_sigma_collapsed(_nsr)

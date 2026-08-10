@@ -53,12 +53,21 @@ _SBML_MSG_CAP = 300  # keep a single SBML message from bloating the (re-sent) to
 # warning COUNT, and therefore no consumer.
 _LINT_NOISE = ("Visualization table not available",)
 
+# petab's `lint_problem` closes with a bare verdict line ("OK" / "Not OK") that carries no finding.
+# Matched EXACTLY, not as a substring, so a real message that happens to contain the word survives.
+# It is not merely cosmetic: it is logged at ERROR level and arrives FIRST, so it was the leading
+# entry of `issues` on 127 of the 197 "resulting problem is invalid" rejections in the Aug 8-10
+# sweep -- i.e. the first thing the agent read about why its edit failed was the word "Not OK".
+_LINT_VERDICT_LINES = frozenset({"OK", "Not OK"})
+
 
 def _is_lint_noise(record: logging.LogRecord) -> bool:
     try:
         message = record.getMessage()
     except Exception:  # noqa: BLE001 - a record we cannot render is not noise we can recognise
         return False
+    if message.strip() in _LINT_VERDICT_LINES:
+        return True
     return any(fragment in message for fragment in _LINT_NOISE)
 
 

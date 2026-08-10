@@ -403,11 +403,62 @@ class AmiciEngine:
         except Exception:  # noise formula references model states / unresolved params
             return None, None
 
+    @staticmethod
+    def _unusable_rdatas(rdatas) -> int:
+        """How many conditions came back with no usable simulation output.
+
+        AMICI's failfast path returns a ``ReturnData`` whose output arrays are ``None`` rather than
+        raising. ``rdatas_to_simulation_df`` then iterates them and dies with
+        ``'NoneType' object is not iterable`` — a bare ``TypeError`` that
+        ``_compile_fit_failure_message`` reads as an ILL-POSED ODE, telling the agent to rewrite a
+        model whose only problem was that one integration failed at its nominal values. That is the
+        precise outcome ``fitting._run_fit`` documents it must avoid (see its ``objective_before``
+        comment): a failed pre-fit evaluation is a MISSING score, not a structural verdict.
+        Checked per condition here rather than by string-matching the TypeError downstream.
+        """
+        bad = 0
+        for rd in rdatas:
+            ts = getattr(rd, "ts", None)
+            y = getattr(rd, "y", None)
+            if ts is None or y is None or len(ts) == 0:
+                bad += 1
+        return bad
+
+    def _records_without_simulation(self, meas) -> list[dict[str, Any]]:
+        """One record per measurement with ``simulation`` unset — the honest shape for an
+        evaluation that produced no trajectory. ``simulation_gap`` counts every one of these as
+        missing, ``_chi2`` declines to score them and ``goodness_of_fit`` reports the gap, so the
+        whole downstream chain already handles this; it only ever needed the records to exist."""
+        return [
+            {
+                "observable_id": row.get(OBSERVABLE_ID),
+                "condition_id": row.get(SIMULATION_CONDITION_ID),
+                "time": finite_float(row.get(TIME)),
+                "measurement": finite_float(row.get(MEASUREMENT)),
+                "simulation": None,
+                "residual": None,
+                "residual_weighted": None,
+                "noise": None,
+            }
+            for _, row in meas.iterrows()
+        ]
+
     def _simulation_records(self, model, result) -> list[dict[str, Any]]:
         from amici.sim.sundials.petab.v1 import RDATAS, rdatas_to_simulation_df
 
         meas = self.session.problem.measurement_df
-        simdf = rdatas_to_simulation_df(result[RDATAS], model, meas)
+        rdatas = result[RDATAS]
+        n_bad = self._unusable_rdatas(rdatas)
+        if n_bad:
+            # Partial success is treated the same as total failure on purpose: when any condition
+            # fails to integrate, AMICI's likelihood for the evaluation is already NaN (see
+            # `simulation_gap`), so keeping the surviving conditions' simulations would describe a
+            # smaller dataset than `n_data_points` while looking like a complete one.
+            self.session.logger.info(
+                "simulation: %d/%d conditions returned no usable trajectory; reporting a missing "
+                "score instead of a partial one", n_bad, len(rdatas))
+            return self._records_without_simulation(meas)
+        simdf = rdatas_to_simulation_df(rdatas, model, meas)
         keys = [OBSERVABLE_ID, SIMULATION_CONDITION_ID, TIME]
         # ``rdatas_to_simulation_df`` (a thin wrapper over amici's
         # ``rdatas_to_measurement_df``) carries exactly one simulation row per

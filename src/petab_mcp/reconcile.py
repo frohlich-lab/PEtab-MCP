@@ -370,6 +370,53 @@ def _set_parametric_ic(sm, sid: str, value: float) -> str:
     return init_id
 
 
+def _drop_initial_assignment(sm, sid: str, *, drop_sole_parameter: bool = False) -> bool:
+    """Remove any initialAssignment for ``sid``; True if one was there.
+
+    ``drop_sole_parameter`` also removes the IC parameter the assignment pointed at, when that
+    parameter is the assignment's SOLE symbol (the ``<sid> = <sid>_init`` shape). Dropping the
+    assignment alone leaves that parameter referenced by nothing, and because it is still an SBML
+    parameter it stays in the table as an ESTIMATED row that no longer affects the trajectory --
+    a free ``ln(n)`` of BIC per fit with zero fit effect, which is precisely the artefact
+    :func:`ensure_parametric_initial_conditions` exists to avoid. Not applied to a COMPOUND
+    expression (``Rec = ini_R1*ini_R2fold``): those symbols are the author's own estimated seeds
+    and may well be used elsewhere.
+    """
+    for i in range(sm.getNumInitialAssignments()):
+        ia = sm.getInitialAssignment(i)
+        if ia.getSymbol() != sid:
+            continue
+        sole = None
+        if drop_sole_parameter:
+            names = _ast_names(ia.getMath())
+            if len(names) == 1:
+                (only,) = names
+                if sm.getParameter(only) is not None:
+                    sole = only
+        sm.removeInitialAssignment(i)
+        if sole is not None:
+            sm.removeParameter(sole)
+        return True
+    return False
+
+
+def assignment_rule_targets(sm) -> set[str]:
+    """Symbols set by an ASSIGNMENT rule (``X := expr``), excluding rate-rule targets.
+
+    Narrower than :func:`_rule_target_symbols` on purpose. An assignment rule determines its target
+    at EVERY time including t=0, and SBML forbids an initialAssignment on such a symbol
+    ("Cannot set a value using both an initial assignment and an assignment rule simultaneously").
+    A RATE rule (``X' = expr``) is the opposite case: it integrates from an initial value and so
+    still needs one. Anything that skips ICs must therefore split the two, not lump them.
+    """
+    out: set[str] = set()
+    for i in range(sm.getNumRules()):
+        rule = sm.getRule(i)
+        if rule.isSetVariable() and rule.isAssignment():
+            out.add(rule.getVariable())
+    return out
+
+
 def ensure_parametric_initial_conditions(sm, skip_species: set[str] | None = None) -> list[str]:
     """Give every species a parametric IC; returns the IC parameter ids created/kept.
 
@@ -378,12 +425,32 @@ def ensure_parametric_initial_conditions(sm, skip_species: set[str] | None = Non
     Their IC is neither a free parameter nor a fixed literal — the condition table drives it — so we
     leave the declared initial in place and do NOT mint a ``<sid>_init``. Minting one would add an
     estimated, non-identifiable parameter that the per-condition override silently supersedes
-    (inflating k with no fit effect), which is exactly the artefact this avoids."""
+    (inflating k with no fit effect), which is exactly the artefact this avoids.
+
+    Species driven by an ASSIGNMENT rule are skipped for a different and harder reason: minting an
+    IA on them builds an SBML document that libSBML rejects, so the agent's own model — which
+    validated cleanly on its own — was rejected for a construct the SERVER wrote. That accounted for
+    69 rejected ``make_changes`` calls in the Aug 8-10 sweep, and 48% of them were followed by a
+    byte-identical retry because the error described something the agent had not done. Verified by
+    round-tripping all 152 affected models through libAntimony -> libsbml.checkConsistency():
+    152/152 clean, 0 initialAssignment/rule-target collisions before reconcile touched them.
+    Rate-rule targets are NOT skipped — see :func:`assignment_rule_targets`."""
+    rule_driven = assignment_rule_targets(sm)
+    # NOT unioned into `skip`: the `rule_driven` branch below runs first and `continue`s, so a union
+    # here could never change a decision -- it would only read as if there were two paths.
     skip = skip_species or set()
     ic_params: list[str] = []
     for i in range(sm.getNumSpecies()):
         sp = sm.getSpecies(i)
         sid = sp.getId()
+        if sid in rule_driven:
+            # Skipping is not enough on its own: a store written by an earlier reconcile (before
+            # this skip existed) can carry an IA that is illegal alongside the rule. Drop it -- and
+            # its now-unreferenced `<sid>_init` with it, or the parameter table keeps estimating a
+            # value the assignment rule overrides at t=0. Heals a corrupted version store instead of
+            # inheriting the fault from it.
+            _drop_initial_assignment(sm, sid, drop_sole_parameter=True)
+            continue
         if sid in skip:  # condition-column-driven initial; not a parameter
             continue
         existing = _ic_symbol_for(sm, sid)
@@ -1441,6 +1508,49 @@ def sigma_noise_form(problem, pid: str, rows=None) -> str | None:
     return _per_observable_agreement(problem, pid, rows, _form)
 
 
+def sigma_scale_coupled(problem, pid: str) -> bool:
+    """True when ``pid`` shares its noiseFormula with an ESTIMATED co-parameter, so the sigma's own
+    numeric value is not comparable ACROSS MODELS -- only the combination is.
+
+    Deliberately NOT restricted to a product, and does not inspect the formula's FORM: any estimated
+    co-parameter (``gain * sigma``, ``sigma + offset``) leaves the raw sigma under-determined on its
+    own, and every such case is one where a cross-model raw-sigma ratio is the wrong statistic. A
+    FIXED co-parameter is different and is not flagged: it is a declared constant of the problem,
+    identical on both sides, so it cancels from the ratio.
+
+    fiedler is the live case: ``noiseFormula = noiseParameter1 * noiseParameter2`` resolves to
+    ``s_pMek_<gel> * sigma_pMek``, and the gels' ``s_pMek_*`` are estimated over 77.7 … 999.99. Only
+    the product is identified, so a model whose internal pMek units differ fits a proportionally
+    different sigma for the SAME noise. Note what IS comparable: the product is the noise sd in
+    measurement units (404.2 * 5.8e-4 = 0.235 against a pMek data std of 1.35 -- plausible), so the
+    reference basis is recoverable in principle; see
+    :func:`petab_harness.runner.scoring._reference_sigma_flag` for why it is declined today and what
+    recording it would take. :func:`sigma_effective_value` already documents the half of this that
+    was known -- "two models that split the same fit differently between gain and sigma report
+    different values here" -- which is harmless for the data-driven ratio (the gain cancels from
+    sd/spread) but not for a comparison against another model's fitted sigma.
+
+    Unflagged, this made the judge's reference-sigma gate fire on 19 of 20 fiedler runs in the Aug
+    8-10 sweep, silently failing 17 that had BEATEN the BIC bar (best dBIC -28.8, while the one
+    scored pass was +0.50). The candidates' own data-driven numbers said their noise was fine
+    (fraction_of_data_std ~0.31, fitted_over_data_noise ~0.56); only the cross-model raw-sigma ratio
+    called them 179x inflated. Of the 21 examples here, fiedler is the ONLY one with this shape.
+    """
+    rows = _measurement_rows_for_sigma(problem, pid)
+    if rows is None or rows.empty or NOISE_PARAMETERS not in rows.columns:
+        return False
+    for cell in rows[NOISE_PARAMETERS].dropna().astype(str).unique():
+        parts = [p.strip() for p in cell.split(";")]
+        if len(parts) < 2 or pid not in parts:
+            continue
+        for other in parts:
+            # A co-factor that is itself ESTIMATED is what breaks comparability. A FIXED co-factor
+            # is a declared constant of the problem: identical on both sides, so the ratio survives.
+            if other != pid and other and is_parameter_estimated(problem, other):
+                return True
+    return False
+
+
 def sigma_effective_value(problem, pid: str, fitted: float,
                           fitted_values: "dict[str, float] | None" = None) -> float | None:
     """The sd implied by ``pid = fitted``, expressed on the scale :func:`sigma_data_std` measures.
@@ -1657,10 +1767,7 @@ def prune_orphans(problem) -> dict[str, list[str]]:
             continue
         # orphan species: drop it, its IC assignment, and IC parameter
         ic = _ic_symbol_for(sm, sid)
-        for i in range(sm.getNumInitialAssignments()):
-            if sm.getInitialAssignment(i).getSymbol() == sid:
-                sm.removeInitialAssignment(i)
-                break
+        _drop_initial_assignment(sm, sid)
         if ic and sm.getParameter(ic) is not None:
             sm.removeParameter(ic)
         sm.removeSpecies(sid)
@@ -1682,13 +1789,25 @@ def prune_orphans(problem) -> dict[str, list[str]]:
             keep_names.add(ic)
 
     removed_params: list[str] = []
+    removed_initial_assignments: list[str] = []
     for pid in list(parameter_ids(sm)):
         if pid in keep_names:
             continue
+        # An initialAssignment's SYMBOL (its target) appears in none of the keep sets:
+        # `_model_math_names` walks IA *math* (the right-hand side), so `IPR_total = A*B` keeps A
+        # and B but not IPR_total itself. Removing the parameter while leaving its IA behind
+        # produced a dangling IA -- invalid SBML -- and the whole edit was then rejected for a
+        # corruption the server introduced (11 rejected calls in the Aug 8-10 sweep, on
+        # `IPR_total`, `k_bind_S6`, `delta`, `pEGFR_tot`). Drop the IA WITH its symbol rather than
+        # keeping a parameter nothing reads: an unreferenced parameter is a genuine orphan, and its
+        # IA is only meaningful while the parameter exists. Reported so the caller can say so.
+        if _drop_initial_assignment(sm, pid):
+            removed_initial_assignments.append(pid)
         sm.removeParameter(pid)
         removed_params.append(pid)
 
-    return {"species": removed_species, "parameters": removed_params}
+    return {"species": removed_species, "parameters": removed_params,
+            "initial_assignments": removed_initial_assignments}
 
 
 # -- parameter-table sync --------------------------------------------------
@@ -1761,6 +1880,16 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
     # Deaths/Cumulative_cases in the same shape. The agent's model was legal; the sync produced a
     # table petab forbids, so the fix belongs here and not in the model text.
     keep_table -= _rule_target_symbols(sm)
+    # Same failure, second shape: a symbol that USED to be a parameter and is now a SPECIES. PEtab
+    # forbids species in the parameter table exactly as it forbids rule targets, but `keep_table`
+    # overrode that too whenever an observable formula referenced the symbol -- which is the normal
+    # shape when the agent promotes a lumped parameter into an explicit state. The stale row then
+    # survived the sync and lint refused the problem with "Extraneous parameter(s) in parameter
+    # table". 20 rejected calls in the Aug 8-10 sweep, every one of them the same fujita pair
+    # {'pEGFR_Akt', 'pAkt_S6'} (18 of them inside a single run, which looped on it for 18 calls).
+    # Critically the agent had NO WAY OUT: no tool in the surface can delete a parameter-table row,
+    # so the state was unreachable from the agent side and the retry could only fail again.
+    keep_table -= species_ids(sm)
 
     added, removed = [], []
 

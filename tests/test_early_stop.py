@@ -481,3 +481,139 @@ def test_fixed_sigma_well_calibrated_fit_is_still_adequate(session):
     p = session.progress_report()
     assert 0.05 <= p["best_gof_pvalue"] <= 0.995
     assert p["should_stop"] is True and "plateau" in p["stop_reason"].lower()
+
+
+# --- (d) NO fitted-op budget: the streak cap is the only progress-based bound ------------------
+def test_a_run_that_keeps_finding_new_bests_is_not_cut_off_by_an_op_budget(session):
+    """A 20-fitted-op cap was tried and removed. It was not redundant with the streak cap -- that
+    resets on every new best, so 73 of 333 clean runs in the Aug 8-10 sweep passed 20 fits anyway --
+    but it cost ~1.8% of passes, charged against exactly the models that explore longest, which
+    biases the comparison the benchmark exists to make. Pins that a long, still-improving run runs on.
+    """
+    nll = -50.0
+    for v in range(1, 31):                       # well past the old cap of 20
+        nll -= NEW_BEST_MIN_DELTA_BIC
+        session.record_fit_progress(v, _fitsim(nll, 500.0), {"is_new_best": True})
+    p = session.progress_report()
+    assert p["n_fitted_ops"] == 30
+    assert p["non_improving_streak"] == 0
+    assert p["should_stop"] is False              # still improving -> keep going
+    assert p["stop_reason"] is None
+    assert "fitted_ops_cap" not in p             # the knob is gone from the contract too
+
+
+def test_a_stalled_long_run_is_still_stopped_by_the_streak_cap(session):
+    """Removing the budget must not remove the bound that matters: a run that stops improving is
+    still caught, and still gets the structural diagnosis rather than a budget notice."""
+    nll = -50.0
+    for v in range(1, 11):
+        nll -= NEW_BEST_MIN_DELTA_BIC
+        session.record_fit_progress(v, _fitsim(nll, 500.0), {"is_new_best": True})
+    for v in range(11, 11 + NON_IMPROVING_STREAK_CAP):
+        session.record_fit_progress(v, _fitsim(nll, 500.0), {"is_new_best": False})
+    p = session.progress_report()
+    assert p["should_stop"] is True
+    assert "streak" in p["stop_reason"].lower()
+    assert "budget" not in p["stop_reason"].lower()
+    assert "STRUCTURAL" in p["stop_reason"]
+
+
+# --- (e) a scale-coupled sigma has no cross-model meaning ------------------------------------
+def test_reference_sigma_basis_is_declined_for_a_scale_coupled_sigma():
+    """fiedler's noise is `s_<gel> * sigma`, with the gels' `s_*` ESTIMATED over 77.7..999.99. Only
+    the product is identified, so a model at different internal units reaches the SAME effective
+    noise with a proportionally different sigma. The judge's reference basis divided one model's raw
+    sigma by another's and called 19 of 20 fiedler runs implausible, silently failing 17 that had
+    beaten the BIC bar (best dBIC -28.8; the one scored pass was +0.50)."""
+    from petab_harness.runner.scoring import _reference_sigma_flag
+
+    reference = {"noise_sigma": {"sigma_pMek": 0.0005804511382150003},
+                 "noise_sigma_effective": {"sigma_pMek": 0.0005804511382150003},
+                 "k": 22, "n": 72}
+    # The real numbers from 51526222_124: plausible on its own data-driven metrics, 179x the
+    # reference's raw sigma.
+    entry = {"fitted": 0.10386657663301647, "effective_sigma": 0.10386657663301647,
+             "n_points": 36, "data_std": 0.33907019890637025,
+             "fraction_of_data_std": 0.3063276482805788, "status": "ok"}
+
+    coupled = _reference_sigma_flag({"sigma_pMek": {**entry, "scale_coupled": True}},
+                                    reference, k=22, n=72)
+    assert coupled is None          # declined -> the judge falls through to the data-driven band
+
+    # Without the coupling the basis still applies, and still flags this ratio -- so the fix is
+    # scoped to the coupling and does not disable the gate generally.
+    plain = _reference_sigma_flag({"sigma_pMek": {**entry, "scale_coupled": False}},
+                                  reference, k=22, n=72)
+    assert plain is not None and plain["inflated"] is True
+    assert plain["max_ratio"] > 100
+
+
+@pytest.mark.parametrize("gain_estimated,expected", [(1, True), (0, False)])
+def test_only_an_estimated_co_factor_breaks_comparability(gain_estimated, expected):
+    """Only an ESTIMATED co-factor breaks the ratio. A FIXED one is a declared constant of the
+    problem, identical on both sides, so it cancels and the reference basis stays valid.
+
+    Built as a real fiedler-shaped problem rather than probed on the toy session: the toy sigma has
+    no composite noiseFormula at all, so `sigma_scale_coupled` returned False at the `len(parts) < 2`
+    guard and never reached the `is_parameter_estimated` branch. Inverting that check would have left
+    such a test passing while silently re-flagging every fiedler-shaped run.
+    """
+    import pandas as pd
+    import petab.v1 as petab
+    from petab.v1.C import (ESTIMATE, LOWER_BOUND, MEASUREMENT, NOISE_FORMULA, NOISE_PARAMETERS,
+                            NOMINAL_VALUE, OBSERVABLE_FORMULA, OBSERVABLE_ID, PARAMETER_ID,
+                            PARAMETER_SCALE, SIMULATION_CONDITION_ID, TIME, UPPER_BOUND)
+    from petab.v1.models.sbml_model import SbmlModel
+    from petab_mcp import reconcile as R
+
+    ant = ("model g\n  compartment c = 1;\n  species pMek in c;\n  pMek = 1.0;\n"
+           "  kf = 0.5;\n  r: pMek => ; kf * pMek;\nend\n")
+    prob = petab.Problem(model=SbmlModel.from_antimony(ant))
+    prob.observable_df = pd.DataFrame(
+        {OBSERVABLE_ID: ["pMek_obs"], OBSERVABLE_FORMULA: ["pMek * observableParameter1_pMek_obs"],
+         NOISE_FORMULA: ["noiseParameter1_pMek_obs * noiseParameter2_pMek_obs"]}
+    ).set_index(OBSERVABLE_ID)
+    prob.measurement_df = pd.DataFrame({
+        OBSERVABLE_ID: ["pMek_obs"] * 4,
+        SIMULATION_CONDITION_ID: ["c0"] * 4,
+        TIME: [0.0, 1.0, 2.0, 3.0],
+        MEASUREMENT: [1.0, 0.6, 0.4, 0.2],
+        # The fiedler shape exactly: a per-gel gain paired with the shared sigma.
+        NOISE_PARAMETERS: ["s_gel;sigma_pMek"] * 4,
+    })
+    prob.parameter_df = pd.DataFrame({
+        PARAMETER_ID: ["s_gel", "sigma_pMek", "kf"],
+        PARAMETER_SCALE: ["log10"] * 3,
+        LOWER_BOUND: [1e-5] * 3, UPPER_BOUND: [1e3] * 3,
+        NOMINAL_VALUE: [100.0, 0.001, 0.5],
+        ESTIMATE: [gain_estimated, 1, 1],
+    }).set_index(PARAMETER_ID)
+
+    assert R.sigma_scale_coupled(prob, "sigma_pMek") is expected
+    # The gain itself is never the sigma under test, either way.
+    assert R.sigma_scale_coupled(prob, "kf") is False
+
+
+def test_an_unscorable_run_is_diagnosed_by_the_streak_cap_not_the_budget(session):
+    """A run that never produces a usable score reaches the STREAK cap first, and must get the
+    unscored-stall diagnosis rather than a budget notice.
+
+    Pins the ordering invariant: `record_fit_progress` advances the non-improving streak on every
+    non-finite score (regardless of `is_new_best`), so such a run trips the cap at op 15 and the
+    op budget is unreachable for it. That is why the budget branch's `best is None` wording is
+    documented as defensive. If this test ever fails because the budget claimed the stop, the
+    "no best version to keep" wording has become live and needs its own coverage.
+    """
+    for v in range(1, NON_IMPROVING_STREAK_CAP + 2):
+        session.record_fit_progress(
+            v, {"status": "fit", "neg_log_likelihood": None, "chi2": None,
+                "n_data_points": 20, "n_estimated": 2}, {"is_new_best": True})
+
+    p = session.progress_report()
+    assert p["best_version"] is None
+    assert p["should_stop"] is True
+    reason = p["stop_reason"]
+    assert "streak" in reason.lower() and "budget" not in reason.lower()
+    # The actionable finding — the fits are failing to EVALUATE, not the form failing to fit.
+    assert "No fit in this run produced a" in reason
+    assert "best scored version is kept" not in reason

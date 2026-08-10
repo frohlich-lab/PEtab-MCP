@@ -31,10 +31,10 @@ the real work lives in the ``session`` / ``operations`` / ``fitting`` / ``data_a
 from __future__ import annotations
 
 import json
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from fastmcp import FastMCP
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 from petab.v1.C import OBSERVABLE_ID, SIMULATION_CONDITION_ID
 
 from . import data_access as data_mod
@@ -115,6 +115,38 @@ class ParameterChange(BaseModel):
     scale: Literal["lin", "log", "log10"] | None = Field(
         default=None, description="PEtab parameterScale. Exactly these three values."
     )
+
+
+# Provider serialisation artefact: some models emit a list-typed argument wrapped in a
+# single-key object -- `{"parameters": {"item": [{...}, {...}]}}` instead of
+# `{"parameters": [{...}, {...}]}` -- or as a JSON string containing the array. pydantic then
+# rejects the whole call with `Input should be a valid list [type=list_type]`, and because the
+# wrapper is how that model serialises lists, the retry is byte-identical. In the Aug 8-10 sweep
+# this produced 28 client-side ToolExceptions that KILLED 3 runs outright (0 fits, 0 versions) and
+# recursion-limited a 4th; the escalation guard told the model "REPEATING THIS CALL WILL FAIL
+# AGAIN" three times and the wrapper came back each time. Prompting cannot fix a serialiser, so
+# accept the shape and unwrap it. Applied as a BeforeValidator so the JSON schema the model is
+# shown still says `array` -- we are tolerating a malformed encoding, not documenting it as valid.
+_LIST_WRAPPER_KEYS = ("item", "items", "value", "values", "list")
+
+
+def _unwrap_listish(v: Any) -> Any:
+    """Coerce the known malformed encodings of a JSON array back to a list; pass anything else
+    through untouched so real validation errors still surface as themselves."""
+    if isinstance(v, dict) and len(v) == 1:
+        (key, inner), = v.items()
+        if key in _LIST_WRAPPER_KEYS and isinstance(inner, list):
+            return inner
+    if isinstance(v, str):
+        s = v.strip()
+        if s.startswith("[") and s.endswith("]"):
+            try:
+                parsed = json.loads(s)
+            except ValueError:
+                return v
+            if isinstance(parsed, list):
+                return parsed
+    return v
 
 
 def _parameter_entries(parameters: Any) -> list[dict[str, Any]] | None:
@@ -397,8 +429,9 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
     def make_changes(
         justification: str,
         antimony: str | None = None,
-        parameters: list[ParameterChange] | None = None,
-        references: list[str] | None = None,
+        parameters: Annotated[list[ParameterChange] | None,
+                              BeforeValidator(_unwrap_listish)] = None,
+        references: Annotated[list[str] | None, BeforeValidator(_unwrap_listish)] = None,
         n_starts: int | None = None,
     ) -> dict[str, Any]:
         """Change the model and/or its parameter search space, then FIT and snapshot a version.
@@ -878,6 +911,8 @@ def _register_provenance_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         `non_improving_streak` counts consecutive fitted ops since the last real new best.
         `should_stop` is set (with a `stop_reason`) once the run has stopped making progress — the
         hard non-improving-streak cap, or a plateau once the best model is statistically adequate.
+        There is no cap on the TOTAL number of fits: a run that keeps genuinely improving keeps
+        going, and only a stall stops it.
         A plateaued `stop_reason` also carries the structural-inadequacy nudge: when the score
         stops moving and the best model is still not adequate, the misfit is the model's FORM — the
         next model must change the structure (add a latent state, add a feedback reaction, raise

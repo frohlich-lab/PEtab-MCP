@@ -1269,6 +1269,14 @@ def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[st
             entry["status"] = "collapsed"    # overfitting the noise for a good-looking score
         else:
             entry["status"] = "ok"
+        # Whether this sigma's NUMBER can be compared to another model's fitted sigma at all. The
+        # data-driven verdicts above are unaffected (the gain cancels from sd/spread), but the
+        # judge's reference-sigma gate divides one model's sigma by another's, and that ratio is
+        # meaningless when an estimated gain shares the formula -- see reconcile.sigma_scale_coupled.
+        try:
+            entry["scale_coupled"] = R.sigma_scale_coupled(problem, pid)
+        except Exception:  # noqa: BLE001 - a report field must never break a fit
+            entry["scale_coupled"] = False
         out[pid] = entry
     return out
 

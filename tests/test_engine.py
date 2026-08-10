@@ -355,3 +355,67 @@ def test_module_built_asks_for_the_compiled_extension_not_the_folder(session, tm
     assert engine.module_built(other) is False
     engine._pypesto_hashes.add(other)
     assert engine.module_built(other) is True
+
+
+# -- a failed integration is a MISSING score, never an "ill-posed model" verdict -------------
+class _DeadRData:
+    """A ReturnData as AMICI's failfast path leaves it: output arrays are None, no exception.
+
+    Feeding this to `rdatas_to_simulation_df` raised a bare `TypeError: 'NoneType' object is not
+    iterable`, which `_compile_fit_failure_message` then reported to the agent as an ill-posed ODE
+    -- sending it to rewrite a structurally fine model. 32 rejected `make_changes` calls in the
+    Aug 8-10 sweep, every one of them AFTER a successful compile (~94 min of wasted builds).
+    """
+    ts = None
+    y = None
+    res = None
+    status = -1
+
+
+def test_failed_integration_yields_records_with_no_simulation(engine, session):
+    from amici.sim.sundials.petab.v1 import RDATAS
+
+    meas = session.problem.measurement_df
+    recs = engine._simulation_records(None, {RDATAS: [_DeadRData()]})
+
+    # It returns, rather than raising the TypeError that used to be misdiagnosed downstream.
+    assert len(recs) == len(meas)
+    assert all(r["simulation"] is None for r in recs)
+    assert all(r["residual"] is None for r in recs)
+    # Measurements are still carried, so the gap is reportable rather than invisible.
+    assert all(r["measurement"] is not None for r in recs)
+    n_expected, n_missing = type(engine).simulation_gap(recs)
+    assert n_expected == len(meas) and n_missing == len(meas)
+
+
+def test_partial_integration_failure_is_not_scored_as_a_smaller_dataset(engine, session):
+    """One good condition + one dead one must NOT yield a confident score over the survivors:
+    AMICI's likelihood is already NaN for such an evaluation, so a partial chi2 would describe a
+    smaller dataset than `n_data_points` while looking complete."""
+    from amici.sim.sundials.petab.v1 import RDATAS
+
+    good = engine._objective_evaluate()          # a real, working evaluation first
+    assert good[1] and any(r["simulation"] is not None for r in good[1])
+
+    class _Live:
+        ts = [0.0]
+        y = [[1.0]]
+        res = [0.0]
+        status = 0
+
+    recs = engine._simulation_records(None, {RDATAS: [_Live(), _DeadRData()]})
+    assert all(r["simulation"] is None for r in recs)
+    assert engine._chi2(recs, None) is None      # declines to score, rather than partial-summing
+
+
+def test_unusable_rdatas_counts_only_the_dead_conditions(engine):
+    class _Live:
+        ts = [0.0, 1.0]
+        y = [[1.0], [2.0]]
+
+    E = type(engine)
+    assert E._unusable_rdatas([_Live(), _Live()]) == 0
+    assert E._unusable_rdatas([_Live(), _DeadRData()]) == 1
+    assert E._unusable_rdatas([_DeadRData(), _DeadRData()]) == 2
+    # An empty time vector is just as unusable as a None one.
+    assert E._unusable_rdatas([type("E0", (), {"ts": [], "y": []})()]) == 1

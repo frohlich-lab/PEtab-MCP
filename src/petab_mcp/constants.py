@@ -51,6 +51,12 @@ NON_IMPROVING_STREAK_CAP = 15
 PLATEAU_MIN_BIC_GAIN = 1.0
 PLATEAU_WINDOW = 5
 
+# (c) There is deliberately NO hard cap on total fitted ops -- see the note in
+# `session.progress_report`. One was tried at 20 and removed: it bounded real waste (73 of 333 clean
+# runs in the Aug 8-10 sweep exceeded 20 fits despite the streak cap, using 43% of all fits) but paid
+# for it with ~1.8% of passes, charged unevenly against the models that explore longest. Bound cost
+# in the sweep, not in the scoring path.
+
 # The chi2 goodness-of-fit p-value at/above which the best model is considered statistically
 # adequate for the plateau gate (its residuals are consistent with the known measurement noise).
 ADEQUATE_GOF_PVALUE = 0.05

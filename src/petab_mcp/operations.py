@@ -243,6 +243,34 @@ def _parsimony_warnings(problem, old_species: set[str]) -> list[str]:
     ]
 
 
+_REJECTION_ISSUES_SHOWN = 3
+_REJECTION_ISSUE_CHARS = 320
+
+
+def _rejection_summary(issues: list[str]) -> str:
+    """The rejection message, with the reasons IN it rather than only beside it.
+
+    `issues` already travelled next to the error, but the bare
+    "the resulting problem is invalid." carried no reason, and that class recovered on the next
+    call only 60.4% of the time against 83-100% for rejections whose message names the fix (Aug
+    8-10 sweep, 197 calls). Folding the leading reasons into the text the agent reads first is one
+    concatenation and needs no new machinery.
+
+    Truncated per issue and capped in count: libSBML emits multi-paragraph messages, and a wall of
+    them costs the context it is meant to save. The full list stays on `issues`, and the count of
+    what was elided is stated so a truncated view never looks complete.
+    """
+    if not issues:
+        # `valid: false` with no error-level issue is a lint that failed on its own summary line;
+        # keep the old wording rather than inventing a reason we do not have.
+        return "the resulting problem is invalid."
+    shown = [" ".join(str(m).split())[:_REJECTION_ISSUE_CHARS] for m in issues[:_REJECTION_ISSUES_SHOWN]]
+    more = len(issues) - len(shown)
+    tail = f" (+{more} more in `issues`)" if more > 0 else ""
+    joined = " | ".join(shown)
+    return f"the resulting problem is invalid: {joined}{tail}"
+
+
 def _commit_change(
     session,
     op: str,
@@ -363,10 +391,11 @@ def _commit_change(
             protected_fixed = None
         report = validate_problem(problem, protected_fixed_ids=protected_fixed)
         if not report["valid"]:
+            hard = [i["message"] for i in report["issues"]
+                    if i["level"] in ("error", "critical")]
             raise ValidationError(
-                f"Operation {op!r} rejected: the resulting problem is invalid.",
-                issues=[i["message"] for i in report["issues"]
-                        if i["level"] in ("error", "critical")],
+                f"Operation {op!r} rejected: {_rejection_summary(hard)}",
+                issues=hard,
             )
 
         warnings = (_parsimony_warnings(problem, old_species) if recon is not None else [])

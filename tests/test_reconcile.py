@@ -492,3 +492,149 @@ def test_symbolic_noise_formulas_are_memoised_on_the_TABLE_TEXT(session):
     # ...and a table this cache has never seen is parsed rather than borrowed from a stale neighbour
     assert R._symbolic_noise_formulas(odf.assign(noiseFormula="sigma_B"))["obs_B"] == \
         first["obs_B"]
+
+
+# -- assignment-rule targets must not get a parametric IC (#158 follow-up) -------------------
+# Verbatim shape of the construct that produced 69 rejected `make_changes` calls in the Aug 8-10
+# sweep (smallest real instance: 51526222_113 seq 16, deepseek-v4-flash on sneyd). The agent's own
+# SBML is legal; the server then minted `IPR_A_init` + an initialAssignment on a symbol that already
+# carries an assignment rule, which libSBML rejects with "Cannot set a value using both an initial
+# assignment and an assignment rule simultaneously" -- and the agent was blamed for it.
+RULE_TARGET_ANTIMONY = """model rule_target
+  compartment cell = 1;
+  species x in cell; species y in cell; species z in cell;
+  species IPR_A in cell; species IPR_O in cell;
+  x = 0.5; y = 0.3; z = 0.1;
+  IPR_A := x*y*(1-z);
+  IPR_O := 0.0;
+  kf = 1.0;
+  decay: x => ; kf * x;
+end
+"""
+
+# The counter-case: a RATE rule integrates from an initial value, so its target still needs an IC.
+RATE_RULE_ANTIMONY = """model rate_target
+  compartment cell = 1;
+  species w in cell; species v in cell;
+  w = 2.0; v = 4.0;
+  kf = 1.0;
+  v' = -kf * v;
+  decay: w => ; kf * w;
+end
+"""
+
+
+def _consistency_errors(sm):
+    """Hard libSBML errors on the document this model belongs to.
+
+    The error log must be cleared first: libSBML ACCUMULATES across `checkConsistency()` calls on
+    one document, so a second check on a repaired model still reports the first check's errors --
+    which reads as "the fix did not work" when it did.
+    """
+    import libsbml
+    doc = sm.getSBMLDocument()
+    doc.getErrorLog().clearLog()
+    doc.checkConsistency()
+    return [doc.getError(i).getMessage() for i in range(doc.getNumErrors())
+            if doc.getError(i).getSeverity() >= libsbml.LIBSBML_SEV_ERROR]
+
+
+def test_assignment_rule_targets_get_no_parametric_ic():
+    sm = _sm(RULE_TARGET_ANTIMONY)
+    ic = R.ensure_parametric_initial_conditions(sm)
+    # No <sid>_init minted for either rule-driven species...
+    assert sm.getParameter("IPR_A_init") is None
+    assert sm.getParameter("IPR_O_init") is None
+    assert "IPR_A_init" not in ic and "IPR_O_init" not in ic
+    # ...and no initialAssignment on them either, which is what libSBML actually objects to.
+    ia_symbols = {sm.getInitialAssignment(i).getSymbol()
+                  for i in range(sm.getNumInitialAssignments())}
+    assert ia_symbols.isdisjoint({"IPR_A", "IPR_O"})
+    # The free dynamic species are untouched -- the fix must not stop parametrising ordinary ICs.
+    assert {"x_init", "y_init", "z_init"} <= set(ic)
+
+
+def test_reconciled_rule_target_model_is_valid_sbml():
+    # The end-to-end claim: after reconcile the document libSBML sees is CLEAN. This is the test
+    # that would have failed before the fix.
+    sm = _sm(RULE_TARGET_ANTIMONY)
+    assert _consistency_errors(sm) == []          # the agent's model was always fine
+    R.ensure_parametric_initial_conditions(sm)
+    assert _consistency_errors(sm) == []          # and reconcile no longer breaks it
+
+
+def test_rate_rule_targets_keep_their_initial_condition():
+    # A rate rule is the opposite case: v' = -kf*v integrates from v(0), so v MUST keep an IC.
+    # Lumping both rule kinds into the skip would silently drop an estimated initial value.
+    sm = _sm(RATE_RULE_ANTIMONY)
+    ic = R.ensure_parametric_initial_conditions(sm)
+    assert "v_init" in ic
+    assert abs(sm.getParameter("v_init").getValue() - 4.0) < 1e-9
+    assert R.assignment_rule_targets(sm) == set()          # v is a rate target, not an assignment
+
+
+def test_reconcile_heals_a_store_that_already_carries_the_illegal_initial_assignment():
+    # A version store written before this fix can carry the illegal IA. Re-authoring over it must
+    # repair the document rather than inherit the fault.
+    sm = _sm(RULE_TARGET_ANTIMONY)
+    R._set_parametric_ic(sm, "IPR_A", 0.0)                 # simulate the old buggy reconcile
+    assert _consistency_errors(sm) != []                   # document is now genuinely broken
+    R.ensure_parametric_initial_conditions(sm)
+    assert _consistency_errors(sm) == []                   # healed
+    ia_symbols = {sm.getInitialAssignment(i).getSymbol()
+                  for i in range(sm.getNumInitialAssignments())}
+    assert "IPR_A" not in ia_symbols                       # the illegal IA is gone...
+    # ...AND so is the parameter it pointed at. Leaving `IPR_A_init` behind would keep an ESTIMATED
+    # row that the assignment rule overrides at t=0 — a free ln(n) of BIC on every subsequent fit
+    # with zero effect on the trajectory, which is exactly the artefact
+    # `ensure_parametric_initial_conditions` exists to prevent.
+    assert sm.getParameter("IPR_A_init") is None
+
+
+# -- prune/sync bugs the Aug 8-10 sweep exposed ----------------------------------------------
+# A parameter that is the TARGET of an initialAssignment, and that nothing else references.
+# `_model_math_names` walks IA math (so `a`/`b` are kept) but not IA symbols, so `total` was pruned
+# and its IA left dangling -> invalid SBML -> the whole edit rejected (11 calls).
+IA_TARGET_ANTIMONY = """model ia_target
+  compartment c = 1;
+  species s in c;
+  s = 1.0;
+  a = 2.0; b = 3.0;
+  total = 0.0;
+  total := a * b;
+  kf = 1.0;
+  deg: s => ; kf * s;
+end
+"""
+
+
+def test_prune_orphans_never_leaves_a_dangling_initial_assignment():
+    import libsbml
+    from petab_mcp import reconcile as RR
+    sm = _sm(IA_TARGET_ANTIMONY)
+    # Give `total` a real initialAssignment (not an assignment rule) and no other reference.
+    for i in range(sm.getNumRules()):
+        if sm.getRule(i).getVariable() == "total":
+            sm.removeRule(i)
+            break
+    ia = sm.createInitialAssignment()
+    ia.setSymbol("total")
+    ia.setMath(libsbml.parseL3Formula("a * b"))
+    assert _consistency_errors(sm) == []
+
+    class _P:
+        pass
+    prob = _P()
+    prob.model = type("M", (), {"sbml_model": sm})()
+    prob.parameter_df = None
+    prob.condition_df = None
+    prob.observable_df = None
+    prob.measurement_df = None
+    out = RR.prune_orphans(prob)
+    # `total` may go, but never as a dangling IA: the document stays valid either way.
+    assert _consistency_errors(sm) == []
+    ia_symbols = {sm.getInitialAssignment(i).getSymbol()
+                  for i in range(sm.getNumInitialAssignments())}
+    if "total" in out["parameters"]:
+        assert "total" not in ia_symbols
+        assert "total" in out["initial_assignments"]
