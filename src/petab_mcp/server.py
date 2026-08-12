@@ -45,6 +45,7 @@ from . import messages as msg_mod
 from . import model as model_mod
 from . import operations as ops_mod
 from . import parameters as param_mod
+from . import regimes as regimes_mod
 from . import skills as skills_mod
 from .constants import DEFAULT_AUTO_FIT_STARTS
 from .engine import AmiciEngine
@@ -655,6 +656,43 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
                 }
 
         return ctx.run("get_run_timing", run)
+
+    @mcp.tool()
+    def get_data_regimes(observables: str | None = None) -> dict[str, Any]:
+        """What the MEASUREMENTS require of any model — computed from the data alone, no model, no
+        fit, no simulation. Valid BEFORE the first model exists.
+
+        SIZE, since it is re-sent in your history every later turn: 1-9 kB on the shipped examples,
+        because at most 12 observables are reported. Pass `observables="id1,id2"` to scope the call
+        to the ones you are actually reasoning about — on a problem with a hundred observables an
+        unscoped call is mostly noise you will keep paying for.
+
+        Per observable, each verdict measured against that observable's own noise floor (estimated
+        from replicates where the design has them, else successive differences — the method is in
+        the payload):
+
+        - `shape` — does the response RISE AND FALL under a held input? A pulse cannot be produced
+          by constant production plus first-order decay at ANY rate constants, so it REQUIRES a
+          depletable pool, a second state, or feedback.
+        - `timescales` — is a second relaxation timescale distinguishable, by BIC.
+          `delta_bic_favouring_two` is POSITIVE when the two-timescale form fits better.
+        - `dose_response` — the steepest local log-log slope against a numeric condition input,
+          with its uncertainty. Above 1 rules out a single mass-action binding step.
+        - `conservation` — is the sum of the observables constant in time? Imposing the total is
+          a constraint rather than an addition: it REMOVES a parameter.
+
+        Each entry carries a `requirement` (non-null only when ESTABLISHED — then any model must
+        reproduce it) and `support_for_extension`, where `suggestive` means the estimate leans
+        toward the richer structure without establishing it, which is a reason to TRY it.
+
+        THESE FINDINGS CAN FORCE STRUCTURE IN; THEY NEVER RULE IT OUT. `testable: false` means the
+        DESIGN cannot answer; a null `requirement` means this design did not settle it. Neither is
+        permission to simplify — no evidence for a second timescale is not evidence that one
+        suffices. `conservation` is the sole entry that genuinely constrains.
+        """
+        return ctx.run("get_data_regimes",
+                       lambda: regimes_mod.data_regimes(session, observables),
+                       {"observables": observables})
 
     @mcp.tool()
     def list_data_tables() -> dict[str, Any]:
