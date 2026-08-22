@@ -52,13 +52,25 @@ def sha16(text: str) -> str:
 
 
 def _default_bounds(nominal) -> tuple[float, float]:
-    """Bounds for an auto-added parameter that always bracket its nominal value."""
+    """Bounds for an auto-added parameter that always bracket its nominal value.
+
+    A ZERO nominal is bracketed by [0, ub], not by dipping below: the zero case is in practice
+    always an initial CONCENTRATION (reconcile minting `<sid>_init` for a species that starts
+    empty), and the old `nominal - 1.0` handed every such row a lower bound of -1.0. Those rows
+    ship fixed, so the fit never sampled the negative range — but the -1.0 was visible in every
+    parameter read and draft TSV (which deliberately omit the estimate column), where it read as
+    a live negative-concentration box and sent one segfault investigation down a dead end. Zero
+    is IN [0, ub], so the bracket contract holds. A genuinely negative nominal (a log-space or
+    difference parameter) keeps the old dip, which is correct there.
+    """
     lb, ub = DEFAULT_PARAMETER_LOWER_BOUND, DEFAULT_PARAMETER_UPPER_BOUND
     if nominal is None:
         return lb, ub
     nominal = float(nominal)
     if nominal > 0:
         return min(lb, nominal), max(ub, nominal)
+    if nominal == 0:
+        return 0.0, ub
     return min(lb, nominal - 1.0), max(ub, nominal + 1.0)
 
 

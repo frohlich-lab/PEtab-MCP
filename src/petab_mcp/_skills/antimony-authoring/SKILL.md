@@ -53,6 +53,12 @@ in a Hill/Michaelis–Menten denominator (see below: a parameter must never be o
   cycle, not a parse error. `k` and `p` bite most, being the textbook symbols for a rate constant
   and a production rate: write `k_mat`, `p_vir`. Uppercase is unaffected — single-letter species
   `A`, `S`, `P`, `V`, `T`, `I` are fine.
+- **Time is the built-in `time`.** `t` is AMICI-reserved; any other name (`tau`) becomes a
+  parameter the fit ESTIMATES, so the gate compiles and commits with its time dependence gone.
+- **A reaction id must not be an Antimony keyword** (`at`, `in`, `is`, `end`, `var`, `const`,
+  `event`, `species`, `model`): `at: -> X; k*C;` fails with `unexpected ->`, never naming the id.
+- **Never assign a symbol to itself.** `k = k;` is a definition loop and refuses to load. A shipped
+  constant needs no assignment — reference it by name.
 - Match the names the problem already uses: a species driven by a condition column, or read by
   an observable formula, must be spelled exactly as that table spells it.
 - **A typo becomes a new parameter, not an error.** `kf*A` mistyped as `kF*A` silently creates

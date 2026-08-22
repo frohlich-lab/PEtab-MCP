@@ -296,7 +296,8 @@ _NO_SIMULATION_STATUS = (
 )
 
 
-def fit_diagnosis(session, worst_n: int = 8) -> dict[str, Any]:
+def fit_diagnosis(session, worst_n: int = 8,
+                  max_observables: int | None = 12) -> dict[str, Any]:
     """A COMPACT, size-bounded residual diagnosis of the current fit — the ``residuals`` section of
     ``get_fit_diagnosis``.
 
@@ -372,6 +373,51 @@ def fit_diagnosis(session, worst_n: int = 8) -> dict[str, Any]:
         if o["observable_id"] in flagged:
             o["structure_flag"] = True
 
+    # SIZE CAP, worst-first, applied AFTER the structure flags exist. "One row per observable"
+    # stops being compact at scale: on lucarelli (65 observables) this table alone was ~6-8 kB
+    # per call, and it rides on payloads the caller re-sends in history on every later turn —
+    # the lead's history there grew 15.5k tokens/TURN and three of nine runs died on the context
+    # window before their fit budget. Worst-K keeps the rows the caller acts on (sorted by chi2,
+    # and every structure-FLAGGED row is retained regardless of rank, so the cap can never hide
+    # a verdict); the omission note says what was dropped, so a truncated table cannot read as a
+    # complete one.
+    # Selection keeps the rows a caller ACTS on, under a HARD ceiling. Three ranks are unioned
+    # because three different consumers each have their own notion of "worst" and a cap that
+    # knows only one of them silently changes their answers: chi2 (this table's own sort),
+    # |mean_weighted_residual| (the finish gate picks its headline observable by bias), and the
+    # structure flags (the rolled-up verdict must never be contradicted by a truncated table).
+    # The flagged set is CAPPED too — on a badly-fitting 65-observable problem the rollup can
+    # flag 50+, and an unbounded "keep all flagged" escape reproduces exactly the payload the cap
+    # exists to remove, in precisely the regime where context pressure is worst.
+    # `max_observables=None` (or 0) means NO cap — for the OFFLINE readers. The cap exists for
+    # the agent's context window; the judge/scoring path has no such pressure and its projection
+    # into result.json is permanent, so truncating there loses rows for every future analysis of
+    # the run. Same function, different budget, chosen by the caller.
+    _CAP, _BIAS_KEEP, _FLAG_KEEP = (max_observables or 0), 3, 6
+    omitted_note = None
+    if _CAP and len(per_observable) > _CAP:
+        keep, seen = [], set()
+        def _take(rows):
+            for r in rows:
+                if id(r) not in seen:
+                    seen.add(id(r)); keep.append(r)
+        _take(per_observable[:_CAP])                                     # worst by chi2
+        _take(sorted(per_observable, key=lambda r: abs(r.get("mean_weighted_residual") or 0.0),
+                     reverse=True)[:_BIAS_KEEP])                         # worst by BIAS
+        _take([r for r in per_observable if r.get("structure_flag")][:_FLAG_KEEP])
+        omitted = [r for r in per_observable if id(r) not in seen]
+        n_flagged_omitted = sum(1 for r in omitted if r.get("structure_flag"))
+        per_observable = [r for r in per_observable if id(r) in seen]    # keep chi2 order
+        omitted_note = {
+            "n_observables_omitted": len(omitted),
+            "omitted_chi2_total": round(sum(r["chi2"] for r in omitted), 3),
+            "n_flagged_omitted": n_flagged_omitted,
+            "note": (f"TRUNCATED: showing the worst {_CAP} by chi2, the worst {_BIAS_KEEP} by "
+                     f"|mean_weighted_residual| and up to {_FLAG_KEEP} structure-flagged rows. "
+                     "Aggregates over these rows are NOT whole-problem aggregates. The rolled-up "
+                     "residual_structure verdict on the fit result covers every observable."),
+        }
+
     # Noise-model plausibility, echoed here too (the agent reads this tool to see WHERE the fit is
     # off): an inflated/collapsed ESTIMATED sigma means a good BIC is not genuine adequacy — the fix
     # is mechanistic, not noise-side. Best-effort; advisory only, never breaks the diagnosis (the
@@ -389,7 +435,8 @@ def fit_diagnosis(session, worst_n: int = 8) -> dict[str, Any]:
     return {
         "n_points": int(len(d)),
         "total_chi2": round(float((d["_rw"] * d["_rw"]).sum()), 3),
-        "per_observable": per_observable,   # bounded: one row per observable
+        "per_observable": per_observable,   # bounded: worst-12 by chi2 + all flagged rows
+        **({"omitted": omitted_note} if omitted_note else {}),
         "worst_points": worst_points,       # bounded: <= worst_n rows
         "noise_sigma": noise_sigma,         # {} if no estimated sigma/fit; else {report, advice} (advice None when plausible)
         "hint": ("mean_weighted_residual far from 0 = a systematic over/under-shoot for that "

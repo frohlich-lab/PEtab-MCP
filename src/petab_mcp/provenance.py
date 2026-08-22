@@ -134,6 +134,7 @@ class ProvenanceStore:
         label: str | None = None,
         kind: str = "snapshot",
         parent: int | None = None,
+        model_source: str | None = None,
         meta: dict[str, Any] | None = None,
         simulation: dict[str, Any] | None = None,
         optimization: dict[str, Any] | None = None,
@@ -142,6 +143,25 @@ class ProvenanceStore:
         vdir = self.versions_dir / f"v{n}"
         vdir.mkdir(parents=True, exist_ok=True)
         (vdir / "model.ant").write_text(model_ant, encoding="utf-8")
+        # The Antimony the caller SUBMITTED, next to the build output. `model.ant` is what the
+        # reconcile and libantimony produced from it; this is what went in.
+        #
+        # This IS the agent's source, and that is what makes lineage checkable: structured
+        # operations apply to the stored source rather than to the re-render, so a child's
+        # source is its parent's source plus that call's operations. (It was NOT a source of
+        # truth under the deleted substring surface, where patches were quoted against the
+        # render and the submitted text was therefore render(base) + patches. Operating on the
+        # source directly was the behaviour change that fixed it.)
+        #
+        # It also keeps the reconcile's contribution visible — measured at 19 symbols per run,
+        # 3 of them minted `*_init` parameters the fit actually estimates — by giving the
+        # before-text to compare the render against.
+        #
+        # A parameters-only commit submits no model text, so it inherits the source it did not
+        # change (see session._snapshot_version); every version after the first authoring has
+        # one, and a rollback onto any of them lands on real source rather than a render.
+        if model_source:
+            (vdir / "model_source.ant").write_text(model_source, encoding="utf-8")
         # The parameter table is stored as a DataFrame (PEtab-style TSV), not JSON records,
         # so it round-trips as a real table with its dtypes intact.
         from .parameters import parameter_df_to_tsv
@@ -207,6 +227,19 @@ class ProvenanceStore:
     def get_parameter_df(self, n: int):
         """Read a version's parameter table back as a DataFrame (index = ``parameterId``)."""
         return self._read_parameter_df(self._version_dir(n))
+
+    def get_model_source(self, n: int) -> str | None:
+        """A version's SOURCE — the text its author last edited — or None if it has none.
+
+        A parameters-only commit INHERITS the source it did not change, so every version after
+        the first authoring has one; absent only for versions written before sources were stored,
+        where callers fall back to ``get_model_antimony`` (the re-render). Structured edits apply
+        here rather than to the render, which is what keeps a lineage checkable.
+
+        Raises ``UnknownEntityError`` for a version that does not exist — that is a bad argument,
+        not a missing source, and callers must not silently treat it as one."""
+        f = self._version_dir(n) / "model_source.ant"
+        return f.read_text(encoding="utf-8") if f.is_file() else None
 
     def get_model_antimony(self, n: int) -> str:
         """Read a version's ``model.ant`` ONLY — cheap, unlike :meth:`get_version`, which also

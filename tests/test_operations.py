@@ -109,17 +109,23 @@ def test_reauthor_auto_adds_species_and_params(session):
                      references=["PMID:1"])
     assert res["applied"] is True
     assert "D" in _species(session)
-    assert {"D_init", "k3"} <= _ids(session)  # new IC param + rate constant added to table
-    assert set(res["reconcile"]["parameters"]["added"]) == {"D_init", "k3"}
+    # D is created EMPTY (no declared initial), so it gets NO `D_init` — an unset initial is an
+    # empty pool, and minting a zero-nominal parameter for it is the artifact the IC convention
+    # removes. Only the rate constant is added.
+    assert "k3" in _ids(session)
+    assert "D_init" not in _ids(session)
+    assert set(res["reconcile"]["parameters"]["added"]) == {"k3"}
 
 
-def test_empty_pool_ic_fixed(session):
-    # A species created EMPTY (t0 == 0) has its IC FIXED at 0 (the empty-pool value rule); ICs are
+def test_empty_pool_ic_is_not_parametrised(session):
+    # A species created EMPTY (t0 == 0, whether written as `D = 0;` or left unwritten) gets NO
+    # `<sid>_init` at all. It used to get one FIXED at 0: a row nothing could ever use (the draft
+    # TSV carries only bounds/scale, and `parameters=` sets bounds/scale), which regenerated into
+    # the draft on every commit and, being zero-nominal, could not live on log10. ICs are
     # otherwise ESTIMATED by default.
     _set_model(session, ["J: B => D; k3 * B;"], justification="B converts to D")
-    row = session.problem.parameter_df.loc["D_init"]
-    assert int(row["estimate"]) == 0
-    assert float(row["nominalValue"]) == 0.0
+    assert "D_init" not in session.problem.parameter_df.index
+    assert session.model.sbml_model.getParameter("D_init") is None
 
 
 def test_seeded_ic_estimated_by_default(session):
@@ -159,8 +165,12 @@ def test_commit_result_includes_initial_conditions(session):
     res = _set_model(session, ["J: B => D; k3 * B;"], justification="B converts to D")
     ics = {r["species"]: r for r in res["initial_conditions"]}
     assert {"A", "B", "D"} <= set(ics)
-    assert ics["D"]["newly_added"] is True
+    # D is an empty pool carried as a literal: no IC parameter, so nothing was "added" for it,
+    # but the declared t=0 still governs the simulated state and must be reported as such.
+    assert ics["D"]["ic_parameter"] is None and ics["D"]["newly_added"] is False
+    assert ics["D"]["declared_t0"] == 0.0
     assert ics["D"]["t0_source"] == "fixed" and ics["D"]["declared_t0_used"] is True
+    assert "costs nothing in k" in ics["D"]["note"]
 
 
 def test_no_parameter_estimate_or_fix_operation():

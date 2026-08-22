@@ -528,3 +528,59 @@ def test_residual_flag_separates_untested_from_unflagged(session):
     session.simulation = {"records": [_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0)
                                       for t in range(10)]}
     assert data_access.residual_flag(data_access.residual_structure_rollup(session)) is True
+
+
+def test_fit_diagnosis_caps_per_observable_at_worst_12(session):
+    """One-row-per-observable stops being compact at scale: on lucarelli (65 observables) this
+    table alone was ~6-8 kB per call, re-sent in the caller's history every later turn — the
+    lead's history there grew ~15.5k tokens/turn and 3/9 runs died on the context window. The
+    cap keeps the worst-12 by chi2 plus EVERY structure-flagged row (a cap must never hide a
+    verdict), and the omission note keeps a truncated table from reading as complete."""
+    recs = []
+    for i in range(20):
+        # descending chi2 with i: obs_00 worst. 4 points each so the structure tests can run.
+        for t, r in ((0.0, 2.0), (1.0, -2.0), (2.0, 2.0), (3.0, -2.0)):
+            recs.append({"observable_id": f"obs_{i:02d}", "condition_id": "c0", "time": t,
+                         "measurement": 1.0, "simulation": 1.0,
+                         "residual_weighted": r * (20 - i) / 20})
+    session.simulation = {"records": recs,
+                          # a stored verdict flagging a LOW-chi2 observable, to prove retention
+                          "residual_structure": {"flagged_observables": ["obs_19"]}}
+    out = data_access.fit_diagnosis(session)
+    ids = [r["observable_id"] for r in out["per_observable"]]
+    assert len(ids) == 13                                  # worst 12 + the flagged straggler
+    assert ids[:12] == [f"obs_{i:02d}" for i in range(12)] # worst-first by chi2
+    assert "obs_19" in ids                                  # flagged row survives the cap
+    assert out["omitted"]["n_observables_omitted"] == 7
+    assert out["omitted"]["omitted_chi2_total"] > 0
+    # small problems are untouched: no omission note, all rows present
+    session.simulation = {"records": recs[:16]}            # 4 observables only
+    out2 = data_access.fit_diagnosis(session)
+    assert len(out2["per_observable"]) == 4 and "omitted" not in out2
+
+
+def test_fit_diagnosis_cap_is_bounded_even_when_everything_is_flagged(session):
+    """The flagged-row escape must not reopen the payload it caps. On a badly-fitting
+    65-observable problem the rollup can flag 50+ observables; an unbounded 'keep all flagged'
+    rebuilt exactly the table the cap removes, in the regime where context pressure is worst.
+    The bias-rank keep also has to be honoured, since the finish gate ranks by bias, not chi2."""
+    recs = []
+    for i in range(30):
+        for t, r in ((0.0, 2.0), (1.0, -2.0), (2.0, 2.0), (3.0, -2.0)):
+            recs.append({"observable_id": f"obs_{i:02d}", "condition_id": "c0", "time": t,
+                         "measurement": 1.0, "simulation": 1.0,
+                         "residual_weighted": r * (30 - i) / 30})
+    # one low-chi2 observable with a LARGE systematic bias — the finish gate's "worst"
+    for t in (0.0, 1.0, 2.0, 3.0):
+        recs.append({"observable_id": "obs_bias", "condition_id": "c0", "time": t,
+                     "measurement": 1.0, "simulation": 1.0, "residual_weighted": 0.9})
+    session.simulation = {"records": recs,
+                          "residual_structure": {"flagged_observables":
+                                                 [f"obs_{i:02d}" for i in range(30)]}}
+    out = data_access.fit_diagnosis(session)
+    ids = [r["observable_id"] for r in out["per_observable"]]
+    assert len(ids) <= 21, f"cap unbounded: {len(ids)} rows"      # 12 chi2 + 3 bias + 6 flagged
+    assert "obs_bias" in ids                                       # bias-ranked row retained
+    assert out["omitted"]["n_observables_omitted"] > 0
+    assert out["omitted"]["n_flagged_omitted"] > 0                 # says flagged rows were cut
+    assert "TRUNCATED" in out["omitted"]["note"]

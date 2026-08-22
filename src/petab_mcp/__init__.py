@@ -20,6 +20,14 @@ from .errors import (
     UnknownEntityError,
     ValidationError,
 )
+from . import antimony_guard
+
+# Process-wide, package-level: libantimony keeps global state and is not thread-safe, while
+# FastMCP dispatches each tool call on its own worker thread (20/20 draft-arm runs of the
+# 2026-08-15 sneyd A/B died on signal 11 without this). Installed here rather than in session.py
+# so the altitude matches the scope, and because importing ANY submodule runs this file.
+antimony_guard.install()
+
 from .session import PetabSession
 
 __all__ = [

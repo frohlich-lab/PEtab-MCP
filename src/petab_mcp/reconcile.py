@@ -55,13 +55,14 @@ _IDENT_RE = re.compile(r"(?<![\w.])[A-Za-z_]\w*")
 #: The t=0 value every SEEDED species is declared at (see :func:`seed_model_antimony`).
 #:
 #: The value is arbitrary and identical for every problem — it carries no information, and the
-#: multistart ignores a nominal value anyway — but it may not be 0 or 1. Those two are the
-#: leak-free conventions :func:`sync_parameter_table` holds an initial condition FIXED at (an
-#: empty pool / a unit normalization), and reconcile never re-touches a row once it exists. A
-#: seed at 0 would therefore mint a FIXED-at-0 `<species>_init` for every seeded species and
-#: freeze its initial condition for the rest of the run — silently reinstating the frozen-IC trap
-#: of issue #90, on exactly the species the caller is about to build a mechanism around. Any
-#: other positive value lands on the ordinary path: estimated, on log10.
+#: multistart ignores a nominal value anyway — but it may not be 0 or 1. An explicit 0 is the
+#: author's-design skip in :func:`ensure_parametric_initial_conditions` (no ``<sid>_init`` is
+#: minted at all — the state starts empty), and 1 is the unit-normalization convention
+#: :func:`sync_parameter_table` holds an IC FIXED at; reconcile never re-touches a row once it
+#: exists. A seed at either value would therefore leave every seeded species' initial condition
+#: constant for the rest of the run — silently reinstating the frozen-IC trap of issue #90, on
+#: exactly the species the caller is about to build a mechanism around. Any other positive value
+#: lands on the ordinary path: estimated, on log10.
 SEED_INITIAL_VALUE = 0.1
 
 # PEtab's per-observable placeholders, substituted from the measurement table at import time.
@@ -417,7 +418,8 @@ def assignment_rule_targets(sm) -> set[str]:
     return out
 
 
-def ensure_parametric_initial_conditions(sm, skip_species: set[str] | None = None) -> list[str]:
+def ensure_parametric_initial_conditions(sm, skip_species: set[str] | None = None,
+                                         protect_ids: set[str] | None = None) -> list[str]:
     """Give every species a parametric IC; returns the IC parameter ids created/kept.
 
     ``skip_species`` are species whose initial condition is set PER CONDITION by a condition-table
@@ -439,6 +441,13 @@ def ensure_parametric_initial_conditions(sm, skip_species: set[str] | None = Non
     # NOT unioned into `skip`: the `rule_driven` branch below runs first and `continue`s, so a union
     # here could never change a decision -- it would only read as if there were two paths.
     skip = skip_species or set()
+    # Ids that must exist however the species is initialised: a SHIPPED-FIXED `<sid>_init`.
+    # Without this, the zero/unset skip below silently drops one, `sync_parameter_table` removes
+    # its row, and `validate_problem` then REJECTS the commit ("ships FIXED ... but this edit
+    # REMOVED it from the model") -- with no edit the agent could make to satisfy it short of
+    # misstating the biology. Minting it back is the only outcome that keeps such a problem
+    # editable, and a shipped row is the problem author's decision, not this convention's.
+    protect = protect_ids or set()
     ic_params: list[str] = []
     for i in range(sm.getNumSpecies()):
         sp = sm.getSpecies(i)
@@ -464,12 +473,30 @@ def ensure_parametric_initial_conditions(sm, skip_species: set[str] | None = Non
             # clobber it with a fresh <sid>_init, which would discard the estimated seed(s).
             ic_params.extend(expr_params)
             continue
-        value = 0.0
+        value = None
         if sp.isSetInitialConcentration():
             value = sp.getInitialConcentration()
         elif sp.isSetInitialAmount():
             value = sp.getInitialAmount()
-        ic_params.append(_set_parametric_ic(sm, sid, value))
+        # `value is None` is the UNSET species (`species B;` with no assignment): libantimony
+        # sets neither initialConcentration nor initialAmount, and SBML reads it as an empty
+        # pool. It is the same state as an explicit `B = 0;` and must take the same branch —
+        # otherwise the two spellings produce different parameter tables and the regenerating
+        # `<sid>_init` artifact returns one omitted assignment later.
+        if (value is None or value == 0.0) and f"{sid}_init" not in protect:
+            # An EXPLICIT zero initial ("IPR_I = 0;") is the author's design — the state starts
+            # empty — not a missing value to parametrise. Same class of reason as the
+            # condition-column skip above: minting `<sid>_init` here adds an estimated
+            # zero-nominal parameter nobody asked for, and because this runs on EVERY commit and
+            # the drafts are refreshed from the committed model, the row REGENERATES no matter
+            # how often it is edited away. Measured (sneyd/fujita A/B, draft arm): one lead
+            # re-delegated the deletion of a minted `IPR_S_init` 17 times, misattributing the
+            # server's artifact to its editor subagent; the only two unfixable lint dead-ends in
+            # the arm were log10-scale-on-zero-nominal conflicts on minted `_init` rows. A zero
+            # nominal also breaks log-scale estimation by construction, which is why these rows
+            # kept surfacing as lint issues no requested change could legally fix.
+            continue
+        ic_params.append(_set_parametric_ic(sm, sid, value if value is not None else 0.0))
     return ic_params
 
 
@@ -1669,7 +1696,8 @@ def initial_conditions_report(
     model op is what lets the caller see immediately whether a t=0 "fix" took — instead of
     re-authoring the model under a series of different IC naming schemes that all fit identically
     because none of them ever changed the estimate status (see issue #57). ICs are ESTIMATED by
-    default (fixed only at 0 = empty pool or 1 = unit normalization); this is decided by value in
+    default; an IC of exactly 1 (a unit normalization) is held FIXED, and an IC of exactly 0 (an
+    empty pool, including an unwritten initial) is not parametrised at all. Decided by value in
     reconcile, not switchable from the model text.
 
     For each species returns ``{species, ic_parameter, declared_t0, estimated, set_by_condition,
@@ -1699,6 +1727,12 @@ def initial_conditions_report(
             declared = float(sp.getInitialConcentration())
         elif sp.isSetInitialAmount():
             declared = float(sp.getInitialAmount())
+        elif ic is None:
+            # No IC parameter AND no declared initial: an unset species is an empty pool in SBML,
+            # and `ensure_parametric_initial_conditions` deliberately mints nothing for it. Report
+            # the value it actually simulates from rather than None, which would otherwise fall
+            # through the FIXED branch below and be described as "shipped as a fixed parameter".
+            declared = 0.0
         estimated = ic is not None and is_parameter_estimated(problem, ic)
         set_by_condition = sid in cond_cols or (ic is not None and ic in cond_cols)
         if set_by_condition:
@@ -1718,7 +1752,10 @@ def initial_conditions_report(
             # FIXED. Under the always-on default, an IC is only fixed at the two leak-free value
             # conventions (0 = empty pool, 1 = unit normalization) or because it was shipped as a
             # fixed parameter row; say which, so the caller sees why it is not estimated.
-            if declared == 0.0:
+            if ic is None:
+                why = ("an empty pool (t=0 == 0), carried as a literal — no `<species>_init` "
+                       "parameter exists for it, so it costs nothing in k")
+            elif declared == 0.0:
                 why = "an empty pool (t=0 == 0)"
             elif declared == 1.0:
                 why = "a unit normalization (t=0 == 1)"
@@ -2002,8 +2039,8 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
 def reconcile(problem, shipped=None) -> dict[str, Any]:
     """Full reconciliation after a structural edit: prune, parametric ICs, table sync.
 
-    Initial conditions are estimated by default (fixed only at 0 or 1; see
-    :func:`sync_parameter_table`). ``shipped`` is the problem's original parameter table, so a
+    Initial conditions are estimated by default; an IC of exactly 1 is held FIXED and an IC of
+    exactly 0 gets no parameter at all (see :func:`ensure_parametric_initial_conditions`). ``shipped`` is the problem's original parameter table, so a
     row the model reintroduces comes back as the problem defined it — see
     :func:`sync_parameter_table`.
 
@@ -2014,7 +2051,13 @@ def reconcile(problem, shipped=None) -> dict[str, Any]:
     pruned = prune_orphans(problem)
     # Species whose IC is set per-condition (a condition-table column) are driven by the condition
     # table, not estimated — skip parametrising them (see ensure_parametric_initial_conditions).
-    ensure_parametric_initial_conditions(sm, skip_species=condition_column_symbols(problem))
+    # `protect_ids` is the SHIPPED table's own ids: if the problem author shipped a `<sid>_init`
+    # row, that row is part of the problem definition and the zero/unset skip must not delete it
+    # out from under them (`session.protected_fixed_parameter_ids` deliberately excludes IC
+    # parameters, so nothing else would catch it).
+    ensure_parametric_initial_conditions(
+        sm, skip_species=condition_column_symbols(problem),
+        protect_ids=set(shipped.index) if shipped is not None else None)
     synced = sync_parameter_table(problem, shipped=shipped)
     return {"pruned": pruned, "parameters": synced}
 

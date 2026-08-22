@@ -153,3 +153,58 @@ def test_fit_n_workers_env_precedence(monkeypatch):
         # constant doesn't leak the patched values into later tests.
         monkeypatch.undo()
         importlib.reload(fitting)
+
+
+# ------------------------------------------------------- fitted-parameters diff (payload diet)
+def test_slim_fitted_parameters_diffs_against_previous_version():
+    """The 84-118-entry fitted dict rode on every make_changes/get_fit_summary payload, re-sent
+    in history every later turn. It becomes NEW-or-moved->1% vs the previous version's meta;
+    full values stay pullable (get_parameters) and archived (meta.json)."""
+    from petab_mcp.fitting import _slim_fitted_parameters
+
+    class _Prov:
+        """Two reads now: get_meta(version) for the PARENT pointer, then get_meta(parent) for
+        its fitted values — the baseline is the recorded parent, not version-1, so a rollback
+        does not diff against the branch the run abandoned."""
+
+        def get_meta(self, n):
+            if n == 5:
+                return {"parent": 4}
+            assert n == 4, f"baseline must be the parent (4), got {n}"
+            return {"fitted_parameters": {"a": 1.0, "b": 2.0, "c": 3.0}}
+
+    class _S:
+        provenance = _Prov()
+
+    out = {"version": 5,
+           "fitted_parameters": {"a": 1.005, "b": 2.5, "d": 7.0},   # a ~unchanged, b moved, d new
+           "parameter_scales": {"a": "log10", "b": "log10", "d": "lin"}}
+    _slim_fitted_parameters(_S(), out)
+    assert out["fitted_parameters"] is None
+    assert out["fitted_parameters_changed"] == {"b": 2.5, "d": 7.0}
+    assert out["n_parameters_unchanged"] == 1
+    assert out["parameter_scales"] == {"b": "log10", "d": "lin"}
+
+
+def test_slim_fitted_parameters_keeps_the_first_fit_whole():
+    """version 0 (or no previous fit) has nothing to diff against — the first read is the one
+    place the whole vector genuinely informs, and it must stay intact."""
+    from petab_mcp.fitting import _slim_fitted_parameters
+
+    out = {"version": 0, "fitted_parameters": {"a": 1.0}, "parameter_scales": {"a": "lin"}}
+    _slim_fitted_parameters(object(), out)
+    assert out["fitted_parameters"] == {"a": 1.0}
+    assert "fitted_parameters_changed" not in out
+
+
+def test_slim_fitted_parameters_never_degrades_on_failure():
+    from petab_mcp.fitting import _slim_fitted_parameters
+
+    class _Boom:
+        @property
+        def provenance(self):
+            raise RuntimeError("store gone")
+
+    out = {"version": 3, "fitted_parameters": {"a": 1.0}, "parameter_scales": {"a": "lin"}}
+    _slim_fitted_parameters(_Boom(), out)
+    assert out["fitted_parameters"] == {"a": 1.0}   # slimming aid must not break the score payload

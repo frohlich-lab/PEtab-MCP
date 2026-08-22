@@ -649,3 +649,123 @@ def test_fit_tools(tmp_path):
         assert trace["rows"][0]["n"] >= 1
 
     asyncio.run(go())
+
+
+def test_get_parameters_filters_rows(tmp_path):
+    """`parameter_ids`/`role` filter server-side. On 100+-row tables (lucarelli: 118) the
+    unfiltered payload was a top-3 context cost, re-sent in the caller's history every later
+    turn — and telling the model to ignore rows does not un-bill the tokens."""
+    mcp = _server(tmp_path)
+
+    def rows(payload):
+        return payload["result"] if isinstance(payload, dict) and "result" in payload else payload
+
+    async def go():
+        allrows = rows(_structured(await mcp.call_tool("get_parameters", {})))
+        assert len(allrows) >= 3
+        some_id = allrows[0]["parameterId"]
+        only = rows(_structured(await mcp.call_tool(
+            "get_parameters", {"parameter_ids": [some_id]})))
+        assert [r["parameterId"] for r in only] == [some_id]
+        # pick a row with a TRUTHY role: parameters_to_records leaves role None for anything
+        # reconcile cannot classify, and role=None would skip the filter and fail for reasons
+        # unrelated to the code under test.
+        role = next(r["role"] for r in allrows if r.get("role"))
+        byrole = rows(_structured(await mcp.call_tool("get_parameters", {"role": role})))
+        assert byrole and all(r["role"] == role for r in byrole)
+        assert len(byrole) <= len(allrows)
+        # an unknown id is an ERROR, not an empty list: [] is indistinguishable from a real
+        # empty table, and the agent would act on "that parameter does not exist".
+        # An unknown id RAISES. It must not return [] (indistinguishable from a real empty
+        # table) and it must not return a ctx.run {ok:false} dict either: this tool declares a
+        # LIST return, so FastMCP validates its structured output against an array schema and a
+        # dict fails validation with a RuntimeError that KILLS THE RUN — that regression
+        # cost 6 of 14 runs in the 2026-08-16 sweep before it was caught. The raise becomes a
+        # ToolMessage the model reads and corrects.
+        raised = None
+        try:
+            await mcp.call_tool("get_parameters", {"parameter_ids": ["no_such_parameter"]})
+        except Exception as exc:            # fastmcp.exceptions.ToolError
+            raised = exc
+        assert raised is not None, "an unknown id must not return [] — that reads as 'no such row'"
+        assert "unknown parameter_ids" in str(raised)
+        # The message must CARRY its remedy, and that is asserted on the string a caller
+        # receives — not on the helper, and not on the source. Both earlier guards were written
+        # the other way and both passed while the feature was dead: the near-miss hint was
+        # computed into a local and never interpolated into the error, and a unit test that
+        # called the scorer directly could not see it.
+        every_id = sorted(str(r["parameterId"]) for r in allrows)
+        if len(every_id) <= 60:
+            assert all(p in str(raised) for p in every_id), \
+                "the id list is the remedy; truncating it sends the caller back to guessing"
+        # A token SWAP is the commonest real miss (`pEGFR_scaling` for `scaling_pEGFR`), so
+        # manufacture exactly that from a genuine id and require the message to name it.
+        swap = next(((("_".join(reversed(p.split("_")))), p)
+                     for p in every_id if "_" in p
+                     and "_".join(reversed(p.split("_"))) not in every_id), None)
+        if swap is not None:
+            typo, meant = swap
+            swapped_err = None
+            try:
+                await mcp.call_tool("get_parameters", {"parameter_ids": [typo]})
+            except Exception as exc:
+                swapped_err = exc
+            assert swapped_err is not None
+            assert "Did you mean" in str(swapped_err) and meant in str(swapped_err), \
+                f"a swapped id must be pointed back at {meant!r}; got: {swapped_err}"
+        # ...and the VALID paths still return a list, which is the contract that broke.
+        assert isinstance(allrows, list) and isinstance(byrole, list)
+
+    asyncio.run(go())
+
+
+def test_an_unknown_id_suggests_the_one_the_caller_meant_even_when_the_tokens_are_SWAPPED():
+    """Measured on the 2026-08-17 sweep: all 18 unknown-id errors invented the right CONCEPT under
+    the wrong convention, and the agent tried BOTH token orderings across runs (`pEGFR_scaling`
+    5x, `scaling_pEGFR` 4x). Plain difflib fails exactly there — it compares characters in order,
+    so a swap reads as a mismatch and it suggests a DIFFERENT parameter (`EGFR_init`) with
+    confidence. That is worse than no hint."""
+    # ONE definition of the rule, shared by every surface that reports an unknown id — a second
+    # copy in server.py meant a cutoff tuned on one surface silently diverged from the other.
+    from petab_mcp.model_edits import closest_symbols
+    known = sorted(["Akt_init", "EGFR_init", "S6_init", "k_akt_phos", "scaling_pEGFR",
+                    "scaling_pS6", "k_bind"])
+    assert closest_symbols("pEGFR_scaling", known)[0] == "scaling_pEGFR"   # the swap
+    assert closest_symbols("pAkt_init", known)[0] == "Akt_init"            # ordinary near-miss
+    assert closest_symbols("k_totally_unrelated_xyz", known) == []         # no false confidence
+
+
+def test_the_unknown_id_message_carries_its_own_remedy():
+    """Asserted on the MESSAGE the server builds, not on the helper beside it and not on the
+    module source. Both of those weaker forms were written first and both passed while the hint
+    they were guarding was assigned to a local and never interpolated."""
+    from petab_mcp.server import unknown_ids_message
+
+    small = sorted(["Akt_init", "EGFR_init", "S6_init", "scaling_pEGFR", "k_bind"])
+    msg = unknown_ids_message(["pEGFR_scaling"], small)
+    assert "Did you mean" in msg and "scaling_pEGFR" in msg, "the token swap must be named"
+    assert all(p in msg for p in small), "a short table must be listed in full"
+
+    # Over the cap: truncated, but never a dead end.
+    big = [f"p{i:03d}_rate" for i in range(80)]
+    big_msg = unknown_ids_message(["nope_xyz"], big)
+    assert "(+20 more" in big_msg
+    assert "call get_parameters() with no parameter_ids" in big_msg
+    assert "p079_rate" not in big_msg, "the ceiling must still bind — lucarelli is 118 rows"
+
+    # No false confidence when nothing is close.
+    assert "Did you mean" not in unknown_ids_message(["totally_unrelated_xyz"], small)
+
+
+def test_the_reserved_t_hint_says_use_the_builtin_time_not_a_rename():
+    """`t` collides because the caller is expressing TIME, and renaming is the wrong fix: a free
+    symbol has nothing binding it to simulation time, so it is estimated as a parameter and the
+    time dependence silently disappears. 4 of 16 isensee runs hit this collision on 2026-08-17 and
+    the one that took the old 'rename to tau' advice lost ~512 nll to it."""
+    from petab_mcp.operations import _compile_fit_failure_message
+    msg = _compile_fit_failure_message(KeyError("amici_t"))
+    assert "built-in" in msg and "`time`" in msg
+    assert "tau" in msg and "free parameter" in msg, "must say WHY renaming fails"
+    # the other reserved names keep their plain rename hints
+    other = _compile_fit_failure_message(KeyError("amici_k"))
+    assert "k_rate" in other and "built-in" not in other

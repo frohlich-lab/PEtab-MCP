@@ -1339,6 +1339,91 @@ def noise_sigma_advice(report: "dict[str, Any] | None") -> str | None:
     return noise_sigma_advice_for(noise_sigma_inflated(report), noise_sigma_collapsed(report))
 
 
+
+def slim_fit_payload(session, out: dict) -> dict:
+    """Public entry point: slim ``out`` in place and return it, for callers that assemble a fit
+    payload themselves (``session._fit_result`` and friends build it via
+    :func:`fit_result_block`, which has no session and so cannot do this itself). The
+    make_changes result is the payload the lead sees MOST — slimming only get_fit_summary left
+    the dominant instance untouched, and shipped two different shapes for the same quantity."""
+    _slim_fitted_parameters(session, out)
+    return out
+
+
+def _slim_fitted_parameters(session, out: dict) -> None:
+    """Replace the full fitted-values dict with a CHANGED-vs-previous-commit view, in place.
+
+    The full dict is 84-118 entries on the large problems and rides on every make_changes /
+    get_fit_summary payload, each re-sent in the caller's history on every later turn — on
+    lucarelli the lead's history grew ~15.5k tokens/turn and three of nine runs died on the
+    context window before their fit budget. Most entries barely move between commits; the
+    caller acts on the ones that DID. Full values stay one call away (`get_parameters` serves
+    nominalValue = the last fit) and the ARCHIVE keeps the complete dict per version
+    (meta.json), so only the push is slimmed — the pull is intact.
+
+    Semantics: `fitted_parameters_changed` = entries NEW or moved >1% (relative, absolute floor
+    for zeros) vs the PREVIOUS version's stored fit; `n_parameters_unchanged` counts the rest.
+    The FIRST fit keeps the full dict under the original key — nothing to diff against, and the
+    first read is where the whole vector genuinely informs. Best-effort: any failure keeps the
+    full dict, because a slimming aid must never degrade the score payload.
+    """
+    fitted = out.get("fitted_parameters")
+    version = out.get("version")
+    if not isinstance(fitted, dict) or not isinstance(version, int) or version <= 0:
+        return
+    try:
+        # The PARENT, not version-1: after a restore/rollback the tip of the abandoned branch is
+        # not what this fit descends from, and diffing against it reports parameters identical to
+        # the real parent as "moved" and vice versa. provenance records `parent` per version.
+        meta = session.provenance.get_meta(version) or {}
+        base_v = meta.get("parent")
+        if not isinstance(base_v, int) or base_v < 0:
+            base_v = version - 1
+        prev = session.provenance.get_meta(base_v) or {}        # meta only: no 600kB sims read
+        before = prev.get("fitted_parameters")
+        if not isinstance(before, dict) or not before:
+            return
+        def _num(x):
+            try:
+                f = float(x)
+            except (TypeError, ValueError):
+                return None
+            return f if math.isfinite(f) else None
+        changed = {}
+        for pid, val in fitted.items():
+            new_v, old_v = _num(val), _num(before.get(pid))
+            # NON-FINITE is always reported: a parameter that diverged to NaN/inf is the single
+            # most diagnostic entry in the vector, and `abs(nan - x) > tol` is False, so a plain
+            # comparison would file it as "unchanged" and drop it from the payload entirely.
+            if new_v is None or old_v is None:   # non-finite, unparseable, or NEW
+                changed[pid] = val
+                continue
+            if abs(new_v - old_v) / max(abs(old_v), 1e-12) > 0.01:
+                changed[pid] = val
+        # REMOVALS are a change too: a structural re-author that drops a parameter would
+        # otherwise be invisible, since the loop above only walks the current vector.
+        removed = sorted(set(before) - set(fitted))
+        scales = out.get("parameter_scales") or {}
+        out["fitted_parameters_changed"] = changed
+        if removed:
+            out["parameters_removed"] = removed
+        out["n_parameters_unchanged"] = len(fitted) - len(changed)
+        out["fitted_parameters_note"] = (
+            f"only parameters NEW, REMOVED or moved >1% vs version {base_v} (this fit's parent) "
+            f"are listed; {len(fitted) - len(changed)} unchanged "
+            "(read any value via get_parameters)."
+        )
+        out["fitted_parameters"] = None
+        # Scales for everything the payload still NAMES (changed + removed). Nulling them
+        # wholesale when nothing changed left a read with no scale information at all, right
+        # after _parameter_scales_for reconstructed it precisely so a linear value is never
+        # misread as a log10 one.
+        named = set(changed) | set(removed)
+        out["parameter_scales"] = {k: v for k, v in scales.items() if k in named}
+    except Exception:  # noqa: BLE001 - never degrade the score payload over a slimming aid
+        return
+
+
 def fit_summary(session, engine) -> dict[str, Any]:
     """The current fit metrics, no per-point records — a cheap score read (backs
     ``get_fit_summary``).
@@ -1404,6 +1489,13 @@ def fit_summary(session, engine) -> dict[str, Any]:
     _invalid = session.invalid_comparison
     if _invalid:
         out["invalid_comparison"] = _invalid
+    # LAST, after every field derived FROM the fitted values has been computed. Slimming earlier
+    # silently disabled the noise-sigma verdict: noise_sigma_report(problem, None) returns {},
+    # which zeroes noise_sigma_inflated/collapsed — the finish gate's gamed-noise refusal and the
+    # judge's sigma-implausibility check both read exactly those keys, so a run that bought a good
+    # BIC with an inflated sigma would have scored success. A payload diet must be the last step,
+    # never an input to one.
+    _slim_fitted_parameters(session, out)
     return out
 
 

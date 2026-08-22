@@ -98,8 +98,10 @@ def test_versioning_diff_and_rollback(session, reauthor_toy):
 
     reauthor_toy(session, ["J: B => E; k4 * B;"], justification="y")
     diff = session.provenance.diff_versions(0, 1)
-    assert set(diff["parameter_diff"]["added"]) == {"E_init", "k4"}
-    assert set(diff["parameter_diff"]["removed"]) == {"D_init", "k3"}
+    # D and E are both created empty, so neither gets a `<sid>_init` (see the IC convention in
+    # reconcile.ensure_parametric_initial_conditions) — only the rate constants move.
+    assert set(diff["parameter_diff"]["added"]) == {"k4"}
+    assert set(diff["parameter_diff"]["removed"]) == {"k3"}
 
     # rollback to v0 makes it the working state and moves HEAD back onto it — no new version
     out = session.rollback_to(0)

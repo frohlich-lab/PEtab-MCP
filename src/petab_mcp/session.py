@@ -261,6 +261,39 @@ class PetabSession:
         # parameters WITHOUT worsening the nll — a comparison that CAN answer the question.
         self.invalid_comparison: str | None = None
 
+        # The Antimony the CALLER actually submitted for the next commit — the agent's own text,
+        # before the reconcile adds declarations and before libantimony re-renders it. Stored
+        # alongside the committed model as ``model_source.ant`` (see _snapshot_version).
+        #
+        # WHY IT IS WORTH A FILE. What every version stores today is the BUILD OUTPUT, and three
+        # separate investigations broke on that:
+        #   * LINEAGE cannot be recovered from it. A child's stored text is a re-render, so
+        #     "which version was this patched from" is not answerable by text distance —
+        #     measured, the attempt mis-assigned 43% of parents on runs that could not even fork.
+        #     A SOURCE changes only by the agent's own patches, so `child.source ==
+        #     parent.source + patches` is checkable rather than inferable.
+        #   * ANALYSIS of what the agent did (which patches landed, whether an edit was additive)
+        #     has to reverse-engineer intent out of a rendered artifact.
+        #   * The render/source gap is itself a measured failure mode: 19% of failed patch
+        #     anchors matched the agent's own text but not the render.
+        # Nothing READS this yet — it is provenance, not behaviour. The agent still sees the
+        # committed model, because the reconcile's additions (measured: 19 symbols per run,
+        # 3 of them minted `*_init` parameters it is actually fitting) are real and must not
+        # vanish from what it reasons about.
+        self.submitted_source: str | None = None
+
+        # The CURRENT branch's model source: the text the caller last authored (`antimony=`) or
+        # last edited (`model_edits`), carried across calls so a structured edit never has to
+        # re-derive it from the render. Restored on rollback with the rest of the state.
+        self.model_source: str | None = None
+
+        # The version the NEXT commit descends from, or None for "whatever HEAD is".
+        # `make_changes(edits=..., base_version=N)` patches version N's stored text, so the commit
+        # that follows is a child of N even when later versions exist. The server sets this for
+        # the duration of such a call (see server.make_changes); everything else leaves it None
+        # and the snapshot falls back to HEAD, which is correct for an edit of the working model.
+        self.derived_from: int | None = None
+
         # De-duplication memory for identical fits (see :mod:`dedup` and issue #59): how many times
         # each *identical* estimation problem has been handed to `fit` this run, keyed by structure
         # fingerprint + estimation setup (see `dedup.reauthor_key`) so that only truly identical
@@ -287,6 +320,10 @@ class PetabSession:
                 else R.seed_model_antimony(self.problem))
             # durable resume: restore the working state from the latest version
             self.apply_version(self.provenance.current_version)
+            # apply_version restores `model_source` too, so a durable resume (or recover_run.py)
+            # keeps editing the SOURCE rather than silently adopting the render as its base —
+            # which would break `child.source == parent.source + ops` exactly at the resume
+            # boundary, with nothing in the payload marking where.
             # ...and seed the best-BIC checkpoint from the prior events, so the first commit after
             # a resume is judged against the run's real best rather than treated as a free new best.
             self._seed_progress_from_provenance()
@@ -593,6 +630,12 @@ class PetabSession:
             self._set_model_from_antimony(snap["model_antimony"])
             self.problem.parameter_df = self.provenance.get_parameter_df(version)
             self.simulation = snap.get("simulation")
+            # The branch source moves WITH the model. Without this, a structured edit after a
+            # rollback applies its operations to the abandoned branch's text and silently
+            # resurrects it. Falls back to the restored render for versions stored before
+            # sources existed, which is the correct base for them.
+            self.model_source = (self.provenance.get_model_source(version)
+                                 or snap["model_antimony"])
             # Restore this version's fit artifacts too: the optimization traces/results are
             # persisted per version (``None`` for legacy/unfitted versions), so a rollback or
             # durable resume brings them back rather than dropping them.
@@ -642,6 +685,25 @@ class PetabSession:
             parameters=self.problem.parameter_df,
             label="fit",
             kind="fit",
+            # LINEAGE, not chronology. `parent` defaults to HEAD, which is right for an edit of
+            # the working model and WRONG for a fork: `make_changes(edits=..., base_version=N)`
+            # patches version N's stored text, so the child descends from N however many other
+            # versions were committed since. Measured on the 30 diff-edit runs: 207 of 311
+            # base_version calls pointed at something older than HEAD, and every one of those
+            # was recorded as a child of HEAD — 30/30 version trees looked perfectly linear
+            # while two thirds of the forks were real. Everything that reasons parent-to-child
+            # then compares against a model the child never came from: `_check_nesting_vs_parent`
+            # (so the advisory describes a comparison that did not happen),
+            # `fitting._slim_fitted_parameters` (diffs against the wrong predecessor), and any
+            # later trajectory analysis.
+            parent=self.derived_from,
+            # A commit that changed only BOUNDS still has a source — the one it inherited. Writing
+            # None there left the version with no `model_source.ant`, and the next resume or
+            # rollback onto it fell back to the reconciled RENDER as the branch base: operations
+            # then edit render text, `child.source == parent.source + ops` quietly stops holding,
+            # and nothing in the payload marks where it stopped. Carry the current source forward
+            # so every version after the first authoring has one.
+            model_source=self.submitted_source or self.model_source,
             meta=meta,
             simulation=fitting.build_sim_payload_for_version(sim),
             optimization=fitting.build_optimization_payload_for_version(self.optimization),
@@ -757,7 +819,12 @@ class PetabSession:
         from . import nesting
         from .parameters import estimated_ids
 
-        parent_version = self.provenance.current_version
+        # The model this child DESCENDS FROM, which is not HEAD when the call forked
+        # (`make_changes(model_edits=..., base_version=N)`). Comparing k and nll against HEAD
+        # there advises on a comparison that never happened — the very defect `derived_from`
+        # was added to fix, which this consumer would otherwise still exhibit.
+        parent_version = (self.derived_from if self.derived_from is not None
+                          else self.provenance.current_version)
         if parent_version < 0:
             return None
         try:
@@ -1293,8 +1360,8 @@ class PetabSession:
                 # this key rides on every fit and is re-sent in the agent's history each turn
                 # (PR #23), so it is one line only when there is something to say.
                 **({"nesting_advisory": nesting_advisory} if nesting_advisory else {}),
-                **fitting.fit_result_block(
-                    fitsim, improvement, self.problem.parameter_df, problem=self.problem)}
+                **fitting.slim_fit_payload(self, fitting.fit_result_block(
+                    fitsim, improvement, self.problem.parameter_df, problem=self.problem))}
 
     def _fit_noop_result(self, decision: dict[str, Any],
                          staged: "list[dict[str, Any]] | None" = None) -> dict[str, Any]:
@@ -1340,8 +1407,8 @@ class PetabSession:
             # Falls back to the stored flag if the tests can't run now; None (never False) when
             # neither is available: "unknown", not a clean bill of health.
             "residual_flagged": (meta.get("residual_flagged") if flag is None else flag),
-            **fitting.fit_result_block(
-                sim, parameter_df=self.problem.parameter_df, problem=self.problem),
+            **fitting.slim_fit_payload(self, fitting.fit_result_block(
+                sim, parameter_df=self.problem.parameter_df, problem=self.problem)),
         }
 
     def rollback_to(self, version: int, justification: str | None = None) -> dict[str, Any]:
@@ -1375,8 +1442,8 @@ class PetabSession:
                 {"type": "rollback", "rolled_back_to": version, "version": version,
                  "justification": justification, "neg_log_likelihood": nllh})
         return {"rolled_back_to": version, "version": version,
-                **fitting.fit_result_block(
-                    sim, parameter_df=self.problem.parameter_df, problem=self.problem)}
+                **fitting.slim_fit_payload(self, fitting.fit_result_block(
+                    sim, parameter_df=self.problem.parameter_df, problem=self.problem))}
 
     def restore_version(self, version: int, justification: str | None = None) -> dict[str, Any]:
         """Bring a prior version's model + parameters back as the working state (no refit).

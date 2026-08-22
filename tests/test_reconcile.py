@@ -151,10 +151,12 @@ def _bare_problem(antimony):
     return prob
 
 
-def test_ic_estimated_by_default_empty_pool_fixed():
-    """ICs are ESTIMATED by default: a positive seed is estimated on log10; an empty pool
-    (t0 == 0) stays fixed at 0."""
-    from petab.v1.C import ESTIMATE, LIN, LOG10, NOMINAL_VALUE, PARAMETER_SCALE
+def test_ic_estimated_by_default_empty_pool_unminted():
+    """ICs are ESTIMATED by default: a positive seed is estimated on log10; an EXPLICIT zero
+    (empty pool) gets NO `<sid>_init` at all — the literal 0 is the author's design, and a minted
+    row regenerated into the draft TSV on every commit (the draft-arm A/B measured one lead
+    re-delegating the deletion of a minted `IPR_S_init` 17 times)."""
+    from petab.v1.C import ESTIMATE, LOG10, NOMINAL_VALUE, PARAMETER_SCALE
 
     ant = (
         "model seeded_and_empty\n"
@@ -171,8 +173,8 @@ def test_ic_estimated_by_default_empty_pool_fixed():
     assert pdf.loc["A_init", ESTIMATE] == 1              # estimated by default
     assert pdf.loc["A_init", PARAMETER_SCALE] == LOG10   # positive -> log10
     assert abs(pdf.loc["A_init", NOMINAL_VALUE] - 2.5) < 1e-9
-    assert pdf.loc["B_init", ESTIMATE] == 0             # empty pool -> FIXED
-    assert pdf.loc["B_init", PARAMETER_SCALE] == LIN
+    assert "B_init" not in pdf.index                     # explicit zero -> no row minted
+    assert prob.model.sbml_model.getParameter("B_init") is None
 
 
 def test_ic_unit_normalization_stays_fixed():
@@ -194,7 +196,7 @@ def test_ic_unit_normalization_stays_fixed():
     pdf = prob.parameter_df
     assert pdf.loc["R_init", ESTIMATE] == 0             # unit normalization -> FIXED
     assert pdf.loc["R_init", PARAMETER_SCALE] == LIN
-    assert pdf.loc["O_init", ESTIMATE] == 0             # empty pool -> FIXED
+    assert "O_init" not in pdf.index                    # explicit zero -> no row minted
 
 
 def test_ic_convention_fixes_a_pre_existing_estimated_row():
@@ -237,17 +239,18 @@ def test_ic_convention_fixes_a_pre_existing_estimated_row():
 
     R.reconcile(prob)
     pdf = prob.parameter_df
-    # R == 1.0 (unit normalization) and O == 0.0 (empty pool): both re-derived to FIXED at their
-    # model value, NOT left estimated at the seed's 0.1.
+    # R == 1.0 (unit normalization): re-derived to FIXED at the model value, NOT left estimated
+    # at the seed's 0.1.
     assert pdf.loc["R_init", ESTIMATE] == 0
     assert pdf.loc["R_init", PARAMETER_SCALE] == LIN
     assert abs(pdf.loc["R_init", NOMINAL_VALUE] - 1.0) < 1e-9
-    assert pdf.loc["O_init", ESTIMATE] == 0
-    assert abs(pdf.loc["O_init", NOMINAL_VALUE] - 0.0) < 1e-9
     # Bounds are re-derived to BRACKET the fixed nominal (as the add-loop does), NOT left at the
-    # stale positive-log10 seed bounds — so the empty pool's 0.0 is not below its own lowerBound.
-    for pid, v in (("R_init", 1.0), ("O_init", 0.0)):
-        assert pdf.loc[pid, LOWER_BOUND] <= v <= pdf.loc[pid, UPPER_BOUND]
+    # stale positive-log10 seed bounds.
+    assert pdf.loc["R_init", LOWER_BOUND] <= 1.0 <= pdf.loc["R_init", UPPER_BOUND]
+    # O == 0.0 (explicit empty pool): no `<sid>_init` is minted for it any more, so the stale
+    # estimated seed row is PRUNED with the parameter — stronger than the old FIXED-at-0 heal
+    # (the non-identifiable row is gone from the table and from the draft TSV entirely).
+    assert "O_init" not in pdf.index
     # G == 2.5 (a positive guess, not 0/1) stays ESTIMATED — the convention only FIXES 0/1, and a
     # legitimately-estimated IC's fitted nominal must never be clobbered.
     assert pdf.loc["G_init", ESTIMATE] == 1
@@ -316,7 +319,7 @@ def test_condition_column_species_ic_not_parametrised():
     R.reconcile(prob)
     pdf = prob.parameter_df
     assert "M_init" not in pdf.index                    # condition-driven -> NOT parametrised
-    assert pdf.loc["P_init", ESTIMATE] == 0             # empty pool still fixed at 0
+    assert "P_init" not in pdf.index                    # explicit zero -> not parametrised either
 
 
 def test_ic_estimate_is_value_based_not_observation_based():
@@ -638,3 +641,43 @@ def test_prune_orphans_never_leaves_a_dangling_initial_assignment():
     if "total" in out["parameters"]:
         assert "total" not in ia_symbols
         assert "total" in out["initial_assignments"]
+
+
+def test_an_unset_initial_is_the_same_empty_pool_as_an_explicit_zero():
+    """`species B;` with no assignment sets neither initialConcentration nor initialAmount, and
+    SBML reads it as an empty pool — the same state as `B = 0;`. Both must take the no-mint
+    branch, or the two spellings produce different parameter tables and the regenerating
+    `<sid>_init` artifact returns one omitted assignment later."""
+    ant = (
+        "model unset_vs_zero\n"
+        "  compartment c = 1;\n"
+        "  species A in c; species B in c; species C in c;\n"
+        "  A = 1.5; C = 0;\n"                  # B's initial is not written at all
+        "  k = 0.3;\n"
+        "  r1: A -> B; k * A;\n"
+        "  r2: B -> C; k * B;\n"
+        "end\n"
+    )
+    sm = SbmlModel.from_antimony(ant).sbml_model
+    assert R.ensure_parametric_initial_conditions(sm) == ["A_init"]
+    assert sm.getParameter("B_init") is None and sm.getParameter("C_init") is None
+
+
+def test_a_shipped_ic_row_survives_the_zero_skip():
+    """If the PROBLEM ships a `<sid>_init` row, that row is part of the problem definition. The
+    zero/unset skip must not delete it: sync_parameter_table would drop the row and
+    validate_problem then rejects the commit, with no edit the agent could make to satisfy it
+    short of misstating the biology (`protected_fixed_parameter_ids` excludes IC parameters, so
+    nothing else catches this)."""
+    ant = (
+        "model shipped_ic\n"
+        "  compartment c = 1;\n"
+        "  species A in c; species C in c;\n"
+        "  A = 1.5; C = 0;\n"
+        "  k = 0.3;\n"
+        "  r1: A -> C; k * A;\n"
+        "end\n"
+    )
+    sm = SbmlModel.from_antimony(ant).sbml_model
+    ic = R.ensure_parametric_initial_conditions(sm, protect_ids={"C_init"})
+    assert "C_init" in ic and sm.getParameter("C_init") is not None

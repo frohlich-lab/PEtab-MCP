@@ -44,8 +44,17 @@ from .validation import (
 # ``h``, Euler's ``e`` …). A model entity that reuses one of those names fails code generation
 # with a cryptic ``KeyError: 'amici_<name>'`` — which looks nothing like a name clash. Map the
 # clash-prone ones to a concrete rename so the rejection is actionable.
+# NOTE on `t`: renaming is the WRONG advice when the colliding symbol is standing in for time,
+# which it almost always is. An agent told to rename writes `tau`, `tau` has nothing binding it to
+# simulation time, reconcile mints it as an ESTIMATED parameter, and every `piecewise(level,
+# tau >= X_time, 0)` gate silently becomes a comparison against a fitted CONSTANT — all inputs go
+# time-invariant while the model still compiles, fits and commits. Measured on the 2026-08-17
+# isensee sweep: 4 of 16 runs hit the collision, and the one that followed the "rename to tau"
+# hint lost ~512 nll to it, recovering the whole amount in one edit once it switched to `time`.
+# So `t` maps to an INSTRUCTION, not a replacement name.
 _AMICI_RESERVED_HINTS = {
-    "h": "n_hill or hill_coeff", "e": "eff or efficiency", "t": "tau or t_delay",
+    "h": "n_hill or hill_coeff", "e": "eff or efficiency",
+    "t": "tau or t_delay",   # only used if `t` is NOT standing in for time; see the `t` branch below
     "x": "x_state", "k": "k_rate", "p": "prot", "w": "w_rate",
 }
 _AMICI_RESERVED_RE = re.compile(r"amici_([A-Za-z]\w?)\b")
@@ -125,6 +134,24 @@ def _compile_fit_failure_message(exc: Exception) -> str:
     m = _AMICI_RESERVED_RE.search(str(exc))
     if m:
         name = m.group(1)
+        if name == "t":
+            # NOT a rename. `t` collides because the caller is expressing TIME, and the fix is the
+            # built-in symbol, not another name of its own: a free symbol has nothing binding it
+            # to simulation time, so reconcile mints it as an ESTIMATED parameter and every
+            # `piecewise(level, tau >= X_time, 0)` gate becomes a comparison against a fitted
+            # CONSTANT — the inputs go time-invariant while the model still compiles and fits.
+            # Measured on the 2026-08-17 isensee sweep: 4 of 16 runs hit this, and the one that
+            # took the old "rename to tau" advice lost ~512 nll, recovering it all in one edit
+            # once it switched to `time`.
+            return (
+                "the model uses a symbol named 't', which collides with a name AMICI reserves for "
+                "its generated code. If 't' stands for TIME, do NOT rename it: write the built-in "
+                "symbol `time` instead (e.g. `X := X_level * piecewise(0, time < X_start, 1)`). "
+                "Any other name (`tau`, `t_now`) is a free parameter the fit will estimate, which silently makes "
+                "your time-dependent inputs CONSTANT while the model still compiles. If 't' was "
+                "something else entirely, rename it to a descriptive name. Re-author with "
+                "make_changes — the model structure itself may well be fine."
+            )
         suggest = _AMICI_RESERVED_HINTS.get(name, f"{name}_rate")
         return (
             f"the model uses a symbol named '{name}', which collides with a name AMICI reserves "
@@ -158,7 +185,18 @@ def _compile_fit_failure_message(exc: Exception) -> str:
 
 
 class OperationError(PetabMcpError):
-    """An invalid model operation (bad justification, unparseable reaction, ...)."""
+    """An invalid model operation (bad justification, unparseable reaction, ...).
+
+    ``cause`` is an optional MACHINE-READABLE label for the rejection class, carried through to
+    ``result.json``'s ``edit_rejects.by_cause``. It exists because classifying rejections by
+    substring-matching their English text put three separate buckets on an unreachable branch in
+    one day — a needle that also appears in an earlier entry silently steals every match, and the
+    prose is free to change under the classifier. When a raiser sets this, the classifier uses it
+    verbatim and the wording is nobody's contract."""
+
+    def __init__(self, *args, cause: str | None = None):
+        super().__init__(*args)
+        self.cause = cause
 
 
 # -- commit pipeline -------------------------------------------------------
@@ -476,6 +514,7 @@ def set_model(
     session, antimony: str, justification: str,
     references: list[str] | None = None,
     parameters: list[dict[str, Any]] | None = None,
+    restore_parameter_df: Any | None = None,
 ) -> dict[str, Any]:
     """Author the WHOLE model from Antimony — the structural edit path of ``make_changes``.
 
@@ -562,7 +601,7 @@ def set_model(
     result = _commit_change(
         session, "make_changes", op_args, justification, references,
         model_build=build,
-        param_edit=_parameter_edit(session, normalized) if normalized else None,
+        param_edit=_composed_parameter_edit(session, normalized, restore_parameter_df),
         require_references=False,
     )
 
@@ -894,6 +933,128 @@ def _normalize_parameter_changes(
             {"parameter_id": pid, "lower_bound": lb, "upper_bound": ub, "scale": scale}
         )
     return normalized
+
+
+def _restore_parameter_edit(stored_df, skip: set[str] | None = None) -> Callable[[Any], dict[str, Any]]:
+    """A ``param_edit`` that puts a STORED version's search space back.
+
+    Used by a `base_version=N` fork so that going back to a version restores its bounds, scales
+    and nominal values along with its model — the prompt used to tell the agent that
+    `base_version` "rolls back the MODEL only" and to re-send `parameters` by hand, which meant a
+    fork silently inherited whatever the abandoned branch had widened, and re-started the search
+    from the abandoned branch's optimum.
+
+    Deliberately TOLERANT of a changed symbol set: it restores only ids the post-reconcile table
+    still has. A fork that removes a reaction drops that reaction's parameters, and a strict
+    `parameters` entry for a now-absent id would reject the whole call — turning a working fork
+    into a failed one. Ids the stored table lacks (introduced by this call's operations) keep
+    whatever the reconcile minted.
+
+    The widening backstops are deliberately NOT applied: restoring a state that already existed and
+    was already fit is not a widening request, and `_reject_repeated_widening` would refuse it.
+    """
+    from .parameters import update_parameters
+    from petab.v1.C import LOWER_BOUND, NOMINAL_VALUE, PARAMETER_SCALE, UPPER_BOUND
+
+    # BOUNDS, SCALE, AND NOMINAL VALUE — the search space and the point the fit starts from.
+    #
+    # nominalValue is included DELIBERATELY, and it is the half that does the most work. The fit
+    # writes each estimated parameter's fitted value back into nominalValue, and half the
+    # multistart is seeded from those values (see fitting.warm_start_guesses), so restoring them is
+    # what makes a fork actually resume from the version it names: without it the fork keeps the
+    # ABANDONED branch's optimum as its warm-start point, which is the opposite of rolling back.
+    # Two consequences worth knowing rather than discovering:
+    #   * the dedup fingerprint folds in nominalValue, so a fork that restores it is compared
+    #     against prior versions on the restored point, not the abandoned one;
+    #   * if the restored point is non-finite under the fork's NEW structure, `objective_before`
+    #     gates warm starts off for that fit and it runs cold — a slower fit, not a wrong one.
+    #
+    # NOT estimate — and the reason is NOT "the caller cannot override it", since that is equally
+    # true of nominalValue. It is what surviving the fit means for each. nominalValue is a STARTING
+    # POINT: the fit immediately writes over it, so restoring it steers one search and then stops
+    # mattering. `estimate` is a STRUCTURAL choice that persists: restoring a 0 would re-fix a
+    # parameter the agent had freed, with no argument able to free it again and nothing in the
+    # payload naming what happened. One is a hint, the other is a lock.
+    # `skip` (the ids this call's own `parameters` claim) withholds only the SEARCH-SPACE columns.
+    # nominalValue is restored for every id regardless, because the caller has no way to ask for a
+    # starting point: `ParameterChange` forbids the key outright (see `_require_positive_for_log`,
+    # which exists to explain that rejection). Letting `skip` cover it would mean that naming one
+    # bound in a fork silently opted that parameter out of the rollback's warm start — a
+    # search-space preference quietly costing you the starting point you asked for by forking.
+    SPACE = (LOWER_BOUND, UPPER_BOUND, PARAMETER_SCALE)
+    POINT = (NOMINAL_VALUE,)
+
+    def edit(problem):
+        live = problem.parameter_df
+        updates, restored, skipped, point_only = [], [], [], []
+        for pid in stored_df.index:
+            pid = str(pid)
+            if pid not in live.index:
+                skipped.append(pid)
+                continue
+            # theirs wins on the space they named; the point is restored either way
+            claimed = bool(skip) and pid in skip
+            cols = POINT if claimed else SPACE + POINT
+            upd = {"id": pid}
+            for c in cols:
+                if c not in stored_df.columns:
+                    continue
+                raw = stored_df.loc[pid, c]
+                # CAST out of pandas. `get_parameter_df` is a read_csv, so `estimate` comes back
+                # as numpy.int64 — and `isinstance(np.int64(1), (int, float))` is False on numpy 2,
+                # so `_coerce_estimate_int` would reject it and roll the whole fork back with a
+                # message blaming the caller's parameters. Skip NaN (an absent optional column)
+                # rather than writing it.
+                if raw is None or raw != raw:
+                    continue
+                upd[c] = str(raw) if c == PARAMETER_SCALE else float(raw)
+            if len(upd) > 1:
+                updates.append(upd)
+                (point_only if claimed else restored).append(pid)
+        if updates:
+            update_parameters(problem, updates)
+        out = {"restored_parameters": restored}
+        if point_only:
+            # Named in this call's `parameters`, so the bounds are the caller's; only the
+            # starting point came back. Reported apart so the distinction is legible.
+            out["restored_start_only"] = point_only
+        if skipped:
+            out["parameters_not_in_new_model"] = skipped
+        return out
+
+    return edit
+
+
+def _composed_parameter_edit(session, normalized, stored_df):
+    """Restore a stored search space FIRST, then apply this call's explicit `parameters` on top.
+
+    Order is the contract: an explicit entry in the same call must win over the restored value, so
+    a caller can fork a version AND change one bound in one transaction.
+    """
+    have_stored = stored_df is not None and len(stored_df)
+    apply_new = _parameter_edit(session, normalized) if normalized else None
+    if not have_stored:
+        return apply_new
+    # The caller's OWN entries must be measured against the PRISTINE table: `_parameter_edit`'s
+    # widening backstops read the pre-edit bound (`_reject_repeated_widening` off the live table,
+    # `_pinned_side` against HEAD's fitted values), and restoring first would hand them the old
+    # version's bounds as the baseline — so a third widening could slip past the guard, or an
+    # ordinary entry be flagged as one. So: caller first, then restore only the parameters the
+    # caller did not mention. "An explicit entry wins" still holds, by exclusion rather than by
+    # overwrite.
+    claimed = {c["parameter_id"] for c in (normalized or [])}
+    restore = _restore_parameter_edit(stored_df, skip=claimed)
+    if apply_new is None:
+        return restore
+
+    def edit(problem):
+        first = apply_new(problem) or {}
+        second = restore(problem) or {}
+        merged = dict(second)
+        merged.update(first)
+        return merged
+
+    return edit
 
 
 def _parameter_edit(session, normalized: list[dict[str, Any]]) -> Callable[[Any], dict[str, Any]]:

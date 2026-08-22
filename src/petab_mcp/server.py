@@ -31,6 +31,7 @@ the real work lives in the ``session`` / ``operations`` / ``fitting`` / ``data_a
 from __future__ import annotations
 
 import json
+import os
 from typing import Annotated, Any, Literal
 
 from fastmcp import FastMCP
@@ -43,13 +44,14 @@ from . import identifiability as identifiability_mod
 from . import logging_setup
 from . import messages as msg_mod
 from . import model as model_mod
+from . import model_edits as model_edits_mod
 from . import operations as ops_mod
 from . import parameters as param_mod
 from . import regimes as regimes_mod
 from . import skills as skills_mod
 from .constants import DEFAULT_AUTO_FIT_STARTS
 from .engine import AmiciEngine
-from .errors import PetabMcpError, ValidationError
+from .errors import PetabMcpError, UnknownEntityError, ValidationError
 from .formatting import df_to_records, summarize_measurements
 from .session import PetabSession
 
@@ -73,6 +75,31 @@ SERVER_INSTRUCTIONS = (
     "best-bic one regardless, so re-authoring an earlier structure to go back only recompiles, "
     "refits to the same result, and appends a duplicate."
 )
+
+def _diff_edits_enabled() -> bool:
+    """The `diff_edits` arm, read from the environment.
+
+    Mirrors ``petab_harness.ablations._switch`` for PETAB_DIFF_EDITS — the registry cannot be
+    imported here (petab_mcp must import without petab_harness; see tests/test_import_lightness),
+    so the spelling rule is duplicated the same way the data_regimes gate duplicates it in
+    session.py, and drift is pinned by tests the same way. Read at REGISTRATION time (not module
+    import) so tests can build both server shapes in one process.
+
+    What it changes: with the arm ON, ``make_changes`` is registered WITH the `model_edits` +
+    `base_version` arguments (a batch of ID-addressed operations, applied to the model source or
+    to a prior version's stored source); OFF keeps the baseline schema, where `antimony` is the
+    only model route. Gated at the SCHEMA rather than by prompt because that is the enforcement that held in
+    the draft-era A/Bs: every prompt-only rule broke (44% of runs defected to a forbidden
+    argument), every schema-enforced rule held at exactly 0 violations.
+    """
+    # DEFAULT "1": the arm is default-ON in the registry (petab_harness.ablations), and this
+    # duplicated gate must carry the SAME default or an unset environment gives a half-ablated
+    # run — the prompt instructing the agent to use `model_edits` while the schema does not offer
+    # it. tests/test_ablations.py::test_the_diff_edits_server_gate_agrees_with_the_registry pins
+    # the pair, including the env-unset case; if the registry default flips, flip it here too.
+    return os.environ.get("PETAB_DIFF_EDITS", "1").strip().lower() not in (
+        "0", "false", "no", "off")
+
 
 # Appended to the instructions only when skills are actually registered, so clients
 # are never told to call `list_skills`/`get_skill` when those tools are absent.
@@ -116,6 +143,36 @@ class ParameterChange(BaseModel):
     scale: Literal["lin", "log", "log10"] | None = Field(
         default=None, description="PEtab parameterScale. Exactly these three values."
     )
+
+
+# The STRUCTURED edit surface: name the change, not the characters. See petab_mcp.model_edits
+# for the measured case (the substring surface's failures were 71% one derived line, and 81% of
+# the rest were anchors that existed nowhere). Typed for the same reason ParameterChange is: the
+# JSON schema is the part of the contract a model is actually held to, and `extra="forbid"`
+# makes a misspelled key an error rather than a silently-ignored one.
+class ModelOp(BaseModel):
+    """One structured change to the model, addressed by reaction/symbol id."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    op: Literal["add_reaction", "remove_reaction", "set_rate_law",
+                "set_initial", "rename"] = Field(
+        description="which change to make."
+    )
+    id: str | None = Field(
+        default=None,
+        description="the reaction id (remove_reaction, set_rate_law) or symbol id "
+                    "(set_initial). add_reaction takes its id from the statement itself."
+    )
+    antimony: str | None = Field(
+        default=None,
+        description="the content, written as Antimony: for add_reaction one NAMED statement "
+                    "('egfr_act: EGFR => pEGFR; k_act*EGF*EGFR;'), for set_rate_law the rate "
+                    "law ('k_act*EGF*EGFR'), for set_initial the value ('5', or a symbol like "
+                    "'EGFR_init' to keep it estimated)."
+    )
+    old: str | None = Field(default=None, description="rename only: the current symbol name.")
+    new: str | None = Field(default=None, description="rename only: the replacement name.")
 
 
 # Provider serialisation artefact: some models emit a list-typed argument wrapped in a
@@ -166,6 +223,56 @@ def _parameter_entries(parameters: Any) -> list[dict[str, Any]] | None:
     ]
 
 
+def _shorten(value: Any, limit: int = 200, _depth: int = 0) -> Any:
+    """Recursive body of :meth:`_Ctx.short` — module-level so it can call itself.
+
+    (As a bare ``@staticmethod`` the recursive call resolved to a free name that does not exist
+    at class scope, so every container argument raised NameError from inside the error logger.)
+    """
+    if isinstance(value, str):
+        return (value[:limit] + f"… (+{len(value) - limit} chars)") if len(value) > limit \
+            else value
+    if _depth >= 3:                # containers this deep are not worth walking for a log line
+        return "…"
+    if isinstance(value, (list, tuple)):
+        head = [_shorten(v, limit, _depth + 1) for v in value[:5]]
+        return head + [f"… (+{len(value) - 5} more)"] if len(value) > 5 else head
+    if isinstance(value, dict):
+        out = {k: _shorten(v, limit, _depth + 1) for k, v in list(value.items())[:10]}
+        if len(value) > 10:
+            out["…"] = f"(+{len(value) - 10} more keys)"
+        return out
+    return value
+
+
+# Over this many ids the list is truncated. The ceiling is real — lucarelli's 118-row parameter
+# table, re-sent in the caller's history every turn thereafter, was a measured top-3 context cost
+# — but it sits where a normal problem's table fits WHOLE. The previous cap of 12 elided the
+# answer from the message whose entire job was to give it, and runs re-guessed: one burned six
+# get_parameters calls in the 2026-08-17 sweep, another four.
+_ID_LIST_CAP = model_edits_mod._ID_LIST_CAP
+
+
+def unknown_ids_message(unknown: list, known_ids: list[str]) -> str:
+    """The `get_parameters` unknown-id error text: what was wrong, what you probably meant, and
+    what is valid. Built here rather than inline so it can be tested on the string a caller
+    actually receives — the first version of this hint was assembled into a local variable and
+    never interpolated, and shipped green because the tests around it called the scorer directly
+    and grepped the module source.
+    """
+    hints = []
+    for u in unknown:
+        close = model_edits_mod.closest_symbols(str(u), known_ids)
+        if close:
+            hints.append(f"{u} -> {' or '.join(repr(c) for c in close)}")
+    suggest = f" Did you mean: {'; '.join(hints)}." if hints else ""
+    known = ", ".join(known_ids[:_ID_LIST_CAP])
+    more = ("" if len(known_ids) <= _ID_LIST_CAP else
+            f", (+{len(known_ids) - _ID_LIST_CAP} more — call get_parameters() with no "
+            f"parameter_ids for the whole table)")
+    return f"get_parameters: unknown parameter_ids {unknown}.{suggest} Known ids: [{known}{more}]."
+
+
 class _Ctx:
     """Shared state + error-wrapping helpers the tool groups close over.
 
@@ -190,13 +297,18 @@ class _Ctx:
         )
 
     @staticmethod
-    def short(value: Any, limit: int = 200) -> Any:
+    def short(value: Any, limit: int = 200, _depth: int = 0) -> Any:
         """Truncate long strings before they go into the (persisted) error log, so a large
         argument — e.g. a whole Antimony model passed to `make_changes` — cannot bloat the
-        provenance error log or dump the full model contents into it."""
-        if isinstance(value, str) and len(value) > limit:
-            return value[:limit] + f"… (+{len(value) - limit} chars)"
-        return value
+        provenance error log or dump the full model contents into it.
+
+        RECURSES into lists and dicts, because the bulky arguments on this server are mostly
+        containers: `parameters` is up to ~130 entries on a large problem. Truncating only top-level strings let those through whole,
+        which mattered little while the log was ephemeral and matters now that `archive_run`
+        copies errors.jsonl into every run's permanent archive. The element cap is separate from
+        the string cap: a list is summarised, not just its members shortened.
+        """
+        return _shorten(value, limit, _depth)
 
     def run_operation(self, op_name: str, fn, *args) -> dict[str, Any]:
         """Run the edit half of a change; on a known error, log it and return ``applied: False``.
@@ -214,6 +326,13 @@ class _Ctx:
                    "messages": msg_mod.errors_from_exception(msg_mod.SOURCE_EDIT, exc)}
             if getattr(exc, "issues", None):
                 out["issues"] = exc.issues
+            # Carry a machine-readable rejection class when the raiser set one, exactly as
+            # `reject_operation` does. Without this, a labelled error raised INSIDE the commit
+            # pipeline is silently downgraded to the prose classifier the label exists to
+            # replace — and the docstring's promise ("when a raiser sets this, the classifier
+            # uses it verbatim") would be false for every raiser below the tool layer.
+            if getattr(exc, "cause", None):
+                out["error_cause"] = exc.cause
             return out
         except Exception as exc:
             self.log_error(op_name, {}, exc)
@@ -293,6 +412,7 @@ class _Ctx:
 
     def reject_operation(
         self, op_name: str, message: str, args: dict[str, Any] | None = None,
+        cause: str | None = None,
     ) -> dict[str, Any]:
         """Log and return an ``applied: False`` rejection for an argument the tool layer itself
         refuses — the same shape :meth:`run_operation` produces for a rejected edit.
@@ -304,8 +424,15 @@ class _Ctx:
         exc = ops_mod.OperationError(message)
         self.log_error(op_name, {k: self.short(v) for k, v in (args or {}).items()}, exc)
         self.session.logger.warning("operation %s rejected: %s", op_name, exc)
-        return {"applied": False, "error": message,
-                "messages": [msg_mod.error(msg_mod.SOURCE_TOOL, message)]}
+        out = {"applied": False, "error": message,
+               "messages": [msg_mod.error(msg_mod.SOURCE_TOOL, message)]}
+        if cause:
+            # Machine-readable rejection class for the harness's `edit_rejects.by_cause`. The
+            # alternative — substring-matching the English message — put three buckets on an
+            # unreachable branch in one day, because a needle shared with an earlier entry
+            # steals every match. See operations.OperationError.cause.
+            out["error_cause"] = cause
+        return out
 
     def check_n_starts(self, op_name: str, n_starts: int | None) -> dict[str, Any] | None:
         """Validate ``n_starts`` BEFORE the edit runs; a rejection dict or None.
@@ -407,9 +534,56 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
     session = ctx.session
 
     @mcp.tool()
-    def get_model(format: str = "antimony") -> str:
-        """Return the current model as text. `format` is 'antimony' (canonical) or 'sbml'."""
-        return model_mod.get_model(session, format)
+    def get_model(format: str = "antimony", version: int | None = None) -> str:
+        """Return a model as text — the CURRENT one, or a prior `version`'s stored source.
+
+        `format` is 'antimony' (canonical) or 'sbml'. `version` reads that version's stored
+        model TEXT and nothing else — a plain read of a prior version, and much cheaper than
+        `get_version`, which also returns that version's per-point simulation and full
+        optimization trace. On a problem with a few hundred measurements that payload is
+        large, and it stays in the caller's history afterwards.
+
+        NOTE the trailing `const ...;` line: it is a DERIVED declaration the server regenerates.
+        Antimony treats a parameter as constant unless declared `var`, so its contents carry no
+        meaning — read past it. No operation addresses it.
+        """
+        if version is None:
+            # The RECONCILED model — what is actually fitted, and what `test_make_changes` pins
+            # as identical to the stored version ("the working model is always a scored one").
+            # It need not equal the source that `model_edits` applies to: operations address
+            # reactions by ID, and ids survive the re-render, so nothing here is quoted. What
+            # differs is the reconcile's own additions, which is exactly what a reader wants to
+            # see here rather than in the source.
+            text = model_mod.get_model(session, format)
+        else:
+            if (format or "antimony").lower() != "antimony":
+                raise ValidationError(
+                    "get_model: a stored `version` is only available as antimony (SBML is "
+                    "derived from it); omit `format` or pass 'antimony'."
+                )
+            # The version's own SOURCE when it has one, because this read exists to be paired
+            # with `base_version=N`: the operations apply to that stored source, and showing the
+            # reconciled render instead would answer a different question than the one the next
+            # call acts on (the render carries reconcile-minted declarations the source lacks).
+            # Falls back to the render for versions stored before sources were kept.
+            # An absent version is a BAD ARGUMENT, not a missing source: `get_model_source`
+            # raises for it, so the `or` fallback below can only ever cover a version that exists
+            # without a stored source. Say which versions there are, and RECORD it — this tool is
+            # registered without `ctx.run`, so a rejection raised straight out of here would burn
+            # the caller's turns while showing zero errors in `get_errors` and in result.json's
+            # error block. The prompt actively tells the lead to make this call before a
+            # `base_version=N` fork, so a wrong N is a reachable, ordinary mistake.
+            try:
+                text = (session.provenance.get_model_source(int(version))
+                        or session.provenance.get_model_antimony(int(version)))
+            except UnknownEntityError:
+                have = [m.get("version") for m in session.provenance.list_versions()]
+                exc = ValidationError(
+                    f"get_model: no version {int(version)}. Existing versions: "
+                    f"{', '.join(str(v) for v in have if v is not None) or '(none yet)'}.")
+                ctx.log_error("get_model", {"version": version, "format": format}, exc)
+                raise exc from None
+        return text
 
     @mcp.tool()
     def get_model_structure() -> dict[str, Any]:
@@ -426,10 +600,14 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         """
         return model_mod.model_structure(session)
 
-    @mcp.tool()
+    diff_mode = _diff_edits_enabled()
+
     def make_changes(
         justification: str,
         antimony: str | None = None,
+        model_edits: Annotated[list[ModelOp] | None,
+                               BeforeValidator(_unwrap_listish)] = None,
+        base_version: int | None = None,
         parameters: Annotated[list[ParameterChange] | None,
                               BeforeValidator(_unwrap_listish)] = None,
         references: Annotated[list[str] | None, BeforeValidator(_unwrap_listish)] = None,
@@ -437,13 +615,44 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
     ) -> dict[str, Any]:
         """Change the model and/or its parameter search space, then FIT and snapshot a version.
 
-        The single editor. Give `antimony` to author the WHOLE model (it builds the first model
-        when the problem ships model-less — `describe_problem` → `model_authored: false` — and
-        re-authors/replaces an existing one wholesale, so every structural change is one coherent
-        re-author). Give `parameters` to set estimation BOUNDS and/or SCALE: a list of
+        The single editor, with TWO routes to a model change — give exactly ONE.
+
+        `model_edits` is the route to use for every change after the first: a BATCH of
+        structured operations addressed by ID, not by text. Each entry is one of
+        `{op: 'add_reaction', antimony: 'egfr_act: EGFR => pEGFR; k_act*EGF*EGFR'}` (the id comes
+        from the statement — do NOT also pass `id`),
+        `{op: 'remove_reaction', id}`, `{op: 'set_rate_law', id, antimony: '<rate law>'}`,
+        `{op: 'set_initial', id, antimony: '5'}`, `{op: 'rename', old, new}`. Send the WHOLE coherent
+        change in ONE call — a new mechanism is usually a new reaction plus a rate-law change on
+        the reaction it feeds — because one call is one fit and one version; splitting it across
+        calls pays a multistart per operation. Operations apply IN ORDER and the batch is
+        ALL-OR-NOTHING: a failure names the failing `model_edits[i]`, lists the valid reaction
+        ids when the id is wrong, and applies nothing. They edit the model SOURCE (what you last
+        authored or edited), so there is no text to quote and nothing to keep in sync with the
+        reconcile's re-render.
+
+        `antimony` authors the WHOLE model: it builds the first model when the problem ships
+        model-less (`describe_problem` → `model_authored: false`) and replaces an existing one
+        wholesale — the right route for the first model and for genuinely starting over.
+        Anything the operations cannot express — an assignment rule, an event, a compartment —
+        is a wholesale re-author too.
+
+        `base_version` (with `model_edits`) applies the operations to a PRIOR version's
+        STORED source instead of the current one — the rollback-and-edit path: never retype an earlier
+        model from memory (retyped restores measured 6-37,000 BIC worse than the stored
+        original). Nothing to quote: the operations name reaction ids.
+        Default: the current committed model. It ALSO restores that version's SEARCH SPACE — its
+        bounds and scales — AND the point the fit starts from, that version's own best fit, so the
+        fork resumes from where version N got to rather than from the branch you are abandoning.
+        You never retype any of it. A parameter your operations newly introduce keeps the default
+        the reconcile mints, and any parameter you name in this call's `parameters` keeps YOUR
+        bound and scale rather than the restored one.
+
+        Give `parameters` to set estimation BOUNDS and/or SCALE: a list of
         `{parameter_id, lower_bound?, upper_bound?, scale?}` entries, applied atomically AFTER the
-        reconcile — so an entry may target a parameter this very call introduces. Give BOTH for a
-        structural change and the bounds it needs. At least one is required.
+        reconcile — so an entry may target a parameter this very call introduces. Combine it with
+        either model route for a structural change and the bounds it needs. At least one of
+        `antimony` / `model_edits` / `parameters` is required.
 
         There is no fit-free edit and no separate fit: one call is one coherent change, scored
         once, snapshotted as ONE version. `n_starts` REPLACES the server's configured multistart
@@ -482,37 +691,244 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         re-authoring an earlier structure to go back only recompiles and refits to the same result.
         """
         # To plain dicts before anything else, so every path below (including the rejection
-        # payload) sees the same shape the operations layer does.
+        # payload) sees the same shape the operations layer does. ModelOp is tolerated as plain
+        # dicts too, for the same reason _parameter_entries does it: an in-process caller (the
+        # tests, another tool) should not have to construct the pydantic model.
         parameters = _parameter_entries(parameters)
-        if not antimony and not parameters:
+        ops = [o.model_dump(exclude_none=True) if isinstance(o, ModelOp) else o
+               for o in (model_edits or [])] or None
+        routes_given = [n for n, v in (("antimony", antimony), ("model_edits", ops)) if v]
+        if len(routes_given) > 1:
             return ctx.reject_operation(
                 "make_changes",
-                "make_changes: give `antimony` (to author the model), `parameters` (to set "
-                "bounds/scale), or both — a call that changes nothing has nothing to score.",
-                {"antimony": antimony, "parameters": parameters},
+                f"make_changes: give ONE model route, not {len(routes_given)} "
+                f"({', '.join('`' + r + '`' for r in routes_given)}). `model_edits` for a "
+                "structured change to an existing model, `antimony` to author one wholesale. "
+                "NOTHING was applied.",
+                {"routes": routes_given}, cause="route_conflict",
+            )
+        if base_version is not None and not ops:
+            # Names NO other tool. The obvious advice here — "to re-fit it unchanged use
+            # restore_version" — would send the LEAD to a tool it does not hold (see
+            # agent/tools.py: restore_version is deliberately withheld), which is the
+            # defection-trigger class the sibling rejections below are written to avoid, and
+            # re-fitting an existing structure is a no-op the de-dup refuses anyway.
+            return ctx.reject_operation(
+                "make_changes",
+                "make_changes: `base_version` selects the version whose STORED model the "
+                "edits apply to — it does nothing on its own. Send the change you want as "
+                "`model_edits`; a prior version re-committed unchanged is already a version "
+                "and would only re-fit to the same result.",
+                {"base_version": base_version},
+            )
+        if not antimony and not ops and not parameters:
+            # In baseline mode `edits` does not EXIST on the schema, so advice naming it would
+            # instruct an impossible call (the defection-trigger class the draft-era A/B
+            # measured); name only what the caller can actually send.
+            routes = ("`model_edits` (structured operations on the committed model — the usual "
+                      "route), `antimony` (author the model wholesale), " if diff_mode else
+                      "`antimony` (to author the model), ")
+            return ctx.reject_operation(
+                "make_changes",
+                f"make_changes: nothing to do — give {routes}`parameters` (to set bounds/"
+                "scale), or a combination.",
+                {"antimony": None, "parameters": None},
             )
         rejected = ctx.check_n_starts("make_changes", n_starts)
         if rejected is not None:
             return rejected
+        # WHOLESALE authoring must arrive fully addressable, because the very next change will be
+        # addressed by id. An unnamed reaction is legal Antimony and unaddressable by construction:
+        # `set_rate_law` cannot name it, so the only way to touch it again is another whole-model
+        # re-author — the cost this arm exists to remove. Refused HERE, where it is written, in
+        # preference to auto-naming, which would invent ids the caller never chose and renumber
+        # them on the next re-author. Gated on `diff_mode`: the baseline arm has no id-addressed
+        # route, so the same model must stay acceptable there or the control is not a control.
+        if diff_mode and antimony:
+            unnamed = model_edits_mod.unnamed_reactions(antimony)
+            if unnamed:
+                shown = ", ".join(repr(u) for u in unnamed[:3])
+                return ctx.reject_operation(
+                    "make_changes",
+                    f"make_changes: {len(unnamed)} reaction(s) have no id ({shown}"
+                    f"{', …' if len(unnamed) > 3 else ''}). Every reaction needs one — it is how "
+                    "`model_edits` addresses it later, and an unnamed reaction can only ever be "
+                    "changed by re-authoring the whole model. Write 'name: A => B; k*A;' and "
+                    "choose names you will recognise (egfr_act, akt_dephos), not r1/r2. "
+                    "NOTHING was applied.",
+                    {"unnamed": unnamed[:5]}, cause="unnamed_reaction")
         # One critical section for the change and its fit, so nothing can fit in between
         # (`session.lock` is an RLock, so the nested acquisitions inside each call are fine).
         with session.lock:
-            # Taken BEFORE the edit: if the fit then produces no version, `edit_then_fit` undoes
-            # the edit against this, so the call is all-or-nothing.
+            op_summary: list[str] = []
+            base_parameter_df = None
+            if ops:
+                # STRUCTURED edits apply to the model SOURCE — the text the caller last authored
+                # or last edited — not to the reconciled re-render. That is the whole point: no
+                # anchor to quote, so nothing to keep in sync with a text the server rewrites,
+                # and `child.source == parent.source + ops` makes lineage checkable.
+                #
+                # Resolved INSIDE the lock so the source cannot move between read and edit. A
+                # base_version fork takes THAT version's source; falling back to the rendered
+                # model covers versions written before sources were stored, and the very first
+                # edit of a shipped (not agent-authored) model.
+                try:
+                    if base_version is not None:
+                        base_src = session.provenance.get_model_source(int(base_version))
+                        if base_src is None:
+                            base_src = session.provenance.get_model_antimony(int(base_version))
+                    else:
+                        base_src = session.model_source or model_mod.get_model(session, "antimony")
+                    antimony, op_summary = model_edits_mod.apply_model_edits(base_src, ops)
+                    # Read INSIDE the guard, next to the source read above: a version dir whose
+                    # parameters.tsv is truncated raises EmptyDataError and the legacy json path
+                    # raises FileNotFoundError, and evaluating this as a bare call argument let
+                    # both escape make_changes as an opaque tool error with nothing in
+                    # errors.jsonl — the invisible-failure class get_model's handler exists to stop.
+                    if base_version is not None:
+                        base_parameter_df = session.provenance.get_parameter_df(int(base_version))
+                except (PetabMcpError, OSError, ValueError, TypeError) as exc:
+                    msg = str(exc)
+                    if not msg.startswith("make_changes"):
+                        msg = f"make_changes: {msg}"
+                    return ctx.reject_operation(
+                        "make_changes", msg,
+                        {"n_ops": len(ops), "base_version": base_version},
+                        cause=getattr(exc, "cause", None),
+                    )
             before = ops_mod.working_state(session)
-            if antimony:
-                result = ctx.run_operation(
-                    "make_changes", ops_mod.set_model,
-                    session, antimony, justification, references, parameters,
-                )
-            else:
-                result = ctx.run_operation(
-                    "make_changes", ops_mod.change_parameters,
-                    session, parameters, justification, references,
-                )
-            if not result.get("applied"):
-                return result
-            return ctx.edit_then_fit(result, n_starts, justification, before)
+            # LINEAGE: a `base_version` commit descends from THAT version, not from HEAD (see
+            # session.derived_from). Set for the duration of this call only, and cleared in the
+            # `finally` so a later ordinary commit cannot inherit a stale fork parent.
+            session.derived_from = int(base_version) if base_version is not None else None
+            # PROVENANCE: the text SUBMITTED to the pipeline — the wholesale `antimony`, or
+            # the result of applying this call's operations to the base source. Stored beside
+            # the committed model as model_source.ant (see session.submitted_source), and read
+            # back by `base_version` forks and by `get_model(version=N)`. On BOTH routes this is
+            # the agent's own text: operations apply to the source, never to the re-render, so
+            # `child.source == parent.source + ops` holds exactly.
+            session.submitted_source = antimony
+            try:
+                if antimony:
+                    result = ctx.run_operation(
+                        "make_changes", ops_mod.set_model,
+                        session, antimony, justification, references, parameters,
+                        # A `base_version=N` fork restores that version's SEARCH SPACE too, not
+                        # just its model: before this, a fork inherited whatever the abandoned
+                        # branch had widened and the prompt had to ask the agent to retype the old
+                        # bounds. Tolerant of a changed symbol set, and applied BEFORE this call's
+                        # own `parameters` entries so an explicit bound still wins (see
+                        # operations._composed_parameter_edit).
+                        #
+                        # POSITIONAL, not a keyword: `run_operation` is `(op_name, fn, *args)` with
+                        # no **kwargs, so a keyword here raises TypeError on EVERY model-changing
+                        # call — outside both except paths, so it escapes make_changes entirely and
+                        # the run cannot edit the model at all.
+                        base_parameter_df,
+                    )
+                else:
+                    result = ctx.run_operation(
+                        "make_changes", ops_mod.change_parameters,
+                        session, parameters, justification, references,
+                    )
+                if not result.get("applied"):
+                    return result
+                out = ctx.edit_then_fit(result, n_starts, justification, before)
+            finally:
+                session.derived_from = None
+                session.submitted_source = None
+            # PAYLOAD DIET (measured: warnings texts were duplicated between `warnings` and
+            # `messages` in 62.8% of 915 make_changes payloads — 17% of payload bytes, re-sent
+            # in the lead's history on every later turn). `messages` is the canonical stack
+            # (level + source per entry); the flat copy goes.
+            out.pop("warnings", None)
+            if out.get("applied") and antimony:
+                # The submitted text becomes this branch's source for the next structured edit.
+                # Keyed on APPLIED, not committed: a de-duplicated commit (`applied: true,
+                # committed: false, no_change`) still moves the WORKING model, and leaving the
+                # source behind would make the next batch of operations silently revert it.
+                # A rejected or fit-reverted call leaves the model where it was, and `applied`
+                # is false there, so the source correctly stays put.
+                session.model_source = antimony
+            if op_summary:
+                # The diff, PRE-CLASSIFIED. Every earlier analysis had to reconstruct this from
+                # re-rendered text with id- and regex-keyed heuristics, and four of those
+                # reported artifacts as findings; here the operation IS the classification.
+                out["model_edits_applied"] = op_summary
+            return out
+
+    if diff_mode:
+        mcp.tool()(make_changes)
+    else:
+        # Baseline schema: no `edits`/`base_version` — `antimony` is the only model route,
+        # byte-identical to the pre-arm contract so old baselines stay comparable. The
+        # full-signature function above stays the implementation; this wrapper only narrows
+        # the SCHEMA, which is the part of a tool contract a model is actually constrained by
+        # (schema-enforced rules held at 0 violations where prompt-only rules broke).
+        @mcp.tool(name="make_changes")
+        def make_changes_baseline(
+            justification: str,
+            antimony: str | None = None,
+            parameters: Annotated[list[ParameterChange] | None,
+                                  BeforeValidator(_unwrap_listish)] = None,
+            references: Annotated[list[str] | None, BeforeValidator(_unwrap_listish)] = None,
+            n_starts: int | None = None,
+        ) -> dict[str, Any]:
+            """Change the model and/or its parameter search space, then FIT and snapshot a version.
+
+            The single editor. Give `antimony` to author the WHOLE model (it builds the first
+            model when the problem ships model-less — `describe_problem` → `model_authored:
+            false` — and re-authors/replaces an existing one wholesale, so every structural
+            change is one coherent re-author). Give `parameters` to set estimation BOUNDS
+            and/or SCALE: a list of `{parameter_id, lower_bound?, upper_bound?, scale?}`
+            entries, applied atomically AFTER the reconcile — so an entry may target a
+            parameter this very call introduces. Give BOTH for a structural change and the
+            bounds it needs. At least one is required.
+
+            There is no fit-free edit and no separate fit: one call is one coherent change,
+            scored once, snapshotted as ONE version. `n_starts` REPLACES the server's
+            configured multistart count (`describe_problem` → `fit_n_starts_default`) rather
+            than adding to it, so omit it unless you want MORE than that; below it fits LESS
+            hard, and the minimum is 1.
+
+            ALL-OR-NOTHING. The change applies to a copy, reconciles SBML↔PEtab, and lints; a
+            rejected `parameters` entry reverts the re-author too, and if the change applies
+            but the FIT then produces no version the change is REVERTED as well. So the working
+            model is always a scored one, and there is never an edit waiting to be fit.
+            The result IS the fit, flat — the same field names `get_fit_summary` uses — plus
+            two flags. Read `applied`: `false` → the change is NOT in the model, either
+            rejected before it applied or reverted because the fit failed; `error`/`issues`
+            says which. Then `committed`: `true` → a version exists, read `bic`; `false` with
+            `no_change` → the change applied but this structure already IS a version, so
+            change something else.
+            Nothing else rides on the result: the reconcile/validation reports and the
+            parameter diff are not a score, so read the reconciled model on demand through
+            `get_model_structure` (which also carries the per-species initial-condition
+            account) or `get_parameters`.
+
+            `messages` is the call's whole diagnostic stack, in pipeline order: every warning
+            and the error that stopped it, each tagged `level` ("error"/"warning") and
+            `source` — "make_changes" (an argument refused before anything ran), "edit",
+            "validation" (the PEtab/SBML lint), or "fit". Read it to see EVERYTHING the call
+            had to say; `warnings` is just its warning texts, and `error` just the last error.
+
+            REJECTS an EMPTY model (no species and no reactions — nothing to simulate or fit;
+            this includes an Antimony whose species all prune away as orphans), a re-author
+            that drops a shipped-FIXED constant, or brings one back estimated, or leaves a
+            condition-table target unused, or wires an observation-model symbol (a scaling
+            factor / noise sigma) into a rate law. Warns if a previously-estimated parameter
+            is dropped. Widening an ESTIMATED noise sigma past its data-driven cap is advisory
+            (a warning, not a rejection); a THIRD widening of a still-pinned parameter is
+            rejected — such a parameter is unidentifiable, not under-explored (see
+            `get_fit_diagnosis`).
+
+            Every fitted version is kept and the run is scored on the best-bic one regardless,
+            so re-authoring an earlier structure to go back only recompiles and refits to the
+            same result.
+            """
+            return make_changes(justification=justification, antimony=antimony,
+                                parameters=parameters, references=references,
+                                n_starts=n_starts)
 
 
 # -------------------------------------------------------------- parameter tools
@@ -520,9 +936,16 @@ def _register_parameter_tools(mcp: FastMCP, ctx: _Ctx) -> None:
     session = ctx.session
 
     @mcp.tool()
-    def get_parameters() -> list[dict[str, Any]]:
+    def get_parameters(parameter_ids: Annotated[list[str] | None,
+                                                BeforeValidator(_unwrap_listish)] = None,
+                       role: Literal["kinetic", "noise_sigma", "observable_scaling",
+                                     "initial_condition", "exponent", "constant"] | None = None,
+                       ) -> list[dict[str, Any]]:
         """Return the parameter table (id, bounds, nominal_value, estimate, prior), each row
-        annotated with its `role` and `status`.
+        annotated with its `role` and `status`. `parameter_ids` and/or `role` FILTER the rows —
+        on large problems (100+ rows, re-sent in your history every later turn) ask for the rows
+        you need (e.g. the parameters a fit just changed, or role='noise_sigma') rather than the
+        whole table by reflex.
 
         `role` names what the parameter IS — `kinetic` (a mechanistic rate constant used in a
         rate law), `noise_sigma` or `observable_scaling` (fixed observation-model factors, never
@@ -550,8 +973,38 @@ def _register_parameter_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         scale through `make_changes` (one batched call: a `parameters` list whose entries
         each carry `lower_bound`/`upper_bound` and/or `scale` for a parameter).
         """
-        return param_mod.parameters_to_records(
+        rows = param_mod.parameters_to_records(
             session.problem, shipped=session.shipped_parameter_df)
+        # Server-side filters, added when the 118-row lucarelli table (re-sent in the caller's
+        # history every turn thereafter) turned out to be a top-3 context cost. Filtering here
+        # rather than telling the model to ignore rows: unread tokens still bill.
+        if parameter_ids:
+            want = set(parameter_ids)
+            # An unknown id must not read as "that parameter does not exist": [] is
+            # indistinguishable from a real empty table, and the agent acts on the wrong belief.
+            unknown = sorted(want - {r.get("parameterId") for r in rows})
+            if unknown:
+                known_ids = sorted(str(r.get("parameterId")) for r in rows)
+                # Name the near-misses, and do not truncate the id list down to uselessness —
+                # see `unknown_ids_message`, which owns both rules and is tested on its output.
+                # RAISED, not returned. This tool's declared return type is a LIST, so FastMCP
+                # validates its structured output against an array schema and a `ctx.run`
+                # {ok:false,...} dict fails that validation with a RuntimeError that KILLS THE
+                # RUN — observed 6/14 runs in the 2026-08-16 sneyd/fujita sweep, which had to be
+                # cancelled. A raise is the shape a list-returning tool can express: FastMCP
+                # turns it into a tool error and langchain-mcp-adapters into a ToolMessage the
+                # model reads and corrects, exactly like any other rejected argument.
+                exc = ValidationError(unknown_ids_message(unknown, known_ids))
+                # RECORD it before raising. ctx.run would have done this; raising past it meant
+                # a run that burned turns on bad ids showed ZERO errors in get_errors and in
+                # result.json's error block — invisible in the post-mortem artefact.
+                ctx.log_error("get_parameters", {"parameter_ids": parameter_ids}, exc)
+                raise exc
+            rows = [r for r in rows if r.get("parameterId") in want]
+        if role:
+            # `role` is a Literal, so a typo is rejected by the schema before arriving here.
+            rows = [r for r in rows if r.get("role") == role]
+        return rows
 
 
 #: What each ``get_fit_diagnosis`` ``sections`` value asks for. Two halves of one diagnosis, and the
@@ -587,7 +1040,7 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
     def get_fit_summary() -> dict[str, Any]:
         """Return just the current fit metrics — no per-point records (a cheap read).
 
-        `{status, neg_log_likelihood, chi2, n_data_points, fitted_parameters,
+        `{status, neg_log_likelihood, chi2, n_data_points, fitted_parameters_changed,
         parameter_scales, version}` plus the complexity-penalised scores `{bic, aic, chi2_dof,
         reduced_chi2, chi2_gof_pvalue}` (lower bic/aic is better — the score to rank models by).
         `reduced_chi2`/`chi2_gof_pvalue` are only meaningful with a KNOWN noise level: when the
@@ -596,7 +1049,7 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         gate (judge adequacy from residual STRUCTURE instead — the `residual_structure` verdict
         rides on this result, as it does on every fit result; see
         :func:`data_access.residual_structure_rollup` for where it is and is not reported).
-        `fitted_parameters` are LINEAR
+        Fitted values are LINEAR
         (unscaled) values; `parameter_scales` gives each one's estimation scale (lin/log10) —
         a fitted value is the linear number, never its log10 coordinate. `parameters_at_bound`
         lists any fitted parameter sitting within ~1% of its lower/upper bound (on its own
@@ -802,9 +1255,17 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
     @mcp.tool()
     def get_fit_diagnosis(
         sections: str = "residuals", worst_n: int = 8, top_n: int = 8,
+        max_observables: int = 12,
     ) -> dict[str, Any]:
         """The COMPACT, size-bounded DETAIL behind the verdicts every fit result already carries —
-        where the fit is off, and which parameters it cannot pin. `sections` picks which half:
+        where the fit is off, and which parameters it cannot pin.
+
+        `per_observable` is CAPPED at `max_observables` rows (default 12) on problems with more
+        observables than that — the worst by chi2, plus the worst few by bias and a few
+        structure-flagged rows, with an `omitted` block saying what was dropped. It is NOT a
+        complete table on a large problem: aggregate over it and you are aggregating over a
+        worst-first subsample. Pass `max_observables=0` for every row (large payload, re-sent in
+        your history on every later turn). `sections` picks which half:
         `"residuals"` (the default), `"parameters"`, or `"all"` — one call, both.
 
         COSTS, since the choice is yours, and NEITHER half compiles anything. `residuals` is
@@ -866,7 +1327,8 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
                         session.logger.warning(
                             "get_fit_diagnosis: could not generate simulation dataframe",
                             exc_info=True)
-                out.update(data_mod.fit_diagnosis(session, worst_n))
+                out.update(data_mod.fit_diagnosis(
+                    session, worst_n, max_observables=max_observables or None))
             if "parameters" in want:
                 # Guarded, and guarded SEPARATELY: before the two were one tool a FIM failure could
                 # not take the residual half with it, and the caller that pays most for this half
@@ -1033,9 +1495,10 @@ def create_server(
     ``auto_fit_starts`` is the default pyPESTO multistart count (overridable per commit via
     ``n_starts``). Set ``auto_fit=False`` to skip the compile-heavy fit hook (tests/dev).
 
-    Initial conditions are ESTIMATED by default (fixed only at 0 = empty pool or 1 = unit
-    normalization; see ``reconcile.sync_parameter_table``); to keep another IC fixed, ship it as
-    a fixed parameter row.
+    Initial conditions are ESTIMATED by default; an IC of exactly 1 (a unit normalization) is held
+    FIXED and an IC of exactly 0 (an empty pool) gets no parameter at all (see
+    ``reconcile.ensure_parametric_initial_conditions``); to keep another IC fixed, ship it as a
+    fixed parameter row.
     """
     session = PetabSession(
         yaml_path,
