@@ -1367,6 +1367,39 @@ def _noise_expr_and_observable(problem, pid: str, rows):
         return None
 
 
+def _sympify_real(formula: str):
+    """``sympify(formula)`` with every free SYMBOL declared real, or ``None`` if it will not parse.
+
+    petab builds its formulas with ``real=True`` assumptions and ``Symbol(x) != Symbol(x, real=True)``,
+    so an assumption-free parse silently fails to cancel against the noise expression — which is why
+    a gain the observable formula names DIRECTLY was never detected.
+
+    Binding names via ``locals`` must skip anything sympy resolves as a CALLABLE:
+    :func:`formula_symbols` is a bare identifier regex, so ``scale * exp(-k*t)`` yields ``exp`` too,
+    and binding ``exp -> Symbol('exp')`` makes the parse raise ``'Symbol' object is not callable``.
+    Swallowed by the caller's ``except``, that turned every observable whose formula uses ``exp`` /
+    ``log`` / ``sqrt`` / ``piecewise`` into "no amplitude", losing gain normalisation entirely and
+    judging its sigma in the un-normalised coordinate — the same wrong-coordinate verdict the
+    real=True change was made to fix. No shipped example has a call in an observableFormula today,
+    so nothing in the suite covers it; an agent-authored model will.
+    """
+    try:
+        import sympy as sp
+
+        # Skip by CALL SYNTAX, not by sympy's namespace. `callable(getattr(sp, name, None))`
+        # catches `exp`/`log`/`sqrt` but misses `log10`, which sympy has no attribute for and
+        # PEtab uses freely — binding it as a Symbol raises exactly the same way. An identifier
+        # immediately followed by `(` is a call whatever sympy knows about it; sympify then
+        # builds an undefined Function for it, which is fine here since only the multiplicative
+        # structure matters.
+        called = set(re.findall(r"(?<![\w.])([A-Za-z_]\w*)\s*\(", formula))
+        names = {n for n in formula_symbols(formula)
+                 if n not in called and not callable(getattr(sp, n, None))}
+        return sp.sympify(formula, locals={n: sp.Symbol(n, real=True) for n in names})
+    except Exception:  # noqa: BLE001 - advisory scale only; caller fails open
+        return None
+
+
 def _observable_amplitude(problem, observable_id: str, noise_expr):
     """The multiplicative AMPLITUDE of ``observable_id`` — a factor appearing in BOTH the observable
     formula and the noise formula (fiedler's per-gel ``s_pErk_20140430_gel1``) — as a sympy
@@ -1391,53 +1424,115 @@ def _observable_amplitude(problem, observable_id: str, noise_expr):
 
         scaling = observable_scaling_ids(problem)
         candidates = sorted((s for s in noise_expr.free_symbols if str(s) in scaling), key=str)
-        if len(candidates) != 1:
+        if not candidates:
             return None
-        amplitude = candidates[0]
-        # A pure gain divides the sd exactly: sd/a must not mention a. (sqrt(a**2 + s**2) would.)
-        if amplitude in sp.simplify(noise_expr / amplitude).free_symbols:
+        # EVERY qualifying candidate, not just a lone one. A noise formula may name more than one
+        # scaling symbol and only some of them be gains: isensee's flattened microscopy readout is
+        # `noiseParameter1_<obs> * s_pRII_global * rho`, whose override resolves noiseParameter1 to
+        # a PER-EXPERIMENT `s_pRII_JI09_<run>`. That per-experiment factor is a true assay gain --
+        # it multiplies the whole observable -- while `s_pRII_global` sits INSIDE the formula
+        # (`b_pRII_global + s_pRII_global * (...)`) and is not a multiplicative factor at all.
+        # Requiring exactly one candidate bailed on that observable, so the gain was never divided
+        # out, the three experiments implied three different effective sds,
+        # `_per_observable_agreement` failed open, and `effective_sigma` came back None. That in
+        # turn made `_reference_sigma_flag` unpairable and dropped the judge onto the data-driven
+        # band -- which isensee's own REFERENCE sigma exceeds (0.165 against a 0.75*data_std cap of
+        # 0.092), so every candidate was flagged `inflated` on a threshold the truth fails.
+        # The per-candidate tests below are exactly the ones this function already applied to a
+        # lone candidate, so nothing that was not a pure dual-role gain becomes one.
+        # real=True on every symbol, matching how petab builds its formulas. A bare `sympify`
+        # yields assumption-free symbols, and `Symbol(x) != Symbol(x, real=True)`, so
+        # `simplify(obs_expr / candidate)` would not cancel and `_is_pure_gain` would reject a
+        # gain the formula names DIRECTLY — isensee's Western readout (`s_pRII_Western * (...)`
+        # against `s_pRII_Western * rho_pRII_Western`) is exactly that case.
+        obs_expr = _sympify_real(str(odf.loc[observable_id, OBSERVABLE_FORMULA]))
+        if obs_expr is None:
             return None
-        # ...and it must scale the OBSERVABLE the same way, or dividing the measurements by it does
-        # not put the gels on a common coordinate. The observable names it through its own
-        # `observableParameter{i}_` placeholder, so compare against the measurement-table override.
-        # Symbols are compared BY NAME from here on: petab builds its formulas with `real=True`
-        # assumptions while a plain `sympify` does not, and `Symbol(x) != Symbol(x, real=True)`, so
-        # identity matching silently no-ops the substitution and reports "no amplitude" for every
-        # observable that has one.
-        obs_expr = sp.sympify(str(odf.loc[observable_id, OBSERVABLE_FORMULA]))
-        if str(amplitude) not in {str(s) for s in obs_expr.free_symbols}:
-            # Not named DIRECTLY by the formula, so it can only reach it through an
-            # `observableParameter{i}_` placeholder resolved from the measurement table (fiedler's
-            # per-gel gain). Resolve and look again.
-            #
-            # The direct case above is not hypothetical: `materialize` FLATTENS any benchmark whose
-            # per-measurement overrides vary within an observable, and flattening writes the
-            # override into the formula and drops the placeholder. isensee's Western readout is
-            # exactly that — `s_pRII_Western * (2*RIIp_2 + ...)` against a noise of
-            # `s_pRII_Western * rho_pRII_Western`, an assay gain on both sides by this function's
-            # own definition. Requiring the placeholder made it undetectable, so the gain was
-            # neither divided out nor carried, and the published sd was judged in a coordinate
-            # matching neither convention.
-            mdf = getattr(problem, "measurement_df", None)
-            if mdf is None or OBSERVABLE_PARAMETERS not in mdf.columns:
-                return None
-            cells = set(mdf.loc[mdf[OBSERVABLE_ID] == observable_id,
-                                OBSERVABLE_PARAMETERS].dropna().astype(str))
-            if len(cells) != 1:
-                return None
-            from petab.v1 import split_parameter_replacement_list
-            by_name = {str(s): s for s in obs_expr.free_symbols}
-            obs_expr = obs_expr.subs({
-                by_name[key]: (sp.Symbol(str(v), real=True) if isinstance(v, str) else v)
-                for i, v in enumerate(split_parameter_replacement_list(next(iter(cells))))
-                if (key := f"observableParameter{i + 1}_{observable_id}") in by_name})
-            if str(amplitude) not in {str(s) for s in obs_expr.free_symbols}:
-                return None
-        if str(amplitude) in {str(s) for s in sp.simplify(obs_expr / amplitude).free_symbols}:
+        obs_expr = _resolve_observable_parameters(problem, observable_id, obs_expr)
+        gains = [c for c in candidates if _is_pure_gain(c, noise_expr, obs_expr)]
+        if not gains:
             return None
+        amplitude = gains[0]
+        for extra in gains[1:]:
+            amplitude = amplitude * extra
+        amplitude = sp.simplify(amplitude)
+        # The PRODUCT must still divide both sides exactly — each factor does individually, but
+        # verify the combination rather than assuming it composes.
+        for side in (noise_expr, obs_expr):
+            if set(amplitude.free_symbols) & set(sp.simplify(side / amplitude).free_symbols):
+                return None
         return amplitude
     except Exception:  # noqa: BLE001 - advisory scale only
         return None
+
+
+def _resolve_observable_parameters(problem, observable_id: str, obs_expr):
+    """``obs_expr`` with the measurement table's ``observableParameters`` overrides substituted.
+
+    Resolved ONCE, before any candidate is tested, because the substitution depends on the
+    observable rather than on the candidate. A gain reaches the observable formula through an
+    ``observableParameter{i}_`` placeholder while the NOISE side already carries the substituted
+    value, so without this the same quantity has two different names and no candidate can match.
+
+    Unchanged when there is no measurement table, no override column, or the covered rows disagree
+    about the override — the caller then tests against the raw formula, which is the pre-existing
+    behaviour for a gain the formula names directly (``materialize`` FLATTENS an example whose
+    overrides vary within an observable, writing the value into the formula and dropping the
+    placeholder; isensee's Western readout is exactly that).
+    """
+    try:
+        import sympy as sp
+        from petab.v1 import split_parameter_replacement_list
+
+        mdf = getattr(problem, "measurement_df", None)
+        if mdf is None or OBSERVABLE_PARAMETERS not in mdf.columns:
+            return obs_expr
+        cells = set(mdf.loc[mdf[OBSERVABLE_ID] == observable_id,
+                            OBSERVABLE_PARAMETERS].dropna().astype(str))
+        if len(cells) != 1:
+            return obs_expr
+        # Symbols are matched BY NAME: petab builds its formulas with `real=True` assumptions while
+        # a plain `sympify` does not, and `Symbol(x) != Symbol(x, real=True)`, so identity matching
+        # silently no-ops the substitution and reports "no amplitude" for every observable with one.
+        by_name = {str(s): s for s in obs_expr.free_symbols}
+        return obs_expr.subs({
+            by_name[key]: (sp.Symbol(str(v), real=True) if isinstance(v, str) else v)
+            for i, v in enumerate(split_parameter_replacement_list(next(iter(cells))))
+            if (key := f"observableParameter{i + 1}_{observable_id}") in by_name})
+    except Exception:  # noqa: BLE001 - advisory scale only
+        return obs_expr
+
+
+def _is_pure_gain(candidate, noise_expr, obs_expr) -> bool:
+    """Whether ``candidate`` is an assay gain: a factor dividing BOTH the noise sd and the
+    observable formula exactly.
+
+    "Exactly" is the load-bearing word — a pure gain ``a`` satisfies ``sd/a`` free of ``a``, which
+    ``sqrt(a**2 + s**2)`` would not, and likewise for the observable. A scaling symbol that appears
+    only additively inside the formula (isensee's ``b_pRII_global + s_pRII_global * (...)``) fails
+    the observable half and is correctly declined.
+    """
+    try:
+        import sympy as sp
+
+        name = str(candidate)
+        if name in {str(s) for s in sp.simplify(noise_expr / candidate).free_symbols}:
+            return False
+        if name not in {str(s) for s in obs_expr.free_symbols}:
+            return False
+        quotient = sp.simplify(obs_expr / candidate)
+        if name in {str(s) for s in quotient.free_symbols}:
+            return False
+        # A gain MULTIPLIES the observable; it is not the whole observable. When the quotient is a
+        # bare number the candidate IS the level symbol -- `observableFormula = x` against
+        # `noiseFormula = noiseParameter1_o*x` is proportional noise, where `expr / y` already
+        # removes it and there is no separate assay gain to normalise the DATA by. Accepting it
+        # returns a SPECIES as the amplitude, which `_amplitude_value` cannot reduce to a number,
+        # so `sigma_data_std` goes None and the sigma becomes unassessable. Before the real=True
+        # fix above this was masked by the symbol-assumption mismatch rather than excluded.
+        return bool(quotient.free_symbols)
+    except Exception:  # noqa: BLE001 - advisory scale only
+        return False
 
 
 def _amplitude_value(problem, amplitude, fitted_values=None) -> float | None:
@@ -1638,7 +1733,20 @@ def sigma_effective_value(problem, pid: str, fitted: float,
         # expression got that wrong in both directions — it left the gain in for a proportional
         # formula naming the species, so a correct fit read `inflated` by exactly the gain.
         amplitude = _observable_amplitude(problem, _obs, expr)
-        if amplitude is not None and amplitude in target.free_symbols:
+        # SUBSET, not membership and not intersection.
+        #   * membership (`amplitude in target.free_symbols`) is wrong because a multi-gain
+        #     amplitude is a sympy `Mul`, never a member of a set of Symbols — it silently
+        #     skipped the division for the very case the multi-candidate branch serves, so the
+        #     gain left the data side (sigma_data_std) but not the sigma side and a correct fit
+        #     read `inflated` by exactly the gain;
+        #   * intersection is wrong the other way: with amplitude `a*b` and a `target` holding
+        #     only `b` (for proportional noise `y` may resolve to one of the gain symbols and
+        #     divide it out already), a partial overlap still divides and leaves a spurious
+        #     `1/a`, which then reduces to a NUMBER under the substitutions below — a silently
+        #     wrong effective sigma feeding the plausibility gate, rather than failing open.
+        # Requiring every factor to be present divides only when the whole gain is there, and
+        # reduces to the old behaviour for a bare Symbol.
+        if amplitude is not None and amplitude.free_symbols <= target.free_symbols:
             target = sp.simplify(target / amplitude)
         value = sp.simplify(target.subs(subs))
         if value.free_symbols:  # an unresolved symbol -> we do not guess, we fail open
@@ -1752,8 +1860,17 @@ def initial_conditions_report(
             # FIXED. Under the always-on default, an IC is only fixed at the two leak-free value
             # conventions (0 = empty pool, 1 = unit normalization) or because it was shipped as a
             # fixed parameter row; say which, so the caller sees why it is not estimated.
-            if ic is None:
+            if ic is None and declared in (None, 0.0):
                 why = ("an empty pool (t=0 == 0), carried as a literal — no `<species>_init` "
+                       "parameter exists for it, so it costs nothing in k")
+            elif ic is None:
+                # No minted `<species>_init` does NOT imply a zero initial. An assignment-rule
+                # target reaches here with `ic` None (ensure_parametric_initial_conditions drops
+                # the initial assignment and continues) while the species still declares a
+                # non-zero concentration. Claiming "t=0 == 0" then contradicted `declared_t0` in
+                # the very same record — a self-contradicting answer to the one question this
+                # report exists to settle.
+                why = (f"carried as a literal (t=0 == {declared:g}) — no `<species>_init` "
                        "parameter exists for it, so it costs nothing in k")
             elif declared == 0.0:
                 why = "an empty pool (t=0 == 0)"

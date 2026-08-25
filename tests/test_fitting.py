@@ -38,15 +38,19 @@ def test_extracts_starts_and_trace():
     res = _Result([
         _OptimizerResult(history=_Hist([9.0, 3.0, 1.0], [0.0, 0.2, 0.5]),
                          id="0", fval=1.0, time=0.5, n_fval=20, n_grad=20, n_hess=0,
-                         exitflag=0, message="converged"),
-        _OptimizerResult(history=None, id="1", fval=5.0, time=0.4, n_fval=15),
+                         exitflag="ExitFlag.FTOL", message="converged"),
+        _OptimizerResult(history=None, id="1", fval=5.0, time=0.4, n_fval=15,
+                         exitflag="ExitFlag.EXCEEDED_BOUNDARY"),
     ])
     payload = fitting._optimization_payload(res)
 
     assert payload["n_starts"] == 2
     s0 = payload["starts"][0]
     assert s0["start"] == 0 and s0["fval"] == 1.0 and s0["n_fval"] == 20
-    assert s0["message"] == "converged"
+    # Per-start exit prose is NOT stored: n_starts copies of `message` answered a histogram
+    # question by grepping. The enumerated outcome is aggregated across starts instead.
+    assert "message" not in s0 and "exitflag" not in s0
+    assert payload["exitflag_counts"] == {"ExitFlag.FTOL": 1, "ExitFlag.EXCEEDED_BOUNDARY": 1}
     # trace only for the start that had a recorded history, indexed by iteration
     assert [t["fval"] for t in payload["trace"] if t["start"] == 0] == [9.0, 3.0, 1.0]
     assert [t["time"] for t in payload["trace"] if t["start"] == 0] == [0.0, 0.2, 0.5]
@@ -65,7 +69,8 @@ def test_non_finite_fval_becomes_none():
 
 def test_robust_to_garbage_result():
     # A result whose shape we don't recognise yields empty tables, never an exception.
-    assert fitting._optimization_payload(object()) == {"n_starts": 0, "starts": [], "trace": []}
+    assert fitting._optimization_payload(object()) == {
+        "n_starts": 0, "starts": [], "trace": [], "exitflag_counts": {}}
 
 
 # --- fitted-value extraction: only ESTIMATED params, unscaled to linear -------------------
@@ -186,6 +191,38 @@ def test_slim_fitted_parameters_diffs_against_previous_version():
     assert out["parameter_scales"] == {"b": "log10", "d": "lin"}
 
 
+def test_slim_fit_payload_slims_a_block_that_carries_no_version_of_its_own():
+    """The regression that made the whole payload diet a no-op where it mattered.
+
+    `fit_result_block` emits no `version`, and all three session callers
+    (`_fit_result`, the duplicate-commit result, `rollback_to`) put `version` as a SIBLING of the
+    block. So `_slim_fitted_parameters` read None, failed its `isinstance(version, int)` guard and
+    returned immediately — leaving the 84-118-entry dict on every make_changes result, the
+    payload this exists to shrink. It shipped green because the tests above call
+    `_slim_fitted_parameters` directly with a hand-built dict that already has `version` in it,
+    proving only that the differ works when handed the thing production never hands it.
+
+    The version therefore has to be passed explicitly — and must NOT leak into the returned block,
+    or it would collide with the caller's own sibling key."""
+    from petab_mcp.fitting import slim_fit_payload
+
+    class _Prov:
+        def get_meta(self, n):
+            return ({"parent": 4} if n == 5
+                    else {"fitted_parameters": {"a": 1.0, "b": 2.0, "c": 3.0}})
+
+    class _S:
+        provenance = _Prov()
+
+    block = {"fitted_parameters": {"a": 1.005, "b": 2.5, "d": 7.0},
+             "parameter_scales": {"a": "log10", "b": "log10", "d": "lin"}}
+    out = slim_fit_payload(_S(), block, version=5)
+
+    assert out["fitted_parameters"] is None, "the block was not slimmed"
+    assert out["fitted_parameters_changed"] == {"b": 2.5, "d": 7.0}
+    assert "version" not in out, "version must stay the caller's sibling, not ride in the block"
+
+
 def test_slim_fitted_parameters_keeps_the_first_fit_whole():
     """version 0 (or no previous fit) has nothing to diff against — the first read is the one
     place the whole vector genuinely informs, and it must stay intact."""
@@ -208,3 +245,45 @@ def test_slim_fitted_parameters_never_degrades_on_failure():
     out = {"version": 3, "fitted_parameters": {"a": 1.0}, "parameter_scales": {"a": "lin"}}
     _slim_fitted_parameters(_Boom(), out)
     assert out["fitted_parameters"] == {"a": 1.0}   # slimming aid must not break the score payload
+
+
+def test_exitflag_counts_reaches_the_fit_result_block(monkeypatch):
+    """The histogram is PRODUCED in `_optimization_payload` (the `optimization` dict) but READ by
+    `fit_result_block` off `fitsim` — two different dicts. Nothing bridged them, so it was None on
+    every fit while the per-start `exitflag`/`message` columns it replaced had already been
+    removed and the Fides logger dropped to ERROR: converged-vs-truncated was unobtainable from
+    the payload, the SQL table and the log simultaneously. Pin every hop."""
+    res = _Result([
+        _OptimizerResult(history=None, id="0", fval=1.0, exitflag="ExitFlag.FTOL"),
+        _OptimizerResult(history=None, id="1", fval=2.0, exitflag="ExitFlag.FTOL"),
+        _OptimizerResult(history=None, id="2", fval=9.0, exitflag="ExitFlag.EXCEEDED_BOUNDARY"),
+    ])
+    payload = fitting._optimization_payload(res)
+    expected = {"ExitFlag.FTOL": 2, "ExitFlag.EXCEEDED_BOUNDARY": 1}
+    assert payload["exitflag_counts"] == expected
+    # survives per version, or a restored version cannot answer "optimiser- or structure-limited?"
+    assert fitting.build_optimization_payload_for_version(payload)["exitflag_counts"] == expected
+    # and reaches the block the agent and judge actually read
+    fitsim = {"status": "fit", "neg_log_likelihood": -5.0, "chi2": 4.0, "n_data_points": 10,
+              "n_estimated": 2, "n_starts": 3, "exitflag_counts": expected}
+    assert fitting.fit_result_block(fitsim, None, None, None)["exitflag_counts"] == expected
+
+
+def test_exitflag_counts_is_carried_by_the_real_call_path():
+    """The hand-built `fitsim` above proves fit_result_block READS the key; it cannot prove
+    anything PUTS it there, and twice it did not. The bridge first read `session.optimization`
+    (never on the payload), then `fitsim["optimization"]` (a key `fit_and_simulate` does not
+    return), and the provenance whitelist stripped it before optimization.json was written --
+    each time with the per-start columns already deleted and Fides already at ERROR. So assert
+    the PATH: the producer writes it onto the payload, and the persister carries it."""
+    import inspect
+    import re
+
+    from petab_mcp.provenance import ProvenanceStore
+
+    # the payload fit_result_block later reads is built in fit_and_simulate, not bridged after
+    assert '"exitflag_counts"' in inspect.getsource(fitting.fit_and_simulate)
+    # ...and the per-version whitelist does not silently drop it
+    wl = re.search(r"for k in \(([^)]*)\)\}",
+                   inspect.getsource(ProvenanceStore._write_optimization), re.S)
+    assert wl and "exitflag_counts" in wl.group(1)

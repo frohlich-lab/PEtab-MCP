@@ -162,7 +162,8 @@ class ModelOp(BaseModel):
     id: str | None = Field(
         default=None,
         description="the reaction id (remove_reaction, set_rate_law) or symbol id "
-                    "(set_initial). add_reaction takes its id from the statement itself."
+                    "(set_initial). add_reaction takes its id from the statement itself; repeating the same "
+                    "id is accepted, a differing one is refused."
     )
     antimony: str | None = Field(
         default=None,
@@ -557,10 +558,16 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
             text = model_mod.get_model(session, format)
         else:
             if (format or "antimony").lower() != "antimony":
-                raise ValidationError(
+                # RECORDED, for the same reason the unknown-version rejection below is: this tool
+                # is registered without `ctx.run`, so a rejection raised straight out of here
+                # burns the caller's turns while showing zero errors in `get_errors` and in
+                # result.json's error block.
+                exc = ValidationError(
                     "get_model: a stored `version` is only available as antimony (SBML is "
                     "derived from it); omit `format` or pass 'antimony'."
                 )
+                ctx.log_error("get_model", {"version": version, "format": format}, exc)
+                raise exc from None
             # The version's own SOURCE when it has one, because this read exists to be paired
             # with `base_version=N`: the operations apply to that stored source, and showing the
             # reconciled render instead would answer a different question than the one the next
@@ -620,7 +627,7 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         `model_edits` is the route to use for every change after the first: a BATCH of
         structured operations addressed by ID, not by text. Each entry is one of
         `{op: 'add_reaction', antimony: 'egfr_act: EGFR => pEGFR; k_act*EGF*EGFR'}` (the id comes
-        from the statement — do NOT also pass `id`),
+        from the statement; repeating it as `id` is fine, a DIFFERENT `id` is refused),
         `{op: 'remove_reaction', id}`, `{op: 'set_rate_law', id, antimony: '<rate law>'}`,
         `{op: 'set_initial', id, antimony: '5'}`, `{op: 'rename', old, new}`. Send the WHOLE coherent
         change in ONE call — a new mechanism is usually a new reaction plus a rate-law change on
@@ -1260,7 +1267,12 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         """The COMPACT, size-bounded DETAIL behind the verdicts every fit result already carries —
         where the fit is off, and which parameters it cannot pin.
 
-        `per_observable` is CAPPED at `max_observables` rows (default 12) on problems with more
+        `per_observable` keeps `max_observables` rows by chi2 (default 12) on problems with more,
+        PLUS up to 3 more by |bias| and up to 6 more carrying a `structure_flag` — so the real
+        bound is `max_observables + 9`, not `max_observables`. The extras are deliberate: an
+        observable that is biased or structurally flagged is the one worth seeing even when its
+        chi2 does not make the cut, and silently dropping it would defeat the diagnosis. Stated
+        exactly because the old wording promised a bound the union never honoured
         observables than that — the worst by chi2, plus the worst few by bias and a few
         structure-flagged rows, with an `omitted` block saying what was dropped. It is NOT a
         complete table on a large problem: aggregate over it and you are aggregating over a

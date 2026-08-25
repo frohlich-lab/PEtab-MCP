@@ -674,3 +674,33 @@ def test_the_difference_estimate_shares_the_sigma_coordinate():
         _two_gel_problem(gains=(4.0, 20.0), sigma=0.1), "sigma",
         {"s1": 4.0, "s2": 20.0, "sigma": 0.1})
     assert estimate == pytest.approx(doubled), (estimate, doubled)
+
+
+# --- amplitude resolution: the two ways the multi-gain branch went wrong -------------------
+def test_a_partial_amplitude_overlap_does_not_divide():
+    """The gain must divide `target` only when EVERY factor is present. Membership was wrong (a
+    multi-gain amplitude is a Mul, never in a set of Symbols, so the division was skipped and the
+    sigma read inflated by the gain); intersection was wrong the other way — with amplitude `a*b`
+    and a target holding only `b`, dividing leaves a spurious `1/a` that then reduces to a NUMBER
+    under substitution, returning a silently wrong effective sigma instead of failing open."""
+    import sympy as sp
+
+    a, b, sigma = sp.symbols("a b sigma", real=True)
+    assert not ((a * b).free_symbols <= (b * sigma).free_symbols)   # partial -> do not divide
+    assert (a * b).free_symbols <= (a * b * sigma).free_symbols     # complete -> divide
+    assert {a} <= (a * sigma).free_symbols                          # bare Symbol still works
+
+
+def test_observable_formulas_with_function_calls_still_parse():
+    """`formula_symbols` is a bare identifier regex, so it reports `exp`/`log10` as symbols.
+    Binding those through `sympify(locals=...)` raises "'Symbol' object is not callable", which
+    the caller swallows into "no amplitude" — silently losing gain normalisation for every
+    observable whose formula uses a function, and judging its sigma in the un-normalised
+    coordinate. `log10` is the case a sympy-namespace check misses: sympy has no such attribute."""
+    from petab_mcp.reconcile import _sympify_real
+
+    for formula in ("scale * exp(-k*t) + offset", "log10(y)*s", "piecewise(a, t > 1, b)*gain"):
+        assert _sympify_real(formula) is not None, formula
+    # and the plain case the real=True binding exists for still resolves
+    expr = _sympify_real("s_pRII_Western * (2*RIIp_2 + x)")
+    assert expr is not None and all(sym.is_real for sym in expr.free_symbols)

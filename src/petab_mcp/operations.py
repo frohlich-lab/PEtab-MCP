@@ -54,7 +54,6 @@ from .validation import (
 # So `t` maps to an INSTRUCTION, not a replacement name.
 _AMICI_RESERVED_HINTS = {
     "h": "n_hill or hill_coeff", "e": "eff or efficiency",
-    "t": "tau or t_delay",   # only used if `t` is NOT standing in for time; see the `t` branch below
     "x": "x_state", "k": "k_rate", "p": "prot", "w": "w_rate",
 }
 _AMICI_RESERVED_RE = re.compile(r"amici_([A-Za-z]\w?)\b")

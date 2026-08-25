@@ -548,8 +548,24 @@ def test_fit_tools(tmp_path):
     mcp = _server(tmp_path, auto_fit=True)
 
     async def go():
+        # BUILD FIRST. A cold read simulates on demand only when a module for this structure is
+        # already compiled -- `fitting._simulation_for_read` logs "a read never pays a build" and
+        # returns nothing otherwise. This test used to skip the fit and still find six rows,
+        # because `create_server` without an explicit `build_root` fell back to
+        # `tempfile.gettempdir()/petab_mcp_amici`, one directory shared by every xdist worker, and
+        # some OTHER test had compiled this same toy model into it. Isolating that root per worker
+        # (conftest._private_tempdir_per_worker) removed the borrowed artifact and left this
+        # asserting behaviour it never exercised. One commit gives it its own module and its own
+        # fit -- which it needs regardless, since it goes on to assert a non-None
+        # neg_log_likelihood.
+        committed = _structured(await mcp.call_tool("make_changes", {
+            "antimony": _reauthored([]),
+            "justification": "fit the shipped structure so the read below has a module",
+        }))
+        assert committed["applied"] is True and committed["committed"] is True
+
         # the simulation dataframe is queryable with SQL via query_data; it is generated on
-        # demand at cold start (no re-simulation on subsequent calls).
+        # demand once a module exists (no re-simulation on subsequent calls).
         allrows = _structured(await mcp.call_tool(
             "query_data", {"sql": "SELECT * FROM simulations"}))
         assert allrows["row_count"] == 6
@@ -592,7 +608,9 @@ def test_fit_tools(tmp_path):
             "parameters": [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
             "justification": "widen bounds", "n_starts": 2,
         }))
-        assert res["applied"] is True and res["committed"] is True and res["version"] == 0
+        # v1, not v0: the setup commit at the top of this test holds v0 (it has to, so a module
+        # exists for the cold read above).
+        assert res["applied"] is True and res["committed"] is True and res["version"] == 1
         assert res["fit_status"] == "fit"
         assert res["neg_log_likelihood"] is not None
         assert res["improvement"]["is_new_best"] is not None
@@ -637,7 +655,9 @@ def test_fit_tools(tmp_path):
         await mcp.call_tool("make_changes", {
             "antimony": _ONE_REACTION_ANTIMONY, "justification": "a second scored version",
             "n_starts": 2})
-        d = _structured(await mcp.call_tool("diff_versions", {"from_version": 0, "to_version": 1}))
+        # The two versions this block actually cares about — the bounds change and the structure
+        # committed just above — shifted up by one for the setup commit.
+        d = _structured(await mcp.call_tool("diff_versions", {"from_version": 1, "to_version": 2}))
         assert "fit" in d and "neg_log_likelihood_delta" in d["fit"]
 
         # that fit's pyPESTO multistart is now queryable: results + per-iteration trace

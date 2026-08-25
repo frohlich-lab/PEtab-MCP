@@ -348,10 +348,19 @@ def _optimization_payload(result) -> dict[str, Any]:
 
     starts: list[dict[str, Any]] = []
     trace: list[dict[str, Any]] = []
+    exitflag_counts: dict[str, int] = {}
     for rank, r in enumerate(olist):
         rid = _get(r, "id")
-        msg = _get(r, "message")
         xvec = _get(r, "x")
+        # Aggregate the enumerated per-start outcome instead of storing one prose row per start:
+        # the converged-vs-truncated question is a HISTOGRAM question ("what fraction of starts
+        # hit FTOL vs the MAXTIME boundary"), and n_starts copies of `message` text answered it
+        # only via fragile grepping while dominating the stored payload. str() of the enum keeps
+        # the label stable across fides versions without importing its ExitFlag type here.
+        flag = _get(r, "exitflag")
+        if flag is not None:
+            key = str(flag)
+            exitflag_counts[key] = exitflag_counts.get(key, 0) + 1
         try:
             xlist = [float(v) for v in xvec] if xvec is not None else None
         except Exception:  # noqa: BLE001 - x shape drift; spread just becomes unavailable
@@ -364,8 +373,6 @@ def _optimization_payload(result) -> dict[str, Any]:
             "n_fval": _int(_get(r, "n_fval")),
             "n_grad": _int(_get(r, "n_grad")),
             "n_hess": _int(_get(r, "n_hess")),
-            "exitflag": _int(_get(r, "exitflag")),
-            "message": str(msg) if msg is not None else None,
             # Full scaled parameter vector at this start's optimum — the raw material for the
             # multistart-spread identifiability signal (:mod:`identifiability`). Order matches the
             # payload's x_names (set by the caller from problem.x_names).
@@ -389,7 +396,9 @@ def _optimization_payload(result) -> dict[str, Any]:
                 "fval": _flt(v),
                 "time": _flt(times[j]) if j < len(times) else None,
             })
-    return {"n_starts": len(starts), "starts": starts, "trace": trace}
+    return {"n_starts": len(starts), "starts": starts, "trace": trace,
+            # Sorted for stable JSON; most common outcome first so the headline reads at a glance.
+            "exitflag_counts": dict(sorted(exitflag_counts.items(), key=lambda kv: -kv[1]))}
 
 
 def estimation_problem(session, engine):
@@ -645,15 +654,31 @@ def warm_start_guesses(problem, parameter_df, n_starts: int, optimization=None):
     Returns a ``(n_warm, dim_full)`` array — pyPESTO fills the first ``n_warm`` starts from it
     and samples the remaining ``n_starts - n_warm`` freshly.
 
-    Start 0 is the current nominal point: the previous fit's BEST optimum (``_run_fit`` writes it
-    back) with any newly-introduced parameter at its neutral value. For a nested edit that point
-    reproduces the parent's likelihood exactly, so the fit cannot end up worse than its parent
-    unless the added structure truly does not help — which is what makes "adding this term made
-    the fit worse" a readable result instead of a coin flip between a real answer and a search
-    that never found the parent's basin (see :mod:`nesting`).
+    The warm starts are seeded from the PREVIOUS fit's optima — and any parameter the previous
+    fit did not have (one this edit just introduced) is NOT left at the reconcile-minted default.
+    A minted mid-range default enters the model FULLY ACTIVE, which is the opposite of a nested
+    comparison: measured on the 2026-08-20 bachmann sweep, additive edits warm-"started" at
+    objective_before +1220 and +2740 against parents at -158, so every such comparison reported a
+    false negative and the agents responded by buying 300-400 random starts per fit.
 
-    Starts 1..n_warm-1 are the previous multistart's OTHER optima, best-first (see
-    :func:`previous_optima`), deduplicated against each other. Those are real, converged basins
+    A new parameter's NEUTRAL value depends on its role, which cannot be inferred: a gate
+    neutralises at its LOWER bound (mechanism off), a transfer/pass-through rate at its UPPER
+    bound (no delay), and unit scale (1.0) is the common declared convention. So the warm rows
+    cover all three, in that order of likelihood: row 0 puts every new parameter at UNIT scale
+    (the declared convention, and what the reconcile usually mints), row 1 at its lower bound,
+    row 2 at its upper bound. Where one edit adds SEVERAL new parameters, further rows vary one
+    parameter at a time against unit for the others -- enumerated, not sampled, because random
+    draws over 3^k combinations miss the case that matters more often than not.
+
+    Order is load-bearing: the candidates are capped at half the warm budget and truncated from
+    the FRONT, so on a small budget it is the unit row that survives. The guarantee that one warm
+    start reproduces the parent exactly -- which is what keeps a nested edit from fitting worse
+    than its parent (see :mod:`nesting`) -- therefore holds once the budget affords the relevant
+    candidate: all three uniform rows need n_starts >= 12 at WARM_START_FRACTION 0.5. Below that
+    only unit is tried, which is the single best guess but not a proof.
+
+    The neutral candidates come first (see the paragraph above); the previous multistart's OTHER
+    optima follow, best-first (see :func:`previous_optima`), deduplicated against each other. Those are real, converged basins
     of the parent likelihood — under an additive edit they stay basins — so re-entering them is a
     far better use of the warm half than perturbing one point at random. Only when the previous
     fit cannot supply enough distinct optima (the run's first fit, or a multistart that converged
@@ -701,13 +726,64 @@ def warm_start_guesses(problem, parameter_df, n_starts: int, optimization=None):
         row[free] = np.clip(row[free], lb, ub)
         return row
 
-    # Start 0 (the previous best + neutral new parameters) then the previous fit's other optima,
-    # best-first. Deduplicated on the FREE coordinates: a multistart that converged many starts to
+    # The neutral candidates, then x0 itself, then the previous fit's other optima, best-first.
+    # Deduplicated on the FREE coordinates: a multistart that converged many starts to
     # the same optimum would otherwise spend the warm half re-running one optimization. Compared
     # after clipping, so two points that differ only outside the box count as one.
+    # NEUTRAL CANDIDATES for parameters this edit introduced, each built from x0 -- the PARENT'S
+    # OWN OPTIMUM -- so one of them reproduces the parent exactly. They must be derived from x0
+    # and not written onto the other optima's rows: rows 1..n are DIFFERENT basins, so pairing
+    # the upper-bound candidate with the parent's 2nd-best point reproduces that point, not the
+    # parent, and the nested guarantee is lost for every parameter whose neutral value is not the
+    # lower bound (the RNA delay chain is exactly that case).
+    #
+    # Which value is neutral cannot be inferred from the symbol: a GATE neutralises at its lower
+    # bound (mechanism off), a TRANSFER/pass-through rate at its upper bound (no delay), and unit
+    # scale is the common declared convention. So all three are offered and the optimizer decides.
+    # An infinite bound is not a usable start (clipping cannot repair -inf, which IS the bound),
+    # so that candidate falls back to unit scale.
+    prev_names = set((optimization or {}).get("x_names") or [])
+    new_free = [i for i in free if str(problem.x_names[i]) not in prev_names] if prev_names else []
+    candidates: list = []
+    if new_free:
+        from petab.v1.parameters import scale as petab_scale
+        pos = {i: free.index(i) for i in new_free}
+        unit_of = {i: float(np.clip(float(petab_scale(1.0, str(problem.x_scales[i]))),
+                                    lb[pos[i]], ub[pos[i]])) for i in new_free}
+
+        def _row(pick_of):
+            row = np.array(x0, dtype=float)
+            for i in new_free:
+                j = pos[i]
+                v = {"lb": lb[j], "ub": ub[j], "unit": unit_of[i]}[pick_of[i]]
+                row[i] = v if np.isfinite(v) else unit_of[i]
+            return row
+
+        # UNIT first: it is the declared convention and the value the reconcile usually mints,
+        # so it is the likeliest neutralisation and must survive a small warm budget.
+        picks = [{i: p for i in new_free} for p in ("unit", "lb", "ub")]
+        # One edit can add parameters with DIFFERENT neutral directions (a delay chain's
+        # pass-through rate neutralises at ub while a gate added in the same batch neutralises at
+        # lb), and no uniform row neutralises both. ENUMERATED, not sampled: 5 iid draws over 3^k
+        # combinations cover the k=3 case only ~17% of the time and can duplicate the uniform
+        # rows. Varying ONE parameter against unit for the others is 2k rows and covers every
+        # case where a single parameter's neutral direction differs from the rest -- which is the
+        # realistic shape, since an edit adds one mechanism whose gate differs from the defaults.
+        if len(new_free) > 1:
+            for i in new_free:
+                for side in ("lb", "ub"):
+                    picks.append({j: (side if j == i else "unit") for j in new_free})
+        # Never spend more than half the warm budget on candidates: they all sit on x0, so past
+        # a point they crowd out the parent's OTHER basins for no gain. At n_warm < 2 that leaves
+        # one candidate (unit), which is the single best guess.
+        candidates = [_row(pk) for pk in picks[:max(1, n_warm // 2)]]
+
     seen: set[tuple] = set()
     guesses: list = []
-    for point in [x0, *previous_optima(problem, optimization, x0)]:
+    # Candidates FIRST: they are the nested-comparison guarantee, and a previous optimum that
+    # displaces one is a worse use of the warm budget than the point that reproduces the parent.
+    # With no new parameters they all collapse to x0 and dedup leaves the original behaviour.
+    for point in [*candidates, x0, *previous_optima(problem, optimization, x0)]:
         row = _clipped(point)
         if not np.all(np.isfinite(row[free])):
             continue
@@ -728,9 +804,16 @@ def warm_start_guesses(problem, parameter_df, n_starts: int, optimization=None):
         # value, which is at least feasible.
         width = ub - lb
         spread = WARM_START_JITTER * np.where(np.isfinite(width), width, 0.0)
-        base = guesses[0][free]
+        # Scatter around the nominal point -- the PARENT'S optimum -- not guesses[0], which is
+        # now a candidate row sitting at a BOUND; perturbing that and clipping back would pile
+        # roughly half the filler starts exactly onto the bound. CLIPPED, because x0 itself can
+        # sit outside the box (a `parameters` edit in the same call can narrow a bound away from
+        # the minted nominal value), and an out-of-box base would put every filler on a bound for
+        # the same reason.
+        anchor = _clipped(np.array(x0, dtype=float))
+        base = anchor[free]
         while len(guesses) < n_warm:
-            row = np.array(guesses[0])
+            row = np.array(anchor, dtype=float)
             row[free] = np.clip(base + rng.normal(0.0, 1.0, size=len(free)) * spread, lb, ub)
             guesses.append(row)
     return np.asarray(guesses)
@@ -783,13 +866,28 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     # likelihood, and a worse result means the structure, not the search (see
     # `warm_start_guesses` and :mod:`nesting`). `session.optimization` still holds that previous
     # fit here; `fit_and_simulate` replaces it only after this returns, and a rollback restores
-    # the version's own. Skipped when the nominal point has no finite objective: an unstable
-    # model there has nothing worth starting from, and the fresh sample is the only way in.
+    # the version's own.
+    #
+    # This used to be SKIPPED when the nominal point had no finite objective ("an unstable model
+    # there has nothing worth starting from"). That was true when the only warm start was the
+    # nominal point itself, and false now: a non-finite objective there is the SIGNATURE of a
+    # newly-minted parameter entering fully active (a mid-range default making the ODE
+    # non-integrable, or driving a log observable to -inf), and the neutral candidates are
+    # exactly the points that switch that mechanism off and recover the parent's integrable
+    # model. Skipping them threw away the rescue in the one case it was built for -- the bachmann
+    # RNA-delay chain, abandoned as "numerically invalid", took this path.
+    #
     # `problem` is cached on the engine, so ALWAYS assign — an empty array clears guesses left by
     # a previous fit rather than silently reusing them.
+    # ...but ONLY when there is something to rescue the point WITH. With no newly-added
+    # parameter there are no candidates, so a non-finite objective at the nominal point means
+    # exactly what it used to: the warm half would be spent jittering around a region that just
+    # failed, where the fresh sample is the only way in.
+    _has_new = bool(set(problem.x_names) - set((session.optimization or {}).get("x_names") or []))
     guesses = (warm_start_guesses(problem, session.problem.parameter_df, n_starts,
                                   optimization=session.optimization)
-               if objective_before is not None else np.zeros((0, len(problem.x_names))))
+               if (objective_before is not None or (_has_new and session.optimization))
+               else np.zeros((0, len(problem.x_names))))
     problem.x_guesses_full = guesses
     log.info(
         "fit: start optimizer=fides n_starts=%d warm_starts=%d workers=%d seed=%d n_free=%d "
@@ -797,12 +895,40 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
         session.sbml_hash(), _fmt(objective_before),
     )
     # Fides: a Newton trust-region optimizer that exploits AMICI's sensitivities; more
-    # robust than the default L-BFGS-B on stiff ODE likelihoods. Its per-iteration logging
-    # is routed to pypesto.log (see logging_setup.configure_pypesto). MAXTIME caps each start's
+    # robust than the default L-BFGS-B on stiff ODE likelihoods. MAXTIME caps each start's
     # wall time (FIT_PER_START_TIMEOUT_S) so a stiff start can't run unbounded and hang the
     # transport; Fides returns that start's best-so-far when the cap is hit.
+    #
+    # WARNING, not INFO. At INFO fides emits one line PER ITERATION PER START: a single
+    # lucarelli run wrote a 1.85 GB server.log, and ten concurrent runs put ~18 GB on a SHARED
+    # lab filesystem. On 2026-08-23 that filesystem hit its quota and five tasks of the terra
+    # sweep died -- another job was the proximate cause, but this was the project's own
+    # contribution to the pressure.
+    #
+    # This level is the only lever that reaches the volume. fides names each optimizer's logger
+    # `fides_<n>` (fides/logging.py) with its OWN StreamHandler, so `logging_setup`'s handler on
+    # the logger named "fides" never catches them; and the fits run in pyPESTO WORKER PROCESSES,
+    # whose stderr is inherited -- which is how the output reached server.log rather than
+    # pypesto.log in the first place. A parent-side handler cannot fix either half.
+    #
+    # KNOWN COST, and the reason this is safe anyway: WARNING drops the CONVERGENCE stopping
+    # reasons, not just the iteration trace. In fides/minimize.py the FTOL/XTOL/GTOL messages
+    # are `logger.info` (623/632/641/649) while only MAXITER/MAXTIME/DELTA_TOO_SMALL are
+    # `logger.warning` (673/685/693), so grepping the text log after this change would see
+    # truncations and no convergences -- reporting ~0% converged and inverting the very
+    # converged-vs-truncated reading that showed lucarelli's gap is structural.
+    #
+    # Do not read that from the log. Every start's outcome is recorded STRUCTURALLY: pyPESTO
+    # returns each start's `exitflag` (an enumerated ExitFlag.FTOL / EXCEEDED_BOUNDARY / ...),
+    # and `collect_optimization` below aggregates them into `exitflag_counts` — the
+    # converged-vs-truncated histogram the analysis actually needs, reported in the fit block
+    # and stored with the version. That is the durable source and it is strictly better than
+    # parsing prose, which is why the level can go all the way to ERROR: the WARNING-level
+    # truncation messages are the same information as the EXCEEDED_BOUNDARY flags, line by
+    # line, n_starts times per fit. `get_fitting_log` is likewise unaffected: it reads the
+    # in-memory HistoryOptions(trace_record=True) trace, not this stream.
     optimizer = pypesto.optimize.FidesOptimizer(
-        verbose=logging.INFO, options=_fides_maxtime_options())
+        verbose=logging.ERROR, options=_fides_maxtime_options())
     # Record the per-iteration optimization history in memory (no trace files) so the
     # traces can be exposed as SQL tables. Older pyPESTO without HistoryOptions just runs
     # without a trace.
@@ -852,13 +978,32 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     # Caught here at the source rather than by string-matching the TypeError downstream, where
     # any future None-indexing in the compile/fit path would inherit the same specific text.
     if best.get("x") is None:
+        # Branch the diagnosis on what actually failed, using the objective already evaluated at
+        # the nominal point above. The old message led unconditionally with the log-transform
+        # hypothesis; followed literally on the 2026-08-20 bachmann sweep, it sent an agent to
+        # re-initialise RNA pools twice while the real failure was AMICI FORWARD_FAILURE
+        # (integration), and the correct delay mechanism was abandoned as "numerically invalid".
+        # Two causes produce this, and they need OPPOSITE fixes. `objective_before` cannot
+        # arbitrate: engine._objective_evaluate stores
+        # finite_float(fval), so it is None for a failed SIMULATION *and* for a finite simulation
+        # whose objective is inf (log10(0) at a measured point) -- branching on it would state the
+        # wrong cause confidently in exactly the case the original text was written for. So name
+        # both, and name the log line that distinguishes them, rather than guessing.
         raise ModelUpdateError(
             "the fit produced NO usable optimum: every multistart failed, so the best result "
             "carries no parameter vector. The objective was non-finite at EVERY start — a "
-            "property of the problem, not the optimizer. Check FIRST whether an observable is "
-            "log-transformed and its simulated value can be 0 or negative at a measured time: a "
-            "species started at exactly 0 and measured at t=0 gives log10(0) = -inf and poisons "
-            "every start. Otherwise look for a non-integrable or stiff ODE."
+            "property of the problem, not the optimizer. There are two causes and they need "
+            "OPPOSITE fixes, so check which one this is BEFORE editing — and you cannot read the "
+            "log yourself, so DELEGATE the check (`task` an analyst to run `get_fitting_log` and "
+            "report which of these two it is): (a) the SIMULATION "
+            "fails — 'FORWARD_FAILURE' / 'AMICI simulation failed' appears in the log; the ODE "
+            "is non-integrable or extremely stiff, usually from the last structural change (a "
+            "new pool with no sink, a rate at an extreme default, or writing into a symbol the "
+            "observables use as a normalisation constant), and re-initialising species will NOT "
+            "help. (b) the simulation succeeds but the OBSERVABLE is undefined — a "
+            "log-transformed observable reaching 0 or negative at a measured time (a species "
+            "started at exactly 0 and measured at t=0 gives log10(0) = -inf); there, fixing the "
+            "initial value or the bound that admits it IS the fix."
         )
     df = session.problem.parameter_df
     nllh = float(best["fval"])
@@ -1008,6 +1153,14 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
             "chi2": sim["chi2"],
             "n_data_points": sim["n_data_points"],
             "n_missing_simulations": sim.get("n_missing_simulations"),
+            # Per-start exit histogram, set HERE rather than bridged from `session.optimization`
+            # afterwards: the `optimization` dict never reaches this payload (it is assigned to
+            # the session a few lines below), so a consumer reading `fitsim["optimization"]` gets
+            # None on every fit -- which is exactly how this value silently stayed None after the
+            # per-start `exitflag`/`message` columns were deleted and Fides dropped to ERROR on
+            # the strength of it. Putting it on the payload at the point it is known removes the
+            # seam instead of adding a second one.
+            "exitflag_counts": (fit["optimization"] or {}).get("exitflag_counts") if fit else None,
             "records": records,
             "objective_before": fit["objective_before"] if fit else None,
             "version": None,
@@ -1340,12 +1493,24 @@ def noise_sigma_advice(report: "dict[str, Any] | None") -> str | None:
 
 
 
-def slim_fit_payload(session, out: dict) -> dict:
+def slim_fit_payload(session, out: dict, version: int | None = None) -> dict:
     """Public entry point: slim ``out`` in place and return it, for callers that assemble a fit
     payload themselves (``session._fit_result`` and friends build it via
     :func:`fit_result_block`, which has no session and so cannot do this itself). The
     make_changes result is the payload the lead sees MOST — slimming only get_fit_summary left
-    the dominant instance untouched, and shipped two different shapes for the same quantity."""
+    the dominant instance untouched, and shipped two different shapes for the same quantity.
+
+    ``version`` MUST be passed by those callers. The diff needs to know which version this fit
+    is, and `fit_result_block` does not carry one: every session caller puts `version` as a
+    SIBLING of the block, so reading it off the block found None and `_slim_fitted_parameters`
+    returned on its first guard. That made this a silent no-op on all three of make_changes,
+    the duplicate-commit result and rollback -- i.e. on the dominant instance it was written for,
+    leaving the 84-118-entry dict riding on every one of them. Only `get_fit_summary`, which
+    happens to build `version` into its own out dict, was ever slimmed."""
+    if version is not None and "version" not in out:
+        out = {**out, "version": version}
+        _slim_fitted_parameters(session, out)
+        return {k: v for k, v in out.items() if k != "version"}
     _slim_fitted_parameters(session, out)
     return out
 
@@ -1674,6 +1839,13 @@ def fit_result_block(
         # did not fit). Reported because `n_starts` OVERRIDES the server default rather than adding
         # to it, so this is how a caller confirms it fitted harder and not weaker.
         "n_starts": fitsim.get("n_starts"),
+        # Per-start outcome histogram (e.g. {"ExitFlag.FTOL": 81, "ExitFlag.EXCEEDED_BOUNDARY":
+        # 19}): how many starts CONVERGED on their own criterion vs hit the per-start time cap.
+        # A fit dominated by boundary exits is optimiser-budget-limited, not structure-limited --
+        # the distinction that decides whether "fit harder" or "change the model" is the right
+        # next move, previously only recoverable by grepping optimizer stdout that is no longer
+        # emitted (fides runs at ERROR level; see the optimizer construction).
+        "exitflag_counts": fitsim.get("exitflag_counts"),
         "neg_log_likelihood": nll,
         "chi2": chi2,
         "n_data_points": n,
@@ -1806,6 +1978,11 @@ def build_optimization_payload_for_version(
         "n_starts": payload.get("n_starts"),
         "starts": payload.get("starts"),
         "trace": payload.get("trace"),
+        # Persisted per version because it is the ONLY surviving record of how each start ended:
+        # the per-start `exitflag`/`message` columns were removed in favour of this histogram and
+        # the optimizer log runs at ERROR, so without it a restored version can no longer answer
+        # "was this fit optimiser-limited or structure-limited?".
+        "exitflag_counts": payload.get("exitflag_counts"),
         "result_file": payload.get("result_file"),
         # Without these a rollback restores the per-start optima with no way to read them: the
         # `x` vectors are positional. Rollback-then-re-author is exactly the path where reusing

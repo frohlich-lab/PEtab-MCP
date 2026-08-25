@@ -196,7 +196,13 @@ class ProvenanceStore:
                    # x_names/x_scales label each start's positional `x` vector; without them a
                    # restored version's per-start optima cannot be read back (see
                    # fitting.previous_optima, which warm-starts the next fit from them).
-                   for k in ("n_starts", "starts", "trace", "x_names", "x_scales")}
+                   # exitflag_counts is the ONLY surviving record of how each start ended --
+                   # the per-start `exitflag`/`message` columns were removed in favour of it and
+                   # the optimizer log runs at ERROR -- so a restored version cannot answer
+                   # "optimiser-limited or structure-limited?" without it. This whitelist
+                   # silently dropped it: a key absent here is not persisted and nothing warns.
+                   for k in ("n_starts", "starts", "trace", "x_names", "x_scales",
+                             "exitflag_counts")}
         (vdir / "optimization.json").write_text(json.dumps(persist, indent=2), encoding="utf-8")
         result_file = optimization.get("result_file")
         if result_file:

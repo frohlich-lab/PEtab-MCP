@@ -83,7 +83,7 @@ SIMULATION_COLUMNS = [
 # Columns of the pyPESTO optimization tables (from the last fit). Fixing them keeps the
 # empty-table schema stable before/without a fit, same as SIMULATION_COLUMNS.
 OPTIMIZATION_START_COLUMNS = [
-    "start", "id", "fval", "time", "n_fval", "n_grad", "n_hess", "exitflag", "message",
+    "start", "id", "fval", "time", "n_fval", "n_grad", "n_hess",
 ]
 OPTIMIZATION_TRACE_COLUMNS = ["start", "iteration", "fval", "time"]
 
@@ -104,8 +104,9 @@ TABLE_DESCRIPTIONS: dict[str, str] = {
     ),
     "optimization_starts": (
         "pyPESTO multistart results from the last fit: one row per start (start=0 is best) "
-        "with fval, time, n_fval/n_grad/n_hess, exitflag, message. Empty on a simulate-only "
-        "pass or before the first fit."
+        "with fval, time, n_fval/n_grad/n_hess. Per-start exit outcomes are aggregated into "
+        "the fit result's exitflag_counts histogram instead of stored per row. Empty on a "
+        "simulate-only pass or before the first fit."
     ),
     "optimization_trace": (
         "pyPESTO per-iteration optimization trace from the last fit: one row per "

@@ -318,26 +318,59 @@ def _line_bounds(text: str, pos: int) -> tuple[int, int]:
     return start, (len(text) if end < 0 else end)
 
 
+def _model_block_start(masked: str) -> int:
+    """Offset just past the ``model <name>(...)`` header, or 0 when there is no explicit block.
+
+    Only used when the model declares NO reactions yet, where there is no reaction to anchor a
+    forward search on. Antimony permits `function ... end` blocks before the model, so starting
+    the terminator search at 0 would find the FUNCTION's `end` and insert the first reaction
+    inside it. 0 is the right fallback for the common bare-body model (no `model` keyword at
+    all), which has exactly one block anyway.
+    """
+    # Match the HEADER only -- `model`, an optional `*`, the name, and an optional argument list.
+    # `[^\n]*` ran to end of LINE instead, which is the same thing for the usual multi-line model
+    # but wrong for a single-line one: on `model m() end` it consumed the `end` too, so the
+    # terminator search below started PAST the block and the first reaction was appended outside
+    # it (or found the next block's `end`).
+    m = re.search(r"(?<![\w.])model(?![\w.])[ \t]*\*?[ \t]*(?:[A-Za-z_]\w*)?[ \t]*"
+                  r"(?:\([^)]*\))?", masked)
+    return m.end() if m else 0
+
+
 def _op_add_reaction(text, op, where):
     # ONE Antimony statement, written as it would appear in the model. Decomposing it into
     # id/stoichiometry/rate_law fields made the caller learn a bespoke format for a language it
     # already writes (and the skill already teaches), and cost ~125 tokens of schema on EVERY
     # turn. The id is parsed back out because it is how every later operation addresses this
     # reaction — which is also why it is required rather than optional.
-    if op.get("id"):
-        raise OperationError(
-            f"{where}: add_reaction takes its id from the statement itself — write "
-            f"'{op['id']}: <stoichiometry>; <rate law>;' in `antimony` and drop `id`, so the "
-            "name you address it by later is the name in the model. NOTHING was applied.",
-            cause="redundant_id")
     stmt = (op.get("antimony") or "").strip()
     if not stmt:
         raise OperationError(
             f"{where}: add_reaction needs `antimony` — one named reaction statement, e.g. "
             "'egfr_act: EGFR => pEGFR; k_act*EGF*EGFR;'. NOTHING was applied.")
     found = _reactions(stmt)
+    if (not found and re.fullmatch(r"[A-Za-z_]\w*", str(op.get("id") or "").strip())
+            and str(op.get("id")).strip() not in _PROTECTED_SYMBOLS
+            and unnamed_reactions(stmt)):
+        # The caller supplied the id separately and wrote the statement without it. Refusing here
+        # would be the same turn-burning pedantry the redundant-id rejection was removed for --
+        # and the schema now says "repeating the same id is accepted", which invites exactly this
+        # shape. The id is unambiguous (there is only one), so assemble it and carry on.
+        # Guarded on the SAME id pattern `rename` uses (an SBML SId, not \w+, which would admit
+        # '3oxo' and fail later inside libantimony), and on the protected-symbol list. Built into
+        # a LOCAL and adopted only if it actually parses: committing it to `stmt` first makes
+        # every downstream error quote a string the caller never wrote -- e.g. an antimony
+        # missing its rate law would be reported as "cannot read 'r1: A => B' ... it has no id",
+        # which is both wrong and self-contradictory.
+        candidate = f"{str(op['id']).strip()}: {stmt.lstrip()}"
+        if _reactions(candidate):
+            stmt = candidate
+            found = _reactions(stmt)
     if not found:
-        why = ("it has no id — name it, e.g. 'egfr_act: EGFR => pEGFR; k*EGF*EGFR;', because "
+        why = ("it needs a rate law after the stoichiometry, e.g. "
+               "'egfr_act: EGFR => pEGFR; k_act*EGF*EGFR;'"
+               if str(op.get("id") or "").strip() and unnamed_reactions(stmt) else
+               "it has no id — name it, e.g. 'egfr_act: EGFR => pEGFR; k*EGF*EGFR;', because "
                "the id is how you will address this reaction later"
                if unnamed_reactions(stmt) else
                "expected 'id: <stoichiometry>; <rate law>;' with -> (reversible) or => "
@@ -351,6 +384,19 @@ def _op_add_reaction(text, op, where):
             "so send one add_reaction per reaction. NOTHING was applied.",
             cause="malformed_reaction")
     m = found[0]
+    # A redundant `id` used to be REJECTED outright ("takes its id from the statement — drop
+    # `id`"), which is interface pedantry the trace corpus paid for: 12 rejections across the
+    # 2026-08-20 sweep, and on bachmann task 2 the burned turn was the FIRST attempt at the
+    # nuclear-RNA delay chain — the single most valuable mechanism for that problem. A matching
+    # id states the caller's intent twice, consistently; only a MISMATCH is ambiguous (which name
+    # would later operations address?), so only a mismatch is refused.
+    given = str(op.get("id") or "").strip()
+    if given and given != m.group("id"):
+        raise OperationError(
+            f"{where}: `id` is {given!r} but the statement names the reaction "
+            f"{m.group('id')!r} — the statement's name is the one the model gets, so either "
+            "drop `id` or make them agree. NOTHING was applied.",
+            cause="id_mismatch")
     # Anything BEYOND the reaction (a second assignment, say) would be dropped on the floor by the
     # reassembly below, so refuse rather than silently discard. A trailing comment is kept.
     leftover = (mask_comments(stmt)[:m.start()] + mask_comments(stmt)[m.end():]).strip(" \t\n;")
@@ -364,6 +410,20 @@ def _op_add_reaction(text, op, where):
     if cmatch and cmatch.start() >= m.end():
         comment = f"  {cmatch.group(0).strip()}"
     rid, stoich, law = m.group("id"), m.group("stoich").strip(), m.group("law").strip()
+    # Reserved names, checked HERE and not only on the auto-id path above. `_PROTECTED_SYMBOLS`
+    # was consulted where the caller supplies `id` separately, and on rename -- but not for the
+    # id parsed out of the statement, which is the documented normal form. So
+    # `add_reaction('at: -> X; k*C;')` wrote an Antimony KEYWORD as a reaction id and surfaced as
+    # `unexpected ->` from libantimony, an opaque parse error far from the operation that caused
+    # it. `time` was the same: `model_symbols` asserts "a caller cannot name a reaction `time`
+    # anyway: that is refused as a keyword", which was only true if the model already mentioned
+    # it somewhere.
+    if rid in _PROTECTED_SYMBOLS:
+        kind = "an Antimony keyword" if rid in _ANTIMONY_KEYWORDS else "a built-in symbol"
+        raise OperationError(
+            f"{where}: {rid!r} is {kind}, so it cannot be a reaction id — libantimony would "
+            "reject the model with a parse error that does not mention this reaction. Pick "
+            "another id. NOTHING was applied.", cause="reserved_id")
     # ONE symbol table: a reaction id that is already a parameter or species is a redefinition,
     # and libantimony reports it as an opaque parse failure at reconcile time rather than as this
     # module's own rejection with a remedy.
@@ -392,9 +452,20 @@ def _op_add_reaction(text, op, where):
             "NOTHING was applied.", cause="id_collision")
     body = f"{rid}: {stoich}; {law};" if law else f"{rid}: {stoich};"
     masked = mask_comments(text)
-    # The model's terminator, wherever it sits — it may share a line with statements.
-    end_tok = re.search(r"(?<![\w.])end(?![\w.])", masked)
     existing = _reactions(text)
+    # The terminator of the block the reaction belongs in — NOT simply the first `end` in the
+    # source. Antimony allows blocks before the model (`function f(x) ... end`, or a second model),
+    # and anchoring on the first `end` inserted the new reaction into THAT block while reporting
+    # "added reaction r2": libantimony then either puts it in the wrong namespace or fails
+    # opaquely at reconcile. Search forward from the anchor instead, so the match is the `end`
+    # that closes the block actually being edited.
+    #
+    # From `last.end()` and not from the end of its LINE, so an `end` sharing the last reaction's
+    # line (`A = 1; r1: A -> B; k1*A; end`) is still found — that case needs the insert-before-end
+    # fallback below, and searching from the line end would skip past it to the next block's `end`
+    # (or find none) and silently append outside the model.
+    search_from = existing[-1].end() if existing else _model_block_start(masked)
+    end_tok = re.compile(r"(?<![\w.])end(?![\w.])").search(masked, search_from)
     if existing:
         last = existing[-1]
         # END of the last reaction's match, not its START: a reaction may span lines
@@ -556,6 +627,19 @@ def _op_rename(text, op, where):
     for m in _RXN_STMT.finditer(masked):
         in_stoich |= set(re.findall(r"[A-Za-z_]\w*", m.group("stoich")))
     collides = re.search(rf"(?<![\w.]){re.escape(new)}\b", masked)
+    # A REACTION id is the same collision arriving through the other door, and `in_stoich` cannot
+    # see it: reaction ids never appear in a stoichiometry. So `rename(k1 -> r1)` against
+    # `r1: A -> B; k1*A;` passed both tests and produced `r1: A -> B; r1*A;` — in Antimony a
+    # reaction id in an expression denotes that reaction's RATE, so the law now references itself.
+    # It committed, and the summary reported `renamed k1 -> r1 (1 occurrences)` as a success.
+    rxn_ids = reaction_ids(text)
+    if collides and (old in rxn_ids or new in rxn_ids):
+        raise OperationError(
+            f"{where}: {new!r} already exists and one of these is a REACTION id, so this rename "
+            "would make a rate law reference a reaction — Antimony reads a reaction id in an "
+            "expression as that reaction's rate, so the law would refer to itself. Rename the "
+            "reaction with its own operation, or pick another name. NOTHING was applied.",
+            cause="reaction_id_merge_refused")
     if collides and (old in in_stoich or new in in_stoich):
         raise OperationError(
             f"{where}: {new!r} already exists and one of these is a SPECIES, so this rename "

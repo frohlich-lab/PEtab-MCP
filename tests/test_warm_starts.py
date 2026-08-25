@@ -196,22 +196,57 @@ def _prev(*points, scales=("log10", "log10"), names=("k1", "k2")):
                        for i, p in enumerate(points)]}
 
 
-def test_previous_optima_become_the_warm_starts_with_the_new_parameter_neutral():
-    """The whole point: each converged basin of the PARENT is re-entered under the child's
-    structure, with the newly-added parameter sitting at its neutral nominal value."""
+def test_a_new_parameter_gets_all_THREE_neutral_candidates_on_the_parent_optimum():
+    """Which value neutralises a new parameter cannot be inferred from the symbol: a GATE is
+    neutral at its lower bound, a pass-through RATE at its upper bound, and unit scale is the
+    common declared convention. So all three are offered, and every one of them sits on the
+    PARENT'S OWN optimum — that is what makes one of them reproduce the parent exactly.
+
+    Deriving them from x0 is the whole point. Writing the candidates onto the rows that carry the
+    parent's 2nd/3rd-best basins instead would pair the upper-bound candidate with a different
+    basin, so nothing would reproduce the parent and an upper-bound-neutral edit (an RNA delay
+    chain) could still come back worse and be misread as 'the mechanism does not help'.
+    """
     prev = _prev([np.log10(0.5), np.log10(0.1)],      # the best optimum (= the nominal point)
                  [np.log10(9.0), np.log10(0.02)],     # a second local optimum
                  [np.log10(0.3), np.log10(7.0)])      # a third
-    g = fitting.warm_start_guesses(_nested_problem(), _nested_pdf(), 8, optimization=prev)
-    assert g.shape == (4, 3)
-    # start 0 is the nominal point; starts 1.. are the other optima, best-first
+    # n_starts=12 (n_warm=6) so all three candidates fit: they are capped at half the warm
+    # budget, and at n_warm=4 only two would be generated.
+    g = fitting.warm_start_guesses(_nested_problem(), _nested_pdf(), 12, optimization=prev)
+    assert g.shape == (6, 3)
+    # rows 0-2 are the three candidates, ALL on the parent's optimum in the shared coordinates
+    for row in g[:3]:
+        assert row[:2] == pytest.approx([np.log10(0.5), np.log10(0.1)])
+    # UNIT first (the declared convention and the likeliest neutralisation), then lb, then ub
+    assert [round(float(v), 6) for v in g[:3, 2]] == [0.0, -4.0, 2.0]
+    # the parent's other basins follow, still carrying a neutral `c`
+    assert g[3, :2] == pytest.approx([np.log10(9.0), np.log10(0.02)])
+
+
+def test_the_neutral_candidates_collapse_when_the_edit_adds_no_parameter():
+    """No new parameter means the three candidates ARE x0, so dedup leaves the previous
+    behaviour untouched: start 0 is the nominal point and the rest are the other basins."""
+    prev = _prev([np.log10(0.5), np.log10(0.1)],
+                 [np.log10(9.0), np.log10(0.02)],
+                 [np.log10(0.3), np.log10(7.0)])
+    g = fitting.warm_start_guesses(_problem(), _pdf(), 8, optimization=prev)
+    # `_problem()` carries a third, FIXED coordinate `d`; only the free ones are asserted
     assert g[0, :2] == pytest.approx([np.log10(0.5), np.log10(0.1)])
     assert g[1, :2] == pytest.approx([np.log10(9.0), np.log10(0.02)])
     assert g[2, :2] == pytest.approx([np.log10(0.3), np.log10(7.0)])
-    # `c` did not exist in the previous fit, so every warm start holds it at its neutral value
-    assert g[:3, 2] == pytest.approx(np.log10(1.0))
-    # the previous fit ran out of distinct optima -> the last slot is a jitter of start 0
-    assert not np.array_equal(g[3], g[0])
+
+
+def test_an_infinite_bound_never_reaches_the_optimizer_as_a_start():
+    """A log10 parameter with lowerBound 0 scales to -inf. Clipping cannot repair it (-inf IS
+    the bound), so that candidate has to fall back to unit scale rather than handing pyPESTO a
+    non-finite start coordinate."""
+    prob = _FakeProblem(names=["k1", "k2", "c"], scales=["log10", "log10", "log10"],
+                        free=[0, 1, 2], lb=[-4.0, -4.0, -np.inf], ub=[2.0, 2.0, np.inf])
+    # n_starts=12: at 6 the candidate cap yields only the `unit` row, which is finite anyway,
+    # so the infinite-bound fallback this test names would never execute.
+    prev = _prev([np.log10(0.5), np.log10(0.1)])
+    g = fitting.warm_start_guesses(prob, _nested_pdf(), 12, optimization=prev)
+    assert np.all(np.isfinite(g)), g
 
 
 def test_previous_optima_are_converted_across_a_changed_scale():
@@ -219,12 +254,13 @@ def test_previous_optima_are_converted_across_a_changed_scale():
     the same parameter differently — carrying the raw coordinate across would be silent nonsense.
     """
     prev = _prev([9.0, np.log10(0.02)], scales=("lin", "log10"))  # k1 was LINEAR last time
-    g = fitting.warm_start_guesses(_nested_problem(), _nested_pdf(), 4, optimization=prev)
-    assert g[0, 0] == pytest.approx(np.log10(0.5))  # start 0 is still the nominal point
+    g = fitting.warm_start_guesses(_nested_problem(), _nested_pdf(), 12, optimization=prev)
+    assert g[0, 0] == pytest.approx(np.log10(0.5))  # the candidates all sit on the nominal point
     # the previous optimum's k1=9.0 (linear) arrives as log10(9.0) on this problem's scale —
-    # carrying the raw 9.0 across would place the start 9 decades out instead of ~0.95
-    assert g[1, 0] == pytest.approx(np.log10(9.0))
-    assert g[1, 1] == pytest.approx(np.log10(0.02))  # the already-log10 coordinate is unchanged
+    # carrying the raw 9.0 across would place the start 9 decades out instead of ~0.95. It now
+    # follows the three neutral candidates for the newly-added `c`.
+    assert g[3, 0] == pytest.approx(np.log10(9.0))
+    assert g[3, 1] == pytest.approx(np.log10(0.02))  # the already-log10 coordinate is unchanged
 
 
 def test_duplicate_previous_optima_do_not_eat_the_warm_budget():
@@ -237,10 +273,12 @@ def test_duplicate_previous_optima_do_not_eat_the_warm_budget():
 
 
 def test_failed_previous_starts_are_not_treated_as_basins():
+    # n_starts=12 (n_warm=6), not 4: at n_warm=2 the whole warm budget is neutral candidates and
+    # `previous_optima` is never consulted, so this would pass with the NaN filter deleted.
     prev = _prev([np.log10(0.5), np.log10(0.1)], [np.log10(9.0), np.log10(0.02)])
     prev["starts"][1]["fval"] = float("nan")  # the start did not converge
-    g = fitting.warm_start_guesses(_nested_problem(), _nested_pdf(), 4, optimization=prev)
-    assert not np.allclose(g[1, :2], [np.log10(9.0), np.log10(0.02)])
+    g = fitting.warm_start_guesses(_nested_problem(), _nested_pdf(), 12, optimization=prev)
+    assert not any(np.allclose(row[:2], [np.log10(9.0), np.log10(0.02)]) for row in g)
 
 
 def test_a_previous_fit_without_scales_falls_back_to_jitter():
@@ -248,9 +286,10 @@ def test_a_previous_fit_without_scales_falls_back_to_jitter():
     reusing the optima at all. Legacy payloads (written before x_scales) take the old path."""
     prev = _prev([np.log10(9.0), np.log10(0.02)])
     prev.pop("x_scales")
-    g = fitting.warm_start_guesses(_nested_problem(), _nested_pdf(), 4, optimization=prev)
-    assert g.shape == (2, 3)
-    assert not np.allclose(g[1, :2], [np.log10(9.0), np.log10(0.02)])
+    # n_starts=12 for the same reason as above: the guard has to be REACHED to be tested.
+    g = fitting.warm_start_guesses(_nested_problem(), _nested_pdf(), 12, optimization=prev)
+    assert g.shape == (6, 3)
+    assert not any(np.allclose(row[:2], [np.log10(9.0), np.log10(0.02)]) for row in g)
 
 
 def test_no_previous_fit_still_warm_starts_from_the_nominal_point():
@@ -289,10 +328,13 @@ def test_previous_optima_are_projected_into_the_current_bounds():
     the box collapse to one start rather than burning two on the same feasible point."""
     prev = _prev([np.log10(1e6), np.log10(1e-9)],   # both coordinates far outside [-4, 2]
                  [np.log10(1e9), np.log10(1e-12)])  # ...and so are these, to the SAME corner
-    g = fitting.warm_start_guesses(_nested_problem(), _nested_pdf(), 8, optimization=prev)
-    assert g.shape == (4, 3)
+    # n_starts=12 so BOTH mapped optima are in scope past the candidate rows — at n_warm=4 the
+    # second one is never reached and "not spent twice" would be vacuously true.
+    g = fitting.warm_start_guesses(_nested_problem(), _nested_pdf(), 12, optimization=prev)
+    assert g.shape == (6, 3)
     assert (g[:, :3] <= 2.0 + 1e-12).all() and (g[:, :3] >= -4.0 - 1e-12).all()
+    corner = [np.allclose(row[:2], [2.0, -4.0]) for row in g]
     # the first out-of-box optimum is pulled to the corner...
-    assert g[1, :2] == pytest.approx([2.0, -4.0])
-    # ...and the second, which clips to that same corner, is not spent a second time
-    assert not np.allclose(g[2, :2], [2.0, -4.0])
+    assert any(corner)
+    # ...and the second, which clips to that SAME corner, is not spent a second time
+    assert sum(corner) == 1

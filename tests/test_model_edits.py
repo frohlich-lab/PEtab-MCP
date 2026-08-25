@@ -308,6 +308,10 @@ def test_every_rejection_reports_a_DISTINCT_machine_readable_cause(tool_env):
         # (an unknown `op` never reaches the server: the pydantic Literal rejects it
         #  client-side, which is a stricter guarantee than a cause label)
         "rename_target_missing": {"model_edits": [{"op": "rename", "old": "zzz", "new": "q"}]},
+        # A redundant `id` that MATCHES the statement is accepted (it states the same thing
+        # twice); only a DIFFERING one is ambiguous about which name later ops address.
+        "id_mismatch": {"model_edits": [{"op": "add_reaction", "id": "not_r9",
+                                         "antimony": "r9: A => B; k1*A;"}]},
         "route_conflict": {"antimony": whole,
                            "model_edits": [{"op": "remove_reaction", "id": "r1"}]},
     }
@@ -556,3 +560,91 @@ def test_a_new_reaction_id_cannot_collide_with_a_rate_law_parameter():
     assert "k_deg" in me.model_symbols(src)
     with pytest.raises(OperationError, match="rate-law parameter"):
         me.apply_model_edits(src, [{"op": "add_reaction", "antimony": "k_deg: B -> C; k2*B;"}])
+
+
+def test_add_reaction_targets_the_model_block_not_a_preceding_function():
+    """Antimony allows `function ... end` before the model. Anchoring on the FIRST `end` in the
+    source put the new reaction inside the function body and still reported "added reaction" —
+    libantimony then either resolves it in the wrong namespace or fails opaquely at reconcile."""
+    src = ("function hill(x, k, n)\n  x^n/(k^n + x^n);\nend\n\n"
+           "model m()\n  r1: A -> B; k1*A;\nend\n")
+    out, _ = me.apply_model_edits(src, [{"op": "add_reaction",
+                                         "antimony": "r2: B -> C; k2*B;"}])
+    fn_body = out[out.index("function"):out.index("model")]
+    assert "r2" not in fn_body, f"reaction landed in the function block:\n{out}"
+    assert "r2: B -> C" in out[out.index("model"):]
+
+
+def test_add_reaction_targets_the_model_block_with_no_reactions_yet():
+    """Same trap on the FIRST reaction of a model, where there is no reaction to anchor on: the
+    terminator search starts after the `model` header rather than at offset 0."""
+    src = ("function hill(x, k, n)\n  x^n/(k^n + x^n);\nend\n\n"
+           "model m()\n  A = 1;\nend\n")
+    out, _ = me.apply_model_edits(src, [{"op": "add_reaction",
+                                         "antimony": "r2: B -> C; k2*B;"}])
+    assert "r2" not in out[out.index("function"):out.index("model")]
+    assert "r2: B -> C" in out[out.index("model"):]
+
+
+# ------------------------------------------------- reserved / colliding ids (third review pass)
+@pytest.mark.parametrize("rid", ["at", "in", "time", "log10"])
+def test_add_reaction_refuses_a_reserved_id_parsed_from_the_statement(rid):
+    """`_PROTECTED_SYMBOLS` was consulted where the caller supplies `id` separately, and on
+    rename — but NOT for the id parsed out of the statement, which is the documented normal form.
+    So an Antimony keyword sailed through and libantimony reported `unexpected ->`, an opaque
+    parse error naming nothing about the operation that caused it. `model_symbols` even asserts
+    "a caller cannot name a reaction `time` anyway: that is refused as a keyword" — which held
+    only when the model happened to mention `time` already."""
+    with pytest.raises(OperationError) as ei:
+        me.apply_model_edits(SRC, [{"op": "add_reaction", "antimony": f"{rid}: A => B; k1*A;"}])
+    assert ei.value.cause == "reserved_id"
+    assert rid in str(ei.value)
+
+
+def test_add_reaction_still_accepts_an_ordinary_id():
+    """The guard must not start refusing normal names — `at_rate` merely CONTAINS a keyword."""
+    out, summary = me.apply_model_edits(
+        SRC, [{"op": "add_reaction", "antimony": "at_rate: A => B; k1*A;"}])
+    assert summary == ["added reaction at_rate"]
+    assert "at_rate: A => B; k1*A;" in out
+
+
+def test_rename_onto_an_existing_REACTION_id_is_refused():
+    """The species guard reads `in_stoich`, and reaction ids never appear in a stoichiometry — so
+    this collision came through the other door. `rename(k1 -> rev)` produced
+    `rev: B => A; rev*B;`, and in Antimony a reaction id inside an expression denotes that
+    reaction's RATE, so the law referenced itself. It committed, and the summary reported
+    `renamed k1 -> rev (1 occurrences)` as a success."""
+    with pytest.raises(OperationError) as ei:
+        me.apply_model_edits(SRC, [{"op": "rename", "old": "k1", "new": "rev"}])
+    assert ei.value.cause == "reaction_id_merge_refused"
+
+
+def test_renaming_a_reaction_itself_is_still_refused_only_on_collision():
+    """Renaming a reaction to a FREE name stays legal — the guard is about merging, not about
+    reactions being untouchable."""
+    out, summary = me.apply_model_edits(SRC, [{"op": "rename", "old": "rev", "new": "back"}])
+    assert summary == ["renamed rev -> back (1 occurrences)"]
+    assert "back: B => A; k2*B;" in out
+
+
+def test_add_reaction_into_a_SINGLE_LINE_model_block():
+    """`_model_block_start` matched to end of LINE, so on a one-line `model m() end` it consumed
+    the terminator as well and the search for `end` started past the block — appending the first
+    reaction outside the model. Only bites when the model declares no reactions yet, which is
+    exactly the from-scratch authoring case."""
+    src = "model m() end\n"
+    out, summary = me.apply_model_edits(src, [
+        {"op": "add_reaction", "antimony": "r1: A => B; k1*A;"}])
+    assert summary == ["added reaction r1"]
+    body, _, tail = out.partition("end")
+    assert "r1: A => B; k1*A;" in body, f"reaction landed outside the model block: {out!r}"
+
+
+def test_add_reaction_into_a_starred_model_header():
+    """libantimony emits `model *name()`; the header match has to survive the star."""
+    src = "model *m()\nend\n"
+    out, _ = me.apply_model_edits(src, [
+        {"op": "add_reaction", "antimony": "r1: A => B; k1*A;"}])
+    body, _, _ = out.partition("end")
+    assert "r1: A => B; k1*A;" in body, f"reaction landed outside the model block: {out!r}"
