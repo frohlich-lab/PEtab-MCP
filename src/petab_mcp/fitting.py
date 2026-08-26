@@ -218,7 +218,8 @@ def _fitted_values(x_names, x_values, free_indices, parameter_df) -> dict[str, f
     return fitted
 
 
-def _build_hierarchical_problem(session, importer_kwargs: dict[str, Any]):
+def _build_hierarchical_problem(session, importer_kwargs: dict[str, Any],
+                                petab_problem=None):
     """Best-effort hierarchical pyPESTO problem for ``session``'s current problem.
 
     Returns ``(pypesto_problem, inner_scales)`` where ``inner_scales`` maps each inner
@@ -239,6 +240,9 @@ def _build_hierarchical_problem(session, importer_kwargs: dict[str, Any]):
     is unaffected). On ANY failure this returns ``(None, {})`` so the caller falls back to the
     ordinary joint fit — hierarchical never risks a fit that would otherwise succeed.
     """
+    # `petab_problem` is the AMICI-facing problem (possibly a flattened copy); classification
+    # and the parameter table come from the SESSION's problem, which shares the parameter table.
+    base = petab_problem if petab_problem is not None else session.problem
     inner = _reconcile.classify_inner_parameters(session.problem)
     if not inner:
         return None, {}
@@ -261,7 +265,7 @@ def _build_hierarchical_problem(session, importer_kwargs: dict[str, Any]):
         # Sigma → [0, inf], scaling/offset → [-inf, inf]; required by the inner solver.
         df = correct_parameter_df_bounds(df)
 
-        hier_problem = copy.copy(session.problem)  # shallow: shares model/measurement/etc.
+        hier_problem = copy.copy(base)  # shallow: shares model/measurement/etc.
         hier_problem.parameter_df = df
         importer = pypesto.petab.PetabImporter(hier_problem, hierarchical=True, **importer_kwargs)
         return importer.create_problem(), inner_scales
@@ -401,6 +405,96 @@ def _optimization_payload(result) -> dict[str, Any]:
             "exitflag_counts": dict(sorted(exitflag_counts.items(), key=lambda kv: -kv[1]))}
 
 
+def needs_flattening(problem) -> bool:
+    """Whether AMICI needs a FLATTENED copy of ``problem`` — i.e. whether any observable/noise
+    parameter override differs WITHIN one (observable, simulation condition) pair.
+
+    That is the actual AMICI limitation: per-condition overrides are handled natively by its
+    parameter mapping (one mapping per condition), so only TIMEPOINT-specific overrides — two
+    rows of the same observable in the same condition carrying different overrides — force
+    petab's ``flatten_timepoint_specific_output_overrides``. Grouping by observable alone would
+    flatten bachmann (20 observables -> 101), isensee (3 -> 123) and schwen (4 -> 22) for
+    overrides AMICI takes as shipped; measured across the collection, only fiedler genuinely
+    trips this predicate.
+
+    Flattening is an AMICI implementation detail, so it happens HERE, on a copy, at the compile
+    boundary (:func:`amici_facing_problem`) — the problem the session holds, the agent reads and
+    the diagnostics consume stays unflattened.
+    """
+    from petab.v1.C import (NOISE_PARAMETERS, OBSERVABLE_ID, OBSERVABLE_PARAMETERS,
+                            SIMULATION_CONDITION_ID)
+
+    mdf = getattr(problem, "measurement_df", None)
+    if mdf is None:
+        return False
+    keys = [OBSERVABLE_ID, SIMULATION_CONDITION_ID]
+    from petab.v1.C import PREEQUILIBRATION_CONDITION_ID
+    if PREEQUILIBRATION_CONDITION_ID in mdf.columns:
+        keys.append(PREEQUILIBRATION_CONDITION_ID)
+    # Whether a NUMERIC override counts differs by column, and the difference is AMICI's
+    # internals, not a style choice:
+    #
+    # * noiseParameters: a numeric sigma never enters the parameter mapping at all -- AMICI
+    #   writes it straight into the ExpData as that datapoint's standard deviation, so
+    #   per-timepoint numbers are already exact. MEASURED, not assumed: on upstream crauste (4
+    #   groups with 4 distinct numeric sigmas each) the nominal llh is -190.96512533983716
+    #   unflattened and -190.96512533983716 flattened -- bit-identical. Bruno, Chen, Fujita and
+    #   Salazar-Cavazos are the collection's other numeric-sigma problems and would all have been
+    #   flattened for nothing, which is not free: it multiplies the observable count, and the
+    #   same predicate now gates `_merge_equivalent_observables`.
+    # * observableParameters: these DO become mapped parameters, one value per condition, so a
+    #   number that varies between timepoints of one condition has nowhere to live. No benchmark
+    #   in the collection does this today, so it is untested rather than measured -- which is
+    #   exactly why it errs toward flattening: an unnecessary flatten costs observables, a missed
+    #   one silently simulates the wrong scaling.
+    for col in (OBSERVABLE_PARAMETERS, NOISE_PARAMETERS):
+        if col not in mdf.columns:
+            continue
+        sub = mdf[[*keys, col]].dropna(subset=[col])
+        if col == NOISE_PARAMETERS:
+            sub = sub[sub[col].apply(lambda v: isinstance(v, str))]
+        sub = sub.assign(**{col: sub[col].astype(str)})
+        if not sub.empty and (sub.groupby(keys, dropna=False)[col].nunique() > 1).any():
+            return True
+    return False
+
+
+def amici_facing_problem(session):
+    """The petab problem AMICI is allowed to see: ``session.problem`` itself, or — only when
+    :func:`needs_flattening` says AMICI cannot take it as-is — a flattened DEEP COPY.
+
+    Cached on the session under ``problem_hash`` (flattening a large problem re-derives every
+    table). ``petab.flatten_timepoint_specific_output_overrides`` mutates in place, which is why
+    the copy: the session's problem is the single source the agent-facing reads, the reconcile
+    and the residual machinery all consume, and none of them may ever see flattened observable
+    ids. Simulation frames coming BACK from a flattened build are mapped to the original ids by
+    ``petab.unflatten_simulation_df`` -- but only AFTER the simulation frame has been paired
+    with the measurements IN THIS VOCABULARY. Unflattening first and merging against the natural
+    measurements mispairs every override-carrying row (see ``AmiciEngine._simulation_records``,
+    which measures it).
+
+    Returns ``(problem, flattened)``.
+    """
+    import copy as _copy
+
+    import petab.v1 as petab
+
+    if not needs_flattening(session.problem):
+        return session.problem, False
+    key = session.problem_hash()
+    cached = getattr(session, "_amici_problem_cache", None)
+    if cached is not None and cached[0] == key:
+        return cached[1], True
+    flat = _copy.deepcopy(session.problem)
+    petab.flatten_timepoint_specific_output_overrides(flat)
+    session._amici_problem_cache = (key, flat)
+    session.logger.info(
+        "flattening timepoint-specific output overrides for the AMICI build only "
+        "(%d -> %d observables); the problem itself stays unflattened",
+        len(session.problem.observable_df), len(flat.observable_df))
+    return flat, True
+
+
 def estimation_problem(session, engine):
     """The pyPESTO problem for the session's CURRENT estimation problem, cached on the engine.
 
@@ -442,9 +536,11 @@ def estimation_problem(session, engine):
     # Prefer a hierarchical objective (inner-solve the noise sigmas / observable-scaling
     # factors, shrinking the outer search) when the problem has cleanly-separable inner
     # parameters; fall back to the ordinary joint objective otherwise.
-    problem, inner_scales = _build_hierarchical_problem(session, importer_kwargs)
+    amici_problem, _ = amici_facing_problem(session)
+    problem, inner_scales = _build_hierarchical_problem(session, importer_kwargs,
+                                                        petab_problem=amici_problem)
     if problem is None:
-        importer = pypesto.petab.PetabImporter(session.problem, **importer_kwargs)
+        importer = pypesto.petab.PetabImporter(amici_problem, **importer_kwargs)
         problem = importer.create_problem()
         inner_scales = {}
     # After the branch, so the hierarchical and joint objectives are integrated identically.

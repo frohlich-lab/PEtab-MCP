@@ -305,6 +305,88 @@ def _fixed_constant_role_issues(problem, protected_fixed_ids) -> list[dict[str, 
     return issues
 
 
+def _undefined_readout_issues(problem) -> list[dict[str, Any]]:
+    """One error per ``readout_*`` symbol an observable formula references but the model leaves
+    undefined — with the remedy and the observable's own biological description in the message.
+
+    ``readout_<observableId>`` is the blinded-benchmark measurement-mapping contract
+    (``petab_harness.benchmark._blind_observables``): the shipped observable formula references a
+    symbol the MODEL must define via an assignment rule, so what the assay measures is stated
+    (``observableName``) but how it maps onto the model's states is the modeller's to decide.
+    petab's own lint already errors on the missing entity, but generically — nothing tells the
+    agent the fix is one ``set_assignment`` op, and nothing repeats what the readout measures at
+    the moment that information is needed. Burned turns follow. This check owns the remedy.
+
+    A model with no dynamics yet (the v0 seed) declares every referenced identifier as a species,
+    so this fires only once the agent has authored a model that forgot a mapping. Best-effort:
+    any failure returns ``[]`` rather than breaking validation.
+    """
+    from petab.v1.C import OBSERVABLE_FORMULA, OBSERVABLE_NAME
+
+    try:
+        from .reconcile import formula_identifiers
+
+        odf = getattr(problem, "observable_df", None)
+        sm = getattr(problem.model, "sbml_model", None)
+        if odf is None or sm is None or OBSERVABLE_FORMULA not in odf.columns:
+            return []
+        # The SEED declares one species per observable-formula identifier so v0 lints and
+        # simulates, and that includes every readout_*. So "the id resolves to some SBML element"
+        # is satisfied by construction and cannot be the test -- checking it made this whole guard
+        # a no-op, which is how a model leaving every readout a FREE CONSTANT would have committed:
+        # on blasi that is 16 constants against 16 steady-state observable means, fitting them
+        # exactly while skipping the measurement-mapping task entirely.
+        #
+        # The test is therefore an ASSIGNMENT RULE, and the seed is skipped by the same
+        # predicate `_unused_condition_target_issues` uses -- `has_dynamics`, NOT a bare reaction
+        # count. A model can be fully dynamic with zero reactions (rate rules are the other half
+        # of `has_dynamics`, and ODE-style authoring is a normal Antimony idiom), and counting
+        # reactions alone let exactly those models through the gate with every readout left as a
+        # free constant -- the loophole this check exists to close.
+        if not has_dynamics(sm):
+            return []
+        rule_targets = {
+            sm.getRule(i).getVariable() for i in range(sm.getNumRules())
+            if sm.getRule(i).isAssignment()
+        }
+        issues: list[dict[str, Any]] = []
+        # One issue per READOUT SYMBOL, not per observable. isensee references readout_pRII from
+        # 117 of its 123 rows, so per-row emission meant ~117 byte-identical errors (~100kB with
+        # its description) on a single rejected commit — the payload cap `_ID_LIST_CAP` exists to
+        # prevent elsewhere.
+        seen_readouts: set[str] = set()
+        for obs_id, row in odf.iterrows():
+            formula = str(row[OBSERVABLE_FORMULA])
+            if "readout_" not in formula:      # skip the L3 parse on unblinded rows
+                continue
+            for name in sorted(formula_identifiers(formula)):
+                if not name.startswith("readout_") or name in seen_readouts:
+                    continue
+                seen_readouts.add(name)
+                if name in rule_targets:
+                    seen_readouts.discard(name)      # defined: do not consume the slot
+                    continue
+                # F9: a present-but-empty observableName cell is float NaN, which is TRUTHY --
+                # `or ""` does not catch it and the agent is told "It measures: nan."
+                raw = row.get(OBSERVABLE_NAME, "")
+                measures = raw.strip() if isinstance(raw, str) else ""
+                measured = f" It measures: {measures}." if measures else ""
+                issues.append({
+                    "level": "error",
+                    "message": (
+                        f"observable {obs_id!r} references {name!r}, a MEASUREMENT MAPPING your "
+                        f"model must define — say what this readout is in terms of YOUR model's "
+                        f"states with an ASSIGNMENT RULE: `{name} := <expression of your "
+                        f"species>` (op set_assignment). Declaring it as a species or a "
+                        f"parameter does NOT define it: a free constant is not a "
+                        f"measurement.{measured}"),
+                    "check": "readout_mapping",
+                })
+        return issues
+    except Exception:  # pragma: no cover - advisory check must never break validation
+        return []
+
+
 def _unused_condition_target_issues(problem) -> list[dict[str, Any]]:
     """Hard-error when the model declares a condition-table target but never USES it.
 
@@ -592,10 +674,15 @@ def validate_problem(problem, protected_fixed_ids=None) -> dict[str, Any]:
     issues += condition_issues
     n_errors += len(condition_issues)
 
+    readout_issues = _undefined_readout_issues(problem)
+    issues += readout_issues
+    n_errors += len(readout_issues)
+
     return {
         "valid": (
             (not has_errors) and sbml_errors == 0
             and not reuse_errors and not role_issues and not condition_issues
+            and not readout_issues
         ),
         "n_errors": n_errors,
         "n_warnings": n_warnings,

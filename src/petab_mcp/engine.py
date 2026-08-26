@@ -446,7 +446,14 @@ class AmiciEngine:
     def _simulation_records(self, model, result) -> list[dict[str, Any]]:
         from amici.sim.sundials.petab.v1 import RDATAS, rdatas_to_simulation_df
 
-        meas = self.session.problem.measurement_df
+        from .fitting import amici_facing_problem
+
+        # The AMICI model was built from the AMICI-FACING problem, which may be a flattened
+        # copy (timepoint-specific overrides; see fitting.needs_flattening). The rdatas name
+        # observables in THAT problem's vocabulary, so the simulation frame is built against its
+        # measurement table and mapped back to the session's (unflattened) observable ids with
+        # petab's own inverse before anything downstream reads it — every consumer (residual
+        # structure, query_data's `simulations`, the sigma checks) keys on the unflattened ids.
         rdatas = result[RDATAS]
         n_bad = self._unusable_rdatas(rdatas)
         if n_bad:
@@ -457,9 +464,24 @@ class AmiciEngine:
             self.session.logger.info(
                 "simulation: %d/%d conditions returned no usable trajectory; reporting a missing "
                 "score instead of a partial one", n_bad, len(rdatas))
-            return self._records_without_simulation(meas)
+            return self._records_without_simulation(self.session.problem.measurement_df)
+        amici_problem, flattened = amici_facing_problem(self.session)
+        meas = amici_problem.measurement_df
         simdf = rdatas_to_simulation_df(rdatas, model, meas)
         keys = [OBSERVABLE_ID, SIMULATION_CONDITION_ID, TIME]
+        # PAIR IN THE AMICI VOCABULARY, then relabel — not the other way round. Unflattening the
+        # simulation frame first and merging against the natural measurements looked equivalent
+        # and is not: flattening is triggered PRECISELY when two rows share
+        # (observable, condition, time) with different overrides, so in the natural vocabulary
+        # those rows are not replicates and their simulated values differ — the positional
+        # `cumcount` pairing below would match them by row order, which petab's flatten does not
+        # preserve (it rebuilds the frame grouped by overrides). Measured on fiedler: with the
+        # gel rows in a different but perfectly legal TSV order, 72/72 rows mispair (one
+        # measurement drew a simulation 26x off), silently corrupting every residual, chi2 and
+        # sigma check. In the FLATTENED vocabulary the override lives in the observable id, so
+        # (observable, condition, time) is unique (measured: 72 rows, 72 distinct keys, max 1
+        # row per key) and the merge cannot mispair. `slurm/_pairing_probe.py` is that
+        # experiment, negative control included.
         # ``rdatas_to_simulation_df`` (a thin wrapper over amici's
         # ``rdatas_to_measurement_df``) carries exactly one simulation row per
         # measurement row, but replicate measurements share the same
@@ -467,9 +489,11 @@ class AmiciEngine:
         # would cross-join each size-r replicate group into r*r rows, inflating
         # ``n_data_points`` (and chi2, which counts each weighted residual r*r times).
         # Tag each row with its within-group replicate index so the merge stays
-        # one-to-one with the measurements: ``len(merged) == len(meas)``. The simulated
-        # value is identical across a replicate group, so pairing by index is exact
-        # regardless of the (possibly reordered) row order in ``simdf``.
+        # one-to-one with the measurements: ``len(merged) == len(meas)``. Pairing WITHIN a
+        # group is by position, which is exact only because a group reaching this point is a
+        # true replicate group -- same observable, condition, time AND overrides -- whose rows
+        # therefore share one simulated value. That is what the flattened vocabulary above buys;
+        # in the natural one the claim is false for override-carrying rows.
         rep = "_petab_mcp_replicate"
         while rep in meas.columns or rep in simdf.columns:  # avoid clobbering real columns
             rep += "_"
@@ -480,6 +504,20 @@ class AmiciEngine:
         merged = meas.merge(
             simdf[keys + [rep, SIMULATION]], on=keys + [rep], how="left", validate="1:1"
         )
+        if flattened:
+            # Back to the session's vocabulary for everything downstream (records, residual
+            # structure, query_data). petab's own inverse does exactly this and nothing else --
+            # it replaces the observableId column -- so `merged` (a measurement frame carrying a
+            # `simulation` column) is precisely the shape it documents. It rebuilds the id
+            # mapping per call, measured at 3.4 ms on fiedler, which is noise next to the
+            # simulation it follows; caching it would trade a public API for a private one.
+            #
+            # The noise substitution below reads the NATURAL observable_df's formula together
+            # with this row's own noiseParameters, which flattening leaves untouched, so the
+            # pair stays consistent.
+            import petab.v1 as petab
+
+            merged = petab.unflatten_simulation_df(merged, self.session.problem)
         ctx = self._noise_context()
 
         records: list[dict[str, Any]] = []

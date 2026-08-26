@@ -127,7 +127,8 @@ _ASSIGN_STMT = re.compile(
 #: An arrow — what makes a statement a reaction rather than an assignment.
 _ARROW = re.compile(r"->|=>")
 
-OPS = ("add_reaction", "remove_reaction", "set_rate_law", "set_initial", "rename")
+OPS = ("add_reaction", "remove_reaction", "set_rate_law", "set_initial",
+       "set_assignment", "remove_assignment", "rename")
 
 
 #: One-entry memo for :func:`mask_comments`. Every helper masks INDEPENDENTLY — a single
@@ -245,6 +246,49 @@ def unnamed_reactions(text: str) -> list[str]:
         # parser confusion rather than a missing id.
         out.append(" ".join(part[part.rfind("\n", 0, arrow.start()) + 1:].split()))
     return out
+
+
+_RULE_STMT = re.compile(r"(?<![\w.])(?P<id>[A-Za-z_]\w*)\s*:=", re.MULTILINE)
+
+
+def _stoichiometry_symbols(text: str) -> set[str]:
+    """The DYNAMIC states in a reaction's stoichiometry.
+
+    Two things in a stoichiometry are not states, and counting them made every guard built on
+    this refuse legal models outright:
+
+    * `$S` marks a BOUNDARY species — held by something outside the reaction network, so an
+      assignment rule on it is legal SBML (libantimony loads it without complaint). The `$` may
+      sit on the reaction (`$EGF -> B`) OR on a separate declaration (`species $EGF;`) with the
+      reaction naming it bare. libantimony's own round-trip re-emits the `$` in BOTH places, so
+      this is about HAND-AUTHORED text -- which is what the agent writes, and
+      `species $EGF, B; R1: EGF + B -> C; EGF := 3;` loads clean. Stripping only the inline form
+      counted such a species as dynamic and locked the caller out of `model_edits` on the very
+      models that need it;
+    * `A in cyt` names a COMPARTMENT, and a growing compartment (`cyt := V0*exp(mu*time)`) is an
+      ordinary modelling pattern. A bare regex also picked up the keyword `in` itself.
+
+    Counting either made the batch over-determination check fire on the FINAL text of every
+    batch, so a model containing one locked the caller out of `model_edits` entirely — including
+    the `remove_assignment` the error message recommends.
+    """
+    masked = mask_comments(text or "")
+    # `$` marks the species boundary WHEREVER it appears, so collect the marks document-wide
+    # rather than per-reaction: a `species $EGF;` declaration up top makes a bare `EGF` in a
+    # reaction below non-dynamic just as surely as writing `$EGF` in the reaction would.
+    boundary = set(re.findall(r"\$\s*([A-Za-z_]\w*)", masked))
+    out: set[str] = set()
+    for m in _RXN_STMT.finditer(masked):
+        stoich = m.group("stoich")
+        stoich = re.sub(r"(?<![\w.])in[ \t]+[A-Za-z_]\w*", " ", stoich)   # drop `in <compartment>`
+        out |= set(re.findall(r"[A-Za-z_]\w*", stoich))
+    return out - boundary
+
+
+def rule_target_symbols(text: str) -> set[str]:
+    """Symbols carrying an assignment rule (`id := ...`) in this source."""
+    masked = mask_comments(text or "")
+    return {m.group("id") for m in _RULE_STMT.finditer(masked)}
 
 
 def assigned_symbols(text: str) -> list[str]:
@@ -433,6 +477,16 @@ def _op_add_reaction(text, op, where):
         raise OperationError(f"{where}: reaction {rid!r} already exists — use set_rate_law to "
                              "change it, or pick another id. NOTHING was applied.",
                              cause="duplicate_reaction_id")
+    if rid in rule_target_symbols(text):
+        # `model_symbols` cannot see rule targets (`assigned_symbols` matches `=`, not `:=`), so
+        # this collision slipped through -- and libantimony does NOT reject it: it reinterprets
+        # the rule as the new reaction's KINETIC LAW, silently discarding both the law the caller
+        # wrote and the assignment rule.
+        raise OperationError(
+            f"{where}: {rid!r} already carries an assignment rule in this model. Antimony keeps "
+            "one symbol table and would read the rule as this reaction's rate law, discarding "
+            "both. Pick another reaction id (or remove_assignment first). NOTHING was applied.",
+            cause="id_collision")
     if rid in model_symbols(text):
         masked_all = mask_comments(text)
         in_stoich, in_law = set(), set()
@@ -632,6 +686,14 @@ def _op_rename(text, op, where):
     # `r1: A -> B; k1*A;` passed both tests and produced `r1: A -> B; r1*A;` — in Antimony a
     # reaction id in an expression denotes that reaction's RATE, so the law now references itself.
     # It committed, and the summary reported `renamed k1 -> r1 (1 occurrences)` as a success.
+    targets = rule_target_symbols(text)
+    if collides and (old in targets or new in targets):
+        raise OperationError(
+            f"{where}: {new!r} already carries an assignment rule, so this rename would merge a "
+            "symbol into a rule TARGET — every use of the old name would start reading a "
+            "rule-computed value (a rate law reading a measurement readout instead of its own "
+            "kinetic parameter, and the model still compiles). Pick another name, or "
+            "remove_assignment first. NOTHING was applied.", cause="rule_target_merge_refused")
     rxn_ids = reaction_ids(text)
     if collides and (old in rxn_ids or new in rxn_ids):
         raise OperationError(
@@ -656,11 +718,115 @@ def _op_rename(text, op, where):
     return "".join(out), f"renamed {old} -> {new} ({len(spans)} occurrences)"
 
 
+def _op_set_assignment(text, op, where):
+    """Write or replace an ASSIGNMENT RULE — ``id := expr;``.
+
+    The op behind measurement-mapping (``readout_*``) symbols: a blinded benchmark ships each
+    observable formula referencing ``readout_<observableId>`` instead of the reference model's own
+    species combination, and the caller must say what that readout IS in terms of its model —
+    which in Antimony/SBML is an assignment rule, not an initial value (``set_initial`` writes
+    ``id = value``, a t=0 statement; this writes ``id := expr``, which holds at ALL times).
+    General-purpose beyond that: any derived/algebraic quantity is the same statement.
+    """
+    sid = (op.get("id") or "").strip()
+    expr = op.get("antimony")
+    if isinstance(expr, str):
+        expr = expr.strip().rstrip(";")
+    if not sid or not re.fullmatch(r"[A-Za-z_]\w*", sid) or expr is None or expr == "":
+        raise OperationError(
+            f"{where}: set_assignment needs `id` (the symbol to define) and `antimony` (the "
+            "expression it equals at all times), e.g. "
+            "{op: 'set_assignment', id: 'readout_pAkt_tot', antimony: 'pAkt + pAkt_S6'}. "
+            "NOTHING was applied.")
+    _reject_semicolons(where, antimony=str(expr))
+    if sid in _PROTECTED_SYMBOLS:
+        raise OperationError(
+            f"{where}: {sid!r} is a reserved Antimony/SBML name and cannot be assigned. "
+            "NOTHING was applied.", cause="reserved_id")
+    masked = mask_comments(text)
+    rxn_spans = [(m.start(), m.end()) for m in _RXN_STMT.finditer(masked)]
+    # A STATE cannot also be assigned: a species produced/consumed by a reaction with an
+    # assignment rule on top is an over-determined model libantimony rejects opaquely.
+    in_stoich = _stoichiometry_symbols(text)
+    if sid in reaction_ids(text):
+        # Antimony keeps ONE symbol table and reads a reaction id in an expression as that
+        # reaction's rate, so assigning to one is a redefinition -- the same collision
+        # `_op_add_reaction` refuses, arriving through the other door.
+        raise OperationError(
+            f"{where}: {sid!r} is a REACTION id in this model, and Antimony keeps one symbol "
+            "table — assigning to it is a redefinition. Pick another symbol. NOTHING was "
+            "applied.", cause="id_collision")
+    if sid in in_stoich:
+        # The remedy has to name the way OUT, not just the refusal: when the blocked symbol is a
+        # readout the caller wired into a reaction, "assign a different symbol" is unfollowable —
+        # the observable references THAT name and no other.
+        raise OperationError(
+            f"{where}: {sid!r} is a SPECIES in this model's reactions — a state integrated by the "
+            "ODEs cannot also carry an assignment rule (the model would be over-determined). "
+            f"If {sid!r} is meant to be a measured READOUT, it must not be a reaction "
+            "participant: remove it from the stoichiometry (remove_reaction / set_rate_law, or "
+            "re-author) and assign it instead. If it is meant to be a state, leave it alone and "
+            "assign a different symbol. NOTHING was applied.", cause="assign_to_species_refused")
+    pat = re.compile(rf"(?<![\w.]){re.escape(sid)}\s*:=\s*[^;\n]+?\s*(?:;|$)", re.MULTILINE)
+    hits = [m for m in pat.finditer(masked)
+            if not any(s <= m.start() < e for s, e in rxn_spans)]
+    if hits:
+        m = hits[-1]
+        return (text[:m.start()] + f"{sid} := {expr};" + text[m.end():],
+                f"set assignment {sid} := {expr}")
+    # New rule: insert before the model block's `end` (after the last reaction when there is one,
+    # so the rule reads in context; the block header otherwise).
+    search_from = rxn_spans[-1][1] if rxn_spans else _model_block_start(masked)
+    end_tok = re.compile(r"(?<![\w.])end(?![\w.])").search(masked, search_from)
+    if end_tok is None:
+        # No `end`: a bare-body model. Append, with the same separator guard `_op_add_reaction`
+        # uses -- without it the rule is glued onto a previous unterminated statement
+        # (`B = 2` + `  readout_x := ...` on one line) and libantimony fails to parse, reported
+        # by this op as a success.
+        sep = "" if text.endswith("\n") or not text else "\n"
+        return text + f"{sep}  {sid} := {expr};\n", f"set assignment {sid} := {expr}"
+    return (text[:end_tok.start()] + f"  {sid} := {expr};\n" + text[end_tok.start():],
+            f"set assignment {sid} := {expr}")
+
+
+def _op_remove_assignment(text, op, where):
+    """Delete an assignment rule — the inverse of `set_assignment`.
+
+    Needed because nothing else can undo one: `sync_parameter_table` strips rule targets from the
+    parameter table and `prune_orphans` deliberately never removes a rule target ("a rule's TARGET
+    is assigned by that rule, so it is never an orphan"), so a rule created with a mistyped id
+    would otherwise survive every later edit and could only be cleared by re-authoring the whole
+    model — the cost this operation surface exists to remove. It is also the only way out for a
+    symbol the caller now needs as a dynamic STATE: set_assignment refuses a species, add_reaction
+    would over-determine it, so the rule has to go first.
+    """
+    sid = (op.get("id") or "").strip()
+    if not sid:
+        raise OperationError(f"{where}: remove_assignment needs `id` — the assigned symbol. "
+                             "NOTHING was applied.")
+    masked = mask_comments(text)
+    pat = re.compile(rf"(?<![\w.]){re.escape(sid)}\s*:=\s*[^;\n]+?\s*(?:;|$)", re.MULTILINE)
+    hits = list(pat.finditer(masked))
+    if not hits:
+        have = sorted(rule_target_symbols(text))
+        listed = f" Assignment rules here: {', '.join(have)}." if have else " There are none."
+        raise OperationError(f"{where}: no assignment rule for {sid!r}.{listed} NOTHING was "
+                             "applied.", cause="unknown_symbol")
+    m = hits[-1]
+    cut = text[:m.start()] + text[m.end():]
+    line_start, line_end = _line_bounds(cut, min(m.start(), max(len(cut) - 1, 0)))
+    if not cut[line_start:line_end].strip():
+        cut = cut[:line_start] + cut[min(line_end + 1, len(cut)):]
+    return cut, f"removed assignment {sid}"
+
+
 _HANDLERS = {
     "add_reaction": _op_add_reaction,
     "remove_reaction": _op_remove_reaction,
     "set_rate_law": _op_set_rate_law,
     "set_initial": _op_set_initial,
+    "set_assignment": _op_set_assignment,
+    "remove_assignment": _op_remove_assignment,
     "rename": _op_rename,
 }
 
@@ -691,4 +857,17 @@ def apply_model_edits(source: str, edits: "list[dict[str, Any]]", *,
                                  "NOTHING was applied.", cause="unknown_op")
         text, msg = handler(text, op, label)
         summary.append(msg)
+    # BATCH-level, because the per-op guards see only the text as it stood when they ran: a
+    # `set_assignment` followed by an `add_reaction` that puts the same symbol in a stoichiometry
+    # is accepted one op at a time and yields an over-determined model — a state integrated by the
+    # ODEs that also carries an assignment rule — which libantimony rejects with a message naming
+    # neither op. Checked once at the end, where the whole batch is visible.
+    over_determined = rule_target_symbols(text) & _stoichiometry_symbols(text)
+    if over_determined:
+        names = ", ".join(repr(s) for s in sorted(over_determined))
+        raise OperationError(
+            f"{where}: {names} would be BOTH a reaction participant and an assignment-rule "
+            "target, which is an over-determined model. A measured readout must not appear in a "
+            "stoichiometry; a dynamic state must not carry a rule (use remove_assignment). "
+            "NOTHING was applied.", cause="assign_to_species_refused")
     return text, summary

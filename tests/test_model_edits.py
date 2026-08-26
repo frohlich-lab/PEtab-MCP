@@ -648,3 +648,54 @@ def test_add_reaction_into_a_starred_model_header():
         {"op": "add_reaction", "antimony": "r1: A => B; k1*A;"}])
     body, _, _ = out.partition("end")
     assert "r1: A => B; k1*A;" in body, f"reaction landed outside the model block: {out!r}"
+
+
+# ------------------------------------------------------------------ set_assignment (readouts)
+def test_set_assignment_creates_a_rule_inside_the_model_block():
+    out, summary = me.apply_model_edits(
+        SRC, [{"op": "set_assignment", "id": "readout_total", "antimony": "A + B"}])
+    assert summary == ["set assignment readout_total := A + B"]
+    body, _, _ = out.partition("end")
+    assert "readout_total := A + B;" in body
+
+
+def test_set_assignment_replaces_an_existing_rule_in_place():
+    """Re-defining a readout must not leave two `:=` statements — Antimony would reject the
+    redefinition opaquely."""
+    once, _ = me.apply_model_edits(
+        SRC, [{"op": "set_assignment", "id": "readout_total", "antimony": "A + B"}])
+    twice, summary = me.apply_model_edits(
+        once, [{"op": "set_assignment", "id": "readout_total", "antimony": "2*B"}])
+    assert summary == ["set assignment readout_total := 2*B"]
+    assert twice.count(":=") == 1 and "readout_total := 2*B;" in twice
+
+
+def test_set_assignment_refuses_a_species():
+    """A state integrated by the ODEs cannot also carry an assignment rule — the model would be
+    over-determined, and libantimony's rejection would not name the cause."""
+    with pytest.raises(OperationError) as ei:
+        me.apply_model_edits(SRC, [{"op": "set_assignment", "id": "A", "antimony": "2*B"}])
+    assert ei.value.cause == "assign_to_species_refused"
+
+
+def test_set_assignment_refuses_a_reserved_name():
+    with pytest.raises(OperationError) as ei:
+        me.apply_model_edits(SRC, [{"op": "set_assignment", "id": "time", "antimony": "A"}])
+    assert ei.value.cause == "reserved_id"
+
+
+def test_a_boundary_species_declared_out_of_line_is_not_a_dynamic_state():
+    """`$` marks the boundary wherever it is written.
+
+    Antimony round-trips a boundary species as a `species $EGF;` DECLARATION with the reaction
+    naming it bare, so stripping only the inline `$EGF -> B` form counted it as a dynamic state.
+    Everything built on this predicate then saw an over-determined model and refused the whole
+    batch -- including the `remove_assignment` the error message recommends, locking the caller
+    out of `model_edits` on exactly the models that need it.
+    """
+    from petab_mcp.model_edits import _stoichiometry_symbols
+
+    out_of_line = _stoichiometry_symbols("species $EGF, B;\n  R1: EGF + B -> C; k*EGF*B\n")
+    assert "EGF" not in out_of_line and {"B", "C"} <= out_of_line
+    # the inline form keeps working
+    assert "EGF" not in _stoichiometry_symbols("R1: $EGF -> B; k\n")

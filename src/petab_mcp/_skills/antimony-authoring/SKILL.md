@@ -2,10 +2,9 @@
 name: antimony-authoring
 description: >-
   Read before writing an Antimony model string. The syntax and naming mistakes that make a model
-  fail to parse, fail to compile under AMICI, or silently fit wrong — expecting the arrow to supply
-  a reverse flux, hard-coded exponents, typos that become parameters, and the syntax that actually
-  gets edits rejected: the rate-law separator, declaration keywords Antimony lacks, `<->`,
-  stoichiometry, and names taken by a built-in function or reserved by AMICI.
+  fail to parse, fail to compile under AMICI, or silently fit wrong — expecting the arrow to
+  supply a reverse flux, typos that become parameters, `:=` vs `=`, stoichiometry, and names
+  reserved by AMICI or taken by a built-in.
 ---
 
 # Writing Antimony that works
@@ -83,18 +82,19 @@ Antimony names the unexpected token, not the rule you broke — recognise them b
   Wrong: `R1: S -> E : foi;` — Right: `R1: S -> E; foi;`
 - **`param` is not a keyword** (nor `parameter`). A parameter is a plain assignment.
   Wrong: `param S_on = 1.0;` — Right: `S_on = 1.0;`
-  (`species`, `compartment`, `var`, `const` ARE real keywords — do not strip those.) A comma list
-  needs one: `T0 = 11000, K0 = 3.9e-7;` is `unexpected ','`; write `const T0 = 11000, K0 = 3.9e-7;`
-  or one assignment per `;`.
+  (`species`, `compartment`, `var`, `const` ARE real keywords — keep those.) A comma list needs
+  one: `T0 = 11000, K0 = 3.9e-7;` is `unexpected ','`; write `const T0 = 11000, K0 = 3.9e-7;` or
+  one assignment per `;`.
+- **`:=` is a RULE (all times); `=` is an initial value.** A derived quantity (a total, a
+  normalised signal) is `y := expr;`; with `=` it is a constant and its observable goes flat.
 - **There is no `<->` arrow.** Only `->` and `=>`. A reversible step is a net rate law
   (see above). Wrong: `v: E + S <-> ES; ...` — Right: `v: E + S -> ES; k1*E*S - k_1*ES`
-- **Stoichiometry is a NUMERIC LITERAL separated by a space — never a `*`, never a parameter.**
+- **Stoichiometry is a NUMERIC LITERAL after a space — never `*`, never a parameter.**
   Wrong: `R: P -> 2*P;` — Right: `R: P -> 2 P;`
-  A parameter coefficient is the trap: `I -> I + NN*V` fails to parse, and "fixing" the `*` to a
-  space gives `I -> I + NN V`, which PARSES but freezes the coefficient at NN's nominal and drops
-  NN from the model. A burst size, yield or gain belongs in the rate law:
+  `I -> I + NN*V` fails to parse; "fixing" `*` to a space PARSES but freezes the coefficient at
+  NN's nominal and drops NN from the model. A burst size/yield/gain goes in the rate law:
   Wrong: `r_burst: I -> I + NN V; delta*I;` — Right: `r_burst: -> V; NN*delta*I;` (production
-  only; the loss of `I` stays its own reaction, and `I` on both sides never consumed it anyway).
+  only — `I` was on both sides, so never consumed; its loss stays its own reaction).
 - **Reactants and products are species lists, not expressions.** Wrong:
   `v: (RAF_total - pRaf) -> pRaf;` — algebra goes in the rate law:
   `v: Raf -> pRaf; kact*(RAF_total - pRaf)`.

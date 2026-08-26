@@ -994,9 +994,8 @@ class PetabSession:
                 #     uninformative.
                 #
                 # Hence: reset on an improvement whose only implausibility is inflation; keep the
-                # penalty when the sigma collapsed. (An earlier revision discounted BOTH tails by
-                # a fixed fraction -- a magic constant guarding a runaway that the inflated tail
-                # cannot produce.)
+                # penalty when the sigma collapsed. Discounting both tails by a fixed fraction
+                # would be a magic constant guarding a runaway the inflated tail cannot produce.
                 if not sigma_implausible or (sig_inflated and not sig_collapsed
                                              and not self.ever_sigma_plausible):
                     self.non_improving_streak = 0

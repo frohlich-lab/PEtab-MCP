@@ -162,8 +162,8 @@ def test_a_fork_patches_its_BASE_not_head(arm_on):
     operations apply to the source, so `child.source == parent.source + ops` holds exactly.
 
     (Matching is on symbols, never on exact formatting: libantimony re-renders `(k1*2)*A` as
-    `k1*2*A`, and asserting the literal is how an earlier version of this test failed — the same
-    render gap the production failures came from.)"""
+    `k1*2*A`, so asserting the literal trips over the very render gap the production failures
+    came from.)"""
     mcp, prov = arm_on
     v0 = _call(mcp, "make_changes", {"justification": "v0", "model_edits": [
         {"op": "set_rate_law", "id": "r1", "antimony": "(k1*2)*A"}]})

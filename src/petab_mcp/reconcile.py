@@ -223,8 +223,13 @@ def seed_model_antimony(problem) -> str | None:
     and that skeleton is not a neutral placeholder — it is a *broken* PEtab problem (its
     observables reference entities no model defines) that AMICI's SBML import SEGFAULTS on,
     taking the server process with it. Every downstream guard exists to keep that one state
-    unreachable. Making the initial model VALID instead removes the state, so v0 is an ordinary,
-    restorable, simulatable version like any other.
+    unreachable. Making the initial model VALID instead removes the state.
+
+    The seed is NOT a version: nothing is snapshotted at construction (``list_versions`` is empty
+    until the first commit), so it cannot be restored or scored. What it must be is IMPORTABLE,
+    because ``has_model()`` is an asserted invariant — see :func:`ensure_one_species`, which
+    carries it with a placeholder so that nothing here has to pretend an observation symbol is a
+    state.
 
     What it declares, and why that leaks nothing: one SPECIES per identifier the observable
     formulas name, plus each condition-table column (a per-condition target must be a model
@@ -279,7 +284,27 @@ def seed_model_antimony(problem) -> str | None:
     if not species:
         return None
 
-    body = "\n".join(f"  species {sid};\n  {sid} = {SEED_INITIAL_VALUE:g};" for sid in species)
+
+    # A `readout_*` identifier is a MEASUREMENT MAPPING the author must later define with an
+    # assignment rule — seeding it as a SPECIES taught the wrong lesson: agents copied the
+    # declaration into their own models, wired the readout into reactions as a state, and then
+    # could not assign it (4 of the first blinded sweep's 27 rejections were exactly this
+    # over-determination refusal, all on fujita, whose mappings are non-identity sums). A constant
+    # PARAMETER lints and simulates identically at v0 (flat, like a species with no reactions),
+    # keeps the seed dynamics-free (a seeded `:=` rule would flip `has_dynamics` and with it
+    # `model_authored`), and suggests nothing about being a state.
+    #
+    # EVERY readout, with no exception: :func:`ensure_one_species` carries the "at least one
+    # species" invariant now, so the seed never has to make a measurement mapping look like a
+    # state to stay importable. The two earlier attempts both did: first unconditionally (which
+    # broke a pure-readout problem outright), then keyed on "does a non-readout entity exist?",
+    # which quietly left every readout a species on boehm, blasi, crauste, perelson and rahman —
+    # boehm's mappings being as non-identity as fujita's.
+    demote = {sid for sid in species if sid.startswith("readout_")}
+    body = "\n".join(
+        (f"  {sid} = {SEED_INITIAL_VALUE:g};" if sid in demote
+         else f"  species {sid};\n  {sid} = {SEED_INITIAL_VALUE:g};")
+        for sid in species)
     return f"model petab_mcp_seed\n{body}\nend"
 
 
@@ -2153,6 +2178,47 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
     return {"added": added, "removed": removed}
 
 
+#: The species minted when a model would otherwise have none. Named to be obviously not the
+#: caller's: it exists only to keep the "there is always at least one species" invariant true.
+PLACEHOLDER_SPECIES = "petab_mcp_placeholder"
+
+
+def ensure_one_species(sm) -> bool:
+    """Guarantee the model has at least one species, minting :data:`PLACEHOLDER_SPECIES` if not.
+
+    AMICI's SBML import SEGFAULTS on a zero-species model, taking the server process with it
+    where no caller can catch or degrade it. That single state is why `has_model()` is an
+    asserted invariant and why the guards it replaced could be deleted from ``fit``,
+    ``ensure_simulation``, ``_restore_or_simulate`` and ``identifiability``.
+
+    Minting a placeholder keeps the invariant without distorting what the model MEANS, which the
+    alternative — declaring observable-formula identifiers as species — does not: on a blinded
+    problem whose formulas name only ``readout_*`` measurement mappings, the mappings themselves
+    look like states, get wired into reactions, and can then never be assigned. Every readout is
+    a constant instead, and this placeholder carries the invariant.
+
+    Self-clearing: it is referenced by nothing, so the next :func:`prune_orphans` removes it the
+    moment the caller's model has a real species. Returns whether one was minted.
+    """
+    if sm.getNumSpecies() > 0:
+        return False
+    comp = sm.getCompartment(0)
+    if comp is None:
+        comp = sm.createCompartment()
+        comp.setId("petab_mcp_placeholder_compartment")
+        comp.setConstant(True)
+        comp.setSize(1.0)
+        comp.setSpatialDimensions(3)
+    s = sm.createSpecies()
+    s.setId(PLACEHOLDER_SPECIES)
+    s.setCompartment(comp.getId())
+    s.setInitialConcentration(0.0)
+    s.setConstant(False)
+    s.setBoundaryCondition(False)
+    s.setHasOnlySubstanceUnits(False)
+    return True
+
+
 def reconcile(problem, shipped=None) -> dict[str, Any]:
     """Full reconciliation after a structural edit: prune, parametric ICs, table sync.
 
@@ -2166,6 +2232,8 @@ def reconcile(problem, shipped=None) -> dict[str, Any]:
     """
     sm = problem.model.sbml_model
     pruned = prune_orphans(problem)
+    # AFTER the prune, or it would be pruned as the orphan it deliberately is.
+    ensure_one_species(sm)
     # Species whose IC is set per-condition (a condition-table column) are driven by the condition
     # table, not estimated — skip parametrising them (see ensure_parametric_initial_conditions).
     # `protect_ids` is the SHIPPED table's own ids: if the problem author shipped a `<sid>_init`

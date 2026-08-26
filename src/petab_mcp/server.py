@@ -156,21 +156,24 @@ class ModelOp(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     op: Literal["add_reaction", "remove_reaction", "set_rate_law",
-                "set_initial", "rename"] = Field(
+                "set_initial", "set_assignment", "remove_assignment", "rename"] = Field(
         description="which change to make."
     )
     id: str | None = Field(
         default=None,
         description="the reaction id (remove_reaction, set_rate_law) or symbol id "
-                    "(set_initial). add_reaction takes its id from the statement itself; repeating the same "
-                    "id is accepted, a differing one is refused."
+                    "(set_initial, set_assignment, remove_assignment). add_reaction takes its id from "
+                    "the statement itself; "
+                    "repeating the same id is accepted, a differing one is refused."
     )
     antimony: str | None = Field(
         default=None,
         description="the content, written as Antimony: for add_reaction one NAMED statement "
                     "('egfr_act: EGFR => pEGFR; k_act*EGF*EGFR;'), for set_rate_law the rate "
                     "law ('k_act*EGF*EGFR'), for set_initial the value ('5', or a symbol like "
-                    "'EGFR_init' to keep it estimated)."
+                    "'EGFR_init' to keep it estimated), for set_assignment the expression the "
+                    "symbol equals at ALL times ('pAkt + pAkt_S6') — the op behind readout_* "
+                    "measurement mappings."
     )
     old: str | None = Field(default=None, description="rename only: the current symbol name.")
     new: str | None = Field(default=None, description="rename only: the replacement name.")
@@ -500,7 +503,17 @@ def _register_read_tools(mcp: FastMCP, ctx: _Ctx) -> None:
 
     @mcp.tool()
     def list_observables() -> list[dict[str, Any]]:
-        """List the (fixed) observables and their formulas/noise models."""
+        """List the (fixed) observables and their formulas/noise models.
+
+        A formula symbol named `readout_<name>` is a MEASUREMENT MAPPING you must define in your
+        model with an assignment rule (`readout_x := <expression of your species>`, or the
+        `set_assignment` edit op): the problem tells you WHAT was measured — `observableName`
+        carries the biological description — and your model says what that quantity IS in terms
+        of its own states. Several observables may reference the SAME readout (one per
+        dataset/gel, differing only in shipped scalings); one assignment rule covers them all.
+        Scaling/offset parameters and the noise model are fixed parts of the assay; only the
+        readout mapping is yours to define.
+        """
         return df_to_records(session.problem.observable_df)
 
     @mcp.tool()
@@ -629,7 +642,10 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         `{op: 'add_reaction', antimony: 'egfr_act: EGFR => pEGFR; k_act*EGF*EGFR'}` (the id comes
         from the statement; repeating it as `id` is fine, a DIFFERENT `id` is refused),
         `{op: 'remove_reaction', id}`, `{op: 'set_rate_law', id, antimony: '<rate law>'}`,
-        `{op: 'set_initial', id, antimony: '5'}`, `{op: 'rename', old, new}`. Send the WHOLE coherent
+        `{op: 'set_initial', id, antimony: '5'}`, `{op: 'set_assignment', id, antimony:
+        'pAkt + pAkt_S6'}` (an `id := expr` rule holding at ALL times — how a `readout_*` symbol
+        referenced by an observable formula is defined in terms of YOUR model),
+        `{op: 'remove_assignment', id}`, `{op: 'rename', old, new}`. Send the WHOLE coherent
         change in ONE call — a new mechanism is usually a new reaction plus a rate-law change on
         the reaction it feeds — because one call is one fit and one version; splitting it across
         calls pays a multistart per operation. Operations apply IN ORDER and the batch is
@@ -725,7 +741,9 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
                 "make_changes: `base_version` selects the version whose STORED model the "
                 "edits apply to — it does nothing on its own. Send the change you want as "
                 "`model_edits`; a prior version re-committed unchanged is already a version "
-                "and would only re-fit to the same result.",
+                "and would only re-fit to the same result. If you wanted to RETURN to that "
+                "version because it was better: you do not need to — every fitted version is "
+                "kept and the run is scored on the BEST one, wherever HEAD ends up.",
                 {"base_version": base_version},
             )
         if not antimony and not ops and not parameters:
