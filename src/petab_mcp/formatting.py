@@ -91,8 +91,10 @@ def summarize_measurements(df: "pd.DataFrame | None", *, preview: int = 4) -> di
 
     Returned by ``get_measurements`` by default so the panel sees the data's SHAPE (dynamics,
     ranges, sampling) without every raw point re-entering the LLM context on every turn — a
-    full measurement dump is ~6k tokens and compounds as history. Full records remain
-    available via ``get_measurements(summarize=False)`` or SQL over the ``measurements`` table.
+    full measurement dump is 35-81k tokens on the shipped benchmark problems (measured:
+    bachmann 541 rows/35k, isensee 687/73k, lucarelli 1755/81k) and compounds as history, which
+    is why the raw read is PAGED. Raw records come from ``get_measurements(summarize=False)``
+    one page at a time, or from SQL over the ``measurements`` table.
     """
     if df is None or len(df) == 0:
         # Same key set as the non-empty return, so consumers never special-case empty.
@@ -124,7 +126,13 @@ def summarize_measurements(df: "pd.DataFrame | None", *, preview: int = 4) -> di
     return {
         "n_points": int(len(df)), "n_groups": len(groups),
         "columns": [str(c) for c in df.columns], "groups": groups,
+        # Says PAGED, not "all points": the raw read caps at max_rows and returns
+        # truncated/next_offset. An agent told this returns everything would reason over a
+        # silently partial view — concluding, say, that an observable has no late timepoints
+        # because they fell past the first page.
         "note": "Summary view (per observable×condition: n, time span, value min/max/mean, and a "
-                "few preview points). Call get_measurements(summarize=False) for all points, or "
-                "query_data for SQL over the `measurements` table.",
+                "few preview points). get_measurements(summarize=False) returns raw points "
+                "PAGED (max_rows per call, with total_rows/truncated/next_offset) — page it, or "
+                "narrow with condition_id/observable_id, or use query_data for SQL over the "
+                "`measurements` table.",
     }

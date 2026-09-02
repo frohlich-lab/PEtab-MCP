@@ -524,23 +524,57 @@ def _register_read_tools(mcp: FastMCP, ctx: _Ctx) -> None:
     @mcp.tool()
     def get_measurements(
         condition_id: str | None = None, observable_id: str | None = None,
-        summarize: bool = True,
+        summarize: bool = True, max_rows: int = 200, offset: int = 0,
     ) -> "list[dict[str, Any]] | dict[str, Any]":
         """Return the (fixed) measurement data, optionally filtered by condition/observable.
 
         By default (``summarize=True``) returns a COMPACT SUMMARY — per observable×condition:
         point count, time span, value min/max/mean, and a few preview points — so the data's
-        shape is visible without every raw point (a full dump is ~6k tokens and re-enters the
-        context each turn). Pass ``summarize=False`` for the full per-point records, or use
-        ``query_data`` for targeted SQL over the ``measurements`` table.
+        shape is visible without every raw point. Prefer it, and prefer ``query_data`` for a
+        targeted slice; the raw dump is rarely the right tool.
+
+        ``summarize=False`` returns raw per-point records, PAGED:
+        ``{rows, row_count, total_rows, offset, truncated, next_offset?}``. Paging is not
+        cosmetic — an unpaged dump measured 73k tokens on isensee and 81k on lucarelli, in ONE
+        tool result that then re-enters the context on every later turn; one such call has
+        ended a run with the provider's "prompt exceeds max length". Page with ``offset`` (feed
+        back ``next_offset``) or, better, narrow with ``condition_id``/``observable_id`` first.
+        Row order is the measurement table's own and is stable across pages.
         """
-        df = session.problem.measurement_df
-        if df is not None:
-            if condition_id is not None:
-                df = df[df[SIMULATION_CONDITION_ID] == condition_id]
-            if observable_id is not None:
-                df = df[df[OBSERVABLE_ID] == observable_id]
-        return summarize_measurements(df) if summarize else df_to_records(df)
+        def run() -> "list[dict[str, Any]] | dict[str, Any]":
+            # Validated on BOTH paths, before the summarize branch: a nonsense max_rows/offset
+            # must be reported whichever mode the caller asked for, rather than being silently
+            # accepted whenever summarize happens to be true.
+            n_rows, off = data_mod.validate_page_args(max_rows, offset)
+            df = session.problem.measurement_df
+            if df is not None:
+                if condition_id is not None:
+                    df = df[df[SIMULATION_CONDITION_ID] == condition_id]
+                if observable_id is not None:
+                    df = df[df[OBSERVABLE_ID] == observable_id]
+            if summarize:
+                return summarize_measurements(df)
+            records = df_to_records(df)
+            total = len(records)
+            page = records[off:off + n_rows]
+            out: dict[str, Any] = {
+                "rows": page,
+                "row_count": len(page),
+                "total_rows": total,
+                "offset": off,
+                "truncated": off + len(page) < total,
+            }
+            if out["truncated"]:
+                out["next_offset"] = off + len(page)
+            return out
+
+        # Through ctx.run like every other validated tool: a bad max_rows/offset must come back
+        # as the logged {ok: false, error} shape, not as a raw exception. An unwrapped raise is
+        # invisible to get_errors AND counts as a tool error against the circuit breaker, so
+        # three argument typos in a row would disable get_measurements for the rest of the run.
+        return ctx.run("get_measurements", run,
+                       {"condition_id": condition_id, "observable_id": observable_id,
+                        "summarize": summarize, "max_rows": max_rows, "offset": offset})
 
 
 # ------------------------------------------------------------------ model tools
@@ -1178,9 +1212,10 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
 
         The tables are the PEtab design tables (`measurements`, `conditions`,
         `observables`), the `parameters` table, the `simulations` dataframe (one row per
-        measurement point, carrying `simulation` and the residuals), and the last fit's
-        pyPESTO multistart (`optimization_starts`, `optimization_trace`). Use it to learn the
-        exact column names before writing a `query_data` query.
+        measurement point, carrying `simulation` and the residuals), `simulations_history`
+        (those same rows for EVERY stored version, with a `version` column), and the last
+        fit's pyPESTO multistart (`optimization_starts`, `optimization_trace`). Use it to
+        learn the exact column names before writing a `query_data` query.
         """
         return ctx.run("list_data_tables", lambda: data_mod.table_schema(session))
 
@@ -1205,7 +1240,7 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         return ctx.run("get_fitting_log", run, {"tail_lines": tail_lines})
 
     @mcp.tool()
-    def query_data(sql: str, max_rows: int = 50) -> dict[str, Any]:
+    def query_data(sql: str, max_rows: int = 50, offset: int = 0) -> dict[str, Any]:
         """Run a SQL query (DuckDB) over the PEtab tables and the simulation dataframe.
 
         The query runs against a private, disposable copy of the data, so any SQL is allowed
@@ -1213,18 +1248,28 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         `measurements`, `conditions`, `observables`, `parameters`; `simulations` — the
         per-point dataframe from the last commit, with `measurement`, `simulation`, `residual`
         (natural units), `residual_weighted` (the noise-normalized chi2 term), and `noise`
-        (sigma); and the last fit's pyPESTO multistart in `optimization_starts` (one row per
+        (sigma); `simulations_history` — those same per-point rows for EVERY stored version
+        with a `version` column (see the CROSS-VERSION paragraph below); and the last fit's
+        pyPESTO multistart in `optimization_starts` (one row per
         start, `start`=0 is best) and `optimization_trace` (fval per start/iteration). Call
         `list_data_tables()` for the exact columns. Returns
-        `{columns, rows, row_count, truncated}` (capped at `max_rows`, default 50 to keep
-        results compact — raise it explicitly for a full dump; prefer aggregations); the
+        `{columns, rows, row_count, offset, truncated}` (capped at `max_rows`, default 50 to
+        keep results compact — prefer aggregations over a full dump); the
         `simulations` dataframe is generated on demand if no commit has produced one yet.
+
+        PAGING: when `truncated` is true the result also carries `next_offset` — pass it back
+        as `offset` for the next page rather than raising `max_rows` (a large page is a large
+        tool result, and it re-enters your context on EVERY later turn). Add an explicit
+        `ORDER BY` when you page: without one, SQL row order is not guaranteed stable between
+        calls, so pages can overlap or skip rows. No total row count is reported — obtaining
+        one would mean running your query a second time.
 
         TWO NAMING CONVENTIONS, and they do not mix. The PEtab tables keep PEtab's camelCase:
         `measurements(observableId, simulationConditionId, preequilibrationConditionId, time,
         measurement, observableParameters, noiseParameters)`, `conditions(conditionId, ...)`,
         `observables(observableId, ...)`, `parameters(parameterId, ...)`. The DERIVED tables use
-        snake_case: `simulations(observable_id, condition_id, time, ...)` and
+        snake_case: `simulations(observable_id, condition_id, time, ...)`,
+        `simulations_history` (the same plus `version`), and
         `optimization_starts` / `optimization_trace`. The measurement table's condition column is
         `simulationConditionId` — NOT `conditionId` (the `conditions` table's own key) and NOT
         `condition_id` (that is `simulations`). Do not carry a column list from a `simulations`
@@ -1256,26 +1301,44 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
              GROUP BY observable_id ORDER BY chi2 DESC`
           `SELECT * FROM simulations WHERE residual_weighted IS NOT NULL
              ORDER BY abs(residual_weighted) DESC LIMIT 10`
+
+        CROSS-VERSION comparison: `simulations_history` holds the same per-point rows for
+        every stored version, with a `version` column (snake_case like `simulations`; a
+        version whose fit failed contributes no rows). Where did v4 get worse than v3:
+          `SELECT observable_id, condition_id, time,
+                  max(CASE WHEN version=3 THEN residual_weighted END) AS v3,
+                  max(CASE WHEN version=4 THEN residual_weighted END) AS v4
+             FROM simulations_history WHERE version IN (3, 4)
+             GROUP BY 1, 2, 3 ORDER BY abs(v4) - abs(v3) DESC LIMIT 10`
         """
         def run() -> dict[str, Any]:
-            # Reject bad arguments cheaply before generating a (compile-heavy) simulation.
-            data_mod.validate_query_args(sql, max_rows)
+            # Reject bad arguments cheaply before generating a (compile-heavy) simulation, and
+            # USE what validation returns: it clamps max_rows to MAX_PAGE_ROWS, so discarding
+            # the normalized pair would let the boundary check and the value actually queried
+            # disagree.
+            n_rows, off = data_mod.validate_query_args(sql, max_rows, offset)
             # Populate the stored simulation dataframe on demand so `simulations` is
             # queryable (a no-op once a commit has produced one). A simulation failure must
             # not block querying the static tables, so fall through with an empty table.
-            if session.simulation is None or not session.simulation.get("records"):
+            # Generate the HEAD simulation dataframe only when the query actually reads the
+            # `simulations` table: current_simulation() is an AMICI build+simulate — minutes
+            # of C++ compile on a cold/resumed session — and a query over the static tables or
+            # over `simulations_history` (assembled from per-version files on disk, no
+            # simulation involved) must not pay it.
+            if data_mod.query_references_head_simulations(sql) and (
+                    session.simulation is None or not session.simulation.get("records")):
                 try:
                     ctx.current_simulation()
                 except Exception:  # pragma: no cover - defensive; static tables still work
                     session.logger.warning(
                         "query_data: could not generate simulation dataframe", exc_info=True
                     )
-            return data_mod.run_query(session, sql, max_rows)
+            return data_mod.run_query(session, sql, n_rows, off)
 
         # Log the query (truncated) alongside max_rows so a failed call is reproducible
         # from `get_errors`.
         logged_sql = sql[:1000] if isinstance(sql, str) else sql
-        return ctx.run("query_data", run, {"sql": logged_sql, "max_rows": max_rows})
+        return ctx.run("query_data", run, {"sql": logged_sql, "max_rows": max_rows, "offset": offset})
 
     @mcp.tool()
     def get_fit_diagnosis(

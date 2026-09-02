@@ -229,8 +229,12 @@ def test_table_schema(session):
     tables = {t["table"]: t for t in schema["tables"]}
     assert set(tables) == {
         "measurements", "conditions", "observables", "parameters", "simulations",
-        "optimization_starts", "optimization_trace",
+        "simulations_history", "optimization_starts", "optimization_trace",
     }
+    assert tables["simulations_history"]["n_rows"] == 0  # no versions stored yet
+    assert set(data_access.SIMULATION_HISTORY_COLUMNS) <= set(
+        tables["simulations_history"]["columns"]
+    )
     assert tables["measurements"]["n_rows"] == 6
     assert tables["simulations"]["n_rows"] == 0  # nothing simulated yet
     assert set(data_access.SIMULATION_COLUMNS) <= set(tables["simulations"]["columns"])
@@ -584,3 +588,252 @@ def test_fit_diagnosis_cap_is_bounded_even_when_everything_is_flagged(session):
     assert out["omitted"]["n_observables_omitted"] > 0
     assert out["omitted"]["n_flagged_omitted"] > 0                 # says flagged rows were cut
     assert "TRUNCATED" in out["omitted"]["note"]
+
+
+# ------------------------------------------------------------- simulations_history
+
+def _snapshot(session, records, label):
+    """Store a version carrying ``records`` as its simulation, via the real ProvenanceStore."""
+    return session.provenance.snapshot_version(
+        model_ant="// test model",
+        parameters=session.problem.parameter_df,
+        label=label,
+        simulation={"records": records} if records is not None else None,
+    )
+
+
+def test_simulations_history_spans_versions(session):
+    v1 = _snapshot(session, SIM_RECORDS[:2], "v1")
+    # v2 improves obs_A/c0/t0: weighted residual 2.0 -> 0.5
+    better = [dict(SIM_RECORDS[0], simulation=0.75, residual=0.25, residual_weighted=0.5),
+              SIM_RECORDS[1]]
+    v2 = _snapshot(session, better, "v2")
+
+    out = data_access.run_query(
+        session,
+        "SELECT version, count(*) AS n FROM simulations_history GROUP BY version ORDER BY version",
+    )
+    assert out["rows"] == [{"version": v1, "n": 2}, {"version": v2, "n": 2}]
+
+    # The comparative query the analysts kept reconstructing by hand: per-point deltas.
+    out = data_access.run_query(
+        session,
+        f"""SELECT observable_id, time,
+                   max(CASE WHEN version={v1} THEN residual_weighted END) AS a,
+                   max(CASE WHEN version={v2} THEN residual_weighted END) AS b
+              FROM simulations_history GROUP BY 1, 2 ORDER BY time""",
+    )
+    assert out["rows"][0]["a"] == 2.0 and out["rows"][0]["b"] == 0.5
+    assert out["rows"][1]["a"] == 0.0 and out["rows"][1]["b"] == 0.0
+
+
+def test_simulations_history_skips_versions_without_simulation(session):
+    _snapshot(session, None, "failed fit")          # stores no simulations.json
+    v2 = _snapshot(session, SIM_RECORDS[:1], "ok")
+    out = data_access.run_query(
+        session, "SELECT DISTINCT version FROM simulations_history ORDER BY version")
+    assert [r["version"] for r in out["rows"]] == [v2]
+
+
+def test_simulations_history_does_not_shadow_head(session):
+    # HEAD `simulations` stays exactly the session's own dataframe — the history table is a
+    # separate name, not a replacement.
+    _snapshot(session, SIM_RECORDS[:1], "v1")
+    session.simulation = {"records": SIM_RECORDS}
+    out = data_access.run_query(session, "SELECT count(*) AS n FROM simulations")
+    assert out["rows"][0]["n"] == len(SIM_RECORDS)
+
+
+def test_simulations_history_is_lazy(session, monkeypatch):
+    # A query that never names the table must not touch the version store.
+    def _boom(_session):
+        raise AssertionError("simulations_history materialized for an unrelated query")
+
+    monkeypatch.setattr(data_access, "_simulation_history_frame", _boom)
+    out = data_access.run_query(session, "SELECT count(*) AS n FROM measurements")
+    assert out["rows"][0]["n"] == 6
+
+
+def test_simulations_history_cache_tracks_new_versions(session):
+    _snapshot(session, SIM_RECORDS[:1], "v1")
+    out = data_access.run_query(
+        session, "SELECT count(DISTINCT version) AS n FROM simulations_history")
+    assert out["rows"][0]["n"] == 1
+    _snapshot(session, SIM_RECORDS[:2], "v2")       # cache key changes with the store
+    out = data_access.run_query(
+        session, "SELECT count(DISTINCT version) AS n FROM simulations_history")
+    assert out["rows"][0]["n"] == 2
+
+
+def test_simulations_history_empty_but_typed(session):
+    # Cold start: no versions at all — the table exists, is empty, and its columns resolve.
+    out = data_access.run_query(
+        session,
+        "SELECT version, observable_id, residual_weighted FROM simulations_history")
+    assert out["rows"] == []
+
+
+def test_simulations_history_positive_control(session, monkeypatch):
+    # The inverse of the laziness test: a query that DOES name the table must build it — a
+    # broken name gate would otherwise leave every history query failing while the suite
+    # stays green.
+    called = {}
+    real = data_access._simulation_history_frame
+
+    def _spy(s):
+        called["yes"] = True
+        return real(s)
+
+    monkeypatch.setattr(data_access, "_simulation_history_frame", _spy)
+    data_access.run_query(session, "SELECT count(*) FROM simulations_history")
+    assert called.get("yes")
+
+
+def test_simulations_history_survives_corrupt_file(session):
+    # A snapshot interrupted mid-write (wall-clock kill, disk full) leaves a truncated
+    # simulations.json. It must degrade to "this version contributes no rows" — not take down
+    # every query_data/list_data_tables call for the rest of the run.
+    v1 = _snapshot(session, SIM_RECORDS[:1], "good")
+    v2 = _snapshot(session, SIM_RECORDS[:2], "corrupt")
+    vdir = session.provenance.versions_dir / f"v{v2}"
+    (vdir / "simulations.json").write_text('{"records": [{"obs', encoding="utf-8")
+
+    out = data_access.run_query(
+        session, "SELECT DISTINCT version FROM simulations_history ORDER BY version")
+    assert [r["version"] for r in out["rows"]] == [v1]
+    schema = data_access.table_schema(session)  # must not raise either
+    tables = {t["table"]: t for t in schema["tables"]}
+    assert tables["simulations_history"]["n_rows"] == 1
+
+
+def test_simulations_history_non_object_json_contributes_nothing(session):
+    v1 = _snapshot(session, SIM_RECORDS[:1], "v1")
+    vdir = session.provenance.versions_dir / f"v{v1}"
+    (vdir / "simulations.json").write_text("[1, 2, 3]", encoding="utf-8")
+    out = data_access.run_query(session, "SELECT count(*) AS n FROM simulations_history")
+    assert out["rows"][0]["n"] == 0
+
+
+def test_simulations_history_mid_commit_window_heals(session):
+    # snapshot_version writes meta.json BEFORE simulations.json, and query_data takes no
+    # session lock — so a query can see version N listed while its simulation is not on disk
+    # yet. That read must not poison the cache: the entry is keyed by the FILE's fingerprint,
+    # so it invalidates the moment the file lands.
+    import json as _json
+
+    v1 = _snapshot(session, None, "mid-commit")     # meta exists, simulations.json does not
+    out = data_access.run_query(session, "SELECT count(*) AS n FROM simulations_history")
+    assert out["rows"][0]["n"] == 0                 # the empty view, now cached
+    vdir = session.provenance.versions_dir / f"v{v1}"
+    (vdir / "simulations.json").write_text(
+        _json.dumps({"records": SIM_RECORDS[:2]}), encoding="utf-8")
+    out = data_access.run_query(session, "SELECT count(*) AS n FROM simulations_history")
+    assert out["rows"][0]["n"] == 2                 # healed, not permanently missing
+
+
+def test_simulations_history_survives_bad_record_shape(session):
+    # The blob parses as an object (so the store's isinstance guard passes) but `records` is
+    # not a list of dicts — a hand-edited file, or an archive from an older schema. Splatting
+    # a non-mapping would raise a TypeError that escapes into EVERY query for the rest of the
+    # run; the bad entries are skipped instead.
+    import json as _json
+
+    v1 = _snapshot(session, SIM_RECORDS[:1], "good")
+    v2 = _snapshot(session, SIM_RECORDS[:1], "bad-records")
+    (session.provenance.versions_dir / f"v{v2}" / "simulations.json").write_text(
+        _json.dumps({"records": [1, 2, 3]}), encoding="utf-8")
+    v3 = _snapshot(session, SIM_RECORDS[:1], "records-not-a-list")
+    (session.provenance.versions_dir / f"v{v3}" / "simulations.json").write_text(
+        _json.dumps({"records": {"a": 1}}), encoding="utf-8")
+
+    out = data_access.run_query(
+        session, "SELECT DISTINCT version FROM simulations_history ORDER BY version")
+    assert [r["version"] for r in out["rows"]] == [v1]
+    data_access.table_schema(session)  # must not raise either
+
+
+def test_simulations_history_survives_corrupt_meta(session):
+    # A version's meta.json is unrelated to its simulation: list_versions skips such a version,
+    # so enumerating from meta would drop an INTACT simulation from every comparison.
+    v1 = _snapshot(session, SIM_RECORDS[:2], "v1")
+    (session.provenance.versions_dir / f"v{v1}" / "meta.json").write_text("{trunc", "utf-8")
+    out = data_access.run_query(session, "SELECT count(*) AS n FROM simulations_history")
+    assert out["rows"][0]["n"] == 2
+
+
+def test_record_version_field_cannot_override_the_column(session):
+    # A record carrying its own `version` must not re-attribute the row (the fit payload
+    # already stamps a version at blob top level, so this is a live shape).
+    rec = dict(SIM_RECORDS[0], version=999)
+    v1 = _snapshot(session, [rec], "v1")
+    out = data_access.run_query(session, "SELECT DISTINCT version FROM simulations_history")
+    assert [r["version"] for r in out["rows"]] == [v1]
+
+
+def test_table_schema_reports_history_without_building_it(session, monkeypatch):
+    # list_data_tables is the FIRST call the harness prompt prescribes: it must report the
+    # row count without concatenating a cross-version DataFrame it immediately discards.
+    _snapshot(session, SIM_RECORDS[:2], "v1")
+
+    def _boom(_s):
+        raise AssertionError("table_schema built the history frame just to count rows")
+
+    monkeypatch.setattr(data_access, "_simulation_history_frame", _boom)
+    tables = {t["table"]: t for t in data_access.table_schema(session)["tables"]}
+    assert tables["simulations_history"]["n_rows"] == 2
+    assert tables["simulations_history"]["columns"] == list(
+        data_access.SIMULATION_HISTORY_COLUMNS)
+
+
+# ------------------------------------------------------------- paging
+
+def test_query_pages_without_overlap_or_gap(session):
+    # Six measurement rows, three pages of two: every row seen exactly once.
+    seen, offset, pages = [], 0, 0
+    while True:
+        out = data_access.run_query(
+            session, "SELECT time, observableId FROM measurements ORDER BY observableId, time",
+            max_rows=2, offset=offset)
+        pages += 1
+        seen += [tuple(r.values()) for r in out["rows"]]
+        assert out["offset"] == offset
+        if not out["truncated"]:
+            assert "next_offset" not in out
+            break
+        offset = out["next_offset"]
+    assert pages == 3
+    assert len(seen) == 6 and len(set(seen)) == 6
+
+
+def test_offset_past_the_end_is_empty_not_an_error(session):
+    out = data_access.run_query(session, "SELECT * FROM measurements", max_rows=5, offset=500)
+    assert out["rows"] == [] and out["row_count"] == 0 and out["truncated"] is False
+
+
+def test_max_rows_is_clamped_to_a_hard_ceiling(session):
+    # The paging guarantee must be enforced, not merely advised: without a ceiling the caller
+    # can ask for the whole table and reproduce the context blow-up paging exists to prevent.
+    n_rows, off = data_access.validate_page_args(100_000, 0)
+    assert n_rows == data_access.MAX_PAGE_ROWS and off == 0
+    out = data_access.run_query(session, "SELECT * FROM measurements", max_rows=100_000)
+    assert out["row_count"] == 6          # small table still returns whole
+
+
+def test_page_args_rejected(session):
+    for bad in (0, -1, "x"):
+        with pytest.raises(ValidationError):
+            data_access.validate_page_args(bad, 0)
+    for bad in (-1, "x"):
+        with pytest.raises(ValidationError):
+            data_access.validate_page_args(10, bad)
+    assert data_access.validate_page_args("5", "2") == (5, 2)   # numeric strings coerce
+
+
+def test_head_simulations_reference_gate():
+    # Decides whether query_data pays an AMICI build: HEAD `simulations` reads must, queries
+    # touching only the history (or the static tables) must not.
+    ref = data_access.query_references_head_simulations
+    assert ref("SELECT * FROM simulations WHERE residual_weighted IS NOT NULL")
+    assert ref("select s.time from SIMULATIONS s")
+    assert not ref("SELECT version FROM simulations_history")
+    assert not ref("SELECT count(*) FROM measurements")

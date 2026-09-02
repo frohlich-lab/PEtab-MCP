@@ -11,6 +11,9 @@ loop produces is queryable in one place:
   carrying the ``simulation`` value and the **residuals** (``residual``,
   ``residual_weighted`` — the chi2 term — and the evaluated ``noise``) next to the
   ``measurement``;
+* ``simulations_history`` — those same per-point rows for EVERY stored version, with a
+  ``version`` column, so model versions can be compared point-by-point in one query
+  (assembled lazily from the version store; see :func:`_simulation_history_frame`);
 * the last fit's pyPESTO multistart — ``optimization_starts`` (one row per start) and
   ``optimization_trace`` (one row per start/iteration, the objective over the run).
 
@@ -29,6 +32,8 @@ itself prevent. Results come back as plain JSON records.
 
 from __future__ import annotations
 
+import logging
+import re
 from collections import Counter
 from typing import Any
 
@@ -80,6 +85,21 @@ SIMULATION_COLUMNS = [
     "noise",
 ]
 
+# The cross-version copy of the simulation dataframe: SIMULATION_COLUMNS plus which stored
+# version each row belongs to. Same stable-schema rationale as SIMULATION_COLUMNS.
+SIMULATION_HISTORY_COLUMNS = ["version", *SIMULATION_COLUMNS]
+
+#: Rows discarded per fetch when skipping to a page ``offset``. Bounds the peak allocation of
+#: the skip itself, which would otherwise be O(offset) in one go.
+_OFFSET_SKIP_CHUNK = 1000
+
+#: Hard ceiling on any single page, whatever the caller asks for. Sized from the measured cost
+#: of the reads it bounds: the full raw measurement table is 35-81k tokens on the shipped
+#: benchmark problems (bachmann 541 rows, isensee 687, lucarelli 1755), so 1000 rows keeps the
+#: worst single tool result to roughly a quarter of the smallest of those while still returning
+#: whole small tables in one call. Callers page past it with ``next_offset``.
+MAX_PAGE_ROWS = 1000
+
 # Columns of the pyPESTO optimization tables (from the last fit). Fixing them keeps the
 # empty-table schema stable before/without a fit, same as SIMULATION_COLUMNS.
 OPTIMIZATION_START_COLUMNS = [
@@ -101,6 +121,12 @@ TABLE_DESCRIPTIONS: dict[str, str] = {
         "Per-point simulation dataframe from the last commit: measurement vs simulation "
         "with residual, residual_weighted (the chi2 term), and noise (sigma). Empty until "
         "the first commit/fit."
+    ),
+    "simulations_history": (
+        "The same per-point rows for EVERY stored version, with a `version` column — compare "
+        "residuals across model versions in one query (e.g. pivot residual_weighted on "
+        "version to see per-point where v4 got worse than v3). A version whose fit failed "
+        "stores no simulation and contributes no rows."
     ),
     "optimization_starts": (
         "pyPESTO multistart results from the last fit: one row per start (start=0 is best) "
@@ -192,21 +218,148 @@ def _frames(session) -> dict[str, Any]:
     return frames
 
 
-def validate_query_args(sql: Any, max_rows: Any) -> int:
-    """Validate ``query_data`` arguments cheaply (no DuckDB, no simulation).
+def _simulation_history_frame(session):
+    """One row per (stored version, measurement point): the ``simulations_history`` table.
 
-    Returns the normalized ``max_rows``. Raises :class:`ValidationError` on bad input so the
-    tool boundary can reject it *before* generating a simulation dataframe.
+    Assembled from each version's ``simulations.json`` via
+    :meth:`ProvenanceStore.get_version_simulation` (the light read), with a PER-VERSION cache
+    on the session: each entry is keyed by that version's file fingerprint (size, mtime — see
+    :meth:`ProvenanceStore.simulation_fingerprint`), so a rebuild re-reads only versions whose
+    file changed or appeared. Two properties hang off that key choice:
+
+    * **rebuilds are O(new versions), not O(all)** — the store only grows, and re-parsing every
+      earlier blob after each commit would make a run's total history I/O quadratic in its
+      version count;
+    * **the mid-commit window cannot poison the cache** — ``snapshot_version`` writes
+      ``meta.json`` before ``simulations.json`` and ``query_data`` takes no session lock, so a
+      query can see version N listed while its simulation is not on disk yet. That read caches
+      ``(fingerprint=None, no rows)`` for N, and the entry invalidates the moment the file
+      lands. (A rollback appends nothing and rewrites nothing, so it needs no invalidation.)
+
+    Versions come from :meth:`ProvenanceStore.stored_version_numbers` (directory names), NOT
+    ``list_versions``: the latter parses every ``meta.json`` on every call — pure waste when
+    only the numbers are wanted — and skips versions whose meta is unreadable, which would drop
+    an intact simulation from the history over an unrelated corrupt file.
+
+    Cost, stated honestly: on a COLD cache both callers parse every version's
+    ``simulations.json`` — ``table_schema`` skips only the DataFrame concat, not the parse, so
+    the first ``list_data_tables`` of a run with N committed versions reads N files. What the
+    fingerprint cache buys is every call AFTER that: a schema listing costs one stat per
+    version, and a commit costs parsing only the version it added. Versions whose fit failed or
+    was skipped store no simulation and contribute no rows.
     """
-    if not isinstance(sql, str) or not sql.strip():
-        raise ValidationError("`sql` must be a non-empty SQL query string.")
+    import pandas as pd
+
+    per_version = _simulation_history_rows(session)
+    # Explicit columns=, like the HEAD `simulations` frame above: the promised schema holds
+    # even if some version's records miss a key (that column is then null, not absent).
+    return pd.DataFrame([r for n in sorted(per_version) for r in per_version[n][1]],
+                        columns=SIMULATION_HISTORY_COLUMNS)
+
+
+def _simulation_history_rows(session) -> "dict[int, tuple[Any, list]]":
+    """``{version: (fingerprint, rows)}`` for every stored version — the cache itself.
+
+    Split from the frame builder so ``table_schema`` can report ``n_rows`` by summing lengths
+    instead of materializing (and immediately discarding) a full cross-version DataFrame on
+    every ``list_data_tables`` — the FIRST call the harness prompt prescribes, on a store where
+    a single ``simulations.json`` can be hundreds of kB.
+    """
+    prov = getattr(session, "provenance", None)
+    if prov is None:
+        return {}
+    cache: dict = getattr(session, "_sim_history_cache", None) or {}
+    fresh: dict = {}
+    for n in prov.stored_version_numbers():
+        fp = prov.simulation_fingerprint(n)
+        hit = cache.get(n)
+        if hit is not None and hit[0] == fp:
+            fresh[n] = hit
+            continue
+        rows: list[dict[str, Any]] = []
+        if fp is not None:
+            records = (prov.get_version_simulation(n) or {}).get("records")
+            # Shape-check per record: a blob can parse as an object (so the store's own
+            # isinstance guard passes) and still hold `records: [1, 2, 3]` — a hand-edited
+            # file, or an archive from an older schema. Splatting a non-mapping raises a
+            # TypeError that would escape into every query_data AND list_data_tables call for
+            # the rest of the run, which is exactly the poisoning this path exists to avoid.
+            for r in records if isinstance(records, list) else []:
+                if isinstance(r, dict):
+                    # `version` LAST so the column is authoritative: a record carrying its own
+                    # `version` field (the fit payload already stamps one at blob top level)
+                    # must not silently re-attribute the row to another version.
+                    rows.append({**r, "version": n})
+        fresh[n] = (fp, rows)
+    session._sim_history_cache = fresh
+    return fresh
+
+
+def query_references(sql: Any, table: str) -> bool:
+    """Does ``sql`` name ``table``? A word-boundary scan of the raw query text.
+
+    Two callers gate expensive work on this: the server skips generating the HEAD simulation
+    dataframe (an AMICI build+simulate — minutes on a cold session) when a query does not read
+    ``simulations``, and :func:`run_query` skips assembling ``simulations_history`` when a
+    query does not read it. ``\\b`` does not match between ``simulations`` and ``_`` (both word
+    characters), so the two names do not alias each other.
+
+    Deliberately a text scan, with the failure modes stated: a false positive (the bare name
+    inside a comment or a string literal) costs one unnecessary build, and a name reached only
+    through the catalog (``SHOW TABLES``) is missed. A false negative is impossible for a query
+    that actually reads the table by name, since DuckDB resolves the bare identifier the same
+    way. Non-string ``sql`` answers True — validation rejects it moments later, and guessing
+    "no" there would skip work a valid query needed.
+    """
+    if not isinstance(sql, str):
+        return True
+    return bool(re.search(rf"\b{re.escape(table)}\b", sql, re.IGNORECASE))
+
+
+def query_references_head_simulations(sql: Any) -> bool:
+    """Does ``sql`` read the HEAD ``simulations`` table (as opposed to only the history)?"""
+    return query_references(sql, "simulations")
+
+
+def validate_page_args(max_rows: Any, offset: Any = 0) -> "tuple[int, int]":
+    """Normalize a ``(max_rows, offset)`` page window, or raise :class:`ValidationError`.
+
+    Shared by every paged read so one bad argument is rejected identically wherever it lands —
+    ``query_data``'s SQL page and ``get_measurements``' raw page have no reason to disagree
+    about what a valid window is.
+
+    ``max_rows`` is CLAMPED to :data:`MAX_PAGE_ROWS`. Paging is a guarantee, not advice: without
+    a ceiling the caller can simply ask for the whole table (``max_rows=100000`` returns all
+    1755 lucarelli rows, ~81k tokens) and reproduce the context blow-up paging exists to
+    prevent — a tool description telling the model not to is not a bound. Clamped rather than
+    rejected because the reply already reports ``truncated``/``next_offset``, so an over-large
+    request degrades into a correct first page instead of an error the model must recover from.
+    """
     try:
         max_rows = int(max_rows)
     except (TypeError, ValueError):
         raise ValidationError(f"max_rows must be an integer >= 1, got {max_rows!r}.")
     if max_rows < 1:
         raise ValidationError(f"max_rows must be an integer >= 1, got {max_rows}.")
-    return max_rows
+    max_rows = min(max_rows, MAX_PAGE_ROWS)
+    try:
+        offset = int(offset)
+    except (TypeError, ValueError):
+        raise ValidationError(f"offset must be an integer >= 0, got {offset!r}.")
+    if offset < 0:
+        raise ValidationError(f"offset must be an integer >= 0, got {offset}.")
+    return max_rows, offset
+
+
+def validate_query_args(sql: Any, max_rows: Any, offset: Any = 0) -> "tuple[int, int]":
+    """Validate ``query_data`` arguments cheaply (no DuckDB, no simulation).
+
+    Returns the normalized ``(max_rows, offset)``. Raises :class:`ValidationError` on bad input
+    so the tool boundary can reject it *before* generating a simulation dataframe.
+    """
+    if not isinstance(sql, str) or not sql.strip():
+        raise ValidationError("`sql` must be a non-empty SQL query string.")
+    return validate_page_args(max_rows, offset)
 
 
 def table_schema(session) -> dict[str, Any]:
@@ -221,23 +374,64 @@ def table_schema(session) -> dict[str, Any]:
         }
         for name, df in frames.items()
     ]
+    # The history is listed with a real row count — so an analyst deciding whether
+    # cross-version comparison is even possible sees "0 rows" vs "N rows" here rather than
+    # discovering it through an empty query result — but WITHOUT building the frame: the
+    # columns are the declared schema and the count is a sum over the cache. This is the one
+    # caller that touches the history without the query-names-it gate, and it is also the
+    # most frequent one (the harness prompt says to call list_data_tables FIRST), so it must
+    # not concatenate a cross-version DataFrame it would immediately discard.
+    # Guarded: this is the one entry that touches DISK, and list_data_tables was previously
+    # incapable of failing. A stale NFS handle or a permissions change on the version store
+    # must not break the run's opening move — degrade to an unknown count and let the caller
+    # still learn every table's columns.
+    try:
+        n_history = sum(len(rows) for _, rows in _simulation_history_rows(session).values())
+    except Exception:
+        logging.getLogger("petab_mcp").warning(
+            "could not read the version store for simulations_history; reporting an unknown "
+            "row count", exc_info=True)
+        n_history = None
+    tables.append({
+        "table": "simulations_history",
+        "description": TABLE_DESCRIPTIONS.get("simulations_history", ""),
+        "columns": list(SIMULATION_HISTORY_COLUMNS),
+        "n_rows": n_history,
+    })
     return {"tables": tables}
 
 
-def run_query(session, sql: str, max_rows: int = 1000) -> dict[str, Any]:
+def run_query(session, sql: str, max_rows: int = 1000, offset: int = 0) -> dict[str, Any]:
     """Run ``sql`` over the PEtab tables + simulation dataframe and return the rows.
 
-    Copies every queryable table (``measurements``, ``conditions``, ``observables``,
-    ``parameters``, ``simulations``, ``optimization_starts``, ``optimization_trace``) into a
+    Copies the queryable tables (``measurements``, ``conditions``, ``observables``,
+    ``parameters``, ``simulations``, ``optimization_starts``, ``optimization_trace`` — plus
+    ``simulations_history``, materialized only when the query names it) into a
     fresh in-memory DuckDB database, executes ``sql``, and returns
     ``{columns, rows, row_count, truncated}`` with at most ``max_rows`` records (one extra
     row is fetched to set ``truncated``). Because the tables are a disposable copy, the query
     may use any SQL it likes without affecting the session; a SQL error is surfaced as a
     :class:`ValidationError` (a client-facing 4xx), not an internal crash.
     """
-    max_rows = validate_query_args(sql, max_rows)
+    max_rows, offset = validate_query_args(sql, max_rows, offset)
     duckdb = _duckdb()
     frames = _frames(session)
+    # Materialized ONLY when the query names it (see query_references for the trade-off):
+    # assembling it parses every stored version's simulations.json on a cold cache, and the
+    # overwhelmingly common HEAD-only queries must not pay that.
+    if query_references(sql, "simulations_history"):
+        # Guarded like table_schema's read, and for the same reason: the version store lives on
+        # shared storage, and an ESTALE/EIO from the glob must not surface as a raw exception —
+        # ctx.run re-raises anything that is not a PetabMcpError, the circuit breaker counts it,
+        # and three in a row would disable query_data for the rest of the run over a transient
+        # filesystem hiccup on a table the query merely mentioned.
+        try:
+            frames["simulations_history"] = _simulation_history_frame(session)
+        except Exception as exc:
+            raise ValidationError(
+                f"Could not read the version store for `simulations_history` ({exc}). The other "
+                "tables are unaffected — query `simulations` for the current model's residuals."
+            ) from exc
 
     con = duckdb.connect()
     try:
@@ -269,6 +463,21 @@ def run_query(session, sql: str, max_rows: int = 1000) -> dict[str, Any]:
         try:
             rel = con.execute(sql)
             columns = [d[0] for d in rel.description] if rel.description else []
+            # Skip `offset` rows on the streaming cursor rather than re-running the query with
+            # a LIMIT/OFFSET wrapper: the SQL surface deliberately allows statements with side
+            # effects (INSERT/UPDATE/DROP over the disposable copy), so executing the caller's
+            # text twice could produce two different results. Same reason no total row count is
+            # reported — obtaining one means either exhausting the cursor (unbounded memory,
+            # which is what paging exists to avoid) or a second execution.
+            # Skipped in bounded chunks, not one fetchmany(offset): a single call would
+            # materialize `offset` tuples at once, which is the unbounded-memory objection the
+            # paragraph above raises against reporting a total. Peak stays O(chunk).
+            remaining = offset
+            while remaining > 0:
+                skipped = rel.fetchmany(min(remaining, _OFFSET_SKIP_CHUNK))
+                if not skipped:
+                    break  # fewer rows than the offset — the page below is legitimately empty
+                remaining -= len(skipped)
             rows = rel.fetchmany(max_rows + 1)
         except duckdb.Error as exc:
             raise ValidationError(
@@ -281,12 +490,18 @@ def run_query(session, sql: str, max_rows: int = 1000) -> dict[str, Any]:
     truncated = len(rows) > max_rows
     rows = rows[:max_rows]
     records = [dict(zip(columns, (_clean(v) for v in row))) for row in rows]
-    return {
+    out = {
         "columns": columns,
         "rows": records,
         "row_count": len(records),
+        "offset": offset,
         "truncated": truncated,
     }
+    if truncated:
+        # The exact argument for the next page, so a caller that hit the cap does not have to
+        # infer it (or rewrite its SQL with LIMIT/OFFSET and risk a different row order).
+        out["next_offset"] = offset + len(records)
+    return out
 
 
 #: Why the residual section is empty: there are no per-point records for this model and a READ does

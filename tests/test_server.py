@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import asyncio
 import shutil
 from pathlib import Path
@@ -342,6 +343,48 @@ def test_query_data_blocks_file_access(tmp_path):
     asyncio.run(go())
 
 
+def test_get_measurements_raw_is_paged(tmp_path):
+    # The unpaged dump measured 73k tokens on isensee and 81k on lucarelli, in ONE tool result
+    # that then re-enters context every later turn — one such call has ended a run on the
+    # provider's "prompt exceeds max length". Raw reads are paged; the summary is not (it is
+    # already compact) and keeps its list/dict shape.
+    mcp = _server(tmp_path)
+
+    def _page(res):
+        # get_measurements is annotated `list | dict`, so FastMCP wraps the payload in
+        # {"result": ...} — the same unwrap test_describe_and_parameters does for get_parameters.
+        out = _structured(res)
+        return out["result"] if isinstance(out, dict) and "result" in out else out
+
+    async def go():
+        first = _page(await mcp.call_tool(
+            "get_measurements", {"summarize": False, "max_rows": 4}))
+        assert first["row_count"] == 4
+        assert first["total_rows"] == 6
+        assert first["offset"] == 0
+        assert first["truncated"] is True
+        assert first["next_offset"] == 4
+
+        second = _page(await mcp.call_tool(
+            "get_measurements", {"summarize": False, "max_rows": 4,
+                                 "offset": first["next_offset"]}))
+        assert second["row_count"] == 2
+        assert second["truncated"] is False
+        assert "next_offset" not in second
+
+        # the two pages together are the whole table, each row once
+        rows = first["rows"] + second["rows"]
+        assert len(rows) == 6
+        assert len({json.dumps(r, sort_keys=True) for r in rows}) == 6
+
+        # a page that fits is not marked truncated
+        whole = _page(await mcp.call_tool(
+            "get_measurements", {"summarize": False, "max_rows": 500}))
+        assert whole["row_count"] == 6 and whole["truncated"] is False
+
+    asyncio.run(go())
+
+
 def test_list_data_tables(tmp_path):
     mcp = _server(tmp_path)  # schema is static; no simulation/AMICI needed
 
@@ -350,7 +393,7 @@ def test_list_data_tables(tmp_path):
         tables = {t["table"] for t in schema["tables"]}
         assert tables == {
             "measurements", "conditions", "observables", "parameters", "simulations",
-            "optimization_starts", "optimization_trace",
+            "simulations_history", "optimization_starts", "optimization_trace",
         }
 
     asyncio.run(go())

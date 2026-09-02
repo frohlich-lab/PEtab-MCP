@@ -266,6 +266,83 @@ class ProvenanceStore:
             df = df.set_index("parameterId")
         return df
 
+    def get_version_simulation(self, n: int) -> "dict[str, Any] | None":
+        """Version ``n``'s stored simulation blob (``simulations.json``), or ``None``.
+
+        A LIGHT read for assembling the ``simulations_history`` SQL table: unlike
+        :meth:`get_version` it loads neither the model text, the parameter table, nor the
+        optimization payload — history assembly touches every version, so it must not pay for
+        the four other files per version.
+
+        Reached by :meth:`stored_version_numbers` + this method, never by ``list_versions``:
+        the history must not depend on ``meta.json``'s health (a version with an intact
+        simulation would otherwise vanish from every comparison because its unrelated meta was
+        truncated — the very interrupted-write case this is hardened against).
+
+        ``None`` covers every way the blob can be missing or unusable: an absent version dir,
+        an absent file (a failed/skipped fit stores no simulation), an unreadable or corrupt
+        one (a snapshot interrupted mid-write — wall-clock kill, disk full — must degrade this
+        read, not poison every ``query_data``/``list_data_tables`` call for the rest of the
+        run), and a file that parses to a non-object. That is :meth:`list_versions`'s
+        per-file defensiveness, NOT :meth:`get_model_source`'s raise-on-bad-argument contract:
+        history assembly iterates versions it did not choose, so a bad one is skippable data
+        here, never a caller error.
+        """
+        p = self._version_path(n) / "simulations.json"
+        try:
+            obj = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            if p.is_file():  # exists but unreadable/corrupt — worth a line; absence is normal
+                logging.getLogger("petab_mcp").warning(
+                    "version v%s has an unreadable simulations.json; it contributes no rows "
+                    "to simulations_history", n, exc_info=True)
+            return None
+        if not isinstance(obj, dict):
+            logging.getLogger("petab_mcp").warning(
+                "version v%s simulations.json is not a JSON object (%s); it contributes no "
+                "rows to simulations_history", n, type(obj).__name__)
+            return None
+        return obj
+
+    def simulation_fingerprint(self, n: int) -> "tuple[int, int] | None":
+        """``(size, mtime_ns)`` of version ``n``'s ``simulations.json``, or ``None`` if absent.
+
+        A stat, not a parse — the cache-invalidation key for ``simulations_history``. Keying
+        on the FILE rather than on the version list is what closes the mid-commit window:
+        ``snapshot_version`` writes ``meta.json`` before ``simulations.json``, so a reader can
+        see version N listed while its simulation does not exist yet; a version-tuple key
+        would cache that empty view permanently, whereas this key changes the moment the file
+        lands.
+        """
+        try:
+            st = (self._version_path(n) / "simulations.json").stat()
+        except OSError:
+            return None
+        return (st.st_size, st.st_mtime_ns)
+
+    def _version_path(self, n: int) -> Path:
+        """``versions/v<n>`` without existence checking — the NON-raising sibling of
+        :meth:`_version_dir`.
+
+        The two light reads above iterate versions they did not choose, so a missing dir is
+        skippable data, not the bad argument ``_version_dir`` rightly raises on. ``int(n)``
+        keeps the path canonical: a ``meta.json`` carrying ``"version": 3.0`` (callers can
+        splat their own ``meta`` over the field) would otherwise format as ``v3.0``, miss
+        silently, and drop that version's rows with no warning.
+        """
+        return self.versions_dir / f"v{int(n)}"
+
+    def stored_version_numbers(self) -> "list[int]":
+        """Version numbers present on disk, ascending — from the DIRECTORY NAMES.
+
+        Deliberately not ``list_versions``: that reads and JSON-parses every ``meta.json``
+        (waste when only the numbers are wanted) and SKIPS any version whose meta is
+        unreadable, which would silently drop an intact simulation from the history. Same
+        ``v<int>`` source :attr:`last_version` uses, so a stray ``v*`` entry cannot raise here.
+        """
+        return sorted(int(d.name[1:]) for d in self.versions_dir.glob("v*")
+                      if d.is_dir() and d.name[1:].isdigit())
+
     def get_version(self, n: int) -> dict[str, Any]:
         vdir = self._version_dir(n)
         meta = json.loads((vdir / "meta.json").read_text())
