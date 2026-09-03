@@ -17,7 +17,6 @@ than being swallowed into a degraded "committed but not fitted" state.
 from __future__ import annotations
 
 import copy
-import json
 import logging
 import math
 import os
@@ -44,7 +43,7 @@ from .constants import (
 )
 from .errors import ModelUpdateError
 from .formatting import finite_float as _flt
-from .parameters import parameter_df_to_tsv, sha16, structure_fingerprint
+from .parameters import structure_fingerprint
 
 # pyPESTO's parameter-table column that tags an inner (hierarchical) parameter.
 _PARAMETER_TYPE_COL = "parameterType"
@@ -1346,13 +1345,13 @@ def parameters_at_bound(
         scale = str(row[PARAMETER_SCALE])
         try:
             lb, ub = float(row[LOWER_BOUND]), float(row[UPPER_BOUND])
-            v, l, u = _scaled(float(value), scale), _scaled(lb, scale), _scaled(ub, scale)
+            v, lo, up = _scaled(float(value), scale), _scaled(lb, scale), _scaled(ub, scale)
         except (TypeError, ValueError):
             continue
-        span = u - l
+        span = up - lo
         if span <= 0:
             continue
-        frac = (v - l) / span
+        frac = (v - lo) / span
         if frac <= tol:
             flags.append({"parameter_id": pid, "side": "lower", "value": value, "bound_value": lb})
         elif frac >= 1 - tol:

@@ -552,7 +552,7 @@ def _conservation(by_obs) -> dict[str, Any]:
     obs = linear
     if len(obs) < 2:
         return {"testable": False,
-                "reason": (f"fewer than two observables on a linear scale"
+                "reason": ("fewer than two observables on a linear scale"
                            + (f" ({skipped} are log-transformed, where a SUM is not the quantity a "
                               f"conservation law constrains)" if skipped else ""))}
 

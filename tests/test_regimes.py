@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import pytest
 from petab.v1.C import (MEASUREMENT, OBSERVABLE_ID, SIMULATION_CONDITION_ID, TIME)
 
 from petab_mcp.regimes import data_regimes

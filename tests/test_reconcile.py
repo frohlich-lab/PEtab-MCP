@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 from petab.v1.models.sbml_model import SbmlModel
 
 from petab_mcp import reconcile as R

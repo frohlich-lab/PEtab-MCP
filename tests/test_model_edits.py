@@ -166,7 +166,7 @@ def test_a_fork_applies_operations_to_that_versions_source(tool_env):
     v0 = _call(mcp, "make_changes", {
         "justification": "v0", "model_edits": [
             {"op": "add_reaction", "antimony": "sink: B =>; k_sink*B;"}]})
-    v1 = _call(mcp, "make_changes", {
+    _v1 = _call(mcp, "make_changes", {
         "justification": "v1", "model_edits": [
             {"op": "add_reaction", "antimony": "src2: => A; k_src;"}]})
     v2 = _call(mcp, "make_changes", {

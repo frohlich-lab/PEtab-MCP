@@ -165,9 +165,9 @@ def test_a_fork_patches_its_BASE_not_head(arm_on):
     `k1*2*A`, so asserting the literal trips over the very render gap the production failures
     came from.)"""
     mcp, prov = arm_on
-    v0 = _call(mcp, "make_changes", {"justification": "v0", "model_edits": [
+    _v0 = _call(mcp, "make_changes", {"justification": "v0", "model_edits": [
         {"op": "set_rate_law", "id": "r1", "antimony": "(k1*2)*A"}]})
-    v1 = _call(mcp, "make_changes", {"justification": "v1", "model_edits": [
+    _v1 = _call(mcp, "make_changes", {"justification": "v1", "model_edits": [
         {"op": "set_rate_law", "id": "r2", "antimony": "(k2*2)*B"}]})
     v2 = _call(mcp, "make_changes", {
         "justification": "fork from v0", "base_version": 0,

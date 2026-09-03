@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pandas as pd
 import pytest
-from petab.v1.C import NOMINAL_VALUE
 
 from pathlib import Path
 
