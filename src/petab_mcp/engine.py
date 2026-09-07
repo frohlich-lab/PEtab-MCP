@@ -480,8 +480,7 @@ class AmiciEngine:
         # measurement drew a simulation 26x off), silently corrupting every residual, chi2 and
         # sigma check. In the FLATTENED vocabulary the override lives in the observable id, so
         # (observable, condition, time) is unique (measured: 72 rows, 72 distinct keys, max 1
-        # row per key) and the merge cannot mispair. `slurm/_pairing_probe.py` is that
-        # experiment, negative control included.
+        # row per key) and the merge cannot mispair.
         # ``rdatas_to_simulation_df`` (a thin wrapper over amici's
         # ``rdatas_to_measurement_df``) carries exactly one simulation row per
         # measurement row, but replicate measurements share the same
