@@ -732,8 +732,8 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         `messages` is the call's whole diagnostic stack, in pipeline order: every warning and the
         error that stopped it, each tagged `level` ("error"/"warning") and `source` —
         "make_changes" (an argument refused before anything ran), "edit", "validation" (the
-        PEtab/SBML lint), or "fit". Read it to see EVERYTHING the call had to say; `warnings` is
-        just its warning texts, and `error` just the last error.
+        PEtab/SBML lint), or "fit". Read it to see EVERYTHING the call had to say; `error` alone is
+        the one rejection that stopped it, and `issues` that rejection's structured detail.
 
         REJECTS an EMPTY model (no species and no reactions — nothing to simulate or fit; this
         includes an Antimony whose species all prune away as orphans), a re-author that drops a
@@ -896,11 +896,6 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
             finally:
                 session.derived_from = None
                 session.submitted_source = None
-            # PAYLOAD DIET (measured: warnings texts were duplicated between `warnings` and
-            # `messages` in 62.8% of 915 make_changes payloads — 17% of payload bytes, re-sent
-            # in the lead's history on every later turn). `messages` is the canonical stack
-            # (level + source per entry); the flat copy goes.
-            out.pop("warnings", None)
             if out.get("applied") and antimony:
                 # The submitted text becomes this branch's source for the next structured edit.
                 # Keyed on APPLIED, not committed: a de-duplicated commit (`applied: true,
@@ -969,7 +964,8 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
             and the error that stopped it, each tagged `level` ("error"/"warning") and
             `source` — "make_changes" (an argument refused before anything ran), "edit",
             "validation" (the PEtab/SBML lint), or "fit". Read it to see EVERYTHING the call
-            had to say; `warnings` is just its warning texts, and `error` just the last error.
+            had to say; `error` alone is the one rejection that stopped it, and `issues` that
+            rejection's structured detail.
 
             REJECTS an EMPTY model (no species and no reactions — nothing to simulate or fit;
             this includes an Antimony whose species all prune away as orphans), a re-author

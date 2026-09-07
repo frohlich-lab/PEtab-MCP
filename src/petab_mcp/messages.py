@@ -16,11 +16,13 @@ So every diagnostic a call produces goes onto ONE ordered stack::
 * ``source`` says which step produced it — ``"make_changes"`` (an argument the tool layer itself
   refused), ``"edit"``, ``"validation"`` (the PEtab/SBML lint), or ``"fit"``.
 * The stack is in PIPELINE order: arguments, then the edit and its lint, then the fit. So reading
-  it top to bottom replays what happened, and the last error is the one that stopped the call.
+  it top to bottom replays what happened. The FIRST error is the one that stopped the call: only
+  one step can fail, and any error after it is that rejection's own structured issue (see
+  :func:`errors_from_exception`).
 
-``warnings`` stays on the result as the flat list of warning texts it always was — it is what
-existing callers read, and a message stack is not a reason to break them. It is DERIVED from the
-stack (see :func:`texts`), so the two cannot disagree.
+The stack is the ONLY channel: a result carries no flat list of warning texts beside it. The one
+flat field left is ``error``, and it is not derived from the stack either — it is the message from
+the step that refused, copied straight through by whoever built the result.
 
 Deliberately its own module: :mod:`operations` builds the edit half and :mod:`server` builds the
 tool-layer and fit halves, and neither should have to import the other to agree on the shape.
@@ -70,10 +72,3 @@ def errors_from_exception(source: str, exc: BaseException) -> list[dict[str, str
     out = [error(source, exc)]
     out += [error(SOURCE_VALIDATION, issue) for issue in (getattr(exc, "issues", None) or [])]
     return out
-
-
-def texts(messages: Any, level: str) -> list[str]:
-    """The message strings at ``level``, in stack order — how the flat ``warnings``/``error``
-    fields are derived, so they can never drift from the stack itself."""
-    return [m["message"] for m in (messages or [])
-            if isinstance(m, dict) and m.get("level") == level]

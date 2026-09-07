@@ -1188,7 +1188,7 @@ def revert_working_state(session, snapshot: dict[str, Any], reason: str) -> None
 # history nothing prunes, and none of it is a score. Readable on demand instead:
 # `get_model_structure` carries the reconciled model and the initial-condition account,
 # `get_parameters` each row's role and status.
-_EDIT_KEYS_KEPT = ("warnings", "messages")
+_EDIT_KEYS_KEPT = ("messages",)
 
 
 def bundle_result(
@@ -1212,8 +1212,7 @@ def bundle_result(
     Both halves' diagnostics are merged into ONE ordered ``messages`` stack (see :mod:`messages`) —
     the edit's advisories and lint warnings first, then the fit's — so a caller reads every
     warning and the error that stopped the call from a single place, each tagged with the step it
-    came from. ``warnings`` is kept as the flat list of warning texts it has always been, derived
-    from that stack so the two cannot disagree.
+    came from.
 
     On a failure the message does NOT prescribe a fix, it forwards ``error`` — because that error
     is not always "the model is broken". The identical-structure loop guard reaches the same
@@ -1276,9 +1275,6 @@ def bundle_result(
         "committed": committed,
         "version": version,
         "messages": messages,
-        # Derived from the stack, so the flat list every existing caller reads can never drift
-        # from it (see messages.texts).
-        "warnings": M.texts(messages, M.LEVEL_WARNING),
         "message": message,
     }
     return result

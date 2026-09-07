@@ -504,8 +504,8 @@ def test_there_is_no_way_to_edit_without_fitting(tmp_path):
 def test_the_message_stack_carries_the_edit_and_the_fit_together(tmp_path):
     """One call runs two steps that can each warn, and they used to report through different
     channels — the edit's advisories into a flat `warnings`, a failure into `error`. `messages` is
-    the single ordered stack: every entry tagged with its level and the step it came from, and
-    `warnings` derived from it so the two cannot drift."""
+    the single ordered stack: every entry tagged with its level and the step it came from, and no
+    flat copy beside it to drift from it."""
     mcp = _server(tmp_path, auto_fit=True)
     _call(mcp, "make_changes", {
         "antimony": _antimony(), "justification": "initial", "n_starts": 2})
@@ -519,9 +519,8 @@ def test_the_message_stack_carries_the_edit_and_the_fit_together(tmp_path):
     assert all({"level", "source", "message"} <= set(m) for m in stack)
     assert all(m["level"] in ("error", "warning") for m in stack)
     assert any(m["source"] == "edit" and "k2" in m["message"] for m in stack), stack
-    # the flat list every existing caller reads is DERIVED from the stack, so they cannot drift
-    # `warnings` is deliberately ABSENT from the payload: it duplicated the warning-level
-    # entries of `messages` (measured at 17% of payload bytes across 915 calls).
+    # `warnings` is deliberately ABSENT from the payload: the stack is the only channel, so there
+    # is no flat copy of the warning texts to drift from it.
     assert "warnings" not in res
     assert [m["message"] for m in stack if m["level"] == "warning"]
 
