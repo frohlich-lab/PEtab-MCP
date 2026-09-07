@@ -1219,6 +1219,17 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
     """
     with session.lock:
         fit = _run_fit(session, engine, n_starts) if do_fit else None
+        # The effective parameter count at the optimum the fit just froze (see
+        # identifiability.effective_parameter_count). It reaches the harness through the stored
+        # version (build_sim_payload_for_version) and no agent-facing result — docs/RATIONALE.md.
+        # None on a simulate-only pass: no optimum of its own.
+        k_eff = None
+        if fit is not None:
+            from .identifiability import effective_parameter_count
+
+            k_eff = effective_parameter_count(
+                fit["record"].pypesto_problem, fit["record"].x_free,
+                k=int(session.problem.n_estimated))
         sim = engine.residuals()
         records = sim["records"]
         nllh, nll_note = _reconcile_objective(session, fit, sim)
@@ -1237,6 +1248,9 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
             # The estimated-parameter count k, so the goodness-of-fit metrics (bic/reduced_chi2)
             # are available even on a simulate-only pass where `fitted_parameters` is None.
             "n_estimated": int(session.problem.n_estimated),
+            # ...and the count the data actually see. Harness-facing: fit_result_block and
+            # goodness_of_fit deliberately do not copy it.
+            "k_eff": k_eff,
             # The OPTIMIZER's objective at its best start when that is available (see
             # _reconcile_objective) — the quantity actually minimised, and the one every
             # downstream score (bic, is_new_best, the judge) must agree with.
@@ -2031,6 +2045,10 @@ def build_sim_payload_for_version(payload: dict[str, Any] | None) -> dict[str, A
         # Carried so a restored version keeps the reason its likelihood was/wasn't usable,
         # rather than looking like a clean fit after a rollback.
         "n_missing_simulations": payload.get("n_missing_simulations"),
+        # The effective parameter count. Persisted for the same reason as the diagnosis below: it
+        # is a statistic of the built objective at the optimum, which a later process (a resume, a
+        # restore) cannot reproduce without a build. This blob is where the harness judge reads it.
+        "k_eff": payload.get("k_eff"),
         "fitted_parameters": payload.get("fitted_parameters"),
         "records": payload.get("records"),
     }

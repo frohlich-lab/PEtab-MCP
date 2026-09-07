@@ -248,6 +248,137 @@ def _compute_fim(record):
         return None
 
 
+def _amici_models(objective) -> list:
+    """Every AMICI model behind a pyPESTO objective — one for a plain ``AmiciObjective``, one per
+    sub-objective for the ``AggregatedObjective`` pyPESTO builds for some PEtab problems."""
+    model = getattr(objective, "amici_model", None)
+    if model is not None:
+        return [model]
+    subs = getattr(objective, "_objectives", None)
+    if subs is None:
+        subs = getattr(objective, "objectives", None) or []
+    seen: dict[int, Any] = {}
+    for sub in subs:
+        for m in _amici_models(sub):
+            seen.setdefault(id(m), m)
+    return list(seen.values())
+
+
+def _residual_rows(problem, x):
+    """``(res, sres, blocks)`` of the built ``problem`` at the FREE point ``x``, in residual mode:
+    the residual vector, its sensitivities with respect to ``x`` (one column per free parameter),
+    and the per-condition row counts pyPESTO reports through ``rdatas``.
+
+    A plain objective answers this itself. A HIERARCHICAL one (pyPESTO's
+    ``InnerCalculatorCollector``) cannot, so its relative calculator's ``call_amici_twice`` — solve
+    the inner problem at ``x``, then evaluate AMICI with those values filled in — is driven
+    directly, with the arguments the collector would pass, and the full-width ``sres`` it returns
+    is cut to ``x_free_indices``. See ``docs/RATIONALE.md``.
+    """
+    import numpy as np
+    from pypesto.C import MODE_RES, RDATAS, RES, SRES
+
+    obj = problem.objective
+    inner = getattr(getattr(obj, "calculator", None), "inner_calculators", None)
+    if inner:
+        x_full = obj.pre_post_processor.preprocess(x=x)
+        ret, _ = inner[0].call_amici_twice(
+            x_dct=obj.par_arr_to_dct(x_full), sensi_orders=(0, 1), mode=MODE_RES,
+            amici_model=obj.amici_model, amici_solver=obj.amici_solver, edatas=obj.edatas,
+            n_threads=obj.n_threads, x_ids=obj.x_ids, parameter_mapping=obj.parameter_mapping,
+            fim_for_hess=obj.fim_for_hess)
+        sres = np.asarray(ret[SRES], dtype=float)[:, list(problem.x_free_indices)]
+    else:
+        ret = obj(x, sensi_orders=(0, 1), mode=MODE_RES, return_dict=True)
+        sres = np.asarray(ret[SRES], dtype=float)
+    res = np.asarray(ret[RES], dtype=float).reshape(-1)
+    return res, sres, [len(r["res"]) for r in ret[RDATAS]]
+
+
+def effective_parameter_count(problem, x_free, *, k: int | None = None) -> float | None:
+    """The EFFECTIVE parameter count ``k_eff = tr(J·H⁻¹)`` at the FROZEN optimum ``x_free`` of
+    the built pyPESTO ``problem`` — or ``None`` when it cannot be evaluated there.
+
+    How many parameters the DATA see, as opposed to how many the model declares (``k``):
+    Takeuchi's trace, with ``J = Σ_i sᵢsᵢᵀ`` over the data points' score vectors (each point's
+    gradient of its own log-likelihood term) and ``H`` the Fisher information at the optimum, so
+    ``k_eff = Σ_i sᵢᵀH⁻¹sᵢ`` — one leverage-weighted term per measurement, no integral over
+    parameter space. It equals ``k`` for a correctly specified model (there ``E[ssᵀ] = H``),
+    exceeds it where large residuals sit on high-leverage points, and falls short of it along
+    directions the data do not determine — those are dropped from ``H⁻¹`` at numpy's rank
+    tolerance, the floor every FIM inversion in this module uses — so ``k_eff`` well below ``k``
+    says the model carries parameters the data cannot tell apart. It is also what TIC charges for
+    in place of ``k``.
+
+    Both ``J`` and ``H`` come off ONE evaluation of the objective's RESIDUAL mode with AMICI's
+    sigma pseudo-residuals on (:func:`_residual_rows`): each measurement then contributes two
+    rows — ``r = (m−y)/σ`` and ``ρ = √(2·ln σ + c)`` — whose ``res·sres`` products sum EXACTLY to
+    that point's score, the ``−∂ln σ`` term an estimated sigma adds included (the constant ``c``
+    cancels in the product). AMICI lays a condition's rows out as the data half followed by the
+    sigma half, index-aligned, which is how they are paired here, and the flag is set for this one
+    evaluation and restored. ``H`` is the Gauss-Newton information over the same rows, the data
+    rows as they are and the sigma rows weighted by ``ρ²`` — the exact Gaussian Fisher information
+    ``∂y∂yᵀ/σ² + 2·∂ln σ∂ln σᵀ`` per point, and NOT the ``hess`` the objective reports.
+
+    ``k`` is the estimated-parameter count the run charges for; a hierarchical fit's inner-solved
+    parameters (sigmas, scalings, offsets) have no coordinate in ``x_free`` and no row in ``H``,
+    and are charged one unit each (the ``k − m`` of them). Best-effort in the strong sense: ANY
+    failure is ``None``, and ``None`` is "no count", never a fallback to ``k``. Evaluates the
+    built objective and nothing else — no importer, no hash, so no build (see
+    :class:`fitting.FitRecord`). One sensitivity evaluation, the FIM's cost.
+
+    ``docs/RATIONALE.md`` has why ``H`` is built from the rows rather than taken from the
+    objective, why the hierarchical path is driven by hand, and why the count reaches no
+    agent-facing result.
+    """
+    try:
+        import numpy as np
+
+        x = np.asarray(x_free, dtype=float)
+        m = int(x.size)
+        if m == 0 or not np.isfinite(x).all():
+            return None
+
+        models = _amici_models(problem.objective)
+        before = [mdl.get_add_sigma_residuals() for mdl in models]
+        for mdl in models:
+            mdl.set_add_sigma_residuals(True)
+        try:
+            res, sres, blocks = _residual_rows(problem, x)
+        finally:
+            for mdl, flag in zip(models, before):
+                mdl.set_add_sigma_residuals(flag)
+        if sres.shape != (res.size, m) or not (np.isfinite(res).all() and np.isfinite(sres).all()):
+            return None
+        rows = res[:, None] * sres            # one row per residual: its res·∂res term
+        if sum(blocks) != res.size or any(b % 2 for b in blocks):
+            return None
+        scores, start = [], 0
+        H = np.zeros((m, m))
+        for b in blocks:                      # fold each condition's sigma half onto its data half
+            half = b // 2
+            data, sigma = slice(start, start + half), slice(start + half, start + b)
+            scores.append(rows[data] + rows[sigma])
+            # ∂r∂rᵀ from the data rows, ρ²·∂ρ∂ρᵀ = ∂ln σ∂ln σᵀ from the sigma rows.
+            H += sres[data].T @ sres[data] + rows[sigma].T @ rows[sigma]
+            start += b
+        S = np.vstack(scores)
+
+        evals, evecs = np.linalg.eigh(H)
+        eps = float(np.finfo(float).eps)
+        tol = max(m * eps * float(np.abs(evals).max(initial=0.0)), float(np.finfo(float).tiny))
+        keep = evals > tol
+        if not keep.any():
+            return None
+        Hinv = (evecs[:, keep] / evals[keep]) @ evecs[:, keep].T
+        k_eff = float(np.einsum("ij,jk,ik->", S, Hinv, S))
+        if k is not None and int(k) > m:
+            k_eff += int(k) - m
+        return k_eff if math.isfinite(k_eff) and k_eff >= 0.0 else None
+    except Exception:  # noqa: BLE001 - advisory statistic; a fit is never failed by it
+        return None
+
+
 def _multistart_spread(optimization, free_names: list[str]) -> dict[str, Any]:
     """Per-parameter spread across near-optimal multistarts (scaled space), from the FROZEN
     optimization payload's per-start ``x``. Empty when x/x_names were not recorded."""
