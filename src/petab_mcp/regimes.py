@@ -13,7 +13,7 @@ model, the parameter table or any simulation, which has two consequences worth s
   data. The same code produces the same kind of verdict on a problem nobody has looked at.
 
 Why a tool and not an instruction: in the Aug 8-10 sweep, 49% of the pivotal element-instances in
-passing runs were harness-computed telemetry the agent RELAYED (verified — the quoted `(dnll, dbic)`
+passing runs were harness-computed telemetry the agent RELAYED (verified — the quoted `(dnll, dscore)`
 pairs satisfy the harness's own identity to <0.06, which an agent cannot fake), while no provenance
 class distinguished passing runs from failing ones. Numbers the harness computes get used;
 procedures the prompt describes are a lottery. So compute the numbers.
@@ -54,6 +54,10 @@ _WEAK_SIGMA = 2.0
 _EXCURSION_K = 2.25
 
 # A second exponential has to earn its two extra parameters on the usual BIC evidence scale.
+# Deliberately BIC and not the run's model-selection criterion (:mod:`criteria`): this is a fixed
+# TEST on one observable's shape, run against its own threshold, not a score models are ranked by
+# — a diagnostic whose verdict moved when the search objective was reconfigured would be reporting
+# the configuration rather than the data.
 _TIMESCALE_MIN_DELTA_BIC = 6.0
 
 _MIN_POINTS_SHAPE = 5

@@ -8,7 +8,7 @@ structure (see :func:`petab_mcp.parameters.structure_fingerprint`) and, BEFORE t
 recompile+fit, decides whether to
 
 * **skip** a no-op fit (byte-identical to the current version) — no fit, no new version;
-* **warn** when revisiting a structure already in the history, or a family whose best BIC was
+* **warn** when revisiting a structure already in the history, or a family whose best score was
   materially worse than the best model so far (the best model is kept and scored regardless);
 * **terminate** an identical-fit loop after a few repeats (they cannot change anything).
 
@@ -32,10 +32,11 @@ from .parameters import estimated_ids
 # is nothing to go back to.
 MAX_IDENTICAL_REAUTHORS = 3
 
-# Warn when re-authoring a structure family whose best (lowest) BIC was at least this much
-# WORSE (higher) than the best BIC seen so far: revisiting it is very unlikely to beat the
-# current best. ~5 BIC units is the conventional "positive evidence" threshold.
-WORSE_BIC_MARGIN = 5.0
+# Warn when re-authoring a structure family whose best (lowest) score was at least this much
+# WORSE (higher) than the best score seen so far: revisiting it is very unlikely to beat the
+# current best. ~5 units is the conventional "positive evidence" threshold; every criterion is on
+# the same deviance scale (see :mod:`criteria`), so it holds for whichever one is active.
+WORSE_SCORE_MARGIN = 5.0
 
 
 def estimation_setup_signature(parameter_df) -> tuple:
@@ -86,14 +87,20 @@ def reauthor_key(structure_hash: str, parameter_df) -> str:
 
 
 def build_registry(session) -> list[dict[str, Any]]:
-    """Prior FITTED versions as ``{version, structure_hash, neg_log_likelihood, bic}`` dicts,
-    read from each version's stored meta.
+    """Prior FITTED versions as ``{version, structure_hash, neg_log_likelihood, score, criterion}``
+    dicts, read from each version's stored meta.
+
+    ``score`` is the version's value under the run's criterion (see
+    :meth:`criteria.Criterion.score_of`) — ``None`` for a version stored without one, which just
+    leaves it out of the ranking — and ``criterion`` is that criterion's label, carried ON the
+    entry so :func:`decide` can name it without a session in hand.
 
     Every version is a fit, so every version competes. Versions written before the
     ``structure_hash`` field existed are skipped — they simply do not participate in
     de-duplication. Never raises: bookkeeping must not break a commit.
     """
     registry: list[dict[str, Any]] = []
+    criterion = session.criterion
     try:
         metas = session.provenance.list_versions()
     except Exception:  # noqa: BLE001 - registry is advisory; a read failure just disables dedup
@@ -106,18 +113,19 @@ def build_registry(session) -> list[dict[str, Any]]:
             "version": meta.get("version"),
             "structure_hash": sh,
             "neg_log_likelihood": meta.get("neg_log_likelihood"),
-            "bic": meta.get("bic"),
+            "score": criterion.score_of(meta),
+            "criterion": criterion.name,
         })
     return registry
 
 
-def _min_bic_entry(entries: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """The entry with the smallest finite BIC, or ``None``. Uses :func:`~petab_mcp.formatting.finite_float` (not an
-    ``isinstance`` check) so a BIC stored as a NumPy scalar — common in fit payloads — still
-    counts; an ``isinstance(x, float)`` filter would silently drop ``numpy.float64`` and quietly
-    disable the worse-family / best-structure logic."""
-    scored = [e for e in entries if finite_float(e.get("bic")) is not None]
-    return min(scored, key=lambda e: finite_float(e["bic"])) if scored else None
+def _min_score_entry(entries: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The best-scoring (lowest) entry, or ``None``. Uses :func:`~petab_mcp.formatting.finite_float`
+    (not an ``isinstance`` check) so a score stored as a NumPy scalar — common in fit payloads —
+    still counts; an ``isinstance(x, float)`` filter would silently drop ``numpy.float64`` and
+    quietly disable the worse-family / best-structure logic."""
+    scored = [e for e in entries if finite_float(e.get("score")) is not None]
+    return min(scored, key=lambda e: finite_float(e["score"])) if scored else None
 
 
 def decide(
@@ -187,16 +195,20 @@ def decide(
             "different change instead."
         )
     # (b) The structure family already scored materially worse than the best model so far.
-    family = _min_bic_entry(matches)
-    best = _min_bic_entry(registry)
+    family = _min_score_entry(matches)
+    best = _min_score_entry(registry)
     if family is not None and best is not None:
-        # Both are non-None: _min_bic_entry only ever returns an entry whose bic already passed
-        # finite_float, so no second None-check is needed here.
-        fb, gb = finite_float(family["bic"]), finite_float(best["bic"])
-        if fb - gb > WORSE_BIC_MARGIN:
+        # Both are non-None: _min_score_entry only ever returns an entry whose score already
+        # passed finite_float, so no second None-check is needed here.
+        fb, gb = finite_float(family["score"]), finite_float(best["score"])
+        if fb - gb > WORSE_SCORE_MARGIN:
+            # Off the ENTRY, so the label cannot describe a different criterion than the two
+            # numbers beside it. A registry built without one degrades to the generic word.
+            name = best.get("criterion") or "score"
             warnings.append(
-                f"This structure family previously scored bic≈{fb:.1f}, {fb - gb:.1f} WORSE than "
-                f"the best model so far (bic≈{gb:.1f}, v{best.get('version')}). Revisiting it is "
+                f"This structure family previously scored {name}≈{fb:.1f}, {fb - gb:.1f} WORSE "
+                f"than the best model so far ({name}≈{gb:.1f}, v{best.get('version')}). "
+                f"Revisiting it is "
                 f"unlikely to beat the best (v{best.get('version')} is kept and scored regardless) "
                 "— try a different structure."
             )

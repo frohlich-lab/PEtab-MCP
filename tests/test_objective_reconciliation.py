@@ -29,8 +29,11 @@ class _Session:
     production code: a fake that omits state the real session always has lets a typo pass."""
 
     def __init__(self):
+        from petab_mcp.criteria import Criterion
+
         self.logger = logging.getLogger("test_objective_reconciliation")
         self.best = None
+        self.criterion = Criterion()
 
 
 @pytest.fixture

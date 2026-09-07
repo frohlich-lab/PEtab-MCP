@@ -9,6 +9,7 @@ import argparse
 import os
 import sys
 
+from . import criteria
 from .server import create_server
 
 
@@ -45,6 +46,18 @@ def build_parser() -> argparse.ArgumentParser:
         "(default: PETAB_MCP_SKILLS_DIR, else the bundled _skills).",
     )
     parser.add_argument(
+        "--criterion",
+        # `None`, NOT the environment's value: the session resolves an omitted criterion
+        # (argument, else environment, else bic — `criteria.resolve`) in the one place that holds
+        # it, so there is a single read of the variable rather than several that could disagree.
+        default=None,
+        choices=sorted(criteria.PENALTIES),
+        help="Complexity penalty to rank models by. bic = k*ln(n) (the default); "
+        "caic = k*(ln(n)+1), stricter still; aic = 2k; aicc = AIC with the small-sample "
+        "correction; hqc = Hannan-Quinn, 2k*ln(ln(n)); tic = Takeuchi, 2*k_eff, charging the "
+        "effective parameter count the fit reports. Defaults to PETAB_MCP_CRITERION, else bic.",
+    )
+    parser.add_argument(
         "--transport",
         default="stdio",
         choices=["stdio", "sse", "streamable-http"],
@@ -67,6 +80,7 @@ def main(argv: list[str] | None = None) -> int:
         provenance_dir=args.provenance_dir,
         reference_mode=args.reference_validation,
         skills_dir=args.skills_dir,
+        criterion=args.criterion,
     )
     server.run(transport=args.transport)
     return 0

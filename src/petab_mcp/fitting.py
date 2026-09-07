@@ -34,10 +34,10 @@ from petab.v1.C import (
     UPPER_BOUND,
 )
 
-from . import reconcile as _reconcile
+from . import criteria, reconcile as _reconcile
 from .constants import (
     NOISE_SIGMA_MIN_POINTS,
-    NEW_BEST_MIN_DELTA_BIC,
+    NEW_BEST_MIN_DELTA_SCORE,
     NOISE_SIGMA_COLLAPSE_FRACTION,
     PARAMETER_AT_BOUND_RELATIVE_TOL,
 )
@@ -1222,7 +1222,9 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
         # The effective parameter count at the optimum the fit just froze (see
         # identifiability.effective_parameter_count). It reaches the harness through the stored
         # version (build_sim_payload_for_version) and no agent-facing result — docs/RATIONALE.md.
-        # None on a simulate-only pass: no optimum of its own.
+        # Computed here rather than beside the diagnosis in the session because compute_improvement
+        # ranks THIS payload, and under TIC it needs the count to rank at all. None on a
+        # simulate-only pass: no optimum of its own.
         k_eff = None
         if fit is not None:
             from .identifiability import effective_parameter_count
@@ -1248,8 +1250,8 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
             # The estimated-parameter count k, so the goodness-of-fit metrics (bic/reduced_chi2)
             # are available even on a simulate-only pass where `fitted_parameters` is None.
             "n_estimated": int(session.problem.n_estimated),
-            # ...and the count the data actually see. Harness-facing: fit_result_block and
-            # goodness_of_fit deliberately do not copy it.
+            # ...and the count the data actually see, which is what TIC charges for. Otherwise
+            # harness-facing: fit_result_block and goodness_of_fit deliberately do not copy it.
             "k_eff": k_eff,
             # The OPTIMIZER's objective at its best start when that is available (see
             # _reconcile_objective) — the quantity actually minimised, and the one every
@@ -1726,6 +1728,7 @@ def fit_summary(session, engine) -> dict[str, Any]:
     out.update(goodness_of_fit(
         sim.get("neg_log_likelihood"), sim.get("chi2"),
         int(session.problem.n_estimated), sim.get("n_data_points"),
+        criterion=session.criterion, k_eff=sim.get("k_eff"),
     ))
     out["parameters_at_bound"] = parameters_at_bound(out.get("fitted_parameters"), pdf)
     _report = noise_sigma_report(session.problem, out.get("fitted_parameters"))
@@ -1777,56 +1780,68 @@ def compute_improvement(
     session, nllh: float | None, objective_before: float | None = None,
     fitsim: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Improvement metrics for a fit, ranking it against the best model so far **by BIC**.
+    """Improvement metrics for a fit, ranking it against the best model so far **by the run's
+    complexity criterion** (``bic`` unless configured otherwise — see :mod:`criteria`).
 
-    ``is_new_best`` tracks BIC — the same complexity-penalised score the judge gates on and the
+    ``is_new_best`` tracks ``criterion_value`` — the same complexity-penalised score the
     early-stop checkpoint stores — so the flag, the non-improving-streak reset, and the
     best-model checkpoint all move on one coherent notion of "better". A fit is a new best only
-    when its BIC beats the reference by at least ``NEW_BEST_MIN_DELTA_BIC`` (the conventional
+    when that score beats the reference by at least ``NEW_BEST_MIN_DELTA_SCORE`` (the conventional
     "positive evidence" bar), so a raw nll drop bought by an extra parameter that actually RAISES
-    BIC does NOT count, and neither does a 1e-6 noise-floor twitch.
+    the score does NOT count, and neither does a 1e-6 noise-floor twitch.
 
-    The reference is the session's best-BIC :class:`~petab_mcp.session.Checkpoint`, set on the
+    The reference is the session's best-score :class:`~petab_mcp.session.Checkpoint`, set on the
     previous new best — not the raw running minimum. Comparing against
-    the checkpoint is what lets a slow, steady BIC creep of < ``NEW_BEST_MIN_DELTA_BIC`` per op
+    the checkpoint is what lets a slow, steady creep of < ``NEW_BEST_MIN_DELTA_SCORE`` per op
     still register a new best once it CUMULATIVELY clears the bar, instead of starving the streak
     while the fit genuinely improves. Must be called BEFORE :meth:`session.record_fit_progress`
     updates the checkpoint, so a fit never compares against itself. The first fitted version (no
     checkpoint yet) is always a new best.
+
+    The returned block carries the ranked pair ``criterion``/``criterion_value`` beside the
+    canonical ``bic``, and is stamped into the fit event and the version meta — which is what
+    lets a resumed run and the de-dup registry recover the score. Only those three: this block
+    rides on every fit result and is re-sent in the agent's history each turn, and the full
+    criterion table is already on the fit block (and in the version meta) one level up.
     """
     fitsim = fitsim or {}
-    bic = goodness_of_fit(
+    scores = goodness_of_fit(
         nllh, fitsim.get("chi2"), fitsim.get("n_estimated"), fitsim.get("n_data_points"),
-    ).get("bic")
+        criterion=session.criterion, k_eff=fitsim.get("k_eff"),
+    )
+    score = scores.get("criterion_value")
 
     # A non-finite checkpoint is no checkpoint: treat it as absent so a session that somehow
     # acquired one (a legacy provenance seed, a version written before goodness_of_fit
     # rejected non-finite scores) recovers on its next fit instead of staying locked out.
     _best = session.best
-    best_prior_bic = _flt(_best.bic) if _best else None
+    best_prior_score = _flt(_best.score) if _best else None
     best_prior_version = _best.version if _best else None
     best_prior_nllh = _best.nll if _best else None
 
     self_improvement = None
     if objective_before is not None and nllh is not None:
         self_improvement = objective_before - nllh
-    improvement_vs_best_prior = None  # BIC delta: > 0 means this fit is better than the checkpoint
-    if best_prior_bic is not None and bic is not None:
-        improvement_vs_best_prior = best_prior_bic - bic
-    # ``<=`` so an improvement EXACTLY at the threshold counts as a new best — i.e. ΔBIC >= the
-    # gate, matching the docstring's "at least NEW_BEST_MIN_DELTA_BIC" (a strict ``<`` would exclude
-    # the boundary and leave the streak un-reset there).
-    is_new_best = best_prior_bic is None or (
-        bic is not None and bic <= best_prior_bic - NEW_BEST_MIN_DELTA_BIC
+    # Criterion delta: > 0 means this fit is better than the checkpoint.
+    improvement_vs_best_prior = None
+    if best_prior_score is not None and score is not None:
+        improvement_vs_best_prior = best_prior_score - score
+    # ``<=`` so an improvement EXACTLY at the threshold counts as a new best — i.e. Δscore >= the
+    # gate, matching the docstring's "at least NEW_BEST_MIN_DELTA_SCORE" (a strict ``<`` would
+    # exclude the boundary and leave the streak un-reset there).
+    is_new_best = best_prior_score is None or (
+        score is not None and score <= best_prior_score - NEW_BEST_MIN_DELTA_SCORE
     )
 
     return {
         "neg_log_likelihood": nllh,
         "objective_before": objective_before,
         "self_improvement": self_improvement,
-        "bic": bic,
+        "bic": scores.get("bic"),
+        "criterion": scores.get("criterion"),
+        "criterion_value": score,
         "best_prior_version": best_prior_version,
-        "best_prior_bic": best_prior_bic,
+        "best_prior_criterion_value": best_prior_score,
         "best_prior_neg_log_likelihood": best_prior_nllh,
         "improvement_vs_best_prior": improvement_vs_best_prior,
         "is_new_best": is_new_best,
@@ -1834,43 +1849,60 @@ def compute_improvement(
 
 
 def goodness_of_fit(
-    nll: float | None, chi2: float | None, k: int | None, n: int | None
+    nll: float | None, chi2: float | None, k: int | None, n: int | None,
+    criterion: "criteria.Criterion | None" = None, *, k_eff: float | None = None,
 ) -> dict[str, Any]:
     """Complexity-penalised fit scores, so a commit is judged on more than raw nll.
 
     The agent otherwise sees only the raw nll/chi2 and cannot tell "already at the noise
     floor" from "keep going". These derived scores make that explicit:
 
-    * ``bic = k*ln(n) + 2*nll`` and ``aic = 2*k + 2*nll`` (lower is better) charge for every
-      free parameter, so an edit that adds a parameter for a marginal nll drop scores WORSE.
+    * ``bic = k*ln(n) + 2*nll``, ``aic = 2*k + 2*nll``, plus ``aicc`` (AIC's small-sample
+      correction), ``caic`` (BIC plus one unit per parameter), ``hqc`` (Hannan-Quinn) and ``tic``
+      (Takeuchi: ``2*k_eff + 2*nll``, charging the EFFECTIVE count ``k_eff`` the fit reports
+      rather than ``k``) — see :mod:`criteria`. Lower is better; each charges for every free
+      parameter, so an edit that adds a parameter for a marginal nll drop scores WORSE. All of
+      them ride on every result at their textbook weight, whichever one the run ranks by, so a
+      fit can be re-read under a criterion it was not run with. ``k_eff`` itself is an INPUT
+      here and not an output: it is for the harness, and is on no result the agent reads.
+    * ``criterion`` names the one the run ACTUALLY ranks by — the session's
+      (``PetabSession.criterion``, which every session caller passes; plain BIC when a bare score
+      is read outside a session) — and ``criterion_value`` is that score. Every gate in the loop
+      — ``is_new_best``, the best-score checkpoint, the plateau stop, the de-dup registry — reads
+      ``criterion_value`` and nothing else, so they cannot disagree.
     * ``reduced_chi2 = chi2 / (n - k)`` is ≈ 1 when the model fits to the noise floor, and
       ``chi2_gof_pvalue`` is the upper-tail chi2 p-value on ``chi2`` with ``n - k`` degrees of
       freedom. Both are only meaningful with a KNOWN noise level: when the observable noise
       sigmas are ESTIMATED, chi2 pins near ``n`` by construction, so reduced_chi2 ≈ 1 and the
-      p-value are uninformative — rank models by ``bic``/``aic``, not by these.
+      p-value are uninformative — rank models by ``criterion_value``, not by these.
 
-    ``k`` is the number of estimated parameters, ``n`` the number of data points. ``bic`` and
-    ``aic`` are ``None`` only when ``nll``/``k``/``n`` are missing; the chi2-based fields
-    (``chi2_dof``, ``reduced_chi2``, ``chi2_gof_pvalue``) are additionally ``None`` when the
+    ``k`` is the number of estimated parameters, ``n`` the number of data points, ``k_eff`` the
+    fit's effective count (``None`` when the fit did not produce one). The criterion scores are
+    ``None`` when ``nll``/``k``/``n`` are missing, and each is additionally ``None`` where that
+    criterion is undefined (``aicc`` at ``n <= k+1``, ``hqc`` below ``n = 3``, ``tic`` without a
+    ``k_eff``); the
+    chi2-based fields (``chi2_dof``, ``reduced_chi2``, ``chi2_gof_pvalue``) are ``None`` when the
     degrees of freedom ``n - k`` are non-positive (an under-determined fit) or ``chi2`` is
     missing.
     """
+    crit = criterion or criteria.Criterion()
+    k_eff = _flt(k_eff)
     out: dict[str, Any] = {
-        "bic": None, "aic": None, "chi2_dof": None,
+        **{name: None for name in criteria.PENALTIES},
+        "criterion": crit.name, "criterion_value": None, "chi2_dof": None,
         "reduced_chi2": None, "chi2_gof_pvalue": None,
     }
     # Non-finite inputs are MISSING scores, not scores. A NaN nll would otherwise produce
-    # bic = k*ln(n) + 2*NaN = NaN, which is a float and passes every `is not None` guard
+    # a score of k*ln(n) + 2*NaN = NaN, which is a float and passes every `is not None` guard
     # downstream — and because NaN compares False against everything, a NaN adopted as the
-    # best-BIC checkpoint locks out every subsequent fit for the rest of the run (the
+    # best-score checkpoint locks out every subsequent fit for the rest of the run (the
     # `is_new_best` test can never fire again). Coercing to None here is the single upstream
     # chokepoint that keeps a failed evaluation from masquerading as a real score.
     nll = _flt(nll)
     chi2 = _flt(chi2)
     if nll is None or k is None or n is None or n <= 0:
         return out
-    out["bic"] = k * math.log(n) + 2.0 * nll
-    out["aic"] = 2.0 * k + 2.0 * nll
+    out.update(crit.values(nll, k, n, k_eff))
     dof = n - k
     if dof > 0:
         out["chi2_dof"] = dof
@@ -1907,14 +1939,17 @@ def _parameter_scales_for(fitted, stored, parameter_df) -> "dict[str, str] | Non
 def fit_result_block(
     fitsim: dict[str, Any] | None, improvement: dict[str, Any] | None = None,
     parameter_df: Any = None, problem: Any = None,
+    criterion: "criteria.Criterion | None" = None,
 ) -> dict[str, Any]:
     """The fit fields every fit-bearing result returns (a fit, and a restore).
 
     Keeps the tool-result shape identical across those paths so an agent reads the same
     keys everywhere. ``fitsim`` is a :func:`fit_and_simulate` payload (or the restored
-    simulation for a restore); ``improvement`` is the :func:`compute_improvement` dict.
+    simulation for a restore); ``improvement`` is the :func:`compute_improvement` dict;
+    ``criterion`` is the session's, which every session caller passes.
     Beyond the raw nll/chi2 it also carries the complexity-penalised
-    :func:`goodness_of_fit` scores (bic/aic/reduced_chi2/gof p-value) so the agent can see
+    :func:`goodness_of_fit` scores (every named criterion, the ranked `criterion`/`criterion_value`
+    pair, reduced_chi2/gof p-value) so the agent can see
     when the fit is already at the noise floor and stop adding parameters,
     ``parameters_at_bound`` (see :func:`parameters_at_bound`; empty when ``parameter_df`` is
     not passed) so a parameter pinned to its bound is flagged in the SAME report instead of
@@ -1962,15 +1997,21 @@ def fit_result_block(
         # and the likelihood came from the optimizer rather than the re-simulation.
         "n_missing_simulations": fitsim.get("n_missing_simulations"),
         "objective_note": fitsim.get("objective_note"),
-        # Surface the estimated-parameter count k next to bic so the parameter penalty in
-        # bic = k*ln(n) + 2*nll is legible — adding a free parameter must earn its keep.
+        # Surface the estimated-parameter count k next to the scores so the parameter penalty
+        # in bic = k*ln(n) + 2*nll (or whichever criterion the run ranks by) is legible —
+        # adding a free parameter must earn its keep.
         "n_estimated": k,
         # fitted_parameters: LINEAR (unscaled) values; parameter_scales: each one's estimation
         # scale (lin/log10). Kept side by side so a linear value is never misread as a log10 one.
         "fitted_parameters": fitted,
         "parameter_scales": _parameter_scales_for(fitted, fitsim.get("parameter_scales"),
                                                   parameter_df),
-        "improvement": improvement or None,
+        # The ranked pair is stripped from the AGENT's copy: it is already at the top level of
+        # this block, and this dict is re-sent in the agent's history every turn (PR #23). The
+        # RAW `improvement` keeps it — the fit event is spread from that one, and the durable
+        # resume seeds its checkpoint off exactly those two keys.
+        "improvement": ({k: v for k, v in improvement.items()
+                         if k not in ("criterion", "criterion_value")} if improvement else None),
         "parameters_at_bound": parameters_at_bound(fitted, parameter_df),
         # Prefer the report PetabSession.fit already computed and stashed, so the event, the
         # adequacy gate and this block cannot disagree; computed here for the paths that don't
@@ -1993,7 +2034,7 @@ def fit_result_block(
     hints = fitsim.get("merge_hints")
     if hints:
         block["merge_hints"] = hints
-    block.update(goodness_of_fit(nll, chi2, k, n))
+    block.update(goodness_of_fit(nll, chi2, k, n, criterion=criterion, k_eff=fitsim.get("k_eff")))
     return block
 
 
@@ -2045,7 +2086,7 @@ def build_sim_payload_for_version(payload: dict[str, Any] | None) -> dict[str, A
         # Carried so a restored version keeps the reason its likelihood was/wasn't usable,
         # rather than looking like a clean fit after a rollback.
         "n_missing_simulations": payload.get("n_missing_simulations"),
-        # The effective parameter count. Persisted for the same reason as the diagnosis below: it
+        # The effective parameter count TIC charges for. Persisted like the diagnosis below: it
         # is a statistic of the built objective at the optimum, which a later process (a resume, a
         # restore) cannot reproduce without a build. This blob is where the harness judge reads it.
         "k_eff": payload.get("k_eff"),

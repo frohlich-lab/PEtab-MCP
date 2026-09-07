@@ -1100,8 +1100,11 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         """Return just the current fit metrics — no per-point records (a cheap read).
 
         `{status, neg_log_likelihood, chi2, n_data_points, fitted_parameters_changed,
-        parameter_scales, version}` plus the complexity-penalised scores `{bic, aic, chi2_dof,
-        reduced_chi2, chi2_gof_pvalue}` (lower bic/aic is better — the score to rank models by).
+        parameter_scales, version}` plus the complexity-penalised scores `{bic, aic, aicc, caic,
+        hqc, tic, criterion, criterion_value, chi2_dof, reduced_chi2, chi2_gof_pvalue}` (lower is
+        better). `criterion` names the penalty this run ranks by (`bic` unless configured
+        otherwise) and `criterion_value` is that score — the one to rank models by; the named
+        scores are always reported at their textbook weight whichever is active.
         `reduced_chi2`/`chi2_gof_pvalue` are only meaningful with a KNOWN noise level: when the
         observable noise sigmas are ESTIMATED, chi2 pins near `n_data_points` by construction, so
         reduced_chi2 ≈ 1 and its p-value are uninformative — do not use them as a fit-adequacy
@@ -1459,9 +1462,10 @@ def _register_provenance_tools(mcp: FastMCP, ctx: _Ctx) -> None:
     @mcp.tool()
     def list_versions() -> list[dict[str, Any]]:
         """List all model versions (fit snapshots) with kind/label/timestamp and fit metrics
-        (neg_log_likelihood, chi2, bic, is_new_best) — use it to rank versions by BIC and find
-        the best-scoring one. Every version is a fit snapshot (or the `rollback`
-        snapshots); `is_new_best` tracks BIC (gated on a minimum effect size)."""
+        (neg_log_likelihood, chi2, bic/aic/aicc/caic/hqc/tic, criterion_value, is_new_best) — use it to
+        rank versions by `criterion_value` and find the best-scoring one. Every version is a fit
+        snapshot (or the `rollback` snapshots); `is_new_best` tracks that same score (gated on a
+        minimum effect size)."""
         return session.provenance.list_versions()
 
     @mcp.tool()
@@ -1488,7 +1492,7 @@ def _register_provenance_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         with `make_changes` — a re-author recompiles, refits, and appends a byte-identical duplicate
         version (which `make_changes` will warn about, then refuse, once it detects the repeat), whereas this
         reuses the existing fit and records a clean restore. Find the target with `list_versions`
-        (pick the lowest-bic / is_new_best version), then `restore_version(v)`. Appends a new
+        (pick the best-scoring / is_new_best version), then `restore_version(v)`. Appends a new
         version rather than erasing history, so a restore is itself auditable."""
         return ctx.run("restore_version",
                        lambda: session.restore_version(version, justification or None),
@@ -1498,9 +1502,10 @@ def _register_provenance_tools(mcp: FastMCP, ctx: _Ctx) -> None:
     def get_progress() -> dict[str, Any]:
         """Early-stop-chain progress for this run — a cheap counter read (no fit/simulation).
 
-        `{n_fitted_ops, non_improving_streak, streak_cap, best_version, best_bic,
-        best_gof_pvalue, bic_improvement_over_last_n, plateau_window, should_stop, stop_reason}`.
-        `best_version` is the lowest-BIC fitted model committed so far (the checkpoint to score);
+        `{n_fitted_ops, non_improving_streak, streak_cap, best_version, criterion, best_score,
+        best_gof_pvalue, score_improvement_over_last_n, plateau_window, should_stop, stop_reason}`.
+        `best_score` is under `criterion` — the complexity penalty this run ranks by.
+        `best_version` is the best-scoring fitted model committed so far (the checkpoint to score);
         `non_improving_streak` counts consecutive fitted ops since the last real new best.
         `should_stop` is set (with a `stop_reason`) once the run has stopped making progress — the
         hard non-improving-streak cap, or a plateau once the best model is statistically adequate.
@@ -1578,6 +1583,7 @@ def create_server(
     skills_dir: str | None = None,
     auto_fit: bool = True,
     auto_fit_starts: int = DEFAULT_AUTO_FIT_STARTS,
+    criterion: str | None = None,
 ) -> FastMCP:
     """Build a FastMCP server bound to the PEtab problem at ``yaml_path``.
 
@@ -1587,6 +1593,13 @@ def create_server(
     ``auto_fit`` (default on) makes every commit fit + simulate before snapshotting;
     ``auto_fit_starts`` is the default pyPESTO multistart count (overridable per commit via
     ``n_starts``). Set ``auto_fit=False`` to skip the compile-heavy fit hook (tests/dev).
+
+    ``criterion`` chooses the complexity penalty the run ranks models by — ``bic`` (default),
+    ``caic``, ``aic``, ``aicc``, ``hqc`` or ``tic`` (see :mod:`criteria`). ``None`` means "as the
+    environment says" (``PETAB_MCP_CRITERION``, else plain BIC). Resolved once by the session
+    and held as ``session.criterion``, which every scorer is handed: there is no process state,
+    so two servers in one process can rank by different criteria and nothing can change a
+    session's criterion under it.
 
     Initial conditions are ESTIMATED by default; an IC of exactly 1 (a unit normalization) is held
     FIXED and an IC of exactly 0 (an empty pool) gets no parameter at all (see
@@ -1598,6 +1611,7 @@ def create_server(
         provenance_dir=provenance_dir,
         reference_mode=reference_mode,
         resolver=resolver,
+        criterion=criterion,
     )
     engine = AmiciEngine(session, build_root=build_root)
     # Wire the engine so the fit `make_changes` runs can fit + simulate.

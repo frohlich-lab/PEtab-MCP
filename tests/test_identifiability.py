@@ -189,14 +189,14 @@ def test_merge_candidates_rank_the_cheap_tie_first_and_price_it():
     theta = [1.0, 1.02, 3.0]           # a,b nearly equal and collinear; c far away
     rep = merge_candidates(H, ["a", "b", "c"], theta, n_data=252)
     assert rep["ties"][0]["parameters"] == ["a", "b"]
-    assert rep["bic_price_nll"] == round(math.log(252) / 2, 3)
-    assert rep["ties"][0]["merge_improves_bic"] is True          # cheaper than the parameter it drops
-    assert rep["ties"][-1]["merge_improves_bic"] is False        # the data pins these apart
-    assert rep["n_merges_improving_bic"] == 1
+    assert rep["parameter_price_nll"] == round(math.log(252) / 2, 3)
+    assert rep["ties"][0]["merge_improves_score"] is True          # cheaper than the parameter it drops
+    assert rep["ties"][-1]["merge_improves_score"] is False        # the data pins these apart
+    assert rep["n_merges_improving_score"] == 1
 
 
-def test_merge_flag_and_dbic_agree_with_each_other():
-    """The row's subject is the MERGE: `merge_improves_bic` is true exactly when `dbic` is negative.
+def test_merge_flag_and_dscore_agree_with_each_other():
+    """The row's subject is the MERGE: `merge_improves_score` is true exactly when `dscore` is negative.
     A flag whose sense the reader has to derive gets read backwards — an agent selecting the true
     rows would merge every pair the data separates and skip every free one."""
     import math
@@ -207,12 +207,12 @@ def test_merge_flag_and_dbic_agree_with_each_other():
 
     # H = I so c@inv(H)@c = 2 and the cost is (theta_a - theta_b)^2 / 4: pick the gap for each side.
     expensive = merge_candidates(np.eye(2), ["a", "b"], [math.sqrt(40.0), 0.0], n_data=252)["ties"][0]
-    assert expensive["dnll"] == 10.0 and expensive["dbic"] > 0
-    assert expensive["merge_improves_bic"] is False              # +14.5 bic: do NOT merge
+    assert expensive["dnll"] == 10.0 and expensive["dscore"] > 0
+    assert expensive["merge_improves_score"] is False              # +14.5 bic: do NOT merge
 
     free = merge_candidates(np.eye(2), ["a", "b"], [math.sqrt(4 * 0.022), 0.0], n_data=252)["ties"][0]
-    assert free["dnll"] == 0.022 and free["dbic"] < 0
-    assert free["merge_improves_bic"] is True                    # -5.5 bic: merge it
+    assert free["dnll"] == 0.022 and free["dscore"] < 0
+    assert free["merge_improves_score"] is True                    # -5.5 bic: merge it
 
 
 def test_a_singular_fim_prices_its_free_merge_at_zero_and_first():
@@ -230,7 +230,7 @@ def test_a_singular_fim_prices_its_free_merge_at_zero_and_first():
     H = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 1.0], [0.0, 1.0, 1.0]])
     rep = merge_candidates(H, ["c", "a", "b"], [100.0, 1.0, 3.0], n_data=252)
     assert rep["ties"][0]["parameters"] == ["a", "b"]            # ranked FIRST, not last
-    assert rep["ties"][0]["dnll"] == 0.0 and rep["ties"][0]["merge_improves_bic"] is True
+    assert rep["ties"][0]["dnll"] == 0.0 and rep["ties"][0]["merge_improves_score"] is True
     # tying c to either of them is free too — the flat direction pays for it — but only by moving a
     # parameter the whole 99 there, and that is what ranks the collinear pair above them: among ties
     # the price cannot separate, the writable edit is the one with the smaller move.
@@ -274,7 +274,7 @@ def test_the_merge_price_is_continuous_as_a_direction_goes_flat():
     # the cheap end of that ramp is cheap because the optimum wanders down the flat direction, and
     # the row says how far: a merge that needs a move of 20000 is not an edit that survives a refit.
     nearly_free = price(1e-4)
-    assert nearly_free["merge_improves_bic"] is True and nearly_free["move_scaled"] > 1e4
+    assert nearly_free["merge_improves_score"] is True and nearly_free["move_scaled"] > 1e4
     assert price(0.7071)["move_scaled"] < 5             # ...where a real overlap needs none
 
 
@@ -363,7 +363,7 @@ def test_merge_candidates_is_bounded_and_degrades_quietly():
     assert merge_candidates(np.diag([4.0, -4.0]), ["a", "b"], [1.0, 2.0]) is None
 
     # a cost that overflows a double is not a candidate; `Infinity` is not valid strict JSON, and
-    # 2*dnll is what goes in dbic — a cost half the double ceiling overflows one line later
+    # 2*dnll is what goes in dscore — a cost half the double ceiling overflows one line later
     for th in ([1e150, -1e150], [2e104, 0.0]):
         huge = merge_candidates(1e100 * np.eye(2), ["a", "b"], th, n_data=252)
         assert huge["ties"] == [] and huge["n_ties_skipped"] == {"cost_not_finite": 1}
@@ -412,14 +412,14 @@ def test_merge_hints_are_the_cheapest_ties_bic_would_pay_for():
     meta[1]["estimate_scaled"] = 1.0001
     diag = _identifiability_stats(meta, fim, {}, n_data=252)
     row = diag["merge_candidates"]["ties"][0]
-    assert row["merge_improves_bic"] is True
+    assert row["merge_improves_score"] is True
 
     hints = merge_hints(diag)
-    assert hints == [{k: row[k] for k in ("parameters", "dnll", "dbic", "move_scaled")}]
+    assert hints == [{k: row[k] for k in ("parameters", "dnll", "dscore", "move_scaled")}]
     # `move_scaled` rides along because merge_candidates says the price must be read against it — a
     # near-free tie bought with a move of many decades is a flat direction, not an edit. Everything
     # else stays in the section: this is re-sent in history on every later turn.
-    assert set(hints[0]) == {"parameters", "dnll", "dbic", "move_scaled"}
+    assert set(hints[0]) == {"parameters", "dnll", "dscore", "move_scaled"}
 
 
 def test_merge_hints_report_every_tie_the_charge_covers_up_to_the_cap():
@@ -436,14 +436,14 @@ def test_merge_hints_report_every_tie_the_charge_covers_up_to_the_cap():
     meta = _meta(*"abcde", est_scaled=1.0)
     diag = _identifiability_stats(meta, fim, {}, n_data=252, top_n=10)
     ties = diag["merge_candidates"]["ties"]
-    assert sum(1 for r in ties if r["merge_improves_bic"]) > I.MERGE_HINT_LIMIT
+    assert sum(1 for r in ties if r["merge_improves_score"]) > I.MERGE_HINT_LIMIT
 
     hints = I.merge_hints(diag)
     assert len(hints) == I.MERGE_HINT_LIMIT == 3
     # the section's own ranking, truncated — not a re-ranking, and never a row the charge misses
     assert [h["parameters"] for h in hints] == \
-        [r["parameters"] for r in ties if r["merge_improves_bic"]][:I.MERGE_HINT_LIMIT]
-    assert all(h["dbic"] < 0 for h in hints)
+        [r["parameters"] for r in ties if r["merge_improves_score"]][:I.MERGE_HINT_LIMIT]
+    assert all(h["dscore"] < 0 for h in hints)
     assert I.merge_hints(diag, limit=1) == hints[:1]
 
 
@@ -458,7 +458,7 @@ def test_merge_hints_are_none_when_nothing_beats_the_charge_or_nothing_is_priced
     dear_meta[1]["estimate_scaled"] = 3.0
     dear = _identifiability_stats(dear_meta, np.diag([4.0, 4.0]), {}, n_data=252)
     dear_ties = dear["merge_candidates"]["ties"]
-    assert dear_ties and not any(r["merge_improves_bic"] for r in dear_ties)
+    assert dear_ties and not any(r["merge_improves_score"] for r in dear_ties)
     assert merge_hints(dear) is None       # None, never [] — an omitted key, not an empty list
     # no FIM -> no priced tie at all
     assert merge_hints(_identifiability_stats(_meta("a", "b"), None, {})) is None

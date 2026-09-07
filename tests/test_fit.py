@@ -225,13 +225,13 @@ def test_a_near_free_tie_reaches_the_fit_result_as_a_merge_hint_row(fit_session,
     assert len(hints) == 1
     hint = hints[0]
     assert hint["parameters"] == ["k1", "k2"]
-    assert hint["dbic"] < 0                      # the merge lowers BIC — that is why it is here
-    assert hint["dnll"] is not None and hint["dnll"] < abs(hint["dbic"])
+    assert hint["dscore"] < 0                    # the merge lowers the score — why it is here
+    assert hint["dnll"] is not None and hint["dnll"] < abs(hint["dscore"])
     # ...and it is the cheapest row of the diagnosis's own priced list, not a second statistic —
     # including `move_scaled`, the field the price has to be read against
     ties = I.identifiability(sess)["merge_candidates"]["ties"]
-    assert {k: ties[0][k] for k in ("parameters", "dnll", "dbic", "move_scaled")} == hint
-    assert set(hint) == {"parameters", "dnll", "dbic", "move_scaled"}  # ~110 B on every fit
+    assert {k: ties[0][k] for k in ("parameters", "dnll", "dscore", "move_scaled")} == hint
+    assert set(hint) == {"parameters", "dnll", "dscore", "move_scaled"}  # ~110 B on every fit
     # ...and the SCORE read carries the same one, so a caller that did not run the fit (the
     # analysts, the harness finish gate, the final scoring) sees the tie the lead was shown.
     from petab_mcp import fitting
@@ -239,7 +239,7 @@ def test_a_near_free_tie_reaches_the_fit_result_as_a_merge_hint_row(fit_session,
     assert fitting.fit_summary(sess, sess.engine)["merge_hints"] == hints
 
 
-def test_no_hints_when_no_tie_beats_the_bic_charge(fit_session, monkeypatch):
+def test_no_hints_when_no_tie_beats_the_parameter_charge(fit_session, monkeypatch):
     """ABSENT, not a null verdict — the same convention as noise_sigma_advice and
     nesting_advisory, so a fit with nothing to say costs nothing."""
     from petab_mcp import fitting, identifiability as I
@@ -249,7 +249,7 @@ def test_no_hints_when_no_tie_beats_the_bic_charge(fit_session, monkeypatch):
     assert "merge_hints" not in res
     assert "merge_hints" not in fitting.fit_summary(fit_session, fit_session.engine)
     ties = I.identifiability(fit_session)["merge_candidates"]["ties"]
-    assert ties and not any(r["merge_improves_bic"] for r in ties)
+    assert ties and not any(r["merge_improves_score"] for r in ties)
 
 
 def test_a_broken_diagnosis_never_costs_the_fit(fit_session, monkeypatch):

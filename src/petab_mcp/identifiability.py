@@ -1,6 +1,6 @@
 """Parameter-identifiability diagnosis of the current fit.
 
-Which estimated parameters are superfluous? The lead over-parameterises because raw nll/bic
+Which estimated parameters are superfluous? The lead over-parameterises because raw nll/score
 don't say WHICH parameters are unconstrained or trading off. The ``parameters`` section of
 ``get_fit_diagnosis`` (see :mod:`petab_mcp.server`) answers that from two cheap, complementary
 signals at the fitted optimum:
@@ -15,7 +15,7 @@ The FIM is a LOCAL linearization and can understate non-identifiability for stro
 models, so the two are meant to be read together. All output is bounded (top-N pairs/directions).
 
 One verdict off that diagnosis rides on EVERY fit result instead of waiting to be asked for:
-:func:`fit_merge_hints` names the parameter ties whose cost the BIC penalty already pays for (see
+:func:`fit_merge_hints` names the parameter ties whose cost the complexity penalty already pays for (see
 :func:`merge_hints`). It is the same computation the section reports, condensed — a tool called
 once a run cannot inform a decision made every turn.
 
@@ -37,6 +37,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from . import criteria
 from .constants import PARAMETER_AT_BOUND_RELATIVE_TOL
 
 
@@ -52,6 +53,7 @@ def _identifiability_stats(
     spread_unstable: float = 0.5,
     roles: dict[str, str] | None = None,
     n_data: int | None = None,
+    criterion: "criteria.Criterion | None" = None,
 ) -> dict[str, Any]:
     """Pure statistics core (no pyPESTO/AMICI). ``params_meta`` is one dict per estimated
     parameter — ``{id, scale, estimate, estimate_scaled, at_bound}`` — in the SAME order as the
@@ -168,7 +170,7 @@ def _identifiability_stats(
                 fim, names, theta,
                 scales=[p.get("scale") for p in params_meta],
                 at_bound=[per[n]["at_bound"] for n in names],
-                roles=roles, n_data=n_data, top_n=top_n)
+                roles=roles, n_data=n_data, top_n=top_n, criterion=criterion)
 
     method = ("fim+multistart" if fim is not None and spread else
               "fim" if fim is not None else
@@ -296,7 +298,7 @@ def _residual_rows(problem, x):
 
 
 def effective_parameter_count(problem, x_free, *, k: int | None = None) -> float | None:
-    """The EFFECTIVE parameter count ``k_eff = tr(J·H⁻¹)`` at the FROZEN optimum ``x_free`` of
+    """TIC's effective parameter count ``k_eff = tr(J·H⁻¹)`` at the FROZEN optimum ``x_free`` of
     the built pyPESTO ``problem`` — or ``None`` when it cannot be evaluated there.
 
     How many parameters the DATA see, as opposed to how many the model declares (``k``):
@@ -415,8 +417,8 @@ def _multistart_spread(optimization, free_names: list[str]) -> dict[str, Any]:
 
 
 def _measurement_count(problem) -> int | None:
-    """Number of measurement rows — the ``n`` in BIC's ``k*ln(n)`` penalty, so a tie's cost can be
-    compared against what BIC charges for the parameter it would remove."""
+    """Number of measurement rows — the ``n`` in the complexity penalty, so a tie's cost can be
+    compared against what the criterion charges for the parameter it would remove."""
     try:
         n = len(problem.measurement_df)
         return n or None
@@ -438,7 +440,7 @@ def _cost_nll(x: float) -> float:
 
 
 def merge_candidates(fim, names, theta, *, scales=None, at_bound=None, roles=None,
-                     n_data=None, top_n=6):
+                     n_data=None, top_n=6, criterion=None):
     """Which pairs of estimated parameters could take ONE SHARED VALUE, and what that would cost.
 
     The question ``flat_directions`` does not answer: it names the members of a poorly determined
@@ -477,10 +479,14 @@ def merge_candidates(fim, names, theta, *, scales=None, at_bound=None, roles=Non
     truncated to ``top_n``.
 
     Read as a SCREEN. The quadratic is local: it separates cheap ties from expensive ones, but a
-    single price can be off by a factor in EITHER direction, so BIC adjudicates the refit that
-    follows a merge.
+    single price can be off by a factor in EITHER direction, so the criterion adjudicates the
+    refit that follows a merge.
     """
     import numpy as np
+
+    # Resolved ONCE: the price below and the label reported beside it must be the same criterion.
+    # The session's, when a session is scoring (see `identifiability`); plain BIC for a bare call.
+    crit = criterion or criteria.Criterion()
 
     H = np.asarray(fim, dtype=float)
     th = np.asarray(theta, dtype=float)
@@ -505,7 +511,11 @@ def merge_candidates(fim, names, theta, *, scales=None, at_bound=None, roles=Non
     curv = d[:, None] + d[None, :] - 2.0 * Hinv   # c @ inv(H) @ c for every c = e_i - e_j at once
     gap = th[:, None] - th[None, :]               # c @ theta likewise
 
-    price = round(math.log(n_data) / 2.0, 3) if n_data and n_data > 0 else None
+    # What the run's criterion charges for the k-th parameter, in nll (see
+    # :meth:`criteria.Criterion.parameter_price`): ln(n)/2 under BIC, 1 under AIC, k-dependent
+    # under AICc. A merge that costs less than this pays for itself by deleting a parameter.
+    _price = crit.parameter_price(k, n_data)
+    price = round(_price, 3) if _price is not None else None
     ties: list[dict[str, Any]] = []
     skipped: dict[str, int] = {}
 
@@ -541,7 +551,7 @@ def merge_candidates(fim, names, theta, *, scales=None, at_bound=None, roles=Non
                 # the constrained optimum is -(c@theta) inv(H) c / (c@inv(H)@c); report its
                 # largest component, the move the panel would have to believe.
                 move = float(abs(gap[i, j]) * np.abs(Hinv[:, i] - Hinv[:, j]).max() / curv[i, j])
-            # 2*dnll is the BIC charge, so a cost within a factor of two of the double ceiling is
+            # 2*dnll is the score charge, so a cost within a factor of two of the double ceiling is
             # `Infinity` in the payload — not valid strict JSON, and not a merge candidate either.
             if not (math.isfinite(2.0 * exact) and math.isfinite(move)):
                 _skip("cost_not_finite")
@@ -551,9 +561,9 @@ def merge_candidates(fim, names, theta, *, scales=None, at_bound=None, roles=Non
                    "move_scaled": round(move, 3)}
             if price is not None:
                 # Both read off the DISPLAYED cost and price, so the row agrees with itself:
-                # dbic < 0 exactly when merge_improves_bic is true.
-                row["dbic"] = round(2.0 * (dnll - price), 3)
-                row["merge_improves_bic"] = dnll < price
+                # dscore < 0 exactly when merge_improves_score is true.
+                row["dscore"] = round(2.0 * (dnll - price), 3)
+                row["merge_improves_score"] = dnll < price
             ties.append(row)
     # Cheapest first, and among the ties the price cannot separate — the ones the data left
     # undetermined, all of them free — the smallest move first, since that is what decides which of
@@ -567,8 +577,9 @@ def merge_candidates(fim, names, theta, *, scales=None, at_bound=None, roles=Non
     if off:  # nothing refused these pairs, so merges nobody could write are in the list too
         out["filters_off"] = off
     if price is not None:
-        out["bic_price_nll"] = price
-        out["n_merges_improving_bic"] = sum(1 for r in ties if r["merge_improves_bic"])
+        out["criterion"] = crit.name
+        out["parameter_price_nll"] = price
+        out["n_merges_improving_score"] = sum(1 for r in ties if r["merge_improves_score"])
     return out
 
 
@@ -739,7 +750,8 @@ def identifiability(session, *, top_n: int = 8, corr_threshold: float = 0.9) -> 
             roles = None
     out = _identifiability_stats(_params_meta(record), fim, spread,
                                  top_n=top_n, corr_threshold=corr_threshold,
-                                 roles=roles, n_data=_measurement_count(record.problem))
+                                 roles=roles, n_data=_measurement_count(record.problem),
+                                 criterion=session.criterion)
     if record.hierarchical:
         out["inner_parameters_omitted"] = INNER_OMITTED_NOTE
     if is_stale(session, record):
@@ -750,7 +762,8 @@ def identifiability(session, *, top_n: int = 8, corr_threshold: float = 0.9) -> 
     return out
 
 
-#: How many ties ride beside a fit's score. Every one shown is a merge BIC already pays for, so the
+#: How many ties ride beside a fit's score. Every one shown is a merge the criterion already pays
+#: for, so the
 #: cap is not about which ties qualify but about what the score line can carry: this list is re-sent
 #: in the agent's history on every later turn (PR #23). Three is what it takes to stop the caller
 #: merging PIECEMEAL — one pair per fit, a whole refit spent per deleted parameter, when the ties
@@ -761,13 +774,14 @@ MERGE_HINT_LIMIT = 3
 def merge_hints(diagnosis: "dict[str, Any] | None",
                 *, limit: int = MERGE_HINT_LIMIT) -> list[dict[str, Any]] | None:
     """The ties worth reporting beside a fit's score: up to ``limit`` cheapest ONE-SHARED-VALUE
-    merges whose ``dnll`` is below what BIC charges for the parameter each deletes — or ``None``.
+    merges whose ``dnll`` is below what the run's criterion charges for the parameter each deletes
+    — or ``None``.
 
     ``diagnosis`` is an :func:`identifiability` payload, so the hints cannot say anything the
     section does not: they ARE that payload's ONE-SHARED-VALUE ``merge_candidates`` rows that beat
     the charge, cheapest first, minus the detail. Four fields each, kept short because this rides on every fit
-    result and is re-sent in the agent's history every later turn: the pair, its cost, ``dbic``
-    (negative = the merge lowers BIC), and ``move_scaled``. The last one is not decoration —
+    result and is re-sent in the agent's history every later turn: the pair, its cost, ``dscore``
+    (negative = the merge lowers the score), and ``move_scaled``. The last one is not decoration —
     :func:`merge_candidates` prices a ONE-SHARED-VALUE tie and says that price must be read against
     the move: a hint naming a near-free tie without it invites taking a merge whose parameter
     travels many decades, which is the quadratic running off down a flat direction rather than an
@@ -779,12 +793,12 @@ def merge_hints(diagnosis: "dict[str, Any] | None",
     naming an arbitrary member of a set the caller should be looking at whole.
 
     Each price is still an INDEPENDENT one, computed for that tie alone at this optimum: the list is
-    not a menu whose ``dbic`` values add up. Rows sharing no parameter are separable edits and may be
+    not a menu whose ``dscore`` values add up. Rows sharing no parameter are separable edits and may be
     taken together; rows SHARING one are not. What is priced is the ONE SHARED VALUE of a PAIR —
     :func:`merge_candidates` prices ``theta_i == theta_j`` and no higher-order constraint — so tying
     three symbols to one value is an unpriced extrapolation whose cost is not the sum of its pairs. Measured on blasi: three pairs each within 0.02 nll of free, collapsed into one
     symbol, cost +186 bic and reintroduced lack-of-fit. Take the cheapest pair of such a group and
-    refit — the next fit prices what is left, and BIC adjudicates each step.
+    refit — the next fit prices what is left, and the criterion adjudicates each step.
 
     ``None`` covers every case the list has nothing to claim in — no FIM, no priceable pair, or no
     tie that beats the charge — so its ABSENCE is not a certificate of parsimony. Only the section
@@ -792,10 +806,10 @@ def merge_hints(diagnosis: "dict[str, Any] | None",
     """
     ties = ((diagnosis or {}).get("merge_candidates") or {}).get("ties") or []
     out = [{"parameters": list(row.get("parameters") or ()),
-            "dnll": row.get("dnll"), "dbic": row.get("dbic"),
+            "dnll": row.get("dnll"), "dscore": row.get("dscore"),
             "move_scaled": row.get("move_scaled")}
-           for row in ties  # cheapest-first, each priced against one shared ln(n)/2
-           if isinstance(row, dict) and row.get("merge_improves_bic")]
+           for row in ties  # cheapest-first; each is ONE SHARED VALUE, priced on its own
+           if isinstance(row, dict) and row.get("merge_improves_score")]
     return out[:limit] or None
 
 

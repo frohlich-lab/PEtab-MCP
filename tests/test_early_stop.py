@@ -14,18 +14,18 @@ import pytest
 
 from petab_mcp import fitting
 from petab_mcp.constants import (
-    NEW_BEST_MIN_DELTA_BIC,
+    NEW_BEST_MIN_DELTA_SCORE,
     NOISE_SIGMA_COLLAPSE_FRACTION,
     NON_IMPROVING_STREAK_CAP,
     PLATEAU_WINDOW,
 )
 
 
-def _checkpoint(*, bic, version, nll, **over):
-    """A best-BIC checkpoint seeded directly, as record_fit_progress would adopt one."""
+def _checkpoint(*, score, version, nll, **over):
+    """A best-score checkpoint seeded directly, as record_fit_progress would adopt one."""
     from petab_mcp.session import Checkpoint
 
-    fields = dict(version=version, bic=bic, nll=nll, gof_pvalue=None, sigma_estimated=False,
+    fields = dict(version=version, score=score, nll=nll, gof_pvalue=None, sigma_estimated=False,
                   sigma_inflated=False, sigma_collapsed=False, sigma_assessable=False,
                   residual_flagged=False)
     fields.update(over)
@@ -46,15 +46,15 @@ def test_is_new_best_tracks_bic_effect_size(session):
     first = fitting.compute_improvement(
         session, nllh=fs0["neg_log_likelihood"], objective_before=-40.0, fitsim=fs0)
     assert first["is_new_best"] is True
-    assert first["best_prior_bic"] is None
+    assert first["best_prior_criterion_value"] is None
     assert first["bic"] is not None
 
     # Seed the best-BIC checkpoint at that fit's BIC (as record_fit_progress would).
-    session.best = _checkpoint(bic=first["bic"], version=1, nll=-50.0)
+    session.best = _checkpoint(score=first["criterion_value"], version=1, nll=-50.0)
 
     # BIC = k·ln(n) + 2·nll, so at fixed k,n a ΔBIC of X needs a ΔNLL of X/2. A sub-threshold BIC
-    # improvement (< NEW_BEST_MIN_DELTA_BIC) is NOT a new best, even though nll strictly dropped.
-    d_small = NEW_BEST_MIN_DELTA_BIC / 2
+    # improvement (< NEW_BEST_MIN_DELTA_SCORE) is NOT a new best, even though nll strictly dropped.
+    d_small = NEW_BEST_MIN_DELTA_SCORE / 2
     fs_small = _fitsim(-50.0 - d_small / 2, 18.0)
     small = fitting.compute_improvement(
         session, nllh=fs_small["neg_log_likelihood"], objective_before=-50.0, fitsim=fs_small)
@@ -62,14 +62,14 @@ def test_is_new_best_tracks_bic_effect_size(session):
     assert small["is_new_best"] is False
 
     # An improvement EXACTLY at the threshold counts (the gate is ">=", not ">").
-    fs_edge = _fitsim(-50.0 - NEW_BEST_MIN_DELTA_BIC / 2, 18.0)  # ΔBIC == NEW_BEST_MIN_DELTA_BIC
+    fs_edge = _fitsim(-50.0 - NEW_BEST_MIN_DELTA_SCORE / 2, 18.0)  # ΔBIC == NEW_BEST_MIN_DELTA_SCORE
     edge = fitting.compute_improvement(
         session, nllh=fs_edge["neg_log_likelihood"], objective_before=-50.0, fitsim=fs_edge)
-    assert edge["improvement_vs_best_prior"] == pytest.approx(NEW_BEST_MIN_DELTA_BIC)
+    assert edge["improvement_vs_best_prior"] == pytest.approx(NEW_BEST_MIN_DELTA_SCORE)
     assert edge["is_new_best"] is True
 
     # A BIC improvement comfortably past the threshold does count.
-    d_big = NEW_BEST_MIN_DELTA_BIC + 2
+    d_big = NEW_BEST_MIN_DELTA_SCORE + 2
     fs_big = _fitsim(-50.0 - d_big / 2, 18.0)
     big = fitting.compute_improvement(
         session, nllh=fs_big["neg_log_likelihood"], objective_before=-50.0, fitsim=fs_big)
@@ -81,7 +81,8 @@ def test_is_new_best_rejects_nll_gain_that_worsens_bic(session):
     """The whole point of gating on BIC not nll: a fit that lowers nll but adds parameters that
     RAISE BIC is not a new best."""
     session.best = _checkpoint(                       # checkpoint at k=2
-        bic=fitting.goodness_of_fit(-50.0, 18.0, 2, 20)["bic"], version=1, nll=-50.0)
+        score=fitting.goodness_of_fit(-50.0, 18.0, 2, 20)["criterion_value"],
+        version=1, nll=-50.0)
     # nll improves (-50 -> -51) but k jumps 2 -> 5: BIC = k·ln(20)+2·nll gets WORSE.
     fs = _fitsim(-51.0, 18.0, k=5)
     imp = fitting.compute_improvement(session, nllh=-51.0, objective_before=-50.0, fitsim=fs)
@@ -96,7 +97,7 @@ def test_first_fitted_op_sets_checkpoint_and_resets_streak(session):
     assert p["n_fitted_ops"] == 1
     assert p["non_improving_streak"] == 0
     assert p["best_version"] == 1
-    assert p["best_bic"] is not None
+    assert p["best_score"] is not None
     assert p["should_stop"] is False
 
 
@@ -128,7 +129,7 @@ def test_plateau_stops_an_adequate_flat_run(session):
     assert p["n_fitted_ops"] == PLATEAU_WINDOW + 1
     assert p["non_improving_streak"] == PLATEAU_WINDOW < NON_IMPROVING_STREAK_CAP  # cap not hit
     assert p["best_gof_pvalue"] is not None and p["best_gof_pvalue"] >= 0.05
-    assert p["bic_improvement_over_last_n"] == pytest.approx(0.0)
+    assert p["score_improvement_over_last_n"] == pytest.approx(0.0)
     assert p["should_stop"] is True
     assert "plateau" in p["stop_reason"].lower()
 
@@ -153,7 +154,7 @@ def test_inflated_sigma_blocks_the_adequate_plateau_stop(session):
     p = session.progress_report()
     assert p["best_gof_pvalue"] is not None and p["best_gof_pvalue"] >= 0.05  # GoF LOOKS adequate
     assert session.best.sigma_inflated is True                                # but sigma inflated
-    assert p["bic_improvement_over_last_n"] == pytest.approx(0.0)             # and BIC is flat
+    assert p["score_improvement_over_last_n"] == pytest.approx(0.0)             # and BIC is flat
     assert p["should_stop"] is False                                          # -> no plateau stop
 
 
@@ -285,12 +286,12 @@ def test_gamed_fit_does_not_overwrite_a_plausible_best_checkpoint(session):
     plausible["noise_sigma_report"] = {"sigma": {"fitted": 0.05, "upper_bound_cap": 0.1,
                                                  "data_std": 0.2, "fraction_of_data_std": 0.25}}
     session.record_fit_progress(1, plausible, {"is_new_best": True})
-    best_v, best_bic = session.best.version, session.best.bic
+    best_v, best_score = session.best.version, session.best.score
     assert best_v == 1 and session.best.sigma_inflated is False
     # A later fit with STRICTLY LOWER BIC (nll -80 < -50) but an inflated sigma must NOT take over.
     session.record_fit_progress(2, _fitsim_inflated_sigma(-80.0, 18.0), {"is_new_best": True})
     assert session.best.version == best_v            # plausible checkpoint preserved...
-    assert session.best.bic == best_bic
+    assert session.best.score == best_score
     assert session.best.sigma_inflated is False       # ...best is still the plausible model
 
 
@@ -328,7 +329,7 @@ def test_flagged_residual_structure_blocks_the_adequate_plateau_stop(session):
     p = session.progress_report()
     assert session.best.sigma_estimated is True and session.best.sigma_inflated is False
     assert session.best.residual_flagged is True
-    assert p["bic_improvement_over_last_n"] == pytest.approx(0.0)  # BIC is flat...
+    assert p["score_improvement_over_last_n"] == pytest.approx(0.0)  # BIC is flat...
     assert p["should_stop"] is False                              # ...but residual structure blocks it
 
 
@@ -387,7 +388,7 @@ def test_steadily_improving_run_never_stops_early(session):
     p = session.progress_report()
     assert p["non_improving_streak"] == 0
     assert p["best_version"] == 9          # the last (lowest-BIC) op
-    assert p["bic_improvement_over_last_n"] > 0
+    assert p["score_improvement_over_last_n"] > 0
     assert p["should_stop"] is False
 
 
@@ -439,7 +440,7 @@ def test_running_report_has_no_stop_reason_and_no_nudge(session):
 
 # --- (e) non-finite scores must never become the checkpoint --------------------------------
 # Regression for the crauste sweep run whose FIRST fit returned a NaN neg-log-likelihood: NaN
-# is a float, so it passed the old `bic is not None` guard, became best_bic, and then locked
+# is a float, so it passed the old `bic is not None` guard, became best_score, and then locked
 # the run out for good — every later `bic <= NaN - delta` is False, so no fit could ever be a
 # new best again. 16 fits, 73 minutes, and an unscoreable result.
 def test_nan_nll_yields_no_bic_at_all():
@@ -459,7 +460,7 @@ def test_nan_first_fit_does_not_become_the_checkpoint(session):
                                 {"is_new_best": True})
     p = session.progress_report()
     assert p["best_version"] is None
-    assert p["best_bic"] is None
+    assert p["best_score"] is None
     assert p["non_improving_streak"] == 1   # an unscoreable fit is not progress
 
     # The next real fit is a legitimate new best and claims the checkpoint.
@@ -469,7 +470,7 @@ def test_nan_first_fit_does_not_become_the_checkpoint(session):
     session.record_fit_progress(2, fs, imp)
     p = session.progress_report()
     assert p["best_version"] == 2
-    assert p["best_bic"] == pytest.approx(fitting.goodness_of_fit(266.62, 100.0, 10, 21)["bic"])
+    assert p["best_score"] == pytest.approx(fitting.goodness_of_fit(266.62, 100.0, 10, 21)["bic"])
     assert p["non_improving_streak"] == 0
 
 
@@ -481,7 +482,7 @@ def test_improving_fits_are_never_locked_out_by_a_poisoned_checkpoint(session):
     by `Checkpoint` itself, so the poisoned state is unconstructible rather than survivable.
     """
     with pytest.raises(ValueError, match="real number"):
-        _checkpoint(bic=float("nan"), version=1, nll=float("nan"))
+        _checkpoint(score=float("nan"), version=1, nll=float("nan"))
     # An unscoreable fit leaves no checkpoint at all, which is the state the run recovers from.
     session.best = None
     for bic_target in (580.97, 569.19, 519.86):
@@ -492,7 +493,7 @@ def test_improving_fits_are_never_locked_out_by_a_poisoned_checkpoint(session):
         imp = fitting.compute_improvement(session, nllh=nll, objective_before=8377.0, fitsim=fs)
         assert imp["is_new_best"] is True, f"BIC {bic_target} must be able to beat a NaN"
         session.record_fit_progress(2, fs, imp)
-        assert session.best.bic == pytest.approx(bic_target)
+        assert session.best.score == pytest.approx(bic_target)
 
 
 def test_stall_without_any_checkpoint_reports_an_evaluation_failure(session):
@@ -552,7 +553,7 @@ def test_a_run_that_keeps_finding_new_bests_is_not_cut_off_by_an_op_budget(sessi
     """
     nll = -50.0
     for v in range(1, 31):                       # well past the old cap of 20
-        nll -= NEW_BEST_MIN_DELTA_BIC
+        nll -= NEW_BEST_MIN_DELTA_SCORE
         session.record_fit_progress(v, _fitsim(nll, 500.0), {"is_new_best": True})
     p = session.progress_report()
     assert p["n_fitted_ops"] == 30
@@ -567,7 +568,7 @@ def test_a_stalled_long_run_is_still_stopped_by_the_streak_cap(session):
     still caught, and still gets the structural diagnosis rather than a budget notice."""
     nll = -50.0
     for v in range(1, 11):
-        nll -= NEW_BEST_MIN_DELTA_BIC
+        nll -= NEW_BEST_MIN_DELTA_SCORE
         session.record_fit_progress(v, _fitsim(nll, 500.0), {"is_new_best": True})
     for v in range(11, 11 + NON_IMPROVING_STREAK_CAP):
         session.record_fit_progress(v, _fitsim(nll, 500.0), {"is_new_best": False})

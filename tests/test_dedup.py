@@ -105,9 +105,9 @@ def test_reauthor_key_distinguishes_different_bounds(session):
 
 # -- decide() (pure) --------------------------------------------------------
 def _reg(*entries):
-    """Build a registry from (version, structure_hash, bic) tuples."""
+    """Build a registry from (version, structure_hash, score) tuples."""
     return [{"version": v, "structure_hash": s, "problem_hash": None,
-             "neg_log_likelihood": None, "bic": b} for v, s, b in entries]
+             "neg_log_likelihood": None, "score": b} for v, s, b in entries]
 
 
 def test_decide_proceeds_on_fresh_structure():
@@ -162,14 +162,14 @@ def test_decide_no_worse_warning_within_margin():
 
 
 def test_decide_handles_numpy_bic_scalars():
-    """BIC values stored as NumPy scalars must still drive the worse-family warning — an
+    """Scores stored as NumPy scalars must still drive the worse-family warning — an
     isinstance(float) filter would silently drop numpy.float64 (addresses PR #70 review)."""
     import numpy as np
 
     reg = [{"version": 1, "structure_hash": "X", "problem_hash": None,
-            "neg_log_likelihood": None, "bic": np.float64(20.0)},
+            "neg_log_likelihood": None, "score": np.float64(20.0)},
            {"version": 2, "structure_hash": "Y", "problem_hash": None,
-            "neg_log_likelihood": None, "bic": np.float64(1.0)}]
+            "neg_log_likelihood": None, "score": np.float64(1.0)}]
     d = D.decide(structure_hash="X", head_structure_hash="Y", same_setup=False,
                  head_version=2, registry=reg, prior_attempts=1)
     assert any("WORSE" in w for w in d["warnings"])
