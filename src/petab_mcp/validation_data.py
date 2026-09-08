@@ -1,11 +1,15 @@
-"""Score a model against HELD-OUT measurements — the predictive check.
+"""Score a model against HELD-OUT measurements — the predictive check, in one of two modes.
 
 NOT :mod:`petab_mcp.validation`, which lints a PEtab problem for structural errors.
 
-The model in front of us was fitted to one set of measurements; :func:`score_problem` asks how well
-it accounts for a set it never saw. The fitted parameters carry over, so the model is EVALUATED at
-them (fujita's EGF pulses and ramps) — nothing is fitted here, and no inner solve either, which is
-what makes the number comparable to the training nll rather than merely adjacent to it.
+* **fixed-θ** (:func:`score_problem`) — the same problem under conditions the training set does not
+  cover, so the fitted parameters carry over and the model is EVALUATED at them (fujita's EGF
+  pulses and ramps). Nothing is fitted, and no inner solve either.
+* **transfer** (:func:`transfer_view`) — the same MECHANISM on a different system, whose parameters
+  are not the training ones (oliveira's Bahia). The fitted point means nothing there, so both the
+  candidate and the reference structure are REFIT on the held-out data and compared by nll and by
+  BIC over ``k`` estimated parameters and ``n`` held-out rows. A held-out set that brings its own
+  parameter table IS a transfer set (:class:`HeldOut`).
 
 One implementation serves both sides: the candidate through the server tool, the reference through
 ``petab_harness.benchmark``, so no solver setting or chi2 convention can drift between the two
@@ -15,11 +19,14 @@ tool is absent from the panel's ``ALLOWED_TOOLS``. Rationale in ``docs/RATIONALE
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from petab.v1.C import (
+    ESTIMATE,
+    NOMINAL_VALUE,
     OBSERVABLE_ID,
     PREEQUILIBRATION_CONDITION_ID,
     SIMULATION_CONDITION_ID,
@@ -39,31 +46,40 @@ STATUS_NO_DATA = "no_data"
 STATUS_TABLE_MISMATCH = "table_mismatch"
 STATUS_FLATTENING_REQUIRED = "flattening_required"
 STATUS_NON_FINITE = "non_finite"
+#: * ``input_missing`` — transfer only: the held-out system changes a FIXED input the candidate has
+#:   no fixed parameter to receive. A finding about the model, not a table error.
+STATUS_INPUT_MISSING = "input_missing"
 
-#: ``mode`` a score carries — one kind so far; :mod:`petab_harness.runner.scoring` reads it to
-#: refuse subtracting two scores of different kinds.
+#: ``mode`` values a score carries — which of the two comparisons it is (module docstring);
+#: :mod:`petab_harness.runner.scoring` reads it to refuse subtracting across kinds.
 MODE_FIXED = "fixed"
+MODE_TRANSFER = "transfer"
 
 
 @dataclass(frozen=True)
 class HeldOut:
-    """A held-out set as read from disk: the measurements, plus the condition table beside them if
-    there is one.
+    """A held-out set as read from disk: the measurements, plus the condition and parameter tables
+    it brings with it, if any.
 
-    ``condition_df`` is carried but not yet used by :func:`score_problem`: every held-out condition
-    must already be in the training table (fujita).
+    ``parameter_df`` is what makes it a TRANSFER set — the statement that the parameter values are
+    not the training ones, which is exactly when evaluating the fitted point is meaningless. No
+    separate mode flag, because a flag and a table can disagree and the table is the fact.
+    ``condition_df`` replaces the training condition table for a transfer fit; ``None`` is the
+    fixed-θ case, where every held-out condition must already be in the training table (fujita).
     """
     measurement_df: Any
     condition_df: Any = None
+    parameter_df: Any = None
 
     @property
     def mode(self) -> str:
-        return MODE_FIXED
+        return MODE_TRANSFER if self.parameter_df is not None else MODE_FIXED
 
 
 #: File names next to the measurements. Written by ``petab_harness.benchmark.materialize``, read
 #: back by :func:`read_held_out`; the two agree through these names and nowhere else.
 HELD_OUT_CONDITIONS = "conditions.tsv"
+HELD_OUT_PARAMETERS = "parameters.tsv"
 
 
 def _unsupported_reason(problem, view) -> str | None:
@@ -251,12 +267,125 @@ def _data_shape(measurement_df) -> dict[str, Any]:
     }
 
 
+def _reject_untransferable_table(held_out_df, shipped_df, view) -> None:
+    """Refuse a held-out parameter table that cannot describe a DIFFERENT system.
+
+    The table is what makes a held-out set a transfer set (:attr:`HeldOut.mode`), so a table equal
+    to the training one says the set was MIS-ANNOTATED: nothing transfers, and the refit would
+    compare a structure against itself while reporting it as a second system. Conversely,
+    an ESTIMATED MECHANISM parameter the training problem does not have is unusable for the
+    opposite reason — the refit would have to manage a rate the candidate's model has no counterpart
+    for. Two kinds of new row are fine and are exempt:
+
+    * an OBSERVATION-MODEL parameter (a noise sigma, an observable scaling/offset) that the
+      held-out tables name through ``noiseParameters``/``observableParameters`` or a noise/observable
+      formula — it enters through the observation model, not the ODE, so the refit can manage it
+      however many the held-out system brings (:func:`reconcile.observation_model_symbols`);
+    * a FIXED extra row, which binds to nothing — a published table keeps such rows for observables
+      the materialiser dropped.
+
+    ``ValueError``, not a status: both are mistakes in the curated files, not findings about the
+    candidate's model.
+    """
+    from . import reconcile as _reconcile
+
+    manageable = {str(sym) for sym in _reconcile.observation_model_symbols(view)}
+    unmanageable = sorted(
+        str(pid) for pid in held_out_df.index
+        if pid not in shipped_df.index and str(pid) not in manageable
+        and int(float(held_out_df.loc[pid, ESTIMATE])) == 1)
+    if unmanageable:
+        raise ValueError(
+            f"the held-out parameter table estimates parameter(s) {', '.join(unmanageable)} "
+            "that the training problem does not have, and that are not observation-model "
+            "parameters of the held-out "
+            "tables; the candidate's model has no counterpart for them, so the refit cannot manage "
+            "them")
+    if list(held_out_df.index) != list(shipped_df.index):
+        return
+    for pid in held_out_df.index:
+        if int(float(held_out_df.loc[pid, ESTIMATE])) != int(float(shipped_df.loc[pid, ESTIMATE])):
+            return
+        if not math.isclose(float(held_out_df.loc[pid, NOMINAL_VALUE]),
+                            float(shipped_df.loc[pid, NOMINAL_VALUE]), rel_tol=1e-12):
+            return
+    raise ValueError(
+        "the held-out parameter table is identical to the training one, so nothing would transfer; "
+        "a held-out set ships a parameter table only when it describes a DIFFERENT system — drop "
+        "the table to score at the fitted point instead")
+
+
+def transfer_view(problem, held_out: HeldOut, shipped_parameter_df):
+    """The candidate's problem moved onto the held-out system as a new view, or the status saying
+    why it cannot be: ``(view, None)`` or ``(None, {status, reason})``.
+
+    The view shares the model and owns every table it changes, so the session's problem is never
+    touched. Three tables move:
+
+    * the held-out MEASUREMENTS replace the training ones;
+    * the held-out CONDITION table replaces the training one, and must have its column set — a
+      column is a model input, so a new one is a different model;
+    * the FIXED INPUTS that CHANGE between the systems are carried into the candidate's parameter
+      table by name — a row fixed in both the held-out and the shipped training table
+      (``shipped_parameter_df``) with a different value there, e.g. oliveira's ``population``.
+
+    Every other held-out row is left alone, and the held-out table's ESTIMATED values are never
+    used as the candidate's start. A required input the candidate has no fixed row to receive is
+    :data:`STATUS_INPUT_MISSING` — a result about the model, not a plumbing failure.
+    """
+    import copy
+
+    view = copy.copy(problem)
+    view.measurement_df = held_out.measurement_df.copy()
+    view.parameter_df = problem.parameter_df.copy()
+    view.visualization_df = None
+    if held_out.condition_df is not None:
+        if problem.condition_df is None:
+            return None, {"status": STATUS_TABLE_MISMATCH,
+                          "reason": "the held-out set brings a condition table but the problem has "
+                                    "none, so there is no column set to line the two models up by"}
+        mine = list(problem.condition_df.columns)
+        theirs = list(held_out.condition_df.columns)
+        if sorted(mine) != sorted(theirs):
+            return None, {"status": STATUS_TABLE_MISMATCH,
+                          "reason": f"the held-out condition table's columns {theirs} differ from "
+                                    f"the problem's {mine}; a condition column is a model input, so "
+                                    "the two tables describe different models"}
+        view.condition_df = held_out.condition_df.copy()
+    mismatch = _table_mismatch(view, view.measurement_df)
+    if mismatch:
+        return None, {"status": STATUS_TABLE_MISMATCH, "reason": mismatch}
+
+    if held_out.parameter_df is not None:
+        pdf, shipped = view.parameter_df, shipped_parameter_df
+        _reject_untransferable_table(held_out.parameter_df, shipped, view)
+        missing = []
+        for pid, row in held_out.parameter_df.iterrows():
+            if int(float(row[ESTIMATE])) != 0 or pid not in shipped.index:
+                continue
+            if int(float(shipped.loc[pid, ESTIMATE])) != 0:
+                continue
+            value = float(row[NOMINAL_VALUE])
+            if math.isclose(value, float(shipped.loc[pid, NOMINAL_VALUE]), rel_tol=1e-12):
+                continue
+            if pid not in pdf.index or int(float(pdf.loc[pid, ESTIMATE])) != 0:
+                missing.append(str(pid))
+                continue
+            pdf.loc[pid, NOMINAL_VALUE] = value
+        if missing:
+            return None, {"status": STATUS_INPUT_MISSING,
+                          "reason": f"the held-out system changes the fixed input(s) {', '.join(missing)}, "
+                                    "which the model does not carry as fixed parameters of that "
+                                    "name, so it cannot be moved to the held-out system"}
+    return view, None
+
+
 def score_session(session, engine, held_out: HeldOut) -> dict[str, Any]:
     """The session's CURRENT model against ``held_out``.
 
     :func:`score_problem` at the parameter table's ``nominalValue``\\ s, which is where every fit
     writes its optimum back — so this scores exactly the model the judge is about to score on the
-    training data.
+    training data. A transfer set's own refit is not wired up here yet.
 
     Held under ``session.lock`` so the model and the table are one snapshot. The build target is
     ``session.sbml_hash()`` — the model STRUCTURE only, not ``problem_hash``, which also covers the
@@ -276,18 +405,20 @@ def score_session(session, engine, held_out: HeldOut) -> dict[str, Any]:
 def read_held_out(measurements_path: str | Path) -> HeldOut:
     """Load a held-out set from its measurement table and the optional tables beside it.
 
-    ``measurements_path`` is the held-out measurement TSV;
-    a ``conditions.tsv`` in the same directory is the set's own condition table
-    (:data:`HELD_OUT_CONDITIONS`). Read with PEtab's own readers, so the server and the harness
-    parse the files identically.
+    ``measurements_path`` is the held-out measurement TSV; a ``conditions.tsv`` /
+    ``parameters.tsv`` in the same directory are the set's own condition and parameter
+    tables (:data:`HELD_OUT_CONDITIONS`, :data:`HELD_OUT_PARAMETERS`). Read with PEtab's
+    own readers, so the server and the harness parse the files identically.
     """
     import petab.v1 as petab
 
     path = Path(measurements_path)
     cond = path.with_name(HELD_OUT_CONDITIONS)
+    pars = path.with_name(HELD_OUT_PARAMETERS)
     return HeldOut(
         measurement_df=read_measurements(path),
         condition_df=petab.get_condition_df(str(cond)) if cond.is_file() else None,
+        parameter_df=petab.get_parameter_df(str(pars)) if pars.is_file() else None,
     )
 
 
