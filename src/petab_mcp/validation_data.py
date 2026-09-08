@@ -116,6 +116,38 @@ def _table_mismatch(problem, measurement_df) -> str | None:
     return "; ".join(problems) or None
 
 
+def _reduced_from_named(pp, x_full, x_names) -> "list[float]":
+    """``pp``'s REDUCED vector from a caller's FULL vector, matched by NAME.
+
+    By name rather than by list equality because ``pp.x_names`` is not always the caller's list:
+    a held-out view may carry FEWER parameter rows than the problem the caller fitted (petab
+    refuses a parameter table with rows nothing references, and swapping a curated held-out table
+    in retires the overrides the training rows carried), so ``pp.x_names`` can be a strict subset.
+    Requiring the two lists to be equal would refuse such a call outright, while matching by name
+    serves it and still refuses the thing worth refusing: a name ``pp`` needs that the caller did
+    not supply, which is what a silently re-ordered vector looks like from here.
+
+    Arity is checked FIRST and reported as its own failure. The name matching below would
+    otherwise truncate a short vector to the names it happens to cover — and the caller would be
+    told its NAMES were wrong when what it actually passed was a vector already reduced to free
+    coordinates. Two different mistakes; only this one is about length.
+    """
+    if len(x_full) != len(x_names):
+        raise ValueError(
+            f"score_problem: x_full has {len(x_full)} value(s) for {len(x_names)} name(s); it "
+            "must be the FULL vector (fixed parameters included), in x_names order")
+    values = {str(n): float(v) for n, v in zip(x_names, x_full)}
+    missing = [str(n) for n in pp.x_names if str(n) not in values]
+    if missing:
+        raise ValueError(
+            "score_problem: the caller's x_names do not match the held-out problem's (it needs "
+            f"{missing[:5]}{'...' if len(missing) > 5 else ''}); the vector would be evaluated "
+            "permuted")
+    full = [values[str(n)] for n in pp.x_names]
+    free = getattr(pp, "x_free_indices", None)
+    return [full[i] for i in free] if free is not None else full
+
+
 def score_problem(problem, measurement_df, *, build_dir: str | Path, model_name: str,
                   x_full: "list[float] | None" = None,
                   x_names: "list[str] | None" = None) -> dict[str, Any]:
@@ -130,9 +162,10 @@ def score_problem(problem, measurement_df, *, build_dir: str | Path, model_name:
 
     ``x_full``/``x_names`` (both or neither) give the point explicitly, on each parameter's
     estimation scale in ``x_names`` order — for a caller holding a fitted vector that is NOT in the
-    table, e.g. a reference multistart's winning start. The names are CHECKED against this
-    problem's own, not assumed equal: a silent re-ordering would report a plausible, wrong
-    likelihood.
+    table, e.g. a reference multistart's winning start. Matched to this problem's own names rather
+    than assumed aligned, and every name the problem needs must be supplied
+    (:func:`_reduced_from_named`): a silent re-ordering or truncation would report a plausible,
+    wrong likelihood.
 
     Returns ``{status, nll, n, chi2, n_conditions, observables}`` or ``{status, reason}``. ``chi2``
     is the sum of squares of AMICI's weighted residual vector (via
@@ -179,23 +212,14 @@ def score_problem(problem, measurement_df, *, build_dir: str | Path, model_name:
     _apply_amici_solver_defaults(pp)
 
     if x_full is None:
-        # `problem_x_from_nominal` owns the reduction convention and the scale question.
-        reduced = problem_x_from_nominal(pp, problem.parameter_df)
+        # `problem_x_from_nominal` owns the reduction convention and the scale question. Read off
+        # the VIEW's table, not the caller's problem: the two are the same today, but the view is
+        # what `pp` was built from, so any path that adds or drops a parameter row on it (a curated
+        # held-out set retires the training rows' overrides) would otherwise take the point from a
+        # table that no longer describes this problem — and report a plausible, wrong likelihood.
+        reduced = problem_x_from_nominal(pp, view.parameter_df)
     else:
-        if list(map(str, x_names)) != list(map(str, pp.x_names)):
-            raise ValueError(
-                "score_problem: the caller's x_names do not match the held-out problem's "
-                f"({list(x_names)[:5]}... vs {list(pp.x_names)[:5]}...); the vector would be "
-                "evaluated permuted")
-        # The name check says nothing about LENGTH, and a shorter `x_full` (one already reduced to
-        # free coordinates) would index in range and silently evaluate a mis-aligned point.
-        if len(x_full) != len(pp.x_names):
-            raise ValueError(
-                f"score_problem: x_full has {len(x_full)} value(s) for {len(pp.x_names)} "
-                "parameters; it must be the FULL vector (fixed parameters included), in x_names "
-                "order")
-        free = getattr(pp, "x_free_indices", None)
-        reduced = [x_full[i] for i in free] if free is not None else list(x_full)
+        reduced = _reduced_from_named(pp, x_full, x_names)
 
     ret = pp.objective(np.asarray(reduced, dtype=float), sensi_orders=(0,), return_dict=True)
     nll = float(ret[FVAL])
