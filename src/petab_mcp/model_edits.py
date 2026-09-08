@@ -585,8 +585,8 @@ def _op_set_initial(text, op, where):
         value = value.strip().rstrip(";")
     if not sid or value is None or value == "":
         raise OperationError(f"{where}: set_initial needs `id` and `antimony` — the new value, "
-                             "a number like '5' or a symbol like 'A_init' to keep it estimated. "
-                             "NOTHING was applied.")
+                             "a number like '5' (estimated from there; exactly 0 or 1 stays "
+                             "fixed) or a symbol like 'A_init'. NOTHING was applied.")
     _reject_semicolons(where, antimony=str(value))
     # Found on the MASK, rewritten in the original: the terminating `;` is optional here exactly as
     # it is in `assigned_symbols`, because a pattern that required it reported a symbol as unknown

@@ -36,12 +36,10 @@ only for a genuinely one-way step: synthesis, degradation, an irreversible catal
 ## Every kinetic quantity must be a NAMED parameter
 
 A bare number in a rate law is frozen — the fit cannot touch it, so a wrong guess can never be
-corrected. Wrong: `prod: -> x1; 10 * K^2/(K^2 + x3^2)` — the max rate and both exponents are
-hard-coded. Right: `prod: -> x1; alpha * K^n/(K^n + x3^n)`. **Exponents are the costly case**:
-`x^4` pins cooperativity at 4 forever.
-
-Only *structural* constants stay literal: stoichiometric coefficients (`2 A -> B`) and the `1`
-in a Hill/Michaelis–Menten denominator (see below: a parameter must never be one).
+corrected.
+Wrong: `prod: -> x1; 10 * K^2/(K^2 + x3^2)` — the max rate and both exponents are hard-coded.
+Right: `prod: -> x1; alpha * K^n/(K^n + x3^n)` — `n` estimated, so cooperativity is a finding.
+Exponents are the trap here: a literal `x^4` asserts cooperativity of 4 and no fit can revise it.
 
 ## Naming
 
@@ -70,9 +68,8 @@ in a Hill/Michaelis–Menten denominator (see below: a parameter must never be o
 
 ## A parameter can read back as `name = ;`
 
-A parameter with no SBML value serializes as `name = ;` — how an estimated parameter whose value
-lives in the PEtab table round-trips. Not corruption, not zero: the value is in the table.
-Write a plausible number instead — an empty value lands a NaN nominal on the row.
+A parameter with no SBML value serializes as `name = ;`: not corruption, not zero — the value
+lives in the PEtab table. Write a plausible number yourself; an empty value lands a NaN nominal.
 
 ## Parse errors that actually happen
 

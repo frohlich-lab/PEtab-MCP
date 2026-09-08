@@ -34,7 +34,9 @@ from petab.v1.C import (
     UPPER_BOUND,
 )
 
-from . import criteria, reconcile as _reconcile
+from . import criteria
+from . import literals as _literals
+from . import reconcile as _reconcile
 from .constants import (
     NOISE_SIGMA_MIN_POINTS,
     NEW_BEST_MIN_DELTA_SCORE,
@@ -1247,9 +1249,11 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
                 {pid: str(session.problem.parameter_df.loc[pid, PARAMETER_SCALE])
                  for pid in fit["fitted"]}
                 if fit else None),
-            # The estimated-parameter count k, so the goodness-of-fit metrics (bic/reduced_chi2)
-            # are available even on a simulate-only pass where `fitted_parameters` is None.
+            # The estimated-parameter count, so the goodness-of-fit metrics (bic/reduced_chi2)
+            # are available even on a simulate-only pass where `fitted_parameters` is None —
+            # plus the literals `complexity_k` prices on top of it (see :mod:`literals`).
             "n_estimated": int(session.problem.n_estimated),
+            "hardcoded_constants": _literals.hardcoded_constants(session.model.sbml_model),
             # ...and the count the data actually see, which is what TIC charges for. Otherwise
             # harness-facing: fit_result_block and goodness_of_fit deliberately do not copy it.
             "k_eff": k_eff,
@@ -1725,9 +1729,10 @@ def fit_summary(session, engine) -> dict[str, Any]:
     penalised :func:`goodness_of_fit` scores, ``parameters_at_bound`` (see
     :func:`parameters_at_bound`), ``noise_sigma_report`` (see :func:`noise_sigma_report`), and
     ``residual_structure`` (see :func:`data_access.residual_structure_rollup`).
-    ``k`` uses ``n_estimated`` (well-defined even on a simulate-only pass). Pairs fitted values
-    with their estimation scale even when a restored/rollback payload lacks the map, so a linear
-    value is never misread as a log10 one.
+    ``k`` is :func:`complexity_k` — ``n_estimated`` plus the model's ``hardcoded_constants``
+    (well-defined even on a simulate-only pass); both addends ride on the result. Pairs fitted
+    values with their estimation scale even when a restored/rollback payload lacks the map, so a
+    linear value is never misread as a log10 one.
 
     Both adequacy verdicts ride on this read: it is the score read for every caller that did not
     run the fit — the analysts, the harness finish gate, the final scoring.
@@ -1741,9 +1746,13 @@ def fit_summary(session, engine) -> dict[str, Any]:
     pdf = session.problem.parameter_df
     out["parameter_scales"] = _parameter_scales_for(
         out.get("fitted_parameters"), out.get("parameter_scales"), pdf)
+    # Live counts, not the payload's: `ensure_simulation` guarantees the simulation matches the
+    # working model, and a restored legacy payload may predate either field.
+    out["n_estimated"] = int(session.problem.n_estimated)
+    out["hardcoded_constants"] = _literals.hardcoded_constants(session.model.sbml_model)
+    out["k"] = complexity_k(out)
     out.update(goodness_of_fit(
-        sim.get("neg_log_likelihood"), sim.get("chi2"),
-        int(session.problem.n_estimated), sim.get("n_data_points"),
+        sim.get("neg_log_likelihood"), sim.get("chi2"), out["k"], sim.get("n_data_points"),
         criterion=session.criterion, k_eff=sim.get("k_eff"),
     ))
     out["parameters_at_bound"] = parameters_at_bound(out.get("fitted_parameters"), pdf)
@@ -1822,7 +1831,7 @@ def compute_improvement(
     """
     fitsim = fitsim or {}
     scores = goodness_of_fit(
-        nllh, fitsim.get("chi2"), fitsim.get("n_estimated"), fitsim.get("n_data_points"),
+        nllh, fitsim.get("chi2"), complexity_k(fitsim), fitsim.get("n_data_points"),
         criterion=session.criterion, k_eff=fitsim.get("k_eff"),
     )
     score = scores.get("criterion_value")
@@ -1864,6 +1873,19 @@ def compute_improvement(
     }
 
 
+def complexity_k(fitsim: dict[str, Any] | None) -> int | None:
+    """The ``k`` every penalised score charges: a payload's ``n_estimated`` plus its
+    ``hardcoded_constants`` (see :mod:`literals`), so a value frozen into a rate law costs
+    exactly what estimating it costs. ``None`` when the payload carries no ``n_estimated``; a
+    payload without ``hardcoded_constants`` predates the count and is charged none.
+    """
+    fitsim = fitsim or {}
+    k = fitsim.get("n_estimated")
+    if k is None:
+        return None
+    return int(k) + len(fitsim.get("hardcoded_constants") or ())
+
+
 def goodness_of_fit(
     nll: float | None, chi2: float | None, k: int | None, n: int | None,
     criterion: "criteria.Criterion | None" = None, *, k_eff: float | None = None,
@@ -1892,13 +1914,13 @@ def goodness_of_fit(
       sigmas are ESTIMATED, chi2 pins near ``n`` by construction, so reduced_chi2 ≈ 1 and the
       p-value are uninformative — rank models by ``criterion_value``, not by these.
 
-    ``k`` is the number of estimated parameters, ``n`` the number of data points, ``k_eff`` the
-    fit's effective count (``None`` when the fit did not produce one). The criterion scores are
-    ``None`` when ``nll``/``k``/``n`` are missing, and each is additionally ``None`` where that
-    criterion is undefined (``aicc`` at ``n <= k+1``, ``hqc`` below ``n = 3``, ``tic`` without a
-    ``k_eff``); the
-    chi2-based fields (``chi2_dof``, ``reduced_chi2``, ``chi2_gof_pvalue``) are ``None`` when the
-    degrees of freedom ``n - k`` are non-positive (an under-determined fit) or ``chi2`` is
+    ``k`` is the complexity count — :func:`complexity_k`: the estimated parameters plus the
+    model's hardcoded constants — ``n`` the number of data points, ``k_eff`` the fit's effective
+    count (``None`` when the fit did not produce one). The criterion scores are ``None`` when
+    ``nll``/``k``/``n`` are missing, and each is additionally ``None`` where that criterion is
+    undefined (``aicc`` at ``n <= k+1``, ``hqc`` below ``n = 3``, ``tic`` without a ``k_eff``).
+    The chi2-based fields (``chi2_dof``, ``reduced_chi2``, ``chi2_gof_pvalue``) are ``None`` when
+    the degrees of freedom ``n - k`` are non-positive (an under-determined fit) or ``chi2`` is
     missing.
     """
     crit = criterion or criteria.Criterion()
@@ -1985,14 +2007,15 @@ def fit_result_block(
     nll = fitsim.get("neg_log_likelihood")
     chi2 = fitsim.get("chi2")
     n = fitsim.get("n_data_points")
-    # k = number of estimated parameters (n_estimated) — the honest BIC complexity count. It
-    # matches compute_improvement / record_fit_progress / fit_summary and includes any inner
-    # (analytically-profiled) params that len(fitted_parameters) omits, so the block's bic agrees
-    # with improvement.bic within the same result. Fall back to len(fitted_parameters) only when
-    # the payload carries no n_estimated (legacy simulate-only payloads).
-    k = fitsim.get("n_estimated")
+    # k = complexity_k: n_estimated (which includes any inner, analytically-profiled params that
+    # len(fitted_parameters) omits) plus the hardcoded constants — matching compute_improvement /
+    # record_fit_progress / fit_summary, so the block's bic agrees with improvement.bic within the
+    # same result. Fall back to len(fitted_parameters) only when the payload carries no
+    # n_estimated (legacy simulate-only payloads).
+    k = complexity_k(fitsim)
     if k is None and fitted is not None:
         k = len(fitted)
+    constants = fitsim.get("hardcoded_constants") or []
     block = {
         "fit_status": fitsim.get("status"),
         # The multistart count the fit actually ran with (``None`` for a restored version, which
@@ -2013,10 +2036,14 @@ def fit_result_block(
         # and the likelihood came from the optimizer rather than the re-simulation.
         "n_missing_simulations": fitsim.get("n_missing_simulations"),
         "objective_note": fitsim.get("objective_note"),
-        # Surface the estimated-parameter count k next to the scores so the parameter penalty
-        # in bic = k*ln(n) + 2*nll (or whichever criterion the run ranks by) is legible —
-        # adding a free parameter must earn its keep.
-        "n_estimated": k,
+        # Surface k next to the scores so the parameter penalty in bic = k*ln(n) + 2*nll (or
+        # whichever criterion the run ranks by) is legible — adding a free parameter must earn
+        # its keep — and its two addends, so a k that exceeds n_estimated is explained by the
+        # literals listed rather than read as a bug. The list rides only when non-empty: it is
+        # re-sent in the caller's history every later turn.
+        "n_estimated": fitsim.get("n_estimated"),
+        "k": k,
+        **({"hardcoded_constants": constants} if constants else {}),
         # fitted_parameters: LINEAR (unscaled) values; parameter_scales: each one's estimation
         # scale (lin/log10). Kept side by side so a linear value is never misread as a log10 one.
         "fitted_parameters": fitted,

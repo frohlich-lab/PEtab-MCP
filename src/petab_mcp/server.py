@@ -726,6 +726,9 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         applied or reverted because the fit failed; `error`/`issues` says which. Then `committed`:
         `true` → a version exists, read `bic`; `false` with `no_change` → the change applied but
         this structure already IS a version, so change something else.
+        `bic` charges `k` = `n_estimated` + `hardcoded_constants`: a numeric literal in your
+        model's math is a parameter too, bar a few structural ones, so freezing a fitted value
+        costs what estimating it costs — estimate it. What you pay for is listed.
         Nothing else rides on the result: the reconcile/validation reports and the parameter diff
         are not a score, so read the reconciled model on demand through `get_model_structure`
         (which also carries the per-species initial-condition account) or `get_parameters`.
@@ -1101,7 +1104,10 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         hqc, tic, criterion, criterion_value, chi2_dof, reduced_chi2, chi2_gof_pvalue}` (lower is
         better). `criterion` names the penalty this run ranks by (`bic` unless configured
         otherwise) and `criterion_value` is that score — the one to rank models by; the named
-        scores are always reported at their textbook weight whichever is active.
+        scores are always reported at their textbook weight whichever is active. The `k` they
+        charge rides with its two addends: `n_estimated` (the estimated parameter rows) and
+        `hardcoded_constants` (the literals being charged, one parameter each — see
+        `make_changes`).
         `reduced_chi2`/`chi2_gof_pvalue` are only meaningful with a KNOWN noise level: when the
         observable noise sigmas are ESTIMATED, chi2 pins near `n_data_points` by construction, so
         reduced_chi2 ≈ 1 and its p-value are uninformative — do not use them as a fit-adequacy

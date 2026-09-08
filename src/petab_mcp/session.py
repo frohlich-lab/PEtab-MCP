@@ -698,13 +698,16 @@ class PetabSession:
                 pass
         nll = (sim or {}).get("neg_log_likelihood")
         fitted = (sim or {}).get("fitted_parameters")
-        # k = n_estimated (the honest complexity count). self.problem.n_estimated is
-        # authoritative for the state being snapshotted; len(fitted_parameters) can differ (it
-        # omits analytically-profiled inner params), so it is only a last-resort fallback.
-        k = (sim or {}).get("n_estimated")
+        # k = complexity_k (n_estimated + hardcoded constants) — the honest complexity count. The
+        # live problem/model is authoritative for the state being snapshotted when the payload
+        # lacks the counts; len(fitted_parameters) can differ (it omits analytically-profiled
+        # inner params), so it is only a last-resort fallback.
+        k = fitting.complexity_k(sim)
         if k is None:
             try:
-                k = int(self.problem.n_estimated)
+                k = fitting.complexity_k({
+                    "n_estimated": int(self.problem.n_estimated),
+                    "hardcoded_constants": self.hardcoded_constants()})
             except Exception:  # noqa: BLE001 - scores are advisory metadata; never fail a snapshot
                 k = len(fitted) if fitted is not None else None
         # EVERY criterion by name, not just the one this run ranks by: the meta is what the
@@ -822,13 +825,24 @@ class PetabSession:
             saved_optimization = self.optimization
             fitting.fit_and_simulate(self, self.engine, do_fit=False, n_starts=0)
             self.optimization = saved_optimization
-        # A payload restored from a stored version predates the n_estimated field; stamp it
-        # (from the just-applied version's parameter table) so fit_result_block can still
-        # derive k and report the goodness-of-fit metrics on a restore.
+        # A payload restored from a stored version may predate the n_estimated or the
+        # hardcoded_constants field; stamp them (from the just-applied version's parameter table
+        # and model) so fit_result_block can still derive k and report the goodness-of-fit
+        # metrics on a restore.
         sim = self.simulation
-        if sim is not None and sim.get("n_estimated") is None:
-            sim["n_estimated"] = int(self.problem.n_estimated)
+        if sim is not None:
+            if sim.get("n_estimated") is None:
+                sim["n_estimated"] = int(self.problem.n_estimated)
+            if sim.get("hardcoded_constants") is None:
+                sim["hardcoded_constants"] = self.hardcoded_constants()
         return sim
+
+    def hardcoded_constants(self) -> list[str]:
+        """The working model's priced literals (see :mod:`literals`) — the addend that turns
+        ``n_estimated`` into the ``k`` every score charges."""
+        from . import literals
+
+        return literals.hardcoded_constants(self.model.sbml_model)
 
     # -- nesting check on a fresh commit -----------------------------------
     def _check_nesting_vs_parent(
@@ -929,10 +943,10 @@ class PetabSession:
         nll = fitsim.get("neg_log_likelihood")
         chi2 = fitsim.get("chi2")
         n = fitsim.get("n_data_points")
-        # k = estimated-parameter count. Use n_estimated (the estimate=1 count) so this score
+        # k = complexity_k (the estimate=1 count plus the hardcoded constants) so this score
         # matches the judge's — it counts k the same way (fitted_parameters can include
         # inner/fixed params).
-        k = fitsim.get("n_estimated")
+        k = fitting.complexity_k(fitsim)
         gof = fitting.goodness_of_fit(nll, chi2, k, n, criterion=self.criterion,
                                       k_eff=fitsim.get("k_eff"))
         score = gof.get("criterion_value")

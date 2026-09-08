@@ -46,8 +46,8 @@ A condition-set initial value is an experimental *input*, not a value to fit.
 - The rows with `estimate=0` are the complete set of constants you were given. A quantity you
   believe you know but which is not in that set must still be **estimated**.
 - To hold a value fixed, BUILD ON a constant the problem ships with `estimate=0` and keep
-  declaring it. A literal hides the quantity from the table; an ultra-narrow box leaves the row
-  `estimate=1` — still free, and still counted in k.
+  declaring it. Writing the number as a literal does not make it fixed — it makes it unfittable,
+  which is not the same thing; and an ultra-narrow box leaves the row `estimate=1` either way.
 - Whether an **initial condition** is estimated is likewise a table property you cannot set
   here — it is DERIVED from the initial value you write in the model. Renaming it in the model —
   `A_init`, `A_basal`, `p0_A` — changes nothing.
