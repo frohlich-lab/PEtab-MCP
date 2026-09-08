@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import pytest
 from petab.v1.models.sbml_model import SbmlModel
 
 from petab_mcp.validation import (
     _fixed_constant_role_issues,
     _unused_condition_target_issues,
     frozen_parametric_stoichiometry_issues,
-    stoichiometry_conflict_issues,
     validate_problem,
 )
 
@@ -148,17 +146,10 @@ def test_different_symbols_on_both_sides_are_both_flagged():
     assert "N" in joined and "M" in joined
 
 
-def test_same_symbol_both_sides_conversion_conflict_is_recognized():
-    # The SAME symbol on both sides makes libantimony collide two species-reference ids, so the
-    # conversion (raw from_antimony) fails; stoichiometry_conflict_issues turns that opaque libSBML
-    # error into the #89 guidance.
-    with pytest.raises(Exception) as exc:  # petab raises RuntimeError from antimony2sbml
-        SbmlModel.from_antimony("N A -> N B; k*A; N=2; k=0.1", model_id=None)
-    issues = stoichiometry_conflict_issues(exc.value)
+def test_same_symbol_both_sides_is_flagged():
+    # The SAME symbol on both sides converts, but only the first occurrence keeps the frozen
+    # coefficient — the rest become `<reaction>_<species>_stoich` assignment rules reading the
+    # dropped symbol. The one frozen reference is enough to flag the model.
+    issues = _stoich_issues("N A -> N B; k*A; N=2; k=0.1")
     assert [i["check"] for i in issues] == ["symbolic_stoichiometry"]
-    assert "N" in issues[0]["message"] and "both sides" in issues[0]["message"]
-
-
-def test_conflict_detector_ignores_unrelated_errors():
-    assert stoichiometry_conflict_issues("Failed to parse antimony model: syntax error") == []
-    assert stoichiometry_conflict_issues(RuntimeError("some other libSBML complaint")) == []
+    assert "N" in issues[0]["message"]

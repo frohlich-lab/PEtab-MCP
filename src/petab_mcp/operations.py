@@ -33,11 +33,7 @@ from .constants import NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD, WIDENING_NEGLIGIBLE
 from .errors import ModelUpdateError, PetabMcpError, ValidationError
 from .parameters import estimated_mask
 from .references import resolve_references
-from .validation import (
-    frozen_parametric_stoichiometry_issues,
-    stoichiometry_conflict_issues,
-    validate_problem,
-)
+from .validation import frozen_parametric_stoichiometry_issues, validate_problem
 
 # AMICI reserves a handful of short symbols for its generated code (the state vector ``x``,
 # parameters ``p``, constants ``k``, expressions ``w``, time ``t``, the Heaviside/root vector
@@ -561,17 +557,6 @@ def set_model(
         try:
             candidate = SbmlModel.from_antimony(antimony, model_id=None)
         except Exception as exc:
-            # A symbol reused as a stoichiometry coefficient (e.g. the SAME parameter on both sides,
-            # `N A -> N B`) makes libantimony stamp two species references with the same id, which
-            # collides and fails the conversion — the same #89 footgun, so give the actionable
-            # guidance instead of the opaque libSBML error (see validation.stoichiometry_conflict_issues).
-            conflict = stoichiometry_conflict_issues(exc)
-            if conflict:
-                raise ValidationError(
-                    "make_changes rejected: a reaction reuses a parameter/symbol as a stoichiometry "
-                    "coefficient (e.g. on both sides), which Antimony cannot represent.",
-                    issues=[i["message"] for i in conflict],
-                ) from exc
             raise ModelUpdateError(
                 f"Failed to parse antimony model: {exc}.{_antimony_parse_hint(antimony, exc)}"
             ) from exc

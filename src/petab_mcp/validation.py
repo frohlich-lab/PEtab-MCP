@@ -469,9 +469,14 @@ def frozen_parametric_stoichiometry_issues(sbml_model) -> list[dict[str, Any]]:
     libantimony leaves exactly one fingerprint of the frozen symbol: it sets the
     ``SpeciesReference`` **id** to the original symbol name. A literal coefficient (``-> 2 X``)
     leaves the id UNSET, so the two cases — which carry an identical numeric ``stoichiometry`` —
-    are cleanly distinguishable on the converted SBML (verified against libantimony/libroadrunner
-    2.9). This is why the check reads the CONVERTED model rather than trying to re-parse the
-    Antimony source.
+    are cleanly distinguishable on the converted SBML (verified against libantimony 3.2). This is
+    why the check reads the CONVERTED model rather than trying to re-parse the Antimony source.
+
+    Reusing ONE symbol across several stoichiometries (``N A -> N B``) freezes and drops it exactly
+    the same way, but only the FIRST occurrence keeps the fingerprint: the rest become
+    ``<reaction>_<species>_stoich`` species references driven by an assignment rule that reads the
+    now-undeclared symbol. One flagged reference is enough to reject the model, so the extra
+    shape needs no separate detection.
 
     Scope: this is an Antimony-CONVERSION artifact, so it is run on the freshly-converted candidate
     at the ``set_model`` authoring boundary (see :func:`operations.set_model`), NOT wired into
@@ -562,57 +567,6 @@ def _frozen_stoichiometry_message(rid, side: str, species: str, symbol: str, fro
         f"directly as a literal (e.g. '{frozen:g} {species}' or '2.0 {species}'), which is preserved correctly. If it must be "
         "ESTIMATED it cannot be a stoichiometry at all — a reaction's single rate drives every "
         f"participant, so {split}, keeping '{symbol}' a real estimated parameter in the rate law."
-    )
-
-
-def stoichiometry_conflict_issues(conversion_error) -> list[dict[str, Any]]:
-    """Recognize the ONE Antimony→SBML *conversion failure* that is really a #89 footgun.
-
-    When a symbol is used as a stoichiometry coefficient in more than one place — most naturally
-    the SAME symbol on both sides of a reaction (``N A -> N B``) — libantimony names both species
-    references after that symbol, and the two collide under SBML's id-uniqueness rule, so the
-    conversion FAILS with an opaque libSBML error instead of producing a model
-    :func:`frozen_parametric_stoichiometry_issues` could inspect. libantimony sets a species
-    reference id ONLY for a symbolic stoichiometry, so a species-reference id conflict during
-    conversion uniquely signals this same footgun — surface the actionable guidance rather than
-    the raw libSBML text. Returns the standard issue list if the error matches, else ``[]`` (the
-    caller then reports the parse error as usual). Best-effort: any failure yields ``[]``.
-    """
-    try:
-        text = str(conversion_error or "")
-        low = text.lower()
-        if "speciesreference" not in low or "conflict" not in low:
-            return []
-        # Best-effort pull of the offending name from "... <speciesReference> id 'NAME' conflicts".
-        symbol = ""
-        anchor = low.find("speciesreference")
-        id_at = low.find("id '", anchor)
-        if id_at != -1:
-            start = id_at + len("id '")
-            end = text.find("'", start)  # slice the ORIGINAL text to keep the symbol's case
-            if end != -1:
-                symbol = text[start:end]
-        return [{
-            "level": "error",
-            "message": _stoichiometry_conflict_message(symbol),
-            "check": "symbolic_stoichiometry",
-        }]
-    except Exception:  # noqa: BLE001 - detection must never mask the underlying parse error
-        return []
-
-
-def _stoichiometry_conflict_message(symbol: str) -> str:
-    sym = f"'{symbol}'" if symbol else "a parameter/symbol"
-    return (
-        f"A reaction uses {sym} as a stoichiometry coefficient in more than one place (e.g. the "
-        "SAME symbol on both sides of a reaction). Antimony represents a symbolic stoichiometry by "
-        f"naming the species reference after the symbol, so reusing {sym} makes two references "
-        "collide and the Antimony→SBML conversion fails outright. As with any symbolic "
-        "stoichiometry the coefficient would be frozen to a constant and the parameter dropped — it "
-        "cannot be estimated this way. If the coefficients are known whole numbers, write the "
-        "integers directly (e.g. '2 A -> 2 B'). If a factor must be ESTIMATED, move it into the "
-        f"rate law with {sym} as a real parameter — split the reaction so each species' flux is "
-        "scaled independently — rather than writing it as a stoichiometry."
     )
 
 
