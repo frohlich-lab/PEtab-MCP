@@ -5,7 +5,7 @@ NOT :mod:`petab_mcp.validation`, which lints a PEtab problem for structural erro
 * **fixed-θ** (:func:`score_problem`) — the same problem under conditions the training set does not
   cover, so the fitted parameters carry over and the model is EVALUATED at them (fujita's EGF
   pulses and ramps). Nothing is fitted, and no inner solve either.
-* **transfer** (:func:`transfer_view`) — the same MECHANISM on a different system, whose parameters
+* **transfer** (:func:`refit_problem`) — the same MECHANISM on a different system, whose parameters
   are not the training ones (oliveira's Bahia). The fitted point means nothing there, so both the
   candidate and the reference structure are REFIT on the held-out data and compared by nll and by
   BIC over ``k`` estimated parameters and ``n`` held-out rows. A held-out set that brings its own
@@ -380,12 +380,109 @@ def transfer_view(problem, held_out: HeldOut, shipped_parameter_df):
     return view, None
 
 
-def score_session(session, engine, held_out: HeldOut) -> dict[str, Any]:
-    """The session's CURRENT model against ``held_out``.
+def refit_problem(problem, *, build_dir: str | Path, model_name: str,
+                  n_starts: int) -> dict[str, Any]:
+    """REFIT ``problem`` on its own measurements and report the optimum — the transfer score.
 
-    :func:`score_problem` at the parameter table's ``nominalValue``\\ s, which is where every fit
-    writes its optimum back — so this scores exactly the model the judge is about to score on the
-    training data. A transfer set's own refit is not wired up here yet.
+    ``problem`` is already the held-out problem, and its ``nominalValue``\\ s are the START point
+    (the candidate's training optimum via :func:`transfer_view`; the collection's published values
+    for the reference). Every ``estimate = 1`` row is refit and ``k`` counts exactly those, so it is
+    the same ``k`` the training score uses. Nothing is written back.
+
+    One implementation, both sides, on the server's own fitting path — Fides on AMICI
+    sensitivities, start-0 seeded at the nominal point, whose objective is also taken as a
+    candidate optimum (a start whose gradient fails at iteration 0 would otherwise lose a good
+    point). The per-start cap and the worker count are NOT arguments: both sides run on the
+    server's own budget (``PETAB_MCP_FIT_PER_START_TIMEOUT``, ``PETAB_MCP_FIT_N_WORKERS``), the same
+    one the fit that produced the candidate ran on, so neither side can be given a wider search
+    than the other by its caller.
+
+    Returns ``{status, mode, nll, k, n, chi2, n_conditions, observables, n_starts, n_converged,
+    fitted}`` or ``{status, reason}`` for :data:`STATUS_NO_DATA`,
+    :data:`STATUS_TABLE_MISMATCH`, :data:`STATUS_FLATTENING_REQUIRED` or
+    :data:`STATUS_NON_FINITE`.
+    """
+    import copy
+    import logging
+
+    import numpy as np
+    import pypesto.optimize
+    import pypesto.petab
+    from pypesto.C import FVAL
+    from pypesto.C import RDATAS as PP_RDATAS
+
+    from .engine import AmiciEngine, _ensure_swig_on_path
+    from .fitting import (FIT_SEED, _apply_amici_solver_defaults, _fides_maxtime_options,
+                          _fit_engine, _fitted_values, problem_x_full_from_nominal)
+
+    measurement_df = problem.measurement_df
+    if measurement_df is None or len(measurement_df) == 0:
+        return {"status": STATUS_NO_DATA, "reason": "the held-out measurement table is empty"}
+    mismatch = _table_mismatch(problem, measurement_df)
+    if mismatch:
+        return {"status": STATUS_TABLE_MISMATCH, "reason": mismatch}
+    view = copy.copy(problem)
+    view.parameter_df = problem.parameter_df.copy()
+    view.visualization_df = None
+    unsupported = _unsupported_reason(view, view)
+    if unsupported:
+        return {"status": STATUS_FLATTENING_REQUIRED, "reason": unsupported}
+
+    _ensure_swig_on_path()
+    np.random.seed(FIT_SEED)
+    importer = pypesto.petab.PetabImporter(view, output_folder=str(build_dir),
+                                          model_name=model_name)
+    pp = importer.create_problem()
+    _apply_amici_solver_defaults(pp)
+    x_start = np.asarray(problem_x_full_from_nominal(pp, view.parameter_df), dtype=float)
+    pp.set_x_guesses(x_start[None, :])
+    optimizer = pypesto.optimize.FidesOptimizer(
+        verbose=logging.ERROR, options=_fides_maxtime_options())
+    result = pypesto.optimize.minimize(
+        pp, optimizer=optimizer, n_starts=int(n_starts),
+        engine=_fit_engine(int(n_starts)), progress_bar=False)
+
+    finite = [r for r in result.optimize_result.list
+              if r.get("x") is not None and r.get("fval") is not None
+              and math.isfinite(float(r["fval"]))]
+    fvals = [float(r["fval"]) for r in finite]
+    best = min(finite, key=lambda r: float(r["fval"])) if finite else None
+    nll = float(best["fval"]) if best is not None else math.inf
+    x_best = None if best is None else np.asarray(best["x"], dtype=float)
+    x_red_start = pp.get_reduced_vector(x_start)
+    fval_start = float(pp.objective(x_red_start))
+    if math.isfinite(fval_start) and fval_start < nll:
+        nll, x_best = fval_start, x_start
+    if not math.isfinite(nll):
+        return {"status": STATUS_NON_FINITE,
+                "reason": "no multistart produced a finite optimum on the held-out system and the "
+                          "start point has none either (the model could not be integrated there, "
+                          "or its likelihood diverged)"}
+    ret = pp.objective(pp.get_reduced_vector(x_best), sensi_orders=(0,), return_dict=True)
+    res = AmiciEngine._res_from_rdatas(ret[PP_RDATAS])
+    k = int(sum(int(float(v)) == 1 for v in view.parameter_df[ESTIMATE]))
+    return {
+        "status": STATUS_OK,
+        "mode": MODE_TRANSFER,
+        "nll": float(ret[FVAL]),
+        "k": k,
+        "chi2": float(sum(float(v) ** 2 for v in res)) if res else None,
+        **_data_shape(measurement_df),
+        "n_starts": int(n_starts),
+        "n_converged": int(sum(1 for v in fvals if v <= nll + 1e-3)),
+        "fitted": _fitted_values(pp.x_names, x_best, getattr(pp, "x_free_indices", None),
+                                 view.parameter_df),
+    }
+
+
+def score_session(session, engine, held_out: HeldOut,
+                  n_starts: int | None = None) -> dict[str, Any]:
+    """The session's CURRENT model against ``held_out``, in the set's own mode.
+
+    Fixed-θ: :func:`score_problem` at the parameter table's ``nominalValue``\\ s, which is where
+    every fit writes its optimum back — so this scores exactly the model the judge is about to score
+    on the training data. Transfer: :func:`transfer_view` then :func:`refit_problem`, with the
+    session's own default multistart when ``n_starts`` is ``None``.
 
     Held under ``session.lock`` so the model and the table are one snapshot. The build target is
     ``session.sbml_hash()`` — the model STRUCTURE only, not ``problem_hash``, which also covers the
@@ -398,8 +495,14 @@ def score_session(session, engine, held_out: HeldOut) -> dict[str, Any]:
     """
     with session.lock:
         kwargs = engine.pypesto_importer_kwargs(session.sbml_hash())
-        return score_problem(session.problem, held_out.measurement_df,
-                             build_dir=kwargs["output_folder"], model_name=kwargs["model_name"])
+        build = {"build_dir": kwargs["output_folder"], "model_name": kwargs["model_name"]}
+        if held_out.mode == MODE_FIXED:
+            return score_problem(session.problem, held_out.measurement_df, **build)
+        view, failed = transfer_view(session.problem, held_out, session.shipped_parameter_df)
+        if failed:
+            return {**failed, "mode": MODE_TRANSFER}
+        starts = session.auto_fit_starts if n_starts is None else int(n_starts)
+        return refit_problem(view, n_starts=starts, **build)
 
 
 def read_held_out(measurements_path: str | Path) -> HeldOut:

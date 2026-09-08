@@ -1471,21 +1471,25 @@ def _register_validation_data_tools(mcp: FastMCP, ctx: _Ctx,
     session = ctx.session
 
     @mcp.tool()
-    def evaluate_validation_data() -> dict[str, Any]:
-        """Score the CURRENT model against HELD-OUT measurements.
+    def evaluate_validation_data(n_starts: int | None = None) -> dict[str, Any]:
+        """Score the CURRENT model against HELD-OUT measurements, in the held-out set's own mode.
 
         Harness-only (see the registrar's docstring): this is the benchmark judge's predictive
         check, not a modelling tool, and it is not offered to the panel.
 
-        Changes nothing — one objective evaluation of the model as it stands, at its current fitted
-        values, against data it was not fitted to. Returns
-        ``{status, mode, nll, n, chi2, n_conditions, observables}``; see
-        :mod:`petab_mcp.validation_data` for the statuses.
+        Changes nothing. A fixed-θ set is one objective evaluation of the model as it stands, at
+        its current fitted values, against data it was not fitted to. A TRANSFER set (one that
+        brings its own parameter table) REFITS the model's estimated parameters on the held-out
+        system with an ``n_starts`` multistart (the session's default when omitted) and reports the
+        optimum; the fitted point is not written back. Returns
+        ``{status, mode, nll, k, n, chi2, n_conditions, observables, ...}``; see
+        :mod:`petab_mcp.validation_data` for the statuses and the two modes.
         """
         return ctx.run(
             "evaluate_validation_data",
-            lambda: validation_data_mod.score_session(session, ctx.engine, held_out),
-            {})
+            lambda: validation_data_mod.score_session(session, ctx.engine, held_out,
+                                                      n_starts=n_starts),
+            {"n_starts": n_starts})
 
 
 # ------------------------------------------------------ provenance/version tools
@@ -1647,7 +1651,7 @@ def create_server(
     session's criterion under it.
 
     ``validation_measurements`` is a PEtab measurement TSV of HELD-OUT data — data the model is
-    never fitted to — with the set's own condition table beside it where it has one
+    never fitted to — with the set's own condition/parameter tables beside it where it has any
     (:func:`petab_mcp.validation_data.read_held_out`). Giving it registers
     ``evaluate_validation_data``, which the benchmark judge calls to score the finished model on
     that data; it is not offered to the agent (see ``_register_validation_data_tools``). Omit it and
