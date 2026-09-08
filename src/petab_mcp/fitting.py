@@ -1294,6 +1294,22 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
         return payload
 
 
+def score_at_nominal(session, engine) -> dict[str, Any]:
+    """Score a SHIPPED model at its table's ``nominalValue``s: compile, simulate, and report the
+    estimated parameters' nominal values as the fitted point (``{id: linear value}`` + scales),
+    labelled ``scored_at_nominal``. No optimiser runs. Used to judge a problem that arrives
+    finished (the harness's ``barebones`` driver); see ``docs/RATIONALE.md``."""
+    with session.lock:
+        payload = fit_and_simulate(session, engine, do_fit=False, n_starts=0)
+        pdf = session.problem.parameter_df
+        free = [str(pid) for pid in session.problem.x_free_ids if pid in pdf.index]
+        payload["fitted_parameters"] = {pid: float(pdf.loc[pid, NOMINAL_VALUE]) for pid in free}
+        payload["parameter_scales"] = {pid: str(pdf.loc[pid, PARAMETER_SCALE]) for pid in free}
+        payload["status"] = "scored_at_nominal"
+        session.simulation = payload
+        return payload
+
+
 def ensure_simulation(session, engine) -> dict[str, Any] | None:
     """Populate ``session.simulation`` with a simulate-only pass if it is empty, once a mechanism
     has been authored — but NEVER by compiling one.

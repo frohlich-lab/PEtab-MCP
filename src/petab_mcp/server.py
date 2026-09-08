@@ -1622,6 +1622,7 @@ def create_server(
     auto_fit_starts: int = DEFAULT_AUTO_FIT_STARTS,
     criterion: str | None = None,
     validation_measurements: str | None = None,
+    score_shipped_model: bool = False,
 ) -> FastMCP:
     """Build a FastMCP server bound to the PEtab problem at ``yaml_path``.
 
@@ -1650,6 +1651,10 @@ def create_server(
     FIXED and an IC of exactly 0 (an empty pool) gets no parameter at all (see
     ``reconcile.ensure_parametric_initial_conditions``); to keep another IC fixed, ship it as a
     fixed parameter row.
+
+    ``score_shipped_model`` (default off) compiles a problem that ships a model and scores it at
+    the table's nominal values before serving, with no fit (:func:`fitting.score_at_nominal`); a
+    model-less problem ignores it.
     """
     session = PetabSession(
         yaml_path,
@@ -1663,6 +1668,8 @@ def create_server(
     session.engine = engine
     session.auto_fit = auto_fit
     session.auto_fit_starts = auto_fit_starts
+    if score_shipped_model and session.model_authored():
+        fitting_mod.score_at_nominal(session, engine)
 
     # Load tool-usage skills up front so the server instructions only advertise
     # `list_skills`/`get_skill` when skills are actually available (registered below).
