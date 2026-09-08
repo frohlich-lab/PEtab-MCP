@@ -44,7 +44,9 @@ Resolved once per SESSION, by :func:`resolve` in ``PetabSession.__init__``: the 
 (``PETAB_MCP_CRITERION``), else plain BIC. The session holds the result as ``session.criterion``
 and every scorer — ``goodness_of_fit``, the checkpoint, the de-dup registry, the merge price — is
 handed that object. There is no module state, so two sessions in one process can rank by
-different criteria and nothing can change a session's criterion under it.
+different criteria and nothing can change a session's criterion under it. The first version kept
+it behind a module-level ``configure()``, and one caller's ``criterion="aicc"`` then re-scored
+every server built after it — invisibly, since the default call passes ``None``.
 """
 
 from __future__ import annotations
@@ -177,7 +179,10 @@ class Criterion:
         Constant in ``k`` for BIC (``ln(n)/2``), CAIC, AIC (``1``) and HQC, but not for AICc,
         whose correction steepens with every parameter already spent.
 
-        ``None`` under TIC, deliberately rather than AIC's 1 — see ``docs/RATIONALE.md``.
+        ``None`` under TIC, deliberately rather than AIC's 1: what deleting a parameter takes
+        off ``k_eff`` is knowable only after the refit, and for the pair a merge hint targets it
+        is about zero, because TIC never charged for that parameter. Pricing the merge at 1 would
+        promise a saving that is not there.
         """
         if k is None or k < 1:
             return None

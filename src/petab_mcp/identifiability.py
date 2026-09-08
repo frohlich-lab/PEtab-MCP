@@ -285,7 +285,13 @@ def _residual_rows(problem, x):
     ``InnerCalculatorCollector``) cannot, so its relative calculator's ``call_amici_twice`` — solve
     the inner problem at ``x``, then evaluate AMICI with those values filled in — is driven
     directly, with the arguments the collector would pass, and the full-width ``sres`` it returns
-    is cut to ``x_free_indices``. See ``docs/RATIONALE.md``.
+    is cut to ``x_free_indices``. Do not simplify that back to a residual-mode call on the
+    hierarchical objective: pyPESTO 0.6 leaves ``res``/``sres`` at their empty initial values and
+    raises ``TypeError: 'NoneType' object is not subscriptable`` on the gradient, and the path
+    that does fill them is reached only when a Hessian is requested, which ``ObjectiveBase``
+    refuses in residual mode. Without the detour the count is ``None`` for every fit with an
+    inner-solved sigma, i.e. most real examples; the hand-driven scores agree with the profiled
+    objective's own gradient to 3e-7 relative, which is the envelope theorem.
     """
     import numpy as np
     from pypesto.C import MODE_RES, RDATAS, RES, SRES
@@ -385,14 +391,16 @@ def effective_parameter_count(problem, x_free, *, k: int | None = None) -> float
 
     ``k`` is the estimated-parameter count the run charges for; a hierarchical fit's inner-solved
     parameters (sigmas, scalings, offsets) have no coordinate in ``x_free`` and no row in ``H``,
-    and are charged one unit each (the ``k − m`` of them). Best-effort in the strong sense: ANY
-    failure is ``None``, and ``None`` is "no count", never a fallback to ``k``. Evaluates the
+    and are charged one unit each (the ``k − m`` of them) rather than dropped, because a profiled
+    parameter the data pin is exactly where the count and the trace agree. Best-effort in the
+    strong sense: ANY failure is ``None``, and ``None`` is "no count", never a fallback to ``k`` —
+    a ``k`` standing in for a missing measurement would read as "the data determine every
+    parameter", the one conclusion this statistic exists to be able to contradict. Evaluates the
     built objective and nothing else — no importer, no hash, so no build (see
     :class:`fitting.FitRecord`). One sensitivity evaluation, the FIM's cost.
 
     ``docs/RATIONALE.md`` has why ``H`` is built from the rows rather than taken from the
-    objective, why the hierarchical path is driven by hand, and why the count reaches no
-    agent-facing result.
+    objective, and why the count reaches no agent-facing result.
     """
     try:
         import numpy as np

@@ -344,7 +344,7 @@ def test_resolve_refuses_an_unusable_explicit_criterion():
 def test_each_session_holds_its_own_criterion(yaml_path, tmp_path, monkeypatch):
     """The criterion is SESSION state, not module state: two sessions in one process rank by
     different criteria, and building one never changes what another scores by
-    (docs/RATIONALE.md)."""
+    (:mod:`petab_mcp.criteria`)."""
     from petab_mcp.session import PetabSession
 
     monkeypatch.delenv("PETAB_MCP_CRITERION", raising=False)
