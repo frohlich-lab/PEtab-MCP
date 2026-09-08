@@ -207,8 +207,14 @@ def _compute_fim(record):
     anything. There is no importer here, and no hash to resolve: that is the invariant, not an
     optimisation (see :class:`fitting.FitRecord`).
 
+    The matrix is :func:`_fim_from_rows`' — the same construction, off the same evaluation, that
+    :func:`effective_parameter_count` takes its ``H`` from, so the FIM the agent-facing statistics
+    invert and the one the effective count divides by are one object. The objective's own ``hess``
+    and ``sres.T @ sres`` remain as fallbacks, in that order, for an objective with no residual
+    mode; ``docs/RATIONALE.md`` has why neither leads.
+
     On a HIERARCHICAL fit that objective inner-solves the noise sigmas / observable scalings, so
-    its Hessian has only the OUTER coordinates and this is the REDUCED FIM. That is the right
+    the rows carry only the OUTER coordinates and this is the REDUCED FIM. That is the right
     object: the inner parameters are shipped by the observation model, so they define no mergeable
     direction, and every rank statement is made against the FIM's OWN dimension (see
     :func:`_identifiability_stats`) — never against the session's ``k``, which counts them.
@@ -226,8 +232,12 @@ def _compute_fim(record):
             a = np.asarray(a, dtype=float)
             return a.shape == (mfree, mfree) and np.isfinite(a).all()
 
-        # Preferred: the objective's Hessian (AMICI returns the FIM approximation for a
-        # Gaussian LSQ). Fallback: build the FIM from residual sensitivities sres^T sres.
+        try:
+            built = _fim_from_rows(problem, x_free)
+            if built is not None and _finite_square(built[0]):
+                return np.asarray(built[0], dtype=float)
+        except Exception:  # noqa: BLE001 - no residual mode here; ask for the Hessian instead
+            pass
         try:
             ret = problem.objective(x_free, sensi_orders=(0, 1, 2), return_dict=True)
             for key in ("hess", "HESS"):
@@ -297,6 +307,63 @@ def _residual_rows(problem, x):
     return res, sres, [len(r["res"]) for r in ret[RDATAS]]
 
 
+def _fim_from_rows(problem, x):
+    """``(H, S)`` at the free point ``x`` of the built pyPESTO ``problem``: the Fisher information,
+    and the per-measurement score rows it is summed from. ``None`` where the rows are not the
+    layout this pairing assumes, or the objective's residual mode cannot be evaluated there.
+
+    Both come off ONE evaluation of that objective's RESIDUAL mode with AMICI's sigma
+    pseudo-residuals on (:func:`_residual_rows`): each measurement then contributes two rows —
+    ``r = (m−y)/σ`` and ``ρ = √(2·ln σ + c)`` — whose ``res·sres`` products sum EXACTLY to that
+    point's score, the ``−∂ln σ`` term an estimated sigma adds included (the constant ``c`` cancels
+    in the product). AMICI lays a condition's rows out as the data half followed by the sigma half,
+    index-aligned, which is how they are paired here, and the flag is set for this one evaluation
+    and restored.
+
+    ``H`` is the Gauss-Newton information over the same rows, the data rows as they are and the
+    sigma rows weighted by ``ρ²`` — the exact Gaussian Fisher information
+    ``∂y∂yᵀ/σ² + 2·∂ln σ∂ln σᵀ`` per point, and NOT the ``hess`` the objective reports, which
+    leaves an ESTIMATED sigma at half its Fisher information. Both consumers invert it — the
+    agent-facing statistics of :func:`_identifiability_stats` through :func:`_compute_fim`, and
+    :func:`effective_parameter_count` — so they take it from here rather than each building their
+    own; ``docs/RATIONALE.md`` has the measured difference and why the flag is toggled by hand.
+
+    Raises whatever the objective raises: the callers differ in what they do with an objective that
+    has no residual mode (a fallback FIM, or no count at all), so that decision is theirs.
+    """
+    import numpy as np
+
+    x = np.asarray(x, dtype=float)
+    m = int(x.size)
+    if m == 0 or not np.isfinite(x).all():
+        return None
+
+    models = _amici_models(problem.objective)
+    before = [mdl.get_add_sigma_residuals() for mdl in models]
+    for mdl in models:
+        mdl.set_add_sigma_residuals(True)
+    try:
+        res, sres, blocks = _residual_rows(problem, x)
+    finally:
+        for mdl, flag in zip(models, before):
+            mdl.set_add_sigma_residuals(flag)
+    if sres.shape != (res.size, m) or not (np.isfinite(res).all() and np.isfinite(sres).all()):
+        return None
+    if not blocks or sum(blocks) != res.size or any(b % 2 for b in blocks):
+        return None
+    rows = res[:, None] * sres            # one row per residual: its res·∂res term
+    scores, start = [], 0
+    H = np.zeros((m, m))
+    for b in blocks:                      # fold each condition's sigma half onto its data half
+        half = b // 2
+        data, sigma = slice(start, start + half), slice(start + half, start + b)
+        scores.append(rows[data] + rows[sigma])
+        # ∂r∂rᵀ from the data rows, ρ²·∂ρ∂ρᵀ = ∂ln σ∂ln σᵀ from the sigma rows.
+        H += sres[data].T @ sres[data] + rows[sigma].T @ rows[sigma]
+        start += b
+    return H, np.vstack(scores)
+
+
 def effective_parameter_count(problem, x_free, *, k: int | None = None) -> float | None:
     """TIC's effective parameter count ``k_eff = tr(J·H⁻¹)`` at the FROZEN optimum ``x_free`` of
     the built pyPESTO ``problem`` — or ``None`` when it cannot be evaluated there.
@@ -312,15 +379,9 @@ def effective_parameter_count(problem, x_free, *, k: int | None = None) -> float
     says the model carries parameters the data cannot tell apart. It is also what TIC charges for
     in place of ``k``.
 
-    Both ``J`` and ``H`` come off ONE evaluation of the objective's RESIDUAL mode with AMICI's
-    sigma pseudo-residuals on (:func:`_residual_rows`): each measurement then contributes two
-    rows — ``r = (m−y)/σ`` and ``ρ = √(2·ln σ + c)`` — whose ``res·sres`` products sum EXACTLY to
-    that point's score, the ``−∂ln σ`` term an estimated sigma adds included (the constant ``c``
-    cancels in the product). AMICI lays a condition's rows out as the data half followed by the
-    sigma half, index-aligned, which is how they are paired here, and the flag is set for this one
-    evaluation and restored. ``H`` is the Gauss-Newton information over the same rows, the data
-    rows as they are and the sigma rows weighted by ``ρ²`` — the exact Gaussian Fisher information
-    ``∂y∂yᵀ/σ² + 2·∂ln σ∂ln σᵀ`` per point, and NOT the ``hess`` the objective reports.
+    Both ``J`` and ``H`` come off ONE evaluation, through :func:`_fim_from_rows` — the same call
+    that gives the diagnosis its FIM, so the matrix inverted here and the one the agent reads
+    standard errors and merge prices off cannot disagree.
 
     ``k`` is the estimated-parameter count the run charges for; a hierarchical fit's inner-solved
     parameters (sigmas, scalings, offsets) have no coordinate in ``x_free`` and no row in ``H``,
@@ -336,35 +397,11 @@ def effective_parameter_count(problem, x_free, *, k: int | None = None) -> float
     try:
         import numpy as np
 
-        x = np.asarray(x_free, dtype=float)
-        m = int(x.size)
-        if m == 0 or not np.isfinite(x).all():
+        built = _fim_from_rows(problem, x_free)
+        if built is None:
             return None
-
-        models = _amici_models(problem.objective)
-        before = [mdl.get_add_sigma_residuals() for mdl in models]
-        for mdl in models:
-            mdl.set_add_sigma_residuals(True)
-        try:
-            res, sres, blocks = _residual_rows(problem, x)
-        finally:
-            for mdl, flag in zip(models, before):
-                mdl.set_add_sigma_residuals(flag)
-        if sres.shape != (res.size, m) or not (np.isfinite(res).all() and np.isfinite(sres).all()):
-            return None
-        rows = res[:, None] * sres            # one row per residual: its res·∂res term
-        if sum(blocks) != res.size or any(b % 2 for b in blocks):
-            return None
-        scores, start = [], 0
-        H = np.zeros((m, m))
-        for b in blocks:                      # fold each condition's sigma half onto its data half
-            half = b // 2
-            data, sigma = slice(start, start + half), slice(start + half, start + b)
-            scores.append(rows[data] + rows[sigma])
-            # ∂r∂rᵀ from the data rows, ρ²·∂ρ∂ρᵀ = ∂ln σ∂ln σᵀ from the sigma rows.
-            H += sres[data].T @ sres[data] + rows[sigma].T @ rows[sigma]
-            start += b
-        S = np.vstack(scores)
+        H, S = built
+        m = int(H.shape[0])
 
         evals, evecs = np.linalg.eigh(H)
         eps = float(np.finfo(float).eps)
@@ -735,7 +772,12 @@ def identifiability(session, *, top_n: int = 8, corr_threshold: float = 0.9) -> 
         if record is None or stored.get("available"):
             return stored
     # FIM first — its free-parameter order is the record's, which is the canonical order here.
-    fim = _compute_fim(record)
+    # Under the session lock (an RLock, so the commit path already holding it is unaffected):
+    # building it flips the AMICI sigma-residual flag for one evaluation, and the objective it
+    # flips it on is the engine's own cached one (`fitting.estimation_problem`), which every
+    # simulate goes through. See ``docs/RATIONALE.md``.
+    with session.lock:
+        fim = _compute_fim(record)
     spread = _multistart_spread(record.optimization, list(record.x_names))
     # Roles keep the merge offers to edits a modeller would actually write: nothing mathematically
     # stops tying a kinetic rate to an observable scaling, and the arithmetic will call it free.

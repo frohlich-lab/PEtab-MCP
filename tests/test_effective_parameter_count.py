@@ -199,9 +199,13 @@ def test_the_sigma_residual_flag_is_on_for_the_evaluation_and_restored_after_it(
 
 def test_mismatched_row_counts_are_no_count_rather_than_a_wrong_one():
     """The pairing rests on the blocks summing to the residual vector and each having a sigma
-    half; anything else means the layout is not the one assumed."""
+    half; anything else means the layout is not the one assumed. An objective reporting NO
+    conditions at all is one of those: it sums to an empty residual vector, so the parity check
+    passes vacuously and only the emptiness itself refuses it."""
     obj = _Objective(np.ones(4), np.ones((4, 1)), blocks=[3])
     assert effective_parameter_count(_Problem(obj), np.zeros(1)) is None
+    empty = _Objective(np.zeros(0), np.zeros((0, 1)), blocks=[])
+    assert effective_parameter_count(_Problem(empty), np.zeros(1)) is None
 
 
 # -- where it rides --------------------------------------------------------

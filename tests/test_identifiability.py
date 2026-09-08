@@ -20,9 +20,10 @@ def _meta(*ids, scale="log10", est_scaled=1.0, at_bound=False):
 
 
 class _StubObjective:
-    """The one thing ``_compute_fim`` asks a pyPESTO objective for: a Hessian (or an sres to
-    square) at a point. Substituted so the ASSEMBLY around the FIM — the record, the coordinate
-    order, the staleness label — is testable without an AMICI build."""
+    """What ``_compute_fim`` FALLS BACK to when an objective has no residual mode (this one takes
+    no ``mode``, so the row-built FIM is unreachable through it): a Hessian, or an sres to square,
+    at a point. Substituted so the ASSEMBLY around the FIM — the record, the coordinate order, the
+    staleness label — is testable without an AMICI build."""
 
     def __init__(self, hess=None, sres=None):
         self.hess, self.sres = hess, sres
@@ -44,14 +45,14 @@ class _StubProblem:
 
 
 def _record(session, *, names=("k1", "k2"), x=(0.0, -1.0), hess=None, sres=None,
-            scales=("log10", "log10"), lb=(-4.0, -4.0), ub=(2.0, 2.0),
+            scales=("log10", "log10"), lb=(-4.0, -4.0), ub=(2.0, 2.0), objective=None,
             hierarchical=False, optimization=None, structure_hash=None, problem_hash=None):
     """A :class:`fitting.FitRecord` over the toy problem, with the FIM source stubbed."""
     from petab_mcp.fitting import FitRecord
     from petab_mcp.parameters import structure_fingerprint
 
     return FitRecord(
-        pypesto_problem=_StubProblem(_StubObjective(hess=hess, sres=sres), names),
+        pypesto_problem=_StubProblem(objective or _StubObjective(hess=hess, sres=sres), names),
         problem=session.problem,
         structure_hash=structure_hash or structure_fingerprint(
             session.problem.model.sbml_model, session.problem.parameter_df),
@@ -154,6 +155,97 @@ def test_an_unevaluable_objective_degrades_to_the_spread(session):
 
     assert out["fim"] is None and out["merge_candidates"] is None
     assert [p["id"] for p in out["parameters"]] == ["k1", "k2"]
+
+
+# -- which FIM the diagnosis inverts ---------------------------------------
+class _SigmaFlag:
+    """An AMICI model reduced to the flag :func:`identifiability._fim_from_rows` toggles."""
+
+    def __init__(self):
+        self.sigma_residuals = False
+        self.flags_seen: list[bool] = []
+
+    def get_add_sigma_residuals(self):
+        return self.sigma_residuals
+
+    def set_add_sigma_residuals(self, flag):
+        self.sigma_residuals = bool(flag)
+
+
+class _RowsObjective:
+    """A built objective in the shape the row-built FIM is driven through: residual mode with
+    AMICI's sigma pseudo-residuals, an AMICI model whose flag it toggles — and a DIFFERENT `hess`,
+    so which of the two the diagnosis inverts is observable rather than inferred."""
+
+    def __init__(self, res, sres, blocks, hess):
+        self.amici_model = _SigmaFlag()
+        self.res, self.sres, self.blocks, self.hess = res, sres, blocks, hess
+
+    def __call__(self, x, sensi_orders=(0,), mode="mode_fun", return_dict=False):
+        if mode != "mode_res":
+            return {"fval": 1.0, "hess": self.hess}
+        self.amici_model.flags_seen.append(self.amici_model.sigma_residuals)
+        return {"res": self.res, "sres": self.sres,
+                "rdatas": [{"res": [0.0] * b} for b in self.blocks]}
+
+
+def _sigma_objective():
+    """One estimated parameter, ln σ, on four residuals at the MLE of a shared sigma. Its Fisher
+    information is 2 per point, so the row-built FIM is 2n where the `hess` AMICI reports — the
+    data rows' sres alone — is n. Same construction as
+    tests/test_effective_parameter_count.py::test_an_estimated_sigma_carries_its_full_fisher_information.
+    """
+    rho, n = 3.0, 4
+    r = np.sqrt([1.5, 1.5, 0.5, 0.5]) * [1, -1, 1, -1]     # Σ r² = n
+    res = np.concatenate([r, np.full(n, rho)])
+    sres = np.concatenate([-r, np.full(n, 1.0 / rho)])[:, None]   # ∂r/∂lnσ = −r, ∂ρ/∂lnσ = 1/ρ
+    hess = float((r ** 2).sum())
+    return _RowsObjective(res, sres, [2 * n], np.array([[hess]])), hess
+
+
+def test_the_diagnosis_inverts_the_row_built_fim_not_the_objectives_hessian(session):
+    """REGRESSION: `hess` leaves an ESTIMATED sigma at HALF its Fisher information (AMICI drops the
+    term it documents dropping — docs/RATIONALE.md), and se_scaled / fold_uncertainty / the
+    correlations / every merge price are read off the INVERSE of this matrix, so each was reported
+    against a sigma the data pin twice as tightly as the matrix said. It is also the same matrix
+    `effective_parameter_count` divides by — one construction, one evaluation, one answer."""
+    from petab_mcp.identifiability import _compute_fim, effective_parameter_count
+
+    obj, hess = _sigma_objective()
+    record = _record(session, names=("sigma_B",), x=(0.0,), scales=("lin",), lb=(-4.0,),
+                     ub=(4.0,), objective=obj)
+
+    fim = _compute_fim(record)
+
+    assert fim == pytest.approx(np.array([[2.0 * hess]]))    # 2n, not the n `hess` reports
+    scores = obj.res[:4] * obj.sres[:4, 0] + obj.res[4:] * obj.sres[4:, 0]
+    assert effective_parameter_count(record.pypesto_problem, [0.0]) == pytest.approx(
+        float((scores ** 2).sum()) / float(fim[0, 0]))
+
+
+def test_the_sigma_residual_flag_is_restored_after_a_diagnosis(session):
+    """The diagnosis flips it on the objective the ENGINE simulates through — one pyPESTO problem
+    serves the fit and every evaluation (`fitting.estimation_problem`) — so leaving it on would
+    double the residual vector of every later simulation."""
+    obj, _ = _sigma_objective()
+    session.fit_record = _record(session, names=("sigma_B",), x=(0.0,), scales=("lin",),
+                                 lb=(-4.0,), ub=(4.0,), objective=obj)
+
+    assert identifiability(session)["fim"]["rank"] == 1
+
+    assert obj.amici_model.flags_seen == [True]
+    assert obj.amici_model.sigma_residuals is False
+
+
+def test_an_objective_with_no_residual_mode_still_gets_a_fim(session):
+    """The rows are PREFERRED, not required: the fallbacks stay, in their order, for an objective
+    that cannot answer in residual mode at all."""
+    from petab_mcp.identifiability import _compute_fim
+
+    hess = np.array([[4.0, 0.0], [0.0, 1.0]])
+    assert _compute_fim(_record(session, hess=hess)) == pytest.approx(hess)
+    sres = np.array([[1.0, 0.0], [0.0, 2.0], [1.0, 1.0]])
+    assert _compute_fim(_record(session, sres=sres)) == pytest.approx(sres.T @ sres)
 
 
 # -- merge candidates: which pairs could take ONE SHARED value --------------
