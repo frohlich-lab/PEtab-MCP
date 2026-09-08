@@ -116,15 +116,23 @@ def _table_mismatch(problem, measurement_df) -> str | None:
     return "; ".join(problems) or None
 
 
-def score_problem(problem, measurement_df, *, build_dir: str | Path,
-                  model_name: str) -> dict[str, Any]:
+def score_problem(problem, measurement_df, *, build_dir: str | Path, model_name: str,
+                  x_full: "list[float] | None" = None,
+                  x_names: "list[str] | None" = None) -> dict[str, Any]:
     """Evaluate ``problem``'s model at ONE fixed parameter point against ``measurement_df``.
 
     ``problem`` supplies everything but the data, and its ``nominalValue``\\ s are the point —
-    which is where every fit writes its optimum back. Nothing is optimised.
+    which is where every fit writes its optimum back, unless ``x_full`` overrides. Nothing is
+    optimised.
 
     ``build_dir``/``model_name`` name the pyPESTO output target — pass the pair the TRAINING
     problem was built with, so an identical model reuses its compiled module.
+
+    ``x_full``/``x_names`` (both or neither) give the point explicitly, on each parameter's
+    estimation scale in ``x_names`` order — for a caller holding a fitted vector that is NOT in the
+    table, e.g. a reference multistart's winning start. The names are CHECKED against this
+    problem's own, not assumed equal: a silent re-ordering would report a plausible, wrong
+    likelihood.
 
     Returns ``{status, nll, n, chi2, n_conditions, observables}`` or ``{status, reason}``. ``chi2``
     is the sum of squares of AMICI's weighted residual vector (via
@@ -140,6 +148,8 @@ def score_problem(problem, measurement_df, *, build_dir: str | Path,
     from .engine import AmiciEngine
     from .fitting import _apply_amici_solver_defaults, problem_x_from_nominal
 
+    if (x_full is None) != (x_names is None):
+        raise ValueError("score_problem: pass both x_full and x_names, or neither")
     if measurement_df is None or len(measurement_df) == 0:
         return {"status": STATUS_NO_DATA, "reason": "the held-out measurement table is empty"}
 
@@ -168,8 +178,24 @@ def score_problem(problem, measurement_df, *, build_dir: str | Path,
     pp = importer.create_problem()
     _apply_amici_solver_defaults(pp)
 
-    # `problem_x_from_nominal` owns the reduction convention and the scale question.
-    reduced = problem_x_from_nominal(pp, problem.parameter_df)
+    if x_full is None:
+        # `problem_x_from_nominal` owns the reduction convention and the scale question.
+        reduced = problem_x_from_nominal(pp, problem.parameter_df)
+    else:
+        if list(map(str, x_names)) != list(map(str, pp.x_names)):
+            raise ValueError(
+                "score_problem: the caller's x_names do not match the held-out problem's "
+                f"({list(x_names)[:5]}... vs {list(pp.x_names)[:5]}...); the vector would be "
+                "evaluated permuted")
+        # The name check says nothing about LENGTH, and a shorter `x_full` (one already reduced to
+        # free coordinates) would index in range and silently evaluate a mis-aligned point.
+        if len(x_full) != len(pp.x_names):
+            raise ValueError(
+                f"score_problem: x_full has {len(x_full)} value(s) for {len(pp.x_names)} "
+                "parameters; it must be the FULL vector (fixed parameters included), in x_names "
+                "order")
+        free = getattr(pp, "x_free_indices", None)
+        reduced = [x_full[i] for i in free] if free is not None else list(x_full)
 
     ret = pp.objective(np.asarray(reduced, dtype=float), sensi_orders=(0,), return_dict=True)
     nll = float(ret[FVAL])
