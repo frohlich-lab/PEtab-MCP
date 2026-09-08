@@ -201,6 +201,28 @@ def _data_shape(measurement_df) -> dict[str, Any]:
     }
 
 
+def score_session(session, engine, held_out: HeldOut) -> dict[str, Any]:
+    """The session's CURRENT model against ``held_out``.
+
+    :func:`score_problem` at the parameter table's ``nominalValue``\\ s, which is where every fit
+    writes its optimum back — so this scores exactly the model the judge is about to score on the
+    training data.
+
+    Held under ``session.lock`` so the model and the table are one snapshot. The build target is
+    ``session.sbml_hash()`` — the model STRUCTURE only, not ``problem_hash``, which also covers the
+    parameter table. That is the right key because it is the key the AMICI compile cache itself
+    uses: a module is a function of the SBML plus the free/fixed SPLIT, and a fixed-θ score leaves
+    the split alone (it evaluates at the training table's nominals). So this reuses whatever module
+    was compiled for the model and pays a
+    build only for a model nobody built (a restored version re-renders its SBML in a different
+    order) — bounded, once per run, after the agent has finished.
+    """
+    with session.lock:
+        kwargs = engine.pypesto_importer_kwargs(session.sbml_hash())
+        return score_problem(session.problem, held_out.measurement_df,
+                             build_dir=kwargs["output_folder"], model_name=kwargs["model_name"])
+
+
 def read_held_out(measurements_path: str | Path) -> HeldOut:
     """Load a held-out set from its measurement table and the optional tables beside it.
 

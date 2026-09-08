@@ -49,6 +49,7 @@ from . import operations as ops_mod
 from . import parameters as param_mod
 from . import regimes as regimes_mod
 from . import skills as skills_mod
+from . import validation_data as validation_data_mod
 from .constants import DEFAULT_AUTO_FIT_STARTS
 from .engine import AmiciEngine
 from .errors import PetabMcpError, UnknownEntityError, ValidationError
@@ -1441,6 +1442,46 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
                        {"sections": sections, "worst_n": worst_n, "top_n": top_n})
 
 
+# ------------------------------------------------- held-out validation (harness-only)
+def _register_validation_data_tools(mcp: FastMCP, ctx: _Ctx,
+                                    held_out: validation_data_mod.HeldOut) -> None:
+    """Register ``evaluate_validation_data`` — the HARNESS's read, never the agent's.
+
+    Registered only when :func:`create_server` was given a held-out measurement file, and
+    deliberately ABSENT from ``petab_harness.agent.tools.ALLOWED_TOOLS``, which is a strict
+    allowlist: the panel is handed the intersection of that set with the server's tools, so a tool
+    missing from it cannot reach any agent's context — not the lead's, not an analyst's. Two things
+    have to stay out of the agent's reach for a held-out score to mean anything: the held-out DATA
+    (which never enters the problem tree the server is pointed at, because the harness keeps it in
+    a sibling directory of ``problem/``) and the SCORE (which would otherwise be a fitness signal the
+    agent could optimise against by trial and error, turning the held-out set into training data
+    one tool call at a time).
+
+    Registering it as a normal MCP tool anyway, rather than reaching into the server's internals
+    from the harness, because the harness has no other way in: the session lives in a separate
+    process (see ``petab_harness.runner.server``), and the model + its fitted values exist only
+    there.
+    """
+    session = ctx.session
+
+    @mcp.tool()
+    def evaluate_validation_data() -> dict[str, Any]:
+        """Score the CURRENT model against HELD-OUT measurements.
+
+        Harness-only (see the registrar's docstring): this is the benchmark judge's predictive
+        check, not a modelling tool, and it is not offered to the panel.
+
+        Changes nothing — one objective evaluation of the model as it stands, at its current fitted
+        values, against data it was not fitted to. Returns
+        ``{status, mode, nll, n, chi2, n_conditions, observables}``; see
+        :mod:`petab_mcp.validation_data` for the statuses.
+        """
+        return ctx.run(
+            "evaluate_validation_data",
+            lambda: validation_data_mod.score_session(session, ctx.engine, held_out),
+            {})
+
+
 # ------------------------------------------------------ provenance/version tools
 def _register_provenance_tools(mcp: FastMCP, ctx: _Ctx) -> None:
     session = ctx.session
@@ -1580,6 +1621,7 @@ def create_server(
     auto_fit: bool = True,
     auto_fit_starts: int = DEFAULT_AUTO_FIT_STARTS,
     criterion: str | None = None,
+    validation_measurements: str | None = None,
 ) -> FastMCP:
     """Build a FastMCP server bound to the PEtab problem at ``yaml_path``.
 
@@ -1596,6 +1638,13 @@ def create_server(
     and held as ``session.criterion``, which every scorer is handed: there is no process state,
     so two servers in one process can rank by different criteria and nothing can change a
     session's criterion under it.
+
+    ``validation_measurements`` is a PEtab measurement TSV of HELD-OUT data — data the model is
+    never fitted to — with the set's own condition table beside it where it has one
+    (:func:`petab_mcp.validation_data.read_held_out`). Giving it registers
+    ``evaluate_validation_data``, which the benchmark judge calls to score the finished model on
+    that data; it is not offered to the agent (see ``_register_validation_data_tools``). Omit it and
+    no such tool exists.
 
     Initial conditions are ESTIMATED by default; an IC of exactly 1 (a unit normalization) is held
     FIXED and an IC of exactly 0 (an empty pool) gets no parameter at all (see
@@ -1628,6 +1677,12 @@ def create_server(
     _register_model_tools(mcp, ctx)
     _register_parameter_tools(mcp, ctx)
     _register_fit_tools(mcp, ctx)
+    if validation_measurements:
+        # Read ONCE, at startup: a per-call read would make the score depend on a file the run can
+        # no longer see (the harness runs from a scratch copy on the cluster) and would let a mid-run
+        # edit of the file change the bar under the judge.
+        _register_validation_data_tools(
+            mcp, ctx, validation_data_mod.read_held_out(validation_measurements))
     _register_provenance_tools(mcp, ctx)
     _register_resources(mcp, ctx)
     # Register the skills loaded above as `list_skills`/`get_skill` tools plus
