@@ -578,6 +578,115 @@ def _register_read_tools(mcp: FastMCP, ctx: _Ctx) -> None:
                         "summarize": summarize, "max_rows": max_rows, "offset": offset})
 
 
+# ``make_changes`` is registered under one of two SCHEMAS (see :func:`_diff_edits_enabled`), and a
+# tool description is a contract with a model, so each arm needs its own. Composed here from one
+# ROUTE section per arm plus a single shared contract section, rather than written out as a
+# docstring on each function: the arms differ only in how a model change is ADDRESSED, and the fit,
+# the result shape and the rejections are the same call either way.
+_MAKE_CHANGES_SUMMARY = (
+    "Change the model and/or its parameter search space, then FIT and snapshot a version."
+)
+
+_MAKE_CHANGES_ROUTES_DIFF = """\
+The single editor, with TWO routes to a model change — give exactly ONE.
+
+`model_edits` is the route to use for every change after the first: a BATCH of
+structured operations addressed by ID, not by text. Each entry is one of
+`{op: 'add_reaction', antimony: 'egfr_act: EGFR => pEGFR; k_act*EGF*EGFR'}` (the id comes
+from the statement; repeating it as `id` is fine, a DIFFERENT `id` is refused),
+`{op: 'remove_reaction', id}`, `{op: 'set_rate_law', id, antimony: '<rate law>'}`,
+`{op: 'set_initial', id, antimony: '5'}`, `{op: 'set_assignment', id, antimony:
+'pAkt + pAkt_S6'}` (an `id := expr` rule holding at ALL times — how a `readout_*` symbol
+referenced by an observable formula is defined in terms of YOUR model),
+`{op: 'remove_assignment', id}`, `{op: 'rename', old, new}`. Send the WHOLE coherent
+change in ONE call — a new mechanism is usually a new reaction plus a rate-law change on
+the reaction it feeds — because one call is one fit and one version; splitting it across
+calls pays a multistart per operation. Operations apply IN ORDER and the batch is
+ALL-OR-NOTHING: a failure names the failing `model_edits[i]`, lists the valid reaction
+ids when the id is wrong, and applies nothing. They edit the model SOURCE (what you last
+authored or edited), so there is no text to quote and nothing to keep in sync with the
+reconcile's re-render.
+
+`antimony` authors the WHOLE model: it builds the first model when the problem ships
+model-less (`describe_problem` → `model_authored: false`) and replaces an existing one
+wholesale — the right route for the first model and for genuinely starting over.
+Anything the operations cannot express — an assignment rule, an event, a compartment —
+is a wholesale re-author too.
+
+`base_version` (with `model_edits`) applies the operations to a PRIOR version's
+STORED source instead of the current one — the rollback-and-edit path: never retype an earlier
+model from memory (retyped restores measured 6-37,000 BIC worse than the stored
+original). Nothing to quote: the operations name reaction ids.
+Default: the current committed model. It ALSO restores that version's SEARCH SPACE — its
+bounds and scales — AND the point the fit starts from, that version's own best fit, so the
+fork resumes from where version N got to rather than from the branch you are abandoning.
+You never retype any of it. A parameter your operations newly introduce keeps the default
+the reconcile mints, and any parameter you name in this call's `parameters` keeps YOUR
+bound and scale rather than the restored one.
+
+Give `parameters` to set estimation BOUNDS and/or SCALE: a list of
+`{parameter_id, lower_bound?, upper_bound?, scale?}` entries, applied atomically AFTER the
+reconcile — so an entry may target a parameter this very call introduces. Combine it with
+either model route for a structural change and the bounds it needs. At least one of
+`antimony` / `model_edits` / `parameters` is required."""
+
+_MAKE_CHANGES_ROUTES_BASELINE = """\
+The single editor. Give `antimony` to author the WHOLE model (it builds the first
+model when the problem ships model-less — `describe_problem` → `model_authored:
+false` — and re-authors/replaces an existing one wholesale, so every structural
+change is one coherent re-author). Give `parameters` to set estimation BOUNDS
+and/or SCALE: a list of `{parameter_id, lower_bound?, upper_bound?, scale?}`
+entries, applied atomically AFTER the reconcile — so an entry may target a
+parameter this very call introduces. Give BOTH for a structural change and the
+bounds it needs. At least one is required."""
+
+_MAKE_CHANGES_CONTRACT = """\
+There is no fit-free edit and no separate fit: one call is one coherent change, scored
+once, snapshotted as ONE version. `n_starts` REPLACES the server's configured multistart
+count (`describe_problem` → `fit_n_starts_default`) rather than adding to it, so omit it
+unless you want MORE than that; below it fits LESS hard, and the minimum is 1.
+
+ALL-OR-NOTHING. The change applies to a copy, reconciles SBML↔PEtab, and lints; a rejected
+`parameters` entry reverts the re-author too, and if the change applies but the FIT then
+produces no version the change is REVERTED as well. So the working model is always a
+scored one, and there is never an edit waiting to be fit.
+The result IS the fit, flat — the same field names `get_fit_summary` uses — plus two
+flags. Read `applied`: `false` → the change is NOT in the model, either rejected before it
+applied or reverted because the fit failed; `error`/`issues` says which. Then `committed`:
+`true` → a version exists, read `bic`; `false` with `no_change` → the change applied but
+this structure already IS a version, so change something else.
+`bic` charges `k` = `n_estimated` + `hardcoded_constants`: a numeric literal in your
+model's math is a parameter too, bar a few structural ones, so freezing a fitted value
+costs what estimating it costs — estimate it. What you pay for is listed.
+Nothing else rides on the result: the reconcile/validation reports and the parameter diff
+are not a score, so read the reconciled model on demand through `get_model_structure`
+(which also carries the per-species initial-condition account) or `get_parameters`.
+
+`messages` is the call's whole diagnostic stack, in pipeline order: every warning and the
+error that stopped it, each tagged `level` ("error"/"warning") and `source` —
+"make_changes" (an argument refused before anything ran), "edit", "validation" (the
+PEtab/SBML lint), or "fit". Read it to see EVERYTHING the call had to say; `error` alone is
+the one rejection that stopped it, and `issues` that rejection's structured detail.
+
+REJECTS an EMPTY model (no species and no reactions — nothing to simulate or fit; this
+includes an Antimony whose species all prune away as orphans), a re-author that drops a
+shipped-FIXED constant, or brings one back estimated, or leaves a condition-table target
+unused, or wires an observation-model symbol (a scaling factor / noise sigma) into a rate
+law. Warns if a previously-estimated parameter is dropped. Widening an ESTIMATED noise
+sigma past its data-driven cap is advisory (a warning, not a rejection); a THIRD widening
+of a still-pinned parameter is rejected — such a parameter is unidentifiable, not
+under-explored (see `get_fit_diagnosis`).
+
+Every fitted version is kept and the run is scored on the best-bic one regardless, so
+re-authoring an earlier structure to go back only recompiles and refits to the same result."""
+
+
+def _make_changes_doc(diff_mode: bool) -> str:
+    """The `make_changes` description for the arm being registered."""
+    routes = _MAKE_CHANGES_ROUTES_DIFF if diff_mode else _MAKE_CHANGES_ROUTES_BASELINE
+    return "\n\n".join((_MAKE_CHANGES_SUMMARY, routes, _MAKE_CHANGES_CONTRACT))
+
+
 # ------------------------------------------------------------------ model tools
 def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
     session = ctx.session
@@ -668,89 +777,6 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         references: Annotated[list[str] | None, BeforeValidator(_unwrap_listish)] = None,
         n_starts: int | None = None,
     ) -> dict[str, Any]:
-        """Change the model and/or its parameter search space, then FIT and snapshot a version.
-
-        The single editor, with TWO routes to a model change — give exactly ONE.
-
-        `model_edits` is the route to use for every change after the first: a BATCH of
-        structured operations addressed by ID, not by text. Each entry is one of
-        `{op: 'add_reaction', antimony: 'egfr_act: EGFR => pEGFR; k_act*EGF*EGFR'}` (the id comes
-        from the statement; repeating it as `id` is fine, a DIFFERENT `id` is refused),
-        `{op: 'remove_reaction', id}`, `{op: 'set_rate_law', id, antimony: '<rate law>'}`,
-        `{op: 'set_initial', id, antimony: '5'}`, `{op: 'set_assignment', id, antimony:
-        'pAkt + pAkt_S6'}` (an `id := expr` rule holding at ALL times — how a `readout_*` symbol
-        referenced by an observable formula is defined in terms of YOUR model),
-        `{op: 'remove_assignment', id}`, `{op: 'rename', old, new}`. Send the WHOLE coherent
-        change in ONE call — a new mechanism is usually a new reaction plus a rate-law change on
-        the reaction it feeds — because one call is one fit and one version; splitting it across
-        calls pays a multistart per operation. Operations apply IN ORDER and the batch is
-        ALL-OR-NOTHING: a failure names the failing `model_edits[i]`, lists the valid reaction
-        ids when the id is wrong, and applies nothing. They edit the model SOURCE (what you last
-        authored or edited), so there is no text to quote and nothing to keep in sync with the
-        reconcile's re-render.
-
-        `antimony` authors the WHOLE model: it builds the first model when the problem ships
-        model-less (`describe_problem` → `model_authored: false`) and replaces an existing one
-        wholesale — the right route for the first model and for genuinely starting over.
-        Anything the operations cannot express — an assignment rule, an event, a compartment —
-        is a wholesale re-author too.
-
-        `base_version` (with `model_edits`) applies the operations to a PRIOR version's
-        STORED source instead of the current one — the rollback-and-edit path: never retype an earlier
-        model from memory (retyped restores measured 6-37,000 BIC worse than the stored
-        original). Nothing to quote: the operations name reaction ids.
-        Default: the current committed model. It ALSO restores that version's SEARCH SPACE — its
-        bounds and scales — AND the point the fit starts from, that version's own best fit, so the
-        fork resumes from where version N got to rather than from the branch you are abandoning.
-        You never retype any of it. A parameter your operations newly introduce keeps the default
-        the reconcile mints, and any parameter you name in this call's `parameters` keeps YOUR
-        bound and scale rather than the restored one.
-
-        Give `parameters` to set estimation BOUNDS and/or SCALE: a list of
-        `{parameter_id, lower_bound?, upper_bound?, scale?}` entries, applied atomically AFTER the
-        reconcile — so an entry may target a parameter this very call introduces. Combine it with
-        either model route for a structural change and the bounds it needs. At least one of
-        `antimony` / `model_edits` / `parameters` is required.
-
-        There is no fit-free edit and no separate fit: one call is one coherent change, scored
-        once, snapshotted as ONE version. `n_starts` REPLACES the server's configured multistart
-        count (`describe_problem` → `fit_n_starts_default`) rather than adding to it, so omit it
-        unless you want MORE than that; below it fits LESS hard, and the minimum is 1.
-
-        ALL-OR-NOTHING. The change applies to a copy, reconciles SBML↔PEtab, and lints; a rejected
-        `parameters` entry reverts the re-author too, and if the change applies but the FIT then
-        produces no version the change is REVERTED as well. So the working model is always a
-        scored one, and there is never an edit waiting to be fit.
-        The result IS the fit, flat — the same field names `get_fit_summary` uses — plus two
-        flags. Read `applied`: `false` → the change is NOT in the model, either rejected before it
-        applied or reverted because the fit failed; `error`/`issues` says which. Then `committed`:
-        `true` → a version exists, read `bic`; `false` with `no_change` → the change applied but
-        this structure already IS a version, so change something else.
-        `bic` charges `k` = `n_estimated` + `hardcoded_constants`: a numeric literal in your
-        model's math is a parameter too, bar a few structural ones, so freezing a fitted value
-        costs what estimating it costs — estimate it. What you pay for is listed.
-        Nothing else rides on the result: the reconcile/validation reports and the parameter diff
-        are not a score, so read the reconciled model on demand through `get_model_structure`
-        (which also carries the per-species initial-condition account) or `get_parameters`.
-
-        `messages` is the call's whole diagnostic stack, in pipeline order: every warning and the
-        error that stopped it, each tagged `level` ("error"/"warning") and `source` —
-        "make_changes" (an argument refused before anything ran), "edit", "validation" (the
-        PEtab/SBML lint), or "fit". Read it to see EVERYTHING the call had to say; `error` alone is
-        the one rejection that stopped it, and `issues` that rejection's structured detail.
-
-        REJECTS an EMPTY model (no species and no reactions — nothing to simulate or fit; this
-        includes an Antimony whose species all prune away as orphans), a re-author that drops a
-        shipped-FIXED constant, or brings one back estimated, or leaves a condition-table target
-        unused, or wires an observation-model symbol (a scaling factor / noise sigma) into a rate
-        law. Warns if a previously-estimated parameter is dropped. Widening an ESTIMATED noise
-        sigma past its data-driven cap is advisory (a warning, not a rejection); a THIRD widening
-        of a still-pinned parameter is rejected — such a parameter is unidentifiable, not
-        under-explored (see `get_fit_diagnosis`).
-
-        Every fitted version is kept and the run is scored on the best-bic one regardless, so
-        re-authoring an earlier structure to go back only recompiles and refits to the same result.
-        """
         # To plain dicts before anything else, so every path below (including the rejection
         # payload) sees the same shape the operations layer does. ModelOp is tolerated as plain
         # dicts too, for the same reason _parameter_entries does it: an in-process caller (the
@@ -915,6 +941,11 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
                 out["model_edits_applied"] = op_summary
             return out
 
+    # Assigned, not written inline, and assigned BEFORE either registration: FastMCP reads the
+    # description off `__doc__` at decoration time, and whichever function this arm registers
+    # carries the same composed text.
+    make_changes.__doc__ = _make_changes_doc(diff_mode)
+
     if diff_mode:
         mcp.tool()(make_changes)
     else:
@@ -923,7 +954,6 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         # full-signature function above stays the implementation; this wrapper only narrows
         # the SCHEMA, which is the part of a tool contract a model is actually constrained by
         # (schema-enforced rules held at 0 violations where prompt-only rules broke).
-        @mcp.tool(name="make_changes")
         def make_changes_baseline(
             justification: str,
             antimony: str | None = None,
@@ -932,62 +962,12 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
             references: Annotated[list[str] | None, BeforeValidator(_unwrap_listish)] = None,
             n_starts: int | None = None,
         ) -> dict[str, Any]:
-            """Change the model and/or its parameter search space, then FIT and snapshot a version.
-
-            The single editor. Give `antimony` to author the WHOLE model (it builds the first
-            model when the problem ships model-less — `describe_problem` → `model_authored:
-            false` — and re-authors/replaces an existing one wholesale, so every structural
-            change is one coherent re-author). Give `parameters` to set estimation BOUNDS
-            and/or SCALE: a list of `{parameter_id, lower_bound?, upper_bound?, scale?}`
-            entries, applied atomically AFTER the reconcile — so an entry may target a
-            parameter this very call introduces. Give BOTH for a structural change and the
-            bounds it needs. At least one is required.
-
-            There is no fit-free edit and no separate fit: one call is one coherent change,
-            scored once, snapshotted as ONE version. `n_starts` REPLACES the server's
-            configured multistart count (`describe_problem` → `fit_n_starts_default`) rather
-            than adding to it, so omit it unless you want MORE than that; below it fits LESS
-            hard, and the minimum is 1.
-
-            ALL-OR-NOTHING. The change applies to a copy, reconciles SBML↔PEtab, and lints; a
-            rejected `parameters` entry reverts the re-author too, and if the change applies
-            but the FIT then produces no version the change is REVERTED as well. So the working
-            model is always a scored one, and there is never an edit waiting to be fit.
-            The result IS the fit, flat — the same field names `get_fit_summary` uses — plus
-            two flags. Read `applied`: `false` → the change is NOT in the model, either
-            rejected before it applied or reverted because the fit failed; `error`/`issues`
-            says which. Then `committed`: `true` → a version exists, read `bic`; `false` with
-            `no_change` → the change applied but this structure already IS a version, so
-            change something else.
-            Nothing else rides on the result: the reconcile/validation reports and the
-            parameter diff are not a score, so read the reconciled model on demand through
-            `get_model_structure` (which also carries the per-species initial-condition
-            account) or `get_parameters`.
-
-            `messages` is the call's whole diagnostic stack, in pipeline order: every warning
-            and the error that stopped it, each tagged `level` ("error"/"warning") and
-            `source` — "make_changes" (an argument refused before anything ran), "edit",
-            "validation" (the PEtab/SBML lint), or "fit". Read it to see EVERYTHING the call
-            had to say; `error` alone is the one rejection that stopped it, and `issues` that
-            rejection's structured detail.
-
-            REJECTS an EMPTY model (no species and no reactions — nothing to simulate or fit;
-            this includes an Antimony whose species all prune away as orphans), a re-author
-            that drops a shipped-FIXED constant, or brings one back estimated, or leaves a
-            condition-table target unused, or wires an observation-model symbol (a scaling
-            factor / noise sigma) into a rate law. Warns if a previously-estimated parameter
-            is dropped. Widening an ESTIMATED noise sigma past its data-driven cap is advisory
-            (a warning, not a rejection); a THIRD widening of a still-pinned parameter is
-            rejected — such a parameter is unidentifiable, not under-explored (see
-            `get_fit_diagnosis`).
-
-            Every fitted version is kept and the run is scored on the best-bic one regardless,
-            so re-authoring an earlier structure to go back only recompiles and refits to the
-            same result.
-            """
             return make_changes(justification=justification, antimony=antimony,
                                 parameters=parameters, references=references,
                                 n_starts=n_starts)
+
+        make_changes_baseline.__doc__ = make_changes.__doc__
+        mcp.tool(name="make_changes")(make_changes_baseline)
 
 
 # -------------------------------------------------------------- parameter tools

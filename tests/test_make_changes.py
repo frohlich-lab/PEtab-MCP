@@ -566,3 +566,36 @@ def test_a_model_with_no_dynamics_is_rejected(tmp_path):
     # ...and the working model is untouched
     head = _head(mcp)
     assert head["current_version"] == -1 and head["model_authored"] is True
+
+
+def test_the_single_editor_carries_the_whole_change(tmp_path):
+    """The prompt promises ONE call can author the model, set bounds, and score the result.
+
+    That used to be a claim about two schemas agreeing — and it was false: `change_parameters`
+    took `changes=` while `set_model` took `parameters=`, so a lead following the prompt sent the
+    wrong kwarg and lost a step to a tool-arg rejection. Collapsing the editors removes the class
+    of bug rather than re-pinning it: there is one schema, so there is nothing to diverge. What is
+    left to assert is that the one schema really carries every part of the promise — and that no
+    `fit` flag came back, since fitting is unconditional now and an optional flag would let the
+    two halves come apart again.
+    """
+    mcp = create_server(
+        str(Path(__file__).parent / "data" / "toy_v1" / "problem.yaml"),
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+    )
+    got = {t.name: set(t.parameters.get("properties") or {})
+           for t in asyncio.run(mcp.list_tools())}["make_changes"]
+    # The BASELINE promise, always present: author the model, set bounds, justify, cite, score.
+    core = {"antimony", "parameters", "justification", "references", "n_starts"}
+    assert core <= got, f"the one editor dropped part of its promise: {sorted(core - got)}"
+    # The `diff_edits` arm ADDS a second model route to the same schema, so the exact arg set is
+    # arm-dependent. Assert the difference is EXACTLY that route and nothing else — a stray
+    # optional argument here is how the two halves of the promise came apart before.
+    from petab_mcp.server import _diff_edits_enabled
+    extra = {"model_edits", "base_version"} if _diff_edits_enabled() else set()
+    assert got == core | extra, f"unexpected make_changes args: {sorted(got - (core | extra))}"
+    # and NO fit flag in either arm: fitting is unconditional, and an optional flag would let a
+    # change be committed without a score.
+    assert not ({"fit", "do_fit", "skip_fit", "refit"} & got)
+

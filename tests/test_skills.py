@@ -204,3 +204,22 @@ def test_no_skills_when_dir_absent(tmp_path):
     )
     names = {t.name for t in asyncio.run(mcp.list_tools())}
     assert "list_skills" not in names and "get_skill" not in names
+
+
+# -- the length budget ----------------------------------------------------
+def test_the_skills_stay_short():
+    """They are read by an AGENT, into a history nothing prunes — so every character is re-sent
+    on every subsequent turn. Length is a correctness property here, not a style preference.
+
+    Raised 6000 -> 6500 on 2026-08-19 to fit three silent-failure rules in antimony-authoring
+    (time must be the built-in `time`; a reaction id must not be an Antimony keyword; never assign
+    a symbol to itself). Each one costs a whole edit-and-fit cycle when it fires and gives an error
+    that points somewhere else, so they earn their characters — but the budget is a real cost, so
+    keep new entries at rule-plus-consequence length and put the measured evidence in
+    examples/BENCHMARK_NOTES.md instead."""
+    for skill_dir in sorted(SKILLS_DIR.iterdir()):
+        md = skill_dir / "SKILL.md"
+        if md.is_file():
+            n = len(md.read_text())
+            assert n < 6500, f"{skill_dir.name}/SKILL.md is {n} chars — too long to re-send"
+
