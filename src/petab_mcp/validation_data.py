@@ -28,6 +28,7 @@ from petab.v1.C import (
     ESTIMATE,
     NOMINAL_VALUE,
     OBSERVABLE_ID,
+    OBSERVABLE_PARAMETERS,
     PREEQUILIBRATION_CONDITION_ID,
     SIMULATION_CONDITION_ID,
 )
@@ -132,6 +133,127 @@ def _table_mismatch(problem, measurement_df) -> str | None:
     return "; ".join(problems) or None
 
 
+#: Bounds pyPESTO clips an analytically-solved scaling to (it honours the parameter table's
+#: bounds, verified: a too-tight box returns the bound itself). 0 below, because a gel's scale
+#: factor is non-negative — a model whose prediction ANTI-correlates with the blot gets s = 0, i.e.
+#: "predicts nothing usable", not a sign flip that would flatter it — and effectively unbounded above.
+HELD_OUT_SCALING_UPPER_BOUND = 1e12
+
+
+def held_out_scalings(problem, measurement_df) -> "set[str]":
+    """The ``observableParameters`` overrides in the held-out table that ``problem`` does NOT
+    define — the per-blot scale factors of a held-out Western blot. Empty for fujita, whose
+    held-out pulse/ramp rows re-use the shipped scalings (measured on the calibration's scale).
+
+    A token counts when it is not numeric, not a parameter-table row and not a model entity;
+    anything else is an ordinary PEtab override and left alone.
+
+    Whether the observable is actually a scale of the model output is pyPESTO's to enforce:
+    :func:`pypesto.hierarchical.petab.validate_hierarchical_petab_problem` refuses a formula that
+    is not of the expected form for a ``scaling``, and refuses one in a noise formula outright.
+    """
+    import pandas as pd
+    from petab.v1.C import OBSERVABLE_PARAMETERS, PARAMETER_SEPARATOR
+
+    out: set[str] = set()
+    if measurement_df is None or OBSERVABLE_PARAMETERS not in measurement_df.columns:
+        return out
+    known = {str(i) for i in getattr(problem.parameter_df, "index", ())}
+    model = getattr(problem, "model", None)
+    for cell in measurement_df[OBSERVABLE_PARAMETERS]:
+        if pd.isna(cell):
+            continue
+        for tok in str(cell).split(PARAMETER_SEPARATOR):
+            tok = tok.strip()
+            if not tok or tok in known or _is_number(tok):
+                continue
+            if model is not None and model.has_entity_with_id(tok):
+                continue
+            out.add(tok)
+    return out
+
+
+def _is_number(token: str) -> bool:
+    try:
+        float(token)
+    except ValueError:
+        return False
+    return True
+
+
+def _without_extraneous(view):
+    """``view``'s parameter table minus the rows petab's lint would call EXTRANEOUS.
+
+    Swapping a held-out table in retires the overrides the training rows carried (raimundez's 79
+    per-gel scalings), and petab refuses a parameter table with rows nothing references — the
+    same lint that protects every other swap, so it is satisfied rather than disabled. Only rows
+    the held-out problem cannot use are dropped; the kinetics stay, and a caller's vector is
+    matched to what remains BY NAME (:func:`_reduced_from_named`).
+    """
+    if getattr(view, "model", None) is None:
+        return view.parameter_df
+    from petab.v1.parameters import get_valid_parameters_for_parameter_table
+
+    valid = get_valid_parameters_for_parameter_table(
+        view.model, view.condition_df, view.observable_df, view.measurement_df)
+    return view.parameter_df.loc[[pid for pid in view.parameter_df.index if pid in valid]]
+
+
+def _solve_held_out_scalings(view, scalings, *, build_dir, model_name, point) -> dict | None:
+    """The held-out scalings at their analytical optimum for ``view``'s model at ``point``, or
+    ``None`` when the objective is not finite there.
+
+    pyPESTO's hierarchical importer does the work: the scalings are appended to the parameter
+    table as estimated ``parameterType: scaling`` rows, everything the model already has keeps its
+    value, and the inner solver returns the least-squares scale per row group — the same machinery
+    :func:`petab_mcp.fitting._build_hierarchical_problem` uses for a fit. ``point`` maps a pyPESTO
+    problem to the reduced vector its objective takes, so the outer parameters are evaluated at
+    exactly the point the caller asked for.
+    """
+    import copy
+
+    import numpy as np
+    import pandas as pd
+    import pypesto.petab
+    from petab.v1.C import (ESTIMATE, LIN, LOWER_BOUND, NOMINAL_VALUE, PARAMETER_ID,
+                            PARAMETER_SCALE, UPPER_BOUND)
+    from pypesto.C import FVAL, INNER_PARAMETERS, PARAMETER_TYPE, InnerParameterType
+
+    from .fitting import _apply_amici_solver_defaults
+
+    hier = copy.copy(view)
+    pdf = _without_extraneous(view).copy()
+    pdf[PARAMETER_TYPE] = None
+    rows = pd.DataFrame(
+        {PARAMETER_SCALE: LIN, LOWER_BOUND: 0.0, UPPER_BOUND: HELD_OUT_SCALING_UPPER_BOUND,
+         NOMINAL_VALUE: 1.0, ESTIMATE: 1, PARAMETER_TYPE: InnerParameterType.SCALING},
+        index=pd.Index(sorted(scalings), name=PARAMETER_ID))
+    hier.parameter_df = pd.concat([pdf, rows])
+    pp = pypesto.petab.PetabImporter(hier, output_folder=str(build_dir), model_name=model_name,
+                                     hierarchical=True).create_problem()
+    _apply_amici_solver_defaults(pp)
+    ret = pp.objective(np.asarray(point(pp, hier.parameter_df), dtype=float), sensi_orders=(0,),
+                       return_dict=True)
+    if not np.isfinite(float(ret[FVAL])):
+        return None
+    ids = pp.objective.calculator.get_interpretable_inner_par_ids()
+    return {str(i): float(v) for i, v in zip(ids, ret[INNER_PARAMETERS])}
+
+
+def _with_solved_scalings(cells, solved: dict):
+    """``observableParameters`` cells with each solved scaling id replaced by its NUMBER, so the
+    joint objective sees a plain numeric override and no parameter-table row is needed for it."""
+    import pandas as pd
+    from petab.v1.C import PARAMETER_SEPARATOR
+
+    def one(cell):
+        if pd.isna(cell):
+            return cell
+        toks = [t.strip() for t in str(cell).split(PARAMETER_SEPARATOR)]
+        return PARAMETER_SEPARATOR.join(repr(solved[t]) if t in solved else t for t in toks)
+    return cells.map(one)
+
+
 def _reduced_from_named(pp, x_full, x_names) -> "list[float]":
     """``pp``'s REDUCED vector from a caller's FULL vector, matched by NAME.
 
@@ -199,6 +321,14 @@ def score_problem(problem, measurement_df, *, build_dir: str | Path, model_name:
 
     if (x_full is None) != (x_names is None):
         raise ValueError("score_problem: pass both x_full and x_names, or neither")
+    # Arity UP FRONT, before anything is built: it is a pure statement about the caller's two
+    # arguments and needs no problem, and a curated set's scaling solve compiles a model before
+    # the point is ever reduced. `_reduced_from_named` re-checks it for callers that reach it
+    # directly.
+    if x_full is not None and len(x_full) != len(x_names):
+        raise ValueError(
+            f"score_problem: x_full has {len(x_full)} value(s) for {len(x_names)} name(s); it "
+            "must be the FULL vector (fixed parameters included), in x_names order")
     if measurement_df is None or len(measurement_df) == 0:
         return {"status": STATUS_NO_DATA, "reason": "the held-out measurement table is empty"}
 
@@ -214,6 +344,9 @@ def score_problem(problem, measurement_df, *, build_dir: str | Path, model_name:
     mismatch = _table_mismatch(view, measurement_df)
     if mismatch:
         return {"status": STATUS_TABLE_MISMATCH, "reason": mismatch}
+    # A curated held-out blot names its own scale factor, which no training measurement can
+    # inform; those tokens, and only those, are solved below (see the module docstring).
+    scalings = held_out_scalings(problem, measurement_df)
     # Dropped, not carried: petab's lint rejects a visualization table whose datasetIds are absent
     # from the measurement table, which is what swapping in held-out data does. Nothing here plots.
     view.visualization_df = None
@@ -222,6 +355,37 @@ def score_problem(problem, measurement_df, *, build_dir: str | Path, model_name:
     if unsupported:
         return {"status": STATUS_FLATTENING_REQUIRED, "reason": unsupported}
 
+    def _point(pp, parameter_df) -> "list[float]":
+        """The REDUCED vector ``pp``'s objective takes, at the caller's point or the table's
+        nominals — a closure because the scaling solve below needs the SAME point as the final
+        evaluation, one pyPESTO problem apart."""
+        if x_full is None:
+            return problem_x_from_nominal(pp, parameter_df)
+        return _reduced_from_named(pp, x_full, x_names)
+
+    solved = None
+    if scalings:
+        # The blots' own scale factors, solved for THIS model at THIS point, then written into the
+        # table as numbers — so the joint evaluation below is the same code path as for an example
+        # that has none, and `nll`/`chi2` come off that one path either way.
+        solved = _solve_held_out_scalings(view, scalings, build_dir=build_dir,
+                                          model_name=model_name, point=_point)
+        if solved is None:
+            return {"status": STATUS_NON_FINITE,
+                    "reason": "the objective is not finite on the held-out conditions while "
+                              "solving the held-out scalings (the model could not be integrated "
+                              "there, or its likelihood diverged)"}
+        view.measurement_df[OBSERVABLE_PARAMETERS] = _with_solved_scalings(
+            view.measurement_df[OBSERVABLE_PARAMETERS], solved)
+        # Swapping the held-out table in retires the overrides the TRAINING rows carried, and petab
+        # refuses a parameter table with rows nothing references. Only on this path: an example
+        # without curated scalings re-uses the shipped ones, so nothing is retired.
+        view.parameter_df = _without_extraneous(view)
+
+    # AFTER the scalings branch, deliberately: it rewrites the measurement table and drops the
+    # parameter rows the held-out data retires, and petab's lint — which `create_problem` runs —
+    # rejects a table with rows nothing references. Building the importer first would fail on the
+    # very rows `_without_extraneous` exists to remove.
     importer = pypesto.petab.PetabImporter(view, output_folder=str(build_dir),
                                           model_name=model_name)
     pp = importer.create_problem()
@@ -246,13 +410,18 @@ def score_problem(problem, measurement_df, *, build_dir: str | Path, model_name:
     res = AmiciEngine._res_from_rdatas(ret[PP_RDATAS])
     chi2 = float(sum(float(v) ** 2 for v in res)) if res else None
 
-    return {
+    out = {
         "status": STATUS_OK,
         "mode": MODE_FIXED,
         "nll": nll,
         "chi2": chi2,
         **_data_shape(measurement_df),
     }
+    if solved is not None:
+        # The solved per-blot factors, recorded so a held-out score can be read back against the
+        # scale it was computed on. Absent for an example with no curated scalings.
+        out["held_out_scalings"] = solved
+    return out
 
 
 def _data_shape(measurement_df) -> dict[str, Any]:
