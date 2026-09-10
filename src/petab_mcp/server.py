@@ -170,10 +170,10 @@ class ModelOp(BaseModel):
     antimony: str | None = Field(
         default=None,
         description="the content, written as Antimony: for add_reaction one NAMED statement "
-                    "('egfr_act: EGFR => pEGFR; k_act*EGF*EGFR;'), for set_rate_law the rate "
-                    "law ('k_act*EGF*EGFR'), for set_initial the value ('5', or a symbol like "
-                    "'EGFR_init' to keep it estimated), for set_assignment the expression the "
-                    "symbol equals at ALL times ('pAkt + pAkt_S6') — the op behind readout_* "
+                    "('transfer: X1 => X2; k*u*X1;'), for set_rate_law the rate "
+                    "law ('k*u*X1'), for set_initial the value ('5', or a symbol like "
+                    "'X1_init' to keep it estimated), for set_assignment the expression the "
+                    "symbol equals at ALL times ('X2 + X3') — the op behind readout_* "
                     "measurement mappings."
     )
     old: str | None = Field(default=None, description="rename only: the current symbol name.")
@@ -592,11 +592,11 @@ The single editor, with TWO routes to a model change — give exactly ONE.
 
 `model_edits` is the route to use for every change after the first: a BATCH of
 structured operations addressed by ID, not by text. Each entry is one of
-`{op: 'add_reaction', antimony: 'egfr_act: EGFR => pEGFR; k_act*EGF*EGFR'}` (the id comes
+`{op: 'add_reaction', antimony: 'transfer: X1 => X2; k*u*X1'}` (the id comes
 from the statement; repeating it as `id` is fine, a DIFFERENT `id` is refused),
 `{op: 'remove_reaction', id}`, `{op: 'set_rate_law', id, antimony: '<rate law>'}`,
 `{op: 'set_initial', id, antimony: '5'}`, `{op: 'set_assignment', id, antimony:
-'pAkt + pAkt_S6'}` (an `id := expr` rule holding at ALL times — how a `readout_*` symbol
+'X2 + X3'}` (an `id := expr` rule holding at ALL times — how a `readout_*` symbol
 referenced by an observable formula is defined in terms of YOUR model),
 `{op: 'remove_assignment', id}`, `{op: 'rename', old, new}`. Send the WHOLE coherent
 change in ONE call — a new mechanism is usually a new reaction plus a rate-law change on
@@ -843,7 +843,7 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
                     f"{', …' if len(unnamed) > 3 else ''}). Every reaction needs one — it is how "
                     "`model_edits` addresses it later, and an unnamed reaction can only ever be "
                     "changed by re-authoring the whole model. Write 'name: A => B; k*A;' and "
-                    "choose names you will recognise (egfr_act, akt_dephos), not r1/r2. "
+                    "choose names you will recognise (transfer, decay), not r1/r2. "
                     "NOTHING was applied.",
                     {"unnamed": unnamed[:5]}, cause="unnamed_reaction")
         # One critical section for the change and its fit, so nothing can fit in between

@@ -196,7 +196,7 @@ def closest_symbols(wanted: str, known: list[str], n: int = 2, cutoff: float = 0
     """The known symbols most likely to be what ``wanted`` meant.
 
     Token overlap alongside character similarity, taking whichever is kinder: the commonest real
-    miss is the right concept under a swapped convention (`pEGFR_scaling` for `scaling_pEGFR` —
+    miss is the right concept under a swapped convention (`X2_scaling` for `scaling_X2` —
     agents wrote both orderings across runs), and character-order matching scores a swap as a
     near-total mismatch, then confidently suggests a DIFFERENT symbol instead.
 
@@ -259,10 +259,10 @@ def _stoichiometry_symbols(text: str) -> set[str]:
 
     * `$S` marks a BOUNDARY species — held by something outside the reaction network, so an
       assignment rule on it is legal SBML (libantimony loads it without complaint). The `$` may
-      sit on the reaction (`$EGF -> B`) OR on a separate declaration (`species $EGF;`) with the
+      sit on the reaction (`$u -> B`) OR on a separate declaration (`species $u;`) with the
       reaction naming it bare. libantimony's own round-trip re-emits the `$` in BOTH places, so
       this is about HAND-AUTHORED text -- which is what the agent writes, and
-      `species $EGF, B; R1: EGF + B -> C; EGF := 3;` loads clean. Stripping only the inline form
+      `species $u, B; R1: u + B -> C; u := 3;` loads clean. Stripping only the inline form
       counted such a species as dynamic and locked the caller out of `model_edits` on the very
       models that need it;
     * `A in cyt` names a COMPARTMENT, and a growing compartment (`cyt := V0*exp(mu*time)`) is an
@@ -274,8 +274,8 @@ def _stoichiometry_symbols(text: str) -> set[str]:
     """
     masked = mask_comments(text or "")
     # `$` marks the species boundary WHEREVER it appears, so collect the marks document-wide
-    # rather than per-reaction: a `species $EGF;` declaration up top makes a bare `EGF` in a
-    # reaction below non-dynamic just as surely as writing `$EGF` in the reaction would.
+    # rather than per-reaction: a `species $u;` declaration up top makes a bare `u` in a
+    # reaction below non-dynamic just as surely as writing `$u` in the reaction would.
     boundary = set(re.findall(r"\$\s*([A-Za-z_]\w*)", masked))
     out: set[str] = set()
     for m in _RXN_STMT.finditer(masked):
@@ -391,7 +391,7 @@ def _op_add_reaction(text, op, where):
     if not stmt:
         raise OperationError(
             f"{where}: add_reaction needs `antimony` — one named reaction statement, e.g. "
-            "'egfr_act: EGFR => pEGFR; k_act*EGF*EGFR;'. NOTHING was applied.")
+            "'transfer: X1 => X2; k*u*X1;'. NOTHING was applied.")
     found = _reactions(stmt)
     if (not found and re.fullmatch(r"[A-Za-z_]\w*", str(op.get("id") or "").strip())
             and str(op.get("id")).strip() not in _PROTECTED_SYMBOLS
@@ -412,13 +412,13 @@ def _op_add_reaction(text, op, where):
             found = _reactions(stmt)
     if not found:
         why = ("it needs a rate law after the stoichiometry, e.g. "
-               "'egfr_act: EGFR => pEGFR; k_act*EGF*EGFR;'"
+               "'transfer: X1 => X2; k*u*X1;'"
                if str(op.get("id") or "").strip() and unnamed_reactions(stmt) else
-               "it has no id — name it, e.g. 'egfr_act: EGFR => pEGFR; k*EGF*EGFR;', because "
+               "it has no id — name it, e.g. 'transfer: X1 => X2; k*u*X1;', because "
                "the id is how you will address this reaction later"
                if unnamed_reactions(stmt) else
                "expected 'id: <stoichiometry>; <rate law>;' with -> (reversible) or => "
-               "(irreversible), e.g. 'egfr_act: EGFR => pEGFR; k_act*EGF*EGFR;'")
+               "(irreversible), e.g. 'transfer: X1 => X2; k*u*X1;'")
         raise OperationError(f"{where}: cannot read {stmt!r} as a reaction — {why}. "
                              "NOTHING was applied.", cause="malformed_reaction")
     if len(found) > 1:
@@ -563,7 +563,7 @@ def _op_set_rate_law(text, op, where):
     law = (op.get("antimony") or "").strip().rstrip(";")
     if not law:
         raise OperationError(f"{where}: set_rate_law needs `antimony` — the new rate law, e.g. "
-                             "'k_act*EGF*EGFR'. NOTHING was applied.")
+                             "'k*u*X1'. NOTHING was applied.")
     _reject_semicolons(where, antimony=law)
     m = _find_reaction(text, rid)
     if m is None:
@@ -622,7 +622,7 @@ def _op_set_initial(text, op, where):
     hint = f" Did you mean {' or '.join(repr(c) for c in close)}?" if close else ""
     # The `*_init` case is worth naming explicitly: the reconcile MINTS an initial-value parameter
     # for every species that needs one, and those show up in get_model()/get_parameters() — the
-    # render — while these operations apply to the SOURCE. A caller reading `EGFR_init` off a
+    # render — while these operations apply to the SOURCE. A caller reading `X1_init` off a
     # parameter table is not confused about its model; it is seeing a symbol this text genuinely
     # does not contain, so say which surface owns it.
     minted = ("" if not sid.endswith("_init") else
@@ -736,7 +736,7 @@ def _op_set_assignment(text, op, where):
         raise OperationError(
             f"{where}: set_assignment needs `id` (the symbol to define) and `antimony` (the "
             "expression it equals at all times), e.g. "
-            "{op: 'set_assignment', id: 'readout_pAkt_tot', antimony: 'pAkt + pAkt_S6'}. "
+            "{op: 'set_assignment', id: 'readout_001', antimony: 'X2 + X3'}. "
             "NOTHING was applied.")
     _reject_semicolons(where, antimony=str(expr))
     if sid in _PROTECTED_SYMBOLS:
