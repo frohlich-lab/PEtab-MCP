@@ -4,7 +4,8 @@ NOT :mod:`petab_mcp.validation`, which lints a PEtab problem for structural erro
 
 * **fixed-θ** (:func:`score_problem`) — the same problem under conditions the training set does not
   cover, so the fitted parameters carry over and the model is EVALUATED at them (fujita's EGF
-  pulses and ramps). Nothing is fitted, and no inner solve either.
+  pulses and ramps; lucarelli's other cell types, which bring their own rows of the training
+  table's input columns). Nothing is fitted, and no inner solve either.
 * **transfer** (:func:`refit_problem`) — the same MECHANISM on a different system, whose parameters
   are not the training ones (oliveira's Bahia). The fitted point means nothing there, so both the
   candidate and the reference structure are REFIT on the held-out data and compared by nll and by
@@ -65,8 +66,10 @@ class HeldOut:
     ``parameter_df`` is what makes it a TRANSFER set — the statement that the parameter values are
     not the training ones, which is exactly when evaluating the fitted point is meaningless. No
     separate mode flag, because a flag and a table can disagree and the table is the fact.
-    ``condition_df`` replaces the training condition table for a transfer fit; ``None`` is the
-    fixed-θ case, where every held-out condition must already be in the training table (fujita).
+    ``condition_df`` is the set's own condition table: for a transfer fit it REPLACES the training
+    one; for a fixed-θ set it holds the rows the set ADDS — new values of the inputs the training
+    table already has (:func:`_with_held_out_conditions`) — and ``None`` means every held-out
+    condition is already in the training table (fujita).
     """
     measurement_df: Any
     condition_df: Any = None
@@ -131,6 +134,40 @@ def _table_mismatch(problem, measurement_df) -> str | None:
             problems.append(
                 f"{PREEQUILIBRATION_CONDITION_ID} {unknown} are not in the condition table")
     return "; ".join(problems) or None
+
+
+def _with_held_out_conditions(view, condition_df) -> str | None:
+    """Append a fixed-θ set's own condition rows to ``view``'s table, or say why they cannot be.
+
+    A held-out row is a new VALUE of the inputs the training table already has (another cell
+    type's Smad abundances, a knockdown level), which a model that takes those inputs predicts
+    without a refit. A new COLUMN is a new input, i.e. a different model, and an id the training
+    table already defines would redefine a condition the model was fitted under; both are
+    refused. ``conditionName`` is free text and ignored. Shared by the server's scorer and the
+    harness's setup check (``petab_harness.benchmark._curated_held_out``), so the two cannot
+    disagree about what a fixed-θ set may bring.
+    """
+    import pandas as pd
+    from petab.v1.C import CONDITION_NAME
+
+    if condition_df is None:
+        return None
+    if view.condition_df is None:
+        return ("the held-out set brings a condition table but the problem has none, so there is "
+                "no column set to line the two up by")
+    mine = view.condition_df.drop(columns=[CONDITION_NAME], errors="ignore")
+    theirs = condition_df.drop(columns=[CONDITION_NAME], errors="ignore")
+    if set(mine.columns) != set(theirs.columns):
+        return (f"the held-out condition table has columns {sorted(map(str, theirs.columns))} "
+                f"against the problem's {sorted(map(str, mine.columns))}; a condition column is a "
+                "model input, so the two tables describe different models")
+    redefined = sorted(set(theirs.index.astype(str)) & set(mine.index.astype(str)))
+    if redefined:
+        return (f"held-out condition(s) {redefined} are already in the problem's condition table; "
+                "a fixed-θ set adds conditions, it does not redefine the ones the model was "
+                "fitted under")
+    view.condition_df = pd.concat([mine, theirs[list(mine.columns)]])
+    return None
 
 
 #: Bounds pyPESTO clips an analytically-solved scaling to (it honours the parameter table's
@@ -288,7 +325,8 @@ def _reduced_from_named(pp, x_full, x_names) -> "list[float]":
 
 def score_problem(problem, measurement_df, *, build_dir: str | Path, model_name: str,
                   x_full: "list[float] | None" = None,
-                  x_names: "list[str] | None" = None) -> dict[str, Any]:
+                  x_names: "list[str] | None" = None,
+                  condition_df=None) -> dict[str, Any]:
     """Evaluate ``problem``'s model at ONE fixed parameter point against ``measurement_df``.
 
     ``problem`` supplies everything but the data, and its ``nominalValue``\\ s are the point —
@@ -304,6 +342,10 @@ def score_problem(problem, measurement_df, *, build_dir: str | Path, model_name:
     than assumed aligned, and every name the problem needs must be supplied
     (:func:`_reduced_from_named`): a silent re-ordering or truncation would report a plausible,
     wrong likelihood.
+
+    ``condition_df`` is the held-out set's own condition table — the rows it ADDS to the problem's
+    (:class:`HeldOut`, :func:`_with_held_out_conditions`); ``None`` when every held-out condition
+    is a training one.
 
     Returns ``{status, nll, n, chi2, n_conditions, observables}`` or ``{status, reason}``. ``chi2``
     is the sum of squares of AMICI's weighted residual vector (via
@@ -341,7 +383,7 @@ def score_problem(problem, measurement_df, *, build_dir: str | Path, model_name:
     view.observable_df = problem.observable_df.copy()
     if problem.condition_df is not None:
         view.condition_df = problem.condition_df.copy()
-    mismatch = _table_mismatch(view, measurement_df)
+    mismatch = _with_held_out_conditions(view, condition_df) or _table_mismatch(view, measurement_df)
     if mismatch:
         return {"status": STATUS_TABLE_MISMATCH, "reason": mismatch}
     # A curated held-out blot names its own scale factor, which no training measurement can
@@ -666,7 +708,8 @@ def score_session(session, engine, held_out: HeldOut,
         kwargs = engine.pypesto_importer_kwargs(session.sbml_hash())
         build = {"build_dir": kwargs["output_folder"], "model_name": kwargs["model_name"]}
         if held_out.mode == MODE_FIXED:
-            return score_problem(session.problem, held_out.measurement_df, **build)
+            return score_problem(session.problem, held_out.measurement_df,
+                                 condition_df=held_out.condition_df, **build)
         view, failed = transfer_view(session.problem, held_out, session.shipped_parameter_df)
         if failed:
             return {**failed, "mode": MODE_TRANSFER}
