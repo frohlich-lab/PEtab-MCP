@@ -478,47 +478,35 @@ def _data_shape(measurement_df) -> dict[str, Any]:
     }
 
 
-def _reject_untransferable_table(held_out_df, shipped_df, view) -> None:
-    """Refuse a held-out parameter table that cannot describe a DIFFERENT system.
+def _reject_untransferable_table(held_out_df, published_df, view) -> None:
+    """Validate a transfer source against the FULL published training parameter table at setup.
 
-    The table is what makes a held-out set a transfer set (:attr:`HeldOut.mode`), so a table equal
-    to the training one says the set was MIS-ANNOTATED: nothing transfers, and the refit would
-    compare a structure against itself while reporting it as a second system. Conversely,
-    an ESTIMATED MECHANISM parameter the training problem does not have is unusable for the
-    opposite reason — the refit would have to manage a rate the candidate's model has no counterpart
-    for. Two kinds of new row are fine and are exempt:
-
-    * an OBSERVATION-MODEL parameter (a noise sigma, an observable scaling/offset) that the
-      held-out tables name through ``noiseParameters``/``observableParameters`` or a noise/observable
-      formula — it enters through the observation model, not the ODE, so the refit can manage it
-      however many the held-out system brings (:func:`reconcile.observation_model_symbols`);
-    * a FIXED extra row, which binds to nothing — a published table keeps such rows for observables
-      the materialiser dropped.
-
-    ``ValueError``, not a status: both are mistakes in the curated files, not findings about the
-    candidate's model.
+    Refuse an identical table or a new estimated mechanism parameter the published problem cannot
+    use. New observation-model parameters and unused fixed rows are permitted. This check cannot
+    run against the zero-shot shipped subset, which omits kinetics, or the candidate, whose rates
+    may have different names. Candidate refits retain their own estimated values instead.
     """
     from . import reconcile as _reconcile
 
     manageable = {str(sym) for sym in _reconcile.observation_model_symbols(view)}
     unmanageable = sorted(
         str(pid) for pid in held_out_df.index
-        if pid not in shipped_df.index and str(pid) not in manageable
+        if pid not in published_df.index and str(pid) not in manageable
         and int(float(held_out_df.loc[pid, ESTIMATE])) == 1)
     if unmanageable:
         raise ValueError(
             f"the held-out parameter table estimates parameter(s) {', '.join(unmanageable)} "
             "that the training problem does not have, and that are not observation-model "
             "parameters of the held-out "
-            "tables; the candidate's model has no counterpart for them, so the refit cannot manage "
+            "tables; the published model has no counterpart for them, so the refit cannot manage "
             "them")
-    if list(held_out_df.index) != list(shipped_df.index):
+    if list(held_out_df.index) != list(published_df.index):
         return
     for pid in held_out_df.index:
-        if int(float(held_out_df.loc[pid, ESTIMATE])) != int(float(shipped_df.loc[pid, ESTIMATE])):
+        if int(float(held_out_df.loc[pid, ESTIMATE])) != int(float(published_df.loc[pid, ESTIMATE])):
             return
         if not math.isclose(float(held_out_df.loc[pid, NOMINAL_VALUE]),
-                            float(shipped_df.loc[pid, NOMINAL_VALUE]), rel_tol=1e-12):
+                            float(published_df.loc[pid, NOMINAL_VALUE]), rel_tol=1e-12):
             return
     raise ValueError(
         "the held-out parameter table is identical to the training one, so nothing would transfer; "
@@ -569,7 +557,6 @@ def transfer_view(problem, held_out: HeldOut, shipped_parameter_df):
 
     if held_out.parameter_df is not None:
         pdf, shipped = view.parameter_df, shipped_parameter_df
-        _reject_untransferable_table(held_out.parameter_df, shipped, view)
         missing = []
         for pid, row in held_out.parameter_df.iterrows():
             if int(float(row[ESTIMATE])) != 0 or pid not in shipped.index:
