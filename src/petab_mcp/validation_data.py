@@ -72,11 +72,14 @@ class HeldOut:
     ``condition_df`` is the set's own condition table: for a transfer fit it REPLACES the training
     one; for a fixed-θ set it holds the rows the set ADDS — new values of the inputs the training
     table already has (:func:`_with_held_out_conditions`) — and ``None`` means every held-out
-    condition is already in the training table (fujita).
+    condition is already in the training table (fujita). ``units`` names the SYSTEMS a transfer
+    set is refit on — ``{conditionId: unitId}``, lucarelli's three cell types each with its
+    treated and untreated condition — and ``None`` refits the whole table as one system.
     """
     measurement_df: Any
     condition_df: Any = None
     parameter_df: Any = None
+    units: Any = None
 
     @property
     def mode(self) -> str:
@@ -87,6 +90,7 @@ class HeldOut:
 #: back by :func:`read_held_out`; the two agree through these names and nowhere else.
 HELD_OUT_CONDITIONS = "conditions.tsv"
 HELD_OUT_PARAMETERS = "parameters.tsv"
+HELD_OUT_UNITS = "units.tsv"
 
 
 def _unsupported_reason(problem, view) -> str | None:
@@ -594,13 +598,23 @@ def transfer_view(problem, held_out: HeldOut, shipped_parameter_df):
 
 
 def refit_problem(problem, *, build_dir: str | Path, model_name: str,
-                  n_starts: int) -> dict[str, Any]:
+                  n_starts: int, units=None) -> dict[str, Any]:
     """REFIT ``problem`` on its own measurements and report the optimum — the transfer score.
 
     ``problem`` is already the held-out problem, and its ``nominalValue``\\ s are the START point
     (the candidate's training optimum via :func:`transfer_view`; the collection's published values
     for the reference). Every ``estimate = 1`` row is refit and ``k`` counts exactly those, so it is
     the same ``k`` the training score uses. Nothing is written back.
+
+    ``units`` (:attr:`HeldOut.units`) splits the table into the systems it describes, and each is
+    refit ON ITS OWN from the same start point — the paper's protocol when it carried a model to
+    several cell types or patients, and what keeps one system's optimum from being averaged with
+    another's. Every refit, split or not, sees only the observables its rows measure: a sigma no
+    row informs is not a parameter of that refit (:func:`_unit_view`), so units may differ in
+    ``k``. The payload then SUMS ``nll``, ``n``, ``chi2`` and ``k`` over the units and carries
+    every unit's own block under ``units``; a consumer wanting a BIC sums ``2·nll + k·ln n`` per
+    unit rather than computing it from the totals. A row whose condition is in no unit is a table
+    error, and so is an empty ``units`` mapping.
 
     One implementation, both sides, on the server's own fitting path — Fides on AMICI
     sensitivities, start-0 seeded at the nominal point, whose objective is also taken as a
@@ -611,22 +625,12 @@ def refit_problem(problem, *, build_dir: str | Path, model_name: str,
     than the other by its caller.
 
     Returns ``{status, mode, nll, k, n, chi2, n_conditions, observables, n_starts, n_converged,
-    fitted}`` or ``{status, reason}`` for :data:`STATUS_NO_DATA`,
-    :data:`STATUS_TABLE_MISMATCH`, :data:`STATUS_FLATTENING_REQUIRED` or
+    fitted}`` (``units`` and per-unit ``fitted`` when split) or ``{status, reason}`` for
+    :data:`STATUS_NO_DATA`, :data:`STATUS_TABLE_MISMATCH`, :data:`STATUS_FLATTENING_REQUIRED` or
     :data:`STATUS_NON_FINITE`.
     """
     import copy
-    import logging
-
-    import numpy as np
-    import pypesto.optimize
-    import pypesto.petab
-    from pypesto.C import FVAL
-    from pypesto.C import RDATAS as PP_RDATAS
-
-    from .engine import AmiciEngine, _ensure_swig_on_path
-    from .fitting import (FIT_SEED, _apply_amici_solver_defaults, _fides_maxtime_options,
-                          _fit_engine, _fitted_values, problem_x_full_from_nominal)
+    import hashlib
 
     measurement_df = problem.measurement_df
     if measurement_df is None or len(measurement_df) == 0:
@@ -640,7 +644,99 @@ def refit_problem(problem, *, build_dir: str | Path, model_name: str,
     unsupported = _unsupported_reason(view, view)
     if unsupported:
         return {"status": STATUS_FLATTENING_REQUIRED, "reason": unsupported}
+    split = _refit_units(measurement_df, units)
+    if isinstance(split, str):
+        return {"status": STATUS_TABLE_MISMATCH, "reason": split}
 
+    def _module_tag(v) -> str:
+        """What the compiled module is a function of besides the SBML: the estimate split and the
+        observables (their sigmas and scalings are model outputs)."""
+        estimated = sorted(str(p) for p in v.parameter_df.index
+                           if int(float(v.parameter_df.loc[p, ESTIMATE])) == 1)
+        return hashlib.sha1("\0".join(estimated + ["|"] + sorted(map(str, v.observable_df.index)))
+                            .encode()).hexdigest()[:8]
+
+    whole = _module_tag(view)
+
+    def _build_for(uview):
+        """``build_dir``/``model_name`` when the unit's module is the caller's, a sibling keyed by
+        the tag otherwise — a module compiled for another split is silently wrong for this one."""
+        tag = _module_tag(uview)
+        if tag == whole:
+            return build_dir, model_name
+        return Path(build_dir).with_name(f"{Path(build_dir).name}_{tag}"), f"{model_name}_{tag}"
+
+    if units is None:
+        uview = _unit_view(view, measurement_df)
+        ubuild, uname = _build_for(uview)
+        return _refit_one(uview, build_dir=ubuild, model_name=uname, n_starts=n_starts)
+    per_unit: dict[str, dict[str, Any]] = {}
+    for unit, rows in split.items():
+        uview = _unit_view(view, rows)
+        ubuild, uname = _build_for(uview)
+        out = _refit_one(uview, build_dir=ubuild, model_name=uname, n_starts=n_starts)
+        if out["status"] != STATUS_OK:
+            return {**out, "unit": unit, "mode": MODE_TRANSFER}
+        per_unit[unit] = {k: v for k, v in out.items() if k not in ("status", "mode", "n_starts")}
+    chi2s = [u["chi2"] for u in per_unit.values()]
+    return {
+        "status": STATUS_OK,
+        "mode": MODE_TRANSFER,
+        "nll": float(sum(u["nll"] for u in per_unit.values())),
+        "k": int(sum(u["k"] for u in per_unit.values())),
+        "chi2": float(sum(chi2s)) if all(c is not None for c in chi2s) else None,
+        **_data_shape(measurement_df),
+        "n_starts": int(n_starts),
+        "n_converged": min(u["n_converged"] for u in per_unit.values()),
+        "units": per_unit,
+    }
+
+
+def _unit_view(view, rows):
+    """``view`` on ``rows`` alone: the observables those rows measure, and the parameter rows
+    petab's lint keeps for them — a sigma or scaling no row informs is not a parameter of the
+    refit. ``view``'s own tables are left untouched."""
+    import copy
+
+    uview = copy.copy(view)
+    uview.measurement_df = rows.reset_index(drop=True)
+    measured = set(rows[OBSERVABLE_ID].astype(str))
+    uview.observable_df = view.observable_df.loc[
+        [o for o in view.observable_df.index if str(o) in measured]]
+    uview.parameter_df = _without_extraneous(uview)
+    return uview
+
+
+def _refit_units(measurement_df, units):
+    """The held-out table split by ``units`` (``{conditionId: unitId}``) into one table per unit,
+    in unit order; the whole table under ``None`` when there are no units; a reason when a row's
+    condition is in no unit — an empty mapping maps none."""
+    if units is None:
+        return {None: measurement_df}
+    unit_of = measurement_df[SIMULATION_CONDITION_ID].astype(str).map(
+        {str(k): str(v) for k, v in units.items()})
+    unmapped = sorted(set(measurement_df[SIMULATION_CONDITION_ID].astype(str)[unit_of.isna()]))
+    if unmapped:
+        return (f"held-out condition(s) {unmapped} belong to no refit unit ({HELD_OUT_UNITS}); "
+                "every measured condition must be in exactly one system")
+    return {unit: rows for unit, rows in measurement_df.groupby(unit_of, sort=True)}
+
+
+def _refit_one(view, *, build_dir: str | Path, model_name: str, n_starts: int) -> dict[str, Any]:
+    """One system's multistart refit — :func:`refit_problem` for a table that is one unit."""
+    import logging
+
+    import numpy as np
+    import pypesto.optimize
+    import pypesto.petab
+    from pypesto.C import FVAL
+    from pypesto.C import RDATAS as PP_RDATAS
+
+    from .engine import AmiciEngine, _ensure_swig_on_path
+    from .fitting import (FIT_SEED, _apply_amici_solver_defaults, _fides_maxtime_options,
+                          _fit_engine, _fitted_values, problem_x_full_from_nominal)
+
+    measurement_df = view.measurement_df
     _ensure_swig_on_path()
     np.random.seed(FIT_SEED)
     importer = pypesto.petab.PetabImporter(view, output_folder=str(build_dir),
@@ -716,7 +812,7 @@ def score_session(session, engine, held_out: HeldOut,
         if failed:
             return {**failed, "mode": MODE_TRANSFER}
         starts = session.auto_fit_starts if n_starts is None else int(n_starts)
-        return refit_problem(view, n_starts=starts, **build)
+        return refit_problem(view, n_starts=starts, units=held_out.units, **build)
 
 
 def read_held_out(measurements_path: str | Path) -> HeldOut:
@@ -724,19 +820,39 @@ def read_held_out(measurements_path: str | Path) -> HeldOut:
 
     ``measurements_path`` is the held-out measurement TSV; a ``conditions.tsv`` /
     ``parameters.tsv`` in the same directory are the set's own condition and parameter
-    tables (:data:`HELD_OUT_CONDITIONS`, :data:`HELD_OUT_PARAMETERS`). Read with PEtab's
-    own readers, so the server and the harness parse the files identically.
+    tables (:data:`HELD_OUT_CONDITIONS`, :data:`HELD_OUT_PARAMETERS`), a ``units.tsv``
+    (``conditionId``, ``unitId``) the systems a transfer set is refit on
+    (:data:`HELD_OUT_UNITS`). Read with PEtab's own readers, so the server and the harness
+    parse the files identically.
     """
     import petab.v1 as petab
 
     path = Path(measurements_path)
     cond = path.with_name(HELD_OUT_CONDITIONS)
     pars = path.with_name(HELD_OUT_PARAMETERS)
+    units = path.with_name(HELD_OUT_UNITS)
     return HeldOut(
         measurement_df=read_measurements(path),
         condition_df=petab.get_condition_df(str(cond)) if cond.is_file() else None,
         parameter_df=petab.get_parameter_df(str(pars)) if pars.is_file() else None,
+        units=read_units(units) if units.is_file() else None,
     )
+
+
+def read_units(path: str | Path) -> dict[str, str]:
+    """``{conditionId: unitId}`` from a :data:`HELD_OUT_UNITS` table. A condition belongs to
+    exactly one unit, so a repeated ``conditionId`` or a blank cell is refused rather than letting
+    the last row win."""
+    import pandas as pd
+
+    table = pd.read_csv(path, sep="\t", dtype=str)
+    if table[["conditionId", "unitId"]].isna().any().any():
+        raise ValueError(f"{path}: every row needs a conditionId and a unitId")
+    dupes = sorted(table["conditionId"][table["conditionId"].duplicated()])
+    if dupes:
+        raise ValueError(f"{path}: condition(s) {dupes} are listed in more than one unit; a "
+                         "condition belongs to exactly one")
+    return dict(zip(table["conditionId"], table["unitId"]))
 
 
 def read_measurements(path: str | Path):
