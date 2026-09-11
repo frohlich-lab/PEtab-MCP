@@ -27,8 +27,11 @@ from typing import Any
 
 from petab.v1.C import (
     ESTIMATE,
+    LOWER_BOUND,
     NOMINAL_VALUE,
     OBSERVABLE_ID,
+    PARAMETER_SCALE,
+    UPPER_BOUND,
     OBSERVABLE_PARAMETERS,
     PREEQUILIBRATION_CONDITION_ID,
     SIMULATION_CONDITION_ID,
@@ -478,13 +481,17 @@ def _data_shape(measurement_df) -> dict[str, Any]:
     }
 
 
-def _reject_untransferable_table(held_out_df, published_df, view) -> None:
+def _reject_untransferable_table(held_out_df, published_df, view, *,
+                                 system_differs: bool = False) -> None:
     """Validate a transfer source against the FULL published training parameter table at setup.
 
-    Refuse an identical table or a new estimated mechanism parameter the published problem cannot
-    use. New observation-model parameters and unused fixed rows are permitted. This check cannot
-    run against the zero-shot shipped subset, which omits kinetics, or the candidate, whose rates
-    may have different names. Candidate refits retain their own estimated values instead.
+    Refuse a new estimated mechanism parameter the published problem cannot use — new
+    observation-model parameters and unused fixed rows are permitted — and a table identical to the
+    published one in every value, bound, scale and estimate flag, unless ``system_differs`` says
+    the set's condition table already makes it another system (new values of the published inputs
+    under the published parameters: lucarelli's cell types). This check cannot run against the
+    zero-shot shipped subset, which omits kinetics, or the candidate, whose rates may have different
+    names. Candidate refits retain their own estimated values instead.
     """
     from . import reconcile as _reconcile
 
@@ -500,14 +507,22 @@ def _reject_untransferable_table(held_out_df, published_df, view) -> None:
             "parameters of the held-out "
             "tables; the published model has no counterpart for them, so the refit cannot manage "
             "them")
-    if list(held_out_df.index) != list(published_df.index):
+    if system_differs or list(held_out_df.index) != list(published_df.index):
         return
     for pid in held_out_df.index:
         if int(float(held_out_df.loc[pid, ESTIMATE])) != int(float(published_df.loc[pid, ESTIMATE])):
             return
-        if not math.isclose(float(held_out_df.loc[pid, NOMINAL_VALUE]),
-                            float(published_df.loc[pid, NOMINAL_VALUE]), rel_tol=1e-12):
+        if PARAMETER_SCALE in held_out_df.columns and (str(held_out_df.loc[pid, PARAMETER_SCALE])
+                                                       != str(published_df.loc[pid, PARAMETER_SCALE])):
             return
+        for col in (NOMINAL_VALUE, LOWER_BOUND, UPPER_BOUND):
+            if col not in held_out_df.columns:
+                continue
+            a, b = float(held_out_df.loc[pid, col]), float(published_df.loc[pid, col])
+            if math.isnan(a) and math.isnan(b):
+                continue
+            if not math.isclose(a, b, rel_tol=1e-12):
+                return
     raise ValueError(
         "the held-out parameter table is identical to the training one, so nothing would transfer; "
         "a held-out set ships a parameter table only when it describes a DIFFERENT system — drop "
