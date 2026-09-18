@@ -8,12 +8,11 @@ table are mutable, and every committed change is snapshotted as a version and lo
 
 from __future__ import annotations
 
-import os as _os
-
 import math
+import os as _os
 import threading
-from pathlib import Path
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from petab.v1 import Problem
@@ -22,9 +21,9 @@ from petab.v1.models.sbml_model import SbmlModel
 from . import criteria, logging_setup
 from .constants import (
     ADEQUATE_GOF_PVALUE,
-    OVERFIT_GOF_PVALUE,
     DEFAULT_AUTO_FIT_STARTS,
     NON_IMPROVING_STREAK_CAP,
+    OVERFIT_GOF_PVALUE,
     PLATEAU_MIN_SCORE_GAIN,
     PLATEAU_WINDOW,
 )
@@ -209,6 +208,12 @@ class PetabSession:
         self.logger = logging_setup.configure(self.provenance.root)
         # pyPESTO's own optimizer logs go to a separate <root>/pypesto.log
         logging_setup.configure_pypesto(self.provenance.root)
+        # Rate-limit AMICI's per-non-finite-value warnings. Must happen BEFORE the first
+        # `import amici` anywhere in the process — that is what lets us own the `amici` logger
+        # instead of AMICI's own unfiltered handler (see `configure_amici`), and it is why this
+        # call belongs here, in the first thing the server constructs, rather than next to the
+        # fitting code that provokes the warnings.
+        logging_setup.configure_amici()
 
         # Ids of parameters that ship FIXED and are structural/mechanistic constants — the ones
         # the agent must neither free nor remove. Derived once from the initial (v0) problem and

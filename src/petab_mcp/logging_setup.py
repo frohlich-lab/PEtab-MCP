@@ -5,11 +5,16 @@ Attaches a file handler to the ``petab_mcp`` logger so a human-readable log
 pyPESTO's own optimizer logging to a separate ``<store>/pypesto.log`` so the (verbose) fit
 logs are captured without cluttering the main log or the server's stderr. Idempotent:
 calling either repeatedly for the same directory does not add duplicate handlers.
+
+It also RATE-LIMITS AMICI's own warnings (:func:`configure_amici`). AMICI logs one warning per
+non-finite value it finds, and the solver re-evaluates a failing right-hand side many times
+before giving the step up, so one badly conditioned start emits the same line repeatedly.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 _LOGGER_NAME = "petab_mcp"
@@ -97,3 +102,82 @@ def read_pypesto_log(store_root: str | Path, tail_lines: int) -> dict:
     kept = lines if tail_lines == 0 else lines[-tail_lines:]
     return {"path": str(path), "exists": True, "n_lines_total": len(lines),
             "tail_lines": tail_lines, "log": "\n".join(kept)}
+
+
+#: Records let through per wall-clock second before the rest of that second is dropped.
+_AMICI_PER_SECOND = 4
+#: AMICI's logging format
+_AMICI_FORMAT = "%(asctime)s.%(msecs).3d - %(name)s - %(levelname)s - %(message)s"
+_AMICI_DATEFMT = "%Y-%m-%d %H:%M:%S"
+
+_amici_handler: logging.Handler | None = None
+
+
+class _RateLimitFilter(logging.Filter):
+    """Let through at most :data:`_AMICI_PER_SECOND` records per wall-clock second, drop the rest.
+
+    A solver re-evaluating a failing right-hand side can emit the same warning millions of
+    times a second; this caps the cost of that per second rather than per distinct message, so
+    it doesn't matter whether the flood is one message or many.
+
+    DELIBERATELY UNLOCKED. The counter is a plain int mutated without synchronisation: reads and
+    writes are individually atomic under the GIL, so the worst a race costs is an occasionally
+    miscounted record, which a rate limiter does not care about. A :class:`threading.Lock` here
+    would be held across ``fork`` — pyPESTO's ``MultiProcessEngine`` forks its workers out of a
+    threaded server — and a lock that happened to be held at fork time is held forever in the
+    child, deadlocking that worker on its first AMICI warning.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._second = -1
+        self._count = 0
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        second = int(record.created)
+        if second != self._second:
+            self._second = second
+            self._count = 0
+        self._count += 1
+        return self._count <= _AMICI_PER_SECOND
+
+
+def _amici_level() -> int:
+    """``AMICI_LOG`` env as a level, or ``WARNING``.
+
+    A bad value is IGNORED rather than fatal, so that a bad log level doesn't prevent
+    the server from starting.
+    """
+    raw = os.environ.get("AMICI_LOG")
+    if raw is None:
+        return logging.WARNING
+    try:
+        return int(raw)
+    except ValueError:
+        pass
+    named = logging.getLevelNamesMapping().get(raw.strip().upper())
+    return named if named is not None else logging.WARNING
+
+
+def configure_amici(level: int | None = None) -> logging.Logger:
+    """Install a rate-limited stderr handler on the ``amici`` logger.
+
+    ``level`` defaults to :func:`_amici_level` — i.e. to ``AMICI_LOG``, the env var AMICI itself
+    honours.
+    """
+    global _amici_handler
+    logger = logging.getLogger("amici")
+    effective_level = _amici_level() if level is None else level
+    logger.setLevel(effective_level)
+    if _amici_handler is not None:
+        _amici_handler.setLevel(effective_level)
+        return logger
+    handler = logging.StreamHandler()
+    handler.setLevel(effective_level)
+    handler.setFormatter(logging.Formatter(_AMICI_FORMAT, datefmt=_AMICI_DATEFMT))
+    handler.addFilter(_RateLimitFilter())
+    logger.addHandler(handler)
+    logger.propagate = False
+    _amici_handler = handler
+    return logger
+
