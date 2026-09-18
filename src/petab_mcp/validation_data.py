@@ -489,8 +489,9 @@ def _reject_untransferable_table(held_out_df, published_df, view, *,
                                  system_differs: bool = False) -> None:
     """Validate a transfer source against the FULL published training parameter table at setup.
 
-    Refuse a new estimated mechanism parameter the published problem cannot use — new
-    observation-model parameters and unused fixed rows are permitted — and a table identical to the
+    Refuse a new estimated mechanism parameter the published problem cannot use — a parameter the
+    (patched) reference model itself defines, new observation-model parameters, and unused fixed
+    rows are permitted — and a table identical to the
     published one in every value, bound, scale and estimate flag, unless ``system_differs`` says
     the set's condition table already makes it another system (new values of the published inputs
     under the published parameters: lucarelli's cell types). This check cannot run against the
@@ -500,9 +501,11 @@ def _reject_untransferable_table(held_out_df, published_df, view, *,
     from . import reconcile as _reconcile
 
     manageable = {str(sym) for sym in _reconcile.observation_model_symbols(view)}
+    model = getattr(view, "model", None)
     unmanageable = sorted(
         str(pid) for pid in held_out_df.index
         if pid not in published_df.index and str(pid) not in manageable
+        and not (model is not None and model.has_entity_with_id(str(pid)))
         and int(float(held_out_df.loc[pid, ESTIMATE])) == 1)
     if unmanageable:
         raise ValueError(
