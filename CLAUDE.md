@@ -1,12 +1,12 @@
 # Working in this repo
 
-Two packages under `src/`:
+**`petab_mcp`** (under `src/`) is the MCP server. It wraps one PEtab v1 parameter-estimation
+problem and exposes a _deliberately constrained_ editing loop. The constraints are the product,
+not scaffolding.
 
-- **`petab_mcp`** — the MCP server. It wraps one PEtab v1 parameter-estimation problem and
-  exposes a _deliberately constrained_ editing loop. The constraints are the product, not
-  scaffolding.
-- **`petab_harness`** — the agent harness that drives that server in `examples/`: a
-  deepagents panel, the judge, the benchmark sweep, and the run explorer.
+The agent harness that drives it (panel, judge, benchmark sweep, run explorer) lives in
+[frohlich-lab/petab_mcp](https://github.com/frohlich-lab/petab_mcp) and installs this package
+pinned to a commit; a change here reaches it only when that pin is bumped.
 
 ## Read before you change behaviour
 

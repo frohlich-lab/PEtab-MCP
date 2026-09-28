@@ -7,9 +7,7 @@ collapsed predicates themselves are covered in test_result_fields; this pins the
 
 from __future__ import annotations
 
-import json
 import math
-from pathlib import Path
 
 import pytest
 
@@ -320,117 +318,6 @@ def test_proportional_noise_parameter_is_scaled_by_the_observable_magnitude():
     from petab_mcp.constants import NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD as CAP
 
     assert frac <= CAP, f"a correct 10% CV must not read as inflated: frac={frac} cap={CAP}"
-
-
-# --- the truth must pass its own gate (the check that would have caught #118) ---------------
-# The three examples that once needed excusing are all gone for a REASON, not by retuning —
-# oliveira cleared once the gate stopped judging FIXED sigmas (its two ship estimate=0, so no fit
-# can move them); perelson cleared once this test began reading the truth from the reference FIT
-# rather than a parameters.tsv nominalValue that is a linear placeholder (1e5) for a log10-space
-# sd; and schwen cleared when #140's replicate-ratio arm was deleted. That arm flagged schwen's own
-# published reference (sigma 0.187 vs a 0.024 pure-error floor = 7.83x, on 126 replicated points)
-# because schwen's replicates are n_i = 2 TECHNICAL duplicates whose scatter understates the real
-# noise ~8x.
-#
-# So do NOT add to the set below to accommodate a THRESHOLD: a gate that condemns a data-generating
-# model is a gate with the wrong FORM, and an excuse would hide exactly that. The two entries that
-# remain are here on narrower grounds than "the number is close", and each carries its own exit.
-#
-# isensee is a genuine limitation of what the marginal-std cap can see. Its `rho_pRII_Western`
-# reads 0.813 of that observable's data std against the 0.75 cap, on 18 measurements — enough that
-# the ratio means something, and not the small-sample identity that NOISE_SIGMA_MIN_POINTS covers
-# (bachmann's four n=3 readouts, where a population std and the Gaussian MLE are the same
-# estimator). The published Western blot is simply noise-dominated, and two things say so
-# independently: the model-free Rice estimator puts the noise at 0.1377 ABOVE the fitted sigma of
-# 0.0993 (so by that yardstick the sigma is if anything small), and Rice EXCEEDING the total spread
-# of 0.1222 is itself the signature of data with no resolvable trend — nearly all of that
-# observable's variance is noise.
-#
-# Not fixable by moving the estimator: judging against min(data_std, rice) flags ten of lucarelli's
-# healthy gene sigmas (the 0.75 cap is calibrated against total spread, not against a noise
-# estimate), and clamping the judged sigma at rice blinds the gate entirely — alkan's sd_yh2ax_au,
-# genuinely inflated at 10.2x its data std, would read 0.014 and pass.
-#
-# alkan is here for a DIFFERENT reason, and the two should not be read as the same kind of entry.
-# isensee's flag is a property of its data; alkan's is a property of its reference ARTIFACT, which
-# does not currently converge: three 60-start runs of the identical code path and seed returned nll
-# 3500.25, 4319.13 and 4574.75 (~2150 BIC of spread against a <=10 threshold), because the per-start
-# wall-clock cap in fit_budget.fides_maxtime_options binds on a model this size and a slower machine
-# simply gets less optimisation done per start. Its 11 flagged sigmas (fractions 0.76-3.06, n up to
-# 234) follow from that under-converged fit — an inflated MLE sigma is the correct answer for a model
-# leaving large residuals — so they are expected to clear once the reference is regenerated on a quiet
-# machine with a larger REFIT_N_STARTS, at which point this entry should be REMOVED rather than left
-# to rot. See the alkan row in BENCHMARK_NOTES, which says the example should not be scored until then.
-_TRUTH_KNOWN_FAILURES: set[str] = {"isensee", "alkan"}
-
-
-_EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
-# Repo-root-relative, NOT cwd-relative: a bare glob("examples/...") silently yields [] when pytest
-# runs from anywhere but the repo root, and an empty parametrize is a GREEN skip — the check then
-# never runs while looking like it passed.
-_BENCHMARK_YAMLS = sorted(str(p) for p in _EXAMPLES_DIR.glob("*/problem/problem.yaml"))
-# Only the 3 synthetic examples ship their problem/ in git; the benchmark ones are materialized by
-# examples/setup.py and gitignored, so on a bare checkout (including CI) this parametrizes over the
-# synthetic trio alone. Named here so the shortfall is visible rather than inferred from a count.
-_SYNTHETIC = {"enzyme_kinetics", "predator_prey", "repressilator"}
-
-
-def test_benchmark_examples_are_materialized_or_explicitly_absent():
-    """Guard the guard: make the coverage of the ground-truth check below OBSERVABLE.
-
-    If the benchmark problems are materialized, the parametrized test covers them; if not, this
-    states so loudly instead of leaving a green run that silently checked only the synthetic trio.
-    """
-    found = {Path(p).parents[1].name for p in _BENCHMARK_YAMLS}
-    assert found, (
-        f"no examples/*/problem/problem.yaml under {_EXAMPLES_DIR} — the ground-truth gate check "
-        "cannot run at all"
-    )
-    if not (found - _SYNTHETIC):
-        pytest.skip(
-            "only the synthetic examples are materialized, so the ground-truth gate check below "
-            "does NOT cover the benchmark problems (fiedler/oliveira/perelson/...). Run "
-            "`python examples/setup.py` first to cover them."
-        )
-
-
-@pytest.mark.parametrize("yaml_path", _BENCHMARK_YAMLS)
-def test_ground_truth_passes_its_own_plausibility_gate(yaml_path):
-    """The data-generating parameter vector must not be flagged inflated/collapsed. A plausibility
-    test that rejects the TRUTH is measuring the wrong thing — before #118 this failed on 7 of 16
-    examples because the gate compared a log-space / CV parameter to a raw linear std."""
-    petab = pytest.importorskip("petab.v1")
-    from petab_mcp import fitting as F
-    from petab_mcp import reconcile as R
-
-    example = Path(yaml_path).parents[1].name
-    problem = petab.Problem.from_yaml(yaml_path)
-    ids = [i for i in R.plausibility_sigma_ids(problem) if i in problem.parameter_df.index]
-    # Prefer the REFERENCE FIT's own sigmas as the truth. For an ESTIMATED sigma the table's
-    # nominalValue is a starting point, not an answer, and perelson's is a linear placeholder (1e5)
-    # for what is a log10-space sd — feeding that in tests the gate against a value that is not the
-    # truth. The reference fit puts it at 0.1228. Fall back to nominalValue where a reference sigma
-    # is absent (fixed sigmas, or a reference predating the field). Ids can differ between the
-    # pristine collection problem and the materialized one, so a lone sigma is paired positionally.
-    reference_path = Path(yaml_path).parent / "reference.json"
-    reference_sigmas = {}
-    if reference_path.exists():
-        reference_sigmas = (json.loads(reference_path.read_text()) or {}).get("noise_sigma") or {}
-    if len(reference_sigmas) == 1 and len(ids) == 1:
-        reference_sigmas = {ids[0]: next(iter(reference_sigmas.values()))}
-    truth = {
-        i: float(reference_sigmas.get(i, problem.parameter_df.loc[i, "nominalValue"])) for i in ids
-    }
-    report = F.noise_sigma_report(problem, truth)
-    flagged = F.noise_sigma_inflated(report) or F.noise_sigma_collapsed(report)
-    if example in _TRUTH_KNOWN_FAILURES and flagged:
-        # Conditional, NOT an imperative pytest.xfail(): an unconditional call raises before the
-        # assert and can never XPASS, so a real fix would leave the suite green and the stale entry
-        # would sit here forever with whatever diagnosis it was written with.
-        pytest.xfail(f"{example}: known ground-truth/gate limitation (see #118)")
-    assert not flagged, f"{example}: ground truth flagged -> " + str(
-        {k: v.get("fraction_of_data_std") for k, v in report.items()}
-    )
 
 
 # --- model-free difference-based noise estimate (advisory only) ------------------------------

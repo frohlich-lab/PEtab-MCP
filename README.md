@@ -1,6 +1,6 @@
-# petab-mcp
+# PEtab MCP
 
-[![CI](https://github.com/frohlich-lab/petab_mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/frohlich-lab/petab_mcp/actions/workflows/ci.yml)
+[![CI](https://github.com/frohlich-lab/PEtab-MCP/actions/workflows/ci.yml/badge.svg)](https://github.com/frohlich-lab/PEtab-MCP/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 ## Overview
@@ -23,6 +23,10 @@ Simulation/objective use [AMICI](https://github.com/AMICI-dev/AMICI), optimizati
 [Fides](https://github.com/fides-dev/fides) trust-region optimizer. All are **required** —
 fitting is not optional machinery.
 
+The agent harness that drives this server — the analyst panel, the judge, the zero-shot
+benchmark examples and the run explorer — lives in
+[frohlich-lab/petab_mcp](https://github.com/frohlich-lab/petab_mcp).
+
 ## Install
 
 ```bash
@@ -33,10 +37,6 @@ AMICI compiles generated C++ and needs a toolchain: a C++ compiler, CMake, Ninja
 pip `swig` binary on `PATH` (OpenBLAS ships in the AMICI wheel).
 
 ## Run
-
-There are three entry points.
-
-**1. The MCP server**, standalone, against any PEtab problem:
 
 ```bash
 petab-mcp --petab-yaml path/to/problem.yaml
@@ -49,41 +49,7 @@ petab-mcp --petab-yaml path/to/problem.yaml
 Provenance is written to `<problem_dir>/.petab_mcp/` by default and is durable — restarting
 resumes the latest version. A ready toy problem lives at `tests/data/toy_v1/`.
 
-**2. A zero-shot model-building example**, driving the agent harness against the server:
-
-```bash
-python examples/enzyme_kinetics/run.py                     # --driver deepagents (default)
-python examples/enzyme_kinetics/run.py --driver scripted   # no LLM, self-test
-```
-
-**3. The run explorer**, to browse archived and in-flight runs:
-
-```bash
-python examples/explore_ui.py
-```
-
-Examples also run as Slurm array jobs (env setup, a shared Phoenix collector, sweeps) — see
-[`slurm/README.md`](slurm/README.md).
-
-## Project structure
-
-Two packages under `src/`: [`petab_mcp`](src/petab_mcp/) (the MCP server) and
-[`petab_harness`](src/petab_harness/) (the agent harness that drives it — panel, judge,
-benchmark sweep, run explorer). Each submodule is documented in its own docstrings.
-
-### Examples
-
-[`examples/`](examples/) holds 21 zero-shot model-building demos: a PEtab problem that ships
-without a model, which an LLM agent panel must build from the data alone. Each has a
-deliberate trap, so fitting the numbers isn't enough — an independent judge scores the built
-mechanism against a true or published reference under the run's own complexity criterion
-(BIC by default). Three are synthetic
-(`enzyme_kinetics/`, `predator_prey/`, `repressilator/`); eighteen are real published models
-materialized from the PEtab Benchmark-Models collection (`python examples/setup.py`). See
-[`examples/README.md`](examples/README.md) (harness, tracing, judging) and
-[`examples/BENCHMARK_NOTES.md`](examples/BENCHMARK_NOTES.md) (the model roster).
-
-### Tools
+## Tools
 
 `make_changes` is the single tool that changes the model or its parameter search space, and
 it always fits — see its docstring in [`src/petab_mcp/server.py`](src/petab_mcp/server.py)
@@ -91,29 +57,8 @@ for the full argument and result reference. Everything else is read-only: proble
 parameter inspection (`describe_problem`, `get_model`, `get_parameters`, ...), fit
 inspection (`get_fit_summary`, `get_fit_diagnosis`, `query_data` — arbitrary SQL over the
 fit via DuckDB), and provenance (`get_provenance`, `list_versions`, `restore_version`, ...).
-A live server also exposes these as MCP resources under `petab://...`.
-
-### Harness
-
-The [`petab_harness`](src/petab_harness) drives a model building example. It spawns the MCP
-server as a subprocess, launches a panel of agent specialists (mathematician, systems
-scientist, signal engineer) and then hands off to the **judge**, which selects the
-best-scoring version and scores it against a true or published reference. Phoenix tracing
-and the run explorer read the trace and version history this pipeline leaves behind.
-
-`--driver barebones` is the **null arm** for that design: the same model, problem, libraries
-and compute, but a stock deepagent with file tools and a sandboxed shell over the PEtab files
-on disk — no server, no panel, no scored editing loop — asked to deliver a finished PEtab
-problem in place, which the same judge then scores at its delivered parameter values. What
-the harness adds is the difference between the two arms on the same sweep (see
-[`src/petab_harness/agent/barebones.py`](src/petab_harness/agent/barebones.py)).
-
-[`petab_harness.neural_ode`](src/petab_harness/neural_ode) is the harness's non-LLM model
-producer. It reads a PEtab problem's tables without opening the shipped model, restates the
-problem as a PEtab SciML neural ODE — the observed and dosed species as states, a tanh network as
-the right-hand side, the shipped observation model kept — fits it through AMICI's JAX backend,
-scores it against the example's held-out set, and distils the field into Antimony rate laws with
-PySR for the same judge. `python -m petab_harness.neural_ode fit|propose` runs either half.
+A live server also exposes these as MCP resources under `petab://...`. Each submodule of
+[`src/petab_mcp`](src/petab_mcp/) is documented in its own docstrings.
 
 ## Design notes
 
@@ -156,7 +101,7 @@ Principles to hold onto when extending this package.
 ## Development
 
 ```bash
-pip install -e '.[dev]'   # AMICI + pyPESTO are core deps; dev adds pytest + the agent stack
+pip install -e '.[dev]'   # AMICI + pyPESTO are core deps; dev adds pytest + ruff
 pytest                    # needs the full install (AMICI/pyPESTO are hard deps); PubMed is stubbed
 ```
 

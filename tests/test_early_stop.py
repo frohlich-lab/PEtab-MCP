@@ -636,45 +636,6 @@ def test_a_stalled_long_run_is_still_stopped_by_the_streak_cap(session):
 
 
 # --- (e) a scale-coupled sigma has no cross-model meaning ------------------------------------
-def test_reference_sigma_basis_is_declined_for_a_scale_coupled_sigma():
-    """fiedler's noise is `s_<gel> * sigma`, with the gels' `s_*` ESTIMATED over 77.7..999.99. Only
-    the product is identified, so a model at different internal units reaches the SAME effective
-    noise with a proportionally different sigma. The judge's reference basis divided one model's raw
-    sigma by another's and called 19 of 20 fiedler runs implausible, silently failing 17 that had
-    beaten the BIC bar (best dBIC -28.8; the one scored pass was +0.50)."""
-    from petab_harness.runner.scoring import _reference_sigma_flag
-
-    reference = {
-        "noise_sigma": {"sigma_pMek": 0.0005804511382150003},
-        "noise_sigma_effective": {"sigma_pMek": 0.0005804511382150003},
-        "k": 22,
-        "n": 72,
-    }
-    # The real numbers from 51526222_124: plausible on its own data-driven metrics, 179x the
-    # reference's raw sigma.
-    entry = {
-        "fitted": 0.10386657663301647,
-        "effective_sigma": 0.10386657663301647,
-        "n_points": 36,
-        "data_std": 0.33907019890637025,
-        "fraction_of_data_std": 0.3063276482805788,
-        "status": "ok",
-    }
-
-    coupled = _reference_sigma_flag(
-        {"sigma_pMek": {**entry, "scale_coupled": True}}, reference, k=22, n=72
-    )
-    assert coupled is None  # declined -> the judge falls through to the data-driven band
-
-    # Without the coupling the basis still applies, and still flags this ratio -- so the fix is
-    # scoped to the coupling and does not disable the gate generally.
-    plain = _reference_sigma_flag(
-        {"sigma_pMek": {**entry, "scale_coupled": False}}, reference, k=22, n=72
-    )
-    assert plain is not None and plain["inflated"] is True
-    assert plain["max_ratio"] > 100
-
-
 @pytest.mark.parametrize("gain_estimated,expected", [(1, True), (0, False)])
 def test_only_an_estimated_co_factor_breaks_comparability(gain_estimated, expected):
     """Only an ESTIMATED co-factor breaks the ratio. A FIXED one is a declared constant of the

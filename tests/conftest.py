@@ -64,27 +64,6 @@ def reauthor_toy():
     return _reauthor
 
 
-def _langchain_available() -> bool:
-    """Is the harness-only ``langchain`` importable, submodule and all?
-
-    Note the two-step probe: when ``langchain`` IS installed, reaching for the submodule may
-    raise ModuleNotFoundError from a broken install (a missing transitive dependency), and that
-    should surface rather than silently skipping the tests it guards.
-    """
-    import importlib.util
-
-    if importlib.util.find_spec("langchain") is None:
-        return False
-    return importlib.util.find_spec("langchain.agents") is not None
-
-
-#: Skip-marker for tests that build langchain middleware. Lives here because two test modules
-#: had byte-identical copies of it.
-requires_langchain = pytest.mark.skipif(
-    not _langchain_available(), reason="langchain (examples-harness only) not installed"
-)
-
-
 @pytest.fixture
 def broken_model():
     """An ``SbmlModel`` missing entities the fixed observable/condition tables need, for tests

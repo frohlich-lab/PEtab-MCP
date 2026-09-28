@@ -1,7 +1,7 @@
 # Coding standards
 
-How code is written here. This is descriptive: it was derived from the existing ~53k lines,
-so matching it means matching the code around you. For _what the system is_, see the
+How code is written here. This is descriptive: it was derived from the existing code, so
+matching it means matching the code around you. For _what the system is_, see the
 [README.md](../README.md).
 
 ## Rationale log
@@ -44,37 +44,23 @@ This log explains _why_. It does not restate what the source code does.
 
 ## Agent-facing prose
 
-Every string the harness sends to a model lives in
-[prompts.py](../src/petab_harness/prompts.py), and the panel reads several of those surfaces in
-one turn — its system prompt, each tool's description, whatever the finish gate returns. Three
-rules keep one fact from being written down twice:
+A tool docstring states the tool's CONTRACT (arguments, result shape, what it rejects) for any
+client. The agent harness ([frohlich-lab/petab_mcp](https://github.com/frohlich-lab/petab_mcp))
+replaces it for its panel with a `TOOL_DESCRIPTIONS` entry that states the same tool for the job
+the lead is doing. Neither restates the other, and the two packages cannot share a constant, so
+keep them from describing the same thing instead.
 
-- **A rule read on more than one surface is ONE constant**, at the top of `prompts.py`, composed
-  into every prompt that states it (`_SIGMA_CAP_ADVISORY`, `_MERGE_TAKE_RULE`,
-  `_ADEQUATE_IS_NOT_DONE`, `_DSCORE_SIGN`, `_PARAMETER_HALF`, `_MODEL_EDIT_OPS`). Never re-worded
-  per surface: two paraphrases of one rule are two things to keep in sync, and the one the reader
-  acts on is whichever they happened to read. A rule with one home is written where it lives.
 - **No argument lists.** The JSON schema is the signature and is sent alongside the description,
   so `Args: a, b, c` is a hand-maintained copy of it. Say what an argument MEANS when the name
   does not; never enumerate them.
-- **Derive a list of names, don't retype it.** `LEAD_SELF_READ_TOOLS` is rendered into the lead
-  prompt AND spliced into `ORCHESTRATOR_TOOLS`, so the prompt cannot name a tool the lead does
-  not hold.
-
-The server's tool docstrings are the other half of this: they state the tool's CONTRACT
-(arguments, result shape, what it rejects) for any client, and the `TOOL_DESCRIPTIONS` entry
-that replaces them for the panel states the same tool for the job the lead is doing. Neither
-restates the other. The two packages ship separately — `petab_harness` must import without
-`petab_mcp` ([test_import_lightness.py](../tests/test_import_lightness.py)) — so they cannot
-share a constant; keep them from describing the same thing instead.
 
 ## Types
 
 - **`from __future__ import annotations` at the top of every module** — every module in
-  `src/` bar one trivial `__init__.py`, and all but five test files.
+  `src/` and every test file.
 - Builtin generics and `X | None`; `requires-python = ">=3.12"`, so there is no reason to
   reach for `typing.List` or `Optional`.
-- **Return annotations on public functions** (~624 of 816 `def`s). Private one-liners may
+- **Return annotations on public functions** (~457 of 528 `def`s). Private one-liners may
   skip.
 
 ## Errors
@@ -97,12 +83,6 @@ actionable message.
 - **[errors.py](../src/petab_mcp/errors.py)** — the exception types.
 - Tools stay thin. [server.py](../src/petab_mcp/server.py) wires and validates; the work
   lives in `session` / `operations` / `fitting` / `data_access` / `reconcile`.
-- **[prompts.py](../src/petab_harness/prompts.py)** — every agent-facing string the harness
-  sends to a model, plus the registry (`PROMPT_GROUPS`) that versions them. Editing the text
-  starts a new `prompt_version`, so results either side are not comparable.
-- **[ablations.py](../src/petab_harness/ablations.py)** — every switch that changes what a
-  run _does_ (what the agent is told, what tools it has access to). Switched on or off via
-  environment variables.
 
 ## Dependencies
 
@@ -113,9 +93,8 @@ actionable message.
 - **A new import means a new pin.** Several dependencies are pinned precisely because
   nothing imports them directly (`h5py` is written _through_ pyPESTO's storage API) — a
   transitive graph change would otherwise break them silently.
-- **Optional deps must not silently skip tests.** `importorskip`-guarded tests are why `dev`
-  depends on `petab-mcp[agent]`. Adding an `importorskip` means adding its dependency to
-  `dev`.
+- **Optional deps must not silently skip tests.** Adding an `importorskip` means adding its
+  dependency to `dev`.
 
 ## Tests
 
@@ -126,12 +105,10 @@ actionable message.
   ([test_operations.py](../tests/test_operations.py)).
 - **A test comment names the regression it locks in.** A test whose failure does not tell
   you what broke is half a test — see the docstrings in
-  [test_prompt_tracking.py](../tests/test_prompt_tracking.py).
+  [test_noise_sigma_advice.py](../tests/test_noise_sigma_advice.py).
 - **Do not guard prose against prose.** A regex asserting that N paraphrases of one rule still
   agree is a maintenance cost standing in for a structural fix: make it one string and interpolate
-  it (see "Agent-facing prose" above).
-- A test that exercises an arm resolved at import time needs a subprocess, not
-  monkeypatching ([test_subagent_registry.py](../tests/test_subagent_registry.py)).
+  it.
 - **`pytest` takes no `-n` from config.** The caller passes it; CI passes `-n 2`.
 
 ## Linting
@@ -150,5 +127,5 @@ reason** — do not cap ruff.
 ## Commits
 
 `area: what changed (#PR)` — lowercase area, imperative, matching `git log`. The area is a
-module or subsystem (`fit:`, `judge:`, `finish_gate:`, `deps:`, `prompt:`) and may be
+module or subsystem (`fit:`, `server:`, `validation:`, `reconcile:`, `deps:`) and may be
 omitted for a change that spans the repo.

@@ -51,15 +51,6 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e '.[dev]'
 
-      # NOTE: the deepagents driver's tests (test_subagent_registry.py, test_agent_tool_dispatch.py,
-      # test_biocurator_input.py, test_biocurator_trim.py) importorskip their harness dependency, so
-      # they SILENTLY SKIP if it is absent -- which is how a broken _trim_europepmc_search and,
-      # before it, the uncurated `general-purpose` subagent (issue #112) stayed invisible to CI.
-      # `.[dev]` above covers them: dev -> petab-mcp[agent], which pins deepagents,
-      # langchain-openai AND langchain-mcp-adapters. Do not add a manual install step back -- the
-      # one removed here omitted langchain-mcp-adapters, so it was strictly weaker than the extra
-      # it duplicated, and it could drift out of step with the pins in pyproject.toml.
-
       # `swig` is an (unpinned) AMICI dependency, so `.[dev]` already pulls it;
       # install it explicitly too so CI never silently relies on the transitive
       # graph. Its version tracks the SWIG the AMICI wheel is built against,
@@ -86,15 +77,6 @@ jobs:
           print(f"SWIG={swig_bin}")
           print(f"SWIG_LIB={lib_dirs[-1]}")
           PY
-
-      # tests/test_explorer_math.py runs the explorer's LaTeX->MathML converter in `node` (app.js
-      # is a plain browser script, so the only way to test it is to evaluate it). That test skips
-      # where node is absent; pin one here so the skip never happens silently in CI, for the same
-      # reason the SWIG install above is explicit.
-      - name: Set up Node (runs the explorer's JS through pytest)
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
 
       - name: Run tests
         # -n 2 lives HERE, not in pyproject's addopts, so it applies to CI (a 2-core runner)
