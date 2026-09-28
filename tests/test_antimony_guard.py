@@ -14,8 +14,10 @@ from petab.v1.models.sbml_model import SbmlModel
 import petab_mcp  # noqa: F401  - importing the package installs the guard (__init__)
 from petab_mcp import antimony_guard
 
-_ANT = ("model t{i}\n  compartment c = 1;\n  species A in c;\n  A = 1; k = 0.1;\n"
-        "  r: A -> ; k*A;\nend\n")
+_ANT = (
+    "model t{i}\n  compartment c = 1;\n  species A in c;\n  A = 1; k = 0.1;\n"
+    "  r: A -> ; k*A;\nend\n"
+)
 
 
 def test_guard_is_installed_by_package_import():

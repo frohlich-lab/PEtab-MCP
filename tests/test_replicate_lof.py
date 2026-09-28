@@ -86,8 +86,10 @@ RUN_LOG_PREDICTIONS = {
 
 
 def _blasi_points(predictions):
-    return [{"label": obs, "n": n, "ybar": ybar, "s": s, "prediction": predictions[obs]}
-            for obs, n, ybar, s in POINTS]
+    return [
+        {"label": obs, "n": n, "ybar": ybar, "s": s, "prediction": predictions[obs]}
+        for obs, n, ybar, s in POINTS
+    ]
 
 
 def test_blasi_true_model_is_not_flagged():
@@ -103,7 +105,7 @@ def test_blasi_true_model_is_not_flagged():
     assert out["n_points"] == 15
     assert out["max_abs_z"] == pytest.approx(3.393, abs=5e-3)
     assert out["min_p_holm"] == pytest.approx(0.0519, rel=1e-2)
-    assert out["min_p_holm"] > rt.REPLICATE_LOF_ALPHA * 5   # margin, not a near miss
+    assert out["min_p_holm"] > rt.REPLICATE_LOF_ALPHA * 5  # margin, not a near miss
     merged = data_access._merge_lof_verdicts([out], {}, n_structural=9)
     assert merged["lof_df"] == 6 and "weak" not in merged, merged
 
@@ -120,9 +122,19 @@ def test_blasi_early_finish_run_is_flagged():
     assert out["points"][0]["z"] == pytest.approx(-17.976, abs=5e-3)
     # the reported points are the worst FIVE, in the measured order
     assert [p["label"] for p in out["points"]] == [
-        "observable_k8", "observable_k12", "observable_k5", "observable_0ac", "observable_k16"]
-    assert set(out["flagged"]) >= {"observable_k8", "observable_k12", "observable_k5",
-                                   "observable_0ac", "observable_k16"}
+        "observable_k8",
+        "observable_k12",
+        "observable_k5",
+        "observable_0ac",
+        "observable_k16",
+    ]
+    assert set(out["flagged"]) >= {
+        "observable_k8",
+        "observable_k12",
+        "observable_k5",
+        "observable_0ac",
+        "observable_k16",
+    }
 
 
 def test_blasi_separation_is_on_this_axis_and_not_the_sigma_ratio():
@@ -140,8 +152,10 @@ def test_blasi_z_is_exactly_invariant_to_the_sigma_convention():
     run = _blasi_points(RUN_LOG_PREDICTIONS)
     assert rt.replicate_lack_of_fit(run) == rt.replicate_lack_of_fit(run)
     arm = rt.replicate_lack_of_fit(run)
-    assert (data_access._merge_lof_verdicts([arm], {}, n_structural=7)["max_abs_z"] ==
-            data_access._merge_lof_verdicts([arm], {}, n_structural=6)["max_abs_z"])
+    assert (
+        data_access._merge_lof_verdicts([arm], {}, n_structural=7)["max_abs_z"]
+        == data_access._merge_lof_verdicts([arm], {}, n_structural=6)["max_abs_z"]
+    )
 
 
 def test_blasi_holm_does_not_use_a_lack_of_fit_f_statistic():
@@ -151,7 +165,7 @@ def test_blasi_holm_does_not_use_a_lack_of_fit_f_statistic():
     13.60, not 7). The per-point Holm rule needs no df bookkeeping, and it passes the truth."""
     truth = _blasi_points(TRUTH_LOG_PREDICTIONS)
     total = sum(((p["ybar"] - p["prediction"]) / (p["s"] / math.sqrt(p["n"]))) ** 2 for p in truth)
-    assert total == pytest.approx(27.12, abs=0.05)          # the statistic an F test would divide
+    assert total == pytest.approx(27.12, abs=0.05)  # the statistic an F test would divide
     assert rt.replicate_lack_of_fit(truth)["status"] == "pass"
 
 
@@ -159,8 +173,16 @@ def test_blasi_holm_does_not_use_a_lack_of_fit_f_statistic():
 def _rec(obs, cond, t, m, s):
     """A simulation record as engine._simulation_records builds it (one row per MEASUREMENT, and
     finite floats only — which is why a steady-state ``time = inf`` arrives as None)."""
-    return {"observable_id": obs, "condition_id": cond, "time": t, "measurement": m,
-            "simulation": s, "residual": m - s, "residual_weighted": (m - s) / 0.5, "noise": 0.5}
+    return {
+        "observable_id": obs,
+        "condition_id": cond,
+        "time": t,
+        "measurement": m,
+        "simulation": s,
+        "residual": m - s,
+        "residual_weighted": (m - s) / 0.5,
+        "noise": 0.5,
+    }
 
 
 def _replicated_records(session, deviation: float, n_points: int = 3):
@@ -179,8 +201,16 @@ def _replicated_records(session, deviation: float, n_points: int = 3):
             off = deviation if i == n_points - 1 else 0.0
             recs.append(_rec("obs_B", "c0", t, 1.0 + 0.01 * rep + off, 1.0 + 0.015))
     session.problem.measurement_df = pd.DataFrame(
-        [{"observableId": r["observable_id"], "simulationConditionId": r["condition_id"],
-          "time": r["time"], "measurement": r["measurement"]} for r in recs])
+        [
+            {
+                "observableId": r["observable_id"],
+                "simulationConditionId": r["condition_id"],
+                "time": r["time"],
+                "measurement": r["measurement"],
+            }
+            for r in recs
+        ]
+    )
     session.simulation = {"records": recs}
     return recs
 
@@ -217,7 +247,7 @@ def test_rollup_replicate_arm_passes_a_model_that_fits(session):
     out = data_access.residual_structure_rollup(session)
     assert out["replicate_lack_of_fit"]["status"] == "pass"
     assert out["replicate_lack_of_fit"]["lof_df"] == 3
-    assert "weak" not in out["replicate_lack_of_fit"]   # nothing to qualify, so no key
+    assert "weak" not in out["replicate_lack_of_fit"]  # nothing to qualify, so no key
     assert out["flagged_observables"] == []
     assert out["low_power"] is False
     assert data_access.residual_flag(out) is False
@@ -248,8 +278,16 @@ def test_rollup_verdict_shape_is_the_same_on_every_path(session):
     examples cannot run this arm, so a null on each of those is a per-fit tax forever (PR #23). The
     STATISTIC keeps every key on every path — that shape is the assembler's contract, and rebuilding
     it from a partial key list is how `weak` was dropped in the first place."""
-    core = {"available", "status", "n_points", "alpha", "max_abs_z", "min_p_holm", "points",
-            "n_flagged"}
+    core = {
+        "available",
+        "status",
+        "n_points",
+        "alpha",
+        "max_abs_z",
+        "min_p_holm",
+        "points",
+        "n_flagged",
+    }
     session.simulation = None
     assert set(data_access.residual_structure_rollup(session)["replicate_lack_of_fit"]) == core
 
@@ -272,8 +310,9 @@ def test_rollup_verdict_shape_is_the_same_on_every_path(session):
     # ...and an untested sibling adds exactly that key
     thin = rt.replicate_lack_of_fit([_point(f"thin{i}", 30.0, n=2) for i in range(4)])
     thick = [_point(f"obs_B[c0, t={t}]", 0.3) for t in (0.0, 1.0, 2.0)]
-    merged = data_access._merge_lof_verdicts([thin, rt.replicate_lack_of_fit(thick)],
-                                            {p["label"]: "obs_B" for p in thick})
+    merged = data_access._merge_lof_verdicts(
+        [thin, rt.replicate_lack_of_fit(thick)], {p["label"]: "obs_B" for p in thick}
+    )
     assert set(data_access._lof_reported(merged)) == core | {"untested_status"}
 
 
@@ -300,8 +339,11 @@ def test_rollup_replicate_arm_never_raises(session, monkeypatch):
     from petab_mcp import reconcile as R
 
     _replicated_records(session, deviation=0.5)
-    monkeypatch.setattr(R, "replicate_pure_error_points",
-                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(
+        R,
+        "replicate_pure_error_points",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
     out = data_access.residual_structure_rollup(session)
     assert out["replicate_lack_of_fit"]["available"] is False
     assert out["flagged_observables"] == []
@@ -310,8 +352,14 @@ def test_rollup_replicate_arm_never_raises(session, monkeypatch):
 def _point(label, z, *, n=4, s=0.1, observable="obs_B"):
     """A design point whose deviation is exactly ``z`` standard errors, already labelled the way
     ``data_access._labelled_points`` labels one."""
-    return {"label": label, "n": n, "ybar": z * s / math.sqrt(n), "s": s, "prediction": 0.0,
-            "observable_id": observable}
+    return {
+        "label": label,
+        "n": n,
+        "ybar": z * s / math.sqrt(n),
+        "s": s,
+        "prediction": 0.0,
+        "observable_id": observable,
+    }
 
 
 def test_rollup_runs_the_replicate_arm_without_any_weighted_residual(session):
@@ -322,7 +370,7 @@ def test_rollup_runs_the_replicate_arm_without_any_weighted_residual(session):
     0.0, a COLLAPSED sigma. Gated, the verdict degraded to `n_points: 0` and residual_flag None, so
     the plateau gate was not blocked and the agent was told nothing had been tested."""
     recs = _replicated_records(session, deviation=0.5)
-    for r in recs:                      # a collapsed sigma: noise 0 -> no weighted residual at all
+    for r in recs:  # a collapsed sigma: noise 0 -> no weighted residual at all
         r["noise"], r["residual_weighted"] = 0.0, None
     out = data_access.residual_structure_rollup(session)
     lof = out["replicate_lack_of_fit"]
@@ -332,8 +380,9 @@ def test_rollup_runs_the_replicate_arm_without_any_weighted_residual(session):
     assert "Replicate lack-of-fit" in out["summary"]
     # ...and the head attributes the finding only to the test that RAN: quoting the sign/runs
     # threshold for tests that produced no p at all is the same over-claim in the other direction.
-    assert out["summary"].startswith("systematic residual structure in obs_B "
-                                    "(replicate lack-of-fit)")
+    assert out["summary"].startswith(
+        "systematic residual structure in obs_B (replicate lack-of-fit)"
+    )
     assert "sign-test bias" not in out["summary"]
     # get_fit_diagnosis's own no-weighted-residuals early return has no rows and no verdict to
     # contradict this one — the replicate arm reaches the agent through the fit result
@@ -369,13 +418,15 @@ def test_low_power_survives_for_an_observable_the_replicate_arm_never_covered(se
     POWERED arm — the coverage question this test asks is about WHICH observables, not about how many
     directions (that is test_an_underpowered_arm_credits_no_coverage_even_when_it_flagged)."""
     points = [_point(f"obs_B[c0, t={t}]", 0.3) for t in (0.0, 1.0, 2.0)]
-    lof = data_access._merge_lof_verdicts([rt.replicate_lack_of_fit(points)],
-                                         {p["label"]: "obs_B" for p in points}, n_structural=0)
+    lof = data_access._merge_lof_verdicts(
+        [rt.replicate_lack_of_fit(points)], {p["label"]: "obs_B" for p in points}, n_structural=0
+    )
     assert lof["status"] == "pass"
     underpowered = {"structure_low_power": True, "structure_flag": False}
-    out = data_access._rollup_structure([("obs_A", underpowered), ("obs_B", underpowered)],
-                                       replicate_lof=lof)
-    assert out["low_power"] is True                  # obs_A has no replicates; nothing tested it
+    out = data_access._rollup_structure(
+        [("obs_A", underpowered), ("obs_B", underpowered)], replicate_lof=lof
+    )
+    assert out["low_power"] is True  # obs_A has no replicates; nothing tested it
     # ...and the prose NAMES it, because the same summary reports a genuine pass for the observable
     # the arm covered: a blanket "the tests are UNDERPOWERED at this sample size" beside "this arm IS
     # powered, so that is a pass" is a contradiction the agent cannot resolve (armistead, every fit).
@@ -396,8 +447,9 @@ def test_merge_does_not_hide_a_family_the_arm_could_not_test():
     thick_points = [_point(f"obs_B[c0, t={t}]", 0.3) for t in (0.0, 1.0, 2.0)]
     thick = rt.replicate_lack_of_fit(thick_points)
     assert thin["status"] == "replicates_too_thin" and thick["status"] == "pass"
-    merged = data_access._merge_lof_verdicts([thin, thick],
-                                            {p["label"]: "obs_B" for p in thick_points})
+    merged = data_access._merge_lof_verdicts(
+        [thin, thick], {p["label"]: "obs_B" for p in thick_points}
+    )
     assert merged["status"] == "pass" and merged["n_points"] == 3
     assert merged["untested_status"] == "replicates_too_thin"
     assert "replicates_too_thin" in data_access._replicate_lof_line(merged)
@@ -410,8 +462,9 @@ def test_merge_keeps_a_flag_whose_point_has_no_observable_id():
     into "no evidence"."""
     points = [_point("p_none", 12.0), _point("p_obs", 12.0), _point("p_ok", 0.1)]
     verdict = rt.replicate_lack_of_fit(points)
-    merged = data_access._merge_lof_verdicts([verdict],
-                                            {"p_none": None, "p_obs": "obs_A", "p_ok": "obs_A"})
+    merged = data_access._merge_lof_verdicts(
+        [verdict], {"p_none": None, "p_obs": "obs_A", "p_ok": "obs_A"}
+    )
     assert merged["status"] == "flagged" and merged["n_flagged"] == 2
     # the unattributable point falls back to its own LABEL, which is a real string the agent can act
     # on (and not the literal "None")
@@ -427,7 +480,7 @@ def test_the_summary_speaks_when_the_arm_could_not_run(session):
     for silent in ("no_replicated_points", "no_noise_parameter"):
         assert data_access._replicate_lof_line({"available": False, "status": silent}) == ""
     recs = _replicated_records(session, deviation=0.0)
-    for i, r in enumerate(recs):        # break the per-point constancy of the prediction
+    for i, r in enumerate(recs):  # break the per-point constancy of the prediction
         r["simulation"] += 0.001 * i
     out = data_access.residual_structure_rollup(session)
     assert out["replicate_lack_of_fit"]["status"] == "unavailable"
@@ -445,8 +498,17 @@ def test_a_problem_whose_noise_is_fixed_data_says_nothing_every_fit(session):
 
     session.problem.observable_df.loc["obs_B", "noiseFormula"] = "noiseParameter1_obs_B"
     session.problem.measurement_df = pd.DataFrame(
-        [{"observableId": "obs_B", "simulationConditionId": "c0", "time": t, "measurement": 1.0,
-          "noiseParameters": 0.023108} for t in (0.0, 1.0, 2.0)])
+        [
+            {
+                "observableId": "obs_B",
+                "simulationConditionId": "c0",
+                "time": t,
+                "measurement": 1.0,
+                "noiseParameters": 0.023108,
+            }
+            for t in (0.0, 1.0, 2.0)
+        ]
+    )
     session.simulation = {"records": [_rec("obs_B", "c0", t, 1.0, 1.0) for t in (0.0, 1.0, 2.0)]}
     assert data_access._noise_parameter_ids(session.problem) == []
     out = data_access.residual_structure_rollup(session)
@@ -459,8 +521,10 @@ def test_a_benign_family_cannot_silence_an_unresolvable_one():
     resolve at all (a real failure on a problem that DOES have replicates): ranking the catch-all
     BELOW `no_replicated_points` let the benign sibling win the merged status, so the line went
     silent again and finding 10's fix was defeated wherever a problem has more than one sigma."""
-    verdicts = [rt.replicate_lof_unavailable("no_replicated_points"),
-                rt.replicate_lof_unavailable("unavailable")]
+    verdicts = [
+        rt.replicate_lof_unavailable("no_replicated_points"),
+        rt.replicate_lof_unavailable("unavailable"),
+    ]
     for order in (verdicts, list(reversed(verdicts))):
         merged = data_access._merge_lof_verdicts(order, {})
         assert merged["status"] == "unavailable"
@@ -476,11 +540,13 @@ def test_a_pass_is_not_hedged_against_a_family_with_nothing_in_it():
     labels = {p["label"]: "obs_B" for p in thick}
     for silent in ("no_replicated_points", "no_noise_parameter"):
         merged = data_access._merge_lof_verdicts(
-            [passing, rt.replicate_lof_unavailable(silent)], labels)
-        assert merged.get("untested_status") is None      # nothing to say, so not even a null key
+            [passing, rt.replicate_lof_unavailable(silent)], labels
+        )
+        assert merged.get("untested_status") is None  # nothing to say, so not even a null key
         assert "could NOT be tested" not in data_access._replicate_lof_line(merged)
     real = data_access._merge_lof_verdicts(
-        [passing, rt.replicate_lof_unavailable("unavailable")], labels)
+        [passing, rt.replicate_lof_unavailable("unavailable")], labels
+    )
     assert real["untested_status"] == "unavailable"
     assert "could NOT be tested (unavailable)" in data_access._replicate_lof_line(real)
 
@@ -490,8 +556,9 @@ def test_the_line_reports_a_flag_from_the_payload_that_rides_on_a_fit():
     line on its presence turned a FLAGGED verdict into "that is a pass" for any caller summarising
     the projection rather than the merge. Dispatch on the STATUS."""
     points = [_point("far", 25.0), _point("n0", 0.1), _point("n1", 0.1)]
-    merged = data_access._merge_lof_verdicts([rt.replicate_lack_of_fit(points)],
-                                            {p["label"]: "obs_B" for p in points})
+    merged = data_access._merge_lof_verdicts(
+        [rt.replicate_lack_of_fit(points)], {p["label"]: "obs_B" for p in points}
+    )
     assert merged["status"] == "flagged"
     line = data_access._replicate_lof_line(data_access._lof_reported(merged))
     assert "pass" not in line and "1 of 3 replicated design points" in line
@@ -512,9 +579,17 @@ def _split_sigma_records(session, deviation: float):
             sigmas.append("sigma_lo" if i < 3 else "sigma_hi")
     session.problem.observable_df.loc["obs_B", "noiseFormula"] = "noiseParameter1_obs_B"
     session.problem.measurement_df = pd.DataFrame(
-        [{"observableId": r["observable_id"], "simulationConditionId": r["condition_id"],
-          "time": r["time"], "measurement": r["measurement"], "noiseParameters": sigma}
-         for r, sigma in zip(recs, sigmas)])
+        [
+            {
+                "observableId": r["observable_id"],
+                "simulationConditionId": r["condition_id"],
+                "time": r["time"],
+                "measurement": r["measurement"],
+                "noiseParameters": sigma,
+            }
+            for r, sigma in zip(recs, sigmas)
+        ]
+    )
     pdf = session.problem.parameter_df
     for pid in ("sigma_lo", "sigma_hi"):
         pdf.loc[pid] = pdf.loc["sigma_B"]
@@ -530,8 +605,8 @@ def test_each_noise_parameter_tests_only_the_rows_it_governs(session):
     _split_sigma_records(session, deviation=0.5)
     lof = data_access.residual_structure_rollup(session)["replicate_lack_of_fit"]
     assert lof["available"] is True and lof["status"] == "flagged"
-    assert lof["n_points"] == 6          # the six REAL design points, not 6 per sigma
-    assert lof["n_flagged"] == 1         # one deviating point, flagged once
+    assert lof["n_points"] == 6  # the six REAL design points, not 6 per sigma
+    assert lof["n_flagged"] == 1  # one deviating point, flagged once
     labels = [p["label"] for p in lof["points"]]
     assert labels == ["obs_B[c0, t=5.0]"] and len(labels) == len(set(labels))
 
@@ -553,8 +628,15 @@ def test_labels_are_unique_across_noise_families(session):
     for sigma, obs_b_t, obs_a_ts in (("sigma_lo", 0.0, (0.0, 1.0)), ("sigma_hi", 3.0, (2.0, 3.0))):
         for obs, t in [("obs_B", obs_b_t)] + [("obs_A", t) for t in obs_a_ts]:
             for rep in range(4):
-                rows.append({"observableId": obs, "simulationConditionId": "c0", "time": t,
-                             "measurement": 1.0 + 0.01 * rep, "noiseParameters": sigma})
+                rows.append(
+                    {
+                        "observableId": obs,
+                        "simulationConditionId": "c0",
+                        "time": t,
+                        "measurement": 1.0 + 0.01 * rep,
+                        "noiseParameters": sigma,
+                    }
+                )
                 recs.append(_rec(obs, "c0", t, 1.0 + 0.01 * rep, 1.0))
     session.problem.measurement_df = pd.DataFrame(rows)
     pdf = session.problem.parameter_df
@@ -564,9 +646,12 @@ def test_labels_are_unique_across_noise_families(session):
     lof = data_access.residual_structure_rollup(session)["replicate_lack_of_fit"]
     assert lof["available"] is True and lof["n_points"] == 6
     # obs_B's two points are qualified by time even though each is alone in its own family
-    assert data_access._labelled_points(
-        [{"observable_id": "obs_B", "condition_id": "c0", "time": 0.0}],
-        Counter({"obs_B": 2}))[0]["label"] == "obs_B[c0, t=0.0]"
+    assert (
+        data_access._labelled_points(
+            [{"observable_id": "obs_B", "condition_id": "c0", "time": 0.0}], Counter({"obs_B": 2})
+        )[0]["label"]
+        == "obs_B[c0, t=0.0]"
+    )
 
 
 def test_design_points_match_across_a_steady_state_time(session):
@@ -578,12 +663,13 @@ def test_design_points_match_across_a_steady_state_time(session):
     from petab_mcp import reconcile as R
 
     recs = _replicated_records(session, deviation=0.5)
-    for r in recs:                                   # the records' side of a steady-state point
+    for r in recs:  # the records' side of a steady-state point
         r["time"] = None
     mdf = session.problem.measurement_df
-    session.problem.measurement_df = mdf.assign(time=float("inf"))   # the table's side
-    frame = pd.DataFrame(recs).rename(columns={"observable_id": "observableId",
-                                              "condition_id": "simulationConditionId"})
+    session.problem.measurement_df = mdf.assign(time=float("inf"))  # the table's side
+    frame = pd.DataFrame(recs).rename(
+        columns={"observable_id": "observableId", "condition_id": "simulationConditionId"}
+    )
     points = R.replicate_pure_error_points(session.problem, "sigma_B", simulations=frame)
     assert len(points) == 1 and points[0]["n"] == 12  # one steady-state design point, 12 replicates
     assert points[0]["prediction"] is not None
@@ -603,12 +689,22 @@ def test_structural_count_includes_a_dual_role_scaling_noise_symbol(session):
     odf.loc["obs_B", "noiseFormula"] = "noiseParameter1_obs_B"
     odf.loc["obs_B", "observableFormula"] = "observableParameter1_obs_B * B"
     session.problem.measurement_df = pd.DataFrame(
-        [{"observableId": "obs_B", "simulationConditionId": "c0", "time": t, "measurement": 0.5,
-          "noiseParameters": "s_gel", "observableParameters": "s_gel"} for t in (0.0, 1.0)])
+        [
+            {
+                "observableId": "obs_B",
+                "simulationConditionId": "c0",
+                "time": t,
+                "measurement": 0.5,
+                "noiseParameters": "s_gel",
+                "observableParameters": "s_gel",
+            }
+            for t in (0.0, 1.0)
+        ]
+    )
     pdf = session.problem.parameter_df
-    pdf.loc["s_gel"] = pdf.loc["k1"]                       # estimated, like the real gel factors
-    assert "s_gel" in R.noise_sigma_ids(session.problem)   # a noise symbol...
-    assert "s_gel" not in R.plausibility_sigma_ids(session.problem)   # ...but not a judgeable sd
+    pdf.loc["s_gel"] = pdf.loc["k1"]  # estimated, like the real gel factors
+    assert "s_gel" in R.noise_sigma_ids(session.problem)  # a noise symbol...
+    assert "s_gel" not in R.plausibility_sigma_ids(session.problem)  # ...but not a judgeable sd
     # k1, k2 and s_gel are estimated; only the pure sigma placeholder is not structural flexibility
     assert data_access._n_estimated_structural(session.problem) == 3
 
@@ -624,10 +720,23 @@ def test_the_pooled_noise_floor_ignores_a_design_point_with_a_missing_key(sessio
 
     _replicated_records(session, deviation=0.0)
     floor = R.sigma_replicate_noise_estimate(session.problem, "sigma_B")
-    session.problem.measurement_df = pd.concat([
-        session.problem.measurement_df,
-        pd.DataFrame([{"observableId": "obs_B", "simulationConditionId": None, "time": 0.0,
-                       "measurement": v} for v in (0.0, 100.0)])], ignore_index=True)
+    session.problem.measurement_df = pd.concat(
+        [
+            session.problem.measurement_df,
+            pd.DataFrame(
+                [
+                    {
+                        "observableId": "obs_B",
+                        "simulationConditionId": None,
+                        "time": 0.0,
+                        "measurement": v,
+                    }
+                    for v in (0.0, 100.0)
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
     assert R.sigma_replicate_noise_estimate(session.problem, "sigma_B") == pytest.approx(floor)
 
 
@@ -640,14 +749,16 @@ def test_reconcile_exposes_per_point_pure_error_and_pools_to_the_same_floor(sess
     points = R.replicate_pure_error_points(session.problem, "sigma_B")
     assert [p["n"] for p in points] == [4, 4, 4]
     assert all(p["df"] == 3 for p in points)
-    assert all(p["prediction"] is None for p in points)     # no simulations passed -> unknown
+    assert all(p["prediction"] is None for p in points)  # no simulations passed -> unknown
     pooled = math.sqrt(sum(p["ssq"] for p in points) / sum(p["df"] for p in points))
     assert R.sigma_replicate_noise_estimate(session.problem, "sigma_B") == pytest.approx(pooled)
 
     # with the simulation records, each point also carries the prediction it is judged against
     import pandas as pd
-    frame = pd.DataFrame(recs).rename(columns={"observable_id": "observableId",
-                                              "condition_id": "simulationConditionId"})
+
+    frame = pd.DataFrame(recs).rename(
+        columns={"observable_id": "observableId", "condition_id": "simulationConditionId"}
+    )
     with_pred = R.replicate_pure_error_points(session.problem, "sigma_B", simulations=frame)
     assert [round(p["prediction"], 6) for p in with_pred] == [1.015, 1.015, 1.015]
     assert [p["ybar"] for p in with_pred] == pytest.approx([p["ybar"] for p in points])
@@ -656,17 +767,22 @@ def test_reconcile_exposes_per_point_pure_error_and_pools_to_the_same_floor(sess
 # -- the df guard (the 2026-08-02 blasi k=14 run) --------------------------
 def _flat_points(m: int, z: float = 0.1):
     """``m`` replicated design points whose predictions all sit ``z`` SE from their own mean."""
-    return [{"label": f"p{i}", "n": 18, "ybar": 0.0, "s": 1.0, "prediction": -z / 18 ** 0.5}
-            for i in range(m)]
+    return [
+        {"label": f"p{i}", "n": 18, "ybar": 0.0, "s": 1.0, "prediction": -z / 18**0.5}
+        for i in range(m)
+    ]
 
 
 def _merged_flat(m: int, n_structural, *, min_lof_df=None, families: int = 1, z: float = 0.1):
     """``families`` families of ``m`` flat replicated points each, merged the way ``_replicate_lof``
     merges them: ONE whole-model structural count against the POOLED points."""
-    arms = [rt.replicate_lack_of_fit([{**p, "label": f"f{f}{p['label']}"} for p in _flat_points(m, z)])
-            for f in range(families)]
-    return data_access._merge_lof_verdicts(arms, {}, n_structural=n_structural,
-                                           min_lof_df=min_lof_df)
+    arms = [
+        rt.replicate_lack_of_fit([{**p, "label": f"f{f}{p['label']}"} for p in _flat_points(m, z)])
+        for f in range(families)
+    ]
+    return data_access._merge_lof_verdicts(
+        arms, {}, n_structural=n_structural, min_lof_df=min_lof_df
+    )
 
 
 def test_a_pass_needs_lack_of_fit_degrees_of_freedom():
@@ -676,23 +792,23 @@ def test_a_pass_needs_lack_of_fit_degrees_of_freedom():
     showed the lead as "this arm IS powered" on the k=14 blasi run — a model whose 14 free
     parameters had placed every prediction within 0.107 SE of its replicate mean by construction.
     """
-    v = _merged_flat(15, 14)                     # df = 1: evidence, but one direction
+    v = _merged_flat(15, 14)  # df = 1: evidence, but one direction
     assert v["status"] == "pass" and v["weak"] is True and v["lof_df"] == 1, v
-    assert _merged_flat(15, 13)["weak"] is True                 # df = 2
-    v = _merged_flat(15, 12)                     # df = 3: a pass worth the name
+    assert _merged_flat(15, 13)["weak"] is True  # df = 2
+    v = _merged_flat(15, 12)  # df = 3: a pass worth the name
     assert v["status"] == "pass" and "weak" not in v, v
-    v = _merged_flat(15, 15)                     # df = 0: nothing was tested at all
+    v = _merged_flat(15, 15)  # df = 0: nothing was tested at all
     assert v["available"] is False and v["status"] == "vacuous", v
-    assert v["n_points"] == 15                   # ...and it says how much was not tested
+    assert v["n_points"] == 15  # ...and it says how much was not tested
 
 
 def test_a_flag_stands_at_any_lack_of_fit_df():
     """One residual direction is weak evidence for a PASS but conclusive for a FLAG: the point
     deviates by more than its own replicate noise allows AFTER the fit had its way."""
     pts = _flat_points(15)
-    pts[0]["prediction"] = -8.0 / 18 ** 0.5                     # ~8 SE out
+    pts[0]["prediction"] = -8.0 / 18**0.5  # ~8 SE out
     arm = rt.replicate_lack_of_fit(pts)
-    v = data_access._merge_lof_verdicts([arm], {}, n_structural=14)      # df = 1
+    v = data_access._merge_lof_verdicts([arm], {}, n_structural=14)  # df = 1
     assert v["available"] is True and v["status"] == "flagged", v
     assert v["flagged_observables"] == ["p0"] and "weak" not in v, v
     # ...but at df <= 0 the arm is VACUOUS and the flag goes with it: a fit that flexible could have
@@ -728,8 +844,10 @@ def test_an_uncountable_structural_count_is_not_a_powered_pass():
     unknown = data_access._merge_lof_verdicts([rt.replicate_lack_of_fit(points)], labels)
     assert unknown["covered_observables"] == [], unknown
     underpowered = {"structure_low_power": True, "structure_flag": False}
-    assert data_access._rollup_structure([("obs_B", underpowered)],
-                                        replicate_lof=unknown)["low_power"] is True
+    assert (
+        data_access._rollup_structure([("obs_B", underpowered)], replicate_lof=unknown)["low_power"]
+        is True
+    )
 
 
 def test_the_weak_marking_reaches_the_summary_through_the_whole_assembly(session):
@@ -749,7 +867,7 @@ def test_the_weak_marking_reaches_the_summary_through_the_whole_assembly(session
     assert "IS powered" not in out["summary"], out["summary"]
     # ...and a weak pass certifies nothing, so it credits no coverage and low_power survives
     assert out["low_power"] is True
-    assert data_access.residual_flag(out) is False       # advisory: it is still not a FLAG
+    assert data_access.residual_flag(out) is False  # advisory: it is still not a FLAG
     # ...and no second projection of it on the diagnosis path, where it used to be repeated
     assert "residual_structure" not in data_access.fit_diagnosis(session)
 
@@ -765,8 +883,8 @@ def test_lack_of_fit_df_subtracts_the_shared_parameters_once_across_noise_famili
     told the lead its pass was weak when it was not."""
     merged = _merged_flat(5, 3, families=2)
     assert merged["n_points"] == 10
-    assert merged["lof_df"] == 7, merged                # 10 - 3, not (5 - 3) + (5 - 3)
-    assert "weak" not in merged, merged                 # 7 >= REPLICATE_LOF_MIN_LOF_DF
+    assert merged["lof_df"] == 7, merged  # 10 - 3, not (5 - 3) + (5 - 3)
+    assert "weak" not in merged, merged  # 7 >= REPLICATE_LOF_MIN_LOF_DF
 
     # the blasi shape, at one, two and three sigmas: F * 15 - 14, never F * (15 - 14)
     assert [_merged_flat(15, 14, families=f)["lof_df"] for f in (1, 2, 3)] == [1, 16, 31]
@@ -800,8 +918,9 @@ def test_the_merge_honours_a_caller_supplied_threshold():
     only default. The threshold used to live in the statistic and again in the merge, where the copy
     read the module constant — so a caller's `min_lof_df=` was honoured by one and discarded by the
     other, and a weak pass came back out labelled "this arm IS powered"."""
-    merged = data_access._merge_lof_verdicts([rt.replicate_lack_of_fit(_flat_points(15))], {},
-                                            n_structural=11, min_lof_df=8)      # df 4 < 8
+    merged = data_access._merge_lof_verdicts(
+        [rt.replicate_lack_of_fit(_flat_points(15))], {}, n_structural=11, min_lof_df=8
+    )  # df 4 < 8
     assert merged["weak"] is True and merged["lof_df"] == 4, merged
     assert "IS powered" not in data_access._replicate_lof_line(merged)
     # ...and the default is not a second copy of the number: at the same df the module threshold of 3
@@ -817,19 +936,21 @@ def test_an_underpowered_arm_credits_no_coverage_even_when_it_flagged():
     pts = [_point("obs_A", 8.0, n=18, s=1.0, observable="obs_A")]
     pts += [_point(f"obs_B[c0, t={i}]", 0.1, n=18, s=1.0) for i in range(14)]
     labels = {p["label"]: p["observable_id"] for p in pts}
-    arm = rt.replicate_lack_of_fit(pts)                             # 15 points
-    merged = data_access._merge_lof_verdicts([arm], labels, n_structural=14)     # df 1
+    arm = rt.replicate_lack_of_fit(pts)  # 15 points
+    merged = data_access._merge_lof_verdicts([arm], labels, n_structural=14)  # df 1
     assert merged["status"] == "flagged" and merged["lof_df"] == 1 and "weak" not in merged
     assert merged["flagged_observables"] == ["obs_A"]
-    assert merged["covered_observables"] == [], merged              # obs_B is NOT certified
+    assert merged["covered_observables"] == [], merged  # obs_B is NOT certified
     underpowered = {"structure_low_power": True, "structure_flag": False}
     out = data_access._rollup_structure([("obs_B", underpowered)], replicate_lof=merged)
     assert out["low_power"] is True, out
     # ...while the same arm with directions to spare does credit it
     powered = data_access._merge_lof_verdicts([arm], labels, n_structural=5)
     assert powered["covered_observables"] == ["obs_A", "obs_B"]
-    assert data_access._rollup_structure([("obs_B", underpowered)],
-                                        replicate_lof=powered)["low_power"] is False
+    assert (
+        data_access._rollup_structure([("obs_B", underpowered)], replicate_lof=powered)["low_power"]
+        is False
+    )
 
 
 def test_no_unavailable_status_in_the_priority_table_is_unreachable():
@@ -842,6 +963,7 @@ def test_no_unavailable_status_in_the_priority_table_is_unreachable():
     satisfiable by mentioning the dead status in a comment, which is how a dead entry gets kept."""
     src = "".join(p.read_text() for p in (Path(data_access.__file__).parent).glob("*.py"))
     emitter = r'replicate_lof_unavailable\(\s*"%s"'
-    orphans = [s for s in data_access._LOF_STATUS_PRIORITY
-               if not re.search(emitter % re.escape(s), src)]
+    orphans = [
+        s for s in data_access._LOF_STATUS_PRIORITY if not re.search(emitter % re.escape(s), src)
+    ]
     assert not orphans, orphans

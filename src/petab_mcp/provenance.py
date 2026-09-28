@@ -117,13 +117,16 @@ class ProvenanceStore:
     def last_version(self) -> int:
         """The highest version number on disk, or -1. HEAD can point at an EARLIER version — a
         restore moves it back — so this, not HEAD, is what the next snapshot counts from."""
-        vdirs = [int(d.name[1:]) for d in self.versions_dir.glob("v*")
-                 if d.is_dir() and d.name[1:].isdigit()]
+        vdirs = [
+            int(d.name[1:])
+            for d in self.versions_dir.glob("v*")
+            if d.is_dir() and d.name[1:].isdigit()
+        ]
         return max(vdirs, default=-1)
 
     def set_head(self, n: int) -> None:
         """Point HEAD at an existing version without appending a new one."""
-        self._version_dir(n)          # raises UnknownEntityError if absent
+        self._version_dir(n)  # raises UnknownEntityError if absent
         self._set_head(n)
 
     # -- versions ----------------------------------------------------------
@@ -180,7 +183,9 @@ class ProvenanceStore:
         # residuals). Stored as JSON (read back by get_version) plus a best-effort PEtab
         # simulation table for interop (never read back).
         if simulation is not None:
-            (vdir / "simulations.json").write_text(json.dumps(simulation, indent=2), encoding="utf-8")
+            (vdir / "simulations.json").write_text(
+                json.dumps(simulation, indent=2), encoding="utf-8"
+            )
             _write_simulations_tsv(vdir, simulation.get("records") or [])
         # The optimization traces/results for this version: the per-start + per-iteration
         # records (read back into the DuckDB tables) as JSON, plus the pyPESTO HDF5 result
@@ -192,17 +197,18 @@ class ProvenanceStore:
 
     @staticmethod
     def _write_optimization(vdir: Path, optimization: dict[str, Any]) -> None:
-        persist = {k: optimization.get(k)
-                   # x_names/x_scales label each start's positional `x` vector; without them a
-                   # restored version's per-start optima cannot be read back (see
-                   # fitting.previous_optima, which warm-starts the next fit from them).
-                   # exitflag_counts is the ONLY surviving record of how each start ended --
-                   # the per-start `exitflag`/`message` columns were removed in favour of it and
-                   # the optimizer log runs at ERROR -- so a restored version cannot answer
-                   # "optimiser-limited or structure-limited?" without it. This whitelist
-                   # silently dropped it: a key absent here is not persisted and nothing warns.
-                   for k in ("n_starts", "starts", "trace", "x_names", "x_scales",
-                             "exitflag_counts")}
+        persist = {
+            k: optimization.get(k)
+            # x_names/x_scales label each start's positional `x` vector; without them a
+            # restored version's per-start optima cannot be read back (see
+            # fitting.previous_optima, which warm-starts the next fit from them).
+            # exitflag_counts is the ONLY surviving record of how each start ended --
+            # the per-start `exitflag`/`message` columns were removed in favour of it and
+            # the optimizer log runs at ERROR -- so a restored version cannot answer
+            # "optimiser-limited or structure-limited?" without it. This whitelist
+            # silently dropped it: a key absent here is not persisted and nothing warns.
+            for k in ("n_starts", "starts", "trace", "x_names", "x_scales", "exitflag_counts")
+        }
         (vdir / "optimization.json").write_text(json.dumps(persist, indent=2), encoding="utf-8")
         result_file = optimization.get("result_file")
         if result_file:
@@ -295,12 +301,18 @@ class ProvenanceStore:
             if p.is_file():  # exists but unreadable/corrupt — worth a line; absence is normal
                 logging.getLogger("petab_mcp").warning(
                     "version v%s has an unreadable simulations.json; it contributes no rows "
-                    "to simulations_history", n, exc_info=True)
+                    "to simulations_history",
+                    n,
+                    exc_info=True,
+                )
             return None
         if not isinstance(obj, dict):
             logging.getLogger("petab_mcp").warning(
                 "version v%s simulations.json is not a JSON object (%s); it contributes no "
-                "rows to simulations_history", n, type(obj).__name__)
+                "rows to simulations_history",
+                n,
+                type(obj).__name__,
+            )
             return None
         return obj
 
@@ -340,8 +352,11 @@ class ProvenanceStore:
         unreadable, which would silently drop an intact simulation from the history. Same
         ``v<int>`` source :attr:`last_version` uses, so a stray ``v*`` entry cannot raise here.
         """
-        return sorted(int(d.name[1:]) for d in self.versions_dir.glob("v*")
-                      if d.is_dir() and d.name[1:].isdigit())
+        return sorted(
+            int(d.name[1:])
+            for d in self.versions_dir.glob("v*")
+            if d.is_dir() and d.name[1:].isdigit()
+        )
 
     def get_version(self, n: int) -> dict[str, Any]:
         vdir = self._version_dir(n)
@@ -387,12 +402,17 @@ class ProvenanceStore:
             except (OSError, ValueError):
                 logging.getLogger("petab_mcp").warning(
                     "version %s has an unreadable meta.json; excluded from the version listing",
-                    vdir.name, exc_info=True)
+                    vdir.name,
+                    exc_info=True,
+                )
                 continue
             if not isinstance(meta, dict):
                 logging.getLogger("petab_mcp").warning(
                     "version %s has a meta.json that is not a JSON object (%s); excluded from "
-                    "the version listing", vdir.name, type(meta).__name__)
+                    "the version listing",
+                    vdir.name,
+                    type(meta).__name__,
+                )
                 continue
             out.append(meta)
         return out
@@ -412,9 +432,7 @@ class ProvenanceStore:
         param_diff = {
             "added": sorted(set(pb) - set(pa)),
             "removed": sorted(set(pa) - set(pb)),
-            "changed": sorted(
-                pid for pid in set(pa) & set(pb) if pa[pid] != pb[pid]
-            ),
+            "changed": sorted(pid for pid in set(pa) & set(pb) if pa[pid] != pb[pid]),
         }
         # Fit comparison from each version's stored metrics (present for fitted versions).
         na, nb = va.get("neg_log_likelihood"), vb.get("neg_log_likelihood")
@@ -426,5 +444,10 @@ class ProvenanceStore:
             "from_chi2": va.get("chi2"),
             "to_chi2": vb.get("chi2"),
         }
-        return {"from": a, "to": b, "model_diff": model_diff,
-                "parameter_diff": param_diff, "fit": fit}
+        return {
+            "from": a,
+            "to": b,
+            "model_diff": model_diff,
+            "parameter_diff": param_diff,
+            "fit": fit,
+        }

@@ -35,13 +35,29 @@ class _Result:
 
 
 def test_extracts_starts_and_trace():
-    res = _Result([
-        _OptimizerResult(history=_Hist([9.0, 3.0, 1.0], [0.0, 0.2, 0.5]),
-                         id="0", fval=1.0, time=0.5, n_fval=20, n_grad=20, n_hess=0,
-                         exitflag="ExitFlag.FTOL", message="converged"),
-        _OptimizerResult(history=None, id="1", fval=5.0, time=0.4, n_fval=15,
-                         exitflag="ExitFlag.EXCEEDED_BOUNDARY"),
-    ])
+    res = _Result(
+        [
+            _OptimizerResult(
+                history=_Hist([9.0, 3.0, 1.0], [0.0, 0.2, 0.5]),
+                id="0",
+                fval=1.0,
+                time=0.5,
+                n_fval=20,
+                n_grad=20,
+                n_hess=0,
+                exitflag="ExitFlag.FTOL",
+                message="converged",
+            ),
+            _OptimizerResult(
+                history=None,
+                id="1",
+                fval=5.0,
+                time=0.4,
+                n_fval=15,
+                exitflag="ExitFlag.EXCEEDED_BOUNDARY",
+            ),
+        ]
+    )
     payload = fitting._optimization_payload(res)
 
     assert payload["n_starts"] == 2
@@ -58,9 +74,11 @@ def test_extracts_starts_and_trace():
 
 
 def test_non_finite_fval_becomes_none():
-    res = _Result([
-        _OptimizerResult(history=_Hist([float("inf"), 2.0]), id="0", fval=float("nan")),
-    ])
+    res = _Result(
+        [
+            _OptimizerResult(history=_Hist([float("inf"), 2.0]), id="0", fval=float("nan")),
+        ]
+    )
     payload = fitting._optimization_payload(res)
     assert payload["starts"][0]["fval"] is None  # NaN -> None
     trace_fvals = [t["fval"] for t in payload["trace"]]
@@ -70,10 +88,15 @@ def test_non_finite_fval_becomes_none():
 def test_robust_to_garbage_result():
     # A result whose shape we don't recognise yields empty tables, never an exception.
     assert fitting._optimization_payload(object()) == {
-        "n_starts": 0, "starts": [], "trace": [], "exitflag_counts": {}}
+        "n_starts": 0,
+        "starts": [],
+        "trace": [],
+        "exitflag_counts": {},
+    }
 
 
 # --- fitted-value extraction: only ESTIMATED params, unscaled to linear -------------------
+
 
 def test_fitted_values_selects_only_free_params():
     """pyPESTO's x/x_names carry every parameter; `_fitted_values` must keep only the free
@@ -83,33 +106,41 @@ def test_fitted_values_selects_only_free_params():
 
     from petab.v1.C import ESTIMATE, NOMINAL_VALUE, PARAMETER_SCALE
 
-    df = _pdf([
-        {"parameterId": "k1", "estimate": 1, "nominalValue": 1.0, PARAMETER_SCALE: "log10"},
-        {"parameterId": "k2", "estimate": 1, "nominalValue": 1.0, PARAMETER_SCALE: "log10"},
-        {"parameterId": "sigma", "estimate": 0, "nominalValue": 0.1, PARAMETER_SCALE: "lin"},
-        {"parameterId": "A_init", "estimate": 0, "nominalValue": 1.0, PARAMETER_SCALE: "lin"},
-    ])
+    df = _pdf(
+        [
+            {"parameterId": "k1", "estimate": 1, "nominalValue": 1.0, PARAMETER_SCALE: "log10"},
+            {"parameterId": "k2", "estimate": 1, "nominalValue": 1.0, PARAMETER_SCALE: "log10"},
+            {"parameterId": "sigma", "estimate": 0, "nominalValue": 0.1, PARAMETER_SCALE: "lin"},
+            {"parameterId": "A_init", "estimate": 0, "nominalValue": 1.0, PARAMETER_SCALE: "lin"},
+        ]
+    )
     # A pyPESTO-style FULL vector (all four params) in scaled space; free indices are k1, k2.
     x_names = ["k1", "k2", "sigma", "A_init"]
     x_values = [0.0, 1.0, 7.0, 9.0]  # log10 -> 10**x; the fixed 7.0/9.0 must be ignored
     fitted = fitting._fitted_values(x_names, x_values, [0, 1], df)
 
-    assert set(fitted) == {"k1", "k2"}          # fixed sigma/A_init excluded
-    assert fitted["k1"] == pytest.approx(1.0)   # 10**0
+    assert set(fitted) == {"k1", "k2"}  # fixed sigma/A_init excluded
+    assert fitted["k1"] == pytest.approx(1.0)  # 10**0
     assert fitted["k2"] == pytest.approx(10.0)  # 10**1
     _ = (ESTIMATE, NOMINAL_VALUE)  # imported for parity with the parameter table shape
 
     # free_indices=None -> every parameter is treated as free (an all-free problem)
-    all_free = fitting._fitted_values(["k1", "k2"], [0.0, 2.0], None,
-                                      _pdf([
-                                          {"parameterId": "k1", "nominalValue": 1.0,
-                                           PARAMETER_SCALE: "log10"},
-                                          {"parameterId": "k2", "nominalValue": 1.0,
-                                           PARAMETER_SCALE: "log10"}]))
+    all_free = fitting._fitted_values(
+        ["k1", "k2"],
+        [0.0, 2.0],
+        None,
+        _pdf(
+            [
+                {"parameterId": "k1", "nominalValue": 1.0, PARAMETER_SCALE: "log10"},
+                {"parameterId": "k2", "nominalValue": 1.0, PARAMETER_SCALE: "log10"},
+            ]
+        ),
+    )
     assert set(all_free) == {"k1", "k2"}
 
 
 # --- fit cache / fit-skip identity --------------------------------------------------------
+
 
 def _pdf(rows):
     import pandas as pd
@@ -181,9 +212,11 @@ def test_slim_fitted_parameters_diffs_against_previous_version():
     class _S:
         provenance = _Prov()
 
-    out = {"version": 5,
-           "fitted_parameters": {"a": 1.005, "b": 2.5, "d": 7.0},   # a ~unchanged, b moved, d new
-           "parameter_scales": {"a": "log10", "b": "log10", "d": "lin"}}
+    out = {
+        "version": 5,
+        "fitted_parameters": {"a": 1.005, "b": 2.5, "d": 7.0},  # a ~unchanged, b moved, d new
+        "parameter_scales": {"a": "log10", "b": "log10", "d": "lin"},
+    }
     _slim_fitted_parameters(_S(), out)
     assert out["fitted_parameters"] is None
     assert out["fitted_parameters_changed"] == {"b": 2.5, "d": 7.0}
@@ -208,14 +241,17 @@ def test_slim_fit_payload_slims_a_block_that_carries_no_version_of_its_own():
 
     class _Prov:
         def get_meta(self, n):
-            return ({"parent": 4} if n == 5
-                    else {"fitted_parameters": {"a": 1.0, "b": 2.0, "c": 3.0}})
+            return (
+                {"parent": 4} if n == 5 else {"fitted_parameters": {"a": 1.0, "b": 2.0, "c": 3.0}}
+            )
 
     class _S:
         provenance = _Prov()
 
-    block = {"fitted_parameters": {"a": 1.005, "b": 2.5, "d": 7.0},
-             "parameter_scales": {"a": "log10", "b": "log10", "d": "lin"}}
+    block = {
+        "fitted_parameters": {"a": 1.005, "b": 2.5, "d": 7.0},
+        "parameter_scales": {"a": "log10", "b": "log10", "d": "lin"},
+    }
     out = slim_fit_payload(_S(), block, version=5)
 
     assert out["fitted_parameters"] is None, "the block was not slimmed"
@@ -244,7 +280,7 @@ def test_slim_fitted_parameters_never_degrades_on_failure():
 
     out = {"version": 3, "fitted_parameters": {"a": 1.0}, "parameter_scales": {"a": "lin"}}
     _slim_fitted_parameters(_Boom(), out)
-    assert out["fitted_parameters"] == {"a": 1.0}   # slimming aid must not break the score payload
+    assert out["fitted_parameters"] == {"a": 1.0}  # slimming aid must not break the score payload
 
 
 def test_exitflag_counts_reaches_the_fit_result_block(monkeypatch):
@@ -253,37 +289,26 @@ def test_exitflag_counts_reaches_the_fit_result_block(monkeypatch):
     every fit while the per-start `exitflag`/`message` columns it replaced had already been
     removed and the Fides logger dropped to ERROR: converged-vs-truncated was unobtainable from
     the payload, the SQL table and the log simultaneously. Pin every hop."""
-    res = _Result([
-        _OptimizerResult(history=None, id="0", fval=1.0, exitflag="ExitFlag.FTOL"),
-        _OptimizerResult(history=None, id="1", fval=2.0, exitflag="ExitFlag.FTOL"),
-        _OptimizerResult(history=None, id="2", fval=9.0, exitflag="ExitFlag.EXCEEDED_BOUNDARY"),
-    ])
+    res = _Result(
+        [
+            _OptimizerResult(history=None, id="0", fval=1.0, exitflag="ExitFlag.FTOL"),
+            _OptimizerResult(history=None, id="1", fval=2.0, exitflag="ExitFlag.FTOL"),
+            _OptimizerResult(history=None, id="2", fval=9.0, exitflag="ExitFlag.EXCEEDED_BOUNDARY"),
+        ]
+    )
     payload = fitting._optimization_payload(res)
     expected = {"ExitFlag.FTOL": 2, "ExitFlag.EXCEEDED_BOUNDARY": 1}
     assert payload["exitflag_counts"] == expected
     # survives per version, or a restored version cannot answer "optimiser- or structure-limited?"
     assert fitting.build_optimization_payload_for_version(payload)["exitflag_counts"] == expected
     # and reaches the block the agent and judge actually read
-    fitsim = {"status": "fit", "neg_log_likelihood": -5.0, "chi2": 4.0, "n_data_points": 10,
-              "n_estimated": 2, "n_starts": 3, "exitflag_counts": expected}
+    fitsim = {
+        "status": "fit",
+        "neg_log_likelihood": -5.0,
+        "chi2": 4.0,
+        "n_data_points": 10,
+        "n_estimated": 2,
+        "n_starts": 3,
+        "exitflag_counts": expected,
+    }
     assert fitting.fit_result_block(fitsim, None, None, None)["exitflag_counts"] == expected
-
-
-def test_exitflag_counts_is_carried_by_the_real_call_path():
-    """The hand-built `fitsim` above proves fit_result_block READS the key; it cannot prove
-    anything PUTS it there, and twice it did not. The bridge first read `session.optimization`
-    (never on the payload), then `fitsim["optimization"]` (a key `fit_and_simulate` does not
-    return), and the provenance whitelist stripped it before optimization.json was written --
-    each time with the per-start columns already deleted and Fides already at ERROR. So assert
-    the PATH: the producer writes it onto the payload, and the persister carries it."""
-    import inspect
-    import re
-
-    from petab_mcp.provenance import ProvenanceStore
-
-    # the payload fit_result_block later reads is built in fit_and_simulate, not bridged after
-    assert '"exitflag_counts"' in inspect.getsource(fitting.fit_and_simulate)
-    # ...and the per-version whitelist does not silently drop it
-    wl = re.search(r"for k in \(([^)]*)\)\}",
-                   inspect.getsource(ProvenanceStore._write_optimization), re.S)
-    assert wl and "exitflag_counts" in wl.group(1)

@@ -22,10 +22,19 @@ from petab_mcp import operations as O
 # on a linear path, a second product, and a reversible branch.
 _VARIANTS = {
     "degradation": ["r3: B => ; k3 * B;"],
-    "extra_species": ["r3: B => C; k3 * B;", "  species C in compartment_;", "  C = C_init;",
-                      "  C_init = 0.0;"],
-    "reversible_branch": ["r3: A => C; k3 * A;", "r4: C => A; k4 * C;",
-                          "  species C in compartment_;", "  C = C_init;", "  C_init = 0.0;"],
+    "extra_species": [
+        "r3: B => C; k3 * B;",
+        "  species C in compartment_;",
+        "  C = C_init;",
+        "  C_init = 0.0;",
+    ],
+    "reversible_branch": [
+        "r3: A => C; k3 * A;",
+        "r4: C => A; k4 * C;",
+        "  species C in compartment_;",
+        "  C = C_init;",
+        "  C_init = 0.0;",
+    ],
 }
 
 
@@ -55,8 +64,7 @@ def test_the_payload_carries_both_numbers_so_a_gap_stays_visible(fit_session):
     sim = fit_session.simulation
     assert sim["neg_log_likelihood"] is not None
     assert "neg_log_likelihood_simulated" in sim
-    assert sim["neg_log_likelihood_simulated"] == pytest.approx(
-        sim["neg_log_likelihood"], rel=1e-6)
+    assert sim["neg_log_likelihood_simulated"] == pytest.approx(sim["neg_log_likelihood"], rel=1e-6)
 
 
 def test_a_bounds_only_refit_still_agrees(fit_session):
@@ -64,6 +72,8 @@ def test_a_bounds_only_refit_still_agrees(fit_session):
     the previous optima. A problem rebuilt from the wrong table would show up here."""
     fit_session.fit(n_starts=2)
     O.change_parameters(
-        fit_session, [{"parameter_id": "k1", "lower_bound": 1e-4, "upper_bound": 1e4}],
-        justification="widen k1")
+        fit_session,
+        [{"parameter_id": "k1", "lower_bound": 1e-4, "upper_bound": 1e4}],
+        justification="widen k1",
+    )
     _assert_agrees(fit_session.fit(n_starts=2), "bounds-only refit")

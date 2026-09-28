@@ -76,6 +76,7 @@ class HeldOut:
     set is refit on — ``{conditionId: unitId}``, lucarelli's three cell types each with its
     treated and untreated condition — and ``None`` refits the whole table as one system.
     """
+
     measurement_df: Any
     condition_df: Any = None
     parameter_df: Any = None
@@ -110,8 +111,10 @@ def _unsupported_reason(problem, view) -> str | None:
 
     for label, prob in (("the problem's own", problem), ("the held-out", view)):
         if needs_flattening(prob):
-            return (f"{label} measurement table needs petab flattening, so the two sides would be "
-                    "scored over different observable sets (see validation_data._unsupported_reason)")
+            return (
+                f"{label} measurement table needs petab flattening, so the two sides would be "
+                "scored over different observable sets (see validation_data._unsupported_reason)"
+            )
     return None
 
 
@@ -139,7 +142,8 @@ def _table_mismatch(problem, measurement_df) -> str | None:
         unknown = sorted(seen - known_cond)
         if unknown:
             problems.append(
-                f"{PREEQUILIBRATION_CONDITION_ID} {unknown} are not in the condition table")
+                f"{PREEQUILIBRATION_CONDITION_ID} {unknown} are not in the condition table"
+            )
     return "; ".join(problems) or None
 
 
@@ -160,19 +164,25 @@ def _with_held_out_conditions(view, condition_df) -> str | None:
     if condition_df is None:
         return None
     if view.condition_df is None:
-        return ("the held-out set brings a condition table but the problem has none, so there is "
-                "no column set to line the two up by")
+        return (
+            "the held-out set brings a condition table but the problem has none, so there is "
+            "no column set to line the two up by"
+        )
     mine = view.condition_df.drop(columns=[CONDITION_NAME], errors="ignore")
     theirs = condition_df.drop(columns=[CONDITION_NAME], errors="ignore")
     if set(mine.columns) != set(theirs.columns):
-        return (f"the held-out condition table has columns {sorted(map(str, theirs.columns))} "
-                f"against the problem's {sorted(map(str, mine.columns))}; a condition column is a "
-                "model input, so the two tables describe different models")
+        return (
+            f"the held-out condition table has columns {sorted(map(str, theirs.columns))} "
+            f"against the problem's {sorted(map(str, mine.columns))}; a condition column is a "
+            "model input, so the two tables describe different models"
+        )
     redefined = sorted(set(theirs.index.astype(str)) & set(mine.index.astype(str)))
     if redefined:
-        return (f"held-out condition(s) {redefined} are already in the problem's condition table; "
-                "a fixed-θ set adds conditions, it does not redefine the ones the model was "
-                "fitted under")
+        return (
+            f"held-out condition(s) {redefined} are already in the problem's condition table; "
+            "a fixed-θ set adds conditions, it does not redefine the ones the model was "
+            "fitted under"
+        )
     view.condition_df = pd.concat([mine, theirs[list(mine.columns)]])
     return None
 
@@ -239,7 +249,8 @@ def _without_extraneous(view):
     from petab.v1.parameters import get_valid_parameters_for_parameter_table
 
     valid = get_valid_parameters_for_parameter_table(
-        view.model, view.condition_df, view.observable_df, view.measurement_df)
+        view.model, view.condition_df, view.observable_df, view.measurement_df
+    )
     return view.parameter_df.loc[[pid for pid in view.parameter_df.index if pid in valid]]
 
 
@@ -259,8 +270,15 @@ def _solve_held_out_scalings(view, scalings, *, build_dir, model_name, point) ->
     import numpy as np
     import pandas as pd
     import pypesto.petab
-    from petab.v1.C import (ESTIMATE, LIN, LOWER_BOUND, NOMINAL_VALUE, PARAMETER_ID,
-                            PARAMETER_SCALE, UPPER_BOUND)
+    from petab.v1.C import (
+        ESTIMATE,
+        LIN,
+        LOWER_BOUND,
+        NOMINAL_VALUE,
+        PARAMETER_ID,
+        PARAMETER_SCALE,
+        UPPER_BOUND,
+    )
     from pypesto.C import FVAL, INNER_PARAMETERS, PARAMETER_TYPE, InnerParameterType
 
     from .fitting import _apply_amici_solver_defaults
@@ -269,15 +287,24 @@ def _solve_held_out_scalings(view, scalings, *, build_dir, model_name, point) ->
     pdf = _without_extraneous(view).copy()
     pdf[PARAMETER_TYPE] = None
     rows = pd.DataFrame(
-        {PARAMETER_SCALE: LIN, LOWER_BOUND: 0.0, UPPER_BOUND: HELD_OUT_SCALING_UPPER_BOUND,
-         NOMINAL_VALUE: 1.0, ESTIMATE: 1, PARAMETER_TYPE: InnerParameterType.SCALING},
-        index=pd.Index(sorted(scalings), name=PARAMETER_ID))
+        {
+            PARAMETER_SCALE: LIN,
+            LOWER_BOUND: 0.0,
+            UPPER_BOUND: HELD_OUT_SCALING_UPPER_BOUND,
+            NOMINAL_VALUE: 1.0,
+            ESTIMATE: 1,
+            PARAMETER_TYPE: InnerParameterType.SCALING,
+        },
+        index=pd.Index(sorted(scalings), name=PARAMETER_ID),
+    )
     hier.parameter_df = pd.concat([pdf, rows])
-    pp = pypesto.petab.PetabImporter(hier, output_folder=str(build_dir), model_name=model_name,
-                                     hierarchical=True).create_problem()
+    pp = pypesto.petab.PetabImporter(
+        hier, output_folder=str(build_dir), model_name=model_name, hierarchical=True
+    ).create_problem()
     _apply_amici_solver_defaults(pp)
-    ret = pp.objective(np.asarray(point(pp, hier.parameter_df), dtype=float), sensi_orders=(0,),
-                       return_dict=True)
+    ret = pp.objective(
+        np.asarray(point(pp, hier.parameter_df), dtype=float), sensi_orders=(0,), return_dict=True
+    )
     if not np.isfinite(float(ret[FVAL])):
         return None
     ids = pp.objective.calculator.get_interpretable_inner_par_ids()
@@ -295,6 +322,7 @@ def _with_solved_scalings(cells, solved: dict):
             return cell
         toks = [t.strip() for t in str(cell).split(PARAMETER_SEPARATOR)]
         return PARAMETER_SEPARATOR.join(repr(solved[t]) if t in solved else t for t in toks)
+
     return cells.map(one)
 
 
@@ -317,23 +345,31 @@ def _reduced_from_named(pp, x_full, x_names) -> "list[float]":
     if len(x_full) != len(x_names):
         raise ValueError(
             f"score_problem: x_full has {len(x_full)} value(s) for {len(x_names)} name(s); it "
-            "must be the FULL vector (fixed parameters included), in x_names order")
+            "must be the FULL vector (fixed parameters included), in x_names order"
+        )
     values = {str(n): float(v) for n, v in zip(x_names, x_full)}
     missing = [str(n) for n in pp.x_names if str(n) not in values]
     if missing:
         raise ValueError(
             "score_problem: the caller's x_names do not match the held-out problem's (it needs "
             f"{missing[:5]}{'...' if len(missing) > 5 else ''}); the vector would be evaluated "
-            "permuted")
+            "permuted"
+        )
     full = [values[str(n)] for n in pp.x_names]
     free = getattr(pp, "x_free_indices", None)
     return [full[i] for i in free] if free is not None else full
 
 
-def score_problem(problem, measurement_df, *, build_dir: str | Path, model_name: str,
-                  x_full: "list[float] | None" = None,
-                  x_names: "list[str] | None" = None,
-                  condition_df=None) -> dict[str, Any]:
+def score_problem(
+    problem,
+    measurement_df,
+    *,
+    build_dir: str | Path,
+    model_name: str,
+    x_full: "list[float] | None" = None,
+    x_names: "list[str] | None" = None,
+    condition_df=None,
+) -> dict[str, Any]:
     """Evaluate ``problem``'s model at ONE fixed parameter point against ``measurement_df``.
 
     ``problem`` supplies everything but the data, and its ``nominalValue``\\ s are the point —
@@ -377,7 +413,8 @@ def score_problem(problem, measurement_df, *, build_dir: str | Path, model_name:
     if x_full is not None and len(x_full) != len(x_names):
         raise ValueError(
             f"score_problem: x_full has {len(x_full)} value(s) for {len(x_names)} name(s); it "
-            "must be the FULL vector (fixed parameters included), in x_names order")
+            "must be the FULL vector (fixed parameters included), in x_names order"
+        )
     if measurement_df is None or len(measurement_df) == 0:
         return {"status": STATUS_NO_DATA, "reason": "the held-out measurement table is empty"}
 
@@ -390,7 +427,9 @@ def score_problem(problem, measurement_df, *, build_dir: str | Path, model_name:
     view.observable_df = problem.observable_df.copy()
     if problem.condition_df is not None:
         view.condition_df = problem.condition_df.copy()
-    mismatch = _with_held_out_conditions(view, condition_df) or _table_mismatch(view, measurement_df)
+    mismatch = _with_held_out_conditions(view, condition_df) or _table_mismatch(
+        view, measurement_df
+    )
     if mismatch:
         return {"status": STATUS_TABLE_MISMATCH, "reason": mismatch}
     # A curated held-out blot names its own scale factor, which no training measurement can
@@ -417,15 +456,19 @@ def score_problem(problem, measurement_df, *, build_dir: str | Path, model_name:
         # The blots' own scale factors, solved for THIS model at THIS point, then written into the
         # table as numbers — so the joint evaluation below is the same code path as for an example
         # that has none, and `nll`/`chi2` come off that one path either way.
-        solved = _solve_held_out_scalings(view, scalings, build_dir=build_dir,
-                                          model_name=model_name, point=_point)
+        solved = _solve_held_out_scalings(
+            view, scalings, build_dir=build_dir, model_name=model_name, point=_point
+        )
         if solved is None:
-            return {"status": STATUS_NON_FINITE,
-                    "reason": "the objective is not finite on the held-out conditions while "
-                              "solving the held-out scalings (the model could not be integrated "
-                              "there, or its likelihood diverged)"}
+            return {
+                "status": STATUS_NON_FINITE,
+                "reason": "the objective is not finite on the held-out conditions while "
+                "solving the held-out scalings (the model could not be integrated "
+                "there, or its likelihood diverged)",
+            }
         view.measurement_df[OBSERVABLE_PARAMETERS] = _with_solved_scalings(
-            view.measurement_df[OBSERVABLE_PARAMETERS], solved)
+            view.measurement_df[OBSERVABLE_PARAMETERS], solved
+        )
         # Swapping the held-out table in retires the overrides the TRAINING rows carried, and petab
         # refuses a parameter table with rows nothing references. Only on this path: an example
         # without curated scalings re-uses the shipped ones, so nothing is retired.
@@ -435,8 +478,9 @@ def score_problem(problem, measurement_df, *, build_dir: str | Path, model_name:
     # parameter rows the held-out data retires, and petab's lint — which `create_problem` runs —
     # rejects a table with rows nothing references. Building the importer first would fail on the
     # very rows `_without_extraneous` exists to remove.
-    importer = pypesto.petab.PetabImporter(view, output_folder=str(build_dir),
-                                          model_name=model_name)
+    importer = pypesto.petab.PetabImporter(
+        view, output_folder=str(build_dir), model_name=model_name
+    )
     pp = importer.create_problem()
     _apply_amici_solver_defaults(pp)
 
@@ -453,9 +497,11 @@ def score_problem(problem, measurement_df, *, build_dir: str | Path, model_name:
     ret = pp.objective(np.asarray(reduced, dtype=float), sensi_orders=(0,), return_dict=True)
     nll = float(ret[FVAL])
     if not np.isfinite(nll):
-        return {"status": STATUS_NON_FINITE,
-                "reason": "the objective is not finite on the held-out conditions (the model "
-                          "could not be integrated there, or its likelihood diverged)"}
+        return {
+            "status": STATUS_NON_FINITE,
+            "reason": "the objective is not finite on the held-out conditions (the model "
+            "could not be integrated there, or its likelihood diverged)",
+        }
     res = AmiciEngine._res_from_rdatas(ret[PP_RDATAS])
     chi2 = float(sum(float(v) ** 2 for v in res)) if res else None
 
@@ -479,14 +525,17 @@ def _data_shape(measurement_df) -> dict[str, Any]:
     return {
         "n": int(len(measurement_df)),
         "n_conditions": int(measurement_df[SIMULATION_CONDITION_ID].nunique())
-        if SIMULATION_CONDITION_ID in measurement_df.columns else None,
+        if SIMULATION_CONDITION_ID in measurement_df.columns
+        else None,
         "observables": sorted({str(v) for v in measurement_df[OBSERVABLE_ID]})
-        if OBSERVABLE_ID in measurement_df.columns else [],
+        if OBSERVABLE_ID in measurement_df.columns
+        else [],
     }
 
 
-def _reject_untransferable_table(held_out_df, published_df, view, *,
-                                 system_differs: bool = False) -> None:
+def _reject_untransferable_table(
+    held_out_df, published_df, view, *, system_differs: bool = False
+) -> None:
     """Validate a transfer source against the FULL published training parameter table at setup.
 
     Refuse a new estimated mechanism parameter the published problem cannot use — a parameter the
@@ -503,24 +552,32 @@ def _reject_untransferable_table(held_out_df, published_df, view, *,
     manageable = {str(sym) for sym in _reconcile.observation_model_symbols(view)}
     model = getattr(view, "model", None)
     unmanageable = sorted(
-        str(pid) for pid in held_out_df.index
-        if pid not in published_df.index and str(pid) not in manageable
+        str(pid)
+        for pid in held_out_df.index
+        if pid not in published_df.index
+        and str(pid) not in manageable
         and not (model is not None and model.has_entity_with_id(str(pid)))
-        and int(float(held_out_df.loc[pid, ESTIMATE])) == 1)
+        and int(float(held_out_df.loc[pid, ESTIMATE])) == 1
+    )
     if unmanageable:
         raise ValueError(
             f"the held-out parameter table estimates parameter(s) {', '.join(unmanageable)} "
             "that the training problem does not have, and that are not observation-model "
             "parameters of the held-out "
             "tables; the published model has no counterpart for them, so the refit cannot manage "
-            "them")
+            "them"
+        )
     if system_differs or list(held_out_df.index) != list(published_df.index):
         return
     for pid in held_out_df.index:
-        if int(float(held_out_df.loc[pid, ESTIMATE])) != int(float(published_df.loc[pid, ESTIMATE])):
+        if int(float(held_out_df.loc[pid, ESTIMATE])) != int(
+            float(published_df.loc[pid, ESTIMATE])
+        ):
             return
-        if PARAMETER_SCALE in held_out_df.columns and (str(held_out_df.loc[pid, PARAMETER_SCALE])
-                                                       != str(published_df.loc[pid, PARAMETER_SCALE])):
+        if PARAMETER_SCALE in held_out_df.columns and (
+            str(held_out_df.loc[pid, PARAMETER_SCALE])
+            != str(published_df.loc[pid, PARAMETER_SCALE])
+        ):
             return
         for col in (NOMINAL_VALUE, LOWER_BOUND, UPPER_BOUND):
             if col not in held_out_df.columns:
@@ -533,7 +590,8 @@ def _reject_untransferable_table(held_out_df, published_df, view, *,
     raise ValueError(
         "the held-out parameter table is identical to the training one, so nothing would transfer; "
         "a held-out set ships a parameter table only when it describes a DIFFERENT system — drop "
-        "the table to score at the fitted point instead")
+        "the table to score at the fitted point instead"
+    )
 
 
 def transfer_view(problem, held_out: HeldOut, shipped_parameter_df):
@@ -562,16 +620,20 @@ def transfer_view(problem, held_out: HeldOut, shipped_parameter_df):
     view.visualization_df = None
     if held_out.condition_df is not None:
         if problem.condition_df is None:
-            return None, {"status": STATUS_TABLE_MISMATCH,
-                          "reason": "the held-out set brings a condition table but the problem has "
-                                    "none, so there is no column set to line the two models up by"}
+            return None, {
+                "status": STATUS_TABLE_MISMATCH,
+                "reason": "the held-out set brings a condition table but the problem has "
+                "none, so there is no column set to line the two models up by",
+            }
         mine = list(problem.condition_df.columns)
         theirs = list(held_out.condition_df.columns)
         if sorted(mine) != sorted(theirs):
-            return None, {"status": STATUS_TABLE_MISMATCH,
-                          "reason": f"the held-out condition table's columns {theirs} differ from "
-                                    f"the problem's {mine}; a condition column is a model input, so "
-                                    "the two tables describe different models"}
+            return None, {
+                "status": STATUS_TABLE_MISMATCH,
+                "reason": f"the held-out condition table's columns {theirs} differ from "
+                f"the problem's {mine}; a condition column is a model input, so "
+                "the two tables describe different models",
+            }
         view.condition_df = held_out.condition_df.copy()
     mismatch = _table_mismatch(view, view.measurement_df)
     if mismatch:
@@ -593,15 +655,18 @@ def transfer_view(problem, held_out: HeldOut, shipped_parameter_df):
                 continue
             pdf.loc[pid, NOMINAL_VALUE] = value
         if missing:
-            return None, {"status": STATUS_INPUT_MISSING,
-                          "reason": f"the held-out system changes the fixed input(s) {', '.join(missing)}, "
-                                    "which the model does not carry as fixed parameters of that "
-                                    "name, so it cannot be moved to the held-out system"}
+            return None, {
+                "status": STATUS_INPUT_MISSING,
+                "reason": f"the held-out system changes the fixed input(s) {', '.join(missing)}, "
+                "which the model does not carry as fixed parameters of that "
+                "name, so it cannot be moved to the held-out system",
+            }
     return view, None
 
 
-def refit_problem(problem, *, build_dir: str | Path, model_name: str,
-                  n_starts: int, units=None) -> dict[str, Any]:
+def refit_problem(
+    problem, *, build_dir: str | Path, model_name: str, n_starts: int, units=None
+) -> dict[str, Any]:
     """REFIT ``problem`` on its own measurements and report the optimum — the transfer score.
 
     ``problem`` is already the held-out problem, and its ``nominalValue``\\ s are the START point
@@ -654,10 +719,12 @@ def refit_problem(problem, *, build_dir: str | Path, model_name: str,
     def _module_tag(v) -> str:
         """What the compiled module is a function of besides the SBML: the estimate split and the
         observables (their sigmas and scalings are model outputs)."""
-        estimated = sorted(str(p) for p in v.parameter_df.index
-                           if int(float(v.parameter_df.loc[p, ESTIMATE])) == 1)
-        return hashlib.sha1("\0".join(estimated + ["|"] + sorted(map(str, v.observable_df.index)))
-                            .encode()).hexdigest()[:8]
+        estimated = sorted(
+            str(p) for p in v.parameter_df.index if int(float(v.parameter_df.loc[p, ESTIMATE])) == 1
+        )
+        return hashlib.sha1(
+            "\0".join(estimated + ["|"] + sorted(map(str, v.observable_df.index))).encode()
+        ).hexdigest()[:8]
 
     whole = _module_tag(view)
 
@@ -705,7 +772,8 @@ def _unit_view(view, rows):
     uview.measurement_df = rows.reset_index(drop=True)
     measured = set(rows[OBSERVABLE_ID].astype(str))
     uview.observable_df = view.observable_df.loc[
-        [o for o in view.observable_df.index if str(o) in measured]]
+        [o for o in view.observable_df.index if str(o) in measured]
+    ]
     uview.parameter_df = _without_extraneous(uview)
     return uview
 
@@ -716,12 +784,17 @@ def _refit_units(measurement_df, units):
     condition is in no unit — an empty mapping maps none."""
     if units is None:
         return {None: measurement_df}
-    unit_of = measurement_df[SIMULATION_CONDITION_ID].astype(str).map(
-        {str(k): str(v) for k, v in units.items()})
+    unit_of = (
+        measurement_df[SIMULATION_CONDITION_ID]
+        .astype(str)
+        .map({str(k): str(v) for k, v in units.items()})
+    )
     unmapped = sorted(set(measurement_df[SIMULATION_CONDITION_ID].astype(str)[unit_of.isna()]))
     if unmapped:
-        return (f"held-out condition(s) {unmapped} belong to no refit unit ({HELD_OUT_UNITS}); "
-                "every measured condition must be in exactly one system")
+        return (
+            f"held-out condition(s) {unmapped} belong to no refit unit ({HELD_OUT_UNITS}); "
+            "every measured condition must be in exactly one system"
+        )
     return {unit: rows for unit, rows in measurement_df.groupby(unit_of, sort=True)}
 
 
@@ -736,27 +809,41 @@ def _refit_one(view, *, build_dir: str | Path, model_name: str, n_starts: int) -
     from pypesto.C import RDATAS as PP_RDATAS
 
     from .engine import AmiciEngine, _ensure_swig_on_path
-    from .fitting import (FIT_SEED, _apply_amici_solver_defaults, _fides_maxtime_options,
-                          _fit_engine, _fitted_values, problem_x_full_from_nominal)
+    from .fitting import (
+        FIT_SEED,
+        _apply_amici_solver_defaults,
+        _fides_maxtime_options,
+        _fit_engine,
+        _fitted_values,
+        problem_x_full_from_nominal,
+    )
 
     measurement_df = view.measurement_df
     _ensure_swig_on_path()
     np.random.seed(FIT_SEED)
-    importer = pypesto.petab.PetabImporter(view, output_folder=str(build_dir),
-                                          model_name=model_name)
+    importer = pypesto.petab.PetabImporter(
+        view, output_folder=str(build_dir), model_name=model_name
+    )
     pp = importer.create_problem()
     _apply_amici_solver_defaults(pp)
     x_start = np.asarray(problem_x_full_from_nominal(pp, view.parameter_df), dtype=float)
     pp.set_x_guesses(x_start[None, :])
     optimizer = pypesto.optimize.FidesOptimizer(
-        verbose=logging.ERROR, options=_fides_maxtime_options())
+        verbose=logging.ERROR, options=_fides_maxtime_options()
+    )
     result = pypesto.optimize.minimize(
-        pp, optimizer=optimizer, n_starts=int(n_starts),
-        engine=_fit_engine(int(n_starts)), progress_bar=False)
+        pp,
+        optimizer=optimizer,
+        n_starts=int(n_starts),
+        engine=_fit_engine(int(n_starts)),
+        progress_bar=False,
+    )
 
-    finite = [r for r in result.optimize_result.list
-              if r.get("x") is not None and r.get("fval") is not None
-              and math.isfinite(float(r["fval"]))]
+    finite = [
+        r
+        for r in result.optimize_result.list
+        if r.get("x") is not None and r.get("fval") is not None and math.isfinite(float(r["fval"]))
+    ]
     fvals = [float(r["fval"]) for r in finite]
     best = min(finite, key=lambda r: float(r["fval"])) if finite else None
     nll = float(best["fval"]) if best is not None else math.inf
@@ -766,10 +853,12 @@ def _refit_one(view, *, build_dir: str | Path, model_name: str, n_starts: int) -
     if math.isfinite(fval_start) and fval_start < nll:
         nll, x_best = fval_start, x_start
     if not math.isfinite(nll):
-        return {"status": STATUS_NON_FINITE,
-                "reason": "no multistart produced a finite optimum on the held-out system and the "
-                          "start point has none either (the model could not be integrated there, "
-                          "or its likelihood diverged)"}
+        return {
+            "status": STATUS_NON_FINITE,
+            "reason": "no multistart produced a finite optimum on the held-out system and the "
+            "start point has none either (the model could not be integrated there, "
+            "or its likelihood diverged)",
+        }
     ret = pp.objective(pp.get_reduced_vector(x_best), sensi_orders=(0,), return_dict=True)
     res = AmiciEngine._res_from_rdatas(ret[PP_RDATAS])
     k = int(sum(int(float(v)) == 1 for v in view.parameter_df[ESTIMATE]))
@@ -782,13 +871,15 @@ def _refit_one(view, *, build_dir: str | Path, model_name: str, n_starts: int) -
         **_data_shape(measurement_df),
         "n_starts": int(n_starts),
         "n_converged": int(sum(1 for v in fvals if v <= nll + 1e-3)),
-        "fitted": _fitted_values(pp.x_names, x_best, getattr(pp, "x_free_indices", None),
-                                 view.parameter_df),
+        "fitted": _fitted_values(
+            pp.x_names, x_best, getattr(pp, "x_free_indices", None), view.parameter_df
+        ),
     }
 
 
-def score_session(session, engine, held_out: HeldOut,
-                  n_starts: int | None = None) -> dict[str, Any]:
+def score_session(
+    session, engine, held_out: HeldOut, n_starts: int | None = None
+) -> dict[str, Any]:
     """The session's CURRENT model against ``held_out``, in the set's own mode.
 
     Fixed-θ: :func:`score_problem` at the parameter table's ``nominalValue``\\ s, which is where
@@ -809,8 +900,12 @@ def score_session(session, engine, held_out: HeldOut,
         kwargs = engine.pypesto_importer_kwargs(session.sbml_hash())
         build = {"build_dir": kwargs["output_folder"], "model_name": kwargs["model_name"]}
         if held_out.mode == MODE_FIXED:
-            return score_problem(session.problem, held_out.measurement_df,
-                                 condition_df=held_out.condition_df, **build)
+            return score_problem(
+                session.problem,
+                held_out.measurement_df,
+                condition_df=held_out.condition_df,
+                **build,
+            )
         view, failed = transfer_view(session.problem, held_out, session.shipped_parameter_df)
         if failed:
             return {**failed, "mode": MODE_TRANSFER}
@@ -853,8 +948,10 @@ def read_units(path: str | Path) -> dict[str, str]:
         raise ValueError(f"{path}: every row needs a conditionId and a unitId")
     dupes = sorted(table["conditionId"][table["conditionId"].duplicated()])
     if dupes:
-        raise ValueError(f"{path}: condition(s) {dupes} are listed in more than one unit; a "
-                         "condition belongs to exactly one")
+        raise ValueError(
+            f"{path}: condition(s) {dupes} are listed in more than one unit; a "
+            "condition belongs to exactly one"
+        )
     return dict(zip(table["conditionId"], table["unitId"]))
 
 

@@ -32,8 +32,13 @@ def _model_less_problem(tmp_path: Path) -> Path:
     """A copy of the toy problem whose SBML is EMPTY and which ships no ``model.ant``."""
     work = tmp_path / "empty"
     work.mkdir(parents=True)
-    for name in ("problem.yaml", "conditions.tsv", "measurements.tsv",
-                 "observables.tsv", "parameters.tsv"):
+    for name in (
+        "problem.yaml",
+        "conditions.tsv",
+        "measurements.tsv",
+        "observables.tsv",
+        "parameters.tsv",
+    ):
         shutil.copy(DATA_DIR / name, work / name)
     doc = libsbml.SBMLDocument(3, 2)
     model = doc.createModel()
@@ -45,9 +50,11 @@ def _model_less_problem(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def seeded(tmp_path):
-    return PetabSession(str(_model_less_problem(tmp_path)),
-                        provenance_dir=str(tmp_path / "prov"),
-                        resolver=StubReferenceResolver())
+    return PetabSession(
+        str(_model_less_problem(tmp_path)),
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+    )
 
 
 # -- what the seed declares ---------------------------------------------------
@@ -66,7 +73,7 @@ def test_the_seed_has_no_dynamics_so_nothing_reads_as_authored(seeded):
     sm = seeded.model.sbml_model
     assert sm.getNumReactions() == 0
     assert sm.getNumRules() == 0
-    assert seeded.has_model() is True        # something to hand AMICI
+    assert seeded.has_model() is True  # something to hand AMICI
     assert seeded.model_authored() is False  # ...but nothing authored
     assert seeded.describe()["model_authored"] is False
 
@@ -85,8 +92,9 @@ def test_a_function_name_never_becomes_a_species(tmp_path):
     yaml_path = _model_less_problem(tmp_path)
     obs = yaml_path.parent / "observables.tsv"
     obs.write_text(obs.read_text().replace("\tB\t", "\tlog10(B)\t"), encoding="utf-8")
-    session = PetabSession(str(yaml_path), provenance_dir=str(tmp_path / "prov"),
-                           resolver=StubReferenceResolver())
+    session = PetabSession(
+        str(yaml_path), provenance_dir=str(tmp_path / "prov"), resolver=StubReferenceResolver()
+    )
     assert R.species_ids(session.model.sbml_model) == {"B"}
 
 
@@ -133,8 +141,11 @@ def test_a_model_with_no_dynamics_is_refused(seeded):
     from petab_mcp import operations as O
 
     with pytest.raises(ValidationError) as exc:
-        O.set_model(seeded, "model m\n  species B;\n  B = 0;\nend",
-                    justification="declare B but no reaction")
+        O.set_model(
+            seeded,
+            "model m\n  species B;\n  B = 0;\nend",
+            justification="declare B but no reaction",
+        )
     assert "no DYNAMICS" in str(exc.value)
     assert seeded.model_authored() is False  # and the working model is untouched
 
@@ -145,16 +156,18 @@ def test_a_petab_placeholder_never_becomes_a_species(tmp_path):
     invent a state the real model never has."""
     yaml_path = _model_less_problem(tmp_path)
     obs = yaml_path.parent / "observables.tsv"
-    obs.write_text(obs.read_text().replace("\tB\t", "\tobservableParameter1_obs_B * B\t"),
-                   encoding="utf-8")
+    obs.write_text(
+        obs.read_text().replace("\tB\t", "\tobservableParameter1_obs_B * B\t"), encoding="utf-8"
+    )
     meas = yaml_path.parent / "measurements.tsv"
     lines = meas.read_text().splitlines()
     header = lines[0] + "\tobservableParameters"
     rows = [f"{ln}\t1.0" for ln in lines[1:] if ln.strip()]
     meas.write_text("\n".join([header, *rows]) + "\n", encoding="utf-8")
 
-    session = PetabSession(str(yaml_path), provenance_dir=str(tmp_path / "prov"),
-                           resolver=StubReferenceResolver())
+    session = PetabSession(
+        str(yaml_path), provenance_dir=str(tmp_path / "prov"), resolver=StubReferenceResolver()
+    )
     assert R.species_ids(session.model.sbml_model) == {"B"}
 
 
@@ -171,14 +184,17 @@ def test_the_seed_survives_a_parameters_only_edit(tmp_path):
     cond = yaml_path.parent / "conditions.tsv"
     cond.write_text("conditionId\tS\nc0\t2.0\n", encoding="utf-8")
 
-    session = PetabSession(str(yaml_path), provenance_dir=str(tmp_path / "prov"),
-                           resolver=StubReferenceResolver())
+    session = PetabSession(
+        str(yaml_path), provenance_dir=str(tmp_path / "prov"), resolver=StubReferenceResolver()
+    )
     assert "S" in R.species_ids(session.model.sbml_model)
     assert validate_problem(session.problem)["valid"]
 
-    res = O.change_parameters(session, [{"parameter_id": "sigma_B",
-                                         "lower_bound": 1e-3, "upper_bound": 1.0}],
-                              justification="tighten the noise box before authoring")
+    res = O.change_parameters(
+        session,
+        [{"parameter_id": "sigma_B", "lower_bound": 1e-3, "upper_bound": 1.0}],
+        justification="tighten the noise box before authoring",
+    )
     assert res["applied"] is True
 
 
@@ -190,13 +206,17 @@ def test_an_authored_model_must_still_consume_its_condition_targets(tmp_path):
 
     yaml_path = _model_less_problem(tmp_path)
     (yaml_path.parent / "conditions.tsv").write_text("conditionId\tS\nc0\t2.0\n", encoding="utf-8")
-    session = PetabSession(str(yaml_path), provenance_dir=str(tmp_path / "prov"),
-                           resolver=StubReferenceResolver())
+    session = PetabSession(
+        str(yaml_path), provenance_dir=str(tmp_path / "prov"), resolver=StubReferenceResolver()
+    )
     assert {"B", "S"} <= R.species_ids(session.model.sbml_model)
 
     with pytest.raises(ValidationError) as exc:
-        O.set_model(session, "model m\n  species B; species S;\n  B = 0; S = 0;\n  kb = 0.1;\n"
-                             "  r1: -> B; kb;\nend", justification="mechanism ignoring S")
+        O.set_model(
+            session,
+            "model m\n  species B; species S;\n  B = 0; S = 0;\n  kb = 0.1;\n  r1: -> B; kb;\nend",
+            justification="mechanism ignoring S",
+        )
     assert any("never uses 'S'" in i for i in exc.value.issues), exc.value.issues
 
 
@@ -213,8 +233,9 @@ def test_a_legal_id_python_reserves_is_still_seeded(tmp_path):
     params = yaml_path.parent / "parameters.tsv"
     params.write_text(params.read_text().replace("\nB_init\t", "\nlambda_init\t"), encoding="utf-8")
 
-    session = PetabSession(str(yaml_path), provenance_dir=str(tmp_path / "prov"),
-                           resolver=StubReferenceResolver())
+    session = PetabSession(
+        str(yaml_path), provenance_dir=str(tmp_path / "prov"), resolver=StubReferenceResolver()
+    )
     assert "lambda" in R.species_ids(session.model.sbml_model)
     assert validate_problem(session.problem)["valid"]
 
@@ -277,13 +298,14 @@ def test_the_seed_is_reconciled_and_its_initial_conditions_are_estimated(tmp_pat
     kept = [ln for ln in params.read_text().splitlines() if not ln.startswith(("A_init", "B_init"))]
     params.write_text("\n".join(kept) + "\n", encoding="utf-8")
 
-    session = PetabSession(str(yaml_path), provenance_dir=str(tmp_path / "prov"),
-                           resolver=StubReferenceResolver())
+    session = PetabSession(
+        str(yaml_path), provenance_dir=str(tmp_path / "prov"), resolver=StubReferenceResolver()
+    )
     pdf = session.problem.parameter_df
-    assert "B_init" in pdf.index                       # reconcile minted it
-    assert int(pdf.loc["B_init", ESTIMATE]) == 1       # ...ESTIMATED, not frozen
+    assert "B_init" in pdf.index  # reconcile minted it
+    assert int(pdf.loc["B_init", ESTIMATE]) == 1  # ...ESTIMATED, not frozen
     assert pdf.loc["B_init", PARAMETER_SCALE] == LOG10
-    assert int(session.problem.n_estimated) > 0        # so the seed is fittable
+    assert int(session.problem.n_estimated) > 0  # so the seed is fittable
 
 
 def test_a_shipped_row_comes_back_as_the_problem_defined_it(tmp_path):
@@ -299,21 +321,23 @@ def test_a_shipped_row_comes_back_as_the_problem_defined_it(tmp_path):
     # k1 ships a distinctive box + a prior; neither must be replaced by defaults.
     rows = params.read_text().rstrip().splitlines()
     header = rows[0] + "\tobjectivePriorType\tobjectivePriorParameters"
-    body = [(r + "\tnormal\t0.5;0.2") if r.startswith("k1\t") else (r + "\t\t")
-            for r in rows[1:]]
+    body = [(r + "\tnormal\t0.5;0.2") if r.startswith("k1\t") else (r + "\t\t") for r in rows[1:]]
     params.write_text("\n".join([header, *body]) + "\n", encoding="utf-8")
 
-    session = PetabSession(str(yaml_path), provenance_dir=str(tmp_path / "prov"),
-                           resolver=StubReferenceResolver())
+    session = PetabSession(
+        str(yaml_path), provenance_dir=str(tmp_path / "prov"), resolver=StubReferenceResolver()
+    )
     assert "k1" not in session.problem.parameter_df.index  # pruned: the seed has no mechanism
 
-    O.set_model(session, "model m\n  species B;\n  B = 1;\n  k1 = 0.5;\n"
-                         "  r1: B => ; k1 * B;\nend",
-                justification="author a mechanism that uses the shipped k1")
+    O.set_model(
+        session,
+        "model m\n  species B;\n  B = 1;\n  k1 = 0.5;\n  r1: B => ; k1 * B;\nend",
+        justification="author a mechanism that uses the shipped k1",
+    )
     row = session.problem.parameter_df.loc["k1"]
-    assert float(row["lowerBound"]) == 1e-4        # the SHIPPED box, not _default_bounds
+    assert float(row["lowerBound"]) == 1e-4  # the SHIPPED box, not _default_bounds
     assert float(row["upperBound"]) == 100.0
-    assert row["objectivePriorType"] == "normal"   # ...and the shipped prior came back
+    assert row["objectivePriorType"] == "normal"  # ...and the shipped prior came back
     assert row["objectivePriorParameters"] == "0.5;0.2"
 
 
@@ -328,16 +352,16 @@ def test_a_pruned_shipped_parameter_is_still_shown_to_the_caller(seeded):
     records = P.parameters_to_records(seeded.problem, shipped=seeded.shipped_parameter_df)
     by_id = {r["parameterId"]: r for r in records}
 
-    assert {"k1", "k2"} <= set(by_id)                       # visible...
-    assert "k1" not in seeded.problem.parameter_df.index    # ...but not in the live table
+    assert {"k1", "k2"} <= set(by_id)  # visible...
+    assert "k1" not in seeded.problem.parameter_df.index  # ...but not in the live table
     assert by_id["k1"]["in_model"] is False
-    assert by_id["k1"]["role"] == "constant"        # classified even without a row
-    assert by_id["k1"]["status"] == "estimated"     # ...and it restates the shipped estimate flag
+    assert by_id["k1"]["role"] == "constant"  # classified even without a row
+    assert by_id["k1"]["status"] == "estimated"  # ...and it restates the shipped estimate flag
     assert float(by_id["k1"]["lowerBound"]) == 1e-4  # the values the PROBLEM defined
     assert float(by_id["k1"]["upperBound"]) == 100.0
 
-    assert by_id["sigma_B"]["in_model"] is True     # used by the fixed noise formula: kept
-    assert by_id["B_init"]["in_model"] is True      # the seed's own parametric IC
+    assert by_id["sigma_B"]["in_model"] is True  # used by the fixed noise formula: kept
+    assert by_id["B_init"]["in_model"] is True  # the seed's own parametric IC
 
 
 def test_a_re_declared_parameter_stops_being_flagged_absent(tmp_path):
@@ -346,19 +370,24 @@ def test_a_re_declared_parameter_stops_being_flagged_absent(tmp_path):
     from petab_mcp import operations as O
     from petab_mcp import parameters as P
 
-    session = PetabSession(str(_model_less_problem(tmp_path)),
-                           provenance_dir=str(tmp_path / "prov"),
-                           resolver=StubReferenceResolver())
-    O.set_model(session, "model m\n  species B;\n  B = 1;\n  k1 = 0.5;\n"
-                         "  r1: B => ; k1 * B;\nend",
-                justification="use the shipped k1")
+    session = PetabSession(
+        str(_model_less_problem(tmp_path)),
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+    )
+    O.set_model(
+        session,
+        "model m\n  species B;\n  B = 1;\n  k1 = 0.5;\n  r1: B => ; k1 * B;\nend",
+        justification="use the shipped k1",
+    )
 
-    by_id = {r["parameterId"]: r
-             for r in P.parameters_to_records(session.problem,
-                                              shipped=session.shipped_parameter_df)}
+    by_id = {
+        r["parameterId"]: r
+        for r in P.parameters_to_records(session.problem, shipped=session.shipped_parameter_df)
+    }
     assert by_id["k1"]["in_model"] is True
-    assert by_id["k1"]["role"] == "kinetic"     # now it IS a rate constant
-    assert by_id["k2"]["in_model"] is False     # still unused
+    assert by_id["k1"]["role"] == "kinetic"  # now it IS a rate constant
+    assert by_id["k2"]["in_model"] is False  # still unused
     assert sum(1 for r in by_id.values() if r["parameterId"] == "k1") == 1  # not duplicated
 
 
@@ -369,8 +398,10 @@ def test_a_problem_with_no_declarable_entity_refuses_to_construct(tmp_path):
     AMICI segfaulted, so construction refuses."""
     yaml_path = _model_less_problem(tmp_path)
     (yaml_path.parent / "observables.tsv").write_text(
-        "observableId\tobservableFormula\tnoiseFormula\nobs_B\t1.0\tsigma_B\n", encoding="utf-8")
+        "observableId\tobservableFormula\tnoiseFormula\nobs_B\t1.0\tsigma_B\n", encoding="utf-8"
+    )
 
     with pytest.raises(ValidationError, match="nothing that could be declared"):
-        PetabSession(str(yaml_path), provenance_dir=str(tmp_path / "prov"),
-                     resolver=StubReferenceResolver())
+        PetabSession(
+            str(yaml_path), provenance_dir=str(tmp_path / "prov"), resolver=StubReferenceResolver()
+        )

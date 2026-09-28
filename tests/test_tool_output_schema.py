@@ -27,8 +27,10 @@ from petab_mcp.server import create_server
 #: Argument sets aimed at each tool's rejection path. A tool absent here is still covered by the
 #: no-argument sweep below.
 _BAD_ARGS = {
-    "get_parameters": [{"parameter_ids": ["no_such_parameter"]},
-                       {"parameter_ids": ["no_such_parameter"], "role": "kinetic"}],
+    "get_parameters": [
+        {"parameter_ids": ["no_such_parameter"]},
+        {"parameter_ids": ["no_such_parameter"], "role": "kinetic"},
+    ],
     "get_version": [{"version": 9999}],
     "diff_versions": [{"a": 0, "b": 9999}],
     "restore_version": [{"version": 9999}],
@@ -44,10 +46,13 @@ def _server(tmp_path):
     work.mkdir()
     for f in DATA_DIR.iterdir():
         shutil.copy(f, work / f.name)
-    return create_server(str(work / "problem.yaml"),
-                         provenance_dir=str(tmp_path / "prov"),
-                         build_root=str(tmp_path / "amici"),
-                         resolver=StubReferenceResolver(), auto_fit=False)
+    return create_server(
+        str(work / "problem.yaml"),
+        provenance_dir=str(tmp_path / "prov"),
+        build_root=str(tmp_path / "amici"),
+        resolver=StubReferenceResolver(),
+        auto_fit=False,
+    )
 
 
 def _violations(mcp, calls):
@@ -90,8 +95,10 @@ def test_no_tool_violates_its_own_output_schema_on_a_bad_call(tmp_path):
     mcp = _server(tmp_path)
     calls = [(name, args) for name, arglist in _BAD_ARGS.items() for args in arglist]
     bad = _violations(mcp, calls)
-    assert not bad, ("tools returned payloads violating their declared output schema — this "
-                     f"class of failure KILLS a run, it does not degrade: {bad}")
+    assert not bad, (
+        "tools returned payloads violating their declared output schema — this "
+        f"class of failure KILLS a run, it does not degrade: {bad}"
+    )
 
 
 def test_no_tool_violates_its_own_output_schema_with_no_arguments(tmp_path):

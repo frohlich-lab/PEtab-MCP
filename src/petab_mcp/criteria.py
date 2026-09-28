@@ -131,7 +131,8 @@ class Criterion:
         if name not in PENALTIES:
             raise ValueError(
                 f"unknown complexity criterion {self.name!r}; "
-                f"choose one of {', '.join(sorted(PENALTIES))}")
+                f"choose one of {', '.join(sorted(PENALTIES))}"
+            )
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "_penalty", PENALTIES[name])
 
@@ -148,16 +149,16 @@ class Criterion:
         except ValueError:
             return None
 
-    def penalty(self, k: int | None, n: int | None,
-                k_eff: float | None = None) -> float | None:
+    def penalty(self, k: int | None, n: int | None, k_eff: float | None = None) -> float | None:
         """The complexity charge for ``k`` parameters on ``n`` points (``k_eff`` effective ones),
         or ``None`` when the inputs are missing or this criterion is undefined there."""
         if k is None or n is None or k < 0 or n <= 0:
             return None
         return self._penalty(int(k), int(n), k_eff)
 
-    def value(self, nll: float | None, k: int | None, n: int | None,
-              k_eff: float | None = None) -> float | None:
+    def value(
+        self, nll: float | None, k: int | None, n: int | None, k_eff: float | None = None
+    ) -> float | None:
         """``2*nll + penalty``, or ``None`` when any input is missing/non-finite.
 
         ``k_eff`` is the fit's effective parameter count, read by TIC alone (see the module
@@ -189,8 +190,9 @@ class Criterion:
         here, before = self.penalty(k, n), self.penalty(k - 1, n)
         return None if (here is None or before is None) else (here - before) / 2.0
 
-    def values(self, nll: float | None, k: int | None, n: int | None,
-               k_eff: float | None = None) -> dict[str, float | None]:
+    def values(
+        self, nll: float | None, k: int | None, n: int | None, k_eff: float | None = None
+    ) -> dict[str, float | None]:
         """Every criterion by name, PLUS this criterion's ``name`` and the ``criterion_value``
         the run actually ranks on.
 
@@ -223,8 +225,11 @@ class Criterion:
         by_name = finite_float(record.get(self.name))
         if by_name is not None:
             return by_name
-        return (finite_float(record.get("criterion_value"))
-                if record.get("criterion") == self.name else None)
+        return (
+            finite_float(record.get("criterion_value"))
+            if record.get("criterion") == self.name
+            else None
+        )
 
 
 #: One instance per criterion — what :meth:`Criterion.values` reports by name, so a fit carries

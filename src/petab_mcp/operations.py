@@ -49,8 +49,12 @@ from .validation import frozen_parametric_stoichiometry_issues, validate_problem
 # hint lost ~512 nll to it, recovering the whole amount in one edit once it switched to `time`.
 # So `t` maps to an INSTRUCTION, not a replacement name.
 _AMICI_RESERVED_HINTS = {
-    "h": "n_hill or hill_coeff", "e": "eff or efficiency",
-    "x": "x_state", "k": "k_rate", "p": "prot", "w": "w_rate",
+    "h": "n_hill or hill_coeff",
+    "e": "eff or efficiency",
+    "x": "x_state",
+    "k": "k_rate",
+    "p": "prot",
+    "w": "w_rate",
 }
 _AMICI_RESERVED_RE = re.compile(r"amici_([A-Za-z]\w?)\b")
 
@@ -59,9 +63,9 @@ _AMICI_RESERVED_RE = re.compile(r"amici_([A-Za-z]\w?)\b")
 #: denied` anywhere in the text, which caught fit-time OSErrors (a pruned scratch dir, a missing
 #: pyPESTO results.h5) and told the agent not to re-author a model that WAS the problem.
 _TOOLCHAIN_RE = re.compile(
-    r"fatal error:|"                          # a compiler hard-stop, e.g. a missing <span>
+    r"fatal error:|"  # a compiler hard-stop, e.g. a missing <span>
     r"Failed building the model extension|"
-    r"build_ext|setup\.py|"                   # the OUTER exception AMICI actually re-raises
+    r"build_ext|setup\.py|"  # the OUTER exception AMICI actually re-raises
     r"\bcmake\b|\bninja\b|\bswig\b|"
     # Signatures of a compiler/host problem, NOT of bad generated code. Kept specific on purpose:
     # a model-caused codegen error ("'foo' was not declared") must stay on the ill-posed path, so
@@ -297,7 +301,9 @@ def _rejection_summary(issues: list[str]) -> str:
         # `valid: false` with no error-level issue is a lint that failed on its own summary line;
         # keep the old wording rather than inventing a reason we do not have.
         return "the resulting problem is invalid."
-    shown = [" ".join(str(m).split())[:_REJECTION_ISSUE_CHARS] for m in issues[:_REJECTION_ISSUES_SHOWN]]
+    shown = [
+        " ".join(str(m).split())[:_REJECTION_ISSUE_CHARS] for m in issues[:_REJECTION_ISSUES_SHOWN]
+    ]
     more = len(issues) - len(shown)
     tail = f" (+{more} more in `issues`)" if more > 0 else ""
     joined = " | ".join(shown)
@@ -403,7 +409,8 @@ def _commit_change(
             param_result = param_edit(problem)
             apply_result = (
                 {"model": apply_result, "parameters": param_result}
-                if recon is not None else param_result
+                if recon is not None
+                else param_result
             )
         # A parameters-only call must not change the model: it never runs the reconcile or the
         # has-dynamics refusal, so a model edit smuggled through it would reach a committed
@@ -424,14 +431,13 @@ def _commit_change(
             protected_fixed = None
         report = validate_problem(problem, protected_fixed_ids=protected_fixed)
         if not report["valid"]:
-            hard = [i["message"] for i in report["issues"]
-                    if i["level"] in ("error", "critical")]
+            hard = [i["message"] for i in report["issues"] if i["level"] in ("error", "critical")]
             raise ValidationError(
                 f"Operation {op!r} rejected: {_rejection_summary(hard)}",
                 issues=hard,
             )
 
-        warnings = (_parsimony_warnings(problem, old_species) if recon is not None else [])
+        warnings = _parsimony_warnings(problem, old_species) if recon is not None else []
         # Warnings raised by the edit callback itself (e.g. change_parameters' advisory sigma cap)
         # must reach the CALLER, not just the provenance log — an advisory nobody reads is the same
         # as no guard at all. `recon is None` for every parameter edit, so the parsimony list above
@@ -439,8 +445,10 @@ def _commit_change(
         # A bundled `set_model(parameters=[...])` (#117) nests the parameter result under
         # "parameters", so reading only the top level silently dropped the advisory on exactly the
         # call that re-authors the model AND widens the noise box together.
-        for _source in (apply_result, (apply_result or {}).get("parameters")
-                        if isinstance(apply_result, dict) else None):
+        for _source in (
+            apply_result,
+            (apply_result or {}).get("parameters") if isinstance(apply_result, dict) else None,
+        ):
             if isinstance(_source, dict):
                 warnings = warnings + [w for w in (_source.get("warnings") or []) if w]
         # The edit's half of the message stack (see :mod:`messages`). The lint's WARNING-level
@@ -461,21 +469,22 @@ def _commit_change(
         # instead of guessing IC naming schemes that all fit identically (issue #57). Cheap and
         # analytic; `newly_added` marks the ICs this op introduced. Unconditional — there is
         # always a model (see `session.has_model`).
-        initial_conditions = R.initial_conditions_report(
-            problem, added=set(param_diff["added"]))
+        initial_conditions = R.initial_conditions_report(problem, added=set(param_diff["added"]))
         # Log the edit. No version — versions are fit snapshots (see `session.fit`). Written
         # before the fit so a change that fails to score still leaves a trace, and because
         # `references` (resolved PubMed metadata) lives nowhere else.
-        event = session.provenance.append_event({
-            "type": "edit",
-            "operation": op,
-            "args": op_args,
-            "result": apply_result if isinstance(apply_result, (str, dict, list)) else None,
-            "justification": justification,
-            "references": resolved,
-            "parameter_diff": param_diff,
-            "warnings": warnings,
-        })
+        event = session.provenance.append_event(
+            {
+                "type": "edit",
+                "operation": op,
+                "args": op_args,
+                "result": apply_result if isinstance(apply_result, (str, dict, list)) else None,
+                "justification": justification,
+                "references": resolved,
+                "parameter_diff": param_diff,
+                "warnings": warnings,
+            }
+        )
 
         # LAST, once nothing left can raise: the candidate becomes the working problem. Everything
         # above reads the local `problem`, so the swap has no reason to happen earlier — and every
@@ -506,7 +515,9 @@ def _commit_change(
 
 # -- public operations: model ----------------------------------------------
 def set_model(
-    session, antimony: str, justification: str,
+    session,
+    antimony: str,
+    justification: str,
     references: list[str] | None = None,
     parameters: list[dict[str, Any]] | None = None,
     restore_parameter_df: Any | None = None,
@@ -535,12 +546,11 @@ def set_model(
     edit event, since it is one logical change.
     """
     if not isinstance(antimony, str) or not antimony.strip():
-        raise OperationError("make_changes requires a non-empty Antimony model string when `antimony` is given.")
+        raise OperationError(
+            "make_changes requires a non-empty Antimony model string when `antimony` is given."
+        )
 
-    normalized = (
-        _normalize_parameter_changes(parameters, arg="parameters")
-        if parameters else []
-    )
+    normalized = _normalize_parameter_changes(parameters, arg="parameters") if parameters else []
 
     # Snapshot the currently-estimated parameter ids so we can flag any the re-author drops.
     from petab.v1.C import ESTIMATE
@@ -583,7 +593,11 @@ def set_model(
     if normalized:
         op_args["parameters"] = _parameters_arg(normalized)
     result = _commit_change(
-        session, "make_changes", op_args, justification, references,
+        session,
+        "make_changes",
+        op_args,
+        justification,
+        references,
         model_build=build,
         param_edit=_composed_parameter_edit(session, normalized, restore_parameter_df),
         require_references=False,
@@ -595,11 +609,12 @@ def set_model(
     removed = ((result.get("reconcile") or {}).get("parameters") or {}).get("removed") or []
     dropped = sorted(p for p in removed if str(p) in prior_estimated)
     if dropped:
-        note = (f"the re-author dropped previously-estimated parameter(s) {dropped}: their fitted "
-                "values are gone. Re-declare them in the Antimony if that was unintended.")
+        note = (
+            f"the re-author dropped previously-estimated parameter(s) {dropped}: their fitted "
+            "values are gone. Re-declare them in the Antimony if that was unintended."
+        )
         result["warnings"] = list(result.get("warnings") or []) + [note]
-        result["messages"] = list(result.get("messages") or []) + [
-            M.warning(M.SOURCE_EDIT, note)]
+        result["messages"] = list(result.get("messages") or []) + [M.warning(M.SOURCE_EDIT, note)]
     return result
 
 
@@ -625,19 +640,27 @@ def _antimony_parse_hint(text: str, exc: Exception) -> str:
     src = lines[i - 1].strip()
     parts = [f" line {i} reads: {src}"]
     if re.match(r"^(param|parameter)\b", src):
-        parts.append("likely cause: `parameter`/`param` is not an Antimony keyword — a parameter "
-                     "is a plain assignment (`NN = 480;`); a comma list needs a real keyword "
-                     "(`const a = 1, b = 2;`). Keep `species`, `compartment`, `var`, `const`.")
+        parts.append(
+            "likely cause: `parameter`/`param` is not an Antimony keyword — a parameter "
+            "is a plain assignment (`NN = 480;`); a comma list needs a real keyword "
+            "(`const a = 1, b = 2;`). Keep `species`, `compartment`, `var`, `const`."
+        )
     elif re.search(r"^\w+\s*:.*;.*\w+\s*=", src):
-        parts.append("likely cause: a rate law is a bare expression and cannot be named — write "
-                     "`R: -> V; k_prod;`, not `R: -> V; v_prod = k_prod;`.")
+        parts.append(
+            "likely cause: a rate law is a bare expression and cannot be named — write "
+            "`R: -> V; k_prod;`, not `R: -> V; v_prod = k_prod;`."
+        )
     elif re.search(r"(->|=>)", src) and re.search(r"\b\w+\s*\*\s*\w+", src.split(";")[0]):
-        parts.append("likely cause: stoichiometry is a numeric literal separated by a space, not "
-                     "a `*` — and never a parameter. A burst size belongs in the rate law: "
-                     "`r: -> V; NN*delta*I;`.")
+        parts.append(
+            "likely cause: stoichiometry is a numeric literal separated by a space, not "
+            "a `*` — and never a parameter. A burst size belongs in the rate law: "
+            "`r: -> V; NN*delta*I;`."
+        )
     elif re.match(r"^\w+\s*;", src):
-        parts.append("likely cause: a name on its own is not a declaration — use `species V;`, "
-                     "`var gamma;`, or an assignment `gamma = 0.1;`.")
+        parts.append(
+            "likely cause: a name on its own is not a declaration — use `species V;`, "
+            "`var gamma;`, or an assignment `gamma = 0.1;`."
+        )
     return " ".join(parts)
 
 
@@ -659,8 +682,10 @@ def _require_positive_for_log(problem, parameter_id: str, scale: str) -> None:
                 # rejection 41 times each and spent its whole budget without a single fit. Name
                 # the exits that actually work.
                 if field == "lowerBound":
-                    hint = (" Bounds are LINEAR values, not log10 coordinates: a rate spanning "
-                            "1e-4..1e2 is lower_bound=1e-4, upper_bound=1e2 — never -4/2.")
+                    hint = (
+                        " Bounds are LINEAR values, not log10 coordinates: a rate spanning "
+                        "1e-4..1e2 is lower_bound=1e-4, upper_bound=1e2 — never -4/2."
+                    )
                 else:
                     hint = (
                         " `nominalValue` is not settable here (allowed keys: parameter_id, "
@@ -793,8 +818,11 @@ def _widening_history(session, parameter_id: str, side: str) -> tuple[int, float
         if prev_bound is not None:
             if (bound > prev_bound) if side == "upper" else (bound < prev_bound):  # widened
                 count += 1
-                last_gain = (2.0 * (prev_nllh - nllh)
-                             if (prev_nllh is not None and nllh is not None) else None)
+                last_gain = (
+                    2.0 * (prev_nllh - nllh)
+                    if (prev_nllh is not None and nllh is not None)
+                    else None
+                )
             elif (bound < prev_bound) if side == "upper" else (bound > prev_bound):  # narrowed
                 count, last_gain = 0, None
         prev_bound, prev_nllh = bound, nllh
@@ -802,7 +830,11 @@ def _widening_history(session, parameter_id: str, side: str) -> tuple[int, float
 
 
 def _reject_repeated_widening(
-    session, problem, parameter_id: str, lower_bound: float, upper_bound: float,
+    session,
+    problem,
+    parameter_id: str,
+    lower_bound: float,
+    upper_bound: float,
 ) -> None:
     """Refuse a THIRD widening of a parameter that keeps re-pinning to its bound for a negligible
     fit gain. A parameter pinned at a bound with a flat / collinear FIM direction (see
@@ -840,7 +872,7 @@ def _reject_repeated_widening(
         f"Refusing to widen {parameter_id!r} a {count + 1}th time: it re-pinned at its {side} "
         f"bound after {count} previous widenings for a negligible ~{last_gain:.2g} BIC gain. A "
         "parameter pinned at a bound with a flat/collinear FIM direction (check "
-        "get_fit_diagnosis(sections=\"parameters\")) is UNIDENTIFIABLE, not under-explored — widening chases it toward "
+        'get_fit_diagnosis(sections="parameters")) is UNIDENTIFIABLE, not under-explored — widening chases it toward '
         "infinity while it keeps re-pinning. Instead re-author with make_changes to REMOVE its "
         "reaction or use its LIMITING form (make the reaction irreversible / the step "
         "instantaneous); if neither is possible, LEAVE it pinned — do not widen again or "
@@ -850,7 +882,9 @@ def _reject_repeated_widening(
 
 
 def _normalize_parameter_changes(
-    changes: list[dict[str, Any]], label: str = "make_changes", arg: str = "parameters",
+    changes: list[dict[str, Any]],
+    label: str = "make_changes",
+    arg: str = "parameters",
 ) -> list[dict[str, Any]]:
     """Validate + normalize a ``parameters`` list into ``{parameter_id, lower_bound, upper_bound,
     scale}`` entries (missing fields as ``None``), raising :class:`OperationError` on anything
@@ -869,9 +903,7 @@ def _normalize_parameter_changes(
             raise OperationError(f"{label}: entry {i} is not an object.")
         pid = ch.get("parameter_id")
         if not pid or not isinstance(pid, str):
-            raise OperationError(
-                f"{label}: entry {i} is missing a string 'parameter_id'."
-            )
+            raise OperationError(f"{label}: entry {i} is missing a string 'parameter_id'.")
         if pid in seen:
             raise OperationError(
                 f"{label}: {pid!r} appears in more than one entry — combine its bound "
@@ -919,7 +951,9 @@ def _normalize_parameter_changes(
     return normalized
 
 
-def _restore_parameter_edit(stored_df, skip: set[str] | None = None) -> Callable[[Any], dict[str, Any]]:
+def _restore_parameter_edit(
+    stored_df, skip: set[str] | None = None
+) -> Callable[[Any], dict[str, Any]]:
     """A ``param_edit`` that puts a STORED version's search space back.
 
     Used by a `base_version=N` fork so that going back to a version restores its bounds, scales
@@ -1053,7 +1087,12 @@ def _parameter_edit(session, normalized: list[dict[str, Any]]) -> Callable[[Any]
         changed = []
         warnings: list[str] = []
         for ch in normalized:
-            pid, lb, ub, scale = ch["parameter_id"], ch["lower_bound"], ch["upper_bound"], ch["scale"]
+            pid, lb, ub, scale = (
+                ch["parameter_id"],
+                ch["lower_bound"],
+                ch["upper_bound"],
+                ch["scale"],
+            )
             update: dict[str, Any] = {"id": pid}
             if ub is not None:
                 # Widening backstops read the pre-edit bound, so they must run BEFORE any update.
@@ -1084,7 +1123,7 @@ def _parameter_edit(session, normalized: list[dict[str, Any]]) -> Callable[[Any]
             _require_positive_for_log(problem, pid, scale)
         out: dict[str, Any] = {"changed": changed}
         if warnings:
-            out["warnings"] = warnings   # advisory only; the edit was applied
+            out["warnings"] = warnings  # advisory only; the edit was applied
         return out
 
     return edit
@@ -1115,9 +1154,13 @@ def change_parameters(
     but does NOT fit — the fit that scores it is wired at the server layer, not here."""
     normalized = _normalize_parameter_changes(parameters)
     return _commit_change(
-        session, "make_changes", {"parameters": _parameters_arg(normalized)},
-        justification, references,
-        param_edit=_parameter_edit(session, normalized), require_references=False,
+        session,
+        "make_changes",
+        {"parameters": _parameters_arg(normalized)},
+        justification,
+        references,
+        param_edit=_parameter_edit(session, normalized),
+        require_references=False,
     )
 
 
@@ -1160,12 +1203,13 @@ def revert_working_state(session, snapshot: dict[str, Any], reason: str) -> None
         session.problem = snapshot["problem"]
         session.simulation = snapshot["simulation"]
         session.optimization = snapshot["optimization"]
-        session.provenance.append_event({
-            "type": "revert",
-            "operation": "make_changes",
-            "reason": reason,
-        })
-
+        session.provenance.append_event(
+            {
+                "type": "revert",
+                "operation": "make_changes",
+                "reason": reason,
+            }
+        )
 
 
 # Keys of the edit half that survive into a `make_changes` result: its DIAGNOSTICS, merged with
@@ -1177,7 +1221,9 @@ _EDIT_KEYS_KEPT = ("messages",)
 
 
 def bundle_result(
-    session, edit_result: dict[str, Any], fit_result: dict[str, Any],
+    session,
+    edit_result: dict[str, Any],
+    fit_result: dict[str, Any],
     head_before: int,
 ) -> dict[str, Any]:
     """The result of one ``make_changes`` call: a flag, a version, and the fit — flat.
@@ -1254,8 +1300,11 @@ def bundle_result(
     )
     result = {
         **{k: edit_result[k] for k in _EDIT_KEYS_KEPT if k in edit_result},
-        **{k: v for k, v in fit_result.items()
-           if k not in ("committed", "version", "warnings", "messages")},
+        **{
+            k: v
+            for k, v in fit_result.items()
+            if k not in ("committed", "version", "warnings", "messages")
+        },
         "applied": applied,
         "committed": committed,
         "version": version,

@@ -199,20 +199,20 @@ def test_query_runs_on_disposable_copy(session):
     assert len(session.problem.measurement_df) == len(df_before)
     assert session.problem.measurement_df.equals(df_before)
     # ... and every call gets a fresh copy, so the tables are all still there and intact.
-    assert data_access.run_query(
-        session, "SELECT count(*) AS n FROM measurements"
-    )["rows"][0]["n"] == 6
-    assert data_access.run_query(
-        session, "SELECT count(*) AS n FROM parameters"
-    )["rows"][0]["n"] == 5
+    assert (
+        data_access.run_query(session, "SELECT count(*) AS n FROM measurements")["rows"][0]["n"]
+        == 6
+    )
+    assert (
+        data_access.run_query(session, "SELECT count(*) AS n FROM parameters")["rows"][0]["n"] == 5
+    )
 
 
 def test_multi_statement_and_temp_tables_allowed(session):
     # The full SQL surface is available; the last statement's result is returned.
     out = data_access.run_query(
         session,
-        "CREATE TEMP TABLE t AS SELECT observableId FROM measurements; "
-        "SELECT count(*) AS n FROM t",
+        "CREATE TEMP TABLE t AS SELECT observableId FROM measurements; SELECT count(*) AS n FROM t",
     )
     assert out["rows"][0]["n"] == 6
 
@@ -228,8 +228,14 @@ def test_table_schema(session):
     schema = data_access.table_schema(session)
     tables = {t["table"]: t for t in schema["tables"]}
     assert set(tables) == {
-        "measurements", "conditions", "observables", "parameters", "simulations",
-        "simulations_history", "optimization_starts", "optimization_trace",
+        "measurements",
+        "conditions",
+        "observables",
+        "parameters",
+        "simulations",
+        "simulations_history",
+        "optimization_starts",
+        "optimization_trace",
     }
     assert tables["simulations_history"]["n_rows"] == 0  # no versions stored yet
     assert set(data_access.SIMULATION_HISTORY_COLUMNS) <= set(
@@ -259,10 +265,28 @@ def test_optimization_tables_query(session):
     session.optimization = {
         "n_starts": 2,
         "starts": [
-            {"start": 0, "id": "0", "fval": 1.0, "time": 0.5, "n_fval": 20,
-             "n_grad": 20, "n_hess": 0, "exitflag": 0, "message": "converged"},
-            {"start": 1, "id": "1", "fval": 5.0, "time": 0.4, "n_fval": 15,
-             "n_grad": 15, "n_hess": 0, "exitflag": 0, "message": "converged"},
+            {
+                "start": 0,
+                "id": "0",
+                "fval": 1.0,
+                "time": 0.5,
+                "n_fval": 20,
+                "n_grad": 20,
+                "n_hess": 0,
+                "exitflag": 0,
+                "message": "converged",
+            },
+            {
+                "start": 1,
+                "id": "1",
+                "fval": 5.0,
+                "time": 0.4,
+                "n_fval": 15,
+                "n_grad": 15,
+                "n_hess": 0,
+                "exitflag": 0,
+                "message": "converged",
+            },
         ],
         "trace": [
             {"start": 0, "iteration": 0, "fval": 9.0, "time": 0.0},
@@ -308,8 +332,8 @@ def test_fit_diagnosis_empty_without_simulation(session):
 def test_fit_diagnosis_compact_and_bounded(session):
     session.simulation = {"records": SIM_RECORDS}
     out = data_access.fit_diagnosis(session, worst_n=2)
-    assert out["n_points"] == 3                          # the NULL-residual row is excluded
-    assert out["total_chi2"] == pytest.approx(5.0)       # 2^2 + 0^2 + (-1)^2
+    assert out["n_points"] == 3  # the NULL-residual row is excluded
+    assert out["total_chi2"] == pytest.approx(5.0)  # 2^2 + 0^2 + (-1)^2
     per = {r["observable_id"]: r for r in out["per_observable"]}
     assert per["obs_A"]["n"] == 2 and per["obs_A"]["chi2"] == pytest.approx(4.0)
     assert per["obs_A"]["mean_weighted_residual"] == pytest.approx(1.0)
@@ -332,9 +356,9 @@ def test_fit_diagnosis_compact_and_bounded(session):
 
 def test_fit_diagnosis_flags_systematic_bias(session):
     """A one-sided residual series must be flagged by the sign test through fit_diagnosis."""
-    session.simulation = {"records":
-                          [_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0)
-                           for t in range(10)]}
+    session.simulation = {
+        "records": [_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)]
+    }
     out = data_access.fit_diagnosis(session)
     row = out["per_observable"][0]
     assert row["sign_test"]["n_pos"] == 10 and row["sign_test"]["n_neg"] == 0
@@ -351,16 +375,18 @@ def test_fit_diagnosis_flags_systematic_bias(session):
 def _flagged(session) -> bool:
     return bool(data_access.residual_structure_rollup(session)["flagged_observables"])
 
+
 def test_structure_flag_true_on_systematic_bias(session):
     """A one-sided residual series is flagged, and the per-observable rows fit_diagnosis returns
     mark the SAME observable — pinning the two definitions together (they share one builder) so the
     per-commit gate can't drift from the detail read."""
-    session.simulation = {"records":
-                          [_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0)
-                           for t in range(10)]}
+    session.simulation = {
+        "records": [_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)]
+    }
     assert _flagged(session) is True
     assert _flagged(session) is any(
-        o.get("structure_flag") for o in data_access.fit_diagnosis(session)["per_observable"])
+        o.get("structure_flag") for o in data_access.fit_diagnosis(session)["per_observable"]
+    )
 
 
 def test_structure_flag_false_without_simulation(session):
@@ -386,7 +412,8 @@ def test_structure_flag_agrees_with_fit_diagnosis_on_mixed(session):
     boolean equals what fit_diagnosis's own rows mark."""
     session.simulation = {"records": SIM_RECORDS}
     assert _flagged(session) is any(
-        o.get("structure_flag") for o in data_access.fit_diagnosis(session)["per_observable"])
+        o.get("structure_flag") for o in data_access.fit_diagnosis(session)["per_observable"]
+    )
 
 
 # -- residual_structure_rollup: the compact verdict returned ON the fit result (issue #113) ------
@@ -394,15 +421,18 @@ def test_residual_structure_rollup_names_the_flagged_observable(session):
     """The rollup is the verdict `fit` returns, so it must NAME what is structured, not just say
     that something is — and agree exactly with fit_diagnosis's own rollup (one key name, one
     shape, one set of rules)."""
-    session.simulation = {"records":
-                          [_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0)
-                           for t in range(10)]}
+    session.simulation = {
+        "records": [_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)]
+    }
     out = data_access.residual_structure_rollup(session)
     assert out["flagged_observables"] == ["obs_A"]
     assert out["low_power"] is False
     assert "obs_A" in out["summary"]
-    assert [o["observable_id"] for o in data_access.fit_diagnosis(session)["per_observable"]
-            if o.get("structure_flag")] == ["obs_A"]
+    assert [
+        o["observable_id"]
+        for o in data_access.fit_diagnosis(session)["per_observable"]
+        if o.get("structure_flag")
+    ] == ["obs_A"]
 
 
 def test_residual_structure_rollup_reports_low_power_on_the_mixed_set(session):
@@ -413,8 +443,9 @@ def test_residual_structure_rollup_reports_low_power_on_the_mixed_set(session):
     assert out["flagged_observables"] == []
     assert out["low_power"] is True
     assert "UNDERPOWERED" in out["summary"]
-    assert not any(o.get("structure_flag")
-                   for o in data_access.fit_diagnosis(session)["per_observable"])
+    assert not any(
+        o.get("structure_flag") for o in data_access.fit_diagnosis(session)["per_observable"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -433,8 +464,9 @@ def test_residual_structure_rollup_degrades_to_a_well_formed_verdict(session, re
 
 def test_residual_structure_rollup_never_raises(session, monkeypatch):
     """An advisory stat must never take down the fit or the plateau gate that consume it."""
-    monkeypatch.setattr(data_access, "_frames",
-                        lambda _s: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(
+        data_access, "_frames", lambda _s: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
     out = data_access.residual_structure_rollup(session)
     assert out["flagged_observables"] == [] and out["low_power"] is True
     assert _flagged(session) is False
@@ -447,16 +479,19 @@ def test_residual_structure_rollup_agrees_with_fit_diagnosis_on_several_flagged(
     lead reads next would name different ones."""
     # obs_B carries the larger chi2, so fit_diagnosis ranks it first while groupby yields obs_A
     # first; both one-sided, so both flag.
-    records = ([_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)]
-               + [_rec("obs_B", "c0", float(t), 3.0, 0.0, 3.0, 3.0, 1.0) for t in range(10)])
+    records = [_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)] + [
+        _rec("obs_B", "c0", float(t), 3.0, 0.0, 3.0, 3.0, 1.0) for t in range(10)
+    ]
     session.simulation = {"records": records}
     diag = data_access.fit_diagnosis(session)
     assert [o["observable_id"] for o in diag["per_observable"]] == ["obs_B", "obs_A"]
 
     rollup = data_access.residual_structure_rollup(session)
     assert rollup["flagged_observables"] == ["obs_A", "obs_B"]
-    assert sorted(o["observable_id"] for o in diag["per_observable"]
-                  if o.get("structure_flag")) == rollup["flagged_observables"]
+    assert (
+        sorted(o["observable_id"] for o in diag["per_observable"] if o.get("structure_flag"))
+        == rollup["flagged_observables"]
+    )
 
 
 def test_the_two_rollup_callers_produce_IDENTICAL_verdicts(session, monkeypatch):
@@ -470,23 +505,29 @@ def test_the_two_rollup_callers_produce_IDENTICAL_verdicts(session, monkeypatch)
     """
     verdicts: list[dict] = []
     real = data_access._rollup_structure
-    monkeypatch.setattr(data_access, "_rollup_structure",
-                        lambda *a, **kw: verdicts.append(real(*a, **kw)) or verdicts[-1])
+    monkeypatch.setattr(
+        data_access,
+        "_rollup_structure",
+        lambda *a, **kw: verdicts.append(real(*a, **kw)) or verdicts[-1],
+    )
 
     # Two flagged observables reached in DIFFERENT orders per caller (fit_diagnosis marks a
     # chi2-ranked table, the rollup walks groupby order), one underpowered set, and one with nothing
     # testable — so both the list and the summary string built from it have to agree.
-    two_flagged = ([_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)]
-                   + [_rec("obs_B", "c0", float(t), 3.0, 0.0, 3.0, 3.0, 1.0) for t in range(10)])
-    for records in ([_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)],
-                    two_flagged,
-                    SIM_RECORDS,
-                    [_rec("o", "c", 0.0, 1.0, float("nan"), None, None, None)]):
+    two_flagged = [_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)] + [
+        _rec("obs_B", "c0", float(t), 3.0, 0.0, 3.0, 3.0, 1.0) for t in range(10)
+    ]
+    for records in (
+        [_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)],
+        two_flagged,
+        SIM_RECORDS,
+        [_rec("o", "c", 0.0, 1.0, float("nan"), None, None, None)],
+    ):
         verdicts.clear()
-        session.simulation = {"records": records}   # no stored verdict -> both paths recompute
+        session.simulation = {"records": records}  # no stored verdict -> both paths recompute
         data_access.residual_structure_rollup(session)
         data_access.fit_diagnosis(session)
-        if len(verdicts) == 2:      # the degenerate frames short-circuit before the builder
+        if len(verdicts) == 2:  # the degenerate frames short-circuit before the builder
             assert verdicts[0] == verdicts[1]
             assert verdicts[0]["summary"] == verdicts[1]["summary"]
             assert verdicts[0]["low_power"] == verdicts[1]["low_power"]
@@ -497,26 +538,30 @@ def test_the_stored_verdict_is_reused_rather_than_recomputed(session, monkeypatc
     lack-of-fit pass per noise parameter — although `session.fit` already stored that rollup on the
     very frame this reads (`fitsim` IS `session.simulation`). It reads the stored one, and recomputes
     only when the frame carries none (a simulate-only or restored payload)."""
-    session.simulation = {"records": [_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0)
-                                      for t in range(10)]}
+    session.simulation = {
+        "records": [_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)]
+    }
     stored = data_access.residual_structure_rollup(session)
     session.simulation["residual_structure"] = stored
 
     passes: list[int] = []
     real = data_access._replicate_lof
-    monkeypatch.setattr(data_access, "_replicate_lof",
-                        lambda s, df: passes.append(1) or real(s, df))
+    monkeypatch.setattr(
+        data_access, "_replicate_lof", lambda s, df: passes.append(1) or real(s, df)
+    )
 
     diag = data_access.fit_diagnosis(session)
-    assert [o["observable_id"] for o in diag["per_observable"] if o.get("structure_flag")] == \
-        stored["flagged_observables"]
-    assert passes == []                      # nothing re-tested
+    assert [
+        o["observable_id"] for o in diag["per_observable"] if o.get("structure_flag")
+    ] == stored["flagged_observables"]
+    assert passes == []  # nothing re-tested
 
     # ...and with no stored verdict it still marks the same rows, by recomputing
     session.simulation.pop("residual_structure")
     again = data_access.fit_diagnosis(session)
-    assert [o["observable_id"] for o in again["per_observable"] if o.get("structure_flag")] == \
-        stored["flagged_observables"]
+    assert [
+        o["observable_id"] for o in again["per_observable"] if o.get("structure_flag")
+    ] == stored["flagged_observables"]
     assert passes == [1]
 
 
@@ -529,8 +574,9 @@ def test_residual_flag_separates_untested_from_unflagged(session):
     session.simulation = {"records": SIM_RECORDS}
     assert data_access.residual_flag(data_access.residual_structure_rollup(session)) is False
 
-    session.simulation = {"records": [_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0)
-                                      for t in range(10)]}
+    session.simulation = {
+        "records": [_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)]
+    }
     assert data_access.residual_flag(data_access.residual_structure_rollup(session)) is True
 
 
@@ -544,21 +590,30 @@ def test_fit_diagnosis_caps_per_observable_at_worst_12(session):
     for i in range(20):
         # descending chi2 with i: obs_00 worst. 4 points each so the structure tests can run.
         for t, r in ((0.0, 2.0), (1.0, -2.0), (2.0, 2.0), (3.0, -2.0)):
-            recs.append({"observable_id": f"obs_{i:02d}", "condition_id": "c0", "time": t,
-                         "measurement": 1.0, "simulation": 1.0,
-                         "residual_weighted": r * (20 - i) / 20})
-    session.simulation = {"records": recs,
-                          # a stored verdict flagging a LOW-chi2 observable, to prove retention
-                          "residual_structure": {"flagged_observables": ["obs_19"]}}
+            recs.append(
+                {
+                    "observable_id": f"obs_{i:02d}",
+                    "condition_id": "c0",
+                    "time": t,
+                    "measurement": 1.0,
+                    "simulation": 1.0,
+                    "residual_weighted": r * (20 - i) / 20,
+                }
+            )
+    session.simulation = {
+        "records": recs,
+        # a stored verdict flagging a LOW-chi2 observable, to prove retention
+        "residual_structure": {"flagged_observables": ["obs_19"]},
+    }
     out = data_access.fit_diagnosis(session)
     ids = [r["observable_id"] for r in out["per_observable"]]
-    assert len(ids) == 13                                  # worst 12 + the flagged straggler
-    assert ids[:12] == [f"obs_{i:02d}" for i in range(12)] # worst-first by chi2
-    assert "obs_19" in ids                                  # flagged row survives the cap
+    assert len(ids) == 13  # worst 12 + the flagged straggler
+    assert ids[:12] == [f"obs_{i:02d}" for i in range(12)]  # worst-first by chi2
+    assert "obs_19" in ids  # flagged row survives the cap
     assert out["omitted"]["n_observables_omitted"] == 7
     assert out["omitted"]["omitted_chi2_total"] > 0
     # small problems are untouched: no omission note, all rows present
-    session.simulation = {"records": recs[:16]}            # 4 observables only
+    session.simulation = {"records": recs[:16]}  # 4 observables only
     out2 = data_access.fit_diagnosis(session)
     assert len(out2["per_observable"]) == 4 and "omitted" not in out2
 
@@ -571,26 +626,43 @@ def test_fit_diagnosis_cap_is_bounded_even_when_everything_is_flagged(session):
     recs = []
     for i in range(30):
         for t, r in ((0.0, 2.0), (1.0, -2.0), (2.0, 2.0), (3.0, -2.0)):
-            recs.append({"observable_id": f"obs_{i:02d}", "condition_id": "c0", "time": t,
-                         "measurement": 1.0, "simulation": 1.0,
-                         "residual_weighted": r * (30 - i) / 30})
+            recs.append(
+                {
+                    "observable_id": f"obs_{i:02d}",
+                    "condition_id": "c0",
+                    "time": t,
+                    "measurement": 1.0,
+                    "simulation": 1.0,
+                    "residual_weighted": r * (30 - i) / 30,
+                }
+            )
     # one low-chi2 observable with a LARGE systematic bias — the finish gate's "worst"
     for t in (0.0, 1.0, 2.0, 3.0):
-        recs.append({"observable_id": "obs_bias", "condition_id": "c0", "time": t,
-                     "measurement": 1.0, "simulation": 1.0, "residual_weighted": 0.9})
-    session.simulation = {"records": recs,
-                          "residual_structure": {"flagged_observables":
-                                                 [f"obs_{i:02d}" for i in range(30)]}}
+        recs.append(
+            {
+                "observable_id": "obs_bias",
+                "condition_id": "c0",
+                "time": t,
+                "measurement": 1.0,
+                "simulation": 1.0,
+                "residual_weighted": 0.9,
+            }
+        )
+    session.simulation = {
+        "records": recs,
+        "residual_structure": {"flagged_observables": [f"obs_{i:02d}" for i in range(30)]},
+    }
     out = data_access.fit_diagnosis(session)
     ids = [r["observable_id"] for r in out["per_observable"]]
-    assert len(ids) <= 21, f"cap unbounded: {len(ids)} rows"      # 12 chi2 + 3 bias + 6 flagged
-    assert "obs_bias" in ids                                       # bias-ranked row retained
+    assert len(ids) <= 21, f"cap unbounded: {len(ids)} rows"  # 12 chi2 + 3 bias + 6 flagged
+    assert "obs_bias" in ids  # bias-ranked row retained
     assert out["omitted"]["n_observables_omitted"] > 0
-    assert out["omitted"]["n_flagged_omitted"] > 0                 # says flagged rows were cut
+    assert out["omitted"]["n_flagged_omitted"] > 0  # says flagged rows were cut
     assert "TRUNCATED" in out["omitted"]["note"]
 
 
 # ------------------------------------------------------------- simulations_history
+
 
 def _snapshot(session, records, label):
     """Store a version carrying ``records`` as its simulation, via the real ProvenanceStore."""
@@ -605,8 +677,10 @@ def _snapshot(session, records, label):
 def test_simulations_history_spans_versions(session):
     v1 = _snapshot(session, SIM_RECORDS[:2], "v1")
     # v2 improves obs_A/c0/t0: weighted residual 2.0 -> 0.5
-    better = [dict(SIM_RECORDS[0], simulation=0.75, residual=0.25, residual_weighted=0.5),
-              SIM_RECORDS[1]]
+    better = [
+        dict(SIM_RECORDS[0], simulation=0.75, residual=0.25, residual_weighted=0.5),
+        SIM_RECORDS[1],
+    ]
     v2 = _snapshot(session, better, "v2")
 
     out = data_access.run_query(
@@ -628,10 +702,11 @@ def test_simulations_history_spans_versions(session):
 
 
 def test_simulations_history_skips_versions_without_simulation(session):
-    _snapshot(session, None, "failed fit")          # stores no simulations.json
+    _snapshot(session, None, "failed fit")  # stores no simulations.json
     v2 = _snapshot(session, SIM_RECORDS[:1], "ok")
     out = data_access.run_query(
-        session, "SELECT DISTINCT version FROM simulations_history ORDER BY version")
+        session, "SELECT DISTINCT version FROM simulations_history ORDER BY version"
+    )
     assert [r["version"] for r in out["rows"]] == [v2]
 
 
@@ -657,19 +732,21 @@ def test_simulations_history_is_lazy(session, monkeypatch):
 def test_simulations_history_cache_tracks_new_versions(session):
     _snapshot(session, SIM_RECORDS[:1], "v1")
     out = data_access.run_query(
-        session, "SELECT count(DISTINCT version) AS n FROM simulations_history")
+        session, "SELECT count(DISTINCT version) AS n FROM simulations_history"
+    )
     assert out["rows"][0]["n"] == 1
-    _snapshot(session, SIM_RECORDS[:2], "v2")       # cache key changes with the store
+    _snapshot(session, SIM_RECORDS[:2], "v2")  # cache key changes with the store
     out = data_access.run_query(
-        session, "SELECT count(DISTINCT version) AS n FROM simulations_history")
+        session, "SELECT count(DISTINCT version) AS n FROM simulations_history"
+    )
     assert out["rows"][0]["n"] == 2
 
 
 def test_simulations_history_empty_but_typed(session):
     # Cold start: no versions at all — the table exists, is empty, and its columns resolve.
     out = data_access.run_query(
-        session,
-        "SELECT version, observable_id, residual_weighted FROM simulations_history")
+        session, "SELECT version, observable_id, residual_weighted FROM simulations_history"
+    )
     assert out["rows"] == []
 
 
@@ -699,7 +776,8 @@ def test_simulations_history_survives_corrupt_file(session):
     (vdir / "simulations.json").write_text('{"records": [{"obs', encoding="utf-8")
 
     out = data_access.run_query(
-        session, "SELECT DISTINCT version FROM simulations_history ORDER BY version")
+        session, "SELECT DISTINCT version FROM simulations_history ORDER BY version"
+    )
     assert [r["version"] for r in out["rows"]] == [v1]
     schema = data_access.table_schema(session)  # must not raise either
     tables = {t["table"]: t for t in schema["tables"]}
@@ -721,14 +799,15 @@ def test_simulations_history_mid_commit_window_heals(session):
     # so it invalidates the moment the file lands.
     import json as _json
 
-    v1 = _snapshot(session, None, "mid-commit")     # meta exists, simulations.json does not
+    v1 = _snapshot(session, None, "mid-commit")  # meta exists, simulations.json does not
     out = data_access.run_query(session, "SELECT count(*) AS n FROM simulations_history")
-    assert out["rows"][0]["n"] == 0                 # the empty view, now cached
+    assert out["rows"][0]["n"] == 0  # the empty view, now cached
     vdir = session.provenance.versions_dir / f"v{v1}"
     (vdir / "simulations.json").write_text(
-        _json.dumps({"records": SIM_RECORDS[:2]}), encoding="utf-8")
+        _json.dumps({"records": SIM_RECORDS[:2]}), encoding="utf-8"
+    )
     out = data_access.run_query(session, "SELECT count(*) AS n FROM simulations_history")
-    assert out["rows"][0]["n"] == 2                 # healed, not permanently missing
+    assert out["rows"][0]["n"] == 2  # healed, not permanently missing
 
 
 def test_simulations_history_survives_bad_record_shape(session):
@@ -741,13 +820,16 @@ def test_simulations_history_survives_bad_record_shape(session):
     v1 = _snapshot(session, SIM_RECORDS[:1], "good")
     v2 = _snapshot(session, SIM_RECORDS[:1], "bad-records")
     (session.provenance.versions_dir / f"v{v2}" / "simulations.json").write_text(
-        _json.dumps({"records": [1, 2, 3]}), encoding="utf-8")
+        _json.dumps({"records": [1, 2, 3]}), encoding="utf-8"
+    )
     v3 = _snapshot(session, SIM_RECORDS[:1], "records-not-a-list")
     (session.provenance.versions_dir / f"v{v3}" / "simulations.json").write_text(
-        _json.dumps({"records": {"a": 1}}), encoding="utf-8")
+        _json.dumps({"records": {"a": 1}}), encoding="utf-8"
+    )
 
     out = data_access.run_query(
-        session, "SELECT DISTINCT version FROM simulations_history ORDER BY version")
+        session, "SELECT DISTINCT version FROM simulations_history ORDER BY version"
+    )
     assert [r["version"] for r in out["rows"]] == [v1]
     data_access.table_schema(session)  # must not raise either
 
@@ -781,19 +863,22 @@ def test_table_schema_reports_history_without_building_it(session, monkeypatch):
     monkeypatch.setattr(data_access, "_simulation_history_frame", _boom)
     tables = {t["table"]: t for t in data_access.table_schema(session)["tables"]}
     assert tables["simulations_history"]["n_rows"] == 2
-    assert tables["simulations_history"]["columns"] == list(
-        data_access.SIMULATION_HISTORY_COLUMNS)
+    assert tables["simulations_history"]["columns"] == list(data_access.SIMULATION_HISTORY_COLUMNS)
 
 
 # ------------------------------------------------------------- paging
+
 
 def test_query_pages_without_overlap_or_gap(session):
     # Six measurement rows, three pages of two: every row seen exactly once.
     seen, offset, pages = [], 0, 0
     while True:
         out = data_access.run_query(
-            session, "SELECT time, observableId FROM measurements ORDER BY observableId, time",
-            max_rows=2, offset=offset)
+            session,
+            "SELECT time, observableId FROM measurements ORDER BY observableId, time",
+            max_rows=2,
+            offset=offset,
+        )
         pages += 1
         seen += [tuple(r.values()) for r in out["rows"]]
         assert out["offset"] == offset
@@ -816,7 +901,7 @@ def test_max_rows_is_clamped_to_a_hard_ceiling(session):
     n_rows, off = data_access.validate_page_args(100_000, 0)
     assert n_rows == data_access.MAX_PAGE_ROWS and off == 0
     out = data_access.run_query(session, "SELECT * FROM measurements", max_rows=100_000)
-    assert out["row_count"] == 6          # small table still returns whole
+    assert out["row_count"] == 6  # small table still returns whole
 
 
 def test_page_args_rejected(session):
@@ -826,7 +911,7 @@ def test_page_args_rejected(session):
     for bad in (-1, "x"):
         with pytest.raises(ValidationError):
             data_access.validate_page_args(10, bad)
-    assert data_access.validate_page_args("5", "2") == (5, 2)   # numeric strings coerce
+    assert data_access.validate_page_args("5", "2") == (5, 2)  # numeric strings coerce
 
 
 def test_head_simulations_reference_gate():

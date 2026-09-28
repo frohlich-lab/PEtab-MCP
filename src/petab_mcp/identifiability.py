@@ -63,11 +63,19 @@ def _identifiability_stats(
 
     names = [p["id"] for p in params_meta]
     m = len(names)
-    per = {p["id"]: {
-        "id": p["id"], "scale": p.get("scale"), "estimate": p.get("estimate"),
-        "at_bound": bool(p.get("at_bound")), "se_scaled": None, "fold_uncertainty": None,
-        "multistart_std": None, "multistart_range": None,
-    } for p in params_meta}
+    per = {
+        p["id"]: {
+            "id": p["id"],
+            "scale": p.get("scale"),
+            "estimate": p.get("estimate"),
+            "at_bound": bool(p.get("at_bound")),
+            "se_scaled": None,
+            "fold_uncertainty": None,
+            "multistart_std": None,
+            "multistart_range": None,
+        }
+        for p in params_meta
+    }
 
     # multistart spread (always available if the payload carried per-start x)
     for pid, s in (spread or {}).items():
@@ -109,9 +117,13 @@ def _identifiability_stats(
         for i in range(m):
             for j in range(i + 1, m):
                 if abs(marg[i, j]) >= corr_threshold:
-                    correlations.append({"a": names[i], "b": names[j], "r": round(float(marg[i, j]), 3)})
+                    correlations.append(
+                        {"a": names[i], "b": names[j], "r": round(float(marg[i, j]), 3)}
+                    )
                 if abs(pcorr[i, j]) >= corr_threshold:
-                    partials.append({"a": names[i], "b": names[j], "pr": round(float(pcorr[i, j]), 3)})
+                    partials.append(
+                        {"a": names[i], "b": names[j], "pr": round(float(pcorr[i, j]), 3)}
+                    )
         correlations.sort(key=lambda d: -abs(d["r"]))
         partials.sort(key=lambda d: -abs(d["pr"]))
         correlations = correlations[:top_n]
@@ -125,14 +137,24 @@ def _identifiability_stats(
             if emax > 0 and rel < flat_rel:
                 vec = evecs[:, idx]
                 order = np.argsort(-np.abs(vec))
-                participants = [{"id": names[k], "weight": round(float(vec[k]), 3)}
-                                for k in order[:4] if abs(vec[k]) > 0.15]
-                flat_directions.append({"eigenvalue": round(ev, 6), "rel": round(rel, 6),
-                                        "participants": participants})
+                participants = [
+                    {"id": names[k], "weight": round(float(vec[k]), 3)}
+                    for k in order[:4]
+                    if abs(vec[k]) > 0.15
+                ]
+                flat_directions.append(
+                    {"eigenvalue": round(ev, 6), "rel": round(rel, 6), "participants": participants}
+                )
         rank = int(np.linalg.matrix_rank(H))
-        cond = float(emax / max(float(evals[evals > 0].min()) if (evals > 0).any() else emax, 1e-300))
-        fim_info = {"rank": rank, "n_estimated": m, "condition": round(cond, 1),
-                    "rank_deficient": rank < m}
+        cond = float(
+            emax / max(float(evals[evals > 0].min()) if (evals > 0).any() else emax, 1e-300)
+        )
+        fim_info = {
+            "rank": rank,
+            "n_estimated": m,
+            "condition": round(cond, 1),
+            "rank_deficient": rank < m,
+        }
 
     # simplification candidates: rank estimated params by identifiability red flags
     corr_partner: dict[str, list] = {}
@@ -154,7 +176,7 @@ def _identifiability_stats(
         if pid in flat_members:
             reasons.append("flat_direction")
         if p["multistart_std"] is not None and p["multistart_std"] >= spread_unstable:
-            reasons.append(f"multistart_unstable(std={round(p['multistart_std'],3)})")
+            reasons.append(f"multistart_unstable(std={round(p['multistart_std'], 3)})")
         if reasons:
             candidates.append({"id": pid, "n_flags": len(reasons), "reasons": reasons})
     candidates.sort(key=lambda d: -d["n_flags"])
@@ -167,14 +189,26 @@ def _identifiability_stats(
         theta = [p.get("estimate_scaled") for p in params_meta]
         if all(t is not None for t in theta):
             merges = merge_candidates(
-                fim, names, theta,
+                fim,
+                names,
+                theta,
                 scales=[p.get("scale") for p in params_meta],
                 at_bound=[per[n]["at_bound"] for n in names],
-                roles=roles, n_data=n_data, top_n=top_n, criterion=criterion)
+                roles=roles,
+                n_data=n_data,
+                top_n=top_n,
+                criterion=criterion,
+            )
 
-    method = ("fim+multistart" if fim is not None and spread else
-              "fim" if fim is not None else
-              "multistart" if spread else "none")
+    method = (
+        "fim+multistart"
+        if fim is not None and spread
+        else "fim"
+        if fim is not None
+        else "multistart"
+        if spread
+        else "none"
+    )
     return {
         "available": method != "none",
         "method": method,
@@ -186,16 +220,18 @@ def _identifiability_stats(
         "flat_directions": flat_directions[:top_n],
         "candidates": candidates[:12],
         "merge_candidates": merges,
-        "notes": ("FIM is a LOCAL linearization of uncertainty — read se/correlations together "
-                  "with multistart_std (a model-free spread) and flat_directions (the actual "
-                  "non-identifiable parameter combinations). High |r|≈1, large fold_uncertainty, "
-                  "at_bound, or a flat direction all mark a parameter as a simplification "
-                  "candidate: remove its term, take its limiting (irreversible/instantaneous) "
-                  "form, or merge a collinear pair into one parameter — all MODEL edits. "
-                  "`merge_candidates` prices the ONE-SHARED-VALUE form of that merge, cheapest "
-                  "first, with the parameter move each tie would take. "
-                  "If none fits cleanly, leave it: there is no value/estimate "
-                  "tool, and a hard-coded literal is a magic number; values come only from the fit."),
+        "notes": (
+            "FIM is a LOCAL linearization of uncertainty — read se/correlations together "
+            "with multistart_std (a model-free spread) and flat_directions (the actual "
+            "non-identifiable parameter combinations). High |r|≈1, large fold_uncertainty, "
+            "at_bound, or a flat direction all mark a parameter as a simplification "
+            "candidate: remove its term, take its limiting (irreversible/instantaneous) "
+            "form, or merge a collinear pair into one parameter — all MODEL edits. "
+            "`merge_candidates` prices the ONE-SHARED-VALUE form of that merge, cheapest "
+            "first, with the parameter move each tie would take. "
+            "If none fits cleanly, leave it: there is no value/estimate "
+            "tool, and a hard-coded literal is a magic number; values come only from the fit."
+        ),
     }
 
 
@@ -301,10 +337,17 @@ def _residual_rows(problem, x):
     if inner:
         x_full = obj.pre_post_processor.preprocess(x=x)
         ret, _ = inner[0].call_amici_twice(
-            x_dct=obj.par_arr_to_dct(x_full), sensi_orders=(0, 1), mode=MODE_RES,
-            amici_model=obj.amici_model, amici_solver=obj.amici_solver, edatas=obj.edatas,
-            n_threads=obj.n_threads, x_ids=obj.x_ids, parameter_mapping=obj.parameter_mapping,
-            fim_for_hess=obj.fim_for_hess)
+            x_dct=obj.par_arr_to_dct(x_full),
+            sensi_orders=(0, 1),
+            mode=MODE_RES,
+            amici_model=obj.amici_model,
+            amici_solver=obj.amici_solver,
+            edatas=obj.edatas,
+            n_threads=obj.n_threads,
+            x_ids=obj.x_ids,
+            parameter_mapping=obj.parameter_mapping,
+            fim_for_hess=obj.fim_for_hess,
+        )
         sres = np.asarray(ret[SRES], dtype=float)[:, list(problem.x_free_indices)]
     else:
         ret = obj(x, sensi_orders=(0, 1), mode=MODE_RES, return_dict=True)
@@ -357,10 +400,10 @@ def _fim_from_rows(problem, x):
         return None
     if not blocks or sum(blocks) != res.size or any(b % 2 for b in blocks):
         return None
-    rows = res[:, None] * sres            # one row per residual: its res·∂res term
+    rows = res[:, None] * sres  # one row per residual: its res·∂res term
     scores, start = [], 0
     H = np.zeros((m, m))
-    for b in blocks:                      # fold each condition's sigma half onto its data half
+    for b in blocks:  # fold each condition's sigma half onto its data half
         half = b // 2
         data, sigma = slice(start, start + half), slice(start + half, start + b)
         scores.append(rows[data] + rows[sigma])
@@ -437,17 +480,28 @@ def _multistart_spread(optimization, free_names: list[str]) -> dict[str, Any]:
     if not starts or not xnames:
         return {}
     col = {n: i for i, n in enumerate(xnames)}
-    fvals = [float(s["fval"]) for s in starts
-             if s.get("fval") is not None and math.isfinite(float(s["fval"]))]
+    fvals = [
+        float(s["fval"])
+        for s in starts
+        if s.get("fval") is not None and math.isfinite(float(s["fval"]))
+    ]
     if not fvals:
         return {}
     best = min(fvals)
     # near-optimal band; fall back to the best few starts if the band is too tight
-    band = [s for s in starts if s.get("fval") is not None and s.get("x") is not None
-            and math.isfinite(float(s["fval"])) and float(s["fval"]) <= best + 1.0]
+    band = [
+        s
+        for s in starts
+        if s.get("fval") is not None
+        and s.get("x") is not None
+        and math.isfinite(float(s["fval"]))
+        and float(s["fval"]) <= best + 1.0
+    ]
     if len(band) < 3:
-        band = sorted([s for s in starts if s.get("x") is not None and s.get("fval") is not None],
-                      key=lambda s: float(s["fval"]))[:5]
+        band = sorted(
+            [s for s in starts if s.get("x") is not None and s.get("fval") is not None],
+            key=lambda s: float(s["fval"]),
+        )[:5]
     out: dict[str, Any] = {}
     for n in free_names:
         j = col.get(n)
@@ -456,8 +510,12 @@ def _multistart_spread(optimization, free_names: list[str]) -> dict[str, Any]:
         vals = [float(s["x"][j]) for s in band if s.get("x") is not None and j < len(s["x"])]
         if len(vals) >= 2:
             arr = np.asarray(vals)
-            out[n] = {"std": float(arr.std()), "min": float(arr.min()),
-                      "max": float(arr.max()), "n": len(vals)}
+            out[n] = {
+                "std": float(arr.std()),
+                "min": float(arr.min()),
+                "max": float(arr.max()),
+                "n": len(vals),
+            }
     return out
 
 
@@ -484,8 +542,18 @@ def _cost_nll(x: float) -> float:
     return r if r else (float(f"{x:.1g}") if x > 1e-9 else 0.0)
 
 
-def merge_candidates(fim, names, theta, *, scales=None, at_bound=None, roles=None,
-                     n_data=None, top_n=6, criterion=None):
+def merge_candidates(
+    fim,
+    names,
+    theta,
+    *,
+    scales=None,
+    at_bound=None,
+    roles=None,
+    n_data=None,
+    top_n=6,
+    criterion=None,
+):
     """Which pairs of estimated parameters could take ONE SHARED VALUE, and what that would cost.
 
     The question ``flat_directions`` does not answer: it names the members of a poorly determined
@@ -553,8 +621,8 @@ def merge_candidates(fim, names, theta, *, scales=None, at_bound=None, roles=Non
         return None
     Hinv = (evecs / np.maximum(evals, tol)) @ evecs.T
     d = np.diag(Hinv)
-    curv = d[:, None] + d[None, :] - 2.0 * Hinv   # c @ inv(H) @ c for every c = e_i - e_j at once
-    gap = th[:, None] - th[None, :]               # c @ theta likewise
+    curv = d[:, None] + d[None, :] - 2.0 * Hinv  # c @ inv(H) @ c for every c = e_i - e_j at once
+    gap = th[:, None] - th[None, :]  # c @ theta likewise
 
     # What the run's criterion charges for the k-th parameter, in nll (see
     # :meth:`criteria.Criterion.parameter_price`): ln(n)/2 under BIC, 1 under AIC, k-dependent
@@ -602,8 +670,7 @@ def merge_candidates(fim, names, theta, *, scales=None, at_bound=None, roles=Non
                 _skip("cost_not_finite")
                 continue
             dnll = _cost_nll(exact)
-            row = {"parameters": [names[i], names[j]], "dnll": dnll,
-                   "move_scaled": round(move, 3)}
+            row = {"parameters": [names[i], names[j]], "dnll": dnll, "move_scaled": round(move, 3)}
             if price is not None:
                 # Both read off the DISPLAYED cost and price, so the row agrees with itself:
                 # dscore < 0 exactly when merge_improves_score is true.
@@ -617,8 +684,11 @@ def merge_candidates(fim, names, theta, *, scales=None, at_bound=None, roles=Non
     out: dict[str, Any] = {"ties": ties[:top_n], "n_ties_priced": len(ties)}
     if skipped:
         out["n_ties_skipped"] = dict(sorted(skipped.items()))
-    off = [n for n, table in (("role", roles), ("scale", scales), ("at_bound", at_bound))
-           if table is None]
+    off = [
+        n
+        for n, table in (("role", roles), ("scale", scales), ("at_bound", at_bound))
+        if table is None
+    ]
     if off:  # nothing refused these pairs, so merges nobody could write are in the list too
         out["filters_off"] = off
     if price is not None:
@@ -671,8 +741,10 @@ def structure_moved(session, structure_hash: str | None) -> bool:
     try:
         from .parameters import structure_fingerprint
 
-        return structure_fingerprint(
-            session.problem.model.sbml_model, session.problem.parameter_df) != structure_hash
+        return (
+            structure_fingerprint(session.problem.model.sbml_model, session.problem.parameter_df)
+            != structure_hash
+        )
     except Exception:  # noqa: BLE001 - cannot tell: say so rather than claim currency
         return True
 
@@ -695,32 +767,42 @@ def working_table_moved(session, record) -> bool:
 
 #: Why a diagnosis was not computed. Both are reported in the ``available: False`` shape a missing
 #: FIM already produces, so every consumer's existing fail-open path covers them.
-NO_OPTIMUM_NOTE = ("no fitted optimum to diagnose — every number here is a local expansion around "
-                   "one, so none was computed. Commit a model with make_changes (which fits it) "
-                   "and read this again.")
-FAILED_NOTE = ("the parameter diagnosis could not be computed for this fit (see the server log); "
-               "the residual section is unaffected.")
+NO_OPTIMUM_NOTE = (
+    "no fitted optimum to diagnose — every number here is a local expansion around "
+    "one, so none was computed. Commit a model with make_changes (which fits it) "
+    "and read this again."
+)
+FAILED_NOTE = (
+    "the parameter diagnosis could not be computed for this fit (see the server log); "
+    "the residual section is unaffected."
+)
 #: Said when the working model's STRUCTURE has changed since the fit this describes. Reported, never
 #: re-priced: pricing the current structure would mean fitting (and building) it.
-STALE_NOTE = ("this describes the LAST FIT, not the model in front of you — a different structure is "
-              "in the working state now (a restore). Commit the current model with make_changes "
-              "(which fits it) to get its own diagnosis.")
+STALE_NOTE = (
+    "this describes the LAST FIT, not the model in front of you — a different structure is "
+    "in the working state now (a restore). Commit the current model with make_changes "
+    "(which fits it) to get its own diagnosis."
+)
 #: Said when the working parameter TABLE has moved but the structure has not — the de-dup no-op's new
 #: starting guess, or an edit to a bound. The geometry still describes this structure at its fitted
 #: optimum, which is the only fit there is: nothing has been fitted on the table in front of you.
-WORKING_TABLE_NOTE = ("your working parameter table is not the one this fit left (a value, a bound or "
-                      "a scale has changed since), and nothing has been fitted on it: these numbers "
-                      "are the fitted optimum of the SAME structure. A re-authored starting guess in "
-                      "particular is not a fit — it de-duplicated against the committed fit of the "
-                      "identical structure.")
+WORKING_TABLE_NOTE = (
+    "your working parameter table is not the one this fit left (a value, a bound or "
+    "a scale has changed since), and nothing has been fitted on it: these numbers "
+    "are the fitted optimum of the SAME structure. A re-authored starting guess in "
+    "particular is not a fit — it de-duplicated against the committed fit of the "
+    "identical structure."
+)
 #: Said on a hierarchical fit, where the objective inner-solves the noise sigmas / observable
 #: scalings and the FIM has no coordinate for them. Stated because their ABSENCE from `parameters`,
 #: `n_estimated` and every priced tie would otherwise read as a bug rather than as the intent.
-INNER_OMITTED_NOTE = ("this fit inner-solved its noise sigmas / observable-scaling factors, so they "
-                      "are not coordinates of this FIM: `n_estimated` here counts the OUTER "
-                      "parameters (fewer than the model's k) and no tie is priced against them. "
-                      "They are shipped by the observation model, so they define no merge you "
-                      "could write anyway.")
+INNER_OMITTED_NOTE = (
+    "this fit inner-solved its noise sigmas / observable-scaling factors, so they "
+    "are not coordinates of this FIM: `n_estimated` here counts the OUTER "
+    "parameters (fewer than the model's k) and no tie is priced against them. "
+    "They are shipped by the observation model, so they define no merge you "
+    "could write anyway."
+)
 
 
 def unavailable(note: str) -> dict[str, Any]:
@@ -753,8 +835,15 @@ def _params_meta(record) -> list[dict[str, Any]]:
             estimate = float(unscale(est_s, sc))
         except Exception:  # noqa: BLE001 - an unknown scale still has a scaled coordinate
             estimate = None
-        out.append({"id": name, "scale": sc, "estimate": estimate,
-                    "estimate_scaled": est_s, "at_bound": at_bound})
+        out.append(
+            {
+                "id": name,
+                "scale": sc,
+                "estimate": estimate,
+                "estimate_scaled": est_s,
+                "at_bound": at_bound,
+            }
+        )
     return out
 
 
@@ -795,13 +884,20 @@ def identifiability(session, *, top_n: int = 8, corr_threshold: float = 0.9) -> 
     if fim is not None:
         try:
             from .reconcile import parameter_roles
+
             roles = parameter_roles(record.problem)
         except Exception:  # noqa: BLE001 - advisory; the payload says the filter is off
             roles = None
-    out = _identifiability_stats(_params_meta(record), fim, spread,
-                                 top_n=top_n, corr_threshold=corr_threshold,
-                                 roles=roles, n_data=_measurement_count(record.problem),
-                                 criterion=session.criterion)
+    out = _identifiability_stats(
+        _params_meta(record),
+        fim,
+        spread,
+        top_n=top_n,
+        corr_threshold=corr_threshold,
+        roles=roles,
+        n_data=_measurement_count(record.problem),
+        criterion=session.criterion,
+    )
     if record.hierarchical:
         out["inner_parameters_omitted"] = INNER_OMITTED_NOTE
     if is_stale(session, record):
@@ -821,8 +917,9 @@ def identifiability(session, *, top_n: int = 8, corr_threshold: float = 0.9) -> 
 MERGE_HINT_LIMIT = 3
 
 
-def merge_hints(diagnosis: "dict[str, Any] | None",
-                *, limit: int = MERGE_HINT_LIMIT) -> list[dict[str, Any]] | None:
+def merge_hints(
+    diagnosis: "dict[str, Any] | None", *, limit: int = MERGE_HINT_LIMIT
+) -> list[dict[str, Any]] | None:
     """The ties worth reporting beside a fit's score: up to ``limit`` cheapest ONE-SHARED-VALUE
     merges whose ``dnll`` is below what the run's criterion charges for the parameter each deletes
     — or ``None``.
@@ -855,11 +952,16 @@ def merge_hints(diagnosis: "dict[str, Any] | None",
     distinguishes those (``n_ties_skipped``, ``filters_off``).
     """
     ties = ((diagnosis or {}).get("merge_candidates") or {}).get("ties") or []
-    out = [{"parameters": list(row.get("parameters") or ()),
-            "dnll": row.get("dnll"), "dscore": row.get("dscore"),
-            "move_scaled": row.get("move_scaled")}
-           for row in ties  # cheapest-first; each is ONE SHARED VALUE, priced on its own
-           if isinstance(row, dict) and row.get("merge_improves_score")]
+    out = [
+        {
+            "parameters": list(row.get("parameters") or ()),
+            "dnll": row.get("dnll"),
+            "dscore": row.get("dscore"),
+            "move_scaled": row.get("move_scaled"),
+        }
+        for row in ties  # cheapest-first; each is ONE SHARED VALUE, priced on its own
+        if isinstance(row, dict) and row.get("merge_improves_score")
+    ]
     return out[:limit] or None
 
 
@@ -922,8 +1024,9 @@ def stored_diagnosis(session) -> dict[str, Any] | None:
     diagnosis = stored.get("diagnosis") if isinstance(stored, dict) else None
     if not isinstance(diagnosis, dict) or not diagnosis.get("available"):
         return unavailable(NO_OPTIMUM_NOTE)
-    out = {k: v for k, v in diagnosis.items()
-           if k not in ("stale", "stale_note", "working_table_note")}
+    out = {
+        k: v for k, v in diagnosis.items() if k not in ("stale", "stale_note", "working_table_note")
+    }
     if structure_moved(session, stored.get("structure_hash")):
         out["stale"] = True
         out["stale_note"] = STALE_NOTE

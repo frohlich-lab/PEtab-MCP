@@ -114,11 +114,13 @@ def _sbml_consistency_issues(problem) -> list[dict[str, Any]]:
             message = (err.getShortMessage() or err.getMessage() or "").strip()
             if len(message) > _SBML_MSG_CAP:
                 message = message[:_SBML_MSG_CAP] + "…"
-            issues.append({
-                "level": level,
-                "message": message,
-                "check": f"sbml:{err.getCategoryAsString()}",
-            })
+            issues.append(
+                {
+                    "level": level,
+                    "message": message,
+                    "check": f"sbml:{err.getCategoryAsString()}",
+                }
+            )
         return issues
     except Exception:  # noqa: BLE001 - validation must never crash on the SBML lint
         return []
@@ -274,34 +276,38 @@ def _fixed_constant_role_issues(problem, protected_fixed_ids) -> list[dict[str, 
     issues: list[dict[str, Any]] = []
     for pid in sorted(protected_fixed_ids):
         if pid not in current:
-            issues.append({
-                "level": "error",
-                "message": (
-                    f"'{pid}' ships FIXED (estimate=0) in this problem — a known constant (a "
-                    "conservation total, a measured concentration, a fixed rate) — but this edit "
-                    "REMOVED it from the model. A shipped-fixed constant is part of the problem's "
-                    "structure; dropping it changes the problem. Keep it declared AND used: a "
-                    "shipped-fixed constant must be referenced in a rate law, rule, or initial "
-                    "assignment (a constant you declare but never use is pruned as an orphan, "
-                    "which trips this too). Retain the reaction/expression that uses it."
-                ),
-                "check": "fixed_constant_removed",
-            })
+            issues.append(
+                {
+                    "level": "error",
+                    "message": (
+                        f"'{pid}' ships FIXED (estimate=0) in this problem — a known constant (a "
+                        "conservation total, a measured concentration, a fixed rate) — but this edit "
+                        "REMOVED it from the model. A shipped-fixed constant is part of the problem's "
+                        "structure; dropping it changes the problem. Keep it declared AND used: a "
+                        "shipped-fixed constant must be referenced in a rate law, rule, or initial "
+                        "assignment (a constant you declare but never use is pruned as an orphan, "
+                        "which trips this too). Retain the reaction/expression that uses it."
+                    ),
+                    "check": "fixed_constant_removed",
+                }
+            )
         elif _estimated(pid):
-            issues.append({
-                "level": "error",
-                "message": (
-                    f"'{pid}' ships FIXED (estimate=0) in this problem but is now an ESTIMATED "
-                    "parameter. A parameter the problem fixes is a known constant — a conservation "
-                    "total, a measured concentration, a fixed rate — and estimating it lets its "
-                    "value drift off that constant while adding to k (the estimated-parameter "
-                    "count), which inflates BIC. There is no tool to toggle a parameter between "
-                    "fixed and estimated; a shipped-fixed constant is re-added ESTIMATED only if "
-                    "it was dropped and its symbol later reintroduced. Keep the constant declared "
-                    "in the model, as shipped, so its fixed status is preserved."
-                ),
-                "check": "fixed_constant_made_estimated",
-            })
+            issues.append(
+                {
+                    "level": "error",
+                    "message": (
+                        f"'{pid}' ships FIXED (estimate=0) in this problem but is now an ESTIMATED "
+                        "parameter. A parameter the problem fixes is a known constant — a conservation "
+                        "total, a measured concentration, a fixed rate — and estimating it lets its "
+                        "value drift off that constant while adding to k (the estimated-parameter "
+                        "count), which inflates BIC. There is no tool to toggle a parameter between "
+                        "fixed and estimated; a shipped-fixed constant is re-added ESTIMATED only if "
+                        "it was dropped and its symbol later reintroduced. Keep the constant declared "
+                        "in the model, as shipped, so its fixed status is preserved."
+                    ),
+                    "check": "fixed_constant_made_estimated",
+                }
+            )
     return issues
 
 
@@ -346,7 +352,8 @@ def _undefined_readout_issues(problem) -> list[dict[str, Any]]:
         if not has_dynamics(sm):
             return []
         rule_targets = {
-            sm.getRule(i).getVariable() for i in range(sm.getNumRules())
+            sm.getRule(i).getVariable()
+            for i in range(sm.getNumRules())
             if sm.getRule(i).isAssignment()
         }
         issues: list[dict[str, Any]] = []
@@ -357,31 +364,34 @@ def _undefined_readout_issues(problem) -> list[dict[str, Any]]:
         seen_readouts: set[str] = set()
         for obs_id, row in odf.iterrows():
             formula = str(row[OBSERVABLE_FORMULA])
-            if "readout_" not in formula:      # skip the L3 parse on unblinded rows
+            if "readout_" not in formula:  # skip the L3 parse on unblinded rows
                 continue
             for name in sorted(formula_identifiers(formula)):
                 if not name.startswith("readout_") or name in seen_readouts:
                     continue
                 seen_readouts.add(name)
                 if name in rule_targets:
-                    seen_readouts.discard(name)      # defined: do not consume the slot
+                    seen_readouts.discard(name)  # defined: do not consume the slot
                     continue
                 # F9: a present-but-empty observableName cell is float NaN, which is TRUTHY --
                 # `or ""` does not catch it and the agent is told "It measures: nan."
                 raw = row.get(OBSERVABLE_NAME, "")
                 measures = raw.strip() if isinstance(raw, str) else ""
                 measured = f" It measures: {measures}." if measures else ""
-                issues.append({
-                    "level": "error",
-                    "message": (
-                        f"observable {obs_id!r} references {name!r}, a MEASUREMENT MAPPING your "
-                        f"model must define — say what this readout is in terms of YOUR model's "
-                        f"states with an ASSIGNMENT RULE: `{name} := <expression of your "
-                        f"species>` (op set_assignment). Declaring it as a species or a "
-                        f"parameter does NOT define it: a free constant is not a "
-                        f"measurement.{measured}"),
-                    "check": "readout_mapping",
-                })
+                issues.append(
+                    {
+                        "level": "error",
+                        "message": (
+                            f"observable {obs_id!r} references {name!r}, a MEASUREMENT MAPPING your "
+                            f"model must define — say what this readout is in terms of YOUR model's "
+                            f"states with an ASSIGNMENT RULE: `{name} := <expression of your "
+                            f"species>` (op set_assignment). Declaring it as a species or a "
+                            f"parameter does NOT define it: a free constant is not a "
+                            f"measurement.{measured}"
+                        ),
+                        "check": "readout_mapping",
+                    }
+                )
         return issues
     except Exception:  # pragma: no cover - advisory check must never break validation
         return []
@@ -433,8 +443,7 @@ def _unused_condition_target_issues(problem) -> list[dict[str, Any]]:
     # consume it. The exemption is about a column that cannot DISTINGUISH conditions.
     if len(cdf) > 1:
         targets -= {
-            tgt for tgt in targets
-            if tgt in cdf.columns and cdf[tgt].nunique(dropna=False) <= 1
+            tgt for tgt in targets if tgt in cdf.columns and cdf[tgt].nunique(dropna=False) <= 1
         }
 
     return [
@@ -531,13 +540,15 @@ def _frozen_parametric_stoichiometry_issues(sbml_model) -> list[dict[str, Any]]:
                 if key in seen:
                     continue
                 seen.add(key)
-                issues.append({
-                    "level": "error",
-                    "message": _frozen_stoichiometry_message(
-                        rid, side, species, symbol, sref.getStoichiometry()
-                    ),
-                    "check": "symbolic_stoichiometry",
-                })
+                issues.append(
+                    {
+                        "level": "error",
+                        "message": _frozen_stoichiometry_message(
+                            rid, side, species, symbol, sref.getStoichiometry()
+                        ),
+                        "check": "symbolic_stoichiometry",
+                    }
+                )
     return issues
 
 
@@ -634,8 +645,11 @@ def validate_problem(problem, protected_fixed_ids=None) -> dict[str, Any]:
 
     return {
         "valid": (
-            (not has_errors) and sbml_errors == 0
-            and not reuse_errors and not role_issues and not condition_issues
+            (not has_errors)
+            and sbml_errors == 0
+            and not reuse_errors
+            and not role_issues
+            and not condition_issues
             and not readout_issues
         ),
         "n_errors": n_errors,

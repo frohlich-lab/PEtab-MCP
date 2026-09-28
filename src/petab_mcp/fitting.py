@@ -50,6 +50,7 @@ from .parameters import structure_fingerprint
 # pyPESTO's parameter-table column that tags an inner (hierarchical) parameter.
 _PARAMETER_TYPE_COL = "parameterType"
 
+
 def _env_float(name: str, default: float) -> float:
     """A finite, strictly-positive float from ``name``, or ``default`` when the env var is unset,
     non-numeric, or not a finite positive number — a bad override can't NaN/Inf/<=0 the cap or
@@ -130,10 +131,12 @@ def _apply_amici_solver_defaults(problem) -> None:
     tolerance degrades a fit while a raise here would break every fit path at once. Mirrors
     ``petab_harness.fit_budget.apply_amici_solver_defaults``."""
     solver = getattr(getattr(problem, "objective", None), "amici_solver", None)
-    setter = (getattr(solver, "set_absolute_tolerance", None)
-              or getattr(solver, "setAbsoluteTolerance", None))
+    setter = getattr(solver, "set_absolute_tolerance", None) or getattr(
+        solver, "setAbsoluteTolerance", None
+    )
     if setter is not None:
         setter(FIT_AMICI_ATOL)
+
 
 # The multistart's RNG seed and optimizer. Named constants rather than parameters: the fit's own
 # log line hard-codes "optimizer=fides", so a signature knob would be configurable in name only.
@@ -166,6 +169,7 @@ def _fides_maxtime_options() -> dict[str, Any]:
     else ``{}`` (older/absent fides just runs uncapped)."""
     try:
         import fides
+
         return {fides.Options.MAXTIME: FIT_PER_START_TIMEOUT_S}
     except Exception:  # noqa: BLE001 - no fides / no MAXTIME on this version: run uncapped
         return {}
@@ -180,6 +184,7 @@ def _fit_engine(n_starts: int):
         return None
     try:
         from pypesto.engine import MultiProcessEngine
+
         return MultiProcessEngine(n_procs=workers)
     except Exception:  # noqa: BLE001 - parallel engine unavailable: fall back to sequential
         return None
@@ -215,12 +220,13 @@ def _fitted_values(x_names, x_values, free_indices, parameter_df) -> dict[str, f
     for i in idx:
         name = x_names[i]
         if name in parameter_df.index:
-            fitted[name] = float(unscale(float(x_values[i]), parameter_df.loc[name, PARAMETER_SCALE]))
+            fitted[name] = float(
+                unscale(float(x_values[i]), parameter_df.loc[name, PARAMETER_SCALE])
+            )
     return fitted
 
 
-def _build_hierarchical_problem(session, importer_kwargs: dict[str, Any],
-                                petab_problem=None):
+def _build_hierarchical_problem(session, importer_kwargs: dict[str, Any], petab_problem=None):
     """Best-effort hierarchical pyPESTO problem for ``session``'s current problem.
 
     Returns ``(pypesto_problem, inner_scales)`` where ``inner_scales`` maps each inner
@@ -273,7 +279,10 @@ def _build_hierarchical_problem(session, importer_kwargs: dict[str, Any],
     except Exception:  # noqa: BLE001 - hierarchical is best-effort; fall back to a joint fit
         session.logger.warning(
             "hierarchical optimization setup failed (%s inner params: %s); "
-            "falling back to a joint fit", len(inner), sorted(inner), exc_info=True
+            "falling back to a joint fit",
+            len(inner),
+            sorted(inner),
+            exc_info=True,
         )
         return None, {}
 
@@ -298,8 +307,9 @@ def _inner_fitted_values(pypesto_problem, best, inner_scales: dict[str, str]) ->
         ids = calc.get_interpretable_inner_par_ids()
         if len(ids) != len(values):
             return {}
-        return {pid: float(unscale(float(v), inner_scales.get(pid, LIN)))
-                for pid, v in zip(ids, values)}
+        return {
+            pid: float(unscale(float(v), inner_scales.get(pid, LIN))) for pid, v in zip(ids, values)
+        }
     except Exception:  # noqa: BLE001 - inner-value recovery is best-effort reporting
         return {}
 
@@ -340,6 +350,7 @@ def _optimization_payload(result) -> dict[str, Any]:
 
     ``start`` is the rank in the (objective-sorted) result list — ``0`` is the best.
     """
+
     def _get(obj, key):
         try:
             return obj[key]
@@ -370,19 +381,21 @@ def _optimization_payload(result) -> dict[str, Any]:
             xlist = [float(v) for v in xvec] if xvec is not None else None
         except Exception:  # noqa: BLE001 - x shape drift; spread just becomes unavailable
             xlist = None
-        starts.append({
-            "start": rank,
-            "id": str(rid) if rid is not None else None,
-            "fval": _flt(_get(r, "fval")),
-            "time": _flt(_get(r, "time")),
-            "n_fval": _int(_get(r, "n_fval")),
-            "n_grad": _int(_get(r, "n_grad")),
-            "n_hess": _int(_get(r, "n_hess")),
-            # Full scaled parameter vector at this start's optimum — the raw material for the
-            # multistart-spread identifiability signal (:mod:`identifiability`). Order matches the
-            # payload's x_names (set by the caller from problem.x_names).
-            "x": xlist,
-        })
+        starts.append(
+            {
+                "start": rank,
+                "id": str(rid) if rid is not None else None,
+                "fval": _flt(_get(r, "fval")),
+                "time": _flt(_get(r, "time")),
+                "n_fval": _int(_get(r, "n_fval")),
+                "n_grad": _int(_get(r, "n_grad")),
+                "n_hess": _int(_get(r, "n_hess")),
+                # Full scaled parameter vector at this start's optimum — the raw material for the
+                # multistart-spread identifiability signal (:mod:`identifiability`). Order matches the
+                # payload's x_names (set by the caller from problem.x_names).
+                "x": xlist,
+            }
+        )
         history = _get(r, "history")
         if history is None:
             continue
@@ -395,15 +408,21 @@ def _optimization_payload(result) -> dict[str, Any]:
         except Exception:  # noqa: BLE001
             times = []
         for j, v in enumerate(fvals):
-            trace.append({
-                "start": rank,
-                "iteration": j,
-                "fval": _flt(v),
-                "time": _flt(times[j]) if j < len(times) else None,
-            })
-    return {"n_starts": len(starts), "starts": starts, "trace": trace,
-            # Sorted for stable JSON; most common outcome first so the headline reads at a glance.
-            "exitflag_counts": dict(sorted(exitflag_counts.items(), key=lambda kv: -kv[1]))}
+            trace.append(
+                {
+                    "start": rank,
+                    "iteration": j,
+                    "fval": _flt(v),
+                    "time": _flt(times[j]) if j < len(times) else None,
+                }
+            )
+    return {
+        "n_starts": len(starts),
+        "starts": starts,
+        "trace": trace,
+        # Sorted for stable JSON; most common outcome first so the headline reads at a glance.
+        "exitflag_counts": dict(sorted(exitflag_counts.items(), key=lambda kv: -kv[1])),
+    }
 
 
 def needs_flattening(problem) -> bool:
@@ -422,14 +441,19 @@ def needs_flattening(problem) -> bool:
     boundary (:func:`amici_facing_problem`) — the problem the session holds, the agent reads and
     the diagnostics consume stays unflattened.
     """
-    from petab.v1.C import (NOISE_PARAMETERS, OBSERVABLE_ID, OBSERVABLE_PARAMETERS,
-                            SIMULATION_CONDITION_ID)
+    from petab.v1.C import (
+        NOISE_PARAMETERS,
+        OBSERVABLE_ID,
+        OBSERVABLE_PARAMETERS,
+        SIMULATION_CONDITION_ID,
+    )
 
     mdf = getattr(problem, "measurement_df", None)
     if mdf is None:
         return False
     keys = [OBSERVABLE_ID, SIMULATION_CONDITION_ID]
     from petab.v1.C import PREEQUILIBRATION_CONDITION_ID
+
     if PREEQUILIBRATION_CONDITION_ID in mdf.columns:
         keys.append(PREEQUILIBRATION_CONDITION_ID)
     # Whether a NUMERIC override counts differs by column, and the difference is AMICI's
@@ -492,7 +516,9 @@ def amici_facing_problem(session):
     session.logger.info(
         "flattening timepoint-specific output overrides for the AMICI build only "
         "(%d -> %d observables); the problem itself stays unflattened",
-        len(session.problem.observable_df), len(flat.observable_df))
+        len(session.problem.observable_df),
+        len(flat.observable_df),
+    )
     return flat, True
 
 
@@ -538,8 +564,9 @@ def estimation_problem(session, engine):
     # factors, shrinking the outer search) when the problem has cleanly-separable inner
     # parameters; fall back to the ordinary joint objective otherwise.
     amici_problem, _ = amici_facing_problem(session)
-    problem, inner_scales = _build_hierarchical_problem(session, importer_kwargs,
-                                                        petab_problem=amici_problem)
+    problem, inner_scales = _build_hierarchical_problem(
+        session, importer_kwargs, petab_problem=amici_problem
+    )
     if problem is None:
         importer = pypesto.petab.PetabImporter(amici_problem, **importer_kwargs)
         problem = importer.create_problem()
@@ -608,8 +635,9 @@ class FitRecord:
     hierarchical: bool
 
 
-def freeze_fit(session, problem, best, *, hierarchical: bool,
-               optimization: dict[str, Any] | None) -> FitRecord:
+def freeze_fit(
+    session, problem, best, *, hierarchical: bool, optimization: dict[str, Any] | None
+) -> FitRecord:
     """Freeze the fit that just finished into a :class:`FitRecord`.
 
     Called from :func:`_run_fit` after the write-back, which is the only moment where the built
@@ -631,7 +659,8 @@ def freeze_fit(session, problem, best, *, hierarchical: bool,
         pypesto_problem=problem,
         problem=copy.deepcopy(session.problem),
         structure_hash=structure_fingerprint(
-            session.problem.model.sbml_model, session.problem.parameter_df),
+            session.problem.model.sbml_model, session.problem.parameter_df
+        ),
         problem_hash=session.problem_hash(),
         x_names=tuple(str(problem.x_names[i]) for i in idx),
         x_free=tuple(float(x_full[i]) for i in idx),
@@ -803,8 +832,10 @@ def warm_start_guesses(problem, parameter_df, n_starts: int, optimization=None):
     # Every FREE parameter needs a usable nominal value. Where one is missing,
     # `problem_x_full_from_nominal` substitutes pyPESTO's own (0.0 for a free coordinate) — a
     # meaningless start point, so fall back to a wholly fresh sample instead.
-    if any(n not in parameter_df.index or _flt(parameter_df.loc[n, NOMINAL_VALUE]) is None
-           for n in (problem.x_names[i] for i in free)):
+    if any(
+        n not in parameter_df.index or _flt(parameter_df.loc[n, NOMINAL_VALUE]) is None
+        for n in (problem.x_names[i] for i in free)
+    ):
         return np.zeros((0, dim_full))
 
     x0 = np.asarray(problem_x_full_from_nominal(problem, parameter_df), dtype=float)
@@ -844,9 +875,14 @@ def warm_start_guesses(problem, parameter_df, n_starts: int, optimization=None):
     candidates: list = []
     if new_free:
         from petab.v1.parameters import scale as petab_scale
+
         pos = {i: free.index(i) for i in new_free}
-        unit_of = {i: float(np.clip(float(petab_scale(1.0, str(problem.x_scales[i]))),
-                                    lb[pos[i]], ub[pos[i]])) for i in new_free}
+        unit_of = {
+            i: float(
+                np.clip(float(petab_scale(1.0, str(problem.x_scales[i]))), lb[pos[i]], ub[pos[i]])
+            )
+            for i in new_free
+        }
 
         def _row(pick_of):
             row = np.array(x0, dtype=float)
@@ -873,7 +909,7 @@ def warm_start_guesses(problem, parameter_df, n_starts: int, optimization=None):
         # Never spend more than half the warm budget on candidates: they all sit on x0, so past
         # a point they crowd out the parent's OTHER basins for no gain. At n_warm < 2 that leaves
         # one candidate (unit), which is the single best guess.
-        candidates = [_row(pk) for pk in picks[:max(1, n_warm // 2)]]
+        candidates = [_row(pk) for pk in picks[: max(1, n_warm // 2)]]
 
     seen: set[tuple] = set()
     guesses: list = []
@@ -981,15 +1017,24 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     # exactly what it used to: the warm half would be spent jittering around a region that just
     # failed, where the fresh sample is the only way in.
     _has_new = bool(set(problem.x_names) - set((session.optimization or {}).get("x_names") or []))
-    guesses = (warm_start_guesses(problem, session.problem.parameter_df, n_starts,
-                                  optimization=session.optimization)
-               if (objective_before is not None or (_has_new and session.optimization))
-               else np.zeros((0, len(problem.x_names))))
+    guesses = (
+        warm_start_guesses(
+            problem, session.problem.parameter_df, n_starts, optimization=session.optimization
+        )
+        if (objective_before is not None or (_has_new and session.optimization))
+        else np.zeros((0, len(problem.x_names)))
+    )
     problem.x_guesses_full = guesses
     log.info(
         "fit: start optimizer=fides n_starts=%d warm_starts=%d workers=%d seed=%d n_free=%d "
-        "sbml=%s objective_before=%s", n_starts, len(guesses), workers, FIT_SEED, n_free,
-        session.sbml_hash(), _fmt(objective_before),
+        "sbml=%s objective_before=%s",
+        n_starts,
+        len(guesses),
+        workers,
+        FIT_SEED,
+        n_free,
+        session.sbml_hash(),
+        _fmt(objective_before),
     )
     # Fides: a Newton trust-region optimizer that exploits AMICI's sensitivities; more
     # robust than the default L-BFGS-B on stiff ODE likelihoods. MAXTIME caps each start's
@@ -1025,7 +1070,8 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     # line, n_starts times per fit. `get_fitting_log` is likewise unaffected: it reads the
     # in-memory HistoryOptions(trace_record=True) trace, not this stream.
     optimizer = pypesto.optimize.FidesOptimizer(
-        verbose=logging.ERROR, options=_fides_maxtime_options())
+        verbose=logging.ERROR, options=_fides_maxtime_options()
+    )
     # Record the per-iteration optimization history in memory (no trace files) so the
     # traces can be exposed as SQL tables. Older pyPESTO without HistoryOptions just runs
     # without a trace.
@@ -1037,8 +1083,12 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     t0 = time.perf_counter()
     try:
         result = pypesto.optimize.minimize(
-            problem, optimizer=optimizer, n_starts=n_starts, engine=pp_engine,
-            progress_bar=False, **minimize_kwargs
+            problem,
+            optimizer=optimizer,
+            n_starts=n_starts,
+            engine=pp_engine,
+            progress_bar=False,
+            **minimize_kwargs,
         )
     except Exception as exc:  # noqa: BLE001 - retry sequentially before giving up
         # A parallel multistart can construct its engine fine yet still fail at runtime
@@ -1049,11 +1099,18 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
         # backstops a timeout). A sequential fit that itself fails re-raises normally.
         if pp_engine is None:
             raise
-        log.warning("fit: parallel multistart failed (%s: %s); retrying sequentially",
-                    type(exc).__name__, exc)
+        log.warning(
+            "fit: parallel multistart failed (%s: %s); retrying sequentially",
+            type(exc).__name__,
+            exc,
+        )
         result = pypesto.optimize.minimize(
-            problem, optimizer=optimizer, n_starts=n_starts, engine=None,
-            progress_bar=False, **minimize_kwargs
+            problem,
+            optimizer=optimizer,
+            n_starts=n_starts,
+            engine=None,
+            progress_bar=False,
+            **minimize_kwargs,
         )
     duration = time.perf_counter() - t0
     # The multistart optimization is the recurring "fit" cost (a fit-cache hit returns above
@@ -1108,7 +1165,9 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     # fixed parameters too, so filtering to `x_free_indices` (mirroring `_compute_fim`) keeps
     # `fitted` the free parameters only — otherwise k = len(fitted) overcounts and every
     # complexity-penalised score (bic/aic/reduced_chi2) is wrong and disagrees with n_estimated.
-    fitted = _fitted_values(problem.x_names, best["x"], getattr(problem, "x_free_indices", None), df)
+    fitted = _fitted_values(
+        problem.x_names, best["x"], getattr(problem, "x_free_indices", None), df
+    )
     if hierarchical:
         # Merge the analytically-solved inner parameters (not in the outer vector above) so
         # `fitted` covers EVERY estimated parameter — keeping k = len(fitted) consistent with
@@ -1121,16 +1180,21 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
 
     # Convergence summary: how many multistarts landed near the best objective.
     fvals = [
-        float(s["fval"]) for s in result.optimize_result.list
+        float(s["fval"])
+        for s in result.optimize_result.list
         if s.get("fval") is not None and math.isfinite(float(s["fval"]))
     ]
     n_converged = sum(1 for v in fvals if v <= nllh + 1e-3)
     log.info(
         "fit: done best_nllh=%s self_improvement=%s time=%.2fs starts=%d converged~%d "
         "fval[min/max]=%s/%s fitted=%s",
-        _fmt(nllh), _fmt(objective_before - nllh if objective_before is not None else None),
-        duration, len(fvals), n_converged,
-        _fmt(min(fvals) if fvals else None), _fmt(max(fvals) if fvals else None),
+        _fmt(nllh),
+        _fmt(objective_before - nllh if objective_before is not None else None),
+        duration,
+        len(fvals),
+        n_converged,
+        _fmt(min(fvals) if fvals else None),
+        _fmt(max(fvals) if fvals else None),
         {k: round(v, 6) for k, v in fitted.items()},
     )
     optimization = _optimization_payload(result)
@@ -1140,12 +1204,17 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     # re-enter them as warm starts. See `previous_optima`.
     optimization["x_scales"] = [str(s) for s in problem.x_scales]
     optimization["result_file"] = _write_pypesto_result(session, result, session.problem_hash())
-    return {"fitted": fitted, "neg_log_likelihood": nllh, "objective_before": objective_before,
-            "optimization": optimization,
-            # Frozen HERE, where the built problem, the optimizer's point and the written-back
-            # table all agree — every later diagnosis of this fit reads only this (see FitRecord).
-            "record": freeze_fit(session, problem, best, hierarchical=hierarchical,
-                                 optimization=optimization)}
+    return {
+        "fitted": fitted,
+        "neg_log_likelihood": nllh,
+        "objective_before": objective_before,
+        "optimization": optimization,
+        # Frozen HERE, where the built problem, the optimizer's point and the written-back
+        # table all agree — every later diagnosis of this fit reads only this (see FitRecord).
+        "record": freeze_fit(
+            session, problem, best, hierarchical=hierarchical, optimization=optimization
+        ),
+    }
 
 
 #: Relative gap between the optimizer's objective and the re-simulated one above which the
@@ -1155,8 +1224,9 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
 OBJECTIVE_AGREEMENT_RTOL = 1e-3
 
 
-def _reconcile_objective(session, fit: dict[str, Any] | None,
-                         sim: dict[str, Any]) -> tuple[float | None, str | None]:
+def _reconcile_objective(
+    session, fit: dict[str, Any] | None, sim: dict[str, Any]
+) -> tuple[float | None, str | None]:
     """Pick the authoritative neg-log-likelihood for a fit, returning ``(nllh, note)``.
 
     Two numbers claim to be "the" nll of a fitted model: the objective pyPESTO minimised
@@ -1187,19 +1257,22 @@ def _reconcile_objective(session, fit: dict[str, Any] | None,
     if nll_opt is None:
         # The optimizer itself has no usable objective (every start non-finite). Nothing to
         # prefer; the fit genuinely failed to produce a score.
-        return nll_sim, ("optimizer returned no finite objective"
-                         if nll_sim is None else None)
+        return nll_sim, ("optimizer returned no finite objective" if nll_sim is None else None)
     if nll_sim is None:
-        note = (f"re-simulating the fitted point did not reach {n_missing} of "
-                f"{sim.get('n_expected_points')} measured points, so its likelihood is "
-                f"undefined; reporting the optimizer's objective ({_fmt(nll_opt)}) instead. "
-                "The fit converged — this is a solver/integration gap at the optimum, not a "
-                "failed fit.")
+        note = (
+            f"re-simulating the fitted point did not reach {n_missing} of "
+            f"{sim.get('n_expected_points')} measured points, so its likelihood is "
+            f"undefined; reporting the optimizer's objective ({_fmt(nll_opt)}) instead. "
+            "The fit converged — this is a solver/integration gap at the optimum, not a "
+            "failed fit."
+        )
         session.logger.warning("fit: %s", note)
         return nll_opt, note
     if abs(nll_opt - nll_sim) > OBJECTIVE_AGREEMENT_RTOL * max(1.0, abs(nll_opt)):
-        note = (f"optimizer objective {_fmt(nll_opt)} disagrees with the re-simulated "
-                f"{_fmt(nll_sim)} at the same parameters; reporting the optimizer's.")
+        note = (
+            f"optimizer objective {_fmt(nll_opt)} disagrees with the re-simulated "
+            f"{_fmt(nll_sim)} at the same parameters; reporting the optimizer's."
+        )
         session.logger.warning("fit: %s", note)
         return nll_opt, note
     return nll_opt, None
@@ -1232,8 +1305,10 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
             from .identifiability import effective_parameter_count
 
             k_eff = effective_parameter_count(
-                fit["record"].pypesto_problem, fit["record"].x_free,
-                k=int(session.problem.n_estimated))
+                fit["record"].pypesto_problem,
+                fit["record"].x_free,
+                k=int(session.problem.n_estimated),
+            )
         sim = engine.residuals()
         records = sim["records"]
         nllh, nll_note = _reconcile_objective(session, fit, sim)
@@ -1246,9 +1321,13 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
             # 15.3, NOT 10**15.3. (An analyst once made exactly that error.)
             "fitted_parameters": fit["fitted"] if fit else None,
             "parameter_scales": (
-                {pid: str(session.problem.parameter_df.loc[pid, PARAMETER_SCALE])
-                 for pid in fit["fitted"]}
-                if fit else None),
+                {
+                    pid: str(session.problem.parameter_df.loc[pid, PARAMETER_SCALE])
+                    for pid in fit["fitted"]
+                }
+                if fit
+                else None
+            ),
             # The estimated-parameter count, so the goodness-of-fit metrics (bic/reduced_chi2)
             # are available even on a simulate-only pass where `fitted_parameters` is None —
             # plus the literals `complexity_k` prices on top of it (see :mod:`literals`).
@@ -1292,8 +1371,10 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
             session.fit_record = fit["record"]
         session.logger.info(
             "fit_and_simulate: status=%s nllh=%s chi2=%s n_points=%s",
-            payload["status"], _fmt(payload["neg_log_likelihood"]),
-            _fmt(payload["chi2"]), payload["n_data_points"],
+            payload["status"],
+            _fmt(payload["neg_log_likelihood"]),
+            _fmt(payload["chi2"]),
+            payload["n_data_points"],
         )
         return payload
 
@@ -1340,7 +1421,9 @@ def ensure_simulation(session, engine) -> dict[str, Any] | None:
         if not engine.module_built(session.sbml_hash()):
             session.logger.info(
                 "no simulation for this read: the working structure has no compiled module, and a "
-                "read never pays a build (sbml_hash=%s)", session.sbml_hash())
+                "read never pays a build (sbml_hash=%s)",
+                session.sbml_hash(),
+            )
             return session.simulation
         fit_and_simulate(session, engine, do_fit=False, n_starts=0)
     return session.simulation
@@ -1357,7 +1440,8 @@ def _scaled(value: float, scale: str) -> float:
 
 
 def parameters_at_bound(
-    fitted: dict[str, float] | None, parameter_df: Any,
+    fitted: dict[str, float] | None,
+    parameter_df: Any,
     tol: float = PARAMETER_AT_BOUND_RELATIVE_TOL,
 ) -> list[dict[str, Any]]:
     """Fitted parameters sitting within ``tol`` (fraction of the scaled bound span) of their
@@ -1459,8 +1543,9 @@ def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[st
     for pid in sorted(R.plausibility_sigma_ids(problem) & set(fitted)):
         # Fail OPEN when there is no parameter table to consult (a bare observable+measurement
         # problem): unknown estimate status must not silently drop the sigma from the report.
-        if getattr(problem, "parameter_df", None) is not None \
-                and not R.is_parameter_estimated(problem, pid):
+        if getattr(problem, "parameter_df", None) is not None and not R.is_parameter_estimated(
+            problem, pid
+        ):
             continue
         value = fitted[pid]
         try:
@@ -1524,15 +1609,18 @@ def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[st
             # Rice estimate below are still REPORTED — the numbers are informative, the verdict
             # is not. The real bound cap (reconcile.sigma_upper_bound_cap, used when bounds are
             # actually set) is untouched by this; only the gate's view of it is.
-            "upper_bound_cap": None if too_few else R.sigma_upper_bound_cap(
-                problem, pid, fitted_values=fitted, data_std=data_std),
+            "upper_bound_cap": None
+            if too_few
+            else R.sigma_upper_bound_cap(problem, pid, fitted_values=fitted, data_std=data_std),
             "data_std": data_std,
-            "fraction_of_data_std": None if too_few else (
-                (effective / data_std) if (data_std and effective is not None) else None),
+            "fraction_of_data_std": None
+            if too_few
+            else ((effective / data_std) if (data_std and effective is not None) else None),
             "data_noise_estimate": data_noise,
             "data_noise_method": data_noise_method,
             "fitted_over_data_noise": (effective / data_noise)
-                                      if (data_noise and effective is not None) else None,
+            if (data_noise and effective is not None)
+            else None,
         }
         # Per-entry plausibility from the SAME predicates the top-level noise_sigma_inflated/
         # collapsed use (single source of truth, so the agent-facing status can't drift from the
@@ -1548,9 +1636,9 @@ def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[st
             # which already documents this entry as unknown rather than inflated).
             entry["status"] = "unknown"
         elif _entry_inflated(entry):
-            entry["status"] = "inflated"     # noise absorbing model misfit
+            entry["status"] = "inflated"  # noise absorbing model misfit
         elif _entry_collapsed(entry):
-            entry["status"] = "collapsed"    # overfitting the noise for a good-looking score
+            entry["status"] = "collapsed"  # overfitting the noise for a good-looking score
         else:
             entry["status"] = "ok"
         # Whether this sigma's NUMBER can be compared to another model's fitted sigma at all. The
@@ -1623,7 +1711,6 @@ def noise_sigma_advice(report: "dict[str, Any] | None") -> str | None:
     return noise_sigma_advice_for(noise_sigma_inflated(report), noise_sigma_collapsed(report))
 
 
-
 def slim_fit_payload(session, out: dict, version: int | None = None) -> dict:
     """Public entry point: slim ``out`` in place and return it, for callers that assemble a fit
     payload themselves (``session._fit_result`` and friends build it via
@@ -1675,23 +1762,25 @@ def _slim_fitted_parameters(session, out: dict) -> None:
         base_v = meta.get("parent")
         if not isinstance(base_v, int) or base_v < 0:
             base_v = version - 1
-        prev = session.provenance.get_meta(base_v) or {}        # meta only: no 600kB sims read
+        prev = session.provenance.get_meta(base_v) or {}  # meta only: no 600kB sims read
         before = prev.get("fitted_parameters")
         if not isinstance(before, dict) or not before:
             return
+
         def _num(x):
             try:
                 f = float(x)
             except (TypeError, ValueError):
                 return None
             return f if math.isfinite(f) else None
+
         changed = {}
         for pid, val in fitted.items():
             new_v, old_v = _num(val), _num(before.get(pid))
             # NON-FINITE is always reported: a parameter that diverged to NaN/inf is the single
             # most diagnostic entry in the vector, and `abs(nan - x) > tol` is False, so a plain
             # comparison would file it as "unchanged" and drop it from the payload entirely.
-            if new_v is None or old_v is None:   # non-finite, unparseable, or NEW
+            if new_v is None or old_v is None:  # non-finite, unparseable, or NEW
                 changed[pid] = val
                 continue
             if abs(new_v - old_v) / max(abs(old_v), 1e-12) > 0.01:
@@ -1738,23 +1827,39 @@ def fit_summary(session, engine) -> dict[str, Any]:
     run the fit — the analysts, the harness finish gate, the final scoring.
     """
     sim = ensure_simulation(session, engine) or {}
-    out = {k: sim.get(k) for k in (
-        "status", "neg_log_likelihood", "chi2", "n_data_points",
-        "n_missing_simulations", "objective_note",
-        "fitted_parameters", "parameter_scales", "version",
-    )}
+    out = {
+        k: sim.get(k)
+        for k in (
+            "status",
+            "neg_log_likelihood",
+            "chi2",
+            "n_data_points",
+            "n_missing_simulations",
+            "objective_note",
+            "fitted_parameters",
+            "parameter_scales",
+            "version",
+        )
+    }
     pdf = session.problem.parameter_df
     out["parameter_scales"] = _parameter_scales_for(
-        out.get("fitted_parameters"), out.get("parameter_scales"), pdf)
+        out.get("fitted_parameters"), out.get("parameter_scales"), pdf
+    )
     # Live counts, not the payload's: `ensure_simulation` guarantees the simulation matches the
     # working model, and a restored legacy payload may predate either field.
     out["n_estimated"] = int(session.problem.n_estimated)
     out["hardcoded_constants"] = _literals.hardcoded_constants(session.model.sbml_model)
     out["k"] = complexity_k(out)
-    out.update(goodness_of_fit(
-        sim.get("neg_log_likelihood"), sim.get("chi2"), out["k"], sim.get("n_data_points"),
-        criterion=session.criterion, k_eff=sim.get("k_eff"),
-    ))
+    out.update(
+        goodness_of_fit(
+            sim.get("neg_log_likelihood"),
+            sim.get("chi2"),
+            out["k"],
+            sim.get("n_data_points"),
+            criterion=session.criterion,
+            k_eff=sim.get("k_eff"),
+        )
+    )
     out["parameters_at_bound"] = parameters_at_bound(out.get("fitted_parameters"), pdf)
     _report = noise_sigma_report(session.problem, out.get("fitted_parameters"))
     out["noise_sigma_report"] = _report
@@ -1802,7 +1907,9 @@ def fit_summary(session, engine) -> dict[str, Any]:
 
 
 def compute_improvement(
-    session, nllh: float | None, objective_before: float | None = None,
+    session,
+    nllh: float | None,
+    objective_before: float | None = None,
     fitsim: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Improvement metrics for a fit, ranking it against the best model so far **by the run's
@@ -1831,8 +1938,12 @@ def compute_improvement(
     """
     fitsim = fitsim or {}
     scores = goodness_of_fit(
-        nllh, fitsim.get("chi2"), complexity_k(fitsim), fitsim.get("n_data_points"),
-        criterion=session.criterion, k_eff=fitsim.get("k_eff"),
+        nllh,
+        fitsim.get("chi2"),
+        complexity_k(fitsim),
+        fitsim.get("n_data_points"),
+        criterion=session.criterion,
+        k_eff=fitsim.get("k_eff"),
     )
     score = scores.get("criterion_value")
 
@@ -1887,8 +1998,13 @@ def complexity_k(fitsim: dict[str, Any] | None) -> int | None:
 
 
 def goodness_of_fit(
-    nll: float | None, chi2: float | None, k: int | None, n: int | None,
-    criterion: "criteria.Criterion | None" = None, *, k_eff: float | None = None,
+    nll: float | None,
+    chi2: float | None,
+    k: int | None,
+    n: int | None,
+    criterion: "criteria.Criterion | None" = None,
+    *,
+    k_eff: float | None = None,
 ) -> dict[str, Any]:
     """Complexity-penalised fit scores, so a commit is judged on more than raw nll.
 
@@ -1927,8 +2043,11 @@ def goodness_of_fit(
     k_eff = _flt(k_eff)
     out: dict[str, Any] = {
         **{name: None for name in criteria.PENALTIES},
-        "criterion": crit.name, "criterion_value": None, "chi2_dof": None,
-        "reduced_chi2": None, "chi2_gof_pvalue": None,
+        "criterion": crit.name,
+        "criterion_value": None,
+        "chi2_dof": None,
+        "reduced_chi2": None,
+        "chi2_gof_pvalue": None,
     }
     # Non-finite inputs are MISSING scores, not scores. A NaN nll would otherwise produce
     # a score of k*ln(n) + 2*NaN = NaN, which is a float and passes every `is not None` guard
@@ -1969,14 +2088,19 @@ def _parameter_scales_for(fitted, stored, parameter_df) -> "dict[str, str] | Non
         return stored
     if parameter_df is None:
         return None
-    derived = {pid: str(parameter_df.loc[pid, PARAMETER_SCALE])
-               for pid in fitted if pid in parameter_df.index}
+    derived = {
+        pid: str(parameter_df.loc[pid, PARAMETER_SCALE])
+        for pid in fitted
+        if pid in parameter_df.index
+    }
     return derived or None
 
 
 def fit_result_block(
-    fitsim: dict[str, Any] | None, improvement: dict[str, Any] | None = None,
-    parameter_df: Any = None, problem: Any = None,
+    fitsim: dict[str, Any] | None,
+    improvement: dict[str, Any] | None = None,
+    parameter_df: Any = None,
+    problem: Any = None,
     criterion: "criteria.Criterion | None" = None,
 ) -> dict[str, Any]:
     """The fit fields every fit-bearing result returns (a fit, and a restore).
@@ -2047,14 +2171,18 @@ def fit_result_block(
         # fitted_parameters: LINEAR (unscaled) values; parameter_scales: each one's estimation
         # scale (lin/log10). Kept side by side so a linear value is never misread as a log10 one.
         "fitted_parameters": fitted,
-        "parameter_scales": _parameter_scales_for(fitted, fitsim.get("parameter_scales"),
-                                                  parameter_df),
+        "parameter_scales": _parameter_scales_for(
+            fitted, fitsim.get("parameter_scales"), parameter_df
+        ),
         # The ranked pair is stripped from the AGENT's copy: it is already at the top level of
         # this block, and this dict is re-sent in the agent's history every turn (PR #23). The
         # RAW `improvement` keeps it — the fit event is spread from that one, and the durable
         # resume seeds its checkpoint off exactly those two keys.
-        "improvement": ({k: v for k, v in improvement.items()
-                         if k not in ("criterion", "criterion_value")} if improvement else None),
+        "improvement": (
+            {k: v for k, v in improvement.items() if k not in ("criterion", "criterion_value")}
+            if improvement
+            else None
+        ),
         "parameters_at_bound": parameters_at_bound(fitted, parameter_df),
         # Prefer the report PetabSession.fit already computed and stashed, so the event, the
         # adequacy gate and this block cannot disagree; computed here for the paths that don't
@@ -2082,7 +2210,9 @@ def fit_result_block(
 
 
 def noise_sigma_block(
-    problem: Any, fitted: dict[str, float] | None, report: dict[str, Any] | None = None,
+    problem: Any,
+    fitted: dict[str, float] | None,
+    report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The noise-model verdict as it appears on any fit-bearing result.
 

@@ -46,15 +46,23 @@ class _FakeProblem:
 def _problem():
     # k1/k2 free on log10, d fixed — the shape a real PEtab problem has after reconciliation.
     return _FakeProblem(
-        names=["k1", "k2", "d"], scales=["log10", "log10", "lin"],
-        free=[0, 1], lb=[-4.0, -4.0], ub=[2.0, 2.0], fixed_vals=[1.0])
+        names=["k1", "k2", "d"],
+        scales=["log10", "log10", "lin"],
+        free=[0, 1],
+        lb=[-4.0, -4.0],
+        ub=[2.0, 2.0],
+        fixed_vals=[1.0],
+    )
 
 
 def _pdf(k1=0.5, k2=0.1):
     return pd.DataFrame(
-        [{"parameterId": "k1", "nominalValue": k1},
-         {"parameterId": "k2", "nominalValue": k2},
-         {"parameterId": "d", "nominalValue": 1.0}]).set_index("parameterId")
+        [
+            {"parameterId": "k1", "nominalValue": k1},
+            {"parameterId": "k2", "nominalValue": k2},
+            {"parameterId": "d", "nominalValue": 1.0},
+        ]
+    ).set_index("parameterId")
 
 
 def test_half_the_starts_are_warm_and_the_first_is_the_nominal_point():
@@ -108,8 +116,10 @@ def test_no_guesses_when_nothing_is_free():
 def test_no_guesses_from_a_non_finite_nominal_point():
     # A NaN/absent nominal leaves no point to start from; falling back to a pure fresh sample is
     # the honest behaviour, not a guess built around a NaN.
-    assert fitting.warm_start_guesses(
-        _problem(), _pdf(k1=float("nan")), n_starts=10).shape == (0, 3)
+    assert fitting.warm_start_guesses(_problem(), _pdf(k1=float("nan")), n_starts=10).shape == (
+        0,
+        3,
+    )
 
 
 # --- against the real pyPESTO problem ------------------------------------------------------
@@ -124,7 +134,8 @@ def test_pypesto_accepts_the_guesses_and_takes_them_as_start_points(session, eng
     assert problem.x_guesses.shape == (4, problem.dim)  # reduced to the free coordinates
     # the guess equals the nominal point pyPESTO's objective would be evaluated at
     assert problem.x_guesses[0] == pytest.approx(
-        fitting.problem_x_from_nominal(problem, session.problem.parameter_df))
+        fitting.problem_x_from_nominal(problem, session.problem.parameter_df)
+    )
     xs = problem.startpoint_method(n_starts=n_starts, problem=problem)
     assert xs.shape == (n_starts, problem.dim)
     assert xs[: len(guesses)] == pytest.approx(problem.x_guesses)
@@ -164,8 +175,10 @@ def test_fit_still_runs_when_the_nominal_point_has_no_finite_objective(fit_sessi
 
     real = fit_session.engine.evaluate_objective
     monkeypatch.setattr(
-        fit_session.engine, "evaluate_objective",
-        lambda: {**real(), "neg_log_likelihood": float("nan")})
+        fit_session.engine,
+        "evaluate_objective",
+        lambda: {**real(), "neg_log_likelihood": float("nan")},
+    )
 
     out = fitting.fit_and_simulate(fit_session, fit_session.engine, do_fit=True, n_starts=2)
     assert out["status"] == "fit" and out["objective_before"] is None
@@ -178,22 +191,31 @@ def test_fit_still_runs_when_the_nominal_point_has_no_finite_objective(fit_sessi
 def _nested_problem():
     """The child of `_problem()`: k1/k2 kept, a new free `c` added (the nested-edit shape)."""
     return _FakeProblem(
-        names=["k1", "k2", "c"], scales=["log10", "log10", "log10"],
-        free=[0, 1, 2], lb=[-4.0, -4.0, -4.0], ub=[2.0, 2.0, 2.0])
+        names=["k1", "k2", "c"],
+        scales=["log10", "log10", "log10"],
+        free=[0, 1, 2],
+        lb=[-4.0, -4.0, -4.0],
+        ub=[2.0, 2.0, 2.0],
+    )
 
 
 def _nested_pdf(k1=0.5, k2=0.1, c=1.0):
     return pd.DataFrame(
-        [{"parameterId": "k1", "nominalValue": k1},
-         {"parameterId": "k2", "nominalValue": k2},
-         {"parameterId": "c", "nominalValue": c}]).set_index("parameterId")
+        [
+            {"parameterId": "k1", "nominalValue": k1},
+            {"parameterId": "k2", "nominalValue": k2},
+            {"parameterId": "c", "nominalValue": c},
+        ]
+    ).set_index("parameterId")
 
 
 def _prev(*points, scales=("log10", "log10"), names=("k1", "k2")):
     """A `_optimization_payload`-shaped previous fit whose starts are already best-first."""
-    return {"x_names": list(names), "x_scales": list(scales),
-            "starts": [{"start": i, "fval": -100.0 + i, "x": list(p)}
-                       for i, p in enumerate(points)]}
+    return {
+        "x_names": list(names),
+        "x_scales": list(scales),
+        "starts": [{"start": i, "fval": -100.0 + i, "x": list(p)} for i, p in enumerate(points)],
+    }
 
 
 def test_a_new_parameter_gets_all_THREE_neutral_candidates_on_the_parent_optimum():
@@ -207,9 +229,11 @@ def test_a_new_parameter_gets_all_THREE_neutral_candidates_on_the_parent_optimum
     basin, so nothing would reproduce the parent and an upper-bound-neutral edit (an RNA delay
     chain) could still come back worse and be misread as 'the mechanism does not help'.
     """
-    prev = _prev([np.log10(0.5), np.log10(0.1)],      # the best optimum (= the nominal point)
-                 [np.log10(9.0), np.log10(0.02)],     # a second local optimum
-                 [np.log10(0.3), np.log10(7.0)])      # a third
+    prev = _prev(
+        [np.log10(0.5), np.log10(0.1)],  # the best optimum (= the nominal point)
+        [np.log10(9.0), np.log10(0.02)],  # a second local optimum
+        [np.log10(0.3), np.log10(7.0)],
+    )  # a third
     # n_starts=12 (n_warm=6) so all three candidates fit: they are capped at half the warm
     # budget, and at n_warm=4 only two would be generated.
     g = fitting.warm_start_guesses(_nested_problem(), _nested_pdf(), 12, optimization=prev)
@@ -226,9 +250,11 @@ def test_a_new_parameter_gets_all_THREE_neutral_candidates_on_the_parent_optimum
 def test_the_neutral_candidates_collapse_when_the_edit_adds_no_parameter():
     """No new parameter means the three candidates ARE x0, so dedup leaves the previous
     behaviour untouched: start 0 is the nominal point and the rest are the other basins."""
-    prev = _prev([np.log10(0.5), np.log10(0.1)],
-                 [np.log10(9.0), np.log10(0.02)],
-                 [np.log10(0.3), np.log10(7.0)])
+    prev = _prev(
+        [np.log10(0.5), np.log10(0.1)],
+        [np.log10(9.0), np.log10(0.02)],
+        [np.log10(0.3), np.log10(7.0)],
+    )
     g = fitting.warm_start_guesses(_problem(), _pdf(), 8, optimization=prev)
     # `_problem()` carries a third, FIXED coordinate `d`; only the free ones are asserted
     assert g[0, :2] == pytest.approx([np.log10(0.5), np.log10(0.1)])
@@ -240,8 +266,13 @@ def test_an_infinite_bound_never_reaches_the_optimizer_as_a_start():
     """A log10 parameter with lowerBound 0 scales to -inf. Clipping cannot repair it (-inf IS
     the bound), so that candidate has to fall back to unit scale rather than handing pyPESTO a
     non-finite start coordinate."""
-    prob = _FakeProblem(names=["k1", "k2", "c"], scales=["log10", "log10", "log10"],
-                        free=[0, 1, 2], lb=[-4.0, -4.0, -np.inf], ub=[2.0, 2.0, np.inf])
+    prob = _FakeProblem(
+        names=["k1", "k2", "c"],
+        scales=["log10", "log10", "log10"],
+        free=[0, 1, 2],
+        lb=[-4.0, -4.0, -np.inf],
+        ub=[2.0, 2.0, np.inf],
+    )
     # n_starts=12: at 6 the candidate cap yields only the `unit` row, which is finite anyway,
     # so the infinite-bound fallback this test names would never execute.
     prev = _prev([np.log10(0.5), np.log10(0.1)])
@@ -267,7 +298,8 @@ def test_duplicate_previous_optima_do_not_eat_the_warm_budget():
     # A multistart that converged everything to one point supplies ONE basin, not n_warm copies.
     same = [np.log10(0.5), np.log10(0.1)]
     g = fitting.warm_start_guesses(
-        _nested_problem(), _nested_pdf(), 8, optimization=_prev(same, same, same))
+        _nested_problem(), _nested_pdf(), 8, optimization=_prev(same, same, same)
+    )
     assert g.shape == (4, 3)
     assert len({tuple(row) for row in g}) == 4  # the repeats were replaced by jittered starts
 
@@ -326,8 +358,10 @@ def test_previous_optima_are_projected_into_the_current_bounds():
 
     The clip happens BEFORE the dedup key is taken, so two parent optima that differ only outside
     the box collapse to one start rather than burning two on the same feasible point."""
-    prev = _prev([np.log10(1e6), np.log10(1e-9)],   # both coordinates far outside [-4, 2]
-                 [np.log10(1e9), np.log10(1e-12)])  # ...and so are these, to the SAME corner
+    prev = _prev(
+        [np.log10(1e6), np.log10(1e-9)],  # both coordinates far outside [-4, 2]
+        [np.log10(1e9), np.log10(1e-12)],
+    )  # ...and so are these, to the SAME corner
     # n_starts=12 so BOTH mapped optima are in scope past the candidate rows — at n_warm=4 the
     # second one is never reached and "not spent twice" would be vacuously true.
     g = fitting.warm_start_guesses(_nested_problem(), _nested_pdf(), 12, optimization=prev)

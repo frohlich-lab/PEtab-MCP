@@ -96,12 +96,22 @@ def read_pypesto_log(store_root: str | Path, tail_lines: int) -> dict:
     ``get_fitting_log`` tool (which validates ``tail_lines`` first)."""
     path = pypesto_log_path(store_root)
     if not path.exists():
-        return {"path": str(path), "exists": False, "n_lines_total": 0,
-                "tail_lines": tail_lines, "log": ""}
+        return {
+            "path": str(path),
+            "exists": False,
+            "n_lines_total": 0,
+            "tail_lines": tail_lines,
+            "log": "",
+        }
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     kept = lines if tail_lines == 0 else lines[-tail_lines:]
-    return {"path": str(path), "exists": True, "n_lines_total": len(lines),
-            "tail_lines": tail_lines, "log": "\n".join(kept)}
+    return {
+        "path": str(path),
+        "exists": True,
+        "n_lines_total": len(lines),
+        "tail_lines": tail_lines,
+        "log": "\n".join(kept),
+    }
 
 
 #: Records let through per wall-clock second before the rest of that second is dropped.
@@ -180,4 +190,3 @@ def configure_amici(level: int | None = None) -> logging.Logger:
     logger.propagate = False
     _amici_handler = handler
     return logger
-

@@ -11,16 +11,19 @@ import pytest
 
 
 # --- a build failure must not be reported as a modelling failure -----------------------------
-@pytest.mark.parametrize("message", [
-    "amici/model.h:14:10: fatal error: span: No such file or directory",
-    "Command '['cmake', '--build', '...']' returned non-zero exit status 1.",
-    "Failed building the model extension",
-    "swig: command not found",
-    # NOT included: a bare "[Errno 28] No space left on device" / "Permission denied". Those were
-    # matched by the first version anywhere in the text, which caught fit-time OSErrors and told
-    # the agent not to re-author the model that WAS the problem. A disk-full during a BUILD still
-    # carries build context (setup.py / cmake) and is caught by those tokens instead.
-])
+@pytest.mark.parametrize(
+    "message",
+    [
+        "amici/model.h:14:10: fatal error: span: No such file or directory",
+        "Command '['cmake', '--build', '...']' returned non-zero exit status 1.",
+        "Failed building the model extension",
+        "swig: command not found",
+        # NOT included: a bare "[Errno 28] No space left on device" / "Permission denied". Those were
+        # matched by the first version anywhere in the text, which caught fit-time OSErrors and told
+        # the agent not to re-author the model that WAS the problem. A disk-full during a BUILD still
+        # carries build context (setup.py / cmake) and is caught by those tokens instead.
+    ],
+)
 def test_a_toolchain_failure_is_not_blamed_on_the_model(message):
     """The agent's only lever is ``set_model``, so telling it a BUILD failure "usually means it is
     ill-posed for estimation" sends it to rewrite a model that was already correct, and the real
@@ -59,12 +62,18 @@ def test_the_real_amici_build_failure_is_recognised():
 
     from petab_mcp.operations import _compile_fit_failure_message
 
-    real_text = ("Command '['/x/bin/python', PosixPath('/tmp/b/setup.py'), '--verbose', "
-                 "'build_ext', '--build-lib=/tmp/b']' returned non-zero exit status 1.")
-    for exc in (RuntimeError(real_text),
-                subprocess.CalledProcessError(1, ["python", "setup.py", "build_ext"])):
+    real_text = (
+        "Command '['/x/bin/python', PosixPath('/tmp/b/setup.py'), '--verbose', "
+        "'build_ext', '--build-lib=/tmp/b']' returned non-zero exit status 1."
+    )
+    for exc in (
+        RuntimeError(real_text),
+        subprocess.CalledProcessError(1, ["python", "setup.py", "build_ext"]),
+    ):
         out = _compile_fit_failure_message(exc)
         assert "toolchain problem" in out and "ill-posed" not in out, out
+
+
 def test_a_build_failure_carries_what_the_compiler_actually_said():
     """AMICI runs the build with stdout=PIPE/stderr=STDOUT and, on failure, prints `e.output` and
     re-raises — so `str(exc)` is only the wrapper (`Command '[...]' returned non-zero exit status
@@ -75,9 +84,11 @@ def test_a_build_failure_carries_what_the_compiler_actually_said():
     from petab_mcp.operations import _compile_fit_failure_message
 
     exc = subprocess.CalledProcessError(
-        1, ["python", "setup.py", "build_ext"],
+        1,
+        ["python", "setup.py", "build_ext"],
         output=b"[1/9] building x.cpp\nmodel.h:14:10: fatal error: span: No such file "
-               b"or directory\ncompilation terminated.\n")
+        b"or directory\ncompilation terminated.\n",
+    )
     out = _compile_fit_failure_message(exc)
     assert "fatal error: span" in out
     assert "What the build actually reported" in out

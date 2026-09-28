@@ -94,8 +94,13 @@ def empty_yaml(tmp_path) -> str:
     """A PEtab problem that ships WITHOUT a model (empty SBML, no model.ant)."""
     work = tmp_path / "empty"
     work.mkdir()
-    for name in ("problem.yaml", "conditions.tsv", "measurements.tsv",
-                 "observables.tsv", "parameters.tsv"):
+    for name in (
+        "problem.yaml",
+        "conditions.tsv",
+        "measurements.tsv",
+        "observables.tsv",
+        "parameters.tsv",
+    ):
         shutil.copy(DATA_DIR / name, work / name)
     _write_empty_sbml(work / "conversion_reaction.xml")
     return str(work / "problem.yaml")
@@ -137,8 +142,10 @@ def test_empty_problem_has_no_authored_model(empty_session):
 
 def test_set_model_builds_the_first_model(empty_session):
     res = O.set_model(
-        empty_session, REVERSIBLE_ANTIMONY,
-        justification="reversible conversion A<->B", references=["PMID:1"],
+        empty_session,
+        REVERSIBLE_ANTIMONY,
+        justification="reversible conversion A<->B",
+        references=["PMID:1"],
     )
     assert res["applied"] is True
     assert res["operation"] == "make_changes"
@@ -177,8 +184,9 @@ def test_set_model_rejects_unparseable_antimony(empty_session):
     from petab_mcp.errors import ModelUpdateError
 
     with pytest.raises(ModelUpdateError):
-        O.set_model(empty_session, "this is not antimony {{{", justification="x",
-                    references=["PMID:1"])
+        O.set_model(
+            empty_session, "this is not antimony {{{", justification="x", references=["PMID:1"]
+        )
     # a failed author leaves the problem model-less (atomic revert)
     assert empty_session.model_authored() is False
 
@@ -224,7 +232,9 @@ def test_set_model_rejects_same_symbol_stoichiometry_on_both_sides(empty_session
     )
     with pytest.raises(ValidationError) as exc:
         O.set_model(empty_session, both_sides, justification="cooperative conversion")
-    assert any("stoichiometry" in issue.lower() for issue in (exc.value.issues or [])), exc.value.issues
+    assert any("stoichiometry" in issue.lower() for issue in (exc.value.issues or [])), (
+        exc.value.issues
+    )
     assert empty_session.model_authored() is False
 
 
@@ -232,8 +242,12 @@ def test_can_reauthor_after_set_model(empty_session):
     # After the initial build, a structural change is another whole-model re-author that adds a
     # reaction.
     O.set_model(empty_session, REVERSIBLE_ANTIMONY, justification="build", references=["PMID:1"])
-    res = O.set_model(empty_session, REVERSIBLE_PLUS_DEG_ANTIMONY,
-                      justification="add degradation", references=["PMID:2"])
+    res = O.set_model(
+        empty_session,
+        REVERSIBLE_PLUS_DEG_ANTIMONY,
+        justification="add degradation",
+        references=["PMID:2"],
+    )
     assert res["applied"] is True
     assert "rdeg" in _reactions(empty_session)
 
@@ -246,8 +260,8 @@ def test_set_model_replaces_existing_model(session):
     res = O.set_model(session, ONE_REACTION_ANTIMONY, justification="drop the reverse reaction")
     assert res["applied"] is True
     assert res["operation"] == "make_changes"
-    assert _reactions(session) == {"r1"}          # r2 gone
-    assert "k2" not in _ids(session)              # its orphaned rate constant pruned
+    assert _reactions(session) == {"r1"}  # r2 gone
+    assert "k2" not in _ids(session)  # its orphaned rate constant pruned
 
 
 def test_set_model_warns_on_dropped_estimated_param(session):
@@ -265,14 +279,20 @@ def fixed_k1_session(tmp_path) -> PetabSession:
     total / known constant that must not be freed."""
     work = tmp_path / "fixedk1"
     work.mkdir()
-    for name in ("problem.yaml", "conditions.tsv", "measurements.tsv",
-                 "observables.tsv", "model.ant", "conversion_reaction.xml"):
+    for name in (
+        "problem.yaml",
+        "conditions.tsv",
+        "measurements.tsv",
+        "observables.tsv",
+        "model.ant",
+        "conversion_reaction.xml",
+    ):
         src = DATA_DIR / name
         if src.exists():
             shutil.copy(src, work / name)
     (work / "parameters.tsv").write_text(
         "parameterId\tparameterScale\tlowerBound\tupperBound\tnominalValue\testimate\n"
-        "k1\tlog10\t0.0001\t100.0\t0.5\t0\n"   # k1 ships FIXED
+        "k1\tlog10\t0.0001\t100.0\t0.5\t0\n"  # k1 ships FIXED
         "k2\tlog10\t0.0001\t100.0\t0.1\t1\n"
         "sigma_B\tlin\t0.0001\t100.0\t0.1\t0\n"
         "A_init\tlin\t0.0\t100.0\t1.0\t0\n"
@@ -330,8 +350,13 @@ def drive_condition_session(tmp_path) -> PetabSession:
     """A toy problem whose condition table sets a per-condition input species `drive`."""
     work = tmp_path / "drive"
     work.mkdir()
-    for name in ("problem.yaml", "measurements.tsv", "observables.tsv",
-                 "parameters.tsv", "conversion_reaction.xml"):
+    for name in (
+        "problem.yaml",
+        "measurements.tsv",
+        "observables.tsv",
+        "parameters.tsv",
+        "conversion_reaction.xml",
+    ):
         shutil.copy(DATA_DIR / name, work / name)
     (work / "conditions.tsv").write_text("conditionId\tdrive\nc0\t1.0\n")
     return PetabSession(

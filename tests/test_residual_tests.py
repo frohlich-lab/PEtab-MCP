@@ -201,8 +201,9 @@ def test_replicate_lack_of_fit_names_the_points_it_tested():
 
 
 def test_replicate_lack_of_fit_passes_a_model_that_sits_inside_the_scatter():
-    out = rt.replicate_lack_of_fit([_z_point(f"p{i}", z) for i, z in
-                                   enumerate([0.4, -1.1, 2.0, -0.3, 1.2])])
+    out = rt.replicate_lack_of_fit(
+        [_z_point(f"p{i}", z) for i, z in enumerate([0.4, -1.1, 2.0, -0.3, 1.2])]
+    )
     assert out["available"] is True and out["status"] == "pass"
     assert out["flagged"] == []
     # a pass carries NO point rows: the payload rides on every fit (see the cap test below)
@@ -217,8 +218,10 @@ def test_replicate_lack_of_fit_is_invariant_to_the_sigma_convention():
     # scaling every point's scatter AND its deviation together (a different noise convention) leaves
     # each z — and so the verdict — untouched
     rescaled = [{**p, "s": p["s"] * 2.5, "ybar": p["ybar"] * 2.5} for p in points]
-    assert rt.replicate_lack_of_fit(rescaled)["max_abs_z"] == \
-        rt.replicate_lack_of_fit(points)["max_abs_z"]
+    assert (
+        rt.replicate_lack_of_fit(rescaled)["max_abs_z"]
+        == rt.replicate_lack_of_fit(points)["max_abs_z"]
+    )
 
 
 # -- the guards, each named after the benchmark example that forces it ----------------------------
@@ -238,8 +241,10 @@ def test_replicate_lof_unavailable_at_one_degree_of_freedom():
     assert out["available"] is False and out["status"] == "replicates_too_thin"
     assert out["flagged"] == []
     # ...and it is the df, not the count: give the same points one more replicate each and it tests
-    assert rt.replicate_lack_of_fit([_z_point(f"p{i}", 30.0, n=3) for i in range(126)])[
-        "available"] is True
+    assert (
+        rt.replicate_lack_of_fit([_z_point(f"p{i}", 30.0, n=3) for i in range(126)])["available"]
+        is True
+    )
 
 
 def test_replicate_lof_unavailable_below_three_points():
@@ -261,8 +266,10 @@ def test_replicate_lof_vacuous_when_the_fit_can_zero_every_point():
     from petab_mcp import data_access
 
     def arms(n_points, families=1):
-        return [rt.replicate_lack_of_fit([_z_point(f"f{f}p{i}", 0.1) for i in range(n_points)])
-                for f in range(families)]
+        return [
+            rt.replicate_lack_of_fit([_z_point(f"f{f}p{i}", 0.1) for i in range(n_points)])
+            for f in range(families)
+        ]
 
     armistead = data_access._merge_lof_verdicts(arms(4, families=3), {}, n_structural=10)
     assert armistead["available"] is True and armistead["n_points"] == 12
@@ -301,7 +308,7 @@ def test_replicate_lof_caps_the_reported_points():
     the agent's history on every later turn, so a 15- (or 126-) row table must never ship."""
     points = [_z_point(f"p{i}", 20.0 + i) for i in range(40)]
     out = rt.replicate_lack_of_fit(points)
-    assert len(out["flagged"]) == 40                       # all condemned...
+    assert len(out["flagged"]) == 40  # all condemned...
     assert len(out["points"]) == rt.REPLICATE_LOF_MAX_REPORTED_POINTS  # ...but only 5 reported
     # ...and they are the WORST by |z|, largest first
     assert [p["label"] for p in out["points"]] == ["p39", "p38", "p37", "p36", "p35"]

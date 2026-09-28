@@ -42,13 +42,7 @@ def test_parse_frontmatter_simple():
 
 def test_parse_frontmatter_folded_block_scalar():
     text = (
-        "---\n"
-        "name: petab-model-building\n"
-        "description: >-\n"
-        "  first line\n"
-        "  second line\n"
-        "---\n"
-        "body\n"
+        "---\nname: petab-model-building\ndescription: >-\n  first line\n  second line\n---\nbody\n"
     )
     meta, body = skills_mod.parse_frontmatter(text)
     assert meta["name"] == "petab-model-building"
@@ -160,11 +154,10 @@ def test_list_and_get_skill_tools(tmp_path):
         listed = _unwrap(_structured(await mcp.call_tool("list_skills", {})))
         assert any(s["name"] == "petab-model-building" for s in listed)
 
-        body = _unwrap(_structured(await mcp.call_tool(
-            "get_skill", {"name": "petab-model-building"}
-        )))
+        body = _unwrap(
+            _structured(await mcp.call_tool("get_skill", {"name": "petab-model-building"}))
+        )
         assert "PEtab semantics" in body
-
 
     asyncio.run(go())
 
@@ -178,9 +171,7 @@ def test_get_skill_unknown_name_errors(tmp_path):
         with pytest.raises(Exception, match="No skill named 'does-not-exist'"):
             await mcp.call_tool("get_skill", {"name": "does-not-exist"})
         with pytest.raises(Exception, match="no file 'nope.md'"):
-            await mcp.call_tool(
-                "get_skill", {"name": "petab-model-building", "file": "nope.md"}
-            )
+            await mcp.call_tool("get_skill", {"name": "petab-model-building", "file": "nope.md"})
 
     asyncio.run(go())
 
@@ -222,4 +213,3 @@ def test_the_skills_stay_short():
         if md.is_file():
             n = len(md.read_text())
             assert n < 6500, f"{skill_dir.name}/SKILL.md is {n} chars — too long to re-send"
-

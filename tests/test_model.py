@@ -26,6 +26,8 @@ def test_model_structure(session):
 def test_parametric_initial_conditions_present(session):
     # every species has an initial-assignment to an <id>_init parameter
     sm = session.model.sbml_model
-    ic_symbols = {sm.getInitialAssignment(i).getSymbol() for i in range(sm.getNumInitialAssignments())}
+    ic_symbols = {
+        sm.getInitialAssignment(i).getSymbol() for i in range(sm.getNumInitialAssignments())
+    }
     assert {"A", "B"} <= ic_symbols
     assert {"A_init", "B_init"} <= set(session.model.get_parameter_ids())

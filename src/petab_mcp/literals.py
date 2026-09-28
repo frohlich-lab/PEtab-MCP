@@ -40,10 +40,12 @@ _UNIT_FACTORS = (100,)
 #: purpose — see the module docstring on why a list beats a bound.
 STRUCTURAL_VALUES = frozenset(
     [Fraction(0)]
-    + [sign * value
-       for n in (*_MULTIPLICITIES, *_UNIT_FACTORS)
-       for value in (Fraction(n), Fraction(1, n))
-       for sign in (1, -1)]
+    + [
+        sign * value
+        for n in (*_MULTIPLICITIES, *_UNIT_FACTORS)
+        for value in (Fraction(n), Fraction(1, n))
+        for sign in (1, -1)
+    ]
 )
 
 

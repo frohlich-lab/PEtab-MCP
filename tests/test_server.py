@@ -56,8 +56,13 @@ def _empty_model_server(tmp_path):
     """A server over a problem that ships WITHOUT a model (empty SBML, no model.ant)."""
     work = tmp_path / "empty"
     work.mkdir()
-    for name in ("problem.yaml", "conditions.tsv", "measurements.tsv",
-                 "observables.tsv", "parameters.tsv"):
+    for name in (
+        "problem.yaml",
+        "conditions.tsv",
+        "measurements.tsv",
+        "observables.tsv",
+        "parameters.tsv",
+    ):
         shutil.copy(DATA_DIR / name, work / name)
     doc = libsbml.SBMLDocument(3, 2)
     model = doc.createModel()
@@ -107,14 +112,26 @@ def test_tools_registered(tmp_path):
     mcp = _server(tmp_path)
     names = {t.name for t in asyncio.run(mcp.list_tools())}
     expected = {
-        "describe_problem", "list_observables", "list_conditions", "get_measurements",
-        "get_model", "get_model_structure",
+        "describe_problem",
+        "list_observables",
+        "list_conditions",
+        "get_measurements",
+        "get_model",
+        "get_model_structure",
         "make_changes",
         "get_parameters",
-        "get_fit_summary", "get_fit_diagnosis", "get_run_timing", "query_data", "list_data_tables",
+        "get_fit_summary",
+        "get_fit_diagnosis",
+        "get_run_timing",
+        "query_data",
+        "list_data_tables",
         "get_fitting_log",
-        "get_provenance", "list_versions", "get_version", "diff_versions",
-        "restore_version", "get_progress",
+        "get_provenance",
+        "list_versions",
+        "get_version",
+        "diff_versions",
+        "restore_version",
+        "get_progress",
     }
     assert expected <= names
     # `rollback_to` and `current_version` are NOT tools: restore_version IS rollback_to under the
@@ -131,15 +148,26 @@ def test_tools_registered(tmp_path):
     # `make_changes` is the single editor AND the only thing that fits: there is no fit-free edit
     # and no standalone fit, so a change and its score cannot come apart.
     assert not ({"set_model", "change_parameters", "fit"} & names)
-    assert not ({"simulate", "evaluate_objective", "optimize", "residual_statistics",
-                 "update_parameters", "refit"} & names)
+    assert not (
+        {
+            "simulate",
+            "evaluate_objective",
+            "optimize",
+            "residual_statistics",
+            "update_parameters",
+            "refit",
+        }
+        & names
+    )
     assert "update_model" not in names and "set_model_parameter" not in names
     assert "list_experiments" not in names
     # the batch tools were deleted (issue #81): edits no longer fit, so batching is obsolete
     assert not ({"begin_batch", "commit_batch", "abort_batch"} & names)
     # changing a parameter's estimate status in-loop is deliberately unsupported — no such tool
-    assert not ({"estimate_parameter", "change_parameter_estimated",
-                 "fix_parameter", "pin_parameter"} & names)
+    assert not (
+        {"estimate_parameter", "change_parameter_estimated", "fix_parameter", "pin_parameter"}
+        & names
+    )
     # the handcoded residual-analysis tools are gone — SQL via query_data replaces them
     assert not ({"inspect_fit", "get_simulations"} & names)
 
@@ -175,16 +203,23 @@ def test_edit_then_fit_creates_version_via_tools(tmp_path):
     mcp = _server(tmp_path)
 
     async def go():
-        res = _structured(await mcp.call_tool("make_changes", {
-            "antimony": _reauthored(["J: B => D; k3 * B;"]),
-            "justification": "B converts to D",
-            "references": ["PMID:1"],
-        }))
+        res = _structured(
+            await mcp.call_tool(
+                "make_changes",
+                {
+                    "antimony": _reauthored(["J: B => D; k3 * B;"]),
+                    "justification": "B converts to D",
+                    "references": ["PMID:1"],
+                },
+            )
+        )
         assert res["applied"] is True and res["committed"] is True and res["version"] == 0
         assert _structured(await mcp.call_tool("describe_problem", {}))["current_version"] == 0
 
         versions = _structured(await mcp.call_tool("list_versions", {}))
-        vlist = versions["result"] if isinstance(versions, dict) and "result" in versions else versions
+        vlist = (
+            versions["result"] if isinstance(versions, dict) and "result" in versions else versions
+        )
         assert {v["version"] for v in vlist} == {0}
 
         prov = _structured(await mcp.call_tool("get_provenance", {}))
@@ -205,13 +240,30 @@ def test_the_result_is_the_fit_and_nothing_else(tmp_path):
     mcp = _server(tmp_path)  # auto_fit off -> commit without fitting (no AMICI needed)
 
     async def go():
-        res = _structured(await mcp.call_tool("make_changes", {
-            "antimony": _reauthored(["J: B => D; k3 * B;"]), "justification": "B converts to D",
-        }))
+        res = _structured(
+            await mcp.call_tool(
+                "make_changes",
+                {
+                    "antimony": _reauthored(["J: B => D; k3 * B;"]),
+                    "justification": "B converts to D",
+                },
+            )
+        )
         assert res["applied"] is True and res["committed"] is True and res["version"] == 0
-        assert not ({"reconcile", "validation", "parameter_diff", "initial_conditions",
-                     "justification", "references", "operation", "staged_edit",
-                     "fit"} & set(res))
+        assert not (
+            {
+                "reconcile",
+                "validation",
+                "parameter_diff",
+                "initial_conditions",
+                "justification",
+                "references",
+                "operation",
+                "staged_edit",
+                "fit",
+            }
+            & set(res)
+        )
         # the fit's own keys ARE there, at the top level and named as get_fit_summary names them
         assert {"fit_status", "neg_log_likelihood", "n_estimated", "bic"} <= set(res)
 
@@ -223,16 +275,28 @@ def test_references_optional_but_justification_required(tmp_path):
 
     async def go():
         # references are now OPTIONAL for model ops: an edit without any still applies
-        ok = _structured(await mcp.call_tool("make_changes", {
-            "antimony": _reauthored(["J: B => D; k3 * B;"]), "justification": "B is degraded to D",
-        }))
+        ok = _structured(
+            await mcp.call_tool(
+                "make_changes",
+                {
+                    "antimony": _reauthored(["J: B => D; k3 * B;"]),
+                    "justification": "B is degraded to D",
+                },
+            )
+        )
         assert ok["applied"] is True
 
         # justification is still REQUIRED: an empty one is rejected
-        bad = _structured(await mcp.call_tool("make_changes", {
-            "antimony": _reauthored(["J2: D => E; k4 * D;"]), "justification": "   ",
-            "references": [],
-        }))
+        bad = _structured(
+            await mcp.call_tool(
+                "make_changes",
+                {
+                    "antimony": _reauthored(["J2: D => E; k4 * D;"]),
+                    "justification": "   ",
+                    "references": [],
+                },
+            )
+        )
         assert bad["applied"] is False and "error" in bad
 
     asyncio.run(go())
@@ -242,9 +306,15 @@ def test_rejected_operation_is_logged(tmp_path):
     mcp = _server(tmp_path)
 
     async def go():
-        res = _structured(await mcp.call_tool("make_changes", {
-            "parameters": [{"parameter_id": "A_init", "scale": "log10"}], "justification": "x",
-        }))
+        res = _structured(
+            await mcp.call_tool(
+                "make_changes",
+                {
+                    "parameters": [{"parameter_id": "A_init", "scale": "log10"}],
+                    "justification": "x",
+                },
+            )
+        )
         assert res["applied"] is False  # A_init lb=0 -> log10 invalid
         errs = _structured(await mcp.call_tool("get_errors", {}))
         elist = errs["result"] if isinstance(errs, dict) and "result" in errs else errs
@@ -259,10 +329,16 @@ def test_negative_n_starts_rejected(tmp_path):
     mcp = _server(tmp_path)
 
     async def go():
-        res = _structured(await mcp.call_tool("make_changes", {
-            "antimony": _reauthored(["J: B => D; k3 * B;"]), "justification": "x",
-            "n_starts": -1,
-        }))
+        res = _structured(
+            await mcp.call_tool(
+                "make_changes",
+                {
+                    "antimony": _reauthored(["J: B => D; k3 * B;"]),
+                    "justification": "x",
+                    "n_starts": -1,
+                },
+            )
+        )
         assert res["applied"] is False
         assert "n_starts" in res["error"]
         cur = _structured(await mcp.call_tool("describe_problem", {}))
@@ -291,8 +367,9 @@ def test_query_data_rejects_bad_input(tmp_path):
     async def go():
         empty = _structured(await mcp.call_tool("query_data", {"sql": ""}))
         assert empty.get("ok") is False and "sql" in empty.get("error", "")
-        bad_rows = _structured(await mcp.call_tool(
-            "query_data", {"sql": "SELECT 1", "max_rows": 0}))
+        bad_rows = _structured(
+            await mcp.call_tool("query_data", {"sql": "SELECT 1", "max_rows": 0})
+        )
         assert bad_rows.get("ok") is False and "max_rows" in bad_rows.get("error", "")
 
     asyncio.run(go())
@@ -302,8 +379,9 @@ def test_query_data_logs_sql_on_error(tmp_path):
     mcp = _server(tmp_path)  # querying a missing table fails; the sql must be in get_errors
 
     async def go():
-        res = _structured(await mcp.call_tool(
-            "query_data", {"sql": "SELECT * FROM does_not_exist"}))
+        res = _structured(
+            await mcp.call_tool("query_data", {"sql": "SELECT * FROM does_not_exist"})
+        )
         assert res.get("ok") is False
         errs = _structured(await mcp.call_tool("get_errors", {}))
         elist = errs["result"] if isinstance(errs, dict) and "result" in errs else errs
@@ -322,11 +400,11 @@ def test_query_data_runs_on_copy(tmp_path):
     mcp = _server(tmp_path)
 
     async def go():
-        dropped = _structured(await mcp.call_tool(
-            "query_data", {"sql": "DROP TABLE measurements"}))
+        dropped = _structured(await mcp.call_tool("query_data", {"sql": "DROP TABLE measurements"}))
         assert dropped.get("ok") is not False  # not rejected
-        again = _structured(await mcp.call_tool(
-            "query_data", {"sql": "SELECT count(*) AS n FROM measurements"}))
+        again = _structured(
+            await mcp.call_tool("query_data", {"sql": "SELECT count(*) AS n FROM measurements"})
+        )
         assert again["rows"][0]["n"] == 6
 
     asyncio.run(go())
@@ -336,8 +414,11 @@ def test_query_data_blocks_file_access(tmp_path):
     mcp = _server(tmp_path)  # host file access stays disabled even on the copy
 
     async def go():
-        res = _structured(await mcp.call_tool(
-            "query_data", {"sql": "SELECT * FROM read_csv_auto('/etc/hostname')"}))
+        res = _structured(
+            await mcp.call_tool(
+                "query_data", {"sql": "SELECT * FROM read_csv_auto('/etc/hostname')"}
+            )
+        )
         assert res.get("ok") is False
 
     asyncio.run(go())
@@ -357,17 +438,19 @@ def test_get_measurements_raw_is_paged(tmp_path):
         return out["result"] if isinstance(out, dict) and "result" in out else out
 
     async def go():
-        first = _page(await mcp.call_tool(
-            "get_measurements", {"summarize": False, "max_rows": 4}))
+        first = _page(await mcp.call_tool("get_measurements", {"summarize": False, "max_rows": 4}))
         assert first["row_count"] == 4
         assert first["total_rows"] == 6
         assert first["offset"] == 0
         assert first["truncated"] is True
         assert first["next_offset"] == 4
 
-        second = _page(await mcp.call_tool(
-            "get_measurements", {"summarize": False, "max_rows": 4,
-                                 "offset": first["next_offset"]}))
+        second = _page(
+            await mcp.call_tool(
+                "get_measurements",
+                {"summarize": False, "max_rows": 4, "offset": first["next_offset"]},
+            )
+        )
         assert second["row_count"] == 2
         assert second["truncated"] is False
         assert "next_offset" not in second
@@ -378,8 +461,9 @@ def test_get_measurements_raw_is_paged(tmp_path):
         assert len({json.dumps(r, sort_keys=True) for r in rows}) == 6
 
         # a page that fits is not marked truncated
-        whole = _page(await mcp.call_tool(
-            "get_measurements", {"summarize": False, "max_rows": 500}))
+        whole = _page(
+            await mcp.call_tool("get_measurements", {"summarize": False, "max_rows": 500})
+        )
         assert whole["row_count"] == 6 and whole["truncated"] is False
 
     asyncio.run(go())
@@ -392,8 +476,14 @@ def test_list_data_tables(tmp_path):
         schema = _structured(await mcp.call_tool("list_data_tables", {}))
         tables = {t["table"] for t in schema["tables"]}
         assert tables == {
-            "measurements", "conditions", "observables", "parameters", "simulations",
-            "simulations_history", "optimization_starts", "optimization_trace",
+            "measurements",
+            "conditions",
+            "observables",
+            "parameters",
+            "simulations",
+            "simulations_history",
+            "optimization_starts",
+            "optimization_trace",
         }
 
     asyncio.run(go())
@@ -405,8 +495,9 @@ def test_query_data_static_tables(tmp_path):
     mcp = _server(tmp_path)
 
     async def go():
-        out = _structured(await mcp.call_tool(
-            "query_data", {"sql": "SELECT parameterId FROM parameters"}))
+        out = _structured(
+            await mcp.call_tool("query_data", {"sql": "SELECT parameterId FROM parameters"})
+        )
         ids = {r["parameterId"] for r in out["rows"]}
         assert ids == {"k1", "k2", "sigma_B", "A_init", "B_init"}
         assert out["truncated"] is False
@@ -421,10 +512,17 @@ def test_a_re_author_and_its_bounds_are_one_edit_and_one_version(tmp_path):
     mcp = _server(tmp_path)
 
     async def go():
-        res = _structured(await mcp.call_tool("make_changes", {
-            "antimony": _reauthored(["J: B => D; k3 * B;"]),
-            "parameters": [{"parameter_id": "k1", "lower_bound": 1e-2, "upper_bound": 1e2}],
-            "justification": "x", "references": ["PMID:1"]}))
+        res = _structured(
+            await mcp.call_tool(
+                "make_changes",
+                {
+                    "antimony": _reauthored(["J: B => D; k3 * B;"]),
+                    "parameters": [{"parameter_id": "k1", "lower_bound": 1e-2, "upper_bound": 1e2}],
+                    "justification": "x",
+                    "references": ["PMID:1"],
+                },
+            )
+        )
         assert res["applied"] is True and res["version"] == 0
         cur = _structured(await mcp.call_tool("describe_problem", {}))
         assert cur["current_version"] == 0
@@ -446,9 +544,16 @@ def test_a_re_author_is_not_refused_when_a_model_exists(tmp_path):
     async def go():
         desc = _structured(await mcp.call_tool("describe_problem", {}))
         assert desc["model_authored"] is True
-        res = _structured(await mcp.call_tool("make_changes", {
-            "antimony": _ONE_REACTION_ANTIMONY, "justification": "re-author", "references": ["PMID:1"],
-        }))
+        res = _structured(
+            await mcp.call_tool(
+                "make_changes",
+                {
+                    "antimony": _ONE_REACTION_ANTIMONY,
+                    "justification": "re-author",
+                    "references": ["PMID:1"],
+                },
+            )
+        )
         assert res["applied"] is True
         struct = _structured(await mcp.call_tool("get_model_structure", {}))
         assert {r["id"] for r in struct["reactions"]} == {"r1"}  # the edit took effect
@@ -464,13 +569,24 @@ def test_restore_version_tool_registered_and_restores(tmp_path):
 
     async def go():
         # score the reversible model as v0, re-author to one reaction (v1), then restore v0
-        await mcp.call_tool("make_changes", {
-            "antimony": _REVERSIBLE_ANTIMONY, "justification": "score the reversible model",
-            "references": ["PMID:1"]})
+        await mcp.call_tool(
+            "make_changes",
+            {
+                "antimony": _REVERSIBLE_ANTIMONY,
+                "justification": "score the reversible model",
+                "references": ["PMID:1"],
+            },
+        )
         struct = _structured(await mcp.call_tool("get_model_structure", {}))
         assert {r["id"] for r in struct["reactions"]} == {"r1", "r2"}
-        await mcp.call_tool("make_changes", {
-            "antimony": _ONE_REACTION_ANTIMONY, "justification": "drop r2", "references": ["PMID:1"]})
+        await mcp.call_tool(
+            "make_changes",
+            {
+                "antimony": _ONE_REACTION_ANTIMONY,
+                "justification": "drop r2",
+                "references": ["PMID:1"],
+            },
+        )
         struct = _structured(await mcp.call_tool("get_model_structure", {}))
         assert {r["id"] for r in struct["reactions"]} == {"r1"}
         out = _structured(await mcp.call_tool("restore_version", {"version": 0}))
@@ -490,10 +606,16 @@ def test_make_changes_builds_the_first_model_via_tool(tmp_path):
         assert desc["n_reactions"] == 0
 
         # `antimony` builds the first model when the problem ships model-less
-        res = _structured(await mcp.call_tool("make_changes", {
-            "antimony": _REVERSIBLE_ANTIMONY,
-            "justification": "reversible conversion", "references": ["PMID:1"],
-        }))
+        res = _structured(
+            await mcp.call_tool(
+                "make_changes",
+                {
+                    "antimony": _REVERSIBLE_ANTIMONY,
+                    "justification": "reversible conversion",
+                    "references": ["PMID:1"],
+                },
+            )
+        )
         assert res["applied"] is True
 
         desc2 = _structured(await mcp.call_tool("describe_problem", {}))
@@ -519,7 +641,7 @@ def test_an_unauthored_model_gets_no_parameter_diagnosis(tmp_path):
 
     async def go():
         diag = _structured(await mcp.call_tool("get_fit_diagnosis", {"sections": "all"}))
-        assert fims == []            # nothing was computed, so nothing was compiled either
+        assert fims == []  # nothing was computed, so nothing was compiled either
         ident = diag["identifiability"]
         assert ident["available"] is False and "no fitted optimum" in ident["note"]
         assert "fim" not in ident and "merge_candidates" not in ident
@@ -550,8 +672,10 @@ def test_an_unauthored_model_has_no_score_to_finish_on(tmp_path):
         assert by_name["measurements"]["n_rows"] > 0
 
         # ...and once a mechanism IS authored, the score comes back
-        await mcp.call_tool("make_changes", {
-            "antimony": _REVERSIBLE_ANTIMONY, "justification": "reversible conversion"})
+        await mcp.call_tool(
+            "make_changes",
+            {"antimony": _REVERSIBLE_ANTIMONY, "justification": "reversible conversion"},
+        )
         assert _structured(await mcp.call_tool("describe_problem", {}))["model_authored"] is True
 
     asyncio.run(go())
@@ -588,6 +712,7 @@ def test_get_fitting_log(tmp_path):
 
 def test_fit_tools(tmp_path):
     import pytest
+
     mcp = _server(tmp_path, auto_fit=True)
 
     async def go():
@@ -601,37 +726,59 @@ def test_fit_tools(tmp_path):
         # asserting behaviour it never exercised. One commit gives it its own module and its own
         # fit -- which it needs regardless, since it goes on to assert a non-None
         # neg_log_likelihood.
-        committed = _structured(await mcp.call_tool("make_changes", {
-            "antimony": _reauthored([]),
-            "justification": "fit the shipped structure so the read below has a module",
-        }))
+        committed = _structured(
+            await mcp.call_tool(
+                "make_changes",
+                {
+                    "antimony": _reauthored([]),
+                    "justification": "fit the shipped structure so the read below has a module",
+                },
+            )
+        )
         assert committed["applied"] is True and committed["committed"] is True
 
         # the simulation dataframe is queryable with SQL via query_data; it is generated on
         # demand once a module exists (no re-simulation on subsequent calls).
-        allrows = _structured(await mcp.call_tool(
-            "query_data", {"sql": "SELECT * FROM simulations"}))
+        allrows = _structured(
+            await mcp.call_tool("query_data", {"sql": "SELECT * FROM simulations"})
+        )
         assert allrows["row_count"] == 6
         assert {"residual", "residual_weighted", "noise"} <= set(allrows["columns"])
 
         # residual breakdowns that the old inspect_fit hardcoded are now plain SQL
-        by_obs = _structured(await mcp.call_tool("query_data", {"sql": (
-            "SELECT observable_id, count(*) AS n, "
-            "sum(residual_weighted*residual_weighted) AS chi2 "
-            "FROM simulations GROUP BY observable_id")}))
+        by_obs = _structured(
+            await mcp.call_tool(
+                "query_data",
+                {
+                    "sql": (
+                        "SELECT observable_id, count(*) AS n, "
+                        "sum(residual_weighted*residual_weighted) AS chi2 "
+                        "FROM simulations GROUP BY observable_id"
+                    )
+                },
+            )
+        )
         assert {r["observable_id"] for r in by_obs["rows"]} == {"obs_B"}
         assert by_obs["rows"][0]["n"] == 6 and by_obs["rows"][0]["chi2"] is not None
 
-        by_cond = _structured(await mcp.call_tool("query_data", {"sql": (
-            "SELECT DISTINCT condition_id FROM simulations")}))
+        by_cond = _structured(
+            await mcp.call_tool(
+                "query_data", {"sql": ("SELECT DISTINCT condition_id FROM simulations")}
+            )
+        )
         assert {r["condition_id"] for r in by_cond["rows"]} == {"c0"}
-        by_time = _structured(await mcp.call_tool("query_data", {"sql": (
-            "SELECT DISTINCT time FROM simulations")}))
+        by_time = _structured(
+            await mcp.call_tool("query_data", {"sql": ("SELECT DISTINCT time FROM simulations")})
+        )
         assert by_time["row_count"] == 6  # six distinct timepoints
 
         # worst-fit points: an ORDER BY ... LIMIT instead of a dedicated tool
-        worst = _structured(await mcp.call_tool("query_data", {"sql": (
-            "SELECT * FROM simulations ORDER BY abs(residual_weighted) DESC LIMIT 3")}))
+        worst = _structured(
+            await mcp.call_tool(
+                "query_data",
+                {"sql": ("SELECT * FROM simulations ORDER BY abs(residual_weighted) DESC LIMIT 3")},
+            )
+        )
         assert worst["row_count"] == 3
 
         # compact metrics-only read (no records) — and the objective is now in describe
@@ -641,16 +788,23 @@ def test_fit_tools(tmp_path):
         assert desc["neg_log_likelihood"] == pytest.approx(summary["neg_log_likelihood"])
 
         # max_rows caps the result and flags truncation
-        capped = _structured(await mcp.call_tool(
-            "query_data", {"sql": "SELECT * FROM simulations", "max_rows": 2}))
+        capped = _structured(
+            await mcp.call_tool("query_data", {"sql": "SELECT * FROM simulations", "max_rows": 2})
+        )
         assert capped["row_count"] == 2 and capped["truncated"] is True
 
         # a bounds change: the result carries the unified fit block nested under `fit`, plus a
         # fitted version.
-        res = _structured(await mcp.call_tool("make_changes", {
-            "parameters": [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
-            "justification": "widen bounds", "n_starts": 2,
-        }))
+        res = _structured(
+            await mcp.call_tool(
+                "make_changes",
+                {
+                    "parameters": [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
+                    "justification": "widen bounds",
+                    "n_starts": 2,
+                },
+            )
+        )
         # v1, not v0: the setup commit at the top of this test holds v0 (it has to, so a module
         # exists for the cold read above).
         assert res["applied"] is True and res["committed"] is True and res["version"] == 1
@@ -661,7 +815,11 @@ def test_fit_tools(tmp_path):
         # agent doesn't spend a get_fit_diagnosis call to learn its model's form is incomplete —
         # but the DETAIL behind it deliberately does not, or it would ride on every fit.
         assert set(res["residual_structure"]) == {
-            "flagged_observables", "low_power", "summary", "replicate_lack_of_fit"}
+            "flagged_observables",
+            "low_power",
+            "summary",
+            "replicate_lack_of_fit",
+        }
         assert "per_observable" not in res and "worst_points" not in res
         # `parameters_at_bound` stays HERE, on every fit result: it is the at-bound signal the lead
         # acts on (get_parameters carries none), and it costs ~25 bytes when empty.
@@ -674,8 +832,9 @@ def test_fit_tools(tmp_path):
         assert diag["per_observable"] and "worst_points" in diag
         both = _structured(await mcp.call_tool("get_fit_diagnosis", {"sections": "all"}))
         assert both["per_observable"] and both["identifiability"]["n_estimated"] >= 1
-        params_only = _structured(await mcp.call_tool(
-            "get_fit_diagnosis", {"sections": "parameters"}))
+        params_only = _structured(
+            await mcp.call_tool("get_fit_diagnosis", {"sections": "parameters"})
+        )
         assert set(params_only) == {"identifiability"}
         assert params_only["identifiability"] == both["identifiability"]
         # a typo must not silently hand back half a diagnosis
@@ -685,30 +844,43 @@ def test_fit_tools(tmp_path):
         # were two tools, so one could not break the other, and the judge's result.json block (the
         # only record of whether the replicate arm fired) rides on the residual half.
         from petab_mcp import identifiability as ident_mod
+
         broken = getattr(ident_mod, "identifiability")
         try:
             ident_mod.identifiability = lambda *a, **kw: (_ for _ in ()).throw(
-                RuntimeError("FIM exploded"))
-            degraded = _structured(await mcp.call_tool(
-                "get_fit_diagnosis", {"sections": "all"}))
+                RuntimeError("FIM exploded")
+            )
+            degraded = _structured(await mcp.call_tool("get_fit_diagnosis", {"sections": "all"}))
         finally:
             ident_mod.identifiability = broken
         assert degraded["per_observable"] and degraded["identifiability"]["available"] is False
         # diff_versions now reports the fit delta between versions
-        await mcp.call_tool("make_changes", {
-            "antimony": _ONE_REACTION_ANTIMONY, "justification": "a second scored version",
-            "n_starts": 2})
+        await mcp.call_tool(
+            "make_changes",
+            {
+                "antimony": _ONE_REACTION_ANTIMONY,
+                "justification": "a second scored version",
+                "n_starts": 2,
+            },
+        )
         # The two versions this block actually cares about — the bounds change and the structure
         # committed just above — shifted up by one for the setup commit.
         d = _structured(await mcp.call_tool("diff_versions", {"from_version": 1, "to_version": 2}))
         assert "fit" in d and "neg_log_likelihood_delta" in d["fit"]
 
         # that fit's pyPESTO multistart is now queryable: results + per-iteration trace
-        starts = _structured(await mcp.call_tool("query_data", {"sql": (
-            "SELECT count(*) AS n, min(fval) AS best FROM optimization_starts")}))
+        starts = _structured(
+            await mcp.call_tool(
+                "query_data",
+                {"sql": ("SELECT count(*) AS n, min(fval) AS best FROM optimization_starts")},
+            )
+        )
         assert starts["rows"][0]["n"] == 2 and starts["rows"][0]["best"] is not None
-        trace = _structured(await mcp.call_tool("query_data", {"sql": (
-            "SELECT count(*) AS n FROM optimization_trace")}))
+        trace = _structured(
+            await mcp.call_tool(
+                "query_data", {"sql": ("SELECT count(*) AS n FROM optimization_trace")}
+            )
+        )
         assert trace["rows"][0]["n"] >= 1
 
     asyncio.run(go())
@@ -727,8 +899,9 @@ def test_get_parameters_filters_rows(tmp_path):
         allrows = rows(_structured(await mcp.call_tool("get_parameters", {})))
         assert len(allrows) >= 3
         some_id = allrows[0]["parameterId"]
-        only = rows(_structured(await mcp.call_tool(
-            "get_parameters", {"parameter_ids": [some_id]})))
+        only = rows(
+            _structured(await mcp.call_tool("get_parameters", {"parameter_ids": [some_id]}))
+        )
         assert [r["parameterId"] for r in only] == [some_id]
         # pick a row with a TRUTHY role: parameters_to_records leaves role None for anything
         # reconcile cannot classify, and role=None would skip the filter and fail for reasons
@@ -748,7 +921,7 @@ def test_get_parameters_filters_rows(tmp_path):
         raised = None
         try:
             await mcp.call_tool("get_parameters", {"parameter_ids": ["no_such_parameter"]})
-        except Exception as exc:            # fastmcp.exceptions.ToolError
+        except Exception as exc:  # fastmcp.exceptions.ToolError
             raised = exc
         assert raised is not None, "an unknown id must not return [] — that reads as 'no such row'"
         assert "unknown parameter_ids" in str(raised)
@@ -759,13 +932,19 @@ def test_get_parameters_filters_rows(tmp_path):
         # called the scorer directly could not see it.
         every_id = sorted(str(r["parameterId"]) for r in allrows)
         if len(every_id) <= 60:
-            assert all(p in str(raised) for p in every_id), \
+            assert all(p in str(raised) for p in every_id), (
                 "the id list is the remedy; truncating it sends the caller back to guessing"
+            )
         # A token SWAP is the commonest real miss (`pEGFR_scaling` for `scaling_pEGFR`), so
         # manufacture exactly that from a genuine id and require the message to name it.
-        swap = next(((("_".join(reversed(p.split("_")))), p)
-                     for p in every_id if "_" in p
-                     and "_".join(reversed(p.split("_"))) not in every_id), None)
+        swap = next(
+            (
+                (("_".join(reversed(p.split("_")))), p)
+                for p in every_id
+                if "_" in p and "_".join(reversed(p.split("_"))) not in every_id
+            ),
+            None,
+        )
         if swap is not None:
             typo, meant = swap
             swapped_err = None
@@ -774,8 +953,9 @@ def test_get_parameters_filters_rows(tmp_path):
             except Exception as exc:
                 swapped_err = exc
             assert swapped_err is not None
-            assert "Did you mean" in str(swapped_err) and meant in str(swapped_err), \
+            assert "Did you mean" in str(swapped_err) and meant in str(swapped_err), (
                 f"a swapped id must be pointed back at {meant!r}; got: {swapped_err}"
+            )
         # ...and the VALID paths still return a list, which is the contract that broke.
         assert isinstance(allrows, list) and isinstance(byrole, list)
 
@@ -791,11 +971,13 @@ def test_an_unknown_id_suggests_the_one_the_caller_meant_even_when_the_tokens_ar
     # ONE definition of the rule, shared by every surface that reports an unknown id — a second
     # copy in server.py meant a cutoff tuned on one surface silently diverged from the other.
     from petab_mcp.model_edits import closest_symbols
-    known = sorted(["Akt_init", "EGFR_init", "S6_init", "k_akt_phos", "scaling_pEGFR",
-                    "scaling_pS6", "k_bind"])
-    assert closest_symbols("pEGFR_scaling", known)[0] == "scaling_pEGFR"   # the swap
-    assert closest_symbols("pAkt_init", known)[0] == "Akt_init"            # ordinary near-miss
-    assert closest_symbols("k_totally_unrelated_xyz", known) == []         # no false confidence
+
+    known = sorted(
+        ["Akt_init", "EGFR_init", "S6_init", "k_akt_phos", "scaling_pEGFR", "scaling_pS6", "k_bind"]
+    )
+    assert closest_symbols("pEGFR_scaling", known)[0] == "scaling_pEGFR"  # the swap
+    assert closest_symbols("pAkt_init", known)[0] == "Akt_init"  # ordinary near-miss
+    assert closest_symbols("k_totally_unrelated_xyz", known) == []  # no false confidence
 
 
 def test_the_unknown_id_message_carries_its_own_remedy():
@@ -826,6 +1008,7 @@ def test_the_reserved_t_hint_says_use_the_builtin_time_not_a_rename():
     time dependence silently disappears. 4 of 16 isensee runs hit this collision on 2026-08-17 and
     the one that took the old 'rename to tau' advice lost ~512 nll to it."""
     from petab_mcp.operations import _compile_fit_failure_message
+
     msg = _compile_fit_failure_message(KeyError("amici_t"))
     assert "built-in" in msg and "`time`" in msg
     assert "tau" in msg and "free parameter" in msg, "must say WHY renaming fails"

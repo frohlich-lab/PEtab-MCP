@@ -44,7 +44,9 @@ def _species(session):
 # -- enforcement -----------------------------------------------------------
 def test_requires_justification(session):
     with pytest.raises(OperationError):
-        O.set_model(session, _BASE_MODEL.format(extra=""), justification="  ", references=["PMID:1"])
+        O.set_model(
+            session, _BASE_MODEL.format(extra=""), justification="  ", references=["PMID:1"]
+        )
 
 
 def test_commit_change_refuses_a_no_op_edit(session):
@@ -105,8 +107,9 @@ def test_parsimony_warning_still_fires_for_disconnected_sink(session):
 
 # -- re-author: reconcile of new/removed structure -------------------------
 def test_reauthor_auto_adds_species_and_params(session):
-    res = _set_model(session, ["J: B => D; k3 * B;"], justification="B converts to D",
-                     references=["PMID:1"])
+    res = _set_model(
+        session, ["J: B => D; k3 * B;"], justification="B converts to D", references=["PMID:1"]
+    )
     assert res["applied"] is True
     assert "D" in _species(session)
     # D is created EMPTY (no declared initial), so it gets NO `D_init` — an unset initial is an
@@ -131,8 +134,11 @@ def test_empty_pool_ic_is_not_parametrised(session):
 def test_seeded_ic_estimated_by_default(session):
     # A newly-authored species given a positive initial is ESTIMATED (always-on): the declared
     # value is only a guess and must never be silently frozen (issue #90).
-    _set_model(session, ["J: B => D; k3 * B;", "D = 5.0;"],
-               justification="B converts to D, D seeded at a guess")
+    _set_model(
+        session,
+        ["J: B => D; k3 * B;", "D = 5.0;"],
+        justification="B converts to D, D seeded at a guess",
+    )
     row = session.problem.parameter_df.loc["D_init"]
     assert int(row["estimate"]) == 1
     assert abs(float(row["nominalValue"]) - 5.0) < 1e-9
@@ -141,8 +147,9 @@ def test_seeded_ic_estimated_by_default(session):
 def test_reauthor_change_rate_law(session):
     # Re-authoring the same reaction id with a new rate law replaces its kinetic law.
     _set_model(session, ["J: B => D; k3 * B;"], justification="x", references=["PMID:1"])
-    res = _set_model(session, ["J: B => D; k3 * B * B;"], justification="second order",
-                     references=["PMID:2"])
+    res = _set_model(
+        session, ["J: B => D; k3 * B * B;"], justification="second order", references=["PMID:2"]
+    )
     assert res["applied"] is True
     rxn = session.model.sbml_model.getReaction("J")
     formula = rxn.getKineticLaw().getFormula()
@@ -182,8 +189,8 @@ def test_no_parameter_estimate_or_fix_operation():
 
 def test_change_parameters_scale(session):
     res = O.change_parameters(
-        session, [{"parameter_id": "sigma_B", "scale": "log10"}],
-        justification="spans magnitudes")
+        session, [{"parameter_id": "sigma_B", "scale": "log10"}], justification="spans magnitudes"
+    )
     assert res["applied"] is True
     assert res["operation"] == "make_changes"
     assert res["references"] == []  # references optional for parameter operations
@@ -194,7 +201,8 @@ def test_change_parameters_scale(session):
 def test_change_parameters_requires_justification(session):
     with pytest.raises(OperationError):
         O.change_parameters(
-            session, [{"parameter_id": "sigma_B", "scale": "log10"}], justification="")
+            session, [{"parameter_id": "sigma_B", "scale": "log10"}], justification=""
+        )
 
 
 def test_change_parameters_empty_list_rejected(session):
@@ -206,16 +214,19 @@ def test_change_parameters_invalid_scale_is_reverted(session):
     # A_init has lowerBound 0 -> log10 is invalid; the table must be unchanged.
     before = {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
     with pytest.raises(OperationError):
-        O.change_parameters(session, [{"parameter_id": "A_init", "scale": "log10"}],
-                            justification="x")
+        O.change_parameters(
+            session, [{"parameter_id": "A_init", "scale": "log10"}], justification="x"
+        )
     after = {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
     assert after["A_init"] == before["A_init"]
 
 
 def test_change_parameters_bounds(session):
     res = O.change_parameters(
-        session, [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
-        justification="physiological range")
+        session,
+        [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
+        justification="physiological range",
+    )
     assert res["applied"] is True
     recs = {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
     assert float(recs["k1"]["lowerBound"]) == 1e-3
@@ -224,10 +235,14 @@ def test_change_parameters_bounds(session):
 
 def test_change_parameters_batch_applies_bounds_and_scale_atomically(session):
     # One call retunes several parameters at once — the point of the batched editor.
-    res = O.change_parameters(session, [
-        {"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3},
-        {"parameter_id": "sigma_B", "scale": "log10"},
-    ], justification="coherent retuning")
+    res = O.change_parameters(
+        session,
+        [
+            {"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3},
+            {"parameter_id": "sigma_B", "scale": "log10"},
+        ],
+        justification="coherent retuning",
+    )
     assert res["applied"] is True
     recs = {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
     assert float(recs["k1"]["lowerBound"]) == 1e-3 and float(recs["k1"]["upperBound"]) == 1e3
@@ -238,9 +253,13 @@ def test_change_parameters_single_entry_bounds_and_scale(session):
     # ONE entry carrying BOTH a bound change and a scale change (the merged-entry path that
     # armistead's changes_by_id produces): bounds must apply AND the positive-box check must run
     # against the new scale+bounds. k1 = 0.5 with lb 1e-3 is a valid log10 box.
-    res = O.change_parameters(session, [
-        {"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3, "scale": "log10"},
-    ], justification="retune k1 box and scale together")
+    res = O.change_parameters(
+        session,
+        [
+            {"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3, "scale": "log10"},
+        ],
+        justification="retune k1 box and scale together",
+    )
     assert res["applied"] is True
     recs = {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
     assert float(recs["k1"]["lowerBound"]) == 1e-3 and float(recs["k1"]["upperBound"]) == 1e3
@@ -252,24 +271,31 @@ def test_change_parameters_rejects_unknown_entry_key(session):
     # otherwise leave the scale unchanged while the call reports success).
     with pytest.raises(OperationError, match="unknown key"):
         O.change_parameters(
-            session, [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3,
-                       "scal": "log10"}],
-            justification="typo'd scale key")
+            session,
+            [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3, "scal": "log10"}],
+            justification="typo'd scale key",
+        )
 
 
 def test_change_parameters_duplicate_id_rejected(session):
     with pytest.raises(OperationError, match="more than one entry"):
-        O.change_parameters(session, [
-            {"parameter_id": "k1", "scale": "log10"},
-            {"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3},
-        ], justification="combine these")
+        O.change_parameters(
+            session,
+            [
+                {"parameter_id": "k1", "scale": "log10"},
+                {"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3},
+            ],
+            justification="combine these",
+        )
 
 
 def test_change_parameters_bad_range_reverts(session):
     with pytest.raises(Exception):
         O.change_parameters(
-            session, [{"parameter_id": "k1", "lower_bound": 10.0, "upper_bound": 1.0}],
-            justification="x")
+            session,
+            [{"parameter_id": "k1", "lower_bound": 10.0, "upper_bound": 1.0}],
+            justification="x",
+        )
     recs = {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
     assert float(recs["k1"]["upperBound"]) != 1.0  # not applied
 
@@ -286,7 +312,8 @@ def _add_version(session, *, upper, nllh, kind="fit"):
     df.loc["k1", UPPER_BOUND] = upper
     meta = {} if nllh is None else {"neg_log_likelihood": nllh}
     session.provenance.snapshot_version(
-        session.problem.model.to_antimony(), df, kind=kind, meta=meta)
+        session.problem.model.to_antimony(), df, kind=kind, meta=meta
+    )
 
 
 def _pin_k1_at_upper(session, upper):
@@ -316,8 +343,10 @@ def test_third_widening_rejected_through_full_operation_and_reverts(session):
     _pin_k1_at_upper(session, 1e4)
     with pytest.raises(OperationError):
         O.change_parameters(
-            session, [{"parameter_id": "k1", "lower_bound": 1e-4, "upper_bound": 1e5}],
-            justification="widen again")
+            session,
+            [{"parameter_id": "k1", "lower_bound": 1e-4, "upper_bound": 1e5}],
+            justification="widen again",
+        )
     assert float(session.problem.parameter_df.loc["k1", UPPER_BOUND]) == 1e4  # unchanged
 
 
@@ -349,7 +378,7 @@ def test_widening_allowed_when_last_gain_is_meaningful(session):
 def test_widening_allowed_when_last_gain_unknown(session):
     # A simulate-only commit before the last widening leaves its BIC gain undeterminable. The
     # backstop is defined by a NEGLIGIBLE gain, so an unknown gain must NOT trigger it.
-    _add_version(session, upper=1e3, nllh=None)   # no neg_log_likelihood recorded
+    _add_version(session, upper=1e3, nllh=None)  # no neg_log_likelihood recorded
     _add_version(session, upper=1e4, nllh=99.9)
     _pin_k1_at_upper(session, 1e4)
     O._reject_repeated_widening(session, session.problem, "k1", 1e-4, 1e5)  # no raise
@@ -439,8 +468,10 @@ def test_a_successful_edit_swaps_in_a_new_problem_object(session):
     which is what makes the snapshot in `working_state` a valid undo."""
     before_problem = session.problem
     res = O.change_parameters(
-        session, [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
-        justification="widen")
+        session,
+        [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
+        justification="widen",
+    )
     assert res["applied"] is True
     assert session.problem is not before_problem
     # nothing is shared with the problem it replaced — a deep copy, so no in-place edit anywhere
@@ -449,8 +480,7 @@ def test_a_successful_edit_swaps_in_a_new_problem_object(session):
     assert session.problem.model is not before_problem.model
 
 
-def test_a_failure_after_the_edit_applies_still_leaves_the_live_problem_alone(session,
-                                                                              monkeypatch):
+def test_a_failure_after_the_edit_applies_still_leaves_the_live_problem_alone(session, monkeypatch):
     """The candidate is swapped in only once nothing left can raise.
 
     The provenance write is the last thing that can fail, and `make_changes` returns on
@@ -464,8 +494,10 @@ def test_a_failure_after_the_edit_applies_still_leaves_the_live_problem_alone(se
     monkeypatch.setattr(session.provenance, "append_event", _boom)
     with pytest.raises(OSError):
         O.change_parameters(
-            session, [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
-            justification="widen")
+            session,
+            [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
+            justification="widen",
+        )
 
     assert session.problem is before_problem
 
@@ -486,17 +518,24 @@ def test_a_parameters_only_edit_that_touched_the_model_is_refused(session, monke
             out = inner(problem)
             problem.model.sbml_model.getSpecies(0).setId("mutated_in_place")
             return out
+
         return edit
 
-    before_ids = [session.problem.model.sbml_model.getSpecies(i).getId()
-                  for i in range(session.problem.model.sbml_model.getNumSpecies())]
+    before_ids = [
+        session.problem.model.sbml_model.getSpecies(i).getId()
+        for i in range(session.problem.model.sbml_model.getNumSpecies())
+    ]
 
     monkeypatch.setattr(O, "_parameter_edit", _also_mutates_the_model)
     with pytest.raises(PetabMcpError, match="changed the MODEL"):
         O.change_parameters(
-            session, [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
-            justification="widen")
+            session,
+            [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
+            justification="widen",
+        )
 
-    after_ids = [session.problem.model.sbml_model.getSpecies(i).getId()
-                 for i in range(session.problem.model.sbml_model.getNumSpecies())]
+    after_ids = [
+        session.problem.model.sbml_model.getSpecies(i).getId()
+        for i in range(session.problem.model.sbml_model.getNumSpecies())
+    ]
     assert after_ids == before_ids, "the rejected edit reached the live model"

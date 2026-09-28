@@ -31,16 +31,24 @@ def test_score_shipped_model_reports_the_nominal_point(amici_build_root, tmp_pat
 
     work = tmp_path / "work"
     shutil.copytree(TOY, work)
-    (work / "model.ant").unlink()   # the delivery is the SBML the YAML names
-    create_server(str(work / "problem.yaml"), build_root=str(amici_build_root),
-                  provenance_dir=str(tmp_path / "prov"), resolver=StubReferenceResolver(),
-                  score_shipped_model=True)
+    (work / "model.ant").unlink()  # the delivery is the SBML the YAML names
+    create_server(
+        str(work / "problem.yaml"),
+        build_root=str(amici_build_root),
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+        score_shipped_model=True,
+    )
     # create_server returns only the FastMCP app; build a session+engine and score at nominal directly.
     from petab_mcp.session import PetabSession
     from petab_mcp.engine import AmiciEngine
     from petab_mcp import fitting
-    session = PetabSession(str(work / "problem.yaml"), provenance_dir=str(tmp_path / "prov2"),
-                           resolver=StubReferenceResolver())
+
+    session = PetabSession(
+        str(work / "problem.yaml"),
+        provenance_dir=str(tmp_path / "prov2"),
+        resolver=StubReferenceResolver(),
+    )
     engine = AmiciEngine(session, build_root=str(amici_build_root))
     session.engine = engine
     payload = fitting.score_at_nominal(session, engine)
@@ -51,4 +59,4 @@ def test_score_shipped_model_reports_the_nominal_point(amici_build_root, tmp_pat
     assert payload["neg_log_likelihood"] is not None and payload["n_data_points"] > 0
     summary = fitting.fit_summary(session, engine)
     assert summary["neg_log_likelihood"] == payload["neg_log_likelihood"]
-    assert summary["bic"] is not None            # k came from the table, n from the simulation
+    assert summary["bic"] is not None  # k came from the table, n from the simulation

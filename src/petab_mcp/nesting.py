@@ -80,8 +80,10 @@ def _reference_count(model_text: str, pid: str) -> int:
 
 
 def _displacement_note(
-    parent_ids: set[str], child_ids: set[str],
-    parent_model: Any, child_model: Any,
+    parent_ids: set[str],
+    child_ids: set[str],
+    parent_model: Any,
+    child_model: Any,
 ) -> str | None:
     """Name the displaced parameter(s), or ``None`` when nothing cheap identifies one.
 
@@ -128,15 +130,19 @@ def nesting_advisory(parent: dict[str, Any], child: dict[str, Any]) -> str | Non
         return None
 
     note = _displacement_note(
-        set(parent.get("estimated_ids") or ()), set(child.get("estimated_ids") or ()),
-        parent.get("model"), child.get("model"),
+        set(parent.get("estimated_ids") or ()),
+        set(child.get("estimated_ids") or ()),
+        parent.get("model"),
+        child.get("model"),
     )
     # Every other field degrades gracefully when absent; name the parent generically rather than
     # emitting "vs vNone" into text the agent reads verbatim.
     version = parent.get("version")
     return NESTING_ADVISORY_TMPL.format(
         against=f"v{version}" if version is not None else "its parent",
-        parent_k=int(parent_k), child_k=int(child_k), worse=worse,
+        parent_k=int(parent_k),
+        child_k=int(child_k),
+        worse=worse,
         cause=(NESTING_CAUSE_NAMED_TMPL.format(note=note) if note else NESTING_CAUSE_UNKNOWN),
     )
 

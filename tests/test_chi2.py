@@ -28,7 +28,10 @@ def _rec(obs, cond, t, m, s, res, w, noise):
 
 def test_chi2_prefers_res_when_weighted_incomplete():
     # all points have weighted residuals -> use them (petab-canonical)
-    full = [_rec("o", "c", 0.0, 1.0, 0.0, 1.0, 2.0, 0.5), _rec("o", "c", 1.0, 2.0, 0.0, 2.0, 1.0, 1.0)]
+    full = [
+        _rec("o", "c", 0.0, 1.0, 0.0, 1.0, 2.0, 0.5),
+        _rec("o", "c", 1.0, 2.0, 0.0, 2.0, 1.0, 1.0),
+    ]
     assert AmiciEngine._chi2(full, res=[9.0, 9.0]) == pytest.approx(5.0)  # 2^2 + 1^2, RES ignored
 
     # one point has a residual but no weighted residual -> incomplete -> fall back to RES
@@ -87,12 +90,13 @@ def test_res_fallback_reachable_from_rdatas():
     ReturnData instead, and both callers must pass it — otherwise the branch is unreachable and
     chi2 silently degrades to None for every noise-formula failure.
     """
+
     class _RD:
         def __init__(self, res):
             self.res = res
 
     assert AmiciEngine._res_from_rdatas([_RD([1.0, 2.0]), _RD([2.0])]) == [1.0, 2.0, 2.0]
-    assert AmiciEngine._res_from_rdatas([_RD([1.0]), _RD(None)]) is None   # incomplete -> unusable
+    assert AmiciEngine._res_from_rdatas([_RD([1.0]), _RD(None)]) is None  # incomplete -> unusable
     assert AmiciEngine._res_from_rdatas([_RD([])]) is None
     assert AmiciEngine._res_from_rdatas([]) is None
 

@@ -98,9 +98,18 @@ def summarize_measurements(df: "pd.DataFrame | None", *, preview: int = 4) -> di
     """
     if df is None or len(df) == 0:
         # Same key set as the non-empty return, so consumers never special-case empty.
-        return {"n_points": 0, "n_groups": 0, "columns": [], "groups": [], "note": "no measurements"}
-    id_cols = [c for c in (OBSERVABLE_ID, SIMULATION_CONDITION_ID,
-                           PREEQUILIBRATION_CONDITION_ID) if c in df.columns]
+        return {
+            "n_points": 0,
+            "n_groups": 0,
+            "columns": [],
+            "groups": [],
+            "note": "no measurements",
+        }
+    id_cols = [
+        c
+        for c in (OBSERVABLE_ID, SIMULATION_CONDITION_ID, PREEQUILIBRATION_CONDITION_ID)
+        if c in df.columns
+    ]
     tcol = TIME if TIME in df.columns else None
     vcol = MEASUREMENT if MEASUREMENT in df.columns else None
     groups: list[dict[str, Any]] = []
@@ -113,26 +122,38 @@ def summarize_measurements(df: "pd.DataFrame | None", *, preview: int = 4) -> di
             g["time"] = {"min": _clean(sub[tcol].min()), "max": _clean(sub[tcol].max())}
         if vcol is not None:
             m = pd.to_numeric(sub[vcol], errors="coerce")
-            g["measurement"] = {"min": _clean(m.min()), "max": _clean(m.max()),
-                                "mean": _clean(round(float(m.mean()), 6)) if len(m) else None}
+            g["measurement"] = {
+                "min": _clean(m.min()),
+                "max": _clean(m.max()),
+                "mean": _clean(round(float(m.mean()), 6)) if len(m) else None,
+            }
             if tcol is not None:
                 ss = sub.sort_values(tcol)
                 n = len(ss)
-                idx = ([0] if n <= 1 or preview <= 1 else
-                       sorted({int(round(i * (n - 1) / (preview - 1))) for i in range(min(preview, n))}))
-                g["preview"] = [{"time": _clean(ss.iloc[i][tcol]),
-                                 "measurement": _clean(ss.iloc[i][vcol])} for i in idx]
+                idx = (
+                    [0]
+                    if n <= 1 or preview <= 1
+                    else sorted(
+                        {int(round(i * (n - 1) / (preview - 1))) for i in range(min(preview, n))}
+                    )
+                )
+                g["preview"] = [
+                    {"time": _clean(ss.iloc[i][tcol]), "measurement": _clean(ss.iloc[i][vcol])}
+                    for i in idx
+                ]
         groups.append(g)
     return {
-        "n_points": int(len(df)), "n_groups": len(groups),
-        "columns": [str(c) for c in df.columns], "groups": groups,
+        "n_points": int(len(df)),
+        "n_groups": len(groups),
+        "columns": [str(c) for c in df.columns],
+        "groups": groups,
         # Says PAGED, not "all points": the raw read caps at max_rows and returns
         # truncated/next_offset. An agent told this returns everything would reason over a
         # silently partial view — concluding, say, that an observable has no late timepoints
         # because they fell past the first page.
         "note": "Summary view (per observable×condition: n, time span, value min/max/mean, and a "
-                "few preview points). get_measurements(summarize=False) returns raw points "
-                "PAGED (max_rows per call, with total_rows/truncated/next_offset) — page it, or "
-                "narrow with condition_id/observable_id, or use query_data for SQL over the "
-                "`measurements` table.",
+        "few preview points). get_measurements(summarize=False) returns raw points "
+        "PAGED (max_rows per call, with total_rows/truncated/next_offset) — page it, or "
+        "narrow with condition_id/observable_id, or use query_data for SQL over the "
+        "`measurements` table.",
     }

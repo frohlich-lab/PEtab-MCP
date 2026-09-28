@@ -33,8 +33,10 @@ def test_batch_api_removed(session):
 def test_the_edit_half_creates_no_version(session):
     """The edit half mutates the working model and returns what it changed; the fit versions it."""
     res = O.change_parameters(
-        session, [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
-        justification="widen")
+        session,
+        [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
+        justification="widen",
+    )
     assert res["applied"] is True and res["version"] is None
     assert res["staged_edit"]["justification"] == "widen"
     assert session.provenance.current_version == -1  # no version created by an edit
@@ -70,8 +72,10 @@ def test_a_seeded_problem_always_has_a_model(empty_session):
 def test_fit_scores_edits_and_snapshots_a_version(fit_session):
     sess = fit_session
     edit = O.change_parameters(
-        sess, [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
-        justification="widen")
+        sess,
+        [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
+        justification="widen",
+    )
 
     res = sess.fit(n_starts=2, staged_edits=[edit["staged_edit"]])
     assert res["committed"] is True
@@ -225,7 +229,7 @@ def test_a_near_free_tie_reaches_the_fit_result_as_a_merge_hint_row(fit_session,
     assert len(hints) == 1
     hint = hints[0]
     assert hint["parameters"] == ["k1", "k2"]
-    assert hint["dscore"] < 0                    # the merge lowers the score — why it is here
+    assert hint["dscore"] < 0  # the merge lowers the score — why it is here
     assert hint["dnll"] is not None and hint["dnll"] < abs(hint["dscore"])
     # ...and it is the cheapest row of the diagnosis's own priced list, not a second statistic —
     # including `move_scaled`, the field the price has to be read against
@@ -312,7 +316,7 @@ def test_a_re_authored_no_op_keeps_the_fits_own_verdict(fit_session, monkeypatch
 
     assert noop["no_change"] is True and "merge_hints" not in noop
     assert fitting.fit_summary(sess, sess.engine)["merge_hints"] == first["merge_hints"]
-    assert fims == []            # ...and nothing was re-priced to say it
+    assert fims == []  # ...and nothing was re-priced to say it
     # the diagnosis stands, and says the working TABLE has moved rather than claiming another model
     diagnosis = I.identifiability(sess)
     assert "stale" not in diagnosis
@@ -342,7 +346,7 @@ def test_the_fim_is_evaluated_on_the_fits_own_problem(fit_session, monkeypatch):
     from petab_mcp import identifiability as I
 
     sess = fit_session
-    sess.fit(n_starts=2)         # warms the module, leaves an optimum, and prices the hint
+    sess.fit(n_starts=2)  # warms the module, leaves an optimum, and prices the hint
     record = sess.fit_record
 
     builds: list[int] = []
@@ -362,7 +366,7 @@ def test_the_fim_is_evaluated_on_the_fits_own_problem(fit_session, monkeypatch):
     sess.problem.parameter_df.loc["k1", UPPER_BOUND] = 1e4
     third = I.identifiability(sess)
     assert builds == [] and third["fim"] == first["fim"]
-    assert third["working_table_note"]            # ...and it says the working table has moved
+    assert third["working_table_note"]  # ...and it says the working table has moved
     assert sess.fit_record is record
 
 
@@ -392,8 +396,11 @@ def test_a_restore_diagnoses_the_version_it_restored_not_the_last_fit(fit_sessio
     _stub_fim(monkeypatch, 1e-9)
     sess = fit_session
     first = sess.fit(n_starts=2)
-    O.set_model(sess, _TOY_WITH_K1.format(k1=0.5).replace(
-        "r2: B => A; k2 * B;", "r2: B => A; k2 * B * B;"), justification="a second structure")
+    O.set_model(
+        sess,
+        _TOY_WITH_K1.format(k1=0.5).replace("r2: B => A; k2 * B;", "r2: B => A; k2 * B * B;"),
+        justification="a second structure",
+    )
     sess.fit(n_starts=2)
     assert sess.fit_record is not None
 
@@ -425,8 +432,12 @@ def test_restore_version_carries_the_verdict_too(fit_session):
     sess = fit_session
     sess.fit(n_starts=2)
     out = sess.restore_version(0)
-    assert set(out["residual_structure"]) == {"flagged_observables", "low_power", "summary",
-                                             "replicate_lack_of_fit"}
+    assert set(out["residual_structure"]) == {
+        "flagged_observables",
+        "low_power",
+        "summary",
+        "replicate_lack_of_fit",
+    }
 
 
 def test_untested_residuals_are_recorded_as_unknown_not_as_clean(session, monkeypatch):
@@ -514,7 +525,8 @@ def test_the_noop_carries_an_implausible_noise_verdict(fit_session):
     sess.problem.parameter_df.loc["sigma_B", UPPER_BOUND] = 1e-8
     first = sess.fit(n_starts=2)
     assert first["noise_sigma_collapsed"] or first["noise_sigma_inflated"], (
-        "fixture no longer produces an implausible sigma — this test would be vacuous")
+        "fixture no longer produces an implausible sigma — this test would be vacuous"
+    )
 
     again = sess.fit(n_starts=2)
     assert again["no_change"] is True
@@ -527,11 +539,13 @@ def test_a_restored_fit_reports_parameter_scales(fit_session):
     """Regression: a restored payload carries no scale map, and fit_result_block read it straight
     off the payload — returning linear values beside `parameter_scales: None`."""
     sess = fit_session
-    sess.fit(n_starts=2)                                   # v0: a real fit, payload persisted
+    sess.fit(n_starts=2)  # v0: a real fit, payload persisted
     O.change_parameters(
-        sess, [{"parameter_id": "k1", "lower_bound": 1e-4, "upper_bound": 1e4}],
-        justification="widen so the next fit is not a de-dup no-op")
-    sess.fit(n_starts=2)                                   # v1, so v0 is a genuine restore target
+        sess,
+        [{"parameter_id": "k1", "lower_bound": 1e-4, "upper_bound": 1e4}],
+        justification="widen so the next fit is not a de-dup no-op",
+    )
+    sess.fit(n_starts=2)  # v1, so v0 is a genuine restore target
     restored = sess.restore_version(0)
 
     assert restored["fitted_parameters"], "v0's stored fit must come back with values"

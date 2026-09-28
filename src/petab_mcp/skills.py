@@ -43,10 +43,10 @@ _SKILL_FILE = "SKILL.md"
 class Skill:
     """A single loaded skill: its metadata, ``SKILL.md`` text, and support files."""
 
-    slug: str                       # directory name
-    name: str                       # frontmatter `name` (falls back to slug)
-    description: str                # frontmatter `description`
-    text: str                       # full SKILL.md, as authored
+    slug: str  # directory name
+    name: str  # frontmatter `name` (falls back to slug)
+    description: str  # frontmatter `description`
+    text: str  # full SKILL.md, as authored
     files: dict[str, str] = field(default_factory=dict)  # relative path -> content
 
     def summary(self) -> dict[str, object]:
@@ -107,7 +107,7 @@ def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
                 key = None
     if block is not None and key is not None:
         meta[key] = " ".join(s for s in block if s).strip()
-    body = "\n".join(lines[end + 1:]) if end is not None else text
+    body = "\n".join(lines[end + 1 :]) if end is not None else text
     return meta, body
 
 

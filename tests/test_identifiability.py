@@ -15,8 +15,16 @@ from petab_mcp.identifiability import _identifiability_stats, identifiability
 
 
 def _meta(*ids, scale="log10", est_scaled=1.0, at_bound=False):
-    return [{"id": i, "scale": scale, "estimate": 10.0, "estimate_scaled": est_scaled,
-             "at_bound": at_bound} for i in ids]
+    return [
+        {
+            "id": i,
+            "scale": scale,
+            "estimate": 10.0,
+            "estimate_scaled": est_scaled,
+            "at_bound": at_bound,
+        }
+        for i in ids
+    ]
 
 
 class _StubObjective:
@@ -44,9 +52,22 @@ class _StubProblem:
         self.x_names = list(x_names)
 
 
-def _record(session, *, names=("k1", "k2"), x=(0.0, -1.0), hess=None, sres=None,
-            scales=("log10", "log10"), lb=(-4.0, -4.0), ub=(2.0, 2.0), objective=None,
-            hierarchical=False, optimization=None, structure_hash=None, problem_hash=None):
+def _record(
+    session,
+    *,
+    names=("k1", "k2"),
+    x=(0.0, -1.0),
+    hess=None,
+    sres=None,
+    scales=("log10", "log10"),
+    lb=(-4.0, -4.0),
+    ub=(2.0, 2.0),
+    objective=None,
+    hierarchical=False,
+    optimization=None,
+    structure_hash=None,
+    problem_hash=None,
+):
     """A :class:`fitting.FitRecord` over the toy problem, with the FIM source stubbed."""
     from petab_mcp.fitting import FitRecord
     from petab_mcp.parameters import structure_fingerprint
@@ -54,12 +75,16 @@ def _record(session, *, names=("k1", "k2"), x=(0.0, -1.0), hess=None, sres=None,
     return FitRecord(
         pypesto_problem=_StubProblem(objective or _StubObjective(hess=hess, sres=sres), names),
         problem=session.problem,
-        structure_hash=structure_hash or structure_fingerprint(
-            session.problem.model.sbml_model, session.problem.parameter_df),
+        structure_hash=structure_hash
+        or structure_fingerprint(session.problem.model.sbml_model, session.problem.parameter_df),
         problem_hash=problem_hash or session.problem_hash(),
-        x_names=tuple(names), x_free=tuple(x), scales=tuple(scales),
-        lb=tuple(lb), ub=tuple(ub),
-        optimization=optimization, hierarchical=hierarchical,
+        x_names=tuple(names),
+        x_free=tuple(x),
+        scales=tuple(scales),
+        lb=tuple(lb),
+        ub=tuple(ub),
+        optimization=optimization,
+        hierarchical=hierarchical,
     )
 
 
@@ -103,21 +128,25 @@ def test_well_identified_has_no_flags():
     # SE = sqrt(1/4) = 0.5 on the scaled axis; fold = 10**0.5 for a log10 parameter
     p = {x["id"]: x for x in out["parameters"]}
     assert p["a"]["se_scaled"] == pytest.approx(0.5, abs=1e-6)
-    assert p["a"]["fold_uncertainty"] == pytest.approx(10 ** 0.5, rel=1e-3)
+    assert p["a"]["fold_uncertainty"] == pytest.approx(10**0.5, rel=1e-3)
 
 
 def test_multistart_spread_flags_unstable_parameter():
     fim = np.diag([4.0, 4.0])
-    spread = {"a": {"std": 0.7, "min": -0.5, "max": 1.5, "n": 5},
-              "b": {"std": 0.01, "min": 0.99, "max": 1.01, "n": 5}}
+    spread = {
+        "a": {"std": 0.7, "min": -0.5, "max": 1.5, "n": 5},
+        "b": {"std": 0.01, "min": 0.99, "max": 1.01, "n": 5},
+    }
     out = _identifiability_stats(_meta("a", "b"), fim, spread, spread_unstable=0.5)
     assert out["method"] == "fim+multistart"
     p = {x["id"]: x for x in out["parameters"]}
     assert p["a"]["multistart_std"] == 0.7 and p["a"]["multistart_range"] == pytest.approx(2.0)
     cand = {c["id"] for c in out["candidates"]}
     assert "a" in cand and "b" not in cand
-    assert any("multistart_unstable" in r for r in
-               next(c["reasons"] for c in out["candidates"] if c["id"] == "a"))
+    assert any(
+        "multistart_unstable" in r
+        for r in next(c["reasons"] for c in out["candidates"] if c["id"] == "a")
+    )
 
 
 def test_spread_only_when_no_fim():
@@ -185,8 +214,11 @@ class _RowsObjective:
         if mode != "mode_res":
             return {"fval": 1.0, "hess": self.hess}
         self.amici_model.flags_seen.append(self.amici_model.sigma_residuals)
-        return {"res": self.res, "sres": self.sres,
-                "rdatas": [{"res": [0.0] * b} for b in self.blocks]}
+        return {
+            "res": self.res,
+            "sres": self.sres,
+            "rdatas": [{"res": [0.0] * b} for b in self.blocks],
+        }
 
 
 def _sigma_objective():
@@ -196,10 +228,10 @@ def _sigma_objective():
     tests/test_effective_parameter_count.py::test_an_estimated_sigma_carries_its_full_fisher_information.
     """
     rho, n = 3.0, 4
-    r = np.sqrt([1.5, 1.5, 0.5, 0.5]) * [1, -1, 1, -1]     # Σ r² = n
+    r = np.sqrt([1.5, 1.5, 0.5, 0.5]) * [1, -1, 1, -1]  # Σ r² = n
     res = np.concatenate([r, np.full(n, rho)])
-    sres = np.concatenate([-r, np.full(n, 1.0 / rho)])[:, None]   # ∂r/∂lnσ = −r, ∂ρ/∂lnσ = 1/ρ
-    hess = float((r ** 2).sum())
+    sres = np.concatenate([-r, np.full(n, 1.0 / rho)])[:, None]  # ∂r/∂lnσ = −r, ∂ρ/∂lnσ = 1/ρ
+    hess = float((r**2).sum())
     return _RowsObjective(res, sres, [2 * n], np.array([[hess]])), hess
 
 
@@ -212,15 +244,17 @@ def test_the_diagnosis_inverts_the_row_built_fim_not_the_objectives_hessian(sess
     from petab_mcp.identifiability import _compute_fim, effective_parameter_count
 
     obj, hess = _sigma_objective()
-    record = _record(session, names=("sigma_B",), x=(0.0,), scales=("lin",), lb=(-4.0,),
-                     ub=(4.0,), objective=obj)
+    record = _record(
+        session, names=("sigma_B",), x=(0.0,), scales=("lin",), lb=(-4.0,), ub=(4.0,), objective=obj
+    )
 
     fim = _compute_fim(record)
 
-    assert fim == pytest.approx(np.array([[2.0 * hess]]))    # 2n, not the n `hess` reports
+    assert fim == pytest.approx(np.array([[2.0 * hess]]))  # 2n, not the n `hess` reports
     scores = obj.res[:4] * obj.sres[:4, 0] + obj.res[4:] * obj.sres[4:, 0]
     assert effective_parameter_count(record.pypesto_problem, [0.0]) == pytest.approx(
-        float((scores ** 2).sum()) / float(fim[0, 0]))
+        float((scores**2).sum()) / float(fim[0, 0])
+    )
 
 
 def test_the_sigma_residual_flag_is_restored_after_a_diagnosis(session):
@@ -228,8 +262,9 @@ def test_the_sigma_residual_flag_is_restored_after_a_diagnosis(session):
     serves the fit and every evaluation (`fitting.estimation_problem`) — so leaving it on would
     double the residual vector of every later simulation."""
     obj, _ = _sigma_objective()
-    session.fit_record = _record(session, names=("sigma_B",), x=(0.0,), scales=("lin",),
-                                 lb=(-4.0,), ub=(4.0,), objective=obj)
+    session.fit_record = _record(
+        session, names=("sigma_B",), x=(0.0,), scales=("lin",), lb=(-4.0,), ub=(4.0,), objective=obj
+    )
 
     assert identifiability(session)["fim"]["rank"] == 1
 
@@ -259,7 +294,7 @@ def test_merge_cost_is_exact_for_a_quadratic():
     # H = I, theta = (1, 0): c@theta = 1, c@inv(H)@c = 2 -> cost 1/4
     rep = merge_candidates(np.eye(2), ["a", "b"], [1.0, 0.0])
     assert rep["ties"][0]["dnll"] == 0.25
-    assert rep["ties"][0]["move_scaled"] == 0.5   # both meet in the middle of the gap they close
+    assert rep["ties"][0]["move_scaled"] == 0.5  # both meet in the middle of the gap they close
     # H = 2I, theta = (3, 1): c@theta = 2, c@inv(H)@c = 1 -> cost 2
     rep = merge_candidates(2 * np.eye(2), ["a", "b"], [3.0, 1.0])
     assert rep["ties"][0]["dnll"] == 2.0
@@ -278,12 +313,12 @@ def test_merge_candidates_rank_the_cheap_tie_first_and_price_it():
     from petab_mcp.identifiability import merge_candidates
 
     H = np.array([[100.0, 99.0, 0.0], [99.0, 100.0, 0.0], [0.0, 0.0, 100.0]])
-    theta = [1.0, 1.02, 3.0]           # a,b nearly equal and collinear; c far away
+    theta = [1.0, 1.02, 3.0]  # a,b nearly equal and collinear; c far away
     rep = merge_candidates(H, ["a", "b", "c"], theta, n_data=252)
     assert rep["ties"][0]["parameters"] == ["a", "b"]
     assert rep["parameter_price_nll"] == round(math.log(252) / 2, 3)
-    assert rep["ties"][0]["merge_improves_score"] is True          # cheaper than the parameter it drops
-    assert rep["ties"][-1]["merge_improves_score"] is False        # the data pins these apart
+    assert rep["ties"][0]["merge_improves_score"] is True  # cheaper than the parameter it drops
+    assert rep["ties"][-1]["merge_improves_score"] is False  # the data pins these apart
     assert rep["n_merges_improving_score"] == 1
 
 
@@ -298,13 +333,17 @@ def test_merge_flag_and_dscore_agree_with_each_other():
     from petab_mcp.identifiability import merge_candidates
 
     # H = I so c@inv(H)@c = 2 and the cost is (theta_a - theta_b)^2 / 4: pick the gap for each side.
-    expensive = merge_candidates(np.eye(2), ["a", "b"], [math.sqrt(40.0), 0.0], n_data=252)["ties"][0]
+    expensive = merge_candidates(np.eye(2), ["a", "b"], [math.sqrt(40.0), 0.0], n_data=252)["ties"][
+        0
+    ]
     assert expensive["dnll"] == 10.0 and expensive["dscore"] > 0
-    assert expensive["merge_improves_score"] is False              # +14.5 bic: do NOT merge
+    assert expensive["merge_improves_score"] is False  # +14.5 bic: do NOT merge
 
-    free = merge_candidates(np.eye(2), ["a", "b"], [math.sqrt(4 * 0.022), 0.0], n_data=252)["ties"][0]
+    free = merge_candidates(np.eye(2), ["a", "b"], [math.sqrt(4 * 0.022), 0.0], n_data=252)["ties"][
+        0
+    ]
     assert free["dnll"] == 0.022 and free["dscore"] < 0
-    assert free["merge_improves_score"] is True                    # -5.5 bic: merge it
+    assert free["merge_improves_score"] is True  # -5.5 bic: merge it
 
 
 def test_a_singular_fim_prices_its_free_merge_at_zero_and_first():
@@ -321,12 +360,12 @@ def test_a_singular_fim_prices_its_free_merge_at_zero_and_first():
     # not the parameter order — three rows that all display 0.0 make index order look like a ranking.
     H = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 1.0], [0.0, 1.0, 1.0]])
     rep = merge_candidates(H, ["c", "a", "b"], [100.0, 1.0, 3.0], n_data=252)
-    assert rep["ties"][0]["parameters"] == ["a", "b"]            # ranked FIRST, not last
+    assert rep["ties"][0]["parameters"] == ["a", "b"]  # ranked FIRST, not last
     assert rep["ties"][0]["dnll"] == 0.0 and rep["ties"][0]["merge_improves_score"] is True
     # tying c to either of them is free too — the flat direction pays for it — but only by moving a
     # parameter the whole 99 there, and that is what ranks the collinear pair above them: among ties
     # the price cannot separate, the writable edit is the one with the smaller move.
-    assert rep["ties"][0]["move_scaled"] == 1.0                  # half the gap it closes
+    assert rep["ties"][0]["move_scaled"] == 1.0  # half the gap it closes
     assert all(t["dnll"] == 0.0 and t["move_scaled"] > 90 for t in rep["ties"][1:])
 
     # and with no curvature anywhere every tie is free, not unreportable
@@ -340,7 +379,7 @@ def _flat_along(w, lams=(90.0, 30.0, 10.0)):
     raw = np.array([w / 2.0, -w / 2.0, 1.0, 1.0])
     u = raw / np.linalg.norm(raw)
     q, _ = np.linalg.qr(np.column_stack([u, np.eye(4)[:, 1:]]))
-    b = q[:, 1:] * np.sign(q[:, 0] @ u)        # an orthonormal basis of everything BUT u
+    b = q[:, 1:] * np.sign(q[:, 0] @ u)  # an orthonormal basis of everything BUT u
     return (b * np.array(lams)) @ b.T
 
 
@@ -355,19 +394,19 @@ def test_the_merge_price_is_continuous_as_a_direction_goes_flat():
         rep = merge_candidates(_flat_along(w), list("abcd"), [1.0, 3.0, 2.0, 2.5], n_data=252)
         return next(t for t in rep["ties"] if t["parameters"] == ["a", "b"])
 
-    determined = price(0.0)["dnll"]                    # c wholly inside what the data pinned down
+    determined = price(0.0)["dnll"]  # c wholly inside what the data pinned down
     assert determined == 18.0
     prices = [price(w)["dnll"] for w in (0.7071, 1e-2, 1e-3, 1e-4, 1e-5)]
-    assert prices == sorted(prices)                    # less overlap with the flat direction, dearer
-    assert all(p <= determined for p in prices)        # ...and never dearer than no overlap at all
-    for cheap, dear in zip(prices[1:], prices[2:]):    # a DECADE of overlap is two orders of price
-        assert dear <= 150 * cheap, (cheap, dear)      # no cliff: this ratio was 1.2 million
+    assert prices == sorted(prices)  # less overlap with the flat direction, dearer
+    assert all(p <= determined for p in prices)  # ...and never dearer than no overlap at all
+    for cheap, dear in zip(prices[1:], prices[2:]):  # a DECADE of overlap is two orders of price
+        assert dear <= 150 * cheap, (cheap, dear)  # no cliff: this ratio was 1.2 million
 
     # the cheap end of that ramp is cheap because the optimum wanders down the flat direction, and
     # the row says how far: a merge that needs a move of 20000 is not an edit that survives a refit.
     nearly_free = price(1e-4)
     assert nearly_free["merge_improves_score"] is True and nearly_free["move_scaled"] > 1e4
-    assert price(0.7071)["move_scaled"] < 5             # ...where a real overlap needs none
+    assert price(0.7071)["move_scaled"] < 5  # ...where a real overlap needs none
 
 
 def test_merge_candidates_only_offers_ties_within_a_role():
@@ -381,10 +420,10 @@ def test_merge_candidates_only_offers_ties_within_a_role():
     names = ["k1", "k2", "sigma"]
     roles = {"k1": "kinetic", "k2": "kinetic", "sigma": "noise_sigma"}
     rep = merge_candidates(np.eye(3), names, [1.0, 1.0, 1.0], roles=roles)
-    assert rep["n_ties_priced"] == 1                            # k1=k2 only, not either with sigma
+    assert rep["n_ties_priced"] == 1  # k1=k2 only, not either with sigma
     assert rep["ties"][0]["parameters"] == ["k1", "k2"]
 
-    assert rep["n_ties_skipped"] == {"role_mismatch": 2}         # and it says so, by reason
+    assert rep["n_ties_skipped"] == {"role_mismatch": 2}  # and it says so, by reason
 
     # k2 and sigma are both absent from the table: unknown == unknown is not a match, and k1=k2
     # (whose roles cannot be compared) is not offered either. "I cannot tell" is not "they differ".
@@ -410,8 +449,10 @@ def test_merge_candidates_refuse_pairs_they_cannot_price_honestly():
     same = merge_candidates(np.eye(2), names, [1.0, 1.0], scales=["log10", "log10"], roles=roles)
     assert same["n_ties_priced"] == 1 and same["filters_off"] == ["at_bound"]
 
-    unusable = merge_candidates(np.eye(2), names, [1.0, 1.0], scales=[float("nan")] * 2, roles=roles)
-    assert unusable["n_ties_skipped"] == {"scale_unknown": 1}   # unverifiable is not a match either
+    unusable = merge_candidates(
+        np.eye(2), names, [1.0, 1.0], scales=[float("nan")] * 2, roles=roles
+    )
+    assert unusable["n_ties_skipped"] == {"scale_unknown": 1}  # unverifiable is not a match either
 
     pinned = merge_candidates(np.eye(2), names, [1.0, 1.0], at_bound=[True, False], roles=roles)
     assert pinned["ties"] == [] and pinned["n_ties_skipped"] == {"at_bound": 1}
@@ -445,7 +486,7 @@ def test_merge_candidates_is_bounded_and_degrades_quietly():
 
     rep = merge_candidates(np.eye(8), [f"p{i}" for i in range(8)], list(range(8)), top_n=3)
     assert len(rep["ties"]) == 3 and rep["n_ties_priced"] == 28
-    assert merge_candidates(np.eye(1), ["only"], [1.0]) is None          # nothing to tie
+    assert merge_candidates(np.eye(1), ["only"], [1.0]) is None  # nothing to tie
     assert merge_candidates(np.eye(2), ["a", "b"], [float("nan"), 1.0]) is None
     # a mis-sized filter table is unusable input like any other, not an IndexError out of the tool
     assert merge_candidates(np.eye(3), list("abc"), [1.0, 2.0, 3.0], scales=["log10"] * 2) is None
@@ -468,7 +509,9 @@ def test_stats_core_passes_scale_and_at_bound_to_the_merge_report():
     fim = np.array([[100.0, 99.0], [99.0, 100.0]])
     meta = _meta("a", "b", est_scaled=1.0)
     meta[1]["estimate_scaled"] = 1.02
-    assert _identifiability_stats(meta, fim, {}, n_data=252)["merge_candidates"]["n_ties_priced"] == 1
+    assert (
+        _identifiability_stats(meta, fim, {}, n_data=252)["merge_candidates"]["n_ties_priced"] == 1
+    )
 
     meta[0]["at_bound"] = True
     pinned = _identifiability_stats(meta, fim, {}, n_data=252)["merge_candidates"]
@@ -486,8 +529,7 @@ def test_roles_are_not_computed_when_there_is_no_fim(session, monkeypatch):
     import petab_mcp.reconcile as reconcile
 
     calls = []
-    monkeypatch.setattr(reconcile, "parameter_roles",
-                        lambda *a, **kw: calls.append(1) or {})
+    monkeypatch.setattr(reconcile, "parameter_roles", lambda *a, **kw: calls.append(1) or {})
     session.fit_record = _record(session, hess=None, sres=None)
     out = identifiability(session)
     assert out["merge_candidates"] is None and calls == []
@@ -499,7 +541,7 @@ def test_merge_hints_are_the_cheapest_ties_bic_would_pay_for():
     never name different pairs at the same optimum."""
     from petab_mcp.identifiability import merge_hints
 
-    fim = np.array([[1e4, 1e4 - 1e-5], [1e4 - 1e-5, 1e4]])   # a near-flat difference direction
+    fim = np.array([[1e4, 1e4 - 1e-5], [1e4 - 1e-5, 1e4]])  # a near-flat difference direction
     meta = _meta("a", "b", est_scaled=1.0)
     meta[1]["estimate_scaled"] = 1.0001
     diag = _identifiability_stats(meta, fim, {}, n_data=252)
@@ -533,8 +575,9 @@ def test_merge_hints_report_every_tie_the_charge_covers_up_to_the_cap():
     hints = I.merge_hints(diag)
     assert len(hints) == I.MERGE_HINT_LIMIT == 3
     # the section's own ranking, truncated — not a re-ranking, and never a row the charge misses
-    assert [h["parameters"] for h in hints] == \
-        [r["parameters"] for r in ties if r["merge_improves_score"]][:I.MERGE_HINT_LIMIT]
+    assert [h["parameters"] for h in hints] == [
+        r["parameters"] for r in ties if r["merge_improves_score"]
+    ][: I.MERGE_HINT_LIMIT]
     assert all(h["dscore"] < 0 for h in hints)
     assert I.merge_hints(diag, limit=1) == hints[:1]
 
@@ -551,13 +594,15 @@ def test_merge_hints_are_none_when_nothing_beats_the_charge_or_nothing_is_priced
     dear = _identifiability_stats(dear_meta, np.diag([4.0, 4.0]), {}, n_data=252)
     dear_ties = dear["merge_candidates"]["ties"]
     assert dear_ties and not any(r["merge_improves_score"] for r in dear_ties)
-    assert merge_hints(dear) is None       # None, never [] — an omitted key, not an empty list
+    assert merge_hints(dear) is None  # None, never [] — an omitted key, not an empty list
     # no FIM -> no priced tie at all
     assert merge_hints(_identifiability_stats(_meta("a", "b"), None, {})) is None
     # ...and every unusable shape is None rather than an exception: this is read on the fit path
     assert merge_hints(None) is None and merge_hints({}) is None
-    assert merge_hints({"merge_candidates": {"ties": [{"parameters": ["a", "b"], "dnll": 0.0}]}}) \
-        is None      # no price was computable, so no claim that it beats one
+    assert (
+        merge_hints({"merge_candidates": {"ties": [{"parameters": ["a", "b"], "dnll": 0.0}]}})
+        is None
+    )  # no price was computable, so no claim that it beats one
 
 
 def test_fit_merge_hints_never_raises(session, monkeypatch):
@@ -565,8 +610,9 @@ def test_fit_merge_hints_never_raises(session, monkeypatch):
     import petab_mcp.identifiability as I
 
     session.fit_record = _record(session)
-    monkeypatch.setattr(I, "identifiability",
-                        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(
+        I, "identifiability", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
     assert I.fit_merge_hints(session) is None
 
 
@@ -579,7 +625,7 @@ def test_only_a_frozen_fit_may_be_diagnosed(session):
     reconstruction is what paid a 12.5 s AMICI build to price a model nobody had fitted."""
     import petab_mcp.identifiability as I
 
-    out = identifiability(session)                        # nothing fitted in this session
+    out = identifiability(session)  # nothing fitted in this session
     assert out == {"available": False, "method": "none", "note": I.NO_OPTIMUM_NOTE}
     assert I.fit_merge_hints(session) is None
     assert I.stored_merge_hints(session) is None
@@ -598,11 +644,11 @@ def test_the_diagnosed_point_is_the_fits_own_optimum_not_the_live_table(session)
     session.fit_record = record
     before = identifiability(session)["parameters"]
 
-    session.problem.parameter_df.loc["k1", NOMINAL_VALUE] = 42.0   # an edit after the fit
+    session.problem.parameter_df.loc["k1", NOMINAL_VALUE] = 42.0  # an edit after the fit
     after = identifiability(session)["parameters"]
 
     assert after == before
-    assert after[0]["estimate"] == pytest.approx(1.0)    # 10**0.0, the FITTED value, not 42.0
+    assert after[0]["estimate"] == pytest.approx(1.0)  # 10**0.0, the FITTED value, not 42.0
     # ...and the point the quadratic is expanded around is the record's, coordinate for coordinate
     assert [p["estimate_scaled"] for p in _params_meta(record)] == [0.0, -1.0]
     # the objective was asked for sensitivities AT that point, not at the edited table's
@@ -615,15 +661,17 @@ def test_another_structure_in_the_working_state_is_labelled_not_re_priced(sessio
     LAST FIT and says so — re-pricing the current structure would mean building it."""
     import petab_mcp.identifiability as I
 
-    session.fit_record = _record(session, hess=np.diag([4.0, 4.0]),
-                                structure_hash="another-structure")
+    session.fit_record = _record(
+        session, hess=np.diag([4.0, 4.0]), structure_hash="another-structure"
+    )
     out = identifiability(session)
 
     assert out["stale"] is True and out["stale_note"] == I.STALE_NOTE
-    assert out["available"] is True          # still the honest numbers of that earlier fit
+    assert out["available"] is True  # still the honest numbers of that earlier fit
     # ...and nothing rides on the fit RESULT or the score read off another structure's state
-    session.simulation = {I.STORED_DIAGNOSIS_KEY: {"structure_hash": "another-structure",
-                                                  "diagnosis": out}}
+    session.simulation = {
+        I.STORED_DIAGNOSIS_KEY: {"structure_hash": "another-structure", "diagnosis": out}
+    }
     assert I.stored_merge_hints(session) is None
     assert I.fit_merge_hints(session) is None
 
@@ -639,16 +687,21 @@ def test_a_table_only_drift_keeps_the_verdict_and_says_the_table_moved(session):
 
     session.fit_record = _record(session, x=(1.0, 1.0001), hess=_NEAR_FLAT)
     undrifted = identifiability(session)
-    session.fit_record = _record(session, x=(1.0, 1.0001), hess=_NEAR_FLAT,
-                                problem_hash="the-fit-before-the-no-op")
+    session.fit_record = _record(
+        session, x=(1.0, 1.0001), hess=_NEAR_FLAT, problem_hash="the-fit-before-the-no-op"
+    )
 
     out = identifiability(session)
     assert {k: v for k, v in out.items() if k != "working_table_note"} == undrifted
     assert "stale" not in out
     assert out["working_table_note"] == I.WORKING_TABLE_NOTE
     # ...and the score read still names the tie the fit priced, since HEAD is still that fit
-    session.simulation = {I.STORED_DIAGNOSIS_KEY: {
-        "structure_hash": session.fit_record.structure_hash, "diagnosis": out}}
+    session.simulation = {
+        I.STORED_DIAGNOSIS_KEY: {
+            "structure_hash": session.fit_record.structure_hash,
+            "diagnosis": out,
+        }
+    }
     assert [h["parameters"] for h in I.stored_merge_hints(session)] == [["k1", "k2"]]
 
 
@@ -696,8 +749,10 @@ def _resumed(session, diagnosis):
     resumed.fit_record = None
     resumed.simulation = {
         "status": "fit",
-        STORED_DIAGNOSIS_KEY: {"structure_hash": session.fit_record.structure_hash,
-                               "diagnosis": copy.deepcopy(diagnosis)},
+        STORED_DIAGNOSIS_KEY: {
+            "structure_hash": session.fit_record.structure_hash,
+            "diagnosis": copy.deepcopy(diagnosis),
+        },
     }
     return resumed
 
@@ -710,7 +765,7 @@ def test_a_hierarchical_fits_rank_is_read_against_its_own_dimension(session):
     from petab.v1.C import ESTIMATE
 
     df = session.problem.parameter_df
-    df.loc["sigma_B", ESTIMATE] = 1                      # k = 3 for the session...
+    df.loc["sigma_B", ESTIMATE] = 1  # k = 3 for the session...
     assert int(session.problem.n_estimated) == 3
     # ...while the fit's outer problem carries only k1, k2 (sigma_B was inner-solved)
     session.fit_record = _record(session, hess=np.diag([4.0, 4.0]), hierarchical=True)

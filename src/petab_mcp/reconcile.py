@@ -77,11 +77,33 @@ _PLACEHOLDER_RE = re.compile(r"(?:observable|noise)Parameter\d+_\w+")
 # (`time`, `pi`, `avogadro`, `exponentiale`, `true`/`false`, `inf`/`nan`) — is NOT listed here
 # because :func:`_declarable_id` asks libSBML about those instead of keeping a second list that
 # could drift out of step with the first.
-_ANTIMONY_RESERVED = frozenset({
-    "DNA", "after", "at", "compartment", "const", "delete", "end", "event", "ext", "formula",
-    "function", "gene", "has", "import", "in", "is", "model", "operator", "reaction", "species",
-    "substanceOnly", "unit", "var",
-})
+_ANTIMONY_RESERVED = frozenset(
+    {
+        "DNA",
+        "after",
+        "at",
+        "compartment",
+        "const",
+        "delete",
+        "end",
+        "event",
+        "ext",
+        "formula",
+        "function",
+        "gene",
+        "has",
+        "import",
+        "in",
+        "is",
+        "model",
+        "operator",
+        "reaction",
+        "species",
+        "substanceOnly",
+        "unit",
+        "var",
+    }
+)
 
 
 def _declarable_id(sid: str) -> bool:
@@ -284,7 +306,6 @@ def seed_model_antimony(problem) -> str | None:
     if not species:
         return None
 
-
     # A `readout_*` identifier is a MEASUREMENT MAPPING the author must later define with an
     # assignment rule — seeding it as a SPECIES taught the wrong lesson: agents copied the
     # declaration into their own models, wired the readout into reactions as a state, and then
@@ -302,9 +323,13 @@ def seed_model_antimony(problem) -> str | None:
     # boehm's mappings being as non-identity as fujita's.
     demote = {sid for sid in species if sid.startswith("readout_")}
     body = "\n".join(
-        (f"  {sid} = {SEED_INITIAL_VALUE:g};" if sid in demote
-         else f"  species {sid};\n  {sid} = {SEED_INITIAL_VALUE:g};")
-        for sid in species)
+        (
+            f"  {sid} = {SEED_INITIAL_VALUE:g};"
+            if sid in demote
+            else f"  species {sid};\n  {sid} = {SEED_INITIAL_VALUE:g};"
+        )
+        for sid in species
+    )
     return f"model petab_mcp_seed\n{body}\nend"
 
 
@@ -443,8 +468,9 @@ def assignment_rule_targets(sm) -> set[str]:
     return out
 
 
-def ensure_parametric_initial_conditions(sm, skip_species: set[str] | None = None,
-                                         protect_ids: set[str] | None = None) -> list[str]:
+def ensure_parametric_initial_conditions(
+    sm, skip_species: set[str] | None = None, protect_ids: set[str] | None = None
+) -> list[str]:
     """Give every species a parametric IC; returns the IC parameter ids created/kept.
 
     ``skip_species`` are species whose initial condition is set PER CONDITION by a condition-table
@@ -853,8 +879,9 @@ def _measurement_rows_for_sigma(problem, pid: str):
             return mdf[mask]
     odf = problem.observable_df
     if odf is not None and NOISE_FORMULA in odf.columns and OBSERVABLE_ID in mdf.columns:
-        obs_ids = [oid for oid, formula in odf[NOISE_FORMULA].items()
-                   if pid in formula_symbols(formula)]
+        obs_ids = [
+            oid for oid, formula in odf[NOISE_FORMULA].items() if pid in formula_symbols(formula)
+        ]
         if obs_ids:
             return mdf[mdf[OBSERVABLE_ID].isin(obs_ids)]
     return None
@@ -865,8 +892,11 @@ def _observable_transformations(problem, rows) -> set[str]:
     given measurement rows belong to. ``{"lin"}`` when the column is absent/blank — PEtab's
     default."""
     odf = problem.observable_df
-    if odf is None or OBSERVABLE_TRANSFORMATION not in odf.columns \
-            or OBSERVABLE_ID not in rows.columns:
+    if (
+        odf is None
+        or OBSERVABLE_TRANSFORMATION not in odf.columns
+        or OBSERVABLE_ID not in rows.columns
+    ):
         return {LIN}
     out: set[str] = set()
     for oid in rows[OBSERVABLE_ID].dropna().unique():
@@ -886,6 +916,7 @@ def _transform_values(values, transformation: str):
     orders of magnitude; see issue: the gate was dimensionally invalid). Non-positive values are
     dropped, being undefined under a log transform."""
     import numpy as np
+
     if transformation == "log":
         v = values[values > 0]
         return np.log(v) if len(v) else v
@@ -972,8 +1003,7 @@ def sigma_data_std(problem, pid: str, fitted_values=None) -> float | None:
         return None
     import numpy as np
 
-    values = (np.concatenate(normalised) if normalised
-              else np.asarray([], dtype=float))
+    values = np.concatenate(normalised) if normalised else np.asarray([], dtype=float)
     values = _transform_values(values, coordinate)
     if len(values) < 2:
         return None
@@ -1002,8 +1032,10 @@ def _gain_normalised_series(problem, pid: str, rows, fitted_values=None):
         return None
     if OBSERVABLE_ID not in rows.columns:
         return [rows[MEASUREMENT].dropna().astype(float).to_numpy()]
-    return [sub[MEASUREMENT].dropna().astype(float).to_numpy() / gains.get(str(oid), 1.0)
-            for oid, sub in rows.groupby(OBSERVABLE_ID, sort=False)]
+    return [
+        sub[MEASUREMENT].dropna().astype(float).to_numpy() / gains.get(str(oid), 1.0)
+        for oid, sub in rows.groupby(OBSERVABLE_ID, sort=False)
+    ]
 
 
 def _gain_normalised_gains(problem, pid: str, rows, fitted_values=None):
@@ -1018,8 +1050,9 @@ def _gain_normalised_gains(problem, pid: str, rows, fitted_values=None):
     out: dict[str, float] = {}
     for oid, sub in rows.groupby(OBSERVABLE_ID, sort=False):
         resolved = _noise_expr_and_observable(problem, pid, sub)
-        amplitude = (None if resolved is None
-                     else _observable_amplitude(problem, str(oid), resolved[0]))
+        amplitude = (
+            None if resolved is None else _observable_amplitude(problem, str(oid), resolved[0])
+        )
         if amplitude is None:
             out[str(oid)] = 1.0
             continue
@@ -1094,7 +1127,11 @@ def sigma_difference_noise_estimate(problem, pid: str, fitted_values=None) -> fl
         if "time" in series.columns:
             series = series.sort_values("time")
         raw = series[MEASUREMENT].dropna().astype(float)
-        oid = series[OBSERVABLE_ID].iloc[0] if OBSERVABLE_ID in series.columns and len(series) else None
+        oid = (
+            series[OBSERVABLE_ID].iloc[0]
+            if OBSERVABLE_ID in series.columns and len(series)
+            else None
+        )
         values = _transform_values(raw / gains.get(str(oid), 1.0), coordinate)
         values = np.asarray(values, dtype=float)
         if len(values) >= 3:  # need at least two differences for a usable mean
@@ -1189,8 +1226,11 @@ def replicate_pure_error_points(problem, pid: str, fitted_values=None, simulatio
         # override, so two sigmas governing different rows of ONE observable each got all of that
         # observable's points: every count doubled, the reported points came back duplicated, and
         # each arm applied its own gain and coordinate to rows the other sigma governs.
-        if OBSERVABLE_ID not in getattr(simulations, "columns", []) \
-                or MEASUREMENT not in simulations.columns or "time" not in simulations.columns:
+        if (
+            OBSERVABLE_ID not in getattr(simulations, "columns", [])
+            or MEASUREMENT not in simulations.columns
+            or "time" not in simulations.columns
+        ):
             return None
         covered = set(_design_point_keys(rows))
         rows = simulations[[key in covered for key in _design_point_keys(simulations)]]
@@ -1216,7 +1256,11 @@ def replicate_pure_error_points(problem, pid: str, fitted_values=None, simulatio
     # to MATCH the two frames, and never makes a NaN-keyed row into a design point.
     group_cols = [c for c in ("observableId", "simulationConditionId", "time") if c in rows.columns]
     for _key, series in rows.groupby(group_cols, sort=False, dropna=simulations is None):
-        oid = series[OBSERVABLE_ID].iloc[0] if OBSERVABLE_ID in series.columns and len(series) else None
+        oid = (
+            series[OBSERVABLE_ID].iloc[0]
+            if OBSERVABLE_ID in series.columns and len(series)
+            else None
+        )
         gain = gains.get(str(oid), 1.0)
         v = _transform_values(series[MEASUREMENT].dropna().astype(float) / gain, coordinate)
         v = np.asarray(v, dtype=float)
@@ -1224,14 +1268,19 @@ def replicate_pure_error_points(problem, pid: str, fitted_values=None, simulatio
         pure = rt.replicate_pure_error(v.tolist())
         if pure is None:
             continue
-        out.append({
-            "observable_id": None if oid is None else str(oid),
-            "condition_id": _first_value(series, "simulationConditionId"),
-            "time": _first_value(series, "time"),
-            "n": pure["n"], "df": pure["df"], "ssq": pure["ssq"],
-            "ybar": pure["mean"], "s": pure["sd"],
-            "prediction": _constant_prediction(series, gain, coordinate),
-        })
+        out.append(
+            {
+                "observable_id": None if oid is None else str(oid),
+                "condition_id": _first_value(series, "simulationConditionId"),
+                "time": _first_value(series, "time"),
+                "n": pure["n"],
+                "df": pure["df"],
+                "ssq": pure["ssq"],
+                "ybar": pure["mean"],
+                "s": pure["sd"],
+                "prediction": _constant_prediction(series, gain, coordinate),
+            }
+        )
     return out
 
 
@@ -1249,6 +1298,7 @@ def _design_point_keys(frame) -> list[tuple]:
     pooled floor — scoping wider than the grouping is the fail-open direction: it can only admit
     simulation rows that the grouping then declines to make a design point out of.
     """
+
     def _label(value):
         return None if value is None or value != value else str(value)
 
@@ -1325,8 +1375,7 @@ def _symbolic_noise_formulas(odf) -> dict:
     from petab.v1.calculate import get_symbolic_noise_formulas
 
     try:
-        key = (tuple(str(i) for i in odf.index),
-               tuple(str(v) for v in odf[NOISE_FORMULA]))
+        key = (tuple(str(i) for i in odf.index), tuple(str(v) for v in odf[NOISE_FORMULA]))
     except Exception:  # noqa: BLE001 - unkeyable table: just don't cache it
         return get_symbolic_noise_formulas(odf)
     if key not in _NOISE_FORMULA_CACHE:
@@ -1354,8 +1403,11 @@ def _noise_expr_and_observable(problem, pid: str, rows):
     if len(observable_ids) != 1:
         return None
     observable_id = str(observable_ids[0])
-    override_cells = (set(rows[NOISE_PARAMETERS].dropna().astype(str))
-                      if NOISE_PARAMETERS in rows.columns else set())
+    override_cells = (
+        set(rows[NOISE_PARAMETERS].dropna().astype(str))
+        if NOISE_PARAMETERS in rows.columns
+        else set()
+    )
     # Differing override lists across rows (fiedler's per-gel scale factors) mean the covered rows
     # do not share one sd expression; the caller must fail open rather than pick one arbitrarily.
     if len(override_cells) > 1:
@@ -1368,10 +1420,12 @@ def _noise_expr_and_observable(problem, pid: str, rows):
         if expr is None:
             return None
         overrides = {}
-        for i, value in enumerate(split_parameter_replacement_list(
-                next(iter(override_cells)) if override_cells else None)):
+        for i, value in enumerate(
+            split_parameter_replacement_list(next(iter(override_cells)) if override_cells else None)
+        ):
             overrides[sp.Symbol(f"noiseParameter{i + 1}_{observable_id}", real=True)] = (
-                sp.Symbol(str(value), real=True) if isinstance(value, str) else value)
+                sp.Symbol(str(value), real=True) if isinstance(value, str) else value
+            )
         expr = expr.subs(overrides)
         # The formula may name the observable id OR the model quantity the observable reports
         # (armistead: observable `Cer_obs`, noiseFormula `noiseParameter1_Cer_obs*Cer`). Resolve
@@ -1380,9 +1434,10 @@ def _noise_expr_and_observable(problem, pid: str, rows):
         candidates = [sp.Symbol(observable_id, real=True)]
         if OBSERVABLE_FORMULA in odf.columns:
             try:
-                candidates += [sp.Symbol(name, real=True)
-                               for name in sorted(formula_symbols(odf.loc[observable_id,
-                                                                         OBSERVABLE_FORMULA]))]
+                candidates += [
+                    sp.Symbol(name, real=True)
+                    for name in sorted(formula_symbols(odf.loc[observable_id, OBSERVABLE_FORMULA]))
+                ]
             except KeyError:
                 pass
         free = expr.free_symbols
@@ -1418,8 +1473,11 @@ def _sympify_real(formula: str):
         # builds an undefined Function for it, which is fine here since only the multiplicative
         # structure matters.
         called = set(re.findall(r"(?<![\w.])([A-Za-z_]\w*)\s*\(", formula))
-        names = {n for n in formula_symbols(formula)
-                 if n not in called and not callable(getattr(sp, n, None))}
+        names = {
+            n
+            for n in formula_symbols(formula)
+            if n not in called and not callable(getattr(sp, n, None))
+        }
         return sp.sympify(formula, locals={n: sp.Symbol(n, real=True) for n in names})
     except Exception:  # noqa: BLE001 - advisory scale only; caller fails open
         return None
@@ -1512,18 +1570,22 @@ def _resolve_observable_parameters(problem, observable_id: str, obs_expr):
         mdf = getattr(problem, "measurement_df", None)
         if mdf is None or OBSERVABLE_PARAMETERS not in mdf.columns:
             return obs_expr
-        cells = set(mdf.loc[mdf[OBSERVABLE_ID] == observable_id,
-                            OBSERVABLE_PARAMETERS].dropna().astype(str))
+        cells = set(
+            mdf.loc[mdf[OBSERVABLE_ID] == observable_id, OBSERVABLE_PARAMETERS].dropna().astype(str)
+        )
         if len(cells) != 1:
             return obs_expr
         # Symbols are matched BY NAME: petab builds its formulas with `real=True` assumptions while
         # a plain `sympify` does not, and `Symbol(x) != Symbol(x, real=True)`, so identity matching
         # silently no-ops the substitution and reports "no amplitude" for every observable with one.
         by_name = {str(s): s for s in obs_expr.free_symbols}
-        return obs_expr.subs({
-            by_name[key]: (sp.Symbol(str(v), real=True) if isinstance(v, str) else v)
-            for i, v in enumerate(split_parameter_replacement_list(next(iter(cells))))
-            if (key := f"observableParameter{i + 1}_{observable_id}") in by_name})
+        return obs_expr.subs(
+            {
+                by_name[key]: (sp.Symbol(str(v), real=True) if isinstance(v, str) else v)
+                for i, v in enumerate(split_parameter_replacement_list(next(iter(cells))))
+                if (key := f"observableParameter{i + 1}_{observable_id}") in by_name
+            }
+        )
     except Exception:  # noqa: BLE001 - advisory scale only
         return obs_expr
 
@@ -1636,6 +1698,7 @@ def sigma_noise_form(problem, pid: str, rows=None) -> str | None:
         rows = _measurement_rows_for_sigma(problem, pid)
     if rows is None or rows.empty:
         return None
+
     def _form(sub_rows):
         resolved = _noise_expr_and_observable(problem, pid, sub_rows)
         if resolved is None:
@@ -1698,8 +1761,9 @@ def sigma_scale_coupled(problem, pid: str) -> bool:
     return False
 
 
-def sigma_effective_value(problem, pid: str, fitted: float,
-                          fitted_values: "dict[str, float] | None" = None) -> float | None:
+def sigma_effective_value(
+    problem, pid: str, fitted: float, fitted_values: "dict[str, float] | None" = None
+) -> float | None:
     """The sd implied by ``pid = fitted``, expressed on the scale :func:`sigma_data_std` measures.
 
     Evaluated from the noiseFormula, so a COMPOSITE sd (fiedler's
@@ -1724,67 +1788,73 @@ def sigma_effective_value(problem, pid: str, fitted: float,
     form = sigma_noise_form(problem, pid, rows)
     if form is None:
         return None
-    def _value(sub_rows):
-      resolved = _noise_expr_and_observable(problem, pid, sub_rows)
-      if resolved is None:
-        return None
-      expr, y, _obs = resolved
-      try:
-        import sympy as sp
 
-        # Substitute every parameter value we know: the fitted sigma, its co-parameters from this
-        # fit, then the table's nominals for anything unfitted.
-        subs = {}
-        pdf = getattr(problem, "parameter_df", None)
-        if pdf is not None and NOMINAL_VALUE in pdf.columns:
-            for name in pdf.index:
+    def _value(sub_rows):
+        resolved = _noise_expr_and_observable(problem, pid, sub_rows)
+        if resolved is None:
+            return None
+        expr, y, _obs = resolved
+        try:
+            import sympy as sp
+
+            # Substitute every parameter value we know: the fitted sigma, its co-parameters from this
+            # fit, then the table's nominals for anything unfitted.
+            subs = {}
+            pdf = getattr(problem, "parameter_df", None)
+            if pdf is not None and NOMINAL_VALUE in pdf.columns:
+                for name in pdf.index:
+                    try:
+                        subs[sp.Symbol(str(name), real=True)] = float(pdf.loc[name, NOMINAL_VALUE])
+                    except (TypeError, ValueError):
+                        continue
+            for name, value in {**(fitted_values or {}), pid: fitted}.items():
                 try:
-                    subs[sp.Symbol(str(name), real=True)] = float(pdf.loc[name, NOMINAL_VALUE])
+                    subs[sp.Symbol(str(name), real=True)] = float(value)
                 except (TypeError, ValueError):
                     continue
-        for name, value in {**(fitted_values or {}), pid: fitted}.items():
-            try:
-                subs[sp.Symbol(str(name), real=True)] = float(value)
-            except (TypeError, ValueError):
-                continue
-        # For proportional noise divide out the observable FIRST, so the result is the cv and no
-        # value of y is needed at all; additive noise is already independent of y.
-        target = sp.simplify(expr / y) if form == "proportional" else expr
-        # Report the sd in the AMPLITUDE-NORMALISED coordinate sigma_data_std measures in, so a
-        # per-gel gain cancels (see _observable_amplitude). Divide only if the amplitude SURVIVES
-        # into `target`: for proportional noise, dividing by `y` above may already have removed it
-        # (when `y` is the observable, which carries the gain) or may not (when `y` resolved to the
-        # underlying species, which does not), and keying off the noise FORM instead of the actual
-        # expression got that wrong in both directions — it left the gain in for a proportional
-        # formula naming the species, so a correct fit read `inflated` by exactly the gain.
-        amplitude = _observable_amplitude(problem, _obs, expr)
-        # SUBSET, not membership and not intersection.
-        #   * membership (`amplitude in target.free_symbols`) is wrong because a multi-gain
-        #     amplitude is a sympy `Mul`, never a member of a set of Symbols — it silently
-        #     skipped the division for the very case the multi-candidate branch serves, so the
-        #     gain left the data side (sigma_data_std) but not the sigma side and a correct fit
-        #     read `inflated` by exactly the gain;
-        #   * intersection is wrong the other way: with amplitude `a*b` and a `target` holding
-        #     only `b` (for proportional noise `y` may resolve to one of the gain symbols and
-        #     divide it out already), a partial overlap still divides and leaves a spurious
-        #     `1/a`, which then reduces to a NUMBER under the substitutions below — a silently
-        #     wrong effective sigma feeding the plausibility gate, rather than failing open.
-        # Requiring every factor to be present divides only when the whole gain is there, and
-        # reduces to the old behaviour for a bare Symbol.
-        if amplitude is not None and amplitude.free_symbols <= target.free_symbols:
-            target = sp.simplify(target / amplitude)
-        value = sp.simplify(target.subs(subs))
-        if value.free_symbols:  # an unresolved symbol -> we do not guess, we fail open
+            # For proportional noise divide out the observable FIRST, so the result is the cv and no
+            # value of y is needed at all; additive noise is already independent of y.
+            target = sp.simplify(expr / y) if form == "proportional" else expr
+            # Report the sd in the AMPLITUDE-NORMALISED coordinate sigma_data_std measures in, so a
+            # per-gel gain cancels (see _observable_amplitude). Divide only if the amplitude SURVIVES
+            # into `target`: for proportional noise, dividing by `y` above may already have removed it
+            # (when `y` is the observable, which carries the gain) or may not (when `y` resolved to the
+            # underlying species, which does not), and keying off the noise FORM instead of the actual
+            # expression got that wrong in both directions — it left the gain in for a proportional
+            # formula naming the species, so a correct fit read `inflated` by exactly the gain.
+            amplitude = _observable_amplitude(problem, _obs, expr)
+            # SUBSET, not membership and not intersection.
+            #   * membership (`amplitude in target.free_symbols`) is wrong because a multi-gain
+            #     amplitude is a sympy `Mul`, never a member of a set of Symbols — it silently
+            #     skipped the division for the very case the multi-candidate branch serves, so the
+            #     gain left the data side (sigma_data_std) but not the sigma side and a correct fit
+            #     read `inflated` by exactly the gain;
+            #   * intersection is wrong the other way: with amplitude `a*b` and a `target` holding
+            #     only `b` (for proportional noise `y` may resolve to one of the gain symbols and
+            #     divide it out already), a partial overlap still divides and leaves a spurious
+            #     `1/a`, which then reduces to a NUMBER under the substitutions below — a silently
+            #     wrong effective sigma feeding the plausibility gate, rather than failing open.
+            # Requiring every factor to be present divides only when the whole gain is there, and
+            # reduces to the old behaviour for a bare Symbol.
+            if amplitude is not None and amplitude.free_symbols <= target.free_symbols:
+                target = sp.simplify(target / amplitude)
+            value = sp.simplify(target.subs(subs))
+            if value.free_symbols:  # an unresolved symbol -> we do not guess, we fail open
+                return None
+            result = float(value)
+            return result if math.isfinite(result) and result > 0 else None
+        except Exception:  # noqa: BLE001 - advisory scale only
             return None
-        result = float(value)
-        return result if math.isfinite(result) and result > 0 else None
-      except Exception:  # noqa: BLE001 - advisory scale only
-        return None
 
     return _per_observable_agreement(problem, pid, rows, _value)
+
+
 def sigma_upper_bound_cap(
-    problem, pid: str, max_fraction: float = NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD,
-    fitted_values=None, data_std: float | None = None,
+    problem,
+    pid: str,
+    max_fraction: float = NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD,
+    fitted_values=None,
+    data_std: float | None = None,
 ) -> float | None:
     """Data-driven upper-bound cap for noise-sigma parameter ``pid``: ``max_fraction`` times
     :func:`sigma_data_std`. ``None`` if that std can't be computed — callers must not
@@ -1815,9 +1885,7 @@ def is_parameter_estimated(problem, pid: str) -> bool:
 
 
 # -- initial-condition report ----------------------------------------------
-def initial_conditions_report(
-    problem, added: set[str] | None = None
-) -> list[dict[str, Any]]:
+def initial_conditions_report(problem, added: set[str] | None = None) -> list[dict[str, Any]]:
     """Per-species account of how each t=0 initial condition is resolved *after* reconcile.
 
     Antimony can only declare a species' t=0 *value* — it has no way to say "estimate this
@@ -1886,8 +1954,10 @@ def initial_conditions_report(
             # conventions (0 = empty pool, 1 = unit normalization) or because it was shipped as a
             # fixed parameter row; say which, so the caller sees why it is not estimated.
             if ic is None and declared in (None, 0.0):
-                why = ("an empty pool (t=0 == 0), carried as a literal — no `<species>_init` "
-                       "parameter exists for it, so it costs nothing in k")
+                why = (
+                    "an empty pool (t=0 == 0), carried as a literal — no `<species>_init` "
+                    "parameter exists for it, so it costs nothing in k"
+                )
             elif ic is None:
                 # No minted `<species>_init` does NOT imply a zero initial. An assignment-rule
                 # target reaches here with `ic` None (ensure_parametric_initial_conditions drops
@@ -1895,8 +1965,10 @@ def initial_conditions_report(
                 # non-zero concentration. Claiming "t=0 == 0" then contradicted `declared_t0` in
                 # the very same record — a self-contradicting answer to the one question this
                 # report exists to settle.
-                why = (f"carried as a literal (t=0 == {declared:g}) — no `<species>_init` "
-                       "parameter exists for it, so it costs nothing in k")
+                why = (
+                    f"carried as a literal (t=0 == {declared:g}) — no `<species>_init` "
+                    "parameter exists for it, so it costs nothing in k"
+                )
             elif declared == 0.0:
                 why = "an empty pool (t=0 == 0)"
             elif declared == 1.0:
@@ -1937,8 +2009,7 @@ def prune_orphans(problem) -> dict[str, list[str]]:
     # `_model_math_names` walks rule MATH only, so a forcing species driven by a rule that nothing
     # reads -- the `input_species` shape -- would otherwise be removed out from under its own rule.
     rule_targets = {sm.getRule(i).getVariable() for i in range(sm.getNumRules())}
-    used_species = (_reaction_species(sm) | (_model_math_names(sm) & species_ids(sm))
-                    | rule_targets)
+    used_species = _reaction_species(sm) | (_model_math_names(sm) & species_ids(sm)) | rule_targets
 
     removed_species: list[str] = []
     for sid in list(species_ids(sm)):
@@ -1985,8 +2056,11 @@ def prune_orphans(problem) -> dict[str, list[str]]:
         sm.removeParameter(pid)
         removed_params.append(pid)
 
-    return {"species": removed_species, "parameters": removed_params,
-            "initial_assignments": removed_initial_assignments}
+    return {
+        "species": removed_species,
+        "parameters": removed_params,
+        "initial_assignments": removed_initial_assignments,
+    }
 
 
 # -- parameter-table sync --------------------------------------------------
@@ -2104,11 +2178,11 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
                 v0 = 0.0
             lb, ub = _default_bounds(value)
             if v0 == 0.0 or v0 == 1.0:
-                scale, estimate = LIN, 0          # empty pool / unit normalization: FIXED
+                scale, estimate = LIN, 0  # empty pool / unit normalization: FIXED
             elif v0 > 0.0:
-                scale, estimate = LOG10, 1        # positive seed/guess: estimate on log10
+                scale, estimate = LOG10, 1  # positive seed/guess: estimate on log10
             else:
-                scale, estimate = LIN, 1          # nonzero but non-positive: cannot live on log10
+                scale, estimate = LIN, 1  # nonzero but non-positive: cannot live on log10
         elif pid in exp_params:
             # An exponent (Hill coefficient): estimate on a LINEAR scale with tight bounds so it
             # cannot run off to a near-step-function on the wide default log10 range.
@@ -2241,9 +2315,9 @@ def reconcile(problem, shipped=None) -> dict[str, Any]:
     # out from under them (`session.protected_fixed_parameter_ids` deliberately excludes IC
     # parameters, so nothing else would catch it).
     ensure_parametric_initial_conditions(
-        sm, skip_species=condition_column_symbols(problem),
-        protect_ids=set(shipped.index) if shipped is not None else None)
+        sm,
+        skip_species=condition_column_symbols(problem),
+        protect_ids=set(shipped.index) if shipped is not None else None,
+    )
     synced = sync_parameter_table(problem, shipped=shipped)
     return {"pruned": pruned, "parameters": synced}
-
-

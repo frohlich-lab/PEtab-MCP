@@ -42,14 +42,18 @@ def sess():
 
 
 def _sim(nll, *, missing=0, expected=21):
-    return {"neg_log_likelihood": nll, "n_missing_simulations": missing,
-            "n_expected_points": expected}
+    return {
+        "neg_log_likelihood": nll,
+        "n_missing_simulations": missing,
+        "n_expected_points": expected,
+    }
 
 
 def test_optimizer_value_wins_when_resimulation_fails(sess):
     """The lost-run case: a converged fit whose re-simulation could not be evaluated."""
     nllh, note = fitting._reconcile_objective(
-        sess, {"neg_log_likelihood": 266.6246503480759}, _sim(float("nan"), missing=5))
+        sess, {"neg_log_likelihood": 266.6246503480759}, _sim(float("nan"), missing=5)
+    )
     assert nllh == pytest.approx(266.6246503480759)
     assert note is not None
     assert "5 of 21" in note
@@ -60,15 +64,15 @@ def test_optimizer_value_wins_when_resimulation_fails(sess):
 
 def test_agreeing_values_produce_no_note(sess):
     nllh, note = fitting._reconcile_objective(
-        sess, {"neg_log_likelihood": 250.0}, _sim(250.0 + 1e-9))
+        sess, {"neg_log_likelihood": 250.0}, _sim(250.0 + 1e-9)
+    )
     assert nllh == pytest.approx(250.0)
     assert note is None
 
 
 def test_material_disagreement_is_surfaced_not_hidden(sess):
     """Both finite but materially different: keep the optimizer's, and say so."""
-    nllh, note = fitting._reconcile_objective(
-        sess, {"neg_log_likelihood": 250.0}, _sim(311.0))
+    nllh, note = fitting._reconcile_objective(sess, {"neg_log_likelihood": 250.0}, _sim(311.0))
     assert nllh == pytest.approx(250.0)
     assert note is not None and "disagrees" in note
 
@@ -83,7 +87,8 @@ def test_simulate_only_pass_uses_the_simulated_value(sess):
 def test_no_finite_objective_anywhere_stays_unscored(sess):
     """A genuinely failed fit must NOT be rescued into a fake number."""
     nllh, note = fitting._reconcile_objective(
-        sess, {"neg_log_likelihood": float("nan")}, _sim(float("nan"), missing=21))
+        sess, {"neg_log_likelihood": float("nan")}, _sim(float("nan"), missing=21)
+    )
     assert nllh is None
     assert note is not None and "no finite objective" in note
 
@@ -91,7 +96,8 @@ def test_no_finite_objective_anywhere_stays_unscored(sess):
 def test_optimizer_nan_but_resimulation_fine(sess):
     """Symmetric case: trust the value that exists rather than the one that doesn't."""
     nllh, note = fitting._reconcile_objective(
-        sess, {"neg_log_likelihood": float("inf")}, _sim(263.28))
+        sess, {"neg_log_likelihood": float("inf")}, _sim(263.28)
+    )
     assert nllh == pytest.approx(263.28)
 
 
@@ -104,9 +110,14 @@ def test_missing_pre_fit_objective_does_not_abort_the_fit(sess):
     ill-posed for estimation" — refusing to fit an unstable-but-fittable model and telling the
     agent the wrong thing about it. compute_improvement must simply carry the gap through.
     """
-    fs = {"status": "fit", "neg_log_likelihood": 266.62, "chi2": 100.0,
-          "n_data_points": 21, "n_estimated": 10}
+    fs = {
+        "status": "fit",
+        "neg_log_likelihood": 266.62,
+        "chi2": 100.0,
+        "n_data_points": 21,
+        "n_estimated": 10,
+    }
     imp = fitting.compute_improvement(sess, nllh=266.62, objective_before=None, fitsim=fs)
-    assert imp["self_improvement"] is None      # unknown, not an error
-    assert imp["bic"] is not None               # the fit is still scored
+    assert imp["self_improvement"] is None  # unknown, not an error
+    assert imp["bic"] is not None  # the fit is still scored
     assert imp["is_new_best"] is True

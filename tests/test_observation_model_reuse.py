@@ -38,12 +38,23 @@ from petab.v1.models.sbml_model import SbmlModel
 from petab_mcp import reconcile, validation
 
 
-def _problem(antimony: str, *, observable_formula: str, noise_formula: str,
-             extra_params: list[str] = (), condition_cols: dict | None = None):
+def _problem(
+    antimony: str,
+    *,
+    observable_formula: str,
+    noise_formula: str,
+    extra_params: list[str] = (),
+    condition_cols: dict | None = None,
+):
     """A minimal PEtab problem whose observation model names `scale_obs` / `sd_obs`."""
     observable_df = pd.DataFrame(
-        [{OBSERVABLE_ID: "obs_A", OBSERVABLE_FORMULA: observable_formula,
-          NOISE_FORMULA: noise_formula}]
+        [
+            {
+                OBSERVABLE_ID: "obs_A",
+                OBSERVABLE_FORMULA: observable_formula,
+                NOISE_FORMULA: noise_formula,
+            }
+        ]
     ).set_index(OBSERVABLE_ID)
     cond = {"conditionId": ["c0"]}
     cond.update(condition_cols or {})
@@ -52,14 +63,23 @@ def _problem(antimony: str, *, observable_formula: str, noise_formula: str,
         [{OBSERVABLE_ID: "obs_A", SIMULATION_CONDITION_ID: "c0", TIME: 1.0, MEASUREMENT: 1.0}]
     )
     rows = [
-        {PARAMETER_ID: p, PARAMETER_SCALE: "log10", LOWER_BOUND: 1e-3, UPPER_BOUND: 1e3,
-         NOMINAL_VALUE: 1.0, ESTIMATE: 1}
+        {
+            PARAMETER_ID: p,
+            PARAMETER_SCALE: "log10",
+            LOWER_BOUND: 1e-3,
+            UPPER_BOUND: 1e3,
+            NOMINAL_VALUE: 1.0,
+            ESTIMATE: 1,
+        }
         for p in ["scale_obs", "sd_obs", *extra_params]
     ]
     parameter_df = pd.DataFrame(rows).set_index(PARAMETER_ID)
     return petab.Problem(
-        model=SbmlModel.from_antimony(antimony), condition_df=condition_df,
-        observable_df=observable_df, measurement_df=measurement_df, parameter_df=parameter_df,
+        model=SbmlModel.from_antimony(antimony),
+        condition_df=condition_df,
+        observable_df=observable_df,
+        measurement_df=measurement_df,
+        parameter_df=parameter_df,
     )
 
 
@@ -116,8 +136,12 @@ def test_scaling_as_rate_constant_is_an_error():
 
 def test_scaling_as_normaliser_is_only_a_warning():
     """The bachmann shape: the same symbol normalising alongside a dedicated rate constant."""
-    problem = _problem(NORMALISER, observable_formula="A * scale_obs", noise_formula="sd_obs",
-                       extra_params=["k_fwd"])
+    problem = _problem(
+        NORMALISER,
+        observable_formula="A * scale_obs",
+        noise_formula="sd_obs",
+        extra_params=["k_fwd"],
+    )
     levels = _levels(problem)
     assert levels["error"] == set()
     assert "scale_obs" in levels["warning"]
@@ -125,15 +149,23 @@ def test_scaling_as_normaliser_is_only_a_warning():
 
 def test_noise_sigma_in_model_math_is_always_an_error():
     """A sigma has no legitimate mechanistic role, even beside a real rate constant."""
-    problem = _problem(SIGMA_IN_RATE_LAW, observable_formula="A * scale_obs",
-                       noise_formula="sd_obs", extra_params=["k_fwd"])
+    problem = _problem(
+        SIGMA_IN_RATE_LAW,
+        observable_formula="A * scale_obs",
+        noise_formula="sd_obs",
+        extra_params=["k_fwd"],
+    )
     assert "sd_obs" in _levels(problem)["error"]
 
 
 def test_condition_column_does_not_count_as_the_reactions_own_parameter():
     """A dose column is an experimental INPUT, so multiplying one in must not launder the cheat."""
-    problem = _problem(CHEAT_WITH_INPUT, observable_formula="A * scale_obs",
-                       noise_formula="sd_obs", condition_cols={"dose_level": [1.0]})
+    problem = _problem(
+        CHEAT_WITH_INPUT,
+        observable_formula="A * scale_obs",
+        noise_formula="sd_obs",
+        condition_cols={"dose_level": [1.0]},
+    )
     assert "scale_obs" in _levels(problem)["error"]
 
 
@@ -170,8 +202,9 @@ def test_prune_orphans_keeps_a_rule_target_nothing_reads(antimony, target):
     edit. `_model_math_names` walks rule right-hand sides only, so both the parameter and the
     species branch of `prune_orphans` need the targets folded in explicitly.
     """
-    problem = _problem(antimony, observable_formula="A * scale_obs", noise_formula="sd_obs",
-                       extra_params=["k_fwd"])
+    problem = _problem(
+        antimony, observable_formula="A * scale_obs", noise_formula="sd_obs", extra_params=["k_fwd"]
+    )
     reconcile.prune_orphans(problem)
     sm = problem.model.sbml_model
     assert target in reconcile.parameter_ids(sm) | reconcile.species_ids(sm)
@@ -189,22 +222,35 @@ def test_constant_condition_column_need_not_be_used():
       A = 10; B = 0; k_fwd = 1; inert_level = 0;
     end
     """
-    problem = _problem(antimony, observable_formula="A * scale_obs", noise_formula="sd_obs",
-                       extra_params=["k_fwd"], condition_cols={"inert_level": [0.0]})
+    problem = _problem(
+        antimony,
+        observable_formula="A * scale_obs",
+        noise_formula="sd_obs",
+        extra_params=["k_fwd"],
+        condition_cols={"inert_level": [0.0]},
+    )
     # Two conditions, both with inert_level 0: the column cannot distinguish them (raimundez's
     # METinh_level shape). With only ONE condition the column is trivially constant but is still
     # the only thing setting that value, so the check must stay on — see the second assertion.
     import pandas as pd
+
     problem.condition_df = pd.DataFrame(
-        {"conditionId": ["c0", "c1"], "inert_level": [0.0, 0.0]}).set_index("conditionId")
-    problem.measurement_df = pd.concat([
-        problem.measurement_df,
-        problem.measurement_df.assign(simulationConditionId="c1")], ignore_index=True)
+        {"conditionId": ["c0", "c1"], "inert_level": [0.0, 0.0]}
+    ).set_index("conditionId")
+    problem.measurement_df = pd.concat(
+        [problem.measurement_df, problem.measurement_df.assign(simulationConditionId="c1")],
+        ignore_index=True,
+    )
     msgs = [i["message"] for i in validation._unused_condition_target_issues(problem)]
     assert not any("inert_level" in m for m in msgs), msgs
 
-    single = _problem(antimony, observable_formula="A * scale_obs", noise_formula="sd_obs",
-                      extra_params=["k_fwd"], condition_cols={"inert_level": [0.0]})
+    single = _problem(
+        antimony,
+        observable_formula="A * scale_obs",
+        noise_formula="sd_obs",
+        extra_params=["k_fwd"],
+        condition_cols={"inert_level": [0.0]},
+    )
     msgs = [i["message"] for i in validation._unused_condition_target_issues(single)]
     assert any("inert_level" in m for m in msgs), "single-condition column must still be required"
 
@@ -235,14 +281,21 @@ def test_sigma_gate_abstains_below_the_minimum_sample_size():
       A = 10; B = 0; k_fwd = 1;
     end
     """
-    problem = _problem(antimony, observable_formula="A", noise_formula="sd_obs",
-                       extra_params=["k_fwd"])
+    problem = _problem(
+        antimony, observable_formula="A", noise_formula="sd_obs", extra_params=["k_fwd"]
+    )
     below = NOISE_SIGMA_MIN_POINTS - 1
-    problem.measurement_df = pd.DataFrame([
-        {OBSERVABLE_ID: "obs_A", SIMULATION_CONDITION_ID: "c0", TIME: float(t),
-         MEASUREMENT: 1.0 + 0.1 * t}
-        for t in range(below)
-    ])
+    problem.measurement_df = pd.DataFrame(
+        [
+            {
+                OBSERVABLE_ID: "obs_A",
+                SIMULATION_CONDITION_ID: "c0",
+                TIME: float(t),
+                MEASUREMENT: 1.0 + 0.1 * t,
+            }
+            for t in range(below)
+        ]
+    )
     entry = F.noise_sigma_report(problem, {"sd_obs": 1.0}).get("sd_obs")
     assert entry is not None, "the sigma must still be REPORTED, only left unjudged"
     assert entry["n_points"] == below
@@ -252,11 +305,17 @@ def test_sigma_gate_abstains_below_the_minimum_sample_size():
     assert not F.noise_sigma_collapsed({"sd_obs": entry})
 
     # ...and with enough points the gate engages again.
-    problem.measurement_df = pd.DataFrame([
-        {OBSERVABLE_ID: "obs_A", SIMULATION_CONDITION_ID: "c0", TIME: float(t),
-         MEASUREMENT: 1.0 + 0.1 * t}
-        for t in range(NOISE_SIGMA_MIN_POINTS + 3)
-    ])
+    problem.measurement_df = pd.DataFrame(
+        [
+            {
+                OBSERVABLE_ID: "obs_A",
+                SIMULATION_CONDITION_ID: "c0",
+                TIME: float(t),
+                MEASUREMENT: 1.0 + 0.1 * t,
+            }
+            for t in range(NOISE_SIGMA_MIN_POINTS + 3)
+        ]
+    )
     entry = F.noise_sigma_report(problem, {"sd_obs": 1.0})["sd_obs"]
     assert entry["status"] != "unknown"
     assert entry["fraction_of_data_std"] is not None

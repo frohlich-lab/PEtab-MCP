@@ -98,7 +98,8 @@ def _objective_amici_model(objective):
         if model is not None:
             return model
     raise AttributeError(
-        f"{type(objective).__name__} exposes no amici_model (nor do any sub-objectives)")
+        f"{type(objective).__name__} exposes no amici_model (nor do any sub-objectives)"
+    )
 
 
 class AmiciEngine:
@@ -107,9 +108,7 @@ class AmiciEngine:
     def __init__(self, session, build_root: str | Path | None = None) -> None:
         self.session = session
         self.build_root = (
-            Path(build_root)
-            if build_root
-            else Path(tempfile.gettempdir()) / "petab_mcp_amici"
+            Path(build_root) if build_root else Path(tempfile.gettempdir()) / "petab_mcp_amici"
         )
         self.build_root.mkdir(parents=True, exist_ok=True)
         # SBML hashes pyPESTO has already built a problem for this run: it lets the fitter charge
@@ -200,7 +199,10 @@ class AmiciEngine:
                 "AMICI import starting (sbml_hash=%s, species=%d, reactions=%d); if the server "
                 "process dies during this import with no traceback, THIS is the model that "
                 "crashed it:\n%s",
-                sbml_hash, sm.getNumSpecies(), sm.getNumReactions(), ant,
+                sbml_hash,
+                sm.getNumSpecies(),
+                sm.getNumReactions(),
+                ant,
             )
         except Exception:  # noqa: BLE001 - diagnostic only, never block the build
             log.info("AMICI import starting (sbml_hash=%s); model dump unavailable", sbml_hash)
@@ -262,7 +264,9 @@ class AmiciEngine:
         rdatas = ret[PP_RDATAS]
         # pyPESTO's fval IS the negative log-likelihood it minimises.
         nllh = finite_float(ret[FVAL])
-        records = self._simulation_records(_objective_amici_model(problem.objective), {RDATAS: rdatas})
+        records = self._simulation_records(
+            _objective_amici_model(problem.objective), {RDATAS: rdatas}
+        )
         return nllh, records, self._res_from_rdatas(rdatas)
 
     def evaluate_objective(self) -> dict[str, Any]:
@@ -463,7 +467,10 @@ class AmiciEngine:
             # smaller dataset than `n_data_points` while looking like a complete one.
             self.session.logger.info(
                 "simulation: %d/%d conditions returned no usable trajectory; reporting a missing "
-                "score instead of a partial one", n_bad, len(rdatas))
+                "score instead of a partial one",
+                n_bad,
+                len(rdatas),
+            )
             return self._records_without_simulation(self.session.problem.measurement_df)
         amici_problem, flattened = amici_facing_problem(self.session)
         meas = amici_problem.measurement_df

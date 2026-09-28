@@ -24,18 +24,27 @@ import pytest
 from petab_mcp import logging_setup as L
 from petab_mcp.session import PetabSession
 
-_NAN_XDOT = ("[condition_step_30_0][AMICI:NaN] AMICI encountered a NaN value for "
-             "xdot[2] (A) at t=%f ")
+_NAN_XDOT = (
+    "[condition_step_30_0][AMICI:NaN] AMICI encountered a NaN value for xdot[2] (A) at t=%f "
+)
 
 
-def _emit(filt: L._RateLimitFilter, template: str, n: int, second: int = 1_700_000_000
-          ) -> list[str]:
+def _emit(
+    filt: L._RateLimitFilter, template: str, n: int, second: int = 1_700_000_000
+) -> list[str]:
     """Push ``n`` occurrences, all timestamped within wall-clock ``second``, through the
     filter; return the messages that survived."""
     kept = []
     for i in range(n):
-        record = logging.LogRecord("amici.sim.sundials._swig_wrappers", logging.WARNING,
-                                   __file__, 1, template, (3599.999511 + i * 1e-6,), None)
+        record = logging.LogRecord(
+            "amici.sim.sundials._swig_wrappers",
+            logging.WARNING,
+            __file__,
+            1,
+            template,
+            (3599.999511 + i * 1e-6,),
+            None,
+        )
         record.created = second + i * 1e-6  # same second, sub-second jitter like real retries
         if filt.filter(record):
             kept.append(record.getMessage())
@@ -60,9 +69,13 @@ def test_a_new_second_gets_a_fresh_budget():
 
 def _run(body: str) -> str:
     """Run ``body`` in a fresh interpreter — import order is the thing under test."""
-    out = subprocess.run([sys.executable, "-c", textwrap.dedent(body)],
-                         capture_output=True, text=True, timeout=120,
-                         env={**os.environ, "PYTHONWARNINGS": "ignore"})
+    out = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(body)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env={**os.environ, "PYTHONWARNINGS": "ignore"},
+    )
     assert out.returncode == 0, out.stderr
     return out.stdout
 
@@ -72,7 +85,8 @@ def test_configure_amici_pre_empts_amicis_own_handler():
     StreamHandler only if the `amici` logger does not exist yet. Naming it first is what makes
     ours the only one — so this breaks silently if the call ever moves after an AMICI import.
     """
-    assert _run("""
+    assert (
+        _run("""
         import logging, sys
         from petab_mcp import logging_setup as L
         assert "amici" not in sys.modules, "amici imported before configure_amici"
@@ -80,7 +94,9 @@ def test_configure_amici_pre_empts_amicis_own_handler():
         import amici.logging
         lg = logging.getLogger("amici")
         print(lg.handlers == [L._amici_handler], lg.propagate)
-    """).strip() == "True False"
+    """).strip()
+        == "True False"
+    )
 
 
 def test_a_forked_worker_inherits_the_filter():
@@ -107,9 +123,16 @@ def test_a_forked_worker_inherits_the_filter():
     assert len(out.splitlines()) <= 2 * L._AMICI_PER_SECOND
 
 
-@pytest.mark.parametrize("raw,expected", [("ERROR", logging.ERROR), ("error", logging.ERROR),
-                                          ("10", logging.DEBUG), ("", logging.WARNING),
-                                          ("VERBOSE", logging.WARNING)])
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("ERROR", logging.ERROR),
+        ("error", logging.ERROR),
+        ("10", logging.DEBUG),
+        ("", logging.WARNING),
+        ("VERBOSE", logging.WARNING),
+    ],
+)
 def test_amici_log_env_var_still_works(monkeypatch, raw, expected):
     """AMICI's own knob must survive us taking over its logger — including its NAMED form, which
     is what AMICI documents and what a person actually types. Parsing it as a bare `int` took the

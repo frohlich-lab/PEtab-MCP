@@ -23,17 +23,22 @@ def test_problem_hash_tracks_parameter_table(session):
     # identity — otherwise the fit cache / provenance would treat two different fits as one.
     sbml0, prob0 = session.sbml_hash(), session.problem_hash()
     res = O.change_parameters(
-        session, [{"parameter_id": "k1", "lower_bound": 1e-4, "upper_bound": 1e4}],
-        justification="widen k1")
+        session,
+        [{"parameter_id": "k1", "lower_bound": 1e-4, "upper_bound": 1e4}],
+        justification="widen k1",
+    )
     assert res["applied"] is True
-    assert session.sbml_hash() == sbml0        # model structure unchanged
-    assert session.problem_hash() != prob0     # parameter table changed -> problem changed
+    assert session.sbml_hash() == sbml0  # model structure unchanged
+    assert session.problem_hash() != prob0  # parameter table changed -> problem changed
 
     # ...and the edit is on the audit trail. It no longer carries before/after hashes of its own:
     # nothing read them, and the model is stored per version, so any before/after comparison is
     # recoverable from the models themselves.
-    ev = next(e for e in reversed(session.provenance.recent_events(0))
-              if e.get("operation") == "make_changes")
+    ev = next(
+        e
+        for e in reversed(session.provenance.recent_events(0))
+        if e.get("operation") == "make_changes"
+    )
     assert ev["type"] == "edit" and ev["justification"] == "widen k1"
 
 
@@ -65,7 +70,10 @@ def test_rollback_restores_and_copies_optimization(session):
     # via the store.)
     session.provenance.snapshot_version(
         model_ant=session.model.to_antimony(),
-        parameters=session.problem.parameter_df, label="fit", kind="fit")
+        parameters=session.problem.parameter_df,
+        label="fit",
+        kind="fit",
+    )
     root = session.provenance.root
     result_file = root / "cache" / "pypesto_result_xyz.hdf5"
     result_file.parent.mkdir(parents=True, exist_ok=True)
@@ -73,12 +81,15 @@ def test_rollback_restores_and_copies_optimization(session):
     session.provenance.snapshot_version(
         model_ant=session.model.to_antimony(),
         parameters=session.problem.parameter_df,
-        label="fit", kind="alteration",
+        label="fit",
+        kind="alteration",
         optimization={
             "n_starts": 2,
             "starts": [{"start": 0, "fval": 1.0}, {"start": 1, "fval": 4.0}],
-            "trace": [{"start": 0, "iteration": 0, "fval": 9.0},
-                      {"start": 0, "iteration": 1, "fval": 1.0}],
+            "trace": [
+                {"start": 0, "iteration": 0, "fval": 9.0},
+                {"start": 0, "iteration": 1, "fval": 1.0},
+            ],
             "result_file": str(result_file),
         },
     )

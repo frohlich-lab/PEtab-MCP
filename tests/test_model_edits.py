@@ -22,29 +22,34 @@ from petab_mcp import model_edits as me
 from petab_mcp.operations import OperationError
 from petab_mcp.references import StubReferenceResolver
 
-SRC = ("model demo\n"
-       "  compartment cell = 1;\n"
-       "  species A in cell, B in cell;\n"
-       "  A = 1; B = 0;\n"
-       "  k1 = 0.5; k2 = 0.1;\n"
-       "  fwd: A => B; k1*A;\n"
-       "  rev: B => A; k2*B;\n"
-       "end\n")
+SRC = (
+    "model demo\n"
+    "  compartment cell = 1;\n"
+    "  species A in cell, B in cell;\n"
+    "  A = 1; B = 0;\n"
+    "  k1 = 0.5; k2 = 0.1;\n"
+    "  fwd: A => B; k1*A;\n"
+    "  rev: B => A; k2*B;\n"
+    "end\n"
+)
 
 
 # ------------------------------------------------------------------ the operations themselves
 def test_a_batch_applies_in_order_and_reports_what_it_did():
     """The summary IS the diff, pre-classified. Every earlier analysis had to reconstruct this
     from re-rendered text with id/regex heuristics, and four of those reported artifacts."""
-    out, summary = me.apply_model_edits(SRC, [
-        {"op": "set_rate_law", "id": "fwd", "antimony": "k1*A/(Km + A)"},
-        {"op": "add_reaction", "antimony": "deg: B =>; kdeg*B;"},
-        {"op": "set_initial", "id": "k1", "antimony": 2.0},
-    ])
+    out, summary = me.apply_model_edits(
+        SRC,
+        [
+            {"op": "set_rate_law", "id": "fwd", "antimony": "k1*A/(Km + A)"},
+            {"op": "add_reaction", "antimony": "deg: B =>; kdeg*B;"},
+            {"op": "set_initial", "id": "k1", "antimony": 2.0},
+        ],
+    )
     assert summary == ["set rate law of fwd", "added reaction deg", "set k1 = 2.0"]
     assert "fwd: A => B; k1*A/(Km + A);" in out
     assert "deg: B =>; kdeg*B;" in out
-    assert out.strip().endswith("end")            # nothing emitted past the model body
+    assert out.strip().endswith("end")  # nothing emitted past the model body
 
 
 def test_an_unknown_reaction_names_the_valid_ids():
@@ -56,10 +61,13 @@ def test_an_unknown_reaction_names_the_valid_ids():
 
 def test_the_batch_is_all_or_nothing_and_names_the_failing_index():
     with pytest.raises(OperationError, match=r"model_edits\[1\].*NOTHING was applied"):
-        me.apply_model_edits(SRC, [
-            {"op": "set_rate_law", "id": "fwd", "antimony": "k1*A*A"},
-            {"op": "remove_reaction", "id": "ghost"},
-        ])
+        me.apply_model_edits(
+            SRC,
+            [
+                {"op": "set_rate_law", "id": "fwd", "antimony": "k1*A*A"},
+                {"op": "remove_reaction", "id": "ghost"},
+            ],
+        )
 
 
 def test_rename_covers_the_parameter_merge_case():
@@ -104,9 +112,13 @@ def tool_env(tmp_path, monkeypatch):
     work.mkdir()
     for f in DATA_DIR.iterdir():
         shutil.copy(f, work / f.name)
-    mcp = create_server(str(work / "problem.yaml"), provenance_dir=str(tmp_path / "prov"),
-                        build_root=str(tmp_path / "amici"),
-                        resolver=StubReferenceResolver(), auto_fit=True)
+    mcp = create_server(
+        str(work / "problem.yaml"),
+        provenance_dir=str(tmp_path / "prov"),
+        build_root=str(tmp_path / "amici"),
+        resolver=StubReferenceResolver(),
+        auto_fit=True,
+    )
     return mcp, tmp_path / "prov"
 
 
@@ -114,24 +126,34 @@ def test_one_call_one_fit_one_version_however_many_operations(tool_env):
     """The batching contract, and the reason it is not optional: an unbatched surface would pay
     a full multistart per operation."""
     mcp, prov = tool_env
-    res = _call(mcp, "make_changes", {
-        "justification": "a mechanism plus the rate law it forces",
-        "model_edits": [
-            {"op": "set_rate_law", "id": "r1", "antimony": "k1*A/(1 + A)"},
-            {"op": "add_reaction", "antimony": "sink: B =>; k_sink*B;"},
-        ]})
+    res = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "a mechanism plus the rate law it forces",
+            "model_edits": [
+                {"op": "set_rate_law", "id": "r1", "antimony": "k1*A/(1 + A)"},
+                {"op": "add_reaction", "antimony": "sink: B =>; k_sink*B;"},
+            ],
+        },
+    )
     assert res["applied"] is True and res["committed"] is True
     assert res["model_edits_applied"] == ["set rate law of r1", "added reaction sink"]
-    assert len(list((prov / "versions").glob("v*"))) == 1        # ONE version for two operations
+    assert len(list((prov / "versions").glob("v*"))) == 1  # ONE version for two operations
 
 
 def test_operations_edit_the_source_not_the_render(tool_env):
     """No anchor, so nothing to keep in sync with the server's re-render — and the stored source
     is the caller's text plus its operations, which is what makes lineage checkable."""
     mcp, prov = tool_env
-    res = _call(mcp, "make_changes", {
-        "justification": "structured change",
-        "model_edits": [{"op": "add_reaction", "antimony": "sink: B =>; k_sink*B;"}]})
+    res = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "structured change",
+            "model_edits": [{"op": "add_reaction", "antimony": "sink: B =>; k_sink*B;"}],
+        },
+    )
     src = (prov / "versions" / f"v{res['version']}" / "model_source.ant").read_text()
     assert "sink: B =>; k_sink*B;" in src
     # the derived declaration the substring surface kept tripping over is simply not in play
@@ -141,20 +163,30 @@ def test_operations_edit_the_source_not_the_render(tool_env):
 def test_a_bad_id_costs_one_rejection_and_no_fit(tool_env):
     mcp, prov = tool_env
     before = len(list((prov / "versions").glob("v*")))
-    res = _call(mcp, "make_changes", {
-        "justification": "wrong id",
-        "model_edits": [{"op": "set_rate_law", "id": "not_a_reaction", "antimony": "k1*A"}]})
+    res = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "wrong id",
+            "model_edits": [{"op": "set_rate_law", "id": "not_a_reaction", "antimony": "k1*A"}],
+        },
+    )
     assert res["applied"] is False
-    assert "Existing:" in (res.get("error") or "")           # says what the valid ids are
+    assert "Existing:" in (res.get("error") or "")  # says what the valid ids are
     assert len(list((prov / "versions").glob("v*"))) == before
 
 
 def test_only_one_model_route_per_call(tool_env):
     mcp, _ = tool_env
-    res = _call(mcp, "make_changes", {
-        "justification": "two routes",
-        "antimony": "model m\nend",
-        "model_edits": [{"op": "remove_reaction", "id": "r1"}]})
+    res = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "two routes",
+            "antimony": "model m\nend",
+            "model_edits": [{"op": "remove_reaction", "id": "r1"}],
+        },
+    )
     assert res["applied"] is False
     assert "ONE model route" in (res.get("error") or "")
 
@@ -163,20 +195,37 @@ def test_a_fork_applies_operations_to_that_versions_source(tool_env):
     """`base_version` + `model_edits`: fork and change in one call, with the operations applied
     to the forked version's own source rather than to HEAD."""
     mcp, prov = tool_env
-    v0 = _call(mcp, "make_changes", {
-        "justification": "v0", "model_edits": [
-            {"op": "add_reaction", "antimony": "sink: B =>; k_sink*B;"}]})
-    _v1 = _call(mcp, "make_changes", {
-        "justification": "v1", "model_edits": [
-            {"op": "add_reaction", "antimony": "src2: => A; k_src;"}]})
-    v2 = _call(mcp, "make_changes", {
-        "justification": "fork from v0", "base_version": v0["version"],
-        "model_edits": [{"op": "set_rate_law", "id": "sink", "antimony": "k_sink*B*B"}]})
+    v0 = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "v0",
+            "model_edits": [{"op": "add_reaction", "antimony": "sink: B =>; k_sink*B;"}],
+        },
+    )
+    _v1 = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "v1",
+            "model_edits": [{"op": "add_reaction", "antimony": "src2: => A; k_src;"}],
+        },
+    )
+    v2 = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "fork from v0",
+            "base_version": v0["version"],
+            "model_edits": [{"op": "set_rate_law", "id": "sink", "antimony": "k_sink*B*B"}],
+        },
+    )
     assert v2["committed"] is True
     src2 = (prov / "versions" / f"v{v2['version']}" / "model_source.ant").read_text()
     assert "k_sink*B*B" in src2
     assert "src2" not in src2, "the fork picked up v1's change — it did not branch from v0"
     import json
+
     meta = json.loads((prov / "versions" / f"v{v2['version']}" / "meta.json").read_text())
     assert meta["parent"] == v0["version"]
 
@@ -187,8 +236,10 @@ def test_set_initial_does_not_eat_a_reaction_that_comes_first():
     reactions BEFORE species initialisations — so on the standard text this rewrote the reaction
     into an assignment and destroyed it. The original test missed it only because its fixture
     happened to put the assignments above the reactions."""
-    src = ("model demo\n  // Reactions:\n  fwd: A => B; k1*A;\n\n"
-           "  // Species initializations:\n  A = 1;\n  B = 0;\nend\n")
+    src = (
+        "model demo\n  // Reactions:\n  fwd: A => B; k1*A;\n\n"
+        "  // Species initializations:\n  A = 1;\n  B = 0;\nend\n"
+    )
     out, _ = me.apply_model_edits(src, [{"op": "set_initial", "id": "A", "antimony": 5}])
     assert "fwd: A => B; k1*A;" in out, "the reaction was destroyed"
     assert "A = 5;" in out
@@ -236,10 +287,13 @@ def test_arm_off_keeps_the_baseline_make_changes_schema(tmp_path, monkeypatch):
         work.mkdir()
         for f in DATA_DIR.iterdir():
             shutil.copy(f, work / f.name)
-        mcp = create_server(str(work / "problem.yaml"),
-                            provenance_dir=str(tmp_path / f"prov_{flag}"),
-                            build_root=str(tmp_path / f"amici_{flag}"),
-                            resolver=StubReferenceResolver(), auto_fit=False)
+        mcp = create_server(
+            str(work / "problem.yaml"),
+            provenance_dir=str(tmp_path / f"prov_{flag}"),
+            build_root=str(tmp_path / f"amici_{flag}"),
+            resolver=StubReferenceResolver(),
+            auto_fit=False,
+        )
         tool = asyncio.run(mcp.get_tool("make_changes"))
         return set(tool.parameters.get("properties", {}))
 
@@ -262,9 +316,15 @@ def test_base_version_alone_is_rejected_naming_no_withheld_tool(tool_env):
 
 def test_an_unknown_base_version_is_a_clean_rejection(tool_env):
     mcp, _ = tool_env
-    res = _call(mcp, "make_changes", {
-        "justification": "fork a version that does not exist", "base_version": 99,
-        "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "k1*A"}]})
+    res = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "fork a version that does not exist",
+            "base_version": 99,
+            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "k1*A"}],
+        },
+    )
     assert res["applied"] is False
     assert "No such version" in (res.get("error") or "")
 
@@ -280,10 +340,13 @@ def test_a_bare_call_names_only_arguments_the_caller_can_send(tmp_path, monkeypa
         work.mkdir()
         for f in DATA_DIR.iterdir():
             shutil.copy(f, work / f.name)
-        mcp = create_server(str(work / "problem.yaml"),
-                            provenance_dir=str(tmp_path / f"bprov_{flag}"),
-                            build_root=str(tmp_path / f"bamici_{flag}"),
-                            resolver=StubReferenceResolver(), auto_fit=False)
+        mcp = create_server(
+            str(work / "problem.yaml"),
+            provenance_dir=str(tmp_path / f"bprov_{flag}"),
+            build_root=str(tmp_path / f"bamici_{flag}"),
+            resolver=StubReferenceResolver(),
+            auto_fit=False,
+        )
         res = _call(mcp, "make_changes", {"justification": "bare call"})
         assert res["applied"] is False
         return res.get("error") or ""
@@ -302,18 +365,24 @@ def test_every_rejection_reports_a_DISTINCT_machine_readable_cause(tool_env):
     mcp, _ = tool_env
     whole = _call(mcp, "get_model", {})["result"]
     cases = {
-        "unknown_reaction_id": {"model_edits": [{"op": "set_rate_law", "id": "nope",
-                                                 "antimony": "k1*A"}]},
-        "duplicate_reaction_id": {"model_edits": [{"op": "add_reaction", "antimony": "r1: A => B; k1*A;"}]},
+        "unknown_reaction_id": {
+            "model_edits": [{"op": "set_rate_law", "id": "nope", "antimony": "k1*A"}]
+        },
+        "duplicate_reaction_id": {
+            "model_edits": [{"op": "add_reaction", "antimony": "r1: A => B; k1*A;"}]
+        },
         # (an unknown `op` never reaches the server: the pydantic Literal rejects it
         #  client-side, which is a stricter guarantee than a cause label)
         "rename_target_missing": {"model_edits": [{"op": "rename", "old": "zzz", "new": "q"}]},
         # A redundant `id` that MATCHES the statement is accepted (it states the same thing
         # twice); only a DIFFERING one is ambiguous about which name later ops address.
-        "id_mismatch": {"model_edits": [{"op": "add_reaction", "id": "not_r9",
-                                         "antimony": "r9: A => B; k1*A;"}]},
-        "route_conflict": {"antimony": whole,
-                           "model_edits": [{"op": "remove_reaction", "id": "r1"}]},
+        "id_mismatch": {
+            "model_edits": [{"op": "add_reaction", "id": "not_r9", "antimony": "r9: A => B; k1*A;"}]
+        },
+        "route_conflict": {
+            "antimony": whole,
+            "model_edits": [{"op": "remove_reaction", "id": "r1"}],
+        },
     }
     got = {}
     for expected, args in cases.items():
@@ -328,9 +397,14 @@ def test_a_rejected_batch_does_not_write_the_operations_into_the_error_log(tool_
     archive — so a rejected batch must log a COUNT, not the operations."""
     mcp, prov = tool_env
     marker = "UNIQUE_MARKER_" + "x" * 400
-    res = _call(mcp, "make_changes", {
-        "justification": "rejected batch",
-        "model_edits": [{"op": "set_rate_law", "id": "nope", "antimony": marker}]})
+    res = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "rejected batch",
+            "model_edits": [{"op": "set_rate_law", "id": "nope", "antimony": marker}],
+        },
+    )
     assert res["applied"] is False
     log = prov / "errors.jsonl"
     assert log.is_file(), "the rejection was not logged at all — this guard would be vacuous"
@@ -344,21 +418,22 @@ def test_the_matcher_handles_the_rate_laws_biology_actually_uses():
     in the field. It surfaced as a fork failing with "no reaction 'r1'. Existing: r2" against a
     source that plainly contained r1."""
     shapes = {
-        "division":      "  r1: A => B; (k1/2 + k1/2)*A;",
-        "michaelis":     "  mm: S => P; Vmax*S/(Km + S);",
-        "hill":          "  h: A => B; k*A^n/(K^n + A^n);",
-        "no semicolon":  "  r2: B -> A; kr*B",
-        "line comment":  "  r3: A => C; k3*A;  // note",
+        "division": "  r1: A => B; (k1/2 + k1/2)*A;",
+        "michaelis": "  mm: S => P; Vmax*S/(Km + S);",
+        "hill": "  h: A => B; k*A^n/(K^n + A^n);",
+        "no semicolon": "  r2: B -> A; kr*B",
+        "line comment": "  r3: A => C; k3*A;  // note",
         "block comment": "  r4: C => A; k4*C; /* note */",
-        "both":          "  r5: A => D; k*A/(Km+A); // saturating",
+        "both": "  r5: A => D; k*A/(Km+A); // saturating",
     }
     for name, line in shapes.items():
         ids = me.reaction_ids(f"model d\n{line}\nend\n")
         assert len(ids) == 1, f"{name}: {line!r} was not recognised as a reaction ({ids})"
     # and the law survives an edit intact
     src = "model d\n  mm: S => P; Vmax*S/(Km + S);\nend\n"
-    out, _ = me.apply_model_edits(src, [{"op": "set_rate_law", "id": "mm",
-                                         "antimony": "Vmax*S/(Km + S + S^2/Ki)"}])
+    out, _ = me.apply_model_edits(
+        src, [{"op": "set_rate_law", "id": "mm", "antimony": "Vmax*S/(Km + S + S^2/Ki)"}]
+    )
     assert "mm: S => P; Vmax*S/(Km + S + S^2/Ki);" in out
 
 
@@ -369,8 +444,9 @@ def test_several_statements_on_one_line_stay_addressable():
     src = "model m\n  fwd: A => B; k1*A; rev: B => A; k2*B;\nend\n"
     assert me.reaction_ids(src) == ["fwd", "rev"]
     # editing one leaves the other alone, on the same line
-    out, _ = me.apply_model_edits(src, [{"op": "set_rate_law", "id": "rev",
-                                         "antimony": "k2*B/(Km+B)"}])
+    out, _ = me.apply_model_edits(
+        src, [{"op": "set_rate_law", "id": "rev", "antimony": "k2*B/(Km+B)"}]
+    )
     assert "fwd: A => B; k1*A;" in out and "rev: B => A; k2*B/(Km+B);" in out
     # and removing one keeps the other
     out2, _ = me.apply_model_edits(src, [{"op": "remove_reaction", "id": "fwd"}])
@@ -391,8 +467,9 @@ def test_the_assigned_symbol_remedy_sees_symbols_sharing_a_line():
     for it sends the caller back to guessing — the retry loop the list exists to end."""
     assert me.assigned_symbols("model m\n  A = 1; B = 0;\nend") == ["A", "B"]
     with pytest.raises(OperationError) as ei:
-        me.apply_model_edits("model m\n  A = 1; B = 0;\nend\n",
-                             [{"op": "set_initial", "id": "Aa", "antimony": "5"}])
+        me.apply_model_edits(
+            "model m\n  A = 1; B = 0;\nend\n", [{"op": "set_initial", "id": "Aa", "antimony": "5"}]
+        )
     assert "A, B" in str(ei.value) and "Did you mean 'A'" in str(ei.value)
 
 
@@ -401,8 +478,10 @@ def test_rename_will_not_rewrite_antimony_syntax():
     `{old: 'const'}` passed every other guard and rewrote the declaration `const k1, k2;`, which
     breaks the model on the next reconcile and reports success."""
     src = "model m\n  const k1, k2;\n  r1: A => B; k1*A;\nend\n"
-    for bad, why in (({"op": "rename", "old": "const", "new": "konst"}, "keyword"),
-                     ({"op": "rename", "old": "k1;x", "new": "k2"}, "not an identifier")):
+    for bad, why in (
+        ({"op": "rename", "old": "const", "new": "konst"}, "keyword"),
+        ({"op": "rename", "old": "k1;x", "new": "k2"}, "not an identifier"),
+    ):
         with pytest.raises(OperationError) as ei:
             me.apply_model_edits(src, [bad])
         assert "NOTHING was applied" in str(ei.value), why
@@ -417,8 +496,10 @@ def test_set_initial_on_a_reconcile_minted_init_parameter_says_which_surface_own
     parameter table is not confused about its model; it is seeing a symbol the text really does
     not contain, so the error has to say where that symbol lives."""
     with pytest.raises(OperationError) as ei:
-        me.apply_model_edits("model m\n  r1: EGFR => pEGFR; k*EGFR;\nend\n",
-                             [{"op": "set_initial", "id": "EGFR_init", "antimony": "5"}])
+        me.apply_model_edits(
+            "model m\n  r1: EGFR => pEGFR; k*EGFR;\nend\n",
+            [{"op": "set_initial", "id": "EGFR_init", "antimony": "5"}],
+        )
     msg = str(ei.value)
     assert "parameter table" in msg and "`parameters`" in msg
 
@@ -455,8 +536,10 @@ def test_no_operation_reads_or_writes_inside_a_comment():
     assert "A = 9;" in out and "A = 3;" not in out, "the real assignment must be the one edited"
     # and a symbol that exists ONLY in a comment is not in the model
     with pytest.raises(OperationError, match="does not occur in the model"):
-        me.apply_model_edits("model m()\n  // kcat is the turnover number\n  r1: A->B; k1*A;\nend",
-                             [{"op": "rename", "old": "kcat", "new": "kturn"}])
+        me.apply_model_edits(
+            "model m()\n  // kcat is the turnover number\n  r1: A->B; k1*A;\nend",
+            [{"op": "rename", "old": "kcat", "new": "kturn"}],
+        )
 
 
 def test_rename_refuses_a_keyword_on_EITHER_side():
@@ -464,8 +547,10 @@ def test_rename_refuses_a_keyword_on_EITHER_side():
     across the whole model. `{new: 'const'}` yields `const const;`, which fails the next reconcile
     with an opaque Antimony error and burns the batch."""
     src = "model m()\n  const k1;\n  r1: A -> B; k1*A;\n  k1 = 0.5;\nend\n"
-    for bad in ({"op": "rename", "old": "const", "new": "konst"},
-                {"op": "rename", "old": "k1", "new": "const"}):
+    for bad in (
+        {"op": "rename", "old": "const", "new": "konst"},
+        {"op": "rename", "old": "k1", "new": "const"},
+    ):
         with pytest.raises(OperationError, match="Antimony syntax"):
             me.apply_model_edits(src, [bad])
 
@@ -483,8 +568,9 @@ def test_add_reaction_keeps_a_trailing_comment_and_refuses_smuggled_statements()
     """Reassembling the statement from parsed groups silently dropped whatever else was in the
     field. Carry the comment; refuse the extra statement rather than discard it."""
     src = "model m()\n  r1: A->B; k1*A;\nend\n"
-    out, _ = me.apply_model_edits(src, [{"op": "add_reaction",
-                                         "antimony": "r2: B -> C; k2*B; // reverse of r1"}])
+    out, _ = me.apply_model_edits(
+        src, [{"op": "add_reaction", "antimony": "r2: B -> C; k2*B; // reverse of r1"}]
+    )
     assert "// reverse of r1" in out
     with pytest.raises(OperationError, match="beyond the reaction statement"):
         me.apply_model_edits(src, [{"op": "add_reaction", "antimony": "r3: A->C; k*A; k = 5;"}])
@@ -496,9 +582,11 @@ def test_rename_refuses_time_and_the_math_builtins():
     every gated input goes constant while the model still compiles and fits. The one code path
     that can cause that failure directly was the only place not guarding against it."""
     src = "model m\n  r1: A -> B; k1*A*piecewise(0, time < t0, 1);\nend"
-    for bad in ({"op": "rename", "old": "time", "new": "tau"},
-                {"op": "rename", "old": "k1", "new": "exp"},
-                {"op": "rename", "old": "k1", "new": "time"}):
+    for bad in (
+        {"op": "rename", "old": "time", "new": "tau"},
+        {"op": "rename", "old": "k1", "new": "exp"},
+        {"op": "rename", "old": "k1", "new": "time"},
+    ):
         with pytest.raises(OperationError) as ei:
             me.apply_model_edits(src, [bad])
         assert "NOTHING was applied" in str(ei.value)
@@ -512,8 +600,11 @@ def test_a_time_gated_rate_law_stays_addressable():
     every operation AND falsely reported as unnamed — meaning the wholesale path rejected exactly
     the time-gated models the isensee/raimundez prompts instruct the agent to write. Same class as
     the `/` exclusion that broke every saturating law."""
-    for law in ("k1*A*piecewise(0, time >= t0, 1)", "k1*A*piecewise(0, time <= t0, 1)",
-                "k1*A*piecewise(0, time < t0, 1)"):
+    for law in (
+        "k1*A*piecewise(0, time >= t0, 1)",
+        "k1*A*piecewise(0, time <= t0, 1)",
+        "k1*A*piecewise(0, time < t0, 1)",
+    ):
         src = f"model m\n  r1: A -> B; {law};\nend"
         assert me.reaction_ids(src) == ["r1"], law
         assert me.unnamed_reactions(src) == [], law
@@ -532,8 +623,9 @@ def test_add_reaction_inserts_inside_the_model_and_after_a_multiline_reaction():
     assert me.reaction_ids(out) == ["r1", "r2"], out
     assert "r1: A -> B;\n    k1*A;" in out, "r1 lost its rate law"
     inline_end = "model m\n  A = 1; r1: A -> B; k1*A; end"
-    out2, _ = me.apply_model_edits(inline_end, [{"op": "add_reaction",
-                                                 "antimony": "r2: B -> C; k2*B;"}])
+    out2, _ = me.apply_model_edits(
+        inline_end, [{"op": "add_reaction", "antimony": "r2: B -> C; k2*B;"}]
+    )
     assert me.reaction_ids(out2) == ["r1", "r2"]
     assert out2.index("r2:") < out2.rindex("end"), "inserted outside the model block"
 
@@ -566,24 +658,20 @@ def test_add_reaction_targets_the_model_block_not_a_preceding_function():
     """Antimony allows `function ... end` before the model. Anchoring on the FIRST `end` in the
     source put the new reaction inside the function body and still reported "added reaction" —
     libantimony then either resolves it in the wrong namespace or fails opaquely at reconcile."""
-    src = ("function hill(x, k, n)\n  x^n/(k^n + x^n);\nend\n\n"
-           "model m()\n  r1: A -> B; k1*A;\nend\n")
-    out, _ = me.apply_model_edits(src, [{"op": "add_reaction",
-                                         "antimony": "r2: B -> C; k2*B;"}])
-    fn_body = out[out.index("function"):out.index("model")]
+    src = "function hill(x, k, n)\n  x^n/(k^n + x^n);\nend\n\nmodel m()\n  r1: A -> B; k1*A;\nend\n"
+    out, _ = me.apply_model_edits(src, [{"op": "add_reaction", "antimony": "r2: B -> C; k2*B;"}])
+    fn_body = out[out.index("function") : out.index("model")]
     assert "r2" not in fn_body, f"reaction landed in the function block:\n{out}"
-    assert "r2: B -> C" in out[out.index("model"):]
+    assert "r2: B -> C" in out[out.index("model") :]
 
 
 def test_add_reaction_targets_the_model_block_with_no_reactions_yet():
     """Same trap on the FIRST reaction of a model, where there is no reaction to anchor on: the
     terminator search starts after the `model` header rather than at offset 0."""
-    src = ("function hill(x, k, n)\n  x^n/(k^n + x^n);\nend\n\n"
-           "model m()\n  A = 1;\nend\n")
-    out, _ = me.apply_model_edits(src, [{"op": "add_reaction",
-                                         "antimony": "r2: B -> C; k2*B;"}])
-    assert "r2" not in out[out.index("function"):out.index("model")]
-    assert "r2: B -> C" in out[out.index("model"):]
+    src = "function hill(x, k, n)\n  x^n/(k^n + x^n);\nend\n\nmodel m()\n  A = 1;\nend\n"
+    out, _ = me.apply_model_edits(src, [{"op": "add_reaction", "antimony": "r2: B -> C; k2*B;"}])
+    assert "r2" not in out[out.index("function") : out.index("model")]
+    assert "r2: B -> C" in out[out.index("model") :]
 
 
 # ------------------------------------------------- reserved / colliding ids (third review pass)
@@ -604,7 +692,8 @@ def test_add_reaction_refuses_a_reserved_id_parsed_from_the_statement(rid):
 def test_add_reaction_still_accepts_an_ordinary_id():
     """The guard must not start refusing normal names — `at_rate` merely CONTAINS a keyword."""
     out, summary = me.apply_model_edits(
-        SRC, [{"op": "add_reaction", "antimony": "at_rate: A => B; k1*A;"}])
+        SRC, [{"op": "add_reaction", "antimony": "at_rate: A => B; k1*A;"}]
+    )
     assert summary == ["added reaction at_rate"]
     assert "at_rate: A => B; k1*A;" in out
 
@@ -634,8 +723,9 @@ def test_add_reaction_into_a_SINGLE_LINE_model_block():
     reaction outside the model. Only bites when the model declares no reactions yet, which is
     exactly the from-scratch authoring case."""
     src = "model m() end\n"
-    out, summary = me.apply_model_edits(src, [
-        {"op": "add_reaction", "antimony": "r1: A => B; k1*A;"}])
+    out, summary = me.apply_model_edits(
+        src, [{"op": "add_reaction", "antimony": "r1: A => B; k1*A;"}]
+    )
     assert summary == ["added reaction r1"]
     body, _, tail = out.partition("end")
     assert "r1: A => B; k1*A;" in body, f"reaction landed outside the model block: {out!r}"
@@ -644,8 +734,7 @@ def test_add_reaction_into_a_SINGLE_LINE_model_block():
 def test_add_reaction_into_a_starred_model_header():
     """libantimony emits `model *name()`; the header match has to survive the star."""
     src = "model *m()\nend\n"
-    out, _ = me.apply_model_edits(src, [
-        {"op": "add_reaction", "antimony": "r1: A => B; k1*A;"}])
+    out, _ = me.apply_model_edits(src, [{"op": "add_reaction", "antimony": "r1: A => B; k1*A;"}])
     body, _, _ = out.partition("end")
     assert "r1: A => B; k1*A;" in body, f"reaction landed outside the model block: {out!r}"
 
@@ -653,7 +742,8 @@ def test_add_reaction_into_a_starred_model_header():
 # ------------------------------------------------------------------ set_assignment (readouts)
 def test_set_assignment_creates_a_rule_inside_the_model_block():
     out, summary = me.apply_model_edits(
-        SRC, [{"op": "set_assignment", "id": "readout_total", "antimony": "A + B"}])
+        SRC, [{"op": "set_assignment", "id": "readout_total", "antimony": "A + B"}]
+    )
     assert summary == ["set assignment readout_total := A + B"]
     body, _, _ = out.partition("end")
     assert "readout_total := A + B;" in body
@@ -663,9 +753,11 @@ def test_set_assignment_replaces_an_existing_rule_in_place():
     """Re-defining a readout must not leave two `:=` statements — Antimony would reject the
     redefinition opaquely."""
     once, _ = me.apply_model_edits(
-        SRC, [{"op": "set_assignment", "id": "readout_total", "antimony": "A + B"}])
+        SRC, [{"op": "set_assignment", "id": "readout_total", "antimony": "A + B"}]
+    )
     twice, summary = me.apply_model_edits(
-        once, [{"op": "set_assignment", "id": "readout_total", "antimony": "2*B"}])
+        once, [{"op": "set_assignment", "id": "readout_total", "antimony": "2*B"}]
+    )
     assert summary == ["set assignment readout_total := 2*B"]
     assert twice.count(":=") == 1 and "readout_total := 2*B;" in twice
 

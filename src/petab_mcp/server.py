@@ -77,6 +77,7 @@ SERVER_INSTRUCTIONS = (
     "refits to the same result, and appends a duplicate."
 )
 
+
 def _diff_edits_enabled() -> bool:
     """The `diff_edits` arm, read from the environment.
 
@@ -99,7 +100,11 @@ def _diff_edits_enabled() -> bool:
     # it. tests/test_ablations.py::test_the_diff_edits_server_gate_agrees_with_the_registry pins
     # the pair, including the env-unset case; if the registry default flips, flip it here too.
     return os.environ.get("PETAB_DIFF_EDITS", "1").strip().lower() not in (
-        "0", "false", "no", "off")
+        "0",
+        "false",
+        "no",
+        "off",
+    )
 
 
 # Appended to the instructions only when skills are actually registered, so clients
@@ -133,7 +138,7 @@ class ParameterChange(BaseModel):
 
     parameter_id: str = Field(
         description="id of the parameter to change — an existing row, or one this same call's "
-                    "`antimony` introduces."
+        "`antimony` introduces."
     )
     lower_bound: float | None = Field(
         default=None, description="new lower bound of the estimation interval."
@@ -156,25 +161,30 @@ class ModelOp(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    op: Literal["add_reaction", "remove_reaction", "set_rate_law",
-                "set_initial", "set_assignment", "remove_assignment", "rename"] = Field(
-        description="which change to make."
-    )
+    op: Literal[
+        "add_reaction",
+        "remove_reaction",
+        "set_rate_law",
+        "set_initial",
+        "set_assignment",
+        "remove_assignment",
+        "rename",
+    ] = Field(description="which change to make.")
     id: str | None = Field(
         default=None,
         description="the reaction id (remove_reaction, set_rate_law) or symbol id "
-                    "(set_initial, set_assignment, remove_assignment). add_reaction takes its id from "
-                    "the statement itself; "
-                    "repeating the same id is accepted, a differing one is refused."
+        "(set_initial, set_assignment, remove_assignment). add_reaction takes its id from "
+        "the statement itself; "
+        "repeating the same id is accepted, a differing one is refused.",
     )
     antimony: str | None = Field(
         default=None,
         description="the content, written as Antimony: for add_reaction one NAMED statement "
-                    "('transfer: X1 => X2; k*u*X1;'), for set_rate_law the rate "
-                    "law ('k*u*X1'), for set_initial the value ('5', or a symbol like "
-                    "'X1_init' to keep it estimated), for set_assignment the expression the "
-                    "symbol equals at ALL times ('X2 + X3') — the op behind readout_* "
-                    "measurement mappings."
+        "('transfer: X1 => X2; k*u*X1;'), for set_rate_law the rate "
+        "law ('k*u*X1'), for set_initial the value ('5', or a symbol like "
+        "'X1_init' to keep it estimated), for set_assignment the expression the "
+        "symbol equals at ALL times ('X2 + X3') — the op behind readout_* "
+        "measurement mappings.",
     )
     old: str | None = Field(default=None, description="rename only: the current symbol name.")
     new: str | None = Field(default=None, description="rename only: the replacement name.")
@@ -197,7 +207,7 @@ def _unwrap_listish(v: Any) -> Any:
     """Coerce the known malformed encodings of a JSON array back to a list; pass anything else
     through untouched so real validation errors still surface as themselves."""
     if isinstance(v, dict) and len(v) == 1:
-        (key, inner), = v.items()
+        ((key, inner),) = v.items()
         if key in _LIST_WRAPPER_KEYS and isinstance(inner, list):
             return inner
     if isinstance(v, str):
@@ -223,8 +233,7 @@ def _parameter_entries(parameters: Any) -> list[dict[str, Any]] | None:
     if parameters is None:
         return None
     return [
-        p.model_dump(exclude_none=True) if isinstance(p, ParameterChange) else p
-        for p in parameters
+        p.model_dump(exclude_none=True) if isinstance(p, ParameterChange) else p for p in parameters
     ]
 
 
@@ -235,9 +244,8 @@ def _shorten(value: Any, limit: int = 200, _depth: int = 0) -> Any:
     at class scope, so every container argument raised NameError from inside the error logger.)
     """
     if isinstance(value, str):
-        return (value[:limit] + f"… (+{len(value) - limit} chars)") if len(value) > limit \
-            else value
-    if _depth >= 3:                # containers this deep are not worth walking for a log line
+        return (value[:limit] + f"… (+{len(value) - limit} chars)") if len(value) > limit else value
+    if _depth >= 3:  # containers this deep are not worth walking for a log line
         return "…"
     if isinstance(value, (list, tuple)):
         head = [_shorten(v, limit, _depth + 1) for v in value[:5]]
@@ -272,9 +280,12 @@ def unknown_ids_message(unknown: list, known_ids: list[str]) -> str:
             hints.append(f"{u} -> {' or '.join(repr(c) for c in close)}")
     suggest = f" Did you mean: {'; '.join(hints)}." if hints else ""
     known = ", ".join(known_ids[:_ID_LIST_CAP])
-    more = ("" if len(known_ids) <= _ID_LIST_CAP else
-            f", (+{len(known_ids) - _ID_LIST_CAP} more — call get_parameters() with no "
-            f"parameter_ids for the whole table)")
+    more = (
+        ""
+        if len(known_ids) <= _ID_LIST_CAP
+        else f", (+{len(known_ids) - _ID_LIST_CAP} more — call get_parameters() with no "
+        f"parameter_ids for the whole table)"
+    )
     return f"get_parameters: unknown parameter_ids {unknown}.{suggest} Known ids: [{known}{more}]."
 
 
@@ -325,10 +336,17 @@ class _Ctx:
         try:
             return fn(*args)
         except PetabMcpError as exc:
-            self.log_error(op_name, {"args": [self.short(a) for a in args if isinstance(a, (str, int, float, list))]}, exc)
+            self.log_error(
+                op_name,
+                {"args": [self.short(a) for a in args if isinstance(a, (str, int, float, list))]},
+                exc,
+            )
             self.session.logger.warning("operation %s rejected: %s", op_name, exc)
-            out = {"applied": False, "error": str(exc),
-                   "messages": msg_mod.errors_from_exception(msg_mod.SOURCE_EDIT, exc)}
+            out = {
+                "applied": False,
+                "error": str(exc),
+                "messages": msg_mod.errors_from_exception(msg_mod.SOURCE_EDIT, exc),
+            }
             if getattr(exc, "issues", None):
                 out["issues"] = exc.issues
             # Carry a machine-readable rejection class when the raiser set one, exactly as
@@ -356,8 +374,11 @@ class _Ctx:
         except PetabMcpError as exc:
             self.log_error("fit", args or {}, exc)
             self.session.logger.warning("fit rejected: %s", exc)
-            out = {"committed": False, "error": str(exc),
-                   "messages": msg_mod.errors_from_exception(msg_mod.SOURCE_FIT, exc)}
+            out = {
+                "committed": False,
+                "error": str(exc),
+                "messages": msg_mod.errors_from_exception(msg_mod.SOURCE_FIT, exc),
+            }
             if getattr(exc, "issues", None):
                 out["issues"] = exc.issues
             return out
@@ -367,7 +388,10 @@ class _Ctx:
             raise
 
     def edit_then_fit(
-        self, edit_result: dict[str, Any], n_starts: int | None, justification: str,
+        self,
+        edit_result: dict[str, Any],
+        n_starts: int | None,
+        justification: str,
         before: dict[str, Any],
     ) -> dict[str, Any]:
         """Score a just-applied edit, reverting it if the fit produced no version.
@@ -392,9 +416,12 @@ class _Ctx:
         try:
             fit_result = self.run_fit(
                 lambda: self.session.fit(
-                    n_starts=n_starts, justification=justification or None,
+                    n_starts=n_starts,
+                    justification=justification or None,
                     staged_edits=[edit_result["staged_edit"]]
-                    if edit_result.get("staged_edit") else None),
+                    if edit_result.get("staged_edit")
+                    else None,
+                ),
                 {"n_starts": n_starts},
             )
         except Exception as exc:  # noqa: BLE001 - already logged by run_fit; see the docstring
@@ -410,13 +437,17 @@ class _Ctx:
         )
         if not scored:
             ops_mod.revert_working_state(
-                self.session, before,
+                self.session,
+                before,
                 f"the fit produced no version: {fit_result.get('error') or 'no error message'}",
             )
         return ops_mod.bundle_result(self.session, edit_result, fit_result, head_before)
 
     def reject_operation(
-        self, op_name: str, message: str, args: dict[str, Any] | None = None,
+        self,
+        op_name: str,
+        message: str,
+        args: dict[str, Any] | None = None,
         cause: str | None = None,
     ) -> dict[str, Any]:
         """Log and return an ``applied: False`` rejection for an argument the tool layer itself
@@ -429,8 +460,11 @@ class _Ctx:
         exc = ops_mod.OperationError(message)
         self.log_error(op_name, {k: self.short(v) for k, v in (args or {}).items()}, exc)
         self.session.logger.warning("operation %s rejected: %s", op_name, exc)
-        out = {"applied": False, "error": message,
-               "messages": [msg_mod.error(msg_mod.SOURCE_TOOL, message)]}
+        out = {
+            "applied": False,
+            "error": message,
+            "messages": [msg_mod.error(msg_mod.SOURCE_TOOL, message)],
+        }
         if cause:
             # Machine-readable rejection class for the harness's `edit_rejects.by_cause`. The
             # alternative — substring-matching the English message — put three buckets on an
@@ -455,8 +489,8 @@ class _Ctx:
             coerced = self.session._coerce_n_starts(n_starts)
         except PetabMcpError as exc:
             return self.reject_operation(
-                op_name, f"{op_name}: {exc} (omit it to use the server default of {default}).",
-                args)
+                op_name, f"{op_name}: {exc} (omit it to use the server default of {default}).", args
+            )
         # Not an error — a smaller value is a legitimate (cheaper) search — but say so, since
         # `n_starts` REPLACES the default and a caller aiming to "fit harder" with a number below
         # it would quietly get a weaker fit than omitting the argument.
@@ -464,7 +498,10 @@ class _Ctx:
             self.session.logger.warning(
                 "%s: n_starts=%d is BELOW the server default of %d, so this fit is weaker than "
                 "omitting n_starts would be (it overrides the default, it does not add to it).",
-                op_name, coerced, default)
+                op_name,
+                coerced,
+                default,
+            )
         return None
 
     def run(self, tool: str, fn, args: dict[str, Any] | None = None):
@@ -524,8 +561,11 @@ def _register_read_tools(mcp: FastMCP, ctx: _Ctx) -> None:
 
     @mcp.tool()
     def get_measurements(
-        condition_id: str | None = None, observable_id: str | None = None,
-        summarize: bool = True, max_rows: int = 200, offset: int = 0,
+        condition_id: str | None = None,
+        observable_id: str | None = None,
+        summarize: bool = True,
+        max_rows: int = 200,
+        offset: int = 0,
     ) -> "list[dict[str, Any]] | dict[str, Any]":
         """Return the (fixed) measurement data, optionally filtered by condition/observable.
 
@@ -542,6 +582,7 @@ def _register_read_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         back ``next_offset``) or, better, narrow with ``condition_id``/``observable_id`` first.
         Row order is the measurement table's own and is stable across pages.
         """
+
         def run() -> "list[dict[str, Any]] | dict[str, Any]":
             # Validated on BOTH paths, before the summarize branch: a nonsense max_rows/offset
             # must be reported whichever mode the caller asked for, rather than being silently
@@ -557,7 +598,7 @@ def _register_read_tools(mcp: FastMCP, ctx: _Ctx) -> None:
                 return summarize_measurements(df)
             records = df_to_records(df)
             total = len(records)
-            page = records[off:off + n_rows]
+            page = records[off : off + n_rows]
             out: dict[str, Any] = {
                 "rows": page,
                 "row_count": len(page),
@@ -573,9 +614,17 @@ def _register_read_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         # as the logged {ok: false, error} shape, not as a raw exception. An unwrapped raise is
         # invisible to get_errors AND counts as a tool error against the circuit breaker, so
         # three argument typos in a row would disable get_measurements for the rest of the run.
-        return ctx.run("get_measurements", run,
-                       {"condition_id": condition_id, "observable_id": observable_id,
-                        "summarize": summarize, "max_rows": max_rows, "offset": offset})
+        return ctx.run(
+            "get_measurements",
+            run,
+            {
+                "condition_id": condition_id,
+                "observable_id": observable_id,
+                "summarize": summarize,
+                "max_rows": max_rows,
+                "offset": offset,
+            },
+        )
 
 
 # ``make_changes`` is registered under one of two SCHEMAS (see :func:`_diff_edits_enabled`), and a
@@ -738,13 +787,15 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
             # error block. The prompt actively tells the lead to make this call before a
             # `base_version=N` fork, so a wrong N is a reachable, ordinary mistake.
             try:
-                text = (session.provenance.get_model_source(int(version))
-                        or session.provenance.get_model_antimony(int(version)))
+                text = session.provenance.get_model_source(
+                    int(version)
+                ) or session.provenance.get_model_antimony(int(version))
             except UnknownEntityError:
                 have = [m.get("version") for m in session.provenance.list_versions()]
                 exc = ValidationError(
                     f"get_model: no version {int(version)}. Existing versions: "
-                    f"{', '.join(str(v) for v in have if v is not None) or '(none yet)'}.")
+                    f"{', '.join(str(v) for v in have if v is not None) or '(none yet)'}."
+                )
                 ctx.log_error("get_model", {"version": version, "format": format}, exc)
                 raise exc from None
         return text
@@ -769,11 +820,11 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
     def make_changes(
         justification: str,
         antimony: str | None = None,
-        model_edits: Annotated[list[ModelOp] | None,
-                               BeforeValidator(_unwrap_listish)] = None,
+        model_edits: Annotated[list[ModelOp] | None, BeforeValidator(_unwrap_listish)] = None,
         base_version: int | None = None,
-        parameters: Annotated[list[ParameterChange] | None,
-                              BeforeValidator(_unwrap_listish)] = None,
+        parameters: Annotated[
+            list[ParameterChange] | None, BeforeValidator(_unwrap_listish)
+        ] = None,
         references: Annotated[list[str] | None, BeforeValidator(_unwrap_listish)] = None,
         n_starts: int | None = None,
     ) -> dict[str, Any]:
@@ -782,8 +833,10 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         # dicts too, for the same reason _parameter_entries does it: an in-process caller (the
         # tests, another tool) should not have to construct the pydantic model.
         parameters = _parameter_entries(parameters)
-        ops = [o.model_dump(exclude_none=True) if isinstance(o, ModelOp) else o
-               for o in (model_edits or [])] or None
+        ops = [
+            o.model_dump(exclude_none=True) if isinstance(o, ModelOp) else o
+            for o in (model_edits or [])
+        ] or None
         routes_given = [n for n, v in (("antimony", antimony), ("model_edits", ops)) if v]
         if len(routes_given) > 1:
             return ctx.reject_operation(
@@ -792,7 +845,8 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
                 f"({', '.join('`' + r + '`' for r in routes_given)}). `model_edits` for a "
                 "structured change to an existing model, `antimony` to author one wholesale. "
                 "NOTHING was applied.",
-                {"routes": routes_given}, cause="route_conflict",
+                {"routes": routes_given},
+                cause="route_conflict",
             )
         if base_version is not None and not ops:
             # Names NO other tool. The obvious advice here — "to re-fit it unchanged use
@@ -814,9 +868,12 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
             # In baseline mode `edits` does not EXIST on the schema, so advice naming it would
             # instruct an impossible call (the defection-trigger class the draft-era A/B
             # measured); name only what the caller can actually send.
-            routes = ("`model_edits` (structured operations on the committed model — the usual "
-                      "route), `antimony` (author the model wholesale), " if diff_mode else
-                      "`antimony` (to author the model), ")
+            routes = (
+                "`model_edits` (structured operations on the committed model — the usual "
+                "route), `antimony` (author the model wholesale), "
+                if diff_mode
+                else "`antimony` (to author the model), "
+            )
             return ctx.reject_operation(
                 "make_changes",
                 f"make_changes: nothing to do — give {routes}`parameters` (to set bounds/"
@@ -845,7 +902,9 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
                     "changed by re-authoring the whole model. Write 'name: A => B; k*A;' and "
                     "choose names you will recognise (transfer, decay), not r1/r2. "
                     "NOTHING was applied.",
-                    {"unnamed": unnamed[:5]}, cause="unnamed_reaction")
+                    {"unnamed": unnamed[:5]},
+                    cause="unnamed_reaction",
+                )
         # One critical section for the change and its fit, so nothing can fit in between
         # (`session.lock` is an RLock, so the nested acquisitions inside each call are fine).
         with session.lock:
@@ -881,7 +940,8 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
                     if not msg.startswith("make_changes"):
                         msg = f"make_changes: {msg}"
                     return ctx.reject_operation(
-                        "make_changes", msg,
+                        "make_changes",
+                        msg,
                         {"n_ops": len(ops), "base_version": base_version},
                         cause=getattr(exc, "cause", None),
                     )
@@ -900,8 +960,13 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
             try:
                 if antimony:
                     result = ctx.run_operation(
-                        "make_changes", ops_mod.set_model,
-                        session, antimony, justification, references, parameters,
+                        "make_changes",
+                        ops_mod.set_model,
+                        session,
+                        antimony,
+                        justification,
+                        references,
+                        parameters,
                         # A `base_version=N` fork restores that version's SEARCH SPACE too, not
                         # just its model: before this, a fork inherited whatever the abandoned
                         # branch had widened and the prompt had to ask the agent to retype the old
@@ -917,8 +982,12 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
                     )
                 else:
                     result = ctx.run_operation(
-                        "make_changes", ops_mod.change_parameters,
-                        session, parameters, justification, references,
+                        "make_changes",
+                        ops_mod.change_parameters,
+                        session,
+                        parameters,
+                        justification,
+                        references,
                     )
                 if not result.get("applied"):
                     return result
@@ -957,14 +1026,19 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         def make_changes_baseline(
             justification: str,
             antimony: str | None = None,
-            parameters: Annotated[list[ParameterChange] | None,
-                                  BeforeValidator(_unwrap_listish)] = None,
+            parameters: Annotated[
+                list[ParameterChange] | None, BeforeValidator(_unwrap_listish)
+            ] = None,
             references: Annotated[list[str] | None, BeforeValidator(_unwrap_listish)] = None,
             n_starts: int | None = None,
         ) -> dict[str, Any]:
-            return make_changes(justification=justification, antimony=antimony,
-                                parameters=parameters, references=references,
-                                n_starts=n_starts)
+            return make_changes(
+                justification=justification,
+                antimony=antimony,
+                parameters=parameters,
+                references=references,
+                n_starts=n_starts,
+            )
 
         make_changes_baseline.__doc__ = make_changes.__doc__
         mcp.tool(name="make_changes")(make_changes_baseline)
@@ -975,11 +1049,18 @@ def _register_parameter_tools(mcp: FastMCP, ctx: _Ctx) -> None:
     session = ctx.session
 
     @mcp.tool()
-    def get_parameters(parameter_ids: Annotated[list[str] | None,
-                                                BeforeValidator(_unwrap_listish)] = None,
-                       role: Literal["kinetic", "noise_sigma", "observable_scaling",
-                                     "initial_condition", "exponent", "constant"] | None = None,
-                       ) -> list[dict[str, Any]]:
+    def get_parameters(
+        parameter_ids: Annotated[list[str] | None, BeforeValidator(_unwrap_listish)] = None,
+        role: Literal[
+            "kinetic",
+            "noise_sigma",
+            "observable_scaling",
+            "initial_condition",
+            "exponent",
+            "constant",
+        ]
+        | None = None,
+    ) -> list[dict[str, Any]]:
         """Return the parameter table (id, bounds, nominal_value, estimate, prior), each row
         annotated with its `role` and `status`. `parameter_ids` and/or `role` FILTER the rows —
         on large problems (100+ rows, re-sent in your history every later turn) ask for the rows
@@ -1013,7 +1094,8 @@ def _register_parameter_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         each carry `lower_bound`/`upper_bound` and/or `scale` for a parameter).
         """
         rows = param_mod.parameters_to_records(
-            session.problem, shipped=session.shipped_parameter_df)
+            session.problem, shipped=session.shipped_parameter_df
+        )
         # Server-side filters, added when the 118-row lucarelli table (re-sent in the caller's
         # history every turn thereafter) turned out to be a top-3 context cost. Filtering here
         # rather than telling the model to ignore rows: unread tokens still bill.
@@ -1142,6 +1224,7 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         These are server-side wall times (a breakdown of the heavy compute), distinct from the
         client's `compute_seconds` tool-busy measure, which also covers reads/SQL.
         """
+
         def run() -> dict[str, Any]:
             # Read under the lock so the four accumulators are a consistent snapshot even if a
             # fit is mid-update on another thread (the panel dispatches tool calls concurrently).
@@ -1188,9 +1271,11 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         permission to simplify — no evidence for a second timescale is not evidence that one
         suffices. `conservation` is the sole entry that genuinely constrains.
         """
-        return ctx.run("get_data_regimes",
-                       lambda: regimes_mod.data_regimes(session, observables),
-                       {"observables": observables})
+        return ctx.run(
+            "get_data_regimes",
+            lambda: regimes_mod.data_regimes(session, observables),
+            {"observables": observables},
+        )
 
     @mcp.tool()
     def list_data_tables() -> dict[str, Any]:
@@ -1218,6 +1303,7 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         signatures. Returns `{path, exists, n_lines_total, tail_lines, log}` (the last
         `tail_lines` lines of the file; pass a larger value for more history, `0` for all).
         """
+
         def run() -> dict[str, Any]:
             if not isinstance(tail_lines, int) or tail_lines < 0:
                 raise ValidationError(f"tail_lines must be an integer >= 0, got {tail_lines!r}.")
@@ -1297,6 +1383,7 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
              FROM simulations_history WHERE version IN (3, 4)
              GROUP BY 1, 2, 3 ORDER BY abs(v4) - abs(v3) DESC LIMIT 10`
         """
+
         def run() -> dict[str, Any]:
             # Reject bad arguments cheaply before generating a (compile-heavy) simulation, and
             # USE what validation returns: it clamps max_rows to MAX_PAGE_ROWS, so discarding
@@ -1312,7 +1399,8 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
             # over `simulations_history` (assembled from per-version files on disk, no
             # simulation involved) must not pay it.
             if data_mod.query_references_head_simulations(sql) and (
-                    session.simulation is None or not session.simulation.get("records")):
+                session.simulation is None or not session.simulation.get("records")
+            ):
                 try:
                     ctx.current_simulation()
                 except Exception:  # pragma: no cover - defensive; static tables still work
@@ -1324,11 +1412,15 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         # Log the query (truncated) alongside max_rows so a failed call is reproducible
         # from `get_errors`.
         logged_sql = sql[:1000] if isinstance(sql, str) else sql
-        return ctx.run("query_data", run, {"sql": logged_sql, "max_rows": max_rows, "offset": offset})
+        return ctx.run(
+            "query_data", run, {"sql": logged_sql, "max_rows": max_rows, "offset": offset}
+        )
 
     @mcp.tool()
     def get_fit_diagnosis(
-        sections: str = "residuals", worst_n: int = 8, top_n: int = 8,
+        sections: str = "residuals",
+        worst_n: int = 8,
+        top_n: int = 8,
         max_observables: int = 12,
     ) -> dict[str, Any]:
         """The COMPACT, size-bounded DETAIL behind the verdicts every fit result already carries —
@@ -1392,6 +1484,7 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         (`available: false` before there is a fit, `stale: true` once a DIFFERENT structure is in the
         working state).
         """
+
         def run() -> dict[str, Any]:
             want = _diagnosis_sections(sections)
             out: dict[str, Any] = {}
@@ -1405,9 +1498,13 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
                     except Exception:  # pragma: no cover - defensive; return the empty-fit result
                         session.logger.warning(
                             "get_fit_diagnosis: could not generate simulation dataframe",
-                            exc_info=True)
-                out.update(data_mod.fit_diagnosis(
-                    session, worst_n, max_observables=max_observables or None))
+                            exc_info=True,
+                        )
+                out.update(
+                    data_mod.fit_diagnosis(
+                        session, worst_n, max_observables=max_observables or None
+                    )
+                )
             if "parameters" in want:
                 # Guarded, and guarded SEPARATELY: before the two were one tool a FIM failure could
                 # not take the residual half with it, and the caller that pays most for this half
@@ -1416,21 +1513,26 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
                 # it reads the frozen fit record, so there is no live state left to gate on.
                 try:
                     out["identifiability"] = identifiability_mod.identifiability(
-                        session, top_n=top_n)
+                        session, top_n=top_n
+                    )
                 except Exception:  # noqa: BLE001 - one section must not fail the other
                     session.logger.warning(
-                        "get_fit_diagnosis: parameter identifiability unavailable", exc_info=True)
+                        "get_fit_diagnosis: parameter identifiability unavailable", exc_info=True
+                    )
                     out["identifiability"] = identifiability_mod.unavailable(
-                        identifiability_mod.FAILED_NOTE)
+                        identifiability_mod.FAILED_NOTE
+                    )
             return out
 
-        return ctx.run("get_fit_diagnosis", run,
-                       {"sections": sections, "worst_n": worst_n, "top_n": top_n})
+        return ctx.run(
+            "get_fit_diagnosis", run, {"sections": sections, "worst_n": worst_n, "top_n": top_n}
+        )
 
 
 # ------------------------------------------------- held-out validation (harness-only)
-def _register_validation_data_tools(mcp: FastMCP, ctx: _Ctx,
-                                    held_out: validation_data_mod.HeldOut) -> None:
+def _register_validation_data_tools(
+    mcp: FastMCP, ctx: _Ctx, held_out: validation_data_mod.HeldOut
+) -> None:
     """Register ``evaluate_validation_data`` — the HARNESS's read, never the agent's.
 
     Registered only when :func:`create_server` was given a held-out measurement file, and
@@ -1467,9 +1569,11 @@ def _register_validation_data_tools(mcp: FastMCP, ctx: _Ctx,
         """
         return ctx.run(
             "evaluate_validation_data",
-            lambda: validation_data_mod.score_session(session, ctx.engine, held_out,
-                                                      n_starts=n_starts),
-            {"n_starts": n_starts})
+            lambda: validation_data_mod.score_session(
+                session, ctx.engine, held_out, n_starts=n_starts
+            ),
+            {"n_starts": n_starts},
+        )
 
 
 # ------------------------------------------------------ provenance/version tools
@@ -1498,15 +1602,20 @@ def _register_provenance_tools(mcp: FastMCP, ctx: _Ctx) -> None:
     @mcp.tool()
     def get_version(version: int) -> dict[str, Any]:
         """Return a version's Antimony model and parameter table."""
-        return ctx.run("get_version", lambda: session.provenance.get_version(version), {"version": version})
+        return ctx.run(
+            "get_version", lambda: session.provenance.get_version(version), {"version": version}
+        )
 
     @mcp.tool()
     def diff_versions(from_version: int, to_version: int) -> dict[str, Any]:
         """Diff two versions: Antimony unified diff + parameter add/remove/change + a `fit`
         block with each version's neg_log_likelihood/chi2 and the neg-log-likelihood delta
         (positive = the `to` version fits better)."""
-        return ctx.run("diff_versions", lambda: session.provenance.diff_versions(from_version, to_version),
-                       {"from": from_version, "to": to_version})
+        return ctx.run(
+            "diff_versions",
+            lambda: session.provenance.diff_versions(from_version, to_version),
+            {"from": from_version, "to": to_version},
+        )
 
     # NOTE: `current_version` is not a tool — `describe_problem` already returns it. A second tool
     # costs a JSON schema in every client's context on every turn and a docstring to keep in sync.
@@ -1521,9 +1630,11 @@ def _register_provenance_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         reuses the existing fit and records a clean restore. Find the target with `list_versions`
         (pick the best-scoring / is_new_best version), then `restore_version(v)`. Appends a new
         version rather than erasing history, so a restore is itself auditable."""
-        return ctx.run("restore_version",
-                       lambda: session.restore_version(version, justification or None),
-                       {"version": version})
+        return ctx.run(
+            "restore_version",
+            lambda: session.restore_version(version, justification or None),
+            {"version": version},
+        )
 
     @mcp.tool()
     def get_progress() -> dict[str, Any]:
@@ -1572,8 +1683,10 @@ def _register_resources(mcp: FastMCP, ctx: _Ctx) -> None:
 
     @mcp.resource("petab://parameters")
     def _res_parameters() -> str:
-        return json.dumps(param_mod.parameters_to_records(
-            session.problem, shipped=session.shipped_parameter_df), indent=2)
+        return json.dumps(
+            param_mod.parameters_to_records(session.problem, shipped=session.shipped_parameter_df),
+            indent=2,
+        )
 
     @mcp.resource("petab://provenance")
     def _res_provenance() -> str:
@@ -1679,7 +1792,8 @@ def create_server(
         # no longer see (the harness runs from a scratch copy on the cluster) and would let a mid-run
         # edit of the file change the bar under the judge.
         _register_validation_data_tools(
-            mcp, ctx, validation_data_mod.read_held_out(validation_measurements))
+            mcp, ctx, validation_data_mod.read_held_out(validation_measurements)
+        )
     _register_provenance_tools(mcp, ctx)
     _register_resources(mcp, ctx)
     # Register the skills loaded above as `list_skills`/`get_skill` tools plus

@@ -109,13 +109,15 @@ def build_registry(session) -> list[dict[str, Any]]:
         sh = meta.get("structure_hash")
         if not sh:
             continue
-        registry.append({
-            "version": meta.get("version"),
-            "structure_hash": sh,
-            "neg_log_likelihood": meta.get("neg_log_likelihood"),
-            "score": criterion.score_of(meta),
-            "criterion": criterion.name,
-        })
+        registry.append(
+            {
+                "version": meta.get("version"),
+                "structure_hash": sh,
+                "neg_log_likelihood": meta.get("neg_log_likelihood"),
+                "score": criterion.score_of(meta),
+                "criterion": criterion.name,
+            }
+        )
     return registry
 
 
@@ -159,12 +161,15 @@ def decide(
     if prior_attempts >= MAX_IDENTICAL_REAUTHORS:
         # `prior_attempts` fits actually RAN; this call is the one being refused, so it is not
         # among them (saying "fit N+1 times now" claimed a fit that never happened).
-        return {"action": "terminate", "message": (
-            f"This same model structure has already been fit {prior_attempts} times. Re-fitting an "
-            "identical structure recompiles and refits to the SAME result — it cannot improve the "
-            "fit. Stop re-fitting it: your best model is kept and scored regardless (see "
-            "list_versions), so make a genuinely different structural change and fit THAT."
-        )}
+        return {
+            "action": "terminate",
+            "message": (
+                f"This same model structure has already been fit {prior_attempts} times. Re-fitting an "
+                "identical structure recompiles and refits to the SAME result — it cannot improve the "
+                "fit. Stop re-fitting it: your best model is kept and scored regardless (see "
+                "list_versions), so make a genuinely different structural change and fit THAT."
+            ),
+        }
 
     # (a) Byte-identical to the current HEAD (same structure AND same estimation setup): nothing
     # would change — skip the recompile+fit+snapshot and report the no-op.

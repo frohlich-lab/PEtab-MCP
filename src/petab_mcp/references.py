@@ -80,7 +80,9 @@ class StubReferenceResolver:
 class EutilsReferenceResolver:
     """Resolve PMIDs/DOIs against NCBI E-utilities."""
 
-    def __init__(self, mode: str = "best_effort", timeout: float = REFERENCE_TIMEOUT_SECONDS) -> None:
+    def __init__(
+        self, mode: str = "best_effort", timeout: float = REFERENCE_TIMEOUT_SECONDS
+    ) -> None:
         if mode not in ("required", "best_effort", "off"):
             raise ValueError(f"Unknown reference-validation mode {mode!r}.")
         self.mode = mode
@@ -93,24 +95,37 @@ class EutilsReferenceResolver:
             return json.loads(resp.read().decode("utf-8"))
 
     def _doi_to_pmid(self, doi: str) -> str | None:
-        url = _IDCONV + "?" + urllib.parse.urlencode(
-            {"ids": doi, "format": "json", "tool": "petab-mcp", "email": "petab-mcp@example.org"}
+        url = (
+            _IDCONV
+            + "?"
+            + urllib.parse.urlencode(
+                {
+                    "ids": doi,
+                    "format": "json",
+                    "tool": "petab-mcp",
+                    "email": "petab-mcp@example.org",
+                }
+            )
         )
         data = self._get_json(url)
         for rec in data.get("records", []):
             if rec.get("pmid"):
                 return str(rec["pmid"])
         # fallback: esearch by DOI
-        url = _EUTILS + "/esearch.fcgi?" + urllib.parse.urlencode(
-            {"db": "pubmed", "term": f"{doi}[AID]", "retmode": "json"}
+        url = (
+            _EUTILS
+            + "/esearch.fcgi?"
+            + urllib.parse.urlencode({"db": "pubmed", "term": f"{doi}[AID]", "retmode": "json"})
         )
         data = self._get_json(url)
         ids = data.get("esearchresult", {}).get("idlist", [])
         return str(ids[0]) if ids else None
 
     def _summary(self, pmid: str) -> dict[str, Any] | None:
-        url = _EUTILS + "/esummary.fcgi?" + urllib.parse.urlencode(
-            {"db": "pubmed", "id": pmid, "retmode": "json"}
+        url = (
+            _EUTILS
+            + "/esummary.fcgi?"
+            + urllib.parse.urlencode({"db": "pubmed", "id": pmid, "retmode": "json"})
         )
         data = self._get_json(url)
         result = data.get("result", {})
@@ -152,9 +167,7 @@ class EutilsReferenceResolver:
             # reachable but not found
             note = "no PubMed record found"
             if self.mode == "required":
-                raise ReferenceError(
-                    f"Reference {ref!r} could not be resolved to a PubMed record."
-                )
+                raise ReferenceError(f"Reference {ref!r} could not be resolved to a PubMed record.")
             return ResolvedReference(input=ref, verified=False, pmid=pmid, doi=doi, note=note)
         except ReferenceError:
             raise

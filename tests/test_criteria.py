@@ -26,18 +26,22 @@ def test_the_default_is_plain_bic():
     assert Criterion().name == "bic"
 
 
-@pytest.mark.parametrize(("name", "penalty"), [
-    ("bic", lambda k, n, k_eff: k * math.log(n)),
-    ("caic", lambda k, n, k_eff: k * (math.log(n) + 1.0)),
-    ("aic", lambda k, n, k_eff: 2.0 * k),
-    ("aicc", lambda k, n, k_eff: 2.0 * k + 2.0 * k * (k + 1) / (n - k - 1)),
-    ("hqc", lambda k, n, k_eff: 2.0 * k * math.log(math.log(n))),
-    ("tic", lambda k, n, k_eff: 2.0 * k_eff),
-])
+@pytest.mark.parametrize(
+    ("name", "penalty"),
+    [
+        ("bic", lambda k, n, k_eff: k * math.log(n)),
+        ("caic", lambda k, n, k_eff: k * (math.log(n) + 1.0)),
+        ("aic", lambda k, n, k_eff: 2.0 * k),
+        ("aicc", lambda k, n, k_eff: 2.0 * k + 2.0 * k * (k + 1) / (n - k - 1)),
+        ("hqc", lambda k, n, k_eff: 2.0 * k * math.log(math.log(n))),
+        ("tic", lambda k, n, k_eff: 2.0 * k_eff),
+    ],
+)
 def test_each_criterion_is_two_nll_plus_its_textbook_penalty(name, penalty):
     nll, k, n, k_eff = 12.5, 4, 60, 3.3
     assert Criterion(name).value(nll, k, n, k_eff) == pytest.approx(
-        2.0 * nll + penalty(k, n, k_eff))
+        2.0 * nll + penalty(k, n, k_eff)
+    )
 
 
 def test_caic_is_bic_plus_one_unit_per_parameter():
@@ -76,14 +80,15 @@ def test_aicc_exceeds_aic_and_converges_to_it_as_data_grows():
     k = 4
     assert Criterion("aicc").penalty(k, 12) > Criterion("aic").penalty(k, 12)
     assert Criterion("aicc").penalty(k, 100_000) == pytest.approx(
-        Criterion("aic").penalty(k, 100_000), rel=1e-3)
+        Criterion("aic").penalty(k, 100_000), rel=1e-3
+    )
 
 
 def test_aicc_is_undefined_when_the_data_cannot_support_the_parameters():
     """``n - k - 1 <= 0`` is not a large correction but no correction: AICc diverges and then
     flips sign there, so it must read as a MISSING score — the same ``None`` every other absent
     score uses — rather than as a suspiciously good one."""
-    assert Criterion("aicc").value(10.0, 9, 10) is None   # n - k - 1 == 0
+    assert Criterion("aicc").value(10.0, 9, 10) is None  # n - k - 1 == 0
     assert Criterion("aicc").value(10.0, 12, 10) is None  # n - k - 1 < 0
     assert Criterion("aicc").value(10.0, 8, 10) is not None
 
@@ -199,8 +204,15 @@ def test_a_bare_score_read_outside_a_session_is_plain_bic():
 
 # -- the wiring: what the loop actually ranks by ---------------------------
 def _fitsim(nll: float, *, n: int = 40, k: int = 3, k_eff: float | None = 2.5) -> dict:
-    return {"status": "fit", "neg_log_likelihood": nll, "chi2": float(n),
-            "n_data_points": n, "n_estimated": k, "k_eff": k_eff, "fitted_parameters": {}}
+    return {
+        "status": "fit",
+        "neg_log_likelihood": nll,
+        "chi2": float(n),
+        "n_data_points": n,
+        "n_estimated": k,
+        "k_eff": k_eff,
+        "fitted_parameters": {},
+    }
 
 
 def test_is_new_best_is_decided_by_the_active_criterion_not_by_bic(session):
@@ -294,9 +306,14 @@ def test_the_merge_price_follows_the_criterion(monkeypatch):
     # Two parameters the data cannot separate: an identical, weakly-determined pair.
     fim = np.array([[1.0, 0.999], [0.999, 1.0]])
     theta = np.array([0.0, 1.4])
-    kwargs = dict(names=["a", "b"], theta=theta, n_data=500,
-                  roles={"a": "rate", "b": "rate"}, scales=["log10", "log10"],
-                  at_bound=[False, False])
+    kwargs = dict(
+        names=["a", "b"],
+        theta=theta,
+        n_data=500,
+        roles={"a": "rate", "b": "rate"},
+        scales=["log10", "log10"],
+        at_bound=[False, False],
+    )
 
     under_bic = I.merge_candidates(fim, criterion=Criterion("bic"), **kwargs)
     under_aic = I.merge_candidates(fim, criterion=Criterion("aic"), **kwargs)
@@ -392,4 +409,3 @@ def test_an_unpassed_cli_flag_leaves_the_resolution_to_the_session(monkeypatch):
     assert criteria.resolve(args.criterion) == Criterion("hqc")
     monkeypatch.delenv("PETAB_MCP_CRITERION")
     assert criteria.resolve(None) == Criterion("bic")
-

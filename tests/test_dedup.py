@@ -32,7 +32,9 @@ end
 """
 
 # Same STRUCTURE as REVERSIBLE, only the starting guesses differ (the fit ignores them).
-REVERSIBLE_OTHER_VALUES = REVERSIBLE.replace("k1 = 0.25", "k1 = 3.0").replace("k2 = 0.05", "k2 = 9.9")
+REVERSIBLE_OTHER_VALUES = REVERSIBLE.replace("k1 = 0.25", "k1 = 3.0").replace(
+    "k2 = 0.05", "k2 = 9.9"
+)
 
 ONE_REACTION = """model conversion_reaction
   compartment compartment_ = 1;
@@ -64,7 +66,9 @@ def test_structure_fingerprint_ignores_nominal_values(session):
 
 def test_structure_fingerprint_changes_with_structure(session):
     df = session.problem.parameter_df
-    assert P.structure_fingerprint(_sm(REVERSIBLE), df) != P.structure_fingerprint(_sm(ONE_REACTION), df)
+    assert P.structure_fingerprint(_sm(REVERSIBLE), df) != P.structure_fingerprint(
+        _sm(ONE_REACTION), df
+    )
 
 
 def test_structure_fingerprint_changes_with_estimated_set(session):
@@ -106,20 +110,40 @@ def test_reauthor_key_distinguishes_different_bounds(session):
 # -- decide() (pure) --------------------------------------------------------
 def _reg(*entries):
     """Build a registry from (version, structure_hash, score) tuples."""
-    return [{"version": v, "structure_hash": s, "problem_hash": None,
-             "neg_log_likelihood": None, "score": b} for v, s, b in entries]
+    return [
+        {
+            "version": v,
+            "structure_hash": s,
+            "problem_hash": None,
+            "neg_log_likelihood": None,
+            "score": b,
+        }
+        for v, s, b in entries
+    ]
 
 
 def test_decide_proceeds_on_fresh_structure():
-    d = D.decide(structure_hash="new", head_structure_hash="head", same_setup=False,
-                 head_version=0, registry=_reg((0, "head", 1.0)), prior_attempts=0)
+    d = D.decide(
+        structure_hash="new",
+        head_structure_hash="head",
+        same_setup=False,
+        head_version=0,
+        registry=_reg((0, "head", 1.0)),
+        prior_attempts=0,
+    )
     assert d["action"] == "proceed"
     assert d["warnings"] == []
 
 
 def test_decide_skips_identical_head():
-    d = D.decide(structure_hash="X", head_structure_hash="X", same_setup=True,
-                 head_version=3, registry=_reg((3, "X", 1.0)), prior_attempts=1)
+    d = D.decide(
+        structure_hash="X",
+        head_structure_hash="X",
+        same_setup=True,
+        head_version=3,
+        registry=_reg((3, "X", 1.0)),
+        prior_attempts=1,
+    )
     assert d["action"] == "skip"
     assert d["duplicate_of"] == 3
     assert "kept and scored" in d["message"]
@@ -127,37 +151,66 @@ def test_decide_skips_identical_head():
 
 def test_decide_no_skip_when_setup_differs():
     # Same structure as HEAD but a bound changed — a real edit, not a no-op.
-    d = D.decide(structure_hash="X", head_structure_hash="X", same_setup=False,
-                 head_version=3, registry=_reg((3, "X", 1.0)), prior_attempts=1)
+    d = D.decide(
+        structure_hash="X",
+        head_structure_hash="X",
+        same_setup=False,
+        head_version=3,
+        registry=_reg((3, "X", 1.0)),
+        prior_attempts=1,
+    )
     assert d["action"] == "proceed"
 
 
 def test_decide_terminates_after_repeated_reauthors():
-    d = D.decide(structure_hash="X", head_structure_hash="Y", same_setup=False,
-                 head_version=5, registry=_reg((5, "Y", 1.0)),
-                 prior_attempts=D.MAX_IDENTICAL_REAUTHORS)
+    d = D.decide(
+        structure_hash="X",
+        head_structure_hash="Y",
+        same_setup=False,
+        head_version=5,
+        registry=_reg((5, "Y", 1.0)),
+        prior_attempts=D.MAX_IDENTICAL_REAUTHORS,
+    )
     assert d["action"] == "terminate"
     assert "kept and scored" in d["message"]
 
 
 def test_decide_warns_on_revisiting_prior_version():
-    d = D.decide(structure_hash="X", head_structure_hash="Y", same_setup=False,
-                 head_version=2, registry=_reg((1, "X", 1.0), (2, "Y", 1.0)), prior_attempts=1)
+    d = D.decide(
+        structure_hash="X",
+        head_structure_hash="Y",
+        same_setup=False,
+        head_version=2,
+        registry=_reg((1, "X", 1.0), (2, "Y", 1.0)),
+        prior_attempts=1,
+    )
     assert d["action"] == "proceed"
     assert any("version(s) [1]" in w for w in d["warnings"])
 
 
 def test_decide_warns_on_worse_family():
     # Structure X's best bic (20) is far worse than the global best (1, at v2).
-    d = D.decide(structure_hash="X", head_structure_hash="Y", same_setup=False,
-                 head_version=2, registry=_reg((1, "X", 20.0), (2, "Y", 1.0)), prior_attempts=1)
+    d = D.decide(
+        structure_hash="X",
+        head_structure_hash="Y",
+        same_setup=False,
+        head_version=2,
+        registry=_reg((1, "X", 20.0), (2, "Y", 1.0)),
+        prior_attempts=1,
+    )
     assert d["action"] == "proceed"
     assert any("WORSE" in w for w in d["warnings"])
 
 
 def test_decide_no_worse_warning_within_margin():
-    d = D.decide(structure_hash="X", head_structure_hash="Y", same_setup=False,
-                 head_version=2, registry=_reg((1, "X", 3.0), (2, "Y", 1.0)), prior_attempts=1)
+    d = D.decide(
+        structure_hash="X",
+        head_structure_hash="Y",
+        same_setup=False,
+        head_version=2,
+        registry=_reg((1, "X", 3.0), (2, "Y", 1.0)),
+        prior_attempts=1,
+    )
     assert not any("WORSE" in w for w in d["warnings"])
 
 
@@ -166,12 +219,30 @@ def test_decide_handles_numpy_bic_scalars():
     isinstance(float) filter would silently drop numpy.float64 (addresses PR #70 review)."""
     import numpy as np
 
-    reg = [{"version": 1, "structure_hash": "X", "problem_hash": None,
-            "neg_log_likelihood": None, "score": np.float64(20.0)},
-           {"version": 2, "structure_hash": "Y", "problem_hash": None,
-            "neg_log_likelihood": None, "score": np.float64(1.0)}]
-    d = D.decide(structure_hash="X", head_structure_hash="Y", same_setup=False,
-                 head_version=2, registry=reg, prior_attempts=1)
+    reg = [
+        {
+            "version": 1,
+            "structure_hash": "X",
+            "problem_hash": None,
+            "neg_log_likelihood": None,
+            "score": np.float64(20.0),
+        },
+        {
+            "version": 2,
+            "structure_hash": "Y",
+            "problem_hash": None,
+            "neg_log_likelihood": None,
+            "score": np.float64(1.0),
+        },
+    ]
+    d = D.decide(
+        structure_hash="X",
+        head_structure_hash="Y",
+        same_setup=False,
+        head_version=2,
+        registry=reg,
+        prior_attempts=1,
+    )
     assert any("WORSE" in w for w in d["warnings"])
 
 
@@ -189,12 +260,16 @@ def test_set_model_reauthor_is_a_fit_free_edit(session):
 
 def test_restore_version_goes_back_without_dedup(session, reauthor_toy):
     """restore_version is the cheap way back — it restores a prior model and is not a re-author."""
-    reauthor_toy(session)                       # v0: the reversible structure, scored
+    reauthor_toy(session)  # v0: the reversible structure, scored
     O.set_model(session, ONE_REACTION, justification="drop r2")
-    assert {session.model.sbml_model.getReaction(i).getId()
-            for i in range(session.model.sbml_model.getNumReactions())} == {"r1"}
+    assert {
+        session.model.sbml_model.getReaction(i).getId()
+        for i in range(session.model.sbml_model.getNumReactions())
+    } == {"r1"}
     out = session.restore_version(0)
     assert out["rolled_back_to"] == 0
     # the reversible structure (r1 + r2) is back
-    assert {session.model.sbml_model.getReaction(i).getId()
-            for i in range(session.model.sbml_model.getNumReactions())} == {"r1", "r2"}
+    assert {
+        session.model.sbml_model.getReaction(i).getId()
+        for i in range(session.model.sbml_model.getNumReactions())
+    } == {"r1", "r2"}

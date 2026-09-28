@@ -25,24 +25,26 @@ def _sm(antimony):
 
 def test_exponent_symbols_detects_hill_coefficient_only():
     exps = R._exponent_symbols(_sm(HILL_ANTIMONY))
-    assert "n_hill" in exps                    # appears in an exponent position
-    assert "K" not in exps                     # a base/threshold, not an exponent
+    assert "n_hill" in exps  # appears in an exponent position
+    assert "K" not in exps  # a base/threshold, not an exponent
     assert "alpha" not in exps and "delta" not in exps and "x2" not in exps
 
 
 def test_exponent_symbols_ignores_exp_function():
     # exp(x) is AST_FUNCTION_EXP, not a cooperativity power -> its argument is NOT an exponent.
-    ant = ("model e_test\n  compartment c = 1;\n  species s in c;\n  s = 1.0;\n"
-           "  tau = 2.0; kk = 0.1;\n  r: s => ; kk * exp(-s/tau);\nend\n")
+    ant = (
+        "model e_test\n  compartment c = 1;\n  species s in c;\n  s = 1.0;\n"
+        "  tau = 2.0; kk = 0.1;\n  r: s => ; kk * exp(-s/tau);\nend\n"
+    )
     exps = R._exponent_symbols(_sm(ant))
     assert "tau" not in exps and "kk" not in exps
 
 
 def test_exponent_bounds_tight_linear_bracket_nominal():
-    assert R._exponent_bounds(2.0) == (1.0, 8.0)          # typical Hill in range
-    assert R._exponent_bounds(12.0) == (1.0, 12.0)        # nominal above -> bracket up
-    assert R._exponent_bounds(0.5) == (0.5, 8.0)          # nominal below -> bracket down
-    assert R._exponent_bounds(None) == (1.0, 8.0)         # no nominal -> plain tight range
+    assert R._exponent_bounds(2.0) == (1.0, 8.0)  # typical Hill in range
+    assert R._exponent_bounds(12.0) == (1.0, 12.0)  # nominal above -> bracket up
+    assert R._exponent_bounds(0.5) == (0.5, 8.0)  # nominal below -> bracket down
+    assert R._exponent_bounds(None) == (1.0, 8.0)  # no nominal -> plain tight range
 
 
 # The author parametrises an initial condition under their OWN name (p1 = p1_0), not <sid>_init.
@@ -85,17 +87,17 @@ def test_reconcile_respects_authors_own_ic_parameter():
     # The author's p1_0 must be recognised as the IC param — NOT clobbered by a fresh p1_init=0.
     sm = SbmlModel.from_antimony(IC_CUSTOM_ANTIMONY).sbml_model
     ic = R.ensure_parametric_initial_conditions(sm)
-    assert 'p1_0' in ic                            # author's own IC param is kept
-    assert sm.getParameter('p1_init') is None      # no redundant *_init created
-    assert abs(sm.getParameter('p1_0').getValue() - 0.8) < 1e-9   # intended value preserved
+    assert "p1_0" in ic  # author's own IC param is kept
+    assert sm.getParameter("p1_init") is None  # no redundant *_init created
+    assert abs(sm.getParameter("p1_0").getValue() - 0.8) < 1e-9  # intended value preserved
 
 
 def test_reconcile_parametrises_a_literal_ic():
     # A literal IC still gets the server's <sid>_init parameter (unchanged behaviour).
     sm = SbmlModel.from_antimony(IC_LITERAL_ANTIMONY).sbml_model
     ic = R.ensure_parametric_initial_conditions(sm)
-    assert 'q1_init' in ic
-    assert abs(sm.getParameter('q1_init').getValue() - 2.5) < 1e-9
+    assert "q1_init" in ic
+    assert abs(sm.getParameter("q1_init").getValue() - 2.5) < 1e-9
 
 
 def test_reconcile_preserves_a_compound_parametric_ic():
@@ -103,13 +105,16 @@ def test_reconcile_preserves_a_compound_parametric_ic():
     # parameters (so the parameter-table sync keeps/estimates them rather than dropping the seed).
     sm = SbmlModel.from_antimony(IC_COMPOUND_ANTIMONY).sbml_model
     ic = R.ensure_parametric_initial_conditions(sm)
-    assert sm.getParameter('r2_init') is None            # the compound IC is NOT clobbered
-    assert {'ini_R1', 'ini_R2fold'} <= set(ic)           # both compound-IC params reported
-    assert set(R._ic_parameter_ids(sm)) >= {'ini_R1', 'ini_R2fold'}
+    assert sm.getParameter("r2_init") is None  # the compound IC is NOT clobbered
+    assert {"ini_R1", "ini_R2fold"} <= set(ic)  # both compound-IC params reported
+    assert set(R._ic_parameter_ids(sm)) >= {"ini_R1", "ini_R2fold"}
     # the initial assignment still evaluates to the product (expression untouched)
-    ia = next(sm.getInitialAssignment(i) for i in range(sm.getNumInitialAssignments())
-              if sm.getInitialAssignment(i).getSymbol() == 'r2')
-    assert R._ast_names(ia.getMath()) == {'ini_R1', 'ini_R2fold'}
+    ia = next(
+        sm.getInitialAssignment(i)
+        for i in range(sm.getNumInitialAssignments())
+        if sm.getInitialAssignment(i).getSymbol() == "r2"
+    )
+    assert R._ast_names(ia.getMath()) == {"ini_R1", "ini_R2fold"}
 
 
 def test_sync_parameter_table_uses_linear_for_nonpositive_nominal(session):
@@ -124,14 +129,14 @@ def test_sync_parameter_table_uses_linear_for_nonpositive_nominal(session):
         "  compartment c = 1;\n"
         "  species A in c; species B in c;\n"
         "  A = 1.0; B = 0.0;\n"
-        "  k_off = 0;\n"                    # a rate constant initialised to zero
+        "  k_off = 0;\n"  # a rate constant initialised to zero
         "  r1: A -> B; k_off * A;\n"
         "end\n"
     )
     session._set_model_from_antimony(ant)
     R.reconcile(session.problem)
     pdf = session.problem.parameter_df
-    assert pdf.loc["k_off", PARAMETER_SCALE] == LIN   # linear, NOT an invalid log10
+    assert pdf.loc["k_off", PARAMETER_SCALE] == LIN  # linear, NOT an invalid log10
 
 
 # -- always-on IC estimation; fix only the {0, 1} value conventions (#90) -----------------
@@ -140,8 +145,14 @@ def _bare_problem(antimony):
     needed — the IC estimate decision is purely value-based (estimated by default; fixed at 0/1)."""
     import pandas as pd
     import petab.v1 as petab
-    from petab.v1.C import (ESTIMATE, LOWER_BOUND, NOMINAL_VALUE, PARAMETER_ID,
-                            PARAMETER_SCALE, UPPER_BOUND)
+    from petab.v1.C import (
+        ESTIMATE,
+        LOWER_BOUND,
+        NOMINAL_VALUE,
+        PARAMETER_ID,
+        PARAMETER_SCALE,
+        UPPER_BOUND,
+    )
 
     prob = petab.Problem(model=SbmlModel.from_antimony(antimony))
     prob.parameter_df = pd.DataFrame(
@@ -161,7 +172,7 @@ def test_ic_estimated_by_default_empty_pool_unminted():
         "model seeded_and_empty\n"
         "  compartment c = 1;\n"
         "  species A in c; species B in c;\n"
-        "  A = 2.5; B = 0.0;\n"                 # A seeded (nonzero, != 1); B empty
+        "  A = 2.5; B = 0.0;\n"  # A seeded (nonzero, != 1); B empty
         "  k1 = 0.3;\n"
         "  r1: A -> B; k1 * A;\n"
         "end\n"
@@ -169,10 +180,10 @@ def test_ic_estimated_by_default_empty_pool_unminted():
     prob = _bare_problem(ant)
     R.reconcile(prob)
     pdf = prob.parameter_df
-    assert pdf.loc["A_init", ESTIMATE] == 1              # estimated by default
-    assert pdf.loc["A_init", PARAMETER_SCALE] == LOG10   # positive -> log10
+    assert pdf.loc["A_init", ESTIMATE] == 1  # estimated by default
+    assert pdf.loc["A_init", PARAMETER_SCALE] == LOG10  # positive -> log10
     assert abs(pdf.loc["A_init", NOMINAL_VALUE] - 2.5) < 1e-9
-    assert "B_init" not in pdf.index                     # explicit zero -> no row minted
+    assert "B_init" not in pdf.index  # explicit zero -> no row minted
     assert prob.model.sbml_model.getParameter("B_init") is None
 
 
@@ -185,7 +196,7 @@ def test_ic_unit_normalization_stays_fixed():
         "model unit_norm\n"
         "  compartment c = 1;\n"
         "  species R in c; species O in c;\n"
-        "  R = 1.0; O = 0.0;\n"                 # R is the total-receptor normalization (== 1)
+        "  R = 1.0; O = 0.0;\n"  # R is the total-receptor normalization (== 1)
         "  k1 = 0.3;\n"
         "  r1: R -> O; k1 * R;\n"
         "end\n"
@@ -193,9 +204,9 @@ def test_ic_unit_normalization_stays_fixed():
     prob = _bare_problem(ant)
     R.reconcile(prob)
     pdf = prob.parameter_df
-    assert pdf.loc["R_init", ESTIMATE] == 0             # unit normalization -> FIXED
+    assert pdf.loc["R_init", ESTIMATE] == 0  # unit normalization -> FIXED
     assert pdf.loc["R_init", PARAMETER_SCALE] == LIN
-    assert "O_init" not in pdf.index                    # explicit zero -> no row minted
+    assert "O_init" not in pdf.index  # explicit zero -> no row minted
 
 
 def test_ic_convention_fixes_a_pre_existing_estimated_row():
@@ -213,14 +224,22 @@ def test_ic_convention_fixes_a_pre_existing_estimated_row():
     """
     import pandas as pd
     import petab.v1 as petab
-    from petab.v1.C import (ESTIMATE, LIN, LOG10, LOWER_BOUND, NOMINAL_VALUE, PARAMETER_ID,
-                            PARAMETER_SCALE, UPPER_BOUND)
+    from petab.v1.C import (
+        ESTIMATE,
+        LIN,
+        LOG10,
+        LOWER_BOUND,
+        NOMINAL_VALUE,
+        PARAMETER_ID,
+        PARAMETER_SCALE,
+        UPPER_BOUND,
+    )
 
     ant = (
         "model seed_collision\n"
         "  compartment c = 1;\n"
         "  species R in c; species O in c; species G in c;\n"
-        "  R = 1.0; O = 0.0; G = 2.5;\n"        # R unit-norm, O empty pool, G a positive guess
+        "  R = 1.0; O = 0.0; G = 2.5;\n"  # R unit-norm, O empty pool, G a positive guess
         "  k1 = 0.3;\n"
         "  r1: R -> O; k1 * R;\n"
         "  r2: O -> G; k1 * O;\n"
@@ -232,7 +251,8 @@ def test_ic_convention_fixes_a_pre_existing_estimated_row():
     R.ensure_parametric_initial_conditions(prob.model.sbml_model)
     rows = {pid: [LOG10, 1e-4, 1e4, 0.1, 1] for pid in ("R_init", "O_init", "G_init")}
     prob.parameter_df = pd.DataFrame.from_dict(
-        rows, orient="index",
+        rows,
+        orient="index",
         columns=[PARAMETER_SCALE, LOWER_BOUND, UPPER_BOUND, NOMINAL_VALUE, ESTIMATE],
     ).rename_axis(PARAMETER_ID)
 
@@ -262,15 +282,22 @@ def test_ic_convention_does_not_fix_a_compound_expression_participant():
     estimated even though its value is 1.0 and it is (via the compound expression) an IC param."""
     import pandas as pd
     import petab.v1 as petab
-    from petab.v1.C import (ESTIMATE, LOG10, LOWER_BOUND, NOMINAL_VALUE, PARAMETER_ID,
-                            PARAMETER_SCALE, UPPER_BOUND)
+    from petab.v1.C import (
+        ESTIMATE,
+        LOG10,
+        LOWER_BOUND,
+        NOMINAL_VALUE,
+        PARAMETER_ID,
+        PARAMETER_SCALE,
+        UPPER_BOUND,
+    )
 
     ant = (
         "model ic_compound_unit\n"
         "  compartment c = 1;\n"
         "  species r2 in c;\n"
-        "  r2 = a * b;\n"                       # a, b appear ONLY in a compound IC expression
-        "  a = 2.0; b = 1.0;\n"                 # b == 1.0 would be a unit-norm IC if it were direct
+        "  r2 = a * b;\n"  # a, b appear ONLY in a compound IC expression
+        "  a = 2.0; b = 1.0;\n"  # b == 1.0 would be a unit-norm IC if it were direct
         "  koff = 0.1;\n"
         "  deg2: r2 -> ; koff * r2;\n"
         "end\n"
@@ -279,13 +306,14 @@ def test_ic_convention_does_not_fix_a_compound_expression_participant():
     R.ensure_parametric_initial_conditions(prob.model.sbml_model)
     rows = {pid: [LOG10, 1e-4, 1e4, val, 1] for pid, val in (("a", 2.0), ("b", 1.0))}
     prob.parameter_df = pd.DataFrame.from_dict(
-        rows, orient="index",
+        rows,
+        orient="index",
         columns=[PARAMETER_SCALE, LOWER_BOUND, UPPER_BOUND, NOMINAL_VALUE, ESTIMATE],
     ).rename_axis(PARAMETER_ID)
 
     R.reconcile(prob)
     pdf = prob.parameter_df
-    assert pdf.loc["b", ESTIMATE] == 1                  # NOT fixed despite value 1.0 (compound part)
+    assert pdf.loc["b", ESTIMATE] == 1  # NOT fixed despite value 1.0 (compound part)
     assert pdf.loc["a", ESTIMATE] == 1
 
 
@@ -296,14 +324,21 @@ def test_condition_column_species_ic_not_parametrised():
     override would silently supersede it, inflating k with a non-identifiable parameter)."""
     import pandas as pd
     import petab.v1 as petab
-    from petab.v1.C import (CONDITION_ID, ESTIMATE, LOWER_BOUND, NOMINAL_VALUE,
-                            PARAMETER_ID, PARAMETER_SCALE, UPPER_BOUND)
+    from petab.v1.C import (
+        CONDITION_ID,
+        ESTIMATE,
+        LOWER_BOUND,
+        NOMINAL_VALUE,
+        PARAMETER_ID,
+        PARAMETER_SCALE,
+        UPPER_BOUND,
+    )
 
     ant = (
         "model condcol_ic\n"
         "  compartment c = 1;\n"
         "  species M in c; species P in c;\n"
-        "  M = 0.988; P = 0.0;\n"                # M's initial is set per condition (a species column)
+        "  M = 0.988; P = 0.0;\n"  # M's initial is set per condition (a species column)
         "  k1 = 0.3;\n"
         "  r1: M -> P; k1 * M;\n"
         "end\n"
@@ -317,8 +352,8 @@ def test_condition_column_species_ic_not_parametrised():
     )
     R.reconcile(prob)
     pdf = prob.parameter_df
-    assert "M_init" not in pdf.index                    # condition-driven -> NOT parametrised
-    assert "P_init" not in pdf.index                    # explicit zero -> not parametrised either
+    assert "M_init" not in pdf.index  # condition-driven -> NOT parametrised
+    assert "P_init" not in pdf.index  # explicit zero -> not parametrised either
 
 
 def test_ic_estimate_is_value_based_not_observation_based():
@@ -331,7 +366,7 @@ def test_ic_estimate_is_value_based_not_observation_based():
         "model decay\n"
         "  compartment c = 1;\n"
         "  species A in c; species B in c;\n"
-        "  A = 1.0; B = 460.0;\n"               # B a positive guess (!= 1); A a unit normalization
+        "  A = 1.0; B = 460.0;\n"  # B a positive guess (!= 1); A a unit normalization
         "  k1 = 0.3;\n"
         "  r1: B -> A; k1 * B;\n"
         "end\n"
@@ -339,8 +374,8 @@ def test_ic_estimate_is_value_based_not_observation_based():
     prob = _bare_problem(ant)
     R.reconcile(prob)
     pdf = prob.parameter_df
-    assert pdf.loc["B_init", ESTIMATE] == 1             # guessed IC -> estimated, never frozen
-    assert pdf.loc["A_init", ESTIMATE] == 0             # A == 1.0 -> unit normalization, fixed
+    assert pdf.loc["B_init", ESTIMATE] == 1  # guessed IC -> estimated, never frozen
+    assert pdf.loc["A_init", ESTIMATE] == 0  # A == 1.0 -> unit normalization, fixed
 
 
 # A model driven by a per-condition input parameter ``dose`` that is ALSO a condition-table column,
@@ -360,15 +395,34 @@ def _condcol_problem():
     import petab.v1 as petab
 
     cond = pd.DataFrame({"conditionId": ["c1", "c2"], "dose": [1.0, 5.0]}).set_index("conditionId")
-    obs = pd.DataFrame({"observableId": ["obs_X"], "observableFormula": ["X"],
-                        "noiseFormula": ["1"]}).set_index("observableId")
-    meas = pd.DataFrame({"observableId": ["obs_X", "obs_X"], "simulationConditionId": ["c1", "c2"],
-                         "time": [1.0, 1.0], "measurement": [0.3, 1.2]})
-    par = pd.DataFrame({"parameterId": ["k"], "parameterScale": ["log10"], "lowerBound": [1e-3],
-                        "upperBound": [1e3], "nominalValue": [0.1], "estimate": [1]}
-                       ).set_index("parameterId")
-    return petab.Problem(model=SbmlModel.from_antimony(_CONDCOL_ANTIMONY), condition_df=cond,
-                         observable_df=obs, measurement_df=meas, parameter_df=par)
+    obs = pd.DataFrame(
+        {"observableId": ["obs_X"], "observableFormula": ["X"], "noiseFormula": ["1"]}
+    ).set_index("observableId")
+    meas = pd.DataFrame(
+        {
+            "observableId": ["obs_X", "obs_X"],
+            "simulationConditionId": ["c1", "c2"],
+            "time": [1.0, 1.0],
+            "measurement": [0.3, 1.2],
+        }
+    )
+    par = pd.DataFrame(
+        {
+            "parameterId": ["k"],
+            "parameterScale": ["log10"],
+            "lowerBound": [1e-3],
+            "upperBound": [1e3],
+            "nominalValue": [0.1],
+            "estimate": [1],
+        }
+    ).set_index("parameterId")
+    return petab.Problem(
+        model=SbmlModel.from_antimony(_CONDCOL_ANTIMONY),
+        condition_df=cond,
+        observable_df=obs,
+        measurement_df=meas,
+        parameter_df=par,
+    )
 
 
 def test_condition_column_symbols_are_the_input_columns():
@@ -377,6 +431,7 @@ def test_condition_column_symbols_are_the_input_columns():
 
 
 # -- initial-condition report (issue #57) ---------------------------------------------------
+
 
 def test_initial_conditions_report_fixed_by_default(session):
     """The toy problem's ICs are FIXED: the report says the declared t=0 governs the t=0 state."""
@@ -388,7 +443,7 @@ def test_initial_conditions_report_fixed_by_default(session):
     assert a["estimated"] is False
     assert a["set_by_condition"] is False
     assert a["t0_source"] == "fixed"
-    assert a["declared_t0_used"] is True          # declared t=0 survives into the t=0 state
+    assert a["declared_t0_used"] is True  # declared t=0 survives into the t=0 state
     assert rep["B"]["declared_t0"] == 0.0 and rep["B"]["declared_t0_used"] is True
 
 
@@ -405,8 +460,7 @@ def test_initial_conditions_report_flags_estimated_ic(session):
 
 def test_initial_conditions_report_marks_newly_added(session):
     """`added` (the reconcile diff) flags which ICs this op introduced."""
-    rep = {r["species"]: r for r in
-           R.initial_conditions_report(session.problem, added={"A_init"})}
+    rep = {r["species"]: r for r in R.initial_conditions_report(session.problem, added={"A_init"})}
     assert rep["A"]["newly_added"] is True
     assert rep["B"]["newly_added"] is False
 
@@ -431,10 +485,10 @@ def test_condition_column_parameter_not_synced_into_parameter_table():
 
     prob = _condcol_problem()
     diff = R.sync_parameter_table(prob)
-    assert "dose" not in prob.parameter_df.index      # condition-column param stays out of the table
+    assert "dose" not in prob.parameter_df.index  # condition-column param stays out of the table
     assert "dose" not in diff["added"]
-    assert "k" in prob.parameter_df.index             # a genuine kinetic is still synced
-    assert not petab.lint_problem(prob)               # petab accepts the verbatim condition column
+    assert "k" in prob.parameter_df.index  # a genuine kinetic is still synced
+    assert not petab.lint_problem(prob)  # petab accepts the verbatim condition column
 
 
 # -- observable-connection gating (issue #64) ------------------------------
@@ -465,16 +519,16 @@ end
 
 def test_species_influence_graph_is_directional():
     edges = R.species_influence_graph(_sm(INFLUENCE_ANTIMONY))
-    assert "B" in edges["A"]                    # A drives its product B
-    assert "D" in edges["B"]                    # B drives its sink D
-    assert edges.get("D", set()) == set()       # a pure sink drives nothing downstream
+    assert "B" in edges["A"]  # A drives its product B
+    assert "D" in edges["B"]  # B drives its sink D
+    assert edges.get("D", set()) == set()  # a pure sink drives nothing downstream
 
 
 def test_input_species_flags_const_boundary_and_rule_driven():
     inputs = R.input_species(_sm(INPUT_ANTIMONY))
-    assert "I" in inputs                        # const species -> a held input
-    assert "F" in inputs                        # assignment-rule-driven -> a forcing term
-    assert "X" not in inputs                    # a free dynamic state, not an input
+    assert "I" in inputs  # const species -> a held input
+    assert "F" in inputs  # assignment-rule-driven -> a forcing term
+    assert "X" not in inputs  # a free dynamic state, not an input
 
 
 def test_symbolic_noise_formulas_are_memoised_on_the_TABLE_TEXT(session):
@@ -486,14 +540,13 @@ def test_symbolic_noise_formulas_are_memoised_on_the_TABLE_TEXT(session):
     and a stale expression would feed a stop gate."""
     odf = session.problem.observable_df
     first = R._symbolic_noise_formulas(odf)
-    assert R._symbolic_noise_formulas(odf) is first        # same text -> same object, no re-parse
-    odf.loc["obs_B", "noiseFormula"] = "sigma_B * B"       # re-authored
+    assert R._symbolic_noise_formulas(odf) is first  # same text -> same object, no re-parse
+    odf.loc["obs_B", "noiseFormula"] = "sigma_B * B"  # re-authored
     rewritten = R._symbolic_noise_formulas(odf)
     assert rewritten is not first
     assert str(rewritten["obs_B"]) != str(first["obs_B"])
     # ...and a table this cache has never seen is parsed rather than borrowed from a stale neighbour
-    assert R._symbolic_noise_formulas(odf.assign(noiseFormula="sigma_B"))["obs_B"] == \
-        first["obs_B"]
+    assert R._symbolic_noise_formulas(odf.assign(noiseFormula="sigma_B"))["obs_B"] == first["obs_B"]
 
 
 # -- assignment-rule targets must not get a parametric IC (#158 follow-up) -------------------
@@ -534,11 +587,15 @@ def _consistency_errors(sm):
     which reads as "the fix did not work" when it did.
     """
     import libsbml
+
     doc = sm.getSBMLDocument()
     doc.getErrorLog().clearLog()
     doc.checkConsistency()
-    return [doc.getError(i).getMessage() for i in range(doc.getNumErrors())
-            if doc.getError(i).getSeverity() >= libsbml.LIBSBML_SEV_ERROR]
+    return [
+        doc.getError(i).getMessage()
+        for i in range(doc.getNumErrors())
+        if doc.getError(i).getSeverity() >= libsbml.LIBSBML_SEV_ERROR
+    ]
 
 
 def test_assignment_rule_targets_get_no_parametric_ic():
@@ -549,8 +606,9 @@ def test_assignment_rule_targets_get_no_parametric_ic():
     assert sm.getParameter("IPR_O_init") is None
     assert "IPR_A_init" not in ic and "IPR_O_init" not in ic
     # ...and no initialAssignment on them either, which is what libSBML actually objects to.
-    ia_symbols = {sm.getInitialAssignment(i).getSymbol()
-                  for i in range(sm.getNumInitialAssignments())}
+    ia_symbols = {
+        sm.getInitialAssignment(i).getSymbol() for i in range(sm.getNumInitialAssignments())
+    }
     assert ia_symbols.isdisjoint({"IPR_A", "IPR_O"})
     # The free dynamic species are untouched -- the fix must not stop parametrising ordinary ICs.
     assert {"x_init", "y_init", "z_init"} <= set(ic)
@@ -560,9 +618,9 @@ def test_reconciled_rule_target_model_is_valid_sbml():
     # The end-to-end claim: after reconcile the document libSBML sees is CLEAN. This is the test
     # that would have failed before the fix.
     sm = _sm(RULE_TARGET_ANTIMONY)
-    assert _consistency_errors(sm) == []          # the agent's model was always fine
+    assert _consistency_errors(sm) == []  # the agent's model was always fine
     R.ensure_parametric_initial_conditions(sm)
-    assert _consistency_errors(sm) == []          # and reconcile no longer breaks it
+    assert _consistency_errors(sm) == []  # and reconcile no longer breaks it
 
 
 def test_rate_rule_targets_keep_their_initial_condition():
@@ -572,20 +630,21 @@ def test_rate_rule_targets_keep_their_initial_condition():
     ic = R.ensure_parametric_initial_conditions(sm)
     assert "v_init" in ic
     assert abs(sm.getParameter("v_init").getValue() - 4.0) < 1e-9
-    assert R.assignment_rule_targets(sm) == set()          # v is a rate target, not an assignment
+    assert R.assignment_rule_targets(sm) == set()  # v is a rate target, not an assignment
 
 
 def test_reconcile_heals_a_store_that_already_carries_the_illegal_initial_assignment():
     # A version store written before this fix can carry the illegal IA. Re-authoring over it must
     # repair the document rather than inherit the fault.
     sm = _sm(RULE_TARGET_ANTIMONY)
-    R._set_parametric_ic(sm, "IPR_A", 0.0)                 # simulate the old buggy reconcile
-    assert _consistency_errors(sm) != []                   # document is now genuinely broken
+    R._set_parametric_ic(sm, "IPR_A", 0.0)  # simulate the old buggy reconcile
+    assert _consistency_errors(sm) != []  # document is now genuinely broken
     R.ensure_parametric_initial_conditions(sm)
-    assert _consistency_errors(sm) == []                   # healed
-    ia_symbols = {sm.getInitialAssignment(i).getSymbol()
-                  for i in range(sm.getNumInitialAssignments())}
-    assert "IPR_A" not in ia_symbols                       # the illegal IA is gone...
+    assert _consistency_errors(sm) == []  # healed
+    ia_symbols = {
+        sm.getInitialAssignment(i).getSymbol() for i in range(sm.getNumInitialAssignments())
+    }
+    assert "IPR_A" not in ia_symbols  # the illegal IA is gone...
     # ...AND so is the parameter it pointed at. Leaving `IPR_A_init` behind would keep an ESTIMATED
     # row that the assignment rule overrides at t=0 — a free ln(n) of BIC on every subsequent fit
     # with zero effect on the trajectory, which is exactly the artefact
@@ -613,6 +672,7 @@ end
 def test_prune_orphans_never_leaves_a_dangling_initial_assignment():
     import libsbml
     from petab_mcp import reconcile as RR
+
     sm = _sm(IA_TARGET_ANTIMONY)
     # Give `total` a real initialAssignment (not an assignment rule) and no other reference.
     for i in range(sm.getNumRules()):
@@ -626,6 +686,7 @@ def test_prune_orphans_never_leaves_a_dangling_initial_assignment():
 
     class _P:
         pass
+
     prob = _P()
     prob.model = type("M", (), {"sbml_model": sm})()
     prob.parameter_df = None
@@ -635,8 +696,9 @@ def test_prune_orphans_never_leaves_a_dangling_initial_assignment():
     out = RR.prune_orphans(prob)
     # `total` may go, but never as a dangling IA: the document stays valid either way.
     assert _consistency_errors(sm) == []
-    ia_symbols = {sm.getInitialAssignment(i).getSymbol()
-                  for i in range(sm.getNumInitialAssignments())}
+    ia_symbols = {
+        sm.getInitialAssignment(i).getSymbol() for i in range(sm.getNumInitialAssignments())
+    }
     if "total" in out["parameters"]:
         assert "total" not in ia_symbols
         assert "total" in out["initial_assignments"]
@@ -651,7 +713,7 @@ def test_an_unset_initial_is_the_same_empty_pool_as_an_explicit_zero():
         "model unset_vs_zero\n"
         "  compartment c = 1;\n"
         "  species A in c; species B in c; species C in c;\n"
-        "  A = 1.5; C = 0;\n"                  # B's initial is not written at all
+        "  A = 1.5; C = 0;\n"  # B's initial is not written at all
         "  k = 0.3;\n"
         "  r1: A -> B; k * A;\n"
         "  r2: B -> C; k * B;\n"

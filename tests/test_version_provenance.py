@@ -35,10 +35,13 @@ def _server(tmp_path, tag="prov"):
     work.mkdir()
     for f in DATA_DIR.iterdir():
         shutil.copy(f, work / f.name)
-    return create_server(str(work / "problem.yaml"),
-                         provenance_dir=str(tmp_path / f"prov_{tag}"),
-                         build_root=str(tmp_path / f"amici_{tag}"),
-                         resolver=StubReferenceResolver(), auto_fit=True), tmp_path / f"prov_{tag}"
+    return create_server(
+        str(work / "problem.yaml"),
+        provenance_dir=str(tmp_path / f"prov_{tag}"),
+        build_root=str(tmp_path / f"amici_{tag}"),
+        resolver=StubReferenceResolver(),
+        auto_fit=True,
+    ), tmp_path / f"prov_{tag}"
 
 
 def _call(mcp, name, args):
@@ -61,9 +64,11 @@ def _start_objective(result: dict) -> float:
     imp = result.get("improvement")
     assert imp, (
         f"the commit response carries no `improvement` block (keys: {sorted(result)}) — "
-        "without it there is no observable for which point a fork started from")
+        "without it there is no observable for which point a fork started from"
+    )
     assert "objective_before" in imp, (
-        f"`improvement` no longer carries `objective_before` (keys: {sorted(imp)})")
+        f"`improvement` no longer carries `objective_before` (keys: {sorted(imp)})"
+    )
     val = imp["objective_before"]
     assert val is not None, "objective_before is None: the starting point was not evaluated"
     return val
@@ -77,21 +82,36 @@ def test_a_fork_is_recorded_as_a_child_of_the_version_it_patched(arm_on):
     """The bug this closes: v2 patched from v0 while HEAD was v1 was recorded as a child of v1,
     so every parent-to-child comparison used a model v2 never came from."""
     mcp, prov = arm_on
-    r0 = _call(mcp, "make_changes", {"justification": "v0",
-                                     "model_edits": [{"op": "set_rate_law", "id": "r1",
-                                                     "antimony": "(k1/2 + k1/2)*A"}]})
-    r1 = _call(mcp, "make_changes", {"justification": "v1",
-                                     "model_edits": [{"op": "set_rate_law", "id": "r2",
-                                                     "antimony": "(k2/2 + k2/2)*B"}]})
+    r0 = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "v0",
+            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1/2 + k1/2)*A"}],
+        },
+    )
+    r1 = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "v1",
+            "model_edits": [{"op": "set_rate_law", "id": "r2", "antimony": "(k2/2 + k2/2)*B"}],
+        },
+    )
     assert (r0["version"], r1["version"]) == (0, 1)
     # HEAD is v1; fork from v0.
-    r2 = _call(mcp, "make_changes", {
-        "justification": "fork from v0",
-        "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1/3 + 2*k1/3)*A"}],
-        "base_version": 0})
+    r2 = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "fork from v0",
+            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1/3 + 2*k1/3)*A"}],
+            "base_version": 0,
+        },
+    )
     assert r2["committed"] is True
     assert _meta(prov, r2["version"])["parent"] == 0, "a fork is still recorded as a child of HEAD"
-    assert _meta(prov, 1)["parent"] == 0                      # the ordinary chain is unaffected
+    assert _meta(prov, 1)["parent"] == 0  # the ordinary chain is unaffected
 
 
 def test_an_ordinary_commit_still_descends_from_head(arm_on):
@@ -100,9 +120,15 @@ def test_an_ordinary_commit_still_descends_from_head(arm_on):
     mcp, prov = arm_on
 
     def op(justification, rid, law, **kw):
-        return _call(mcp, "make_changes",
-                     {"justification": justification,
-                      "model_edits": [{"op": "set_rate_law", "id": rid, "antimony": law}], **kw})
+        return _call(
+            mcp,
+            "make_changes",
+            {
+                "justification": justification,
+                "model_edits": [{"op": "set_rate_law", "id": rid, "antimony": law}],
+                **kw,
+            },
+        )
 
     op("v0", "r1", "(k1*1.0)*A")
     op("v1", "r2", "(k2*1.0)*B")
@@ -110,21 +136,27 @@ def test_an_ordinary_commit_still_descends_from_head(arm_on):
     after = op("ordinary commit after a fork", "r2", "(k2*1.00)*B")
     assert _meta(prov, forked["version"])["parent"] == 0
     assert _meta(prov, after["version"])["parent"] == forked["version"], (
-        "an ordinary commit inherited the fork's base instead of HEAD")
+        "an ordinary commit inherited the fork's base instead of HEAD"
+    )
 
 
 def test_the_callers_own_text_is_stored_beside_the_built_model(arm_on):
     """`model.ant` is the reconciled, re-rendered build output; `model_source.ant` is what the
     caller submitted. Keeping both is what makes lineage checkable after the fact."""
     mcp, prov = arm_on
-    res = _call(mcp, "make_changes", {"justification": "authored wholesale",
-                                      "antimony": _call(mcp, "get_model", {})["result"]
-                                      .replace("k1*A", "(k1 + 0.0)*A")})
+    res = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "authored wholesale",
+            "antimony": _call(mcp, "get_model", {})["result"].replace("k1*A", "(k1 + 0.0)*A"),
+        },
+    )
     assert res["committed"] is True
     vdir = prov / "versions" / f"v{res['version']}"
     built = (vdir / "model.ant").read_text()
     source = (vdir / "model_source.ant").read_text()
-    assert "(k1 + 0.0)*A" in source                    # the caller's text, verbatim
+    assert "(k1 + 0.0)*A" in source  # the caller's text, verbatim
     assert source != built, "source and build output are identical — the render did nothing?"
     # The build output carries what the reconcile added; the source does not have to.
     assert "const" in built
@@ -142,12 +174,22 @@ def test_a_parameters_only_commit_INHERITS_the_source_it_did_not_change(arm_on):
     empty model" — is still guarded, because an inherited source is never empty.
     """
     mcp, prov = arm_on
-    base = _call(mcp, "make_changes", {"justification": "seed",
-                                       "model_edits": [{"op": "set_rate_law", "id": "r1",
-                                                        "antimony": "(k1*1.0)*A"}]})
-    res = _call(mcp, "make_changes", {
-        "justification": "bounds only",
-        "parameters": [{"parameter_id": "k1", "lower_bound": 1e-4, "upper_bound": 1e4}]})
+    base = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "seed",
+            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*1.0)*A"}],
+        },
+    )
+    res = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "bounds only",
+            "parameters": [{"parameter_id": "k1", "lower_bound": 1e-4, "upper_bound": 1e4}],
+        },
+    )
     assert res["applied"] is True
     base_src = (prov / "versions" / f"v{base['version']}" / "model_source.ant").read_text()
     kept = prov / "versions" / f"v{res['version']}" / "model_source.ant"
@@ -165,18 +207,37 @@ def test_a_fork_patches_its_BASE_not_head(arm_on):
     `k1*2*A`, so asserting the literal trips over the very render gap the production failures
     came from.)"""
     mcp, prov = arm_on
-    _v0 = _call(mcp, "make_changes", {"justification": "v0", "model_edits": [
-        {"op": "set_rate_law", "id": "r1", "antimony": "(k1*2)*A"}]})
-    _v1 = _call(mcp, "make_changes", {"justification": "v1", "model_edits": [
-        {"op": "set_rate_law", "id": "r2", "antimony": "(k2*2)*B"}]})
-    v2 = _call(mcp, "make_changes", {
-        "justification": "fork from v0", "base_version": 0,
-        "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*3)*A"}]})
+    _v0 = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "v0",
+            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*2)*A"}],
+        },
+    )
+    _v1 = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "v1",
+            "model_edits": [{"op": "set_rate_law", "id": "r2", "antimony": "(k2*2)*B"}],
+        },
+    )
+    v2 = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "fork from v0",
+            "base_version": 0,
+            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*3)*A"}],
+        },
+    )
     assert v2["committed"] is True
     submitted = (prov / "versions" / f"v{v2['version']}" / "model_source.ant").read_text()
-    assert "k1*3" in submitted                      # this call's patch is in it
+    assert "k1*3" in submitted  # this call's patch is in it
     assert "k2*2" not in submitted, (
-        "the fork's submitted text carries v1's change — it was patched from HEAD, not v0")
+        "the fork's submitted text carries v1's change — it was patched from HEAD, not v0"
+    )
 
 
 def test_a_fork_restores_the_search_space_not_just_the_model(arm_on):
@@ -184,26 +245,46 @@ def test_a_fork_restores_the_search_space_not_just_the_model(arm_on):
     bounds the abandoned branch had widened, and the prompt had to ask the agent to re-send
     `parameters` from memory. Going back to a version now brings its search space with it."""
     mcp, prov = arm_on
-    v0 = _call(mcp, "make_changes", {"justification": "v0", "model_edits": [
-        {"op": "set_rate_law", "id": "r1", "antimony": "(k1*1.0)*A"}]})
+    v0 = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "v0",
+            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*1.0)*A"}],
+        },
+    )
     # widen k1 far beyond v0's box, then fork back to v0
-    _call(mcp, "make_changes", {"justification": "widen k1",
-                                "parameters": [{"parameter_id": "k1",
-                                                "lower_bound": 1e-9, "upper_bound": 1e9}]})
+    _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "widen k1",
+            "parameters": [{"parameter_id": "k1", "lower_bound": 1e-9, "upper_bound": 1e9}],
+        },
+    )
     import csv as _csv
+
     def bounds(version):
         with open(prov / "versions" / f"v{version}" / "parameters.tsv") as fh:
             for r in _csv.DictReader(fh, delimiter="\t"):
                 if r["parameterId"] == "k1":
                     return float(r["lowerBound"]), float(r["upperBound"])
         return None
+
     v0_box = bounds(v0["version"])
-    fork = _call(mcp, "make_changes", {
-        "justification": "fork from v0", "base_version": v0["version"],
-        "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*3.0)*A"}]})
+    fork = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "fork from v0",
+            "base_version": v0["version"],
+            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*3.0)*A"}],
+        },
+    )
     assert fork.get("committed") is True, fork
     assert bounds(fork["version"]) == v0_box, (
-        f"fork kept the widened box {bounds(fork['version'])} instead of v0's {v0_box}")
+        f"fork kept the widened box {bounds(fork['version'])} instead of v0's {v0_box}"
+    )
 
 
 def test_an_explicit_bound_in_the_fork_call_wins_over_the_restored_one(arm_on):
@@ -215,14 +296,27 @@ def test_an_explicit_bound_in_the_fork_call_wins_over_the_restored_one(arm_on):
     is load-bearing — the widening backstops compare against the PRE-EDIT bound, so restoring
     first would hand them v0's box as the baseline and let a third widening past the guard."""
     mcp, prov = arm_on
-    v0 = _call(mcp, "make_changes", {"justification": "v0", "model_edits": [
-        {"op": "set_rate_law", "id": "r1", "antimony": "(k1*1.0)*A"}]})
-    fork = _call(mcp, "make_changes", {
-        "justification": "fork and rebound", "base_version": v0["version"],
-        "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*2.0)*A"}],
-        "parameters": [{"parameter_id": "k1", "lower_bound": 0.02, "upper_bound": 20.0}]})
+    v0 = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "v0",
+            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*1.0)*A"}],
+        },
+    )
+    fork = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "fork and rebound",
+            "base_version": v0["version"],
+            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*2.0)*A"}],
+            "parameters": [{"parameter_id": "k1", "lower_bound": 0.02, "upper_bound": 20.0}],
+        },
+    )
     assert fork.get("committed") is True, fork
     import csv as _csv
+
     with open(prov / "versions" / f"v{fork['version']}" / "parameters.tsv") as fh:
         row = next(r for r in _csv.DictReader(fh, delimiter="\t") if r["parameterId"] == "k1")
     assert (float(row["lowerBound"]), float(row["upperBound"])) == (0.02, 20.0)
@@ -241,26 +335,45 @@ def test_a_fork_resumes_from_its_BASE_optimum_not_the_abandoned_branchs(arm_on):
     objective, not the abandoned v1's.
     """
     mcp, _ = arm_on
-    v0 = _call(mcp, "make_changes", {"justification": "v0", "model_edits": [
-        {"op": "set_rate_law", "id": "r1", "antimony": "k1*A"}]})
+    v0 = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "v0",
+            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "k1*A"}],
+        },
+    )
     v0_nllh = v0["neg_log_likelihood"]
     # A branch with a genuinely different optimum, so "restored" and "inherited" are separable.
-    v1 = _call(mcp, "make_changes", {"justification": "a branch worth abandoning",
-                                     "model_edits": [{"op": "set_rate_law", "id": "r1",
-                                                      "antimony": "k1*A*A"}]})
+    v1 = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "a branch worth abandoning",
+            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "k1*A*A"}],
+        },
+    )
     assert v1["committed"] is True
     assert abs(v1["neg_log_likelihood"] - v0_nllh) > 1e-6, (
-        "the two branches fit equally well, so this test cannot tell the points apart")
+        "the two branches fit equally well, so this test cannot tell the points apart"
+    )
     # Fork back to v0 with an edit that renders differently but computes the same value: the
     # restored point is therefore still v0's optimum under the fork's own structure.
-    fork = _call(mcp, "make_changes", {
-        "justification": "fork from v0", "base_version": v0["version"],
-        "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1 + 0.0)*A"}]})
+    fork = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "fork from v0",
+            "base_version": v0["version"],
+            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1 + 0.0)*A"}],
+        },
+    )
     assert fork.get("committed") is True, fork
     assert _start_objective(fork) == pytest.approx(v0_nllh, rel=1e-6), (
         f"the fork started from {(fork.get('improvement') or {}).get('objective_before')}, "
         f"not v0's optimum {v0_nllh} — "
-        f"it inherited the abandoned branch's point (v1 fit to {v1['neg_log_likelihood']})")
+        f"it inherited the abandoned branch's point (v1 fit to {v1['neg_log_likelihood']})"
+    )
 
 
 def test_the_starting_point_comes_back_even_for_a_parameter_the_fork_rebounds(arm_on):
@@ -271,20 +384,39 @@ def test_the_starting_point_comes_back_even_for_a_parameter_the_fork_rebounds(ar
     parameter back to the abandoned branch's value. Fork-and-rebound is exactly the case where the
     agent is steering hardest, so it is the worst place to lose the rollback."""
     mcp, prov = arm_on
-    v0 = _call(mcp, "make_changes", {"justification": "v0", "model_edits": [
-        {"op": "set_rate_law", "id": "r1", "antimony": "k1*A"}]})
-    _call(mcp, "make_changes", {"justification": "a branch worth abandoning",
-                                "model_edits": [{"op": "set_rate_law", "id": "r1",
-                                                 "antimony": "k1*A*A"}]})
-    fork = _call(mcp, "make_changes", {
-        "justification": "fork and rebound k1", "base_version": v0["version"],
-        "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1 + 0.0)*A"}],
-        "parameters": [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}]})
+    v0 = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "v0",
+            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "k1*A"}],
+        },
+    )
+    _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "a branch worth abandoning",
+            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "k1*A*A"}],
+        },
+    )
+    fork = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "fork and rebound k1",
+            "base_version": v0["version"],
+            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1 + 0.0)*A"}],
+            "parameters": [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
+        },
+    )
     assert fork.get("committed") is True, fork
     assert _start_objective(fork) == pytest.approx(v0["neg_log_likelihood"], rel=1e-6), (
-        "naming k1 in `parameters` cost the fork k1's restored starting point")
+        "naming k1 in `parameters` cost the fork k1's restored starting point"
+    )
     # ...and the caller's own box is the one that survived.
     import csv as _csv
+
     with open(prov / "versions" / f"v{fork['version']}" / "parameters.tsv") as fh:
         row = next(r for r in _csv.DictReader(fh, delimiter="\t") if r["parameterId"] == "k1")
     assert (float(row["lowerBound"]), float(row["upperBound"])) == (1e-3, 1e3)

@@ -107,7 +107,7 @@ def sign_test(residuals: list[float]) -> dict[str, Any]:
     # directly so this module carries no scipy dependency of its own (and matches exactly at the
     # boundary, where binom_test's doubling convention differs across versions).
     k = min(n_pos, n_neg)
-    tail = 2.0 * sum(math.comb(n, i) for i in range(0, k + 1)) / (2.0 ** n)
+    tail = 2.0 * sum(math.comb(n, i) for i in range(0, k + 1)) / (2.0**n)
     p = min(1.0, tail)
     return {"n": n, "n_pos": n_pos, "n_neg": n_neg, "p": p, "low_power": n < MIN_POWER_N}
 
@@ -129,8 +129,9 @@ def _runs_pmf(n1: int, n2: int) -> dict[int, float]:
             ways = 2 * math.comb(n1 - 1, k - 1) * math.comb(n2 - 1, k - 1)
         else:
             k = (r - 1) // 2
-            ways = (math.comb(n1 - 1, k) * math.comb(n2 - 1, k - 1)
-                    + math.comb(n1 - 1, k - 1) * math.comb(n2 - 1, k))
+            ways = math.comb(n1 - 1, k) * math.comb(n2 - 1, k - 1) + math.comb(
+                n1 - 1, k - 1
+            ) * math.comb(n2 - 1, k)
         if ways:
             pmf[r] = ways / total
     return pmf
@@ -164,8 +165,7 @@ def runs_test(residuals: list[float]) -> dict[str, Any]:
     base = {"n": n, "n_pos": n_pos, "n_neg": n_neg, "runs": _count_runs(signs)}
     if n_pos == 0 or n_neg == 0:
         # All one sign: no runs structure to test (the bias is the sign test's finding).
-        return {**base, "expected_runs": None, "p": None, "direction": None,
-                "low_power": True}
+        return {**base, "expected_runs": None, "p": None, "direction": None, "low_power": True}
     pmf = _runs_pmf(n_pos, n_neg)
     expected = 2.0 * n_pos * n_neg / n + 1.0
     r_obs = base["runs"]
@@ -179,8 +179,13 @@ def runs_test(residuals: list[float]) -> dict[str, Any]:
         direction = "few_runs"
     elif r_obs > expected:
         direction = "many_runs"
-    return {**base, "expected_runs": round(expected, 3), "p": p, "direction": direction,
-            "low_power": n < MIN_POWER_N}
+    return {
+        **base,
+        "expected_runs": round(expected, 3),
+        "p": p,
+        "direction": direction,
+        "low_power": n < MIN_POWER_N,
+    }
 
 
 def fisher_combine(pvalues: list[float]) -> float | None:
@@ -286,8 +291,9 @@ def replicate_pure_error(values: list[float]) -> dict[str, Any] | None:
     return {"n": n, "mean": mean, "sd": math.sqrt(ssq / (n - 1)), "df": n - 1, "ssq": ssq}
 
 
-def lof_power(n_points: int, n_structural: int | None,
-              min_lof_df: int | None = None) -> tuple[int | None, str]:
+def lof_power(
+    n_points: int, n_structural: int | None, min_lof_df: int | None = None
+) -> tuple[int | None, str]:
     """``(lof_df, band)``: how much a replicate lack-of-fit PASS over ``n_points`` replicated design
     points is worth against ``n_structural`` estimated structural parameters.
 
@@ -399,8 +405,8 @@ def replicate_lack_of_fit(
     usable: list[dict[str, Any]] = []
     # Counted so that "nothing to test" can name WHICH kind of nothing it was — each unavailable
     # status has to mean exactly one thing (see replicate_lof_unavailable).
-    n_replicated = 0   # design points measured more than once at all
-    n_thin = 0         # ...of those, the ones below min_df (schwen's every-n_i-is-2)
+    n_replicated = 0  # design points measured more than once at all
+    n_thin = 0  # ...of those, the ones below min_df (schwen's every-n_i-is-2)
     for p in points or []:
         try:
             n = int(p["n"])
@@ -458,15 +464,16 @@ def replicate_lack_of_fit(
         # the same to 3 s.f., and this number is the one a regression pins.
         "max_abs_z": round(abs(worst[0]["z"]), 3),
         "min_p_holm": _sig3(min(u["p_holm"] for u in usable)),
-        "points": [{"label": u["label"], "n": u["n"], "z": round(u["z"], 3),
-                    "p_holm": _sig3(u["p_holm"])}
-                   for u in named],
+        "points": [
+            {"label": u["label"], "n": u["n"], "z": round(u["z"], 3), "p_holm": _sig3(u["p_holm"])}
+            for u in named
+        ],
     }
 
 
-def replicate_lof_unavailable(status: str = "unavailable",
-                              alpha: float = REPLICATE_LOF_ALPHA,
-                              n_points: int = 0) -> dict[str, Any]:
+def replicate_lof_unavailable(
+    status: str = "unavailable", alpha: float = REPLICATE_LOF_ALPHA, n_points: int = 0
+) -> dict[str, Any]:
     """The degraded verdict: the same keys, and honest that the arm produced NO EVIDENCE — which a
     consumer must be able to tell apart from a pass (an empty ``flagged`` alone reads as adequacy).
     An arm that could not run tested NOTHING, so ``tested`` is empty and no observable may be
@@ -477,5 +484,14 @@ def replicate_lof_unavailable(status: str = "unavailable",
     """
     # Every key of the available path, so the verdict has ONE shape whatever happened: the assembler
     # reads them off each arm and a missing key would be a KeyError.
-    return {"available": False, "status": status, "n_points": n_points, "alpha": alpha,
-            "flagged": [], "tested": [], "max_abs_z": None, "min_p_holm": None, "points": []}
+    return {
+        "available": False,
+        "status": status,
+        "n_points": n_points,
+        "alpha": alpha,
+        "flagged": [],
+        "tested": [],
+        "max_abs_z": None,
+        "min_p_holm": None,
+        "points": [],
+    }

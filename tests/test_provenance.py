@@ -18,10 +18,18 @@ def _pdf(records):
 
 def test_diff_versions_reports_fit_delta(tmp_path):
     store = ProvenanceStore(tmp_path / ".petab_mcp")
-    store.snapshot_version("model m() end", _pdf([{"parameterId": "k", "estimate": 1}]),
-                           label="v0", meta={"neg_log_likelihood": -6.6, "chi2": 3.4})
-    store.snapshot_version("model m() k=1 end", _pdf([{"parameterId": "k", "estimate": 1}]),
-                           label="v1", meta={"neg_log_likelihood": -8.3, "chi2": 0.04})
+    store.snapshot_version(
+        "model m() end",
+        _pdf([{"parameterId": "k", "estimate": 1}]),
+        label="v0",
+        meta={"neg_log_likelihood": -6.6, "chi2": 3.4},
+    )
+    store.snapshot_version(
+        "model m() k=1 end",
+        _pdf([{"parameterId": "k", "estimate": 1}]),
+        label="v1",
+        meta={"neg_log_likelihood": -8.3, "chi2": 0.04},
+    )
     fit = store.diff_versions(0, 1)["fit"]
     assert fit["from_neg_log_likelihood"] == -6.6
     assert fit["to_neg_log_likelihood"] == -8.3
@@ -35,8 +43,9 @@ def test_diff_versions_reports_fit_delta(tmp_path):
 
 def test_snapshot_and_get(tmp_path):
     store = ProvenanceStore(tmp_path / ".petab_mcp")
-    v = store.snapshot_version("model m() end", _pdf([{"parameterId": "k", "estimate": 1}]),
-                               label="a")
+    v = store.snapshot_version(
+        "model m() end", _pdf([{"parameterId": "k", "estimate": 1}]), label="a"
+    )
     assert v == 0
     assert store.current_version == 0
     snap = store.get_version(0)
@@ -60,12 +69,18 @@ def test_snapshot_persists_optimization_and_copies_result_file(tmp_path):
     optimization = {
         "n_starts": 2,
         "starts": [{"start": 0, "fval": 1.0}, {"start": 1, "fval": 5.0}],
-        "trace": [{"start": 0, "iteration": 0, "fval": 9.0},
-                  {"start": 0, "iteration": 1, "fval": 1.0}],
+        "trace": [
+            {"start": 0, "iteration": 0, "fval": 9.0},
+            {"start": 0, "iteration": 1, "fval": 1.0},
+        ],
         "result_file": str(result_file),
     }
-    v = store.snapshot_version("model m() end", _pdf([{"parameterId": "k", "estimate": 1}]),
-                               label="fit", optimization=optimization)
+    v = store.snapshot_version(
+        "model m() end",
+        _pdf([{"parameterId": "k", "estimate": 1}]),
+        label="fit",
+        optimization=optimization,
+    )
 
     vdir = store.versions_dir / f"v{v}"
     assert (vdir / "optimization.json").is_file()
@@ -151,7 +166,8 @@ def test_one_unreadable_meta_does_not_empty_the_version_listing(session, reautho
     assert 0 not in [m.get("version") for m in after]
     # ...and the survivors are intact, so de-dup and the widening walk still have history
     assert [m.get("version") for m in after] == [
-        v for v in (m.get("version") for m in before) if v != 0]
+        v for v in (m.get("version") for m in before) if v != 0
+    ]
 
 
 def test_a_meta_that_is_not_an_object_is_excluded_too(session, reauthor_toy):
@@ -166,7 +182,7 @@ def test_a_meta_that_is_not_an_object_is_excluded_too(session, reauthor_toy):
     metas = session.provenance.list_versions()
     assert all(isinstance(m, dict) for m in metas)
     assert [m["version"] for m in metas] == [1]
-    D.build_registry(session)          # must not raise
+    D.build_registry(session)  # must not raise
 
 
 def test_every_version_is_a_fit(session, reauthor_toy):
@@ -181,4 +197,5 @@ def test_every_version_is_a_fit(session, reauthor_toy):
     assert {m["kind"] for m in metas} == {"fit"}
     # every one of them competes on bic; none is excluded as unscored
     from petab_mcp import dedup as D
+
     assert {r["version"] for r in D.build_registry(session)} == {m["version"] for m in metas}

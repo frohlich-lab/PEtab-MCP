@@ -110,7 +110,7 @@ def _noise_floor(frame) -> tuple["float | None", str]:
     import numpy as np
 
     within, dof = 0.0, 0
-    all_y = frame["_y"].to_numpy(dtype=float)      # hoisted: was rebuilt once PER GROUP
+    all_y = frame["_y"].to_numpy(dtype=float)  # hoisted: was rebuilt once PER GROUP
     for _, idx in frame.groupby([SIMULATION_CONDITION_ID, TIME], sort=False).indices.items():
         v = all_y[idx]
         v = v[np.isfinite(v)]
@@ -158,7 +158,7 @@ def _extremum_legs(y, idx) -> tuple[float, float]:
     """
     import numpy as np
 
-    left = float(y[idx] - np.min(y[:idx + 1]))
+    left = float(y[idx] - np.min(y[: idx + 1]))
     right = float(y[idx] - np.min(y[idx:]))
     return left, right
 
@@ -209,8 +209,7 @@ def _shape(series, sigma) -> dict[str, Any]:
         # Note the rate is ~15x the idealised one (0.2% at k=2.25 with a KNOWN sigma) because sigma
         # is itself estimated here, and an underestimate inflates every feature. Quote 3%, not 0.2%.
         # Floored at the standing 3-sigma bar so a very short series is never judged more loosely.
-        bar = sig_m * max(_STRONG_SIGMA,
-                          _EXCURSION_K * math.sqrt(2.0 * math.log(max(len(y), 2))))
+        bar = sig_m * max(_STRONG_SIGMA, _EXCURSION_K * math.sqrt(2.0 * math.log(max(len(y), 2))))
         for kind, i in (("peak", int(np.argmax(y))), ("trough", int(np.argmin(y)))):
             if not (0 < i < len(y) - 1):
                 continue
@@ -240,23 +239,31 @@ def _shape(series, sigma) -> dict[str, Any]:
     # docstring all tell the agent to act on. The agent was reading None for the only real finding
     # it gets, while the two tests that can essentially never fire were the only ones able to
     # report. Absence stays absence: monotone/flat set `requirement: None`.
-    _EXCURSION = ("the response must rise AND fall — constant production with first-order decay "
-                  "cannot produce this at any rate constants, so a depletable pool, a second "
-                  "state, or feedback is REQUIRED")
+    _EXCURSION = (
+        "the response must rise AND fall — constant production with first-order decay "
+        "cannot produce this at any rate constants, so a depletable pool, a second "
+        "state, or feedback is REQUIRED"
+    )
     return {
         "testable": True,
         "n_conditions": len(usable),
-        "n_excursions": n_exc, "n_peaks": peaks, "n_troughs": troughs,
+        "n_excursions": n_exc,
+        "n_peaks": peaks,
+        "n_troughs": troughs,
         "n_monotone": monotone,
         "extremum_time_fraction": round(float(np.median(frac)), 3) if frac else None,
         "min_leg_sigmas": round(float(np.median(strength)), 1) if strength else None,
         "requirement": _EXCURSION if n_exc else None,
         "support_for_extension": "established" if n_exc else "none",
-        "verdict": (_EXCURSION if n_exc else
-                    "monotone over every condition tested — NO REQUIREMENT either way, and NOT "
-                    "evidence that one state suffices" if monotone else
-                    "flat/indeterminate: this design does not resolve the shape — NO REQUIREMENT "
-                    "either way, and NOT evidence that the response is simple"),
+        "verdict": (
+            _EXCURSION
+            if n_exc
+            else "monotone over every condition tested — NO REQUIREMENT either way, and NOT "
+            "evidence that one state suffices"
+            if monotone
+            else "flat/indeterminate: this design does not resolve the shape — NO REQUIREMENT "
+            "either way, and NOT evidence that the response is simple"
+        ),
     }
 
 
@@ -283,9 +290,11 @@ def _timescales(series, sigma) -> dict[str, Any]:
     usable = [s for s in series if len(s[1]) >= _MIN_POINTS_TIMESCALE]
     cand = max(usable, key=lambda s: float(np.ptp(s[2])), default=None)
     if cand is None or len(cand[1]) < _MIN_POINTS_TIMESCALE:
-        return {"testable": False,
-                "reason": f"fewer than {_MIN_POINTS_TIMESCALE} time points (a two-exponential form "
-                          f"has 5 free parameters and would interpolate a shorter series)"}
+        return {
+            "testable": False,
+            "reason": f"fewer than {_MIN_POINTS_TIMESCALE} time points (a two-exponential form "
+            f"has 5 free parameters and would interpolate a shorter series)",
+        }
     _, t, y, _reps = cand
     i = int(np.argmax(y))
     if len(t) - i < _MIN_POINTS_TIMESCALE:
@@ -313,8 +322,11 @@ def _timescales(series, sigma) -> dict[str, Any]:
     span = float(t[-1]) or 1.0
     a0, c0 = float(y[0] - y[-1]), float(y[-1])
     b1 = _bic(lambda x, a, k, c: a * np.exp(-k * x) + c, [a0, 1.0 / span, c0], 3)
-    b2 = _bic(lambda x, a, k1, b, k2, c: a * np.exp(-k1 * x) + b * np.exp(-k2 * x) + c,
-              [a0 / 2, 3.0 / span, a0 / 2, 0.3 / span, c0], 5)
+    b2 = _bic(
+        lambda x, a, k1, b, k2, c: a * np.exp(-k1 * x) + b * np.exp(-k2 * x) + c,
+        [a0 / 2, 3.0 / span, a0 / 2, 0.3 / span, c0],
+        5,
+    )
     if b1 is None:
         return {"testable": False, "reason": "single-exponential fit failed"}
     if b2 is None:
@@ -323,30 +335,38 @@ def _timescales(series, sigma) -> dict[str, Any]:
         # distinguish a second timescale -- so "the comparison did not run" and "the comparison ran
         # and found nothing" were indistinguishable downstream. Same treatment as the
         # single-exponential failure above: a question the analysis could not answer is untestable.
-        return {"testable": False, "reason": "two-exponential fit failed, so the comparison with "
-                                             "the single-exponential form could not be made"}
+        return {
+            "testable": False,
+            "reason": "two-exponential fit failed, so the comparison with "
+            "the single-exponential form could not be made",
+        }
     # POSITIVE, favouring the EXTENSION: > 0 means the two-timescale form has the lower BIC.
     # Named for what it measures — `delta_bic_two_vs_one` was computed as `b1 - b2` and so read
     # backwards, shipping a number that contradicted the sentence beside it.
     # Threshold on the RAW difference and round only for display: rounding first moves the
     # boundary, so a true margin of 6.04 would round to 6.0 and stop being "established".
-    raw_margin = b1 - b2                      # both forms fitted: the comparison is real
+    raw_margin = b1 - b2  # both forms fitted: the comparison is real
     margin = round(raw_margin, 1)
     established = raw_margin > _TIMESCALE_MIN_DELTA_BIC
     if established:
         verdict = "at least two distinguishable timescales"
         support = "established"
     elif raw_margin > 0:
-        verdict = (f"a second timescale is weakly favoured (BIC lower by {margin}, under the "
-                   f"{_TIMESCALE_MIN_DELTA_BIC} needed to call it) — WEAK SUPPORT for a second "
-                   "relaxing process, not a finding")
+        verdict = (
+            f"a second timescale is weakly favoured (BIC lower by {margin}, under the "
+            f"{_TIMESCALE_MIN_DELTA_BIC} needed to call it) — WEAK SUPPORT for a second "
+            "relaxing process, not a finding"
+        )
         support = "suggestive"
     else:
-        verdict = ("this design does not distinguish a second timescale — NO REQUIREMENT either "
-                   "way, and NOT evidence that one is enough")
+        verdict = (
+            "this design does not distinguish a second timescale — NO REQUIREMENT either "
+            "way, and NOT evidence that one is enough"
+        )
         support = "none"
     return {
-        "testable": True, "n_points": int(len(t)),
+        "testable": True,
+        "n_points": int(len(t)),
         # Only ever set when the extension is ESTABLISHED. Absence is absence of evidence.
         "requirement": "at least two distinguishable timescales" if established else None,
         "support_for_extension": support,
@@ -413,7 +433,7 @@ def _dose_response(frame, conditions, sigma, coordinate) -> dict[str, Any]:
                 continue
             slopes.append((ly[a + 1] - ly[a]) / dx)
             if ly_sigma is not None:
-                s2 = 2.0 * ly_sigma ** 2
+                s2 = 2.0 * ly_sigma**2
             else:  # propagate the LINEAR sigma through the log at each level
                 s2 = sum((sigma / v) ** 2 for v in (y[a], y[a + 1])) / (math.log(10) ** 2)
             unc.append(math.sqrt(s2) / dx)
@@ -427,16 +447,22 @@ def _dose_response(frame, conditions, sigma, coordinate) -> dict[str, Any]:
         # point-estimate test the widening exists to prevent. Bounded (the band is worth <=0.02
         # slope units there, and every real problem sits at 0.31-1.35, far above it) but wrong in
         # the same way as thresholding a rounded BIC margin: a threshold never reads a display value.
-        cand = {"input": str(col), "n_doses": len(pts),
-                "max_log_log_slope": round(float(slopes[j]), 2),
-                "slope_uncertainty": round(float(unc[j]), 2),
-                "_raw_slope": float(slopes[j]), "_raw_unc": float(unc[j])}
+        cand = {
+            "input": str(col),
+            "n_doses": len(pts),
+            "max_log_log_slope": round(float(slopes[j]), 2),
+            "slope_uncertainty": round(float(unc[j]), 2),
+            "_raw_slope": float(slopes[j]),
+            "_raw_unc": float(unc[j]),
+        }
         if best is None or cand["max_log_log_slope"] > best["max_log_log_slope"]:
             best = cand
     if best is None:
-        return {"testable": False,
-                "reason": f"no numeric input with >={_MIN_DOSES} positive levels and a positive "
-                          f"response"}
+        return {
+            "testable": False,
+            "reason": f"no numeric input with >={_MIN_DOSES} positive levels and a positive "
+            f"response",
+        }
     # Bonferroni over every (column, adjacent-pair) slope the maximum was taken over.
     #
     # THIS `z` IS WHY THE ARM MEASURED HARMFUL. Read before touching the verdict wording below:
@@ -512,21 +538,29 @@ def _dose_response(frame, conditions, sigma, coordinate) -> dict[str, Any]:
         # shape the data disputes.
         # round(z): the raw float renders as `+-3.9704896987915534x0.89` in text the lead re-sends
         # in its history every later turn, and `band_z` beside it is already rounded to 2 dp.
-        verdict = (f"central slope {slope} exceeds one by more than the selection bias alone "
-                   f"(+-{round(selection, 2)}x{unc_j}), but not by the full band (+-{round(z, 2)}x"
-                   f"{unc_j}), so a single binding step is not excluded — WEAK SUPPORT for "
-                   "cooperativity / a cascade / saturation, not a finding")
+        verdict = (
+            f"central slope {slope} exceeds one by more than the selection bias alone "
+            f"(+-{round(selection, 2)}x{unc_j}), but not by the full band (+-{round(z, 2)}x"
+            f"{unc_j}), so a single binding step is not excluded — WEAK SUPPORT for "
+            "cooperativity / a cascade / saturation, not a finding"
+        )
         support = "suggestive"
     else:
-        verdict = ("this design does not establish a slope above one — NO REQUIREMENT either way, "
-                   "and NOT evidence that a single binding step suffices")
+        verdict = (
+            "this design does not establish a slope above one — NO REQUIREMENT either way, "
+            "and NOT evidence that a single binding step suffices"
+        )
         support = "none"
-    best.update({
-        "testable": True, "n_comparisons": n_comparisons, "band_z": round(z, 2),
-        "requirement": _STEEP if established else None,
-        "support_for_extension": support,
-        "verdict": verdict,
-    })
+    best.update(
+        {
+            "testable": True,
+            "n_comparisons": n_comparisons,
+            "band_z": round(z, 2),
+            "requirement": _STEEP if established else None,
+            "support_for_extension": support,
+            "verdict": verdict,
+        }
+    )
     return best
 
 
@@ -555,10 +589,18 @@ def _conservation(by_obs) -> dict[str, Any]:
     skipped = len(by_obs) - len(linear)
     obs = linear
     if len(obs) < 2:
-        return {"testable": False,
-                "reason": ("fewer than two observables on a linear scale"
-                           + (f" ({skipped} are log-transformed, where a SUM is not the quantity a "
-                              f"conservation law constrains)" if skipped else ""))}
+        return {
+            "testable": False,
+            "reason": (
+                "fewer than two observables on a linear scale"
+                + (
+                    f" ({skipped} are log-transformed, where a SUM is not the quantity a "
+                    f"conservation law constrains)"
+                    if skipped
+                    else ""
+                )
+            ),
+        }
 
     per_cond, tested = [], 0
     conds = {c for o in obs for c, _, _, _ in by_obs[o]["series"]}
@@ -589,7 +631,7 @@ def _conservation(by_obs) -> dict[str, Any]:
             reps_by_obs[o] = reps
             # `y` is a replicate MEAN, so its noise is sigma/sqrt(reps); using the per-measurement
             # sigma here would make the constancy test ~sqrt(reps) too permissive.
-            sig2 += (s ** 2) / max(reps, 1)
+            sig2 += (s**2) / max(reps, 1)
         if not ok or not stack:
             continue
         tested += 1
@@ -610,43 +652,73 @@ def _conservation(by_obs) -> dict[str, Any]:
         # altogether put a genuinely FLAT pair right on the boundary, since the observed range of n
         # noise samples lands at its expectation about half the time. 1.5x clears both: flat pairs
         # stay still, and repressilator's ~14-sigma swings still count as moving.
-        moving = [o for o in ranges
-                  if ranges[o] > 1.5 * 2.0 * math.sqrt(2.0 * math.log(max(npts, 2)))
-                  * ((by_obs[o]["sigma"] or float("inf")) / math.sqrt(max(reps_by_obs.get(o, 1), 1)))]
+        moving = [
+            o
+            for o in ranges
+            if ranges[o]
+            > 1.5
+            * 2.0
+            * math.sqrt(2.0 * math.log(max(npts, 2)))
+            * ((by_obs[o]["sigma"] or float("inf")) / math.sqrt(max(reps_by_obs.get(o, 1), 1)))
+        ]
         largest = max(ranges.values()) if ranges else 0.0
         sum_range = float(np.ptp(tot))
-        per_cond.append({
-            "condition": cid, "n_points": npts, "n_moving": len(moving),
-            "sum_range_over_largest_component": round(sum_range / largest, 3) if largest else None,
-            # 1.5x the EXPECTED noise range, not 1.0x: the observed range of a genuinely constant
-            # sum lands at the expectation about half the time, so a bar set exactly there is a coin
-            # flip on real conservation. The like-for-like ratio below is the discriminating test.
-            "holds": bool(sum_range < 1.5 * noise_range and len(moving) >= 2
-                          and largest and sum_range < largest / _STRONG_SIGMA),
-        })
+        per_cond.append(
+            {
+                "condition": cid,
+                "n_points": npts,
+                "n_moving": len(moving),
+                "sum_range_over_largest_component": round(sum_range / largest, 3)
+                if largest
+                else None,
+                # 1.5x the EXPECTED noise range, not 1.0x: the observed range of a genuinely constant
+                # sum lands at the expectation about half the time, so a bar set exactly there is a coin
+                # flip on real conservation. The like-for-like ratio below is the discriminating test.
+                "holds": bool(
+                    sum_range < 1.5 * noise_range
+                    and len(moving) >= 2
+                    and largest
+                    and sum_range < largest / _STRONG_SIGMA
+                ),
+            }
+        )
     if not tested:
-        return {"testable": False,
-                "reason": (f"no condition has >={_MIN_POINTS_CONSERVATION} time points where at "
-                           f"least two observables are measured together")}
+        return {
+            "testable": False,
+            "reason": (
+                f"no condition has >={_MIN_POINTS_CONSERVATION} time points where at "
+                f"least two observables are measured together"
+            ),
+        }
     holds = [c for c in per_cond if c["holds"]]
     established = len(holds) == tested
-    _CONSERVED = ("the summed observables are constant while the components vary in every "
-                  "condition tested — a conserved total is available, and imposing it REMOVES a "
-                  "parameter")
+    _CONSERVED = (
+        "the summed observables are constant while the components vary in every "
+        "condition tested — a conserved total is available, and imposing it REMOVES a "
+        "parameter"
+    )
     return {
-        "testable": True, "observables": obs, "n_conditions_tested": tested,
+        "testable": True,
+        "observables": obs,
+        "n_conditions_tested": tested,
         "log_observables_excluded": skipped,
-        "n_conditions_holding": len(holds), "per_condition": per_cond[:6],
+        "n_conditions_holding": len(holds),
+        "per_condition": per_cond[:6],
         # Same contract as the other three tests -- see the note in `_shape`. Note this one can
         # only ever REMOVE a parameter, so a null here costs nothing structural; it is filled for
         # consistency, so "every entry carries a requirement" is true of the payload as a whole.
         "requirement": _CONSERVED if established else None,
-        "support_for_extension": ("established" if established else
-                                  "suggestive" if holds else "none"),
-        "verdict": (_CONSERVED if established else
-                    f"a conserved total holds in only {len(holds)} of {tested} conditions — not a "
-                    "law, and WEAK SUPPORT at most" if holds else
-                    "no conserved total over these observables — NO REQUIREMENT either way"),
+        "support_for_extension": (
+            "established" if established else "suggestive" if holds else "none"
+        ),
+        "verdict": (
+            _CONSERVED
+            if established
+            else f"a conserved total holds in only {len(holds)} of {tested} conditions — not a "
+            "law, and WEAK SUPPORT at most"
+            if holds
+            else "no conserved total over these observables — NO REQUIREMENT either way"
+        ),
     }
 
 
@@ -690,10 +762,18 @@ def data_regimes(session, observables: "str | None" = None) -> dict[str, Any]:
             }
     payload = {
         "observables": out,
-        "conservation": (_conservation(by_obs) if by_obs else
-                         {"testable": False,
-                          "reason": ("no measurement table" if empty else
-                                     "the `observables` filter matched no observable id")}),
+        "conservation": (
+            _conservation(by_obs)
+            if by_obs
+            else {
+                "testable": False,
+                "reason": (
+                    "no measurement table"
+                    if empty
+                    else "the `observables` filter matched no observable id"
+                ),
+            }
+        ),
         "how_to_read": (
             "Two kinds of entry, and they carry different weight. A non-null `requirement` is "
             "something ANY model must reproduce, measured in the coordinate where that "
@@ -717,7 +797,8 @@ def data_regimes(session, observables: "str | None" = None) -> dict[str, Any]:
             f"{omitted} further observable(s) not reported (cap {_MAX_OBSERVABLES}), and the "
             f"conservation verdict was computed on the {_MAX_OBSERVABLES} shown -- an alphabetical "
             f"slice, not a co-measured set -- so treat it as provisional here. Pass "
-            f"`observables=\"id1,id2\"` to scope this call to the ones you are reasoning about.")
+            f'`observables="id1,id2"` to scope this call to the ones you are reasoning about.'
+        )
     if empty:
         payload["note"] = "no measurement table"
     return payload

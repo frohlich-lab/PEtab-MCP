@@ -45,8 +45,11 @@ class _Objective:
         self.amici_model.flags_seen.append(self.amici_model.sigma_residuals)
         if self.fail_res:
             raise RuntimeError("no residual mode here")
-        return {"res": self.res, "sres": self.sres,
-                "rdatas": [{"res": [0.0] * b} for b in self.blocks]}
+        return {
+            "res": self.res,
+            "sres": self.sres,
+            "rdatas": [{"res": [0.0] * b} for b in self.blocks],
+        }
 
 
 class _Problem:
@@ -66,8 +69,14 @@ class _Relative:
     def call_amici_twice(self, **kw):
         self.calls.append(kw)
         assert kw["mode"] == "mode_res" and kw["sensi_orders"] == (0, 1)
-        return ({"res": self.res, "sres": self.sres_full,
-                 "rdatas": [{"res": [0.0] * b} for b in self.blocks]}, {"sigma": 0.1})
+        return (
+            {
+                "res": self.res,
+                "sres": self.sres_full,
+                "rdatas": [{"res": [0.0] * b} for b in self.blocks],
+            },
+            {"sigma": 0.1},
+        )
 
 
 class _Collector:
@@ -91,7 +100,12 @@ class _HierarchicalObjective:
         self.amici_model = _Model()
         self.calculator = _Collector(relative)
         self.pre_post_processor = _Pre(np.zeros(n_fixed))
-        self.amici_solver, self.edatas, self.n_threads, self.fim_for_hess = "solver", "edatas", 1, True
+        self.amici_solver, self.edatas, self.n_threads, self.fim_for_hess = (
+            "solver",
+            "edatas",
+            1,
+            True,
+        )
         self.x_ids = ["k1", "k2", "A_init"]
         self.parameter_mapping = "mapping"
 
@@ -116,11 +130,12 @@ def _k_eff(X, res, *, k=None, blocks=None, fail_res=False):
     blocks = blocks or [len(res)]
     rows_res, rows_sres, start = [], [], 0
     for b in blocks:
-        rows_res += [res[start:start + b], np.zeros(b)]
-        rows_sres += [X[start:start + b], np.zeros((b, X.shape[1]))]
+        rows_res += [res[start : start + b], np.zeros(b)]
+        rows_sres += [X[start : start + b], np.zeros((b, X.shape[1]))]
         start += b
-    obj = _Objective(np.concatenate(rows_res), np.vstack(rows_sres),
-                     [2 * b for b in blocks], fail_res=fail_res)
+    obj = _Objective(
+        np.concatenate(rows_res), np.vstack(rows_sres), [2 * b for b in blocks], fail_res=fail_res
+    )
     return effective_parameter_count(_Problem(obj), np.zeros(X.shape[1]), k=k), obj
 
 
@@ -167,15 +182,16 @@ def test_an_estimated_sigma_carries_its_full_fisher_information():
     Fisher information ``2`` per point, and the ρ²-weighted sigma rows put that 2 in H — which is
     what building H from the rows buys over the objective's own ``hess`` (docs/RATIONALE.md)."""
     n, rho = 4, 3.0
-    r = np.sqrt([1.5, 1.5, 0.5, 0.5]) * [1, -1, 1, -1]   # Σ r² = n, as at the MLE of a shared sigma
+    r = np.sqrt([1.5, 1.5, 0.5, 0.5]) * [1, -1, 1, -1]  # Σ r² = n, as at the MLE of a shared sigma
     res = np.concatenate([r, np.full(n, rho)])
-    sres = np.concatenate([-r, np.full(n, 1.0 / rho)])[:, None]   # ∂r/∂lnσ = −r, ∂ρ/∂lnσ = 1/ρ
+    sres = np.concatenate([-r, np.full(n, 1.0 / rho)])[:, None]  # ∂r/∂lnσ = −r, ∂ρ/∂lnσ = 1/ρ
     obj = _Objective(res, sres, blocks=[2 * n])
-    scores = -(r ** 2) + 1.0                          # r·∂r + ρ·∂ρ per point
-    H = float((r ** 2).sum() + n)                     # Σ r² + Σ ρ²·(1/ρ)² = 2n
+    scores = -(r**2) + 1.0  # r·∂r + ρ·∂ρ per point
+    H = float((r**2).sum() + n)  # Σ r² + Σ ρ²·(1/ρ)² = 2n
     assert H == pytest.approx(2 * n)
     assert effective_parameter_count(_Problem(obj), np.zeros(1)) == pytest.approx(
-        float((scores ** 2).sum()) / H)
+        float((scores**2).sum()) / H
+    )
 
 
 def test_inner_solved_parameters_are_charged_one_unit_each():
@@ -210,9 +226,16 @@ def test_mismatched_row_counts_are_no_count_rather_than_a_wrong_one():
 
 # -- where it rides --------------------------------------------------------
 def _fitsim(nll: float, *, n: int = 40, k: int = 3, k_eff: float | None = 2.5) -> dict:
-    return {"status": "fit", "neg_log_likelihood": nll, "chi2": float(n),
-            "n_data_points": n, "n_estimated": k, "k_eff": k_eff, "fitted_parameters": {},
-            "records": [{"observable_id": "obs", "measurement": 1.0, "simulation": 1.0}]}
+    return {
+        "status": "fit",
+        "neg_log_likelihood": nll,
+        "chi2": float(n),
+        "n_data_points": n,
+        "n_estimated": k,
+        "k_eff": k_eff,
+        "fitted_parameters": {},
+        "records": [{"observable_id": "obs", "measurement": 1.0, "simulation": 1.0}],
+    }
 
 
 def test_no_result_the_agent_reads_carries_the_count():
@@ -257,5 +280,8 @@ def test_a_hierarchical_objective_is_evaluated_through_call_amici_twice():
     call = rel.calls[0]
     assert call["x_dct"] == {"k1": 0.0, "k2": 0.0, "A_init": 0.0}, "the free point, expanded"
     assert (call["amici_model"], call["edatas"], call["parameter_mapping"]) == (
-        obj.amici_model, "edatas", "mapping"), "the collector's own arguments, passed through"
+        obj.amici_model,
+        "edatas",
+        "mapping",
+    ), "the collector's own arguments, passed through"
     assert obj.amici_model.flags_seen == [] and obj.amici_model.sigma_residuals is False

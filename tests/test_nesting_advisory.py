@@ -51,13 +51,25 @@ _V4_MODEL = """\
 
 
 def _v3(**over):
-    return {"version": 3, "n_estimated": 7, "neg_log_likelihood": _V3_NLL,
-            "estimated_ids": _V3_IDS, "model": _V3_MODEL, **over}
+    return {
+        "version": 3,
+        "n_estimated": 7,
+        "neg_log_likelihood": _V3_NLL,
+        "estimated_ids": _V3_IDS,
+        "model": _V3_MODEL,
+        **over,
+    }
 
 
 def _v4(**over):
-    return {"version": 4, "n_estimated": 8, "neg_log_likelihood": _V4_NLL,
-            "estimated_ids": _V4_IDS, "model": _V4_MODEL, **over}
+    return {
+        "version": 4,
+        "n_estimated": 8,
+        "neg_log_likelihood": _V4_NLL,
+        "estimated_ids": _V4_IDS,
+        "model": _V4_MODEL,
+        **over,
+    }
 
 
 def test_blasi_v3_to_v4_flags_the_displaced_parameter():
@@ -81,8 +93,11 @@ def test_blasi_v3_to_v4_is_not_a_valid_added_parameter_experiment():
 def test_parameter_dropped_from_the_table_is_named_outright():
     # The unambiguous shape: c81216 is present in the parent and ABSENT from the child, so the
     # estimated-id diff alone identifies it — no reference counting needed.
-    child = _v4(estimated_ids=[i for i in _V4_IDS if i != "c81216"], n_estimated=8,
-                model=_V4_MODEL.replace("c81216*", "").replace("c81216", ""))
+    child = _v4(
+        estimated_ids=[i for i in _V4_IDS if i != "c81216"],
+        n_estimated=8,
+        model=_V4_MODEL.replace("c81216*", "").replace("c81216", ""),
+    )
     # keep k rising: the child swapped c81216 for two new factors
     child["estimated_ids"] = [*child["estimated_ids"], "c8"]
     child["n_estimated"] = len(child["estimated_ids"])
@@ -92,8 +107,12 @@ def test_parameter_dropped_from_the_table_is_named_outright():
 
 def test_no_advisory_when_the_added_parameter_actually_helps():
     # v2 -> v3 in the same run: k rose AND the nll improved by 150.7. Nothing to say.
-    v2 = _v3(version=2, n_estimated=6, neg_log_likelihood=-837.1807567142856,
-             estimated_ids=[i for i in _V3_IDS if i != "c81216"])
+    v2 = _v3(
+        version=2,
+        n_estimated=6,
+        neg_log_likelihood=-837.1807567142856,
+        estimated_ids=[i for i in _V3_IDS if i != "c81216"],
+    )
     assert nesting_advisory(v2, _v3()) is None
     assert valid_added_parameter_experiment(v2, _v3()) is True
 
@@ -139,7 +158,8 @@ def test_session_flags_a_worse_fit_that_freed_another_parameter(session):
     _snapshot_parent(session, -100.0)
     session.problem.parameter_df.loc["sigma_B", ESTIMATE] = 1  # k: 2 -> 3
     advisory = session._check_nesting_vs_parent(
-        {"neg_log_likelihood": -90.0}, session.model.to_antimony())
+        {"neg_log_likelihood": -90.0}, session.model.to_antimony()
+    )
     assert advisory is not None and "2->3" in advisory and "v" in advisory
     # ...and it is remembered for the finish gate, which reads it through fit_summary.
     assert session.invalid_comparison == advisory
@@ -150,8 +170,12 @@ def test_session_silent_on_an_ordinary_improving_commit(session):
 
     _snapshot_parent(session, -100.0)
     session.problem.parameter_df.loc["sigma_B", ESTIMATE] = 1
-    assert session._check_nesting_vs_parent(
-        {"neg_log_likelihood": -140.0}, session.model.to_antimony()) is None
+    assert (
+        session._check_nesting_vs_parent(
+            {"neg_log_likelihood": -140.0}, session.model.to_antimony()
+        )
+        is None
+    )
     assert session.invalid_comparison is None
 
 
@@ -161,14 +185,18 @@ def test_a_valid_added_parameter_commit_clears_the_outstanding_flag(session):
 
     _snapshot_parent(session, -100.0)
     session.problem.parameter_df.loc["sigma_B", ESTIMATE] = 1
-    assert session._check_nesting_vs_parent(
-        {"neg_log_likelihood": -90.0}, session.model.to_antimony()) is not None
+    assert (
+        session._check_nesting_vs_parent({"neg_log_likelihood": -90.0}, session.model.to_antimony())
+        is not None
+    )
     assert session.invalid_comparison is not None
     # a second, genuinely additive experiment: k rises again and the nll improves
     _snapshot_parent(session, -90.0)
     session.problem.parameter_df.loc["A_init", ESTIMATE] = 1
-    assert session._check_nesting_vs_parent(
-        {"neg_log_likelihood": -95.0}, session.model.to_antimony()) is None
+    assert (
+        session._check_nesting_vs_parent({"neg_log_likelihood": -95.0}, session.model.to_antimony())
+        is None
+    )
     assert session.invalid_comparison is None
 
 
@@ -177,8 +205,10 @@ def test_no_parent_version_yields_no_advisory(session):
     from petab.v1.C import ESTIMATE
 
     session.problem.parameter_df.loc["sigma_B", ESTIMATE] = 1
-    assert session._check_nesting_vs_parent(
-        {"neg_log_likelihood": -90.0}, session.model.to_antimony()) is None
+    assert (
+        session._check_nesting_vs_parent({"neg_log_likelihood": -90.0}, session.model.to_antimony())
+        is None
+    )
 
 
 def test_fit_summary_carries_the_outstanding_flag_for_the_finish_gate(session):
@@ -186,13 +216,20 @@ def test_fit_summary_carries_the_outstanding_flag_for_the_finish_gate(session):
     None) when there is nothing outstanding, so an omitted key reads as "no invalid comparison"."""
     from petab_mcp import fitting
 
-    session.simulation = {"status": "fit", "neg_log_likelihood": -100.0, "chi2": 1.0,
-                          "n_data_points": 10, "fitted_parameters": {},
-                          "records": [{"observable_id": "obs_B"}]}
+    session.simulation = {
+        "status": "fit",
+        "neg_log_likelihood": -100.0,
+        "chi2": 1.0,
+        "n_data_points": 10,
+        "fitted_parameters": {},
+        "records": [{"observable_id": "obs_B"}],
+    }
     assert "invalid_comparison" not in fitting.fit_summary(session, engine=None)
     session.invalid_comparison = "INVALID COMPARISON vs v3: ..."
-    assert fitting.fit_summary(session, engine=None)["invalid_comparison"] \
+    assert (
+        fitting.fit_summary(session, engine=None)["invalid_comparison"]
         == "INVALID COMPARISON vs v3: ..."
+    )
 
 
 def test_the_outstanding_flag_survives_a_durable_resume(session, tmp_path):
@@ -207,20 +244,28 @@ def test_the_outstanding_flag_survives_a_durable_resume(session, tmp_path):
     _snapshot_parent(session, -100.0)
     session.problem.parameter_df.loc["sigma_B", ESTIMATE] = 1
     advisory = session._check_nesting_vs_parent(
-        {"neg_log_likelihood": -90.0}, session.model.to_antimony())
+        {"neg_log_likelihood": -90.0}, session.model.to_antimony()
+    )
     assert advisory is not None
     # what session.fit records on every commit
     session.provenance.append_event(
-        {"type": "fit", "version": 1, "invalid_comparison": session.invalid_comparison})
+        {"type": "fit", "version": 1, "invalid_comparison": session.invalid_comparison}
+    )
 
-    resumed = PetabSession(session.yaml_path, provenance_dir=str(session.provenance.root),
-                           resolver=StubReferenceResolver())
+    resumed = PetabSession(
+        session.yaml_path,
+        provenance_dir=str(session.provenance.root),
+        resolver=StubReferenceResolver(),
+    )
     assert resumed.invalid_comparison == advisory
 
     # ...and a later commit that cleared it stays cleared across the restart
     session.provenance.append_event({"type": "fit", "version": 2, "invalid_comparison": None})
-    again = PetabSession(session.yaml_path, provenance_dir=str(session.provenance.root),
-                         resolver=StubReferenceResolver())
+    again = PetabSession(
+        session.yaml_path,
+        provenance_dir=str(session.provenance.root),
+        resolver=StubReferenceResolver(),
+    )
     assert again.invalid_comparison is None
 
 
@@ -233,11 +278,17 @@ def test_the_model_is_only_read_when_the_advisory_fires():
         def read():
             reads.append(text)
             return text
+
         return read
 
     # clean comparison: the model is never resolved
-    v2 = _v3(version=2, n_estimated=6, neg_log_likelihood=-837.1807567142856,
-             estimated_ids=[i for i in _V3_IDS if i != "c81216"], model=_lazy(_V3_MODEL))
+    v2 = _v3(
+        version=2,
+        n_estimated=6,
+        neg_log_likelihood=-837.1807567142856,
+        estimated_ids=[i for i in _V3_IDS if i != "c81216"],
+        model=_lazy(_V3_MODEL),
+    )
     assert nesting_advisory(v2, _v3(model=_lazy(_V3_MODEL))) is None
     assert reads == []
 
@@ -260,12 +311,18 @@ def test_a_new_best_supersedes_the_outstanding_flag(session):
 
     _snapshot_parent(session, -100.0)
     session.problem.parameter_df.loc["sigma_B", ESTIMATE] = 1
-    assert session._check_nesting_vs_parent(
-        {"neg_log_likelihood": -90.0}, session.model.to_antimony()) is not None
+    assert (
+        session._check_nesting_vs_parent({"neg_log_likelihood": -90.0}, session.model.to_antimony())
+        is not None
+    )
     assert session.invalid_comparison is not None
 
     # a later commit that does NOT add parameters, but is a new best
     _snapshot_parent(session, -90.0)
-    assert session._check_nesting_vs_parent(
-        {"neg_log_likelihood": -120.0}, session.model.to_antimony(), is_new_best=True) is None
+    assert (
+        session._check_nesting_vs_parent(
+            {"neg_log_likelihood": -120.0}, session.model.to_antimony(), is_new_best=True
+        )
+        is None
+    )
     assert session.invalid_comparison is None

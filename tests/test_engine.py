@@ -13,7 +13,14 @@ def test_evaluate_objective(engine):
     assert obj["n_data_points"] == 6
     assert len(obj["simulations"]) == 6
     rec = obj["simulations"][0]
-    assert {"observable_id", "condition_id", "time", "measurement", "simulation", "residual"} <= set(rec)
+    assert {
+        "observable_id",
+        "condition_id",
+        "time",
+        "measurement",
+        "simulation",
+        "residual",
+    } <= set(rec)
 
 
 def test_replicate_measurements_not_double_counted(engine, session):
@@ -43,7 +50,9 @@ def test_replicate_measurements_not_double_counted(engine, session):
     # every (obs, cond, time) group has exactly its 2 replicates, sharing one simulation
     groups: dict[tuple, list[float]] = {}
     for r in obj["simulations"]:
-        groups.setdefault((r["observable_id"], r["condition_id"], r["time"]), []).append(r["simulation"])
+        groups.setdefault((r["observable_id"], r["condition_id"], r["time"]), []).append(
+            r["simulation"]
+        )
     assert {len(v) for v in groups.values()} == {2}
     for sims in groups.values():
         assert sims[0] == pytest.approx(sims[1])  # replicates simulate identically
@@ -160,8 +169,10 @@ def test_fit_tracks_improvement_vs_versions(fit_session):
 
     # edits are fit-free; `fit` scores them and tracks improvement across the fitted versions
     O.change_parameters(
-        fit_session, [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
-        justification="widen k1")
+        fit_session,
+        [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}],
+        justification="widen k1",
+    )
     first = fit_session.fit()
     assert first["fit_status"] == "fit"
     imp1 = first["improvement"]
@@ -171,8 +182,10 @@ def test_fit_tracks_improvement_vs_versions(fit_session):
     assert imp1["improvement_vs_best_prior"] is None
 
     O.change_parameters(
-        fit_session, [{"parameter_id": "k2", "lower_bound": 1e-3, "upper_bound": 1e3}],
-        justification="widen k2")
+        fit_session,
+        [{"parameter_id": "k2", "lower_bound": 1e-3, "upper_bound": 1e3}],
+        justification="widen k2",
+    )
     second = fit_session.fit()
     imp2 = second["improvement"]
     assert imp2["best_prior_version"] is not None
@@ -202,7 +215,8 @@ def test_a_problem_that_cannot_be_seeded_refuses_to_load(tmp_path):
     # An observable whose formula is a bare NUMBER references no entity, so nothing can be
     # declared from it; the parameter table's rows all resolve through the noise formula.
     (work / "observables.tsv").write_text(
-        "observableId\tobservableFormula\tnoiseFormula\nobs_B\t1.0\tsigma_B\n", encoding="utf-8")
+        "observableId\tobservableFormula\tnoiseFormula\nobs_B\t1.0\tsigma_B\n", encoding="utf-8"
+    )
     doc = libsbml.SBMLDocument(3, 2)
     model = doc.createModel()
     model.setId("conversion_reaction")
@@ -210,8 +224,11 @@ def test_a_problem_that_cannot_be_seeded_refuses_to_load(tmp_path):
     libsbml.writeSBMLToFile(doc, str(work / "conversion_reaction.xml"))
 
     with pytest.raises(ValidationError):
-        PetabSession(str(work / "problem.yaml"), provenance_dir=str(tmp_path / "prov"),
-                     resolver=StubReferenceResolver())
+        PetabSession(
+            str(work / "problem.yaml"),
+            provenance_dir=str(tmp_path / "prov"),
+            resolver=StubReferenceResolver(),
+        )
 
 
 def test_fit_objective_and_reported_nll_are_the_same_number(fit_session):
@@ -264,11 +281,13 @@ def test_one_amici_build_per_structure(fit_session):
     assert fit_session.n_compiles == n_after_first
     # ...and the objective's model is the one the engine reports on.
     problem, _ = __import__("petab_mcp.fitting", fromlist=["x"]).estimation_problem(
-        fit_session, fit_session.engine)
+        fit_session, fit_session.engine
+    )
     # Reach the model the way the engine does (via _objective_amici_model), so this stays green even
     # if the fixture ever yields an AggregatedObjective. The helper itself, incl. a real
     # AggregatedObjective, is covered without a compile in tests/test_objective_amici_model.py.
     from petab_mcp.engine import _objective_amici_model
+
     assert _objective_amici_model(problem.objective) is not None
 
 
@@ -317,8 +336,10 @@ def test_the_pre_import_dump_is_written_once_per_structure(engine, session, reau
 def test_a_failing_dump_never_blocks_the_build(engine, session, monkeypatch):
     """Diagnostics must not become the outage. A model that will not round-trip to Antimony
     still has to be handed to AMICI — and is still worth recording by hash."""
+
     def _boom():
         raise RuntimeError("antimony round-trip failed")
+
     monkeypatch.setattr(session.problem.model, "to_antimony", _boom)
 
     kwargs = engine.pypesto_importer_kwargs(session.sbml_hash())
@@ -337,14 +358,14 @@ def test_module_built_asks_for_the_compiled_extension_not_the_folder(session, tm
     # a PRIVATE build root: the shared session-scoped one already holds the toy's module
     engine = AmiciEngine(session, build_root=str(tmp_path / "build"))
     h = session.sbml_hash()
-    assert engine.module_built(h) is False              # cold build root
+    assert engine.module_built(h) is False  # cold build root
 
     folder = engine.build_root / f"pypesto_{h}"
     package = folder / f"petab_mcp_pp_{h}"
     package.mkdir(parents=True)
     (folder / "wrapfunctions.cpp").write_text("// codegen ran")
     (package / "__init__.py").write_text("")
-    assert engine.module_built(h) is False              # generated, not built
+    assert engine.module_built(h) is False  # generated, not built
 
     (package / f"_petab_mcp_pp_{h}.cpython-312-darwin.so").write_bytes(b"\x00")
     assert engine.module_built(h) is True
@@ -365,6 +386,7 @@ class _DeadRData:
     -- sending it to rewrite a structurally fine model. 32 rejected `make_changes` calls in the
     Aug 8-10 sweep, every one of them AFTER a successful compile (~94 min of wasted builds).
     """
+
     ts = None
     y = None
     res = None
@@ -393,7 +415,7 @@ def test_partial_integration_failure_is_not_scored_as_a_smaller_dataset(engine, 
     smaller dataset than `n_data_points` while looking complete."""
     from amici.sim.sundials.petab.v1 import RDATAS
 
-    good = engine._objective_evaluate()          # a real, working evaluation first
+    good = engine._objective_evaluate()  # a real, working evaluation first
     assert good[1] and any(r["simulation"] is not None for r in good[1])
 
     class _Live:
@@ -404,7 +426,7 @@ def test_partial_integration_failure_is_not_scored_as_a_smaller_dataset(engine, 
 
     recs = engine._simulation_records(None, {RDATAS: [_Live(), _DeadRData()]})
     assert all(r["simulation"] is None for r in recs)
-    assert engine._chi2(recs, None) is None      # declines to score, rather than partial-summing
+    assert engine._chi2(recs, None) is None  # declines to score, rather than partial-summing
 
 
 def test_unusable_rdatas_counts_only_the_dead_conditions(engine):

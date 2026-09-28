@@ -41,6 +41,7 @@ _EDITABLE_FIELDS = (
     OBJECTIVE_PRIOR_PARAMETERS,
 )
 
+
 def sha16(text: str) -> str:
     """A short, stable content hash (first 16 hex chars of SHA-256) of ``text``.
 
@@ -117,11 +118,9 @@ def parameters_to_records(problem, shipped=None) -> list[dict[str, Any]]:
     current = set(problem.parameter_df.index)
     absent = [pid for pid in getattr(shipped, "index", []) if pid not in current]
     roles = parameter_roles(problem, extra_ids=absent)
-    records = [{**r, "in_model": True}
-               for r in parameter_df_to_records(problem.parameter_df)]
+    records = [{**r, "in_model": True} for r in parameter_df_to_records(problem.parameter_df)]
     if absent:
-        records += [{**r, "in_model": False}
-                    for r in parameter_df_to_records(shipped.loc[absent])]
+        records += [{**r, "in_model": False} for r in parameter_df_to_records(shipped.loc[absent])]
     for rec in records:
         pid = str(rec.get(PARAMETER_ID))
         rec["role"] = roles.get(pid)
@@ -221,11 +220,13 @@ def structure_fingerprint(sbml_model, parameter_df) -> str:
         # reaction ids (J1 vs r1) is the same structure. Sorting makes it order-independent.
         reactions.append((tuple(reactants), tuple(products), law))
     reactions.sort()
-    payload = repr({
-        "species": species,
-        "reactions": reactions,
-        "estimated": estimated_ids(parameter_df),
-    })
+    payload = repr(
+        {
+            "species": species,
+            "reactions": reactions,
+            "estimated": estimated_ids(parameter_df),
+        }
+    )
     return sha16(payload)
 
 
@@ -262,9 +263,7 @@ def update_parameters(problem, updates: list[dict[str, Any]]) -> dict[str, Any]:
         if pid is None:
             raise ParameterError("Each update must include an 'id'.")
         if pid not in df.index:
-            raise ParameterError(
-                f"Unknown parameter id {pid!r}. Known ids: {sorted(df.index)}"
-            )
+            raise ParameterError(f"Unknown parameter id {pid!r}. Known ids: {sorted(df.index)}")
         fields: dict[str, Any] = {}
         for field, value in upd.items():
             if field in ("id", PARAMETER_ID):
