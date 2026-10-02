@@ -553,3 +553,28 @@ def test_a_restored_fit_reports_parameter_scales(fit_session):
     assert scales, "a restored fit must carry the scale map, not None beside linear values"
     assert set(scales) == set(restored["fitted_parameters"])
     assert all(v in ("lin", "log", "log10") for v in scales.values())
+
+
+def test_a_log10_observable_keeps_the_fit_joint(session):
+    """pyPESTO refuses a log-scale observable that HAS inner parameters, but scores one without
+    them as normal on the linear scale, so one beside an inner-solvable sigma would come out
+    wrong: such a problem is fitted jointly, before anything is built."""
+    import pandas as pd
+
+    from petab_mcp import fitting
+
+    p = session.problem
+    p.observable_df = pd.concat(
+        [
+            p.observable_df.assign(noiseFormula="noiseParameter1_obs_B"),
+            pd.DataFrame(
+                {"observableFormula": ["A"], "noiseFormula": ["0.2"]},
+                index=pd.Index(["obs_A"], name="observableId"),
+            ).assign(observableTransformation="log10"),
+        ]
+    )
+    b = p.measurement_df.assign(noiseParameters="sigma_B")
+    p.measurement_df = pd.concat([b, b.assign(observableId="obs_A", noiseParameters=float("nan"))])
+    p.parameter_df.loc["sigma_B", "estimate"] = 1
+    assert fitting._reconcile.classify_inner_parameters(p) == {"sigma_B": "sigma"}
+    assert fitting._build_hierarchical_problem(session, {}) == (None, {})

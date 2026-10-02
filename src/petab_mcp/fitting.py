@@ -29,7 +29,10 @@ from petab.v1.C import (
     LOG,
     LOG10,
     LOWER_BOUND,
+    NOISE_DISTRIBUTION,
     NOMINAL_VALUE,
+    NORMAL,
+    OBSERVABLE_TRANSFORMATION,
     PARAMETER_SCALE,
     UPPER_BOUND,
 )
@@ -232,8 +235,8 @@ def _build_hierarchical_problem(session, importer_kwargs: dict[str, Any], petab_
     Returns ``(pypesto_problem, inner_scales)`` where ``inner_scales`` maps each inner
     parameter id to the estimation scale it was tagged on (so the fit can un-scale the
     analytically-solved value back to linear), or ``(None, {})`` when the problem has no
-    cleanly-separable inner parameters (see :func:`reconcile.classify_inner_parameters`) or
-    pyPESTO rejects the hierarchical setup.
+    cleanly-separable inner parameters (see :func:`reconcile.classify_inner_parameters`), has an
+    observable that is not normal on the linear scale, or pyPESTO rejects the hierarchical setup.
 
     The whole win is optimization efficiency/robustness: the inner parameters (noise sigmas,
     observable-scaling factors) are solved analytically per objective evaluation instead of by
@@ -253,6 +256,14 @@ def _build_hierarchical_problem(session, importer_kwargs: dict[str, Any], petab_
     inner = _reconcile.classify_inner_parameters(session.problem)
     if not inner:
         return None, {}
+    # pyPESTO refuses a non-linear or non-normal observable only when it HAS inner parameters, and
+    # scores every other observable as normal on the linear scale whatever its transformation or
+    # distribution (`calculate_quantitative_result`): a log10 observable beside an inner-solved
+    # sigma comes out with a wrong likelihood, silently. Such a problem is fitted jointly.
+    odf = session.problem.observable_df
+    for column, default in ((OBSERVABLE_TRANSFORMATION, LIN), (NOISE_DISTRIBUTION, NORMAL)):
+        if column in odf.columns and (odf[column].fillna(default) != default).any():
+            return None, {}
     try:
         import copy
 
