@@ -62,12 +62,16 @@ dependencies = [
     # Imported directly for the chi2 goodness-of-fit p-value (residual_tests, fitting). Only
     # transitively present via pyPESTO otherwise.
     "scipy>=1.10",
-    # 1.x, not 0.30: the package was reorganised at 1.0 and every import here uses the new layout
-    # (`amici.importers.petab.v1`, `amici.importers.sbml`, `amici.sim.sundials.petab.v1`), none
-    # of which exists in 0.x -- the old floor admitted versions that fail at import. 1.1.0 is what
-    # the cluster env runs and the suite is measured against.
-    "amici>=1.1",
-    "pypesto[petab]>=0.5",
+    # Pinned to a main commit, not a release: 1.1.0 lacks AMICI-dev/AMICI#3309, without which a
+    # hierarchical PEtab v2 problem cannot be unpickled once its objective has been evaluated
+    # (ICB-DCM/pyPESTO#1771) -- and every fit evaluates the objective before its parallel
+    # multistart pickles the problem into the workers. Built from source (no wheel for a commit),
+    # which is why CI installs a toolchain before it. Revisit once a release contains #3309.
+    "amici @ git+https://github.com/AMICI-dev/AMICI.git@dc6ce2ae320d259f10a417d28f8c3bb76c10c1e3#subdirectory=python/sdist",
+    # Pinned to the merge of ICB-DCM/pyPESTO#1740: before it, the PEtab v2 importer raised
+    # NotImplementedError for `hierarchical=True`, and the fit inner-solves its noise sigmas and
+    # observable scalings whenever the problem allows. Revisit once a release contains #1740.
+    "pypesto[petab] @ git+https://github.com/ICB-DCM/pyPESTO.git@07b3361d2ff9e711f314d5940fceddb560c5ec5e",
     "fides>=0.7",
 ]
 
@@ -90,6 +94,10 @@ petab-mcp = "petab_mcp.cli:main"
 [project.urls]
 Homepage = "https://github.com/frohlich-lab/PEtab-MCP"
 Repository = "https://github.com/frohlich-lab/PEtab-MCP"
+
+# The amici and pypesto pins above are git commits, which hatchling refuses without this.
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/petab_mcp"]
