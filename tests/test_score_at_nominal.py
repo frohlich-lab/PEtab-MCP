@@ -19,7 +19,7 @@ import pytest
 
 pytest.importorskip("amici", reason="compiles a model")
 
-TOY = Path(__file__).parent / "data" / "toy_v1"
+TOY = Path(__file__).parent / "data" / "toy_v2"
 
 
 def test_score_shipped_model_reports_the_nominal_point(amici_build_root, tmp_path):

@@ -636,7 +636,7 @@ def test_a_stalled_long_run_is_still_stopped_by_the_streak_cap(session):
 
 
 # --- (e) a scale-coupled sigma has no cross-model meaning ------------------------------------
-@pytest.mark.parametrize("gain_estimated,expected", [(1, True), (0, False)])
+@pytest.mark.parametrize("gain_estimated,expected", [(True, True), (False, False)])
 def test_only_an_estimated_co_factor_breaks_comparability(gain_estimated, expected):
     """Only an ESTIMATED co-factor breaks the ratio. A FIXED one is a declared constant of the
     problem, identical on both sides, so it cancels and the reference basis stays valid.
@@ -647,41 +647,44 @@ def test_only_an_estimated_co_factor_breaks_comparability(gain_estimated, expect
     such a test passing while silently re-flagging every fiedler-shaped run.
     """
     import pandas as pd
-    import petab.v1 as petab
-    from petab.v1.C import (
+    from petab.v2.C import (
         ESTIMATE,
+        EXPERIMENT_ID,
         LOWER_BOUND,
         MEASUREMENT,
         NOISE_FORMULA,
         NOISE_PARAMETERS,
+        NOISE_PLACEHOLDERS,
         NOMINAL_VALUE,
         OBSERVABLE_FORMULA,
         OBSERVABLE_ID,
+        OBSERVABLE_PLACEHOLDERS,
         PARAMETER_ID,
-        PARAMETER_SCALE,
-        SIMULATION_CONDITION_ID,
         TIME,
         UPPER_BOUND,
     )
-    from petab.v1.models.sbml_model import SbmlModel
+    from petab.v2.models.sbml_model import SbmlModel
     from petab_mcp import reconcile as R
+    from petab_mcp.problem import PARAMETER_SCALE, WorkingProblem
 
     ant = (
         "model g\n  compartment c = 1;\n  species pMek in c;\n  pMek = 1.0;\n"
         "  kf = 0.5;\n  r: pMek => ; kf * pMek;\nend\n"
     )
-    prob = petab.Problem(model=SbmlModel.from_antimony(ant))
+    prob = WorkingProblem(model=SbmlModel.from_antimony(ant))
     prob.observable_df = pd.DataFrame(
         {
             OBSERVABLE_ID: ["pMek_obs"],
             OBSERVABLE_FORMULA: ["pMek * observableParameter1_pMek_obs"],
+            OBSERVABLE_PLACEHOLDERS: ["observableParameter1_pMek_obs"],
             NOISE_FORMULA: ["noiseParameter1_pMek_obs * noiseParameter2_pMek_obs"],
+            NOISE_PLACEHOLDERS: ["noiseParameter1_pMek_obs;noiseParameter2_pMek_obs"],
         }
     ).set_index(OBSERVABLE_ID)
     prob.measurement_df = pd.DataFrame(
         {
             OBSERVABLE_ID: ["pMek_obs"] * 4,
-            SIMULATION_CONDITION_ID: ["c0"] * 4,
+            EXPERIMENT_ID: [""] * 4,
             TIME: [0.0, 1.0, 2.0, 3.0],
             MEASUREMENT: [1.0, 0.6, 0.4, 0.2],
             # The fiedler shape exactly: a per-gel gain paired with the shared sigma.
@@ -695,7 +698,7 @@ def test_only_an_estimated_co_factor_breaks_comparability(gain_estimated, expect
             LOWER_BOUND: [1e-5] * 3,
             UPPER_BOUND: [1e3] * 3,
             NOMINAL_VALUE: [100.0, 0.001, 0.5],
-            ESTIMATE: [gain_estimated, 1, 1],
+            ESTIMATE: [gain_estimated, True, True],
         }
     ).set_index(PARAMETER_ID)
 

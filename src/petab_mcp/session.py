@@ -1,7 +1,7 @@
-"""Session state: a PEtab v1 problem with a fixed design, an Antimony-canonical model,
+"""Session state: a PEtab v2 problem with a fixed design, an Antimony-canonical model,
 and persisted provenance/versioning.
 
-The experimental design (measurements, conditions, observables) is fixed. The model
+The experimental design (measurements, conditions, experiments, observables) is fixed. The model
 (edited only through the constrained operations in :mod:`operations`) and the parameter
 table are mutable, and every committed change is snapshotted as a version and logged.
 """
@@ -15,8 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from petab.v1 import Problem
-from petab.v1.models.sbml_model import SbmlModel
+from petab.v2.C import CONDITION_ID, ESTIMATE, EXPERIMENT_ID
+from petab.v2.models.sbml_model import SbmlModel
 
 from . import criteria, logging_setup
 from .constants import (
@@ -31,6 +31,7 @@ from .data_access import residual_flag, residual_structure_rollup
 from .errors import ModelUpdateError, PetabMcpError, ValidationError
 from .fitting import noise_sigma_collapsed, noise_sigma_inflated
 from .parameters import problem_fingerprint, sha16
+from .problem import WorkingProblem, as_bool
 from .provenance import ProvenanceStore
 from .references import EutilsReferenceResolver
 
@@ -112,6 +113,11 @@ _SIGMA_COLLAPSED_ADVICE = (
 )
 
 
+def _n_unique(df, column: str) -> int:
+    """How many distinct ``column`` ids ``df`` names; 0 for an absent table."""
+    return 0 if df is None or column not in df.columns else int(df[column].nunique())
+
+
 def _noise_sigma_assessable(report: "dict[str, Any] | None") -> bool:
     """Whether ANY entry in a noise_sigma_report was actually assessable — i.e. carries a usable
     ``fraction_of_data_std``. An entry whose observable std can't be computed is reported with
@@ -187,14 +193,16 @@ class PetabSession:
         # seed below reads it), and never reassigned by the session: a score is only comparable
         # against scores computed the same way.
         self.criterion: criteria.Criterion = criteria.resolve(criterion)
-        self.problem: Problem = Problem.from_yaml(str(self.yaml_path))
+        # A v1 problem is upgraded here, once, and everything downstream sees v2 (see
+        # petab_mcp.problem).
+        self.problem: WorkingProblem = WorkingProblem.from_yaml(self.yaml_path)
         # The parameter table exactly as the problem SHIPPED it, captured before anything can
         # touch it — the reference for "which constants did the problem fix?" (see
         # `protected_fixed_parameter_ids`). It used to be read back from version 0, which was the
         # same thing only for as long as v0 was a verbatim snapshot of the load; the content-free
         # seed reconciles v0, and a durable resume replaces the working table wholesale. Reading
         # the YAML's own table is true on every process start, resume included, because
-        # `Problem.from_yaml` above always re-reads the shipped `parameters.tsv`.
+        # `WorkingProblem.from_yaml` above always re-reads the shipped `parameters.tsv`.
         self.shipped_parameter_df = self.problem.parameter_df.copy(deep=True)
 
         # Antimony is the canonical model form: prefer a model.ant next to the YAML.
@@ -399,7 +407,7 @@ class PetabSession:
             raise ValidationError(
                 "this problem ships without a model, and its fixed tables name nothing that "
                 "could be declared as one: no observable formula references an entity, no "
-                "condition column names a target, and the parameter table is empty. There is "
+                "condition targets one, and the parameter table is empty. There is "
                 "nothing to simulate and nothing an initial model could be built from."
             )
         try:
@@ -420,8 +428,8 @@ class PetabSession:
         if not self.has_model():
             raise ValidationError(
                 "this problem ships without a model and none can be built from its fixed tables: "
-                "no observable formula references a model entity and no condition column names a "
-                "target, so there are no species to simulate. Nothing here can be fit."
+                "no observable formula references a model entity and no condition targets one, "
+                "so there are no species to simulate. Nothing here can be fit."
             )
         report = validate_problem(self.problem)
         if not report["valid"]:
@@ -556,13 +564,20 @@ class PetabSession:
     def sbml_hash(self) -> str:
         return sha16(self.model_sbml())
 
+    def module_hash(self) -> str:
+        """The key of the compiled AMICI module this problem needs — the model plus the parts of
+        the design and the estimated set the v2 import compiles in (see
+        :meth:`problem.WorkingProblem.module_fingerprint`). The design is fixed for a session, so
+        within one run this moves with the SBML and the estimated set."""
+        return self.problem.module_fingerprint()
+
     def problem_hash(self) -> str:
         """Hash of the full problem identity: model SBML + the parameter table.
 
-        Unlike ``sbml_hash`` (structure only — the right key for the AMICI compile cache),
-        this changes when a parameter's bounds/scale/estimate/value change, so it uniquely
+        Unlike ``module_hash`` (what the AMICI compile cache is keyed on), this changes when a
+        parameter's bounds/scale/estimate/value change, so it uniquely
         identifies a *fit* and is the correct key for fit artifacts (the pyPESTO result
-        cache). Keying those on ``sbml_hash`` alone would collide across versions that
+        cache). Keying those on the model alone would collide across versions that
         differ only in the parameter table.
         """
         return problem_fingerprint(self.model_sbml(), self.problem.parameter_df)
@@ -597,8 +612,6 @@ class PetabSession:
         return self._protected_fixed_ids
 
     def _compute_protected_fixed_ids(self) -> set[str]:
-        from petab.v1.C import ESTIMATE
-
         from . import reconcile as R
 
         ref_df = self.shipped_parameter_df
@@ -607,7 +620,7 @@ class PetabSession:
 
         def _is_fixed(value: Any) -> bool:
             try:
-                return float(value) == 0
+                return not as_bool(value)
             except (TypeError, ValueError):
                 return False
 
@@ -656,9 +669,10 @@ class PetabSession:
             "n_table_parameters": int(len(p.parameter_df)),
             "n_estimated": int(p.n_estimated),
             "free_parameters": [str(x) for x in p.x_free_ids],
-            "observables": [str(x) for x in p.get_observable_ids()],
-            "n_conditions": int(len(p.condition_df)),
-            "n_measurements": int(p.n_measurements),
+            "observables": [str(x) for x in getattr(p.observable_df, "index", [])],
+            "n_conditions": _n_unique(p.condition_df, CONDITION_ID),
+            "n_experiments": _n_unique(p.experiment_df, EXPERIMENT_ID),
+            "n_measurements": 0 if p.measurement_df is None else int(len(p.measurement_df)),
             "n_reactions_detail": [sm.getReaction(i).getId() for i in range(sm.getNumReactions())],
             "current_version": self.provenance.current_version,
             # The multistart count a fit uses when `n_starts` is omitted. Reported because
@@ -666,7 +680,7 @@ class PetabSession:
             # caller cannot tell whether the value it passes fits harder or (silently) weaker,
             # and guessing low degrades every fit it makes.
             "fit_n_starts_default": int(self.auto_fit_starts),
-            "fixed_tables": ["measurements", "conditions", "observables"],
+            "fixed_tables": ["measurements", "conditions", "experiments", "observables"],
             "neg_log_likelihood": (self.simulation or {}).get("neg_log_likelihood"),
             "chi2": (self.simulation or {}).get("chi2"),
         }

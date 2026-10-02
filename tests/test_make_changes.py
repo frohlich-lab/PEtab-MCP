@@ -30,7 +30,7 @@ from petab_mcp.references import StubReferenceResolver
 from petab_mcp.server import create_server
 from petab_mcp.session import PetabSession
 
-YAML_PATH = Path(__file__).parent / "data" / "toy_v1" / "problem.yaml"
+YAML_PATH = Path(__file__).parent / "data" / "toy_v2" / "problem.yaml"
 
 
 _BASE = """model conversion_reaction
@@ -677,7 +677,7 @@ def test_the_single_editor_carries_the_whole_change(tmp_path):
     two halves come apart again.
     """
     mcp = create_server(
-        str(Path(__file__).parent / "data" / "toy_v1" / "problem.yaml"),
+        str(Path(__file__).parent / "data" / "toy_v2" / "problem.yaml"),
         provenance_dir=str(tmp_path / "prov"),
         resolver=StubReferenceResolver(),
     )

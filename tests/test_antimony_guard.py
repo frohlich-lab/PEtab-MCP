@@ -9,7 +9,7 @@ idempotently, and stays live under concurrency.
 
 from __future__ import annotations
 
-from petab.v1.models.sbml_model import SbmlModel
+from petab.v2.models.sbml_model import SbmlModel
 
 import petab_mcp  # noqa: F401  - importing the package installs the guard (__init__)
 from petab_mcp import antimony_guard

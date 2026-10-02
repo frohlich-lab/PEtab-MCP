@@ -17,10 +17,11 @@ normaliser ALONGSIDE a dedicated rate constant (warning).
 from __future__ import annotations
 
 import pandas as pd
-import petab.v1 as petab
 import pytest
-from petab.v1.C import (
+from petab.v2.C import (
+    CONDITION_ID,
     ESTIMATE,
+    EXPERIMENT_ID,
     LOWER_BOUND,
     MEASUREMENT,
     NOISE_FORMULA,
@@ -28,14 +29,15 @@ from petab.v1.C import (
     OBSERVABLE_FORMULA,
     OBSERVABLE_ID,
     PARAMETER_ID,
-    PARAMETER_SCALE,
-    SIMULATION_CONDITION_ID,
+    TARGET_ID,
+    TARGET_VALUE,
     TIME,
     UPPER_BOUND,
 )
-from petab.v1.models.sbml_model import SbmlModel
+from petab.v2.models.sbml_model import SbmlModel
 
 from petab_mcp import reconcile, validation
+from petab_mcp.problem import PARAMETER_SCALE, WorkingProblem
 
 
 def _problem(
@@ -46,7 +48,10 @@ def _problem(
     extra_params: list[str] = (),
     condition_cols: dict | None = None,
 ):
-    """A minimal PEtab problem whose observation model names `scale_obs` / `sd_obs`."""
+    """A minimal PEtab problem whose observation model names `scale_obs` / `sd_obs`.
+
+    ``condition_cols`` maps a condition target to its value in condition ``c0`` (which experiment
+    ``e0`` applies), the shape a v1 condition column had."""
     observable_df = pd.DataFrame(
         [
             {
@@ -56,11 +61,23 @@ def _problem(
             }
         ]
     ).set_index(OBSERVABLE_ID)
-    cond = {"conditionId": ["c0"]}
-    cond.update(condition_cols or {})
-    condition_df = pd.DataFrame(cond).set_index("conditionId")
+    changes = [
+        {CONDITION_ID: "c0", TARGET_ID: target, TARGET_VALUE: values[0]}
+        for target, values in (condition_cols or {}).items()
+    ]
+    condition_df = pd.DataFrame(changes) if changes else None
+    experiment_df = (
+        pd.DataFrame([{EXPERIMENT_ID: "e0", TIME: 0.0, CONDITION_ID: "c0"}]) if changes else None
+    )
     measurement_df = pd.DataFrame(
-        [{OBSERVABLE_ID: "obs_A", SIMULATION_CONDITION_ID: "c0", TIME: 1.0, MEASUREMENT: 1.0}]
+        [
+            {
+                OBSERVABLE_ID: "obs_A",
+                EXPERIMENT_ID: "e0" if changes else "",
+                TIME: 1.0,
+                MEASUREMENT: 1.0,
+            }
+        ]
     )
     rows = [
         {
@@ -69,14 +86,15 @@ def _problem(
             LOWER_BOUND: 1e-3,
             UPPER_BOUND: 1e3,
             NOMINAL_VALUE: 1.0,
-            ESTIMATE: 1,
+            ESTIMATE: True,
         }
         for p in ["scale_obs", "sd_obs", *extra_params]
     ]
     parameter_df = pd.DataFrame(rows).set_index(PARAMETER_ID)
-    return petab.Problem(
+    return WorkingProblem(
         model=SbmlModel.from_antimony(antimony),
         condition_df=condition_df,
+        experiment_df=experiment_df,
         observable_df=observable_df,
         measurement_df=measurement_df,
         parameter_df=parameter_df,
@@ -158,8 +176,8 @@ def test_noise_sigma_in_model_math_is_always_an_error():
     assert "sd_obs" in _levels(problem)["error"]
 
 
-def test_condition_column_does_not_count_as_the_reactions_own_parameter():
-    """A dose column is an experimental INPUT, so multiplying one in must not launder the cheat."""
+def test_condition_target_does_not_count_as_the_reactions_own_parameter():
+    """A dose target is an experimental INPUT, so multiplying one in must not launder the cheat."""
     problem = _problem(
         CHEAT_WITH_INPUT,
         observable_formula="A * scale_obs",
@@ -212,8 +230,8 @@ def test_prune_orphans_keeps_a_rule_target_nothing_reads(antimony, target):
     assert target in rule_targets, "the rule itself must survive alongside its target"
 
 
-def test_constant_condition_column_need_not_be_used():
-    """A column with one distinct value encodes no design, so the model need not consume it."""
+def test_constant_condition_target_need_not_be_used():
+    """A target with one distinct value encodes no design, so the model need not consume it."""
     antimony = """
     model constant_col
       compartment cell = 1;
@@ -229,16 +247,21 @@ def test_constant_condition_column_need_not_be_used():
         extra_params=["k_fwd"],
         condition_cols={"inert_level": [0.0]},
     )
-    # Two conditions, both with inert_level 0: the column cannot distinguish them (raimundez's
-    # METinh_level shape). With only ONE condition the column is trivially constant but is still
+    # Two conditions, both with inert_level 0: the target cannot distinguish them (raimundez's
+    # METinh_level shape). With only ONE condition the target is trivially constant but is still
     # the only thing setting that value, so the check must stay on — see the second assertion.
-    import pandas as pd
-
     problem.condition_df = pd.DataFrame(
-        {"conditionId": ["c0", "c1"], "inert_level": [0.0, 0.0]}
-    ).set_index("conditionId")
+        {
+            CONDITION_ID: ["c0", "c1"],
+            TARGET_ID: ["inert_level", "inert_level"],
+            TARGET_VALUE: [0.0, 0.0],
+        }
+    )
+    problem.experiment_df = pd.DataFrame(
+        {EXPERIMENT_ID: ["e0", "e1"], TIME: [0.0, 0.0], CONDITION_ID: ["c0", "c1"]}
+    )
     problem.measurement_df = pd.concat(
-        [problem.measurement_df, problem.measurement_df.assign(simulationConditionId="c1")],
+        [problem.measurement_df, problem.measurement_df.assign(**{EXPERIMENT_ID: "e1"})],
         ignore_index=True,
     )
     msgs = [i["message"] for i in validation._unused_condition_target_issues(problem)]
@@ -252,7 +275,7 @@ def test_constant_condition_column_need_not_be_used():
         condition_cols={"inert_level": [0.0]},
     )
     msgs = [i["message"] for i in validation._unused_condition_target_issues(single)]
-    assert any("inert_level" in m for m in msgs), "single-condition column must still be required"
+    assert any("inert_level" in m for m in msgs), "single-condition target must still be required"
 
 
 # --- the plausibility gate abstains where the spread ratio is degenerate ----------------------
@@ -269,7 +292,6 @@ def test_sigma_gate_abstains_below_the_minimum_sample_size():
     Both verdict inputs must be withheld, not just one: `_entry_inflated` keys on
     `upper_bound_cap` and `_entry_collapsed` on `fraction_of_data_std`.
     """
-    import pandas as pd
     from petab_mcp import fitting as F
     from petab_mcp.constants import NOISE_SIGMA_MIN_POINTS
 
@@ -289,7 +311,7 @@ def test_sigma_gate_abstains_below_the_minimum_sample_size():
         [
             {
                 OBSERVABLE_ID: "obs_A",
-                SIMULATION_CONDITION_ID: "c0",
+                EXPERIMENT_ID: "",
                 TIME: float(t),
                 MEASUREMENT: 1.0 + 0.1 * t,
             }
@@ -309,7 +331,7 @@ def test_sigma_gate_abstains_below_the_minimum_sample_size():
         [
             {
                 OBSERVABLE_ID: "obs_A",
-                SIMULATION_CONDITION_ID: "c0",
+                EXPERIMENT_ID: "",
                 TIME: float(t),
                 MEASUREMENT: 1.0 + 0.1 * t,
             }

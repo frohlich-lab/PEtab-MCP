@@ -636,7 +636,7 @@ def test_the_diagnosed_point_is_the_fits_own_optimum_not_the_live_table(session)
     `parameter_df[nominalValue]`, so it was the fit's optimum only while the post-fit write-back
     happened to still be intact. An agent edit to the table must not move the point a diagnosis
     expands around."""
-    from petab.v1.C import NOMINAL_VALUE
+    from petab.v2.C import NOMINAL_VALUE
 
     from petab_mcp.identifiability import _params_meta
 
@@ -762,10 +762,10 @@ def test_a_hierarchical_fits_rank_is_read_against_its_own_dimension(session):
     coordinate even though the session counts one in `k`. Every rank statement must therefore be
     made against the FIM's OWN dimension — comparing it with the session's k would read every
     hierarchical fit as rank-deficient and the finish gate would refuse it."""
-    from petab.v1.C import ESTIMATE
+    from petab.v2.C import ESTIMATE
 
     df = session.problem.parameter_df
-    df.loc["sigma_B", ESTIMATE] = 1  # k = 3 for the session...
+    df.loc["sigma_B", ESTIMATE] = True  # k = 3 for the session...
     assert int(session.problem.n_estimated) == 3
     # ...while the fit's outer problem carries only k1, k2 (sigma_B was inner-solved)
     session.fit_record = _record(session, hess=np.diag([4.0, 4.0]), hierarchical=True)

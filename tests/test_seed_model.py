@@ -25,20 +25,14 @@ from petab_mcp.references import StubReferenceResolver
 from petab_mcp.session import PetabSession
 from petab_mcp.validation import validate_problem
 
-DATA_DIR = Path(__file__).parent / "data" / "toy_v1"
+DATA_DIR = Path(__file__).parent / "data" / "toy_v2"
 
 
 def _model_less_problem(tmp_path: Path) -> Path:
     """A copy of the toy problem whose SBML is EMPTY and which ships no ``model.ant``."""
     work = tmp_path / "empty"
     work.mkdir(parents=True)
-    for name in (
-        "problem.yaml",
-        "conditions.tsv",
-        "measurements.tsv",
-        "observables.tsv",
-        "parameters.tsv",
-    ):
+    for name in ("problem.yaml", "measurements.tsv", "observables.tsv", "parameters.tsv"):
         shutil.copy(DATA_DIR / name, work / name)
     doc = libsbml.SBMLDocument(3, 2)
     model = doc.createModel()
@@ -157,7 +151,9 @@ def test_a_petab_placeholder_never_becomes_a_species(tmp_path):
     yaml_path = _model_less_problem(tmp_path)
     obs = yaml_path.parent / "observables.tsv"
     obs.write_text(
-        obs.read_text().replace("\tB\t", "\tobservableParameter1_obs_B * B\t"), encoding="utf-8"
+        "observableId\tobservableFormula\tobservablePlaceholders\tnoiseFormula\n"
+        "obs_B\tobservableParameter1_obs_B * B\tobservableParameter1_obs_B\tsigma_B\n",
+        encoding="utf-8",
     )
     meas = yaml_path.parent / "measurements.tsv"
     lines = meas.read_text().splitlines()
@@ -171,18 +167,17 @@ def test_a_petab_placeholder_never_becomes_a_species(tmp_path):
     assert R.species_ids(session.model.sbml_model) == {"B"}
 
 
-def test_the_seed_survives_a_parameters_only_edit(tmp_path):
+def test_the_seed_survives_a_parameters_only_edit(tmp_path, add_condition):
     """The seed is not just valid AT GENERATION — it stays valid under the full check every edit
     re-runs. A bounds edit made while the seed is still the working model re-validates it, so a
     seed that only passed a relaxed check would fail the caller's very first parameter change
-    (and again after `restore_version(0)`). Uses a problem WITH a condition-target column, which
-    is the case that breaks: the seed declares the target so petab lints, but has no mechanism
-    to consume it."""
+    (and again after `restore_version(0)`). Uses a problem WITH a condition target, which is the
+    case that breaks: the seed declares the target so petab lints, but has no mechanism to
+    consume it."""
     from petab_mcp import operations as O
 
     yaml_path = _model_less_problem(tmp_path)
-    cond = yaml_path.parent / "conditions.tsv"
-    cond.write_text("conditionId\tS\nc0\t2.0\n", encoding="utf-8")
+    add_condition(yaml_path, "S", 2.0)
 
     session = PetabSession(
         str(yaml_path), provenance_dir=str(tmp_path / "prov"), resolver=StubReferenceResolver()
@@ -198,14 +193,14 @@ def test_the_seed_survives_a_parameters_only_edit(tmp_path):
     assert res["applied"] is True
 
 
-def test_an_authored_model_must_still_consume_its_condition_targets(tmp_path):
+def test_an_authored_model_must_still_consume_its_condition_targets(tmp_path, add_condition):
     """The skip is scoped to "no dynamics", not to "the seed": a real mechanism that ignores a
-    condition column is still rejected, because `make_changes` refuses a dynamics-free model in
+    condition target is still rejected, because `make_changes` refuses a dynamics-free model in
     the first place — so nothing a caller authors can slip through the gap."""
     from petab_mcp import operations as O
 
     yaml_path = _model_less_problem(tmp_path)
-    (yaml_path.parent / "conditions.tsv").write_text("conditionId\tS\nc0\t2.0\n", encoding="utf-8")
+    add_condition(yaml_path, "S", 2.0)
     session = PetabSession(
         str(yaml_path), provenance_dir=str(tmp_path / "prov"), resolver=StubReferenceResolver()
     )
@@ -272,13 +267,23 @@ def test_the_reserved_word_list_matches_libantimony():
 # -- lint noise ----------------------------------------------------------------
 
 
-def test_the_visualization_advisory_never_reaches_the_caller(seeded):
-    """petab logs "Visualization table not available. Skipping." at WARNING on every lint of a
-    problem without the optional table — i.e. every problem this server handles. Promoting it
-    would put a fixed, unactionable string on the warnings of EVERY make_changes result."""
+def test_design_only_lint_warnings_never_reach_the_caller(seeded):
+    """petab warns about a condition or experiment no measurement uses — a statement about the
+    FIXED design (fujita ships its held-out pulses in the condition table), which no call can
+    change. Promoting it would put a fixed, unactionable string on the warnings of EVERY
+    make_changes result."""
+    import pandas as pd
+
+    seeded.problem.condition_df = pd.DataFrame(
+        {"conditionId": ["c_unused"], "targetId": ["B"], "targetValue": [1.0]}
+    )
+    seeded.problem.experiment_df = pd.DataFrame(
+        {"experimentId": ["e_unused"], "time": [0.0], "conditionId": ["c_unused"]}
+    )
+    lint = {i.task for i in seeded.problem.to_petab().validate()}
+    assert "CheckUnusedExperiments" in lint  # petab does warn...
     report = validate_problem(seeded.problem)
-    assert not any("Visualization" in i["message"] for i in report["issues"]), report["issues"]
-    assert report["n_warnings"] == 0
+    assert report["n_warnings"] == 0, report["issues"]  # ...and the caller never sees it
 
 
 # -- the seed is reconciled like any other model -------------------------------
@@ -290,7 +295,8 @@ def test_the_seed_is_reconciled_and_its_initial_conditions_are_estimated(tmp_pat
     convention would hold the minted `<species>_init` FIXED, and reconcile never re-touches an
     existing row — so the caller's first authoring would inherit a frozen initial condition,
     which is the trap of #90 on the very species it is about to build a mechanism around."""
-    from petab.v1.C import ESTIMATE, LOG10, PARAMETER_SCALE
+    from petab.v2.C import ESTIMATE
+    from petab_mcp.problem import LOG10, PARAMETER_SCALE
 
     yaml_path = _model_less_problem(tmp_path)
     # Ship no IC rows, so the seed's reconcile is what mints them.
@@ -311,16 +317,16 @@ def test_the_seed_is_reconciled_and_its_initial_conditions_are_estimated(tmp_pat
 def test_a_shipped_row_comes_back_as_the_problem_defined_it(tmp_path):
     """The seed declares no mechanism, so every kinetic / initial-condition row a zero-shot
     problem ships is pruned at v0. That is only safe because re-declaring the parameter RESTORES
-    the shipped row — bounds, scale, estimate and any objectivePrior* columns — rather than
-    minting defaults. Losing a shipped prior would mean the candidate and the reference are no
-    longer fit against the same objective (schwen ships priors on its two receptor ICs)."""
+    the shipped row — bounds, scale and estimate — rather than minting defaults, so the candidate
+    and the reference are fit over the same box. A shipped PRIOR is not part of the row: the
+    objective is the likelihood the criterion scores, so the table does not carry one at all."""
     from petab_mcp import operations as O
 
     yaml_path = _model_less_problem(tmp_path)
     params = yaml_path.parent / "parameters.tsv"
-    # k1 ships a distinctive box + a prior; neither must be replaced by defaults.
+    # k1 ships a distinctive box + a prior; the box must come back, the prior must not.
     rows = params.read_text().rstrip().splitlines()
-    header = rows[0] + "\tobjectivePriorType\tobjectivePriorParameters"
+    header = rows[0] + "\tpriorDistribution\tpriorParameters"
     body = [(r + "\tnormal\t0.5;0.2") if r.startswith("k1\t") else (r + "\t\t") for r in rows[1:]]
     params.write_text("\n".join([header, *body]) + "\n", encoding="utf-8")
 
@@ -337,8 +343,7 @@ def test_a_shipped_row_comes_back_as_the_problem_defined_it(tmp_path):
     row = session.problem.parameter_df.loc["k1"]
     assert float(row["lowerBound"]) == 1e-4  # the SHIPPED box, not _default_bounds
     assert float(row["upperBound"]) == 100.0
-    assert row["objectivePriorType"] == "normal"  # ...and the shipped prior came back
-    assert row["objectivePriorParameters"] == "0.5;0.2"
+    assert "priorDistribution" not in session.problem.parameter_df.columns  # never carried
 
 
 def test_a_pruned_shipped_parameter_is_still_shown_to_the_caller(seeded):

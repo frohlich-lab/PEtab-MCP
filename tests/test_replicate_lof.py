@@ -170,12 +170,12 @@ def test_blasi_holm_does_not_use_a_lack_of_fit_f_statistic():
 
 
 # -- the assembler: reconcile's per-point plumbing + the rollup that carries the verdict -----------
-def _rec(obs, cond, t, m, s):
+def _rec(obs, exp, t, m, s):
     """A simulation record as engine._simulation_records builds it (one row per MEASUREMENT, and
     finite floats only — which is why a steady-state ``time = inf`` arrives as None)."""
     return {
         "observable_id": obs,
-        "condition_id": cond,
+        "experiment_id": exp,
         "time": t,
         "measurement": m,
         "simulation": s,
@@ -199,12 +199,12 @@ def _replicated_records(session, deviation: float, n_points: int = 3):
     for i, t in enumerate(float(x) for x in range(n_points)):
         for rep in range(4):
             off = deviation if i == n_points - 1 else 0.0
-            recs.append(_rec("obs_B", "c0", t, 1.0 + 0.01 * rep + off, 1.0 + 0.015))
+            recs.append(_rec("obs_B", "", t, 1.0 + 0.01 * rep + off, 1.0 + 0.015))
     session.problem.measurement_df = pd.DataFrame(
         [
             {
                 "observableId": r["observable_id"],
-                "simulationConditionId": r["condition_id"],
+                "experimentId": r["experiment_id"],
                 "time": r["time"],
                 "measurement": r["measurement"],
             }
@@ -501,7 +501,7 @@ def test_a_problem_whose_noise_is_fixed_data_says_nothing_every_fit(session):
         [
             {
                 "observableId": "obs_B",
-                "simulationConditionId": "c0",
+                "experimentId": "",
                 "time": t,
                 "measurement": 1.0,
                 "noiseParameters": 0.023108,
@@ -509,7 +509,7 @@ def test_a_problem_whose_noise_is_fixed_data_says_nothing_every_fit(session):
             for t in (0.0, 1.0, 2.0)
         ]
     )
-    session.simulation = {"records": [_rec("obs_B", "c0", t, 1.0, 1.0) for t in (0.0, 1.0, 2.0)]}
+    session.simulation = {"records": [_rec("obs_B", "", t, 1.0, 1.0) for t in (0.0, 1.0, 2.0)]}
     assert data_access._noise_parameter_ids(session.problem) == []
     out = data_access.residual_structure_rollup(session)
     assert out["replicate_lack_of_fit"]["status"] == "no_noise_parameter"
@@ -575,14 +575,14 @@ def _split_sigma_records(session, deviation: float):
     for i, t in enumerate((0.0, 1.0, 2.0, 3.0, 4.0, 5.0)):
         for rep in range(4):
             off = deviation if t == 5.0 else 0.0
-            recs.append(_rec("obs_B", "c0", t, 1.0 + 0.01 * rep + off, 1.0 + 0.015))
+            recs.append(_rec("obs_B", "", t, 1.0 + 0.01 * rep + off, 1.0 + 0.015))
             sigmas.append("sigma_lo" if i < 3 else "sigma_hi")
     session.problem.observable_df.loc["obs_B", "noiseFormula"] = "noiseParameter1_obs_B"
     session.problem.measurement_df = pd.DataFrame(
         [
             {
                 "observableId": r["observable_id"],
-                "simulationConditionId": r["condition_id"],
+                "experimentId": r["experiment_id"],
                 "time": r["time"],
                 "measurement": r["measurement"],
                 "noiseParameters": sigma,
@@ -608,7 +608,7 @@ def test_each_noise_parameter_tests_only_the_rows_it_governs(session):
     assert lof["n_points"] == 6  # the six REAL design points, not 6 per sigma
     assert lof["n_flagged"] == 1  # one deviating point, flagged once
     labels = [p["label"] for p in lof["points"]]
-    assert labels == ["obs_B[c0, t=5.0]"] and len(labels) == len(set(labels))
+    assert labels == ["obs_B[t=5.0]"] and len(labels) == len(set(labels))
 
 
 def test_labels_are_unique_across_noise_families(session):
@@ -631,13 +631,13 @@ def test_labels_are_unique_across_noise_families(session):
                 rows.append(
                     {
                         "observableId": obs,
-                        "simulationConditionId": "c0",
+                        "experimentId": "",
                         "time": t,
                         "measurement": 1.0 + 0.01 * rep,
                         "noiseParameters": sigma,
                     }
                 )
-                recs.append(_rec(obs, "c0", t, 1.0 + 0.01 * rep, 1.0))
+                recs.append(_rec(obs, "", t, 1.0 + 0.01 * rep, 1.0))
     session.problem.measurement_df = pd.DataFrame(rows)
     pdf = session.problem.parameter_df
     for pid in ("sigma_lo", "sigma_hi"):
@@ -648,9 +648,9 @@ def test_labels_are_unique_across_noise_families(session):
     # obs_B's two points are qualified by time even though each is alone in its own family
     assert (
         data_access._labelled_points(
-            [{"observable_id": "obs_B", "condition_id": "c0", "time": 0.0}], Counter({"obs_B": 2})
+            [{"observable_id": "obs_B", "experiment_id": "", "time": 0.0}], Counter({"obs_B": 2})
         )[0]["label"]
-        == "obs_B[c0, t=0.0]"
+        == "obs_B[t=0.0]"
     )
 
 
@@ -668,7 +668,7 @@ def test_design_points_match_across_a_steady_state_time(session):
     mdf = session.problem.measurement_df
     session.problem.measurement_df = mdf.assign(time=float("inf"))  # the table's side
     frame = pd.DataFrame(recs).rename(
-        columns={"observable_id": "observableId", "condition_id": "simulationConditionId"}
+        columns={"observable_id": "observableId", "experiment_id": "experimentId"}
     )
     points = R.replicate_pure_error_points(session.problem, "sigma_B", simulations=frame)
     assert len(points) == 1 and points[0]["n"] == 12  # one steady-state design point, 12 replicates
@@ -692,7 +692,7 @@ def test_structural_count_includes_a_dual_role_scaling_noise_symbol(session):
         [
             {
                 "observableId": "obs_B",
-                "simulationConditionId": "c0",
+                "experimentId": "",
                 "time": t,
                 "measurement": 0.5,
                 "noiseParameters": "s_gel",
@@ -712,9 +712,9 @@ def test_structural_count_includes_a_dual_role_scaling_noise_symbol(session):
 def test_the_pooled_noise_floor_ignores_a_design_point_with_a_missing_key(session):
     """`dropna=False` is needed only for the SIMULATION records, whose `time` stores finite floats
     only (blasi's steady-state t = inf arrives as None). On the MEASUREMENT table a blank
-    observable/condition/time cell is missing data: pooling every such row into ONE NaN-keyed group
-    counts its between-point spread as within-point noise, silently moving the floor the 1.5
-    inflation gate reads."""
+    observable/time cell is missing data: pooling every such row into ONE NaN-keyed group counts
+    its between-point spread as within-point noise, silently moving the floor the 1.5 inflation
+    gate reads. (A blank experiment is not missing: it is the experiment-less design.)"""
     import pandas as pd
     from petab_mcp import reconcile as R
 
@@ -727,8 +727,8 @@ def test_the_pooled_noise_floor_ignores_a_design_point_with_a_missing_key(sessio
                 [
                     {
                         "observableId": "obs_B",
-                        "simulationConditionId": None,
-                        "time": 0.0,
+                        "experimentId": "",
+                        "time": float("nan"),
                         "measurement": v,
                     }
                     for v in (0.0, 100.0)
@@ -757,7 +757,7 @@ def test_reconcile_exposes_per_point_pure_error_and_pools_to_the_same_floor(sess
     import pandas as pd
 
     frame = pd.DataFrame(recs).rename(
-        columns={"observable_id": "observableId", "condition_id": "simulationConditionId"}
+        columns={"observable_id": "observableId", "experiment_id": "experimentId"}
     )
     with_pred = R.replicate_pure_error_points(session.problem, "sigma_B", simulations=frame)
     assert [round(p["prediction"], 6) for p in with_pred] == [1.015, 1.015, 1.015]

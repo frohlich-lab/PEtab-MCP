@@ -10,7 +10,7 @@ import libsbml
 from petab_mcp.references import StubReferenceResolver
 from petab_mcp.server import create_server
 
-YAML_PATH = Path(__file__).parent / "data" / "toy_v1" / "problem.yaml"
+YAML_PATH = Path(__file__).parent / "data" / "toy_v2" / "problem.yaml"
 DATA_DIR = YAML_PATH.parent
 
 # Tables that must never be mutable — assert no tool can write them.
@@ -56,13 +56,7 @@ def _empty_model_server(tmp_path):
     """A server over a problem that ships WITHOUT a model (empty SBML, no model.ant)."""
     work = tmp_path / "empty"
     work.mkdir()
-    for name in (
-        "problem.yaml",
-        "conditions.tsv",
-        "measurements.tsv",
-        "observables.tsv",
-        "parameters.tsv",
-    ):
+    for name in ("problem.yaml", "measurements.tsv", "observables.tsv", "parameters.tsv"):
         shutil.copy(DATA_DIR / name, work / name)
     doc = libsbml.SBMLDocument(3, 2)
     model = doc.createModel()
@@ -115,6 +109,7 @@ def test_tools_registered(tmp_path):
         "describe_problem",
         "list_observables",
         "list_conditions",
+        "list_experiments",
         "get_measurements",
         "get_model",
         "get_model_structure",
@@ -160,7 +155,6 @@ def test_tools_registered(tmp_path):
         & names
     )
     assert "update_model" not in names and "set_model_parameter" not in names
-    assert "list_experiments" not in names
     # the batch tools were deleted (issue #81): edits no longer fit, so batching is obsolete
     assert not ({"begin_batch", "commit_batch", "abort_batch"} & names)
     # changing a parameter's estimate status in-loop is deliberately unsupported — no such tool
@@ -478,6 +472,7 @@ def test_list_data_tables(tmp_path):
         assert tables == {
             "measurements",
             "conditions",
+            "experiments",
             "observables",
             "parameters",
             "simulations",
@@ -763,10 +758,10 @@ def test_fit_tools(tmp_path):
 
         by_cond = _structured(
             await mcp.call_tool(
-                "query_data", {"sql": ("SELECT DISTINCT condition_id FROM simulations")}
+                "query_data", {"sql": ("SELECT DISTINCT experiment_id FROM simulations")}
             )
         )
-        assert {r["condition_id"] for r in by_cond["rows"]} == {"c0"}
+        assert {r["experiment_id"] for r in by_cond["rows"]} == {""}
         by_time = _structured(
             await mcp.call_tool("query_data", {"sql": ("SELECT DISTINCT time FROM simulations")})
         )

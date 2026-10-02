@@ -1,9 +1,8 @@
 """Helpers to turn PEtab/pandas objects into compact, JSON-serializable records.
 
-MCP tool results must be plain JSON. petab.v1 tables come back either as pandas
-DataFrames (which may be ``None`` when empty) or as lists of pydantic objects, and
-sympy/enum values need stringifying. These helpers centralize that conversion so
-every tool returns clean data.
+MCP tool results must be plain JSON. The problem's tables are pandas DataFrames (``None``
+when a table is absent), and numpy/sympy/enum values need stringifying. These helpers
+centralize that conversion so every tool returns clean data.
 """
 
 from __future__ import annotations
@@ -12,13 +11,7 @@ import math
 from typing import Any
 
 import pandas as pd
-from petab.v1.C import (
-    MEASUREMENT,
-    OBSERVABLE_ID,
-    PREEQUILIBRATION_CONDITION_ID,
-    SIMULATION_CONDITION_ID,
-    TIME,
-)
+from petab.v2.C import EXPERIMENT_ID, MEASUREMENT, OBSERVABLE_ID, TIME
 
 
 def finite_float(value: Any) -> float | None:
@@ -61,8 +54,8 @@ def _clean(value: Any) -> Any:
 def df_to_records(df: "pd.DataFrame | None") -> list[dict[str, Any]]:
     """Convert a DataFrame (or ``None``) to a list of cleaned record dicts.
 
-    A NAMED index is preserved under its own name (petab tables are indexed by their
-    primary-key id — ``observableId``, ``conditionId``, ``parameterId``). An unnamed index
+    A NAMED index is preserved under its own name (the observable and parameter tables are
+    indexed by their primary-key id — ``observableId``, ``parameterId``). An unnamed index
     carries only positional offsets and is dropped, so boolean-filtering a measurement table
     cannot leak a spurious id field.
     """
@@ -70,7 +63,7 @@ def df_to_records(df: "pd.DataFrame | None") -> list[dict[str, Any]]:
         return []
     records: list[dict[str, Any]] = []
     index_name = df.index.name
-    # Only surface the index when it is a meaningful, *named* primary key (petab's
+    # Only surface the index when it is a meaningful, *named* primary key (the
     # observable/parameter tables). Unnamed indexes — including the Int64Index that
     # boolean-filtering leaves behind on a measurement table — carry only positional
     # offsets and must not become a spurious `id` field.
@@ -86,7 +79,7 @@ def df_to_records(df: "pd.DataFrame | None") -> list[dict[str, Any]]:
 
 
 def summarize_measurements(df: "pd.DataFrame | None", *, preview: int = 4) -> dict[str, Any]:
-    """Compact summary of a measurement table: per observable×condition, the point count,
+    """Compact summary of a measurement table: per observable×experiment, the point count,
     time span, value min/max/mean, and a small evenly-spaced ``preview`` of points.
 
     Returned by ``get_measurements`` by default so the panel sees the data's SHAPE (dynamics,
@@ -105,11 +98,7 @@ def summarize_measurements(df: "pd.DataFrame | None", *, preview: int = 4) -> di
             "groups": [],
             "note": "no measurements",
         }
-    id_cols = [
-        c
-        for c in (OBSERVABLE_ID, SIMULATION_CONDITION_ID, PREEQUILIBRATION_CONDITION_ID)
-        if c in df.columns
-    ]
+    id_cols = [c for c in (OBSERVABLE_ID, EXPERIMENT_ID) if c in df.columns]
     tcol = TIME if TIME in df.columns else None
     vcol = MEASUREMENT if MEASUREMENT in df.columns else None
     groups: list[dict[str, Any]] = []
@@ -151,9 +140,9 @@ def summarize_measurements(df: "pd.DataFrame | None", *, preview: int = 4) -> di
         # truncated/next_offset. An agent told this returns everything would reason over a
         # silently partial view — concluding, say, that an observable has no late timepoints
         # because they fell past the first page.
-        "note": "Summary view (per observable×condition: n, time span, value min/max/mean, and a "
+        "note": "Summary view (per observable×experiment: n, time span, value min/max/mean, and a "
         "few preview points). get_measurements(summarize=False) returns raw points "
         "PAGED (max_rows per call, with total_rows/truncated/next_offset) — page it, or "
-        "narrow with condition_id/observable_id, or use query_data for SQL over the "
+        "narrow with experiment_id/observable_id, or use query_data for SQL over the "
         "`measurements` table.",
     }

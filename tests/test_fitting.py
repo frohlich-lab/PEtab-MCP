@@ -104,7 +104,8 @@ def test_fitted_values_selects_only_free_params():
     scores stay correct. Regression guard for the fixed-params-inflate-k bug."""
     import pytest
 
-    from petab.v1.C import ESTIMATE, NOMINAL_VALUE, PARAMETER_SCALE
+    from petab.v2.C import ESTIMATE, NOMINAL_VALUE
+    from petab_mcp.problem import PARAMETER_SCALE
 
     df = _pdf(
         [
