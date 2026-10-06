@@ -34,7 +34,9 @@ pip install -e .          # installs AMICI + pyPESTO (a C++ toolchain is require
 ```
 
 AMICI compiles generated C++ and needs a toolchain: a C++ compiler, CMake, Ninja, and the
-pip `swig` binary on `PATH` (OpenBLAS ships in the AMICI wheel).
+pip `swig` binary on `PATH`. AMICI and pyPESTO are pinned to commits on their `main` branches
+until releases carry the PEtab v2 fixes named in `pyproject.toml`, so AMICI itself is built from
+source on install (BLAS comes from the `scipy-openblas64` wheel, or Accelerate on macOS).
 
 ## Run
 
