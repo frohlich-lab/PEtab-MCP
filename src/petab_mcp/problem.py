@@ -335,7 +335,11 @@ def _read_tables(paths, base: Path, reader) -> pd.DataFrame | None:
     frames = [reader(str(base / p)) for p in paths or []]
     if not frames:
         return None
-    return frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True)
+    return (
+        frames[0]
+        if len(frames) == 1
+        else pd.concat(frames, ignore_index=all(df.index.name is None for df in frames))
+    )
 
 
 def _from_v2(yaml_path: Path, config: dict) -> WorkingProblem:
@@ -439,7 +443,12 @@ def v1_measurements(measurement_df, changing: set[str]) -> tuple[pd.DataFrame | 
         if as_is == [(p, s)]:
             ids[(p, s)] = ""
             continue
-        exp_id = v1_experiment_id(p, s)
+        base_id = v1_experiment_id(p, s)
+        exp_id = base_id
+        suffix = 1
+        while exp_id in ids.values():
+            exp_id = f"{base_id}_{suffix}"
+            suffix += 1
         ids[(p, s)] = exp_id
         if p:
             rows.append(
