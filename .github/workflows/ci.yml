@@ -78,6 +78,13 @@ jobs:
           print(f"SWIG_LIB={lib_dirs[-1]}")
           PY
 
+      # The `statements` route expands its rule-based model with BioNetGen, which is not on
+      # PyPI; pysb finds it through BNGPATH.
+      - name: Install BioNetGen
+        run: |
+          curl -sSL https://github.com/RuleWorld/bionetgen/releases/download/BioNetGen-2.9.3/BioNetGen-2.9.3-linux.tar.gz | tar -xz -C "$RUNNER_TEMP"
+          echo "BNGPATH=$RUNNER_TEMP/BioNetGen-2.9.3" >> "$GITHUB_ENV"
+
       - name: Run tests
         # -n 2 lives HERE, not in pyproject's addopts, so it applies to CI (a 2-core runner)
         # without taxing every local invocation: in addopts it made pytest-xdist a hard

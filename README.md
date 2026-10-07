@@ -36,6 +36,9 @@ pip install -e .          # installs AMICI + pyPESTO (a C++ toolchain is require
 AMICI compiles generated C++ and needs a toolchain: a C++ compiler, CMake, Ninja, and the
 pip `swig` binary on `PATH` (OpenBLAS ships in the AMICI wheel).
 
+Expanding a PySB model into equations (`pysb.bng.generate_equations`) needs BioNetGen's `BNG2.pl`
+on `PATH` (or `BNGPATH` set); it is not a pip dependency.
+
 ## Run
 
 ```bash
