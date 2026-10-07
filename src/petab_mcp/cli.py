@@ -58,6 +58,12 @@ def build_parser() -> argparse.ArgumentParser:
         "effective parameter count the fit reports. Defaults to PETAB_MCP_CRITERION, else bic.",
     )
     parser.add_argument(
+        "--entity-map",
+        default=None,
+        help="JSON binding the problem's species to INDRA agents; offers make_changes the "
+        "`statements` route (see petab_mcp.seeding).",
+    )
+    parser.add_argument(
         "--transport",
         default="stdio",
         choices=["stdio", "sse", "streamable-http"],
@@ -81,6 +87,7 @@ def main(argv: list[str] | None = None) -> int:
         reference_mode=args.reference_validation,
         skills_dir=args.skills_dir,
         criterion=args.criterion,
+        entity_map=args.entity_map,
     )
     server.run(transport=args.transport)
     return 0

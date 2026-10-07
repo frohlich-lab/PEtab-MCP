@@ -16,6 +16,7 @@ about the fit is a server-layer concern, so those tests drive the in-process MCP
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -697,3 +698,134 @@ def test_the_single_editor_carries_the_whole_change(tmp_path):
     # and NO fit flag in either arm: fitting is unconditional, and an optional flag would let a
     # change be committed without a score.
     assert not ({"fit", "do_fit", "skip_fit", "refit"} & got)
+
+
+# -- the `statements` route ------------------------------------------------------
+# The toy's two species as the entity map binds them; ``{extra}`` splices more entries.
+_BASE_ENTITY_MAP = '{{"A": {{"name": "A"}}, "B": {{"name": "B"}}{extra}}}'
+
+
+def _statement_row(type_="PopulationTransition", policy="mass_action"):
+    return {
+        "statement": {"type": type_, "source": {"name": "A"}, "target": {"name": "B"}},
+        "policy": policy,
+        "prefix": "conv",
+    }
+
+
+def _statements_server(tmp_path, extra=""):
+    entity_map = tmp_path / "entities.json"
+    entity_map.write_text(_BASE_ENTITY_MAP.format(extra=extra))
+    return create_server(
+        str(YAML_PATH),
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+        auto_fit=False,
+        entity_map=str(entity_map),
+    )
+
+
+def _make_changes_schema(mcp):
+    tools = asyncio.run(mcp.list_tools())
+    return next(t for t in tools if t.name == "make_changes").parameters["properties"]
+
+
+def test_statements_route_exists_only_with_an_entity_map(tmp_path):
+    """Without a map nothing binds a statement-built model to the observables, so offering the
+    route would offer a call that always fails."""
+    assert "statements" not in _make_changes_schema(_server(tmp_path / "plain"))
+    assert "statements" in _make_changes_schema(_statements_server(tmp_path))
+
+
+def test_statements_commit_records_what_was_asserted(tmp_path):
+    """The row and its Emission are stored beside the generated source: a later ``revise``
+    addresses the row, and neither is recoverable from the expanded model."""
+    mcp = _statements_server(tmp_path)
+    out = _call(
+        mcp, "make_changes", {"justification": "A becomes B", "statements": [_statement_row()]}
+    )
+    assert out["applied"] is True and out["committed"] is True
+    assert "carry no grounding" in out["messages"][0]["message"]
+    (stored,) = json.loads((tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text())
+    assert stored["emission"]["parameters"] == ["conv_k"]
+
+
+def test_a_library_gap_is_its_own_rejection(tmp_path):
+    """A pair the library does not hold must stay countable apart from a malformed call — it is
+    the to-do list for the library."""
+    row = _statement_row(policy="no_such_mechanism")
+    out = _call(
+        _statements_server(tmp_path), "make_changes", {"justification": "x", "statements": [row]}
+    )
+    assert out["applied"] is False and out["error_cause"] == "library_gap"
+
+
+def test_an_unreadable_statement_is_refused_not_dropped(tmp_path):
+    """INDRA's reader drops what it cannot parse with only a logged warning; a silently shorter
+    model would then be fitted and committed."""
+    row = _statement_row(type_="NotAStatement")
+    out = _call(
+        _statements_server(tmp_path), "make_changes", {"justification": "x", "statements": [row]}
+    )
+    assert out["applied"] is False and out["error_cause"] == "unreadable_statement"
+
+
+def test_a_repeated_prefix_is_refused_before_assembly(tmp_path):
+    """Two rows minting the same parameter names clash inside PySB, whose error is not one the
+    tool boundary catches."""
+    rows = [_statement_row(), _statement_row()]
+    out = _call(
+        _statements_server(tmp_path), "make_changes", {"justification": "x", "statements": rows}
+    )
+    assert out["applied"] is False and out["error_cause"] == "duplicate_prefix"
+
+
+def test_statement_species_take_the_problems_own_initial_conditions(tmp_path):
+    """The first version minted a fixed one-unit initial amount per species, so Crauste's
+    populations all started at one cell and its shipped `Naive_init` (8090) went unused. The
+    toy ships `A_init` and `B_init` fixed; both must survive, and no other IC row may appear."""
+    mcp = _statements_server(tmp_path)
+    _call(mcp, "make_changes", {"justification": "A becomes B", "statements": [_statement_row()]})
+    ids = {r["parameterId"] for r in _call(mcp, "get_parameters", {})["result"]}
+    assert {"A_init", "B_init"} <= ids
+    assert not {i for i in ids if i.endswith("_0")}
+
+
+_SATURATING = {
+    "statement_type": "PopulationTransition",
+    "policy": "saturating",
+    "based_on": "mass_action",
+    "rate": "vmax / (K + source)",
+    "parameters": ["vmax", "K"],
+}
+
+
+def test_a_mechanism_the_agent_writes_stays_in_the_run_library(tmp_path):
+    """The library is not closed: an entry written in one call serves every later call without
+    being resent, and the version that used it records its definition."""
+    mcp = _statements_server(tmp_path)
+    row = _statement_row(policy="saturating")
+    args = {"justification": "saturating", "statements": [row], "mechanisms": [_SATURATING]}
+    assert _call(mcp, "make_changes", args)["committed"] is True
+    (stored,) = json.loads((tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text())
+    assert stored["mechanism"]["rate"] == "vmax / (K + source)"
+    row["prefix"] = "conv2"  # a different structure, so the de-dup does not refuse the refit
+    again = _call(mcp, "make_changes", {"justification": "reuse", "statements": [row]})
+    assert again["applied"] is True
+
+
+def test_a_written_mechanism_is_not_redefined_in_place(tmp_path):
+    """Earlier versions were built with the first definition; changing it under the same name
+    would change what their records mean."""
+    mcp = _statements_server(tmp_path)
+    row = _statement_row(policy="saturating")
+    _call(
+        mcp,
+        "make_changes",
+        {"justification": "x", "statements": [row], "mechanisms": [_SATURATING]},
+    )
+    changed = {**_SATURATING, "rate": "vmax"}
+    out = _call(
+        mcp, "make_changes", {"justification": "y", "statements": [row], "mechanisms": [changed]}
+    )
+    assert out["applied"] is False and out["error_cause"] == "mechanism_redefined"
