@@ -54,3 +54,14 @@ class ParameterError(PetabMcpError):
 
 class UnknownEntityError(PetabMcpError):
     """A referenced id (parameter, observable, experiment, ...) does not exist."""
+
+
+class MechanismError(PetabMcpError):
+    """No registered mechanism expresses a ``(statement class, policy)`` pair.
+
+    A gap in the library, not a malformed request: it is the signal that the library needs an
+    entry, so it stays distinguishable from every other rejection — ``cause`` is the label
+    ``edit_rejects.by_cause`` counts it under.
+    """
+
+    cause = "library_gap"

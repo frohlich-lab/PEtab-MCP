@@ -69,6 +69,17 @@ dependencies = [
     "amici>=1.1",
     "pypesto[petab]>=0.5",
     "fides>=0.7",
+    # INDRA supplies the Statement base class the mechanism vocabulary extends (`statements`),
+    # Agent grounding, Preassembler deduplication, and the PySB assembler's monomer and site
+    # construction (`mechanisms.assemble`). Pinned to one minor: `mechanisms` drives the
+    # assembler's private monomer pass and dispatch, and `statements` registers its subclass into
+    # `indra.statements.statements`, none of which is a public interface.
+    # Revisit once INDRA exposes a stable policy-registration interface.
+    "indra>=1.24,<1.25",
+    # The model language the mechanisms build, and its SBML export (`problem_sbml`). Capped at
+    # the major: the policies construct Rule, Expression and Observable directly. Revisit once the
+    # suite runs against a 2.x release.
+    "pysb>=1.17,<2",
 ]
 
 [project.optional-dependencies]
