@@ -683,6 +683,53 @@ def test_resources_registered(tmp_path):
     assert any("model/antimony" in u for u in uris)
 
 
+def test_a_tool_acts_on_the_session_routed_to_at_call_time(tmp_path):
+    """REGRESSION: every tool group captured `ctx.session` when it was REGISTERED, so one
+    registration could only ever serve the session it was built with. Two sessions on the same
+    problem behind one `route`: a change made while it points at one is seen exactly while it
+    points there, and no group may resolve a session while registering."""
+    from fastmcp import FastMCP
+
+    from petab_mcp import server as S
+
+    def open_ctx(store):
+        return S._open_ctx(
+            str(YAML_PATH),
+            provenance_dir=str(tmp_path / store),
+            criterion=None,
+            auto_fit_starts=1,
+            validation_measurements=None,
+            score_shipped_model=False,
+            build_root=None,
+            reference_mode="best_effort",
+            resolver=StubReferenceResolver(),
+            auto_fit=False,
+        )
+
+    a, b = open_ctx("a"), open_ctx("b")
+    bound = []  # empty while registering, so a group that resolves a session there raises
+    mcp = FastMCP("route")
+    for name in [n for n in dir(S) if n.startswith("_register_")]:
+        getattr(S, name)(mcp, lambda: bound[-1])
+
+    async def read():
+        version = _structured(await mcp.call_tool("describe_problem", {}))["current_version"]
+        return version, "k3" in _structured(await mcp.call_tool("get_model", {}))["result"]
+
+    async def go():
+        bound.append(a)
+        await mcp.call_tool(
+            "make_changes", {"antimony": _reauthored(["J: B => D; k3 * B;"]), "justification": "x"}
+        )
+        assert await read() == (0, True)
+        bound.append(b)
+        assert await read() == (-1, False)
+        bound.append(a)
+        assert await read() == (0, True)
+
+    asyncio.run(go())
+
+
 def test_get_fitting_log(tmp_path):
     # No AMICI/pyPESTO needed: the pypesto.log handler is installed at session start, so
     # the tool reads a (possibly empty) log without a fit ever running. Validates the
