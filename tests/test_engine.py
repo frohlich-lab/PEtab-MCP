@@ -40,7 +40,7 @@ def test_replicate_measurements_not_double_counted(engine, session):
     dup = base.copy()
     dup["measurement"] = dup["measurement"] + 0.01
     rep = pd.concat([base, dup], ignore_index=True)
-    session.problem.measurement_df = rep
+    session.problem = session.problem.replace(measurement_df=rep)
 
     obj = engine.evaluate_objective()
     # one record per measurement row (Sum r), not the buggy cross-join (Sum r**2)
@@ -201,7 +201,7 @@ def test_a_problem_that_cannot_be_seeded_refuses_to_load(tmp_path):
     case: there is no model the fixed tables could imply."""
     import shutil
 
-    import libsbml
+    from conftest import with_empty_sbml
 
     from petab_mcp.errors import ValidationError
     from petab_mcp.references import StubReferenceResolver
@@ -217,11 +217,7 @@ def test_a_problem_that_cannot_be_seeded_refuses_to_load(tmp_path):
     (work / "observables.tsv").write_text(
         "observableId\tobservableFormula\tnoiseFormula\nobs_B\t1.0\tsigma_B\n", encoding="utf-8"
     )
-    doc = libsbml.SBMLDocument(3, 2)
-    model = doc.createModel()
-    model.setId("conversion_reaction")
-    model.setMetaId("conversion_reaction")
-    libsbml.writeSBMLToFile(doc, str(work / "conversion_reaction.xml"))
+    with_empty_sbml(work / "problem.yaml")
 
     with pytest.raises(ValidationError):
         PetabSession(

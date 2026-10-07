@@ -24,6 +24,7 @@ from petab_mcp.errors import ValidationError
 from petab_mcp.references import StubReferenceResolver
 from petab_mcp.session import PetabSession
 from petab_mcp.validation import validate_problem
+from conftest import with_empty_sbml
 
 DATA_DIR = Path(__file__).parent / "data" / "toy_v2"
 
@@ -34,11 +35,7 @@ def _model_less_problem(tmp_path: Path) -> Path:
     work.mkdir(parents=True)
     for name in ("problem.yaml", "measurements.tsv", "observables.tsv", "parameters.tsv"):
         shutil.copy(DATA_DIR / name, work / name)
-    doc = libsbml.SBMLDocument(3, 2)
-    model = doc.createModel()
-    model.setId("conversion_reaction")
-    model.setMetaId("conversion_reaction")
-    libsbml.writeSBMLToFile(doc, str(work / "conversion_reaction.xml"))
+    with_empty_sbml(work / "problem.yaml")
     return work / "problem.yaml"
 
 

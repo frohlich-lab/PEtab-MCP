@@ -557,9 +557,9 @@ def amici_facing_problem(session):
 
     flat_petab = copy.deepcopy(session.problem.to_petab())
     flatten_timepoint_specific_output_overrides(flat_petab)
-    flat = copy.copy(session.problem)
-    flat.observable_df = flat_petab.observable_df
-    flat.measurement_df = flat_petab.measurement_df
+    flat = session.problem.replace(
+        observable_df=flat_petab.observable_df, measurement_df=flat_petab.measurement_df
+    )
     session._amici_problem_cache = (key, flat)
     session.logger.info(
         "flattening timepoint-specific output overrides for the AMICI build only "

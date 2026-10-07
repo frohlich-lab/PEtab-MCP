@@ -564,7 +564,7 @@ def test_a_log_normal_observable_keeps_the_fit_joint(session):
     from petab_mcp import fitting
 
     p = session.problem
-    p.observable_df = pd.concat(
+    observables = pd.concat(
         [
             p.observable_df.assign(
                 noiseFormula="noiseParameter1_obs_B", noisePlaceholders="noiseParameter1_obs_B"
@@ -578,7 +578,10 @@ def test_a_log_normal_observable_keeps_the_fit_joint(session):
         ]
     )
     b = p.measurement_df.assign(noiseParameters="sigma_B")
-    p.measurement_df = pd.concat([b, b.assign(observableId="obs_A", noiseParameters="")])
+    p = session.problem = p.replace(
+        observable_df=observables,
+        measurement_df=pd.concat([b, b.assign(observableId="obs_A", noiseParameters="")]),
+    )
     p.parameter_df.loc["sigma_B", "estimate"] = True
     assert fitting._reconcile.classify_inner_parameters(p) == {"sigma_B": "sigma"}
     assert fitting._build_hierarchical_problem(session, {}) == (None, {})

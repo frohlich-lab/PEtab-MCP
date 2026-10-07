@@ -167,6 +167,19 @@ def _write_empty_sbml(path: Path, model_id: str = "conversion_reaction") -> None
     libsbml.writeSBMLToFile(doc, str(path))
 
 
+def with_empty_sbml(yaml_path) -> None:
+    """Point a copy of the toy's YAML at an EMPTY SBML model, the shape a zero-shot problem ships
+    in (the toy itself ships Antimony)."""
+    yaml_path = Path(yaml_path)
+    _write_empty_sbml(yaml_path.parent / "conversion_reaction.xml")
+    yaml_path.write_text(
+        yaml_path.read_text().replace(
+            "location: model.ant\n    language: antimony",
+            "location: conversion_reaction.xml\n    language: sbml",
+        )
+    )
+
+
 @pytest.fixture
 def empty_yaml(tmp_path) -> str:
     """A PEtab problem that ships WITHOUT a model (empty SBML, no model.ant)."""
@@ -174,7 +187,7 @@ def empty_yaml(tmp_path) -> str:
     work.mkdir()
     for name in ("problem.yaml", "measurements.tsv", "observables.tsv", "parameters.tsv"):
         shutil.copy(DATA_DIR / name, work / name)
-    _write_empty_sbml(work / "conversion_reaction.xml")
+    with_empty_sbml(work / "problem.yaml")
     return str(work / "problem.yaml")
 
 

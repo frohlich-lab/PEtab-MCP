@@ -467,8 +467,6 @@ def score_problem(
     is the sum of squares of AMICI's weighted residual vector (via
     :meth:`engine.AmiciEngine._res_from_rdatas`), ``None`` where AMICI did not populate it.
     """
-    import copy
-
     import numpy as np
     from pypesto.C import FVAL
     from pypesto.C import RDATAS as PP_RDATAS
@@ -494,13 +492,10 @@ def score_problem(
     )
     measurement_df = held_out.measurement_df
 
-    # Shallow copy, fresh tables: the model is shared (it is what we are scoring, and deep-copying
+    # A new problem, fresh tables: the model is shared (it is what we are scoring, and deep-copying
     # an SBML document per call is pure cost), but every dataframe pyPESTO reads is this call's own,
     # so nothing downstream can mutate the caller's session state.
-    view = copy.copy(problem)
-    view.measurement_df = measurement_df.copy()
-    view.parameter_df = problem.parameter_df.copy()
-    view.observable_df = problem.observable_df.copy()
+    view = problem.replace(measurement_df=measurement_df)
     for name in ("condition_df", "experiment_df"):
         if getattr(problem, name) is not None:
             setattr(view, name, getattr(problem, name).copy())
@@ -541,8 +536,14 @@ def score_problem(
                 "solving the held-out scalings (the model could not be integrated "
                 "there, or its likelihood diverged)",
             }
-        view.measurement_df[OBSERVABLE_PARAMETERS] = _with_solved_scalings(
-            view.measurement_df[OBSERVABLE_PARAMETERS], solved
+        view = view.replace(
+            measurement_df=view.measurement_df.assign(
+                **{
+                    OBSERVABLE_PARAMETERS: _with_solved_scalings(
+                        view.measurement_df[OBSERVABLE_PARAMETERS], solved
+                    )
+                }
+            )
         )
         # Swapping the held-out table in retires the overrides the TRAINING rows carried, and petab
         # refuses a parameter table with rows nothing references. Only on this path: an example
@@ -684,12 +685,8 @@ def transfer_view(problem, held_out: HeldOut, shipped_parameter_df):
     used as the candidate's start. A required input the candidate has no fixed row to receive is
     :data:`STATUS_INPUT_MISSING` — a result about the model, not a plumbing failure.
     """
-    import copy
-
     held_out = as_v2(held_out, problem)
-    view = copy.copy(problem)
-    view.measurement_df = held_out.measurement_df.copy()
-    view.parameter_df = problem.parameter_df.copy()
+    view = problem.replace(measurement_df=held_out.measurement_df)
     if held_out.condition_df is not None:
         if problem.condition_df is None:
             return None, {
@@ -831,14 +828,13 @@ def _unit_view(view, rows):
     measured in, and the parameter rows petab's lint keeps for them — a sigma or scaling no row
     informs is not a parameter of the refit, and an experiment no row uses would only be compiled
     in. ``view``'s own tables are left untouched."""
-    import copy
-
-    uview = copy.copy(view)
-    uview.measurement_df = rows.reset_index(drop=True)
     measured = set(rows[OBSERVABLE_ID].astype(str))
-    uview.observable_df = view.observable_df.loc[
-        [o for o in view.observable_df.index if str(o) in measured]
-    ]
+    uview = view.replace(
+        measurement_df=rows.reset_index(drop=True),
+        observable_df=view.observable_df.loc[
+            [o for o in view.observable_df.index if str(o) in measured]
+        ],
+    )
     if view.experiment_df is not None:
         used = set(rows[EXPERIMENT_ID].astype(str))
         uview.experiment_df = view.experiment_df[

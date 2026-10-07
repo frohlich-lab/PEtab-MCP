@@ -200,16 +200,18 @@ def _replicated_records(session, deviation: float, n_points: int = 3):
         for rep in range(4):
             off = deviation if i == n_points - 1 else 0.0
             recs.append(_rec("obs_B", "", t, 1.0 + 0.01 * rep + off, 1.0 + 0.015))
-    session.problem.measurement_df = pd.DataFrame(
-        [
-            {
-                "observableId": r["observable_id"],
-                "experimentId": r["experiment_id"],
-                "time": r["time"],
-                "measurement": r["measurement"],
-            }
-            for r in recs
-        ]
+    session.problem = session.problem.replace(
+        measurement_df=pd.DataFrame(
+            [
+                {
+                    "observableId": r["observable_id"],
+                    "experimentId": r["experiment_id"],
+                    "time": r["time"],
+                    "measurement": r["measurement"],
+                }
+                for r in recs
+            ]
+        )
     )
     session.simulation = {"records": recs}
     return recs
@@ -496,18 +498,22 @@ def test_a_problem_whose_noise_is_fixed_data_says_nothing_every_fit(session):
     exact per-fit tax PR #23 cut. Its own status, and silent."""
     import pandas as pd
 
-    session.problem.observable_df.loc["obs_B", "noiseFormula"] = "noiseParameter1_obs_B"
-    session.problem.measurement_df = pd.DataFrame(
-        [
-            {
-                "observableId": "obs_B",
-                "experimentId": "",
-                "time": t,
-                "measurement": 1.0,
-                "noiseParameters": 0.023108,
-            }
-            for t in (0.0, 1.0, 2.0)
-        ]
+    odf = session.problem.observable_df.copy()
+    odf.loc["obs_B", "noiseFormula"] = "noiseParameter1_obs_B"
+    session.problem = session.problem.replace(
+        observable_df=odf,
+        measurement_df=pd.DataFrame(
+            [
+                {
+                    "observableId": "obs_B",
+                    "experimentId": "",
+                    "time": t,
+                    "measurement": 1.0,
+                    "noiseParameters": 0.023108,
+                }
+                for t in (0.0, 1.0, 2.0)
+            ]
+        ),
     )
     session.simulation = {"records": [_rec("obs_B", "", t, 1.0, 1.0) for t in (0.0, 1.0, 2.0)]}
     assert data_access._noise_parameter_ids(session.problem) == []
@@ -577,18 +583,22 @@ def _split_sigma_records(session, deviation: float):
             off = deviation if t == 5.0 else 0.0
             recs.append(_rec("obs_B", "", t, 1.0 + 0.01 * rep + off, 1.0 + 0.015))
             sigmas.append("sigma_lo" if i < 3 else "sigma_hi")
-    session.problem.observable_df.loc["obs_B", "noiseFormula"] = "noiseParameter1_obs_B"
-    session.problem.measurement_df = pd.DataFrame(
-        [
-            {
-                "observableId": r["observable_id"],
-                "experimentId": r["experiment_id"],
-                "time": r["time"],
-                "measurement": r["measurement"],
-                "noiseParameters": sigma,
-            }
-            for r, sigma in zip(recs, sigmas)
-        ]
+    odf = session.problem.observable_df.copy()
+    odf.loc["obs_B", "noiseFormula"] = "noiseParameter1_obs_B"
+    session.problem = session.problem.replace(
+        observable_df=odf,
+        measurement_df=pd.DataFrame(
+            [
+                {
+                    "observableId": r["observable_id"],
+                    "experimentId": r["experiment_id"],
+                    "time": r["time"],
+                    "measurement": r["measurement"],
+                    "noiseParameters": sigma,
+                }
+                for r, sigma in zip(recs, sigmas)
+            ]
+        ),
     )
     pdf = session.problem.parameter_df
     for pid in ("sigma_lo", "sigma_hi"):
@@ -619,7 +629,7 @@ def test_labels_are_unique_across_noise_families(session):
     The count is taken across every family now."""
     import pandas as pd
 
-    odf = session.problem.observable_df
+    odf = session.problem.observable_df.copy()
     odf.loc["obs_B", "noiseFormula"] = "noiseParameter1_obs_B"
     odf.loc["obs_A"] = {"observableFormula": "A", "noiseFormula": "noiseParameter1_obs_A"}
     rows, recs = [], []
@@ -638,7 +648,7 @@ def test_labels_are_unique_across_noise_families(session):
                     }
                 )
                 recs.append(_rec(obs, "", t, 1.0 + 0.01 * rep, 1.0))
-    session.problem.measurement_df = pd.DataFrame(rows)
+    session.problem = session.problem.replace(observable_df=odf, measurement_df=pd.DataFrame(rows))
     pdf = session.problem.parameter_df
     for pid in ("sigma_lo", "sigma_hi"):
         pdf.loc[pid] = pdf.loc["sigma_B"]
@@ -666,7 +676,9 @@ def test_design_points_match_across_a_steady_state_time(session):
     for r in recs:  # the records' side of a steady-state point
         r["time"] = None
     mdf = session.problem.measurement_df
-    session.problem.measurement_df = mdf.assign(time=float("inf"))  # the table's side
+    session.problem = session.problem.replace(
+        measurement_df=mdf.assign(time=float("inf"))
+    )  # the table's side
     frame = pd.DataFrame(recs).rename(
         columns={"observable_id": "observableId", "experiment_id": "experimentId"}
     )
@@ -685,21 +697,24 @@ def test_structural_count_includes_a_dual_role_scaling_noise_symbol(session):
     import pandas as pd
     from petab_mcp import reconcile as R
 
-    odf = session.problem.observable_df
+    odf = session.problem.observable_df.copy()
     odf.loc["obs_B", "noiseFormula"] = "noiseParameter1_obs_B"
     odf.loc["obs_B", "observableFormula"] = "observableParameter1_obs_B * B"
-    session.problem.measurement_df = pd.DataFrame(
-        [
-            {
-                "observableId": "obs_B",
-                "experimentId": "",
-                "time": t,
-                "measurement": 0.5,
-                "noiseParameters": "s_gel",
-                "observableParameters": "s_gel",
-            }
-            for t in (0.0, 1.0)
-        ]
+    session.problem = session.problem.replace(
+        observable_df=odf,
+        measurement_df=pd.DataFrame(
+            [
+                {
+                    "observableId": "obs_B",
+                    "experimentId": "",
+                    "time": t,
+                    "measurement": 0.5,
+                    "noiseParameters": "s_gel",
+                    "observableParameters": "s_gel",
+                }
+                for t in (0.0, 1.0)
+            ]
+        ),
     )
     pdf = session.problem.parameter_df
     pdf.loc["s_gel"] = pdf.loc["k1"]  # estimated, like the real gel factors
@@ -720,22 +735,24 @@ def test_the_pooled_noise_floor_ignores_a_design_point_with_a_missing_key(sessio
 
     _replicated_records(session, deviation=0.0)
     floor = R.sigma_replicate_noise_estimate(session.problem, "sigma_B")
-    session.problem.measurement_df = pd.concat(
-        [
-            session.problem.measurement_df,
-            pd.DataFrame(
-                [
-                    {
-                        "observableId": "obs_B",
-                        "experimentId": "",
-                        "time": float("nan"),
-                        "measurement": v,
-                    }
-                    for v in (0.0, 100.0)
-                ]
-            ),
-        ],
-        ignore_index=True,
+    session.problem = session.problem.replace(
+        measurement_df=pd.concat(
+            [
+                session.problem.measurement_df,
+                pd.DataFrame(
+                    [
+                        {
+                            "observableId": "obs_B",
+                            "experimentId": "",
+                            "time": float("nan"),
+                            "measurement": v,
+                        }
+                        for v in (0.0, 100.0)
+                    ]
+                ),
+            ],
+            ignore_index=True,
+        )
     )
     assert R.sigma_replicate_noise_estimate(session.problem, "sigma_B") == pytest.approx(floor)
 

@@ -526,7 +526,7 @@ def test_symbolic_noise_formulas_are_memoised_on_the_TABLE_TEXT(session):
     resolving gains (measured per sigma: blasi 35.8 -> 5.8 ms). The cache is keyed on the formulas' TEXT
     and not on the frame's identity, because the agent RE-AUTHORS the observable table mid-session
     and a stale expression would feed a stop gate."""
-    odf = session.problem.observable_df
+    odf = session.problem.observable_df.copy()
     first = R._symbolic_noise_formulas(odf)
     assert R._symbolic_noise_formulas(odf) is first  # same text -> same object, no re-parse
     odf.loc["obs_B", "noiseFormula"] = "sigma_B * B"  # re-authored
