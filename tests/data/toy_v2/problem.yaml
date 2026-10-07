@@ -3,8 +3,8 @@ parameter_files:
 - parameters.tsv
 model_files:
   conversion_reaction:
-    location: conversion_reaction.xml
-    language: sbml
+    location: model.ant
+    language: antimony
 measurement_files:
 - measurements.tsv
 observable_files:

@@ -18,13 +18,15 @@ DATA = Path(__file__).parent / "data"
 
 
 def test_the_v1_toy_upgrades_to_exactly_the_v2_toy():
-    """Every table, and the module fingerprint — so the two even share a compiled module."""
+    """Every table, and so the module fingerprint once both hold one model (toy_v1 ships SBML,
+    toy_v2 the Antimony it was made from)."""
     old = P.WorkingProblem.from_yaml(DATA / "toy_v1" / "problem.yaml")
     new = P.WorkingProblem.from_yaml(DATA / "toy_v2" / "problem.yaml")
     for name in ("parameter_df", "observable_df", "measurement_df", "condition_df"):
         a, b = getattr(old, name), getattr(new, name)
         assert (a is None and b is None) or a.equals(b), name
     assert old.experiment_df is None and new.experiment_df is None
+    new.model = old.model
     assert old.module_fingerprint() == new.module_fingerprint()
 
 
@@ -161,7 +163,7 @@ def test_the_module_fingerprint_moves_with_what_is_compiled_only():
     wp = P.WorkingProblem.from_yaml(DATA / "toy_v2" / "problem.yaml")
     base = wp.module_fingerprint()
     wp.parameter_df.loc["k1", "nominalValue"] = 7.0  # a value: set per simulation
-    wp.measurement_df = wp.measurement_df.assign(measurement=0.5)
+    wp = wp.replace(measurement_df=wp.measurement_df.assign(measurement=0.5))
     assert wp.module_fingerprint() == base
     wp.parameter_df.loc["sigma_B", "estimate"] = True  # a constant would have no sensitivity
     assert wp.module_fingerprint() != base
@@ -210,19 +212,18 @@ def test_two_v1_conditions_that_change_nothing_stay_two_series():
     assert set(alone["experimentId"]) == {""}
 
 
-def test_a_write_into_a_table_reaches_the_libpetab_problem():
-    """Cached tables are keyed on content: a held-out view writes its solved scalings into its
-    measurement table in place."""
+def test_the_design_tables_are_read_only_and_a_view_is_a_new_problem():
     wp = P.WorkingProblem.from_yaml(DATA / "toy_v2" / "problem.yaml")
-    assert wp.to_petab().measurements[1].measurement == pytest.approx(0.3)
-    wp.measurement_df["measurement"] = 0.5
-    assert {m.measurement for m in wp.to_petab().measurements} == {0.5}
+    with pytest.raises(AttributeError):
+        wp.measurement_df = wp.measurement_df.iloc[3:]
+    view = wp.replace(measurement_df=wp.measurement_df.iloc[3:])
+    view.parameter_df.loc["k1", "nominalValue"] = 7.0
+    assert len(view.measurement_df) == 3 and len(wp.measurement_df) == 6
+    assert wp.parameter_df.loc["k1", "nominalValue"] == 0.5  # not shared
+    assert view.model is wp.model and view.observable_df.equals(wp.observable_df)
 
 
 def test_views_over_different_rows_of_one_design_share_a_module():
-    import copy
-
     wp = P.WorkingProblem.from_yaml(DATA / "toy_v2" / "problem.yaml")
-    view = copy.copy(wp)
-    view.measurement_df = wp.measurement_df.iloc[3:]
+    view = wp.replace(measurement_df=wp.measurement_df.iloc[3:])
     assert view.module_fingerprint() == wp.module_fingerprint()
