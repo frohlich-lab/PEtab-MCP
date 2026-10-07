@@ -1370,6 +1370,9 @@ def _symbolic_noise_formulas(odf) -> dict:
     expression for a rewritten formula. Building the key costs one tuple of strings; a miss costs what
     the call always cost. sympy expressions are immutable and every caller ``.subs()`` into a new one,
     so sharing them is safe.
+
+    One ``.get()``, and the result returned from a local: another session's thread may clear the
+    cache between a membership test and a read, so that pair can raise ``KeyError`` even on a hit.
     """
     from petab.v2.calculate import get_symbolic_noise_formulas
 
@@ -1377,11 +1380,13 @@ def _symbolic_noise_formulas(odf) -> dict:
         key = (tuple(str(i) for i in odf.index), tuple(str(v) for v in odf[NOISE_FORMULA]))
     except Exception:  # noqa: BLE001 - unkeyable table: just don't cache it
         return get_symbolic_noise_formulas(odf)
-    if key not in _NOISE_FORMULA_CACHE:
+    formulas = _NOISE_FORMULA_CACHE.get(key)
+    if formulas is None:
+        formulas = get_symbolic_noise_formulas(odf)
         if len(_NOISE_FORMULA_CACHE) >= _NOISE_FORMULA_CACHE_MAX:
             _NOISE_FORMULA_CACHE.clear()
-        _NOISE_FORMULA_CACHE[key] = get_symbolic_noise_formulas(odf)
-    return _NOISE_FORMULA_CACHE[key]
+        _NOISE_FORMULA_CACHE[key] = formulas
+    return formulas
 
 
 def _noise_expr_and_observable(problem, pid: str, rows):
