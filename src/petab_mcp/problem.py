@@ -22,10 +22,15 @@ The tables follow the PEtab v2 schema, with three conventions every consumer may
 * priors are not carried. The objective is the likelihood the complexity criterion scores, so a
   prior has nowhere to act, and a table that showed one would promise an effect it does not have.
 
-These are enforced on ASSIGNMENT (``parameter_df``/``observable_df``/``measurement_df`` are
-properties whose setters normalise), so a view that swaps a table in gets them too; the
-observable table additionally always carries ``noiseDistribution`` and its two placeholder
-columns, ``""`` where there are none.
+They are enforced when a problem is built and whenever ``parameter_df`` is assigned. The observable
+and measurement tables are read-only — a view with other ones is a new problem
+(:meth:`WorkingProblem.replace`) — and the observable table always carries ``noiseDistribution``
+and its two placeholder columns, ``""`` where there are none.
+
+The estimation scale is the server's: v2 dropped ``parameterScale``, and neither AMICI's v2
+simulator nor pyPESTO's v2 importer scales, so the parameter table carries libpetab v1's column as
+an extension and :mod:`petab_mcp.scaling` reparameterises the objective. Missing or blank reads as
+``lin``.
 
 A PEtab v1 problem is upgraded on load (:func:`_from_v1`), table by table and WITHOUT linting:
 libpetab's ``petab1to2`` lints the v1 problem first and refuses, but a zero-shot problem ships an
@@ -34,9 +39,7 @@ empty SBML whose observables reference nothing yet, which is the input this serv
 
 from __future__ import annotations
 
-import copy
 import logging
-import math
 import re
 from pathlib import Path
 from typing import Any
@@ -44,6 +47,12 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from petab import v2
+from petab.v1.C import LIN, LOG, LOG10, PARAMETER_SCALE
+
+# Re-exported: the server's modules take these from here.
+from petab.v1.C import PARAMETER_SCALES as SCALES  # noqa: F401
+from petab.v1.measurements import split_parameter_replacement_list as split_overrides  # noqa: F401
+from petab.v1.parameters import scale, unscale  # noqa: F401
 from petab.v2.C import (
     CONDITION_ID,
     ESTIMATE,
@@ -68,18 +77,9 @@ from petab.v2.C import (
     UPPER_BOUND,
 )
 from petab.v2.models.sbml_model import SbmlModel
+from petab.v2.petab1to2 import v1v2_condition_df
 
 logger = logging.getLogger("petab_mcp")
-
-#: The parameter-table column holding the scale a parameter is ESTIMATED on (``lin``, ``log`` or
-#: ``log10``). PEtab v2 dropped it from the format, and neither AMICI's v2 simulator nor pyPESTO's
-#: v2 importer scales, so the server carries it as an extension column and reparameterises the
-#: objective itself (see :mod:`petab_mcp.scaling`). Missing or blank reads as :data:`LIN`.
-PARAMETER_SCALE = "parameterScale"
-LIN = "lin"
-LOG = "log"
-LOG10 = "log10"
-SCALES = (LIN, LOG, LOG10)
 
 #: Noise distributions whose residual lives in log space; every other one is linear.
 _LOG_DISTRIBUTIONS = ("log-normal", "log-laplace")
@@ -96,30 +96,6 @@ _V1_PRIOR_COLUMNS = (
     "initializationPriorType",
     "initializationPriorParameters",
 )
-
-
-def scale(value, scale_str: str):
-    """``value`` on estimation scale ``scale_str``. NumPy semantics on purpose: a zero on a log
-    scale is ``-inf``, which callers test for, not an exception."""
-    if scale_str == LIN:
-        return value
-    with np.errstate(divide="ignore"):
-        if scale_str == LOG:
-            return np.log(value)
-        if scale_str == LOG10:
-            return np.log10(value)
-    raise ValueError(f"unknown parameter scale {scale_str!r}")
-
-
-def unscale(value, scale_str: str):
-    """The inverse of :func:`scale`."""
-    if scale_str == LIN:
-        return value
-    if scale_str == LOG:
-        return np.exp(value)
-    if scale_str == LOG10:
-        return np.power(10.0, value)
-    raise ValueError(f"unknown parameter scale {scale_str!r}")
 
 
 def observable_transformation(observable_df, obs_id) -> str:
@@ -215,11 +191,8 @@ def normalize_measurement_df(df: pd.DataFrame | None) -> pd.DataFrame | None:
 
 
 class WorkingProblem:
-    """The model plus the PEtab v2 tables, mutable in place.
-
-    The design tables (observables, measurements, conditions, experiments, mapping) are fixed for
-    the life of a session; the model and ``parameter_df`` are what edits change.
-    """
+    """The model plus the PEtab v2 tables. The design tables are fixed for the life of a session;
+    the model and ``parameter_df`` are what edits change."""
 
     def __init__(
         self,
@@ -232,14 +205,12 @@ class WorkingProblem:
         experiment_df: pd.DataFrame | None = None,
         mapping_df: pd.DataFrame | None = None,
     ) -> None:
-        # {table name: (id of the frame it was built from, libpetab table)} -- see to_petab
-        self._petab_tables: dict[str, tuple[int, Any]] = {}
         self.model = model
         self.parameter_df = (
             parameter_df if parameter_df is not None else pd.DataFrame(columns=[PARAMETER_ID])
         )
-        self.observable_df = observable_df
-        self.measurement_df = measurement_df
+        self._observable_df = normalize_observable_df(observable_df)
+        self._measurement_df = normalize_measurement_df(measurement_df)
         self.condition_df = condition_df
         self.experiment_df = experiment_df
         self.mapping_df = mapping_df
@@ -253,38 +224,24 @@ class WorkingProblem:
     def parameter_df(self, df: pd.DataFrame) -> None:
         self._parameter_df = normalize_parameter_df(df)
 
-    @property
-    def observable_df(self) -> pd.DataFrame | None:
-        return self._observable_df
+    observable_df = property(lambda self: self._observable_df)
+    measurement_df = property(lambda self: self._measurement_df)
 
-    @observable_df.setter
-    def observable_df(self, df: pd.DataFrame | None) -> None:
-        self._observable_df = normalize_observable_df(df)
-
-    @property
-    def measurement_df(self) -> pd.DataFrame | None:
-        return self._measurement_df
-
-    @measurement_df.setter
-    def measurement_df(self, df: pd.DataFrame | None) -> None:
-        self._measurement_df = normalize_measurement_df(df)
-
-    def __copy__(self) -> WorkingProblem:
-        """A shallow copy that shares the frames but not the libpetab-table cache, so a view that
-        swaps a table in rebuilds only its own."""
-        new = object.__new__(WorkingProblem)
-        new.__dict__.update(self.__dict__)
-        new._petab_tables = {}
-        return new
-
-    def __deepcopy__(self, memo) -> WorkingProblem:
-        """Frames and model copied; the libpetab-table cache is not (it is rebuilt on demand, and
-        copying a large measurement table's pydantic objects costs more than rebuilding them)."""
-        new = object.__new__(WorkingProblem)
-        memo[id(self)] = new
-        for key, value in self.__dict__.items():
-            setattr(new, key, {} if key == "_petab_tables" else copy.deepcopy(value, memo))
-        return new
+    def replace(self, **tables) -> WorkingProblem:
+        """A new problem with ``tables`` (keyword per table, e.g. ``measurement_df=``) in place of
+        this one's: the model is shared, every table not given is carried over."""
+        current = {
+            name: getattr(self, name)
+            for name in (
+                "parameter_df",
+                "observable_df",
+                "measurement_df",
+                "condition_df",
+                "experiment_df",
+                "mapping_df",
+            )
+        }
+        return WorkingProblem(model=self.model, **{**current, **tables})
 
     # -- parameter vector ------------------------------------------------------
     @property
@@ -352,93 +309,25 @@ class WorkingProblem:
 
     # -- the exchange format ---------------------------------------------------------
     def to_petab(self) -> v2.Problem:
-        """This problem as a ``petab.v2.Problem`` — for libpetab's lint, AMICI and pyPESTO.
-
-        The fixed tables are converted once per CONTENT and cached: a large measurement table costs
-        seconds to validate into pydantic objects, and nothing downstream mutates them (AMICI
-        deep-copies the problem it imports). Keyed on what a frame holds, not on the frame object,
-        so a write into one (a held-out view's solved scalings) is never served the stale table.
-        The model is SHARED, not copied, and the parameter table is rebuilt on every call, since it
-        is what edits change.
-        """
+        """This problem as a ``petab.v2.Problem`` — for libpetab's lint, AMICI and pyPESTO — built
+        afresh on every call, with the model shared rather than copied."""
         return v2.Problem(
             models=[self.model] if self.model is not None else [],
-            parameter_tables=[_parameter_table(self.parameter_df)],
-            observable_tables=[self._cached("observables", self.observable_df, _observable_table)],
+            parameter_tables=[v2.ParameterTable.from_df(self.parameter_df)],
+            observable_tables=[v2.ObservableTable.from_df(self.observable_df)],
+            # Indexed by a column, which `from_df`'s `reset_index` gives back; a RangeIndex would
+            # come back as an `index` field on every measurement.
             measurement_tables=[
-                self._cached("measurements", self.measurement_df, _measurement_table)
+                v2.MeasurementTable.from_df(
+                    None
+                    if self.measurement_df is None
+                    else self.measurement_df.set_index(OBSERVABLE_ID)
+                )
             ],
-            condition_tables=[self._cached("conditions", self.condition_df, _condition_table)],
-            experiment_tables=[self._cached("experiments", self.experiment_df, _experiment_table)],
-            mapping_tables=[self._cached("mapping", self.mapping_df, _mapping_table)],
+            condition_tables=[v2.ConditionTable.from_df(self.condition_df)],
+            experiment_tables=[v2.ExperimentTable.from_df(self.experiment_df)],
+            mapping_tables=[v2.MappingTable.from_df(self.mapping_df)],
         )
-
-    def _cached(self, name: str, df, build):
-        key = _content_key(df)
-        hit = self._petab_tables.get(name)
-        if hit is not None and hit[0] == key:
-            return hit[1]
-        table = build(df)
-        self._petab_tables[name] = (key, table)
-        return table
-
-
-def _content_key(df) -> str | None:
-    """A hash of ``df``'s columns, index and values."""
-    if df is None:
-        return None
-    import hashlib
-
-    h = hashlib.sha256(repr((list(df.columns), df.index.name)).encode())
-    h.update(pd.util.hash_pandas_object(df, index=True).to_numpy().tobytes())
-    return h.hexdigest()
-
-
-# -- libpetab tables -------------------------------------------------------------------
-# Built element by element rather than through `XTable.from_df`, which `reset_index`es its input
-# (an `index` extra on every element of a RangeIndex frame) and, for measurements, writes into the
-# frame it was given.
-
-
-def _records(df) -> list[dict[str, Any]]:
-    """``df``'s rows as dicts, a named index included as a column."""
-    if df is None or len(df) == 0:
-        return []
-    if df.index.name is not None:
-        df = df.reset_index()
-    return df.to_dict("records")
-
-
-def _parameter_table(df) -> v2.ParameterTable:
-    return v2.ParameterTable([v2.Parameter(**r) for r in _records(df)])
-
-
-def _observable_table(df) -> v2.ObservableTable:
-    return v2.ObservableTable([v2.Observable(**r) for r in _records(df)])
-
-
-def _measurement_table(df) -> v2.MeasurementTable:
-    return v2.MeasurementTable([v2.Measurement(**r) for r in _records(df)])
-
-
-def _condition_table(df) -> v2.ConditionTable:
-    conditions = []
-    if df is not None and len(df):
-        for cid, sub in df.groupby(CONDITION_ID, sort=False):
-            changes = [
-                v2.Change(target_id=r[TARGET_ID], target_value=r[TARGET_VALUE])
-                for r in sub.to_dict("records")
-            ]
-            conditions.append(v2.Condition(id=cid, changes=changes))
-    return v2.ConditionTable(conditions)
-
-
-def _experiment_table(df) -> v2.ExperimentTable:
-    return v2.ExperimentTable.from_df(df) if df is not None and len(df) else v2.ExperimentTable()
-
-
-def _mapping_table(df) -> v2.MappingTable:
-    return v2.MappingTable([v2.Mapping(**r) for r in _records(df)])
 
 
 # -- v2 ------------------------------------------------------------------------------------
@@ -451,16 +340,20 @@ def _read_tables(paths, base: Path, reader) -> pd.DataFrame | None:
 
 def _from_v2(yaml_path: Path, config: dict) -> WorkingProblem:
     """A v2 problem, read as the files have it. The YAML is validated by libpetab's own config
-    model, which also resolves the file list."""
+    model, which also resolves the file list; a model file may be SBML or Antimony."""
     base = yaml_path.parent
     cfg = v2.ProblemConfig(**config, base_path=base, filepath=yaml_path)
     if len(cfg.model_files or {}) > 1:
         raise ValueError("only single-model PEtab problems are supported")
     model = None
     for model_id, info in (cfg.model_files or {}).items():
-        if info.language != "sbml":
-            raise ValueError(f"only SBML models are supported, not {info.language!r}")
-        model = SbmlModel.from_file(base / info.location, model_id=model_id)
+        # `antimony` is no PEtab language but the server's canonical model form.
+        if info.language == "antimony":
+            model = SbmlModel.from_antimony(base / info.location, model_id=model_id)
+        elif info.language == "sbml":
+            model = SbmlModel.from_file(base / info.location, model_id=model_id)
+        else:
+            raise ValueError(f"only SBML and Antimony models are supported, not {info.language!r}")
         model.rel_path = info.location
     observable_df = _read_tables(cfg.observable_files, base, v2.get_observable_df)
     return WorkingProblem(
@@ -497,16 +390,11 @@ def _from_v1(yaml_path: Path) -> WorkingProblem:
 
 
 def v1_conditions(df) -> pd.DataFrame | None:
-    """The wide v1 table as v2 changes: one row per non-empty cell, or ``None`` when no cell sets
-    anything (a v2 problem without a condition table). ``conditionName`` has no v2 column and is
-    dropped; an empty cell set nothing in v1 and sets nothing here."""
+    """The wide v1 table as v2 changes (libpetab's conversion), or ``None`` when no cell sets
+    anything — a v2 problem without a condition table."""
     if df is None:
         return None
-    wide = df.drop(columns=["conditionName"], errors="ignore")
-    long = wide.reset_index().melt(
-        id_vars=[CONDITION_ID], var_name=TARGET_ID, value_name=TARGET_VALUE
-    )
-    long = long.dropna(subset=[TARGET_VALUE]).reset_index(drop=True)
+    long = v1v2_condition_df(df, None).reset_index(drop=True)
     return long if len(long) else None
 
 
@@ -613,29 +501,6 @@ def _v1_placeholders(kind: str, obs_id: str, formula) -> str:
     pattern = re.compile(rf"(?<![\w.])({kind}Parameter(\d+)_{re.escape(str(obs_id))})(?!\w)")
     found = {m.group(1): int(m.group(2)) for m in pattern.finditer(formula)}
     return PARAMETER_SEPARATOR.join(sorted(found, key=found.get))
-
-
-def is_number(token) -> bool:
-    """Whether an override cell or one of its ``;``-separated tokens is a number literal."""
-    try:
-        return math.isfinite(float(token))
-    except (TypeError, ValueError):
-        return False
-
-
-def split_overrides(cell) -> list[str | float]:
-    """An ``observableParameters``/``noiseParameters`` cell as its overrides, in order: a number
-    token as a float, anything else as the (stripped) id it names. An empty cell has none."""
-    if cell is None or (isinstance(cell, float) and math.isnan(cell)):
-        return []
-    if isinstance(cell, (int, float, np.integer, np.floating)):
-        return [float(cell)]
-    out: list[str | float] = []
-    for tok in str(cell).split(PARAMETER_SEPARATOR):
-        tok = tok.strip()
-        if tok:
-            out.append(float(tok) if is_number(tok) else tok)
-    return out
 
 
 def placeholders(observable_df, obs_id, kind: str) -> list[str]:
