@@ -200,12 +200,19 @@ class OperationError(PetabMcpError):
 
 # -- commit pipeline -------------------------------------------------------
 def _observed_symbol_ids(problem) -> set[str]:
-    """Identifiers that appear in any observable formula — the 'observed' entities.
+    """Identifiers an observable formula reads — the 'observed' entities — directly or through
+    the assignment rules that define a symbol it reads.
 
     Uses the canonical :func:`reconcile.formula_symbols` extractor (with its negative
     lookbehind) rather than a bare ``[A-Za-z_]\\w*`` scan, so a scientific-notation literal
     like ``1e5`` never leaks a bogus ``e5`` identifier — matching every other
     formula-symbol site in the package.
+
+    The rules matter on every blinded benchmark: each formula reads a ``readout_*`` measurement
+    mapping, which the model must define by an assignment rule (see
+    :func:`validation._undefined_readout_issues`), so the formula itself names no species. Read
+    off the formula alone, every species a commit added was reported as feeding no observable —
+    all ten of a Fujita model whose three readouts summed them.
     """
     from petab.v1.C import OBSERVABLE_FORMULA
 
@@ -214,6 +221,17 @@ def _observed_symbol_ids(problem) -> set[str]:
     if obs_df is not None and OBSERVABLE_FORMULA in obs_df.columns:
         for formula in obs_df[OBSERVABLE_FORMULA]:
             ids |= R.formula_symbols(formula)
+    sm = problem.model.sbml_model
+    rules = {
+        rule.getVariable(): R._ast_names(rule.getMath())
+        for rule in sm.getListOfRules()
+        if rule.isAssignment()
+    }
+    pending = ids & rules.keys()
+    while pending:
+        read = rules[pending.pop()] - ids
+        ids |= read
+        pending |= read & rules.keys()
     return ids
 
 
