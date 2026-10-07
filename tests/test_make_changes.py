@@ -264,12 +264,12 @@ def test_a_parameters_only_call_fits_too(tmp_path):
 
 
 def test_a_call_that_changes_nothing_is_rejected_before_it_fits(tmp_path):
-    """`antimony` and `parameters` are each optional, but not both: with neither there is nothing
-    to score, and the call would still spend a multistart fit."""
+    """`antimony`, `model_edits` and `parameters` are each optional, but not all three: with none
+    there is nothing to score, and the call would still spend a multistart fit."""
     mcp = _server(tmp_path, auto_fit=True)
     res = _call(mcp, "make_changes", {"justification": "nothing to do"})
     assert res["applied"] is False
-    assert "antimony" in res["error"] and "parameters" in res["error"]
+    assert all(arg in res["error"] for arg in ("model_edits", "antimony", "parameters"))
     assert "fit" not in res and "committed" not in res
     assert _head(mcp)["current_version"] == -1
 
@@ -687,13 +687,10 @@ def test_the_single_editor_carries_the_whole_change(tmp_path):
     # The BASELINE promise, always present: author the model, set bounds, justify, cite, score.
     core = {"antimony", "parameters", "justification", "references", "n_starts"}
     assert core <= got, f"the one editor dropped part of its promise: {sorted(core - got)}"
-    # The `diff_edits` arm ADDS a second model route to the same schema, so the exact arg set is
-    # arm-dependent. Assert the difference is EXACTLY that route and nothing else — a stray
-    # optional argument here is how the two halves of the promise came apart before.
-    from petab_mcp.server import _diff_edits_enabled
-
-    extra = {"model_edits", "base_version"} if _diff_edits_enabled() else set()
+    # Plus the structured model route, and EXACTLY that — a stray optional argument here is how
+    # the two halves of the promise came apart before.
+    extra = {"model_edits", "base_version"}
     assert got == core | extra, f"unexpected make_changes args: {sorted(got - (core | extra))}"
-    # and NO fit flag in either arm: fitting is unconditional, and an optional flag would let a
-    # change be committed without a score.
+    # and NO fit flag: fitting is unconditional, and an optional flag would let a change be
+    # committed without a score.
     assert not ({"fit", "do_fit", "skip_fit", "refit"} & got)

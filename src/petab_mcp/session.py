@@ -9,7 +9,6 @@ table are mutable, and every committed change is snapshotted as a version and lo
 from __future__ import annotations
 
 import math
-import os as _os
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,33 +38,6 @@ from .references import EutilsReferenceResolver
 # the model's form, not the optimizer or the bounds. The nudge stays model-agnostic (issue #82):
 # it names generic structural MOVE CATEGORIES, never a specific mechanism, so it can't teach to a
 # withheld-model benchmark.
-# The data-regimes half of the structural advice, suppressed in the ablation arm
-# (`PETAB_DATA_REGIMES=0`, see petab_harness.prompts). Gated HERE too because this text is
-# SERVER-side: with only the harness gated, a control run was still told to call
-# `get_data_regimes` and to read a skill, for a tool that had been removed from its toolset —
-# a wasted turn on an unknown-tool error and, worse, a contaminated control.
-_REGIMES_ADVICE = (
-    (
-        " `get_data_regimes` reads the measurements alone (no model, no fit) and reports whether the "
-        "response must rise and fall, whether a second timescale is distinguishable, and whether a "
-        "total is conserved. It can only ever force a move IN: a non-null `requirement` is one any "
-        "model must reproduce, while a null one means the design did not settle that question and "
-        "leaves the choice to your own judgement — it is NOT a shortlist of the moves worth making, "
-        "and never a reason to drop one. "
-        "`get_skill('independence-audit')` then covers which independence assumption each finding "
-        "points at, and the ways a model can meet it."
-    )
-    if _os.environ.get("PETAB_DATA_REGIMES", "0").strip().lower() not in ("0", "false", "no", "off")
-    else ""
-)
-# Read DIRECTLY rather than through the registry, and this is the one place in the repo that
-# duplicates the rule. `petab_harness.ablations` OWNS it; the server cannot import the harness
-# (wrong direction — the harness imports this package) and the harness cannot import the server
-# from `prompts` (it must stay import-light, see tests/test_import_lightness). An ablation is an
-# experiment concept the server has no business knowing about; it merely honours one documented
-# variable. `test_ablations.test_the_server_gate_agrees_with_the_registry` executes both sides on
-# every spelling, so the two cannot drift even though the predicate is written twice.
-
 _STRUCTURAL_PLATEAU_ADVICE = (
     "The best model is still not adequate and the fit has plateaued: this is the signature of "
     "STRUCTURAL inadequacy — the model's FORM cannot fit the data — not an optimizer or bounds "
@@ -73,7 +45,7 @@ _STRUCTURAL_PLATEAU_ADVICE = (
     "rather than re-fitting the same one: consider a generic structural move (categories, not a "
     "specific answer) — add a latent / unobserved state; add a feedback / regulation reaction; or "
     "raise the interaction order (linear -> nonlinear / higher-order) — and re-author it with "
-    "make_changes." + _REGIMES_ADVICE
+    "make_changes."
 )
 
 # Appended instead of the structural nudge when a stall happened without ever scoring a model.

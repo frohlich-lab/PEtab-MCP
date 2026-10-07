@@ -104,8 +104,7 @@ def _call(mcp, name, args):
 
 
 @pytest.fixture
-def tool_env(tmp_path, monkeypatch):
-    monkeypatch.setenv("PETAB_DIFF_EDITS", "1")
+def tool_env(tmp_path):
     from petab_mcp.server import create_server
 
     work = tmp_path / "toy"
@@ -276,32 +275,6 @@ def test_rename_refuses_a_new_name_that_is_not_an_identifier():
 
 # ------------------------------------------------- contracts inherited from the deleted
 # ------------------------------------------------- substring-surface test module
-def test_arm_off_keeps_the_baseline_make_changes_schema(tmp_path, monkeypatch):
-    """Every recorded baseline run's comparability rests on this: with the arm OFF the schema is
-    byte-compatible with the pre-arm contract, and ON adds exactly the structured route."""
-    from petab_mcp.server import create_server
-
-    def _props(flag):
-        monkeypatch.setenv("PETAB_DIFF_EDITS", flag)
-        work = tmp_path / f"toy_{flag}"
-        work.mkdir()
-        for f in DATA_DIR.iterdir():
-            shutil.copy(f, work / f.name)
-        mcp = create_server(
-            str(work / "problem.yaml"),
-            provenance_dir=str(tmp_path / f"prov_{flag}"),
-            build_root=str(tmp_path / f"amici_{flag}"),
-            resolver=StubReferenceResolver(),
-            auto_fit=False,
-        )
-        tool = asyncio.run(mcp.get_tool("make_changes"))
-        return set(tool.parameters.get("properties", {}))
-
-    base = {"justification", "antimony", "parameters", "references", "n_starts"}
-    assert _props("0") == base
-    assert _props("1") == base | {"model_edits", "base_version"}
-
-
 def test_base_version_alone_is_rejected_naming_no_withheld_tool(tool_env):
     """The refusal must not point at `restore_version`, which the lead does not hold — naming an
     uncallable tool is the defection-trigger class the draft-era A/B measured."""
@@ -327,34 +300,6 @@ def test_an_unknown_base_version_is_a_clean_rejection(tool_env):
     )
     assert res["applied"] is False
     assert "No such version" in (res.get("error") or "")
-
-
-def test_a_bare_call_names_only_arguments_the_caller_can_send(tmp_path, monkeypatch):
-    """Arm-aware advice: naming an argument the schema does not carry instructs an impossible
-    call, which is how a lead ends up defecting to a route it was told not to use."""
-    from petab_mcp.server import create_server
-
-    def _bare(flag):
-        monkeypatch.setenv("PETAB_DIFF_EDITS", flag)
-        work = tmp_path / f"bare_{flag}"
-        work.mkdir()
-        for f in DATA_DIR.iterdir():
-            shutil.copy(f, work / f.name)
-        mcp = create_server(
-            str(work / "problem.yaml"),
-            provenance_dir=str(tmp_path / f"bprov_{flag}"),
-            build_root=str(tmp_path / f"bamici_{flag}"),
-            resolver=StubReferenceResolver(),
-            auto_fit=False,
-        )
-        res = _call(mcp, "make_changes", {"justification": "bare call"})
-        assert res["applied"] is False
-        return res.get("error") or ""
-
-    on = _bare("1")
-    assert "`model_edits`" in on and "`antimony`" in on
-    off = _bare("0")
-    assert "`model_edits`" not in off and "`antimony`" in off
 
 
 def test_every_rejection_reports_a_DISTINCT_machine_readable_cause(tool_env):
