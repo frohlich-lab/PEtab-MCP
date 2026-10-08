@@ -517,15 +517,17 @@ def placeholders(observable_df, obs_id, kind: str) -> list[str]:
 
 
 def experiment_inputs(problem) -> pd.DataFrame | None:
-    """The condition targets in effect while each experiment is SIMULATED, wide: one row per
-    experiment id, one column per target, the ``targetValue`` (NaN where the experiment never
-    sets that target).
+    """The condition targets that hold ONE value while each experiment is SIMULATED, wide: one
+    row per experiment id, one column per target, the ``targetValue`` (NaN where the experiment
+    never sets that target, or a later period changes it).
 
-    "In effect while simulated" is the value after the pre-equilibration period and the first
-    simulated period have applied their conditions — v2 changes persist, so a target only the
-    pre-equilibration sets still holds afterwards, and one the simulated period sets wins. That
-    is the v1 simulation condition's row for an upgraded problem, which is what an analysis keyed
-    on "the dose of this series" needs. ``None`` when there is no experiment or condition table.
+    The value is the one in effect after the pre-equilibration period and the first simulated
+    period have applied their conditions — v2 changes persist, so a target only the
+    pre-equilibration sets still holds afterwards, and one the simulated period sets wins. A
+    target a later period sets to another value has no single value: an analysis keyed on "the
+    dose of this series" would credit the response after the switch to the dose before it. For
+    an upgraded v1 problem, with one simulated period, this is the simulation condition's row.
+    ``None`` when there is no experiment or condition table.
     """
     edf, cdf = problem.experiment_df, problem.condition_df
     if edf is None or cdf is None or not len(edf) or not len(cdf):
@@ -537,12 +539,16 @@ def experiment_inputs(problem) -> pd.DataFrame | None:
     rows: dict[str, dict[str, Any]] = {}
     for eid, periods in edf.groupby(EXPERIMENT_ID, sort=False):
         times = sorted(float(t) for t in periods[TIME].unique())
-        simulated = [t for t in times if t != TIME_PREEQUILIBRATION][:1]
+        start = min((t for t in times if t != TIME_PREEQUILIBRATION), default=np.inf)
         applied: dict[str, Any] = {}
-        for t in [t for t in times if t == TIME_PREEQUILIBRATION] + simulated:
+        switched: set[str] = set()
+        for t in times:
             for cid in periods.loc[periods[TIME] == t, CONDITION_ID].dropna():
-                applied.update(changes.get(str(cid), {}))
-        rows[str(eid)] = applied
+                for target, value in changes.get(str(cid), {}).items():
+                    if t > start and applied.get(target) != value:
+                        switched.add(target)
+                    applied[target] = value
+        rows[str(eid)] = {k: v for k, v in applied.items() if k not in switched}
     return pd.DataFrame.from_dict(rows, orient="index")
 
 

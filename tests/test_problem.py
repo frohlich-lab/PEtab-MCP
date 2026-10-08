@@ -170,7 +170,8 @@ def test_the_module_fingerprint_moves_with_what_is_compiled_only():
 
 
 def test_experiment_inputs_are_the_targets_in_effect_while_simulated():
-    """Pre-equilibration changes persist unless the simulated period resets them (v2)."""
+    """Pre-equilibration changes persist unless the simulated period resets them (v2); a target a
+    later period changes has no single value, one it sets again to the same value keeps it."""
     wp = P.WorkingProblem()
     wp.condition_df = pd.DataFrame(
         {
@@ -181,14 +182,15 @@ def test_experiment_inputs_are_the_targets_in_effect_while_simulated():
     )
     wp.experiment_df = pd.DataFrame(
         {
-            "experimentId": ["e", "e", "f"],
-            "time": [-math.inf, 0.0, 0.0],
-            "conditionId": ["pre", "dose", "dose"],
+            "experimentId": ["e", "e", "f", "g", "g", "g"],
+            "time": [-math.inf, 0.0, 0.0, -math.inf, 0.0, 10.0],
+            "conditionId": ["pre", "dose", "dose", "pre", "dose", "pre"],
         }
     )
     inputs = P.experiment_inputs(wp)
     assert inputs.loc["e", "dose"] == 5.0 and inputs.loc["e", "inhibitor"] == 1.0
     assert inputs.loc["f", "dose"] == 5.0 and math.isnan(inputs.loc["f", "inhibitor"])
+    assert math.isnan(inputs.loc["g", "dose"]) and inputs.loc["g", "inhibitor"] == 1.0
 
 
 def test_two_v1_conditions_that_change_nothing_stay_two_series():

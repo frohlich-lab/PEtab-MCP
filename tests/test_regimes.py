@@ -179,6 +179,22 @@ def test_a_single_step_dose_response_is_not_flagged():
     assert "steeper than one binding step" not in dr["verdict"]
 
 
+def test_a_dose_switched_mid_experiment_is_not_credited_to_its_first_dose():
+    """A v2 experiment can change its dose in a later period. This one starts at 0.02 and
+    switches to 3, so its peak is the response to 3; credited to 0.02, it turns the Hill-1 design
+    into an established 'steeper than one binding step'."""
+    p = _dose_problem(hill=1.0)
+    t = np.linspace(0, 5, 6)
+    rows = _series("obs", "s", t, 10.0 * 3.0 / 3.3 * t * np.exp(-t) + 0.1, noise=0.002)
+    p.measurement_df = pd.concat([p.measurement_df, _meas(rows)], ignore_index=True)
+    low = {CONDITION_ID: "low", TARGET_ID: "dose", TARGET_VALUE: 0.02}
+    p.condition_df = pd.concat([p.condition_df, pd.DataFrame([low])], ignore_index=True)
+    switch = {EXPERIMENT_ID: ["s", "s"], TIME: [0.0, 0.5], CONDITION_ID: ["low", "c5"]}
+    p.experiment_df = pd.concat([p.experiment_df, pd.DataFrame(switch)], ignore_index=True)
+    dr = data_regimes(_S(p))["observables"]["obs"]["dose_response"]
+    assert dr["n_doses"] == 6 and dr["support_for_extension"] == "none"
+
+
 # -- conservation: the one verdict that REMOVES a parameter, so false positives are expensive ---
 def test_a_real_conserved_total_is_found():
     t = np.linspace(0, 10, 12)
