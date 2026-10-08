@@ -5,8 +5,8 @@ with respect to them. Checked against the same problem built linear, by the chai
 
 from __future__ import annotations
 
+import copy
 import math
-import pickle
 from pathlib import Path
 
 import numpy as np
@@ -63,11 +63,12 @@ def test_the_simulator_takes_scaled_values_and_returns_scaled_derivatives(proble
     assert out[SRES] == pytest.approx(ref[SRES] * J, rel=1e-6, abs=1e-12)
 
 
-def test_the_scales_survive_pickling(problems):
-    """Multistart pickles the objective into its workers, which would read log values as linear
-    if the scaled experiment manager stayed behind."""
+def test_the_scales_survive_copying(problems):
+    """Multistart copies or pickles the objective into its workers, both through its instance
+    dict; a copy that left the scaled experiment manager behind would read log values as linear.
+    (A deep copy, because pickling an AMICI solver needs HDF5, which CI's build lacks.)"""
     _, scaled = problems
-    clone = pickle.loads(pickle.dumps(scaled.objective))
+    clone = copy.deepcopy(scaled.objective)
     assert clone(X) == pytest.approx(scaled.objective(X), rel=1e-12)
 
 
