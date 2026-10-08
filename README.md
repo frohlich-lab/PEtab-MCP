@@ -51,7 +51,8 @@ petab-mcp --petab-yaml path/to/problem.yaml
 ```
 
 Provenance is written to `<problem_dir>/.petab_mcp/` by default and is durable — restarting
-resumes the latest version (a store written by the PEtab v1 server is refused). A ready toy
+resumes the latest version (a store written by the PEtab v1 server is refused). The server's
+stderr goes to `stderr.log` there, beside `petab_mcp.log` and the fit log `pypesto.log`. A ready toy
 problem lives at `tests/data/toy_v2/`; `tests/data/toy_v1/` is the same problem in v1 form.
 
 ## Tools

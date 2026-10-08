@@ -12,6 +12,9 @@ from __future__ import annotations
 
 import contextvars
 import logging
+import subprocess
+import sys
+import textwrap
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -27,7 +30,7 @@ def _store(root):
 
 def _log(tag: str) -> None:
     logging.getLogger("petab_mcp").info("record from %s", tag)
-    logging.getLogger("pypesto").debug("record from %s", tag)
+    logging.getLogger("pypesto").info("record from %s", tag)
 
 
 def _text(root, name: str = "petab_mcp.log") -> str:
@@ -93,6 +96,29 @@ def test_fides_records_land_in_pypesto_log(tmp_path):
     assert "trust region collapsed" in _text(a, "pypesto.log")
     assert "trust region collapsed" not in _text(a)
     assert logging.getLogger("fides").propagate is False
+
+
+def test_library_output_lands_in_the_store_not_on_stderr(tmp_path):
+    """Three things went to the server's stderr, where no session's log has them. pyPESTO's own
+    stderr handler copied every pyPESTO record (the multistart summary, every fit). petab's lint
+    warnings fell through to logging's last-resort handler. Python warnings printed themselves.
+    A fresh interpreter, because pyPESTO attaches its handler when it is first imported."""
+    body = textwrap.dedent(f"""
+        import logging, warnings
+        from petab_mcp import logging_setup as L
+        L.configure({str(tmp_path)!r})
+        L.configure_pypesto({str(tmp_path)!r})
+        logging.getLogger("pypesto").info("multistart summary")
+        logging.getLogger("petab.v2.lint").warning("conditions unused")
+        warnings.warn("SWIG version mismatch", RuntimeWarning)
+    """)
+    out = subprocess.run([sys.executable, "-c", body], capture_output=True, text=True, timeout=120)
+    assert out.returncode == 0, out.stderr
+    assert "multistart summary" in _text(tmp_path, "pypesto.log")
+    assert "conditions unused" in _text(tmp_path)
+    assert "SWIG version mismatch" in _text(tmp_path)
+    for line in ("multistart summary", "conditions unused", "SWIG version mismatch"):
+        assert line not in out.stderr
 
 
 def test_both_files_exist_right_after_configure(tmp_path):
