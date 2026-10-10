@@ -73,6 +73,10 @@ _IDENT_RE = re.compile(r"(?<![\w.])[A-Za-z_]\w*")
 #: lands on the ordinary path: estimated, on log10.
 SEED_INITIAL_VALUE = 0.1
 
+#: The ``model_id`` a model-less problem's model is created under; the same id gemot gives the
+#: empty SBML it ships. Must not be an Antimony keyword.
+ZERO_SHOT_MODEL_ID = "zero_shot_problem"
+
 # Antimony GRAMMAR keywords: `species species;` does not parse, so an entity with one of these
 # ids cannot be declared. Determined by probing libantimony, not from a spec — and pinned that
 # way by test_seed_model.test_the_reserved_word_list_matches_libantimony, so a libantimony
@@ -246,8 +250,8 @@ def seed_model_antimony(problem) -> str | None:
     """A CONTENT-FREE but VALID initial model for a problem that ships without one, or ``None``
     when the fixed tables name nothing to declare.
 
-    A problem that ships model-less otherwise starts as a bare ``model model / end`` skeleton,
-    and that skeleton is not a neutral placeholder — it is a *broken* PEtab problem (its
+    A problem that ships model-less otherwise starts as an empty skeleton, and that
+    skeleton is not a neutral placeholder — it is a *broken* PEtab problem (its
     observables reference entities no model defines) that AMICI's SBML import SEGFAULTS on,
     taking the server process with it. Every downstream guard exists to keep that one state
     unreachable. Making the initial model VALID instead removes the state.
