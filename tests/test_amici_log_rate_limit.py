@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -112,21 +113,16 @@ def test_a_forked_worker_inherits_the_filter():
         def work(_):
             log = logging.getLogger("amici.sim.sundials._swig_wrappers")
             for i in range(2000):
-                record = log.makeRecord(
-                    log.name, logging.WARNING, "<sim>", 1,
-                    "[AMICI:NaN] NaN value for xdot[2] (A) at t=%f", (1.0 + i * 1e-6,), None,
-                )
-                record.created = 1_700_000_000  # one wall-clock second, as a retry storm is
-                log.handle(record)
+                log.warning("[AMICI:NaN] NaN value for xdot[2] (A) at t=%f", 1.0 + i * 1e-6)
 
         if __name__ == "__main__":
             with mp.get_context("fork").Pool(2) as pool:
                 pool.map(work, range(2))
     """)
-    # Each worker is capped at _AMICI_PER_SECOND rather than emitting 2000. The second is fixed
-    # because real time let a burst straddle a second boundary on a loaded CI runner, doubling
-    # the cap.
-    assert len(out.splitlines()) <= 2 * L._AMICI_PER_SECOND
+    # The cap is per wall-clock second and per process, and a burst can straddle a second, so each
+    # second's lines (asctime, to the second) are held to two workers' caps rather than 2000 each.
+    per_second = Counter(line[:19] for line in out.splitlines())
+    assert per_second and max(per_second.values()) <= 2 * L._AMICI_PER_SECOND
 
 
 @pytest.mark.parametrize(
