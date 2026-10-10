@@ -27,21 +27,52 @@ from petab_mcp.fitting import (  # noqa: E402
 
 def _upgraded(observable_df=None, measurement_df=None, parameter_df=None):
     """The v1-shaped tables these cases are written in, upgraded the way a shipped v1 problem is
-    (:func:`petab_mcp.problem._from_v1`): libpetab's observable conversion, with an exact
-    ``log(10)`` factor on a log10 observable's noise formula, and one simulation condition that
-    changes nothing, i.e. no experiment."""
+    (:func:`petab_mcp.problem._from_v1`): libpetab's observable conversion -- which itself puts the
+    exact ``log(10)`` factor on a log10 observable's noise formula (PEtab-dev/libpetab-python#535),
+    and warns that it did -- and one simulation condition that changes nothing, i.e. no
+    experiment. Adding the factor here as well, as this did until libpetab took it on, scaled every
+    log10 fixture by ln(10) twice (pinned by the test below)."""
+    import warnings
+
     from petab.v2.petab1to2 import v1v2_observable_df
 
     from petab_mcp.problem import WorkingProblem
 
-    odf = v1v2_observable_df(observable_df).set_index("observableId")
-    log10 = observable_df["observableTransformation"] == "log10"
-    odf.loc[log10, "noiseFormula"] = "log(10) * (" + odf.loc[log10, "noiseFormula"] + ")"
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", "PEtab v2 does not support log10", UserWarning)
+        odf = v1v2_observable_df(observable_df).set_index("observableId")
     return WorkingProblem(
         observable_df=odf,
         measurement_df=measurement_df.drop(columns="simulationConditionId").assign(experimentId=""),
         parameter_df=parameter_df,
     )
+
+
+def test_the_fixtures_upgrade_a_log10_observable_as_the_server_does(tmp_path):
+    """`_upgraded` stands in for `_from_v1`, so a fixture's effective sigma is the one a served
+    problem has. It once kept its own log(10) after libpetab began adding it, and every log10 case
+    here was judged on a sigma ln(10) times too large while its broad assertions stayed green."""
+    import shutil
+    from pathlib import Path
+
+    import pandas as pd
+
+    from petab_mcp.problem import WorkingProblem
+
+    shutil.copytree(Path(__file__).parent / "data" / "toy_v1", tmp_path, dirs_exist_ok=True)
+    obs = pd.DataFrame(
+        {
+            "observableId": ["obs_B"],
+            "observableFormula": ["B"],
+            "noiseFormula": ["sigma_B"],
+            "observableTransformation": ["log10"],
+        }
+    )
+    obs.to_csv(tmp_path / "observables.tsv", sep="\t", index=False)
+    served = WorkingProblem.from_yaml(tmp_path / "problem.yaml").observable_df
+    meas = pd.read_csv(tmp_path / "measurements.tsv", sep="\t")
+    fixture = _upgraded(observable_df=obs.set_index("observableId"), measurement_df=meas)
+    assert fixture.observable_df.loc["obs_B", "noiseFormula"] == served.loc["obs_B", "noiseFormula"]
 
 
 def _entry(fitted, cap, frac):
@@ -318,9 +349,14 @@ def test_log10_observable_sigma_is_judged_on_the_log_scale():
     TRANSFORMED data. Judging it against the raw linear std (the pre-#118 bug) made a normal ~20%
     relative error read as ~1e-7 of the data std -> a spurious 'collapsed'."""
     # Values spanning 4 decades: linear std is huge, log10 std is ~1.3.
+    import statistics
+
     meas = [1e2, 1e3, 1e4, 1e5, 1e6]
     frac = _sigma_scale_case("log10", "noiseParameter1_o", meas, fitted=0.1)
-    assert 0.01 < frac < 1.0, frac  # sane, same-scale ratio
+    # Exactly the log10-space sigma over the log10 data's (population) std, whatever scale the two
+    # are carried in. The range check this replaces passed 0.163 too: the ratio with ln(10) on the
+    # noise twice, which every log10 fixture had once libpetab added the factor itself.
+    assert frac == pytest.approx(0.1 / statistics.pstdev([math.log10(m) for m in meas]))
     assert frac > 1e-3  # NOT the ~1e-7 the linear-std bug produced
 
 
