@@ -97,12 +97,11 @@ Principles to hold onto when extending this package.
   `result.json` carries the whole table. Named penalties and nothing between them: the fixed
   effect-size thresholds carry over when the penalty is swapped, not when it is scaled. See
   [`src/petab_mcp/criteria.py`](src/petab_mcp/criteria.py) before adding one.
-- **The estimation scale is the server's.** PEtab v2 dropped `parameterScale`, and neither
-  AMICI's v2 simulator nor pyPESTO's v2 importer scales, so the server keeps the column as an
-  extension of the parameter table and reparameterises the objective itself — every pyPESTO
-  problem is built through `fitting.pypesto_problem`, never handed to pyPESTO linear. See
-  [`src/petab_mcp/scaling.py`](src/petab_mcp/scaling.py). Priors are not carried at all: the
-  objective is the likelihood the criterion scores.
+- **The estimation scale is the server's.** PEtab v2 dropped `parameterScale`, so the server keeps
+  the column as an extension of the parameter table and hands it to pyPESTO's v2 importer as its
+  `parameter_scales`, which puts AMICI's simulator on it too — every pyPESTO problem is built
+  through `fitting.pypesto_problem`, never handed to pyPESTO linear. Priors are not carried at
+  all: the objective is the likelihood the criterion scores.
 - **A hardcoded constant is not free.** `k` is the estimated parameters plus every numeric
   literal in the model's math bar a few structural ones (each distinct value once — see
   [`src/petab_mcp/literals.py`](src/petab_mcp/literals.py)), so freezing a fitted value costs
