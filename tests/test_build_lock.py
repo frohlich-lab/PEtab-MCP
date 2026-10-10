@@ -52,6 +52,13 @@ def _open(tmp_path, problem_dir=TOY):
     return session, AmiciEngine(session, build_root=str(tmp_path / "build"))
 
 
+def _build_lands(engine, h):
+    """What a finished build of module ``h`` leaves behind: its compiled extension."""
+    package = engine.build_root / f"pypesto_{h}" / f"petab_mcp_pp_{h}"
+    package.mkdir(parents=True)
+    (package / f"_petab_mcp_pp_{h}.so").write_bytes(b"\x00")
+
+
 def test_a_build_another_holds_fails_fast_and_touches_nothing(tmp_path, builds):
     """While another session or process holds a module's lock, the fit's build of that module raises
     ModelBuildBusyError carrying the holder's line — before pyPESTO's builder, which would clear the
@@ -74,14 +81,12 @@ def test_a_built_module_takes_no_lock(tmp_path, builds):
     pyPESTO, which imports, even while the lock file is held."""
     session, engine = _open(tmp_path)
     h = session.module_hash()
-    package = engine.build_root / f"pypesto_{h}" / f"petab_mcp_pp_{h}"
-    package.mkdir(parents=True)
-    (package / f"_petab_mcp_pp_{h}.cpython-312-darwin.so").write_bytes(b"\x00")
+    _build_lands(engine, h)
     held = filelock.try_lock(engine.build_root / f"pypesto_{h}.lock")
     with pytest.raises(_Built):
         fitting.estimation_problem(session, engine)
     os.close(held)
-    assert builds == [("build", str(package.parent))]
+    assert builds == [("build", str(engine.build_root / f"pypesto_{h}"))]
 
 
 def test_a_busy_build_is_not_counted_as_a_fit_of_its_structure(tmp_path, builds):
@@ -110,9 +115,7 @@ def test_a_busy_hierarchical_build_is_not_retried_as_a_joint_one(tmp_path, build
     h = session.module_hash()
 
     def _lands_while_refused(path):
-        package = engine.build_root / f"pypesto_{h}" / f"petab_mcp_pp_{h}"
-        package.mkdir(parents=True)
-        (package / f"_petab_mcp_pp_{h}.so").write_bytes(b"\x00")
+        _build_lands(engine, h)
         raise filelock.Held("4242 elsewhere 2026-10-10T00:00:00+00:00")
 
     monkeypatch.setattr(filelock, "try_lock", _lands_while_refused)
