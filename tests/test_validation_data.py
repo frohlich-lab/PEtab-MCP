@@ -784,11 +784,13 @@ def test_a_held_out_set_using_part_of_the_observation_model_scores(tmp_path, mon
     out = score()
     assert out["status"] == "ok", out
     assert [i.message for i in built[-1].to_petab().validate()] == []
-    assert out["nll"] == pytest.approx(nll(0.5, 0.1, 2.0, 0.3), rel=1e-6)
+    # AMICI integrates at its default rtol, ~1e-6 off the closed form here (platform-dependent);
+    # day 1's values would miss by ~11.
+    assert out["nll"] == pytest.approx(nll(0.5, 0.1, 2.0, 0.3), rel=1e-4)
 
     # The caller's vector names day 1 too; the view needs none of it.
     names = ["k1", "k2", "A_init", "B_init", "s_d1", "s_d2", "sd_d1", "sd_d2"]
     x = [math.log10(0.4), math.log10(0.2), 1.0, 0.0, 9.0, 1.5, 9.0, 0.25]
     out = score(x_full=x, x_names=names)
     assert out["status"] == "ok", out
-    assert out["nll"] == pytest.approx(nll(0.4, 0.2, 1.5, 0.25), rel=1e-6)
+    assert out["nll"] == pytest.approx(nll(0.4, 0.2, 1.5, 0.25), rel=1e-4)
