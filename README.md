@@ -47,12 +47,42 @@ petab-mcp --petab-yaml path/to/problem.yaml
 # --build-root DIR       --skills-dir DIR
 # --transport {stdio,sse,streamable-http}
 # --criterion {bic,caic,aic,aicc,hqc,tic}   (env PETAB_MCP_CRITERION; default bic)
+# --slurm-max-jobs N     --slurm-min-jobs M   (see "Fitting on SLURM")
 ```
 
 Provenance is written to `<problem_dir>/.petab_mcp/` by default and is durable — restarting
 resumes the latest version (a store written by the PEtab v1 server is refused). The server's
 stderr goes to `stderr.log` there, beside `petab_mcp.log` and the fit log `pypesto.log`. A ready toy
 problem lives at `tests/data/toy_v2/`; `tests/data/toy_v1/` is the same problem in v1 form.
+
+## Fitting on SLURM
+
+`--slurm-max-jobs N` runs the fits' multistarts on a pool of up to N SLURM jobs that the server
+submits while fits wait for workers and cancels when it stops; `--slurm-min-jobs M` (default 0)
+keeps M of them while idle. It needs the `dask` extra (`pip install -e '.[dask]'`), and:
+
+- **the server inside a SLURM allocation**, never on the login node: it compiles every model
+  itself, and its node must be able to `sbatch`;
+- **a `--build-root` on storage the compute nodes share**, not `$TMPDIR`: the workers import the
+  compiled models by the server's path;
+- **the jobs configured in dask's own config**, not by flags: `~/.config/dask/jobqueue.yaml` (or
+  `DASK_JOBQUEUE__SLURM__*`). For NEMO's `ncpu` partition:
+
+```yaml
+jobqueue:
+  slurm:
+    queue: ncpu
+    cores: 32
+    processes: 32              # = cores: one start per process
+    memory: 64GiB
+    walltime: "06:00:00"
+    # Below the walltime, so workers retire (and are replaced) instead of being killed.
+    worker-extra-args: ["--lifetime", "5h45m", "--lifetime-stagger", "5m"]
+    local-directory: $TMPDIR   # the node's own scratch
+    log-directory: /nemo/lab/<lab>/home/shared/dask-logs
+```
+
+A killed server's workers exit on their own after jobqueue's `death-timeout` (60 s).
 
 ## Tools
 
