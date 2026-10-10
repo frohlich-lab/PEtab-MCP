@@ -5,6 +5,7 @@ import asyncio
 import shutil
 from pathlib import Path
 
+import pytest
 
 from petab_mcp.references import StubReferenceResolver
 from petab_mcp.server import create_server
@@ -52,13 +53,21 @@ def _server(tmp_path, auto_fit=False):
     )
 
 
-def _empty_model_server(tmp_path):
-    """A server over a problem that ships WITHOUT a model (empty SBML, no model.ant)."""
+def _empty_model_server(tmp_path, *, sbml=True):
+    """A server over a problem that ships WITHOUT a model: an empty SBML and no model.ant, or,
+    with ``sbml=False``, no model file at all (``model_files: {}``)."""
     work = tmp_path / "empty"
     work.mkdir()
     for name in ("problem.yaml", "measurements.tsv", "observables.tsv", "parameters.tsv"):
         shutil.copy(DATA_DIR / name, work / name)
-    with_empty_sbml(work / "problem.yaml")
+    if sbml:
+        with_empty_sbml(work / "problem.yaml")
+    else:
+        (work / "problem.yaml").write_text(
+            "format_version: 2.0.0\nparameter_files:\n- parameters.tsv\nmodel_files: {}\n"
+            "measurement_files:\n- measurements.tsv\nobservable_files:\n- observables.tsv\n",
+            encoding="utf-8",
+        )
     return create_server(
         str(work / "problem.yaml"),
         provenance_dir=str(tmp_path / "prov"),
@@ -588,8 +597,9 @@ def test_restore_version_tool_registered_and_restores(tmp_path):
     asyncio.run(go())
 
 
-def test_make_changes_builds_the_first_model_via_tool(tmp_path):
-    mcp = _empty_model_server(tmp_path)
+@pytest.mark.parametrize("sbml", [True, False], ids=["empty_sbml", "no_model_files"])
+def test_make_changes_builds_the_first_model_via_tool(tmp_path, sbml):
+    mcp = _empty_model_server(tmp_path, sbml=sbml)
 
     async def go():
         desc = _structured(await mcp.call_tool("describe_problem", {}))

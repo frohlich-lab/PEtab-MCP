@@ -27,7 +27,7 @@ from .constants import (
     PLATEAU_WINDOW,
 )
 from .data_access import residual_flag, residual_structure_rollup
-from .errors import ModelUpdateError, PetabMcpError, ValidationError
+from .errors import ModelBuildBusyError, ModelUpdateError, PetabMcpError, ValidationError
 from .fitting import noise_sigma_collapsed, noise_sigma_inflated
 from .parameters import problem_fingerprint, sha16
 from .problem import WorkingProblem, as_bool
@@ -192,7 +192,9 @@ class PetabSession:
             # No Antimony source and no SBML in the YAML: start from an empty model so the
             # working object always exists. `_seed_initial_model` below replaces it with a
             # content-free but VALID one; the empty skeleton survives only if seeding fails.
-            self._set_model_from_antimony("model model\nend")
+            from . import reconcile as R
+
+            self._set_model_from_antimony(f"model {R.ZERO_SHOT_MODEL_ID}\nend")
 
         self.lock = threading.RLock()
         self.provenance = ProvenanceStore(store_root(self.yaml_path, provenance_dir))
@@ -1391,6 +1393,9 @@ class PetabSession:
             # tool returns committed=false with an actionable message rather than crashing.
             try:
                 fitsim, improvement = self._auto_fit_and_improvement(n_starts)
+            except ModelBuildBusyError:
+                self._fit_attempts[fit_key] -= 1  # nothing was fitted, so a retry is not a loop
+                raise
             except PetabMcpError:
                 raise
             except Exception as exc:  # noqa: BLE001 - surface as a clean, actionable rejection
