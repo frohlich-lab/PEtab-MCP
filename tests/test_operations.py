@@ -549,36 +549,75 @@ def test_the_sigma_widening_warning_reads_an_upgraded_log10_sigma_in_its_own_uni
     import pandas as pd
 
     from petab_mcp import reconcile as R
-    from petab_mcp.problem import WorkingProblem, _v1_observables, v1_measurements
+    from petab_mcp.problem import WorkingProblem
 
-    _, measurements = v1_measurements(
-        pd.DataFrame(
-            {
-                "observableId": ["o"] * 5,
-                "simulationConditionId": ["c"] * 5,
-                "time": [0.0, 1.0, 2.0, 3.0, 4.0],
-                "measurement": [1e2, 1e3, 1e4, 1e5, 1e6],
-                "noiseParameters": ["sd_o"] * 5,
-            }
-        ),
-        set(),
+    measurements = pd.DataFrame(
+        {
+            "observableId": ["o"] * 5,
+            "experimentId": [""] * 5,
+            "time": [0.0, 1.0, 2.0, 3.0, 4.0],
+            "measurement": [1e2, 1e3, 1e4, 1e5, 1e6],
+            "noiseParameters": ["sd_o"] * 5,
+        }
     )
+    # What the upgrade (`problem._from_v1`) makes of a v1 log10 observable.
     observables = pd.DataFrame(
         {
             "observableId": ["o"],
             "observableFormula": ["x"],
-            "observableTransformation": ["log10"],
-            "noiseFormula": ["noiseParameter1_o"],
+            "noiseFormula": ["log(10) * (noiseParameter1_o)"],
+            "noiseDistribution": ["log-normal"],
+            "noisePlaceholders": ["noiseParameter1_o"],
         }
     ).set_index("observableId")
     parameters = pd.DataFrame(
         {"parameterId": ["sd_o"], "lowerBound": [1e-3], "upperBound": [1e-2], "estimate": [True]}
     ).assign(nominalValue=0.1)
     problem = WorkingProblem(
-        observable_df=_v1_observables(observables),
-        measurement_df=measurements,
-        parameter_df=parameters,
+        observable_df=observables, measurement_df=measurements, parameter_df=parameters
     )
     cap = R.sigma_upper_bound_cap(problem, "sd_o") / math.log(10)  # in log10 units
     assert O._warn_sigma_bound_widening(problem, "sd_o", 1.2 * cap) is not None
     assert O._warn_sigma_bound_widening(problem, "sd_o", 0.8 * cap) is None
+
+
+def test_rejection_summary_names_the_reasons():
+    from petab_mcp.operations import _rejection_summary
+
+    out = _rejection_summary(
+        [
+            "'RAF_total' ships FIXED (estimate=0) in this problem — a known constant",
+            "Extraneous parameter(s) in parameter table: {'pEGFR_Akt', 'pAkt_S6'}",
+        ]
+    )
+    assert "resulting problem is invalid" in out  # bucket substring preserved
+    assert "RAF_total" in out and "pAkt_S6" in out  # the actionable detail is IN the message
+    assert "more in `issues`" not in out  # nothing elided at 2 issues
+
+
+def test_rejection_summary_caps_and_says_what_it_elided():
+    from petab_mcp.operations import _rejection_summary
+
+    out = _rejection_summary([f"issue number {i}" for i in range(7)])
+    assert "issue number 0" in out and "issue number 2" in out
+    assert "issue number 3" not in out  # capped at 3
+    assert "(+4 more in `issues`)" in out  # a truncated view never looks complete
+
+
+def test_rejection_summary_collapses_multiline_libsbml_noise():
+    from petab_mcp.operations import _rejection_summary
+
+    long_sbml = (
+        "libSBML Error (SBML component consistency): The value of a 'symbol' field in any "
+        "<initialAssignment>\n   definition cannot also appear as the value of a "
+        "'variable' field.\n   " + "x" * 400
+    )
+    out = _rejection_summary([long_sbml])
+    assert "\n" not in out  # one line, not a wall of text
+    assert len(out) < 420  # per-issue truncation actually applied
+
+
+def test_rejection_summary_falls_back_when_there_is_no_error_level_issue():
+    from petab_mcp.operations import _rejection_summary
+
+    assert _rejection_summary([]) == "the resulting problem is invalid."

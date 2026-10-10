@@ -301,16 +301,16 @@ def _residual_rows(problem, x):
     the residual vector, its sensitivities with respect to ``x`` (one column per free parameter),
     and the per-experiment row counts pyPESTO reports through ``rdatas``.
 
-    A plain objective answers this itself (:class:`scaling.ScaledObjective` carries the chain rule
-    into ``sres``). A HIERARCHICAL one refuses: pyPESTO raises on residual sensitivities whenever a
+    A plain objective answers this itself (AMICI's ``sres`` is on the estimation scale already,
+    see :func:`fitting.pypesto_problem`). A HIERARCHICAL one refuses: pyPESTO raises on residual sensitivities whenever a
     sigma is inner-solved, since at the analytic sigma the least-squares objective is constant —
     true for an optimizer, irrelevant to the FIM, which only needs the rows at one point. So the
     inner problem is solved once at ``x`` (a function-mode call, which reports the inner values),
     and the rows are evaluated by pyPESTO's PLAIN v2 calculator on the hierarchical objective's own
     simulator with those values filled in: the same module, the same solver, nothing built. Its
     ``sres`` spans the outer parameters followed by the inner ones; the inner columns are dropped
-    (the FIM has no coordinate for them, see :data:`INNER_OMITTED_NOTE`) and the outer ones are put
-    on the estimation scale and cut to ``x_free_indices``. Without the detour the count is ``None``
+    (the FIM has no coordinate for them, see :data:`INNER_OMITTED_NOTE`) and the outer ones, already
+    on the estimation scale, are cut to ``x_free_indices``. Without the detour the count is ``None``
     for every fit with an inner-solved sigma, i.e. most real examples; scores built from these rows
     agree with the profiled objective's own gradient, which is the envelope theorem.
     """
@@ -318,17 +318,15 @@ def _residual_rows(problem, x):
     from pypesto.C import INNER_PARAMETERS, MODE_RES, RDATAS, RES, SRES
     from pypesto.objective.amici.amici_calculator import AmiciCalculatorPetabV2
 
-    from .scaling import _dlin_dscaled
-
     obj = problem.objective
     calc = getattr(obj, "calculator", None)
     if hasattr(calc, "inner_calculators"):
         inner_ids = list(calc.get_interpretable_inner_par_ids())
         inner_values = obj(x, sensi_orders=(0,), return_dict=True)[INNER_PARAMETERS]
-        x_lin = obj.to_linear(obj.pre_post_processor.preprocess(x=x))
+        x_full = obj.pre_post_processor.preprocess(x=x)
         outer_ids = list(obj.x_ids)
         ret = AmiciCalculatorPetabV2(obj._petab_simulator)(
-            x_dct={**dict(zip(outer_ids, x_lin)), **dict(zip(inner_ids, inner_values))},
+            x_dct={**dict(zip(outer_ids, x_full)), **dict(zip(inner_ids, inner_values))},
             sensi_orders=(0, 1),
             mode=MODE_RES,
             amici_model=obj.amici_model,
@@ -339,8 +337,7 @@ def _residual_rows(problem, x):
             parameter_mapping=None,
             fim_for_hess=obj.fim_for_hess,
         )
-        sres = np.asarray(ret[SRES], dtype=float)[:, : len(outer_ids)]
-        sres = (sres * _dlin_dscaled(x_lin, obj.scales))[:, list(problem.x_free_indices)]
+        sres = np.asarray(ret[SRES], dtype=float)[:, list(problem.x_free_indices)]
     else:
         ret = obj(x, sensi_orders=(0, 1), mode=MODE_RES, return_dict=True)
         sres = np.asarray(ret[SRES], dtype=float)

@@ -238,11 +238,12 @@ def _fitted_values(x_names, x_values, free_indices, parameter_df) -> dict[str, f
 
 def pypesto_problem(problem, importer_kwargs: dict[str, Any], *, validate: bool = True):
     """The pyPESTO problem for ``problem`` (a :class:`problem.WorkingProblem`), in estimation
-    coordinates (see :mod:`petab_mcp.scaling`).
+    coordinates: pyPESTO's v2 importer takes each row's ``parameterScale`` as its
+    ``parameter_scales`` and hands them to AMICI's simulator, so every pyPESTO problem the server
+    builds — the fit's, a held-out score's, a transfer refit's — is optimised on the same
+    coordinates. Inner (hierarchically solved) parameters are left out: they are solved on a linear
+    scale, and the importer refuses another one for them.
 
-    pyPESTO's v2 importer builds the objective, linear in every parameter; the reparameterisation
-    onto each row's ``parameterScale`` happens here, so every pyPESTO problem the server builds —
-    the fit's, a held-out score's, a transfer refit's — is optimised on the same coordinates.
     ``validate`` runs libpetab's lint on the way in: the session's own problem was linted on every
     edit that produced it, a held-out view was not. Passes ``hierarchical`` and the output target
     through ``importer_kwargs``.
@@ -250,8 +251,10 @@ def pypesto_problem(problem, importer_kwargs: dict[str, Any], *, validate: bool 
     import pypesto.petab
     from petab import v2
 
-    from .scaling import to_estimation_scale
-
+    pdf = problem.parameter_df
+    scales = pdf[PARAMETER_SCALE]
+    if importer_kwargs.get("hierarchical") and _PARAMETER_TYPE_COL in pdf.columns:
+        scales = scales[pdf[_PARAMETER_TYPE_COL].isna()]
     petab_problem = problem.to_petab()
     # AMICI simulates every experiment in the table, and one without measurements comes back as an
     # rdata with no outputs, which every reader of the rdatas takes for a failed simulation. It adds
@@ -262,11 +265,9 @@ def pypesto_problem(problem, importer_kwargs: dict[str, Any], *, validate: bool 
         v2.ExperimentTable([e for e in petab_problem.experiments if e.id in measured])
     ]
     importer = pypesto.petab.PetabImporter(
-        petab_problem, validate_petab=validate, **importer_kwargs
+        petab_problem, validate_petab=validate, parameter_scales=dict(scales), **importer_kwargs
     )
-    return to_estimation_scale(
-        importer.create_problem(), dict(problem.parameter_df[PARAMETER_SCALE])
-    )
+    return importer.create_problem()
 
 
 def _build_hierarchical_problem(session, importer_kwargs: dict[str, Any], petab_problem=None):
@@ -557,9 +558,9 @@ def amici_facing_problem(session):
 
     flat_petab = copy.deepcopy(session.problem.to_petab())
     flatten_timepoint_specific_output_overrides(flat_petab)
-    flat = copy.copy(session.problem)
-    flat.observable_df = flat_petab.observable_df
-    flat.measurement_df = flat_petab.measurement_df
+    flat = session.problem.replace(
+        observable_df=flat_petab.observable_df, measurement_df=flat_petab.measurement_df
+    )
     session._amici_problem_cache = (key, flat)
     session.logger.info(
         "flattening timepoint-specific output overrides for the AMICI build only "
@@ -645,7 +646,7 @@ class FitRecord:
     ``problem`` is a DEEP copy of the PEtab problem: the parameters-only edit path reconciles the
     live SBML in place, so a shallow copy's model could still be moved under a frozen record.
     ``x_free``/``lb``/``ub`` are the FREE coordinates on the estimation scale — pyPESTO's own
-    (see :mod:`petab_mcp.scaling`), and the space the FIM is expressed in. The fitted point is
+    (see :func:`pypesto_problem`), and the space the FIM is expressed in. The fitted point is
     carried here rather than re-read from ``parameter_df[nominalValue]`` so an agent edit to the
     table cannot silently move the point a diagnosis expands around.
 

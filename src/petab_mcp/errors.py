@@ -54,3 +54,27 @@ class ParameterError(PetabMcpError):
 
 class UnknownEntityError(PetabMcpError):
     """A referenced id (parameter, observable, experiment, ...) does not exist."""
+
+
+class NoSessionBoundError(PetabMcpError):
+    """A call arrived on a connection that has no session bound to it."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "no session is open on this connection: open_session starts one, resume_session "
+            "continues an existing one by its id"
+        )
+
+
+class SessionLockedError(PetabMcpError):
+    """The session is live in another server process: ``holder`` is the line that process wrote
+    into the session's ``LOCK`` file (``pid host time``)."""
+
+    def __init__(self, session_id: str, holder: str) -> None:
+        self.session_id = session_id
+        self.holder = holder
+        super().__init__(
+            f"session {session_id!r} is locked by another process (holder: "
+            f"{holder or 'unknown'}); a session is live in one server at a time, so stop that "
+            "one or wait for it to exit"
+        )

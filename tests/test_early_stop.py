@@ -672,24 +672,28 @@ def test_only_an_estimated_co_factor_breaks_comparability(gain_estimated, expect
         "  kf = 0.5;\n  r: pMek => ; kf * pMek;\nend\n"
     )
     prob = WorkingProblem(model=SbmlModel.from_antimony(ant))
-    prob.observable_df = pd.DataFrame(
-        {
-            OBSERVABLE_ID: ["pMek_obs"],
-            OBSERVABLE_FORMULA: ["pMek * observableParameter1_pMek_obs"],
-            OBSERVABLE_PLACEHOLDERS: ["observableParameter1_pMek_obs"],
-            NOISE_FORMULA: ["noiseParameter1_pMek_obs * noiseParameter2_pMek_obs"],
-            NOISE_PLACEHOLDERS: ["noiseParameter1_pMek_obs;noiseParameter2_pMek_obs"],
-        }
-    ).set_index(OBSERVABLE_ID)
-    prob.measurement_df = pd.DataFrame(
-        {
-            OBSERVABLE_ID: ["pMek_obs"] * 4,
-            EXPERIMENT_ID: [""] * 4,
-            TIME: [0.0, 1.0, 2.0, 3.0],
-            MEASUREMENT: [1.0, 0.6, 0.4, 0.2],
-            # The fiedler shape exactly: a per-gel gain paired with the shared sigma.
-            NOISE_PARAMETERS: ["s_gel;sigma_pMek"] * 4,
-        }
+    prob = prob.replace(
+        observable_df=pd.DataFrame(
+            {
+                OBSERVABLE_ID: ["pMek_obs"],
+                OBSERVABLE_FORMULA: ["pMek * observableParameter1_pMek_obs"],
+                OBSERVABLE_PLACEHOLDERS: ["observableParameter1_pMek_obs"],
+                NOISE_FORMULA: ["noiseParameter1_pMek_obs * noiseParameter2_pMek_obs"],
+                NOISE_PLACEHOLDERS: ["noiseParameter1_pMek_obs;noiseParameter2_pMek_obs"],
+            }
+        ).set_index(OBSERVABLE_ID)
+    )
+    prob = prob.replace(
+        measurement_df=pd.DataFrame(
+            {
+                OBSERVABLE_ID: ["pMek_obs"] * 4,
+                EXPERIMENT_ID: [""] * 4,
+                TIME: [0.0, 1.0, 2.0, 3.0],
+                MEASUREMENT: [1.0, 0.6, 0.4, 0.2],
+                # The fiedler shape exactly: a per-gel gain paired with the shared sigma.
+                NOISE_PARAMETERS: ["s_gel;sigma_pMek"] * 4,
+            }
+        )
     )
     prob.parameter_df = pd.DataFrame(
         {

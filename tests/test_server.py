@@ -5,11 +5,11 @@ import asyncio
 import shutil
 from pathlib import Path
 
-import libsbml
 import pytest
 
 from petab_mcp.references import StubReferenceResolver
 from petab_mcp.server import create_server
+from conftest import with_empty_sbml
 
 YAML_PATH = Path(__file__).parent / "data" / "toy_v2" / "problem.yaml"
 DATA_DIR = YAML_PATH.parent
@@ -61,11 +61,7 @@ def _empty_model_server(tmp_path, *, sbml=True):
     for name in ("problem.yaml", "measurements.tsv", "observables.tsv", "parameters.tsv"):
         shutil.copy(DATA_DIR / name, work / name)
     if sbml:
-        doc = libsbml.SBMLDocument(3, 2)
-        model = doc.createModel()
-        model.setId("conversion_reaction")
-        model.setMetaId("conversion_reaction")
-        libsbml.writeSBMLToFile(doc, str(work / "conversion_reaction.xml"))
+        with_empty_sbml(work / "problem.yaml")
     else:
         (work / "problem.yaml").write_text(
             "format_version: 2.0.0\nparameter_files:\n- parameters.tsv\nmodel_files: {}\n"

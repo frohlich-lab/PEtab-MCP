@@ -260,9 +260,11 @@ def test_constant_condition_target_need_not_be_used():
     problem.experiment_df = pd.DataFrame(
         {EXPERIMENT_ID: ["e0", "e1"], TIME: [0.0, 0.0], CONDITION_ID: ["c0", "c1"]}
     )
-    problem.measurement_df = pd.concat(
-        [problem.measurement_df, problem.measurement_df.assign(**{EXPERIMENT_ID: "e1"})],
-        ignore_index=True,
+    problem = problem.replace(
+        measurement_df=pd.concat(
+            [problem.measurement_df, problem.measurement_df.assign(**{EXPERIMENT_ID: "e1"})],
+            ignore_index=True,
+        )
     )
     msgs = [i["message"] for i in validation._unused_condition_target_issues(problem)]
     assert not any("inert_level" in m for m in msgs), msgs
@@ -307,16 +309,18 @@ def test_sigma_gate_abstains_below_the_minimum_sample_size():
         antimony, observable_formula="A", noise_formula="sd_obs", extra_params=["k_fwd"]
     )
     below = NOISE_SIGMA_MIN_POINTS - 1
-    problem.measurement_df = pd.DataFrame(
-        [
-            {
-                OBSERVABLE_ID: "obs_A",
-                EXPERIMENT_ID: "",
-                TIME: float(t),
-                MEASUREMENT: 1.0 + 0.1 * t,
-            }
-            for t in range(below)
-        ]
+    problem = problem.replace(
+        measurement_df=pd.DataFrame(
+            [
+                {
+                    OBSERVABLE_ID: "obs_A",
+                    EXPERIMENT_ID: "",
+                    TIME: float(t),
+                    MEASUREMENT: 1.0 + 0.1 * t,
+                }
+                for t in range(below)
+            ]
+        )
     )
     entry = F.noise_sigma_report(problem, {"sd_obs": 1.0}).get("sd_obs")
     assert entry is not None, "the sigma must still be REPORTED, only left unjudged"
@@ -327,16 +331,18 @@ def test_sigma_gate_abstains_below_the_minimum_sample_size():
     assert not F.noise_sigma_collapsed({"sd_obs": entry})
 
     # ...and with enough points the gate engages again.
-    problem.measurement_df = pd.DataFrame(
-        [
-            {
-                OBSERVABLE_ID: "obs_A",
-                EXPERIMENT_ID: "",
-                TIME: float(t),
-                MEASUREMENT: 1.0 + 0.1 * t,
-            }
-            for t in range(NOISE_SIGMA_MIN_POINTS + 3)
-        ]
+    problem = problem.replace(
+        measurement_df=pd.DataFrame(
+            [
+                {
+                    OBSERVABLE_ID: "obs_A",
+                    EXPERIMENT_ID: "",
+                    TIME: float(t),
+                    MEASUREMENT: 1.0 + 0.1 * t,
+                }
+                for t in range(NOISE_SIGMA_MIN_POINTS + 3)
+            ]
+        )
     )
     entry = F.noise_sigma_report(problem, {"sd_obs": 1.0})["sd_obs"]
     assert entry["status"] != "unknown"

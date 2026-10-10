@@ -5,7 +5,6 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-import libsbml
 import pytest
 
 from petab_mcp import operations as O
@@ -13,6 +12,7 @@ from petab_mcp import parameters as P
 from petab_mcp.operations import OperationError
 from petab_mcp.references import StubReferenceResolver
 from petab_mcp.session import PetabSession
+from conftest import with_empty_sbml
 
 DATA_DIR = Path(__file__).parent / "data" / "toy_v2"
 
@@ -81,14 +81,6 @@ end
 """
 
 
-def _write_empty_sbml(path: Path, model_id: str = "conversion_reaction") -> None:
-    doc = libsbml.SBMLDocument(3, 2)
-    model = doc.createModel()
-    model.setId(model_id)
-    model.setMetaId(model_id)
-    libsbml.writeSBMLToFile(doc, str(path))
-
-
 @pytest.fixture
 def empty_yaml(tmp_path) -> str:
     """A PEtab problem that ships WITHOUT a model (empty SBML, no model.ant)."""
@@ -96,7 +88,7 @@ def empty_yaml(tmp_path) -> str:
     work.mkdir()
     for name in ("problem.yaml", "measurements.tsv", "observables.tsv", "parameters.tsv"):
         shutil.copy(DATA_DIR / name, work / name)
-    _write_empty_sbml(work / "conversion_reaction.xml")
+    with_empty_sbml(work / "problem.yaml")
     return str(work / "problem.yaml")
 
 
@@ -278,7 +270,6 @@ def fixed_k1_session(tmp_path) -> PetabSession:
         "measurements.tsv",
         "observables.tsv",
         "model.ant",
-        "conversion_reaction.xml",
     ):
         shutil.copy(DATA_DIR / name, work / name)
     (work / "parameters.tsv").write_text(
@@ -346,7 +337,7 @@ def drive_condition_session(tmp_path, add_condition) -> PetabSession:
         "measurements.tsv",
         "observables.tsv",
         "parameters.tsv",
-        "conversion_reaction.xml",
+        "model.ant",
     ):
         shutil.copy(DATA_DIR / name, work / name)
     add_condition(work / "problem.yaml", "drive", 1.0)
@@ -405,7 +396,7 @@ def zero_shot_empty_ic_session(tmp_path) -> PetabSession:
     work.mkdir()
     for name in ("problem.yaml", "observables.tsv", "measurements.tsv"):
         shutil.copy(DATA_DIR / name, work / name)
-    _write_empty_sbml(work / "conversion_reaction.xml")
+    with_empty_sbml(work / "problem.yaml")
     # Parameter table WITHOUT ICs (reconcile creates them) — matches a zero-shot's empty table;
     # sigma_B stays because the observable's noiseFormula references it (a fixed noise param).
     pdf = pd.read_csv(DATA_DIR / "parameters.tsv", sep="\t")
