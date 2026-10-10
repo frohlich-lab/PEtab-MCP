@@ -31,7 +31,6 @@ the real work lives in the ``session`` / ``operations`` / ``fitting`` / ``data_a
 from __future__ import annotations
 
 import json
-import os
 from typing import Annotated, Any, Literal
 
 from fastmcp import FastMCP
@@ -76,35 +75,6 @@ SERVER_INSTRUCTIONS = (
     "best-bic one regardless, so re-authoring an earlier structure to go back only recompiles, "
     "refits to the same result, and appends a duplicate."
 )
-
-
-def _diff_edits_enabled() -> bool:
-    """The `diff_edits` arm, read from the environment.
-
-    Mirrors ``petab_harness.ablations._switch`` for PETAB_DIFF_EDITS — the registry cannot be
-    imported here (petab_mcp must import without petab_harness; see tests/test_import_lightness),
-    so the spelling rule is duplicated the same way the data_regimes gate duplicates it in
-    session.py, and drift is pinned by tests the same way. Read at REGISTRATION time (not module
-    import) so tests can build both server shapes in one process.
-
-    What it changes: with the arm ON, ``make_changes`` is registered WITH the `model_edits` +
-    `base_version` arguments (a batch of ID-addressed operations, applied to the model source or
-    to a prior version's stored source); OFF keeps the baseline schema, where `antimony` is the
-    only model route. Gated at the SCHEMA rather than by prompt because that is the enforcement that held in
-    the draft-era A/Bs: every prompt-only rule broke (44% of runs defected to a forbidden
-    argument), every schema-enforced rule held at exactly 0 violations.
-    """
-    # DEFAULT "1": the arm is default-ON in the registry (petab_harness.ablations), and this
-    # duplicated gate must carry the SAME default or an unset environment gives a half-ablated
-    # run — the prompt instructing the agent to use `model_edits` while the schema does not offer
-    # it. tests/test_ablations.py::test_the_diff_edits_server_gate_agrees_with_the_registry pins
-    # the pair, including the env-unset case; if the registry default flips, flip it here too.
-    return os.environ.get("PETAB_DIFF_EDITS", "1").strip().lower() not in (
-        "0",
-        "false",
-        "no",
-        "off",
-    )
 
 
 # Appended to the instructions only when skills are actually registered, so clients
@@ -639,16 +609,13 @@ def _register_read_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         )
 
 
-# ``make_changes`` is registered under one of two SCHEMAS (see :func:`_diff_edits_enabled`), and a
-# tool description is a contract with a model, so each arm needs its own. Composed here from one
-# ROUTE section per arm plus a single shared contract section, rather than written out as a
-# docstring on each function: the arms differ only in how a model change is ADDRESSED, and the fit,
-# the result shape and the rejections are the same call either way.
+# ``make_changes``'s tool description, composed from the summary, the model ROUTES and the
+# CONTRACT the call keeps whichever route is taken.
 _MAKE_CHANGES_SUMMARY = (
     "Change the model and/or its parameter search space, then FIT and snapshot a version."
 )
 
-_MAKE_CHANGES_ROUTES_DIFF = """\
+_MAKE_CHANGES_ROUTES = """\
 The single editor, with TWO routes to a model change — give exactly ONE.
 
 `model_edits` is the route to use for every change after the first: a BATCH of
@@ -691,16 +658,6 @@ reconcile — so an entry may target a parameter this very call introduces. Comb
 either model route for a structural change and the bounds it needs. At least one of
 `antimony` / `model_edits` / `parameters` is required."""
 
-_MAKE_CHANGES_ROUTES_BASELINE = """\
-The single editor. Give `antimony` to author the WHOLE model (it builds the first
-model when the problem ships model-less — `describe_problem` → `model_authored:
-false` — and re-authors/replaces an existing one wholesale, so every structural
-change is one coherent re-author). Give `parameters` to set estimation BOUNDS
-and/or SCALE: a list of `{parameter_id, lower_bound?, upper_bound?, scale?}`
-entries, applied atomically AFTER the reconcile — so an entry may target a
-parameter this very call introduces. Give BOTH for a structural change and the
-bounds it needs. At least one is required."""
-
 _MAKE_CHANGES_CONTRACT = """\
 There is no fit-free edit and no separate fit: one call is one coherent change, scored
 once, snapshotted as ONE version. `n_starts` REPLACES the server's configured multistart
@@ -741,11 +698,9 @@ under-explored (see `get_fit_diagnosis`).
 Every fitted version is kept and the run is scored on the best-bic one regardless, so
 re-authoring an earlier structure to go back only recompiles and refits to the same result."""
 
-
-def _make_changes_doc(diff_mode: bool) -> str:
-    """The `make_changes` description for the arm being registered."""
-    routes = _MAKE_CHANGES_ROUTES_DIFF if diff_mode else _MAKE_CHANGES_ROUTES_BASELINE
-    return "\n\n".join((_MAKE_CHANGES_SUMMARY, routes, _MAKE_CHANGES_CONTRACT))
+_MAKE_CHANGES_DOC = "\n\n".join(
+    (_MAKE_CHANGES_SUMMARY, _MAKE_CHANGES_ROUTES, _MAKE_CHANGES_CONTRACT)
+)
 
 
 # ------------------------------------------------------------------ model tools
@@ -827,8 +782,7 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         """
         return model_mod.model_structure(session)
 
-    diff_mode = _diff_edits_enabled()
-
+    @mcp.tool(description=_MAKE_CHANGES_DOC)
     def make_changes(
         justification: str,
         antimony: str | None = None,
@@ -877,19 +831,11 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
                 {"base_version": base_version},
             )
         if not antimony and not ops and not parameters:
-            # In baseline mode `edits` does not EXIST on the schema, so advice naming it would
-            # instruct an impossible call (the defection-trigger class the draft-era A/B
-            # measured); name only what the caller can actually send.
-            routes = (
-                "`model_edits` (structured operations on the committed model — the usual "
-                "route), `antimony` (author the model wholesale), "
-                if diff_mode
-                else "`antimony` (to author the model), "
-            )
             return ctx.reject_operation(
                 "make_changes",
-                f"make_changes: nothing to do — give {routes}`parameters` (to set bounds/"
-                "scale), or a combination.",
+                "make_changes: nothing to do — give `model_edits` (structured operations on the "
+                "committed model — the usual route), `antimony` (author the model wholesale), "
+                "`parameters` (to set bounds/scale), or a combination.",
                 {"antimony": None, "parameters": None},
             )
         rejected = ctx.check_n_starts("make_changes", n_starts)
@@ -898,11 +844,10 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         # WHOLESALE authoring must arrive fully addressable, because the very next change will be
         # addressed by id. An unnamed reaction is legal Antimony and unaddressable by construction:
         # `set_rate_law` cannot name it, so the only way to touch it again is another whole-model
-        # re-author — the cost this arm exists to remove. Refused HERE, where it is written, in
+        # re-author — the cost `model_edits` exists to remove. Refused HERE, where it is written, in
         # preference to auto-naming, which would invent ids the caller never chose and renumber
-        # them on the next re-author. Gated on `diff_mode`: the baseline arm has no id-addressed
-        # route, so the same model must stay acceptable there or the control is not a control.
-        if diff_mode and antimony:
+        # them on the next re-author.
+        if antimony:
             unnamed = model_edits_mod.unnamed_reactions(antimony)
             if unnamed:
                 shown = ", ".join(repr(u) for u in unnamed[:3])
@@ -1021,39 +966,6 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
                 # reported artifacts as findings; here the operation IS the classification.
                 out["model_edits_applied"] = op_summary
             return out
-
-    # Assigned, not written inline, and assigned BEFORE either registration: FastMCP reads the
-    # description off `__doc__` at decoration time, and whichever function this arm registers
-    # carries the same composed text.
-    make_changes.__doc__ = _make_changes_doc(diff_mode)
-
-    if diff_mode:
-        mcp.tool()(make_changes)
-    else:
-        # Baseline schema: no `edits`/`base_version` — `antimony` is the only model route,
-        # byte-identical to the pre-arm contract so old baselines stay comparable. The
-        # full-signature function above stays the implementation; this wrapper only narrows
-        # the SCHEMA, which is the part of a tool contract a model is actually constrained by
-        # (schema-enforced rules held at 0 violations where prompt-only rules broke).
-        def make_changes_baseline(
-            justification: str,
-            antimony: str | None = None,
-            parameters: Annotated[
-                list[ParameterChange] | None, BeforeValidator(_unwrap_listish)
-            ] = None,
-            references: Annotated[list[str] | None, BeforeValidator(_unwrap_listish)] = None,
-            n_starts: int | None = None,
-        ) -> dict[str, Any]:
-            return make_changes(
-                justification=justification,
-                antimony=antimony,
-                parameters=parameters,
-                references=references,
-                n_starts=n_starts,
-            )
-
-        make_changes_baseline.__doc__ = make_changes.__doc__
-        mcp.tool(name="make_changes")(make_changes_baseline)
 
 
 # -------------------------------------------------------------- parameter tools

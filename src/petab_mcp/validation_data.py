@@ -46,7 +46,12 @@ from petab.v2.C import (
     UPPER_BOUND,
 )
 
-from .problem import PARAMETER_SCALE, V1_SIMULATION_CONDITION_ID, as_bool
+from .problem import (
+    PARAMETER_SCALE,
+    V1_PREEQUILIBRATION_CONDITION_ID,
+    V1_SIMULATION_CONDITION_ID,
+    as_bool,
+)
 
 
 #: ``status`` values a score can come back with — named rather than folded into ``nll: None``,
@@ -116,35 +121,57 @@ def as_v2(held_out: HeldOut, problem) -> HeldOut:
     """``held_out`` with its measurements (and ``units``) keyed by EXPERIMENT, for scoring against
     ``problem`` — the identity for a set that already is.
 
-    A v1 set names (pre-equilibration, simulation) condition pairs. Each becomes the experiment the
-    problem's own upgrade made of that pair (:func:`problem.v1_experiment_id`), so a held-out row
-    that repeats a training design lands in the training experiment; whether a pair is an
-    experiment at all depends on which conditions change anything — the set's own, plus the
-    training problem's unless a transfer set replaces those (:func:`transfer_view`). A unit is the
-    unit of its experiment's simulation condition.
+    A v1 set names (pre-equilibration, simulation) condition pairs. Each becomes the experiment
+    libpetab's ``petab1to2`` makes of that pair when it upgrades the training problem
+    (``experiment__{preeq}___{sim}``, ``experiment____{sim}`` without a pre-equilibration), so a
+    held-out row that repeats a training design lands in the training experiment. A pair neither of
+    whose conditions changes anything is no experiment (``""``), and which conditions change
+    anything are the set's own plus the training problem's, unless a transfer set replaces those
+    (:func:`transfer_view`). A unit is the unit of its experiment's simulation condition.
     """
-    from .problem import changing_conditions, v1_measurements
+    import numpy as np
+    import pandas as pd
+    from petab.v2.C import TIME, TIME_PREEQUILIBRATION
 
     mdf = held_out.measurement_df
     if mdf is None or V1_SIMULATION_CONDITION_ID not in mdf.columns:
         return held_out
-    changing = changing_conditions(held_out.condition_df)
+    changing = _condition_ids(held_out.condition_df)
     if not (held_out.mode == MODE_TRANSFER and held_out.condition_df is not None):
-        changing |= changing_conditions(problem.condition_df)
-    experiment_df, measurement_df = v1_measurements(mdf, changing)
+        changing |= _condition_ids(problem.condition_df)
+    sim = mdf[V1_SIMULATION_CONDITION_ID].fillna("").astype(str)
+    pre = mdf.get(V1_PREEQUILIBRATION_CONDITION_ID, pd.Series("", index=mdf.index))
+    pre = pre.fillna("").astype(str)
+
+    ids, rows = {}, []
+    for p, s in dict.fromkeys(zip(pre, sim)):
+        exp = f"experiment__{p}{'_' if p else ''}__{s}" if {p, s} & changing else ""
+        ids[(p, s)] = exp
+        if not exp:
+            continue
+        # A condition that changes nothing has no row in a v2 condition table: its period applies
+        # none.
+        for t, c in ([(TIME_PREEQUILIBRATION, p)] if p else []) + [(0.0, s)]:
+            rows.append({EXPERIMENT_ID: exp, TIME: t, CONDITION_ID: c if c in changing else np.nan})
+    measurement_df = mdf.drop(
+        columns=[V1_SIMULATION_CONDITION_ID, V1_PREEQUILIBRATION_CONDITION_ID], errors="ignore"
+    ).rename(columns={EXPERIMENT_ID: f"v1_{EXPERIMENT_ID}"})
+    measurement_df.insert(0, EXPERIMENT_ID, [ids[k] for k in zip(pre, sim)])
     units = held_out.units
     if units is not None:
-        sims = mdf[V1_SIMULATION_CONDITION_ID].fillna("").astype(str)
-        units = {
-            exp: units[sim] for exp, sim in zip(measurement_df[EXPERIMENT_ID], sims) if sim in units
-        }
+        units = {exp: units[s] for exp, s in zip(measurement_df[EXPERIMENT_ID], sim) if s in units}
     return HeldOut(
         measurement_df=measurement_df,
         condition_df=held_out.condition_df,
         parameter_df=held_out.parameter_df,
         units=units,
-        experiment_df=experiment_df,
+        experiment_df=pd.DataFrame(rows) if rows else None,
     )
+
+
+def _condition_ids(condition_df) -> set[str]:
+    """The conditions of a v2 condition table — each of which changes something."""
+    return set() if condition_df is None else set(condition_df[CONDITION_ID].astype(str))
 
 
 def _unsupported_reason(problem, view) -> str | None:
@@ -990,8 +1017,9 @@ def read_held_out(measurements_path: str | Path) -> HeldOut:
     is scored (:func:`as_v2`), since that needs the problem.
     """
     from petab import v2
+    from petab.v2.petab1to2 import v1v2_condition_df
 
-    from .problem import normalize_parameter_df, v1_conditions
+    from .problem import normalize_parameter_df
 
     path = Path(measurements_path)
     cond = path.with_name(HELD_OUT_CONDITIONS)
@@ -1001,7 +1029,8 @@ def read_held_out(measurements_path: str | Path) -> HeldOut:
     measurement_df = read_measurements(path)
     condition_df = v2.get_condition_df(str(cond)) if cond.is_file() else None
     if condition_df is not None and TARGET_ID not in condition_df.columns:
-        condition_df = v1_conditions(condition_df.set_index(CONDITION_ID))
+        condition_df = v1v2_condition_df(condition_df.set_index(CONDITION_ID), None)
+        condition_df = condition_df.reset_index(drop=True) if len(condition_df) else None
     return HeldOut(
         measurement_df=measurement_df,
         condition_df=condition_df,
