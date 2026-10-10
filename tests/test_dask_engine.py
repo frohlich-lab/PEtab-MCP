@@ -1,13 +1,5 @@
-"""Fits on a shared dask cluster (``petab_mcp.dask_engine``).
-
-A server given a cluster runs every session's starts there instead of in local processes, so fits
-running at once share one worker pool rather than oversubscribing the node, where Fides' per-start
-time cap stops a slowed start early. These pin what crosses the process boundary: a fit on the
-cluster ends where the local fit ends, start for start; fits take turns; a start's log reaches the
-session that ran it; a cluster failure fails the fit and is never rerun on the server; a worker never
-compiles; and the starts are today's, drawn from the fit's own RNG. Real ``LocalCluster``s with
-process workers, because the contract is about that boundary.
-"""
+"""Fits on a shared dask cluster (``petab_mcp.dask_engine``), on real ``LocalCluster``s with process
+workers: the engine's contract is what crosses that boundary."""
 
 from __future__ import annotations
 
