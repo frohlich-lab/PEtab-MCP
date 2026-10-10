@@ -31,7 +31,11 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-          cache-dependency-path: pyproject.toml
+          # The cache holds the AMICI wheel built against what this file installs (HDF5 below),
+          # so a change here must not restore a wheel built without it.
+          cache-dependency-path: |
+            pyproject.toml
+            .github/workflows/ci.yml
 
       # AMICI generates and compiles C++ for every model, and is itself built
       # from source here (pyproject pins a git commit; its build pulls BLAS from
@@ -39,14 +43,19 @@ jobs:
       # ubuntu-latest; the Ninja generator AMICI drives CMake with does not, so
       # install it.
       #
+      # HDF5 too: AMICI builds with it only if it finds the headers, and without
+      # it AMICI cannot pickle a solver, so no fit start can reach a worker
+      # process (tests/test_dask_engine.py).
+      #
       # Deliberately NOT installing the apt `swig`: AMICI is built against the
       # pip `swig`, and a mismatched system SWIG makes compiled models raise
       # "'SwigPyObject' object has no attribute 'module'". The matching SWIG is
       # the pip `swig` package (installed and pinned below).
-      - name: Install build toolchain (Ninja)
+      - name: Install build toolchain (Ninja, HDF5)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ninja-build cmake build-essential
+          sudo apt-get install -y libhdf5-dev  # with its recommends, as AMICI's own CI does
 
       # AMICI's source build compiles serially unless told otherwise; the pip
       # cache keeps the built wheel for the pinned commit.

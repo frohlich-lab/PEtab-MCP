@@ -101,12 +101,23 @@ class _NoBuild(WorkerPlugin):
 
 
 class DaskEngine(Engine):
-    """A pyPESTO engine that runs each task on ``client``'s cluster."""
+    """A pyPESTO engine that runs each task on ``cluster``, through a client of its own.
 
-    def __init__(self, client: Client) -> None:
+    Refused before connecting when AMICI was built without HDF5: AMICI pickles a solver's settings
+    through HDF5, so no start could reach a worker and every fit on the cluster would fail.
+    """
+
+    def __init__(self, cluster) -> None:
+        from amici.sim.sundials import hdf5_enabled
+
+        if not hdf5_enabled:
+            raise FitBackendError(
+                "this AMICI was built without HDF5, which it needs to pickle a start for a "
+                "worker: rebuild AMICI with the HDF5 headers installed to fit on a cluster"
+            )
         super().__init__()
-        self.client = client
-        client.register_plugin(_NoBuild(), name="petab-mcp-no-build")
+        self.client = Client(cluster)
+        self.client.register_plugin(_NoBuild(), name="petab-mcp-no-build")
 
     def execute(self, tasks: list[Task], progress_bar: bool | None = None) -> list[Any]:
         """The tasks' results, in task order."""
