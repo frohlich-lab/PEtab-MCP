@@ -83,7 +83,8 @@ class _Fixture:
         self.session.auto_fit = auto_fit
         self.session.auto_fit_starts = 2
         self.mcp = FastMCP("petab-mcp-contract-test")
-        S._register_fit_tools(self.mcp, S._Ctx(self.session, self.session.engine))
+        ctx = S._Ctx(self.session, self.session.engine)
+        S._register_fit_tools(self.mcp, lambda: ctx)
 
     def reopen(self):
         """A DURABLE RESUME: a second session over the same provenance dir and the same build root,
