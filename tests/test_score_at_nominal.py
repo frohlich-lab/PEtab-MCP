@@ -31,7 +31,6 @@ def test_score_shipped_model_reports_the_nominal_point(amici_build_root, tmp_pat
 
     work = tmp_path / "work"
     shutil.copytree(TOY, work)
-    (work / "model.ant").unlink()  # the delivery is the SBML the YAML names
     create_server(
         str(work / "problem.yaml"),
         build_root=str(amici_build_root),
