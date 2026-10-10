@@ -192,7 +192,9 @@ class PetabSession:
             # No Antimony source and no SBML in the YAML: start from an empty model so the
             # working object always exists. `_seed_initial_model` below replaces it with a
             # content-free but VALID one; the empty skeleton survives only if seeding fails.
-            self._set_model_from_antimony("model model\nend")
+            from . import reconcile as R
+
+            self._set_model_from_antimony(f"model {R.ZERO_SHOT_MODEL_ID}\nend")
 
         self.lock = threading.RLock()
         self.provenance = ProvenanceStore(store_root(self.yaml_path, provenance_dir))
