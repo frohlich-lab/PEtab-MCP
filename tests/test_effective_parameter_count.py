@@ -199,13 +199,15 @@ def test_the_stored_simulation_persists_the_count():
     assert fitting.build_sim_payload_for_version(_fitsim(100.0, k_eff=None))["k_eff"] is None
 
 
+@pytest.mark.parametrize("sigma_scale", ["lin", "log10"])
 def test_a_hierarchical_objectives_rows_are_the_joint_rows_at_its_inner_optimum(
-    tmp_path, amici_build_root
+    tmp_path, amici_build_root, sigma_scale
 ):
     """pyPESTO refuses residual sensitivities while a sigma is inner-solved, so the rows are taken
     from its plain calculator with the inner solution filled in. On the real toy, with its sigma
     made a noise override: the joint objective at that same sigma must give the same rows, bar
-    the sigma's own column."""
+    the sigma's own column. A sigma estimated on log10 is inner-solved all the same, on a linear
+    scale: pyPESTO refuses any other for an inner parameter."""
     import shutil
 
     import pandas as pd
@@ -213,6 +215,7 @@ def test_a_hierarchical_objectives_rows_are_the_joint_rows_at_its_inner_optimum(
 
     from petab_mcp.engine import AmiciEngine
     from petab_mcp.identifiability import _fim_from_rows
+    from petab_mcp.problem import scale
     from petab_mcp.references import StubReferenceResolver
     from petab_mcp.session import PetabSession
 
@@ -227,7 +230,11 @@ def test_a_hierarchical_objectives_rows_are_the_joint_rows_at_its_inner_optimum(
     meas = pd.read_csv(work / "measurements.tsv", sep="\t", keep_default_na=False)
     meas.assign(noiseParameters="sigma_B").to_csv(work / "measurements.tsv", sep="\t", index=False)
     pars = work / "parameters.tsv"
-    pars.write_text(pars.read_text().replace("0.1\tfalse", "0.1\ttrue"))  # sigma_B's row
+    pars.write_text(  # sigma_B's row
+        pars.read_text()
+        .replace("sigma_B\tlin", f"sigma_B\t{sigma_scale}")
+        .replace("0.1\tfalse", "0.1\ttrue")
+    )
     session = PetabSession(
         str(work / "problem.yaml"),
         provenance_dir=str(tmp_path / "prov"),
@@ -245,6 +252,6 @@ def test_a_hierarchical_objectives_rows_are_the_joint_rows_at_its_inner_optimum(
     assert joint.x_names[:3] == ["k1", "k2", "sigma_B"]
 
     H, S = _fim_from_rows(hierarchical, x)
-    H_joint, S_joint = _fim_from_rows(joint, np.append(x, sigma))
+    H_joint, S_joint = _fim_from_rows(joint, np.append(x, scale(sigma, sigma_scale)))
     assert H == pytest.approx(H_joint[:2, :2], rel=1e-6)
     assert S == pytest.approx(S_joint[:, :2], rel=1e-6, abs=1e-12)

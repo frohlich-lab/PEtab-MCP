@@ -27,20 +27,18 @@ and measurement tables are read-only — a view with other ones is a new problem
 (:meth:`WorkingProblem.replace`) — and the observable table always carries ``noiseDistribution``
 and its two placeholder columns, ``""`` where there are none.
 
-The estimation scale is the server's: v2 dropped ``parameterScale``, and neither AMICI's v2
-simulator nor pyPESTO's v2 importer scales, so the parameter table carries libpetab v1's column as
-an extension and :mod:`petab_mcp.scaling` reparameterises the objective. Missing or blank reads as
-``lin``.
+The estimation scale is the server's: v2 dropped ``parameterScale``, so the parameter table
+carries libpetab v1's column as an extension, which is what pyPESTO's importer takes as its
+``parameter_scales``. Missing or blank reads as ``lin``.
 
-A PEtab v1 problem is upgraded on load (:func:`_from_v1`), table by table and WITHOUT linting:
-libpetab's ``petab1to2`` lints the v1 problem first and refuses, but a zero-shot problem ships an
-empty SBML whose observables reference nothing yet, which is the input this server exists for.
+A PEtab v1 problem is upgraded on load by libpetab's ``petab1to2`` (:func:`_from_v1`). That lints
+the v1 problem first and refuses one that fails (PEtab-dev/libpetab-python#528), so a zero-shot
+problem, whose SBML is still empty, has to come as v2.
 """
 
 from __future__ import annotations
 
 import logging
-import re
 from pathlib import Path
 from typing import Any
 
@@ -63,7 +61,6 @@ from petab.v2.C import (
     NOISE_PLACEHOLDERS,
     NOMINAL_VALUE,
     NORMAL,
-    OBSERVABLE_FORMULA,
     OBSERVABLE_ID,
     OBSERVABLE_PLACEHOLDERS,
     PARAMETER_ID,
@@ -77,15 +74,14 @@ from petab.v2.C import (
     UPPER_BOUND,
 )
 from petab.v2.models.sbml_model import SbmlModel
-from petab.v2.petab1to2 import v1v2_condition_df
 
 logger = logging.getLogger("petab_mcp")
 
 #: Noise distributions whose residual lives in log space; every other one is linear.
 _LOG_DISTRIBUTIONS = ("log-normal", "log-laplace")
 
-#: A v1 measurement table's simulation keys: what the upgrade turns into experiments, and how a
-#: predicate that accepts a table of either version tells a v1 one apart.
+#: A v1 measurement table's simulation keys, by which a predicate that accepts a table of either
+#: version tells a v1 one apart.
 V1_SIMULATION_CONDITION_ID = "simulationConditionId"
 V1_PREEQUILIBRATION_CONDITION_ID = "preequilibrationConditionId"
 
@@ -104,7 +100,7 @@ def observable_transformation(observable_df, obs_id) -> str:
 
     PEtab v2 folded v1's ``observableTransformation`` into ``noiseDistribution`` and has no log10
     distribution (a v1 log10 observable is upgraded to an exactly equivalent ``log`` one, see
-    :func:`_v1_observables`). A blank, absent or unrecognised cell, and an unknown observable,
+    :func:`_from_v1`). A blank, absent or unrecognised cell, and an unknown observable,
     read as linear rather than raising: every caller is a residual or a noise yardstick, and a
     raise there loses the point instead of the transformation.
     """
@@ -287,7 +283,7 @@ class WorkingProblem:
             if df is None:
                 return ""
             if columns is None:
-                return df.to_csv(sep="\t")
+                return df.sort_index(axis=1).to_csv(sep="\t")
             # The distinct combinations only, so two views over different rows of one design share
             # a module.
             df = df[[c for c in columns if c in df.columns]].astype(str).drop_duplicates()
@@ -332,10 +328,15 @@ class WorkingProblem:
 
 # -- v2 ------------------------------------------------------------------------------------
 def _read_tables(paths, base: Path, reader) -> pd.DataFrame | None:
-    frames = [reader(str(base / p)) for p in paths or []]
+    """The concatenated tables, or ``None`` where there are none or all are empty."""
+    frames = [df for df in (reader(str(base / p)) for p in paths or []) if len(df)]
     if not frames:
         return None
-    return frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True)
+    return (
+        frames[0]
+        if len(frames) == 1
+        else pd.concat(frames, ignore_index=all(df.index.name is None for df in frames))
+    )
 
 
 def _from_v2(yaml_path: Path, config: dict) -> WorkingProblem:
@@ -369,138 +370,30 @@ def _from_v2(yaml_path: Path, config: dict) -> WorkingProblem:
 
 # -- v1 ------------------------------------------------------------------------------------
 def _from_v1(yaml_path: Path) -> WorkingProblem:
-    """A v1 problem, upgraded table by table with every likelihood unchanged (see
-    :func:`_v1_observables` for the one place that needs care) and its parameter scales kept."""
+    """A v1 problem, upgraded by libpetab's ``petab1to2`` and read back like any v2 problem.
+
+    Two corrections. ``petab1to2`` drops ``parameterScale``, which the server estimates on. And it
+    maps v1's log10-normal onto log-normal with the noise formula unchanged, which changes the
+    likelihood (PEtab-dev/libpetab-python#529); ``log(10) *`` on the noise formula makes the two
+    densities identical.
+    """
+    import tempfile
+
     from petab import v1
+    from petab.v2.petab1to2 import petab1to2
 
     old = v1.Problem.from_yaml(str(yaml_path))
-    condition_df = v1_conditions(old.condition_df)
-    experiment_df, measurement_df = v1_measurements(
-        old.measurement_df, changing_conditions(condition_df)
+    with tempfile.TemporaryDirectory() as tmp:
+        petab1to2(yaml_path, tmp)
+        new = WorkingProblem.from_yaml(Path(tmp) / yaml_path.name)
+    new.parameter_df = new.parameter_df.assign(
+        **{PARAMETER_SCALE: old.parameter_df[PARAMETER_SCALE]}
     )
-    return WorkingProblem(
-        model=old.model,
-        parameter_df=old.parameter_df,
-        observable_df=_v1_observables(old.observable_df),
-        measurement_df=measurement_df,
-        condition_df=condition_df,
-        experiment_df=experiment_df,
-        mapping_df=getattr(old, "mapping_df", None),
-    )
-
-
-def v1_conditions(df) -> pd.DataFrame | None:
-    """The wide v1 table as v2 changes (libpetab's conversion), or ``None`` when no cell sets
-    anything — a v2 problem without a condition table."""
-    if df is None:
-        return None
-    long = v1v2_condition_df(df, None).reset_index(drop=True)
-    return long if len(long) else None
-
-
-def v1_experiment_id(preeq: str, sim: str) -> str:
-    """The experiment a v1 (pre-equilibration, simulation) condition pair becomes — libpetab's
-    ``petab1to2`` naming, so a problem upgraded there and one upgraded here agree."""
-    pre = f"{preeq}_" if preeq else ""
-    return f"experiment__{pre}__{sim}"
-
-
-def changing_conditions(condition_df) -> set[str]:
-    """The ids of the conditions in a (long, v2) condition table — every one of which changes
-    something, since a v1 condition that set nothing has no row there."""
-    return set() if condition_df is None else set(condition_df[CONDITION_ID].astype(str))
-
-
-def v1_measurements(measurement_df, changing: set[str]) -> tuple[pd.DataFrame | None, pd.DataFrame]:
-    """One experiment per measured (pre-equilibration, simulation) pair of a v1 measurement table,
-    and the measurement table keyed by it. ``changing`` names the conditions that change anything
-    (:func:`changing_conditions`); a v1 condition that set nothing is not one.
-
-    A pair whose conditions change nothing and that does not pre-equilibrate is no experiment at
-    all — v2's "simulate the model as is" (``experimentId`` ``""``) — while it is the only such
-    pair: ``""`` is one series, and two pairs (two cell lines told apart by their scalings alone)
-    are two, so each keeps an experiment of its own. A pre-equilibration with an empty condition is
-    still a pre-equilibration, and keeps its period: ``petab1to2`` drops it.
-    """
-    # v1 had no `experimentId` column, so one there is a free-text annotation (brannmark's names
-    # its time-course vs dose-response blocks); it keeps its values under another name.
-    mdf = measurement_df.rename(columns={EXPERIMENT_ID: f"v1_{EXPERIMENT_ID}"})
-    pre_col, sim_col = V1_PREEQUILIBRATION_CONDITION_ID, V1_SIMULATION_CONDITION_ID
-    pre = mdf.pop(pre_col) if pre_col in mdf.columns else pd.Series("", index=mdf.index)
-    sim = mdf.pop(sim_col) if sim_col in mdf.columns else pd.Series("", index=mdf.index)
-    pre = pre.fillna("").astype(str)
-    sim = sim.fillna("").astype(str)
-
-    rows: list[dict[str, Any]] = []
-    ids: dict[tuple[str, str], Any] = {}
-    pairs = list(dict.fromkeys(zip(pre, sim)))
-    as_is = [(p, s) for p, s in pairs if not p and s not in changing]
-    for p, s in pairs:
-        if as_is == [(p, s)]:
-            ids[(p, s)] = ""
-            continue
-        exp_id = v1_experiment_id(p, s)
-        ids[(p, s)] = exp_id
-        if p:
-            rows.append(
-                {
-                    EXPERIMENT_ID: exp_id,
-                    TIME: TIME_PREEQUILIBRATION,
-                    CONDITION_ID: p if p in changing else np.nan,
-                }
-            )
-        rows.append(
-            {EXPERIMENT_ID: exp_id, TIME: 0.0, CONDITION_ID: s if s in changing else np.nan}
-        )
-    # Where v2 files conventionally carry it: right after the observable.
-    at = mdf.columns.get_loc(OBSERVABLE_ID) + 1 if OBSERVABLE_ID in mdf.columns else 0
-    mdf.insert(at, EXPERIMENT_ID, [ids[k] for k in zip(pre, sim)])
-    return (pd.DataFrame(rows) if rows else None), mdf
-
-
-def _v1_observables(df) -> pd.DataFrame:
-    """The v1 observable table in v2 form: ``observableTransformation`` folded into
-    ``noiseDistribution``, and the placeholders v1 implied by name declared explicitly.
-
-    v2 has no log10 distribution, and ``petab1to2`` maps v1's ``log10``-``normal`` onto
-    ``log-normal`` with the same noise formula — which rescales what sigma means by ln 10 and
-    shifts every likelihood by n·ln(ln 10). Here the noise formula is multiplied by ``log(10)``
-    instead, which makes the two densities IDENTICAL (residual and Jacobian both carry the factor),
-    so an upgraded problem's likelihoods, fitted sigmas and any score recorded against the v1
-    problem stay valid.
-    """
-    out = df.copy()
-    trans = out.pop("observableTransformation") if "observableTransformation" in out else None
-    dist = (
-        out[NOISE_DISTRIBUTION].fillna(NORMAL).astype(str)
-        if NOISE_DISTRIBUTION in out
-        else pd.Series(NORMAL, index=out.index)
-    )
-    if trans is not None:
-        trans = trans.fillna(LIN).astype(str)
-        dist = pd.Series(
-            [d if t == LIN else f"log-{d}" for t, d in zip(trans, dist)], index=out.index
-        )
-        is10 = trans == LOG10
-        out.loc[is10, NOISE_FORMULA] = [f"log(10) * ({f})" for f in out.loc[is10, NOISE_FORMULA]]
-    out[NOISE_DISTRIBUTION] = dist
-    out[OBSERVABLE_PLACEHOLDERS] = [
-        _v1_placeholders("observable", oid, f) for oid, f in out[OBSERVABLE_FORMULA].items()
-    ]
-    out[NOISE_PLACEHOLDERS] = [
-        _v1_placeholders("noise", oid, f) for oid, f in out[NOISE_FORMULA].items()
-    ]
-    return out
-
-
-def _v1_placeholders(kind: str, obs_id: str, formula) -> str:
-    """v1's implicit ``{kind}Parameter{n}_{obs_id}`` placeholders in ``formula``, in ``n`` order —
-    numerically, so ten or more line up with their overrides (``petab1to2`` sorts them as text)."""
-    if not isinstance(formula, str):
-        return ""
-    pattern = re.compile(rf"(?<![\w.])({kind}Parameter(\d+)_{re.escape(str(obs_id))})(?!\w)")
-    found = {m.group(1): int(m.group(2)) for m in pattern.finditer(formula)}
-    return PARAMETER_SEPARATOR.join(sorted(found, key=found.get))
+    odf = new.observable_df.copy()
+    trans = old.observable_df.get("observableTransformation", pd.Series(dtype=str))
+    log10 = trans.reindex(odf.index) == LOG10
+    odf.loc[log10, NOISE_FORMULA] = "log(10) * (" + odf.loc[log10, NOISE_FORMULA].astype(str) + ")"
+    return new.replace(observable_df=odf)
 
 
 def placeholders(observable_df, obs_id, kind: str) -> list[str]:
@@ -517,15 +410,17 @@ def placeholders(observable_df, obs_id, kind: str) -> list[str]:
 
 
 def experiment_inputs(problem) -> pd.DataFrame | None:
-    """The condition targets in effect while each experiment is SIMULATED, wide: one row per
-    experiment id, one column per target, the ``targetValue`` (NaN where the experiment never
-    sets that target).
+    """The condition targets that hold ONE value while each experiment is SIMULATED, wide: one
+    row per experiment id, one column per target, the ``targetValue`` (NaN where the experiment
+    never sets that target, or a later period changes it).
 
-    "In effect while simulated" is the value after the pre-equilibration period and the first
-    simulated period have applied their conditions — v2 changes persist, so a target only the
-    pre-equilibration sets still holds afterwards, and one the simulated period sets wins. That
-    is the v1 simulation condition's row for an upgraded problem, which is what an analysis keyed
-    on "the dose of this series" needs. ``None`` when there is no experiment or condition table.
+    The value is the one in effect after the pre-equilibration period and the first simulated
+    period have applied their conditions — v2 changes persist, so a target only the
+    pre-equilibration sets still holds afterwards, and one the simulated period sets wins. A
+    target a later period sets to another value has no single value: an analysis keyed on "the
+    dose of this series" would credit the response after the switch to the dose before it. For
+    an upgraded v1 problem, with one simulated period, this is the simulation condition's row.
+    ``None`` when there is no experiment or condition table.
     """
     edf, cdf = problem.experiment_df, problem.condition_df
     if edf is None or cdf is None or not len(edf) or not len(cdf):
@@ -537,12 +432,16 @@ def experiment_inputs(problem) -> pd.DataFrame | None:
     rows: dict[str, dict[str, Any]] = {}
     for eid, periods in edf.groupby(EXPERIMENT_ID, sort=False):
         times = sorted(float(t) for t in periods[TIME].unique())
-        simulated = [t for t in times if t != TIME_PREEQUILIBRATION][:1]
+        start = min((t for t in times if t != TIME_PREEQUILIBRATION), default=np.inf)
         applied: dict[str, Any] = {}
-        for t in [t for t in times if t == TIME_PREEQUILIBRATION] + simulated:
+        switched: set[str] = set()
+        for t in times:
             for cid in periods.loc[periods[TIME] == t, CONDITION_ID].dropna():
-                applied.update(changes.get(str(cid), {}))
-        rows[str(eid)] = applied
+                for target, value in changes.get(str(cid), {}).items():
+                    if t > start and applied.get(target) != value:
+                        switched.add(target)
+                    applied[target] = value
+        rows[str(eid)] = {k: v for k, v in applied.items() if k not in switched}
     return pd.DataFrame.from_dict(rows, orient="index")
 
 
