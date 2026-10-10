@@ -1,13 +1,5 @@
-"""Fits on a shared dask cluster (``petab_mcp.dask_engine``).
-
-A server given a cluster runs every session's starts there instead of in local processes, so fits
-running at once share one worker pool rather than oversubscribing the node, where Fides' per-start
-time cap stops a slowed start early. These pin what crosses the process boundary: a fit on the
-cluster ends where the local fit ends, start for start; fits take turns; a start's log reaches the
-session that ran it; a cluster failure fails the fit and is never rerun on the server; a worker never
-compiles; and the starts are today's, drawn from the fit's own RNG. Real ``LocalCluster``s with
-process workers, because the contract is about that boundary.
-"""
+"""Fits on a shared dask cluster (``petab_mcp.dask_engine``), on real ``LocalCluster``s with process
+workers: the engine's contract is what crosses that boundary."""
 
 from __future__ import annotations
 
@@ -25,7 +17,7 @@ from types import SimpleNamespace
 import dask
 import numpy as np
 import pytest
-from distributed import Client, LocalCluster, get_task_stream
+from distributed import LocalCluster, get_task_stream
 from pypesto.engine import Task
 
 from petab_mcp import fitting
@@ -44,12 +36,10 @@ def _engine(n_workers: int = 2, config: dict | None = None):
         cluster = LocalCluster(
             n_workers=n_workers, threads_per_worker=1, processes=True, dashboard_address=":0"
         )
-    client = Client(cluster)
-    try:
-        yield DaskEngine(client)
-    finally:
-        client.close()
-        cluster.close()
+    with cluster:
+        engine = DaskEngine(cluster)
+        with engine.client:
+            yield engine
 
 
 class _Sleep(Task):
@@ -221,6 +211,25 @@ def test_a_worker_never_builds_a_model(tmp_path):
             with pytest.raises(FitBackendError, match=refusal):
                 engine.execute([_Build(str(folder), how)])
     assert [p.name for p in folder.iterdir()] == ["half_built"]
+
+
+def test_an_amici_without_hdf5_refuses_the_cluster_before_connecting(
+    yaml_path, tmp_path, monkeypatch
+):
+    """AMICI pickles a solver's settings through HDF5, so without it no start reaches a worker and
+    every fit on the cluster fails, as on CI's AMICI before the workflow installed HDF5. The server
+    refuses the cluster instead, before connecting to it (`object()` is no cluster)."""
+    import amici.sim.sundials
+
+    monkeypatch.setattr(amici.sim.sundials, "hdf5_enabled", False)
+    with pytest.raises(FitBackendError, match="without HDF5"):
+        create_server(
+            yaml_path,
+            provenance_dir=str(tmp_path / "prov"),
+            resolver=StubReferenceResolver(),
+            auto_fit=False,
+            cluster=object(),
+        )
 
 
 def test_a_fits_own_stream_draws_the_starts_the_global_seed_drew(session, engine):

@@ -1,28 +1,23 @@
 """Run a fit's multistart on the server's dask cluster, one worker pool for every session.
 
-Without a cluster, each fit starts its own local pyPESTO ``MultiProcessEngine`` of up to
-``FIT_N_WORKERS`` processes, so sessions fitting at once oversubscribe the node. Fides caps each
-start's wall time, so a start slowed by that contention stops early: contention changes results,
-not only speed. With a cluster, :func:`petab_mcp.server.create_server` builds one
-:class:`DaskEngine`, and every fit and held-out refit of that server runs its starts there.
+Without a cluster, each fit starts up to ``FIT_N_WORKERS`` local processes, so sessions fitting at
+once oversubscribe the node, and Fides' per-start time cap then stops slowed starts early:
+contention changes results, not only speed. With one, :func:`petab_mcp.server.create_server` builds
+one :class:`DaskEngine`, and every fit and held-out refit of that server runs its starts there.
 
-* **Fits take turns.** Start ``i`` of a fit is submitted at ``priority=-i``. dask runs higher
-  priorities first and equal ones in submission order, so concurrent fits interleave start by
-  start without a queue of our own.
-* **Logs follow the session.** A start's ``pypesto``/``fides`` records come back with its result.
-  They are re-emitted in the calling thread, where :mod:`petab_mcp.logging_setup` files them in
-  that session's ``pypesto.log``.
-* **A cluster failure fails the fit.** A lost scheduler, a killed worker, a cancelled start or a
-  task that will not run on a worker raises :class:`~petab_mcp.errors.FitBackendError`, and the
-  edit reverts. The starts never rerun on the server node (see ``fitting._run_fit``).
-* **Workers never build.** A start's AMICI model reaches a worker by import only: unpickling
-  imports the compiled module from the server's build root at the same absolute path and checks
-  its checksum. The builder paths, pyPESTO's creator and AMICI's PEtab importer, would instead
-  compile the module there, inside the build root every session shares (pyPESTO's after an
-  ``rmtree`` of its folder), so :class:`_NoBuild` makes them raise in each worker process.
+* **Fits take turns.** Start ``i`` is submitted at ``priority=-i``; dask runs higher priorities
+  first and equal ones in submission order, so concurrent fits interleave start by start.
+* **Logs follow the session.** A start's ``pypesto``/``fides`` records come back with its result
+  and are re-emitted in the calling thread, so :mod:`petab_mcp.logging_setup` files them in that
+  session's ``pypesto.log``.
+* **A cluster failure fails the fit** with :class:`~petab_mcp.errors.FitBackendError`, and the
+  starts never rerun on the server node (see ``fitting._run_fit``).
+* **Workers never build.** Unpickling a start imports its compiled module from the server's build
+  root at the same absolute path. pyPESTO's creator and AMICI's importer would instead compile it
+  there, inside the build root every session shares, so :class:`_NoBuild` makes them raise.
 
-A separate module because it is the only one that imports ``distributed`` (the ``dask`` extra).
-A server without a cluster never imports it.
+The only module that imports ``distributed`` (the ``dask`` extra); a server without a cluster never
+imports it.
 """
 
 from __future__ import annotations
@@ -101,12 +96,23 @@ class _NoBuild(WorkerPlugin):
 
 
 class DaskEngine(Engine):
-    """A pyPESTO engine that runs each task on ``client``'s cluster."""
+    """A pyPESTO engine that runs each task on ``cluster``, through a client of its own.
 
-    def __init__(self, client: Client) -> None:
+    Refused before connecting when AMICI was built without HDF5: AMICI pickles a solver's settings
+    through HDF5, so no start could reach a worker and every fit on the cluster would fail.
+    """
+
+    def __init__(self, cluster) -> None:
+        from amici.sim.sundials import hdf5_enabled
+
+        if not hdf5_enabled:
+            raise FitBackendError(
+                "this AMICI was built without HDF5, which it needs to pickle a start for a "
+                "worker: rebuild AMICI with the HDF5 headers installed to fit on a cluster"
+            )
         super().__init__()
-        self.client = client
-        client.register_plugin(_NoBuild(), name="petab-mcp-no-build")
+        self.client = Client(cluster)
+        self.client.register_plugin(_NoBuild(), name="petab-mcp-no-build")
 
     def execute(self, tasks: list[Task], progress_bar: bool | None = None) -> list[Any]:
         """The tasks' results, in task order."""
