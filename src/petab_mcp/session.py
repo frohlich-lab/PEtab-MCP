@@ -27,7 +27,7 @@ from .constants import (
     PLATEAU_WINDOW,
 )
 from .data_access import residual_flag, residual_structure_rollup
-from .errors import ModelUpdateError, PetabMcpError, ValidationError
+from .errors import ModelBuildBusyError, ModelUpdateError, PetabMcpError, ValidationError
 from .fitting import noise_sigma_collapsed, noise_sigma_inflated
 from .parameters import problem_fingerprint, sha16
 from .problem import WorkingProblem, as_bool
@@ -1391,6 +1391,9 @@ class PetabSession:
             # tool returns committed=false with an actionable message rather than crashing.
             try:
                 fitsim, improvement = self._auto_fit_and_improvement(n_starts)
+            except ModelBuildBusyError:
+                self._fit_attempts[fit_key] -= 1  # nothing was fitted, so a retry is not a loop
+                raise
             except PetabMcpError:
                 raise
             except Exception as exc:  # noqa: BLE001 - surface as a clean, actionable rejection

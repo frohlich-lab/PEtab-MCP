@@ -16,11 +16,15 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 from petab.v2.C import EXPERIMENT_ID, MEASUREMENT, OBSERVABLE_ID, SIMULATION, TIME
 
+from . import filelock
+from .errors import ModelBuildBusyError
 from .formatting import finite_float
 from .problem import observable_transformation, scale
 
@@ -37,6 +41,41 @@ def _ensure_swig_on_path() -> None:
             os.environ["PATH"] = str(cand) + os.pathsep + os.environ.get("PATH", "")
     except Exception:  # best-effort; AMICI will error clearly if still missing
         pass
+
+
+def _module_on_disk(output_folder: str | Path, model_name: str) -> bool:
+    """Is the compiled extension of the module ``model_name`` under ``output_folder`` there? An
+    unreadable folder counts as not built."""
+    try:
+        return any((Path(output_folder) / model_name).glob(f"_{model_name}*.so"))
+    except OSError:
+        return False
+
+
+@contextmanager
+def build_lock(output_folder: str | Path, model_name: str) -> Iterator[None]:
+    """Hold ``<output_folder>.lock`` while pyPESTO may build the module ``model_name`` there, or
+    raise :class:`~petab_mcp.errors.ModelBuildBusyError` naming whoever holds it.
+
+    The build root is shared by every session and process and keyed by module hash, so two of them
+    reaching one structure name one folder — and AMICI deletes the files it finds there before it
+    generates code, so a second build corrupts the first. The second fails fast instead, without
+    waiting (:mod:`petab_mcp.filelock`). A module whose extension is already there takes no lock:
+    importing it is safe beside anything, and that is what every re-fit of a structure does.
+    """
+    folder = Path(output_folder)
+    if _module_on_disk(folder, model_name):
+        yield
+        return
+    folder.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = filelock.try_lock(folder.with_name(f"{folder.name}.lock"))
+    except filelock.Held as held:
+        raise ModelBuildBusyError(folder.name, held.holder) from None
+    try:
+        yield
+    finally:
+        os.close(fd)
 
 
 class AmiciEngine:
@@ -102,11 +141,8 @@ class AmiciEngine:
         """
         if module_hash in self._pypesto_hashes:
             return True
-        folder, model_name = self._module_target(module_hash)
-        try:
-            return any((folder / model_name).glob(f"_{model_name}*.so"))
-        except OSError:  # unreadable build root: assume nothing is built rather than risk a build
-            return False
+        # an unreadable build root reads as nothing built, rather than risk a build
+        return _module_on_disk(*self._module_target(module_hash))
 
     def _log_pending_import(self, module_hash: str) -> None:
         """Dump the exact model about to be handed to AMICI, BEFORE the import call.

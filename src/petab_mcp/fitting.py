@@ -45,7 +45,8 @@ from .constants import (
     NOISE_SIGMA_COLLAPSE_FRACTION,
     PARAMETER_AT_BOUND_RELATIVE_TOL,
 )
-from .errors import ModelUpdateError
+from .engine import build_lock
+from .errors import ModelBuildBusyError, ModelUpdateError
 from .formatting import finite_float as _flt
 from .parameters import structure_fingerprint
 from .problem import (
@@ -247,6 +248,9 @@ def pypesto_problem(problem, importer_kwargs: dict[str, Any], *, validate: bool 
     ``validate`` runs libpetab's lint on the way in: the session's own problem was linted on every
     edit that produced it, a held-out view was not. Passes ``hierarchical`` and the output target
     through ``importer_kwargs``.
+
+    The one place a module is compiled — ``create_problem`` builds into a target folder that is not
+    there yet — so it runs under :func:`engine.build_lock`.
     """
     import pypesto.petab
     from petab import v2
@@ -267,7 +271,8 @@ def pypesto_problem(problem, importer_kwargs: dict[str, Any], *, validate: bool 
     importer = pypesto.petab.PetabImporter(
         petab_problem, validate_petab=validate, parameter_scales=dict(scales), **importer_kwargs
     )
-    return importer.create_problem()
+    with build_lock(importer_kwargs["output_folder"], importer_kwargs["model_name"]):
+        return importer.create_problem()
 
 
 def _build_hierarchical_problem(session, importer_kwargs: dict[str, Any], petab_problem=None):
@@ -320,6 +325,9 @@ def _build_hierarchical_problem(session, importer_kwargs: dict[str, Any], petab_
             pypesto_problem(view, {**importer_kwargs, "hierarchical": True}, validate=False),
             inner,
         )
+    except ModelBuildBusyError:
+        # Not a hierarchical failure: falling back would fit jointly once the other build lands.
+        raise
     except Exception:  # noqa: BLE001 - hierarchical is best-effort; fall back to a joint fit
         session.logger.warning(
             "hierarchical optimization setup failed (%s inner params: %s); "
