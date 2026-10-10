@@ -62,16 +62,22 @@ dependencies = [
     # Imported directly for the chi2 goodness-of-fit p-value (residual_tests, fitting). Only
     # transitively present via pyPESTO otherwise.
     "scipy>=1.10",
-    # Pinned to a main commit, not a release: 1.1.0 lacks AMICI-dev/AMICI#3309, without which a
-    # hierarchical PEtab v2 problem cannot be unpickled once its objective has been evaluated
-    # (ICB-DCM/pyPESTO#1771) -- and every fit evaluates the objective before its parallel
-    # multistart pickles the problem into the workers. Built from source (no wheel for a commit),
-    # which is why CI installs a toolchain before it. Revisit once a release contains #3309.
-    "amici @ git+https://github.com/AMICI-dev/AMICI.git@dc6ce2ae320d259f10a417d28f8c3bb76c10c1e3#subdirectory=python/sdist",
-    # Pinned to the merge of ICB-DCM/pyPESTO#1740: before it, the PEtab v2 importer raised
-    # NotImplementedError for `hierarchical=True`, and the fit inner-solves its noise sigmas and
-    # observable scalings whenever the problem allows. Revisit once a release contains #1740.
-    "pypesto[petab] @ git+https://github.com/ICB-DCM/pyPESTO.git@07b3361d2ff9e711f314d5940fceddb560c5ec5e",
+    # Pinned to the merge of AMICI-dev/AMICI#3312, not a release: it gives the PEtab v2 simulator
+    # per-parameter scales, which pyPESTO's importer hands it (below). It also contains
+    # AMICI-dev/AMICI#3309, which 1.1.0 lacks, and without which a hierarchical PEtab v2 problem
+    # cannot be unpickled once its objective has been evaluated (ICB-DCM/pyPESTO#1771) -- and every
+    # fit evaluates the objective before its parallel multistart pickles the problem into the
+    # workers. Built from source (no wheel for a commit), which is why CI installs a toolchain
+    # before it. Move to a release once one contains both.
+    "amici @ git+https://github.com/AMICI-dev/AMICI.git@712c44a60753ea3910eac2a2753041dc0cf2ec6e#subdirectory=python/sdist",
+    # Pinned to the head of ICB-DCM/pyPESTO#1782, not a merge: its PEtab v2 importer takes the
+    # estimation scales (`PetabImporter(parameter_scales=...)`), which v2 dropped from the format.
+    # Without it every v2 problem is optimised linearly, with start points almost all in the top
+    # decade of a log-spanning box. It contains ICB-DCM/pyPESTO#1740, before which the v2 importer
+    # raised NotImplementedError for `hierarchical=True`, and the fit inner-solves its noise sigmas
+    # and observable scalings whenever the problem allows. Move to the merge commit once #1782 is
+    # merged, and to a release once one contains both.
+    "pypesto[petab] @ git+https://github.com/ICB-DCM/pyPESTO.git@106d02d2b8a4f6211debb6cdc45a52a2de75af30",
     "fides>=0.7",
 ]
 
