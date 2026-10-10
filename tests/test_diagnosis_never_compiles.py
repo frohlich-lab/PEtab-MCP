@@ -31,7 +31,7 @@ from petab_mcp.references import StubReferenceResolver
 from petab_mcp.session import PetabSession
 
 
-YAML_PATH = Path(__file__).parent / "data" / "toy_v1" / "problem.yaml"
+YAML_PATH = Path(__file__).parent / "data" / "toy_v2" / "problem.yaml"
 
 
 # The toy model, re-authorable with a different STARTING VALUE for k1. That is the drift that makes
@@ -110,23 +110,13 @@ def _model_less_problem(work: Path) -> Path:
     """A copy of the toy PEtab problem shipping an EMPTY model, so nothing is ever compiled."""
     import shutil
 
-    import libsbml
+    from conftest import with_empty_sbml
 
     d = work / "empty"
     d.mkdir()
-    for name in (
-        "problem.yaml",
-        "conditions.tsv",
-        "measurements.tsv",
-        "observables.tsv",
-        "parameters.tsv",
-    ):
+    for name in ("problem.yaml", "measurements.tsv", "observables.tsv", "parameters.tsv"):
         shutil.copy(YAML_PATH.parent / name, d / name)
-    doc = libsbml.SBMLDocument(3, 2)
-    model = doc.createModel()
-    model.setId("conversion_reaction")
-    model.setMetaId("conversion_reaction")
-    libsbml.writeSBMLToFile(doc, str(d / "conversion_reaction.xml"))
+    with_empty_sbml(d / "problem.yaml")
     return d / "problem.yaml"
 
 

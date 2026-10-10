@@ -549,35 +549,32 @@ def test_the_sigma_widening_warning_reads_an_upgraded_log10_sigma_in_its_own_uni
     import pandas as pd
 
     from petab_mcp import reconcile as R
-    from petab_mcp.problem import WorkingProblem, _v1_observables, v1_measurements
+    from petab_mcp.problem import WorkingProblem
 
-    _, measurements = v1_measurements(
-        pd.DataFrame(
-            {
-                "observableId": ["o"] * 5,
-                "simulationConditionId": ["c"] * 5,
-                "time": [0.0, 1.0, 2.0, 3.0, 4.0],
-                "measurement": [1e2, 1e3, 1e4, 1e5, 1e6],
-                "noiseParameters": ["sd_o"] * 5,
-            }
-        ),
-        set(),
+    measurements = pd.DataFrame(
+        {
+            "observableId": ["o"] * 5,
+            "experimentId": [""] * 5,
+            "time": [0.0, 1.0, 2.0, 3.0, 4.0],
+            "measurement": [1e2, 1e3, 1e4, 1e5, 1e6],
+            "noiseParameters": ["sd_o"] * 5,
+        }
     )
+    # What the upgrade (`problem._from_v1`) makes of a v1 log10 observable.
     observables = pd.DataFrame(
         {
             "observableId": ["o"],
             "observableFormula": ["x"],
-            "observableTransformation": ["log10"],
-            "noiseFormula": ["noiseParameter1_o"],
+            "noiseFormula": ["log(10) * (noiseParameter1_o)"],
+            "noiseDistribution": ["log-normal"],
+            "noisePlaceholders": ["noiseParameter1_o"],
         }
     ).set_index("observableId")
     parameters = pd.DataFrame(
         {"parameterId": ["sd_o"], "lowerBound": [1e-3], "upperBound": [1e-2], "estimate": [True]}
     ).assign(nominalValue=0.1)
     problem = WorkingProblem(
-        observable_df=_v1_observables(observables),
-        measurement_df=measurements,
-        parameter_df=parameters,
+        observable_df=observables, measurement_df=measurements, parameter_df=parameters
     )
     cap = R.sigma_upper_bound_cap(problem, "sd_o") / math.log(10)  # in log10 units
     assert O._warn_sigma_bound_widening(problem, "sd_o", 1.2 * cap) is not None
