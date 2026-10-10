@@ -508,7 +508,7 @@ def _dose_response(frame, inputs, sigma, coordinate) -> dict[str, Any]:
     # costs. Do not validate a fix on fujita: it cannot tell the arms apart.
     #
     # So: do not re-litigate the phrasing. Either make this test able to fire at realistic effect
-    # sizes and design sizes, or keep the arm off (petab_harness.ablations.data_regimes).
+    # sizes and design sizes, or keep `get_data_regimes` out of the agent's toolset.
     # TWO bars, and the reported slope is a MAXIMUM over every column and adjacent dose pair, so
     # neither may be the bare point estimate. `selection` is the expected maximum of that many
     # standard normals -- the widening the selection itself forces, before any confidence margin --
