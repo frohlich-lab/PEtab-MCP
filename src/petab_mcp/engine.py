@@ -13,6 +13,7 @@ here are unconditional; ``swig`` is still located on ``PATH`` for the C++ build.
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import tempfile
@@ -62,6 +63,11 @@ def build_lock(output_folder: str | Path, model_name: str) -> Iterator[None]:
     generates code, so a second build corrupts the first. The second fails fast instead, without
     waiting (:mod:`petab_mcp.filelock`). A module whose extension is already there takes no lock:
     importing it is safe beside anything, and that is what every re-fit of a structure does.
+
+    Once the lock is held, a folder that still has no extension was left by a build that stopped: a
+    running one would hold the lock. AMICI's v2 import compiles only into a missing folder and
+    imports from one that is there, so the leftover would fail every later build of the structure;
+    it is removed first.
     """
     folder = Path(output_folder)
     if _module_on_disk(folder, model_name):
@@ -73,6 +79,11 @@ def build_lock(output_folder: str | Path, model_name: str) -> Iterator[None]:
     except filelock.Held as held:
         raise ModelBuildBusyError(folder.name, held.holder) from None
     try:
+        if folder.is_dir() and not _module_on_disk(folder, model_name):
+            logging.getLogger("petab_mcp").info(
+                "removing %s, which a build left without its compiled extension", folder
+            )
+            shutil.rmtree(folder)
         yield
     finally:
         os.close(fd)

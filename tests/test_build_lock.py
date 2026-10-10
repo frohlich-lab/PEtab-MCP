@@ -1,4 +1,5 @@
-"""A module build fails fast instead of racing another: :func:`petab_mcp.engine.build_lock`.
+"""A module build fails fast instead of racing another, and one that stopped is redone:
+:func:`petab_mcp.engine.build_lock`.
 
 Every session and process shares one build root keyed by module hash, so these tests hold a module's
 lock file the way another build would and drive the real build paths — the fit's, the hierarchical
@@ -52,11 +53,15 @@ def _open(tmp_path, problem_dir=TOY):
     return session, AmiciEngine(session, build_root=str(tmp_path / "build"))
 
 
-def _build_lands(engine, h):
-    """What a finished build of module ``h`` leaves behind: its compiled extension."""
+def _build_lands(engine, h, *, extension=True):
+    """What a build of module ``h`` leaves behind: its generated code and, unless it stopped first,
+    its compiled extension. Returns the module's folder."""
     package = engine.build_root / f"pypesto_{h}" / f"petab_mcp_pp_{h}"
     package.mkdir(parents=True)
-    (package / f"_petab_mcp_pp_{h}.so").write_bytes(b"\x00")
+    (package.parent / "wrapfunctions.cpp").write_text("")
+    if extension:
+        (package / f"_petab_mcp_pp_{h}.so").write_bytes(b"\x00")
+    return package.parent
 
 
 def test_a_build_another_holds_fails_fast_and_touches_nothing(tmp_path, builds):
@@ -86,6 +91,41 @@ def test_a_built_module_takes_no_lock(tmp_path, builds):
     with pytest.raises(_Built):
         fitting.estimation_problem(session, engine)
     os.close(held)
+    assert builds == [("build", str(engine.build_root / f"pypesto_{h}"))]
+
+
+def test_a_stopped_build_is_cleared_once_its_lock_is_free(tmp_path, builds):
+    """A build that stops before its extension lands leaves its generated code, and AMICI's v2 import
+    compiles only into a missing folder: every later build of the structure imported the leftover,
+    and failed, until someone deleted it by hand. A running build looks the same but holds the lock,
+    so its folder is left alone; once the lock is free the folder is cleared and the build goes
+    ahead."""
+    session, engine = _open(tmp_path)
+    folder = _build_lands(engine, session.module_hash(), extension=False)
+    held = filelock.try_lock(f"{folder}.lock")
+    with pytest.raises(ModelBuildBusyError):
+        fitting.estimation_problem(session, engine)
+    os.close(held)
+    assert builds == []
+    with pytest.raises(_Built):
+        fitting.estimation_problem(session, engine)
+    assert builds == [("rmtree", (folder,)), ("build", str(folder))]
+
+
+def test_a_module_that_lands_while_the_lock_is_taken_is_kept(tmp_path, builds, monkeypatch):
+    """The extension is looked for again once the lock is held: a build that finished between the
+    first look and the lock left a module, which another process may be importing without a lock."""
+    session, engine = _open(tmp_path)
+    h = session.module_hash()
+    try_lock = filelock.try_lock
+
+    def _lands_first(path):
+        _build_lands(engine, h)
+        return try_lock(path)
+
+    monkeypatch.setattr(filelock, "try_lock", _lands_first)
+    with pytest.raises(_Built):
+        fitting.estimation_problem(session, engine)
     assert builds == [("build", str(engine.build_root / f"pypesto_{h}"))]
 
 
