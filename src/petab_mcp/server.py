@@ -21,17 +21,17 @@ enforced structurally (there is simply no such tool) and re-checked by the opera
 pipeline's lint (see ``operations``/``validation``). Parameter *values* are set only by the fit
 ``make_changes`` runs; bounds and scale are changed through that same justified call.
 
-``create_server`` wires the session/engine and delegates the (large) tool + resource
-surface to the ``_register_*`` groups below, each closing over a small :class:`_Ctx`
-that carries the session, engine, and the error-wrapping helpers. The tools stay thin:
-the real work lives in the ``session`` / ``operations`` / ``fitting`` / ``data_access`` /
-``reconcile`` modules.
+``create_server`` opens the session/engine (:func:`_open_ctx`) and delegates the (large) tool +
+resource surface to the ``_register_*`` groups below. On EVERY call, never once at
+registration, each tool asks its group's ``route`` for the small :class:`_Ctx` that carries the
+session, engine, and the error-wrapping helpers. The tools stay thin: the real work lives in the
+``session`` / ``operations`` / ``fitting`` / ``data_access`` / ``reconcile`` modules.
 """
 
 from __future__ import annotations
 
 import json
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Callable, Literal
 
 from fastmcp import FastMCP
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
@@ -262,16 +262,23 @@ def unknown_ids_message(unknown: list, known_ids: list[str]) -> str:
 
 
 class _Ctx:
-    """Shared state + error-wrapping helpers the tool groups close over.
+    """One session's state + the error-wrapping helpers a tool resolves through ``route``.
 
-    Bundles the :class:`PetabSession` and :class:`AmiciEngine` with the two dispatch
-    wrappers that turn a raised :class:`PetabMcpError` into a structured tool result (and
-    log it), so every ``_register_*`` group builds its tools against the same helpers.
+    Bundles the :class:`PetabSession`, its :class:`AmiciEngine` and its held-out set (``None``
+    without one) with the two dispatch wrappers that turn a raised :class:`PetabMcpError` into a
+    structured tool result (and log it), so every ``_register_*`` group builds its tools against
+    the same helpers.
     """
 
-    def __init__(self, session: PetabSession, engine: AmiciEngine) -> None:
+    def __init__(
+        self,
+        session: PetabSession,
+        engine: AmiciEngine,
+        held_out: validation_data_mod.HeldOut | None = None,
+    ) -> None:
         self.session = session
         self.engine = engine
+        self.held_out = held_out
 
     def log_error(self, tool: str, args: dict[str, Any], exc: Exception) -> None:
         self.session.provenance.log_error(
@@ -498,9 +505,7 @@ class _Ctx:
 
 
 # ------------------------------------------------------------------- read tools
-def _register_read_tools(mcp: FastMCP, ctx: _Ctx) -> None:
-    session = ctx.session
-
+def _register_read_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
     @mcp.tool()
     def describe_problem() -> dict[str, Any]:
         """Summarize the problem: model size, tables, and free parameters.
@@ -509,6 +514,8 @@ def _register_read_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         `n_starts` is omitted. Read it before passing `n_starts` anywhere: that argument REPLACES
         this default rather than adding to it, so a value below it fits less hard.
         """
+        ctx = route()
+        session = ctx.session
         return session.describe()
 
     @mcp.tool()
@@ -524,6 +531,8 @@ def _register_read_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         Scaling/offset parameters and the noise model are fixed parts of the assay; only the
         readout mapping is yours to define.
         """
+        ctx = route()
+        session = ctx.session
         return df_to_records(session.problem.observable_df)
 
     @mcp.tool()
@@ -531,6 +540,8 @@ def _register_read_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         """List the (fixed) conditions: one row per change a condition makes — it sets
         `targetId` (a model parameter, species or compartment) to `targetValue`. When a condition
         applies is the experiments' business (`list_experiments`)."""
+        ctx = route()
+        session = ctx.session
         return df_to_records(session.problem.condition_df)
 
     @mcp.tool()
@@ -539,6 +550,8 @@ def _register_read_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         `experimentId` applies condition `conditionId` (none: the model as is). `time` -inf is a
         pre-equilibration to steady state before the experiment starts. Every measurement names
         the experiment it was taken in; one with no experiment simulates the model as is."""
+        ctx = route()
+        session = ctx.session
         return df_to_records(session.problem.experiment_df)
 
     @mcp.tool()
@@ -564,6 +577,8 @@ def _register_read_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         back ``next_offset``) or, better, narrow with ``experiment_id``/``observable_id`` first.
         Row order is the measurement table's own and is stable across pages.
         """
+        ctx = route()
+        session = ctx.session
 
         def run() -> "list[dict[str, Any]] | dict[str, Any]":
             # Validated on BOTH paths, before the summarize branch: a nonsense max_rows/offset
@@ -704,9 +719,7 @@ _MAKE_CHANGES_DOC = "\n\n".join(
 
 
 # ------------------------------------------------------------------ model tools
-def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
-    session = ctx.session
-
+def _register_model_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
     @mcp.tool()
     def get_model(format: str = "antimony", version: int | None = None) -> str:
         """Return a model as text — the CURRENT one, or a prior `version`'s stored source.
@@ -721,6 +734,8 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         Antimony treats a parameter as constant unless declared `var`, so its contents carry no
         meaning — read past it. No operation addresses it.
         """
+        ctx = route()
+        session = ctx.session
         if version is None:
             # The RECONCILED model — what is actually fitted, and what `test_make_changes` pins
             # as identical to the stored version ("the working model is always a scored one").
@@ -780,6 +795,8 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         actually took, and to see which species are driven per-condition — those have no
         parameter-table row at all, so `get_parameters` cannot show them.
         """
+        ctx = route()
+        session = ctx.session
         return model_mod.model_structure(session)
 
     @mcp.tool(description=_MAKE_CHANGES_DOC)
@@ -794,6 +811,8 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         references: Annotated[list[str] | None, BeforeValidator(_unwrap_listish)] = None,
         n_starts: int | None = None,
     ) -> dict[str, Any]:
+        ctx = route()
+        session = ctx.session
         # To plain dicts before anything else, so every path below (including the rejection
         # payload) sees the same shape the operations layer does. ModelOp is tolerated as plain
         # dicts too, for the same reason _parameter_entries does it: an in-process caller (the
@@ -969,9 +988,7 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
 
 
 # -------------------------------------------------------------- parameter tools
-def _register_parameter_tools(mcp: FastMCP, ctx: _Ctx) -> None:
-    session = ctx.session
-
+def _register_parameter_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
     @mcp.tool()
     def get_parameters(
         parameter_ids: Annotated[list[str] | None, BeforeValidator(_unwrap_listish)] = None,
@@ -1017,6 +1034,8 @@ def _register_parameter_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         scale through `make_changes` (one batched call: a `parameters` list whose entries
         each carry `lower_bound`/`upper_bound` and/or `scale` for a parameter).
         """
+        ctx = route()
+        session = ctx.session
         rows = param_mod.parameters_to_records(
             session.problem, shipped=session.shipped_parameter_df
         )
@@ -1077,10 +1096,7 @@ def _diagnosis_sections(sections: Any) -> frozenset[str]:
 
 
 # ------------------------------------------------------- fit + simulation tools
-def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
-    session = ctx.session
-    engine = ctx.engine
-
+def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
     @mcp.tool()
     def get_fit_summary() -> dict[str, Any]:
         """Return just the current fit metrics — no per-point records (a cheap read).
@@ -1134,6 +1150,9 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         use `query_data` to query the measured-vs-simulated points and residuals with SQL.
         Refreshed on every commit; generated on demand if none exists.
         """
+        ctx = route()
+        session = ctx.session
+        engine = ctx.engine
         return ctx.run("get_fit_summary", lambda: fitting_mod.fit_summary(session, engine))
 
     @mcp.tool()
@@ -1148,6 +1167,8 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         These are server-side wall times (a breakdown of the heavy compute), distinct from the
         client's `compute_seconds` tool-busy measure, which also covers reads/SQL.
         """
+        ctx = route()
+        session = ctx.session
 
         def run() -> dict[str, Any]:
             # Read under the lock so the four accumulators are a consistent snapshot even if a
@@ -1195,6 +1216,8 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         permission to simplify — no evidence for a second timescale is not evidence that one
         suffices. `conservation` is the sole entry that genuinely constrains.
         """
+        ctx = route()
+        session = ctx.session
         return ctx.run(
             "get_data_regimes",
             lambda: regimes_mod.data_regimes(session, observables),
@@ -1212,6 +1235,8 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         fit's pyPESTO multistart (`optimization_starts`, `optimization_trace`). Use it to
         learn the exact column names before writing a `query_data` query.
         """
+        ctx = route()
+        session = ctx.session
         return ctx.run("list_data_tables", lambda: data_mod.table_schema(session))
 
     @mcp.tool()
@@ -1227,6 +1252,8 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         signatures. Returns `{path, exists, n_lines_total, tail_lines, log}` (the last
         `tail_lines` lines of the file; pass a larger value for more history, `0` for all).
         """
+        ctx = route()
+        session = ctx.session
 
         def run() -> dict[str, Any]:
             if not isinstance(tail_lines, int) or tail_lines < 0:
@@ -1307,6 +1334,8 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
              FROM simulations_history WHERE version IN (3, 4)
              GROUP BY 1, 2, 3 ORDER BY abs(v4) - abs(v3) DESC LIMIT 10`
         """
+        ctx = route()
+        session = ctx.session
 
         def run() -> dict[str, Any]:
             # Reject bad arguments cheaply before generating a (compile-heavy) simulation, and
@@ -1408,6 +1437,8 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         (`available: false` before there is a fit, `stale: true` once a DIFFERENT structure is in the
         working state).
         """
+        ctx = route()
+        session = ctx.session
 
         def run() -> dict[str, Any]:
             want = _diagnosis_sections(sections)
@@ -1454,9 +1485,7 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
 
 
 # ------------------------------------------------- held-out validation (harness-only)
-def _register_validation_data_tools(
-    mcp: FastMCP, ctx: _Ctx, held_out: validation_data_mod.HeldOut
-) -> None:
+def _register_validation_data_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
     """Register ``evaluate_validation_data`` — the HARNESS's read, never the agent's.
 
     Registered only when :func:`create_server` was given a held-out measurement file, and
@@ -1474,7 +1503,6 @@ def _register_validation_data_tools(
     process (see ``petab_harness.runner.server``), and the model + its fitted values exist only
     there.
     """
-    session = ctx.session
 
     @mcp.tool()
     def evaluate_validation_data(n_starts: int | None = None) -> dict[str, Any]:
@@ -1491,27 +1519,31 @@ def _register_validation_data_tools(
         ``{status, mode, nll, k, n, chi2, n_conditions, observables, ...}``; see
         :mod:`petab_mcp.validation_data` for the statuses and the two modes.
         """
+        ctx = route()
+        session = ctx.session
         return ctx.run(
             "evaluate_validation_data",
             lambda: validation_data_mod.score_session(
-                session, ctx.engine, held_out, n_starts=n_starts
+                session, ctx.engine, ctx.held_out, n_starts=n_starts
             ),
             {"n_starts": n_starts},
         )
 
 
 # ------------------------------------------------------ provenance/version tools
-def _register_provenance_tools(mcp: FastMCP, ctx: _Ctx) -> None:
-    session = ctx.session
-
+def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
     @mcp.tool()
     def get_provenance(limit: int = 50) -> list[dict[str, Any]]:
         """Return the most recent provenance events (edits, fits, rollbacks)."""
+        ctx = route()
+        session = ctx.session
         return session.provenance.recent_events(limit)
 
     @mcp.tool()
     def get_errors(limit: int = 50) -> list[dict[str, Any]]:
         """Return the most recent logged errors (rejected operations / failed tool calls)."""
+        ctx = route()
+        session = ctx.session
         return session.provenance.recent_errors(limit)
 
     @mcp.tool()
@@ -1521,11 +1553,15 @@ def _register_provenance_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         rank versions by `criterion_value` and find the best-scoring one. Every version is a fit
         snapshot (or the `rollback` snapshots); `is_new_best` tracks that same score (gated on a
         minimum effect size)."""
+        ctx = route()
+        session = ctx.session
         return session.provenance.list_versions()
 
     @mcp.tool()
     def get_version(version: int) -> dict[str, Any]:
         """Return a version's Antimony model and parameter table."""
+        ctx = route()
+        session = ctx.session
         return ctx.run(
             "get_version", lambda: session.provenance.get_version(version), {"version": version}
         )
@@ -1535,6 +1571,8 @@ def _register_provenance_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         """Diff two versions: Antimony unified diff + parameter add/remove/change + a `fit`
         block with each version's neg_log_likelihood/chi2 and the neg-log-likelihood delta
         (positive = the `to` version fits better)."""
+        ctx = route()
+        session = ctx.session
         return ctx.run(
             "diff_versions",
             lambda: session.provenance.diff_versions(from_version, to_version),
@@ -1554,6 +1592,8 @@ def _register_provenance_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         reuses the existing fit and records a clean restore. Find the target with `list_versions`
         (pick the best-scoring / is_new_best version), then `restore_version(v)`. Appends a new
         version rather than erasing history, so a restore is itself auditable."""
+        ctx = route()
+        session = ctx.session
         return ctx.run(
             "restore_version",
             lambda: session.restore_version(version, justification or None),
@@ -1578,39 +1618,53 @@ def _register_provenance_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         next model must change the structure (add a latent state, add a feedback reaction, raise
         interaction order), not re-fit or widen the same one.
         """
+        ctx = route()
+        session = ctx.session
         return session.progress_report()
 
 
 # --------------------------------------------------------------------- resources
-def _register_resources(mcp: FastMCP, ctx: _Ctx) -> None:
-    session = ctx.session
-
+def _register_resources(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
     @mcp.resource("petab://model/antimony")
     def _res_model_antimony() -> str:
+        ctx = route()
+        session = ctx.session
         return model_mod.get_model(session, "antimony")
 
     @mcp.resource("petab://model/sbml")
     def _res_model_sbml() -> str:
+        ctx = route()
+        session = ctx.session
         return model_mod.get_model(session, "sbml")
 
     @mcp.resource("petab://observables")
     def _res_observables() -> str:
+        ctx = route()
+        session = ctx.session
         return json.dumps(df_to_records(session.problem.observable_df), indent=2)
 
     @mcp.resource("petab://conditions")
     def _res_conditions() -> str:
+        ctx = route()
+        session = ctx.session
         return json.dumps(df_to_records(session.problem.condition_df), indent=2)
 
     @mcp.resource("petab://experiments")
     def _res_experiments() -> str:
+        ctx = route()
+        session = ctx.session
         return json.dumps(df_to_records(session.problem.experiment_df), indent=2)
 
     @mcp.resource("petab://measurements")
     def _res_measurements() -> str:
+        ctx = route()
+        session = ctx.session
         return json.dumps(df_to_records(session.problem.measurement_df), indent=2)
 
     @mcp.resource("petab://parameters")
     def _res_parameters() -> str:
+        ctx = route()
+        session = ctx.session
         return json.dumps(
             param_mod.parameters_to_records(session.problem, shipped=session.shipped_parameter_df),
             indent=2,
@@ -1618,28 +1672,78 @@ def _register_resources(mcp: FastMCP, ctx: _Ctx) -> None:
 
     @mcp.resource("petab://provenance")
     def _res_provenance() -> str:
+        ctx = route()
+        session = ctx.session
         return json.dumps(session.provenance.recent_events(200), indent=2)
 
     @mcp.resource("petab://errors")
     def _res_errors() -> str:
+        ctx = route()
+        session = ctx.session
         return json.dumps(session.provenance.recent_errors(200), indent=2)
 
     @mcp.resource("petab://versions")
     def _res_versions() -> str:
+        ctx = route()
+        session = ctx.session
         return json.dumps(session.provenance.list_versions(), indent=2)
 
     @mcp.resource("petab://simulations")
     def _res_simulations() -> str:
+        ctx = route()
         return json.dumps(ctx.run("simulations", ctx.current_simulation), indent=2)
 
     @mcp.resource("petab://data/schema")
     def _res_data_schema() -> str:
+        ctx = route()
+        session = ctx.session
         return json.dumps(data_mod.table_schema(session), indent=2)
 
     @mcp.resource("petab://fit/log")
     def _res_fit_log() -> str:
+        ctx = route()
+        session = ctx.session
         path = logging_setup.pypesto_log_path(session.provenance.root)
         return path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+
+
+def _open_ctx(
+    yaml_path: str,
+    *,
+    provenance_dir: str | None,
+    criterion: str | None,
+    auto_fit_starts: int,
+    validation_measurements: str | None,
+    score_shipped_model: bool,
+    build_root: str | None,
+    reference_mode: str,
+    resolver: Any | None,
+    auto_fit: bool,
+) -> _Ctx:
+    """Open the session on the problem at ``yaml_path``: its :class:`PetabSession`, the
+    :class:`AmiciEngine` wired into it, and its held-out set. The arguments are
+    :func:`create_server`'s."""
+    session = PetabSession(
+        yaml_path,
+        provenance_dir=provenance_dir,
+        reference_mode=reference_mode,
+        resolver=resolver,
+        criterion=criterion,
+    )
+    engine = AmiciEngine(session, build_root=build_root)
+    # Wire the engine so the fit `make_changes` runs can fit + simulate.
+    session.engine = engine
+    session.auto_fit = auto_fit
+    session.auto_fit_starts = auto_fit_starts
+    if score_shipped_model and session.model_authored():
+        fitting_mod.score_at_nominal(session, engine)
+    held_out = None
+    if validation_measurements:
+        # Read ONCE, as the session opens: a per-call read would make the score depend on a file
+        # the run can no longer see (the harness runs from a scratch copy on the cluster) and would
+        # let a mid-run edit of the file change the bar under the judge.
+        held_out = validation_data_mod.read_held_out(validation_measurements)
+    return _Ctx(session, engine, held_out)
 
 
 def create_server(
@@ -1687,20 +1791,18 @@ def create_server(
     the table's nominal values before serving, with no fit (:func:`fitting.score_at_nominal`); a
     model-less problem ignores it.
     """
-    session = PetabSession(
+    ctx = _open_ctx(
         yaml_path,
         provenance_dir=provenance_dir,
+        criterion=criterion,
+        auto_fit_starts=auto_fit_starts,
+        validation_measurements=validation_measurements,
+        score_shipped_model=score_shipped_model,
+        build_root=build_root,
         reference_mode=reference_mode,
         resolver=resolver,
-        criterion=criterion,
+        auto_fit=auto_fit,
     )
-    engine = AmiciEngine(session, build_root=build_root)
-    # Wire the engine so the fit `make_changes` runs can fit + simulate.
-    session.engine = engine
-    session.auto_fit = auto_fit
-    session.auto_fit_starts = auto_fit_starts
-    if score_shipped_model and session.model_authored():
-        fitting_mod.score_at_nominal(session, engine)
 
     # Load tool-usage skills up front so the server instructions only advertise
     # `list_skills`/`get_skill` when skills are actually available (registered below).
@@ -1709,21 +1811,18 @@ def create_server(
     instructions = SERVER_INSTRUCTIONS + (_SKILLS_INSTRUCTION if skills else "")
     mcp = FastMCP("petab-mcp", instructions=instructions)
 
-    # Register the tool + resource groups; each closes over the shared context.
-    ctx = _Ctx(session, engine)
-    _register_read_tools(mcp, ctx)
-    _register_model_tools(mcp, ctx)
-    _register_parameter_tools(mcp, ctx)
-    _register_fit_tools(mcp, ctx)
-    if validation_measurements:
-        # Read ONCE, at startup: a per-call read would make the score depend on a file the run can
-        # no longer see (the harness runs from a scratch copy on the cluster) and would let a mid-run
-        # edit of the file change the bar under the judge.
-        _register_validation_data_tools(
-            mcp, ctx, validation_data_mod.read_held_out(validation_measurements)
-        )
-    _register_provenance_tools(mcp, ctx)
-    _register_resources(mcp, ctx)
+    # Register the tool + resource groups; each tool asks `route` for the context per call.
+    def route() -> _Ctx:
+        return ctx
+
+    _register_read_tools(mcp, route)
+    _register_model_tools(mcp, route)
+    _register_parameter_tools(mcp, route)
+    _register_fit_tools(mcp, route)
+    if ctx.held_out is not None:
+        _register_validation_data_tools(mcp, route)
+    _register_provenance_tools(mcp, route)
+    _register_resources(mcp, route)
     # Register the skills loaded above as `list_skills`/`get_skill` tools plus
     # `petab://skills` resources (no-op when no skills were found).
     skills_mod.register_skills(mcp, skills)
