@@ -5,7 +5,8 @@ The statistic is exercised on a fake built objective (residuals + sensitivities 
 an AMICI model whose sigma-residual flag it toggles), so each property is pinned by construction
 rather than against the implementation's own arithmetic: the ``k_eff = m`` identity for unit
 residuals, a redundant column counting nothing, high-leverage misfit inflating it, the
-per-condition row folding, the ρ²-weighted sigma information, and the failure modes.
+per-experiment row folding, the ρ²-weighted sigma information, and the failure modes. Only the
+hierarchical detour runs on the real toy, against the joint objective it has to agree with.
 """
 
 from __future__ import annotations
@@ -55,71 +56,6 @@ class _Objective:
 class _Problem:
     def __init__(self, objective):
         self.objective = objective
-
-
-class _Relative:
-    """pyPESTO's relative inner calculator, reduced to the one method the hierarchical path drives:
-    solve the inner problem at x, evaluate AMICI with the solution filled in, hand back residuals
-    with a column for EVERY optimisation parameter."""
-
-    def __init__(self, res, sres_full, blocks):
-        self.res, self.sres_full, self.blocks = res, sres_full, blocks
-        self.calls: list[dict] = []
-
-    def call_amici_twice(self, **kw):
-        self.calls.append(kw)
-        assert kw["mode"] == "mode_res" and kw["sensi_orders"] == (0, 1)
-        return (
-            {
-                "res": self.res,
-                "sres": self.sres_full,
-                "rdatas": [{"res": [0.0] * b} for b in self.blocks],
-            },
-            {"sigma": 0.1},
-        )
-
-
-class _Collector:
-    def __init__(self, relative):
-        self.inner_calculators = [relative]
-
-
-class _Pre:
-    def __init__(self, fixed):
-        self.fixed = fixed
-
-    def preprocess(self, x):
-        return np.concatenate([np.asarray(x, dtype=float), self.fixed])
-
-
-class _HierarchicalObjective:
-    """What pyPESTO's hierarchical AmiciObjective exposes: the collector as `calculator`, the
-    pre-processor that expands the free vector, and the AMICI handles the calculator is handed."""
-
-    def __init__(self, relative, n_fixed):
-        self.amici_model = _Model()
-        self.calculator = _Collector(relative)
-        self.pre_post_processor = _Pre(np.zeros(n_fixed))
-        self.amici_solver, self.edatas, self.n_threads, self.fim_for_hess = (
-            "solver",
-            "edatas",
-            1,
-            True,
-        )
-        self.x_ids = ["k1", "k2", "A_init"]
-        self.parameter_mapping = "mapping"
-
-    def par_arr_to_dct(self, x):
-        return dict(zip(self.x_ids, x))
-
-    def __call__(self, *a, **kw):
-        raise RuntimeError("pyPESTO's direct hierarchical residual path — never fills res/sres")
-
-
-class _HierarchicalProblem:
-    def __init__(self, objective, x_free_indices):
-        self.objective = objective
-        self.x_free_indices = x_free_indices
 
 
 def _k_eff(X, res, *, k=None, blocks=None, fail_res=False):
@@ -263,25 +199,59 @@ def test_the_stored_simulation_persists_the_count():
     assert fitting.build_sim_payload_for_version(_fitsim(100.0, k_eff=None))["k_eff"] is None
 
 
-def test_a_hierarchical_objective_is_evaluated_through_call_amici_twice():
-    """pyPESTO's hierarchical objective raises in residual mode on its own path, so the relative
-    calculator's `call_amici_twice` is driven directly and its full-width `sres` cut to the free
-    columns; the inner parameter, not an optimisation coordinate there, is charged its unit."""
-    X = np.array([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, -1.0]])
-    res = np.concatenate([[1, -1, 1, -1], np.zeros(4)])
-    # a third column for the fixed `A_init`, which the post-processing must drop
-    sres_full = np.vstack([np.column_stack([X, np.full(4, 7.0)]), np.zeros((4, 3))])
-    rel = _Relative(res, sres_full, blocks=[8])
-    obj = _HierarchicalObjective(rel, n_fixed=1)
-    problem = _HierarchicalProblem(obj, x_free_indices=[0, 1])
+@pytest.mark.parametrize("sigma_scale", ["lin", "log10"])
+def test_a_hierarchical_objectives_rows_are_the_joint_rows_at_its_inner_optimum(
+    tmp_path, amici_build_root, sigma_scale
+):
+    """pyPESTO refuses residual sensitivities while a sigma is inner-solved, so the rows are taken
+    from its plain calculator with the inner solution filled in. On the real toy, with its sigma
+    made a noise override: the joint objective at that same sigma must give the same rows, bar
+    the sigma's own column. A sigma estimated on log10 is inner-solved all the same, on a linear
+    scale: pyPESTO refuses any other for an inner parameter."""
+    import shutil
 
-    k_eff = effective_parameter_count(problem, np.zeros(2), k=3)
-    assert k_eff == pytest.approx(2.0 + 1), "outer trace over the two free columns, plus one inner"
-    call = rel.calls[0]
-    assert call["x_dct"] == {"k1": 0.0, "k2": 0.0, "A_init": 0.0}, "the free point, expanded"
-    assert (call["amici_model"], call["edatas"], call["parameter_mapping"]) == (
-        obj.amici_model,
-        "edatas",
-        "mapping",
-    ), "the collector's own arguments, passed through"
-    assert obj.amici_model.flags_seen == [] and obj.amici_model.sigma_residuals is False
+    import pandas as pd
+    from pypesto.C import INNER_PARAMETERS
+
+    from petab_mcp.engine import AmiciEngine
+    from petab_mcp.identifiability import _fim_from_rows
+    from petab_mcp.problem import scale
+    from petab_mcp.references import StubReferenceResolver
+    from petab_mcp.session import PetabSession
+
+    from conftest import DATA_DIR
+
+    work = tmp_path / "toy"
+    shutil.copytree(DATA_DIR, work)
+    (work / "observables.tsv").write_text(
+        "observableId\tobservableFormula\tnoiseFormula\tnoisePlaceholders\n"
+        "obs_B\tB\tnoiseParameter1_obs_B\tnoiseParameter1_obs_B\n"
+    )
+    meas = pd.read_csv(work / "measurements.tsv", sep="\t", keep_default_na=False)
+    meas.assign(noiseParameters="sigma_B").to_csv(work / "measurements.tsv", sep="\t", index=False)
+    pars = work / "parameters.tsv"
+    pars.write_text(  # sigma_B's row
+        pars.read_text()
+        .replace("sigma_B\tlin", f"sigma_B\t{sigma_scale}")
+        .replace("0.1\tfalse", "0.1\ttrue")
+    )
+    session = PetabSession(
+        str(work / "problem.yaml"),
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+    )
+    engine = AmiciEngine(session, build_root=str(amici_build_root))
+
+    hierarchical, inner = fitting.estimation_problem(session, engine)
+    assert list(inner) == ["sigma_B"], "the sigma is inner-solved"
+    x = np.log10([0.4, 0.08])  # k1, k2 on their log10 scale
+    sigma = hierarchical.objective(x, sensi_orders=(0,), return_dict=True)[INNER_PARAMETERS][0]
+    joint = fitting.pypesto_problem(
+        session.problem, engine.pypesto_importer_kwargs(session.module_hash())
+    )
+    assert joint.x_names[:3] == ["k1", "k2", "sigma_B"]
+
+    H, S = _fim_from_rows(hierarchical, x)
+    H_joint, S_joint = _fim_from_rows(joint, np.append(x, scale(sigma, sigma_scale)))
+    assert H == pytest.approx(H_joint[:2, :2], rel=1e-6)
+    assert S == pytest.approx(S_joint[:, :2], rel=1e-6, abs=1e-12)

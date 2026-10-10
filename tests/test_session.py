@@ -8,8 +8,8 @@ from petab_mcp.session import PetabSession
 
 def test_load_and_summary(session):
     p = session.problem
-    assert p.n_measurements == 6
-    assert list(p.get_observable_ids()) == ["obs_B"]
+    assert len(p.measurement_df) == 6
+    assert list(p.observable_df.index) == ["obs_B"]
     assert set(p.x_free_ids) == {"k1", "k2"}
 
 

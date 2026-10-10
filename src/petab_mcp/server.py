@@ -3,7 +3,7 @@
 Tool groups:
 
 * read-only (fixed design): ``describe_problem``, ``list_observables``,
-  ``list_conditions``, ``get_measurements``
+  ``list_conditions``, ``list_experiments``, ``get_measurements``
 * model + parameters (the single constrained operation): ``make_changes`` — author the whole
   model in Antimony and/or set parameter bounds/scale, then fit and snapshot a version. Requires
   a justification (references optional). Plus read-only ``get_model``, ``get_model_structure``,
@@ -16,7 +16,7 @@ Tool groups:
 * skills (tool-usage documentation, bundled under ``_skills/``): ``list_skills``,
   ``get_skill``
 
-No tool mutates the measurement/condition/observable tables — that invariant is
+No tool mutates the measurement/condition/experiment/observable tables — that invariant is
 enforced structurally (there is simply no such tool) and re-checked by the operation
 pipeline's lint (see ``operations``/``validation``). Parameter *values* are set only by the fit
 ``make_changes`` runs; bounds and scale are changed through that same justified call.
@@ -35,7 +35,7 @@ from typing import Annotated, Any, Literal
 
 from fastmcp import FastMCP
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
-from petab.v1.C import OBSERVABLE_ID, SIMULATION_CONDITION_ID
+from petab.v2.C import EXPERIMENT_ID, OBSERVABLE_ID
 
 from . import data_access as data_mod
 from . import fitting as fitting_mod
@@ -61,8 +61,8 @@ from .session import PetabSession
 # cannot learn from any single tool's description: the shape of the problem, the invariants
 # that span tools, and where the full workflow lives.
 SERVER_INSTRUCTIONS = (
-    "Interact with a fixed PEtab v1 estimation problem. The experimental design "
-    "(measurements, conditions, observables) is READ-ONLY — no tool mutates it. "
+    "Interact with a fixed PEtab v2 estimation problem. The experimental design "
+    "(measurements, conditions, experiments, observables) is READ-ONLY — no tool mutates it. "
     "`make_changes` is the SINGLE editor: give it `antimony` to author the whole model, "
     "`parameters` to set estimation bounds/scale, or both — at least one. It requires a "
     "non-empty justification (references optional, PubMed-validated if given), reconciles the "
@@ -117,7 +117,9 @@ class ParameterChange(BaseModel):
         default=None, description="new upper bound of the estimation interval."
     )
     scale: Literal["lin", "log", "log10"] | None = Field(
-        default=None, description="PEtab parameterScale. Exactly these three values."
+        default=None,
+        description="the scale the parameter is ESTIMATED on (log10 for a positive quantity "
+        "that may span decades). Exactly these three values.",
     )
 
 
@@ -526,20 +528,30 @@ def _register_read_tools(mcp: FastMCP, ctx: _Ctx) -> None:
 
     @mcp.tool()
     def list_conditions() -> list[dict[str, Any]]:
-        """List the (fixed) conditions and the model changes they apply."""
+        """List the (fixed) conditions: one row per change a condition makes — it sets
+        `targetId` (a model parameter, species or compartment) to `targetValue`. When a condition
+        applies is the experiments' business (`list_experiments`)."""
         return df_to_records(session.problem.condition_df)
 
     @mcp.tool()
+    def list_experiments() -> list[dict[str, Any]]:
+        """List the (fixed) experiments: one row per period — from `time` on, experiment
+        `experimentId` applies condition `conditionId` (none: the model as is). `time` -inf is a
+        pre-equilibration to steady state before the experiment starts. Every measurement names
+        the experiment it was taken in; one with no experiment simulates the model as is."""
+        return df_to_records(session.problem.experiment_df)
+
+    @mcp.tool()
     def get_measurements(
-        condition_id: str | None = None,
+        experiment_id: str | None = None,
         observable_id: str | None = None,
         summarize: bool = True,
         max_rows: int = 200,
         offset: int = 0,
     ) -> "list[dict[str, Any]] | dict[str, Any]":
-        """Return the (fixed) measurement data, optionally filtered by condition/observable.
+        """Return the (fixed) measurement data, optionally filtered by experiment/observable.
 
-        By default (``summarize=True``) returns a COMPACT SUMMARY — per observable×condition:
+        By default (``summarize=True``) returns a COMPACT SUMMARY — per observable×experiment:
         point count, time span, value min/max/mean, and a few preview points — so the data's
         shape is visible without every raw point. Prefer it, and prefer ``query_data`` for a
         targeted slice; the raw dump is rarely the right tool.
@@ -549,7 +561,7 @@ def _register_read_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         cosmetic — an unpaged dump measured 73k tokens on isensee and 81k on lucarelli, in ONE
         tool result that then re-enters the context on every later turn; one such call has
         ended a run with the provider's "prompt exceeds max length". Page with ``offset`` (feed
-        back ``next_offset``) or, better, narrow with ``condition_id``/``observable_id`` first.
+        back ``next_offset``) or, better, narrow with ``experiment_id``/``observable_id`` first.
         Row order is the measurement table's own and is stable across pages.
         """
 
@@ -560,8 +572,8 @@ def _register_read_tools(mcp: FastMCP, ctx: _Ctx) -> None:
             n_rows, off = data_mod.validate_page_args(max_rows, offset)
             df = session.problem.measurement_df
             if df is not None:
-                if condition_id is not None:
-                    df = df[df[SIMULATION_CONDITION_ID] == condition_id]
+                if experiment_id is not None:
+                    df = df[df[EXPERIMENT_ID] == experiment_id]
                 if observable_id is not None:
                     df = df[df[OBSERVABLE_ID] == observable_id]
             if summarize:
@@ -588,7 +600,7 @@ def _register_read_tools(mcp: FastMCP, ctx: _Ctx) -> None:
             "get_measurements",
             run,
             {
-                "condition_id": condition_id,
+                "experiment_id": experiment_id,
                 "observable_id": observable_id,
                 "summarize": summarize,
                 "max_rows": max_rows,
@@ -763,7 +775,7 @@ def _register_model_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         Each initial-condition entry reports whether that species' declared t=0 actually governs
         the simulated state: `t0_source` is `fixed` (the declared value is used), `estimated` (the
         fit sets it — the DEFAULT, so a declared t=0 is only a starting guess) or
-        `condition_table` (a condition column overrides it per condition), with `ic_parameter`
+        `condition_table` (a condition target overrides it per condition), with `ic_parameter`
         naming the parameter that carries it. Read it to check whether a t=0 you meant to pin
         actually took, and to see which species are driven per-condition — those have no
         parameter-table row at all, so `get_parameters` cannot show them.
@@ -973,7 +985,7 @@ def _register_parameter_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         ]
         | None = None,
     ) -> list[dict[str, Any]]:
-        """Return the parameter table (id, bounds, nominal_value, estimate, prior), each row
+        """Return the parameter table (id, bounds, scale, nominal_value, estimate), each row
         annotated with its `role` and `status`. `parameter_ids` and/or `role` FILTER the rows —
         on large problems (100+ rows, re-sent in your history every later turn) ask for the rows
         you need (e.g. the parameters a fit just changed, or role='noise_sigma') rather than the
@@ -997,7 +1009,7 @@ def _register_parameter_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         is no mechanism to reference them. They are shown because they were handed to you: they
         are the constants you may build on, and a shipped-FIXED one must stay declared or the
         change is rejected. Declare the name in your Antimony and the row comes back exactly as
-        shown here — its bounds, scale, estimated/fixed status and any prior — so re-introducing
+        shown here — its bounds, scale and estimated/fixed status — so re-introducing
         a shipped parameter never costs you its definition. (`query_data`'s `parameters` table is
         the LIVE table only, so a count there is the real estimation problem.)
 
@@ -1193,7 +1205,7 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
     def list_data_tables() -> dict[str, Any]:
         """List the SQL tables `query_data` exposes: name, description, columns, row count.
 
-        The tables are the PEtab design tables (`measurements`, `conditions`,
+        The tables are the PEtab design tables (`measurements`, `conditions`, `experiments`,
         `observables`), the `parameters` table, the `simulations` dataframe (one row per
         measurement point, carrying `simulation` and the residuals), `simulations_history`
         (those same rows for EVERY stored version, with a `version` column), and the last
@@ -1229,8 +1241,8 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
 
         The query runs against a private, disposable copy of the data, so any SQL is allowed
         and nothing can affect the session (host file/network access is disabled). Tables:
-        `measurements`, `conditions`, `observables`, `parameters`; `simulations` — the
-        per-point dataframe from the last commit, with `measurement`, `simulation`, `residual`
+        `measurements`, `conditions`, `experiments`, `observables`, `parameters`; `simulations` —
+        the per-point dataframe from the last commit, with `measurement`, `simulation`, `residual`
         (natural units), `residual_weighted` (the noise-normalized chi2 term), and `noise`
         (sigma); `simulations_history` — those same per-point rows for EVERY stored version
         with a `version` column (see the CROSS-VERSION paragraph below); and the last fit's
@@ -1249,15 +1261,15 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         one would mean running your query a second time.
 
         TWO NAMING CONVENTIONS, and they do not mix. The PEtab tables keep PEtab's camelCase:
-        `measurements(observableId, simulationConditionId, preequilibrationConditionId, time,
-        measurement, observableParameters, noiseParameters)`, `conditions(conditionId, ...)`,
-        `observables(observableId, ...)`, `parameters(parameterId, ...)`. The DERIVED tables use
-        snake_case: `simulations(observable_id, condition_id, time, ...)`,
-        `simulations_history` (the same plus `version`), and
-        `optimization_starts` / `optimization_trace`. The measurement table's condition column is
-        `simulationConditionId` — NOT `conditionId` (the `conditions` table's own key) and NOT
-        `condition_id` (that is `simulations`). Do not carry a column list from a `simulations`
-        query onto `measurements`, or the reverse.
+        `measurements(observableId, experimentId, time, measurement, observableParameters,
+        noiseParameters)`, `conditions(conditionId, targetId, targetValue)`,
+        `experiments(experimentId, time, conditionId)`, `observables(observableId, ...)`,
+        `parameters(parameterId, ...)`. The DERIVED tables use snake_case:
+        `simulations(observable_id, experiment_id, time, ...)`, `simulations_history` (the same
+        plus `version`), and `optimization_starts` / `optimization_trace`. The measurement
+        table's key column is `experimentId` — NOT `experiment_id` (that is `simulations`); an
+        empty `experimentId` ('') is a measurement of the model simulated as is. Do not carry a
+        column list from a `simulations` query onto `measurements`, or the reverse.
 
         ONE ROW PER GROUP: use DuckDB's aggregates, do not hand-roll them. In a GROUP BY query
         every selected expression must be an aggregate or a grouping key — a window function
@@ -1269,11 +1281,11 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
           peak and the time it occurs      `max(measurement)` / `arg_max(time, measurement)`
           trend                            `regr_slope(measurement, time)`, `corr(time, measurement)`
           spread                           `stddev_samp` / `var_samp` (there is no `var`)
-          `SELECT observableId, simulationConditionId, count(*) AS n,
+          `SELECT observableId, experimentId, count(*) AS n,
                   arg_min(measurement, time) AS y_at_t0, arg_max(measurement, time) AS y_at_tend,
                   max(measurement) AS y_peak, arg_max(time, measurement) AS t_peak,
                   regr_slope(measurement, time) AS slope
-             FROM measurements GROUP BY observableId, simulationConditionId`
+             FROM measurements GROUP BY observableId, experimentId`
 
         Compute whatever residual breakdown you
         need in SQL. Filter to `residual_weighted IS NOT NULL` for residual stats (rows with
@@ -1289,7 +1301,7 @@ def _register_fit_tools(mcp: FastMCP, ctx: _Ctx) -> None:
         CROSS-VERSION comparison: `simulations_history` holds the same per-point rows for
         every stored version, with a `version` column (snake_case like `simulations`; a
         version whose fit failed contributes no rows). Where did v4 get worse than v3:
-          `SELECT observable_id, condition_id, time,
+          `SELECT observable_id, experiment_id, time,
                   max(CASE WHEN version=3 THEN residual_weighted END) AS v3,
                   max(CASE WHEN version=4 THEN residual_weighted END) AS v4
              FROM simulations_history WHERE version IN (3, 4)
@@ -1588,6 +1600,10 @@ def _register_resources(mcp: FastMCP, ctx: _Ctx) -> None:
     @mcp.resource("petab://conditions")
     def _res_conditions() -> str:
         return json.dumps(df_to_records(session.problem.condition_df), indent=2)
+
+    @mcp.resource("petab://experiments")
+    def _res_experiments() -> str:
+        return json.dumps(df_to_records(session.problem.experiment_df), indent=2)
 
     @mcp.resource("petab://measurements")
     def _res_measurements() -> str:

@@ -47,11 +47,11 @@ def test_zero_estimated_params_guard(session):
     """A fit of a model with no free parameters is rejected with a clear message BEFORE pyPESTO
     runs. The guard lives in ``_auto_fit_and_improvement`` and fires before the engine is touched,
     so a dummy engine is enough."""
-    from petab.v1.C import ESTIMATE
+    from petab.v2.C import ESTIMATE
 
     session.engine = object()  # non-None so the fit path is entered (guard raises before use)
     session.auto_fit = True
-    session.problem.parameter_df[ESTIMATE] = 0  # nothing left to estimate
+    session.problem.parameter_df[ESTIMATE] = False  # nothing left to estimate
     with pytest.raises(ModelUpdateError, match="NO estimated"):
         session._auto_fit_and_improvement(n_starts=1)
 
@@ -341,7 +341,7 @@ def test_the_fim_is_evaluated_on_the_fits_own_problem(fit_session, monkeypatch):
     minimised, held on the frozen fit record. Construction used to dominate the hint's cost (0.33 s
     of 0.70 s on schwen, k=30) and, when the working SBML had drifted, came with a full C++ build."""
     import pypesto.petab
-    from petab.v1.C import UPPER_BOUND
+    from petab.v2.C import UPPER_BOUND
 
     from petab_mcp import identifiability as I
 
@@ -466,10 +466,10 @@ def test_a_real_fit_populates_the_noise_sigma_verdict(fit_session):
     sigma: with the toy's fixed sigma_B the report is legitimately empty, which cannot tell a
     working path from a dead one.
     """
-    from petab.v1.C import ESTIMATE
+    from petab.v2.C import ESTIMATE
 
     sess = fit_session
-    sess.problem.parameter_df.loc["sigma_B", ESTIMATE] = 1
+    sess.problem.parameter_df.loc["sigma_B", ESTIMATE] = True
     res = sess.fit(n_starts=2)
 
     assert res["noise_sigma_report"], "the fit block must carry the estimated sigma's report"
@@ -513,10 +513,10 @@ def test_the_noop_carries_an_implausible_noise_verdict(fit_session):
     """The case the omission would have hidden: when the duplicate version's noise model IS
     implausible, the de-duplicated fit must say so — including the advice string, which is the
     only key that distinguishes "implausible" from "plausible" by its presence."""
-    from petab.v1.C import ESTIMATE, LOWER_BOUND, UPPER_BOUND
+    from petab.v2.C import ESTIMATE, LOWER_BOUND, UPPER_BOUND
 
     sess = fit_session
-    sess.problem.parameter_df.loc["sigma_B", ESTIMATE] = 1
+    sess.problem.parameter_df.loc["sigma_B", ESTIMATE] = True
     # FORCE the implausible verdict via the box rather than hoping the fit lands outside the band:
     # once the plausibility gate became dimensionally correct (#118) this fixture's sigma fitted to
     # a perfectly reasonable value and the test went vacuous. Clamping sigma_B many orders below
@@ -553,3 +553,35 @@ def test_a_restored_fit_reports_parameter_scales(fit_session):
     assert scales, "a restored fit must carry the scale map, not None beside linear values"
     assert set(scales) == set(restored["fitted_parameters"])
     assert all(v in ("lin", "log", "log10") for v in scales.values())
+
+
+def test_a_log_normal_observable_keeps_the_fit_joint(session):
+    """pyPESTO refuses a log-normal observable that HAS inner parameters, but scores one without
+    them as normal on the linear scale, so it beside an inner-solvable sigma would come out wrong:
+    such a problem is fitted jointly, before anything is built."""
+    import pandas as pd
+
+    from petab_mcp import fitting
+
+    p = session.problem
+    observables = pd.concat(
+        [
+            p.observable_df.assign(
+                noiseFormula="noiseParameter1_obs_B", noisePlaceholders="noiseParameter1_obs_B"
+            ),
+            pd.DataFrame(
+                {"observableFormula": ["A"], "noiseFormula": ["0.2"]},
+                index=pd.Index(["obs_A"], name="observableId"),
+            ).assign(
+                noiseDistribution="log-normal", observablePlaceholders="", noisePlaceholders=""
+            ),
+        ]
+    )
+    b = p.measurement_df.assign(noiseParameters="sigma_B")
+    p = session.problem = p.replace(
+        observable_df=observables,
+        measurement_df=pd.concat([b, b.assign(observableId="obs_A", noiseParameters="")]),
+    )
+    p.parameter_df.loc["sigma_B", "estimate"] = True
+    assert fitting._reconcile.classify_inner_parameters(p) == {"sigma_B": "sigma"}
+    assert fitting._build_hierarchical_problem(session, {}) == (None, {})

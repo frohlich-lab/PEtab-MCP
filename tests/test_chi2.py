@@ -16,7 +16,7 @@ from petab_mcp.engine import AmiciEngine
 def _rec(obs, cond, t, m, s, res, w, noise):
     return {
         "observable_id": obs,
-        "condition_id": cond,
+        "experiment_id": cond,
         "time": t,
         "measurement": m,
         "simulation": s,

@@ -33,7 +33,7 @@ def model_structure(session) -> dict[str, Any]:
     (fixed), fitted (estimated), or overridden per-condition. That account used to ride on every
     edit result until the result became just the fit, which left it computed but unreachable —
     and it is the only place two facts appear at all: which IC parameter belongs to which
-    species, and which species are driven by a condition column (those have no parameter row, so
+    species, and which species are driven by a condition target (those have no parameter row, so
     `get_parameters` cannot show them). It lives here, on an on-demand read, rather than on every
     call.
     """

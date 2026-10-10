@@ -147,6 +147,6 @@ def test_a_bad_amici_log_value_does_not_take_the_server_down(monkeypatch, tmp_pa
     task in the sweep failing to start. Drive the real constructor, since that is where it broke.
     """
     monkeypatch.setenv("AMICI_LOG", "not-a-level")
-    shutil.copytree(Path(__file__).parent / "data" / "toy_v1", tmp_path / "p")
+    shutil.copytree(Path(__file__).parent / "data" / "toy_v2", tmp_path / "p")
     PetabSession(str(tmp_path / "p" / "problem.yaml"))
     assert logging.getLogger("amici").level == logging.WARNING

@@ -9,18 +9,27 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from petab.v1.C import MEASUREMENT, OBSERVABLE_ID, SIMULATION_CONDITION_ID, TIME
+from petab.v2.C import (
+    CONDITION_ID,
+    EXPERIMENT_ID,
+    MEASUREMENT,
+    OBSERVABLE_ID,
+    TARGET_ID,
+    TARGET_VALUE,
+    TIME,
+)
 
 from petab_mcp.regimes import data_regimes
 
 
 class _P:
-    """The two tables `data_regimes` reads. Nothing else is touched."""
+    """The tables `data_regimes` reads. Nothing else is touched."""
 
-    def __init__(self, measurement_df, condition_df=None, observable_df=None):
+    def __init__(self, measurement_df, condition_df=None, observable_df=None, experiment_df=None):
         self.measurement_df = measurement_df
         self.condition_df = condition_df
         self.observable_df = observable_df
+        self.experiment_df = experiment_df
 
 
 class _S:
@@ -29,14 +38,14 @@ class _S:
 
 
 def _meas(rows) -> pd.DataFrame:
-    return pd.DataFrame(rows, columns=[OBSERVABLE_ID, SIMULATION_CONDITION_ID, TIME, MEASUREMENT])
+    return pd.DataFrame(rows, columns=[OBSERVABLE_ID, EXPERIMENT_ID, TIME, MEASUREMENT])
 
 
-def _series(oid, cid, t, y, reps=2, noise=0.01, seed=0):
+def _series(oid, eid, t, y, reps=2, noise=0.01, seed=0):
     """One trace, with `reps` replicates per point so the noise floor is the unbiased estimate."""
     rng = np.random.default_rng(seed)
     return [
-        (oid, cid, float(ti), float(yi + rng.normal(0, noise)))
+        (oid, eid, float(ti), float(yi + rng.normal(0, noise)))
         for ti, yi in zip(t, y)
         for _ in range(reps)
     ]
@@ -46,7 +55,7 @@ def _series(oid, cid, t, y, reps=2, noise=0.01, seed=0):
 def test_a_rise_and_fall_is_reported_as_pulsatile():
     t = np.linspace(0, 10, 12)
     y = 5.0 * t * np.exp(-t)  # interior peak, both legs far above noise
-    r = data_regimes(_S(_P(_meas(_series("obs", "c0", t, y)))))
+    r = data_regimes(_S(_P(_meas(_series("obs", "e0", t, y)))))
     shape = r["observables"]["obs"]["shape"]
     assert shape["testable"] is True
     # The ESTABLISHED half of the contract every test shares. `shape` is the only test that
@@ -63,7 +72,7 @@ def test_a_rise_and_fall_is_reported_as_pulsatile():
 def test_a_monotone_decay_is_not_called_pulsatile():
     t = np.linspace(0, 10, 12)
     y = 3.0 * np.exp(-0.4 * t)
-    r = data_regimes(_S(_P(_meas(_series("obs", "c0", t, y)))))
+    r = data_regimes(_S(_P(_meas(_series("obs", "e0", t, y)))))
     shape = r["observables"]["obs"]["shape"]
     assert shape["n_excursions"] == 0
     # Absence of evidence stays absence: no requirement, no support, and the text must NOT read as
@@ -88,7 +97,7 @@ def test_pure_noise_rarely_reads_as_an_excursion():
     y = np.full_like(t, 2.0)
     fired = sum(
         bool(
-            data_regimes(_S(_P(_meas(_series("obs", "c0", t, y, noise=0.01, seed=s)))))[
+            data_regimes(_S(_P(_meas(_series("obs", "e0", t, y, noise=0.01, seed=s)))))[
                 "observables"
             ]["obs"]["shape"]["n_excursions"]
         )
@@ -101,7 +110,7 @@ def test_pure_noise_rarely_reads_as_an_excursion():
 def test_two_well_separated_timescales_are_detected():
     t = np.linspace(0, 30, 40)
     y = 5.0 * np.exp(-2.0 * t) + 5.0 * np.exp(-0.08 * t)  # 25x apart
-    r = data_regimes(_S(_P(_meas(_series("obs", "c0", t, y, noise=0.005)))))
+    r = data_regimes(_S(_P(_meas(_series("obs", "e0", t, y, noise=0.005)))))
     ts = r["observables"]["obs"]["timescales"]
     assert ts["testable"] is True
     assert ts["requirement"] == "at least two distinguishable timescales"
@@ -121,7 +130,7 @@ def test_a_single_exponential_establishes_no_requirement_and_no_ceiling():
     """
     t = np.linspace(0, 30, 40)
     y = 5.0 * np.exp(-0.3 * t)
-    ts = data_regimes(_S(_P(_meas(_series("obs", "c0", t, y, noise=0.005)))))["observables"]["obs"][
+    ts = data_regimes(_S(_P(_meas(_series("obs", "e0", t, y, noise=0.005)))))["observables"]["obs"][
         "timescales"
     ]
     assert ts["requirement"] is None
@@ -140,14 +149,13 @@ def test_a_single_exponential_establishes_no_requirement_and_no_ceiling():
 def _dose_problem(hill, seed=0):
     doses = [0.01, 0.03, 0.1, 0.3, 1.0, 3.0]
     t = np.linspace(0, 5, 6)
-    rows, cond = [], {}
+    rows, cond, exps = [], [], []
     for i, d in enumerate(doses):
         amp = 10.0 * d**hill / (0.3**hill + d**hill)
-        rows += _series("obs", f"c{i}", t, amp * t * np.exp(-t) + 0.1, noise=0.002, seed=seed + i)
-        cond[f"c{i}"] = {"dose": d}
-    cdf = pd.DataFrame.from_dict(cond, orient="index")
-    cdf.index.name = SIMULATION_CONDITION_ID
-    return _P(_meas(rows), condition_df=cdf)
+        rows += _series("obs", f"e{i}", t, amp * t * np.exp(-t) + 0.1, noise=0.002, seed=seed + i)
+        cond.append({CONDITION_ID: f"c{i}", TARGET_ID: "dose", TARGET_VALUE: d})
+        exps.append({EXPERIMENT_ID: f"e{i}", TIME: 0.0, CONDITION_ID: f"c{i}"})
+    return _P(_meas(rows), condition_df=pd.DataFrame(cond), experiment_df=pd.DataFrame(exps))
 
 
 def test_a_cooperative_dose_response_is_flagged_as_steeper_than_one_binding_step():
@@ -171,38 +179,54 @@ def test_a_single_step_dose_response_is_not_flagged():
     assert "steeper than one binding step" not in dr["verdict"]
 
 
+def test_a_dose_switched_mid_experiment_is_not_credited_to_its_first_dose():
+    """A v2 experiment can change its dose in a later period. This one starts at 0.02 and
+    switches to 3, so its peak is the response to 3; credited to 0.02, it turns the Hill-1 design
+    into an established 'steeper than one binding step'."""
+    p = _dose_problem(hill=1.0)
+    t = np.linspace(0, 5, 6)
+    rows = _series("obs", "s", t, 10.0 * 3.0 / 3.3 * t * np.exp(-t) + 0.1, noise=0.002)
+    p.measurement_df = pd.concat([p.measurement_df, _meas(rows)], ignore_index=True)
+    low = {CONDITION_ID: "low", TARGET_ID: "dose", TARGET_VALUE: 0.02}
+    p.condition_df = pd.concat([p.condition_df, pd.DataFrame([low])], ignore_index=True)
+    switch = {EXPERIMENT_ID: ["s", "s"], TIME: [0.0, 0.5], CONDITION_ID: ["low", "c5"]}
+    p.experiment_df = pd.concat([p.experiment_df, pd.DataFrame(switch)], ignore_index=True)
+    dr = data_regimes(_S(p))["observables"]["obs"]["dose_response"]
+    assert dr["n_doses"] == 6 and dr["support_for_extension"] == "none"
+
+
 # -- conservation: the one verdict that REMOVES a parameter, so false positives are expensive ---
 def test_a_real_conserved_total_is_found():
     t = np.linspace(0, 10, 12)
     a = 4.0 * np.exp(-0.5 * t)
-    rows = _series("A", "c0", t, a, noise=0.005, seed=1) + _series(
-        "B", "c0", t, 4.0 - a, noise=0.005, seed=2
+    rows = _series("A", "e0", t, a, noise=0.005, seed=1) + _series(
+        "B", "e0", t, 4.0 - a, noise=0.005, seed=2
     )  # A + B == 4 exactly
     c = data_regimes(_S(_P(_meas(rows))))["conservation"]
     assert c["testable"] is True
-    assert c["n_conditions_holding"] == c["n_conditions_tested"] == 1
+    assert c["n_experiments_holding"] == c["n_experiments_tested"] == 1
     assert "a conserved total is available" in c["verdict"]
-    assert c["per_condition"][0]["sum_range_over_largest_component"] < 0.34
+    assert c["per_experiment"][0]["sum_range_over_largest_component"] < 0.34
 
 
 def test_two_flat_observables_are_not_a_conserved_total():
     """The sum of two constants is constant. Without requiring the COMPONENTS to move, that reads as
     a conservation law and licenses removing a parameter that was never there."""
     t = np.linspace(0, 10, 12)
-    rows = _series("A", "c0", t, np.full_like(t, 2.0), noise=0.005, seed=1) + _series(
-        "B", "c0", t, np.full_like(t, 3.0), noise=0.005, seed=2
+    rows = _series("A", "e0", t, np.full_like(t, 2.0), noise=0.005, seed=1) + _series(
+        "B", "e0", t, np.full_like(t, 3.0), noise=0.005, seed=2
     )
     c = data_regimes(_S(_P(_meas(rows))))["conservation"]
     assert "conserved total is available" not in c["verdict"]
-    assert c["per_condition"][0]["n_moving"] == 0
+    assert c["per_experiment"][0]["n_moving"] == 0
 
 
 def test_unrelated_observables_are_not_a_conserved_total():
     """Two independent decays on different scales: both move, the sum is not markedly steadier than
     its largest component. This is the fujita shape (three unrelated phospho-readouts)."""
     t = np.linspace(0, 10, 12)
-    rows = _series("A", "c0", t, 5.0 * np.exp(-0.5 * t), noise=0.005, seed=1) + _series(
-        "B", "c0", t, 3.0 * np.exp(-0.2 * t), noise=0.005, seed=2
+    rows = _series("A", "e0", t, 5.0 * np.exp(-0.5 * t), noise=0.005, seed=1) + _series(
+        "B", "e0", t, 3.0 * np.exp(-0.2 * t), noise=0.005, seed=2
     )
     c = data_regimes(_S(_P(_meas(rows))))["conservation"]
     assert "conserved total is available" not in c["verdict"]
@@ -212,7 +236,7 @@ def test_unrelated_observables_are_not_a_conserved_total():
 def test_an_undersized_design_reports_unknown_rather_than_a_default():
     """`testable: false` with a reason, never a reassuring 'no' — a design that cannot answer a
     question must not look like one that answered it negatively."""
-    rows = _series("obs", "c0", np.array([0.0, 1.0, 2.0]), np.array([1.0, 2.0, 1.5]))
+    rows = _series("obs", "e0", np.array([0.0, 1.0, 2.0]), np.array([1.0, 2.0, 1.5]))
     r = data_regimes(_S(_P(_meas(rows))))["observables"]["obs"]
     assert r["shape"]["testable"] is False and "time points" in r["shape"]["reason"]
     assert r["timescales"]["testable"] is False
@@ -229,7 +253,7 @@ def test_the_noise_method_is_named():
     '3 sigma' claim without knowing which sigma."""
     t = np.linspace(0, 10, 12)
     y = 5.0 * t * np.exp(-t)
-    with_reps = data_regimes(_S(_P(_meas(_series("obs", "c0", t, y, reps=3)))))
+    with_reps = data_regimes(_S(_P(_meas(_series("obs", "e0", t, y, reps=3)))))
     assert with_reps["observables"]["obs"]["noise_method"] == "replicate"
-    no_reps = data_regimes(_S(_P(_meas(_series("obs", "c0", t, y, reps=1)))))
+    no_reps = data_regimes(_S(_P(_meas(_series("obs", "e0", t, y, reps=1)))))
     assert no_reps["observables"]["obs"]["noise_method"] == "difference"

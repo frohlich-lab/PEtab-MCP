@@ -1,10 +1,9 @@
-"""Problem validation: petab.v1 linting + libsbml SBML consistency.
+"""Problem validation: PEtab v2 linting + libsbml SBML consistency.
 
-petab.v1's ``lint_problem(problem)`` returns a bool (``True`` if errors occurred) and
-reports the specifics through the ``petab`` logger rather than a structured result.
-We capture those log records so the report still carries human-readable messages, and
-rely on the same lint to enforce the invariant that the model must satisfy the fixed
-tables (an observable/condition/parameter referencing a missing entity is an error).
+libpetab's ``Problem.validate()`` returns structured issues (level, message, the check that
+raised it), run here on :meth:`problem.WorkingProblem.to_petab`, and the same lint enforces the
+invariant that the model must satisfy the fixed tables (an observable/condition/parameter
+referencing a missing entity is an error).
 
 petab's lint only checks the PEtab *tables* against the model, not the SBML document
 itself, so we ALSO run libsbml's ``checkConsistency`` on the candidate model and fold its
@@ -17,15 +16,15 @@ those categories would flag essentially every reaction/parameter and drown the r
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
-import petab.v1 as petab
-from petab.v1.C import CONDITION_ID, CONDITION_NAME, ESTIMATE
+from petab.v2.C import CONDITION_ID, ESTIMATE, TARGET_ID, TARGET_VALUE
+from petab.v2.lint import ValidationIssueSeverity
 
+from .problem import as_bool
 from .reconcile import (
     _ast_names,
-    condition_column_symbols,
+    condition_target_symbols,
     noise_sigma_ids,
     _model_math_names,
     _reaction_species,
@@ -45,39 +44,13 @@ _SBML_SILENCED_CATEGORIES = (
 _SBML_MSG_CAP = 300  # keep a single SBML message from bloating the (re-sent) tool result
 
 
-# petab lint records that say nothing about THIS problem. Its "Visualization table not
-# available. Skipping." is emitted at WARNING on every single lint of a problem without the
-# optional visualization table — which is every problem this server handles — so promoting it
-# would put a fixed, unactionable string on the `warnings` of EVERY make_changes result, into a
-# history nothing prunes. Dropped at the capture site so it reaches neither `issues` nor the
-# warning COUNT, and therefore no consumer.
-_LINT_NOISE = ("Visualization table not available",)
-
-# petab's `lint_problem` closes with a bare verdict line ("OK" / "Not OK") that carries no finding.
-# Matched EXACTLY, not as a substring, so a real message that happens to contain the word survives.
-# It is not merely cosmetic: it is logged at ERROR level and arrives FIRST, so it was the leading
-# entry of `issues` on 127 of the 197 "resulting problem is invalid" rejections in the Aug 8-10
-# sweep -- i.e. the first thing the agent read about why its edit failed was the word "Not OK".
-_LINT_VERDICT_LINES = frozenset({"OK", "Not OK"})
-
-
-def _is_lint_noise(record: logging.LogRecord) -> bool:
-    try:
-        message = record.getMessage()
-    except Exception:  # noqa: BLE001 - a record we cannot render is not noise we can recognise
-        return False
-    if message.strip() in _LINT_VERDICT_LINES:
-        return True
-    return any(fragment in message for fragment in _LINT_NOISE)
-
-
-class _CaptureHandler(logging.Handler):
-    def __init__(self) -> None:
-        super().__init__()
-        self.records: list[logging.LogRecord] = []
-
-    def emit(self, record: logging.LogRecord) -> None:
-        self.records.append(record)
+# petab lint checks that say nothing about THIS EDIT: they warn about the FIXED design (a
+# condition or experiment no measurement uses — fujita ships its held-out pulses in the condition
+# table), which no call can change. Promoting them would put a fixed, unactionable string on the
+# `warnings` of EVERY make_changes result, into a history nothing prunes, so they are dropped at
+# the capture site and reach neither `issues` nor the warning COUNT. Warnings only: an ERROR from
+# any check is kept.
+_DESIGN_ONLY_CHECKS = frozenset({"CheckUnusedConditions", "CheckUnusedExperiments"})
 
 
 def _sbml_consistency_issues(problem) -> list[dict[str, Any]]:
@@ -178,10 +151,11 @@ def _observation_model_reuse_issues(problem) -> list[dict[str, Any]]:
     # JAK2ActEpo / (SOCS3 * SOCS3Inh / SOCS3Eqc + 1)`).
     # Hoisted: parameter_ids walks every SBML parameter, and validate_problem runs on every edit.
     all_params = parameter_ids(sm)
-    # A condition column is an experimental INPUT (a dose, a switch), not a rate constant the model
+    # A condition target is an experimental INPUT (a dose, a switch), not a rate constant the model
     # supplies, so it must not count as the reaction's "own" parameter — otherwise the Brannmark
-    # cheat escapes simply by multiplying the dose column in: `IR => IRp; cell*IR*k_IRP_1Step*insulin_level`.
-    own_params = all_params - obs_symbols - condition_column_symbols(problem)
+    # cheat escapes simply by multiplying the dose target in:
+    # `IR => IRp; cell*IR*k_IRP_1Step*insulin_level`.
+    own_params = all_params - obs_symbols - condition_target_symbols(problem)
     rate_constant_role: set[str] = set()
     for i in range(sm.getNumReactions()):
         kl = sm.getReaction(i).getKineticLaw()
@@ -269,7 +243,7 @@ def _fixed_constant_role_issues(problem, protected_fixed_ids) -> list[dict[str, 
 
     def _estimated(pid) -> bool:
         try:
-            return ESTIMATE in pdf.columns and float(pdf.loc[pid, ESTIMATE]) != 0
+            return ESTIMATE in pdf.columns and as_bool(pdf.loc[pid, ESTIMATE])
         except (TypeError, ValueError, KeyError):
             return False
 
@@ -327,7 +301,7 @@ def _undefined_readout_issues(problem) -> list[dict[str, Any]]:
     so this fires only once the agent has authored a model that forgot a mapping. Best-effort:
     any failure returns ``[]`` rather than breaking validation.
     """
-    from petab.v1.C import OBSERVABLE_FORMULA, OBSERVABLE_NAME
+    from petab.v2.C import OBSERVABLE_FORMULA, OBSERVABLE_NAME
 
     try:
         from .reconcile import formula_identifiers
@@ -400,15 +374,15 @@ def _undefined_readout_issues(problem) -> list[dict[str, Any]]:
 def _unused_condition_target_issues(problem) -> list[dict[str, Any]]:
     """Hard-error when the model declares a condition-table target but never USES it.
 
-    Each condition-table column (other than ``conditionId``/``conditionName``) sets a model
-    quantity per condition — a dose, an input level, a genotype switch, a rate multiplier: the
-    very thing that makes the conditions differ. petab requires the target to be a model entity
-    (a species or parameter) and reconcile keeps it (a condition column is never pruned), so a
-    target the model declares but never references in a rate law, rule, initial assignment, or
-    reaction — nor in the observation model — passes the lint yet does NOTHING: every condition
-    then simulates identically and the experimental design is silently ignored. A run can then
-    "fit" by tuning other parameters while the perturbation it should be responding to is inert.
-    Gate it here so the model actually consumes each condition-table quantity.
+    Each condition-table target sets a model quantity per condition — a dose, an input level, a
+    genotype switch, a rate multiplier: the very thing that makes the conditions differ. petab
+    requires the target to be a model entity (a species or parameter) and reconcile keeps it (a
+    condition target is never pruned), so a target the model declares but never references in a rate
+    law, rule, initial assignment, or reaction — nor in the observation model — passes the lint yet
+    does NOTHING: every condition then simulates identically and the experimental design is silently
+    ignored. A run can then "fit" by tuning other parameters while the perturbation it should be
+    responding to is inert. Gate it here so the model actually consumes each condition-table
+    quantity.
 
     Only targets that ARE model entities are checked (a target absent from the model is a
     different error petab lint already reports). Best-effort: no condition table / no model
@@ -430,21 +404,25 @@ def _unused_condition_target_issues(problem) -> list[dict[str, Any]]:
 
     used = _model_math_names(sm) | _reaction_species(sm) | observation_model_symbols(problem)
     model_entities = parameter_ids(sm) | species_ids(sm)
-    targets = {str(c) for c in cdf.columns} - {CONDITION_ID, CONDITION_NAME}
-    # A column with a SINGLE distinct value across every condition encodes no experimental design:
+    targets = condition_target_symbols(problem)
+    # A target with a SINGLE distinct value across every condition encodes no experimental design:
     # it cannot make one condition differ from another, so "the conditions don't perturb the model"
     # simply does not apply and requiring the model to consume it is wrong. Published exports carry
-    # such columns — raimundez's METinh_level is 0 in all 174 conditions because the paper used MET
+    # such targets — raimundez's METinh_level is 0 in all 174 conditions because the paper used MET
     # inhibition for a PREDICTION validated against separate data, not for calibration. Forcing the
     # agent to wire one in buys a submodule that can never carry flux. petab lint still requires the
-    # target to EXIST as a model entity; this only drops the requirement that it be USED.
-    # Requires MORE THAN ONE condition: with a single condition every column is trivially
-    # constant, yet the column is still the only thing setting that value, so the model should
-    # consume it. The exemption is about a column that cannot DISTINGUISH conditions.
-    if len(cdf) > 1:
-        targets -= {
-            tgt for tgt in targets if tgt in cdf.columns and cdf[tgt].nunique(dropna=False) <= 1
-        }
+    # target to EXIST as a model entity; this only drops the requirement that it be USED. A
+    # condition that leaves the target unset counts as one more distinct value, as an empty cell
+    # did in the wide v1 table.
+    # Requires MORE THAN ONE condition: with a single condition every target is trivially
+    # constant, yet the condition is still the only thing setting that value, so the model should
+    # consume it. The exemption is about a target that cannot DISTINGUISH conditions.
+    n_conditions = cdf[CONDITION_ID].nunique()
+    if n_conditions > 1:
+        for tgt, sub in cdf.groupby(TARGET_ID, sort=False):
+            values = sub[TARGET_VALUE].astype(str).nunique()
+            if values + (sub[CONDITION_ID].nunique() < n_conditions) <= 1:
+                targets.discard(str(tgt))
 
     return [
         {
@@ -582,7 +560,7 @@ def _frozen_stoichiometry_message(rid, side: str, species: str, symbol: str, fro
 
 
 def validate_problem(problem, protected_fixed_ids=None) -> dict[str, Any]:
-    """Run petab.v1 linting + libsbml SBML consistency and return a JSON-friendly report.
+    """Run PEtab v2 linting + libsbml SBML consistency and return a JSON-friendly report.
 
     Returns ``valid`` (no errors from either check), ``n_errors``/``n_warnings``, and the
     captured ``issues`` (level/message/check) — petab table issues first, then SBML ones.
@@ -594,29 +572,19 @@ def validate_problem(problem, protected_fixed_ids=None) -> dict[str, Any]:
     :func:`_unused_condition_target_issues`) always runs — it needs no reference, and it
     self-skips the one case it cannot answer (a model with no dynamics).
     """
-    logger = logging.getLogger("petab")
-    handler = _CaptureHandler()
-    prev_level = logger.level
-    logger.setLevel(logging.DEBUG)
-    logger.addHandler(handler)
-    try:
-        has_errors = bool(petab.lint_problem(problem))
-    finally:
-        logger.removeHandler(handler)
-        logger.setLevel(prev_level)
-
-    records = [r for r in handler.records if not _is_lint_noise(r)]
-    issues = [
-        {
-            "level": rec.levelname.lower(),
-            "message": rec.getMessage(),
-            "check": rec.name,
-        }
-        for rec in records
-        if rec.levelno >= logging.WARNING
+    lint = [
+        i
+        for i in problem.to_petab().validate()
+        if i.level >= ValidationIssueSeverity.ERROR
+        or (i.level == ValidationIssueSeverity.WARNING and i.task not in _DESIGN_ONLY_CHECKS)
     ]
-    n_errors = sum(1 for r in records if r.levelno >= logging.ERROR)
-    n_warnings = sum(1 for r in records if r.levelno == logging.WARNING)
+    issues = [
+        {"level": i.level.name.lower(), "message": i.message, "check": i.task or "petab"}
+        for i in lint
+    ]
+    has_errors = any(i.level >= ValidationIssueSeverity.ERROR for i in lint)
+    n_errors = sum(1 for i in lint if i.level >= ValidationIssueSeverity.ERROR)
+    n_warnings = sum(1 for i in lint if i.level == ValidationIssueSeverity.WARNING)
 
     sbml_issues = _sbml_consistency_issues(problem)
     issues += sbml_issues

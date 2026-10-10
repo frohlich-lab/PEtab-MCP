@@ -11,7 +11,7 @@ from petab_mcp.server import create_server
 
 REPO_ROOT = Path(__file__).parent.parent
 SKILLS_DIR = REPO_ROOT / "src" / "petab_mcp" / "_skills"
-YAML_PATH = Path(__file__).parent / "data" / "toy_v1" / "problem.yaml"
+YAML_PATH = Path(__file__).parent / "data" / "toy_v2" / "problem.yaml"
 
 
 def _structured(result):

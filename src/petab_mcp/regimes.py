@@ -4,8 +4,8 @@ Every model imposes a factorisation on the data — states acting independently,
 timescale, a linear input, no conserved total. A misfit that survives re-fitting is usually one of
 those assumptions being false, and the fastest way to find out WHICH is to ask the data directly.
 
-This module answers that from ``measurements.tsv`` and ``conditions.tsv`` ALONE. It never reads the
-model, the parameter table or any simulation, which has two consequences worth stating:
+This module answers that from the measurement, condition and experiment tables ALONE. It never reads
+the model, the parameter table or any simulation, which has two consequences worth stating:
 
 * it can be run BEFORE the first model exists, so a structural requirement is known up front rather
   than discovered by ten fits that cannot meet it; and
@@ -19,8 +19,8 @@ class distinguished passing runs from failing ones. Numbers the harness computes
 procedures the prompt describes are a lottery. So compute the numbers.
 
 THE ANALYSIS COORDINATE. Every verdict is computed where the noise is ADDITIVE, not on the raw
-linear scale: an observable declared ``log``/``log10`` is transformed first, and its noise floor and
-every sigma-threshold below live in that coordinate. Judging a log-scale observable against one
+linear scale: an observable with a log noise distribution is transformed first, and its noise floor
+and every sigma-threshold below live in that coordinate. Judging a log-scale observable against one
 absolute linear sigma is dimensionally invalid — it hides low-amplitude structure and inflates
 high-amplitude wiggle — which is the same trap ``reconcile.sigma_data_std`` documents having fallen
 into once already.
@@ -36,13 +36,9 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from petab.v1.C import (
-    MEASUREMENT,
-    OBSERVABLE_ID,
-    OBSERVABLE_TRANSFORMATION,
-    SIMULATION_CONDITION_ID,
-    TIME,
-)
+from petab.v2.C import EXPERIMENT_ID, MEASUREMENT, OBSERVABLE_ID, TIME
+
+from .problem import experiment_inputs, observable_transformation
 
 # A feature must clear this many noise sigmas to be called real. 3 is the conventional bar and it is
 # what the "beyond ~3 sigma" advice downstream is calibrated to; below 2 we actively say "no".
@@ -111,7 +107,7 @@ def _noise_floor(frame) -> tuple["float | None", str]:
 
     within, dof = 0.0, 0
     all_y = frame["_y"].to_numpy(dtype=float)  # hoisted: was rebuilt once PER GROUP
-    for _, idx in frame.groupby([SIMULATION_CONDITION_ID, TIME], sort=False).indices.items():
+    for _, idx in frame.groupby([EXPERIMENT_ID, TIME], sort=False).indices.items():
         v = all_y[idx]
         v = v[np.isfinite(v)]
         if len(v) > 1:
@@ -121,7 +117,7 @@ def _noise_floor(frame) -> tuple["float | None", str]:
         return math.sqrt(within / dof), "replicate"
 
     diffs = []
-    for _, g in frame.groupby(SIMULATION_CONDITION_ID, sort=False):
+    for _, g in frame.groupby(EXPERIMENT_ID, sort=False):
         v = g.sort_values(TIME)["_y"].to_numpy(dtype=float)
         v = v[np.isfinite(v)]
         if len(v) > 2:
@@ -132,11 +128,11 @@ def _noise_floor(frame) -> tuple["float | None", str]:
 
 
 def _series(frame) -> list[tuple[str, Any, Any, int]]:
-    """Per-condition (id, times, mean values, replicates-per-point), steady-state rows dropped."""
+    """Per-experiment (id, times, mean values, replicates-per-point), steady-state rows dropped."""
     import numpy as np
 
     out = []
-    for cid, g in frame.groupby(SIMULATION_CONDITION_ID, sort=False):
+    for eid, g in frame.groupby(EXPERIMENT_ID, sort=False):
         g = g[np.isfinite(g[TIME])]
         if g.empty:
             continue
@@ -145,7 +141,7 @@ def _series(frame) -> list[tuple[str, Any, Any, int]]:
         t, y = m.index.to_numpy(dtype=float), m.to_numpy(dtype=float)
         keep = np.isfinite(t) & np.isfinite(y)
         if keep.sum() >= 2:
-            out.append((str(cid), t[keep], y[keep], int(counts.min())))
+            out.append((str(eid), t[keep], y[keep], int(counts.min())))
     return out
 
 
@@ -171,10 +167,10 @@ def _shape(series, sigma) -> dict[str, Any]:
     excursion therefore REQUIRES a depletable pool, a second slower state, or feedback. A trough
     falsifies the same form as a peak, so both are detected.
 
-    ONE condition clearing the bar is decisive — the topology is falsified by a single counterexample
-    — so there is no quorum over conditions. The 3-sigma test on both legs is the noise guard; a
-    quorum on top of it would only discard real evidence, which matters because in a dose design it
-    is normal for the low doses to be flat and only the top one or two to peak.
+    ONE experiment clearing the bar is decisive — the topology is falsified by a single
+    counterexample — so there is no quorum over experiments. The 3-sigma test on both legs is the
+    noise guard; a quorum on top of it would only discard real evidence, which matters because in a
+    dose design it is normal for the low doses to be flat and only the top one or two to peak.
     """
     import numpy as np
 
@@ -246,7 +242,7 @@ def _shape(series, sigma) -> dict[str, Any]:
     )
     return {
         "testable": True,
-        "n_conditions": len(usable),
+        "n_experiments": len(usable),
         "n_excursions": n_exc,
         "n_peaks": peaks,
         "n_troughs": troughs,
@@ -258,7 +254,7 @@ def _shape(series, sigma) -> dict[str, Any]:
         "verdict": (
             _EXCURSION
             if n_exc
-            else "monotone over every condition tested — NO REQUIREMENT either way, and NOT "
+            else "monotone over every experiment tested — NO REQUIREMENT either way, and NOT "
             "evidence that one state suffices"
             if monotone
             else "flat/indeterminate: this design does not resolve the shape — NO REQUIREMENT "
@@ -273,7 +269,7 @@ def _timescales(series, sigma) -> dict[str, Any]:
 
     LIKE `_dose_response`, THIS NEVER FIRED ON ANY PROBLEM WE HAVE, and for the same reason: the
     bar sits above what these designs can clear. Measured over 184 calls in 20 traced runs -- fujita
-    is `testable: false` 188/188 (8 points per condition, under `_MIN_POINTS_TIMESCALE`), and sneyd
+    is `testable: false` 188/188 (8 points per series, under `_MIN_POINTS_TIMESCALE`), and sneyd
     is `testable` but lands at margin -4.2 in ALL 90 calls: it has exactly 13 points, the bare
     minimum, where a 5-parameter two-exponential is BIC-penalised out of existence. Not near the
     threshold -- the wrong side of it, deterministically, on a problem whose reference model has
@@ -283,9 +279,9 @@ def _timescales(series, sigma) -> dict[str, Any]:
 
     if sigma is None or sigma <= 0:
         return {"testable": False, "reason": "no noise estimate"}
-    # Every condition long enough, not just the longest. `max(..., key=len)` is first-wins on ties,
+    # Every experiment long enough, not just the longest. `max(..., key=len)` is first-wins on ties,
     # and a dose design shares one time grid across doses -- so it always analysed whichever
-    # condition came first in the table, conventionally the vehicle control, which by construction
+    # experiment came first in the table, conventionally the vehicle control, which by construction
     # has the least dynamics. `_shape` already scans them all for the same reason.
     usable = [s for s in series if len(s[1]) >= _MIN_POINTS_TIMESCALE]
     cand = max(usable, key=lambda s: float(np.ptp(s[2])), default=None)
@@ -375,24 +371,24 @@ def _timescales(series, sigma) -> dict[str, Any]:
     }
 
 
-def _dose_response(frame, conditions, sigma, coordinate) -> dict[str, Any]:
+def _dose_response(frame, inputs, sigma, coordinate) -> dict[str, Any]:
     """Steepest local slope of response against a numeric input, in log-log.
 
     A slope reliably above 1 cannot come from a single mass-action binding step — it needs
     cooperativity, a cascade, or saturation elsewhere. The estimate is a MAXIMUM over adjacent dose
-    pairs and over candidate input columns, so its band is Bonferroni-widened by the number of
+    pairs and over candidate inputs, so its band is Bonferroni-widened by the number of
     comparisons actually made; without that the winner crosses the bar on noise alone.
     """
     import numpy as np
 
-    if sigma is None or conditions is None or getattr(conditions, "empty", True):
-        return {"testable": False, "reason": "no condition table or noise estimate"}
+    if sigma is None or inputs is None or getattr(inputs, "empty", True):
+        return {"testable": False, "reason": "no experiment inputs or noise estimate"}
 
-    # AMPLITUDE per condition = max over time of the replicate MEAN. Two traps avoided: the max over
-    # raw replicates is biased upward by an amount that grows with the group size (which varies
-    # across conditions, faking a dose trend), and a median over the whole time course measures the
-    # baseline rather than the response whenever the trace is a pulse.
-    grouped = frame.groupby([SIMULATION_CONDITION_ID, TIME])["_y"]
+    # AMPLITUDE per experiment = max over time of the replicate MEAN. Two traps avoided: the max
+    # over raw replicates is biased upward by an amount that grows with the group size (which
+    # varies across experiments, faking a dose trend), and a median over the whole time course
+    # measures the baseline rather than the response whenever the trace is a pulse.
+    grouped = frame.groupby([EXPERIMENT_ID, TIME])["_y"]
     peak = grouped.mean().groupby(level=0).max()
     # `peak` is a MEAN of replicates, so its noise is sigma/sqrt(reps). Propagating the raw
     # per-measurement sigma widened the slope band by ~sqrt(reps) and turned a genuinely cooperative
@@ -401,14 +397,14 @@ def _dose_response(frame, conditions, sigma, coordinate) -> dict[str, Any]:
     _reps = int(grouped.count().min() or 1)
     sigma = sigma / math.sqrt(max(_reps, 1))
     best, n_comparisons = None, 0
-    for col in conditions.columns:
+    for col in inputs.columns:
         vals = {}
-        for cid in peak.index:
-            if cid not in conditions.index:
+        for eid in peak.index:
+            if eid not in inputs.index:
                 continue
-            d = _finite(conditions.at[cid, col])
+            d = _finite(inputs.at[eid, col])
             if d is not None and d > 0:
-                vals[cid] = d
+                vals[eid] = d
         if len(set(vals.values())) < _MIN_DOSES:
             continue
         pts = sorted((d, float(peak[c])) for c, d in vals.items())
@@ -570,8 +566,8 @@ def _conservation(by_obs) -> dict[str, Any]:
     A conserved total is the one finding here that makes a model CHEAPER — imposing it removes a
     parameter — so a false positive is expensive and the test is deliberately strict:
 
-    * WITHIN a condition. A real law holds per experiment; different conditions load different
-      totals, and pooling them measures the between-condition step instead of the law.
+    * WITHIN an experiment. A real law holds per experiment; different experiments load different
+      totals, and pooling them measures the between-experiment step instead of the law.
     * LIKE FOR LIKE. The sum's peak-to-trough is compared against the components' peak-to-trough.
       Comparing a standard deviation against a range passes on the unit mismatch alone -- that is
       exactly how the three-gene repressilator, which has no conservation law at all, read as
@@ -602,15 +598,15 @@ def _conservation(by_obs) -> dict[str, Any]:
             ),
         }
 
-    per_cond, tested = [], 0
-    conds = {c for o in obs for c, _, _, _ in by_obs[o]["series"]}
-    for cid in sorted(conds):
-        # The observables co-measured in THIS condition, at their common time points. Requiring all
+    per_exp, tested = [], 0
+    exps = {e for o in obs for e, _, _, _ in by_obs[o]["series"]}
+    for eid in sorted(exps):
+        # The observables co-measured in THIS experiment, at their common time points. Requiring all
         # observables at one time is hopeless on a real design (bachmann has 101, isensee 123).
         curves = {}
         for o in obs:
-            for c, t, y, reps in by_obs[o]["series"]:
-                if c == cid:
+            for e, t, y, reps in by_obs[o]["series"]:
+                if e == eid:
                     curves[o] = (t, y, reps)
         if len(curves) < 2:
             continue
@@ -663,9 +659,9 @@ def _conservation(by_obs) -> dict[str, Any]:
         ]
         largest = max(ranges.values()) if ranges else 0.0
         sum_range = float(np.ptp(tot))
-        per_cond.append(
+        per_exp.append(
             {
-                "condition": cid,
+                "experiment": eid,
                 "n_points": npts,
                 "n_moving": len(moving),
                 "sum_range_over_largest_component": round(sum_range / largest, 3)
@@ -686,24 +682,24 @@ def _conservation(by_obs) -> dict[str, Any]:
         return {
             "testable": False,
             "reason": (
-                f"no condition has >={_MIN_POINTS_CONSERVATION} time points where at "
+                f"no experiment has >={_MIN_POINTS_CONSERVATION} time points where at "
                 f"least two observables are measured together"
             ),
         }
-    holds = [c for c in per_cond if c["holds"]]
+    holds = [c for c in per_exp if c["holds"]]
     established = len(holds) == tested
     _CONSERVED = (
         "the summed observables are constant while the components vary in every "
-        "condition tested — a conserved total is available, and imposing it REMOVES a "
+        "experiment tested — a conserved total is available, and imposing it REMOVES a "
         "parameter"
     )
     return {
         "testable": True,
         "observables": obs,
-        "n_conditions_tested": tested,
+        "n_experiments_tested": tested,
         "log_observables_excluded": skipped,
-        "n_conditions_holding": len(holds),
-        "per_condition": per_cond[:6],
+        "n_experiments_holding": len(holds),
+        "per_experiment": per_exp[:6],
         # Same contract as the other three tests -- see the note in `_shape`. Note this one can
         # only ever REMOVE a parameter, so a null here costs nothing structural; it is filled for
         # consistency, so "every entry carries a requirement" is true of the payload as a whole.
@@ -714,7 +710,7 @@ def _conservation(by_obs) -> dict[str, Any]:
         "verdict": (
             _CONSERVED
             if established
-            else f"a conserved total holds in only {len(holds)} of {tested} conditions — not a "
+            else f"a conserved total holds in only {len(holds)} of {tested} experiments — not a "
             "law, and WEAK SUPPORT at most"
             if holds
             else "no conserved total over these observables — NO REQUIREMENT either way"
@@ -727,7 +723,7 @@ def data_regimes(session, observables: "str | None" = None) -> dict[str, Any]:
     problem = session.problem
     mdf = getattr(problem, "measurement_df", None)
     empty = mdf is None or getattr(mdf, "empty", True)
-    cdf = getattr(problem, "condition_df", None)
+    inputs = experiment_inputs(problem)
     odf = getattr(problem, "observable_df", None)
 
     out: dict[str, Any] = {}
@@ -741,24 +737,21 @@ def data_regimes(session, observables: "str | None" = None) -> dict[str, Any]:
         omitted = max(0, len(ids) - _MAX_OBSERVABLES)
         for oid in ids[:_MAX_OBSERVABLES]:
             sub = mdf[mdf[OBSERVABLE_ID] == oid].copy()
-            trans = None
-            if odf is not None and OBSERVABLE_TRANSFORMATION in getattr(odf, "columns", []):
-                if oid in odf.index:
-                    trans = str(odf.at[oid, OBSERVABLE_TRANSFORMATION])
+            trans = observable_transformation(odf, oid)
             sub["_y"], coord = _coordinate(sub, trans)
             sigma, method = _noise_floor(sub)
             series = _series(sub)
             by_obs[str(oid)] = {"sigma": sigma, "series": series, "coordinate": coord}
             out[str(oid)] = {
                 "n_points": int(len(sub)),
-                "n_conditions": int(sub[SIMULATION_CONDITION_ID].nunique()),
+                "n_experiments": int(sub[EXPERIMENT_ID].nunique()),
                 "analysis_coordinate": coord,
                 "declared_transformation": trans,
                 "noise_floor": None if sigma is None else round(sigma, 6),
                 "noise_method": method,
                 "shape": _shape(series, sigma),
                 "timescales": _timescales(series, sigma),
-                "dose_response": _dose_response(sub, cdf, sigma, coord),
+                "dose_response": _dose_response(sub, inputs, sigma, coord),
             }
     payload = {
         "observables": out,

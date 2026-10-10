@@ -51,7 +51,9 @@ def estimation_setup_signature(parameter_df) -> tuple:
     """
     if parameter_df is None:
         return ()
-    from petab.v1.C import LOWER_BOUND, NOMINAL_VALUE, PARAMETER_SCALE, UPPER_BOUND
+    from petab.v2.C import LOWER_BOUND, NOMINAL_VALUE, UPPER_BOUND
+
+    from .problem import PARAMETER_SCALE
 
     df = parameter_df
     cols = getattr(df, "columns", [])
