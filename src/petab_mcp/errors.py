@@ -56,6 +56,11 @@ class UnknownEntityError(PetabMcpError):
     """A referenced id (parameter, observable, experiment, ...) does not exist."""
 
 
+class FitBackendError(PetabMcpError):
+    """The cluster a fit's starts run on failed them: scheduler gone, a worker killed, a start
+    cancelled, or a start that cannot run on a worker (see :mod:`petab_mcp.dask_engine`)."""
+
+
 class NoSessionBoundError(PetabMcpError):
     """A call arrived on a connection that has no session bound to it."""
 
