@@ -31,9 +31,9 @@ The estimation scale is the server's: v2 dropped ``parameterScale``, so the para
 carries libpetab v1's column as an extension, which is what pyPESTO's importer takes as its
 ``parameter_scales``. Missing or blank reads as ``lin``.
 
-A PEtab v1 problem is upgraded on load by libpetab's ``petab1to2`` (:func:`_from_v1`). That lints
-the v1 problem first and refuses one that fails (PEtab-dev/libpetab-python#528), so a zero-shot
-problem, whose SBML is still empty, has to come as v2.
+A PEtab v1 problem is upgraded on load by libpetab's ``petab1to2`` (:func:`_from_v1`), with its
+lint off: a benchmark problem ships its model unwritten -- an empty or partial SBML whose
+observables name readouts the agent defines -- so it fails v1 lint until the agent writes it.
 """
 
 from __future__ import annotations
@@ -45,9 +45,10 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from petab import v2
-from petab.v1.C import LIN, LOG, LOG10, PARAMETER_SCALE
+from petab.v1.C import LIN, LOG, PARAMETER_SCALE
 
 # Re-exported: the server's modules take these from here.
+from petab.v1.C import LOG10  # noqa: F401
 from petab.v1.C import PARAMETER_SCALES as SCALES  # noqa: F401
 from petab.v1.measurements import split_parameter_replacement_list as split_overrides  # noqa: F401
 from petab.v1.parameters import scale, unscale  # noqa: F401
@@ -57,7 +58,6 @@ from petab.v2.C import (
     EXPERIMENT_ID,
     LOWER_BOUND,
     NOISE_DISTRIBUTION,
-    NOISE_FORMULA,
     NOISE_PLACEHOLDERS,
     NOMINAL_VALUE,
     NORMAL,
@@ -372,10 +372,14 @@ def _from_v2(yaml_path: Path, config: dict) -> WorkingProblem:
 def _from_v1(yaml_path: Path) -> WorkingProblem:
     """A v1 problem, upgraded by libpetab's ``petab1to2`` and read back like any v2 problem.
 
-    Two corrections. ``petab1to2`` drops ``parameterScale``, which the server estimates on. And it
-    maps v1's log10-normal onto log-normal with the noise formula unchanged, which changes the
-    likelihood (PEtab-dev/libpetab-python#529); ``log(10) *`` on the noise formula makes the two
-    densities identical.
+    Unlinted (``validate=False``, PEtab-dev/libpetab-python#534): ``petab1to2`` otherwise refuses a
+    problem that fails v1 lint, which is every PEtabAgentBench problem as shipped (its observables
+    name ``readout_*`` symbols the agent's model has yet to define), so the server could start on
+    none of them. The likelihood is libpetab's to keep: it maps v1's log10-normal onto log-normal
+    with the noise rescaled by ln(10) (#535, the fix for #529). This function applied that factor
+    itself before #535, and would now apply it twice -- 64.7 nats on one benchmark state.
+
+    One correction remains: ``petab1to2`` drops ``parameterScale``, which the server estimates on.
     """
     import tempfile
 
@@ -384,16 +388,12 @@ def _from_v1(yaml_path: Path) -> WorkingProblem:
 
     old = v1.Problem.from_yaml(str(yaml_path))
     with tempfile.TemporaryDirectory() as tmp:
-        petab1to2(yaml_path, tmp)
+        petab1to2(yaml_path, tmp, validate=False)
         new = WorkingProblem.from_yaml(Path(tmp) / yaml_path.name)
     new.parameter_df = new.parameter_df.assign(
         **{PARAMETER_SCALE: old.parameter_df[PARAMETER_SCALE]}
     )
-    odf = new.observable_df.copy()
-    trans = old.observable_df.get("observableTransformation", pd.Series(dtype=str))
-    log10 = trans.reindex(odf.index) == LOG10
-    odf.loc[log10, NOISE_FORMULA] = "log(10) * (" + odf.loc[log10, NOISE_FORMULA].astype(str) + ")"
-    return new.replace(observable_df=odf)
+    return new
 
 
 def placeholders(observable_df, obs_id, kind: str) -> list[str]:
