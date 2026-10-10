@@ -49,8 +49,7 @@ def _call(mcp, name, args):
 
 
 @pytest.fixture
-def arm_on(tmp_path, monkeypatch):
-    monkeypatch.setenv("PETAB_DIFF_EDITS", "1")
+def served(tmp_path):
     return _server(tmp_path)
 
 
@@ -78,10 +77,10 @@ def _meta(prov: Path, v: int) -> dict:
     return json.loads((prov / "versions" / f"v{v}" / "meta.json").read_text())
 
 
-def test_a_fork_is_recorded_as_a_child_of_the_version_it_patched(arm_on):
+def test_a_fork_is_recorded_as_a_child_of_the_version_it_patched(served):
     """The bug this closes: v2 patched from v0 while HEAD was v1 was recorded as a child of v1,
     so every parent-to-child comparison used a model v2 never came from."""
-    mcp, prov = arm_on
+    mcp, prov = served
     r0 = _call(
         mcp,
         "make_changes",
@@ -114,10 +113,10 @@ def test_a_fork_is_recorded_as_a_child_of_the_version_it_patched(arm_on):
     assert _meta(prov, 1)["parent"] == 0  # the ordinary chain is unaffected
 
 
-def test_an_ordinary_commit_still_descends_from_head(arm_on):
+def test_an_ordinary_commit_still_descends_from_head(served):
     """The fork parent must not leak: `derived_from` is per-call state, so the NEXT ordinary
     commit has to go back to HEAD or every later version inherits a stale fork parent."""
-    mcp, prov = arm_on
+    mcp, prov = served
 
     def op(justification, rid, law, **kw):
         return _call(
@@ -140,10 +139,10 @@ def test_an_ordinary_commit_still_descends_from_head(arm_on):
     )
 
 
-def test_the_callers_own_text_is_stored_beside_the_built_model(arm_on):
+def test_the_callers_own_text_is_stored_beside_the_built_model(served):
     """`model.ant` is the reconciled, re-rendered build output; `model_source.ant` is what the
     caller submitted. Keeping both is what makes lineage checkable after the fact."""
-    mcp, prov = arm_on
+    mcp, prov = served
     res = _call(
         mcp,
         "make_changes",
@@ -162,7 +161,7 @@ def test_the_callers_own_text_is_stored_beside_the_built_model(arm_on):
     assert "const" in built
 
 
-def test_a_parameters_only_commit_INHERITS_the_source_it_did_not_change(arm_on):
+def test_a_parameters_only_commit_INHERITS_the_source_it_did_not_change(served):
     """A bounds-only commit submits no model text, but the version still HAS a model, so it still
     has a source: the one it inherited.
 
@@ -173,7 +172,7 @@ def test_a_parameters_only_commit_INHERITS_the_source_it_did_not_change(arm_on):
     payload marked where. The original worry — an EMPTY file reading as "the agent authored an
     empty model" — is still guarded, because an inherited source is never empty.
     """
-    mcp, prov = arm_on
+    mcp, prov = served
     base = _call(
         mcp,
         "make_changes",
@@ -198,7 +197,7 @@ def test_a_parameters_only_commit_INHERITS_the_source_it_did_not_change(arm_on):
     assert kept.read_text() == base_src, "the text did not change, so neither should the source"
 
 
-def test_a_fork_patches_its_BASE_not_head(arm_on):
+def test_a_fork_patches_its_BASE_not_head(served):
     """With `base_version=0`, the stored source is v0's source plus THIS call's operations — so
     v1's change is absent from it. Under structured edits this is the strong property: the
     operations apply to the source, so `child.source == parent.source + ops` holds exactly.
@@ -206,7 +205,7 @@ def test_a_fork_patches_its_BASE_not_head(arm_on):
     (Matching is on symbols, never on exact formatting: libantimony re-renders `(k1*2)*A` as
     `k1*2*A`, so asserting the literal trips over the very render gap the production failures
     came from.)"""
-    mcp, prov = arm_on
+    mcp, prov = served
     _v0 = _call(
         mcp,
         "make_changes",
@@ -240,11 +239,11 @@ def test_a_fork_patches_its_BASE_not_head(arm_on):
     )
 
 
-def test_a_fork_restores_the_search_space_not_just_the_model(arm_on):
+def test_a_fork_restores_the_search_space_not_just_the_model(served):
     """`base_version=N` used to roll back the MODEL only, so a fork silently inherited whatever
     bounds the abandoned branch had widened, and the prompt had to ask the agent to re-send
     `parameters` from memory. Going back to a version now brings its search space with it."""
-    mcp, prov = arm_on
+    mcp, prov = served
     v0 = _call(
         mcp,
         "make_changes",
@@ -287,7 +286,7 @@ def test_a_fork_restores_the_search_space_not_just_the_model(arm_on):
     )
 
 
-def test_an_explicit_bound_in_the_fork_call_wins_over_the_restored_one(arm_on):
+def test_an_explicit_bound_in_the_fork_call_wins_over_the_restored_one(served):
     """A caller can fork a version AND change one bound in a single transaction; the bound they
     name is the one that survives.
 
@@ -295,7 +294,7 @@ def test_an_explicit_bound_in_the_fork_call_wins_over_the_restored_one(arm_on):
     pristine table, and the restore then skips the search space of any id they claimed. That order
     is load-bearing — the widening backstops compare against the PRE-EDIT bound, so restoring
     first would hand them v0's box as the baseline and let a third widening past the guard."""
-    mcp, prov = arm_on
+    mcp, prov = served
     v0 = _call(
         mcp,
         "make_changes",
@@ -322,7 +321,7 @@ def test_an_explicit_bound_in_the_fork_call_wins_over_the_restored_one(arm_on):
     assert (float(row["lowerBound"]), float(row["upperBound"])) == (0.02, 20.0)
 
 
-def test_a_fork_resumes_from_its_BASE_optimum_not_the_abandoned_branchs(arm_on):
+def test_a_fork_resumes_from_its_BASE_optimum_not_the_abandoned_branchs(served):
     """`base_version=N` restores that version's nominal values, which is what makes a fork RESUME
     from version N rather than merely re-use its bounds.
 
@@ -334,7 +333,7 @@ def test_a_fork_resumes_from_its_BASE_optimum_not_the_abandoned_branchs(arm_on):
     optimizer moves: for a fork whose edit is numerically inert, it must land on v0's own fitted
     objective, not the abandoned v1's.
     """
-    mcp, _ = arm_on
+    mcp, _ = served
     v0 = _call(
         mcp,
         "make_changes",
@@ -376,14 +375,14 @@ def test_a_fork_resumes_from_its_BASE_optimum_not_the_abandoned_branchs(arm_on):
     )
 
 
-def test_the_starting_point_comes_back_even_for_a_parameter_the_fork_rebounds(arm_on):
+def test_the_starting_point_comes_back_even_for_a_parameter_the_fork_rebounds(served):
     """`skip` withholds the SEARCH SPACE the caller claimed, never the starting point.
 
     The caller cannot ask for a point — `parameters` rejects `nominalValue` outright — so treating
     a named id as "handled" would mean that retuning one bound inside a fork silently dropped that
     parameter back to the abandoned branch's value. Fork-and-rebound is exactly the case where the
     agent is steering hardest, so it is the worst place to lose the rollback."""
-    mcp, prov = arm_on
+    mcp, prov = served
     v0 = _call(
         mcp,
         "make_changes",

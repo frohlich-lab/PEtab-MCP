@@ -27,14 +27,19 @@ from petab_mcp.fitting import (  # noqa: E402
 
 def _upgraded(observable_df=None, measurement_df=None, parameter_df=None):
     """The v1-shaped tables these cases are written in, upgraded the way a shipped v1 problem is
-    (:mod:`petab_mcp.problem`) — so each case also pins that the upgrade keeps a sigma's meaning,
-    the log10 observables included (their noise formula gains an exact ``log(10)`` factor)."""
-    from petab_mcp.problem import WorkingProblem, _v1_observables, v1_measurements
+    (:func:`petab_mcp.problem._from_v1`): libpetab's observable conversion, with an exact
+    ``log(10)`` factor on a log10 observable's noise formula, and one simulation condition that
+    changes nothing, i.e. no experiment."""
+    from petab.v2.petab1to2 import v1v2_observable_df
 
-    _, measurement_df = v1_measurements(measurement_df, set())
+    from petab_mcp.problem import WorkingProblem
+
+    odf = v1v2_observable_df(observable_df).set_index("observableId")
+    log10 = observable_df["observableTransformation"] == "log10"
+    odf.loc[log10, "noiseFormula"] = "log(10) * (" + odf.loc[log10, "noiseFormula"] + ")"
     return WorkingProblem(
-        observable_df=_v1_observables(observable_df),
-        measurement_df=measurement_df,
+        observable_df=odf,
+        measurement_df=measurement_df.drop(columns="simulationConditionId").assign(experimentId=""),
         parameter_df=parameter_df,
     )
 
@@ -453,7 +458,7 @@ def test_noise_form_read_from_the_expression_not_the_data():
 def test_mixed_noise_form_fails_open():
     """sqrt(additive**2 + (cv*y)**2) has no single scalar summary, so the form (and hence the
     coordinate and the effective sd) must be None rather than an arbitrary pick."""
-    p, R = _form_case("sqrt(noiseParameter1_o**2 + (0.1*x)**2)", [1e-3, 1e-1, 1e1, 1e3])
+    p, R = _form_case("sqrt(noiseParameter1_o^2 + (0.1*x)^2)", [1e-3, 1e-1, 1e1, 1e3])
     assert R.sigma_noise_form(p, "sd_o") is None
     assert R.sigma_noise_coordinate(p, "sd_o") is None
     assert R.sigma_effective_value(p, "sd_o", 0.1) is None
