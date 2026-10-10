@@ -1,11 +1,11 @@
-"""The estimation scale (`petab_mcp.scaling`) on the toy: the pyPESTO problem moves onto each
-parameter's scale, and AMICI's PEtab v2 simulator reads the scaled values and returns derivatives
+"""Parameter scales on the toy, through pyPESTO's PEtab v2 importer (``parameter_scales``,
+ICB-DCM/pyPESTO#1782), which hands them to AMICI's simulator (AMICI-dev/AMICI#3312): the problem's
+box is on each parameter's scale, and the objective takes scaled values and returns derivatives
 with respect to them. Checked against the same problem built linear, by the chain rule.
 """
 
 from __future__ import annotations
 
-import copy
 import math
 from pathlib import Path
 
@@ -15,7 +15,6 @@ import pytest
 from pypesto.C import FVAL, GRAD, HESS, MODE_FUN, MODE_RES, RES, SRES
 
 from petab_mcp.problem import WorkingProblem
-from petab_mcp.scaling import to_estimation_scale
 
 TOY = Path(__file__).parent / "data" / "toy_v2" / "problem.yaml"
 #: Both log flavours, and the FIXED sigma_B on log10, whose value the simulator has to unscale.
@@ -29,13 +28,18 @@ J = np.array([K1 * math.log(10.0), K2])
 @pytest.fixture(scope="module")
 def problems(tmp_path_factory):
     """The toy's pyPESTO problem, linear and on SCALES, from one compiled module."""
-    importer = pypesto.petab.PetabImporter(
-        WorkingProblem.from_yaml(TOY).to_petab(),
-        output_folder=str(tmp_path_factory.mktemp("amici") / "toy_scaling"),
-        model_name="toy_scaling",
-    )
-    linear = importer.create_problem(verbose=False)
-    return linear, to_estimation_scale(importer.create_problem(verbose=False), SCALES)
+    folder = str(tmp_path_factory.mktemp("amici") / "toy_scaling")
+
+    def build(**kwargs):
+        importer = pypesto.petab.PetabImporter(
+            WorkingProblem.from_yaml(TOY).to_petab(),
+            output_folder=folder,
+            model_name="toy_scaling",
+            **kwargs,
+        )
+        return importer.create_problem(verbose=False)
+
+    return build(), build(parameter_scales=SCALES)
 
 
 def test_bounds_and_fixed_values_move_to_the_estimation_scale(problems):
@@ -61,15 +65,6 @@ def test_the_simulator_takes_scaled_values_and_returns_scaled_derivatives(proble
     out = scaled.objective(X, sensi_orders=(0, 1), mode=MODE_RES, return_dict=True)
     assert out[RES] == pytest.approx(ref[RES], rel=1e-10, abs=1e-12)
     assert out[SRES] == pytest.approx(ref[SRES] * J, rel=1e-6, abs=1e-12)
-
-
-def test_the_scales_survive_copying(problems):
-    """Multistart copies or pickles the objective into its workers, both through its instance
-    dict; a copy that left the scaled experiment manager behind would read log values as linear.
-    (A deep copy, because pickling an AMICI solver needs HDF5, which CI's build lacks.)"""
-    _, scaled = problems
-    clone = copy.deepcopy(scaled.objective)
-    assert clone(X) == pytest.approx(scaled.objective(X), rel=1e-12)
 
 
 def test_start_points_are_drawn_from_the_scaled_box(problems):

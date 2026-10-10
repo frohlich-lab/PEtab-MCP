@@ -28,8 +28,8 @@ and measurement tables are read-only — a view with other ones is a new problem
 and its two placeholder columns, ``""`` where there are none.
 
 The estimation scale is the server's: v2 dropped ``parameterScale``, so the parameter table
-carries libpetab v1's column as an extension, and :mod:`petab_mcp.scaling` puts the pyPESTO problem
-and AMICI's simulator on it. Missing or blank reads as ``lin``.
+carries libpetab v1's column as an extension, which is what pyPESTO's importer takes as its
+``parameter_scales``. Missing or blank reads as ``lin``.
 
 A PEtab v1 problem is upgraded on load by libpetab's ``petab1to2`` (:func:`_from_v1`). That lints
 the v1 problem first and refuses one that fails (PEtab-dev/libpetab-python#528), so a zero-shot
