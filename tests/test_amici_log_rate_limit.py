@@ -112,14 +112,20 @@ def test_a_forked_worker_inherits_the_filter():
         def work(_):
             log = logging.getLogger("amici.sim.sundials._swig_wrappers")
             for i in range(2000):
-                log.warning("[AMICI:NaN] NaN value for xdot[2] (A) at t=%f", 1.0 + i * 1e-6)
+                record = log.makeRecord(
+                    log.name, logging.WARNING, "<sim>", 1,
+                    "[AMICI:NaN] NaN value for xdot[2] (A) at t=%f", (1.0 + i * 1e-6,), None,
+                )
+                record.created = 1_700_000_000  # one wall-clock second, as a retry storm is
+                log.handle(record)
 
         if __name__ == "__main__":
             with mp.get_context("fork").Pool(2) as pool:
                 pool.map(work, range(2))
     """)
-    # All 2000 x 2 records land inside the same wall-clock second in practice, so each worker
-    # is capped at _AMICI_PER_SECOND rather than emitting 2000.
+    # Each worker is capped at _AMICI_PER_SECOND rather than emitting 2000. The second is fixed
+    # because real time let a burst straddle a second boundary on a loaded CI runner, doubling
+    # the cap.
     assert len(out.splitlines()) <= 2 * L._AMICI_PER_SECOND
 
 
