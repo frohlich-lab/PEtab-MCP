@@ -83,3 +83,17 @@ class SessionLockedError(PetabMcpError):
             f"{holder or 'unknown'}); a session is live in one server at a time, so stop that "
             "one or wait for it to exit"
         )
+
+
+class ModelBuildBusyError(PetabMcpError):
+    """Another session or process is compiling the AMICI module this call needs: ``holder`` is the
+    line that build wrote into the module's lock file (``pid host time``)."""
+
+    def __init__(self, module: str, holder: str) -> None:
+        self.module = module
+        self.holder = holder
+        super().__init__(
+            f"another session or process is compiling this exact model right now ({module}, "
+            f"held by {holder or 'unknown'}); nothing was built or scored here, so retrying the "
+            "change is safe once that build finishes"
+        )
