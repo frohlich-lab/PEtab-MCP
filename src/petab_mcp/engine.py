@@ -114,7 +114,7 @@ class AmiciEngine:
         AMICI's SBML import + C++ codegen can hard-crash the process (a segfault-class failure in
         libsbml/codegen on a pathological model) that no Python exception can catch and that
         leaves no traceback — the MCP client just sees the connection drop (``httpx.ReadError``).
-        When that happens this INFO line is the last thing in ``server.log`` and pinpoints the
+        When that happens this INFO line is the last thing in ``petab_mcp.log`` and pinpoints the
         offending model; a blasi sweep run died exactly this way with no record of the culprit.
 
         Emitted once per module hash, so it costs one write per STRUCTURE rather than per fit: a
