@@ -38,9 +38,10 @@ from pathlib import Path
 _LOGGER_NAME = "petab_mcp"
 _FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
-#: Files a routing handler keeps open. pytest builds hundreds of sessions in one process; past this
-#: the least recently written file is closed, and reopened for appending on its next record.
-_MAX_OPEN = 8
+#: Files each routing handler keeps open, across all sessions; past this the least recently written
+#: one is closed, and reopened for appending on its next record. The cap is for pytest, which builds
+#: hundreds of sessions in one process; 64 is more sessions than one server hosts at once.
+_MAX_OPEN = 64
 
 #: The store this context logs to (see :func:`use_store`); ``None`` means the configured default.
 _STORE_ROOT: ContextVar[Path | None] = ContextVar("petab_mcp_store_root", default=None)
