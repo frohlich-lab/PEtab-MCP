@@ -4,8 +4,8 @@ One process hosts many sessions, and each session's ``petab_mcp.log`` and ``pype
 that session's records only: ``pypesto.log`` is what ``get_fitting_log`` serves the agent, so a
 record in the wrong store is a wrong answer about the fit. Records go through the real loggers and
 are read straight off disk without a flush, which is what ``get_fitting_log`` and
-``test_engine._log_text`` rely on. Every scope here is a ``with`` block, so none leaks into the
-next test.
+``test_engine._log_text`` rely on. Every scope here is a ``with`` block or runs in its own context
+copy, so none leaks into the next test.
 """
 
 from __future__ import annotations
