@@ -318,7 +318,7 @@ def test_the_server_only_registers_the_tool_when_given_held_out_data(
     monkeypatch.setattr(
         server_mod,
         "_register_validation_data_tools",
-        lambda mcp, ctx, held_out: calls.append(held_out),
+        lambda mcp, route: calls.append(route().held_out),
     )
     assert "validation_measurements" in inspect.signature(create_server).parameters
 
