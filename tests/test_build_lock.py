@@ -17,7 +17,7 @@ import pytest
 from petab_mcp import filelock
 from petab_mcp import fitting
 from petab_mcp import validation_data as V
-from petab_mcp.engine import AmiciEngine
+from petab_mcp.engine import AmiciEngine, build_lock
 from petab_mcp.errors import ModelBuildBusyError
 from petab_mcp.references import StubReferenceResolver
 from petab_mcp.session import PetabSession
@@ -53,10 +53,12 @@ def _open(tmp_path, problem_dir=TOY):
 
 
 def _build_lands(engine, h):
-    """What a finished build of module ``h`` leaves behind: its compiled extension."""
+    """What a finished build of module ``h`` leaves behind: its compiled extension, and the mark its
+    builder writes once that imported."""
     package = engine.build_root / f"pypesto_{h}" / f"petab_mcp_pp_{h}"
     package.mkdir(parents=True)
     (package / f"_petab_mcp_pp_{h}.so").write_bytes(b"\x00")
+    (package.parent / ".built").touch()
 
 
 def test_a_build_another_holds_fails_fast_and_touches_nothing(tmp_path, builds):
@@ -87,6 +89,25 @@ def test_a_built_module_takes_no_lock(tmp_path, builds):
         fitting.estimation_problem(session, engine)
     os.close(held)
     assert builds == [("build", str(engine.build_root / f"pypesto_{h}"))]
+
+
+def test_an_extension_without_the_finished_mark_still_meets_the_lock(tmp_path):
+    """The install step writes the extension before its build is done, so finding it is no proof the
+    build finished: a caller still meets the holder's lock, and the error names the AMICI module. A
+    build that returns marks the module, and the next import takes no lock."""
+    folder, name = tmp_path / "pypesto_h", "petab_mcp_pp_h"
+    (folder / name).mkdir(parents=True)
+    (folder / name / f"_{name}.so").write_bytes(b"\x00")
+    held = filelock.try_lock(f"{folder}.lock")
+    with pytest.raises(ModelBuildBusyError, match=name), build_lock(folder, name):
+        pass
+    os.close(held)
+    with build_lock(folder, name):
+        pass
+    held = filelock.try_lock(f"{folder}.lock")
+    with build_lock(folder, name):
+        pass
+    os.close(held)
 
 
 def test_a_busy_build_is_not_counted_as_a_fit_of_its_structure(tmp_path, builds):

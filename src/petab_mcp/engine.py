@@ -60,20 +60,24 @@ def build_lock(output_folder: str | Path, model_name: str) -> Iterator[None]:
     The build root is shared by every session and process and keyed by module hash, so two of them
     reaching one structure name one folder — and AMICI deletes the files it finds there before it
     generates code, so a second build corrupts the first. The second fails fast instead, without
-    waiting (:mod:`petab_mcp.filelock`). A module whose extension is already there takes no lock:
-    importing it is safe beside anything, and that is what every re-fit of a structure does.
+    waiting (:mod:`petab_mcp.filelock`). A module whose build FINISHED takes no lock: importing it
+    is safe beside anything, and that is what every re-fit of a structure does. Finished means its
+    holder marked it (``.built``) once its own import succeeded — the extension alone is no signal,
+    since the install step writes it before the build is done.
     """
     folder = Path(output_folder)
-    if _module_on_disk(folder, model_name):
+    done = folder / ".built"
+    if done.exists() and _module_on_disk(folder, model_name):
         yield
         return
     folder.parent.mkdir(parents=True, exist_ok=True)
     try:
         fd = filelock.try_lock(folder.with_name(f"{folder.name}.lock"))
     except filelock.Held as held:
-        raise ModelBuildBusyError(folder.name, held.holder) from None
+        raise ModelBuildBusyError(model_name, held.holder) from None
     try:
         yield
+        done.touch()
     finally:
         os.close(fd)
 
