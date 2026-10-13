@@ -1,7 +1,7 @@
 """Command-line entry point: ``petab-mcp --petab-yaml PATH``.
 
 Starts the local MCP server (stdio transport) for the given PEtab problem (v2; a v1 problem
-is upgraded on load).
+is upgraded on load). The process's stderr goes to ``<store>/stderr.log``.
 """
 
 from __future__ import annotations
@@ -9,9 +9,12 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
+from typing import Any, BinaryIO
 
 from . import criteria
 from .server import create_server
+from .session import store_root
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -67,6 +70,41 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _send_stderr_to(path: Path) -> None:
+    """Point fd 2 at ``path``, because nobody reads a server's stderr. This catches Python, every
+    logging stream handler (AMICI's rate-limited one, fides'), native code, compilers and the
+    pyPESTO workers, which inherit fd 2. One line on the real stderr says where it all went."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"petab-mcp: stderr goes to {path}", file=sys.stderr, flush=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    os.dup2(fd, 2)
+    os.close(fd)
+
+
+class _ProtocolStdout:
+    """``sys.stdout`` under the stdio transport: ``buffer`` is the JSON-RPC channel, and any text
+    written goes to stderr."""
+
+    def __init__(self, channel: BinaryIO) -> None:
+        self.buffer = channel
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(sys.stderr, name)
+
+
+def _reserve_stdout_for_the_protocol() -> None:
+    """Under the stdio transport fd 1 IS the JSON-RPC channel, and neither mcp nor FastMCP guards it:
+    AMICI ``print()``s a failed build's whole compiler log to stdout, and native code, compiler
+    subprocesses and pyPESTO workers inherit fd 1. In the channel, any of it is a line the client
+    cannot parse, or a partial line that swallows the reply written after it. So the protocol gets
+    a private duplicate of the channel and fd 1 becomes stderr for everything else. The MCP SDK
+    wraps ``sys.stdout.buffer`` once, when the transport starts, so that is the one attribute that
+    has to lead to the channel."""
+    channel = os.fdopen(os.dup(1), "wb")
+    os.dup2(2, 1)
+    sys.stdout = _ProtocolStdout(channel)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if not args.petab_yaml:
@@ -75,6 +113,10 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    # stderr first: the stdout guard points fd 1 at whatever fd 2 is by then.
+    _send_stderr_to(store_root(args.petab_yaml, args.provenance_dir) / "stderr.log")
+    if args.transport == "stdio":
+        _reserve_stdout_for_the_protocol()
     server = create_server(
         args.petab_yaml,
         build_root=args.build_root,

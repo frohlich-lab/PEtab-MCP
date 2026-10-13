@@ -145,6 +145,13 @@ class Checkpoint:
         return not (self.sigma_inflated or self.sigma_collapsed)
 
 
+def store_root(yaml_path: str | Path, provenance_dir: str | Path | None = None) -> Path:
+    """A problem's provenance store: ``provenance_dir``, else ``<problem dir>/.petab_mcp``."""
+    return (
+        Path(provenance_dir) if provenance_dir else Path(yaml_path).resolve().parent / ".petab_mcp"
+    )
+
+
 class PetabSession:
     """Holds the working problem, provenance store, and reference resolver."""
 
@@ -190,8 +197,7 @@ class PetabSession:
             self._set_model_from_antimony(f"model {R.ZERO_SHOT_MODEL_ID}\nend")
 
         self.lock = threading.RLock()
-        root = Path(provenance_dir) if provenance_dir else self.yaml_path.parent / ".petab_mcp"
-        self.provenance = ProvenanceStore(root)
+        self.provenance = ProvenanceStore(store_root(self.yaml_path, provenance_dir))
         self.resolver = resolver or EutilsReferenceResolver(mode=reference_mode)
         self.logger = logging_setup.configure(self.provenance.root)
         # pyPESTO's own optimizer logs go to a separate <root>/pypesto.log

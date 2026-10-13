@@ -113,12 +113,19 @@ def use_store(store_root: str | Path) -> contextlib.ExitStack:
 
 def configure(store_root: str | Path, level: int = logging.INFO) -> logging.Logger:
     """Make ``<store_root>/petab_mcp.log`` where the ``petab_mcp`` logger writes outside a
-    :func:`use_store` scope."""
+    :func:`use_store` scope.
+
+    petab's warnings (its lint logs through ``petab.v2.lint``, which has no handler of its own) and
+    Python warnings land there too: otherwise both print to the server's stderr, where no session's
+    log has them.
+    """
     _PETAB_LOG.install((_LOGGER_NAME,), store_root, level, propagate=True)
+    logging.captureWarnings(True)
+    _PETAB_LOG.install(("petab", "py.warnings"), store_root, logging.WARNING, propagate=False)
     return logging.getLogger(_LOGGER_NAME)
 
 
-def configure_pypesto(store_root: str | Path, level: int = logging.DEBUG) -> logging.Logger:
+def configure_pypesto(store_root: str | Path, level: int = logging.INFO) -> logging.Logger:
     """Route the fitting optimizer's logging to ``<store_root>/pypesto.log`` (outside a
     :func:`use_store` scope).
 
@@ -127,9 +134,23 @@ def configure_pypesto(store_root: str | Path, level: int = logging.DEBUG) -> log
     that (verbose) optimizer output lands only in ``pypesto.log`` — not in ``petab_mcp.log``
     or the server's stderr. The separate file is the place for the detailed per-start /
     per-iteration fit log without cluttering anything else.
+
+    Stopping propagation is not enough on its own: importing pyPESTO attaches its own stderr
+    handler to ``pypesto`` (``pypesto/__init__.py`` calls ``pypesto.logging.log()``), which copies
+    every record onto the server's stderr. So pyPESTO is imported here and that handler dropped.
+    Importing pyPESTO imports AMICI, whose logger must be ours first (see :func:`configure_amici`).
+
+    INFO, not DEBUG: pyPESTO's DEBUG logs every objective evaluation (three lines per dataset), and
+    forked workers would write all of it into the fit log the agent reads.
     """
+    configure_amici()
+    import pypesto  # noqa: F401 - runs pyPESTO's import-time handler setup now, so it can be undone
+
     _PYPESTO_LOG.install(("pypesto", "fides"), store_root, level, propagate=False)
-    return logging.getLogger("pypesto")
+    logger = logging.getLogger("pypesto")
+    for handler in [h for h in logger.handlers if h is not _PYPESTO_LOG]:
+        logger.removeHandler(handler)
+    return logger
 
 
 def pypesto_log_path(store_root: str | Path) -> Path:
