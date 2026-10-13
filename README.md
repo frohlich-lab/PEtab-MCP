@@ -66,12 +66,12 @@ keeps M of them while idle. It needs the `dask` extra (`pip install -e '.[dask]'
 - **a `--build-root` on storage the compute nodes share**, not `$TMPDIR`: the workers import the
   compiled models by the server's path;
 - **the jobs configured in dask's own config**, not by flags: `~/.config/dask/jobqueue.yaml` (or
-  `DASK_JOBQUEUE__SLURM__*`). For NEMO's `ncpu` partition:
+  `DASK_JOBQUEUE__SLURM__*`), for example:
 
 ```yaml
 jobqueue:
   slurm:
-    queue: ncpu
+    queue: <partition>
     cores: 32
     processes: 32              # = cores: one start per process
     memory: 64GiB
@@ -79,7 +79,7 @@ jobqueue:
     # Below the walltime, so workers retire (and are replaced) instead of being killed.
     worker-extra-args: ["--lifetime", "5h45m", "--lifetime-stagger", "5m"]
     local-directory: $TMPDIR   # the node's own scratch
-    log-directory: /nemo/lab/<lab>/home/shared/dask-logs
+    log-directory: <shared storage>/dask-logs
 ```
 
 A killed server's workers exit on their own after jobqueue's `death-timeout` (60 s).
