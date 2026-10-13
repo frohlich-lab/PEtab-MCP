@@ -30,12 +30,16 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
-          # The cache holds the AMICI wheel built against what this file installs (HDF5 below),
-          # so a change here must not restore a wheel built without it.
-          cache-dependency-path: |
-            pyproject.toml
-            .github/workflows/ci.yml
+
+      # Not setup-python's pip cache, which falls back to any older cache of the same Python: pip
+      # keys the AMICI wheel it builds on the URL alone, so this prefix names the toolchain below.
+      # Change "hdf5" when that toolchain changes.
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-hdf5-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: pip-hdf5-${{ runner.os }}-py${{ matrix.python-version }}-
 
       # AMICI generates and compiles C++ for every model, and is itself built
       # from source here (pyproject pins a git commit; its build pulls BLAS from
@@ -43,9 +47,8 @@ jobs:
       # ubuntu-latest; the Ninja generator AMICI drives CMake with does not, so
       # install it.
       #
-      # HDF5 too: AMICI builds with it only if it finds the headers, and without
-      # it AMICI cannot pickle a solver, so no fit start can reach a worker
-      # process (tests/test_dask_engine.py).
+      # HDF5 too: AMICI builds with it only if it finds the headers, and needs it
+      # to pickle a solver, i.e. to send a fit start to a worker.
       #
       # Deliberately NOT installing the apt `swig`: AMICI is built against the
       # pip `swig`, and a mismatched system SWIG makes compiled models raise

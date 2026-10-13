@@ -99,9 +99,8 @@ class _Build(Task):
 def test_a_server_given_a_cluster_fits_there_and_each_start_ends_as_it_would_here(
     yaml_path, amici_build_root, tmp_path, monkeypatch
 ):
-    """`create_server(cluster=...)` hands one DaskEngine to every fit of the server. The cluster
-    runs the starts the server drew, on the module the server built, so each start ends where it
-    ends in this process, not merely the best one."""
+    """A server given a cluster runs every start there, and each ends exactly where it ends in this
+    process."""
     monkeypatch.setattr(fitting, "FIT_N_WORKERS", 1)  # the local fit runs in this process
 
     def fit(store, cluster=None):
@@ -126,16 +125,13 @@ def test_a_server_given_a_cluster_fits_there_and_each_start_ends_as_it_would_her
         remote = fit("dask", engine.client.cluster)
 
     assert len(stream.data) == 4, "every start ran on the cluster"
-    # Exact: on the toy every start reaches one optimum, so only the last digits of `fval` and the
-    # evaluation count tell the starts apart.
+    # Exact: the toy's starts share one optimum, so only fval's last digits and n_fval tell them apart.
     assert len(local) == 4 and remote == local
 
 
 def test_a_fit_arriving_during_another_takes_turns_with_it():
-    """Start i of every fit is submitted at priority -i, so a fit that arrives while another runs
-    does not queue behind all of the other's starts: on one worker their starts finish alternating
-    (9 turns here). At one priority dask runs them first come, first served: the first fit's six,
-    then the second's (1 turn)."""
+    """A fit arriving while another runs alternates with it start by start (9 turns here), not
+    after all of its starts as at one priority (1 turn)."""
     done = {}
     with _engine(n_workers=1) as engine:
 
@@ -154,9 +150,8 @@ def test_a_fit_arriving_during_another_takes_turns_with_it():
 
 
 def test_a_starts_records_land_in_the_pypesto_log_of_the_session_that_ran_it(tmp_path):
-    """`get_fitting_log` serves the session's pypesto.log, and a start on a worker logs in another
-    process. Its records come back with its result and are re-emitted in the calling thread, so the
-    per-store routing files each in the log of the session whose fit ran it, and in no other."""
+    """A start's records, logged on a worker, land in the pypesto.log of the session whose fit ran
+    it, and in no other."""
     logging_setup.configure_pypesto(tmp_path / "default")
     with _engine() as engine:
         for text in ("alpha", "beta"):
@@ -178,9 +173,8 @@ def test_a_killed_worker_fails_the_fit():
 
 
 def test_a_lost_cluster_fails_the_fit_and_nothing_reruns_it_here(fit_session, monkeypatch):
-    """`_run_fit` reruns a failed parallel multistart sequentially, in this process. For the cluster
-    that would quietly run every start on the server node, the oversubscription the cluster exists
-    to end, so a cluster failure fails the fit: `minimize` runs once, on the cluster."""
+    """A cluster failure fails the fit: `minimize` runs once, on the cluster, never again
+    sequentially on the server node."""
     import pypesto.optimize
 
     engines = []
@@ -199,9 +193,8 @@ def test_a_lost_cluster_fails_the_fit_and_nothing_reruns_it_here(fit_session, mo
 
 
 def test_a_worker_never_builds_a_model(tmp_path):
-    """A start reaches a worker by import only. pyPESTO's creators, asked for a module that will not
-    import there, would rmtree its folder and recompile it inside the build root every session
-    shares; on a worker they and AMICI's importer refuse instead, naming the folder and the host."""
+    """On a worker, pyPESTO's creators and AMICI's importer refuse to build in the shared build root,
+    naming the folder and the host, and leave the folder as it was."""
     folder = tmp_path / "pypesto_hash"
     folder.mkdir()
     (folder / "half_built").write_text("", encoding="utf-8")
@@ -216,9 +209,8 @@ def test_a_worker_never_builds_a_model(tmp_path):
 def test_an_amici_without_hdf5_refuses_the_cluster_before_connecting(
     yaml_path, tmp_path, monkeypatch
 ):
-    """AMICI pickles a solver's settings through HDF5, so without it no start reaches a worker and
-    every fit on the cluster fails, as on CI's AMICI before the workflow installed HDF5. The server
-    refuses the cluster instead, before connecting to it (`object()` is no cluster)."""
+    """An AMICI without HDF5 cannot pickle a start, so the server refuses the cluster before
+    connecting to it (`object()` is no cluster)."""
     import amici.sim.sundials
 
     monkeypatch.setattr(amici.sim.sundials, "hdf5_enabled", False)
@@ -233,10 +225,8 @@ def test_an_amici_without_hdf5_refuses_the_cluster_before_connecting(
 
 
 def test_a_fits_own_stream_draws_the_starts_the_global_seed_drew(session, engine):
-    """Fresh starts came from numpy's global stream after `np.random.seed(FIT_SEED)`, which two
-    fits in two threads interleave. The fit's own RandomState must draw the same starts byte for
-    byte, warm starts first, or no stored score is reproducible by a refit; and it must leave the
-    global stream alone."""
+    """The fit's own RandomState draws, byte for byte, the starts pyPESTO draws after
+    `np.random.seed(FIT_SEED)`, warm starts first, and leaves numpy's global stream alone."""
     from pypesto.startpoint import to_startpoint_method
 
     problem, _ = fitting.estimation_problem(session, engine)

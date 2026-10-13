@@ -213,10 +213,10 @@ def _seeded_starts():
     The draw is pyPESTO's own for a PEtab problem (``PetabStartpoints``; the server carries no
     priors, so one uniform column per free parameter over its bounds), but from a
     ``RandomState(FIT_SEED)`` owned by this fit rather than numpy's global stream, on which two
-    fits in two threads interleave their draws. For a fit alone the starts are byte-identical to the
-    ``np.random.seed(FIT_SEED)`` this replaced. pyPESTO wraps the callable in ``FunctionStartpoints``
-    with the same defaults as before: the problem's ``x_guesses`` (the warm starts) come first, and
-    no start is checked."""
+    fits in two threads interleave their draws; for a fit alone the starts are byte-identical to
+    pyPESTO's own after ``np.random.seed(FIT_SEED)``. pyPESTO wraps the callable in
+    ``FunctionStartpoints`` with its sampler's defaults: the problem's ``x_guesses`` (the warm
+    starts) come first, and no start is checked."""
     import numpy as np
 
     rng = np.random.RandomState(FIT_SEED)
