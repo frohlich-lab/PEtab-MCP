@@ -40,10 +40,13 @@ dependencies = [
     # streamable_http_client with a new signature; CallToolResult/Tool fields went snake_case).
     # Revisit once langchain-mcp-adapters ships mcp 2.0 support.
     "fastmcp>=3,<4",
-    # 0.9 is the first release whose v2 problem carries the SciML extension natively
-    # (`petab.v2.extensions.sciml`); the harness's neural route stages its problems in that form
-    # and reads them back through `petab.v2.Problem.from_yaml`, which older releases refuse.
-    "petab>=0.9",
+    # libpetab main, not a release: `petab1to2(validate=False)` (PEtab-dev/libpetab-python#534)
+    # upgrades a v1 problem that does not lint, which every benchmark problem is until its agent
+    # writes the model, and petab1to2 now rescales log10 noise onto log-normal itself (#535). Move
+    # to the first release with both. It must stay at or above 0.9, the first release whose v2
+    # problem carries the SciML extension natively (`petab.v2.extensions.sciml`), which the
+    # harness's neural route stages its problems in.
+    "petab @ git+https://github.com/PEtab-dev/libpetab-python.git@402393d85f1664051e598f15b486ff84879d2a6e",
     "python-libsbml>=5.19",
     # Floored at 3.2 because `validation.frozen_parametric_stoichiometry_issues` is now the ONLY
     # guard against a symbolic reaction stoichiometry (issue frohlich-lab/petab_mcp#89). Below

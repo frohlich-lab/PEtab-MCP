@@ -45,9 +45,10 @@ def test_the_upgrade_keeps_each_parameter_scale():
 
 @pytest.mark.parametrize("transformation", ["lin", "log", "log10"])
 def test_a_v1_observable_keeps_its_likelihood(tmp_path, transformation):
-    """v2 has no log10 distribution, and ``petab1to2`` maps log10-normal onto log-normal with the
-    noise formula unchanged (PEtab-dev/libpetab-python#529). With ``log(10) *`` on the noise
-    formula the densities are IDENTICAL, placeholder overrides included."""
+    """v2 has no log10 distribution: ``petab1to2`` maps log10-normal onto log-normal and rescales
+    the noise by ln(10) (PEtab-dev/libpetab-python#535), so the densities are IDENTICAL,
+    placeholder overrides included -- provided nothing rescales a second time, which the upgrade
+    did once #535 landed beside its own ``log(10) *``."""
     from petab import v1
     from petab.v1.calculate import calculate_llh as llh_v1
     from petab.v2.calculate import calculate_llh as llh_v2
@@ -81,6 +82,21 @@ def test_a_v1_observable_keeps_its_likelihood(tmp_path, transformation):
         new.measurement_df, simulated(new.measurement_df), new.observable_df, new.parameter_df
     )
     assert llh == pytest.approx(expected, rel=1e-12)
+
+
+def test_a_v1_problem_that_does_not_lint_still_upgrades(tmp_path):
+    """Every benchmark problem fails v1 lint as shipped: its observables name readouts the agent's
+    model has yet to define. petab1to2 refused all of them while it linted, so the server could
+    start on none (PEtab-dev/libpetab-python#534 made the lint optional)."""
+    from petab import v1
+
+    shutil.copytree(DATA / "toy_v1", tmp_path, dirs_exist_ok=True)
+    odf = pd.read_csv(tmp_path / "observables.tsv", sep="\t")
+    odf.loc[0, "observableFormula"] = "readout_B"
+    odf.to_csv(tmp_path / "observables.tsv", sep="\t", index=False)
+    assert v1.lint_problem(v1.Problem.from_yaml(tmp_path / "problem.yaml"))  # it does not lint
+    new = P.WorkingProblem.from_yaml(tmp_path / "problem.yaml")
+    assert new.observable_df.iloc[0]["observableFormula"] == "readout_B"
 
 
 def test_parameter_table_conventions_hold_on_every_assignment():
