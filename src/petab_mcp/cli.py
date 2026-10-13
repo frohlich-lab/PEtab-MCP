@@ -83,7 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         metavar="M",
-        help="SLURM jobs the pool keeps while idle (default 0).",
+        help="SLURM jobs the pool keeps while idle, at most N (default 0).",
     )
     return parser
 
@@ -143,6 +143,12 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    if not 0 <= args.slurm_min_jobs <= args.slurm_max_jobs:
+        print(
+            "error: the SLURM pool needs 0 <= --slurm-min-jobs <= --slurm-max-jobs.",
+            file=sys.stderr,
+        )
+        return 2
     if args.slurm_max_jobs > 0 and not args.build_root:
         print(
             "error: --slurm-max-jobs needs --build-root (or PETAB_MCP_BUILD_ROOT) on storage the "
@@ -158,16 +164,16 @@ def main(argv: list[str] | None = None) -> int:
     cluster = None
     if args.slurm_max_jobs > 0:
         cluster = _slurm_pool(args.slurm_min_jobs, args.slurm_max_jobs)
-    server = create_server(
-        args.petab_yaml,
-        build_root=args.build_root,
-        provenance_dir=args.provenance_dir,
-        reference_mode=args.reference_validation,
-        skills_dir=args.skills_dir,
-        criterion=args.criterion,
-        cluster=cluster,
-    )
     try:
+        server = create_server(
+            args.petab_yaml,
+            build_root=args.build_root,
+            provenance_dir=args.provenance_dir,
+            reference_mode=args.reference_validation,
+            skills_dir=args.skills_dir,
+            criterion=args.criterion,
+            cluster=cluster,
+        )
         server.run(transport=args.transport)
     finally:
         if cluster is not None:

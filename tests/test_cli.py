@@ -112,33 +112,50 @@ def _never(*args):
     raise AssertionError("main went past its refusal")
 
 
-def test_a_pool_without_a_build_root_is_refused_before_anything_starts(monkeypatch, capsys):
+_BOUNDS = "0 <= --slurm-min-jobs <= --slurm-max-jobs"
+
+
+@pytest.mark.parametrize(
+    "flags, says",
+    [
+        (["--slurm-max-jobs", "2"], "--build-root"),
+        (["--slurm-max-jobs", "-1"], _BOUNDS),
+        (["--slurm-min-jobs", "1"], _BOUNDS),
+        (["--slurm-max-jobs", "2", "--slurm-min-jobs", "3", "--build-root", "b"], _BOUNDS),
+        (["--slurm-max-jobs", "2", "--slurm-min-jobs", "-1", "--build-root", "b"], _BOUNDS),
+    ],
+)
+def test_a_pool_main_cannot_run_is_refused_before_anything_starts(monkeypatch, capsys, flags, says):
     """The workers import the compiled models by the path the server built them at, and the default
-    build root is a temp dir on the server's own node, which no worker can read. So ``main`` refuses
-    at once, while its stderr is still the terminal's."""
+    build root is a temp dir on the server's own node, which no worker can read. Job bounds outside
+    0 <= min <= max would otherwise pass without a word: a negative maximum fits on this node, a
+    minimum without a maximum starts no pool, and dask clamps the rest. ``main`` refuses each at
+    once, while its stderr is still the terminal's."""
     monkeypatch.delenv("PETAB_MCP_BUILD_ROOT", raising=False)
     monkeypatch.setattr(cli, "_send_stderr_to", _never)
-    assert cli.main(["--petab-yaml", "problem.yaml", "--slurm-max-jobs", "2"]) == 2
-    assert "--build-root" in capsys.readouterr().err
+    assert cli.main(["--petab-yaml", "problem.yaml", *flags]) == 2
+    assert says in capsys.readouterr().err
 
 
 class _Stop(Exception):
-    """Whatever ends ``server.run``: a closed stdin, Ctrl-C."""
+    """Whatever ends the server: an unreadable problem in ``create_server``, Ctrl-C in ``run``."""
 
 
-def _fake_server(monkeypatch, events, stop=None):
-    """Replace ``create_server`` with one that records the ``cluster`` it is given, and whose
-    server records its ``run`` and then raises ``stop``. ``main`` also leaves this process's fd 1 and
-    fd 2 alone, since pytest is capturing them."""
+def _fake_server(monkeypatch, events, fails_in=None):
+    """Replace ``create_server`` with one that records the ``cluster`` it is given, and whose server
+    records its ``run``; ``fails_in`` names which of the two then raises :class:`_Stop`. ``main``
+    also leaves this process's fd 1 and fd 2 alone, since pytest is capturing them."""
 
     class Server:
         def run(self, transport):
             events.append("run")
-            if stop:
-                raise stop
+            if fails_in == "run":
+                raise _Stop
 
     def create_server(*args, cluster, **kwargs):
         events.append(("create_server", cluster))
+        if fails_in == "create_server":
+            raise _Stop
         return Server()
 
     monkeypatch.setattr(cli, "create_server", create_server)
@@ -146,10 +163,11 @@ def _fake_server(monkeypatch, events, stop=None):
     monkeypatch.setattr(cli, "_reserve_stdout_for_the_protocol", lambda: None)
 
 
-def test_the_server_gets_the_pool_and_takes_it_down_when_it_stops(monkeypatch, tmp_path):
+@pytest.mark.parametrize("fails_in", ["create_server", "run"])
+def test_the_server_gets_the_pool_and_takes_it_down_when_it_stops(monkeypatch, tmp_path, fails_in):
     """``main`` builds ``SLURMCluster()`` with no arguments, bounds it in jobs by the two flags,
-    hands it to ``create_server``, and closes it (cancelling its jobs) however ``run`` ends. The
-    cluster is faked, so no scheduler starts."""
+    hands it to ``create_server``, and closes it (cancelling its jobs) however the server ends, even
+    when it never starts. The cluster is faked, so no scheduler starts."""
     events, pools = [], []
 
     class Cluster:
@@ -164,26 +182,27 @@ def test_the_server_gets_the_pool_and_takes_it_down_when_it_stops(monkeypatch, t
             events.append("close")
 
     monkeypatch.setattr(dask_jobqueue, "SLURMCluster", Cluster)
-    _fake_server(monkeypatch, events, stop=_Stop)
+    _fake_server(monkeypatch, events, fails_in)
     argv = ["--petab-yaml", "problem.yaml", "--build-root", str(tmp_path)]
     with pytest.raises(_Stop):
         cli.main([*argv, "--slurm-max-jobs", "4", "--slurm-min-jobs", "1"])
+    ran = ["run"] if fails_in == "run" else []
     assert events == [
         ("SLURMCluster", (), {}),
         ("adapt", {"minimum_jobs": 1, "maximum_jobs": 4}),
         ("create_server", pools[0]),
-        "run",
+        *ran,
         "close",
     ]
 
 
 def test_without_slurm_max_jobs_the_cli_needs_no_dask(monkeypatch):
-    """The pool is opt-in, and ``--slurm-min-jobs`` alone does not opt in: ``create_server`` gets
-    ``cluster=None``. Neither importing the CLI nor running it imports ``dask_jobqueue``, so it runs
-    without the ``dask`` extra (which CI always installs)."""
+    """The pool is opt-in: ``create_server`` gets ``cluster=None``. Neither importing the CLI nor
+    running it imports ``dask_jobqueue``, so it runs without the ``dask`` extra (which CI always
+    installs)."""
     monkeypatch.setitem(sys.modules, "dask_jobqueue", None)  # importing it now fails
     importlib.reload(cli)
     events = []
     _fake_server(monkeypatch, events)
-    assert cli.main(["--petab-yaml", "problem.yaml", "--slurm-min-jobs", "1"]) == 0
+    assert cli.main(["--petab-yaml", "problem.yaml"]) == 0
     assert events == [("create_server", None), "run"]
