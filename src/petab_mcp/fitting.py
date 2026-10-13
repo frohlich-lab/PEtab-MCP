@@ -151,8 +151,9 @@ def _apply_amici_solver_defaults(problem) -> None:
         setter(FIT_AMICI_ATOL)
 
 
-# The multistart's RNG seed and optimizer. Named constants rather than parameters: the fit's own
-# log line hard-codes "optimizer=fides", so a signature knob would be configurable in name only.
+# The warm-start jitter's seed and the multistart's optimizer. Named constants rather than
+# parameters: the fit's own log line hard-codes "optimizer=fides", so a signature knob would be
+# configurable in name only.
 FIT_SEED = 0
 FIT_OPTIMIZER = "fides"
 
@@ -205,26 +206,6 @@ def _fit_engine(n_starts: int, shared=None):
         return MultiProcessEngine(n_procs=workers)
     except Exception:  # noqa: BLE001 - parallel engine unavailable: fall back to sequential
         return None
-
-
-def _seeded_starts():
-    """A multistart's fresh start points, for ``minimize(startpoint_method=...)``.
-
-    The draw is pyPESTO's own for a PEtab problem (``PetabStartpoints``; the server carries no
-    priors, so one uniform column per free parameter over its bounds), but from a
-    ``RandomState(FIT_SEED)`` owned by this fit rather than numpy's global stream, on which two
-    fits in two threads interleave their draws; for a fit alone the starts are byte-identical to
-    pyPESTO's own after ``np.random.seed(FIT_SEED)``. pyPESTO wraps the callable in
-    ``FunctionStartpoints`` with its sampler's defaults: the problem's ``x_guesses`` (the warm
-    starts) come first, and no start is checked."""
-    import numpy as np
-
-    rng = np.random.RandomState(FIT_SEED)
-
-    def draw(n_starts: int, lb, ub, **_):
-        return np.array([rng.uniform(low, high, n_starts) for low, high in zip(lb, ub)]).T
-
-    return draw
 
 
 def _fmt(x: Any) -> str:
@@ -887,7 +868,7 @@ def warm_start_guesses(problem, parameter_df, n_starts: int, optimization=None):
     holds. Every start is clipped into the box.
 
     Deterministic: jitter is drawn from a private ``default_rng(FIT_SEED)``, so it neither
-    depends on nor perturbs the stream the fresh starts are drawn from (:func:`_seeded_starts`).
+    depends on nor perturbs the global stream pyPESTO samples its fresh starts from.
 
     Returns an empty ``(0, dim_full)`` array when there is nothing to warm-start from
     (``n_starts < 2``, no free parameters, or a free parameter with no usable nominal value),
@@ -1095,12 +1076,11 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     )
     problem.x_guesses_full = guesses
     log.info(
-        "fit: start optimizer=fides n_starts=%d warm_starts=%d workers=%s seed=%d n_free=%d "
+        "fit: start optimizer=fides n_starts=%d warm_starts=%d workers=%s n_free=%d "
         "sbml=%s objective_before=%s",
         n_starts,
         len(guesses),
         workers,
-        FIT_SEED,
         n_free,
         session.sbml_hash(),
         _fmt(objective_before),
@@ -1143,8 +1123,8 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     )
     # Record the per-iteration optimization history in memory (no trace files) so the
     # traces can be exposed as SQL tables. Older pyPESTO without HistoryOptions just runs
-    # without a trace. The fresh starts come from the fit's own stream, which a retry continues.
-    minimize_kwargs: dict[str, Any] = {"startpoint_method": _seeded_starts()}
+    # without a trace.
+    minimize_kwargs: dict[str, Any] = {}
     try:
         minimize_kwargs["history_options"] = pypesto.HistoryOptions(trace_record=True)
     except Exception:  # noqa: BLE001 - HistoryOptions absent/renamed in this pyPESTO

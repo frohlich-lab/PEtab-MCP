@@ -86,18 +86,13 @@ dependencies = [
 
 [project.optional-dependencies]
 # Fits on a dask cluster: `create_server(cluster=...)` and petab_mcp.dask_engine, the only importer.
-# `distributed` is floored at the release the engine was written and tested against; nothing older
-# is known to break, nor known to work. cloudpickle ships each start exactly as pyPESTO's own
-# MultiProcessEngine does; distributed and pyPESTO require it too, so it is pinned only because
-# dask_engine imports it.
-dask = [
-    "distributed>=2026.8",
-    "cloudpickle>=3",
-    # cli.py builds the `--slurm-max-jobs` pool as a `dask_jobqueue.SLURMCluster`. Below 0.8.5,
-    # every `sbatch`/`scancel` blocked the event loop of the scheduler the pool runs in this
-    # process (asynchronous since dask/dask-jobqueue#610); 0.9 is the release tested here.
-    "dask-jobqueue>=0.9",
-]
+# `distributed` below 2023.9.2 has no `Client.register_plugin`, which registers the engine's worker
+# plugin. cloudpickle, which ships each start as pyPESTO's own MultiProcessEngine does, is listed
+# because dask_engine imports it; no version is known to break that, so it has no floor.
+# dask-jobqueue builds cli.py's `--slurm-max-jobs` pool; below 0.8.5 every `sbatch`/`scancel` it
+# runs blocked the event loop of the scheduler the pool hosts in this process
+# (dask/dask-jobqueue#610).
+dask = ["distributed>=2023.9.2", "cloudpickle", "dask-jobqueue>=0.8.5"]
 dev = [
     # The dask extra, so CI runs tests/test_dask_engine.py and the SLURM-pool tests in
     # tests/test_cli.py (which submit nothing) rather than skipping them.
