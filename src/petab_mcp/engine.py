@@ -61,23 +61,27 @@ def build_lock(output_folder: str | Path, model_name: str) -> Iterator[None]:
     The build root is shared by every session and process and keyed by module hash, so two of them
     reaching one structure name one folder — and AMICI deletes the files it finds there before it
     generates code, so a second build corrupts the first. The second fails fast instead, without
-    waiting (:mod:`petab_mcp.filelock`). A module whose extension is already there takes no lock:
-    importing it is safe beside anything, and that is what every re-fit of a structure does.
+    waiting (:mod:`petab_mcp.filelock`). A module whose build FINISHED takes no lock: importing it
+    is safe beside anything, and that is what every re-fit of a structure does. Finished means its
+    holder marked it (``.built``) once its own import succeeded — the extension alone is no signal,
+    since the install step writes it before the build is done.
 
     Once the lock is held, a folder that still has no extension was left by a build that stopped: a
     running one would hold the lock. AMICI's v2 import compiles only into a missing folder and
     imports from one that is there, so the leftover would fail every later build of the structure;
-    it is removed first.
+    it is removed first. A folder with the extension but no mark is kept and imported, then marked:
+    every module of a build root from before the mark looks like that.
     """
     folder = Path(output_folder)
-    if _module_on_disk(folder, model_name):
+    done = folder / ".built"
+    if done.exists() and _module_on_disk(folder, model_name):
         yield
         return
     folder.parent.mkdir(parents=True, exist_ok=True)
     try:
         fd = filelock.try_lock(folder.with_name(f"{folder.name}.lock"))
     except filelock.Held as held:
-        raise ModelBuildBusyError(folder.name, held.holder) from None
+        raise ModelBuildBusyError(model_name, held.holder) from None
     try:
         if folder.is_dir() and not _module_on_disk(folder, model_name):
             logging.getLogger("petab_mcp").info(
@@ -85,6 +89,7 @@ def build_lock(output_folder: str | Path, model_name: str) -> Iterator[None]:
             )
             shutil.rmtree(folder)
         yield
+        done.touch()
     finally:
         os.close(fd)
 
