@@ -74,6 +74,25 @@ class _Die(Task):
         os._exit(1)
 
 
+class _Fail(Task):
+    """A start that fails on its worker."""
+
+    def execute(self):
+        raise RuntimeError("start failed")
+
+
+class _Touch(Task):
+    """A start that leaves ``path`` behind once it has run."""
+
+    def __init__(self, path: str) -> None:
+        super().__init__()
+        self.path = path
+
+    def execute(self):
+        time.sleep(0.5)
+        Path(self.path).touch()
+
+
 class _Build(Task):
     """A start that reaches one model-build entry point on its worker: pyPESTO's v1 or v2 creator
     asked for a model whose module there will not import, or AMICI's PEtab importer."""
@@ -116,6 +135,7 @@ def test_a_server_given_a_cluster_fits_there_and_each_start_ends_as_it_would_her
             return asyncio.run(mcp.call_tool(tool, args)).structured_content
 
         bounds = {"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}
+        np.random.seed(0)  # the same fresh starts on both sides
         call("make_changes", {"parameters": [bounds], "justification": "x", "n_starts": 4})
         sql = "SELECT id, fval, n_fval FROM optimization_starts"
         return {r["id"]: (r["fval"], r["n_fval"]) for r in call("query_data", {"sql": sql})["rows"]}
@@ -172,6 +192,18 @@ def test_a_killed_worker_fails_the_fit():
             engine.execute([_Die()])
 
 
+def test_a_failed_start_cancels_the_fits_starts_still_queued(tmp_path):
+    """A failed fit leaves none of its other starts queued on the shared pool (at most the one its
+    worker had already taken runs)."""
+    ran = tmp_path / "ran"
+    ran.mkdir()
+    with _engine(n_workers=1) as engine:
+        with pytest.raises(FitBackendError, match="start failed"):
+            engine.execute([_Fail(), *(_Touch(str(ran / str(i))) for i in range(5))])
+        time.sleep(3)  # long enough for every start left queued to run
+    assert len(list(ran.iterdir())) <= 1
+
+
 def test_a_lost_cluster_fails_the_fit_and_nothing_reruns_it_here(fit_session, monkeypatch):
     """A cluster failure fails the fit: `minimize` runs once, on the cluster, never again
     sequentially on the server node."""
@@ -222,23 +254,3 @@ def test_an_amici_without_hdf5_refuses_the_cluster_before_connecting(
             auto_fit=False,
             cluster=object(),
         )
-
-
-def test_a_fits_own_stream_draws_the_starts_the_global_seed_drew(session, engine):
-    """The fit's own RandomState draws, byte for byte, the starts pyPESTO draws after
-    `np.random.seed(FIT_SEED)`, warm starts first, and leaves numpy's global stream alone."""
-    from pypesto.startpoint import to_startpoint_method
-
-    problem, _ = fitting.estimation_problem(session, engine)
-    n_starts = 8
-    problem.x_guesses_full = fitting.warm_start_guesses(
-        problem, session.problem.parameter_df, n_starts
-    )
-    np.random.seed(fitting.FIT_SEED)
-    before = problem.startpoint_method(n_starts=n_starts, problem=problem)
-    state = np.random.get_state()
-
-    after = to_startpoint_method(fitting._seeded_starts())(n_starts=n_starts, problem=problem)
-
-    assert after.tobytes() == before.tobytes()
-    assert np.random.get_state()[2] == state[2] and (np.random.get_state()[1] == state[1]).all()

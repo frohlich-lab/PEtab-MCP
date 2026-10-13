@@ -22,6 +22,7 @@ imports it.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import socket
 import threading
@@ -115,16 +116,19 @@ class DaskEngine(Engine):
         self.client.register_plugin(_NoBuild(), name="petab-mcp-no-build")
 
     def execute(self, tasks: list[Task], progress_bar: bool | None = None) -> list[Any]:
-        """The tasks' results, in task order."""
+        """The tasks' results, in task order. A failure cancels the starts still queued, so a failed
+        fit leaves nothing running on the pool."""
+        futures = []
         try:
-            futures = [
-                self.client.submit(_work, cloudpickle.dumps(task), priority=-i, pure=False)
-                for i, task in enumerate(tasks)
-            ]
+            for i, task in enumerate(tasks):
+                payload = cloudpickle.dumps(task)
+                futures.append(self.client.submit(_work, payload, priority=-i, pure=False))
             done = self.client.gather(futures)
-        except FitBackendError:
-            raise
         except Exception as exc:  # noqa: BLE001 - every cluster failure fails the fit
+            with contextlib.suppress(Exception):  # the client itself may be what failed
+                self.client.cancel(futures)
+            if isinstance(exc, FitBackendError):
+                raise
             raise FitBackendError(f"the fit's dask cluster failed it: {exc!r}") from exc
         for _, records in done:
             for name, levelno, message, created in records:

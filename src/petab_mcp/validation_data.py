@@ -906,7 +906,6 @@ def _refit_one(view, *, target: dict[str, str], n_starts: int, fit_engine) -> di
         _fides_maxtime_options,
         _fit_engine,
         _fitted_values,
-        _seeded_starts,
         problem_x_full_from_nominal,
         pypesto_problem,
     )
@@ -926,7 +925,6 @@ def _refit_one(view, *, target: dict[str, str], n_starts: int, fit_engine) -> di
         n_starts=int(n_starts),
         engine=_fit_engine(int(n_starts), fit_engine),
         progress_bar=False,
-        startpoint_method=_seeded_starts(),
     )
 
     finite = [
