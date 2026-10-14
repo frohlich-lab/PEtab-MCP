@@ -659,13 +659,16 @@ def statements_to_antimony(
     rows: list[dict[str, Any]],
     written: list[dict[str, Any]] | None = None,
     starts: list[dict[str, Any]] | None = None,
+    readouts: dict[str, str] | None = None,
+    amounts: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[str, dict[str, Any], list[dict[str, str]], dict[tuple[str, str], dict]]:
     """The ``statements`` route: build the model the rows assert, as Antimony for :func:`set_model`.
 
     Each row is ``{statement, policy, prefix}`` with the statement in INDRA's JSON. ``written``
     are mechanisms the agent writes in this call (:func:`mechanisms.written`), joining those it
     wrote earlier in the run. ``starts`` (``{agent, amount, name?}``) declare what is present at
-    the start (:func:`problem_sbml.to_antimony`). Returns the Antimony; the provenance record —
+    the start, ``readouts`` (id to formula) the measurement mappings that are not one pattern's
+    amount, over ``amounts`` (name to agent) (:func:`problem_sbml.to_antimony`). Returns the Antimony; the provenance record —
     ``rows``, each with the :class:`mechanisms.Emission` it produced and with its definition when
     the agent wrote its mechanism, and ``starts``; a warning per ungrounded agent, since grounding is
     optional and its absence is reported, never refused; and the run's written mechanisms, for
@@ -731,6 +734,8 @@ def statements_to_antimony(
         library,
         session.inputs,
         declared,
+        readouts,
+        {k: Agent._from_json(v) for k, v in (amounts or {}).items()},
     )
     record = {
         "rows": [
@@ -742,6 +747,8 @@ def statements_to_antimony(
             {"name": name, "agent": start["agent"], "amount": start["amount"]}
             for (name, _, _), start in zip(declared, starts or [])
         ],
+        "readouts": dict(readouts or {}),
+        "amounts": dict(amounts or {}),
     }
     warnings = [
         M.warning(M.SOURCE_EDIT, f"`statements[{i}]` agent(s) {names} carry no grounding.")

@@ -77,6 +77,8 @@ def to_antimony(
     library: dict[tuple[str, str], M.Policy] = M.REGISTRY,
     inputs: dict[str, str] | None = None,
     starts: list[tuple[str, Agent, float | str]] | None = None,
+    formulas: dict[str, str] | None = None,
+    amounts: dict[str, Agent] | None = None,
 ) -> tuple[str, list[M.Emission]]:
     """The model ``rows`` build, as Antimony the ``antimony`` route accepts unchanged.
 
@@ -90,8 +92,19 @@ def to_antimony(
 
     ``starts`` (``(name, agent, amount)``: a number or an expression over parameter ids) declare
     what is present at the start, as the module docstring sets out; each is ``<name>_init``.
+
+    ``formulas`` (readout id to an expression; ``make_changes``' ``readouts``) define each readout that is not one pattern's amount as an
+    assignment rule over ``amounts`` (name to the agent whose amount it is), the entity map's ids
+    — each a symbol of the model by then — and parameter ids, a name the model does not hold
+    becoming a parameter as in a declared start.
     """
     starts = starts or []
+    clash = sorted(set(amounts or {}) & set(entities))
+    if clash:
+        raise ModelUpdateError(f"amounts {clash} are also entity-map ids; name them apart")
+    # An amount a readout formula reads is named like an entity-map readout (below), for this
+    # model only: the map itself is the problem's, and amounts are the agent's.
+    entities = {**entities, **(amounts or {})}
     # Start agents join the monomer pass (they may name a site or partner no row does); they are
     # not readouts, so they stay out of `entities` below.
     model, emissions = M.assemble(
@@ -196,6 +209,8 @@ def to_antimony(
             rule.setVariable(new)
             renamed = parameter
         _rename(sbml_model, renamed, new)
+    for readout, formula in (formulas or {}).items():
+        _readout_formula(sbml_model, readout, formula)
     for name, _, amount in starts:
         if isinstance(amount, str):
             _initial_expression(sbml_model, f"{name}_init", name, amount)
@@ -275,15 +290,40 @@ def _initial_expression(sbml_model, placeholder: str, species: str, formula: str
     math = libsbml.parseL3Formula(formula)
     if math is None:
         raise ModelUpdateError(f"start {species!r} is no formula: {formula!r}")
+    _parameters_for_unknown_names(sbml_model, math)
+    for assignment in sbml_model.getListOfInitialAssignments():
+        if assignment.getMath().isName() and assignment.getMath().getName() == placeholder:
+            assignment.setMath(math)
+
+
+def _readout_formula(sbml_model, readout: str, formula: str) -> None:
+    """Define ``readout`` as ``formula``: an assignment rule, as the lint wants a measurement
+    mapping to be, over symbols of the model and parameters made for the names it lacks."""
+    if sbml_model.getElementBySId(readout) is not None:
+        raise ModelUpdateError(
+            f"readout {readout!r} is a formula and also names something else in the model"
+        )
+    math = libsbml.parseL3Formula(formula)
+    if math is None:
+        raise ModelUpdateError(f"readout {readout!r} is no formula: {formula!r}")
+    _parameters_for_unknown_names(sbml_model, math)
+    parameter = sbml_model.createParameter()
+    parameter.setId(readout)
+    parameter.setConstant(False)
+    rule = sbml_model.createAssignmentRule()
+    rule.setVariable(readout)
+    rule.setMath(math)
+
+
+def _parameters_for_unknown_names(sbml_model, math) -> None:
+    """A parameter for every name in ``math`` the model does not hold: a shipped row or a
+    condition-table column fills it, and anything else is estimated from reconcile's seed."""
     for node in _ast_nodes(math):
         if node.getType() == libsbml.AST_NAME and sbml_model.getElementBySId(node.getName()) is None:
             parameter = sbml_model.createParameter()
             parameter.setId(node.getName())
             parameter.setConstant(True)
             parameter.setValue(SEED_INITIAL_VALUE)
-    for assignment in sbml_model.getListOfInitialAssignments():
-        if assignment.getMath().isName() and assignment.getMath().getName() == placeholder:
-            assignment.setMath(math)
 
 
 def _initial_empty(sbml_model, placeholder: str) -> None:

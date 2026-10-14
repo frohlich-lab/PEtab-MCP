@@ -360,6 +360,35 @@ def test_the_dimers_the_refusal_advises_are_not_refused():
     assert "STAT5A" in antimony and "STAT5B" in antimony
 
 
+# -- readout formulas (make_changes' `readouts` over `amounts`) ----------------------
+def test_a_readout_formula_reads_other_entries_and_parameters():
+    """Boehm's pSTAT5A readout is a ratio of two patterns scaled by a shipped constant; one
+    pattern's amount cannot say it."""
+    p_erk = Agent._from_json(
+        {"name": "ERK", "mods": [{"mod_type": "phosphorylation", "residue": "T", "position": "185"}]}
+    )
+    antimony, _ = PS.to_antimony(
+        [(_PHOSPHO, INDRA_DEFAULT, "r1")],
+        {},
+        formulas={"readout_ratio": "scale * pERK / tERK"},
+        amounts={"pERK": p_erk, "tERK": Agent("ERK")},
+    )
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    rule = sbml.getAssignmentRuleByVariable("readout_ratio")
+    assert libsbml.formulaToL3String(rule.getMath()) == "scale * pERK / tERK"
+    assert sbml.getParameter("scale") is not None
+
+
+def test_a_readout_formula_names_a_new_symbol():
+    """A readout's id that is also a species or an entity-map id would define one symbol twice."""
+    with pytest.raises(ModelUpdateError, match="also names something else"):
+        PS.to_antimony(
+            [(_TRANSITION, "mass_action", "r1")],
+            {"naive": Agent("naive")},
+            formulas={"naive": "2 * naive"},
+        )
+
+
 # -- entries written from the statement's own agents ---------------------------------
 def _reactions(rows, entities):
     antimony, _ = PS.to_antimony(rows, entities)
