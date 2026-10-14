@@ -38,6 +38,7 @@ from dataclasses import dataclass
 
 import pysb
 import sympy
+from indra.assemblers.pysb import assembler as _indra_assembler
 from indra.assemblers.pysb.assembler import Policy as IndraPolicy
 from indra.assemblers.pysb.assembler import (
     PysbAssembler,
@@ -50,10 +51,12 @@ from indra.assemblers.pysb.base_agents import BaseAgentSet
 from indra.assemblers.pysb.sites import get_mod_site_name, states
 from indra.statements import (
     Agent,
+    RegulateActivity,
     RemoveModification,
     Statement,
     get_all_descendants,
     get_statement_by_name,
+    modclass_to_modtype,
 )
 from pysb.core import time
 
@@ -186,6 +189,7 @@ def written(definition: dict, library: dict[tuple[str, str], Policy]) -> Policy:
             parameters=tuple(p.name for p in params.values()),
         )
 
+    policy_fn.indra_policy = getattr(base, "indra_policy", "default")
     return policy_fn
 
 
@@ -204,7 +208,9 @@ def assemble(
     # vocabulary in :mod:`statements`, whose agents carry only the sites their own conditions
     # name, so those are added directly.
     indra = PysbAssembler(stmts)
-    indra.processed_policies = indra.process_policies(None)
+    indra.processed_policies = {
+        stmt.uuid: IndraPolicy(_monomer_policy(policy, library)) for stmt, policy, _ in rows
+    }
     indra.agent_set = agents = BaseAgentSet()
     indra._monomers()
     for stmt in stmts:
@@ -224,6 +230,13 @@ def assemble(
     return model, [
         instantiate(stmt, model, policy, prefix, library) for stmt, policy, prefix in rows
     ]
+
+
+def _monomer_policy(policy: str, library: dict[tuple[str, str], Policy]) -> str:
+    """The INDRA policy whose monomer pass a row needs: its entry's, or for a written entry the
+    one it was based on; ``default`` for the entries of this module, which build no sites."""
+    entries = [fn for (_, p), fn in library.items() if p == policy]
+    return getattr(entries[0], "indra_policy", "default") if entries else "default"
 
 
 def _add(model: pysb.Model, *components) -> None:
@@ -283,33 +296,48 @@ for _cls in get_all_descendants(RemoveModification):
 INDRA_DEFAULT = "indra_default"
 
 
-def _indra_default(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
-    """INDRA's default policy for ``stmt``; what it added is read off the model, before against
-    after. Its parameters are renamed ``<prefix>_<kind>`` (``kf``, ``kr``, ``Km``...): INDRA's own
-    names (``kf_ar_phosphorylation_1``) say neither which row minted them nor which statement, and
-    an agent widening a bound on Fujita had to look each one up."""
-    before = {c.name for c in model.all_components()}
-    indra = PysbAssembler()
-    indra.processed_policies = {stmt.uuid: IndraPolicy("default")}
-    try:
-        indra._dispatch(stmt, "assemble", model, BaseAgentSet(), {})
-    except UnknownPolicyError as exc:
-        raise MechanismError(f"INDRA has no default assembly for {type(stmt).__name__}") from exc
-    added = [c for c in model.all_components() if c.name not in before]
-    for parameter in (c for c in added if isinstance(c, pysb.Parameter)):
-        name = f"{prefix}_{parameter.name.split('_')[0]}"
-        # INDRA builds with PySB's global export off, which `rename` still tries to update.
-        parameter._export = False
-        parameter.rename(
-            name if name not in model.parameters.keys() else f"{name}_{parameter.name}"
+def _indra(name: str) -> Policy:
+    """INDRA's own ``name`` policy for a statement; what it added is read off the model, before
+    against after. Its parameters are renamed ``<prefix>_<kind>`` (``kf``, ``kr``, ``Km``...):
+    INDRA's own names (``kf_ar_phosphorylation_1``) say neither which row minted them nor which
+    statement, and an agent widening a bound on Fujita had to look each one up."""
+    entry = INDRA_DEFAULT if name == "default" else f"indra_{name}"
+
+    def apply(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
+        before = {c.name for c in model.all_components()}
+        indra = PysbAssembler()
+        indra.processed_policies = {stmt.uuid: IndraPolicy(name)}
+        try:
+            indra._dispatch(stmt, "assemble", model, BaseAgentSet(), {})
+        except UnknownPolicyError as exc:
+            raise MechanismError(
+                f"INDRA has no {name} assembly for {type(stmt).__name__}"
+            ) from exc
+        added = [c for c in model.all_components() if c.name not in before]
+        for parameter in (c for c in added if isinstance(c, pysb.Parameter)):
+            renamed = f"{prefix}_{parameter.name.split('_')[0]}"
+            # INDRA builds with PySB's global export off, which `rename` still tries to update.
+            parameter._export = False
+            parameter.rename(
+                renamed
+                if renamed not in model.parameters.keys()
+                else f"{renamed}_{parameter.name}"
+            )
+        return Emission(
+            (type(stmt).__name__, entry),
+            prefix,
+            {role: _role_names(getattr(stmt, role)) for role in stmt._agent_order},
+            rules=tuple(c.name for c in added if isinstance(c, pysb.Rule)),
+            parameters=tuple(c.name for c in added if isinstance(c, pysb.Parameter)),
         )
-    return Emission(
-        (type(stmt).__name__, INDRA_DEFAULT),
-        prefix,
-        {role: _role_names(getattr(stmt, role)) for role in stmt._agent_order},
-        rules=tuple(c.name for c in added if isinstance(c, pysb.Rule)),
-        parameters=tuple(c.name for c in added if isinstance(c, pysb.Parameter)),
-    )
+
+    # The monomer pass (:func:`assemble`) must run the same policy: ``two_step`` gives the enzyme
+    # and substrate the binding site its complex forms on, which the default pass does not.
+    apply.indra_policy = name
+    return apply
+
+
+_indra_default = _indra("default")
 
 
 def _role_names(value) -> str:
@@ -318,5 +346,25 @@ def _role_names(value) -> str:
     return "" if value is None else value.name
 
 
+def _dispatch_name(cls: type[Statement]) -> str:
+    """The name INDRA's ``_dispatch`` looks a statement class's policies up by."""
+    if issubclass(cls, RemoveModification) and cls in modclass_to_modtype:
+        return modclass_to_modtype[cls]
+    if issubclass(cls, RegulateActivity):
+        return "regulateactivity"
+    return cls.__name__.lower()
+
+
+_INDRA_ASSEMBLY = {n for n, f in vars(_indra_assembler).items() if "_assemble_" in n and callable(f)}
+
 for _cls in {c for base in statement_whitelist for c in (base, *get_all_descendants(base))}:
     mechanism(_cls, INDRA_DEFAULT)(_indra_default)
+    # Every OTHER policy INDRA itself implements for this type, as ``indra_<policy>``: two_step
+    # (enzyme-substrate complex, then release), michaelis_menten, hill, multi_way,
+    # interactions_only, atp_dependent. Only the pairs INDRA defines: its dispatch falls back to
+    # the default without a word when a policy is missing, which would build one model under
+    # another's name.
+    for _name in sorted(_INDRA_ASSEMBLY):
+        _kind, _policy = _name.split("_assemble_")
+        if _kind == _dispatch_name(_cls) and _policy not in ("default", "one_step"):
+            mechanism(_cls, f"indra_{_policy}")(_indra(_policy))
