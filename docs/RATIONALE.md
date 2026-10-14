@@ -24,7 +24,7 @@ The numbers on the entries below are pull requests of
 [frohlich-lab/petab_mcp](https://github.com/frohlich-lab/petab_mcp), where this package was
 developed before it moved here.
 
-#300 A fixed-θ held-out set may bring ROWS of the training condition table but never a column, and the rows are appended at score time (`validation_data._with_held_out_conditions`) rather than shipped in the agent's `problem/conditions.tsv`. The shipped-table route is the obvious simplification and worked on main before #300; it tells the agent which experiments are held out and moves `Scenario.version`, which is what kept raimundez's EGFR knockdown (Fig 6E) filed as a transfer set in #290's first draft although the paper predicted it at the fitted point.
+#300 A fixed-θ held-out set may bring ROWS of the training condition table but never a new target, and the rows are appended at score time (`validation_data._with_held_out_design`) rather than shipped in the agent's `problem/conditions.tsv`. The shipped-table route is the obvious simplification and worked on main before #300; it tells the agent which experiments are held out and moves `Scenario.version`, which is what kept raimundez's EGFR knockdown (Fig 6E) filed as a transfer set in #290's first draft although the paper predicted it at the fitted point.
 
 #89 `validation.stoichiometry_conflict_issues` and its `set_model` caller are gone: antimony's 3.2
 floor makes the id-uniqueness collision they translated — `N A -> N B` failing conversion outright

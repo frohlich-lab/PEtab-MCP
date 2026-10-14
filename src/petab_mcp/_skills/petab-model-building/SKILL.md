@@ -28,13 +28,13 @@ a total abundance that sets an initial condition *and* divides a relative readou
 
 ## The condition table drives the model
 
-Each condition column sets a model quantity for that condition — a dose, an input, a genotype
-switch. Two consequences:
+Each condition sets model quantities — a dose, an input, a genotype switch — and each experiment
+says when its conditions apply (time -inf: while the model equilibrates beforehand). So:
 
-- **Names must match.** The column targets a model entity by name; a mismatch means the
+- **Names must match.** A condition targets a model entity by name; a mismatch means the
   perturbation silently never happens.
-- **The model must actually use it.** If nothing references it, every condition simulates
-  identically and the design is thrown away. Exception: a column holding the SAME value in every
+- **The model must actually use it.** If nothing references a target, every experiment simulates
+  identically and the design is thrown away. Exception: a target set to the SAME value in every
   condition encodes no design, so it need only exist.
 
 A condition-set initial value is an experimental *input*, not a value to fit.
@@ -57,7 +57,7 @@ A condition-set initial value is an experimental *input*, not a value to fit.
 You do not write that table — the sync does, and it excludes both forbidden symbols:
 
 - **A quantity the model computes**: an assignment- or rate-rule target (`prevalence := I/N;`).
-- **A condition-table column**: an input supplied per condition, not fitted.
+- **A condition target**: an input supplied per condition, not fitted.
 
 Observable/noise symbols are the opposite case: a `sigma_*` or scaling factor **belongs** in the
 table (only `observableParameter1_*` placeholders don't) — out of the mechanism.

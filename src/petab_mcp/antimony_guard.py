@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import threading
 
-from petab.v1.models.sbml_model import SbmlModel
+from petab.v2.models.sbml_model import SbmlModel
 
 #: Exported: any code driving libantimony outside ``SbmlModel`` must hold this.
 ANTIMONY_LOCK = threading.Lock()

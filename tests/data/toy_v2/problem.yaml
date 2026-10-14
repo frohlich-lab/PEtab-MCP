@@ -1,0 +1,11 @@
+format_version: 2.0.0
+parameter_files:
+- parameters.tsv
+model_files:
+  conversion_reaction:
+    location: model.ant
+    language: antimony
+measurement_files:
+- measurements.tsv
+observable_files:
+- observables.tsv

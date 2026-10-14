@@ -1,8 +1,8 @@
-"""Parameter-table inspection, editing, and model reconciliation (PEtab v1).
+"""Parameter-table inspection, editing, and model reconciliation.
 
-In PEtab v1 the parameter table is a pandas DataFrame indexed by ``parameterId``
-with columns ``parameterScale`` (lin/log/log10), ``lowerBound``, ``upperBound``,
-``nominalValue``, ``estimate`` (0/1), and optional priors. Edits operate directly on
+The parameter table is a DataFrame indexed by ``parameterId`` with ``lowerBound``,
+``upperBound``, ``nominalValue``, ``estimate`` (a bool) and the server's ``parameterScale``
+extension column (lin/log/log10; see :mod:`petab_mcp.problem`). Edits operate directly on
 ``problem.parameter_df``.
 """
 
@@ -11,25 +11,20 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
-from petab.v1.C import (
+from petab.v2.C import (
     ESTIMATE,
-    LIN,
-    LOG,
-    LOG10,
     LOWER_BOUND,
     NOMINAL_VALUE,
-    OBJECTIVE_PRIOR_PARAMETERS,
-    OBJECTIVE_PRIOR_TYPE,
     PARAMETER_ID,
-    PARAMETER_SCALE,
     UPPER_BOUND,
 )
 
 from .constants import DEFAULT_PARAMETER_LOWER_BOUND, DEFAULT_PARAMETER_UPPER_BOUND
 from .errors import ParameterError
 from .formatting import _clean
+from .problem import PARAMETER_SCALE, SCALES, as_bool
 
-_SCALES = {LIN, LOG, LOG10}
+_SCALES = set(SCALES)
 _NUMERIC_FIELDS = {LOWER_BOUND, UPPER_BOUND, NOMINAL_VALUE}
 _EDITABLE_FIELDS = (
     NOMINAL_VALUE,
@@ -37,8 +32,6 @@ _EDITABLE_FIELDS = (
     UPPER_BOUND,
     ESTIMATE,
     PARAMETER_SCALE,
-    OBJECTIVE_PRIOR_TYPE,
-    OBJECTIVE_PRIOR_PARAMETERS,
 )
 
 
@@ -81,7 +74,7 @@ def _param_record(df, pid: str) -> dict[str, Any]:
     for col in df.columns:
         rec[col] = _clean(row[col])
     if ESTIMATE in rec and rec[ESTIMATE] is not None:
-        rec[ESTIMATE] = bool(int(float(rec[ESTIMATE])))
+        rec[ESTIMATE] = as_bool(rec[ESTIMATE])
     return rec
 
 
@@ -130,37 +123,39 @@ def parameters_to_records(problem, shipped=None) -> list[dict[str, Any]]:
 
 
 def parameter_df_to_tsv(df) -> str:
-    """Serialize the parameter table to PEtab-style TSV text (index = ``parameterId``).
+    """Serialize the parameter table to PEtab v2 TSV text (index = ``parameterId``, ``estimate``
+    spelled ``true``/``false``).
 
     This is the on-disk form of a version's parameter table (a real DataFrame, not JSON
     records) and the canonical serialization hashed by :func:`problem_fingerprint`.
     """
+    if ESTIMATE in df.columns:
+        df = df.assign(**{ESTIMATE: ["true" if as_bool(v) else "false" for v in df[ESTIMATE]]})
     return df.to_csv(sep="\t")
 
 
 def problem_fingerprint(sbml_str: str, parameter_df) -> str:
     """Short hash of the full problem identity: model SBML + the parameter-table DataFrame.
 
-    Distinct from the SBML-only model hash used for the AMICI compile cache: this also
+    Distinct from the module hash the AMICI compile cache is keyed on: this also
     changes when a parameter's bounds / scale / estimate / value change, so it correctly
     identifies a *fit* — whose result depends on the parameter table, not just the model
     structure. Keying fit artifacts (the pyPESTO result cache) and provenance on this,
-    rather than the SBML hash alone, keeps two versions that differ only in bounds distinct.
+    rather than the model alone, keeps two versions that differ only in bounds distinct.
     """
     payload = sbml_str + "\n" + parameter_df_to_tsv(parameter_df)
     return sha16(payload)
 
 
 def estimated_mask(parameter_df) -> Any:
-    """Boolean mask over ``parameter_df.index``: True where ``estimate`` != 0 (NaN/missing → 0).
+    """Boolean mask over ``parameter_df.index``: True where ``estimate`` is (NaN/missing → False).
 
     The single expression every "which parameters are estimated" site shares, so the coercion
-    rule (`fillna(0).astype(float) != 0`) lives in one place and cannot drift. Assumes ``ESTIMATE``
-    is a column; may raise ``TypeError``/``ValueError`` on a wholly non-numeric ``estimate``
-    column — callers wrap it with their own fallback (``estimated_ids`` treats that as "all free",
-    the re-author snapshot as "none free").
+    rule (:func:`problem.as_bool`) lives in one place and cannot drift. Assumes ``ESTIMATE`` is a
+    column; raises ``ValueError`` on a cell that is not a boolean — callers wrap it with their own
+    fallback (``estimated_ids`` treats that as "all free", the re-author snapshot as "none free").
     """
-    return parameter_df[ESTIMATE].fillna(0).astype(float) != 0
+    return parameter_df[ESTIMATE].fillna(False).map(as_bool).astype(bool)
 
 
 def estimated_ids(parameter_df) -> list[str]:
@@ -230,28 +225,20 @@ def structure_fingerprint(sbml_model, parameter_df) -> str:
     return sha16(payload)
 
 
-def _coerce_estimate_int(value: Any) -> int:
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, (int, float)):
-        return 1 if value else 0
-    if isinstance(value, str):
-        low = value.strip().lower()
-        if low in ("true", "1", "yes"):
-            return 1
-        if low in ("false", "0", "no"):
-            return 0
-    raise ParameterError(f"Cannot interpret estimate value {value!r} as 0/1.")
+def _coerce_estimate(value: Any) -> bool:
+    try:
+        return as_bool(value)
+    except ValueError:
+        raise ParameterError(f"Cannot interpret estimate value {value!r} as true/false.") from None
 
 
 def update_parameters(problem, updates: list[dict[str, Any]]) -> dict[str, Any]:
     """Apply a batch of parameter-table edits, transactionally.
 
     Each update is a dict with an ``id`` (or ``parameterId``) plus any editable
-    PEtab column (``nominalValue``, ``lowerBound``, ``upperBound``, ``estimate``,
-    ``parameterScale``, prior columns). Unknown ids, non-editable columns, bad
-    bounds, or an invalid scale raise ``ParameterError`` and leave the table
-    unchanged.
+    column (``nominalValue``, ``lowerBound``, ``upperBound``, ``estimate``,
+    ``parameterScale``). Unknown ids, non-editable columns, bad bounds, or an invalid scale
+    raise ``ParameterError`` and leave the table unchanged.
     """
     if not isinstance(updates, list):
         raise ParameterError("`updates` must be a list of {id, ...field} objects.")
@@ -276,8 +263,7 @@ def update_parameters(problem, updates: list[dict[str, Any]]) -> dict[str, Any]:
         resolved.append((pid, fields))
 
     touched = [pid for pid, _ in resolved]
-    # Snapshot the whole (small) table so rollback also undoes any column a prior
-    # edit may have created (e.g. adding an objectivePrior* column).
+    # Snapshot the whole (small) table so rollback also undoes any column an edit created.
     snapshot = df.copy(deep=True)
 
     try:
@@ -286,7 +272,7 @@ def update_parameters(problem, updates: list[dict[str, Any]]) -> dict[str, Any]:
                 if col in _NUMERIC_FIELDS:
                     value = float(value)
                 elif col == ESTIMATE:
-                    value = _coerce_estimate_int(value)
+                    value = _coerce_estimate(value)
                 elif col == PARAMETER_SCALE:
                     value = str(value)
                     if value not in _SCALES:

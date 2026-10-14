@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-DATA_DIR = Path(__file__).parent / "data" / "toy_v1"
+DATA_DIR = Path(__file__).parent / "data" / "toy_v2"
 YAML_PATH = DATA_DIR / "problem.yaml"
 
 
@@ -25,7 +25,7 @@ def yaml_path() -> str:
     return str(YAML_PATH)
 
 
-# The shipped toy model (tests/data/toy_v1/model.ant). Structural edits in tests are made by
+# The shipped toy model (tests/data/toy_v2/model.ant). Structural edits in tests are made by
 # re-authoring this base (via ``set_model``) with extra reaction lines spliced in.
 _TOY_BASE_MODEL = """model conversion_reaction
   compartment compartment_ = 1;
@@ -70,7 +70,7 @@ def broken_model():
     that assert validation rejects it. Built here rather than in the server package: the
     production build path is ``operations.set_model`` -> ``SbmlModel.from_antimony``, so a
     text->model helper is a test fixture, not shipped API."""
-    from petab.v1.models.sbml_model import SbmlModel
+    from petab.v2.models.sbml_model import SbmlModel
 
     return SbmlModel.from_antimony(
         "model conversion_reaction\n species A = 1;\n k1 = 0.5;\n r1: A => ; k1 * A;\nend",
@@ -167,21 +167,54 @@ def _write_empty_sbml(path: Path, model_id: str = "conversion_reaction") -> None
     libsbml.writeSBMLToFile(doc, str(path))
 
 
+def with_empty_sbml(yaml_path) -> None:
+    """Point a copy of the toy's YAML at an EMPTY SBML model, the shape a zero-shot problem ships
+    in (the toy itself ships Antimony)."""
+    yaml_path = Path(yaml_path)
+    _write_empty_sbml(yaml_path.parent / "conversion_reaction.xml")
+    yaml_path.write_text(
+        yaml_path.read_text().replace(
+            "location: model.ant\n    language: antimony",
+            "location: conversion_reaction.xml\n    language: sbml",
+        )
+    )
+
+
 @pytest.fixture
 def empty_yaml(tmp_path) -> str:
     """A PEtab problem that ships WITHOUT a model (empty SBML, no model.ant)."""
     work = tmp_path / "empty"
     work.mkdir()
-    for name in (
-        "problem.yaml",
-        "conditions.tsv",
-        "measurements.tsv",
-        "observables.tsv",
-        "parameters.tsv",
-    ):
+    for name in ("problem.yaml", "measurements.tsv", "observables.tsv", "parameters.tsv"):
         shutil.copy(DATA_DIR / name, work / name)
-    _write_empty_sbml(work / "conversion_reaction.xml")
+    with_empty_sbml(work / "problem.yaml")
     return str(work / "problem.yaml")
+
+
+@pytest.fixture
+def add_condition():
+    """Return a helper giving a copied toy problem one condition that sets ``target`` to
+    ``value``, applied by an experiment every measurement is taken in — the v2 shape of a
+    one-column v1 condition table."""
+
+    def _add(yaml_path, target: str, value: float) -> None:
+        work = Path(yaml_path).parent
+        (work / "conditions.tsv").write_text(
+            f"conditionId\ttargetId\ttargetValue\nc0\t{target}\t{value}\n", encoding="utf-8"
+        )
+        (work / "experiments.tsv").write_text(
+            "experimentId\ttime\tconditionId\ne0\t0\tc0\n", encoding="utf-8"
+        )
+        meas = work / "measurements.tsv"
+        meas.write_text(meas.read_text().replace("obs_B\t\t", "obs_B\te0\t"), encoding="utf-8")
+        yaml = Path(yaml_path)
+        yaml.write_text(
+            yaml.read_text()
+            + "condition_files:\n- conditions.tsv\nexperiment_files:\n- experiments.tsv\n",
+            encoding="utf-8",
+        )
+
+    return _add
 
 
 @pytest.fixture

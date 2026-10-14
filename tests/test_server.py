@@ -5,12 +5,13 @@ import asyncio
 import shutil
 from pathlib import Path
 
-import libsbml
+import pytest
 
 from petab_mcp.references import StubReferenceResolver
 from petab_mcp.server import create_server
+from conftest import with_empty_sbml
 
-YAML_PATH = Path(__file__).parent / "data" / "toy_v1" / "problem.yaml"
+YAML_PATH = Path(__file__).parent / "data" / "toy_v2" / "problem.yaml"
 DATA_DIR = YAML_PATH.parent
 
 # Tables that must never be mutable — assert no tool can write them.
@@ -52,23 +53,21 @@ def _server(tmp_path, auto_fit=False):
     )
 
 
-def _empty_model_server(tmp_path):
-    """A server over a problem that ships WITHOUT a model (empty SBML, no model.ant)."""
+def _empty_model_server(tmp_path, *, sbml=True):
+    """A server over a problem that ships WITHOUT a model: an empty SBML and no model.ant, or,
+    with ``sbml=False``, no model file at all (``model_files: {}``)."""
     work = tmp_path / "empty"
     work.mkdir()
-    for name in (
-        "problem.yaml",
-        "conditions.tsv",
-        "measurements.tsv",
-        "observables.tsv",
-        "parameters.tsv",
-    ):
+    for name in ("problem.yaml", "measurements.tsv", "observables.tsv", "parameters.tsv"):
         shutil.copy(DATA_DIR / name, work / name)
-    doc = libsbml.SBMLDocument(3, 2)
-    model = doc.createModel()
-    model.setId("conversion_reaction")
-    model.setMetaId("conversion_reaction")
-    libsbml.writeSBMLToFile(doc, str(work / "conversion_reaction.xml"))
+    if sbml:
+        with_empty_sbml(work / "problem.yaml")
+    else:
+        (work / "problem.yaml").write_text(
+            "format_version: 2.0.0\nparameter_files:\n- parameters.tsv\nmodel_files: {}\n"
+            "measurement_files:\n- measurements.tsv\nobservable_files:\n- observables.tsv\n",
+            encoding="utf-8",
+        )
     return create_server(
         str(work / "problem.yaml"),
         provenance_dir=str(tmp_path / "prov"),
@@ -115,6 +114,7 @@ def test_tools_registered(tmp_path):
         "describe_problem",
         "list_observables",
         "list_conditions",
+        "list_experiments",
         "get_measurements",
         "get_model",
         "get_model_structure",
@@ -160,7 +160,6 @@ def test_tools_registered(tmp_path):
         & names
     )
     assert "update_model" not in names and "set_model_parameter" not in names
-    assert "list_experiments" not in names
     # the batch tools were deleted (issue #81): edits no longer fit, so batching is obsolete
     assert not ({"begin_batch", "commit_batch", "abort_batch"} & names)
     # changing a parameter's estimate status in-loop is deliberately unsupported — no such tool
@@ -478,6 +477,7 @@ def test_list_data_tables(tmp_path):
         assert tables == {
             "measurements",
             "conditions",
+            "experiments",
             "observables",
             "parameters",
             "simulations",
@@ -597,8 +597,9 @@ def test_restore_version_tool_registered_and_restores(tmp_path):
     asyncio.run(go())
 
 
-def test_make_changes_builds_the_first_model_via_tool(tmp_path):
-    mcp = _empty_model_server(tmp_path)
+@pytest.mark.parametrize("sbml", [True, False], ids=["empty_sbml", "no_model_files"])
+def test_make_changes_builds_the_first_model_via_tool(tmp_path, sbml):
+    mcp = _empty_model_server(tmp_path, sbml=sbml)
 
     async def go():
         desc = _structured(await mcp.call_tool("describe_problem", {}))
@@ -692,6 +693,53 @@ def test_resources_registered(tmp_path):
     assert any("model/antimony" in u for u in uris)
 
 
+def test_a_tool_acts_on_the_session_routed_to_at_call_time(tmp_path):
+    """REGRESSION: every tool group captured `ctx.session` when it was REGISTERED, so one
+    registration could only ever serve the session it was built with. Two sessions on the same
+    problem behind one `route`: a change made while it points at one is seen exactly while it
+    points there, and no group may resolve a session while registering."""
+    from fastmcp import FastMCP
+
+    from petab_mcp import server as S
+
+    def open_ctx(store):
+        return S._open_ctx(
+            str(YAML_PATH),
+            provenance_dir=str(tmp_path / store),
+            criterion=None,
+            auto_fit_starts=1,
+            validation_measurements=None,
+            score_shipped_model=False,
+            build_root=None,
+            reference_mode="best_effort",
+            resolver=StubReferenceResolver(),
+            auto_fit=False,
+        )
+
+    a, b = open_ctx("a"), open_ctx("b")
+    bound = []  # empty while registering, so a group that resolves a session there raises
+    mcp = FastMCP("route")
+    for name in [n for n in dir(S) if n.startswith("_register_")]:
+        getattr(S, name)(mcp, lambda: bound[-1])
+
+    async def read():
+        version = _structured(await mcp.call_tool("describe_problem", {}))["current_version"]
+        return version, "k3" in _structured(await mcp.call_tool("get_model", {}))["result"]
+
+    async def go():
+        bound.append(a)
+        await mcp.call_tool(
+            "make_changes", {"antimony": _reauthored(["J: B => D; k3 * B;"]), "justification": "x"}
+        )
+        assert await read() == (0, True)
+        bound.append(b)
+        assert await read() == (-1, False)
+        bound.append(a)
+        assert await read() == (0, True)
+
+    asyncio.run(go())
+
+
 def test_get_fitting_log(tmp_path):
     # No AMICI/pyPESTO needed: the pypesto.log handler is installed at session start, so
     # the tool reads a (possibly empty) log without a fit ever running. Validates the
@@ -763,10 +811,10 @@ def test_fit_tools(tmp_path):
 
         by_cond = _structured(
             await mcp.call_tool(
-                "query_data", {"sql": ("SELECT DISTINCT condition_id FROM simulations")}
+                "query_data", {"sql": ("SELECT DISTINCT experiment_id FROM simulations")}
             )
         )
-        assert {r["condition_id"] for r in by_cond["rows"]} == {"c0"}
+        assert {r["experiment_id"] for r in by_cond["rows"]} == {""}
         by_time = _structured(
             await mcp.call_tool("query_data", {"sql": ("SELECT DISTINCT time FROM simulations")})
         )

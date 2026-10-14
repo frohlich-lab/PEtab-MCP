@@ -5,17 +5,18 @@ Under ``<store_root>/`` (default ``<problem_dir>/.petab_mcp``):
 * ``provenance.jsonl`` — append-only event log (edits, fits, rollbacks, resets). Each
   event carries a UTC timestamp.
 * ``versions/vN/`` — a snapshot of the mutable model state at version N: ``model.ant``
-  (the canonical Antimony) and ``parameters.tsv`` (the parameter table, as a PEtab TSV --
-  ``_read_parameter_df`` still reads a legacy ``parameters.json`` written before the
-  switch), plus
-  ``meta.json`` (label, kind, parent, timestamp). A fitted version also carries
+  (the canonical Antimony) and ``parameters.tsv`` (the parameter table, as a PEtab v2 TSV),
+  plus ``meta.json`` (label, kind, parent, timestamp). A fitted version also carries
   ``simulations.json`` (the measured-vs-simulated dataframe + residuals), ``optimization.json``
   (the pyPESTO per-start + per-iteration trace records), and ``pypesto_result.hdf5`` (the
   pyPESTO result file, copied in from the per-model cache) — so rolling back restores a
   version's fit artifacts, not just its model.
-* ``cache/`` — pyPESTO result files keyed by SBML hash (written on each fit, copied into
+* ``cache/`` — pyPESTO result files keyed by problem hash (written on each fit, copied into
   version dirs when snapshotted).
 * ``HEAD`` — the current version number.
+* ``FORMAT`` — :data:`STORE_FORMAT`. A store without it was written by the PEtab v1 server, whose
+  versions hold v1 parameter tables and condition-keyed simulation records; it is refused rather
+  than read, since nothing here can tell which of its numbers still mean what they meant.
 
 The store is pure storage: it records Antimony text + parameter records and reads them
 back. Applying a version to the live problem lives in the session/operations layer.
@@ -32,6 +33,10 @@ from pathlib import Path
 from typing import Any
 
 
+#: The layout a store's ``FORMAT`` file names (see the module docstring).
+STORE_FORMAT = "petab-v2"
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -42,17 +47,12 @@ def _write_simulations_tsv(vdir: Path, records: list[dict[str, Any]]) -> None:
         return
     try:
         import pandas as pd
-        from petab.v1.C import (
-            OBSERVABLE_ID,
-            SIMULATION,
-            SIMULATION_CONDITION_ID,
-            TIME,
-        )
+        from petab.v2.C import EXPERIMENT_ID, OBSERVABLE_ID, SIMULATION, TIME
 
         rows = [
             {
                 OBSERVABLE_ID: r.get("observable_id"),
-                SIMULATION_CONDITION_ID: r.get("condition_id"),
+                EXPERIMENT_ID: r.get("experiment_id"),
                 TIME: r.get("time"),
                 SIMULATION: r.get("simulation"),
             }
@@ -70,7 +70,19 @@ class ProvenanceStore:
         self.log_path = self.root / "provenance.jsonl"
         self.errors_path = self.root / "errors.jsonl"
         self.head_path = self.root / "HEAD"
+        format_path = self.root / "FORMAT"
+        if self.versions_dir.is_dir() and any(self.versions_dir.iterdir()):
+            found = format_path.read_text().strip() if format_path.is_file() else None
+            if found != STORE_FORMAT:
+                from .errors import PetabMcpError
+
+                raise PetabMcpError(
+                    f"the provenance store at {self.root} is in format {found or 'petab-v1'!r}, "
+                    f"not {STORE_FORMAT!r}: it was written by an earlier server and cannot be "
+                    "resumed. Start the run with a fresh --provenance-dir."
+                )
         self.versions_dir.mkdir(parents=True, exist_ok=True)
+        format_path.write_text(STORE_FORMAT)
 
     # -- event log ---------------------------------------------------------
     def append_event(self, event: dict[str, Any]) -> dict[str, Any]:
@@ -260,17 +272,12 @@ class ProvenanceStore:
 
     @staticmethod
     def _read_parameter_df(vdir: Path):
-        """Load ``parameters.tsv`` as a DataFrame, falling back to legacy ``parameters.json``."""
+        """Load ``parameters.tsv`` as a DataFrame in :mod:`petab_mcp.problem`'s conventions."""
         import pandas as pd
 
-        tsv = vdir / "parameters.tsv"
-        if tsv.is_file():
-            return pd.read_csv(tsv, sep="\t", index_col=0)
-        legacy = vdir / "parameters.json"  # versions written before the TSV switch
-        df = pd.DataFrame(json.loads(legacy.read_text()))
-        if "parameterId" in df.columns:
-            df = df.set_index("parameterId")
-        return df
+        from .problem import normalize_parameter_df
+
+        return normalize_parameter_df(pd.read_csv(vdir / "parameters.tsv", sep="\t", index_col=0))
 
     def get_version_simulation(self, n: int) -> "dict[str, Any] | None":
         """Version ``n``'s stored simulation blob (``simulations.json``), or ``None``.
