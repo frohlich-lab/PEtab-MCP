@@ -106,10 +106,12 @@ def instantiate(
     prefix: str,
     library: dict[tuple[str, str], Policy] = REGISTRY,
     binding: dict[str, str | float] | None = None,
+    modifiers: dict[str, Agent] | None = None,
 ) -> Emission:
     """Apply one entry of ``library`` (the registered entries plus any the agent wrote), then the
-    row's ``binding`` (:func:`bind`). Raises :class:`MechanismError` when the pair is not in it —
-    the agent's signal to write one."""
+    row's ``binding`` (:func:`bind`). ``modifiers`` fill the slots a written entry's rate reads
+    (:func:`written`). Raises :class:`MechanismError` when the pair is not in it — the agent's
+    signal to write one."""
     key = (type(stmt).__name__, policy)
     if key not in library:
         known = sorted(p for c, p in library if c == key[0])
@@ -117,7 +119,16 @@ def instantiate(
             f"no mechanism {key}; the library has {known or 'none'} for {key[0]}. If none fits, "
             "write one with `mechanisms`."
         )
-    emission = library[key](stmt, model, prefix)
+    entry = library[key]
+    if modifiers:
+        if not getattr(entry, "modifiers", ()):
+            raise MechanismError(
+                f"row {prefix!r} names modifiers, but {key} reads none; a written mechanism "
+                "declares the modifiers its rate reads"
+            )
+        emission = entry(stmt, model, prefix, modifiers=modifiers)
+    else:
+        emission = entry(stmt, model, prefix)
     return bind(model, emission, binding) if binding else emission
 
 
@@ -192,8 +203,12 @@ def written(definition: dict, library: dict[tuple[str, str], Policy]) -> Policy:
     base entry's, and the rate is a COEFFICIENT that mass action multiplies by every reactant's
     amount, catalysts included, so a rate that stays non-negative can never drive an amount
     negative (``kcat / (Km + sub)`` is Michaelis-Menten). The rate names the statement type's roles
-    (``enz``, ``sub``, ``source``...), each the amount of that agent as the statement writes it;
-    the definition's ``parameters``, each minted as ``<prefix>_<name>``; ``time``; exp, log, sqrt.
+    (``enz``, ``sub``, ``source``...), each the amount of that agent as the statement writes it —
+    a list role by position (``obj_from_0``), or by its own name when it holds one agent; the
+    definition's ``parameters``, each minted as ``<prefix>_<name>`` (and shared by a row's
+    binding, :func:`bind`); its ``modifiers``, each the amount of an agent the ROW names, which
+    takes no part in the reaction (Fiedler's sorafenib slowing RAF, the SMAD complexes regulating
+    Lucarelli's genes, Sneyd's IP3 and calcium); ``time``; exp, log, sqrt.
     """
     stmt_type, policy = definition["statement_type"], definition["policy"]
     base_key = (stmt_type, definition.get("based_on", INDRA_DEFAULT))
@@ -203,23 +218,42 @@ def written(definition: dict, library: dict[tuple[str, str], Policy]) -> Policy:
         raise MechanismError(f"no mechanism {base_key} to base {policy!r} on")
     roles = list(get_statement_by_name(stmt_type)._agent_order)
     names = set(definition.get("parameters") or [])
+    slots = list(definition.get("modifiers") or [])
+    clash = sorted(set(slots) & (names | set(roles)))
+    if clash:
+        raise MechanismError(f"{policy!r} names {clash} both as modifiers and otherwise")
     rate = definition["rate"]
     tokens = _RATE_TOKENS.findall(rate)
+    positional = re.compile(rf"^(?:{'|'.join(map(re.escape, roles))})_\d+$")
     unknown = sorted(
         {t for t in tokens if t[:1].isalpha() or t[:1] == "_"}
         - names
         - set(roles)
+        - set(slots)
         - set(_RATE_FUNCTIONS)
         - {"time"}
+        - {t for t in tokens if positional.match(t)}
     )
     if "".join(tokens) != rate or unknown:
         raise MechanismError(
-            f"rate {rate!r} of {policy!r} may name only {sorted(names) + roles + ['time']} and "
-            f"exp/log/sqrt{f'; it names {unknown}' if unknown else ''}"
+            f"rate {rate!r} of {policy!r} may name only {sorted(names) + slots + roles + ['time']}"
+            f" (a list role by position, e.g. obj_from_0) and exp/log/sqrt"
+            f"{f'; it names {unknown}' if unknown else ''}"
         )
     base = library[base_key]
 
-    def policy_fn(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
+    def policy_fn(
+        stmt: Statement,
+        model: pysb.Model,
+        prefix: str,
+        modifiers: dict[str, Agent] | None = None,
+    ) -> Emission:
+        given = modifiers or {}
+        if set(given) != set(slots):
+            raise MechanismError(
+                f"row {prefix!r} uses {policy!r}, whose rate reads modifiers {sorted(slots)}; "
+                f"the row names {sorted(given)}"
+            )
         # The base's own parameters go unused once re-rated; kept apart from the written ones.
         emitted = base(stmt, model, f"{prefix}_base")
         if len(emitted.rules) != 1 or model.rules[emitted.rules[0]].is_reversible:
@@ -228,12 +262,27 @@ def written(definition: dict, library: dict[tuple[str, str], Policy]) -> Policy:
                 "mechanism re-rates exactly one irreversible reaction"
             )
         params = {n: pysb.Parameter(f"{prefix}_{n}", 1.0, _export=False) for n in sorted(names)}
+        agents = {}
+        for role in roles:
+            value = getattr(stmt, role, None)
+            if isinstance(value, Agent):
+                agents[role] = value
+            elif isinstance(value, list):
+                agents |= {f"{role}_{i}": agent for i, agent in enumerate(value)}
+                if len(value) == 1:
+                    agents[role] = value[0]
+        agents |= given
+        used = {t for t in tokens if t in agents}
+        missing = sorted(
+            t for t in tokens if positional.match(t) and t not in agents and t not in names
+        )
+        if missing:
+            raise MechanismError(f"row {prefix!r}: its statement has no {missing}")
         amounts = {
-            role: pysb.Observable(
-                f"{prefix}_{role}", get_monomer_pattern(model, getattr(stmt, role)), _export=False
+            name: pysb.Observable(
+                f"{prefix}_{name}", get_monomer_pattern(model, agents[name]), _export=False
             )
-            for role in roles
-            if isinstance(getattr(stmt, role, None), Agent)
+            for name in sorted(used | (set(agents) & set(roles)))
         }
         _add(model, *params.values(), *amounts.values())
         coefficient = sympy.sympify(
@@ -252,6 +301,7 @@ def written(definition: dict, library: dict[tuple[str, str], Policy]) -> Policy:
         )
 
     policy_fn.indra_policy = getattr(base, "indra_policy", "default")
+    policy_fn.modifiers = tuple(slots)
     return policy_fn
 
 
@@ -261,12 +311,13 @@ def assemble(
     library: dict[tuple[str, str], Policy] = REGISTRY,
 ) -> tuple[pysb.Model, list[Emission]]:
     """Build the whole model from ``(statement, policy, prefix)`` rows, each optionally with a
-    fourth element, its parameter binding (:func:`bind`).
+    fourth element, its parameter binding (:func:`bind`), and a fifth, the agents filling its
+    entry's modifier slots (:func:`written`).
 
     ``entities`` (species id to ``Agent``, from the problem's entity map) joins the monomer
     pass, so a species the problem observes has its monomer and sites even when no row names it.
     """
-    rows = [(*row, None) if len(row) == 3 else tuple(row) for row in rows]
+    rows = [(*row, *[None] * (5 - len(row))) for row in rows]
     stmts = [row[0] for row in rows]
     # INDRA's monomer pass collects every site its own statement types imply; it skips the
     # vocabulary in :mod:`statements`, whose agents carry only the sites their own conditions
@@ -282,6 +333,9 @@ def assemble(
             agents.get_create_base_agent(agent)
     for agent in (entities or {}).values():
         agents.get_create_base_agent(agent)
+    for *_, modifiers in rows:
+        for agent in (modifiers or {}).values():
+            agents.get_create_base_agent(agent)
 
     model = pysb.Model(name="statements", _export=False)
     for base in agents.agents.values():
@@ -292,8 +346,8 @@ def assemble(
             if annotation is not None:
                 model.add_annotation(annotation)
     return model, [
-        instantiate(stmt, model, policy, prefix, library, binding)
-        for stmt, policy, prefix, binding in rows
+        instantiate(stmt, model, policy, prefix, library, binding, modifiers)
+        for stmt, policy, prefix, binding, modifiers in rows
     ]
 
 

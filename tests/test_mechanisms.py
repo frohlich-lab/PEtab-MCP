@@ -152,3 +152,68 @@ def test_a_written_mechanism_binds_like_any_entry():
     model, (emission,) = M.assemble([(_TRANSITION, "sat", "r1", {"K": "K_half"})], library=library)
     assert set(emission.parameters) == {"r1_vmax", "K_half"}
     assert "K_half" in str(model.expressions["r1_rate"].expr)
+
+
+# -- written mechanisms: modifiers and list roles ----------------------------------
+def _library_with(definition):
+    library = dict(M.REGISTRY)
+    key = (definition["statement_type"], definition["policy"])
+    library[key] = M.written(definition, library)
+    return library
+
+
+_DIVISIVE = {
+    "statement_type": "PopulationTransition",
+    "policy": "inhibited",
+    "based_on": "mass_action",
+    "rate": "k * Ki / (Ki + inh)",
+    "parameters": ["k", "Ki"],
+    "modifiers": ["inh"],
+}
+
+
+def test_a_written_rate_reads_a_modifier_the_row_names():
+    """Fiedler's sorafenib slows RAF without taking part in the reaction: the rate reads the
+    amount of an agent no role holds, which the row names."""
+    library = _library_with(_DIVISIVE)
+    model, _ = M.assemble(
+        [(_TRANSITION, "inhibited", "r1", None, {"inh": Agent("drug")})], library=library
+    )
+    assert "drug" in model.monomers.keys()
+    assert "r1_inh" in str(model.expressions["r1_rate"].expr)
+    assert model.observables["r1_inh"].reaction_pattern.complex_patterns[0].monomer_patterns[
+        0
+    ].monomer.name == "drug"
+
+
+def test_a_row_must_fill_every_modifier_slot():
+    """An unfilled slot would leave a name in the rate that means nothing."""
+    with pytest.raises(MechanismError, match=r"reads modifiers \['inh'\]"):
+        M.assemble([(_TRANSITION, "inhibited", "r1")], library=_library_with(_DIVISIVE))
+
+
+def test_modifiers_need_an_entry_that_reads_them():
+    """A modifier given to an entry whose rate cannot read it would be dropped without a word."""
+    with pytest.raises(MechanismError, match="names modifiers"):
+        M.assemble([(_TRANSITION, "mass_action", "r1", None, {"inh": Agent("drug")})])
+
+
+def test_a_written_rate_reads_a_list_role():
+    """Conversion's substrate is the list `obj_from`; a rate could not read it, so enzyme
+    kinetics' substrate inhibition had no route but a private entry."""
+    from indra.statements import Conversion
+
+    library = _library_with(
+        {
+            "statement_type": "Conversion",
+            "policy": "haldane",
+            "based_on": M.INDRA_DEFAULT,
+            "rate": "vmax / (Km + obj_from + obj_from_0^2 / Ki)",
+            "parameters": ["vmax", "Km", "Ki"],
+        }
+    )
+    model, _ = M.assemble(
+        [(Conversion(None, [Agent("S")], [Agent("P")]), "haldane", "r1")], library=library
+    )
+    rate = str(model.expressions["r1_rate"].expr)
+    assert "r1_obj_from" in rate and "r1_obj_from_0" in rate
