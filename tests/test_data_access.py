@@ -16,10 +16,10 @@ from petab_mcp import data_access
 from petab_mcp.errors import ValidationError
 
 
-def _rec(obs, cond, t, m, s, res, w, noise):
+def _rec(obs, exp, t, m, s, res, w, noise):
     return {
         "observable_id": obs,
-        "condition_id": cond,
+        "experiment_id": exp,
         "time": t,
         "measurement": m,
         "simulation": s,
@@ -29,12 +29,12 @@ def _rec(obs, cond, t, m, s, res, w, noise):
     }
 
 
-# obs_A/c0 -> weighted [2.0, 0.0]; obs_B/c1 -> weighted [-1.0] and one unsimulated point.
+# obs_A/e0 -> weighted [2.0, 0.0]; obs_B/e1 -> weighted [-1.0] and one unsimulated point.
 SIM_RECORDS = [
-    _rec("obs_A", "c0", 0.0, 1.0, 0.0, 1.0, 2.0, 0.5),
-    _rec("obs_A", "c0", 1.0, 2.0, 2.0, 0.0, 0.0, 0.5),
-    _rec("obs_B", "c1", 0.0, 0.0, 1.0, -1.0, -1.0, 1.0),
-    _rec("obs_B", "c1", 1.0, 3.0, None, None, None, None),
+    _rec("obs_A", "e0", 0.0, 1.0, 0.0, 1.0, 2.0, 0.5),
+    _rec("obs_A", "e0", 1.0, 2.0, 2.0, 0.0, 0.0, 0.5),
+    _rec("obs_B", "e1", 0.0, 0.0, 1.0, -1.0, -1.0, 1.0),
+    _rec("obs_B", "e1", 1.0, 3.0, None, None, None, None),
 ]
 
 
@@ -103,11 +103,14 @@ def test_sql_error_points_at_working_alternatives(session):
 
 
 def test_named_index_promoted_to_column(session):
-    # observables/conditions are indexed by their id in petab; it must be a queryable column.
+    # observables are indexed by their id; it must be a queryable column. The condition and
+    # experiment tables keep their keys as plain columns, so they are queryable even when empty.
     obs = data_access.run_query(session, "SELECT observableId FROM observables")
     assert obs["row_count"] >= 1 and "observableId" in obs["columns"]
     cond = data_access.run_query(session, "SELECT conditionId FROM conditions")
     assert "conditionId" in cond["columns"]
+    exps = data_access.run_query(session, "SELECT experimentId FROM experiments")
+    assert "experimentId" in exps["columns"]
 
 
 def test_simulations_table_empty_but_typed(session):
@@ -230,6 +233,7 @@ def test_table_schema(session):
     assert set(tables) == {
         "measurements",
         "conditions",
+        "experiments",
         "observables",
         "parameters",
         "simulations",
@@ -357,7 +361,7 @@ def test_fit_diagnosis_compact_and_bounded(session):
 def test_fit_diagnosis_flags_systematic_bias(session):
     """A one-sided residual series must be flagged by the sign test through fit_diagnosis."""
     session.simulation = {
-        "records": [_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)]
+        "records": [_rec("obs_A", "e0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)]
     }
     out = data_access.fit_diagnosis(session)
     row = out["per_observable"][0]
@@ -381,7 +385,7 @@ def test_structure_flag_true_on_systematic_bias(session):
     mark the SAME observable — pinning the two definitions together (they share one builder) so the
     per-commit gate can't drift from the detail read."""
     session.simulation = {
-        "records": [_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)]
+        "records": [_rec("obs_A", "e0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)]
     }
     assert _flagged(session) is True
     assert _flagged(session) is any(
@@ -422,7 +426,7 @@ def test_residual_structure_rollup_names_the_flagged_observable(session):
     that something is — and agree exactly with fit_diagnosis's own rollup (one key name, one
     shape, one set of rules)."""
     session.simulation = {
-        "records": [_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)]
+        "records": [_rec("obs_A", "e0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)]
     }
     out = data_access.residual_structure_rollup(session)
     assert out["flagged_observables"] == ["obs_A"]
@@ -479,8 +483,8 @@ def test_residual_structure_rollup_agrees_with_fit_diagnosis_on_several_flagged(
     lead reads next would name different ones."""
     # obs_B carries the larger chi2, so fit_diagnosis ranks it first while groupby yields obs_A
     # first; both one-sided, so both flag.
-    records = [_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)] + [
-        _rec("obs_B", "c0", float(t), 3.0, 0.0, 3.0, 3.0, 1.0) for t in range(10)
+    records = [_rec("obs_A", "e0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)] + [
+        _rec("obs_B", "e0", float(t), 3.0, 0.0, 3.0, 3.0, 1.0) for t in range(10)
     ]
     session.simulation = {"records": records}
     diag = data_access.fit_diagnosis(session)
@@ -514,11 +518,11 @@ def test_the_two_rollup_callers_produce_IDENTICAL_verdicts(session, monkeypatch)
     # Two flagged observables reached in DIFFERENT orders per caller (fit_diagnosis marks a
     # chi2-ranked table, the rollup walks groupby order), one underpowered set, and one with nothing
     # testable — so both the list and the summary string built from it have to agree.
-    two_flagged = [_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)] + [
-        _rec("obs_B", "c0", float(t), 3.0, 0.0, 3.0, 3.0, 1.0) for t in range(10)
+    two_flagged = [_rec("obs_A", "e0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)] + [
+        _rec("obs_B", "e0", float(t), 3.0, 0.0, 3.0, 3.0, 1.0) for t in range(10)
     ]
     for records in (
-        [_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)],
+        [_rec("obs_A", "e0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)],
         two_flagged,
         SIM_RECORDS,
         [_rec("o", "c", 0.0, 1.0, float("nan"), None, None, None)],
@@ -539,7 +543,7 @@ def test_the_stored_verdict_is_reused_rather_than_recomputed(session, monkeypatc
     very frame this reads (`fitsim` IS `session.simulation`). It reads the stored one, and recomputes
     only when the frame carries none (a simulate-only or restored payload)."""
     session.simulation = {
-        "records": [_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)]
+        "records": [_rec("obs_A", "e0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)]
     }
     stored = data_access.residual_structure_rollup(session)
     session.simulation["residual_structure"] = stored
@@ -575,7 +579,7 @@ def test_residual_flag_separates_untested_from_unflagged(session):
     assert data_access.residual_flag(data_access.residual_structure_rollup(session)) is False
 
     session.simulation = {
-        "records": [_rec("obs_A", "c0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)]
+        "records": [_rec("obs_A", "e0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)]
     }
     assert data_access.residual_flag(data_access.residual_structure_rollup(session)) is True
 
@@ -593,7 +597,7 @@ def test_fit_diagnosis_caps_per_observable_at_worst_12(session):
             recs.append(
                 {
                     "observable_id": f"obs_{i:02d}",
-                    "condition_id": "c0",
+                    "experiment_id": "e0",
                     "time": t,
                     "measurement": 1.0,
                     "simulation": 1.0,
@@ -629,7 +633,7 @@ def test_fit_diagnosis_cap_is_bounded_even_when_everything_is_flagged(session):
             recs.append(
                 {
                     "observable_id": f"obs_{i:02d}",
-                    "condition_id": "c0",
+                    "experiment_id": "e0",
                     "time": t,
                     "measurement": 1.0,
                     "simulation": 1.0,
@@ -641,7 +645,7 @@ def test_fit_diagnosis_cap_is_bounded_even_when_everything_is_flagged(session):
         recs.append(
             {
                 "observable_id": "obs_bias",
-                "condition_id": "c0",
+                "experiment_id": "e0",
                 "time": t,
                 "measurement": 1.0,
                 "simulation": 1.0,
@@ -676,7 +680,7 @@ def _snapshot(session, records, label):
 
 def test_simulations_history_spans_versions(session):
     v1 = _snapshot(session, SIM_RECORDS[:2], "v1")
-    # v2 improves obs_A/c0/t0: weighted residual 2.0 -> 0.5
+    # v2 improves obs_A/e0/t0: weighted residual 2.0 -> 0.5
     better = [
         dict(SIM_RECORDS[0], simulation=0.75, residual=0.25, residual_weighted=0.5),
         SIM_RECORDS[1],

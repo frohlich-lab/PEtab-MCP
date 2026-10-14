@@ -152,13 +152,14 @@ def test_a_nested_refit_cannot_come_out_worse_than_its_parent(fit_session):
     petab_mcp.nesting). Uses a parameter-table change rather than a model edit so the fixture's
     compiled AMICI module is reused.
     """
-    from petab.v1.C import ESTIMATE
+    from petab.v2.C import ESTIMATE
 
     parent = fit_session.fit()
     parent_nll = parent["neg_log_likelihood"]
     assert parent["fit_status"] == "fit" and parent_nll is not None
 
-    fit_session.problem.parameter_df.loc["sigma_B", ESTIMATE] = 1  # nested: sigma was fixed at 0.1
+    # nested: sigma was fixed at 0.1
+    fit_session.problem.parameter_df.loc["sigma_B", ESTIMATE] = True
     child = fit_session.fit()
     assert child["n_estimated"] > parent["n_estimated"]
     assert child["neg_log_likelihood"] <= parent_nll + 1e-6

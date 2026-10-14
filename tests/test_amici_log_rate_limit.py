@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -118,9 +119,10 @@ def test_a_forked_worker_inherits_the_filter():
             with mp.get_context("fork").Pool(2) as pool:
                 pool.map(work, range(2))
     """)
-    # All 2000 x 2 records land inside the same wall-clock second in practice, so each worker
-    # is capped at _AMICI_PER_SECOND rather than emitting 2000.
-    assert len(out.splitlines()) <= 2 * L._AMICI_PER_SECOND
+    # The cap is per wall-clock second and per process, and a burst can straddle a second, so each
+    # second's lines (asctime, to the second) are held to two workers' caps rather than 2000 each.
+    per_second = Counter(line[:19] for line in out.splitlines())
+    assert per_second and max(per_second.values()) <= 2 * L._AMICI_PER_SECOND
 
 
 @pytest.mark.parametrize(
@@ -147,6 +149,6 @@ def test_a_bad_amici_log_value_does_not_take_the_server_down(monkeypatch, tmp_pa
     task in the sweep failing to start. Drive the real constructor, since that is where it broke.
     """
     monkeypatch.setenv("AMICI_LOG", "not-a-level")
-    shutil.copytree(Path(__file__).parent / "data" / "toy_v1", tmp_path / "p")
+    shutil.copytree(Path(__file__).parent / "data" / "toy_v2", tmp_path / "p")
     PetabSession(str(tmp_path / "p" / "problem.yaml"))
     assert logging.getLogger("amici").level == logging.WARNING

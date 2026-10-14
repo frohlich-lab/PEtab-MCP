@@ -7,19 +7,41 @@ be scored against it as it stands. This module is the difference, and it is all 
 * **Readouts.** PySB numbers every species (``__s0``, ``__s1`` ...), while the fixed observable
   table reads names: ``pERK``, or a blinded ``readout_pS6_tot``. Each species the entity map
   names is given that name, or for a blinded mapping an assignment rule of that name.
-* **Starting amounts.** A protein that is only ever modified must be present at the start, at an
-  estimated ``<monomer>_init``; a population something produces starts empty; a row the problem
-  ships (Crauste's fixed ``Naive_init``) is used as shipped.
+* **Starting amounts.** What is present at the start is traced (below); each present monomer
+  starts at an estimated ``<monomer>_init``, or at the row the problem ships (Crauste's fixed
+  ``Naive_init``).
 * **Inputs.** A species the experiment sets (Fujita's EGF dose) is held to the protocol formula
   the entity map declares, and the condition-table columns it reads are declared for the table
   to fill.
 * **Leftovers.** A rate constant an agent-written mechanism replaced is removed.
 
+The start rests on two assumptions, and a third check refuses the models they do not fit:
+
+1. **The start holds free monomers in INDRA's default state** (``set_base_initial_condition``):
+   unbound, unmodified, inactive, wild type, in the cytoplasm when that is a location. No complex
+   and no modified form exists at the start.
+2. **What the start makes is absent from it.** Every monomer no rule makes from other kinds is
+   present (one that only proliferates included), and BioNetGen expands the rules from those. A
+   made monomer that expansion reaches starts empty: Crauste's effectors exist only once naive
+   cells convert. One it does not reach traces back to nothing at the start (populations that
+   only interconvert), so it is present too. A protein synthesised at a steady rate therefore
+   starts at zero, not at its steady state; nothing here tells the two apart.
+3. **Every rule fires, and every readout reads a species,** in the expansion from that start. A
+   rule that needs a complex or modified form nothing forms (a kinase active only while bound to a
+   partner no statement binds it to) is refused by its row, rather than built into a model whose
+   fit can never move it.
+
+This is MARM2's causal tracing (Fröhlich et al. 2023, MSB 19:e10988) asked statically. There, a
+synthetic site set by the rule that makes a molecule, and carried by BioNetGen through every
+later step, splits each simulated species by origin. Here the only question is whether an origin
+exists, whether a monomer traces back to the start at all, and the expansion's reactions answer
+it without a site.
+
 It is a separate module because none of it is a mechanism: the same library rows would need
 none of this under a server that read PySB directly. This one reads SBML everywhere — reconcile,
 lint, de-duplication, versions — so a model built from statements enters as SBML and is from then
-on an ordinary authored model; the hop costs a BioNetGen call per edit, and nothing downstream has
-to know where a model came from.
+on an ordinary authored model; the hop costs a BioNetGen call or two per edit, and nothing
+downstream has to know where a model came from.
 """
 
 from __future__ import annotations
@@ -29,6 +51,7 @@ import pysb
 from indra.assemblers.pysb.assembler import get_monomer_pattern
 from indra.statements import Agent, Statement
 from petab.v1.models.sbml_model import SbmlModel
+from pysb.bng import NoInitialConditionsError, generate_equations
 from pysb.export import export
 
 from . import mechanisms as M
@@ -45,49 +68,57 @@ def to_antimony(
     """The model ``rows`` build, as Antimony the ``antimony`` route accepts unchanged.
 
     Every species in ``entities`` becomes a symbol of that name, the sum over its PySB pattern,
-    because that name is what the fixed observable table reads.
-
-    A monomer some rule CREATES starts empty: Crauste's effector populations exist only once
-    naive cells convert. Every other monomer is only ever modified, so it must be present at the
-    start, and its unmodified state starts at ``<monomer>_init`` — estimated, from reconcile's
-    seed value, unless the problem ships that row (Crauste's fixed 8090 naive cells).
+    because that name is what the fixed observable table reads. The start is traced as the module
+    docstring sets out, and :class:`ModelUpdateError` names the rows a model breaking it fails on.
 
     An experiment's INPUT (``inputs``: species id to the protocol formula the problem's entity map
     declares) is held to that formula instead. It has no starting amount of its own, and each
     column the formula names becomes a parameter the condition table sets.
     """
     model, emissions = M.assemble(rows, entities, library)
-    created = set()
-    for rule in model.rules:
-        created |= _monomer_names(rule.product_pattern) - _monomer_names(rule.reactant_pattern)
     held = {entities[species].name: formula for species, formula in (inputs or {}).items()}
-    for monomer in model.monomers:
-        # Also BioNetGen's seeds: network generation starts from the initial species. Not INDRA's
-        # `set_base_initial_condition`: its `<monomer>_0` silently skips a monomer whose name is
-        # taken, and Fujita's EGF stimulus column is `EGF_0`.
-        unmodified = {site: monomer.site_states.get(site, [None])[0] for site in monomer.sites}
-        # Reconcile's own seed value, not 1, which it holds FIXED as a unit normalisation: the
-        # first version started every Crauste population at one cell that way.
-        amount = pysb.Parameter(f"{monomer.name}_init", SEED_INITIAL_VALUE, _export=False)
-        model.add_component(amount)
-        model.add_initial(pysb.Initial(monomer(**unmodified), amount, _export=False))
-    base_names = {
-        str(initial.pattern): initial.pattern.monomer_patterns[0].monomer.name
-        for initial in model.initials
-    }
+    made = set()
+    for rule in model.rules:
+        reactants = _monomer_names(rule.reactant_pattern)
+        products = _monomer_names(rule.product_pattern)
+        made |= products - reactants
+        if rule.is_reversible:
+            made |= reactants - products
     # Readouts are named apart from the species they stand for, which may share a monomer's
     # name; the SBML export numbers observables anyway, and the rename below restores them.
     readouts = {f"readout_{species}": species for species in entities}
     for name, species in readouts.items():
         pattern = get_monomer_pattern(model, entities[species])
         model.add_component(pysb.Observable(name, pattern, _export=False))
-    try:
-        sbml = export(model, "sbml")
-    except Exception as exc:  # BioNetGen fails as a bare Exception or an OSError
+    _seed(model, [m for m in model.monomers if m.name not in made or m.name in held])
+    _expand(model)
+    reached = {mp.monomer.name for sp in model.species for mp in sp.monomer_patterns}
+    unreached = [m for m in model.monomers if m.name in made - held.keys() - reached]
+    if unreached:
+        _seed(model, unreached)
+        model.reset_equations()
+        _expand(model)
+    fired = {name for reaction in model.reactions for name in reaction["rule"]}
+    never = []
+    stuck = sorted({e.prefix for e in emissions if not fired.issuperset(e.rules)})
+    if stuck:
+        never.append(f"rows {stuck} build rules that never fire")
+    unread = sorted(sp for name, sp in readouts.items() if not model.observables[name].species)
+    if unread:
+        never.append(f"readouts {unread} read no species")
+    if never:
         raise ModelUpdateError(
-            f"Expanding the statements into reactions failed: {exc}. (The expansion runs "
-            "BioNetGen, which needs BNG2.pl on PATH or BNGPATH set.)"
-        ) from exc
+            f"In the model these statements build, {' and '.join(never)}. Everything starts as "
+            "free, unmodified molecules, except what the rules make from those, so a rule fires "
+            "only on what the statements form from there: one that never fires needs a complex "
+            "or a modified form that no statement forms, like a kinase active only while bound "
+            "to a partner nothing binds it to."
+        )
+    sbml = export(model, "sbml")  # from the expansion above; BioNetGen does not run again
+    base_names = {
+        str(initial.pattern): initial.pattern.monomer_patterns[0].monomer.name
+        for initial in model.initials
+    }
     document = libsbml.readSBMLFromString(sbml)
     sbml_model = document.getModel()
     base = {
@@ -97,7 +128,7 @@ def to_antimony(
     }
     for assignment in list(sbml_model.getListOfInitialAssignments()):
         amount = assignment.getMath().getName()
-        if amount.removesuffix("_init") in created | held.keys():
+        if amount.removesuffix("_init") in held:
             sbml_model.getSpecies(assignment.getSymbol()).setInitialAmount(0.0)
             sbml_model.removeParameter(amount)
             assignment.removeFromParentAndDelete()
@@ -143,6 +174,37 @@ def to_antimony(
         rule.setVariable(species.getId())
         rule.setMath(protocol)
     return SbmlModel.from_string(libsbml.writeSBMLToString(document)).to_antimony(), emissions
+
+
+def _seed(model: pysb.Model, monomers: list[pysb.Monomer]) -> None:
+    """Start each of ``monomers`` present, as assumption 1 of the module docstring sets out."""
+    for monomer in monomers:
+        # Not INDRA's `set_base_initial_condition` itself, whose state this is: its
+        # `<monomer>_0` silently skips a monomer whose name is taken, and Fujita's EGF stimulus
+        # column is `EGF_0`.
+        state = {site: monomer.site_states.get(site, [None])[0] for site in monomer.sites}
+        if "cytoplasm" in monomer.site_states.get("loc", ()):
+            state["loc"] = "cytoplasm"
+        # Reconcile's own seed value, not 1, which it holds FIXED as a unit normalisation: the
+        # first version started every Crauste population at one cell that way.
+        amount = pysb.Parameter(f"{monomer.name}_init", SEED_INITIAL_VALUE, _export=False)
+        model.add_component(amount)
+        model.add_initial(pysb.Initial(monomer(**state), amount, _export=False))
+
+
+def _expand(model: pysb.Model) -> None:
+    """Fill in BioNetGen's expansion of ``model`` from its start. Left empty when nothing starts
+    (populations that only interconvert), which PySB refuses to expand, or nothing fires, whose
+    network BioNetGen refuses to write."""
+    try:
+        generate_equations(model)
+    except NoInitialConditionsError:
+        pass
+    except Exception as exc:  # BioNetGen fails as a bare Exception or an OSError
+        if "no reactions were found" not in str(exc):
+            raise ModelUpdateError(
+                f"Expanding the statements into reactions failed: {exc}"
+            ) from exc
 
 
 def _drop_unreferenced_parameters(sbml_model) -> None:

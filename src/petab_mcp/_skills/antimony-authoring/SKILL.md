@@ -56,8 +56,8 @@ Exponents are the trap here: a literal `x^4` asserts cooperativity of 4 and no f
   `event`, `species`, `model`): `at: -> X; k*C;` fails with `unexpected ->`, never naming the id.
 - **Never assign a symbol to itself.** `k = k;` is a definition loop and refuses to load. A shipped
   constant needs no assignment — reference it by name.
-- Match the names the problem already uses: a species driven by a condition column, or read by
-  an observable formula, must be spelled exactly as that table spells it.
+- Match the names the problem already uses: a species a condition targets, or one read by an
+  observable formula, must be spelled exactly as that table spells it.
 - **A typo becomes a new parameter, not an error.** `kf*A` mistyped as `kF*A` silently creates
   `kF`. After an edit, read the parameter list back and look for a name you did not intend.
 

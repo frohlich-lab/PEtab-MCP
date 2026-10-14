@@ -296,56 +296,45 @@ def _compute_fim(record):
         return None
 
 
-def _amici_models(objective) -> list:
-    """Every AMICI model behind a pyPESTO objective — one for a plain ``AmiciObjective``, one per
-    sub-objective for the ``AggregatedObjective`` pyPESTO builds for some PEtab problems."""
-    model = getattr(objective, "amici_model", None)
-    if model is not None:
-        return [model]
-    subs = getattr(objective, "_objectives", None)
-    if subs is None:
-        subs = getattr(objective, "objectives", None) or []
-    seen: dict[int, Any] = {}
-    for sub in subs:
-        for m in _amici_models(sub):
-            seen.setdefault(id(m), m)
-    return list(seen.values())
-
-
 def _residual_rows(problem, x):
     """``(res, sres, blocks)`` of the built ``problem`` at the FREE point ``x``, in residual mode:
     the residual vector, its sensitivities with respect to ``x`` (one column per free parameter),
-    and the per-condition row counts pyPESTO reports through ``rdatas``.
+    and the per-experiment row counts pyPESTO reports through ``rdatas``.
 
-    A plain objective answers this itself. A HIERARCHICAL one (pyPESTO's
-    ``InnerCalculatorCollector``) cannot, so its relative calculator's ``call_amici_twice`` — solve
-    the inner problem at ``x``, then evaluate AMICI with those values filled in — is driven
-    directly, with the arguments the collector would pass, and the full-width ``sres`` it returns
-    is cut to ``x_free_indices``. Do not simplify that back to a residual-mode call on the
-    hierarchical objective: pyPESTO 0.6 leaves ``res``/``sres`` at their empty initial values and
-    raises ``TypeError: 'NoneType' object is not subscriptable`` on the gradient, and the path
-    that does fill them is reached only when a Hessian is requested, which ``ObjectiveBase``
-    refuses in residual mode. Without the detour the count is ``None`` for every fit with an
-    inner-solved sigma, i.e. most real examples; the hand-driven scores agree with the profiled
-    objective's own gradient to 3e-7 relative, which is the envelope theorem.
+    A plain objective answers this itself (AMICI's ``sres`` is on the estimation scale already,
+    see :func:`fitting.pypesto_problem`). A HIERARCHICAL one refuses: pyPESTO raises on residual sensitivities whenever a
+    sigma is inner-solved, since at the analytic sigma the least-squares objective is constant —
+    true for an optimizer, irrelevant to the FIM, which only needs the rows at one point. So the
+    inner problem is solved once at ``x`` (a function-mode call, which reports the inner values),
+    and the rows are evaluated by pyPESTO's PLAIN v2 calculator on the hierarchical objective's own
+    simulator with those values filled in: the same module, the same solver, nothing built. Its
+    ``sres`` spans the outer parameters followed by the inner ones; the inner columns are dropped
+    (the FIM has no coordinate for them, see :data:`INNER_OMITTED_NOTE`) and the outer ones, already
+    on the estimation scale, are cut to ``x_free_indices``. Without the detour the count is ``None``
+    for every fit with an inner-solved sigma, i.e. most real examples; scores built from these rows
+    agree with the profiled objective's own gradient, which is the envelope theorem.
     """
     import numpy as np
-    from pypesto.C import MODE_RES, RDATAS, RES, SRES
+    from pypesto.C import INNER_PARAMETERS, MODE_RES, RDATAS, RES, SRES
+    from pypesto.objective.amici.amici_calculator import AmiciCalculatorPetabV2
 
     obj = problem.objective
-    inner = getattr(getattr(obj, "calculator", None), "inner_calculators", None)
-    if inner:
+    calc = getattr(obj, "calculator", None)
+    if hasattr(calc, "inner_calculators"):
+        inner_ids = list(calc.get_interpretable_inner_par_ids())
+        inner_values = obj(x, sensi_orders=(0,), return_dict=True)[INNER_PARAMETERS]
         x_full = obj.pre_post_processor.preprocess(x=x)
-        ret, _ = inner[0].call_amici_twice(
-            x_dct=obj.par_arr_to_dct(x_full),
+        outer_ids = list(obj.x_ids)
+        ret = AmiciCalculatorPetabV2(obj._petab_simulator)(
+            x_dct={**dict(zip(outer_ids, x_full)), **dict(zip(inner_ids, inner_values))},
             sensi_orders=(0, 1),
             mode=MODE_RES,
             amici_model=obj.amici_model,
             amici_solver=obj.amici_solver,
             edatas=obj.edatas,
             n_threads=obj.n_threads,
-            x_ids=obj.x_ids,
-            parameter_mapping=obj.parameter_mapping,
+            x_ids=outer_ids + inner_ids,
+            parameter_mapping=None,
             fim_for_hess=obj.fim_for_hess,
         )
         sres = np.asarray(ret[SRES], dtype=float)[:, list(problem.x_free_indices)]
@@ -365,9 +354,9 @@ def _fim_from_rows(problem, x):
     pseudo-residuals on (:func:`_residual_rows`): each measurement then contributes two rows —
     ``r = (m−y)/σ`` and ``ρ = √(2·ln σ + c)`` — whose ``res·sres`` products sum EXACTLY to that
     point's score, the ``−∂ln σ`` term an estimated sigma adds included (the constant ``c`` cancels
-    in the product). AMICI lays a condition's rows out as the data half followed by the sigma half,
-    index-aligned, which is how they are paired here, and the flag is set for this one evaluation
-    and restored.
+    in the product). AMICI lays an experiment's rows out as the data half followed by the sigma
+    half, index-aligned, which is how they are paired here, and the flag is set for this one
+    evaluation and restored.
 
     ``H`` is the Gauss-Newton information over the same rows, the data rows as they are and the
     sigma rows weighted by ``ρ²`` — the exact Gaussian Fisher information
@@ -387,15 +376,13 @@ def _fim_from_rows(problem, x):
     if m == 0 or not np.isfinite(x).all():
         return None
 
-    models = _amici_models(problem.objective)
-    before = [mdl.get_add_sigma_residuals() for mdl in models]
-    for mdl in models:
-        mdl.set_add_sigma_residuals(True)
+    model = problem.objective.amici_model
+    before = model.get_add_sigma_residuals()
+    model.set_add_sigma_residuals(True)
     try:
         res, sres, blocks = _residual_rows(problem, x)
     finally:
-        for mdl, flag in zip(models, before):
-            mdl.set_add_sigma_residuals(flag)
+        model.set_add_sigma_residuals(before)
     if sres.shape != (res.size, m) or not (np.isfinite(res).all() and np.isfinite(sres).all()):
         return None
     if not blocks or sum(blocks) != res.size or any(b % 2 for b in blocks):
@@ -403,7 +390,7 @@ def _fim_from_rows(problem, x):
     rows = res[:, None] * sres  # one row per residual: its res·∂res term
     scores, start = [], 0
     H = np.zeros((m, m))
-    for b in blocks:  # fold each condition's sigma half onto its data half
+    for b in blocks:  # fold each experiment's sigma half onto its data half
         half = b // 2
         data, sigma = slice(start, start + half), slice(start + half, start + b)
         scores.append(rows[data] + rows[sigma])
@@ -817,7 +804,7 @@ def _params_meta(record) -> list[dict[str, Any]]:
     order — not from ``parameter_df[nominalValue]``, which an agent edit can move after the fit, and
     which would then have a diagnosis expanding around a point the fit never reached.
     """
-    from petab.v1.parameters import unscale
+    from .problem import unscale
 
     out = []
     for i, name in enumerate(record.x_names):
