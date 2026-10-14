@@ -681,7 +681,10 @@ def statements_to_antimony(
         for start in starts or []
     ]
     antimony, emissions = problem_sbml.to_antimony(
-        [(stmt, row["policy"], row["prefix"]) for stmt, row in zip(stmts, rows)],
+        [
+            (stmt, row["policy"], row["prefix"], row.get("parameters"))
+            for stmt, row in zip(stmts, rows)
+        ],
         session.entities,
         library,
         session.inputs,

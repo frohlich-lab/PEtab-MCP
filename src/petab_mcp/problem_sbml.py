@@ -75,7 +75,7 @@ from .reconcile import SEED_INITIAL_VALUE
 
 
 def to_antimony(
-    rows: list[tuple[Statement, str, str]],
+    rows: list[tuple],
     entities: dict[str, Agent],
     library: dict[tuple[str, str], M.Policy] = M.REGISTRY,
     inputs: dict[str, str] | None = None,

@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 
 import pysb
 import sympy
@@ -73,6 +73,9 @@ class Emission:
     roles: dict[str, str]
     rules: tuple[str, ...]
     parameters: tuple[str, ...]
+    #: The row's binding (:func:`bind`): kind -> the shared id or the number that replaced
+    #: ``<prefix>_<kind>``. Empty for a row that binds nothing.
+    bound: dict[str, str | float] = field(default_factory=dict)
 
 
 Policy = Callable[[Statement, pysb.Model, str], Emission]
@@ -102,9 +105,11 @@ def instantiate(
     policy: str,
     prefix: str,
     library: dict[tuple[str, str], Policy] = REGISTRY,
+    binding: dict[str, str | float] | None = None,
 ) -> Emission:
-    """Apply one entry of ``library`` (the registered entries plus any the agent wrote). Raises
-    :class:`MechanismError` when the pair is not in it — the agent's signal to write one."""
+    """Apply one entry of ``library`` (the registered entries plus any the agent wrote), then the
+    row's ``binding`` (:func:`bind`). Raises :class:`MechanismError` when the pair is not in it —
+    the agent's signal to write one."""
     key = (type(stmt).__name__, policy)
     if key not in library:
         known = sorted(p for c, p in library if c == key[0])
@@ -112,7 +117,64 @@ def instantiate(
             f"no mechanism {key}; the library has {known or 'none'} for {key[0]}. If none fits, "
             "write one with `mechanisms`."
         )
-    return library[key](stmt, model, prefix)
+    emission = library[key](stmt, model, prefix)
+    return bind(model, emission, binding) if binding else emission
+
+
+def bind(model: pysb.Model, emission: Emission, binding: dict[str, str | float]) -> Emission:
+    """Replace parameters a row minted (``<prefix>_<kind>``) by a SHARED one or a NUMBER.
+
+    Every row mints its own rate constants, so one rate a reference uses in many reactions became
+    many estimated parameters: Blasi's single ``a_basal`` in 25 acetylations, the 14 constants
+    Sneyd's ten gating steps share, the shipped fixed rates Rahman's deaths run at. A string
+    binds the kind to that id: a parameter an earlier row bound, or a new one of that name — which
+    reconcile then takes from the problem's own row when the problem ships it. A number pins the
+    kind to that value; it is no longer estimated. Bound for every entry alike, INDRA's and
+    written ones, so no entry needs sharing of its own. What a row no longer reads stays behind
+    unreferenced, and the SBML export drops it (as it drops a written mechanism's base constant).
+    """
+    minted = {name.removeprefix(f"{emission.prefix}_"): name for name in emission.parameters}
+    unknown = sorted(set(binding) - set(minted))
+    if unknown:
+        raise MechanismError(
+            f"row {emission.prefix!r} binds {unknown}, but its mechanism makes only "
+            f"{sorted(minted)}"
+        )
+    parameters = []
+    for kind, name in minted.items():
+        if kind not in binding:
+            parameters.append(name)
+            continue
+        old, target = model.parameters[name], binding[kind]
+        if isinstance(target, bool) or not isinstance(target, (str, int, float)):
+            raise MechanismError(f"row {emission.prefix!r} binds {kind!r} to {target!r}")
+        if isinstance(target, str):
+            existing = model.parameters.get(target) or model.expressions.get(target)
+            if existing is None:
+                old._export = False  # INDRA builds with PySB's export off; see `_indra`
+                old.rename(target)
+                parameters.append(target)
+                continue
+            new = existing
+        else:
+            new = pysb.Expression(f"{name}_pinned", sympy.Float(target), _export=False)
+            _add(model, new)
+        _redirect(model, old, new)
+        if isinstance(target, str):
+            parameters.append(target)
+    return replace(emission, parameters=tuple(parameters), bound=dict(binding))
+
+
+def _redirect(model: pysb.Model, old, new) -> None:
+    """Point every rule rate and expression that reads ``old`` at ``new``."""
+    for rule in model.rules:
+        if rule.rate_forward is old:
+            rule.rate_forward = new
+        if rule.rate_reverse is old:
+            rule.rate_reverse = new
+    for expression in model.expressions:
+        if old in expression.expr.free_symbols:
+            expression.expr = expression.expr.xreplace({old: new})
 
 
 #: What a written rate may contain besides names: numbers, arithmetic, parentheses, commas. A
@@ -194,22 +256,24 @@ def written(definition: dict, library: dict[tuple[str, str], Policy]) -> Policy:
 
 
 def assemble(
-    rows: list[tuple[Statement, str, str]],
+    rows: list[tuple],
     entities: dict[str, Agent] | None = None,
     library: dict[tuple[str, str], Policy] = REGISTRY,
 ) -> tuple[pysb.Model, list[Emission]]:
-    """Build the whole model from ``(statement, policy, prefix)`` rows.
+    """Build the whole model from ``(statement, policy, prefix)`` rows, each optionally with a
+    fourth element, its parameter binding (:func:`bind`).
 
     ``entities`` (species id to ``Agent``, from the problem's entity map) joins the monomer
     pass, so a species the problem observes has its monomer and sites even when no row names it.
     """
-    stmts = [stmt for stmt, _, _ in rows]
+    rows = [(*row, None) if len(row) == 3 else tuple(row) for row in rows]
+    stmts = [row[0] for row in rows]
     # INDRA's monomer pass collects every site its own statement types imply; it skips the
     # vocabulary in :mod:`statements`, whose agents carry only the sites their own conditions
     # name, so those are added directly.
     indra = PysbAssembler(stmts)
     indra.processed_policies = {
-        stmt.uuid: IndraPolicy(_monomer_policy(policy, library)) for stmt, policy, _ in rows
+        stmt.uuid: IndraPolicy(_monomer_policy(policy, library)) for stmt, policy, *_ in rows
     }
     indra.agent_set = agents = BaseAgentSet()
     indra._monomers()
@@ -228,7 +292,8 @@ def assemble(
             if annotation is not None:
                 model.add_annotation(annotation)
     return model, [
-        instantiate(stmt, model, policy, prefix, library) for stmt, policy, prefix in rows
+        instantiate(stmt, model, policy, prefix, library, binding)
+        for stmt, policy, prefix, binding in rows
     ]
 
 
