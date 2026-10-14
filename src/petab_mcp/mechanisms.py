@@ -495,6 +495,24 @@ def _removal(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
     )
 
 
+@mechanism(IncreaseAmount, MASS_ACTION)
+def _synthesis(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
+    """``k·[subj]``: obj is made, from nothing or catalysed by ``subj``, in the state the
+    statement writes — INDRA's own IncreaseAmount makes it in its base state, so a protein made
+    at a location or in a modified form (Alkan's per-phase p21 and Wip1) had no route."""
+    catalyst = [stmt.subj] if stmt.subj is not None else []
+    return _one_rule(
+        stmt,
+        model,
+        prefix,
+        MASS_ACTION,
+        catalyst,
+        catalyst + [stmt.obj],
+        "synthesis",
+        {"subj": _role_names(stmt.subj), "obj": stmt.obj.name},
+    )
+
+
 mechanism(Conversion, MASS_ACTION)(_conversion(MASS_ACTION, False))
 mechanism(Conversion, RELEASE)(_conversion(RELEASE, True))
 mechanism(DecreaseAmount, RELEASE)(_removal)
