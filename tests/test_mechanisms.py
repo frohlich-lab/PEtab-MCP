@@ -217,3 +217,13 @@ def test_a_written_rate_reads_a_list_role():
     )
     rate = str(model.expressions["r1_rate"].expr)
     assert "r1_obj_from" in rate and "r1_obj_from_0" in rate
+
+
+def test_a_row_binds_a_rate_to_an_expression_over_shared_ids():
+    """Isensee's off-rates are KD*kf of the reference's own parameters; minted per row instead,
+    they kept k but lost the reference's bounds."""
+    params, emissions = _sbml_parameters(
+        [(_TRANSITION, "mass_action", "r1", {"k": "KD * kf_on"})]
+    )
+    assert {"KD", "kf_on"} <= params and "r1_k" not in params
+    assert set(emissions[0].parameters) == {"KD", "kf_on"}
