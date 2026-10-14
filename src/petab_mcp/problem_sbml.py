@@ -348,7 +348,25 @@ def _expand(model: pysb.Model) -> None:
 
 def _drop_unreferenced_parameters(sbml_model) -> None:
     """Remove the parameters nothing reads or assigns: the rate constant a written mechanism
-    replaced."""
+    replaced; and the ``__obs`` rules PySB exports for the amounts a written rate reads, which the
+    export inlines into the rate, so nothing reads the rule."""
+    while True:
+        read = set()
+        for element in sbml_model.getListOfAllElements():
+            math = element.getMath() if hasattr(element, "getMath") else None
+            if math is not None:
+                read |= {n.getName() for n in _ast_nodes(math) if n.isName()}
+        unread = [
+            rule
+            for rule in sbml_model.getListOfRules()
+            if rule.getVariable().startswith("__obs") and rule.getVariable() not in read
+        ]
+        if not unread:
+            break
+        for rule in unread:
+            variable = rule.getVariable()
+            rule.removeFromParentAndDelete()
+            sbml_model.removeParameter(variable)
     used = {rule.getVariable() for rule in sbml_model.getListOfRules()}
     for element in sbml_model.getListOfAllElements():
         math = element.getMath() if hasattr(element, "getMath") else None

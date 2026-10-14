@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import libsbml
 import pytest
-from indra.statements import Agent, BoundCondition, Phosphorylation
+from indra.statements import Agent, BoundCondition, Phosphorylation, Translocation
 from petab.v1.models.sbml_model import SbmlModel
 
+from petab_mcp import mechanisms as M
 from petab_mcp import problem_sbml as PS
 from petab_mcp.errors import ModelUpdateError
 from petab_mcp.mechanisms import INDRA_DEFAULT
@@ -429,3 +430,37 @@ def test_a_shared_rate_named_by_a_start_is_not_a_unit_pool():
     )
     sbml = SbmlModel.from_antimony(antimony).sbml_model
     assert sbml.getParameter("total").getValue() != 1.0
+
+
+def test_a_protein_is_made_in_the_state_it_is_written():
+    """Alkan's p21 is made in the S- or G2-phase cells it is measured in; INDRA's IncreaseAmount
+    makes the base state."""
+    from indra.statements import IncreaseAmount
+
+    nuclear = Agent("P", location="nucleus")
+    reactions = _reactions(
+        [
+            (IncreaseAmount(None, nuclear), "mass_action", "syn"),
+            (Translocation(Agent("P"), "nucleus", "cytoplasm"), INDRA_DEFAULT, "out"),
+        ],
+        {"P": Agent("P")},
+    )
+    assert ([], ["P(loc='nucleus')"]) in reactions
+
+
+def test_a_written_rate_leaves_no_unread_rules():
+    """The amounts a written rate reads are inlined into it; the observable rules PySB also
+    exports for them were read by nothing."""
+    library = dict(M.REGISTRY)
+    library[("PopulationTransition", "sat")] = M.written(
+        {
+            "statement_type": "PopulationTransition",
+            "policy": "sat",
+            "based_on": "mass_action",
+            "rate": "vmax / (K + source)",
+            "parameters": ["vmax", "K"],
+        },
+        library,
+    )
+    antimony, _ = PS.to_antimony([(_TRANSITION, "sat", "r1")], {"naive": Agent("naive")}, library)
+    assert "__obs" not in antimony
