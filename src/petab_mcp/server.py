@@ -823,18 +823,31 @@ _MAKE_CHANGES_DOC = "\n\n".join(
 
 def _make_changes_statements_doc() -> str:
     """The `statements` route's paragraph, naming the entries the library holds right now."""
-    from indra.statements import Statement, get_all_descendants
-
     from . import mechanisms
 
+    from indra.statements import AddModification, RemoveModification, Statement, get_all_descendants
+
+    families = {
+        base.__name__: {c.__name__ for c in get_all_descendants(base)}
+        for base in (AddModification, RemoveModification)
+    }
     defaulted = {cls for cls, policy in mechanisms.REGISTRY if policy == mechanisms.INDRA_DEFAULT}
     without = sorted({c.__name__ for c in get_all_descendants(Statement)} - defaulted)
-
-    by_policy: dict[str, list[str]] = {}
+    by_policy: dict[str, set[str]] = {}
     for cls, policy in sorted(mechanisms.REGISTRY):
         if policy != mechanisms.INDRA_DEFAULT:
-            by_policy.setdefault(policy, []).append(cls)
-    entries = "; ".join(f"`{policy}` for {', '.join(names)}" for policy, names in by_policy.items())
+            by_policy.setdefault(policy, set()).add(cls)
+
+    def named(classes: set[str]) -> str:
+        # A whole family reads as its base (every AddModification), not two dozen types.
+        names = []
+        for base, members in families.items():
+            if members <= classes:
+                classes = classes - members
+                names.append(f"every {base}")
+        return ", ".join(names + sorted(classes - {"Modification"}))
+
+    entries = "; ".join(f"`{policy}` for {named(c)}" for policy, c in sorted(by_policy.items()))
     return (
         "`statements` is a third model route, and still exactly ONE route per call: it authors "
         "the WHOLE model from mechanism assertions rather than text, each an INDRA statement "
