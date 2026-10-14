@@ -718,7 +718,13 @@ def statements_to_antimony(
     ]
     antimony, emissions = problem_sbml.to_antimony(
         [
-            (stmt, row["policy"], row["prefix"], row.get("parameters"))
+            (
+                stmt,
+                row["policy"],
+                row["prefix"],
+                row.get("parameters"),
+                {k: Agent._from_json(v) for k, v in (row.get("modifiers") or {}).items()},
+            )
             for stmt, row in zip(stmts, rows)
         ],
         session.entities,
