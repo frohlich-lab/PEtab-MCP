@@ -236,6 +236,11 @@ def _rename(sbml_model, element, new: str) -> None:
 
 
 def _monomer_names(reaction_pattern) -> set[str]:
+    # INDRA pads a rule's sides with None for Kappa (one-step Conversion, IncreaseAmount and
+    # DecreaseAmount with a subject): a place holder, not a complex.
     return {
-        mp.monomer.name for cp in reaction_pattern.complex_patterns for mp in cp.monomer_patterns
+        mp.monomer.name
+        for cp in reaction_pattern.complex_patterns
+        if cp is not None
+        for mp in cp.monomer_patterns
     }
