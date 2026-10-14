@@ -76,10 +76,14 @@ dependencies = [
     # `indra.statements.statements`, none of which is a public interface.
     # Revisit once INDRA exposes a stable policy-registration interface.
     "indra>=1.24,<1.25",
-    # The model language the mechanisms build, and its SBML export (`problem_sbml`). Capped at
-    # the major: the policies construct Rule, Expression and Observable directly. Revisit once the
-    # suite runs against a 2.x release.
-    "pysb>=1.17,<2",
+    # The model language the mechanisms build, and its SBML export (`problem_sbml`). A commit on
+    # master, not a release: 1.17.0 caps sympy below 1.12, which amici needs, and the commit lifting
+    # the cap (pysb#611) is unreleased. Revisit with the next release, as `pysb>=1.18,<2`: the
+    # policies construct Rule, Expression and Observable directly.
+    "pysb @ git+https://github.com/pysb/pysb.git@9fc6bcb118683ad851e0a4d5604abe646f77cae3",
+    # Never imported here: it ships the BioNetGen that pysb finds and runs to expand the rules into
+    # reactions (`problem_sbml`). 0.8.7 is what the suite is measured against.
+    "bionetgen>=0.8.7",
 ]
 
 [project.optional-dependencies]
@@ -101,6 +105,10 @@ petab-mcp = "petab_mcp.cli:main"
 [project.urls]
 Homepage = "https://github.com/frohlich-lab/PEtab-MCP"
 Repository = "https://github.com/frohlich-lab/PEtab-MCP"
+
+[tool.hatch.metadata]
+# The pysb pin above is a git commit, which hatchling refuses without this.
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/petab_mcp"]
