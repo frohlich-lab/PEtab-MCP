@@ -619,22 +619,26 @@ def set_model(
 
 
 def statements_to_antimony(
-    session, rows: list[dict[str, Any]], written: list[dict[str, Any]] | None = None
-) -> tuple[str, list[dict[str, Any]], list[dict[str, str]], dict[tuple[str, str], dict]]:
+    session,
+    rows: list[dict[str, Any]],
+    written: list[dict[str, Any]] | None = None,
+    starts: list[dict[str, Any]] | None = None,
+) -> tuple[str, dict[str, Any], list[dict[str, str]], dict[tuple[str, str], dict]]:
     """The ``statements`` route: build the model the rows assert, as Antimony for :func:`set_model`.
 
     Each row is ``{statement, policy, prefix}`` with the statement in INDRA's JSON. ``written``
     are mechanisms the agent writes in this call (:func:`mechanisms.written`), joining those it
-    wrote earlier in the run. Returns the Antimony; the rows each with the
-    :class:`mechanisms.Emission` it produced, and with its definition when the agent wrote its
-    mechanism (the provenance record); a warning per ungrounded agent, since grounding is
+    wrote earlier in the run. ``starts`` (``{agent, amount, name?}``) declare what is present at
+    the start (:func:`problem_sbml.to_antimony`). Returns the Antimony; the provenance record —
+    ``rows``, each with the :class:`mechanisms.Emission` it produced and with its definition when
+    the agent wrote its mechanism, and ``starts``; a warning per ungrounded agent, since grounding is
     optional and its absence is reported, never refused; and the run's written mechanisms, for
     the caller to keep once the change applies.
     """
     from dataclasses import asdict
 
     # Imported here: INDRA takes seconds to import, and only this route needs it.
-    from indra.statements import stmts_from_json
+    from indra.statements import Agent, stmts_from_json
 
     from . import mechanisms, problem_sbml
     from .statements import ungrounded
@@ -671,18 +675,29 @@ def statements_to_antimony(
             "not statements INDRA can read. NOTHING was applied.",
             cause="unreadable_statement",
         )
+    declared = [
+        (start.get("name") or start["agent"]["name"], Agent._from_json(start["agent"]),
+         start["amount"])
+        for start in starts or []
+    ]
     antimony, emissions = problem_sbml.to_antimony(
         [(stmt, row["policy"], row["prefix"]) for stmt, row in zip(stmts, rows)],
         session.entities,
         library,
         session.inputs,
-        session.initials,
+        declared,
     )
-    record = [
-        {**row, "emission": asdict(e)}
-        | ({"mechanism": definitions[e.entry]} if e.entry in definitions else {})
-        for row, e in zip(rows, emissions)
-    ]
+    record = {
+        "rows": [
+            {**row, "emission": asdict(e)}
+            | ({"mechanism": definitions[e.entry]} if e.entry in definitions else {})
+            for row, e in zip(rows, emissions)
+        ],
+        "starts": [
+            {"name": name, "agent": start["agent"], "amount": start["amount"]}
+            for (name, _, _), start in zip(declared, starts or [])
+        ],
+    }
     warnings = [
         M.warning(M.SOURCE_EDIT, f"`statements[{i}]` agent(s) {names} carry no grounding.")
         for i, names in enumerate(map(ungrounded, stmts))

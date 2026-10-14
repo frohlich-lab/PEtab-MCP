@@ -106,7 +106,7 @@ def test_a_complex_nothing_forms_is_refused():
         )
 
 
-# -- declared initial amounts (the entity map's `initial`) ------------------------
+# -- declared starts (make_changes' `starts`) ----------------------------------------
 def _ia(sbml, sid):
     ia = sbml.getInitialAssignmentBySymbol(sid)
     return None if ia is None else libsbml.formulaToL3String(ia.getMath())
@@ -117,8 +117,8 @@ def test_a_declared_unit_pool_replaces_the_estimated_seed():
     normalisation; seeded at an estimated `<monomer>_init` instead, each cost one k for nothing."""
     antimony, _ = PS.to_antimony(
         [(_PHOSPHO, INDRA_DEFAULT, "r1")],
-        {"pERK": Agent("ERK"), "MEK": Agent("MEK", db_refs={"HGNC": "6840"})},
-        initials={"pERK": 1},
+        {"MEK": Agent("MEK", db_refs={"HGNC": "6840"})},
+        starts=[("pERK", Agent("ERK"), 1)],
     )
     sbml = SbmlModel.from_antimony(antimony).sbml_model
     params = {p.getId(): p.getValue() for p in sbml.getListOfParameters()}
@@ -132,7 +132,7 @@ def test_a_made_monomer_can_be_declared_present():
     antimony, _ = PS.to_antimony(
         [(_TRANSITION, "mass_action", "r1")],
         {"effector": Agent("effector")},
-        initials={"effector": 5},
+        starts=[("effector", Agent("effector"), 5)],
     )
     sbml = SbmlModel.from_antimony(antimony).sbml_model
     assert _ia(sbml, "effector") == "effector_init"
@@ -147,8 +147,8 @@ def test_a_declared_start_is_the_state_the_agent_writes():
     )
     antimony, _ = PS.to_antimony(
         [(_PHOSPHO, INDRA_DEFAULT, "r1")],
-        {"pERK": p_erk, "ERK": Agent("ERK")},
-        initials={"pERK": 0.5, "ERK": 2},
+        {"pERK": p_erk},
+        starts=[("pERK", p_erk, 0.5), ("ERK", Agent("ERK"), 2)],
     )
     sbml = SbmlModel.from_antimony(antimony).sbml_model
     names = {sp.getId(): sp.getName() for sp in sbml.getListOfSpecies()}
@@ -164,7 +164,7 @@ def test_a_declared_complex_starts_bound():
     antimony, _ = PS.to_antimony(
         [(Phosphorylation(raf_ras, Agent("MEK")), INDRA_DEFAULT, "r1")],
         {"RAF_RAS": raf_ras},
-        initials={"RAF_RAS": 3},
+        starts=[("RAF_RAS", raf_ras, 3)],
     )
     sbml = SbmlModel.from_antimony(antimony).sbml_model
     assert sbml.getSpecies("RAF_RAS").getName().count("._br_") == 1
@@ -177,7 +177,7 @@ def test_a_declared_expression_names_parameters_the_table_fills():
     antimony, _ = PS.to_antimony(
         [(_TRANSITION, "mass_action", "r1")],
         {"naive": Agent("naive")},
-        initials={"naive": "pool*fold"},
+        starts=[("naive", Agent("naive"), "pool*fold")],
     )
     sbml = SbmlModel.from_antimony(antimony).sbml_model
     assert _ia(sbml, "naive") == "pool * fold"
@@ -193,7 +193,7 @@ def test_an_input_declares_no_start():
             [(Phosphorylation(egf, Agent("AKT")), INDRA_DEFAULT, "r1")],
             {"EGF": egf},
             inputs={"EGF": "EGF_0"},
-            initials={"EGF": 1},
+            starts=[("EGF", egf, 1)],
         )
 
 
@@ -201,7 +201,8 @@ def test_a_declared_empty_start_has_no_parameter():
     """Enzyme kinetics' substrate is set by every condition; an `_init` behind it, even a zero one,
     was an estimated row no condition left any effect to."""
     antimony, _ = PS.to_antimony(
-        [(_TRANSITION, "mass_action", "r1")], {"naive": Agent("naive")}, initials={"naive": 0}
+        [(_TRANSITION, "mass_action", "r1")], {"naive": Agent("naive")},
+        starts=[("naive", Agent("naive"), 0)],
     )
     sbml = SbmlModel.from_antimony(antimony).sbml_model
     assert _ia(sbml, "naive") is None and sbml.getParameter("naive_init") is None

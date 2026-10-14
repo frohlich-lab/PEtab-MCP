@@ -181,6 +181,27 @@ class StatementRow(BaseModel):
     )
 
 
+class StartRow(BaseModel):
+    """One species present at the start, and how much of it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent: dict[str, Any] = Field(
+        description="the species, as an INDRA Agent's JSON in the state it starts in: its mods, "
+        "location, and the complex its bound_conditions form, e.g. {name: 'H4'}."
+    )
+    amount: float | str = Field(
+        description="its starting amount: a number (1 is a fixed unit pool, 0 an empty start, "
+        "anything else estimated from there) or an expression over parameter ids (a parameter "
+        "the problem ships, a condition-table column, a new name)."
+    )
+    name: str | None = Field(
+        default=None,
+        description="names its parameter `<name>_init`; defaults to the agent's name, and must "
+        "differ for a second start of the same agent.",
+    )
+
+
 class MechanismDef(BaseModel):
     """A mechanism you write when none in the library fits: an existing mechanism's reaction with
     your own rate."""
@@ -780,7 +801,9 @@ def _make_changes_statements_doc() -> str:
         f"also holds {entries}. When none fits, WRITE one in `mechanisms` — it stays in the "
         "library for the rest of the run. The species the observables read, and the inputs the "
         "experiments set (a dose), are bound by the problem's entity map: name agents as it "
-        "does, and do not assert an input — it is already held to its protocol. The result is "
+        "does, and do not assert an input — it is already held to its protocol. `starts` "
+        "declares what is present at the start, in the state its agent writes; without it every "
+        "species no rule makes starts at an estimated `<name>_init` and every made one empty. The result is "
         "an ordinary model: `model_edits` can edit it next."
     )
 
@@ -880,6 +903,7 @@ def _register_model_tools(
         n_starts: int | None = None,
         statements: Annotated[list[StatementRow] | None, BeforeValidator(_unwrap_listish)] = None,
         mechanisms: Annotated[list[MechanismDef] | None, BeforeValidator(_unwrap_listish)] = None,
+        starts: Annotated[list[StartRow] | None, BeforeValidator(_unwrap_listish)] = None,
     ) -> dict[str, Any]:
         ctx = route()
         session = ctx.session
@@ -957,12 +981,12 @@ def _register_model_tools(
                     cause="unnamed_reaction",
                 )
         statement_record, statement_warnings, written = None, [], None
-        if mechanisms and not rows:
+        if (mechanisms or starts) and not rows:
             return ctx.reject_operation(
                 "make_changes",
-                "make_changes: `mechanisms` are used by `statements` rows; send them together. "
-                "NOTHING was applied.",
-                {"n_mechanisms": len(mechanisms)},
+                "make_changes: `mechanisms` and `starts` belong to `statements` rows; send them "
+                "together. NOTHING was applied.",
+                {"n_mechanisms": len(mechanisms or []), "n_starts": len(starts or [])},
             )
         if rows:
             definitions = [
@@ -970,7 +994,12 @@ def _register_model_tools(
             ]
             try:
                 antimony, statement_record, statement_warnings, written = (
-                    ops_mod.statements_to_antimony(session, rows, definitions)
+                    ops_mod.statements_to_antimony(
+                        session,
+                        rows,
+                        definitions,
+                        [s.model_dump() if isinstance(s, StartRow) else s for s in starts or []],
+                    )
                 )
             except PetabMcpError as exc:
                 return ctx.reject_operation(
@@ -1883,7 +1912,6 @@ def _open_ctx(
 
         session.entities = seeding_mod.load_entity_map(entity_map)
         session.inputs = seeding_mod.load_inputs(entity_map)
-        session.initials = seeding_mod.load_initials(entity_map)
     if score_shipped_model and session.model_authored():
         fitting_mod.score_at_nominal(session, engine)
     held_out = None

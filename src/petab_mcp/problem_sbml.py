@@ -9,7 +9,7 @@ be scored against it as it stands. This module is the difference, and it is all 
   names is given that name, or for a blinded mapping an assignment rule of that name.
 * **Starting amounts.** What is present at the start is traced (below); each present monomer
   starts at an estimated ``<monomer>_init``, or at the row the problem ships (Crauste's fixed
-  ``Naive_init``) — unless the entity map DECLARES what is there (``initial``, below).
+  ``Naive_init``) — unless the statements DECLARE what is there (``starts``, below).
 * **Inputs.** A species the experiment sets (Fujita's EGF dose) is held to the protocol formula
   the entity map declares, and the condition-table columns it reads are declared for the table
   to fill.
@@ -37,11 +37,11 @@ later step, splits each simulated species by origin. Here the only question is w
 exists, whether a monomer traces back to the start at all, and the expansion's reactions answer
 it without a site.
 
-A declared ``initial`` replaces the trace for the monomers it names. The entry's species starts at
-that amount, in exactly the state its Agent writes (mods, location, activity, and the complex its
+A declared start (``make_changes``' ``starts``) replaces the trace for the monomers it names. The
+species its Agent writes starts at that amount, in exactly the state the Agent writes (mods, location, activity, and the complex its
 ``bound_conditions`` form, partners in their default state), and no monomer named in any
 declaration is started any other way: declare each state it starts in. A number other than 0
-becomes ``<key>_init`` and reconcile treats it as any other starting value (1 a unit normalisation,
+becomes ``<name>_init`` and reconcile treats it as any other starting value (1 a unit normalisation,
 fixed; anything else estimated from there), so Blasi's and Sneyd's unit pools cost nothing in k. A
 0 is an empty start with no parameter at all — what lets a species the condition table sets
 (Enzyme kinetics' substrate) carry no ``_init`` that every condition overrides. An expression is the starting amount itself, over parameter ids: a row the
@@ -79,7 +79,7 @@ def to_antimony(
     entities: dict[str, Agent],
     library: dict[tuple[str, str], M.Policy] = M.REGISTRY,
     inputs: dict[str, str] | None = None,
-    initials: dict[str, float | str] | None = None,
+    starts: list[tuple[str, Agent, float | str]] | None = None,
 ) -> tuple[str, list[M.Emission]]:
     """The model ``rows`` build, as Antimony the ``antimony`` route accepts unchanged.
 
@@ -91,10 +91,15 @@ def to_antimony(
     declares) is held to that formula instead. It has no starting amount of its own, and each
     column the formula names becomes a parameter the condition table sets.
 
-    ``initials`` (species id to a number or an expression, the entity map's ``initial``) declares
-    what is present at the start, as the module docstring sets out.
+    ``starts`` (``(name, agent, amount)``: a number or an expression over parameter ids) declare
+    what is present at the start, as the module docstring sets out; each is ``<name>_init``.
     """
-    model, emissions = M.assemble(rows, entities, library)
+    starts = starts or []
+    # Start agents join the monomer pass (they may name a site or partner no row does); they are
+    # not readouts, so they stay out of `entities` below.
+    model, emissions = M.assemble(
+        rows, {**entities, **{f"__start_{name}": agent for name, agent, _ in starts}}, library
+    )
     held = {entities[species].name: formula for species, formula in (inputs or {}).items()}
     made = set()
     for rule in model.rules:
@@ -109,7 +114,7 @@ def to_antimony(
     for name, species in readouts.items():
         pattern = get_monomer_pattern(model, entities[species])
         model.add_component(pysb.Observable(name, pattern, _export=False))
-    declared = _declare(model, entities, initials or {}, inputs or {})
+    declared = _declare(model, starts, {entities[s].name for s in inputs or {}})
     _seed(
         model,
         [m for m in model.monomers if (m.name not in made or m.name in held) and m.name not in declared],
@@ -176,11 +181,11 @@ def to_antimony(
             rule.setVariable(new)
             renamed = parameter
         _rename(sbml_model, renamed, new)
-    for species, amount in (initials or {}).items():
+    for name, _, amount in starts:
         if isinstance(amount, str):
-            _initial_expression(sbml_model, f"{species}_init", species, amount)
+            _initial_expression(sbml_model, f"{name}_init", name, amount)
         elif float(amount) == 0.0:
-            _initial_empty(sbml_model, f"{species}_init")
+            _initial_empty(sbml_model, f"{name}_init")
     _drop_unreferenced_parameters(sbml_model)
     for monomer, formula in held.items():
         protocol = libsbml.parseL3Formula(formula)
@@ -207,34 +212,37 @@ def to_antimony(
 
 
 def _declare(
-    model: pysb.Model,
-    entities: dict[str, Agent],
-    initials: dict[str, float | str],
-    inputs: dict[str, str],
+    model: pysb.Model, starts: list[tuple[str, Agent, float | str]], held: set[str]
 ) -> set[str]:
-    """Start each declared species at ``<key>_init``, in the state its Agent writes; returns the
+    """Start each declared species at ``<name>_init``, in the state its Agent writes; returns the
     monomers the declarations name, which :func:`_seed` then leaves alone."""
     named: set[str] = set()
-    for species, amount in initials.items():
-        if species in inputs:
+    names = [name for name, _, _ in starts]
+    repeated = sorted({n for n in names if names.count(n) > 1})
+    if repeated:
+        raise ModelUpdateError(
+            f"starts {repeated} are named twice; each start is `<name>_init`, so give a second "
+            "start of the same agent a name of its own"
+        )
+    for name, agent, amount in starts:
+        if agent.name in held:
             raise ModelUpdateError(
-                f"the entity map's {species!r} is an input and declares an initial amount; an "
-                "input is held to its protocol, so it has no start of its own"
+                f"start {name!r}: {agent.name} is an input, held to its protocol, so it has no "
+                "start of its own"
             )
         if not isinstance(amount, (int, float, str)) or isinstance(amount, bool):
             raise ModelUpdateError(
-                f"the entity map's initial for {species!r} is {amount!r}; give a number or an "
-                "expression over parameter ids"
+                f"start {name!r} is {amount!r}; give a number or an expression over parameter ids"
             )
-        pattern = pysb.ComplexPattern(_concrete(model, entities[species], count(1)), None)
+        pattern = pysb.ComplexPattern(_concrete(model, agent, count(1)), None)
         value = float(amount) if not isinstance(amount, str) else SEED_INITIAL_VALUE
-        parameter = pysb.Parameter(f"{species}_init", value, _export=False)
+        parameter = pysb.Parameter(f"{name}_init", value, _export=False)
         model.add_component(parameter)
         try:
             model.add_initial(pysb.Initial(pattern, parameter, _export=False))
         except ValueError as exc:  # pysb: not concrete, or a duplicate species
             raise ModelUpdateError(
-                f"the entity map's initial for {species!r} is not a start PySB accepts: {exc}"
+                f"start {name!r} is not a start PySB accepts: {exc}"
             ) from exc
         named |= {mp.monomer.name for mp in pattern.monomer_patterns}
     return named
@@ -250,7 +258,7 @@ def _concrete(model: pysb.Model, agent: Agent, bonds, partner: tuple | None = No
     unknown = sorted(set(stated) - set(monomer.sites))
     if unknown:
         raise ModelUpdateError(
-            f"the entity map's {agent.name} states sites {unknown} that no statement gives it"
+            f"{agent.name} states sites {unknown} that no statement gives it"
         )
     state, partners = {}, []
     for site in monomer.sites:
@@ -282,7 +290,7 @@ def _initial_expression(sbml_model, placeholder: str, species: str, formula: str
     it, and anything else is estimated from reconcile's seed."""
     math = libsbml.parseL3Formula(formula)
     if math is None:
-        raise ModelUpdateError(f"the entity map's initial for {species!r} is no formula: {formula!r}")
+        raise ModelUpdateError(f"start {species!r} is no formula: {formula!r}")
     for node in _ast_nodes(math):
         if node.getType() == libsbml.AST_NAME and sbml_model.getElementBySId(node.getName()) is None:
             parameter = sbml_model.createParameter()

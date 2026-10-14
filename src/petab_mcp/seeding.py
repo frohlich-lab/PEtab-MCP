@@ -32,15 +32,6 @@ species an experimental INPUT, with the protocol that sets it over the condition
 An input is a fact about the experiment, like a readout, so it is declared beside the readouts
 rather than asserted as a statement or built by a mechanism (see RATIONALE.md). Groundings are
 compared as ``"NS:ID"`` strings.
-
-So is what is present at the start, when the default does not fit (:func:`load_initials`). An
-entry may declare its species' INITIAL amount, as a number or as an expression over parameter ids
-(a shipped row, a condition-table column)::
-
-    {"Pathogen": {"name": "Pathogen", "initial": 1},
-     "SMAD2": {"name": "SMAD2", "db_refs": {"UP": "Q62432"}, "initial": "S2tot"}}
-
-:func:`problem_sbml.to_antimony` says what the declaration replaces.
 """
 
 from __future__ import annotations
@@ -79,13 +70,6 @@ def load_inputs(path: str) -> dict[str, str]:
     map at ``path`` that declares one."""
     entries = json.loads(Path(path).read_text())
     return {k: v["input"] for k, v in entries.items() if "input" in v}
-
-
-def load_initials(path: str) -> dict[str, float | str]:
-    """Species id to the initial amount its entry of the entity map at ``path`` declares (a number,
-    or an expression over parameter ids), for each entry that declares one."""
-    entries = json.loads(Path(path).read_text())
-    return {k: v["initial"] for k, v in entries.items() if "initial" in v}
 
 
 def filter_corpus(path: str, entities: dict[str, Agent]) -> list[Statement]:

@@ -743,7 +743,9 @@ def test_statements_commit_records_what_was_asserted(tmp_path):
     )
     assert out["applied"] is True and out["committed"] is True
     assert "carry no grounding" in out["messages"][0]["message"]
-    (stored,) = json.loads((tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text())
+    (stored,) = json.loads(
+        (tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text()
+    )["rows"]
     assert stored["emission"]["parameters"] == ["conv_k"]
 
 
@@ -804,7 +806,9 @@ def test_a_mechanism_the_agent_writes_stays_in_the_run_library(tmp_path):
     row = _statement_row(policy="saturating")
     args = {"justification": "saturating", "statements": [row], "mechanisms": [_SATURATING]}
     assert _call(mcp, "make_changes", args)["committed"] is True
-    (stored,) = json.loads((tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text())
+    (stored,) = json.loads(
+        (tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text()
+    )["rows"]
     assert stored["mechanism"]["rate"] == "vmax / (K + source)"
     row["prefix"] = "conv2"  # a different structure, so the de-dup does not refuse the refit
     again = _call(mcp, "make_changes", {"justification": "reuse", "statements": [row]})
@@ -829,14 +833,23 @@ def test_a_written_mechanism_is_not_redefined_in_place(tmp_path):
 
 
 def test_a_declared_unit_start_is_fixed_not_estimated(tmp_path):
-    """The entity map's `initial`: a population declared to start at 1 takes reconcile's unit
+    """`starts`: a population declared to start at 1 takes reconcile's unit
     normalisation, fixed, where the default seed would have estimated an `A_init` — Blasi's and
     Sneyd's extra k."""
-    extra = ', "A_start": {"name": "A", "initial": 1}'
-    mcp = _statements_server(tmp_path, extra=extra)
-    out = _call(mcp, "make_changes", {"justification": "A becomes B", "statements": [_statement_row()]})
+    mcp = _statements_server(tmp_path)
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "A becomes B",
+            "statements": [_statement_row()],
+            "starts": [{"agent": {"name": "A"}, "amount": 1, "name": "A_start"}],
+        },
+    )
     assert out["applied"] is True
     rows = {r["parameterId"]: r for r in _call(mcp, "get_parameters", {})["result"]}
     assert "A_start_init" in rows
     # The toy also SHIPS a fixed `A_init` row, which stays; neither may cost a k.
     assert not any(int(rows[p]["estimate"]) for p in ("A_start_init", "A_init") if p in rows)
+    stored = json.loads((tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text())
+    assert stored["starts"] == [{"name": "A_start", "agent": {"name": "A"}, "amount": 1}]

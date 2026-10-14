@@ -319,8 +319,6 @@ class PetabSession:
         self.entities: dict[str, Any] = {}
         # Species id -> the protocol formula an experiment sets it by (:func:`seeding.load_inputs`).
         self.inputs: dict[str, str] = {}
-        # Species id -> the initial amount its entry declares (:func:`seeding.load_initials`).
-        self.initials: dict[str, float | str] = {}
 
         # The version the NEXT commit descends from, or None for "whatever HEAD is".
         # `make_changes(edits=..., base_version=N)` patches version N's stored text, so the commit
