@@ -162,8 +162,10 @@ def bind(model: pysb.Model, emission: Emission, binding: dict[str, str | float])
     Sneyd's ten gating steps share, the shipped fixed rates Rahman's deaths run at. A string
     binds the kind to that id: a parameter an earlier row bound, or a new one of that name — which
     reconcile then takes from the problem's own row when the problem ships it. A number pins the
-    kind to that value; it is no longer estimated. Bound for every entry alike, INDRA's and
-    written ones, so no entry needs sharing of its own. What a row no longer reads stays behind
+    kind to that value; it is no longer estimated. Any other string is an EXPRESSION over such ids
+    (Isensee's off-rates ``KD_cAMP*kf_cAMP``), each name resolved as a shared id is, so the
+    parameters are the reference's own and keep their rows. Bound for every entry alike, INDRA's
+    and written ones, so no entry needs sharing of its own. What a row no longer reads stays behind
     unreferenced, and the SBML export drops it (as it drops a written mechanism's base constant).
     """
     minted = {name.removeprefix(f"{emission.prefix}_"): name for name in emission.parameters}
@@ -181,6 +183,11 @@ def bind(model: pysb.Model, emission: Emission, binding: dict[str, str | float])
         old, target = model.parameters[name], binding[kind]
         if isinstance(target, bool) or not isinstance(target, (str, int, float)):
             raise MechanismError(f"row {emission.prefix!r} binds {kind!r} to {target!r}")
+        if isinstance(target, str) and not _IDENTIFIER.fullmatch(target):
+            new, names = _bound_expression(model, name, target, emission.prefix)
+            _redirect(model, old, new)
+            parameters += [n for n in names if n not in parameters]
+            continue
         if isinstance(target, str):
             existing = model.parameters.get(target) or model.expressions.get(target)
             if existing is None:
@@ -204,6 +211,33 @@ def bind(model: pysb.Model, emission: Emission, binding: dict[str, str | float])
         if isinstance(target, str):
             parameters.append(target)
     return replace(emission, parameters=tuple(parameters), bound=dict(binding))
+
+
+_IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
+
+
+def _shared(model: pysb.Model, name: str):
+    """The component a shared id names, made at reconcile's seed when nothing holds it yet."""
+    existing = model.parameters.get(name) or model.expressions.get(name)
+    if existing is None:
+        from .reconcile import SEED_INITIAL_VALUE
+
+        existing = pysb.Parameter(name, SEED_INITIAL_VALUE, _export=False)
+        _add(model, existing)
+    return existing
+
+
+def _bound_expression(model: pysb.Model, name: str, text: str, prefix: str):
+    """``text`` as an Expression over shared ids, named after the parameter it replaces."""
+    tokens = _RATE_TOKENS.findall(text)
+    names = sorted({t for t in tokens if _IDENTIFIER.fullmatch(t)} - set(_RATE_FUNCTIONS))
+    if "".join(tokens) != text:
+        raise MechanismError(f"row {prefix!r} binds {name!r} to {text!r}, which is no expression")
+    symbols = {n: _shared(model, n) for n in names}
+    value = sympy.sympify(text.replace("^", "**"), locals={**symbols, **_RATE_FUNCTIONS})
+    expression = pysb.Expression(f"{name}_bound", value, _export=False)
+    _add(model, expression)
+    return expression, names
 
 
 def _redirect(model: pysb.Model, old, new) -> None:

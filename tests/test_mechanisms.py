@@ -219,3 +219,13 @@ def test_a_written_mechanism_binds_like_any_entry():
     model, (emission,) = M.assemble([(_TRANSITION, "sat", "r1", {"K": "K_half"})], library=library)
     assert set(emission.parameters) == {"r1_vmax", "K_half"}
     assert "K_half" in str(model.expressions["r1_rate"].expr)
+
+
+def test_a_row_binds_a_rate_to_an_expression_over_shared_ids():
+    """Isensee's off-rates are KD*kf of the reference's own parameters; minted per row instead,
+    they kept k but lost the reference's bounds."""
+    params, emissions = _sbml_parameters(
+        [(_TRANSITION, "mass_action", "r1", {"k": "KD * kf_on"})]
+    )
+    assert {"KD", "kf_on"} <= params and "r1_k" not in params
+    assert set(emissions[0].parameters) == {"KD", "kf_on"}
