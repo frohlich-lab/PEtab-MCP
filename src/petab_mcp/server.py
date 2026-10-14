@@ -822,7 +822,9 @@ def _make_changes_statements_doc() -> str:
         "experiments set (a dose), are bound by the problem's entity map: name agents as it "
         "does, and do not assert an input — it is already held to its protocol. `starts` "
         "declares what is present at the start, in the state its agent writes; without it every "
-        "species no rule makes starts at an estimated `<name>_init` and every made one empty. The result is "
+        "species no rule makes starts at an estimated `<name>_init` and every made one empty. "
+        "`readouts` defines a measurement mapping that is not one pattern's amount as a formula "
+        "over `amounts` (agents whose amounts it reads), entity-map ids and parameter ids. The result is "
         "an ordinary model: `model_edits` can edit it next."
     )
 
@@ -923,6 +925,8 @@ def _register_model_tools(
         statements: Annotated[list[StatementRow] | None, BeforeValidator(_unwrap_listish)] = None,
         mechanisms: Annotated[list[MechanismDef] | None, BeforeValidator(_unwrap_listish)] = None,
         starts: Annotated[list[StartRow] | None, BeforeValidator(_unwrap_listish)] = None,
+        readouts: dict[str, str] | None = None,
+        amounts: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         ctx = route()
         session = ctx.session
@@ -1000,11 +1004,11 @@ def _register_model_tools(
                     cause="unnamed_reaction",
                 )
         statement_record, statement_warnings, written = None, [], None
-        if (mechanisms or starts) and not rows:
+        if (mechanisms or starts or readouts or amounts) and not rows:
             return ctx.reject_operation(
                 "make_changes",
-                "make_changes: `mechanisms` and `starts` belong to `statements` rows; send them "
-                "together. NOTHING was applied.",
+                "make_changes: `mechanisms`, `starts`, `readouts` and `amounts` belong to "
+                "`statements` rows; send them together. NOTHING was applied.",
                 {"n_mechanisms": len(mechanisms or []), "n_starts": len(starts or [])},
             )
         if rows:
@@ -1018,6 +1022,8 @@ def _register_model_tools(
                         rows,
                         definitions,
                         [s.model_dump() if isinstance(s, StartRow) else s for s in starts or []],
+                        readouts,
+                        amounts,
                     )
                 )
             except PetabMcpError as exc:
