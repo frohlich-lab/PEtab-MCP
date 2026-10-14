@@ -25,6 +25,56 @@ from petab_mcp.fitting import (  # noqa: E402
 )
 
 
+def _upgraded(observable_df=None, measurement_df=None, parameter_df=None):
+    """The v1-shaped tables these cases are written in, upgraded the way a shipped v1 problem is
+    (:func:`petab_mcp.problem._from_v1`): libpetab's observable conversion -- which itself puts the
+    exact ``log(10)`` factor on a log10 observable's noise formula (PEtab-dev/libpetab-python#535),
+    and warns that it did -- and one simulation condition that changes nothing, i.e. no
+    experiment. Adding the factor here as well, as this did until libpetab took it on, scaled every
+    log10 fixture by ln(10) twice (pinned by the test below)."""
+    import warnings
+
+    from petab.v2.petab1to2 import v1v2_observable_df
+
+    from petab_mcp.problem import WorkingProblem
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", "PEtab v2 does not support log10", UserWarning)
+        odf = v1v2_observable_df(observable_df).set_index("observableId")
+    return WorkingProblem(
+        observable_df=odf,
+        measurement_df=measurement_df.drop(columns="simulationConditionId").assign(experimentId=""),
+        parameter_df=parameter_df,
+    )
+
+
+def test_the_fixtures_upgrade_a_log10_observable_as_the_server_does(tmp_path):
+    """`_upgraded` stands in for `_from_v1`, so a fixture's effective sigma is the one a served
+    problem has. It once kept its own log(10) after libpetab began adding it, and every log10 case
+    here was judged on a sigma ln(10) times too large while its broad assertions stayed green."""
+    import shutil
+    from pathlib import Path
+
+    import pandas as pd
+
+    from petab_mcp.problem import WorkingProblem
+
+    shutil.copytree(Path(__file__).parent / "data" / "toy_v1", tmp_path, dirs_exist_ok=True)
+    obs = pd.DataFrame(
+        {
+            "observableId": ["obs_B"],
+            "observableFormula": ["B"],
+            "noiseFormula": ["sigma_B"],
+            "observableTransformation": ["log10"],
+        }
+    )
+    obs.to_csv(tmp_path / "observables.tsv", sep="\t", index=False)
+    served = WorkingProblem.from_yaml(tmp_path / "problem.yaml").observable_df
+    meas = pd.read_csv(tmp_path / "measurements.tsv", sep="\t")
+    fixture = _upgraded(observable_df=obs.set_index("observableId"), measurement_df=meas)
+    assert fixture.observable_df.loc["obs_B", "noiseFormula"] == served.loc["obs_B", "noiseFormula"]
+
+
 def _entry(fitted, cap, frac):
     return {"fitted": fitted, "upper_bound_cap": cap, "data_std": 1.0, "fraction_of_data_std": frac}
 
@@ -270,7 +320,6 @@ def test_report_status_per_entry_including_unknown(monkeypatch):
 def _sigma_scale_case(transformation, noise_formula, measurements, fitted):
     """Build a tiny PEtab problem and report the fitted sigma's fraction_of_data_std."""
     import pandas as pd
-    import petab.v1 as petab
     from petab_mcp.fitting import noise_sigma_report
 
     obs = pd.DataFrame(
@@ -290,7 +339,7 @@ def _sigma_scale_case(transformation, noise_formula, measurements, fitted):
             "noiseParameters": ["sd_o"] * len(measurements),
         }
     )
-    p = petab.Problem(observable_df=obs, measurement_df=meas)
+    p = _upgraded(observable_df=obs, measurement_df=meas)
     rep = noise_sigma_report(p, {"sd_o": fitted})
     return rep["sd_o"]["fraction_of_data_std"]
 
@@ -300,9 +349,14 @@ def test_log10_observable_sigma_is_judged_on_the_log_scale():
     TRANSFORMED data. Judging it against the raw linear std (the pre-#118 bug) made a normal ~20%
     relative error read as ~1e-7 of the data std -> a spurious 'collapsed'."""
     # Values spanning 4 decades: linear std is huge, log10 std is ~1.3.
+    import statistics
+
     meas = [1e2, 1e3, 1e4, 1e5, 1e6]
     frac = _sigma_scale_case("log10", "noiseParameter1_o", meas, fitted=0.1)
-    assert 0.01 < frac < 1.0, frac  # sane, same-scale ratio
+    # Exactly the log10-space sigma over the log10 data's (population) std, whatever scale the two
+    # are carried in. The range check this replaces passed 0.163 too: the ratio with ln(10) on the
+    # noise twice, which every log10 fixture had once libpetab added the factor itself.
+    assert frac == pytest.approx(0.1 / statistics.pstdev([math.log10(m) for m in meas]))
     assert frac > 1e-3  # NOT the ~1e-7 the linear-std bug produced
 
 
@@ -328,7 +382,6 @@ def test_difference_noise_estimate_recovers_a_known_noise_level():
     import numpy as np
     import pandas as pd
 
-    petab = pytest.importorskip("petab.v1")
     from petab_mcp.reconcile import sigma_difference_noise_estimate
 
     rng = np.random.default_rng(0)
@@ -352,9 +405,7 @@ def test_difference_noise_estimate_recovers_a_known_noise_level():
             "noiseParameters": "sd_o",
         }
     )
-    est = sigma_difference_noise_estimate(
-        petab.Problem(observable_df=obs, measurement_df=meas), "sd_o"
-    )
+    est = sigma_difference_noise_estimate(_upgraded(observable_df=obs, measurement_df=meas), "sd_o")
     # Densely sampled smooth mean -> the upward bias is small; allow a generous band.
     assert est is not None and 0.5 * true_sigma < est < 2.5 * true_sigma, est
 
@@ -395,7 +446,6 @@ def test_difference_noise_estimate_is_advisory_only(monkeypatch):
 def _form_case(noise_formula, measurements, transformation="lin", observable_formula="x"):
     import pandas as pd
 
-    petab = pytest.importorskip("petab.v1")
     from petab_mcp import reconcile as R
 
     obs = pd.DataFrame(
@@ -425,7 +475,7 @@ def _form_case(noise_formula, measurements, transformation="lin", observable_for
         },
         index=pd.Index(["sd_o"], name="parameterId"),
     )
-    p = petab.Problem(observable_df=obs, measurement_df=meas, parameter_df=pdf)
+    p = _upgraded(observable_df=obs, measurement_df=meas, parameter_df=pdf)
     return p, R
 
 
@@ -444,7 +494,7 @@ def test_noise_form_read_from_the_expression_not_the_data():
 def test_mixed_noise_form_fails_open():
     """sqrt(additive**2 + (cv*y)**2) has no single scalar summary, so the form (and hence the
     coordinate and the effective sd) must be None rather than an arbitrary pick."""
-    p, R = _form_case("sqrt(noiseParameter1_o**2 + (0.1*x)**2)", [1e-3, 1e-1, 1e1, 1e3])
+    p, R = _form_case("sqrt(noiseParameter1_o^2 + (0.1*x)^2)", [1e-3, 1e-1, 1e1, 1e3])
     assert R.sigma_noise_form(p, "sd_o") is None
     assert R.sigma_noise_coordinate(p, "sd_o") is None
     assert R.sigma_effective_value(p, "sd_o", 0.1) is None
@@ -463,7 +513,6 @@ def test_composite_formula_multiplies_both_factors():
     sd alone, so the effective value must be their product."""
     import pandas as pd
 
-    petab = pytest.importorskip("petab.v1")
     from petab_mcp import reconcile as R
 
     obs = pd.DataFrame(
@@ -493,7 +542,7 @@ def test_composite_formula_multiplies_both_factors():
         },
         index=pd.Index(["scale", "sd_o"], name="parameterId"),
     )
-    p = petab.Problem(observable_df=obs, measurement_df=meas, parameter_df=pdf)
+    p = _upgraded(observable_df=obs, measurement_df=meas, parameter_df=pdf)
     assert R.sigma_effective_value(p, "sd_o", 0.25) == pytest.approx(1.0)  # 4.0 * 0.25
 
 
@@ -509,7 +558,6 @@ def _two_gel_problem(
     noise overrides. The underlying signal is identical, so everything that differs between the two
     observables is the gain — which is exactly what must NOT be read as data spread."""
     import pandas as pd
-    import petab.v1 as petab
 
     obs_rows, meas_rows = [], []
     for i, gain in enumerate(gains, start=1):
@@ -543,7 +591,7 @@ def _two_gel_problem(
             "estimate": [1] * (len(gains) + 1),
         }
     ).set_index("parameterId")
-    return petab.Problem(
+    return _upgraded(
         observable_df=pd.DataFrame(obs_rows).set_index("observableId"),
         measurement_df=pd.DataFrame(meas_rows),
         parameter_df=par,
@@ -661,7 +709,6 @@ def _gain_and_ungained_problem():
     """One sigma shared by a GAINED observable and an ungained one — blasi's shape (a single sigma
     over many observables), where only some carry a gel scale."""
     import pandas as pd
-    import petab.v1 as petab
 
     obs = pd.DataFrame(
         [
@@ -711,7 +758,7 @@ def _gain_and_ungained_problem():
             "estimate": [1, 1],
         }
     ).set_index("parameterId")
-    return petab.Problem(observable_df=obs, measurement_df=pd.DataFrame(rows), parameter_df=par)
+    return _upgraded(observable_df=obs, measurement_df=pd.DataFrame(rows), parameter_df=par)
 
 
 def test_an_ungained_observable_does_not_take_the_gate_dark():
@@ -733,7 +780,6 @@ def test_a_proportional_gain_is_normalised_out_of_both_sides():
     numerator for a proportional formula naming the gain, so an unchanged noise level read as
     `inflated` by exactly the gain."""
     import pandas as pd
-    import petab.v1 as petab
     from petab_mcp import reconcile as R
 
     def build(s1):
@@ -768,7 +814,7 @@ def test_a_proportional_gain_is_normalised_out_of_both_sides():
                 "estimate": [1, 1],
             }
         ).set_index("parameterId")
-        return petab.Problem(observable_df=obs, measurement_df=pd.DataFrame(rows), parameter_df=par)
+        return _upgraded(observable_df=obs, measurement_df=pd.DataFrame(rows), parameter_df=par)
 
     fractions = []
     for s1 in (1.0, 10.0):  # identical underlying data and noise level, different gel gain

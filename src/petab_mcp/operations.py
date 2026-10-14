@@ -24,8 +24,8 @@ import copy
 import re
 from typing import Any, Callable
 
-from petab.v1.C import LOWER_BOUND, UPPER_BOUND
-from petab.v1.models.sbml_model import SbmlModel
+from petab.v2.C import LOWER_BOUND, UPPER_BOUND
+from petab.v2.models.sbml_model import SbmlModel
 
 from . import messages as M
 from . import reconcile as R
@@ -207,7 +207,7 @@ def _observed_symbol_ids(problem) -> set[str]:
     like ``1e5`` never leaks a bogus ``e5`` identifier — matching every other
     formula-symbol site in the package.
     """
-    from petab.v1.C import OBSERVABLE_FORMULA
+    from petab.v2.C import OBSERVABLE_FORMULA
 
     ids: set[str] = set()
     obs_df = getattr(problem, "observable_df", None)
@@ -261,7 +261,7 @@ def _parsimony_warnings(problem, old_species: set[str]) -> list[str]:
     if not unobserved:
         return []
 
-    exempt = R.condition_column_symbols(problem) | R.input_species(sm)
+    exempt = R.condition_target_symbols(problem) | R.input_species(sm)
     observed_species = observed & set(R.species_ids(sm))
     edges = R.species_influence_graph(sm)
     disconnected = sorted(
@@ -553,7 +553,7 @@ def set_model(
     normalized = _normalize_parameter_changes(parameters, arg="parameters") if parameters else []
 
     # Snapshot the currently-estimated parameter ids so we can flag any the re-author drops.
-    from petab.v1.C import ESTIMATE
+    from petab.v2.C import ESTIMATE
 
     prior_estimated: set[str] = set()
     try:
@@ -730,7 +730,15 @@ def _warn_sigma_bound_widening(problem, parameter_id: str, upper_bound: float) -
     # fails open by design, and the alternative — threading a stale previous fit in here — would
     # make the advice depend on which fit last ran.
     cap = R.sigma_upper_bound_cap(problem, parameter_id)
-    if cap is None or float(upper_bound) <= cap:
+    if cap is None:
+        return None
+    # The cap is an sd on the scale the noise is additive on, the bound a value of the parameter,
+    # and the noise formula can tell the two apart: an upgraded log10 observable's sd is
+    # log(10)*sigma. So the cap is put into the parameter's own units through that formula.
+    effective = R.sigma_effective_value(problem, parameter_id, float(upper_bound))
+    if effective is not None:
+        cap *= float(upper_bound) / effective
+    if float(upper_bound) <= cap:
         return None
     # Only warn about an actual WIDENING. Without comparing to the CURRENT bound this fires on a
     # TIGHTENING that merely lands above the cap — e.g. perelson ships [1e-10, 1e10] against a cap
@@ -972,7 +980,9 @@ def _restore_parameter_edit(
     was already fit is not a widening request, and `_reject_repeated_widening` would refuse it.
     """
     from .parameters import update_parameters
-    from petab.v1.C import LOWER_BOUND, NOMINAL_VALUE, PARAMETER_SCALE, UPPER_BOUND
+    from petab.v2.C import LOWER_BOUND, NOMINAL_VALUE, UPPER_BOUND
+
+    from .problem import PARAMETER_SCALE
 
     # BOUNDS, SCALE, AND NOMINAL VALUE — the search space and the point the fit starts from.
     #
@@ -1018,11 +1028,8 @@ def _restore_parameter_edit(
                 if c not in stored_df.columns:
                     continue
                 raw = stored_df.loc[pid, c]
-                # CAST out of pandas. `get_parameter_df` is a read_csv, so `estimate` comes back
-                # as numpy.int64 — and `isinstance(np.int64(1), (int, float))` is False on numpy 2,
-                # so `_coerce_estimate_int` would reject it and roll the whole fork back with a
-                # message blaming the caller's parameters. Skip NaN (an absent optional column)
-                # rather than writing it.
+                # CAST out of pandas: `get_parameter_df` is a read_csv, so each cell is a numpy
+                # scalar. Skip NaN (an absent optional column) rather than writing it.
                 if raw is None or raw != raw:
                     continue
                 upd[c] = str(raw) if c == PARAMETER_SCALE else float(raw)

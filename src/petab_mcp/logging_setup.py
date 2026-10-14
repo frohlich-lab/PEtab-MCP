@@ -4,7 +4,22 @@ Attaches a file handler to the ``petab_mcp`` logger so a human-readable log
 (``<store>/petab_mcp.log``) accompanies the structured provenance/error logs, and routes
 pyPESTO's own optimizer logging to a separate ``<store>/pypesto.log`` so the (verbose) fit
 logs are captured without cluttering the main log or the server's stderr. Idempotent:
-calling either repeatedly for the same directory does not add duplicate handlers.
+calling either repeatedly does not add duplicate handlers.
+
+One process serves many sessions, so each logger group has ONE routing handler that writes a record
+into the store of the session it was logged for. The caller chooses that store: code running on a
+session's behalf (a tool call, the session's construction) runs inside :func:`use_store`, and a
+record logged outside any such scope goes to the store last passed to :func:`configure` /
+:func:`configure_pypesto`, which is all single-session use needs. The store is a
+:class:`~contextvars.ContextVar`, not a global, because sessions log at the same time from different
+threads; FastMCP runs every sync tool call in its own copy of the context
+(``anyio.to_thread.run_sync``), so even a plain :func:`use_store` inside a call is scoped to that
+call. A forked pyPESTO worker (Linux) inherits the handler and the variable from the tool thread
+that forked it; a spawned one (macOS) inherits neither and logs nothing to file.
+
+The open files are a small LRU guarded by the routing handler's own lock, which ``logging``
+re-initialises in a forked child. Do not add a :class:`threading.Lock` here (see
+:class:`_RateLimitFilter`).
 
 It also RATE-LIMITS AMICI's own warnings (:func:`configure_amici`). AMICI logs one warning per
 non-finite value it finds, and the solver re-evaluates a failing right-hand side many times
@@ -13,75 +28,129 @@ before giving the step up, so one badly conditioned start emits the same line re
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
+from collections import OrderedDict
+from contextvars import ContextVar
 from pathlib import Path
 
 _LOGGER_NAME = "petab_mcp"
 _FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
-# The single active file handler installed on each logger group. These loggers are
-# process-global, so we keep ONE handler per group and swap it when the store dir changes
-# (rather than accumulating a handler — and an open fd — per session/directory).
-_petab_handler: logging.FileHandler | None = None
-_optimizer_handler: logging.FileHandler | None = None
+#: Files each routing handler keeps open, across all sessions; past this the least recently written
+#: one is closed, and reopened for appending on its next record. The cap is for pytest, which builds
+#: hundreds of sessions in one process; 64 is more sessions than one server hosts at once.
+_MAX_OPEN = 64
+
+#: The store this context logs to (see :func:`use_store`); ``None`` means the configured default.
+_STORE_ROOT: ContextVar[Path | None] = ContextVar("petab_mcp_store_root", default=None)
 
 
-def _swap_file_handler(
-    current: logging.FileHandler | None,
-    logger_names: tuple[str, ...],
-    log_path: str,
-    level: int,
-    propagate: bool,
-) -> logging.FileHandler:
-    """Install a single file handler at ``log_path`` on ``logger_names``, replacing any
-    previously installed one so repeated calls (with different dirs) don't accumulate
-    handlers or leak file descriptors."""
-    for name in logger_names:
-        logging.getLogger(name).setLevel(level)
-    if current is not None and getattr(current, "baseFilename", None) == log_path:
-        return current  # already installed for this path
+class _StoreRouter(logging.Handler):
+    """Writes each record to ``<store>/<filename>``: the store :data:`_STORE_ROOT` names, else
+    ``default_root``, the store this logger group was last configured for.
 
-    handler = logging.FileHandler(log_path, encoding="utf-8")
-    handler.setFormatter(logging.Formatter(_FORMAT))
-    for name in logger_names:
-        lg = logging.getLogger(name)
-        if current is not None and current in lg.handlers:
-            lg.removeHandler(current)
-        lg.addHandler(handler)
-        lg.propagate = propagate
-    if current is not None:
-        current.close()
-    return handler
+    ``_files`` holds the open :class:`logging.FileHandler` per store, least recently written first,
+    and is touched only under ``self.lock`` (``Handler.handle`` holds it around ``emit``).
+    """
+
+    def __init__(self, filename: str) -> None:
+        super().__init__()
+        self.setFormatter(logging.Formatter(_FORMAT))
+        self.filename = filename
+        self.default_root: Path | None = None
+        self._files: OrderedDict[Path, logging.FileHandler] = OrderedDict()
+
+    def _file(self, root: Path) -> logging.FileHandler:
+        handler = self._files.get(root)
+        if handler is not None:
+            self._files.move_to_end(root)
+            return handler
+        root.mkdir(parents=True, exist_ok=True)
+        handler = logging.FileHandler(root / self.filename, encoding="utf-8")
+        handler.setFormatter(self.formatter)
+        self._files[root] = handler
+        while len(self._files) > _MAX_OPEN:
+            self._files.popitem(last=False)[1].close()
+        return handler
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self._file(_STORE_ROOT.get() or self.default_root).emit(record)  # flushes the record
+        except Exception:  # noqa: BLE001 - a log call must never raise into the code that made it
+            self.handleError(record)
+
+    def install(
+        self, logger_names: tuple[str, ...], store_root: str | Path, level: int, propagate: bool
+    ) -> None:
+        """Make ``store_root`` the default store, creating its file now, and install this handler on
+        ``logger_names`` (``addHandler`` ignores a handler that is already there)."""
+        with self.lock:
+            self.default_root = Path(store_root).resolve()
+            self._file(self.default_root)
+        for name in logger_names:
+            logger = logging.getLogger(name)
+            logger.setLevel(level)
+            logger.addHandler(self)
+            logger.propagate = propagate
+
+
+_PETAB_LOG = _StoreRouter("petab_mcp.log")
+_PYPESTO_LOG = _StoreRouter("pypesto.log")
+
+
+def use_store(store_root: str | Path) -> contextlib.ExitStack:
+    """Route this context's records to the log files under ``store_root``.
+
+    A plain call holds for the rest of the current context (inside a sync tool call: that call);
+    ``with use_store(root):`` puts the previous store back on exit.
+    """
+    scope = contextlib.ExitStack()
+    scope.callback(_STORE_ROOT.reset, _STORE_ROOT.set(Path(store_root).resolve()))
+    return scope
 
 
 def configure(store_root: str | Path, level: int = logging.INFO) -> logging.Logger:
-    """Ensure the ``petab_mcp`` logger writes to ``<store_root>/petab_mcp.log``."""
-    global _petab_handler
-    root = Path(store_root)
-    root.mkdir(parents=True, exist_ok=True)
-    log_path = str((root / "petab_mcp.log").resolve())
-    _petab_handler = _swap_file_handler(_petab_handler, (_LOGGER_NAME,), log_path, level, True)
+    """Make ``<store_root>/petab_mcp.log`` where the ``petab_mcp`` logger writes outside a
+    :func:`use_store` scope.
+
+    petab's warnings (its lint logs through ``petab.v2.lint``, which has no handler of its own) and
+    Python warnings land there too: otherwise both print to the server's stderr, where no session's
+    log has them.
+    """
+    _PETAB_LOG.install((_LOGGER_NAME,), store_root, level, propagate=True)
+    logging.captureWarnings(True)
+    _PETAB_LOG.install(("petab", "py.warnings"), store_root, logging.WARNING, propagate=False)
     return logging.getLogger(_LOGGER_NAME)
 
 
-def configure_pypesto(store_root: str | Path, level: int = logging.DEBUG) -> logging.Logger:
-    """Route the fitting optimizer's logging to ``<store_root>/pypesto.log``.
+def configure_pypesto(store_root: str | Path, level: int = logging.INFO) -> logging.Logger:
+    """Route the fitting optimizer's logging to ``<store_root>/pypesto.log`` (outside a
+    :func:`use_store` scope).
 
     The fit runs pyPESTO with the Fides optimizer; both log through their own loggers
     (``pypesto`` and ``fides``). We attach a dedicated file handler and stop propagation so
     that (verbose) optimizer output lands only in ``pypesto.log`` — not in ``petab_mcp.log``
     or the server's stderr. The separate file is the place for the detailed per-start /
     per-iteration fit log without cluttering anything else.
+
+    Stopping propagation is not enough on its own: importing pyPESTO attaches its own stderr
+    handler to ``pypesto`` (``pypesto/__init__.py`` calls ``pypesto.logging.log()``), which copies
+    every record onto the server's stderr. So pyPESTO is imported here and that handler dropped.
+    Importing pyPESTO imports AMICI, whose logger must be ours first (see :func:`configure_amici`).
+
+    INFO, not DEBUG: pyPESTO's DEBUG logs every objective evaluation (three lines per dataset), and
+    forked workers would write all of it into the fit log the agent reads.
     """
-    global _optimizer_handler
-    root = Path(store_root)
-    root.mkdir(parents=True, exist_ok=True)
-    log_path = str((root / "pypesto.log").resolve())
-    _optimizer_handler = _swap_file_handler(
-        _optimizer_handler, ("pypesto", "fides"), log_path, level, False
-    )
-    return logging.getLogger("pypesto")
+    configure_amici()
+    import pypesto  # noqa: F401 - runs pyPESTO's import-time handler setup now, so it can be undone
+
+    _PYPESTO_LOG.install(("pypesto", "fides"), store_root, level, propagate=False)
+    logger = logging.getLogger("pypesto")
+    for handler in [h for h in logger.handlers if h is not _PYPESTO_LOG]:
+        logger.removeHandler(handler)
+    return logger
 
 
 def pypesto_log_path(store_root: str | Path) -> Path:

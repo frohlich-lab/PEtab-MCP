@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from petab.v1.models.sbml_model import SbmlModel
+from petab.v2.models.sbml_model import SbmlModel
 
 from petab_mcp import reconcile as R
 
@@ -122,7 +122,7 @@ def test_sync_parameter_table_uses_linear_for_nonpositive_nominal(session):
     reconcile must fall back to a linear scale rather than emit an invalid log10 row with a
     non-positive bound (which the lint would then reject).
     """
-    from petab.v1.C import LIN, PARAMETER_SCALE
+    from petab_mcp.problem import LIN, PARAMETER_SCALE
 
     ant = (
         "model zero_rate\n"
@@ -141,20 +141,14 @@ def test_sync_parameter_table_uses_linear_for_nonpositive_nominal(session):
 
 # -- always-on IC estimation; fix only the {0, 1} value conventions (#90) -----------------
 def _bare_problem(antimony):
-    """A bare petab.Problem with an empty parameter table. No observable/measurement tables are
+    """A bare problem with an empty parameter table. No observable/measurement tables are
     needed — the IC estimate decision is purely value-based (estimated by default; fixed at 0/1)."""
     import pandas as pd
-    import petab.v1 as petab
-    from petab.v1.C import (
-        ESTIMATE,
-        LOWER_BOUND,
-        NOMINAL_VALUE,
-        PARAMETER_ID,
-        PARAMETER_SCALE,
-        UPPER_BOUND,
-    )
+    from petab_mcp.problem import WorkingProblem
+    from petab.v2.C import ESTIMATE, LOWER_BOUND, NOMINAL_VALUE, PARAMETER_ID, UPPER_BOUND
+    from petab_mcp.problem import PARAMETER_SCALE
 
-    prob = petab.Problem(model=SbmlModel.from_antimony(antimony))
+    prob = WorkingProblem(model=SbmlModel.from_antimony(antimony))
     prob.parameter_df = pd.DataFrame(
         columns=[PARAMETER_SCALE, LOWER_BOUND, UPPER_BOUND, NOMINAL_VALUE, ESTIMATE]
     ).rename_axis(PARAMETER_ID)
@@ -166,7 +160,8 @@ def test_ic_estimated_by_default_empty_pool_unminted():
     (empty pool) gets NO `<sid>_init` at all — the literal 0 is the author's design, and a minted
     row regenerated into the draft TSV on every commit (the draft-arm A/B measured one lead
     re-delegating the deletion of a minted `IPR_S_init` 17 times)."""
-    from petab.v1.C import ESTIMATE, LOG10, NOMINAL_VALUE, PARAMETER_SCALE
+    from petab.v2.C import ESTIMATE, NOMINAL_VALUE
+    from petab_mcp.problem import LOG10, PARAMETER_SCALE
 
     ant = (
         "model seeded_and_empty\n"
@@ -190,7 +185,8 @@ def test_ic_estimated_by_default_empty_pool_unminted():
 def test_ic_unit_normalization_stays_fixed():
     """An IC declared exactly 1.0 is a unit normalization (a conserved-total convention) and stays
     FIXED — decided by value, so it names no species and leaks nothing (issue #90)."""
-    from petab.v1.C import ESTIMATE, LIN, PARAMETER_SCALE
+    from petab.v2.C import ESTIMATE
+    from petab_mcp.problem import LIN, PARAMETER_SCALE
 
     ant = (
         "model unit_norm\n"
@@ -223,17 +219,9 @@ def test_ic_convention_fixes_a_pre_existing_estimated_row():
     the FIXED convention for such a row.
     """
     import pandas as pd
-    import petab.v1 as petab
-    from petab.v1.C import (
-        ESTIMATE,
-        LIN,
-        LOG10,
-        LOWER_BOUND,
-        NOMINAL_VALUE,
-        PARAMETER_ID,
-        PARAMETER_SCALE,
-        UPPER_BOUND,
-    )
+    from petab_mcp.problem import WorkingProblem
+    from petab.v2.C import ESTIMATE, LOWER_BOUND, NOMINAL_VALUE, PARAMETER_ID, UPPER_BOUND
+    from petab_mcp.problem import LIN, LOG10, PARAMETER_SCALE
 
     ant = (
         "model seed_collision\n"
@@ -245,7 +233,7 @@ def test_ic_convention_fixes_a_pre_existing_estimated_row():
         "  r2: O -> G; k1 * O;\n"
         "end\n"
     )
-    prob = petab.Problem(model=SbmlModel.from_antimony(ant))
+    prob = WorkingProblem(model=SbmlModel.from_antimony(ant))
     # Mint the SBML <sid>_init parameters, then PRE-POPULATE the table with estimated seed rows
     # (nominal 0.1, estimate 1) — exactly the leftover a content-free seed of R/O/G would leave.
     R.ensure_parametric_initial_conditions(prob.model.sbml_model)
@@ -281,16 +269,9 @@ def test_ic_convention_does_not_fix_a_compound_expression_participant():
     seed the author means to ESTIMATE, not a unit-normalisation IC to fix — so it must be left
     estimated even though its value is 1.0 and it is (via the compound expression) an IC param."""
     import pandas as pd
-    import petab.v1 as petab
-    from petab.v1.C import (
-        ESTIMATE,
-        LOG10,
-        LOWER_BOUND,
-        NOMINAL_VALUE,
-        PARAMETER_ID,
-        PARAMETER_SCALE,
-        UPPER_BOUND,
-    )
+    from petab_mcp.problem import WorkingProblem
+    from petab.v2.C import ESTIMATE, LOWER_BOUND, NOMINAL_VALUE, PARAMETER_ID, UPPER_BOUND
+    from petab_mcp.problem import LOG10, PARAMETER_SCALE
 
     ant = (
         "model ic_compound_unit\n"
@@ -302,7 +283,7 @@ def test_ic_convention_does_not_fix_a_compound_expression_participant():
         "  deg2: r2 -> ; koff * r2;\n"
         "end\n"
     )
-    prob = petab.Problem(model=SbmlModel.from_antimony(ant))
+    prob = WorkingProblem(model=SbmlModel.from_antimony(ant))
     R.ensure_parametric_initial_conditions(prob.model.sbml_model)
     rows = {pid: [LOG10, 1e-4, 1e4, val, 1] for pid, val in (("a", 2.0), ("b", 1.0))}
     prob.parameter_df = pd.DataFrame.from_dict(
@@ -317,38 +298,40 @@ def test_ic_convention_does_not_fix_a_compound_expression_participant():
     assert pdf.loc["a", ESTIMATE] == 1
 
 
-def test_condition_column_species_ic_not_parametrised():
-    """A species whose initial value is set PER CONDITION by a condition-table column (a PEtab
+def test_condition_target_species_ic_not_parametrised():
+    """A species whose initial value is set PER CONDITION by a condition target (a PEtab
     species-initial override, e.g. armistead's per-genotype metabolite baselines) is driven by the
     condition table — reconcile must NOT mint an estimated ``<sid>_init`` for it (the per-condition
     override would silently supersede it, inflating k with a non-identifiable parameter)."""
     import pandas as pd
-    import petab.v1 as petab
-    from petab.v1.C import (
+    from petab_mcp.problem import WorkingProblem
+    from petab.v2.C import (
         CONDITION_ID,
         ESTIMATE,
         LOWER_BOUND,
         NOMINAL_VALUE,
         PARAMETER_ID,
-        PARAMETER_SCALE,
+        TARGET_ID,
+        TARGET_VALUE,
         UPPER_BOUND,
     )
+    from petab_mcp.problem import PARAMETER_SCALE
 
     ant = (
         "model condcol_ic\n"
         "  compartment c = 1;\n"
         "  species M in c; species P in c;\n"
-        "  M = 0.988; P = 0.0;\n"  # M's initial is set per condition (a species column)
+        "  M = 0.988; P = 0.0;\n"  # M's initial is set per condition (a species target)
         "  k1 = 0.3;\n"
         "  r1: M -> P; k1 * M;\n"
         "end\n"
     )
-    prob = petab.Problem(model=SbmlModel.from_antimony(ant))
+    prob = WorkingProblem(model=SbmlModel.from_antimony(ant))
     prob.parameter_df = pd.DataFrame(
         columns=[PARAMETER_SCALE, LOWER_BOUND, UPPER_BOUND, NOMINAL_VALUE, ESTIMATE]
     ).rename_axis(PARAMETER_ID)
     prob.condition_df = pd.DataFrame(
-        {"M": [0.988, 0.822]}, index=pd.Index(["wt", "mut"], name=CONDITION_ID)
+        {CONDITION_ID: ["wt", "mut"], TARGET_ID: ["M", "M"], TARGET_VALUE: [0.988, 0.822]}
     )
     R.reconcile(prob)
     pdf = prob.parameter_df
@@ -360,7 +343,7 @@ def test_ic_estimate_is_value_based_not_observation_based():
     """Always-on: a nonzero, non-1 IC is estimated with no observable/measurement tables present —
     the decision is purely value-based (a species observed only at t>0 is no longer a special case;
     a declared guess is simply never frozen)."""
-    from petab.v1.C import ESTIMATE
+    from petab.v2.C import ESTIMATE
 
     ant = (
         "model decay\n"
@@ -378,7 +361,7 @@ def test_ic_estimate_is_value_based_not_observation_based():
     assert pdf.loc["A_init", ESTIMATE] == 0  # A == 1.0 -> unit normalization, fixed
 
 
-# A model driven by a per-condition input parameter ``dose`` that is ALSO a condition-table column,
+# A model driven by a per-condition input parameter ``dose`` that is ALSO a condition-table target,
 # plus a genuine kinetic ``k``. This is how benchmark condition tables carry parametric inputs
 # (EGF doses, insulin steps, rate multipliers).
 _CONDCOL_ANTIMONY = """model m
@@ -392,16 +375,21 @@ end"""
 
 def _condcol_problem():
     import pandas as pd
-    import petab.v1 as petab
+    from petab_mcp.problem import WorkingProblem
 
-    cond = pd.DataFrame({"conditionId": ["c1", "c2"], "dose": [1.0, 5.0]}).set_index("conditionId")
+    cond = pd.DataFrame(
+        {"conditionId": ["c1", "c2"], "targetId": ["dose", "dose"], "targetValue": [1.0, 5.0]}
+    )
+    exps = pd.DataFrame(
+        {"experimentId": ["e1", "e2"], "time": [0.0, 0.0], "conditionId": ["c1", "c2"]}
+    )
     obs = pd.DataFrame(
         {"observableId": ["obs_X"], "observableFormula": ["X"], "noiseFormula": ["1"]}
     ).set_index("observableId")
     meas = pd.DataFrame(
         {
             "observableId": ["obs_X", "obs_X"],
-            "simulationConditionId": ["c1", "c2"],
+            "experimentId": ["e1", "e2"],
             "time": [1.0, 1.0],
             "measurement": [0.3, 1.2],
         }
@@ -413,21 +401,22 @@ def _condcol_problem():
             "lowerBound": [1e-3],
             "upperBound": [1e3],
             "nominalValue": [0.1],
-            "estimate": [1],
+            "estimate": [True],
         }
     ).set_index("parameterId")
-    return petab.Problem(
+    return WorkingProblem(
         model=SbmlModel.from_antimony(_CONDCOL_ANTIMONY),
         condition_df=cond,
+        experiment_df=exps,
         observable_df=obs,
         measurement_df=meas,
         parameter_df=par,
     )
 
 
-def test_condition_column_symbols_are_the_input_columns():
+def test_condition_target_symbols_are_the_condition_targets():
     prob = _condcol_problem()
-    assert R.condition_column_symbols(prob) == {"dose"}  # not conditionId/conditionName
+    assert R.condition_target_symbols(prob) == {"dose"}
 
 
 # -- initial-condition report (issue #57) ---------------------------------------------------
@@ -449,9 +438,9 @@ def test_initial_conditions_report_fixed_by_default(session):
 
 def test_initial_conditions_report_flags_estimated_ic(session):
     """An ESTIMATED IC is reported as not governing t=0 (the fit sets it), not fixed."""
-    from petab.v1.C import ESTIMATE
+    from petab.v2.C import ESTIMATE
 
-    session.problem.parameter_df.loc["A_init", ESTIMATE] = 1
+    session.problem.parameter_df.loc["A_init", ESTIMATE] = True
     a = {r["species"]: r for r in R.initial_conditions_report(session.problem)}["A"]
     assert a["estimated"] is True
     assert a["t0_source"] == "estimated"
@@ -465,30 +454,29 @@ def test_initial_conditions_report_marks_newly_added(session):
     assert rep["B"]["newly_added"] is False
 
 
-def test_initial_conditions_report_condition_column_override():
-    """A species set per-condition by a condition-table column: its Antimony t=0 is overridden."""
+def test_initial_conditions_report_condition_target_override():
+    """A species set per-condition by the condition table: its Antimony t=0 is overridden."""
     prob = _condcol_problem()
     R.ensure_parametric_initial_conditions(prob.model.sbml_model)
-    # Rename the condition column to the species id so the species itself is condition-set.
-    prob.condition_df = prob.condition_df.rename(columns={"dose": "X"})
+    # Retarget the conditions at the species id so the species itself is condition-set.
+    prob.condition_df = prob.condition_df.assign(targetId="X")
     x = {r["species"]: r for r in R.initial_conditions_report(prob)}["X"]
     assert x["set_by_condition"] is True
     assert x["t0_source"] == "condition_table"
     assert x["declared_t0_used"] is False
 
 
-def test_condition_column_parameter_not_synced_into_parameter_table():
-    """A parameter that is a condition-table column is a per-condition PEtab override, so reconcile
-    must NOT write it into the parameter table (PEtab forbids it there) while still syncing a real
-    kinetic — so a benchmark condition table with parametric input columns ships verbatim."""
-    import petab.v1 as petab
-
+def test_condition_target_parameter_not_synced_into_parameter_table():
+    """A parameter a condition targets is a per-condition PEtab change, so reconcile must NOT write
+    it into the parameter table (PEtab forbids it there) while still syncing a real kinetic — so a
+    benchmark condition table with parametric inputs ships verbatim."""
     prob = _condcol_problem()
     diff = R.sync_parameter_table(prob)
-    assert "dose" not in prob.parameter_df.index  # condition-column param stays out of the table
+    assert "dose" not in prob.parameter_df.index  # condition-target param stays out of the table
     assert "dose" not in diff["added"]
     assert "k" in prob.parameter_df.index  # a genuine kinetic is still synced
-    assert not petab.lint_problem(prob)  # petab accepts the verbatim condition column
+    errors = [i for i in prob.to_petab().validate() if i.level >= 30]
+    assert not errors, errors  # petab accepts the verbatim condition table
 
 
 # -- observable-connection gating (issue #64) ------------------------------
@@ -538,7 +526,7 @@ def test_symbolic_noise_formulas_are_memoised_on_the_TABLE_TEXT(session):
     resolving gains (measured per sigma: blasi 35.8 -> 5.8 ms). The cache is keyed on the formulas' TEXT
     and not on the frame's identity, because the agent RE-AUTHORS the observable table mid-session
     and a stale expression would feed a stop gate."""
-    odf = session.problem.observable_df
+    odf = session.problem.observable_df.copy()
     first = R._symbolic_noise_formulas(odf)
     assert R._symbolic_noise_formulas(odf) is first  # same text -> same object, no re-parse
     odf.loc["obs_B", "noiseFormula"] = "sigma_B * B"  # re-authored

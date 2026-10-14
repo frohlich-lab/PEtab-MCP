@@ -5,7 +5,6 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-import libsbml
 import pytest
 
 from petab_mcp import operations as O
@@ -13,8 +12,9 @@ from petab_mcp import parameters as P
 from petab_mcp.operations import OperationError
 from petab_mcp.references import StubReferenceResolver
 from petab_mcp.session import PetabSession
+from conftest import with_empty_sbml
 
-DATA_DIR = Path(__file__).parent / "data" / "toy_v1"
+DATA_DIR = Path(__file__).parent / "data" / "toy_v2"
 
 # A correct reversible conversion model authored from scratch in Antimony.
 REVERSIBLE_ANTIMONY = """model conversion_reaction
@@ -81,28 +81,14 @@ end
 """
 
 
-def _write_empty_sbml(path: Path, model_id: str = "conversion_reaction") -> None:
-    doc = libsbml.SBMLDocument(3, 2)
-    model = doc.createModel()
-    model.setId(model_id)
-    model.setMetaId(model_id)
-    libsbml.writeSBMLToFile(doc, str(path))
-
-
 @pytest.fixture
 def empty_yaml(tmp_path) -> str:
     """A PEtab problem that ships WITHOUT a model (empty SBML, no model.ant)."""
     work = tmp_path / "empty"
     work.mkdir()
-    for name in (
-        "problem.yaml",
-        "conditions.tsv",
-        "measurements.tsv",
-        "observables.tsv",
-        "parameters.tsv",
-    ):
+    for name in ("problem.yaml", "measurements.tsv", "observables.tsv", "parameters.tsv"):
         shutil.copy(DATA_DIR / name, work / name)
-    _write_empty_sbml(work / "conversion_reaction.xml")
+    with_empty_sbml(work / "problem.yaml")
     return str(work / "problem.yaml")
 
 
@@ -281,22 +267,18 @@ def fixed_k1_session(tmp_path) -> PetabSession:
     work.mkdir()
     for name in (
         "problem.yaml",
-        "conditions.tsv",
         "measurements.tsv",
         "observables.tsv",
         "model.ant",
-        "conversion_reaction.xml",
     ):
-        src = DATA_DIR / name
-        if src.exists():
-            shutil.copy(src, work / name)
+        shutil.copy(DATA_DIR / name, work / name)
     (work / "parameters.tsv").write_text(
         "parameterId\tparameterScale\tlowerBound\tupperBound\tnominalValue\testimate\n"
-        "k1\tlog10\t0.0001\t100.0\t0.5\t0\n"  # k1 ships FIXED
-        "k2\tlog10\t0.0001\t100.0\t0.1\t1\n"
-        "sigma_B\tlin\t0.0001\t100.0\t0.1\t0\n"
-        "A_init\tlin\t0.0\t100.0\t1.0\t0\n"
-        "B_init\tlin\t0.0\t100.0\t0.0\t0\n"
+        "k1\tlog10\t0.0001\t100.0\t0.5\tfalse\n"  # k1 ships FIXED
+        "k2\tlog10\t0.0001\t100.0\t0.1\ttrue\n"
+        "sigma_B\tlin\t0.0001\t100.0\t0.1\tfalse\n"
+        "A_init\tlin\t0.0\t100.0\t1.0\tfalse\n"
+        "B_init\tlin\t0.0\t100.0\t0.0\tfalse\n"
     )
     return PetabSession(
         str(work / "problem.yaml"),
@@ -346,7 +328,7 @@ end
 
 
 @pytest.fixture
-def drive_condition_session(tmp_path) -> PetabSession:
+def drive_condition_session(tmp_path, add_condition) -> PetabSession:
     """A toy problem whose condition table sets a per-condition input species `drive`."""
     work = tmp_path / "drive"
     work.mkdir()
@@ -355,10 +337,10 @@ def drive_condition_session(tmp_path) -> PetabSession:
         "measurements.tsv",
         "observables.tsv",
         "parameters.tsv",
-        "conversion_reaction.xml",
+        "model.ant",
     ):
         shutil.copy(DATA_DIR / name, work / name)
-    (work / "conditions.tsv").write_text("conditionId\tdrive\nc0\t1.0\n")
+    add_condition(work / "problem.yaml", "drive", 1.0)
     return PetabSession(
         str(work / "problem.yaml"),
         provenance_dir=str(tmp_path / "prov"),
@@ -412,9 +394,9 @@ def zero_shot_empty_ic_session(tmp_path) -> PetabSession:
 
     work = tmp_path / "empty_ic"
     work.mkdir()
-    for name in ("problem.yaml", "conditions.tsv", "observables.tsv", "measurements.tsv"):
+    for name in ("problem.yaml", "observables.tsv", "measurements.tsv"):
         shutil.copy(DATA_DIR / name, work / name)
-    _write_empty_sbml(work / "conversion_reaction.xml")
+    with_empty_sbml(work / "problem.yaml")
     # Parameter table WITHOUT ICs (reconcile creates them) — matches a zero-shot's empty table;
     # sigma_B stays because the observable's noiseFormula references it (a fixed noise param).
     pdf = pd.read_csv(DATA_DIR / "parameters.tsv", sep="\t")
@@ -429,7 +411,8 @@ def zero_shot_empty_ic_session(tmp_path) -> PetabSession:
 
 
 def test_set_model_estimates_created_ic_and_fixes_unit_normalization(zero_shot_empty_ic_session):
-    from petab.v1.C import ESTIMATE, LOG10, PARAMETER_SCALE
+    from petab.v2.C import ESTIMATE
+    from petab_mcp.problem import LOG10, PARAMETER_SCALE
 
     sess = zero_shot_empty_ic_session
     res = O.set_model(

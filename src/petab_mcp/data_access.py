@@ -4,9 +4,10 @@ Instead of a fixed menu of handcoded residual-statistics tools, the server expos
 underlying data as SQL tables the agent can query directly. Everything the model-building
 loop produces is queryable in one place:
 
-* the fixed experimental design — ``measurements``, ``conditions``, ``observables``;
-* the ``parameters`` table (bounds, scale, fitted ``nominalValue``, ``estimate``, priors,
-  plus each parameter's ``role`` and ``status``);
+* the fixed experimental design — ``measurements``, ``conditions``, ``experiments``,
+  ``observables``;
+* the ``parameters`` table (bounds, scale, fitted ``nominalValue``, ``estimate``, plus each
+  parameter's ``role`` and ``status``);
 * the ``simulations`` dataframe from the last commit — one row per measurement point,
   carrying the ``simulation`` value and the **residuals** (``residual``,
   ``residual_weighted`` — the chi2 term — and the evaluated ``noise``) next to the
@@ -17,7 +18,7 @@ loop produces is queryable in one place:
 * the last fit's pyPESTO multistart — ``optimization_starts`` (one row per start) and
   ``optimization_trace`` (one row per start/iteration, the objective over the run).
 
-Residual statistics, worst-fit points, per-observable / per-condition / per-timepoint
+Residual statistics, worst-fit points, per-observable / per-experiment / per-timepoint
 breakdowns, and bias or time-trend diagnostics are all just SQL over these tables now: the
 agent writes the query it needs rather than picking from a fixed set of aggregations.
 
@@ -37,9 +38,10 @@ import re
 from collections import Counter
 from typing import Any
 
-from petab.v1.C import (
+from petab.v2.C import (
     CONDITION_ID,
     ESTIMATE,
+    EXPERIMENT_ID,
     LOWER_BOUND,
     MEASUREMENT,
     NOISE_FORMULA,
@@ -47,14 +49,15 @@ from petab.v1.C import (
     OBSERVABLE_FORMULA,
     OBSERVABLE_ID,
     PARAMETER_ID,
-    PARAMETER_SCALE,
-    SIMULATION_CONDITION_ID,
+    TARGET_ID,
+    TARGET_VALUE,
     TIME,
     UPPER_BOUND,
 )
 
 from .errors import MissingDependencyError, ValidationError
 from .formatting import _clean
+from .problem import PARAMETER_SCALE
 
 # Canonical (minimal) column schema for each FIXED PEtab table. Used only as a FALLBACK when
 # the live table is absent (an optional table petab loaded as ``None``) or empty with no
@@ -64,8 +67,9 @@ from .formatting import _clean
 # every table is copied in BEFORE the query runs, one such frame made EVERY ``query_data`` call
 # fail — even ``SELECT 1``. Giving the empty table its real column names keeps it queryable
 # (it just returns no rows) and keeps the whole query surface working.
-MEASUREMENT_COLUMNS = [OBSERVABLE_ID, SIMULATION_CONDITION_ID, TIME, MEASUREMENT]
-CONDITION_COLUMNS = [CONDITION_ID]
+MEASUREMENT_COLUMNS = [OBSERVABLE_ID, EXPERIMENT_ID, TIME, MEASUREMENT]
+CONDITION_COLUMNS = [CONDITION_ID, TARGET_ID, TARGET_VALUE]
+EXPERIMENT_COLUMNS = [EXPERIMENT_ID, TIME, CONDITION_ID]
 OBSERVABLE_COLUMNS = [OBSERVABLE_ID, OBSERVABLE_FORMULA, NOISE_FORMULA]
 PARAMETER_COLUMNS = [
     PARAMETER_ID,
@@ -81,7 +85,7 @@ PARAMETER_COLUMNS = [
 # cold start, before any commit has produced records — the table is simply empty then.
 SIMULATION_COLUMNS = [
     "observable_id",
-    "condition_id",
+    "experiment_id",
     "time",
     "measurement",
     "simulation",
@@ -120,11 +124,21 @@ OPTIMIZATION_TRACE_COLUMNS = ["start", "iteration", "fval", "time"]
 
 # The queryable tables and a one-line description of each (surfaced by ``list_data_tables``).
 TABLE_DESCRIPTIONS: dict[str, str] = {
-    "measurements": "Fixed measurement data — one row per measured point.",
-    "conditions": "Fixed experimental conditions and the model changes they apply.",
-    "observables": "Fixed observable definitions (formula, noise model, transformation).",
+    "measurements": (
+        "Fixed measurement data — one row per measured point, keyed by the experiment it was "
+        "measured in (experimentId '' = the model simulated as is)."
+    ),
+    "conditions": (
+        "Fixed experimental conditions — one row per change a condition makes: conditionId, "
+        "targetId, targetValue."
+    ),
+    "experiments": (
+        "Fixed experiments — one row per (experiment, period start time, condition applied "
+        "then); time -inf is pre-equilibration."
+    ),
+    "observables": "Fixed observable definitions (formula, noise formula, noise distribution).",
     "parameters": (
-        "Parameter table: bounds, scale, nominalValue (fit-only), estimate, priors, plus "
+        "Parameter table: bounds, scale, nominalValue (fit-only), estimate, plus "
         "role (kinetic/noise_sigma/observable_scaling/initial_condition/exponent/constant) "
         "and status (estimated/fixed)."
     ),
@@ -164,7 +178,7 @@ def _duckdb():
 def _promote_index(df):
     """Return a copy of ``df`` with a *named* index promoted to a regular column.
 
-    petab's observable/condition/parameter tables are indexed by their primary-key id
+    The observable and parameter tables are indexed by their primary-key id
     (``observableId`` etc.); promoting it makes that id queryable as a column. An unnamed
     positional index (e.g. the measurement table's RangeIndex) carries no meaning and is
     left out.
@@ -209,6 +223,7 @@ def _frames(session) -> dict[str, Any]:
     frames: dict[str, Any] = {
         "measurements": _with_schema(_promote_index(problem.measurement_df), MEASUREMENT_COLUMNS),
         "conditions": _with_schema(_promote_index(problem.condition_df), CONDITION_COLUMNS),
+        "experiments": _with_schema(_promote_index(problem.experiment_df), EXPERIMENT_COLUMNS),
         "observables": _with_schema(_promote_index(problem.observable_df), OBSERVABLE_COLUMNS),
         "parameters": _with_schema(pd.DataFrame(parameters_to_records(problem)), PARAMETER_COLUMNS),
     }
@@ -419,7 +434,7 @@ def table_schema(session) -> dict[str, Any]:
 def run_query(session, sql: str, max_rows: int = 1000, offset: int = 0) -> dict[str, Any]:
     """Run ``sql`` over the PEtab tables + simulation dataframe and return the rows.
 
-    Copies the queryable tables (``measurements``, ``conditions``, ``observables``,
+    Copies the queryable tables (``measurements``, ``conditions``, ``experiments``, ``observables``,
     ``parameters``, ``simulations``, ``optimization_starts``, ``optimization_trace`` — plus
     ``simulations_history``, materialized only when the query names it) into a
     fresh in-memory DuckDB database, executes ``sql``, and returns
@@ -585,7 +600,7 @@ def fit_diagnosis(session, worst_n: int = 8, max_observables: int | None = 12) -
     worst_points = [
         {
             "observable_id": _clean(r["observable_id"]),
-            "condition_id": _clean(r["condition_id"]),
+            "experiment_id": _clean(r["experiment_id"]),
             "time": _clean(r["time"]),
             "measurement": round(float(r["measurement"]), 4),
             "simulation": round(float(r["simulation"]), 4),
@@ -957,7 +972,7 @@ def _replicate_lof(session, sims=None) -> dict[str, Any]:
         frame = sims.rename(
             columns={
                 "observable_id": OBSERVABLE_ID,
-                "condition_id": SIMULATION_CONDITION_ID,
+                "experiment_id": EXPERIMENT_ID,
                 "time": TIME,
             }
         )
@@ -1026,7 +1041,7 @@ def _labelled_points(
 ) -> list[dict[str, Any]]:
     """Give each replicated design point a short unique label for the agent-facing payload: the bare
     observable id where that observable has only one replicated point (blasi's 15 steady-state
-    points), qualified by condition and time otherwise.
+    points), qualified by experiment (where it has one) and time otherwise.
 
     ``per_observable`` is the point count per observable across EVERY noise family, so a label is
     unique in the merged verdict and not merely within its own family (:func:`_replicate_lof` builds
@@ -1039,12 +1054,9 @@ def _labelled_points(
     out = []
     for p in points:
         obs = p.get("observable_id")
-        label = (
-            str(obs)
-            if per_observable[obs] == 1
-            else f"{obs}[{_clean(p.get('condition_id'))}, t={_clean(p.get('time'))}]"
-        )
-        out.append({**p, "label": label})
+        exp = _clean(p.get("experiment_id"))
+        where = f"{exp}, t={_clean(p.get('time'))}" if exp else f"t={_clean(p.get('time'))}"
+        out.append({**p, "label": str(obs) if per_observable[obs] == 1 else f"{obs}[{where}]"})
     return out
 
 
@@ -1292,32 +1304,32 @@ def _residual_structure(group) -> dict[str, Any]:
     """Sign-test + runs-test summary for one observable's residuals (see
     :mod:`petab_mcp.residual_tests`).
 
-    BOTH tests are per (condition) SERIES, then Fisher-combined across conditions into one
-    p-value each. The runs test must be per-series (a runs test across conditions would invent
+    BOTH tests are per (experiment) SERIES, then Fisher-combined across experiments into one
+    p-value each. The runs test must be per-series (a runs test across experiments would invent
     spurious runs at the boundaries); the SIGN test is per-series too, so that opposite biases
-    in different conditions — an over-shoot in one, an under-shoot in another — do not cancel
+    in different experiments — an over-shoot in one, an under-shoot in another — do not cancel
     into a spuriously balanced pooled count and hide a real systematic bias. Replicate points
-    sharing a (condition, time) are AVERAGED to one residual first: replicates are not an
+    sharing an (experiment, time) are AVERAGED to one residual first: replicates are not an
     independent draw of the residual's sign, and leaving them in would let a high-replicate
     timepoint dominate.
 
     ``group`` is the observable's rows from :func:`fit_diagnosis`, already restricted to points
     with a weighted residual; the raw ``residual`` (same sign, sigma being positive) is the sign
-    source. Conditions are iterated once, collecting both per-series p-values and the usable
+    source. Experiments are iterated once, collecting both per-series p-values and the usable
     (non-zero) point count that gauges power.
     """
     from . import residual_tests as rt
 
     g = group.copy()
     g["_r"] = g["residual"].astype(float)
-    # Average replicates to one residual per (condition, time), then order by time per series.
-    collapsed = g.groupby(["condition_id", "time"], dropna=False)["_r"].mean().reset_index()
+    # Average replicates to one residual per (experiment, time), then order by time per series.
+    collapsed = g.groupby(["experiment_id", "time"], dropna=False)["_r"].mean().reset_index()
 
     sign_ps: list[float] = []
     runs_ps: list[float] = []
     n_pos = n_neg = 0
     usable = 0  # total non-zero, finite points across series — the real power denominator
-    for _cond, s in collapsed.groupby("condition_id", dropna=False):
+    for _exp, s in collapsed.groupby("experiment_id", dropna=False):
         vals = s.sort_values("time")["_r"].tolist()
         st = rt.sign_test(vals)
         n_pos += st["n_pos"]

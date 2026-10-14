@@ -24,13 +24,15 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from petab.v1.C import (
-    LIN,
-    LOG,
-    LOG10,
+from petab.v2.C import (
+    EXPERIMENT_ID,
     LOWER_BOUND,
+    NOISE_DISTRIBUTION,
+    NOISE_PARAMETERS,
     NOMINAL_VALUE,
-    PARAMETER_SCALE,
+    NORMAL,
+    OBSERVABLE_ID,
+    OBSERVABLE_PARAMETERS,
     UPPER_BOUND,
 )
 
@@ -43,9 +45,20 @@ from .constants import (
     NOISE_SIGMA_COLLAPSE_FRACTION,
     PARAMETER_AT_BOUND_RELATIVE_TOL,
 )
-from .errors import ModelUpdateError
+from .engine import build_lock
+from .errors import ModelBuildBusyError, ModelUpdateError
 from .formatting import finite_float as _flt
 from .parameters import structure_fingerprint
+from .problem import (
+    LOG,
+    LOG10,
+    PARAMETER_SCALE,
+    V1_PREEQUILIBRATION_CONDITION_ID,
+    V1_SIMULATION_CONDITION_ID,
+    scale,
+    split_overrides,
+    unscale,
+)
 
 # pyPESTO's parameter-table column that tags an inner (hierarchical) parameter.
 _PARAMETER_TYPE_COL = "parameterType"
@@ -213,8 +226,6 @@ def _fitted_values(x_names, x_values, free_indices, parameter_df) -> dict[str, f
     Recording the fixed ones too would overcount ``k`` and corrupt every complexity-penalised
     score. ``free_indices`` of ``None`` falls back to every index (an all-free problem).
     """
-    from petab.v1.parameters import unscale
-
     idx = list(free_indices) if free_indices is not None else list(range(len(x_names)))
     fitted: dict[str, float] = {}
     for i in idx:
@@ -226,24 +237,62 @@ def _fitted_values(x_names, x_values, free_indices, parameter_df) -> dict[str, f
     return fitted
 
 
+def pypesto_problem(problem, importer_kwargs: dict[str, Any], *, validate: bool = True):
+    """The pyPESTO problem for ``problem`` (a :class:`problem.WorkingProblem`), in estimation
+    coordinates: pyPESTO's v2 importer takes each row's ``parameterScale`` as its
+    ``parameter_scales`` and hands them to AMICI's simulator, so every pyPESTO problem the server
+    builds — the fit's, a held-out score's, a transfer refit's — is optimised on the same
+    coordinates. Inner (hierarchically solved) parameters are left out: they are solved on a linear
+    scale, and the importer refuses another one for them.
+
+    ``validate`` runs libpetab's lint on the way in: the session's own problem was linted on every
+    edit that produced it, a held-out view was not. Passes ``hierarchical`` and the output target
+    through ``importer_kwargs``.
+
+    The one place a module is compiled — ``create_problem`` builds into a target folder that is not
+    there yet — so it runs under :func:`engine.build_lock`.
+    """
+    import pypesto.petab
+    from petab import v2
+
+    pdf = problem.parameter_df
+    scales = pdf[PARAMETER_SCALE]
+    if importer_kwargs.get("hierarchical") and _PARAMETER_TYPE_COL in pdf.columns:
+        scales = scales[pdf[_PARAMETER_TYPE_COL].isna()]
+    petab_problem = problem.to_petab()
+    # AMICI simulates every experiment in the table, and one without measurements comes back as an
+    # rdata with no outputs, which every reader of the rdatas takes for a failed simulation. It adds
+    # nothing to the likelihood, so AMICI is not shown it: a fixed-θ held-out view keeps all the
+    # training experiments, and a v2 problem may ship unmeasured ones.
+    measured = set(problem.measurement_df[EXPERIMENT_ID])
+    petab_problem.experiment_tables = [
+        v2.ExperimentTable([e for e in petab_problem.experiments if e.id in measured])
+    ]
+    importer = pypesto.petab.PetabImporter(
+        petab_problem, validate_petab=validate, parameter_scales=dict(scales), **importer_kwargs
+    )
+    with build_lock(importer_kwargs["output_folder"], importer_kwargs["model_name"]):
+        return importer.create_problem()
+
+
 def _build_hierarchical_problem(session, importer_kwargs: dict[str, Any], petab_problem=None):
     """Best-effort hierarchical pyPESTO problem for ``session``'s current problem.
 
-    Returns ``(pypesto_problem, inner_scales)`` where ``inner_scales`` maps each inner
-    parameter id to the estimation scale it was tagged on (so the fit can un-scale the
-    analytically-solved value back to linear), or ``(None, {})`` when the problem has no
-    cleanly-separable inner parameters (see :func:`reconcile.classify_inner_parameters`) or
-    pyPESTO rejects the hierarchical setup.
+    Returns ``(pypesto_problem, inner)`` where ``inner`` maps each inner parameter id to its
+    pyPESTO type (see :func:`reconcile.classify_inner_parameters`), or ``(None, {})`` when the
+    problem has no cleanly-separable inner parameters, has an observable whose noise is not normal,
+    or pyPESTO rejects the hierarchical setup.
 
     The whole win is optimization efficiency/robustness: the inner parameters (noise sigmas,
     observable-scaling factors) are solved analytically per objective evaluation instead of by
     the outer multistart, shrinking the outer search (e.g. a benchmark's 13 estimated params →
     5 outer). It does NOT change what the parameters converge to — a sigma's analytic optimum is
-    the same RMS the joint optimizer finds — so the fit's nllh/identity is unchanged.
+    the same RMS the joint optimizer finds — so the fit's nllh/identity is unchanged. pyPESTO
+    solves inner parameters in linear space whatever their ``parameterScale``.
 
     Tagging is applied to a COPY of the parameter table handed to pyPESTO; the session's own
     table is left untouched (the agent keeps seeing ordinary parameters, ``n_estimated``/``k``
-    stays correct because inner parameters are still ``estimate=1`` there, and the fit-cache key
+    stays correct because inner parameters are still estimated there, and the fit-cache key
     is unaffected). On ANY failure this returns ``(None, {})`` so the caller falls back to the
     ordinary joint fit — hierarchical never risks a fit that would otherwise succeed.
     """
@@ -253,29 +302,32 @@ def _build_hierarchical_problem(session, importer_kwargs: dict[str, Any], petab_
     inner = _reconcile.classify_inner_parameters(session.problem)
     if not inner:
         return None, {}
+    # pyPESTO refuses a non-normal noise distribution only on an observable that HAS inner
+    # parameters, and scores every other observable as normal on the linear scale whatever its
+    # distribution (`calculate_quantitative_result`): a log-normal observable beside an
+    # inner-solved sigma comes out with a wrong likelihood, silently (5.8 nll on a two-observable
+    # toy). Such a problem is fitted jointly.
+    if (session.problem.observable_df[NOISE_DISTRIBUTION] != NORMAL).any():
+        return None, {}
     try:
-        import copy
-
-        import pypesto.petab
         from pypesto.hierarchical.petab import correct_parameter_df_bounds
 
         df = session.problem.parameter_df.copy(deep=True)
         df[_PARAMETER_TYPE_COL] = None
-        inner_scales: dict[str, str] = {}
         for pid, typ in inner.items():
             df.loc[pid, _PARAMETER_TYPE_COL] = typ
-            # pyPESTO requires sigma inner parameters on a LINEAR scale (its validator rejects
-            # log/log10 for sigma). Scaling/offset keep their scale.
-            if typ == _reconcile.INNER_TYPE_SIGMA:
-                df.loc[pid, PARAMETER_SCALE] = LIN
-            inner_scales[pid] = str(df.loc[pid, PARAMETER_SCALE])
-        # Sigma → [0, inf], scaling/offset → [-inf, inf]; required by the inner solver.
+        # A sigma's inner solve needs [0, inf]; scaling/offset keep their box.
         df = correct_parameter_df_bounds(df)
 
-        hier_problem = copy.copy(base)  # shallow: shares model/measurement/etc.
-        hier_problem.parameter_df = df
-        importer = pypesto.petab.PetabImporter(hier_problem, hierarchical=True, **importer_kwargs)
-        return importer.create_problem(), inner_scales
+        view = copy.copy(base)  # shallow: shares the model and the design tables
+        view.parameter_df = df
+        return (
+            pypesto_problem(view, {**importer_kwargs, "hierarchical": True}, validate=False),
+            inner,
+        )
+    except ModelBuildBusyError:
+        # Not a hierarchical failure: falling back would fit jointly once the other build lands.
+        raise
     except Exception:  # noqa: BLE001 - hierarchical is best-effort; fall back to a joint fit
         session.logger.warning(
             "hierarchical optimization setup failed (%s inner params: %s); "
@@ -287,29 +339,23 @@ def _build_hierarchical_problem(session, importer_kwargs: dict[str, Any], petab_
         return None, {}
 
 
-def _inner_fitted_values(pypesto_problem, best, inner_scales: dict[str, str]) -> dict[str, float]:
+def _inner_fitted_values(pypesto_problem, best) -> dict[str, float]:
     """Analytically-solved inner-parameter values from a hierarchical fit result, as
     ``{parameter_id: linear value}`` — merged into ``fitted`` alongside the outer parameters so
     the parameter count ``k`` and the value writeback both cover every estimated parameter.
 
     pyPESTO returns ``best["inner_parameters"]`` positionally; the calculator's
-    ``get_interpretable_inner_par_ids()`` gives the matching id order, and each value is on the
-    parameter's own estimation scale (so it un-scales to linear exactly like an outer one).
+    ``get_interpretable_inner_par_ids()`` gives the matching id order, and each value is linear.
     Returns ``{}`` if the result carries no inner parameters or the ids can't be recovered.
     """
     values = best.get("inner_parameters")
     if values is None:
         return {}
     try:
-        from petab.v1.parameters import unscale
-
-        calc = pypesto_problem.objective.calculator
-        ids = calc.get_interpretable_inner_par_ids()
+        ids = pypesto_problem.objective.calculator.get_interpretable_inner_par_ids()
         if len(ids) != len(values):
             return {}
-        return {
-            pid: float(unscale(float(v), inner_scales.get(pid, LIN))) for pid, v in zip(ids, values)
-        }
+        return {pid: float(v) for pid, v in zip(ids, values)}
     except Exception:  # noqa: BLE001 - inner-value recovery is best-effort reporting
         return {}
 
@@ -427,91 +473,102 @@ def _optimization_payload(result) -> dict[str, Any]:
 
 def needs_flattening(problem) -> bool:
     """Whether AMICI needs a FLATTENED copy of ``problem`` — i.e. whether any observable/noise
-    parameter override differs WITHIN one (observable, simulation condition) pair.
+    parameter override differs WITHIN one (observable, experiment) pair.
 
-    That is the actual AMICI limitation: per-condition overrides are handled natively by its
-    parameter mapping (one mapping per condition), so only TIMEPOINT-specific overrides — two
-    rows of the same observable in the same condition carrying different overrides — force
-    petab's ``flatten_timepoint_specific_output_overrides``. Grouping by observable alone would
-    flatten bachmann (20 observables -> 101), isensee (3 -> 123) and schwen (4 -> 22) for
-    overrides AMICI takes as shipped; measured across the collection, only fiedler genuinely
-    trips this predicate.
+    That is the actual AMICI limitation (its v2 importer refuses such a problem outright):
+    per-experiment overrides are handled natively, so only TIMEPOINT-specific overrides — two
+    rows of the same observable in the same experiment carrying different overrides — force
+    ``flatten_timepoint_specific_output_overrides``. Grouping by observable alone would flatten
+    bachmann (20 observables -> 101), isensee (3 -> 123) and schwen (4 -> 22) for overrides AMICI
+    takes as shipped; measured across the collection, only fiedler genuinely trips this
+    predicate.
 
     Flattening is an AMICI implementation detail, so it happens HERE, on a copy, at the compile
     boundary (:func:`amici_facing_problem`) — the problem the session holds, the agent reads and
     the diagnostics consume stays unflattened.
     """
-    from petab.v1.C import (
-        NOISE_PARAMETERS,
-        OBSERVABLE_ID,
-        OBSERVABLE_PARAMETERS,
-        SIMULATION_CONDITION_ID,
-    )
-
     mdf = getattr(problem, "measurement_df", None)
     if mdf is None:
         return False
-    keys = [OBSERVABLE_ID, SIMULATION_CONDITION_ID]
-    from petab.v1.C import PREEQUILIBRATION_CONDITION_ID
-
-    if PREEQUILIBRATION_CONDITION_ID in mdf.columns:
-        keys.append(PREEQUILIBRATION_CONDITION_ID)
+    keys = [OBSERVABLE_ID, EXPERIMENT_ID]
+    if V1_SIMULATION_CONDITION_ID in mdf.columns:
+        # A v1 table — the harness checks published problems before anything upgrades them —
+        # simulates once per (simulation, pre-equilibration) condition pair.
+        keys = [
+            OBSERVABLE_ID,
+            *(
+                c
+                for c in (V1_SIMULATION_CONDITION_ID, V1_PREEQUILIBRATION_CONDITION_ID)
+                if c in mdf.columns
+            ),
+        ]
     # Whether a NUMERIC override counts differs by column, and the difference is AMICI's
     # internals, not a style choice:
     #
-    # * noiseParameters: a numeric sigma never enters the parameter mapping at all -- AMICI
-    #   writes it straight into the ExpData as that datapoint's standard deviation, so
-    #   per-timepoint numbers are already exact. MEASURED, not assumed: on upstream crauste (4
-    #   groups with 4 distinct numeric sigmas each) the nominal llh is -190.96512533983716
-    #   unflattened and -190.96512533983716 flattened -- bit-identical. Bruno, Chen, Fujita and
-    #   Salazar-Cavazos are the collection's other numeric-sigma problems and would all have been
-    #   flattened for nothing, which is not free: it multiplies the observable count, and the
-    #   same predicate now gates `_merge_equivalent_observables`.
-    # * observableParameters: these DO become mapped parameters, one value per condition, so a
-    #   number that varies between timepoints of one condition has nowhere to live. No benchmark
+    # * noiseParameters: a single numeric sigma never enters the parameter mapping at all --
+    #   AMICI writes it straight into the ExpData as that datapoint's standard deviation, so
+    #   per-timepoint numbers are already exact, and AMICI's own check lets a group of them
+    #   through. MEASURED under v1, not assumed: on upstream crauste (4 groups with 4 distinct
+    #   numeric sigmas each) the nominal llh was bit-identical flattened and unflattened. Bruno,
+    #   Chen, Fujita and Salazar-Cavazos are the collection's other numeric-sigma problems and
+    #   would all be flattened for nothing, which is not free: it multiplies the observable count.
+    #   Only a group whose overrides are ALL single numbers is exempt; one symbolic override
+    #   among them is a mapping AMICI refuses to vary.
+    # * observableParameters: these DO become mapped parameters, one value per experiment, so a
+    #   number that varies between timepoints of one experiment has nowhere to live. No benchmark
     #   in the collection does this today, so it is untested rather than measured -- which is
     #   exactly why it errs toward flattening: an unnecessary flatten costs observables, a missed
-    #   one silently simulates the wrong scaling.
+    #   one cannot be imported at all.
     for col in (OBSERVABLE_PARAMETERS, NOISE_PARAMETERS):
         if col not in mdf.columns:
             continue
         sub = mdf[[*keys, col]].dropna(subset=[col])
-        if col == NOISE_PARAMETERS:
-            sub = sub[sub[col].apply(lambda v: isinstance(v, str))]
-        sub = sub.assign(**{col: sub[col].astype(str)})
-        if not sub.empty and (sub.groupby(keys, dropna=False)[col].nunique() > 1).any():
+        cells = sub[col].astype(str)
+        for _, group in cells.groupby([sub[k] for k in keys], sort=False, dropna=False):
+            distinct = set(group)
+            if len(distinct) < 2:
+                continue
+            if col == NOISE_PARAMETERS and all(_single_number(c) for c in distinct):
+                continue
             return True
     return False
 
 
+def _single_number(cell) -> bool:
+    overrides = split_overrides(cell)
+    return len(overrides) == 1 and isinstance(overrides[0], float)
+
+
 def amici_facing_problem(session):
-    """The petab problem AMICI is allowed to see: ``session.problem`` itself, or — only when
-    :func:`needs_flattening` says AMICI cannot take it as-is — a flattened DEEP COPY.
+    """The problem AMICI is allowed to see: ``session.problem`` itself, or — only when
+    :func:`needs_flattening` says AMICI cannot take it as-is — a view with flattened observable
+    and measurement tables.
 
     Cached on the session under ``problem_hash`` (flattening a large problem re-derives every
-    table). ``petab.flatten_timepoint_specific_output_overrides`` mutates in place, which is why
-    the copy: the session's problem is the single source the agent-facing reads, the reconcile
-    and the residual machinery all consume, and none of them may ever see flattened observable
-    ids. Simulation frames coming BACK from a flattened build are mapped to the original ids by
-    ``petab.unflatten_simulation_df`` -- but only AFTER the simulation frame has been paired
-    with the measurements IN THIS VOCABULARY. Unflattening first and merging against the natural
-    measurements mispairs every override-carrying row (see ``AmiciEngine._simulation_records``,
-    which measures it).
+    table). AMICI's ``flatten_timepoint_specific_output_overrides`` mutates the problem it is
+    given, which is why it runs on a deep copy: the session's problem is the single source the
+    agent-facing reads, the reconcile and the residual machinery all consume, and none of them
+    may ever see flattened observable ids. Simulation frames coming BACK from a flattened build
+    are mapped to the original ids by ``unflatten_simulation_df`` -- but only AFTER the
+    simulation frame has been paired with the measurements IN THIS VOCABULARY. Unflattening
+    first and merging against the natural measurements mispairs every override-carrying row
+    (see ``AmiciEngine._simulation_records``, which measures it).
 
     Returns ``(problem, flattened)``.
     """
-    import copy as _copy
-
-    import petab.v1 as petab
-
     if not needs_flattening(session.problem):
         return session.problem, False
     key = session.problem_hash()
     cached = getattr(session, "_amici_problem_cache", None)
     if cached is not None and cached[0] == key:
         return cached[1], True
-    flat = _copy.deepcopy(session.problem)
-    petab.flatten_timepoint_specific_output_overrides(flat)
+    from amici.importers.petab import flatten_timepoint_specific_output_overrides
+
+    flat_petab = copy.deepcopy(session.problem.to_petab())
+    flatten_timepoint_specific_output_overrides(flat_petab)
+    flat = session.problem.replace(
+        observable_df=flat_petab.observable_df, measurement_df=flat_petab.measurement_df
+    )
     session._amici_problem_cache = (key, flat)
     session.logger.info(
         "flattening timepoint-specific output overrides for the AMICI build only "
@@ -541,19 +598,18 @@ def estimation_problem(session, engine):
     Cached on ``engine`` under :meth:`session.problem_hash` — the model AND the parameter table,
     since pyPESTO bakes bounds/scales/fixed values into the problem at construction, so a
     bounds edit (or the nominal-value write-back after a fit) must rebuild it. Rebuilding is
-    cheap relative to a compile: the AMICI module is keyed on the SBML hash alone and is reused.
+    cheap relative to a compile: the AMICI module is keyed on :meth:`session.module_hash`, which
+    a bounds or value edit does not move, and is reused.
 
-    Returns ``(problem, inner_scales)`` — see :func:`_build_hierarchical_problem` for the
-    latter (``{}`` for an ordinary joint problem).
+    Returns ``(problem, inner)`` — see :func:`_build_hierarchical_problem` for the latter
+    (``{}`` for an ordinary joint problem).
     """
-    import pypesto.petab
-
     key = session.problem_hash()
     cached = getattr(engine, "_estimation_problem_cache", None)
     if cached is not None and cached[0] == key:
         return cached[1], cached[2]
 
-    h = session.sbml_hash()
+    h = session.module_hash()
     # Charge the (one-time) model build to the compile bucket only the FIRST time a structure
     # is seen: rebuilding the pyPESTO problem for a changed parameter table reuses the compiled
     # module and must not count as a compile.
@@ -564,13 +620,13 @@ def estimation_problem(session, engine):
     # factors, shrinking the outer search) when the problem has cleanly-separable inner
     # parameters; fall back to the ordinary joint objective otherwise.
     amici_problem, _ = amici_facing_problem(session)
-    problem, inner_scales = _build_hierarchical_problem(
+    problem, inner = _build_hierarchical_problem(
         session, importer_kwargs, petab_problem=amici_problem
     )
     if problem is None:
-        importer = pypesto.petab.PetabImporter(amici_problem, **importer_kwargs)
-        problem = importer.create_problem()
-        inner_scales = {}
+        # Not linted again: every edit that produced this problem was (see validation).
+        problem = pypesto_problem(amici_problem, importer_kwargs, validate=False)
+        inner = {}
     # After the branch, so the hierarchical and joint objectives are integrated identically.
     _apply_amici_solver_defaults(problem)
     if first_build:
@@ -578,8 +634,8 @@ def estimation_problem(session, engine):
         session.n_compiles += 1
         engine._pypesto_hashes.add(h)
 
-    engine._estimation_problem_cache = (key, problem, inner_scales)
-    return problem, inner_scales
+    engine._estimation_problem_cache = (key, problem, inner)
+    return problem, inner
 
 
 @dataclass(frozen=True)
@@ -597,11 +653,10 @@ class FitRecord:
 
     ``problem`` is a DEEP copy of the PEtab problem: the parameters-only edit path reconciles the
     live SBML in place, so a shallow copy's model could still be moved under a frozen record.
-    ``x_free``/``lb``/``ub`` are the FREE coordinates on the estimation scale — pyPESTO's own,
-    which is the authority (a hierarchical problem re-scales its sigmas), and the space the FIM is
-    expressed in. The fitted point is carried here rather than re-read from
-    ``parameter_df[nominalValue]`` so an agent edit to the table cannot silently move the point a
-    diagnosis expands around.
+    ``x_free``/``lb``/``ub`` are the FREE coordinates on the estimation scale — pyPESTO's own
+    (see :func:`pypesto_problem`), and the space the FIM is expressed in. The fitted point is
+    carried here rather than re-read from ``parameter_df[nominalValue]`` so an agent edit to the
+    table cannot silently move the point a diagnosis expands around.
 
     The two fingerprints are COMPARISONS only — never keys to rebuild anything with — and they
     answer different questions, which is why both are here. ``structure_hash``
@@ -612,7 +667,7 @@ class FitRecord:
     no-op, where the same structure is re-authored with a new starting guess and no fit runs. That
     is not a stale diagnosis: the optimum, the structure and HEAD's fit are all still this record's.
 
-    No AMICI output folder can be named from anything here: the SBML hash is deliberately absent,
+    No AMICI output folder can be named from anything here: the module hash is deliberately absent,
     since it is the one argument :meth:`engine.AmiciEngine.pypesto_importer_kwargs` takes and a
     record holding it would put a build target back within a diagnosis's reach.
 
@@ -705,8 +760,6 @@ def problem_x_full_from_nominal(problem, parameter_df) -> list[float]:
     The shape pyPESTO's ``x_guesses`` wants (see :func:`warm_start_guesses`);
     :func:`problem_x_from_nominal` reduces it to the free coordinates an objective takes.
     """
-    from petab.v1.parameters import scale as petab_scale
-
     full: list[float] = []
     for name, sc in zip(problem.x_names, problem.x_scales):
         val = _flt(parameter_df.loc[name, NOMINAL_VALUE]) if name in parameter_df.index else None
@@ -716,7 +769,7 @@ def problem_x_full_from_nominal(problem, parameter_df) -> list[float]:
             fixed = dict(zip(problem.x_fixed_indices, problem.x_fixed_vals))
             full.append(float(fixed.get(len(full), 0.0)))
             continue
-        full.append(float(petab_scale(val, sc)))
+        full.append(float(scale(val, sc)))
     return full
 
 
@@ -738,9 +791,6 @@ def previous_optima(problem, optimization: dict[str, Any] | None, x0) -> list[li
     silently mix log10 and linear coordinates, which is worse than not warm-starting at all.
     Starts whose objective or vector is non-finite are dropped: a failed start is not a basin.
     """
-    from petab.v1.parameters import scale as petab_scale
-    from petab.v1.parameters import unscale
-
     starts = (optimization or {}).get("starts") or []
     prev_names = (optimization or {}).get("x_names")
     prev_scales = (optimization or {}).get("x_scales")
@@ -768,7 +818,7 @@ def previous_optima(problem, optimization: dict[str, Any] | None, x0) -> list[li
                 value = _flt(xs[prev_j])
                 if value is None:
                     raise ValueError("non-finite coordinate")
-                point[cur_i] = float(petab_scale(unscale(value, prev_sc), cur_sc))
+                point[cur_i] = float(scale(unscale(value, prev_sc), cur_sc))
         except (IndexError, KeyError, TypeError, ValueError):
             continue  # a malformed/short vector is one unusable start, not a broken fit
         out.append(point)
@@ -874,13 +924,9 @@ def warm_start_guesses(problem, parameter_df, n_starts: int, optimization=None):
     new_free = [i for i in free if str(problem.x_names[i]) not in prev_names] if prev_names else []
     candidates: list = []
     if new_free:
-        from petab.v1.parameters import scale as petab_scale
-
         pos = {i: free.index(i) for i in new_free}
         unit_of = {
-            i: float(
-                np.clip(float(petab_scale(1.0, str(problem.x_scales[i]))), lb[pos[i]], ub[pos[i]])
-            )
+            i: float(np.clip(float(scale(1.0, str(problem.x_scales[i]))), lb[pos[i]], ub[pos[i]]))
             for i in new_free
         }
 
@@ -962,7 +1008,6 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     """
     import numpy as np
     import pypesto.optimize
-    import pypesto.petab
 
     from .engine import _ensure_swig_on_path
 
@@ -981,10 +1026,10 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
 
     # The SAME problem the engine evaluates the objective against (see estimation_problem):
     # one AMICI model, one solver, one notion of this model's likelihood.
-    problem, inner_scales = estimation_problem(session, engine)
-    hierarchical = bool(inner_scales)
+    problem, inner = estimation_problem(session, engine)
+    hierarchical = bool(inner)
     if hierarchical:
-        log.info("fit: hierarchical objective (inner params: %s)", sorted(inner_scales))
+        log.info("fit: hierarchical objective (inner params: %s)", sorted(inner))
 
     free = getattr(problem, "x_free_indices", None)
     n_free = len(free) if free is not None else len(problem.x_names)
@@ -1172,7 +1217,7 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
         # Merge the analytically-solved inner parameters (not in the outer vector above) so
         # `fitted` covers EVERY estimated parameter — keeping k = len(fitted) consistent with
         # session.n_estimated, and writing the inner values back to the table like any other fit.
-        fitted.update(_inner_fitted_values(problem, best, inner_scales))
+        fitted.update(_inner_fitted_values(problem, best))
     with session.lock:
         for name, linear in fitted.items():
             if name in df.index:
@@ -1418,11 +1463,11 @@ def ensure_simulation(session, engine) -> dict[str, Any] | None:
         return session.simulation
     sim = session.simulation
     if sim is None or not sim.get("records"):
-        if not engine.module_built(session.sbml_hash()):
+        if not engine.module_built(session.module_hash()):
             session.logger.info(
                 "no simulation for this read: the working structure has no compiled module, and a "
-                "read never pays a build (sbml_hash=%s)",
-                session.sbml_hash(),
+                "read never pays a build (module_hash=%s)",
+                session.module_hash(),
             )
             return session.simulation
         fit_and_simulate(session, engine, do_fit=False, n_starts=0)
@@ -1542,10 +1587,10 @@ def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[st
     # "collapsed" at 0.0026 for a noise level the benchmark declared, not one any fit chose.
     for pid in sorted(R.plausibility_sigma_ids(problem) & set(fitted)):
         # Fail OPEN when there is no parameter table to consult (a bare observable+measurement
-        # problem): unknown estimate status must not silently drop the sigma from the report.
-        if getattr(problem, "parameter_df", None) is not None and not R.is_parameter_estimated(
-            problem, pid
-        ):
+        # problem, whose table is empty): unknown estimate status must not silently drop the
+        # sigma from the report.
+        pdf = getattr(problem, "parameter_df", None)
+        if pdf is not None and len(pdf) and not R.is_parameter_estimated(problem, pid):
             continue
         value = fitted[pid]
         try:

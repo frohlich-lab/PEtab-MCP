@@ -1,10 +1,11 @@
-"""AMICI simulation/objective engine for the working PEtab v1 problem.
+"""AMICI simulation/objective engine for the working PEtab v2 problem.
 
-Uses AMICI's legacy PEtab v1 API (``amici.importers.petab.v1.import_petab_problem`` +
-``amici.sim.sundials.petab.v1.simulate_petab``), which accepts in-memory
-``petab.v1.Problem`` objects. Compiled models are cached by SBML hash: a model edit
-changes the hash and triggers a recompile, while parameter edits are cheap — the
-current ``nominalValue``s are passed as ``problem_parameters`` (on linear scale).
+Every likelihood is evaluated through the pyPESTO objective :func:`fitting.estimation_problem`
+builds on AMICI's PEtab v2 import (``amici.importers.petab.PetabImporter`` +
+``amici.sim.sundials.petab.PetabSimulator``). Compiled models are cached by
+:meth:`session.PetabSession.module_hash`: a model edit changes it and triggers a recompile, while
+parameter edits are cheap — the current ``nominalValue``s are passed on each parameter's
+estimation scale.
 
 AMICI is a hard dependency (the server fits + simulates on every commit), so the imports
 here are unconditional; ``swig`` is still located on ``PATH`` for the C++ build.
@@ -15,22 +16,17 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from petab.v1.C import (
-    LIN,
-    LOG,
-    LOG10,
-    MEASUREMENT,
-    OBSERVABLE_ID,
-    OBSERVABLE_TRANSFORMATION,
-    SIMULATION,
-    SIMULATION_CONDITION_ID,
-    TIME,
-)
+from petab.v2.C import EXPERIMENT_ID, MEASUREMENT, OBSERVABLE_ID, SIMULATION, TIME
 
+from . import filelock
+from .errors import ModelBuildBusyError
 from .formatting import finite_float
+from .problem import observable_transformation, scale
 
 
 def _ensure_swig_on_path() -> None:
@@ -47,59 +43,43 @@ def _ensure_swig_on_path() -> None:
         pass
 
 
-#: The observable transformations PEtab defines; anything else means ``lin``.
-_TRANSFORMATIONS = (LIN, LOG, LOG10)
-
-
-def _observable_transformation(observable_df, obs_id) -> str:
-    """``lin``/``log``/``log10`` for ``obs_id``, defaulting to ``lin``.
-
-    ``observableTransformation`` is an OPTIONAL per-row column, so a table that has the column
-    but leaves a row blank yields ``NaN`` — and ``NaN`` is truthy, so the obvious
-    ``.get(col, LIN) or LIN`` did NOT fall back. ``petab.scale`` then raised on it, the caller's
-    broad ``except`` swallowed that, and EVERY point silently lost its weighted residual: chi2
-    fell back to AMICI's own vector so the score still looked fine, while ``get_fit_diagnosis``
-    reported "no weighted residuals available", the sign/runs tests never ran (the replicate
-    lack-of-fit test needs no sigma and does still run — see ``data_access.residual_structure_rollup``),
-    and the ``simulations`` table's residual columns were all NULL. Normalising the way
-    :func:`reconcile._observable_transformations` already does keeps the two agreeing, and also
-    absorbs an unrecognised string rather than turning it into the same silent outage.
-    """
+def _module_on_disk(output_folder: str | Path, model_name: str) -> bool:
+    """Is the compiled extension of the module ``model_name`` under ``output_folder`` there? An
+    unreadable folder counts as not built."""
     try:
-        if obs_id not in observable_df.index:
-            return LIN
-        value = observable_df.loc[obs_id].get(OBSERVABLE_TRANSFORMATION, LIN)
-    except Exception:  # noqa: BLE001 - a duplicate/absent index must not cost the residual
-        return LIN
-    text = str(value).strip().lower()
-    return text if text in _TRANSFORMATIONS else LIN
+        return any((Path(output_folder) / model_name).glob(f"_{model_name}*.so"))
+    except OSError:
+        return False
 
 
-def _objective_amici_model(objective):
-    """The AMICI model behind a pyPESTO objective.
+@contextmanager
+def build_lock(output_folder: str | Path, model_name: str) -> Iterator[None]:
+    """Hold ``<output_folder>.lock`` while pyPESTO may build the module ``model_name`` there, or
+    raise :class:`~petab_mcp.errors.ModelBuildBusyError` naming whoever holds it.
 
-    A plain ``AmiciObjective`` exposes ``amici_model`` directly, but pyPESTO builds an
-    ``AggregatedObjective`` (which wraps several per-condition sub-objectives and has NO
-    ``amici_model`` of its own) for some PEtab problems — intermittently, depending on the model,
-    which was crashing evaluation with ``'AggregatedObjective' object has no attribute
-    'amici_model'``. Fall through to the aggregate's sub-objectives and return the first
-    ``amici_model`` found (they all share one compiled model)."""
-    model = getattr(objective, "amici_model", None)
-    if model is not None:
-        return model
-    # Explicit None check (not truthiness): an aggregate that legitimately exposes an EMPTY
-    # `_objectives` must not fall through to `objectives` — an empty list is still the right,
-    # authoritative container.
-    subs = getattr(objective, "_objectives", None)
-    if subs is None:
-        subs = getattr(objective, "objectives", None)
-    for sub in subs or []:
-        model = getattr(sub, "amici_model", None)
-        if model is not None:
-            return model
-    raise AttributeError(
-        f"{type(objective).__name__} exposes no amici_model (nor do any sub-objectives)"
-    )
+    The build root is shared by every session and process and keyed by module hash, so two of them
+    reaching one structure name one folder — and AMICI deletes the files it finds there before it
+    generates code, so a second build corrupts the first. The second fails fast instead, without
+    waiting (:mod:`petab_mcp.filelock`). A module whose build FINISHED takes no lock: importing it
+    is safe beside anything, and that is what every re-fit of a structure does. Finished means its
+    holder marked it (``.built``) once its own import succeeded — the extension alone is no signal,
+    since the install step writes it before the build is done.
+    """
+    folder = Path(output_folder)
+    done = folder / ".built"
+    if done.exists() and _module_on_disk(folder, model_name):
+        yield
+        return
+    folder.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = filelock.try_lock(folder.with_name(f"{folder.name}.lock"))
+    except filelock.Held as held:
+        raise ModelBuildBusyError(model_name, held.holder) from None
+    try:
+        yield
+        done.touch()
+    finally:
+        os.close(fd)
 
 
 class AmiciEngine:
@@ -111,39 +91,39 @@ class AmiciEngine:
             Path(build_root) if build_root else Path(tempfile.gettempdir()) / "petab_mcp_amici"
         )
         self.build_root.mkdir(parents=True, exist_ok=True)
-        # SBML hashes pyPESTO has already built a problem for this run: it lets the fitter charge
+        # Module hashes pyPESTO has already built a problem for this run: it lets the fitter charge
         # the (one-time) model build to ``compile_seconds`` only the FIRST time a structure is
         # seen, so a re-fit of the same structure (a parameter-only edit) doesn't over-count
         # compiles.
         self._pypesto_hashes: set[str] = set()
-        # SBML hashes already written to the log by :meth:`_log_pending_import`.
+        # Module hashes already written to the log by :meth:`_log_pending_import`.
         self._dumped_hashes: set[str] = set()
 
-    def pypesto_importer_kwargs(self, sbml_hash: str) -> dict[str, str]:
-        """Output kwargs for a pyPESTO ``PetabImporter``, keyed on the model's SBML hash so
+    def pypesto_importer_kwargs(self, module_hash: str) -> dict[str, str]:
+        """Output kwargs for a pyPESTO ``PetabImporter``, keyed on the problem's module hash so
         pyPESTO's own compiled module is cached/reused per structure.
 
         Its ONE caller — :func:`fitting.estimation_problem` — constructs the importer on the very
         next line, which makes this the one choke point every AMICI build passes through, and so
         also where the pre-import model dump is emitted (:meth:`_log_pending_import`).
 
-        ``sbml_hash`` is REQUIRED. It used to default to re-reading ``session.sbml_hash()``, and
+        ``module_hash`` is REQUIRED. It used to default to re-reading ``session.module_hash()``, and
         that read is how a DIAGNOSIS came to name an output folder for a structure nothing was
         built for — a full C++ build to price a model that was never fitted. Nothing may resolve a
         build target from live state inside the choke point; the fit passes the hash it fitted, and
         a diagnosis holds its built problem instead (see :class:`fitting.FitRecord`).
         """
-        self._log_pending_import(sbml_hash)
-        folder, model_name = self._module_target(sbml_hash)
+        self._log_pending_import(module_hash)
+        folder, model_name = self._module_target(module_hash)
         return {"output_folder": str(folder), "model_name": model_name}
 
-    def _module_target(self, sbml_hash: str) -> tuple[Path, str]:
-        """Where pyPESTO's module for ``sbml_hash`` lives — the naming convention itself, so
+    def _module_target(self, module_hash: str) -> tuple[Path, str]:
+        """Where pyPESTO's module for ``module_hash`` lives — the naming convention itself, so
         :meth:`pypesto_importer_kwargs` (which asks for a build there) and :meth:`module_built`
         (which asks whether one happened) cannot disagree about the location."""
-        return self.build_root / f"pypesto_{sbml_hash}", f"petab_mcp_pp_{sbml_hash}"
+        return self.build_root / f"pypesto_{module_hash}", f"petab_mcp_pp_{module_hash}"
 
-    def module_built(self, sbml_hash: str) -> bool:
+    def module_built(self, module_hash: str) -> bool:
         """Is the compiled AMICI module for this structure ALREADY there — i.e. can a problem be
         constructed for it without codegen and a C++ build?
 
@@ -163,24 +143,21 @@ class AmiciEngine:
         recomputed (see :func:`identifiability.fit_diagnosis_block`) — this only keeps a READ from
         paying for the mismatch.
         """
-        if sbml_hash in self._pypesto_hashes:
+        if module_hash in self._pypesto_hashes:
             return True
-        folder, model_name = self._module_target(sbml_hash)
-        try:
-            return any((folder / model_name).glob(f"_{model_name}*.so"))
-        except OSError:  # unreadable build root: assume nothing is built rather than risk a build
-            return False
+        # an unreadable build root reads as nothing built, rather than risk a build
+        return _module_on_disk(*self._module_target(module_hash))
 
-    def _log_pending_import(self, sbml_hash: str) -> None:
+    def _log_pending_import(self, module_hash: str) -> None:
         """Dump the exact model about to be handed to AMICI, BEFORE the import call.
 
         AMICI's SBML import + C++ codegen can hard-crash the process (a segfault-class failure in
         libsbml/codegen on a pathological model) that no Python exception can catch and that
         leaves no traceback — the MCP client just sees the connection drop (``httpx.ReadError``).
-        When that happens this INFO line is the last thing in ``server.log`` and pinpoints the
+        When that happens this INFO line is the last thing in ``petab_mcp.log`` and pinpoints the
         offending model; a blasi sweep run died exactly this way with no record of the culprit.
 
-        Emitted once per SBML hash, so it costs one write per STRUCTURE rather than per fit: a
+        Emitted once per module hash, so it costs one write per STRUCTURE rather than per fit: a
         re-fit or a bounds-only edit rebuilds the pyPESTO problem but reuses the compiled module,
         and only a build can crash. Recording the hash before logging (not after) means a crash
         *inside* the logging call still can't put this on a retry loop.
@@ -189,31 +166,31 @@ class AmiciEngine:
         build — a throwing libsbml accessor or an un-round-trippable model would otherwise do so.
         """
         log = self.session.logger
-        if sbml_hash in self._dumped_hashes:
+        if module_hash in self._dumped_hashes:
             return
-        self._dumped_hashes.add(sbml_hash)
+        self._dumped_hashes.add(module_hash)
         try:
             sm = self.session.problem.model.sbml_model
             ant = self.session.problem.model.to_antimony()
             log.info(
-                "AMICI import starting (sbml_hash=%s, species=%d, reactions=%d); if the server "
+                "AMICI import starting (module_hash=%s, species=%d, reactions=%d); if the server "
                 "process dies during this import with no traceback, THIS is the model that "
                 "crashed it:\n%s",
-                sbml_hash,
+                module_hash,
                 sm.getNumSpecies(),
                 sm.getNumReactions(),
                 ant,
             )
         except Exception:  # noqa: BLE001 - diagnostic only, never block the build
-            log.info("AMICI import starting (sbml_hash=%s); model dump unavailable", sbml_hash)
+            log.info("AMICI import starting (module_hash=%s); model dump unavailable", module_hash)
 
     # NOTE: there is no compile cache here any more. This class used to build its OWN AMICI
-    # model (`_get_model`, keyed by SBML hash) alongside the one pyPESTO builds for the fit —
-    # two full C++ builds of one structure. Unifying every likelihood evaluation onto
-    # `fitting.estimation_problem` (see its docstring) left that second build unused, so it is
-    # gone: the AMICI model now comes off the pyPESTO objective (`_objective_amici_model`),
-    # and pyPESTO caches its own compiled module under `pypesto_importer_kwargs` — which is also
-    # where the pre-import dump `_get_model` used to emit now lives.
+    # model (`_get_model`) alongside the one pyPESTO builds for the fit — two full C++ builds of
+    # one structure. Unifying every likelihood evaluation onto `fitting.estimation_problem` (see
+    # its docstring) left that second build unused, so it is gone: the AMICI model now comes off
+    # the pyPESTO objective, and pyPESTO caches its own compiled module under
+    # `pypesto_importer_kwargs` — which is also where the pre-import dump `_get_model` used to
+    # emit now lives.
 
     # -- public API --------------------------------------------------------
     @staticmethod
@@ -252,21 +229,17 @@ class AmiciEngine:
         the objective is called with ``return_dict=True`` (it switches AMICI to full reporting),
         so the simulation dataframe is unchanged.
         """
-        from amici.sim.sundials.petab.v1 import RDATAS
-        from pypesto.C import FVAL
-        from pypesto.C import RDATAS as PP_RDATAS
+        from pypesto.C import FVAL, RDATAS
 
         from . import fitting
 
         problem, _ = fitting.estimation_problem(self.session, self)
         x = fitting.problem_x_from_nominal(problem, self.session.problem.parameter_df)
         ret = problem.objective(x, sensi_orders=(0,), return_dict=True)
-        rdatas = ret[PP_RDATAS]
+        rdatas = ret[RDATAS]
         # pyPESTO's fval IS the negative log-likelihood it minimises.
         nllh = finite_float(ret[FVAL])
-        records = self._simulation_records(
-            _objective_amici_model(problem.objective), {RDATAS: rdatas}
-        )
+        records = self._simulation_records(problem.objective, rdatas)
         return nllh, records, self._res_from_rdatas(rdatas)
 
     def evaluate_objective(self) -> dict[str, Any]:
@@ -338,7 +311,7 @@ class AmiciEngine:
         """Chi2 = sum of squared noise-weighted residuals, or ``None`` if incomplete.
 
         Prefers the petab-canonical weighted residuals in ``records`` (which equal
-        ``petab.v1.calculate.calculate_chi2``), but only when they are available for
+        ``petab.v2.calculate.calculate_chi2``), but only when they are available for
         *every* point that contributes to the objective — a point can be missing its
         weighted residual either because its noise formula could not be evaluated, or
         because the simulation never reached it. Summing only the available terms would
@@ -373,7 +346,7 @@ class AmiciEngine:
         noise model cannot be prepared (in which case weighted residuals are skipped).
         """
         try:
-            from petab.v1.calculate import get_symbolic_noise_formulas
+            from petab.v2.calculate import get_symbolic_noise_formulas
 
             problem = self.session.problem
             return (
@@ -387,22 +360,23 @@ class AmiciEngine:
     def _weighted_residual(self, ctx, row, m, s):
         """petab-consistent (noise, weighted residual) for one point, or (None, None).
 
-        The weighted residual is ``(scale(m) - scale(s)) / sigma`` on the observable's
-        transformation scale — the quantity that enters chi2 — matching
-        ``petab.v1.calculate.calculate_residuals``.
+        The weighted residual is ``(scale(m) - scale(s)) / sigma`` in the coordinate the
+        observable's noise distribution is additive in — the quantity that enters chi2 —
+        matching ``petab.v2.calculate.calculate_residuals``.
         """
         if ctx is None or m is None or s is None:
             return None, None
         noise_formulas, observable_df, parameter_df = ctx
         try:
-            from petab.v1 import scale as petab_scale
-            from petab.v1.calculate import evaluate_noise_formula
+            from petab.v2.calculate import evaluate_noise_formula
 
-            trafo = _observable_transformation(observable_df, row.get(OBSERVABLE_ID))
-            noise = float(evaluate_noise_formula(row, noise_formulas, parameter_df, s))
+            obs_id = row.get(OBSERVABLE_ID)
+            trafo = observable_transformation(observable_df, obs_id)
+            observable = observable_df.loc[obs_id].to_dict()
+            noise = float(evaluate_noise_formula(row, noise_formulas, parameter_df, s, observable))
             if noise == 0.0:
                 return noise, None
-            weighted = (petab_scale(m, trafo) - petab_scale(s, trafo)) / noise
+            weighted = (scale(m, trafo) - scale(s, trafo)) / noise
             return noise, float(weighted)
         except Exception:  # noise formula references model states / unresolved params
             return None, None
@@ -436,7 +410,7 @@ class AmiciEngine:
         return [
             {
                 "observable_id": row.get(OBSERVABLE_ID),
-                "condition_id": row.get(SIMULATION_CONDITION_ID),
+                "experiment_id": row.get(EXPERIMENT_ID),
                 "time": finite_float(row.get(TIME)),
                 "measurement": finite_float(row.get(MEASUREMENT)),
                 "simulation": None,
@@ -447,26 +421,25 @@ class AmiciEngine:
             for _, row in meas.iterrows()
         ]
 
-    def _simulation_records(self, model, result) -> list[dict[str, Any]]:
-        from amici.sim.sundials.petab.v1 import RDATAS, rdatas_to_simulation_df
+    def _simulation_records(self, objective, rdatas) -> list[dict[str, Any]]:
+        from amici.importers.petab import unflatten_simulation_df
 
         from .fitting import amici_facing_problem
 
         # The AMICI model was built from the AMICI-FACING problem, which may be a flattened
         # copy (timepoint-specific overrides; see fitting.needs_flattening). The rdatas name
-        # observables in THAT problem's vocabulary, so the simulation frame is built against its
+        # observables in THAT problem's vocabulary, so the simulation frame is paired with its
         # measurement table and mapped back to the session's (unflattened) observable ids with
-        # petab's own inverse before anything downstream reads it — every consumer (residual
+        # AMICI's own inverse before anything downstream reads it — every consumer (residual
         # structure, query_data's `simulations`, the sigma checks) keys on the unflattened ids.
-        rdatas = result[RDATAS]
         n_bad = self._unusable_rdatas(rdatas)
         if n_bad:
-            # Partial success is treated the same as total failure on purpose: when any condition
+            # Partial success is treated the same as total failure on purpose: when any experiment
             # fails to integrate, AMICI's likelihood for the evaluation is already NaN (see
-            # `simulation_gap`), so keeping the surviving conditions' simulations would describe a
+            # `simulation_gap`), so keeping the surviving experiments' simulations would describe a
             # smaller dataset than `n_data_points` while looking like a complete one.
             self.session.logger.info(
-                "simulation: %d/%d conditions returned no usable trajectory; reporting a missing "
+                "simulation: %d/%d experiments returned no usable trajectory; reporting a missing "
                 "score instead of a partial one",
                 n_bad,
                 len(rdatas),
@@ -474,30 +447,30 @@ class AmiciEngine:
             return self._records_without_simulation(self.session.problem.measurement_df)
         amici_problem, flattened = amici_facing_problem(self.session)
         meas = amici_problem.measurement_df
-        simdf = rdatas_to_simulation_df(rdatas, model, meas)
-        keys = [OBSERVABLE_ID, SIMULATION_CONDITION_ID, TIME]
+        # One row per measurement of the problem AMICI imported, grouped by experiment; an
+        # experiment-less measurement comes back with a NaN id, which is "" here (see
+        # petab_mcp.problem).
+        simdf = objective.rdatas_to_simulation_df(rdatas)
+        simdf[EXPERIMENT_ID] = [v if isinstance(v, str) else "" for v in simdf[EXPERIMENT_ID]]
+        keys = [OBSERVABLE_ID, EXPERIMENT_ID, TIME]
         # PAIR IN THE AMICI VOCABULARY, then relabel — not the other way round. Unflattening the
         # simulation frame first and merging against the natural measurements looked equivalent
         # and is not: flattening is triggered PRECISELY when two rows share
-        # (observable, condition, time) with different overrides, so in the natural vocabulary
+        # (observable, experiment, time) with different overrides, so in the natural vocabulary
         # those rows are not replicates and their simulated values differ — the positional
-        # `cumcount` pairing below would match them by row order, which petab's flatten does not
-        # preserve (it rebuilds the frame grouped by overrides). Measured on fiedler: with the
-        # gel rows in a different but perfectly legal TSV order, 72/72 rows mispair (one
-        # measurement drew a simulation 26x off), silently corrupting every residual, chi2 and
-        # sigma check. In the FLATTENED vocabulary the override lives in the observable id, so
-        # (observable, condition, time) is unique (measured: 72 rows, 72 distinct keys, max 1
-        # row per key) and the merge cannot mispair.
-        # ``rdatas_to_simulation_df`` (a thin wrapper over amici's
-        # ``rdatas_to_measurement_df``) carries exactly one simulation row per
-        # measurement row, but replicate measurements share the same
-        # (observableId, simulationConditionId, time) key. Merging on ``keys`` alone
-        # would cross-join each size-r replicate group into r*r rows, inflating
+        # `cumcount` pairing below would match them by row order. Measured on fiedler under v1:
+        # with the gel rows in a different but perfectly legal TSV order, 72/72 rows mispaired
+        # (one measurement drew a simulation 26x off), silently corrupting every residual, chi2
+        # and sigma check. In the FLATTENED vocabulary the override lives in the observable id, so
+        # (observable, experiment, time) is unique per design point and the merge cannot mispair.
+        # The simulation frame carries exactly one row per measurement row, but replicate
+        # measurements share the same (observableId, experimentId, time) key. Merging on ``keys``
+        # alone would cross-join each size-r replicate group into r*r rows, inflating
         # ``n_data_points`` (and chi2, which counts each weighted residual r*r times).
         # Tag each row with its within-group replicate index so the merge stays
         # one-to-one with the measurements: ``len(merged) == len(meas)``. Pairing WITHIN a
         # group is by position, which is exact only because a group reaching this point is a
-        # true replicate group -- same observable, condition, time AND overrides -- whose rows
+        # true replicate group -- same observable, experiment, time AND overrides -- whose rows
         # therefore share one simulated value. That is what the flattened vocabulary above buys;
         # in the natural one the claim is false for override-carrying rows.
         rep = "_petab_mcp_replicate"
@@ -512,18 +485,14 @@ class AmiciEngine:
         )
         if flattened:
             # Back to the session's vocabulary for everything downstream (records, residual
-            # structure, query_data). petab's own inverse does exactly this and nothing else --
-            # it replaces the observableId column -- so `merged` (a measurement frame carrying a
-            # `simulation` column) is precisely the shape it documents. It rebuilds the id
-            # mapping per call, measured at 3.4 ms on fiedler, which is noise next to the
-            # simulation it follows; caching it would trade a public API for a private one.
+            # structure, query_data). AMICI's inverse does exactly this and nothing else -- it
+            # replaces the observableId column -- so `merged` (a measurement frame carrying a
+            # `simulation` column) is precisely the shape it documents.
             #
             # The noise substitution below reads the NATURAL observable_df's formula together
             # with this row's own noiseParameters, which flattening leaves untouched, so the
             # pair stays consistent.
-            import petab.v1 as petab
-
-            merged = petab.unflatten_simulation_df(merged, self.session.problem)
+            merged = unflatten_simulation_df(merged, self.session.problem.to_petab())
         ctx = self._noise_context()
 
         records: list[dict[str, Any]] = []
@@ -535,7 +504,7 @@ class AmiciEngine:
             records.append(
                 {
                     "observable_id": row.get(OBSERVABLE_ID),
-                    "condition_id": row.get(SIMULATION_CONDITION_ID),
+                    "experiment_id": row.get(EXPERIMENT_ID),
                     "time": finite_float(row.get(TIME)),
                     "measurement": m,
                     "simulation": s,

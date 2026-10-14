@@ -6,7 +6,8 @@
 ## Overview
 
 A local [MCP](https://modelcontextprotocol.io) server that wraps a single
-[PEtab v1](https://petab.readthedocs.io) parameter-estimation problem and turns mechanistic
+[PEtab v2](https://petab.readthedocs.io/en/latest/v2/documentation_data_format.html)
+parameter-estimation problem (a PEtab v1 problem is upgraded on load) and turns mechanistic
 model building into a **disciplined, auditable** workflow for LLM agents — the loop behind
 model-building assistants such as [petabgpt](https://github.com/frohlich-lab/petabgpt).
 
@@ -18,8 +19,8 @@ nothing lost), and **justified** (a rationale attached, optionally checked again
 This means that instead of a black box just delivering a model, you get the model and
 inspectable provenance describing how it developed.
 
-Simulation/objective use [AMICI](https://github.com/AMICI-dev/AMICI), optimization uses
-[pyPESTO](https://github.com/ICB-DCM/pyPESTO) with the
+Simulation/objective use [AMICI](https://github.com/AMICI-dev/AMICI)'s PEtab v2 import,
+optimization uses [pyPESTO](https://github.com/ICB-DCM/pyPESTO) with the
 [Fides](https://github.com/fides-dev/fides) trust-region optimizer. All are **required** —
 fitting is not optional machinery.
 
@@ -34,7 +35,9 @@ pip install -e .          # installs AMICI + pyPESTO (a C++ toolchain is require
 ```
 
 AMICI compiles generated C++ and needs a toolchain: a C++ compiler, CMake, Ninja, and the
-pip `swig` binary on `PATH` (OpenBLAS ships in the AMICI wheel).
+pip `swig` binary on `PATH`. AMICI and pyPESTO are pinned to commits on their `main` branches
+until releases carry the PEtab v2 fixes named in `pyproject.toml`, so AMICI itself is built from
+source on install (BLAS comes from the `scipy-openblas64` wheel, or Accelerate on macOS).
 
 ## Run
 
@@ -47,14 +50,17 @@ petab-mcp --petab-yaml path/to/problem.yaml
 ```
 
 Provenance is written to `<problem_dir>/.petab_mcp/` by default and is durable — restarting
-resumes the latest version. A ready toy problem lives at `tests/data/toy_v1/`.
+resumes the latest version (a store written by the PEtab v1 server is refused). The server's
+stderr goes to `stderr.log` there, beside `petab_mcp.log` and the fit log `pypesto.log`. A ready toy
+problem lives at `tests/data/toy_v2/`; `tests/data/toy_v1/` is the same problem in v1 form.
 
 ## Tools
 
 `make_changes` is the single tool that changes the model or its parameter search space, and
 it always fits — see its docstring in [`src/petab_mcp/server.py`](src/petab_mcp/server.py)
 for the full argument and result reference. Everything else is read-only: problem/model/
-parameter inspection (`describe_problem`, `get_model`, `get_parameters`, ...), fit
+parameter inspection (`describe_problem`, `list_conditions`, `list_experiments`, `get_model`,
+`get_parameters`, ...), fit
 inspection (`get_fit_summary`, `get_fit_diagnosis`, `query_data` — arbitrary SQL over the
 fit via DuckDB), and provenance (`get_provenance`, `list_versions`, `restore_version`, ...).
 A live server also exposes these as MCP resources under `petab://...`. Each submodule of
@@ -92,6 +98,11 @@ Principles to hold onto when extending this package.
   `result.json` carries the whole table. Named penalties and nothing between them: the fixed
   effect-size thresholds carry over when the penalty is swapped, not when it is scaled. See
   [`src/petab_mcp/criteria.py`](src/petab_mcp/criteria.py) before adding one.
+- **The estimation scale is the server's.** PEtab v2 dropped `parameterScale`, so the server keeps
+  the column as an extension of the parameter table and hands it to pyPESTO's v2 importer as its
+  `parameter_scales`, which puts AMICI's simulator on it too — every pyPESTO problem is built
+  through `fitting.pypesto_problem`, never handed to pyPESTO linear. Priors are not carried at
+  all: the objective is the likelihood the criterion scores.
 - **A hardcoded constant is not free.** `k` is the estimated parameters plus every numeric
   literal in the model's math bar a few structural ones (each distinct value once — see
   [`src/petab_mcp/literals.py`](src/petab_mcp/literals.py)), so freezing a fitted value costs

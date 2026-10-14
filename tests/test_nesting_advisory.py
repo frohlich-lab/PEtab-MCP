@@ -153,10 +153,10 @@ def test_session_flags_a_worse_fit_that_freed_another_parameter(session):
     """The commit path reads the parent's nll (meta.json), its estimated ids (parameters.tsv)
     and its Antimony (model.ant) straight out of the version store, so the check works on the
     real lineage rather than on whatever the caller passes."""
-    from petab.v1.C import ESTIMATE
+    from petab.v2.C import ESTIMATE
 
     _snapshot_parent(session, -100.0)
-    session.problem.parameter_df.loc["sigma_B", ESTIMATE] = 1  # k: 2 -> 3
+    session.problem.parameter_df.loc["sigma_B", ESTIMATE] = True  # k: 2 -> 3
     advisory = session._check_nesting_vs_parent(
         {"neg_log_likelihood": -90.0}, session.model.to_antimony()
     )
@@ -166,10 +166,10 @@ def test_session_flags_a_worse_fit_that_freed_another_parameter(session):
 
 
 def test_session_silent_on_an_ordinary_improving_commit(session):
-    from petab.v1.C import ESTIMATE
+    from petab.v2.C import ESTIMATE
 
     _snapshot_parent(session, -100.0)
-    session.problem.parameter_df.loc["sigma_B", ESTIMATE] = 1
+    session.problem.parameter_df.loc["sigma_B", ESTIMATE] = True
     assert (
         session._check_nesting_vs_parent(
             {"neg_log_likelihood": -140.0}, session.model.to_antimony()
@@ -181,10 +181,10 @@ def test_session_silent_on_an_ordinary_improving_commit(session):
 
 def test_a_valid_added_parameter_commit_clears_the_outstanding_flag(session):
     """The lead redoing the experiment properly must stop being told it has none."""
-    from petab.v1.C import ESTIMATE
+    from petab.v2.C import ESTIMATE
 
     _snapshot_parent(session, -100.0)
-    session.problem.parameter_df.loc["sigma_B", ESTIMATE] = 1
+    session.problem.parameter_df.loc["sigma_B", ESTIMATE] = True
     assert (
         session._check_nesting_vs_parent({"neg_log_likelihood": -90.0}, session.model.to_antimony())
         is not None
@@ -192,7 +192,7 @@ def test_a_valid_added_parameter_commit_clears_the_outstanding_flag(session):
     assert session.invalid_comparison is not None
     # a second, genuinely additive experiment: k rises again and the nll improves
     _snapshot_parent(session, -90.0)
-    session.problem.parameter_df.loc["A_init", ESTIMATE] = 1
+    session.problem.parameter_df.loc["A_init", ESTIMATE] = True
     assert (
         session._check_nesting_vs_parent({"neg_log_likelihood": -95.0}, session.model.to_antimony())
         is None
@@ -202,9 +202,9 @@ def test_a_valid_added_parameter_commit_clears_the_outstanding_flag(session):
 
 def test_no_parent_version_yields_no_advisory(session):
     # v0 exists but was never fitted (no nll in its meta) -> nothing to compare against.
-    from petab.v1.C import ESTIMATE
+    from petab.v2.C import ESTIMATE
 
-    session.problem.parameter_df.loc["sigma_B", ESTIMATE] = 1
+    session.problem.parameter_df.loc["sigma_B", ESTIMATE] = True
     assert (
         session._check_nesting_vs_parent({"neg_log_likelihood": -90.0}, session.model.to_antimony())
         is None
@@ -237,12 +237,12 @@ def test_the_outstanding_flag_survives_a_durable_resume(session, tmp_path):
     immediately — so a process restart must not be a way to launder it away. Rebuilt from the
     persisted fit events, not from the per-commit advisories: a valid additive experiment clears
     the flag without writing an advisory of its own."""
-    from petab.v1.C import ESTIMATE
+    from petab.v2.C import ESTIMATE
     from petab_mcp.references import StubReferenceResolver
     from petab_mcp.session import PetabSession
 
     _snapshot_parent(session, -100.0)
-    session.problem.parameter_df.loc["sigma_B", ESTIMATE] = 1
+    session.problem.parameter_df.loc["sigma_B", ESTIMATE] = True
     advisory = session._check_nesting_vs_parent(
         {"neg_log_likelihood": -90.0}, session.model.to_antimony()
     )
@@ -307,10 +307,10 @@ def test_a_new_best_supersedes_the_outstanding_flag(session):
     """A run that pivots to SIMPLIFYING after a botched experiment never raises k again, so the
     added-parameter clearing path alone would pin the note to every remaining finish ARM. A later
     new best is what the finish would actually rest on, so it supersedes the stale comparison."""
-    from petab.v1.C import ESTIMATE
+    from petab.v2.C import ESTIMATE
 
     _snapshot_parent(session, -100.0)
-    session.problem.parameter_df.loc["sigma_B", ESTIMATE] = 1
+    session.problem.parameter_df.loc["sigma_B", ESTIMATE] = True
     assert (
         session._check_nesting_vs_parent({"neg_log_likelihood": -90.0}, session.model.to_antimony())
         is not None
