@@ -186,6 +186,14 @@ def bind(model: pysb.Model, emission: Emission, binding: dict[str, str | float])
             if existing is None:
                 old._export = False  # INDRA builds with PySB's export off; see `_indra`
                 old.rename(target)
+                # A new shared id starts where any new name does (an entity-map `initial` or
+                # `formula` names one at reconcile's seed too), not at the 1.0 the row minted:
+                # reconcile fixes a starting-amount parameter that is exactly 1 as a unit
+                # normalisation, so a shared rate also read by an `initial` was fixed or
+                # estimated depending on which row named it first (Bachmann lost seven).
+                from .reconcile import SEED_INITIAL_VALUE
+
+                old.value = SEED_INITIAL_VALUE
                 parameters.append(target)
                 continue
             new = existing

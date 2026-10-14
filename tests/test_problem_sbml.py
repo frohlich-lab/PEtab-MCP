@@ -525,6 +525,18 @@ def test_a_dissociative_removal_dissolves_the_complexes_it_was_in():
     assert released and any("S1='u'" in s for s in released[0][1])
 
 
+def test_a_shared_rate_named_by_a_start_is_not_a_unit_pool():
+    """Bachmann's receptor total is both a rate constant several rows share and the receptor's
+    start; minted at 1.0 by the binding, reconcile read it as a unit normalisation and fixed it."""
+    antimony, _ = PS.to_antimony(
+        [(_TRANSITION, "mass_action", "r1", {"k": "total"})],
+        {"naive": Agent("naive")},
+        starts=[("naive", Agent("naive"), "total")],
+    )
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    assert sbml.getParameter("total").getValue() != 1.0
+
+
 def test_a_protein_is_made_in_the_state_it_is_written():
     """Alkan's p21 is made in the S- or G2-phase cells it is measured in; INDRA's IncreaseAmount
     makes the base state."""
