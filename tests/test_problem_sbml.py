@@ -252,3 +252,70 @@ def test_a_readout_formula_names_a_new_symbol():
             {"naive": Agent("naive")},
             formulas={"naive": "2 * naive"},
         )
+
+
+# -- entries written from the statement's own agents ---------------------------------
+def _reactions(rows, entities):
+    antimony, _ = PS.to_antimony(rows, entities)
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    names = {sp.getId(): sp.getName() for sp in sbml.getListOfSpecies()}
+    return [
+        (
+            sorted(names[r.getSpecies()] for r in rx.getListOfReactants()),
+            sorted(names[p.getSpecies()] for p in rx.getListOfProducts()),
+        )
+        for rx in sbml.getListOfReactions()
+    ]
+
+
+def test_a_conversion_makes_its_products_in_the_states_they_write():
+    """Two reactants into one stated product: Boehm's phosphorylation-and-dimerisation step, which
+    INDRA's Conversion (one reactant, base-state products) could not build."""
+    from indra.statements import Conversion
+
+    p_dimer = Agent._from_json(
+        {"name": "D", "mods": [{"mod_type": "phosphorylation", "residue": "Y", "position": "1"}]}
+    )
+    (reaction,) = _reactions(
+        [(Conversion(None, [Agent("A"), Agent("A")], [p_dimer]), "mass_action", "r1")],
+        {"A": Agent("A"), "pD": p_dimer},
+    )
+    assert reaction == (["A()", "A()"], ["D(Y1='p')"])
+
+
+def test_a_release_frees_the_partner_it_was_bound_to():
+    """Schwen's internalised insulin is degraded and its receptor recycles; INDRA's degradation
+    deletes the whole complex, receptor included."""
+    from indra.statements import Complex, DecreaseAmount
+
+    bound = Agent("L", bound_conditions=[BoundCondition(Agent("R"))])
+    reactions = _reactions(
+        [
+            (Complex([Agent("L"), Agent("R")]), INDRA_DEFAULT, "bind"),
+            (DecreaseAmount(None, bound), "release", "deg"),
+        ],
+        {"R": Agent("R"), "L": Agent("L")},
+    )
+    released = [r for r in reactions if r[1] == ["R(l=None)"] and len(r[0]) == 1]
+    assert released and "._br_" in released[0][0][0]
+
+
+def test_a_population_renews_itself():
+    """Crauste's effectors expand from themselves; INDRA reads "X increases X" as nothing."""
+    from indra.statements import IncreaseAmount
+
+    reactions = _reactions(
+        [(IncreaseAmount(None, Agent("E")), "self_renewal", "r1")], {"E": Agent("E")}
+    )
+    assert (["E()"], ["E()", "E()"]) in reactions
+
+
+def test_a_modification_goes_on_without_an_enzyme():
+    """Blasi's acetylations and Brannmark's basal receptor phosphorylation have no named enzyme;
+    `basal` existed only for removal."""
+    from indra.statements import Acetylation
+
+    reactions = _reactions(
+        [(Acetylation(None, Agent("H4"), "K", "5"), "basal", "r1")], {"H4": Agent("H4")}
+    )
+    assert reactions == [(["H4(K5='n')"], ["H4(K5='y')"])]  # INDRA's acetylation states
