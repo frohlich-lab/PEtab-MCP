@@ -303,6 +303,9 @@ class PetabSession:
         # last edited (`model_edits`), carried across calls so a structured edit never has to
         # re-derive it from the render. Restored on rollback with the rest of the state.
         self.model_source: str | None = None
+        # The statements record (:func:`operations.statements_to_antimony`) of the model last built
+        # from statements, beside its source: what `get_model(format='statements')` renders.
+        self.model_statements: dict[str, Any] | None = None
 
         # What the `statements` route asserted for the next commit: each row with the Emission
         # it produced (:func:`operations.statements_to_antimony`). Stored as ``statements.json``
