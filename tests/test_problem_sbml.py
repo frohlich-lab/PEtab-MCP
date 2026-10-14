@@ -103,3 +103,19 @@ def test_a_complex_nothing_forms_is_refused():
         PS.to_antimony(
             [(Phosphorylation(raf, Agent("MEK")), INDRA_DEFAULT, "r1")], {"RAF_RAS": raf}
         )
+
+
+def test_indra_padded_rules_build():
+    """INDRA pads one-step Conversion and subject-driven amount rules with None for Kappa; the
+    trace read every side as a complex and every such statement failed to build (Bachmann's
+    SOCS3-driven degradation, Bruno's conversions, Sneyd's gating)."""
+    from indra.statements import Conversion, DecreaseAmount
+
+    antimony, _ = PS.to_antimony(
+        [
+            (Conversion(None, [Agent("A")], [Agent("B")]), INDRA_DEFAULT, "r1"),
+            (DecreaseAmount(Agent("C"), Agent("B")), INDRA_DEFAULT, "r2"),
+        ],
+        {"B": Agent("B"), "C": Agent("C")},
+    )
+    assert SbmlModel.from_antimony(antimony).sbml_model.getNumReactions() == 2
