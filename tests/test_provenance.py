@@ -199,3 +199,17 @@ def test_every_version_is_a_fit(session, reauthor_toy):
     from petab_mcp import dedup as D
 
     assert {r["version"] for r in D.build_registry(session)} == {m["version"] for m in metas}
+
+
+def test_a_store_written_by_the_v1_server_is_refused(tmp_path):
+    """Its versions hold v1 parameter tables and condition-keyed simulations; an empty store and
+    a v2 store open as before."""
+    from petab_mcp.errors import PetabMcpError
+
+    root = tmp_path / ".petab_mcp"
+    ProvenanceStore(root).snapshot_version("model m() end", _pdf([]), label="v0")
+    ProvenanceStore(root)  # its own FORMAT file
+    (root / "FORMAT").unlink()
+    with pytest.raises(PetabMcpError, match="fresh --provenance-dir"):
+        ProvenanceStore(root)
+    ProvenanceStore(tmp_path / "empty")

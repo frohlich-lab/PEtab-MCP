@@ -7,7 +7,7 @@ from petab_mcp import parameters as P
 from petab_mcp.errors import PetabMcpError
 from petab_mcp.operations import OperationError
 
-# The shipped toy model (tests/data/toy_v1/model.ant), used as the base for every re-author.
+# The shipped toy model (tests/data/toy_v2/model.ant), used as the base for every re-author.
 # Structural edits are made by authoring this base with the change applied via ``set_model`` —
 # ``{extra}`` is where extra reaction lines are spliced in.
 _BASE_MODEL = """model conversion_reaction
@@ -306,7 +306,7 @@ def _add_version(session, *, upper, nllh, kind="fit"):
     and whose meta records ``neg_log_likelihood`` (``None`` => a simulate-only fit). The
     guard reconstructs widening history from these stored tables, so this mirrors exactly how a
     real fit / rollback lands on disk."""
-    from petab.v1.C import UPPER_BOUND
+    from petab.v2.C import UPPER_BOUND
 
     df = session.problem.parameter_df.copy(deep=True)
     df.loc["k1", UPPER_BOUND] = upper
@@ -318,7 +318,7 @@ def _add_version(session, *, upper, nllh, kind="fit"):
 
 def _pin_k1_at_upper(session, upper):
     """Point the live table + last fit at ``upper`` so k1 reads as re-pinned at its upper bound."""
-    from petab.v1.C import UPPER_BOUND
+    from petab.v2.C import UPPER_BOUND
 
     session.problem.parameter_df.loc["k1", UPPER_BOUND] = upper
     session.simulation = {"fitted_parameters": {"k1": float(upper)}}
@@ -336,7 +336,7 @@ def test_reject_third_widening_of_repinning_parameter(session):
 
 def test_third_widening_rejected_through_full_operation_and_reverts(session):
     # Same, but through the public op: it must raise without applying the new bound.
-    from petab.v1.C import UPPER_BOUND
+    from petab.v2.C import UPPER_BOUND
 
     _add_version(session, upper=1e3, nllh=100.0)
     _add_version(session, upper=1e4, nllh=99.9)
@@ -539,3 +539,85 @@ def test_a_parameters_only_edit_that_touched_the_model_is_refused(session, monke
         for i in range(session.problem.model.sbml_model.getNumSpecies())
     ]
     assert after_ids == before_ids, "the rejected edit reached the live model"
+
+
+def test_the_sigma_widening_warning_reads_an_upgraded_log10_sigma_in_its_own_units():
+    """The cap is an sd on the log scale the noise is additive on; an upgraded log10 observable's
+    sd is log(10)*sigma, so its sigma reaches the cap ln 10 times sooner than its raw value says."""
+    import math
+
+    import pandas as pd
+
+    from petab_mcp import reconcile as R
+    from petab_mcp.problem import WorkingProblem
+
+    measurements = pd.DataFrame(
+        {
+            "observableId": ["o"] * 5,
+            "experimentId": [""] * 5,
+            "time": [0.0, 1.0, 2.0, 3.0, 4.0],
+            "measurement": [1e2, 1e3, 1e4, 1e5, 1e6],
+            "noiseParameters": ["sd_o"] * 5,
+        }
+    )
+    # What the upgrade (`problem._from_v1`) makes of a v1 log10 observable.
+    observables = pd.DataFrame(
+        {
+            "observableId": ["o"],
+            "observableFormula": ["x"],
+            "noiseFormula": ["log(10) * (noiseParameter1_o)"],
+            "noiseDistribution": ["log-normal"],
+            "noisePlaceholders": ["noiseParameter1_o"],
+        }
+    ).set_index("observableId")
+    parameters = pd.DataFrame(
+        {"parameterId": ["sd_o"], "lowerBound": [1e-3], "upperBound": [1e-2], "estimate": [True]}
+    ).assign(nominalValue=0.1)
+    problem = WorkingProblem(
+        observable_df=observables, measurement_df=measurements, parameter_df=parameters
+    )
+    cap = R.sigma_upper_bound_cap(problem, "sd_o") / math.log(10)  # in log10 units
+    assert O._warn_sigma_bound_widening(problem, "sd_o", 1.2 * cap) is not None
+    assert O._warn_sigma_bound_widening(problem, "sd_o", 0.8 * cap) is None
+
+
+def test_rejection_summary_names_the_reasons():
+    from petab_mcp.operations import _rejection_summary
+
+    out = _rejection_summary(
+        [
+            "'RAF_total' ships FIXED (estimate=0) in this problem — a known constant",
+            "Extraneous parameter(s) in parameter table: {'pEGFR_Akt', 'pAkt_S6'}",
+        ]
+    )
+    assert "resulting problem is invalid" in out  # bucket substring preserved
+    assert "RAF_total" in out and "pAkt_S6" in out  # the actionable detail is IN the message
+    assert "more in `issues`" not in out  # nothing elided at 2 issues
+
+
+def test_rejection_summary_caps_and_says_what_it_elided():
+    from petab_mcp.operations import _rejection_summary
+
+    out = _rejection_summary([f"issue number {i}" for i in range(7)])
+    assert "issue number 0" in out and "issue number 2" in out
+    assert "issue number 3" not in out  # capped at 3
+    assert "(+4 more in `issues`)" in out  # a truncated view never looks complete
+
+
+def test_rejection_summary_collapses_multiline_libsbml_noise():
+    from petab_mcp.operations import _rejection_summary
+
+    long_sbml = (
+        "libSBML Error (SBML component consistency): The value of a 'symbol' field in any "
+        "<initialAssignment>\n   definition cannot also appear as the value of a "
+        "'variable' field.\n   " + "x" * 400
+    )
+    out = _rejection_summary([long_sbml])
+    assert "\n" not in out  # one line, not a wall of text
+    assert len(out) < 420  # per-issue truncation actually applied
+
+
+def test_rejection_summary_falls_back_when_there_is_no_error_level_issue():
+    from petab_mcp.operations import _rejection_summary
+
+    assert _rejection_summary([]) == "the resulting problem is invalid."

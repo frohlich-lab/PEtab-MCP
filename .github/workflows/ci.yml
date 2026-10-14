@@ -33,28 +33,32 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
-      # AMICI generates and compiles C++ for every model. A C/C++ compiler and
-      # CMake ship on ubuntu-latest; the Ninja generator AMICI drives CMake with
-      # does not, so install it. OpenBLAS is bundled in the AMICI wheel.
+      # AMICI generates and compiles C++ for every model, and is itself built
+      # from source here (pyproject pins a git commit; its build pulls BLAS from
+      # the scipy-openblas64 wheel). A C/C++ compiler and CMake ship on
+      # ubuntu-latest; the Ninja generator AMICI drives CMake with does not, so
+      # install it.
       #
-      # Deliberately NOT installing the apt `swig`: AMICI's wheel is built
-      # against a specific SWIG, and a mismatched system SWIG makes compiled
-      # models raise "'SwigPyObject' object has no attribute 'module'". The
-      # matching SWIG is the pip `swig` package (installed and pinned below).
+      # Deliberately NOT installing the apt `swig`: AMICI is built against the
+      # pip `swig`, and a mismatched system SWIG makes compiled models raise
+      # "'SwigPyObject' object has no attribute 'module'". The matching SWIG is
+      # the pip `swig` package (installed and pinned below).
       - name: Install build toolchain (Ninja)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ninja-build cmake build-essential
 
+      # AMICI's source build compiles serially unless told otherwise; the pip
+      # cache keeps the built wheel for the pinned commit.
       - name: Install package (with dev extras)
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e '.[dev]'
+          AMICI_PARALLEL_COMPILE=$(nproc) python -m pip install -e '.[dev]'
 
       # `swig` is an (unpinned) AMICI dependency, so `.[dev]` already pulls it;
       # install it explicitly too so CI never silently relies on the transitive
-      # graph. Its version tracks the SWIG the AMICI wheel is built against,
-      # which is what compiled models must match.
+      # graph. Its version tracks the SWIG AMICI's own build used, which is
+      # what compiled models must match.
       - name: Install the SWIG that matches the AMICI wheel
         run: python -m pip install swig
 
@@ -77,13 +81,6 @@ jobs:
           print(f"SWIG={swig_bin}")
           print(f"SWIG_LIB={lib_dirs[-1]}")
           PY
-
-      # The `statements` route expands its rule-based model with BioNetGen, which is not on
-      # PyPI; pysb finds it through BNGPATH.
-      - name: Install BioNetGen
-        run: |
-          curl -sSL https://github.com/RuleWorld/bionetgen/releases/download/BioNetGen-2.9.3/BioNetGen-2.9.3-linux.tar.gz | tar -xz -C "$RUNNER_TEMP"
-          echo "BNGPATH=$RUNNER_TEMP/BioNetGen-2.9.3" >> "$GITHUB_ENV"
 
       - name: Run tests
         # -n 2 lives HERE, not in pyproject's addopts, so it applies to CI (a 2-core runner)

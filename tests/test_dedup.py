@@ -12,8 +12,8 @@ from __future__ import annotations
 from petab_mcp import dedup as D
 from petab_mcp import operations as O
 from petab_mcp import parameters as P
-from petab.v1.C import ESTIMATE, NOMINAL_VALUE, UPPER_BOUND
-from petab.v1.models.sbml_model import SbmlModel
+from petab.v2.C import ESTIMATE, NOMINAL_VALUE, UPPER_BOUND
+from petab.v2.models.sbml_model import SbmlModel
 
 # Reversible A<->B (the toy structure) and a one-reaction variant that drops r2/k2.
 REVERSIBLE = """model conversion_reaction
@@ -76,7 +76,7 @@ def test_structure_fingerprint_changes_with_estimated_set(session):
     df = session.problem.parameter_df.copy(deep=True)
     sm = _sm(REVERSIBLE)
     base = P.structure_fingerprint(sm, df)
-    df.loc["k2", ESTIMATE] = 0
+    df.loc["k2", ESTIMATE] = False
     assert P.structure_fingerprint(sm, df) != base
 
 

@@ -3,10 +3,12 @@ inputs."""
 
 from __future__ import annotations
 
-from indra.statements import Agent, Phosphorylation
+import pytest
+from indra.statements import Agent, BoundCondition, Phosphorylation
 from petab.v1.models.sbml_model import SbmlModel
 
 from petab_mcp import problem_sbml as PS
+from petab_mcp.errors import ModelUpdateError
 from petab_mcp.mechanisms import INDRA_DEFAULT
 from petab_mcp.statements import PopulationTransition
 
@@ -74,3 +76,30 @@ def test_a_blinded_readout_stays_a_rule():
     )
     sbml = SbmlModel.from_antimony(antimony).sbml_model
     assert sbml.getAssignmentRuleByVariable("readout_naive") is not None
+
+
+def test_what_the_start_cannot_reach_starts_present():
+    """Populations that only interconvert are each made by a rule, but nothing at the start makes
+    them; with every made monomer started empty, as a diff of each rule's names had it, the model
+    stayed zero. A made monomer the start does reach still starts empty."""
+    antimony, _ = PS.to_antimony(
+        [
+            (_TRANSITION, "mass_action", "r1"),
+            (PopulationTransition(Agent("A"), Agent("B")), "mass_action", "r2"),
+            (PopulationTransition(Agent("B"), Agent("A")), "mass_action", "r3"),
+        ],
+        {},
+    )
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    present = {ia.getMath().getName() for ia in sbml.getListOfInitialAssignments()}
+    assert present == {"naive_init", "A_init", "B_init"}
+
+
+def test_a_complex_nothing_forms_is_refused():
+    """The start holds free monomers only, so a kinase active only while bound to a partner no
+    statement binds it to never acts; built anyway, its rate constant was one no fit could move."""
+    raf = Agent("RAF", bound_conditions=[BoundCondition(Agent("RAS"))])
+    with pytest.raises(ModelUpdateError, match=r"rows \['r1'\].*readouts \['RAF_RAS'\]"):
+        PS.to_antimony(
+            [(Phosphorylation(raf, Agent("MEK")), INDRA_DEFAULT, "r1")], {"RAF_RAS": raf}
+        )

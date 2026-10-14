@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from petab.v1.models.sbml_model import SbmlModel
+from petab.v2.models.sbml_model import SbmlModel
 
 from petab_mcp.validation import (
     _fixed_constant_role_issues,
@@ -72,7 +72,7 @@ def test_unused_condition_target_check_is_noop_without_targets(session):
 # libantimony freezes a symbol used as a stoichiometry coefficient to a constant, drops the
 # parameter, and leaves the dropped symbol as the SpeciesReference id — the signal we detect. A
 # literal coefficient leaves the id unset, so it is never flagged.
-# The shipped toy base model (tests/data/toy_v1/model.ant) — real reactions with `=>` arrows and
+# The shipped toy base model (tests/data/toy_v2/model.ant) — real reactions with `=>` arrows and
 # no coefficients: it must NOT trip the check (a false positive would block every real edit).
 _TOY_BASE = """model conversion_reaction
   compartment compartment_ = 1;

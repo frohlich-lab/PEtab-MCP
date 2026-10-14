@@ -11,7 +11,7 @@ from petab_mcp.server import create_server
 
 REPO_ROOT = Path(__file__).parent.parent
 SKILLS_DIR = REPO_ROOT / "src" / "petab_mcp" / "_skills"
-YAML_PATH = Path(__file__).parent / "data" / "toy_v1" / "problem.yaml"
+YAML_PATH = Path(__file__).parent / "data" / "toy_v2" / "problem.yaml"
 
 
 def _structured(result):
@@ -213,3 +213,18 @@ def test_the_skills_stay_short():
         if md.is_file():
             n = len(md.read_text())
             assert n < 6500, f"{skill_dir.name}/SKILL.md is {n} chars — too long to re-send"
+
+
+def test_skills_version_moves_when_a_skill_changes(tmp_path):
+    """A skill edit must be visible in the version, or the tracking is decorative."""
+    from petab_mcp.skills import skills_version
+
+    src = SKILLS_DIR
+    before = skills_version(src)
+
+    fake = tmp_path / "_skills" / "petab-model-building"
+    fake.mkdir(parents=True)
+    (fake / "SKILL.md").write_text(
+        (src / "petab-model-building" / "SKILL.md").read_text() + "\nAn extra rule.\n"
+    )
+    assert skills_version(tmp_path / "_skills") != before

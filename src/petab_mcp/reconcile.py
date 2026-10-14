@@ -21,12 +21,9 @@ import re
 from typing import Any
 
 import libsbml
-from petab.v1.C import (
-    CONDITION_ID,
-    CONDITION_NAME,
+from petab.v2.C import (
     ESTIMATE,
-    LIN,
-    LOG10,
+    EXPERIMENT_ID,
     LOWER_BOUND,
     MEASUREMENT,
     NOISE_FORMULA,
@@ -35,8 +32,8 @@ from petab.v1.C import (
     OBSERVABLE_FORMULA,
     OBSERVABLE_ID,
     OBSERVABLE_PARAMETERS,
-    OBSERVABLE_TRANSFORMATION,
-    PARAMETER_SCALE,
+    TARGET_ID,
+    TARGET_VALUE,
     UPPER_BOUND,
 )
 
@@ -47,6 +44,17 @@ from .constants import (
     NOISE_SIGMA_REPLICATE_MIN_DOF,
 )
 from .parameters import _default_bounds
+from .problem import (
+    LIN,
+    LOG,
+    LOG10,
+    PARAMETER_SCALE,
+    as_bool,
+    observable_transformation,
+    placeholder_ids,
+    placeholders,
+    split_overrides,
+)
 
 # Leading (?<![\w.]) so a digit-glued run is never read as an identifier: the `e5` in `1e5`
 # and the `e` in `2.5e-3` (scientific-notation exponents) stay part of their numeric literal.
@@ -65,8 +73,9 @@ _IDENT_RE = re.compile(r"(?<![\w.])[A-Za-z_]\w*")
 #: lands on the ordinary path: estimated, on log10.
 SEED_INITIAL_VALUE = 0.1
 
-# PEtab's per-observable placeholders, substituted from the measurement table at import time.
-_PLACEHOLDER_RE = re.compile(r"(?:observable|noise)Parameter\d+_\w+")
+#: The ``model_id`` a model-less problem's model is created under; the same id gemot gives the
+#: empty SBML it ships. Must not be an Antimony keyword.
+ZERO_SHOT_MODEL_ID = "zero_shot_problem"
 
 # Antimony GRAMMAR keywords: `species species;` does not parse, so an entity with one of these
 # ids cannot be declared. Determined by probing libantimony, not from a spec — and pinned that
@@ -241,8 +250,8 @@ def seed_model_antimony(problem) -> str | None:
     """A CONTENT-FREE but VALID initial model for a problem that ships without one, or ``None``
     when the fixed tables name nothing to declare.
 
-    A problem that ships model-less otherwise starts as a bare ``model model / end`` skeleton,
-    and that skeleton is not a neutral placeholder — it is a *broken* PEtab problem (its
+    A problem that ships model-less otherwise starts as an empty skeleton, and that
+    skeleton is not a neutral placeholder — it is a *broken* PEtab problem (its
     observables reference entities no model defines) that AMICI's SBML import SEGFAULTS on,
     taking the server process with it. Every downstream guard exists to keep that one state
     unreachable. Making the initial model VALID instead removes the state.
@@ -254,7 +263,7 @@ def seed_model_antimony(problem) -> str | None:
     state.
 
     What it declares, and why that leaks nothing: one SPECIES per identifier the observable
-    formulas name, plus each condition-table column (a per-condition target must be a model
+    formulas name, plus each condition target (a per-condition target must be a model
     entity or petab's lint rejects the problem). Both tables are read-only and already fully
     visible through ``list_observables`` / ``list_conditions``, so the seed only restates what
     the caller can already read.
@@ -286,19 +295,19 @@ def seed_model_antimony(problem) -> str | None:
     if odf is not None and OBSERVABLE_FORMULA in odf.columns:
         for value in odf[OBSERVABLE_FORMULA]:
             ids |= formula_identifiers(value)
-    # A condition-table column is a per-condition target; petab requires it to be a model entity,
+    # A condition-table target is a per-condition target; petab requires it to be a model entity,
     # so the seed has to declare it too or v0 does not lint.
-    ids |= condition_column_symbols(problem)
+    ids |= condition_target_symbols(problem)
     pdf = getattr(problem, "parameter_df", None)
     rows = {str(p) for p in getattr(pdf, "index", [])}
+    # The observables' declared PLACEHOLDERS are not entities: petab substitutes each from the
+    # measurement table's observableParameters / noiseParameters column at import, and whatever it
+    # resolves to (a scaling factor, a sigma) already has its own parameter-table row. Declaring
+    # the placeholder itself would invent a state the real model never has.
+    placeholder = placeholder_ids(odf)
 
     def _declarable(sid: str) -> bool:
-        # `observableParameter1_<obsId>` / `noiseParameter1_<obsId>` are PEtab PLACEHOLDERS, not
-        # entities: petab substitutes each from the measurement table's observableParameters /
-        # noiseParameters column at import, and whatever it resolves to (a scaling factor, a
-        # sigma) already has its own parameter-table row. Declaring the placeholder itself would
-        # invent a state the real model never has.
-        return _declarable_id(sid) and not _PLACEHOLDER_RE.fullmatch(sid)
+        return _declarable_id(sid) and sid not in placeholder
 
     # A symbol with a parameter-table row is a parameter, not a species — the table is the
     # authority on what it IS, and minting a species for it would collide with its own row.
@@ -598,7 +607,7 @@ def input_species(sm) -> set[str]:
     """Species that are model INPUTS / forcing terms rather than free dynamic states: held
     constant, on the boundary, or driven by an assignment- or rate-rule (a forcing function).
 
-    Their trajectory is imposed, not fitted — like a condition-table column — so they are
+    Their trajectory is imposed, not fitted — like a condition target — so they are
     legitimately absent from every observable and must NOT be flagged as an unconstrained
     hidden state (e.g. a genotype flag ``S_on`` or an input/forcing level ``insulin_level``)."""
     inputs: set[str] = set()
@@ -662,32 +671,29 @@ def _observable_and_measurement_symbols(problem) -> set[str]:
 
 def table_referenced_symbols(problem) -> set[str]:
     """Symbols the *fixed* tables (observables, conditions) depend on."""
-    names = _observable_and_measurement_symbols(problem)
+    names = _observable_and_measurement_symbols(problem) | condition_target_symbols(problem)
     cdf = problem.condition_df
-    if cdf is not None:
-        for col in cdf.columns:
-            if col != CONDITION_NAME:
-                names.add(str(col))
-            for val in cdf[col]:
-                names |= formula_symbols(val)
+    if cdf is not None and TARGET_VALUE in cdf.columns:
+        for val in cdf[TARGET_VALUE]:
+            names |= formula_symbols(val)
     return names
 
 
-def condition_column_symbols(problem) -> set[str]:
-    """Parameters/species that are CONDITION-TABLE COLUMN HEADERS (excluding conditionId/Name).
+def condition_target_symbols(problem) -> set[str]:
+    """Parameters/species the CONDITION TABLE targets (its ``targetId`` column).
 
-    A model parameter that appears as a condition-table column is set PER CONDITION — a PEtab
-    condition override — so it must NOT be written into the parameter table: PEtab rejects it there
-    ("… is not allowed to occur in the parameters table"). Excluding these from the parameter-table
-    sync lets a benchmark condition table with parametric input columns (EGF doses, insulin steps,
-    rate multipliers, genotype switches) ship VERBATIM instead of being rewritten onto species.
-    Mirrors petab's own ``get_valid_parameters_for_parameter_table`` (which blacklists the condition
-    columns). Cell *values* that reference an estimated parameter (a shared dose amplitude) are a
-    different thing — those stay, via :func:`table_referenced_symbols`."""
+    A model parameter a condition targets is set PER CONDITION — a PEtab condition change — so it
+    must NOT be written into the parameter table: PEtab rejects it there ("… present in both the
+    condition table and the parameter table"). Excluding these from the parameter-table sync lets
+    a benchmark condition table with parametric inputs (EGF doses, insulin steps, rate multipliers,
+    genotype switches) ship VERBATIM instead of being rewritten onto species. Mirrors petab's own
+    lint, which forbids a target in both tables. Target *values* that reference an estimated
+    parameter (a shared dose amplitude) are a different thing — those stay, via
+    :func:`table_referenced_symbols`."""
     cdf = problem.condition_df
-    if cdf is None:
+    if cdf is None or TARGET_ID not in cdf.columns:
         return set()
-    return {str(c) for c in cdf.columns} - {CONDITION_NAME, CONDITION_ID}
+    return {str(t) for t in cdf[TARGET_ID].dropna()}
 
 
 def observation_model_symbols(problem) -> set[str]:
@@ -696,7 +702,7 @@ def observation_model_symbols(problem) -> set[str]:
     measurement-level ``observableParameters``/``noiseParameters`` overrides.
 
     Deliberately EXCLUDES condition-table symbols (those are legitimate model DRIVING INPUTS —
-    e.g. a dose species fed through a condition column — not observation-model constants).
+    e.g. a dose species set by a condition target — not observation-model constants).
     Used to catch a model that reuses one of these as a mechanistic rate constant instead of
     introducing a dedicated parameter for it (see ``validation._observation_model_reuse_issues``):
     a run once "fit" the Brannmark benchmark by wiring its four fixed observable-scaling
@@ -866,8 +872,8 @@ def classify_inner_parameters(problem) -> dict[str, str]:
 def _measurement_rows_for_sigma(problem, pid: str):
     """Measurement rows whose noise is modelled by sigma parameter ``pid`` — matched via a
     direct ``noiseParameters`` override, or (for a sigma named directly in the fixed
-    ``noiseFormula`` rather than through the ``noiseParameter1_<obsId>`` placeholder
-    convention) via the observable(s) whose formula names it. ``None`` if no match/no data."""
+    ``noiseFormula`` rather than through a declared noise placeholder) via the observable(s)
+    whose formula names it. ``None`` if no match/no data."""
     mdf = problem.measurement_df
     if mdf is None or MEASUREMENT not in mdf.columns:
         return None
@@ -888,24 +894,17 @@ def _measurement_rows_for_sigma(problem, pid: str):
 
 
 def _observable_transformations(problem, rows) -> set[str]:
-    """The ``observableTransformation``(s) (``lin``/``log``/``log10``) of the observables the
-    given measurement rows belong to. ``{"lin"}`` when the column is absent/blank — PEtab's
-    default."""
+    """The coordinates (``lin``/``log``, see :func:`problem.observable_transformation`) the
+    observables of the given measurement rows have their residuals in. ``{"lin"}`` when nothing
+    says otherwise — PEtab's default."""
     odf = problem.observable_df
-    if (
-        odf is None
-        or OBSERVABLE_TRANSFORMATION not in odf.columns
-        or OBSERVABLE_ID not in rows.columns
-    ):
+    if odf is None or OBSERVABLE_ID not in rows.columns:
         return {LIN}
-    out: set[str] = set()
-    for oid in rows[OBSERVABLE_ID].dropna().unique():
-        try:
-            t = odf.loc[oid, OBSERVABLE_TRANSFORMATION]
-        except KeyError:
-            continue
-        t = str(t).strip().lower()
-        out.add(t if t in (LIN, "log", "log10") else LIN)
+    out = {
+        observable_transformation(odf, oid)
+        for oid in rows[OBSERVABLE_ID].dropna().unique()
+        if oid in odf.index
+    }
     return out or {LIN}
 
 
@@ -917,21 +916,21 @@ def _transform_values(values, transformation: str):
     dropped, being undefined under a log transform."""
     import numpy as np
 
-    if transformation == "log":
+    if transformation == LOG:
         v = values[values > 0]
         return np.log(v) if len(v) else v
-    if transformation == "log10":
+    if transformation == LOG10:
         v = values[values > 0]
         return np.log10(v) if len(v) else v
     return values
 
 
 def sigma_noise_coordinate(problem, pid: str, rows=None) -> str | None:
-    """The coordinate in which ``pid``'s noise is ADDITIVE (homoscedastic) — ``lin``, ``log`` or
-    ``log10`` — which is the only coordinate where "sigma vs data spread" is a meaningful ratio.
+    """The coordinate in which ``pid``'s noise is ADDITIVE (homoscedastic) — ``lin`` or ``log`` —
+    which is the only coordinate where "sigma vs data spread" is a meaningful ratio.
 
     Three cases, unified:
-      * ``observableTransformation`` is ``log``/``log10`` — residuals and sigma already live there.
+      * the noise distribution is a log one — residuals and sigma already live there.
       * a PROPORTIONAL ``noiseFormula`` (``noiseParameter1_X*X``) on a ``lin`` observable — sigma =
         cv*y is additive in LOG space with sd ~= cv (since d(ln y) = dy/y), so the parameter is
         directly comparable to the std of ``ln`` data. This is why a bare CV must never be compared
@@ -946,7 +945,7 @@ def sigma_noise_coordinate(problem, pid: str, rows=None) -> str | None:
     if len(transformations) != 1:
         return None
     t = next(iter(transformations))
-    if t in ("log", "log10"):
+    if t in (LOG, LOG10):
         return t
     # A PROPORTIONAL sd (cv*y) on a lin observable is additive in LOG space with sd ~= cv, so the
     # cv is comparable to the std of ln y. Decided from the symbolic form (see sigma_noise_form),
@@ -954,7 +953,7 @@ def sigma_noise_coordinate(problem, pid: str, rows=None) -> str | None:
     # returns None so the caller fails open instead of judging on an arbitrary scale.
     form = sigma_noise_form(problem, pid, rows)
     if form == "proportional":
-        return "log"
+        return LOG
     if form == "additive":
         return t
     return None
@@ -1069,7 +1068,7 @@ def sigma_difference_noise_estimate(problem, pid: str, fitted_values=None) -> fl
 
         sigma^2 ~= mean((y[i+1] - y[i])^2) / 2
 
-    Differences are taken WITHIN each ``(observable, condition)`` series ordered by time, on the
+    Differences are taken WITHIN each ``(observable, experiment)`` series ordered by time, on the
     coordinate where the noise is additive (see :func:`sigma_noise_coordinate`). A smooth mean
     function nearly cancels between adjacent samples, so what survives is dominated by noise — which
     makes this an independent yardstick that needs NEITHER replicates NOR a ground-truth model. That
@@ -1120,7 +1119,7 @@ def sigma_difference_noise_estimate(problem, pid: str, fitted_values=None) -> fl
     gains = _gain_normalised_gains(problem, pid, rows, fitted_values)
     if gains is None:
         return None
-    group_cols = [c for c in ("observableId", "simulationConditionId") if c in rows.columns]
+    group_cols = [c for c in (OBSERVABLE_ID, EXPERIMENT_ID) if c in rows.columns]
     grouped = rows.groupby(group_cols, sort=False) if group_cols else [(None, rows)]
     squares: list[float] = []
     for _key, series in grouped:
@@ -1144,7 +1143,7 @@ def sigma_difference_noise_estimate(problem, pid: str, fitted_values=None) -> fl
 
 def sigma_replicate_noise_estimate(problem, pid: str, fitted_values=None) -> float | None:
     """The PURE-ERROR noise estimate for ``pid``: the pooled standard deviation WITHIN design points
-    that were measured more than once (same observable, condition and time).
+    that were measured more than once (same observable, experiment and time).
 
         sigma^2 = sum_g sum_i (y_gi - mean_g)^2 / sum_g (n_g - 1)
 
@@ -1191,8 +1190,8 @@ def replicate_pure_error_points(problem, pid: str, fitted_values=None, simulatio
     number — and, when ``simulations`` is given, the model's prediction at each of those points on
     the SAME coordinate.
 
-    One entry per design point measured MORE THAN ONCE (rows sharing observable, condition and
-    time), each ``{observable_id, condition_id, time, n, df, ybar, s, ssq, prediction}`` on the
+    One entry per design point measured MORE THAN ONCE (rows sharing observable, experiment and
+    time), each ``{observable_id, experiment_id, time, n, df, ybar, s, ssq, prediction}`` on the
     noise-additive, amplitude-normalised coordinate (see :func:`sigma_noise_coordinate` /
     :func:`_gain_normalised_gains`) — so ``(ybar - prediction) / (s / sqrt(n))`` is a deviation in
     units of that point's OWN replicate scatter and never touches the fitted sigma at all. Points
@@ -1242,7 +1241,7 @@ def replicate_pure_error_points(problem, pid: str, fitted_values=None, simulatio
     from . import residual_tests as rt
 
     out: list[dict[str, Any]] = []
-    # Group by the full design point INCLUDING time: rows sharing (observable, condition, time) are
+    # Group by the full design point INCLUDING time: rows sharing (observable, experiment, time) are
     # replicates of one true value, so their spread is pure noise. A single-measurement design point
     # (n_g = 1) contributes nothing — which is why a time series without repeats yields no points.
     # dropna only for the MEASUREMENT table. The simulation records store only FINITE floats, so
@@ -1251,10 +1250,12 @@ def replicate_pure_error_points(problem, pid: str, fitted_values=None, simulatio
     # observable/condition/time cell is genuinely missing data, and pooling every such row into ONE
     # NaN-keyed group makes its BETWEEN-point spread read as within-point noise: that silently moves
     # the pooled floor `sigma_replicate_noise_estimate` hands the 1.5 inflation gate (a two-row toy
-    # case moved it 0.0129 -> 22.36), so those rows stay dropped, exactly as before this split. THIS
+    # case moved it 0.0129 -> 22.36), so those rows stay dropped, exactly as before this split. (An
+    # experiment-less row is NOT such a row: its `experimentId` is "" by construction, see
+    # :mod:`petab_mcp.problem`, so it groups like any other.) THIS
     # is the rule for what a design point IS; `_design_point_keys` below normalises a missing time only
     # to MATCH the two frames, and never makes a NaN-keyed row into a design point.
-    group_cols = [c for c in ("observableId", "simulationConditionId", "time") if c in rows.columns]
+    group_cols = [c for c in (OBSERVABLE_ID, EXPERIMENT_ID, "time") if c in rows.columns]
     for _key, series in rows.groupby(group_cols, sort=False, dropna=simulations is None):
         oid = (
             series[OBSERVABLE_ID].iloc[0]
@@ -1271,7 +1272,7 @@ def replicate_pure_error_points(problem, pid: str, fitted_values=None, simulatio
         out.append(
             {
                 "observable_id": None if oid is None else str(oid),
-                "condition_id": _first_value(series, "simulationConditionId"),
+                "experiment_id": _first_value(series, EXPERIMENT_ID),
                 "time": _first_value(series, "time"),
                 "n": pure["n"],
                 "df": pure["df"],
@@ -1285,7 +1286,7 @@ def replicate_pure_error_points(problem, pid: str, fitted_values=None, simulatio
 
 
 def _design_point_keys(frame) -> list[tuple]:
-    """One hashable ``(observable, condition, time)`` key per row of ``frame`` — used ONLY to match
+    """One hashable ``(observable, experiment, time)`` key per row of ``frame`` — used ONLY to match
     rows of the MEASUREMENT table against rows of the SIMULATION records, never to decide what counts
     as a design point (the ``groupby`` above does that, and it still DROPS NaN keys on the measurement
     table; see its comment).
@@ -1293,14 +1294,16 @@ def _design_point_keys(frame) -> list[tuple]:
     For matching, a non-finite or missing time collapses to ``None`` on both sides, because the
     simulation records store only finite floats (blasi's steady-state ``time = inf`` arrives as None)
     and because a NaN would never compare equal to itself anyway. A missing column contributes
-    ``None``, so a frame without a condition column still matches one whose condition is blank. A
+    ``None``, so a frame without an experiment column still matches one whose experiment is blank. A
     measurement row with a blank time therefore contributes a key here and is still excluded from the
     pooled floor — scoping wider than the grouping is the fail-open direction: it can only admit
     simulation rows that the grouping then declines to make a design point out of.
     """
 
     def _label(value):
-        return None if value is None or value != value else str(value)
+        # "" is how an experiment-less row spells its experiment (see petab_mcp.problem); it must
+        # meet a record that carries None for the same thing.
+        return None if value is None or value != value or value == "" else str(value)
 
     def _time(value):
         try:
@@ -1312,7 +1315,7 @@ def _design_point_keys(frame) -> list[tuple]:
     n = len(frame)
     columns = getattr(frame, "columns", [])
     obs = frame[OBSERVABLE_ID] if OBSERVABLE_ID in columns else [None] * n
-    cond = frame["simulationConditionId"] if "simulationConditionId" in columns else [None] * n
+    cond = frame[EXPERIMENT_ID] if EXPERIMENT_ID in columns else [None] * n
     time = frame["time"] if "time" in columns else [None] * n
     return [(_label(o), _label(c), _time(t)) for o, c, t in zip(obs, cond, time)]
 
@@ -1371,30 +1374,35 @@ def _symbolic_noise_formulas(odf) -> dict:
     expression for a rewritten formula. Building the key costs one tuple of strings; a miss costs what
     the call always cost. sympy expressions are immutable and every caller ``.subs()`` into a new one,
     so sharing them is safe.
+
+    One ``.get()``, and the result returned from a local: another session's thread may clear the
+    cache between a membership test and a read, so that pair can raise ``KeyError`` even on a hit.
     """
-    from petab.v1.calculate import get_symbolic_noise_formulas
+    from petab.v2.calculate import get_symbolic_noise_formulas
 
     try:
         key = (tuple(str(i) for i in odf.index), tuple(str(v) for v in odf[NOISE_FORMULA]))
     except Exception:  # noqa: BLE001 - unkeyable table: just don't cache it
         return get_symbolic_noise_formulas(odf)
-    if key not in _NOISE_FORMULA_CACHE:
+    formulas = _NOISE_FORMULA_CACHE.get(key)
+    if formulas is None:
+        formulas = get_symbolic_noise_formulas(odf)
         if len(_NOISE_FORMULA_CACHE) >= _NOISE_FORMULA_CACHE_MAX:
             _NOISE_FORMULA_CACHE.clear()
-        _NOISE_FORMULA_CACHE[key] = get_symbolic_noise_formulas(odf)
-    return _NOISE_FORMULA_CACHE[key]
+        _NOISE_FORMULA_CACHE[key] = formulas
+    return formulas
 
 
 def _noise_expr_and_observable(problem, pid: str, rows):
     """``(sympy_expr, observable_symbol, observable_id)`` for the noise of the rows ``pid`` covers,
     with the measurement-table ``noiseParameters`` overrides already substituted, or ``None``.
 
-    Overrides are resolved the way petab does it — a cell naming a PARAMETER becomes that
-    parameter's symbol, a numeric cell becomes the number — so the fitted sigma survives as a
-    symbol we can substitute a value for. (Getting this wrong is what made an earlier attempt
-    evaluate the formula without reference to the sigma at all.) Requires the covered rows to share
-    one observable and one override list, which is the normal case; ``None`` otherwise so callers
-    fail open rather than average incomparable formulas.
+    Overrides are resolved the way petab does it — the observable's declared noise placeholders are
+    filled in order, a token naming a PARAMETER becomes that parameter's symbol and a numeric one
+    the number — so the fitted sigma survives as a symbol we can substitute a value for. (Getting
+    this wrong is what made an earlier attempt evaluate the formula without reference to the sigma
+    at all.) Requires the covered rows to share one observable and one override list, which is the
+    normal case; ``None`` otherwise so callers fail open rather than average incomparable formulas.
     """
     odf = getattr(problem, "observable_df", None)
     if odf is None or NOISE_FORMULA not in odf.columns or OBSERVABLE_ID not in rows.columns:
@@ -1414,18 +1422,17 @@ def _noise_expr_and_observable(problem, pid: str, rows):
         return None
     try:
         import sympy as sp
-        from petab.v1 import split_parameter_replacement_list
 
         expr = _symbolic_noise_formulas(odf).get(observable_id)
         if expr is None:
             return None
-        overrides = {}
-        for i, value in enumerate(
-            split_parameter_replacement_list(next(iter(override_cells)) if override_cells else None)
-        ):
-            overrides[sp.Symbol(f"noiseParameter{i + 1}_{observable_id}", real=True)] = (
+        values = split_overrides(next(iter(override_cells)) if override_cells else None)
+        overrides = {
+            sp.Symbol(name, real=True): (
                 sp.Symbol(str(value), real=True) if isinstance(value, str) else value
             )
+            for name, value in zip(placeholders(odf, observable_id, "noise"), values)
+        }
         expr = expr.subs(overrides)
         # The formula may name the observable id OR the model quantity the observable reports
         # (armistead: observable `Cer_obs`, noiseFormula `noiseParameter1_Cer_obs*Cer`). Resolve
@@ -1554,8 +1561,8 @@ def _resolve_observable_parameters(problem, observable_id: str, obs_expr):
 
     Resolved ONCE, before any candidate is tested, because the substitution depends on the
     observable rather than on the candidate. A gain reaches the observable formula through an
-    ``observableParameter{i}_`` placeholder while the NOISE side already carries the substituted
-    value, so without this the same quantity has two different names and no candidate can match.
+    observable placeholder while the NOISE side already carries the substituted value, so without
+    this the same quantity has two different names and no candidate can match.
 
     Unchanged when there is no measurement table, no override column, or the covered rows disagree
     about the override — the caller then tests against the raw formula, which is the pre-existing
@@ -1565,7 +1572,6 @@ def _resolve_observable_parameters(problem, observable_id: str, obs_expr):
     """
     try:
         import sympy as sp
-        from petab.v1 import split_parameter_replacement_list
 
         mdf = getattr(problem, "measurement_df", None)
         if mdf is None or OBSERVABLE_PARAMETERS not in mdf.columns:
@@ -1579,11 +1585,12 @@ def _resolve_observable_parameters(problem, observable_id: str, obs_expr):
         # a plain `sympify` does not, and `Symbol(x) != Symbol(x, real=True)`, so identity matching
         # silently no-ops the substitution and reports "no amplitude" for every observable with one.
         by_name = {str(s): s for s in obs_expr.free_symbols}
+        names = placeholders(problem.observable_df, observable_id, "observable")
         return obs_expr.subs(
             {
                 by_name[key]: (sp.Symbol(str(v), real=True) if isinstance(v, str) else v)
-                for i, v in enumerate(split_parameter_replacement_list(next(iter(cells))))
-                if (key := f"observableParameter{i + 1}_{observable_id}") in by_name
+                for key, v in zip(names, split_overrides(next(iter(cells))))
+                if key in by_name
             }
         )
     except Exception:  # noqa: BLE001 - advisory scale only
@@ -1655,8 +1662,8 @@ def _per_observable_agreement(problem, pid, rows, fn):
     ``None`` if they disagree or any is ``None``.
 
     A sigma shared across many observables (blasi: one ``sigma`` for 16 acetylation states) is the
-    normal case, and each observable carries its OWN ``noiseParameter1_<obsId>`` placeholder, so the
-    expression must be resolved per observable. Requiring agreement keeps the reported verdict
+    normal case, and each observable declares its OWN noise placeholder, so the expression must be
+    resolved per observable. Requiring agreement keeps the reported verdict
     meaningful: if one observable's noise is proportional and another's additive, no single scalar
     describes the sigma and we fail open.
     """
@@ -1879,7 +1886,7 @@ def is_parameter_estimated(problem, pid: str) -> bool:
     if pid not in df.index or ESTIMATE not in df.columns:
         return False
     try:
-        return float(df.loc[pid, ESTIMATE]) != 0
+        return as_bool(df.loc[pid, ESTIMATE])
     except (TypeError, ValueError):
         return False
 
@@ -1893,7 +1900,7 @@ def initial_conditions_report(problem, added: set[str] | None = None) -> list[di
     decided by the reconcile/parameter/condition tables, not the model text, and the outcome is
     otherwise invisible: a declared t=0 is silently OVERRIDDEN when its ``<species>_init``
     parameter is estimated (the fit then sets t=0, the declared value is only the start) or when
-    the species is driven per-condition by a condition-table column. Surfacing this after every
+    the species is driven per-condition by a condition target. Surfacing this after every
     model op is what lets the caller see immediately whether a t=0 "fix" took — instead of
     re-authoring the model under a series of different IC naming schemes that all fit identically
     because none of them ever changed the estimate status (see issue #57). ICs are ESTIMATED by
@@ -1906,7 +1913,7 @@ def initial_conditions_report(problem, added: set[str] | None = None) -> list[di
 
     * ``declared_t0`` — the t=0 value declared in the Antimony (the IC parameter's value);
     * ``estimated`` — whether the IC parameter is a FREE (fit) parameter or FIXED;
-    * ``set_by_condition`` — whether the species (or its IC parameter) is a condition-table column,
+    * ``set_by_condition`` — whether the species (or its IC parameter) is a condition target,
       i.e. set per condition, which overrides the Antimony t=0;
     * ``t0_source`` — ``"fixed"`` | ``"estimated"`` | ``"condition_table"``;
     * ``declared_t0_used`` — the bottom line: does the declared t=0 govern the simulated t=0 state
@@ -1914,7 +1921,7 @@ def initial_conditions_report(problem, added: set[str] | None = None) -> list[di
     * ``newly_added`` — whether this op introduced the IC parameter (from the reconcile diff).
     """
     sm = problem.model.sbml_model
-    cond_cols = condition_column_symbols(problem)
+    cond_targets = condition_target_symbols(problem)
     added = added or set()
     out: list[dict[str, Any]] = []
     for i in range(sm.getNumSpecies()):
@@ -1935,7 +1942,7 @@ def initial_conditions_report(problem, added: set[str] | None = None) -> list[di
             # through the FIXED branch below and be described as "shipped as a fixed parameter".
             declared = 0.0
         estimated = ic is not None and is_parameter_estimated(problem, ic)
-        set_by_condition = sid in cond_cols or (ic is not None and ic in cond_cols)
+        set_by_condition = sid in cond_targets or (ic is not None and ic in cond_targets)
         if set_by_condition:
             t0_source, declared_t0_used, note = (
                 "condition_table",
@@ -2028,8 +2035,8 @@ def prune_orphans(problem) -> dict[str, list[str]]:
     # ("the value of an <assignmentRule>'s 'variable' must be the identifier of an existing
     # <compartment>, <species>, <parameter> …") and the whole edit is then rejected. Published
     # models really do carry such write-only quantities — an inert control compound's gated input
-    # (isensee's `fourABnOH`), or a pass-through alias of a condition column (raimundez's
-    # `FM`/`HM`) — and those rules are also what makes their condition columns count as USED.
+    # (isensee's `fourABnOH`), or a pass-through alias of a condition target (raimundez's
+    # `FM`/`HM`) — and those rules are also what makes their condition targets count as USED.
     # `_model_math_names` only walks rule MATH (the right-hand side), so add the targets here.
     keep_names = keep | _model_math_names(sm) | _reaction_species(sm) | rule_targets
     # keep IC params of remaining species
@@ -2096,14 +2103,12 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
 
     ``shipped`` is the parameter table the PROBLEM shipped with
     (:attr:`session.PetabSession.shipped_parameter_df`). A parameter being added that appears
-    there gets its SHIPPED row back — bounds, scale, estimate, and any ``objectivePrior*``
-    columns — instead of the defaults derived below. That matters because a row can leave the
-    table and come back: the content-free seed declares no mechanism, so every kinetic and
-    initial-condition row a zero-shot problem ships is pruned at v0 and re-added by the caller's
-    first authoring. Minting defaults there would quietly replace the shipped search space, and
-    DROP a shipped prior — which for a benchmark example is the difference between the candidate
-    and the reference being fit against the same objective or not (only schwen ships priors, on
-    its two receptor initial levels, and they are meant to apply to both).
+    there gets its SHIPPED row back — bounds, scale and estimate — instead of the defaults derived
+    below. That matters because a row can leave the table and come back: the content-free seed
+    declares no mechanism, so every kinetic and initial-condition row a zero-shot problem ships is
+    pruned at v0 and re-added by the caller's first authoring. Minting defaults there would quietly
+    replace the shipped search space, so the candidate and the reference would no longer be fit
+    over the same box.
 
     Initial conditions are ESTIMATED by default -- a declared t=0 is only a guess and must never
     be silently frozen (issue #90). Two leak-free VALUE conventions stay FIXED: an IC of exactly
@@ -2112,12 +2117,12 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
     parameter row (reconcile never re-touches existing rows)."""
     sm = problem.model.sbml_model
     valid = set(problem.model.get_valid_parameters_for_parameter_table())
-    # A parameter that is a CONDITION-TABLE COLUMN is set per condition (a PEtab condition
-    # override), not a parameter-table row — PEtab forbids it in the parameter table. Drop such
-    # columns from the sync so a condition table with parametric input columns ships verbatim
-    # (see condition_column_symbols); without this, reconcile force-added them and petab lint then
+    # A parameter that is a CONDITION TARGET is set per condition (a PEtab condition change),
+    # not a parameter-table row — PEtab forbids it in the parameter table. Drop such targets
+    # from the sync so a condition table with parametric inputs ships verbatim
+    # (see condition_target_symbols); without this, reconcile force-added them and petab lint then
     # rejected the problem ("… not allowed to occur in the parameters table").
-    valid -= condition_column_symbols(problem)
+    valid -= condition_target_symbols(problem)
     table_ids = set(problem.parameter_df.index)
     ic_params = _ic_parameter_ids(sm)
     exp_params = _exponent_symbols(sm)  # cooperativity/Hill exponents -> lin scale, tight bounds
@@ -2151,7 +2156,7 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
         if pid in shipped_ids:
             # The problem defined this parameter; reintroducing it restores that definition
             # rather than guessing a new one. Column-by-column so the target table gains any
-            # column the shipped row carries (a prior) that it does not have yet.
+            # column the shipped row carries that it does not have yet.
             for col, cell in shipped.loc[pid].items():
                 problem.parameter_df.loc[pid, col] = cell
             added.append(pid)
@@ -2178,16 +2183,16 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
                 v0 = 0.0
             lb, ub = _default_bounds(value)
             if v0 == 0.0 or v0 == 1.0:
-                scale, estimate = LIN, 0  # empty pool / unit normalization: FIXED
+                scale, estimate = LIN, False  # empty pool / unit normalization: FIXED
             elif v0 > 0.0:
-                scale, estimate = LOG10, 1  # positive seed/guess: estimate on log10
+                scale, estimate = LOG10, True  # positive seed/guess: estimate on log10
             else:
-                scale, estimate = LIN, 1  # nonzero but non-positive: cannot live on log10
+                scale, estimate = LIN, True  # nonzero but non-positive: cannot live on log10
         elif pid in exp_params:
             # An exponent (Hill coefficient): estimate on a LINEAR scale with tight bounds so it
             # cannot run off to a near-step-function on the wide default log10 range.
             lb, ub = _exponent_bounds(value)
-            scale, estimate = LIN, 1
+            scale, estimate = LIN, True
         else:
             # A generic rate constant: estimate on log10 when the nominal is positive (the usual
             # case for a kinetic parameter). A non-positive nominal cannot live on a log scale,
@@ -2198,7 +2203,7 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
                 positive = value is not None and float(value) > 0
             except (TypeError, ValueError):
                 positive = False
-            scale, estimate = (LOG10 if positive else LIN), 1
+            scale, estimate = (LOG10 if positive else LIN), True
         problem.parameter_df.loc[pid, PARAMETER_SCALE] = scale
         problem.parameter_df.loc[pid, LOWER_BOUND] = lb
         problem.parameter_df.loc[pid, UPPER_BOUND] = ub
@@ -2231,7 +2236,7 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
         if v0 == 0.0 or v0 == 1.0:
             cur = problem.parameter_df.loc[pid, ESTIMATE]
             try:
-                already_fixed = int(float(cur)) == 0
+                already_fixed = not as_bool(cur)
             except (TypeError, ValueError):
                 already_fixed = False
             if not already_fixed:
@@ -2243,7 +2248,7 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
                 problem.parameter_df.loc[pid, LOWER_BOUND] = lb
                 problem.parameter_df.loc[pid, UPPER_BOUND] = ub
                 problem.parameter_df.loc[pid, NOMINAL_VALUE] = v0
-                problem.parameter_df.loc[pid, ESTIMATE] = 0
+                problem.parameter_df.loc[pid, ESTIMATE] = False
 
     for pid in sorted(table_ids - valid - keep_table):
         problem.parameter_df = problem.parameter_df.drop(index=pid)
@@ -2308,7 +2313,7 @@ def reconcile(problem, shipped=None) -> dict[str, Any]:
     pruned = prune_orphans(problem)
     # AFTER the prune, or it would be pruned as the orphan it deliberately is.
     ensure_one_species(sm)
-    # Species whose IC is set per-condition (a condition-table column) are driven by the condition
+    # Species whose IC is set per-condition (a condition target) are driven by the condition
     # table, not estimated — skip parametrising them (see ensure_parametric_initial_conditions).
     # `protect_ids` is the SHIPPED table's own ids: if the problem author shipped a `<sid>_init`
     # row, that row is part of the problem definition and the zero/unset skip must not delete it
@@ -2316,7 +2321,7 @@ def reconcile(problem, shipped=None) -> dict[str, Any]:
     # parameters, so nothing else would catch it).
     ensure_parametric_initial_conditions(
         sm,
-        skip_species=condition_column_symbols(problem),
+        skip_species=condition_target_symbols(problem),
         protect_ids=set(shipped.index) if shipped is not None else None,
     )
     synced = sync_parameter_table(problem, shipped=shipped)

@@ -15,7 +15,7 @@ def test_evaluate_objective(engine):
     rec = obj["simulations"][0]
     assert {
         "observable_id",
-        "condition_id",
+        "experiment_id",
         "time",
         "measurement",
         "simulation",
@@ -27,7 +27,7 @@ def test_replicate_measurements_not_double_counted(engine, session):
     """Replicate measurements must not inflate n_data_points / chi2.
 
     ``_simulation_records`` used to merge the measurement and simulation tables on
-    (observableId, simulationConditionId, time) alone. For replicate rows that share
+    (observableId, condition, time) alone. For replicate rows that share
     a key, that cross-joins each size-r group into r*r rows, so a table with r=2
     replicates reported ``n_data_points == sum(r**2) == 24`` (and a ~2x-inflated chi2)
     instead of the true 12. The merge is now one-to-one with the measurements.
@@ -40,17 +40,17 @@ def test_replicate_measurements_not_double_counted(engine, session):
     dup = base.copy()
     dup["measurement"] = dup["measurement"] + 0.01
     rep = pd.concat([base, dup], ignore_index=True)
-    session.problem.measurement_df = rep
+    session.problem = session.problem.replace(measurement_df=rep)
 
     obj = engine.evaluate_objective()
     # one record per measurement row (Sum r), not the buggy cross-join (Sum r**2)
     assert obj["n_data_points"] == len(rep) == 2 * len(base)
     assert len(obj["simulations"]) == len(rep)
 
-    # every (obs, cond, time) group has exactly its 2 replicates, sharing one simulation
+    # every (obs, experiment, time) group has exactly its 2 replicates, sharing one simulation
     groups: dict[tuple, list[float]] = {}
     for r in obj["simulations"]:
-        groups.setdefault((r["observable_id"], r["condition_id"], r["time"]), []).append(
+        groups.setdefault((r["observable_id"], r["experiment_id"], r["time"]), []).append(
             r["simulation"]
         )
     assert {len(v) for v in groups.values()} == {2}
@@ -201,27 +201,23 @@ def test_a_problem_that_cannot_be_seeded_refuses_to_load(tmp_path):
     case: there is no model the fixed tables could imply."""
     import shutil
 
-    import libsbml
+    from conftest import with_empty_sbml
 
     from petab_mcp.errors import ValidationError
     from petab_mcp.references import StubReferenceResolver
     from petab_mcp.session import PetabSession
 
-    data = Path(__file__).parent / "data" / "toy_v1"
+    data = Path(__file__).parent / "data" / "toy_v2"
     work = tmp_path / "unseedable"
     work.mkdir()
-    for name in ("problem.yaml", "conditions.tsv", "measurements.tsv", "parameters.tsv"):
+    for name in ("problem.yaml", "measurements.tsv", "parameters.tsv"):
         shutil.copy(data / name, work / name)
     # An observable whose formula is a bare NUMBER references no entity, so nothing can be
     # declared from it; the parameter table's rows all resolve through the noise formula.
     (work / "observables.tsv").write_text(
         "observableId\tobservableFormula\tnoiseFormula\nobs_B\t1.0\tsigma_B\n", encoding="utf-8"
     )
-    doc = libsbml.SBMLDocument(3, 2)
-    model = doc.createModel()
-    model.setId("conversion_reaction")
-    model.setMetaId("conversion_reaction")
-    libsbml.writeSBMLToFile(doc, str(work / "conversion_reaction.xml"))
+    with_empty_sbml(work / "problem.yaml")
 
     with pytest.raises(ValidationError):
         PetabSession(
@@ -283,12 +279,7 @@ def test_one_amici_build_per_structure(fit_session):
     problem, _ = __import__("petab_mcp.fitting", fromlist=["x"]).estimation_problem(
         fit_session, fit_session.engine
     )
-    # Reach the model the way the engine does (via _objective_amici_model), so this stays green even
-    # if the fixture ever yields an AggregatedObjective. The helper itself, incl. a real
-    # AggregatedObjective, is covered without a compile in tests/test_objective_amici_model.py.
-    from petab_mcp.engine import _objective_amici_model
-
-    assert _objective_amici_model(problem.objective) is not None
+    assert problem.objective.amici_model is not None
 
 
 # -- pre-import model dump ----------------------------------------------------
@@ -394,10 +385,8 @@ class _DeadRData:
 
 
 def test_failed_integration_yields_records_with_no_simulation(engine, session):
-    from amici.sim.sundials.petab.v1 import RDATAS
-
     meas = session.problem.measurement_df
-    recs = engine._simulation_records(None, {RDATAS: [_DeadRData()]})
+    recs = engine._simulation_records(None, [_DeadRData()])
 
     # It returns, rather than raising the TypeError that used to be misdiagnosed downstream.
     assert len(recs) == len(meas)
@@ -410,11 +399,9 @@ def test_failed_integration_yields_records_with_no_simulation(engine, session):
 
 
 def test_partial_integration_failure_is_not_scored_as_a_smaller_dataset(engine, session):
-    """One good condition + one dead one must NOT yield a confident score over the survivors:
+    """One good experiment + one dead one must NOT yield a confident score over the survivors:
     AMICI's likelihood is already NaN for such an evaluation, so a partial chi2 would describe a
     smaller dataset than `n_data_points` while looking complete."""
-    from amici.sim.sundials.petab.v1 import RDATAS
-
     good = engine._objective_evaluate()  # a real, working evaluation first
     assert good[1] and any(r["simulation"] is not None for r in good[1])
 
@@ -424,7 +411,7 @@ def test_partial_integration_failure_is_not_scored_as_a_smaller_dataset(engine, 
         res = [0.0]
         status = 0
 
-    recs = engine._simulation_records(None, {RDATAS: [_Live(), _DeadRData()]})
+    recs = engine._simulation_records(None, [_Live(), _DeadRData()])
     assert all(r["simulation"] is None for r in recs)
     assert engine._chi2(recs, None) is None  # declines to score, rather than partial-summing
 
@@ -440,3 +427,36 @@ def test_unusable_rdatas_counts_only_the_dead_conditions(engine):
     assert E._unusable_rdatas([_DeadRData(), _DeadRData()]) == 2
     # An empty time vector is just as unusable as a None one.
     assert E._unusable_rdatas([type("E0", (), {"ts": [], "y": []})()]) == 1
+
+
+def test_an_unmeasured_experiment_leaves_the_fit_statistics_intact(tmp_path, amici_build_root):
+    """AMICI returns no outputs for an experiment without measurements, which every reader of the
+    rdatas would count a failed simulation — blanking chi2 and every residual. A fixed-θ held-out
+    view keeps all the training experiments, and a v2 problem may ship unmeasured ones."""
+    import shutil
+
+    from conftest import DATA_DIR
+
+    from petab_mcp.engine import AmiciEngine
+    from petab_mcp.references import StubReferenceResolver
+    from petab_mcp.session import PetabSession
+
+    work = tmp_path / "toy"
+    shutil.copytree(DATA_DIR, work)
+    (work / "conditions.tsv").write_text(
+        "conditionId\ttargetId\ttargetValue\nc0\tA\t1.0\nc1\tA\t2.0\n"
+    )
+    (work / "experiments.tsv").write_text("experimentId\ttime\tconditionId\ne0\t0\tc0\ne1\t0\tc1\n")
+    meas = work / "measurements.tsv"
+    meas.write_text(meas.read_text().replace("obs_B\t\t", "obs_B\te0\t"))
+    yaml = work / "problem.yaml"
+    yaml.write_text(
+        yaml.read_text()
+        + "condition_files:\n- conditions.tsv\nexperiment_files:\n- experiments.tsv\n"
+    )
+    session = PetabSession(
+        str(yaml), provenance_dir=str(tmp_path / "prov"), resolver=StubReferenceResolver()
+    )
+    out = AmiciEngine(session, build_root=str(amici_build_root)).evaluate_objective()
+    assert out["chi2"] is not None and out["n_data_points"] == 6
+    assert all(r["simulation"] is not None for r in out["simulations"])
