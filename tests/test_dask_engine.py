@@ -67,6 +67,18 @@ class _Log(Task):
         return self.text
 
 
+class _Count(Task):
+    """A start that counts itself into ``seen``, which every start of its fit shares here."""
+
+    def __init__(self, seen: list) -> None:
+        super().__init__()
+        self.seen = seen
+
+    def execute(self):
+        self.seen.append(None)
+        return len(self.seen)
+
+
 class _Die(Task):
     """A start that takes its worker process down."""
 
@@ -244,6 +256,14 @@ def test_a_batched_fit_runs_k_starts_per_task_and_keeps_their_order_and_records(
     assert priorities == [0, -1, -2]
     log = (tmp_path / "session" / "pypesto.log").read_text(encoding="utf-8")
     assert all(f"pypesto says {text}" in log for text in texts)
+
+
+def test_the_starts_of_a_batch_share_nothing_on_their_worker():
+    """Each start of a batch runs on its own copy of what it was given, as it would alone: starts
+    that share one problem here do not share one objective there."""
+    seen = []
+    with _engine(n_workers=1) as engine:
+        assert engine.batched(3).execute([_Count(seen) for _ in range(3)]) == [1, 1, 1]
 
 
 def test_a_start_failing_mid_batch_fails_the_fit_and_cancels_its_batches_still_queued(tmp_path):
