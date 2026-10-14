@@ -57,12 +57,9 @@ downstream has to know where a model came from.
 
 from __future__ import annotations
 
-from itertools import count
-
 import libsbml
 import pysb
-from indra.assemblers.pysb.assembler import _n, get_monomer_pattern, get_site_pattern
-from indra.assemblers.pysb.sites import get_binding_site_name
+from indra.assemblers.pysb.assembler import get_monomer_pattern
 from indra.statements import Agent, Statement
 from petab.v1.models.sbml_model import SbmlModel
 from pysb import ANY
@@ -253,7 +250,11 @@ def _declare(
             raise ModelUpdateError(
                 f"start {name!r} is {amount!r}; give a number or an expression over parameter ids"
             )
-        pattern = pysb.ComplexPattern(_concrete(model, agent, count(1)), None)
+        try:
+            molecules = M.agent_pattern(model, agent, fresh=lambda name: True)
+        except M.MechanismError as exc:
+            raise ModelUpdateError(f"start {name!r}: {exc}") from exc
+        pattern = pysb.ComplexPattern(molecules, None)
         value = float(amount) if not isinstance(amount, str) else SEED_INITIAL_VALUE
         parameter = pysb.Parameter(f"{name}_init", value, _export=False)
         model.add_component(parameter)
@@ -265,42 +266,6 @@ def _declare(
             ) from exc
         named |= {mp.monomer.name for mp in pattern.monomer_patterns}
     return named
-
-
-def _concrete(model: pysb.Model, agent: Agent, bonds, partner: tuple | None = None) -> list:
-    """The species ``agent`` writes, as fully specified monomer patterns: the sites it states,
-    every other site in its default state and unbound, and a partner per bound condition, built
-    the same way and bonded on the sites INDRA names after each other. ``partner`` is the
-    ``(site, bond)`` that links this agent to the one that named it."""
-    monomer = model.monomers[_n(agent.name)]
-    stated = get_site_pattern(agent)
-    unknown = sorted(set(stated) - set(monomer.sites))
-    if unknown:
-        raise ModelUpdateError(
-            f"{agent.name} states sites {unknown} that no statement gives it"
-        )
-    state, partners = {}, []
-    for site in monomer.sites:
-        if site in stated and stated[site] is not ANY:
-            value = stated[site]
-            state[site] = value[0] if isinstance(value, tuple) else value
-        elif site in monomer.site_states:
-            default = monomer.site_states[site][0]
-            if site == "loc" and "cytoplasm" in monomer.site_states[site]:
-                default = "cytoplasm"
-            state[site] = default
-        else:
-            state[site] = None
-    for condition in agent.bound_conditions:
-        if condition.is_bound:
-            bond = next(bonds)
-            state[get_binding_site_name(condition.agent)] = bond
-            partners += _concrete(
-                model, condition.agent, bonds, (get_binding_site_name(agent), bond)
-            )
-    if partner is not None:
-        state[partner[0]] = partner[1]
-    return [monomer(**state), *partners]
 
 
 def _initial_expression(sbml_model, placeholder: str, species: str, formula: str) -> None:
