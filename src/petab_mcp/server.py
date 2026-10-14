@@ -805,18 +805,35 @@ def _make_changes_statements_doc() -> str:
     """The `statements` route's paragraph, naming the entries the library holds right now."""
     from . import mechanisms
 
-    by_policy: dict[str, list[str]] = {}
+    from indra.statements import AddModification, RemoveModification, get_all_descendants
+
+    families = {
+        base.__name__: {c.__name__ for c in get_all_descendants(base)}
+        for base in (AddModification, RemoveModification)
+    }
+    by_policy: dict[str, set[str]] = {}
     for cls, policy in sorted(mechanisms.REGISTRY):
         if policy != mechanisms.INDRA_DEFAULT:
-            by_policy.setdefault(policy, []).append(cls)
-    entries = "; ".join(f"`{policy}` for {', '.join(names)}" for policy, names in by_policy.items())
+            by_policy.setdefault(policy, set()).add(cls)
+
+    def named(classes: set[str]) -> str:
+        # A whole family reads as its base (every AddModification), not two dozen types.
+        names = []
+        for base, members in families.items():
+            if members <= classes:
+                classes = classes - members
+                names.append(f"every {base}")
+        return ", ".join(names + sorted(classes - {"Modification"}))
+
+    entries = "; ".join(f"`{policy}` for {named(c)}" for policy, c in sorted(by_policy.items()))
     return (
         "`statements` is a third model route, and still exactly ONE route per call: it authors "
         "the WHOLE model from mechanism assertions rather than text, each an INDRA statement "
         "with the `policy` (mechanism) that turns it into reactions and a `prefix` naming its "
         f"parameters. Every INDRA statement type has `{mechanisms.INDRA_DEFAULT}`; the library "
         f"also holds {entries}. When none fits, WRITE one in `mechanisms` — it stays in the "
-        "library for the rest of the run. A row's `parameters` shares a rate constant with other "
+        "library for the rest of the run; its rate may read `modifiers`, agents each row names "
+        "that take no part in the reaction (an inhibitor, a regulator). A row's `parameters` shares a rate constant with other "
         "rows, or with a parameter the problem ships, or fixes it to a number. The species the "
         "observables read, and the inputs the "
         "experiments set (a dose), are bound by the problem's entity map: name agents as it "
