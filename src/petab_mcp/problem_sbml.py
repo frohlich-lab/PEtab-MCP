@@ -60,7 +60,7 @@ from __future__ import annotations
 import libsbml
 import pysb
 from indra.assemblers.pysb.assembler import get_monomer_pattern
-from indra.statements import Agent, Statement
+from indra.statements import Agent
 from petab.v1.models.sbml_model import SbmlModel
 from pysb import ANY
 from pysb.bng import NoInitialConditionsError, generate_equations
@@ -72,7 +72,7 @@ from .reconcile import SEED_INITIAL_VALUE
 
 
 def to_antimony(
-    rows: list[tuple[Statement, str, str]],
+    rows: list[tuple],
     entities: dict[str, Agent],
     library: dict[tuple[str, str], M.Policy] = M.REGISTRY,
     inputs: dict[str, str] | None = None,

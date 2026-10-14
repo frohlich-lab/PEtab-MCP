@@ -166,3 +166,56 @@ def test_a_written_mechanism_cannot_shadow_a_built_in():
     """Rows recorded against a built-in entry would silently change meaning."""
     with pytest.raises(MechanismError, match="built-in"):
         _written(', "policy": "indra_default"')
+
+
+# -- a row's parameter binding ---------------------------------------------------
+def _sbml_parameters(rows, entities=None):
+    from petab.v1.models.sbml_model import SbmlModel
+
+    from petab_mcp import problem_sbml
+
+    antimony, emissions = problem_sbml.to_antimony(rows, entities or {})
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    return {p.getId() for p in sbml.getListOfParameters()}, emissions
+
+
+def test_rows_bound_to_one_id_share_one_parameter():
+    """Blasi's 25 acetylations run at one `a_basal`: unbound, each row minted its own and the
+    model estimated 25 constants for one."""
+    a, b = PopulationTransition(Agent("A"), Agent("B")), PopulationTransition(Agent("B"), Agent("C"))
+    params, emissions = _sbml_parameters(
+        [(a, "mass_action", "ab", {"k": "k_shared"}), (b, "mass_action", "bc", {"k": "k_shared"})]
+    )
+    assert "k_shared" in params and not {"ab_k", "bc_k"} & params
+    assert [e.parameters for e in emissions] == [("k_shared",), ("k_shared",)]
+    assert emissions[0].bound == {"k": "k_shared"}
+
+
+def test_a_row_bound_to_a_number_estimates_nothing():
+    """Perelson's infection runs at a rate fixed to 1; a minted constant there is a k."""
+    params, emissions = _sbml_parameters([(_TRANSITION, "mass_action", "r1", {"k": 1.0})])
+    assert "r1_k" not in params and emissions[0].parameters == ()
+
+
+def test_a_binding_names_only_what_the_row_makes():
+    """A misspelt kind would bind nothing and leave the rate unshared without a word."""
+    with pytest.raises(MechanismError, match=r"binds \['kcat'\], but its mechanism makes only"):
+        M.assemble([(_TRANSITION, "mass_action", "r1", {"kcat": "k"})])
+
+
+def test_a_written_mechanism_binds_like_any_entry():
+    """Sneyd's gating steps are written rates over constants the reference shares."""
+    library = dict(M.REGISTRY)
+    library[("PopulationTransition", "sat")] = M.written(
+        {
+            "statement_type": "PopulationTransition",
+            "policy": "sat",
+            "based_on": "mass_action",
+            "rate": "vmax / (K + source)",
+            "parameters": ["vmax", "K"],
+        },
+        library,
+    )
+    model, (emission,) = M.assemble([(_TRANSITION, "sat", "r1", {"K": "K_half"})], library=library)
+    assert set(emission.parameters) == {"r1_vmax", "K_half"}
+    assert "K_half" in str(model.expressions["r1_rate"].expr)
