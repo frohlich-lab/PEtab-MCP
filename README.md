@@ -83,8 +83,9 @@ jobqueue:
 ```
 
 A dask task runs as many starts as fill `PETAB_MCP_FIT_TASK_SECONDS` (default 270) at the median
-start time of the session's previous fit (one start on its first fit); each start keeps its own
-time cap. A killed server's workers exit on their own after jobqueue's `death-timeout` (60 s).
+start time of the session's previous fit, or at the per-start cap `PETAB_MCP_FIT_PER_START_TIMEOUT`
+without one; `PETAB_MCP_FIT_STARTS_PER_TASK` fixes the number instead. A killed server's workers
+exit on their own after jobqueue's `death-timeout` (60 s).
 
 ## Tools
 

@@ -216,11 +216,14 @@ def test_a_failed_start_cancels_the_fits_starts_still_queued(tmp_path):
     assert len(list(ran.iterdir())) <= 1
 
 
-def test_a_batch_holds_FIT_TASK_SECONDS_of_the_previous_fits_median_start(monkeypatch):
+def test_the_batch_size_fills_FIT_TASK_SECONDS_unless_FIT_STARTS_PER_TASK_is_set(monkeypatch):
     """A fit on the cluster runs as many starts per task as fill FIT_TASK_SECONDS at the MEDIAN start
-    time of the session's previous fit (the mean would be dragged by one slow start), at least one
-    and never more than it has; its first fit sends one start per task."""
+    time of the session's previous fit (the mean would be dragged by one slow start), or at the
+    per-start cap without one, at least one and never more than it has. FIT_STARTS_PER_TASK, when
+    set, replaces all of that."""
     monkeypatch.setattr(fitting, "FIT_TASK_SECONDS", 270.0)
+    monkeypatch.setattr(fitting, "FIT_PER_START_TIMEOUT_S", 60.0)
+    monkeypatch.setattr(fitting, "FIT_STARTS_PER_TASK", 0)
     shared = SimpleNamespace(batched=lambda k: k)  # hands back the batch size it is given
 
     def k(n_starts, median):
@@ -229,8 +232,10 @@ def test_a_batch_holds_FIT_TASK_SECONDS_of_the_previous_fits_median_start(monkey
             previous = {"starts": [{"time": t} for t in (None, median / 3, median, 10 * median)]}
         return fitting._fit_engine(n_starts, shared, previous)
 
-    assert [k(20, median) for median in (30.0, 100.0, 400.0, None)] == [9, 2, 1, 1]
+    assert [k(20, median) for median in (30.0, 100.0, 400.0, None)] == [9, 2, 1, 4]
     assert k(4, 30.0) == 4
+    monkeypatch.setattr(fitting, "FIT_STARTS_PER_TASK", 5)
+    assert [k(20, 30.0), k(20, None), k(4, 400.0)] == [5, 5, 4]
 
 
 def test_a_batched_fit_runs_k_starts_per_task_and_keeps_their_order_and_records(

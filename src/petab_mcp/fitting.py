@@ -129,10 +129,14 @@ def _default_fit_workers() -> int:
 FIT_N_WORKERS = _env_int("PETAB_MCP_FIT_N_WORKERS", _default_fit_workers())
 
 # Expected seconds of starts one dask task runs back to back (env PETAB_MCP_FIT_TASK_SECONDS,
-# default 270 = 4.5 min), at the previous fit's median start (see _starts_per_task). Long against
-# a task's scheduling cost, short enough that concurrent fits still take turns every few minutes.
-# Each start keeps its own FIT_PER_START_TIMEOUT_S cap.
+# default 270 = 4.5 min): long against a task's scheduling cost, short enough that concurrent fits
+# still take turns every few minutes. A start is expected to take the previous fit's median, or the
+# per-start cap FIT_PER_START_TIMEOUT_S without one (see _starts_per_task).
 FIT_TASK_SECONDS = _env_float("PETAB_MCP_FIT_TASK_SECONDS", 270.0)
+
+# A fixed number of starts per dask task (env PETAB_MCP_FIT_STARTS_PER_TASK); takes precedence over
+# FIT_TASK_SECONDS when set.
+FIT_STARTS_PER_TASK = _env_int("PETAB_MCP_FIT_STARTS_PER_TASK", 0)
 
 # AMICI absolute integration tolerance for every candidate fit (env PETAB_MCP_FIT_AMICI_ATOL).
 # AMICI's stock 1e-16 is tight enough that on a stiff model the forward-sensitivity solve cannot
@@ -197,13 +201,12 @@ def _fides_maxtime_options() -> dict[str, Any]:
 
 
 def _starts_per_task(n_starts: int, previous: dict[str, Any] | None) -> int:
-    """How many starts one dask task runs: as many as fill ``FIT_TASK_SECONDS`` at the median start
-    time of ``previous``, the session's last fit (``session.optimization``), from 1 to ``n_starts``;
-    1 without a previous fit."""
+    """How many starts one dask task runs, from 1 to ``n_starts``: ``FIT_STARTS_PER_TASK`` when set,
+    else as many as fill ``FIT_TASK_SECONDS`` at the median start time of ``previous``, the
+    session's last fit (``session.optimization``), or at ``FIT_PER_START_TIMEOUT_S`` without one."""
     times = [s["time"] for s in (previous or {}).get("starts") or [] if s.get("time")]
-    if not times:
-        return 1
-    return max(1, int(min(n_starts, FIT_TASK_SECONDS // statistics.median(times))))
+    expected = statistics.median(times) if times else FIT_PER_START_TIMEOUT_S
+    return max(1, int(min(n_starts, FIT_STARTS_PER_TASK or FIT_TASK_SECONDS // expected)))
 
 
 def _fit_engine(n_starts: int, shared=None, previous: dict[str, Any] | None = None):
