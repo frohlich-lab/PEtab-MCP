@@ -9,7 +9,7 @@ be scored against it as it stands. This module is the difference, and it is all 
   names is given that name, or for a blinded mapping an assignment rule of that name.
 * **Starting amounts.** What is present at the start is traced (below); each present monomer
   starts at an estimated ``<monomer>_init``, or at the row the problem ships (Crauste's fixed
-  ``Naive_init``).
+  ``Naive_init``) — unless the entity map DECLARES what is there (``initial``, below).
 * **Inputs.** A species the experiment sets (Fujita's EGF dose) is held to the protocol formula
   the entity map declares, and the condition-table columns it reads are declared for the table
   to fill.
@@ -37,6 +37,17 @@ later step, splits each simulated species by origin. Here the only question is w
 exists, whether a monomer traces back to the start at all, and the expansion's reactions answer
 it without a site.
 
+A declared ``initial`` replaces the trace for the monomers it names. The entry's species starts at
+that amount, in exactly the state its Agent writes (mods, location, activity, and the complex its
+``bound_conditions`` form, partners in their default state), and no monomer named in any
+declaration is started any other way: declare each state it starts in. A number other than 0
+becomes ``<key>_init`` and reconcile treats it as any other starting value (1 a unit normalisation,
+fixed; anything else estimated from there), so Blasi's and Sneyd's unit pools cost nothing in k. A
+0 is an empty start with no parameter at all — what lets a species the condition table sets
+(Enzyme kinetics' substrate) carry no ``_init`` that every condition overrides. An expression is the starting amount itself, over parameter ids: a row the
+problem ships (Fiedler's fixed totals), a condition-table column (Lucarelli's ``init_S2``), or a new
+name, estimated. A declared monomer may also be one the rules make (Lucarelli's genes start at 1).
+
 It is a separate module because none of it is a mechanism: the same library rows would need
 none of this under a server that read PySB directly. This one reads SBML everywhere — reconcile,
 lint, de-duplication, versions — so a model built from statements enters as SBML and is from then
@@ -46,11 +57,15 @@ downstream has to know where a model came from.
 
 from __future__ import annotations
 
+from itertools import count
+
 import libsbml
 import pysb
-from indra.assemblers.pysb.assembler import get_monomer_pattern
+from indra.assemblers.pysb.assembler import _n, get_monomer_pattern, get_site_pattern
+from indra.assemblers.pysb.sites import get_binding_site_name
 from indra.statements import Agent, Statement
 from petab.v1.models.sbml_model import SbmlModel
+from pysb import ANY
 from pysb.bng import NoInitialConditionsError, generate_equations
 from pysb.export import export
 
@@ -64,6 +79,7 @@ def to_antimony(
     entities: dict[str, Agent],
     library: dict[tuple[str, str], M.Policy] = M.REGISTRY,
     inputs: dict[str, str] | None = None,
+    initials: dict[str, float | str] | None = None,
 ) -> tuple[str, list[M.Emission]]:
     """The model ``rows`` build, as Antimony the ``antimony`` route accepts unchanged.
 
@@ -74,6 +90,9 @@ def to_antimony(
     An experiment's INPUT (``inputs``: species id to the protocol formula the problem's entity map
     declares) is held to that formula instead. It has no starting amount of its own, and each
     column the formula names becomes a parameter the condition table sets.
+
+    ``initials`` (species id to a number or an expression, the entity map's ``initial``) declares
+    what is present at the start, as the module docstring sets out.
     """
     model, emissions = M.assemble(rows, entities, library)
     held = {entities[species].name: formula for species, formula in (inputs or {}).items()}
@@ -90,10 +109,16 @@ def to_antimony(
     for name, species in readouts.items():
         pattern = get_monomer_pattern(model, entities[species])
         model.add_component(pysb.Observable(name, pattern, _export=False))
-    _seed(model, [m for m in model.monomers if m.name not in made or m.name in held])
+    declared = _declare(model, entities, initials or {}, inputs or {})
+    _seed(
+        model,
+        [m for m in model.monomers if (m.name not in made or m.name in held) and m.name not in declared],
+    )
     _expand(model)
     reached = {mp.monomer.name for sp in model.species for mp in sp.monomer_patterns}
-    unreached = [m for m in model.monomers if m.name in made - held.keys() - reached]
+    unreached = [
+        m for m in model.monomers if m.name in made - held.keys() - reached - declared
+    ]
     if unreached:
         _seed(model, unreached)
         model.reset_equations()
@@ -151,6 +176,11 @@ def to_antimony(
             rule.setVariable(new)
             renamed = parameter
         _rename(sbml_model, renamed, new)
+    for species, amount in (initials or {}).items():
+        if isinstance(amount, str):
+            _initial_expression(sbml_model, f"{species}_init", species, amount)
+        elif float(amount) == 0.0:
+            _initial_empty(sbml_model, f"{species}_init")
     _drop_unreferenced_parameters(sbml_model)
     for monomer, formula in held.items():
         protocol = libsbml.parseL3Formula(formula)
@@ -174,6 +204,103 @@ def to_antimony(
         rule.setVariable(species.getId())
         rule.setMath(protocol)
     return SbmlModel.from_string(libsbml.writeSBMLToString(document)).to_antimony(), emissions
+
+
+def _declare(
+    model: pysb.Model,
+    entities: dict[str, Agent],
+    initials: dict[str, float | str],
+    inputs: dict[str, str],
+) -> set[str]:
+    """Start each declared species at ``<key>_init``, in the state its Agent writes; returns the
+    monomers the declarations name, which :func:`_seed` then leaves alone."""
+    named: set[str] = set()
+    for species, amount in initials.items():
+        if species in inputs:
+            raise ModelUpdateError(
+                f"the entity map's {species!r} is an input and declares an initial amount; an "
+                "input is held to its protocol, so it has no start of its own"
+            )
+        if not isinstance(amount, (int, float, str)) or isinstance(amount, bool):
+            raise ModelUpdateError(
+                f"the entity map's initial for {species!r} is {amount!r}; give a number or an "
+                "expression over parameter ids"
+            )
+        pattern = pysb.ComplexPattern(_concrete(model, entities[species], count(1)), None)
+        value = float(amount) if not isinstance(amount, str) else SEED_INITIAL_VALUE
+        parameter = pysb.Parameter(f"{species}_init", value, _export=False)
+        model.add_component(parameter)
+        try:
+            model.add_initial(pysb.Initial(pattern, parameter, _export=False))
+        except ValueError as exc:  # pysb: not concrete, or a duplicate species
+            raise ModelUpdateError(
+                f"the entity map's initial for {species!r} is not a start PySB accepts: {exc}"
+            ) from exc
+        named |= {mp.monomer.name for mp in pattern.monomer_patterns}
+    return named
+
+
+def _concrete(model: pysb.Model, agent: Agent, bonds, partner: tuple | None = None) -> list:
+    """The species ``agent`` writes, as fully specified monomer patterns: the sites it states,
+    every other site in its default state and unbound, and a partner per bound condition, built
+    the same way and bonded on the sites INDRA names after each other. ``partner`` is the
+    ``(site, bond)`` that links this agent to the one that named it."""
+    monomer = model.monomers[_n(agent.name)]
+    stated = get_site_pattern(agent)
+    unknown = sorted(set(stated) - set(monomer.sites))
+    if unknown:
+        raise ModelUpdateError(
+            f"the entity map's {agent.name} states sites {unknown} that no statement gives it"
+        )
+    state, partners = {}, []
+    for site in monomer.sites:
+        if site in stated and stated[site] is not ANY:
+            value = stated[site]
+            state[site] = value[0] if isinstance(value, tuple) else value
+        elif site in monomer.site_states:
+            default = monomer.site_states[site][0]
+            if site == "loc" and "cytoplasm" in monomer.site_states[site]:
+                default = "cytoplasm"
+            state[site] = default
+        else:
+            state[site] = None
+    for condition in agent.bound_conditions:
+        if condition.is_bound:
+            bond = next(bonds)
+            state[get_binding_site_name(condition.agent)] = bond
+            partners += _concrete(
+                model, condition.agent, bonds, (get_binding_site_name(agent), bond)
+            )
+    if partner is not None:
+        state[partner[0]] = partner[1]
+    return [monomer(**state), *partners]
+
+
+def _initial_expression(sbml_model, placeholder: str, species: str, formula: str) -> None:
+    """Replace the declared species' ``<key>_init`` with the expression its entry gives. A name
+    the model does not hold becomes a parameter: a shipped row or a condition-table column fills
+    it, and anything else is estimated from reconcile's seed."""
+    math = libsbml.parseL3Formula(formula)
+    if math is None:
+        raise ModelUpdateError(f"the entity map's initial for {species!r} is no formula: {formula!r}")
+    for node in _ast_nodes(math):
+        if node.getType() == libsbml.AST_NAME and sbml_model.getElementBySId(node.getName()) is None:
+            parameter = sbml_model.createParameter()
+            parameter.setId(node.getName())
+            parameter.setConstant(True)
+            parameter.setValue(SEED_INITIAL_VALUE)
+    for assignment in sbml_model.getListOfInitialAssignments():
+        if assignment.getMath().isName() and assignment.getMath().getName() == placeholder:
+            assignment.setMath(math)
+
+
+def _initial_empty(sbml_model, placeholder: str) -> None:
+    """Start the declared species at a literal 0: no assignment, so no parameter for reconcile to
+    estimate or a condition to override."""
+    for assignment in list(sbml_model.getListOfInitialAssignments()):
+        if assignment.getMath().isName() and assignment.getMath().getName() == placeholder:
+            sbml_model.getSpecies(assignment.getSymbol()).setInitialAmount(0.0)
+            assignment.removeFromParentAndDelete()
 
 
 def _seed(model: pysb.Model, monomers: list[pysb.Monomer]) -> None:

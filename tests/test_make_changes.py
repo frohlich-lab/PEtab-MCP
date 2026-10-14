@@ -826,3 +826,17 @@ def test_a_written_mechanism_is_not_redefined_in_place(tmp_path):
         mcp, "make_changes", {"justification": "y", "statements": [row], "mechanisms": [changed]}
     )
     assert out["applied"] is False and out["error_cause"] == "mechanism_redefined"
+
+
+def test_a_declared_unit_start_is_fixed_not_estimated(tmp_path):
+    """The entity map's `initial`: a population declared to start at 1 takes reconcile's unit
+    normalisation, fixed, where the default seed would have estimated an `A_init` — Blasi's and
+    Sneyd's extra k."""
+    extra = ', "A_start": {"name": "A", "initial": 1}'
+    mcp = _statements_server(tmp_path, extra=extra)
+    out = _call(mcp, "make_changes", {"justification": "A becomes B", "statements": [_statement_row()]})
+    assert out["applied"] is True
+    rows = {r["parameterId"]: r for r in _call(mcp, "get_parameters", {})["result"]}
+    assert "A_start_init" in rows
+    # The toy also SHIPS a fixed `A_init` row, which stays; neither may cost a k.
+    assert not any(int(rows[p]["estimate"]) for p in ("A_start_init", "A_init") if p in rows)

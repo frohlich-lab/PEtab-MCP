@@ -676,6 +676,7 @@ def statements_to_antimony(
         session.entities,
         library,
         session.inputs,
+        session.initials,
     )
     record = [
         {**row, "emission": asdict(e)}

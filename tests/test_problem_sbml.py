@@ -3,6 +3,7 @@ inputs."""
 
 from __future__ import annotations
 
+import libsbml
 import pytest
 from indra.statements import Agent, BoundCondition, Phosphorylation
 from petab.v1.models.sbml_model import SbmlModel
@@ -103,6 +104,108 @@ def test_a_complex_nothing_forms_is_refused():
         PS.to_antimony(
             [(Phosphorylation(raf, Agent("MEK")), INDRA_DEFAULT, "r1")], {"RAF_RAS": raf}
         )
+
+
+# -- declared initial amounts (the entity map's `initial`) ------------------------
+def _ia(sbml, sid):
+    ia = sbml.getInitialAssignmentBySymbol(sid)
+    return None if ia is None else libsbml.formulaToL3String(ia.getMath())
+
+
+def test_a_declared_unit_pool_replaces_the_estimated_seed():
+    """Blasi's unacetylated H4 and Sneyd's IPR start at 1, which reconcile fixes as a unit
+    normalisation; seeded at an estimated `<monomer>_init` instead, each cost one k for nothing."""
+    antimony, _ = PS.to_antimony(
+        [(_PHOSPHO, INDRA_DEFAULT, "r1")],
+        {"pERK": Agent("ERK"), "MEK": Agent("MEK", db_refs={"HGNC": "6840"})},
+        initials={"pERK": 1},
+    )
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    params = {p.getId(): p.getValue() for p in sbml.getListOfParameters()}
+    assert params["pERK_init"] == 1.0 and "ERK_init" not in params
+    assert "MEK_init" in params  # an undeclared monomer is still seeded as before
+
+
+def test_a_made_monomer_can_be_declared_present():
+    """Crauste's effectors start empty because naive cells make them; a population present at the
+    start despite being made (Lucarelli's genes at 1) must say so, and then it is present."""
+    antimony, _ = PS.to_antimony(
+        [(_TRANSITION, "mass_action", "r1")],
+        {"effector": Agent("effector")},
+        initials={"effector": 5},
+    )
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    assert _ia(sbml, "effector") == "effector_init"
+    assert sbml.getParameter("effector_init").getValue() == 5.0
+
+
+def test_a_declared_start_is_the_state_the_agent_writes():
+    """Perelson's virus starts infectious, Isensee's RII in each of its states: the start is the
+    Agent's own pattern, every unstated site in its default state."""
+    p_erk = Agent._from_json(
+        {"name": "ERK", "mods": [{"mod_type": "phosphorylation", "residue": "T", "position": "185"}]}
+    )
+    antimony, _ = PS.to_antimony(
+        [(_PHOSPHO, INDRA_DEFAULT, "r1")],
+        {"pERK": p_erk, "ERK": Agent("ERK")},
+        initials={"pERK": 0.5, "ERK": 2},
+    )
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    names = {sp.getId(): sp.getName() for sp in sbml.getListOfSpecies()}
+    assert names["pERK"] == "ERK(T185='p')"
+    assert _ia(sbml, "pERK") == "pERK_init"
+    assert {_ia(sbml, sid) for sid in names} >= {"pERK_init", "ERK_init"}
+
+
+def test_a_declared_complex_starts_bound():
+    """Bachmann's EpoR:JAK2 exists before any rule runs; the partner is built on the sites INDRA
+    names after each other."""
+    raf_ras = Agent("RAF", bound_conditions=[BoundCondition(Agent("RAS"))])
+    antimony, _ = PS.to_antimony(
+        [(Phosphorylation(raf_ras, Agent("MEK")), INDRA_DEFAULT, "r1")],
+        {"RAF_RAS": raf_ras},
+        initials={"RAF_RAS": 3},
+    )
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    assert sbml.getSpecies("RAF_RAS").getName().count("._br_") == 1
+    assert _ia(sbml, "RAF_RAS") == "RAF_RAS_init"
+
+
+def test_a_declared_expression_names_parameters_the_table_fills():
+    """Lucarelli's SMADs start at a condition column and Fiedler's kinases at a shipped total; the
+    names become parameters for the tables to fill, the placeholder goes."""
+    antimony, _ = PS.to_antimony(
+        [(_TRANSITION, "mass_action", "r1")],
+        {"naive": Agent("naive")},
+        initials={"naive": "pool*fold"},
+    )
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    assert _ia(sbml, "naive") == "pool * fold"
+    ids = {p.getId() for p in sbml.getListOfParameters()}
+    assert {"pool", "fold"} <= ids and "naive_init" not in ids
+
+
+def test_an_input_declares_no_start():
+    """An input is held to its protocol; a start for it would be overwritten at t=0."""
+    egf = Agent("EGF")
+    with pytest.raises(ModelUpdateError, match="is an input"):
+        PS.to_antimony(
+            [(Phosphorylation(egf, Agent("AKT")), INDRA_DEFAULT, "r1")],
+            {"EGF": egf},
+            inputs={"EGF": "EGF_0"},
+            initials={"EGF": 1},
+        )
+
+
+def test_a_declared_empty_start_has_no_parameter():
+    """Enzyme kinetics' substrate is set by every condition; an `_init` behind it, even a zero one,
+    was an estimated row no condition left any effect to."""
+    antimony, _ = PS.to_antimony(
+        [(_TRANSITION, "mass_action", "r1")], {"naive": Agent("naive")}, initials={"naive": 0}
+    )
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    assert _ia(sbml, "naive") is None and sbml.getParameter("naive_init") is None
+    assert sbml.getSpecies("naive").getInitialAmount() == 0.0
 
 
 def test_indra_padded_rules_build():
