@@ -82,7 +82,9 @@ jobqueue:
     log-directory: <shared storage>/dask-logs
 ```
 
-A killed server's workers exit on their own after jobqueue's `death-timeout` (60 s).
+Each dask task runs as many starts as the session's previous fit says take
+`PETAB_MCP_FIT_TASK_SECONDS` (default 270) in all, one on its first fit; each start keeps its own
+time cap. A killed server's workers exit on their own after jobqueue's `death-timeout` (60 s).
 
 ## Tools
 

@@ -204,6 +204,61 @@ def test_a_failed_start_cancels_the_fits_starts_still_queued(tmp_path):
     assert len(list(ran.iterdir())) <= 1
 
 
+def test_a_batch_holds_FIT_TASK_SECONDS_of_the_previous_fits_median_start(monkeypatch):
+    """A fit on the cluster runs as many starts per task as fill FIT_TASK_SECONDS at the MEDIAN start
+    time of the session's previous fit (the mean would be dragged by one slow start), at least one
+    and never more than it has; its first fit sends one start per task."""
+    monkeypatch.setattr(fitting, "FIT_TASK_SECONDS", 270.0)
+    shared = SimpleNamespace(batched=lambda k: k)  # hands back the batch size it is given
+
+    def k(n_starts, median):
+        previous = None
+        if median is not None:  # the None is a start with no finite time
+            previous = {"starts": [{"time": t} for t in (None, median / 3, median, 10 * median)]}
+        return fitting._fit_engine(n_starts, shared, previous)
+
+    assert [k(20, median) for median in (30.0, 100.0, 400.0, None)] == [9, 2, 1, 1]
+    assert k(4, 30.0) == 4
+
+
+def test_a_batched_fit_runs_k_starts_per_task_and_keeps_their_order_and_records(
+    tmp_path, monkeypatch
+):
+    """A fit batched 3 to a task sends its 7 starts as ceil(7/3) = 3 tasks, batch j at priority -j,
+    gets their results back in task order, and its starts' records land in its session's
+    pypesto.log."""
+    logging_setup.configure_pypesto(tmp_path / "default")
+    texts = [f"start{i}" for i in range(7)]
+    priorities = []
+    with _engine() as engine:
+        submit = engine.client.submit
+
+        def spy(*args, priority, **kwargs):
+            priorities.append(priority)
+            return submit(*args, priority=priority, **kwargs)
+
+        monkeypatch.setattr(engine.client, "submit", spy)
+        with logging_setup.use_store(tmp_path / "session"):
+            assert engine.batched(3).execute([_Log(text) for text in texts]) == texts
+
+    assert priorities == [0, -1, -2]
+    log = (tmp_path / "session" / "pypesto.log").read_text(encoding="utf-8")
+    assert all(f"pypesto says {text}" in log for text in texts)
+
+
+def test_a_start_failing_mid_batch_fails_the_fit_and_cancels_its_batches_still_queued(tmp_path):
+    """A start failing inside a batch fails the fit with FitBackendError, and none of the fit's
+    batches still queued runs (at most the one its worker had already taken)."""
+    ran = tmp_path / "ran"
+    ran.mkdir()
+    touch = [_Touch(str(ran / str(i))) for i in range(5)]
+    with _engine(n_workers=1) as engine:
+        with pytest.raises(FitBackendError, match="start failed"):
+            engine.batched(2).execute([touch[0], _Fail(), *touch[1:]])
+        time.sleep(3)  # long enough for every batch left queued to run
+    assert len(list(ran.iterdir())) <= 3
+
+
 def test_a_lost_cluster_fails_the_fit_and_nothing_reruns_it_here(fit_session, monkeypatch):
     """A cluster failure fails the fit: `minimize` runs once, on the cluster, never again
     sequentially on the server node."""
@@ -221,7 +276,7 @@ def test_a_lost_cluster_fails_the_fit_and_nothing_reruns_it_here(fit_session, mo
         fit_session.engine.fit_engine = engine
     with pytest.raises(FitBackendError, match="ClosedClientError"):
         fitting.fit_and_simulate(fit_session, fit_session.engine, do_fit=True, n_starts=2)
-    assert engines == [engine]
+    assert len(engines) == 1 and engines[0].client is engine.client
 
 
 def test_a_worker_never_builds_a_model(tmp_path):

@@ -20,6 +20,7 @@ import copy
 import logging
 import math
 import os
+import statistics
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -127,6 +128,12 @@ def _default_fit_workers() -> int:
 # whether the value comes from the shared default or the export.
 FIT_N_WORKERS = _env_int("PETAB_MCP_FIT_N_WORKERS", _default_fit_workers())
 
+# Expected seconds of starts one dask task runs back to back (env PETAB_MCP_FIT_TASK_SECONDS,
+# default 270 = 4.5 min), at the previous fit's median start (see _starts_per_task). Long against
+# a task's scheduling cost, short enough that concurrent fits still take turns every few minutes.
+# Each start keeps its own FIT_PER_START_TIMEOUT_S cap.
+FIT_TASK_SECONDS = _env_float("PETAB_MCP_FIT_TASK_SECONDS", 270.0)
+
 # AMICI absolute integration tolerance for every candidate fit (env PETAB_MCP_FIT_AMICI_ATOL).
 # AMICI's stock 1e-16 is tight enough that on a stiff model the forward-sensitivity solve cannot
 # make progress: the objective VALUE evaluates, the GRADIENT comes back non-finite, and Fides
@@ -189,14 +196,24 @@ def _fides_maxtime_options() -> dict[str, Any]:
         return {}
 
 
-def _fit_engine(n_starts: int, shared=None):
+def _starts_per_task(n_starts: int, previous: dict[str, Any] | None) -> int:
+    """How many starts one dask task runs: as many as fill ``FIT_TASK_SECONDS`` at the median start
+    time of ``previous``, the session's last fit (``session.optimization``), from 1 to ``n_starts``;
+    1 without a previous fit."""
+    times = [s["time"] for s in (previous or {}).get("starts") or [] if s.get("time")]
+    if not times:
+        return 1
+    return max(1, int(min(n_starts, FIT_TASK_SECONDS // statistics.median(times))))
+
+
+def _fit_engine(n_starts: int, shared=None, previous: dict[str, Any] | None = None):
     """The pyPESTO engine a multistart runs on: ``shared``, the server's
-    :class:`~petab_mcp.dask_engine.DaskEngine`, when it has one; otherwise up to ``FIT_N_WORKERS``
-    local worker processes (never more than there are starts), or ``None`` (pyPESTO's sequential
-    ``SingleCoreEngine``) for a single effective worker or when a parallel engine can't be
-    constructed."""
+    :class:`~petab_mcp.dask_engine.DaskEngine`, when it has one, batched by :func:`_starts_per_task`;
+    otherwise up to ``FIT_N_WORKERS`` local worker processes (never more than there are starts), or
+    ``None`` (pyPESTO's sequential ``SingleCoreEngine``) for a single effective worker or when a
+    parallel engine can't be constructed."""
     if shared is not None:
-        return shared
+        return shared.batched(_starts_per_task(n_starts, previous))
     workers = max(1, min(FIT_N_WORKERS, int(n_starts)))
     if workers < 2:
         return None
@@ -1041,8 +1058,10 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     # pyPESTO's sequential engine. Sized so the harness's fit budget (ceil(n_starts/workers) waves)
     # matches the real wall-clock — see petab_harness/fit_budget.py. A server with a cluster runs
     # every start there instead.
-    pp_engine = _fit_engine(n_starts, engine.fit_engine)
-    workers = "dask" if engine.fit_engine is not None else getattr(pp_engine, "n_procs", 1) or 1
+    pp_engine = _fit_engine(n_starts, engine.fit_engine, session.optimization)
+    workers = getattr(pp_engine, "n_procs", 1) or 1
+    if engine.fit_engine is not None:
+        workers = f"dask({pp_engine.starts_per_task} starts per task)"
     # WARM STARTS: seed half the multistart from the PREVIOUS fit — its best optimum (which the
     # write-back left in the nominal values) plus its other converged optima, remapped onto this
     # problem — so a nested edit's fit begins at points that already reproduce its parent's
