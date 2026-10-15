@@ -853,3 +853,18 @@ def test_a_declared_unit_start_is_fixed_not_estimated(tmp_path):
     assert not any(int(rows[p]["estimate"]) for p in ("A_start_init", "A_init") if p in rows)
     stored = json.loads((tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text())
     assert stored["starts"] == [{"name": "A_start", "agent": {"name": "A"}, "amount": 1}]
+
+
+def test_an_empty_entity_map_still_offers_the_route(tmp_path):
+    """Starts travel with the statements, so a problem may need nothing from its map; withheld on
+    an EMPTY map, Rahman's route did not exist and every statements call was refused."""
+    entity_map = tmp_path / "entities.json"
+    entity_map.write_text("{}")
+    mcp = create_server(
+        str(YAML_PATH),
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+        auto_fit=False,
+        entity_map=str(entity_map),
+    )
+    assert "statements" in _make_changes_schema(mcp)

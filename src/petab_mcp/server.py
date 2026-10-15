@@ -2000,7 +2000,9 @@ def create_server(
         return ctx
 
     _register_read_tools(mcp, route)
-    _register_model_tools(mcp, route, statements=bool(ctx.session.entities))
+    # Offered whenever a map was given, even an empty one: a problem whose observables all read
+    # formulas, and whose starts are the statements' own, binds nothing in it (Rahman).
+    _register_model_tools(mcp, route, statements=entity_map is not None)
     _register_parameter_tools(mcp, route)
     _register_fit_tools(mcp, route)
     if ctx.held_out is not None:
