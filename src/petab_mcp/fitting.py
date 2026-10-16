@@ -46,7 +46,7 @@ from .constants import (
     PARAMETER_AT_BOUND_RELATIVE_TOL,
 )
 from .engine import build_lock
-from .errors import ModelBuildBusyError, ModelUpdateError
+from .errors import FitBackendError, ModelBuildBusyError, ModelUpdateError
 from .formatting import finite_float as _flt
 from .parameters import structure_fingerprint
 from .problem import (
@@ -151,8 +151,9 @@ def _apply_amici_solver_defaults(problem) -> None:
         setter(FIT_AMICI_ATOL)
 
 
-# The multistart's RNG seed and optimizer. Named constants rather than parameters: the fit's own
-# log line hard-codes "optimizer=fides", so a signature knob would be configurable in name only.
+# The warm-start jitter's seed and the multistart's optimizer. Named constants rather than
+# parameters: the fit's own log line hard-codes "optimizer=fides", so a signature knob would be
+# configurable in name only.
 FIT_SEED = 0
 FIT_OPTIMIZER = "fides"
 
@@ -188,10 +189,14 @@ def _fides_maxtime_options() -> dict[str, Any]:
         return {}
 
 
-def _fit_engine(n_starts: int):
-    """A pyPESTO engine that runs the multistart across up to ``FIT_N_WORKERS`` worker processes
-    (never more than there are starts), or ``None`` (pyPESTO's sequential ``SingleCoreEngine``) for
-    a single effective worker or when a parallel engine can't be constructed."""
+def _fit_engine(n_starts: int, shared=None):
+    """The pyPESTO engine a multistart runs on: ``shared``, the server's
+    :class:`~petab_mcp.dask_engine.DaskEngine`, when it has one; otherwise up to ``FIT_N_WORKERS``
+    local worker processes (never more than there are starts), or ``None`` (pyPESTO's sequential
+    ``SingleCoreEngine``) for a single effective worker or when a parallel engine can't be
+    constructed."""
+    if shared is not None:
+        return shared
     workers = max(1, min(FIT_N_WORKERS, int(n_starts)))
     if workers < 2:
         return None
@@ -1012,7 +1017,6 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     from .engine import _ensure_swig_on_path
 
     _ensure_swig_on_path()
-    np.random.seed(FIT_SEED)  # best-effort determinism for start-point sampling
 
     log = session.logger
     # objective at the current nominal values, for improvement tracking
@@ -1035,9 +1039,10 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     n_free = len(free) if free is not None else len(problem.x_names)
     # Parallelise the multistart across worker processes when more than one is warranted; None runs
     # pyPESTO's sequential engine. Sized so the harness's fit budget (ceil(n_starts/workers) waves)
-    # matches the real wall-clock — see petab_harness/fit_budget.py.
-    pp_engine = _fit_engine(n_starts)
-    workers = getattr(pp_engine, "n_procs", 1) or 1
+    # matches the real wall-clock — see petab_harness/fit_budget.py. A server with a cluster runs
+    # every start there instead.
+    pp_engine = _fit_engine(n_starts, engine.fit_engine)
+    workers = "dask" if engine.fit_engine is not None else getattr(pp_engine, "n_procs", 1) or 1
     # WARM STARTS: seed half the multistart from the PREVIOUS fit — its best optimum (which the
     # write-back left in the nominal values) plus its other converged optima, remapped onto this
     # problem — so a nested edit's fit begins at points that already reproduce its parent's
@@ -1071,12 +1076,11 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     )
     problem.x_guesses_full = guesses
     log.info(
-        "fit: start optimizer=fides n_starts=%d warm_starts=%d workers=%d seed=%d n_free=%d "
+        "fit: start optimizer=fides n_starts=%d warm_starts=%d workers=%s n_free=%d "
         "sbml=%s objective_before=%s",
         n_starts,
         len(guesses),
         workers,
-        FIT_SEED,
         n_free,
         session.sbml_hash(),
         _fmt(objective_before),
@@ -1141,8 +1145,9 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
         # runs fine on the sequential engine — so fall back to it rather than failing the whole
         # commit. Sequential is slower, so this can exceed the parallel-sized fit budget on a big
         # n_starts; that is an acceptable rare-path cost vs. a hard failure (the run's resume logic
-        # backstops a timeout). A sequential fit that itself fails re-raises normally.
-        if pp_engine is None:
+        # backstops a timeout). A sequential fit that itself fails re-raises normally. A cluster
+        # failure is not retried: that would run every start on the server node.
+        if pp_engine is None or isinstance(exc, FitBackendError):
             raise
         log.warning(
             "fit: parallel multistart failed (%s: %s); retrying sequentially",
