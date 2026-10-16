@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import shutil
+from pathlib import Path
+
 import pytest
 
 from petab_mcp import operations as O
 from petab_mcp import parameters as P
 from petab_mcp.errors import PetabMcpError
 from petab_mcp.operations import OperationError
+from petab_mcp.references import StubReferenceResolver
+from petab_mcp.session import PetabSession
 
 # The shipped toy model (tests/data/toy_v2/model.ant), used as the base for every re-author.
 # Structural edits are made by authoring this base with the change applied via ``set_model`` —
@@ -103,6 +108,32 @@ def test_parsimony_warning_still_fires_for_disconnected_sink(session):
     res = _set_model(session, ["J: B => D; k3 * B;"], justification="B drains to D")
     assert res["applied"] is True
     assert any("unobserved species" in w for w in res["warnings"])
+
+
+def _blinded_session(tmp_path):
+    """The toy problem blinded as the benchmarks ship: its observable reads ``readout_B``, a
+    measurement mapping the model must define by an assignment rule."""
+    work = tmp_path / "blinded"
+    shutil.copytree(Path(__file__).parent / "data" / "toy_v1", work)
+    observables = work / "observables.tsv"
+    observables.write_text(observables.read_text().replace("\tB\t", "\treadout_B\t"))
+    return PetabSession(
+        str(work / "problem.yaml"),
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+    )
+
+
+def test_a_readout_rule_carries_what_it_reads_into_the_observed_set(tmp_path):
+    # On a blinded benchmark the formula names only `readout_B`, never a species. Read off the
+    # formula alone, every added species was reported as feeding no observable — all ten of a
+    # Fujita model. C feeds B, which the readout reads; the sink D is still flagged.
+    session = _blinded_session(tmp_path)
+    res = _set_model(session, ["readout_B := B;", "J: C => B; k3 * C;"], justification="C feeds B")
+    assert res["applied"] is True
+    assert not any("unobserved species" in w for w in res["warnings"])
+    res = _set_model(session, ["readout_B := B;", "J: B => D; k3 * B;"], justification="B to D")
+    assert any("unobserved species ['D']" in w for w in res["warnings"])
 
 
 # -- re-author: reconcile of new/removed structure -------------------------
