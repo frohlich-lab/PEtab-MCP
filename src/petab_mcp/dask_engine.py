@@ -5,8 +5,12 @@ once oversubscribe the node, and Fides' per-start time cap then stops slowed sta
 contention changes results, not only speed. With one, :func:`petab_mcp.server.create_server` builds
 one :class:`DaskEngine`, and every fit and held-out refit of that server runs its starts there.
 
-* **Fits take turns.** Start ``i`` is submitted at ``priority=-i``; dask runs higher priorities
-  first and equal ones in submission order, so concurrent fits interleave start by start.
+* **Starts go in batches.** A task per start would flood the scheduler, which runs in the server's
+  process, with second-long tasks, so a fit sends ``k`` starts per task, run one after another on
+  one worker (:meth:`DaskEngine.batched`). Each is unpickled on its own there, so a start's result
+  does not depend on the batch it ran in.
+* **Fits take turns.** Batch ``j`` is submitted at ``priority=-j``; dask runs higher priorities
+  first and equal ones in submission order, so concurrent fits interleave batch by batch.
 * **Logs follow the session.** A start's ``pypesto``/``fides`` records come back with its result
   and are re-emitted in the calling thread, so :mod:`petab_mcp.logging_setup` files them in that
   session's ``pypesto.log``.
@@ -23,6 +27,8 @@ imports it.
 from __future__ import annotations
 
 import contextlib
+import copy
+import itertools
 import logging
 import socket
 import threading
@@ -57,14 +63,15 @@ class _Records(logging.Handler):
             self.handleError(record)
 
 
-def _work(payload: bytes) -> tuple[Any, list[tuple[str, int, str, float]]]:
-    """Run one cloudpickled pyPESTO task on a worker; returns its result and its records."""
+def _work(payloads: list[bytes]) -> tuple[list[Any], list[tuple[str, int, str, float]]]:
+    """Run cloudpickled pyPESTO tasks one after another on a worker; returns their results and
+    their records."""
     capture = _Records()
     loggers = [logging.getLogger(name) for name in _LOGGERS]
     for logger in loggers:
         logger.addHandler(capture)
     try:
-        return cloudpickle.loads(payload).execute(), capture.records
+        return [cloudpickle.loads(payload).execute() for payload in payloads], capture.records
     finally:
         for logger in loggers:
             logger.removeHandler(capture)
@@ -97,11 +104,15 @@ class _NoBuild(WorkerPlugin):
 
 
 class DaskEngine(Engine):
-    """A pyPESTO engine that runs each task on ``cluster``, through a client of its own.
+    """A pyPESTO engine that runs tasks on ``cluster``, ``starts_per_task`` to a dask task, through
+    a client of its own.
 
     Refused before connecting when AMICI was built without HDF5: AMICI pickles a solver's settings
     through HDF5, so no start could reach a worker and every fit on the cluster would fail.
     """
+
+    #: Starts per dask task; a fit sets its own through :meth:`batched`.
+    starts_per_task = 1
 
     def __init__(self, cluster) -> None:
         from amici.sim.sundials import hdf5_enabled
@@ -115,14 +126,21 @@ class DaskEngine(Engine):
         self.client = Client(cluster)
         self.client.register_plugin(_NoBuild(), name="petab-mcp-no-build")
 
+    def batched(self, k: int) -> DaskEngine:
+        """This engine with ``k`` starts per dask task: a copy, as one engine serves every
+        session's fits at once."""
+        engine = copy.copy(self)
+        engine.starts_per_task = k
+        return engine
+
     def execute(self, tasks: list[Task], progress_bar: bool | None = None) -> list[Any]:
         """The tasks' results, in task order. A failure cancels the starts still queued, so a failed
         fit leaves nothing running on the pool."""
         futures = []
         try:
-            for i, task in enumerate(tasks):
-                payload = cloudpickle.dumps(task)
-                futures.append(self.client.submit(_work, payload, priority=-i, pure=False))
+            for j, batch in enumerate(itertools.batched(tasks, self.starts_per_task)):
+                payloads = [cloudpickle.dumps(task) for task in batch]
+                futures.append(self.client.submit(_work, payloads, priority=-j, pure=False))
             done = self.client.gather(futures)
         except Exception as exc:  # noqa: BLE001 - every cluster failure fails the fit
             with contextlib.suppress(Exception):  # the client itself may be what failed
@@ -143,4 +161,4 @@ class DaskEngine(Engine):
                     }
                 )
                 logging.getLogger(name).handle(record)
-        return [result for result, _ in done]
+        return [result for results, _ in done for result in results]
