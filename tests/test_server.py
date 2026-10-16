@@ -714,6 +714,7 @@ def test_a_tool_acts_on_the_session_routed_to_at_call_time(tmp_path):
             reference_mode="best_effort",
             resolver=StubReferenceResolver(),
             auto_fit=False,
+            fit_engine=None,
         )
 
     a, b = open_ctx("a"), open_ctx("b")
