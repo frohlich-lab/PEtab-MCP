@@ -245,6 +245,18 @@ def test_a_readout_formula_reads_other_entries_and_parameters():
     assert sbml.getParameter("scale") is not None
 
 
+def test_a_readout_formula_reads_an_agent_only_through_amounts():
+    """Naming an agent in a formula without declaring it in `amounts` made a parameter of that
+    name, so the readout measured a fitted constant instead of the species (a gemot run on
+    perelson: `readout_viral_load := Virus`, `Virus` estimated at its bound)."""
+    with pytest.raises(ModelUpdateError, match="only through `amounts`"):
+        PS.to_antimony(
+            [(_PHOSPHO, INDRA_DEFAULT, "r1")],
+            {},
+            formulas={"readout_total": "scale * ERK"},
+        )
+
+
 def test_a_readout_formula_names_a_new_symbol():
     """A readout's id that is also a species or an entity-map id would define one symbol twice."""
     with pytest.raises(ModelUpdateError, match="also names something else"):
