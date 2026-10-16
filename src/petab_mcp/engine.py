@@ -85,12 +85,15 @@ def build_lock(output_folder: str | Path, model_name: str) -> Iterator[None]:
 class AmiciEngine:
     """Compile-cached AMICI backend bound to a :class:`PetabSession`."""
 
-    def __init__(self, session, build_root: str | Path | None = None) -> None:
+    def __init__(self, session, build_root: str | Path | None = None, fit_engine=None) -> None:
         self.session = session
         self.build_root = (
             Path(build_root) if build_root else Path(tempfile.gettempdir()) / "petab_mcp_amici"
         )
         self.build_root.mkdir(parents=True, exist_ok=True)
+        # The server's DaskEngine, which every fit and held-out refit of the session runs its starts
+        # on; None runs them in local processes (see fitting._fit_engine).
+        self.fit_engine = fit_engine
         # Module hashes pyPESTO has already built a problem for this run: it lets the fitter charge
         # the (one-time) model build to ``compile_seconds`` only the FIRST time a structure is
         # seen, so a re-fit of the same structure (a parameter-only edit) doesn't over-count

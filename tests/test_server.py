@@ -715,6 +715,7 @@ def test_a_tool_acts_on_the_session_routed_to_at_call_time(tmp_path):
             resolver=StubReferenceResolver(),
             auto_fit=False,
             entity_map=None,
+            fit_engine=None,
         )
 
     a, b = open_ctx("a"), open_ctx("b")
