@@ -384,7 +384,7 @@ def test_a_single_named_unit_is_still_carried_under_units(monkeypatch):
     block is carried the same way — a consumer reading `units` must not find it missing."""
     seen = []
 
-    def _fake_one(view, *, target, n_starts):
+    def _fake_one(view, *, target, n_starts, fit_engine):
         seen.append(view)
         return {
             "status": "ok",
