@@ -772,6 +772,7 @@ def refit_problem(
     n_starts: int,
     units=None,
     reference=None,
+    fit_engine=None,
 ) -> dict[str, Any]:
     """REFIT ``problem`` on its own measurements and report the optimum — the transfer score.
 
@@ -796,7 +797,8 @@ def refit_problem(
     point). The per-start cap and the worker count are NOT arguments: both sides run on the
     server's own budget (``PETAB_MCP_FIT_PER_START_TIMEOUT``, ``PETAB_MCP_FIT_N_WORKERS``), the same
     one the fit that produced the candidate ran on, so neither side can be given a wider search
-    than the other by its caller.
+    than the other by its caller. ``fit_engine`` only says where the starts run: the server's
+    :class:`~petab_mcp.dask_engine.DaskEngine`, or local processes when ``None``.
 
     ``build_dir``/``model_name`` are the caller's build target, used as is only for a unit that
     compiles to the same module as ``reference`` (the problem that target was built for); every
@@ -827,12 +829,12 @@ def refit_problem(
     if units is None:
         uview = _unit_view(view, measurement_df)
         target = _build_target(uview, reference, build_dir, model_name)
-        return _refit_one(uview, target=target, n_starts=n_starts)
+        return _refit_one(uview, target=target, n_starts=n_starts, fit_engine=fit_engine)
     per_unit: dict[str, dict[str, Any]] = {}
     for unit, rows in split.items():
         uview = _unit_view(view, rows)
         target = _build_target(uview, reference, build_dir, model_name)
-        out = _refit_one(uview, target=target, n_starts=n_starts)
+        out = _refit_one(uview, target=target, n_starts=n_starts, fit_engine=fit_engine)
         if out["status"] != STATUS_OK:
             return {**out, "unit": unit, "mode": MODE_TRANSFER}
         per_unit[unit] = {k: v for k, v in out.items() if k not in ("status", "mode", "n_starts")}
@@ -889,7 +891,7 @@ def _refit_units(measurement_df, units):
     return {unit: rows for unit, rows in measurement_df.groupby(unit_of, sort=True)}
 
 
-def _refit_one(view, *, target: dict[str, str], n_starts: int) -> dict[str, Any]:
+def _refit_one(view, *, target: dict[str, str], n_starts: int, fit_engine) -> dict[str, Any]:
     """One system's multistart refit — :func:`refit_problem` for a table that is one unit."""
     import logging
 
@@ -900,7 +902,6 @@ def _refit_one(view, *, target: dict[str, str], n_starts: int) -> dict[str, Any]
 
     from .engine import AmiciEngine, _ensure_swig_on_path
     from .fitting import (
-        FIT_SEED,
         _apply_amici_solver_defaults,
         _fides_maxtime_options,
         _fit_engine,
@@ -911,7 +912,6 @@ def _refit_one(view, *, target: dict[str, str], n_starts: int) -> dict[str, Any]
 
     measurement_df = view.measurement_df
     _ensure_swig_on_path()
-    np.random.seed(FIT_SEED)
     pp = pypesto_problem(view, target)
     _apply_amici_solver_defaults(pp)
     x_start = np.asarray(problem_x_full_from_nominal(pp, view.parameter_df), dtype=float)
@@ -923,7 +923,7 @@ def _refit_one(view, *, target: dict[str, str], n_starts: int) -> dict[str, Any]
         pp,
         optimizer=optimizer,
         n_starts=int(n_starts),
-        engine=_fit_engine(int(n_starts)),
+        engine=_fit_engine(int(n_starts), fit_engine),
         progress_bar=False,
     )
 
@@ -998,7 +998,12 @@ def score_session(
             return {**failed, "mode": MODE_TRANSFER}
         starts = session.auto_fit_starts if n_starts is None else int(n_starts)
         return refit_problem(
-            view, n_starts=starts, units=held_out.units, reference=session.problem, **build
+            view,
+            n_starts=starts,
+            units=held_out.units,
+            reference=session.problem,
+            fit_engine=engine.fit_engine,
+            **build,
         )
 
 

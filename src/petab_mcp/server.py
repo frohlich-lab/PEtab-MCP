@@ -1862,10 +1862,12 @@ def _open_ctx(
     resolver: Any | None,
     auto_fit: bool,
     entity_map: str | None,
+    fit_engine: Any | None,
 ) -> _Ctx:
     """Open the session on the problem at ``yaml_path``: its :class:`PetabSession`, the
     :class:`AmiciEngine` wired into it, and its held-out set. The arguments are
-    :func:`create_server`'s."""
+    :func:`create_server`'s, but for ``fit_engine``: the server's
+    :class:`~petab_mcp.dask_engine.DaskEngine`, which the session's fits share, or ``None``."""
     session = PetabSession(
         yaml_path,
         provenance_dir=provenance_dir,
@@ -1873,7 +1875,7 @@ def _open_ctx(
         resolver=resolver,
         criterion=criterion,
     )
-    engine = AmiciEngine(session, build_root=build_root)
+    engine = AmiciEngine(session, build_root=build_root, fit_engine=fit_engine)
     # Wire the engine so the fit `make_changes` runs can fit + simulate.
     session.engine = engine
     session.auto_fit = auto_fit
@@ -1907,6 +1909,7 @@ def create_server(
     validation_measurements: str | None = None,
     score_shipped_model: bool = False,
     entity_map: str | None = None,
+    cluster: Any | None = None,
 ) -> FastMCP:
     """Build a FastMCP server bound to the PEtab problem at ``yaml_path``.
 
@@ -1944,7 +1947,18 @@ def create_server(
     (:func:`seeding.load_entity_map`) and declaring its experimental inputs
     (:func:`seeding.load_inputs`). Giving it offers ``make_changes`` the ``statements`` route;
     omit it and the route does not exist.
+
+    ``cluster`` (a ``distributed`` cluster, the ``dask`` extra) runs every fit's starts on that
+    cluster's workers through one client (:mod:`petab_mcp.dask_engine`); without one, each fit runs
+    its starts in local processes. The workers import the compiled models from ``build_root``, so on
+    more than one machine it must be on a filesystem they share. An AMICI built without HDF5 cannot
+    send a start to a worker, so it refuses the cluster here.
     """
+    fit_engine = None
+    if cluster is not None:
+        from .dask_engine import DaskEngine
+
+        fit_engine = DaskEngine(cluster)
     ctx = _open_ctx(
         yaml_path,
         provenance_dir=provenance_dir,
@@ -1957,6 +1971,7 @@ def create_server(
         resolver=resolver,
         auto_fit=auto_fit,
         entity_map=entity_map,
+        fit_engine=fit_engine,
     )
 
     # Load tool-usage skills up front so the server instructions only advertise
