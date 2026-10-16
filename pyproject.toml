@@ -40,13 +40,17 @@ dependencies = [
     # streamable_http_client with a new signature; CallToolResult/Tool fields went snake_case).
     # Revisit once langchain-mcp-adapters ships mcp 2.0 support.
     "fastmcp>=3,<4",
-    # libpetab main, not a release: `petab1to2(validate=False)` (PEtab-dev/libpetab-python#534)
-    # upgrades a v1 problem that does not lint, which every benchmark problem is until its agent
-    # writes the model, and petab1to2 now rescales log10 noise onto log-normal itself (#535). Move
-    # to the first release with both. It must stay at or above 0.9, the first release whose v2
+    # The head of PEtab-dev/libpetab-python#557, not a release: it is stacked on #556 and both
+    # contain the libpetab main this pinned before, with `petab1to2(validate=False)` (#534), which
+    # upgrades a v1 problem that does not lint (every benchmark problem is, until its agent writes
+    # the model), and petab1to2's own rescaling of log10 noise onto log-normal (#535). #556 and
+    # #557 add `assignments_to_experiments` for assignments that switch more than once, and for
+    # values that ramp linearly between switches. Not included: #546, without which Raimundez's
+    # upgraded problem does not import. Move to main once #546, #556 and #557 are merged, and to the
+    # first release with all of them. It must stay at or above 0.9, the first release whose v2
     # problem carries the SciML extension natively (`petab.v2.extensions.sciml`), which the
     # harness's neural route stages its problems in.
-    "petab @ git+https://github.com/PEtab-dev/libpetab-python.git@402393d85f1664051e598f15b486ff84879d2a6e",
+    "petab @ git+https://github.com/PEtab-dev/libpetab-python.git@a9279e1da4e6845c9a4885b67a14827e1aa9ccce",
     "python-libsbml>=5.19",
     # Floored at 3.2 because `validation.frozen_parametric_stoichiometry_issues` is now the ONLY
     # guard against a symbolic reaction stoichiometry (issue frohlich-lab/petab_mcp#89). Below
@@ -73,14 +77,16 @@ dependencies = [
     # workers. Built from source (no wheel for a commit), which is why CI installs a toolchain
     # before it. Move to a release once one contains both.
     "amici @ git+https://github.com/AMICI-dev/AMICI.git@712c44a60753ea3910eac2a2753041dc0cf2ec6e#subdirectory=python/sdist",
-    # Pinned to the head of ICB-DCM/pyPESTO#1782, not a merge: its PEtab v2 importer takes the
-    # estimation scales (`PetabImporter(parameter_scales=...)`), which v2 dropped from the format.
-    # Without it every v2 problem is optimised linearly, with start points almost all in the top
-    # decade of a log-spanning box. It contains ICB-DCM/pyPESTO#1740, before which the v2 importer
-    # raised NotImplementedError for `hierarchical=True`, and the fit inner-solves its noise sigmas
-    # and observable scalings whenever the problem allows. Move to the merge commit once #1782 is
-    # merged, and to a release once one contains both.
-    "pypesto[petab] @ git+https://github.com/ICB-DCM/pyPESTO.git@106d02d2b8a4f6211debb6cdc45a52a2de75af30",
+    # The head of ICB-DCM/pyPESTO#1786 with main merged in, not a release. Main has #1782: the
+    # PEtab v2 importer takes the estimation scales (`PetabImporter(parameter_scales=...)`), which
+    # v2 dropped from the format; without it every v2 problem is optimised linearly, with start
+    # points almost all in the top decade of a log-spanning box. Main also has #1740, before which
+    # the v2 importer raised NotImplementedError for `hierarchical=True`, so the fit inner-solves
+    # its noise sigmas and observable scalings whenever the problem allows. #1786 keeps a constant
+    # term out of a hierarchical scaling (`scale * h + c`, Alkan's readouts), which was scaled with
+    # it, silently. Move to #1786's merge commit once it is merged, and to a release once one
+    # contains it.
+    "pypesto[petab] @ git+https://github.com/ICB-DCM/pyPESTO.git@79a9623a926e633e34a01a5f9fddd2013bb4c77a",
     "fides>=0.7",
     # INDRA supplies the Statement base class the mechanism vocabulary extends (`statements`),
     # Agent grounding, Preassembler deduplication, and the PySB assembler's monomer and site
