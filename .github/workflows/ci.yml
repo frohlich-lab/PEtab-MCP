@@ -30,8 +30,16 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
-          cache-dependency-path: pyproject.toml
+
+      # Not setup-python's pip cache, which falls back to any older cache of the same Python: pip
+      # keys the AMICI wheel it builds on the URL alone, so this prefix names the toolchain below.
+      # Change "hdf5" when that toolchain changes.
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-hdf5-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: pip-hdf5-${{ runner.os }}-py${{ matrix.python-version }}-
 
       # AMICI generates and compiles C++ for every model, and is itself built
       # from source here (pyproject pins a git commit; its build pulls BLAS from
@@ -39,14 +47,18 @@ jobs:
       # ubuntu-latest; the Ninja generator AMICI drives CMake with does not, so
       # install it.
       #
+      # HDF5 too: AMICI builds with it only if it finds the headers, and needs it
+      # to pickle a solver, i.e. to send a fit start to a worker.
+      #
       # Deliberately NOT installing the apt `swig`: AMICI is built against the
       # pip `swig`, and a mismatched system SWIG makes compiled models raise
       # "'SwigPyObject' object has no attribute 'module'". The matching SWIG is
       # the pip `swig` package (installed and pinned below).
-      - name: Install build toolchain (Ninja)
+      - name: Install build toolchain (Ninja, HDF5)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ninja-build cmake build-essential
+          sudo apt-get install -y libhdf5-dev  # with its recommends, as AMICI's own CI does
 
       # AMICI's source build compiles serially unless told otherwise; the pip
       # cache keeps the built wheel for the pinned commit.

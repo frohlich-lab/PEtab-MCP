@@ -67,6 +67,12 @@ class MechanismError(PetabMcpError):
     cause = "library_gap"
 
 
+class FitBackendError(PetabMcpError):
+    """The cluster a fit's starts run on failed them (scheduler gone, a worker killed, a start
+    cancelled or unable to run on a worker), or cannot run them at all because this AMICI cannot
+    pickle a start (see :mod:`petab_mcp.dask_engine`)."""
+
+
 class NoSessionBoundError(PetabMcpError):
     """A call arrived on a connection that has no session bound to it."""
 
