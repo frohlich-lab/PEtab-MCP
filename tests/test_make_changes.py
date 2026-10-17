@@ -749,6 +749,53 @@ def test_statements_commit_records_what_was_asserted(tmp_path):
     assert stored["emission"]["parameters"] == ["conv_k"]
 
 
+def _text(mcp, name, args):
+    """A tool's text return (FastMCP wraps a str in {"result": ...})."""
+    return _listed(_call(mcp, name, args))
+
+
+def test_a_scheme_mechanism_builds_and_is_listed_as_written(tmp_path):
+    """A mechanism written as its own PySB rules joins the run's library: rows use it, the model
+    shows it as written, and `list_mechanisms` lists it beside the library's own entries."""
+    mcp = _statements_server(tmp_path)
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "A becomes B by a rule of my own",
+            "statements": [_statement_row(policy="hop")],
+            "mechanisms": [
+                {"statement_type": "PopulationTransition", "policy": "hop",
+                 "scheme": "source() >> target() @ k_hop"}
+            ],
+        },
+    )
+    assert out["applied"] is True, out
+    (stored,) = json.loads(
+        (tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text()
+    )["rows"]
+    assert stored["emission"]["parameters"] == ["conv_k_hop"]
+    listed = _text(mcp, "list_mechanisms", {"statement_type": "PopulationTransition"})
+    assert "PopulationTransition | hop (written this run)\n  source() >> target() @ k_hop" in listed
+    assert "PopulationTransition | mass_action\n" in listed
+    model = _text(mcp, "get_model", {"format": "statements"})
+    assert "mechanism hop: PopulationTransition, scheme\n  source() >> target() @ k_hop" in model
+
+
+def test_list_mechanisms_exists_only_with_the_route(tmp_path):
+    names = lambda mcp: {t.name for t in asyncio.run(mcp.list_tools())}  # noqa: E731
+    assert "list_mechanisms" not in names(_server(tmp_path / "plain"))
+    assert "list_mechanisms" in names(_statements_server(tmp_path))
+
+
+def test_list_mechanisms_shows_two_step_as_its_rules(tmp_path):
+    listed = _text(_statements_server(tmp_path), "list_mechanisms", {"statement_type": "Phosphorylation"})
+    assert (
+        "Phosphorylation | indra_two_step\n"
+        "  enz(sub=None) + sub(mod='off', enz=None) >> enz(sub=1) % sub(mod='off', enz=1) @ kf"
+    ) in listed
+
+
 def test_a_library_gap_is_its_own_rejection(tmp_path):
     """A pair the library does not hold must stay countable apart from a malformed call — it is
     the to-do list for the library."""
