@@ -932,3 +932,305 @@ def test_a_row_may_be_written_in_the_notation(tmp_path):
     assert stored["statement"]["type"] == "PopulationTransition"
     text = _call(mcp, "get_model", {"format": "statements"})["result"]
     assert "conv: A becomes B | mass_action" in text
+
+
+# -- `statement_edits`: changing a statements model by its rows ----------------------
+_CONV = "conv: A becomes B | mass_action"
+_BACK = "back: B becomes A | mass_action"
+
+
+def _stored_rows(tmp_path, version):
+    path = tmp_path / "prov" / "versions" / f"v{version}" / "statements.json"
+    return json.loads(path.read_text())
+
+
+def _built(tmp_path, rows):
+    mcp = _statements_server(tmp_path)
+    out = _call(mcp, "make_changes", {"justification": "build", "statements": rows})
+    assert out["applied"] is True
+    return mcp
+
+
+def test_statement_edits_change_the_rows_they_name_and_keep_the_rest(tmp_path):
+    """An edit names a row by its prefix; the rows it does not name are rebuilt as they were,
+    so a revision no longer means sending the whole model again."""
+    mcp = _built(tmp_path, [_CONV, _BACK])
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "drop the way back, then give it its own rate again",
+            "statement_edits": [
+                {"op": "remove_row", "prefix": "back"},
+                {"op": "add_row", "row": "back2: B becomes A | mass_action"},
+                {"op": "set_start", "start": {"agent": "A", "amount": 1, "name": "A_start"}},
+            ],
+        },
+    )
+    assert out["applied"] is True
+    assert out["statement_edits_applied"] == [
+        "remove_row back",
+        "add_row back2",
+        "set_start A_start",
+    ]
+    record = _stored_rows(tmp_path, 1)
+    assert [r["prefix"] for r in record["rows"]] == ["conv", "back2"]
+    assert [s["name"] for s in record["starts"]] == ["A_start"]
+
+
+def test_replace_row_rewrites_the_row_in_place(tmp_path):
+    mcp = _built(tmp_path, [_CONV, _BACK])
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "the way back shares the forward rate",
+            "statement_edits": [
+                {"op": "replace_row", "row": "back: B becomes A | mass_action k=conv_k"}
+            ],
+        },
+    )
+    assert out["applied"] is True
+    rows = _stored_rows(tmp_path, 1)["rows"]
+    assert [r["prefix"] for r in rows] == ["conv", "back"]
+    assert rows[1]["parameters"] == {"k": "conv_k"}
+
+
+def test_an_edit_that_names_nothing_applies_nothing(tmp_path):
+    mcp = _built(tmp_path, [_CONV])
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "edit a row that is not there",
+            "statement_edits": [
+                {"op": "add_row", "row": _BACK},
+                {"op": "replace_row", "row": "gone: B becomes A | mass_action"},
+            ],
+        },
+    )
+    assert out["applied"] is False
+    assert "`statement_edits[1]` (replace_row): no row `gone`" in out["error"]
+    assert "['back', 'conv']" in out["error"]
+    assert not (tmp_path / "prov" / "versions" / "v1").exists()
+
+
+def test_statement_edits_need_a_model_built_from_statements(tmp_path):
+    mcp = _statements_server(tmp_path)
+    out = _call(
+        mcp,
+        "make_changes",
+        {"justification": "edit nothing", "statement_edits": [{"op": "add_row", "row": _CONV}]},
+    )
+    assert out["applied"] is False
+    assert "give the whole model as `statements`" in out["error"]
+
+
+def test_whole_sets_ride_with_statements_not_with_edits(tmp_path):
+    mcp = _built(tmp_path, [_CONV])
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "mixed",
+            "statement_edits": [{"op": "add_row", "row": _BACK}],
+            "starts": [{"agent": "A", "amount": 1}],
+        },
+    )
+    assert out["applied"] is False and "`set_start`" in out["error"]
+
+
+def test_base_version_applies_edits_to_that_versions_rows(tmp_path):
+    """The rollback-and-edit path the `model_edits` route has, on the statements route: refused
+    before, although the lead's prompt told it to use it."""
+    mcp = _built(tmp_path, [_CONV])
+    _call(
+        mcp,
+        "make_changes",
+        {"justification": "v1", "statement_edits": [{"op": "add_row", "row": _BACK}]},
+    )
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "from v0 instead",
+            "base_version": 0,
+            "statement_edits": [{"op": "add_row", "row": "back2: B becomes A | mass_action"}],
+        },
+    )
+    assert out["applied"] is True
+    assert [r["prefix"] for r in _stored_rows(tmp_path, 2)["rows"]] == ["conv", "back2"]
+
+
+def test_base_version_takes_whole_statements_too(tmp_path):
+    mcp = _built(tmp_path, [_CONV])
+    out = _call(
+        mcp,
+        "make_changes",
+        {"justification": "afresh from v0", "base_version": 0, "statements": [_CONV, _BACK]},
+    )
+    assert out["applied"] is True
+
+
+def test_on_the_statements_route_the_refusals_name_its_own_routes(tmp_path):
+    """Haiku, told "nothing to do — give `model_edits` ... `antimony`", wrote Antimony on an arm
+    that builds from statements."""
+    mcp = _built(tmp_path, [_CONV])
+    out = _call(mcp, "make_changes", {"justification": "nothing"})
+    assert "`statements`" in out["error"] and "`statement_edits`" in out["error"]
+    assert "`antimony`" not in out["error"]
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "both",
+            "statements": [_CONV],
+            "statement_edits": [{"op": "add_row", "row": _BACK}],
+        },
+    )
+    assert "`statement_edits` for a change to the current rows" in out["error"]
+    out = _call(mcp, "make_changes", {"justification": "bare", "base_version": 0})
+    assert "`statement_edits` (or the whole revised `statements`)" in out["error"]
+
+
+def test_the_route_says_nothing_is_bound_when_the_map_is_empty(tmp_path):
+    """With an empty map the route's paragraph said the observables and inputs were bound by it,
+    and told the agent to name agents as the map does: a map with nothing in it."""
+    from petab_mcp.server import _make_changes_statements_doc
+
+    assert "bound by the problem's entity map" in _make_changes_statements_doc(bound=True)
+    unbound = _make_changes_statements_doc(bound=False)
+    assert "NOTHING is bound" in unbound and "entity map" not in unbound
+    entity_map = tmp_path / "entities.json"
+    entity_map.write_text("{}")
+    mcp = create_server(
+        str(YAML_PATH),
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+        auto_fit=False,
+        entity_map=str(entity_map),
+    )
+    tools = asyncio.run(mcp.list_tools())
+    description = next(t for t in tools if t.name == "make_changes").description
+    assert "NOTHING is bound" in description and "`statement_edits`" in description
+    assert "statement_edits" in _make_changes_schema(mcp)
+
+
+def test_an_unread_condition_target_is_explained():
+    from petab_mcp.operations import _rejection_summary
+
+    text = _rejection_summary(["Condition table contains invalid targets: {'rit'}"])
+    assert "{'rit'}" in text and "input the condition table SETS" in text
+    assert "SETS" not in _rejection_summary(["something else"])
+
+
+# -- readouts, bindings and written mechanisms, as one sweep's traces found them --------
+def _readout_server(tmp_path):
+    """The toy with its observable reading a blinded `readout_B`, and an empty entity map: what
+    a PEtabAgentBench problem is on the indra_statements arm."""
+    import shutil
+
+    data = tmp_path / "toy"
+    shutil.copytree(YAML_PATH.parent, data)
+    (data / "observables.tsv").write_text(
+        "observableId\tobservableFormula\tnoiseFormula\nobs_B\treadout_B\tsigma_B\n"
+    )
+    entity_map = tmp_path / "entities.json"
+    entity_map.write_text("{}")
+    return create_server(
+        str(data / "problem.yaml"),
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+        auto_fit=False,
+        entity_map=str(entity_map),
+    )
+
+
+def test_a_readout_may_read_an_amount_in_place(tmp_path):
+    mcp = _readout_server(tmp_path)
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "A becomes B, measured as B",
+            "statements": [_CONV],
+            "readouts": {"readout_B": "scale_B*amount(B)"},
+        },
+    )
+    assert out["applied"] is True
+    assert _stored_rows(tmp_path, 0)["amounts"] == {"amount_B": {"name": "B"}}
+
+
+def test_a_readout_that_reads_no_amount_is_refused(tmp_path):
+    """43 committed versions in one sweep measured only parameters; the flat fits they gave were
+    the best some runs reached."""
+    mcp = _readout_server(tmp_path)
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "a constant readout",
+            "statements": [_CONV],
+            "readouts": {"readout_B": "k_level/(k_level + 1)"},
+        },
+    )
+    assert out["applied"] is False and "reads no amount" in out["error"]
+
+
+def test_a_readout_no_observable_reads_is_refused(tmp_path):
+    mcp = _readout_server(tmp_path)
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "an extra readout",
+            "statements": [_CONV],
+            "readouts": {"readout_B": "amount(B)", "readout_drugs": "amount(A)"},
+        },
+    )
+    assert out["applied"] is False
+    assert "['readout_drugs'] are read by no observable" in out["error"]
+    assert "['readout_B']" in out["error"]
+
+
+def test_a_binding_may_scale_the_parameter_it_replaces(tmp_path):
+    """`kf="mek_phos_kf*(1 - Sorafenib/K)"` recursed without bottom: the binding's expression
+    was redirected into itself."""
+    mcp = _built(tmp_path, [_CONV])
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "the conversion slowed by a factor",
+            "statement_edits": [
+                {"op": "replace_row", "row": "conv: A becomes B | mass_action k=conv_k*slow"}
+            ],
+        },
+    )
+    assert out["applied"] is True, out.get("error")
+    rows = {r["parameterId"] for r in _call(mcp, "get_parameters", {})["result"]}
+    assert {"conv_k", "slow"} <= rows
+
+
+def test_a_scheme_with_modifiers_is_refused_where_it_is_written():
+    """Accepted and then dropped, before: each row naming them was refused with "reads none"."""
+    from petab_mcp import mechanisms as M
+
+    with pytest.raises(M.MechanismError, match="amount\\(<pattern>\\)"):
+        M.written(
+            {
+                "statement_type": "PopulationTransition",
+                "policy": "inhibited",
+                "scheme": "source() >> target() @ k",
+                "modifiers": ["inh"],
+            },
+            dict(M.REGISTRY),
+        )
+
+
+def test_an_unknown_activity_names_the_modification_tags():
+    """`STAT5A{mod:on}` (a scheme's site, written in a row) built an activity named "mod"."""
+    from petab_mcp import notation
+
+    with pytest.raises(notation.NotationError, match="unknown activity 'mod'"):
+        notation.parse_agent("STAT5A{mod:on}")

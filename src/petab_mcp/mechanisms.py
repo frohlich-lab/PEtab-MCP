@@ -134,8 +134,10 @@ def instantiate(
     if modifiers:
         if not getattr(entry, "modifiers", ()):
             raise MechanismError(
-                f"row {prefix!r} names modifiers, but {key} reads none; a written mechanism "
-                "declares the modifiers its rate reads"
+                f"row {prefix!r} names modifiers, but {key} reads none: only a mechanism written "
+                "with a `rate` and `modifiers` reads them. A condition input (a drug dose) needs "
+                "no modifier: bind the row's rate to an expression over it, "
+                f'`kf="{prefix}_kf*(1 - Sorafenib/(K_i + Sorafenib))"`'
             )
         emission = entry(stmt, model, prefix, modifiers=modifiers)
     else:
@@ -230,14 +232,17 @@ def _bound_expression(model: pysb.Model, name: str, text: str, prefix: str):
 
 
 def _redirect(model: pysb.Model, old, new) -> None:
-    """Point every rule rate and expression that reads ``old`` at ``new``."""
+    """Point every rule rate and expression that reads ``old`` at ``new``, except ``new`` itself:
+    a binding may read the parameter it replaces (``kf="mek_kf*(1 - Sorafenib/K)"`` scales the
+    row's own constant), and redirecting that read into ``new`` made it read itself, which PySB
+    met as a recursion with no bottom (three refusals in one sweep, none recovered)."""
     for rule in model.rules:
         if rule.rate_forward is old:
             rule.rate_forward = new
         if rule.rate_reverse is old:
             rule.rate_reverse = new
     for expression in model.expressions:
-        if old in expression.expr.free_symbols:
+        if expression is not new and old in expression.expr.free_symbols:
             expression.expr = expression.expr.xreplace({old: new})
 
 
@@ -272,6 +277,13 @@ def written(definition: dict, library: dict[tuple[str, str], Policy]) -> Policy:
 
         if definition.get("rate"):
             raise MechanismError(f"{policy!r} gives a scheme and a rate; a scheme carries its rates")
+        if definition.get("modifiers"):
+            # Accepted and then dropped, before: every row naming them was refused with "reads
+            # none" (17 refusals in one sweep, none recovered).
+            raise MechanismError(
+                f"{policy!r} is a scheme with `modifiers`; a scheme reads any agent in its rates "
+                "as `amount(<pattern>)` instead, `@ kf/(1 + amount(Inhibitor)/K_i)`"
+            )
         return compile_scheme(definition)
     if not definition.get("rate"):
         raise MechanismError(f"{policy!r} gives neither a `scheme` nor a `rate`")
@@ -299,7 +311,9 @@ def written(definition: dict, library: dict[tuple[str, str], Policy]) -> Policy:
         raise MechanismError(
             f"rate {rate!r} of {policy!r} may name only {sorted(names) + slots + roles + ['time']}"
             f" (a list role by position, e.g. obj_from_0) and exp/log/sqrt"
-            f"{f'; it names {unknown}' if unknown else ''}"
+            f"{f'; it names {unknown}' if unknown else ''}. A problem parameter or condition "
+            'input enters through a row\'s binding: `parameters={"K": "K_shared"}`, or '
+            '`kf="k*dose"`'
         )
     base = library[base_key]
 
