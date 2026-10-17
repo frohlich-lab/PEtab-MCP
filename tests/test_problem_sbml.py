@@ -226,6 +226,37 @@ def test_indra_padded_rules_build():
     assert SbmlModel.from_antimony(antimony).sbml_model.getNumReactions() == 2
 
 
+def test_complexes_that_grow_without_bound_are_refused():
+    """Homo- and heterodimers of two kinds chain without end; BioNetGen expanded such a network
+    until the client timed out (a gemot run on boehm, 1092 s per call, six calls)."""
+    from indra.statements import Complex
+
+    rows = [
+        (Complex([Agent("STAT5A"), Agent("STAT5A")]), "stated", "aa"),
+        (Complex([Agent("STAT5A"), Agent("STAT5B")]), "stated", "ab"),
+        (Complex([Agent("STAT5B"), Agent("STAT5B")]), "stated", "bb"),
+    ]
+    with pytest.raises(ModelUpdateError, match="grow without bound"):
+        PS.to_antimony(rows, {"STAT5A": Agent("STAT5A"), "STAT5B": Agent("STAT5B")})
+
+
+def test_the_dimers_the_refusal_advises_are_not_refused():
+    """The same three dimers, each partner free of its others where it binds: dimers only."""
+    from indra.statements import Complex
+
+    def free(name, of):
+        return Agent(name, bound_conditions=[BoundCondition(Agent(of), False)])
+
+    a, b = "STAT5A", "STAT5B"
+    rows = [
+        (Complex([free(a, b), free(a, b)]), "stated", "aa"),
+        (Complex([free(a, a), free(b, b)]), "stated", "ab"),
+        (Complex([free(b, a), free(b, a)]), "stated", "bb"),
+    ]
+    antimony, _ = PS.to_antimony(rows, {a: Agent(a), b: Agent(b)})
+    assert "STAT5A" in antimony and "STAT5B" in antimony
+
+
 # -- readout formulas (make_changes' `readouts` over `amounts`) ----------------------
 def test_a_readout_formula_reads_other_entries_and_parameters():
     """Boehm's pSTAT5A readout is a ratio of two patterns scaled by a shipped constant; one
