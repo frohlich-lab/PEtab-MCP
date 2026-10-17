@@ -275,7 +275,7 @@ def to_antimony(
         _rename(sbml_model, renamed, new)
     agents = {m.name for m in model.monomers}
     for readout, formula in (formulas or {}).items():
-        _readout_formula(sbml_model, readout, formula, agents)
+        _readout_formula(sbml_model, readout, formula, agents, set(entities))
     for name, _, amount in starts:
         if isinstance(amount, str):
             _initial_expression(sbml_model, f"{name}_init", name, amount)
@@ -347,14 +347,20 @@ def _initial_expression(sbml_model, placeholder: str, species: str, formula: str
             assignment.setMath(math)
 
 
-def _readout_formula(sbml_model, readout: str, formula: str, agents=frozenset()) -> None:
+def _readout_formula(
+    sbml_model, readout: str, formula: str, agents=frozenset(), states=None
+) -> None:
     """Define ``readout`` as ``formula``: an assignment rule, as the lint wants a measurement
     mapping to be, over symbols of the model and parameters made for the names it lacks.
 
     A name that is one of the model's ``agents`` is refused rather than made a parameter: a
     formula reads an agent's amount only through ``amounts``, and a parameter of the agent's name
     would read a constant, fitted silently in place of the species (``readout_viral_load :=
-    Virus`` measured an estimated ``Virus`` at its bound, not the virions)."""
+    Virus`` measured an estimated ``Virus`` at its bound, not the virions).
+
+    A formula that reads none of the model's ``states`` (the ``amounts``, and the entity map's ids)
+    is refused too: it measures parameters, a constant the fit tunes to the data's mean. One sweep
+    committed 43 such readouts, and the flat fits they gave were the best some runs reached."""
     if sbml_model.getElementBySId(readout) is not None:
         raise ModelUpdateError(
             f"readout {readout!r} is a formula and also names something else in the model"
@@ -385,6 +391,15 @@ def _readout_formula(sbml_model, readout: str, formula: str, agents=frozenset())
             f"(`amounts={{{example}}}` for every state of it, or a pattern such as "
             f'`"{unread[0]}{{p}}"` for one state) and read that name. Unread, it would be a '
             "parameter, a constant, fitted in place of the species."
+        )
+    if states is not None and not {
+        node.getName() for node in _ast_nodes(math) if node.getType() == libsbml.AST_NAME
+    } & set(states):
+        raise ModelUpdateError(
+            f"readout {readout!r} = {formula!r} reads no amount, so it is a constant the fit tunes "
+            "to the data. A readout is what the assay measures of the model's state: read an "
+            "amount, declared in `amounts` or written in place as `amount(<pattern>)`"
+            f"{f' (the amounts are {sorted(states)})' if states else ''}."
         )
     _parameters_for_unknown_names(sbml_model, math)
     parameter = sbml_model.createParameter()

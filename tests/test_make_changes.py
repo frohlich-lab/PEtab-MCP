@@ -1650,6 +1650,75 @@ def test_a_base_version_fork_that_changes_nothing_is_refused_as_that_version(tmp
     assert out["version"] == 1
 
 
+# -- readouts, bindings and written mechanisms, as one sweep's traces found them --------
+def _readout_server(tmp_path):
+    """The toy with its observable reading a blinded `readout_B`, and an empty entity map: what
+    a PEtabAgentBench problem is on the indra_statements arm."""
+    import shutil
+
+    data = tmp_path / "toy"
+    shutil.copytree(YAML_PATH.parent, data)
+    (data / "observables.tsv").write_text(
+        "observableId\tobservableFormula\tnoiseFormula\nobs_B\treadout_B\tsigma_B\n"
+    )
+    entity_map = tmp_path / "entities.json"
+    entity_map.write_text("{}")
+    return create_server(
+        str(data / "problem.yaml"),
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+        auto_fit=False,
+        entity_map=str(entity_map),
+    )
+
+
+def test_a_readout_may_read_an_amount_in_place(tmp_path):
+    mcp = _readout_server(tmp_path)
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "A becomes B, measured as B",
+            "statements": [_CONV],
+            "readouts": {"readout_B": "scale_B*amount(B)"},
+        },
+    )
+    assert out["applied"] is True
+    assert _stored_rows(tmp_path, 0)["amounts"] == {"amount_B": {"name": "B"}}
+
+
+def test_a_readout_that_reads_no_amount_is_refused(tmp_path):
+    """43 committed versions in one sweep measured only parameters; the flat fits they gave were
+    the best some runs reached."""
+    mcp = _readout_server(tmp_path)
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "a constant readout",
+            "statements": [_CONV],
+            "readouts": {"readout_B": "k_level/(k_level + 1)"},
+        },
+    )
+    assert out["applied"] is False and "reads no amount" in out["error"]
+
+
+def test_a_readout_no_observable_reads_is_refused(tmp_path):
+    mcp = _readout_server(tmp_path)
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "an extra readout",
+            "statements": [_CONV],
+            "readouts": {"readout_B": "amount(B)", "readout_drugs": "amount(A)"},
+        },
+    )
+    assert out["applied"] is False
+    assert "['readout_drugs'] are read by no observable" in out["error"]
+    assert "['readout_B']" in out["error"]
+
+
 def _concurrently(monkeypatch, mcp, *calls):
     """The ``make_changes`` calls, each on its own thread, each pausing after it builds its
     statements until every other has built too (or 3 s pass)."""

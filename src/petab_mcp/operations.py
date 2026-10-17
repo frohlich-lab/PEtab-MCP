@@ -730,11 +730,13 @@ def statements_to_antimony(
             if row.get("modifiers"):
                 row["modifiers"] = {k: agent_json(v) for k, v in row["modifiers"].items()}
         starts = [{**start, "agent": agent_json(start["agent"])} for start in starts or []]
+        readouts, amounts = _readout_amounts(readouts, amounts)
         amounts = {k: agent_json(v) for k, v in (amounts or {}).items()}
     except notation.NotationError as exc:
         raise OperationError(
             f"make_changes: {exc}. NOTHING was applied.", cause="unreadable_statement"
         ) from exc
+    _check_readouts_are_read(session, readouts)
     prefixes = [row["prefix"] for row in rows]
     repeated = sorted({p for p in prefixes if prefixes.count(p) > 1})
     if repeated:
@@ -838,6 +840,54 @@ def statements_to_antimony(
             "by name), and free on a binding site.",
         ))
     return antimony, record, warnings, definitions
+
+
+#: ``amount(<pattern>)`` in a readout formula: the amount of an agent pattern, written in place.
+_AMOUNT_CALL = re.compile(r"amount\(\s*([^()]+?)\s*\)")
+
+
+def _readout_amounts(readouts, amounts):
+    """``readouts`` with each ``amount(<pattern>)`` in them replaced by a name in ``amounts``, and
+    ``amounts`` with those names added: a readout may read a pattern's amount in place, as a
+    scheme's rate does, where it used to need the pattern declared in ``amounts`` first (agents
+    wrote ``amount(HIV)`` 14 times in one sweep, and every one was refused)."""
+    if not readouts:
+        return readouts, amounts
+    amounts = dict(amounts or {})
+    named = {v: k for k, v in amounts.items() if isinstance(v, str)}
+
+    def name_for(match):
+        pattern = match.group(1)
+        if pattern not in named:
+            base = "amount_" + re.sub(r"\W+", "_", pattern).strip("_")
+            name, i = base, 1
+            while name in amounts:
+                i += 1
+                name = f"{base}_{i}"
+            amounts[name], named[pattern] = pattern, name
+        return named[pattern]
+
+    return {k: _AMOUNT_CALL.sub(name_for, v) for k, v in readouts.items()}, amounts
+
+
+def _check_readouts_are_read(session, readouts) -> None:
+    """Refuse a readout no observable reads: it measures nothing, and agents defined such ones to
+    reference shipped constants the lint requires used (``readout_drugs = Sorafenib + UO126``)."""
+    from petab.v2.C import OBSERVABLE_FORMULA
+
+    from .reconcile import formula_identifiers
+
+    obs = getattr(session.problem, "observable_df", None)
+    if not readouts or obs is None or OBSERVABLE_FORMULA not in obs.columns:
+        return
+    read = set().union(*(formula_identifiers(f) for f in obs[OBSERVABLE_FORMULA]))
+    unread = sorted(set(readouts) - read)
+    if unread:
+        raise OperationError(
+            f"make_changes: readouts {unread} are read by no observable; the observables read "
+            f"{sorted(r for r in read if r.startswith('readout_'))}. NOTHING was applied.",
+            cause="unread_readout",
+        )
 
 
 _ROW_FIELDS = ("statement", "policy", "prefix", "parameters", "modifiers")
