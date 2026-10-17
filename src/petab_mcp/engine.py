@@ -243,6 +243,13 @@ class AmiciEngine:
         # pyPESTO's fval IS the negative log-likelihood it minimises.
         nllh = finite_float(ret[FVAL])
         records = self._simulation_records(problem.objective, rdatas)
+        if any(r.get("measurement") is not None and r.get("simulation") is None for r in records):
+            # A measured point with no simulated value has no likelihood, so neither has the
+            # model: a MISSING score, as for a failed integration. Not the fval: pyPESTO's
+            # hierarchical (relative-data) objective drops a NaN simulation from its sums and
+            # returns a finite, LOWER value at sensitivity orders 0 and 1 (ICB-DCM/pyPESTO#1794;
+            # AMICI's own llh is NaN) -- Boehm's 0/0 readout at t=0 scored 244.97.
+            nllh = None
         return nllh, records, self._res_from_rdatas(rdatas)
 
     def evaluate_objective(self) -> dict[str, Any]:
