@@ -61,6 +61,11 @@ ABBREV = {
     "modification": "mod",
 }
 MODTYPE = {abbrev: mod_type for mod_type, abbrev in ABBREV.items()}
+#: INDRA's activity types (``indra.statements.activity_types``), written out so the notation
+#: imports nothing from INDRA.
+ACTIVITIES = frozenset(
+    {"activity", "kinase", "phosphatase", "catalytic", "gtpbound", "transcription", "gef", "gap"}
+)
 
 _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*")
 _RESIDUE_SITE = re.compile(r"([A-Z])([0-9]+)?")
@@ -341,6 +346,13 @@ class _Reader:
                 state = self.name()
                 if state not in ("on", "off"):
                     self.fail("an activity is :on or :off")
+                if word not in ACTIVITIES:
+                    # `STAT5A{mod:on}` is how a scheme writes a molecule's modification site, and
+                    # read here as an activity named "mod" it built a species no rule makes.
+                    self.fail(
+                        f"unknown activity {word!r}: an activity is one of {sorted(ACTIVITIES)}; a "
+                        "modification is a tag like pY694 (modified) or -pY694 (unmodified)"
+                    )
                 agent["activity"] = {"activity_type": word, "is_active": state == "on"}
                 return
             if word not in MODTYPE:

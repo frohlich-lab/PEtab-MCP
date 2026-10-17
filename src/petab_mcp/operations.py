@@ -21,6 +21,7 @@ transient state inside one call.
 from __future__ import annotations
 
 import copy
+import json
 import re
 from typing import Any, Callable
 
@@ -325,7 +326,24 @@ def _rejection_summary(issues: list[str]) -> str:
     more = len(issues) - len(shown)
     tail = f" (+{more} more in `issues`)" if more > 0 else ""
     joined = " | ".join(shown)
-    return f"the resulting problem is invalid: {joined}{tail}"
+    hints = "".join(
+        hint for pattern, hint in _ISSUE_HINTS if any(pattern in str(m) for m in issues)
+    )
+    return f"the resulting problem is invalid: {joined}{tail}{hints}"
+
+
+#: A fix the agent can act on, for an issue libpetab states without one. "Condition table
+#: contains invalid targets" was 64 rejections in one sweep of the statements route, most of them
+#: repeated: the model never read an input the condition table sets (rit, Sorafenib), and the
+#: message names the targets without saying that the model has to.
+_ISSUE_HINTS = (
+    (
+        "Condition table contains invalid targets",
+        " — each named target is an input the condition table SETS per experiment, so the model "
+        "must have it: read it as a parameter of that id in a rate law or an initial amount "
+        "(on the statements route, a row's binding `kf=\"k*dose\"` or a start's amount).",
+    ),
+)
 
 
 def _commit_change(
@@ -696,11 +714,14 @@ def statements_to_antimony(
             if row.get("modifiers"):
                 row["modifiers"] = {k: agent_json(v) for k, v in row["modifiers"].items()}
         starts = [{**start, "agent": agent_json(start["agent"])} for start in starts or []]
+        readouts, amounts = _readout_amounts(readouts, amounts)
         amounts = {k: agent_json(v) for k, v in (amounts or {}).items()}
     except notation.NotationError as exc:
         raise OperationError(
-            f"make_changes: {exc}. NOTHING was applied.", cause="unreadable_statement"
+            f"make_changes: {exc}. NOTHING was applied. {_NOTATION_HINT}",
+            cause="unreadable_statement",
         ) from exc
+    _check_readouts_are_read(session, readouts)
     prefixes = [row["prefix"] for row in rows]
     repeated = sorted({p for p in prefixes if prefixes.count(p) > 1})
     if repeated:
@@ -712,11 +733,19 @@ def statements_to_antimony(
             cause="duplicate_prefix",
         )
     stmts = stmts_from_json([row["statement"] for row in rows])
-    # INDRA drops a statement it cannot read with only a logged warning; refuse instead.
+    # INDRA drops a statement it cannot read with only a logged warning; refuse instead, naming
+    # each one: "2 of 9 entries" sent MiMo probing the schema call by call.
     if len(stmts) != len(rows):
+        unread = [
+            f"`{row['prefix']}` ({json.dumps(row['statement'])[:160]})"
+            for row in rows
+            if not stmts_from_json([row["statement"]])
+        ]
         raise OperationError(
             f"make_changes: {len(rows) - len(stmts)} of {len(rows)} `statements` entries are "
-            "not statements INDRA can read. NOTHING was applied.",
+            f"not statements INDRA can read: {'; '.join(unread)}. A list role is a list "
+            '(`"obj_from": [{"name": "A"}]`); the notation is easier: '
+            "`conv: A + B -> C | mass_action`. NOTHING was applied.",
             cause="unreadable_statement",
         )
     declared = [
@@ -761,6 +790,162 @@ def statements_to_antimony(
         if names
     ]
     return antimony, record, warnings, definitions
+
+
+_NOTATION_HINT = (
+    "A row is `prefix: <statement> | <policy> kind=binding ...`; an agent NAME{tag, ...}, its tags "
+    "pY694 (modified; ac, me, ub ... for other modifications) or -pY694 (unmodified), "
+    "kinase:on (an activity), @nucleus, !PARTNER (bound), ~PARTNER (not bound); a statement "
+    "`X phosphorylates Y at Y694`, `Y is dephosphorylated at Y694`, `A binds B`, `A becomes B`, "
+    "`X increases Y`, `Y is produced`, `Y is degraded`, `A + B -> C by X`, `X activates Y`, "
+    "`X inhibits Y`, `A moves from cytoplasm to nucleus`."
+)
+
+#: ``amount(<pattern>)`` in a readout formula: the amount of an agent pattern, written in place.
+_AMOUNT_CALL = re.compile(r"amount\(\s*([^()]+?)\s*\)")
+
+
+def _readout_amounts(readouts, amounts):
+    """``readouts`` with each ``amount(<pattern>)`` in them replaced by a name in ``amounts``, and
+    ``amounts`` with those names added: a readout may read a pattern's amount in place, as a
+    scheme's rate does, where it used to need the pattern declared in ``amounts`` first (agents
+    wrote ``amount(HIV)`` 14 times in one sweep, and every one was refused)."""
+    if not readouts:
+        return readouts, amounts
+    amounts = dict(amounts or {})
+    named = {v: k for k, v in amounts.items() if isinstance(v, str)}
+
+    def name_for(match):
+        pattern = match.group(1)
+        if pattern not in named:
+            base = "amount_" + re.sub(r"\W+", "_", pattern).strip("_")
+            name, i = base, 1
+            while name in amounts:
+                i += 1
+                name = f"{base}_{i}"
+            amounts[name], named[pattern] = pattern, name
+        return named[pattern]
+
+    return {k: _AMOUNT_CALL.sub(name_for, v) for k, v in readouts.items()}, amounts
+
+
+def _check_readouts_are_read(session, readouts) -> None:
+    """Refuse a readout no observable reads: it measures nothing, and agents defined such ones to
+    reference shipped constants the lint requires used (``readout_drugs = Sorafenib + UO126``)."""
+    from petab.v2.C import OBSERVABLE_FORMULA
+
+    from .reconcile import formula_identifiers
+
+    obs = getattr(session.problem, "observable_df", None)
+    if not readouts or obs is None or OBSERVABLE_FORMULA not in obs.columns:
+        return
+    read = set().union(*(formula_identifiers(f) for f in obs[OBSERVABLE_FORMULA]))
+    unread = sorted(set(readouts) - read)
+    if unread:
+        raise OperationError(
+            f"make_changes: readouts {unread} are read by no observable; the observables read "
+            f"{sorted(r for r in read if r.startswith('readout_'))}. NOTHING was applied.",
+            cause="unread_readout",
+        )
+
+
+_ROW_FIELDS = ("statement", "policy", "prefix", "parameters", "modifiers")
+
+
+def apply_statement_edits(
+    record: dict[str, Any], edits: list[dict[str, Any]]
+) -> tuple[list, list[dict[str, Any]], dict[str, str], dict[str, Any], list[str]]:
+    """The whole set the ``statements`` route builds from — ``(rows, starts, readouts, amounts)``
+    — after ``edits`` change the stored statement ``record`` (:func:`statements_to_antimony`'s),
+    and one line per edit saying what it did.
+
+    A row is keyed by its prefix, which names its parameters: `replace_row` keeps the row's place
+    and, with the prefix, its parameters' ids and fitted values. A start is keyed by its name (the
+    agent's, by default), as :func:`statements_to_antimony` names it. Edits apply in order and an
+    edit that names nothing raises, so the batch applies whole or not at all.
+    """
+    from . import notation
+
+    def fail(i: int, edit: dict, why: str) -> OperationError:
+        return OperationError(
+            f"make_changes: `statement_edits[{i}]` ({edit.get('op')}): {why}. NOTHING was applied.",
+            cause="statement_edit",
+        )
+
+    def prefix_of(row) -> str | None:
+        if isinstance(row, str):
+            head = row.split(":", 1)[0].strip()
+            return head if ":" in row and head.isidentifier() else None
+        return row.get("prefix") if isinstance(row, dict) else None
+
+    def name_of(start: dict) -> str:
+        agent = start["agent"]
+        return start.get("name") or (
+            notation.parse_agent(agent)["name"] if isinstance(agent, str) else agent["name"]
+        )
+
+    rows = {
+        row["prefix"]: {k: row[k] for k in _ROW_FIELDS if row.get(k)} for row in record["rows"]
+    }
+    starts = {s["name"]: dict(s) for s in record.get("starts") or []}
+    amounts = dict(record.get("amounts") or {})
+    readouts = dict(record.get("readouts") or {})
+    summary = []
+    for i, edit in enumerate(edits):
+        op = edit.get("op")
+        try:
+            if op in ("add_row", "replace_row"):
+                prefix = prefix_of(edit.get("row"))
+                if prefix is None:
+                    raise fail(i, edit, "`row` is one row, `prefix: <statement> | <policy> ...`")
+                if op == "add_row" and prefix in rows:
+                    raise fail(i, edit, f"a row `{prefix}` exists; `replace_row` changes it")
+                if op == "replace_row" and prefix not in rows:
+                    raise fail(i, edit, f"no row `{prefix}`; the rows are {sorted(rows)}")
+                rows[prefix] = edit["row"]
+                summary.append(f"{op} {prefix}")
+            elif op == "remove_row":
+                if edit.get("prefix") not in rows:
+                    raise fail(i, edit, f"no row `{edit.get('prefix')}`; the rows are {sorted(rows)}")
+                del rows[edit["prefix"]]
+                summary.append(f"remove_row {edit['prefix']}")
+            elif op == "set_start":
+                if not edit.get("start"):
+                    raise fail(i, edit, "`start` is the start, `{agent, amount, name?}`")
+                name = name_of(edit["start"])
+                starts[name] = {**edit["start"], "name": name}
+                summary.append(f"set_start {name}")
+            elif op in ("remove_start", "remove_amount", "remove_readout"):
+                table, key = {
+                    "remove_start": (starts, edit.get("name")),
+                    "remove_amount": (amounts, edit.get("name")),
+                    "remove_readout": (readouts, edit.get("readout")),
+                }[op]
+                if key not in table:
+                    raise fail(i, edit, f"no `{key}`; there are {sorted(table)}")
+                del table[key]
+                summary.append(f"{op} {key}")
+            elif op == "set_amount":
+                if not edit.get("name") or not edit.get("agent"):
+                    raise fail(i, edit, "`name` and `agent` name the amount and its pattern")
+                amounts[edit["name"]] = edit["agent"]
+                summary.append(f"set_amount {edit['name']}")
+            elif op == "set_readout":
+                if not edit.get("readout") or not edit.get("formula"):
+                    raise fail(i, edit, "`readout` and `formula` give the readout")
+                readouts[edit["readout"]] = edit["formula"]
+                summary.append(f"set_readout {edit['readout']}")
+            else:
+                raise fail(i, edit, "not an edit")
+        except notation.NotationError as exc:
+            raise fail(i, edit, str(exc)) from exc
+    if not rows:
+        raise OperationError(
+            "make_changes: `statement_edits` remove every row, which leaves no model. NOTHING "
+            "was applied.",
+            cause="statement_edit",
+        )
+    return list(rows.values()), list(starts.values()), readouts, amounts, summary
 
 
 # -- public operations: parameters (justification required, references optional) --
