@@ -1533,6 +1533,28 @@ def test_whole_sets_ride_with_statements_not_with_edits(tmp_path):
     assert out["applied"] is False and "`set_start`" in out["error"]
 
 
+def test_base_version_applies_edits_to_that_versions_rows(tmp_path):
+    """The rollback-and-edit path the `model_edits` route has, on the statements route: refused
+    before, although the lead's prompt told it to use it."""
+    mcp = _built(tmp_path, [_CONV])
+    _call(
+        mcp,
+        "make_changes",
+        {"justification": "v1", "statement_edits": [{"op": "add_row", "row": _BACK}]},
+    )
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "from v0 instead",
+            "base_version": 0,
+            "statement_edits": [{"op": "add_row", "row": "back2: B becomes A | mass_action"}],
+        },
+    )
+    assert out["applied"] is True
+    assert [r["prefix"] for r in _stored_rows(tmp_path, 2)["rows"]] == ["conv", "back2"]
+
+
 def test_a_restore_brings_back_that_versions_rows(tmp_path):
     """After `restore_version(v)`, the rows the session shows and edits are v's, not those of
     the HEAD it left; a version built from model text holds none."""
@@ -1553,6 +1575,16 @@ def test_a_restore_brings_back_that_versions_rows(tmp_path):
     _call(mcp, "restore_version", {"version": 2})
     out = add_row(_BACK)
     assert out["applied"] is False and "the current model was not" in out["error"]
+
+
+def test_base_version_takes_whole_statements_too(tmp_path):
+    mcp = _built(tmp_path, [_CONV])
+    out = _call(
+        mcp,
+        "make_changes",
+        {"justification": "afresh from v0", "base_version": 0, "statements": [_CONV, _BACK]},
+    )
+    assert out["applied"] is True
 
 
 def _concurrently(monkeypatch, mcp, *calls):

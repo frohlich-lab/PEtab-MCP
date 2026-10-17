@@ -959,7 +959,9 @@ def _make_changes_statements_doc() -> str:
         "so a new policy or binding is the row rewritten), `remove_row` by prefix, and "
         "`set_start`/`set_amount`/`set_readout` or `remove_start`/`remove_amount`/"
         "`remove_readout`; with them `mechanisms` you write for the new rows. They apply in "
-        "order, all or nothing, and the model is rebuilt from the edited set. "
+        "order, all or nothing, and the model is rebuilt from the edited set. `base_version=N` "
+        "applies them to version N's rows instead (with `statements`, it is the whole set given "
+        "afresh), and starts the fit from version N's search space and best fit. "
         "`get_model(format='statements')` shows the rows. The result is an ordinary model; "
         "`model_edits` would edit it as text, after which it has no rows to edit."
     )
@@ -1211,7 +1213,7 @@ def _register_model_tools(
                 {"routes": routes_given},
                 cause="route_conflict",
             )
-        if base_version is not None and not ops:
+        if base_version is not None and not (ops or rows or edits):
             # Names NO other tool. The obvious advice here — "to re-fit it unchanged use
             # restore_version" — would send the LEAD to a tool it does not hold (see
             # agent/tools.py: restore_version is deliberately withheld), which is the
@@ -1380,6 +1382,18 @@ def _register_model_tools(
                         msg,
                         {"n_ops": len(ops), "base_version": base_version},
                         cause=getattr(exc, "cause", None),
+                    )
+            if base_version is not None and not ops:
+                # The statements route: the rows are this call's (given whole, or `base_version`'s
+                # record edited), and the version's SEARCH SPACE and fitted point come with them,
+                # as they do for `model_edits`.
+                try:
+                    base_parameter_df = session.provenance.get_parameter_df(int(base_version))
+                except (PetabMcpError, OSError, ValueError, TypeError) as exc:
+                    return ctx.reject_operation(
+                        "make_changes",
+                        f"make_changes: version {base_version}: {exc}",
+                        {"base_version": base_version},
                     )
             before = ops_mod.working_state(session)
             # LINEAGE: a `base_version` commit descends from THAT version, not from HEAD (see
