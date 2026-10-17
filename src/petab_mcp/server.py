@@ -851,12 +851,14 @@ _MAKE_CHANGES_DOC = "\n\n".join(
 )
 
 
-def _make_changes_statements_doc(bound: bool = True) -> str:
+def _make_changes_statements_doc(bound: bool = True, held: dict[str, str] | None = None) -> str:
     """The `statements` route's paragraph, naming the entries the library holds right now.
 
-    ``bound`` says whether the problem's entity map binds anything. An empty one binds nothing:
-    the readouts, and how the condition targets enter, are the caller's own, and saying the map
-    binds them would send it looking for names that do not exist."""
+    ``bound`` says whether the problem's entity map binds species or readouts. One that does not
+    binds nothing of the model: the readouts, and how the condition targets enter, are the
+    caller's own, and saying the map binds them would send it looking for names that do not exist.
+    ``held`` (agent name to protocol) are the inputs such a map does hold, named with their
+    protocol (Fujita's EGF ramp)."""
     from . import mechanisms
 
     from indra.statements import AddModification, RemoveModification, get_all_descendants
@@ -902,6 +904,11 @@ def _make_changes_statements_doc(bound: bool = True) -> str:
             else "NOTHING is bound: every readout the observables read is yours to define in "
             "`readouts`, and every target the condition table sets is a parameter id your rows "
             "must read, in a binding (`kf=\"k*dose\"`) or a start's amount. "
+            + "".join(
+                f"But `{name}` is HELD to the experiment's protocol, `{name} = {formula}`: read "
+                "it as an agent in your rows; never start, make or degrade it. "
+                for name, formula in sorted((held or {}).items())
+            )
         )
         + "`starts` declares what is present at the start, in the state its agent writes; "
         "without it every species no rule makes starts at an estimated `<name>_init` and every "
@@ -1431,7 +1438,13 @@ def _register_model_tools(
                 (
                     _MAKE_CHANGES_SUMMARY,
                     _MAKE_CHANGES_ROUTES,
-                    _make_changes_statements_doc(bound=bool(route().session.entities)),
+                    _make_changes_statements_doc(
+                        bound=bool(set(route().session.entities) - set(route().session.inputs)),
+                        held={
+                            route().session.entities[k].name: v
+                            for k, v in route().session.inputs.items()
+                        },
+                    ),
                     _MAKE_CHANGES_CONTRACT,
                 )
             )
