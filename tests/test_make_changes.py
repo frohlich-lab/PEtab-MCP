@@ -1925,6 +1925,87 @@ def test_a_failed_fit_names_the_points_a_readout_leaves_undefined():
     assert _undefined_points(session, [dict(r, simulation=None) for r in records]) == ""
 
 
+# -- what GLM met on Fiedler and Boehm in the max-effort sweep ----------------------
+def test_a_scheme_rate_reads_a_molecule_written_in_the_row_notation(tmp_path):
+    """Fiedler's ERK feedback as GLM wrote it, `amount(ERK{pT202})` in a scheme's rate, did not
+    parse: the notation's braces are no Python."""
+    mcp = _statements_server(tmp_path, extra=', "ERK": {"name": "ERK"}')
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "A becomes B, slowed by phosphorylated ERK",
+            "statements": ["conv: A becomes B | fb", "erk_p: ERK is phosphorylated at T202 | basal"],
+            "mechanisms": [
+                {
+                    "statement_type": "PopulationTransition",
+                    "policy": "fb",
+                    "scheme": "source() >> target() @ k/(1 + amount(ERK{pT202})/K_fb)",
+                }
+            ],
+        },
+    )
+    assert out["applied"] is True, out.get("error")
+    rows = {r["parameterId"] for r in _call(mcp, "get_parameters", {})["result"]}
+    assert {"conv_k", "conv_K_fb"} <= rows
+
+
+def test_a_rate_that_does_not_read_says_how_one_is_written():
+    from petab_mcp import schemes
+    from petab_mcp.errors import MechanismError
+
+    with pytest.raises(MechanismError, match=r"amount\(ERK\{pT202\}\)"):
+        schemes._rate("k*amount(ERK{pT202}")
+
+
+def test_a_rule_that_never_fires_names_the_form_nothing_makes(tmp_path):
+    """Boehm: import and export rows needed STAT5A phosphorylated in the cytoplasm, and the
+    refusal only said that such forms exist."""
+    mcp = _statements_server(tmp_path)
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "A moves out of the nucleus, which it never enters",
+            "statements": ["conv: A becomes B | mass_action", "out: A{@nucleus} moves from nucleus to cytoplasm | default"],
+        },
+    )
+    assert out["applied"] is False
+    assert "nothing forms out: A(" in out["error"] and "nucleus" in out["error"]
+
+
+def test_an_enzyme_less_modification_under_a_written_rate_names_basal(tmp_path):
+    mcp = _statements_server(tmp_path)
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "A phosphorylated with no enzyme, re-rated",
+            "statements": ["conv: A becomes B | mass_action", "ap: A is phosphorylated | slow"],
+            "mechanisms": [
+                {"statement_type": "Phosphorylation", "policy": "slow", "rate": "k", "parameters": ["k"]}
+            ],
+        },
+    )
+    assert out["applied"] is False and "`basal`" in out["error"]
+
+
+def test_a_readout_given_as_a_bare_pattern_is_its_amount():
+    """`"readout_pErk": "MAPK1{pT202}"` (GLM on Fiedler) was refused as no formula."""
+    from petab_mcp.operations import _readout_amounts
+
+    readouts, amounts = _readout_amounts({"readout_pErk": "MAPK1{pT202}"}, None)
+    assert readouts == {"readout_pErk": "amount_MAPK1_pT202"}
+    assert amounts == {"amount_MAPK1_pT202": "MAPK1{pT202}"}
+
+
+def test_amount_names_keep_the_notations_negations():
+    from petab_mcp.operations import _readout_amounts
+
+    readouts, amounts = _readout_amounts({"r": "amount(S{pY694}) + amount(S{-pY694})"}, None)
+    assert sorted(amounts) == ["amount_S_no_pY694", "amount_S_pY694"]
+
+
 def test_an_amount_in_place_reads_the_amount_that_holds_its_pattern():
     """A pattern is named by the agent it reads, however it is spelled."""
     from petab_mcp.operations import _readout_amounts
@@ -1943,6 +2024,14 @@ def test_a_server_amount_name_no_amount_holds_is_refused():
     with pytest.raises(OperationError, match=r"\['amount_B'\]"):
         _readout_amounts({"r": "scale*amount_B + amount(A)"}, None)
     assert _readout_amounts({"r": "amount_B + amount(B)"}, None)[0] == {"r": "amount_B + amount_B"}
+
+
+def test_translocates_is_moves():
+    from petab_mcp import notation
+
+    row = notation.parse("imp: S{pY694} translocates from cytoplasm to nucleus | default")
+    assert row["statement"]["type"] == "Translocation"
+    assert row["statement"]["to_location"] == "nucleus"
 
 
 def _concurrently(monkeypatch, mcp, *calls):

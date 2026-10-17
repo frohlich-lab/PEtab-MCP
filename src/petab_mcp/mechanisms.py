@@ -604,6 +604,14 @@ def written(
         # The base's own parameters go unused once re-rated; kept apart from the written ones.
         emitted = base(stmt, model, f"{prefix}_base")
         if len(emitted.rules) != 1 or model.rules[emitted.rules[0]].is_reversible:
+            if not emitted.rules and isinstance(stmt, Modification) and stmt.enz is None:
+                # `X is phosphorylated` under a mechanism based on indra_default: INDRA builds a
+                # modification only through its enzyme, so there was nothing to re-rate.
+                raise MechanismError(
+                    f"row {prefix!r}: {base_key} builds no reaction for a modification without "
+                    "an enzyme. Name the enzyme (`E phosphorylates X`), or base the mechanism on "
+                    "`basal`, the library's enzyme-less modification"
+                )
             raise MechanismError(
                 f"{base_key} builds {len(emitted.rules)} reaction(s) for this statement; a written "
                 "mechanism re-rates exactly one irreversible reaction"

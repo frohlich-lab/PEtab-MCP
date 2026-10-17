@@ -884,6 +884,9 @@ _NOTATION_HINT = (
     "`X inhibits Y`, `A moves from cytoplasm to nucleus`."
 )
 
+#: A readout that is nothing but one agent pattern with tags.
+_BARE_PATTERN = re.compile(r"[A-Za-z_]\w*\{[^{}]*\}")
+
 #: ``amount(<pattern>)`` in a readout formula: the amount of an agent pattern, written in place.
 _AMOUNT_CALL = re.compile(r"amount\(\s*([^()]+?)\s*\)")
 
@@ -905,6 +908,12 @@ def _readout_amounts(readouts, amounts):
 
     if not readouts:
         return readouts, dict(amounts or {})
+    # A readout given as a bare pattern (`"readout_pErk": "MAPK1{pT202}"`, GLM on Fiedler) is that
+    # pattern's amount.
+    readouts = {
+        k: f"amount({v.strip()})" if isinstance(v, str) and _BARE_PATTERN.fullmatch(v.strip()) else v
+        for k, v in readouts.items()
+    }
     amounts = dict(amounts or {})
 
     def text(agent) -> str:
@@ -920,7 +929,10 @@ def _readout_amounts(readouts, amounts):
     def name_for(match):
         pattern = text(match.group(1))
         if pattern not in named:
-            base = "amount_" + re.sub(r"\W+", "_", pattern).strip("_")
+            # The notation's negations kept in the name: dropped, `X{pY694}` and `X{-pY694}` came
+            # out as amount_X_pY694 and amount_X_pY694_2.
+            spelled = pattern.replace("-", " no ").replace("~", " without ").replace("!", " with ")
+            base = "amount_" + re.sub(r"\W+", "_", spelled).strip("_")
             name, i = base, 1
             while name in amounts:
                 i += 1
