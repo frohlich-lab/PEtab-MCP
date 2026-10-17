@@ -464,7 +464,12 @@ def _commit_change(
             protected_fixed = session.protected_fixed_parameter_ids()
         except Exception:  # noqa: BLE001 - never let the lookup break an edit
             protected_fixed = None
-        report = validate_problem(problem, protected_fixed_ids=protected_fixed)
+        report = validate_problem(
+            problem,
+            protected_fixed_ids=protected_fixed,
+            # A statements call reads its remedies in its own vocabulary (`readouts`).
+            statements=getattr(session, "submitted_statements", None) is not None,
+        )
         if not report["valid"]:
             hard = [i["message"] for i in report["issues"] if i["level"] in ("error", "critical")]
             raise ValidationError(
