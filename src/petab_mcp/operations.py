@@ -21,6 +21,7 @@ transient state inside one call.
 from __future__ import annotations
 
 import copy
+import json
 import re
 from typing import Any, Callable
 
@@ -325,7 +326,24 @@ def _rejection_summary(issues: list[str]) -> str:
     more = len(issues) - len(shown)
     tail = f" (+{more} more in `issues`)" if more > 0 else ""
     joined = " | ".join(shown)
-    return f"the resulting problem is invalid: {joined}{tail}"
+    hints = "".join(
+        hint for pattern, hint in _ISSUE_HINTS if any(pattern in str(m) for m in issues)
+    )
+    return f"the resulting problem is invalid: {joined}{tail}{hints}"
+
+
+#: A fix the agent can act on, for an issue libpetab states without one. "Condition table
+#: contains invalid targets" was 64 rejections in one sweep of the statements route, most of them
+#: repeated: the model never read an input the condition table sets (rit, Sorafenib), and the
+#: message names the targets without saying that the model has to.
+_ISSUE_HINTS = (
+    (
+        "Condition table contains invalid targets",
+        " — each named target is an input the condition table SETS per experiment, so the model "
+        "must have it: read it as a parameter of that id in a rate law or an initial amount "
+        "(on the statements route, a row's binding `kf=\"k*dose\"` or a start's amount).",
+    ),
+)
 
 
 def _commit_change(
@@ -735,7 +753,8 @@ def statements_to_antimony(
         amounts = {k: agent_json(v) for k, v in amounts.items()}
     except notation.NotationError as exc:
         raise OperationError(
-            f"make_changes: {exc}. NOTHING was applied.", cause="unreadable_statement"
+            f"make_changes: {exc}. NOTHING was applied. {_NOTATION_HINT}",
+            cause="unreadable_statement",
         ) from exc
     _check_readouts_are_read(session, readouts)
     prefixes = [row["prefix"] for row in rows]
@@ -771,11 +790,19 @@ def statements_to_antimony(
     for row in rows:
         row["statement"] = with_defaults(row["statement"])
     stmts = stmts_from_json([row["statement"] for row in rows])
-    # INDRA drops a statement it cannot read with only a logged warning; refuse instead.
+    # INDRA drops a statement it cannot read with only a logged warning; refuse instead, naming
+    # each one: "2 of 9 entries" sent MiMo probing the schema call by call.
     if len(stmts) != len(rows):
+        unread = [
+            f"`{row['prefix']}` ({json.dumps(row['statement'])[:160]})"
+            for row in rows
+            if not stmts_from_json([row["statement"]])
+        ]
         raise OperationError(
             f"make_changes: {len(rows) - len(stmts)} of {len(rows)} `statements` entries are "
-            "not statements INDRA can read. NOTHING was applied.",
+            f"not statements INDRA can read: {'; '.join(unread)}. A list role is a list "
+            '(`"obj_from": [{"name": "A"}]`); the notation is easier: '
+            "`conv: A + B -> C | mass_action`. NOTHING was applied.",
             cause="unreadable_statement",
         )
     declared = [
@@ -843,6 +870,15 @@ def statements_to_antimony(
         ))
     return antimony, record, warnings, definitions
 
+
+_NOTATION_HINT = (
+    "A row is `prefix: <statement> | <policy> kind=binding ...`; an agent NAME{tag, ...}, its tags "
+    "pY694 (modified; ac, me, ub ... for other modifications) or -pY694 (unmodified), "
+    "kinase:on (an activity), @nucleus, !PARTNER (bound), ~PARTNER (not bound); a statement "
+    "`X phosphorylates Y at Y694`, `Y is dephosphorylated at Y694`, `A binds B`, `A becomes B`, "
+    "`X increases Y`, `Y is produced`, `Y is degraded`, `A + B -> C by X`, `X activates Y`, "
+    "`X inhibits Y`, `A moves from cytoplasm to nucleus`."
+)
 
 #: ``amount(<pattern>)`` in a readout formula: the amount of an agent pattern, written in place.
 _AMOUNT_CALL = re.compile(r"amount\(\s*([^()]+?)\s*\)")

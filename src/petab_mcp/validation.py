@@ -246,24 +246,28 @@ def _fixed_constant_role_issues(problem, protected_fixed_ids) -> list[dict[str, 
             return False
 
     issues: list[dict[str, Any]] = []
+    removed = [pid for pid in sorted(protected_fixed_ids) if pid not in current]
+    if removed:
+        # ONE issue for every constant, the fix first: one per constant, each repeating the
+        # explanation, ran past the rejection's per-issue cut before the fix was reached, and
+        # read as Antimony-only ("rate law, rule") on the statements route.
+        issues.append(
+            {
+                "level": "error",
+                "message": (
+                    f"shipped FIXED constant(s) {removed} are no longer read by the model: read "
+                    "each in a rate, a start's amount or a readout, as the quantity it is (a "
+                    "conservation total, a measured dose, a fixed rate; a constant nothing reads "
+                    "is pruned). They are known constants of the experiment, part of the "
+                    "problem's structure, not parameters to fit."
+                ),
+                "check": "fixed_constant_removed",
+            }
+        )
     for pid in sorted(protected_fixed_ids):
-        if pid not in current:
-            issues.append(
-                {
-                    "level": "error",
-                    "message": (
-                        f"'{pid}' ships FIXED (estimate=0) in this problem — a known constant (a "
-                        "conservation total, a measured concentration, a fixed rate) — but this edit "
-                        "REMOVED it from the model. A shipped-fixed constant is part of the problem's "
-                        "structure; dropping it changes the problem. Keep it declared AND used: a "
-                        "shipped-fixed constant must be referenced in a rate law, rule, or initial "
-                        "assignment (a constant you declare but never use is pruned as an orphan, "
-                        "which trips this too). Retain the reaction/expression that uses it."
-                    ),
-                    "check": "fixed_constant_removed",
-                }
-            )
-        elif _estimated(pid):
+        if pid in removed:
+            continue
+        if _estimated(pid):
             issues.append(
                 {
                     "level": "error",

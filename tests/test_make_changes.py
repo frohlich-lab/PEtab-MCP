@@ -1650,6 +1650,58 @@ def test_a_base_version_fork_that_changes_nothing_is_refused_as_that_version(tmp
     assert out["version"] == 1
 
 
+def test_on_the_statements_route_the_refusals_name_its_own_routes(tmp_path):
+    """Haiku, told "nothing to do — give `model_edits` ... `antimony`", wrote Antimony on an arm
+    that builds from statements."""
+    mcp = _built(tmp_path, [_CONV])
+    out = _call(mcp, "make_changes", {"justification": "nothing"})
+    assert "`statements`" in out["error"] and "`statement_edits`" in out["error"]
+    assert "`antimony`" not in out["error"]
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "both",
+            "statements": [_CONV],
+            "statement_edits": [{"op": "add_row", "row": _BACK}],
+        },
+    )
+    assert "`statement_edits` for a change to the current rows" in out["error"]
+    out = _call(mcp, "make_changes", {"justification": "bare", "base_version": 0})
+    assert "`statement_edits` (or the whole revised `statements`)" in out["error"]
+
+
+def test_the_route_says_nothing_is_bound_when_the_map_is_empty(tmp_path):
+    """With an empty map the route's paragraph said the observables and inputs were bound by it,
+    and told the agent to name agents as the map does: a map with nothing in it."""
+    from petab_mcp.server import _make_changes_statements_doc
+
+    assert "bound by the problem's entity map" in _make_changes_statements_doc(bound=True)
+    unbound = _make_changes_statements_doc(bound=False)
+    assert "NOTHING is bound" in unbound and "entity map" not in unbound
+    entity_map = tmp_path / "entities.json"
+    entity_map.write_text("{}")
+    mcp = create_server(
+        str(YAML_PATH),
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+        auto_fit=False,
+        entity_map=str(entity_map),
+    )
+    tools = asyncio.run(mcp.list_tools())
+    description = next(t for t in tools if t.name == "make_changes").description
+    assert "NOTHING is bound" in description and "`statement_edits`" in description
+    assert "statement_edits" in _make_changes_schema(mcp)
+
+
+def test_an_unread_condition_target_is_explained():
+    from petab_mcp.operations import _rejection_summary
+
+    text = _rejection_summary(["Condition table contains invalid targets: {'rit'}"])
+    assert "{'rit'}" in text and "input the condition table SETS" in text
+    assert "SETS" not in _rejection_summary(["something else"])
+
+
 # -- readouts, bindings and written mechanisms -------------------------------------------
 def _readout_server(tmp_path, extra=""):
     """The toy with its observable reading a blinded `readout_B`, and an empty entity map: a
@@ -1784,6 +1836,49 @@ def test_a_readout_no_observable_reads_is_refused(tmp_path):
     assert out["applied"] is False
     assert "['readout_drugs'] are read by no observable" in out["error"]
     assert "['readout_B']" in out["error"]
+
+
+def test_a_binding_may_scale_the_parameter_it_replaces(tmp_path):
+    """`kf="mek_phos_kf*(1 - Sorafenib/K)"` recursed without bottom: the binding's expression
+    was redirected into itself."""
+    mcp = _built(tmp_path, [_CONV])
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "the conversion slowed by a factor",
+            "statement_edits": [
+                {"op": "replace_row", "row": "conv: A becomes B | mass_action k=conv_k*slow"}
+            ],
+        },
+    )
+    assert out["applied"] is True, out.get("error")
+    rows = {r["parameterId"] for r in _call(mcp, "get_parameters", {})["result"]}
+    assert {"conv_k", "slow"} <= rows
+
+
+def test_a_scheme_with_modifiers_is_refused_where_it_is_written():
+    """Accepted and then dropped, before: each row naming them was refused with "reads none"."""
+    from petab_mcp import mechanisms as M
+
+    with pytest.raises(M.MechanismError, match="amount\\(<pattern>\\)"):
+        M.written(
+            {
+                "statement_type": "PopulationTransition",
+                "policy": "inhibited",
+                "scheme": "source() >> target() @ k",
+                "modifiers": ["inh"],
+            },
+            dict(M.REGISTRY),
+        )
+
+
+def test_an_unknown_activity_names_the_modification_tags():
+    """`STAT5A{mod:on}` (a scheme's site, written in a row) built an activity named "mod"."""
+    from petab_mcp import notation
+
+    with pytest.raises(notation.NotationError, match="unknown activity 'mod'"):
+        notation.parse_agent("STAT5A{mod:on}")
 
 
 def test_an_amount_in_place_reads_the_amount_that_holds_its_pattern():
