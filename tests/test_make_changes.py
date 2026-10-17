@@ -2035,6 +2035,25 @@ def test_translocates_is_moves():
     assert row["statement"]["to_location"] == "nucleus"
 
 
+def test_a_map_holding_only_an_input_names_it_and_binds_nothing_else(tmp_path):
+    """Fujita on the indra_statements arm: the server holds EGF to its ramp, and the route's
+    paragraph says so, without claiming the map binds the observables."""
+    entity_map = tmp_path / "entities.json"
+    entity_map.write_text(
+        '{"A": {"name": "A", "input": "piecewise(1, time <= 5, 0)"}}'
+    )
+    mcp = create_server(
+        str(YAML_PATH),
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+        auto_fit=False,
+        entity_map=str(entity_map),
+    )
+    description = next(t for t in asyncio.run(mcp.list_tools()) if t.name == "make_changes").description
+    assert "NOTHING is bound" in description
+    assert "`A` is HELD to the experiment's protocol, `A = piecewise(1, time <= 5, 0)`" in description
+
+
 def _concurrently(monkeypatch, mcp, *calls):
     """The ``make_changes`` calls, each on its own thread, each pausing after it builds its
     statements until every other has built too (or 3 s pass)."""
