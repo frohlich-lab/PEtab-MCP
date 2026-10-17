@@ -260,6 +260,44 @@ class MechanismDef(BaseModel):
     )
 
 
+class StatementEdit(BaseModel):
+    """One change to a model built from statements: a row, a start, an amount or a readout."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    op: Literal[
+        "add_row",
+        "replace_row",
+        "remove_row",
+        "set_start",
+        "remove_start",
+        "set_amount",
+        "remove_amount",
+        "set_readout",
+        "remove_readout",
+    ] = Field(
+        description="`add_row` a new row; `replace_row` the row with that row's prefix (its "
+        "statement, policy or bindings); `remove_row` by `prefix`; `set_start` adds or replaces "
+        "the start of that name; `set_amount`/`set_readout` add or replace one; `remove_*` by "
+        "`name` (`readout` for a readout)."
+    )
+    row: StatementRow | str | None = Field(
+        default=None, description="add_row/replace_row: the row, one line or JSON."
+    )
+    prefix: str | None = Field(default=None, description="remove_row: the row's prefix.")
+    start: StartRow | None = Field(default=None, description="set_start: the start.")
+    name: str | None = Field(
+        default=None, description="remove_start, set_amount, remove_amount: its name."
+    )
+    agent: dict[str, Any] | str | None = Field(
+        default=None, description="set_amount: the agent pattern whose amount it is."
+    )
+    readout: str | None = Field(
+        default=None, description="set_readout/remove_readout: the readout id."
+    )
+    formula: str | None = Field(default=None, description="set_readout: its formula.")
+
+
 # Provider serialisation artefact: some models emit a list-typed argument wrapped in a
 # single-key object -- `{"parameters": {"item": [{...}, {...}]}}` instead of
 # `{"parameters": [{...}, {...}]}` -- or as a JSON string containing the array. pydantic then
@@ -914,8 +952,15 @@ def _make_changes_statements_doc() -> str:
         "declares what is present at the start, in the state its agent writes; without it every "
         "species no rule makes starts at an estimated `<name>_init` and every made one empty. "
         "`readouts` defines a measurement mapping that is not one pattern's amount as a formula "
-        "over `amounts` (agents whose amounts it reads), entity-map ids and parameter ids. The result is "
-        "an ordinary model: `model_edits` can edit it next."
+        "over `amounts` (agents whose amounts it reads), entity-map ids and parameter ids.\n\n"
+        "`statement_edits` CHANGES the current rows instead of giving them all again: "
+        "`add_row`/`replace_row` a row (one line; `replace_row` takes the row with that prefix, "
+        "so a new policy or binding is the row rewritten), `remove_row` by prefix, and "
+        "`set_start`/`set_amount`/`set_readout` or `remove_start`/`remove_amount`/"
+        "`remove_readout`; with them `mechanisms` you write for the new rows. They apply in "
+        "order, all or nothing, and the model is rebuilt from the edited set. "
+        "`get_model(format='statements')` shows the rows. The result is an ordinary model; "
+        "`model_edits` would edit it as text, after which it has no rows to edit."
     )
 
 
@@ -945,6 +990,17 @@ def _mechanisms_text(session, statement_type: str | None) -> str:
     return "\n".join(blocks)
 
 
+def _statement_record(session, version: int | None) -> dict | None:
+    """The statement record of the current model, or of a stored ``version``; ``None`` for a model
+    not built from statements."""
+    import json
+
+    if version is None:
+        return session.model_statements or None
+    path = session.provenance.versions_dir / f"v{int(version)}" / "statements.json"
+    return (json.loads(path.read_text()) or None) if path.is_file() else None
+
+
 def _statements_text(session, version: int | None) -> str:
     """A model built from statements, as the notation (:mod:`notation`): its written mechanisms,
     its rows one per line (INDRA JSON where the notation has no lossless form), its starts,
@@ -953,11 +1009,7 @@ def _statements_text(session, version: int | None) -> str:
 
     from . import mechanisms, notation
 
-    if version is None:
-        record = session.model_statements
-    else:
-        path = session.provenance.versions_dir / f"v{int(version)}" / "statements.json"
-        record = json.loads(path.read_text()) if path.is_file() else None
+    record = _statement_record(session, version)
     if not record:
         return "(this model was not built from statements)"
     library = dict(mechanisms.REGISTRY)
@@ -1115,6 +1167,9 @@ def _register_model_tools(
         starts: Annotated[list[StartRow] | None, BeforeValidator(_unwrap_listish)] = None,
         readouts: dict[str, str] | None = None,
         amounts: dict[str, dict[str, Any] | str] | None = None,
+        statement_edits: Annotated[
+            list[StatementEdit] | None, BeforeValidator(_unwrap_listish)
+        ] = None,
     ) -> dict[str, Any]:
         ctx = route()
         session = ctx.session
@@ -1130,8 +1185,19 @@ def _register_model_tools(
         rows = [
             r.model_dump() if isinstance(r, StatementRow) else r for r in (statements or [])
         ] or None
+        edits = [
+            e.model_dump(exclude_none=True) if isinstance(e, StatementEdit) else e
+            for e in (statement_edits or [])
+        ] or None
         routes_given = [
-            n for n, v in (("antimony", antimony), ("model_edits", ops), ("statements", rows)) if v
+            n
+            for n, v in (
+                ("antimony", antimony),
+                ("model_edits", ops),
+                ("statements", rows),
+                ("statement_edits", edits),
+            )
+            if v
         ]
         if len(routes_given) > 1:
             return ctx.reject_operation(
@@ -1160,7 +1226,7 @@ def _register_model_tools(
                 "kept and the run is scored on the BEST one, wherever HEAD ends up.",
                 {"base_version": base_version},
             )
-        if not antimony and not ops and not rows and not parameters:
+        if not antimony and not ops and not rows and not edits and not parameters:
             return ctx.reject_operation(
                 "make_changes",
                 "make_changes: nothing to do — give `model_edits` (structured operations on the "
@@ -1194,13 +1260,55 @@ def _register_model_tools(
                     cause="unnamed_reaction",
                 )
         statement_record, statement_warnings, written = None, [], None
-        if (mechanisms or starts or readouts or amounts) and not rows:
+        if (starts or readouts or amounts) and edits:
+            return ctx.reject_operation(
+                "make_changes",
+                "make_changes: with `statement_edits`, change starts, amounts and readouts by "
+                "their own edits (`set_start`, `set_amount`, `set_readout`, `remove_*`), not "
+                "`starts`/`amounts`/`readouts`, which give the whole set with `statements`. "
+                "NOTHING was applied.",
+                {"n_starts": len(starts or [])},
+                cause="statement_edit",
+            )
+        if (mechanisms or starts or readouts or amounts) and not (rows or edits):
             return ctx.reject_operation(
                 "make_changes",
                 "make_changes: `mechanisms`, `starts`, `readouts` and `amounts` belong to "
-                "`statements` rows; send them together. NOTHING was applied.",
+                "`statements` rows; send them together"
+                + (" (or `mechanisms` with `statement_edits`)" if statements_route else "")
+                + ". NOTHING was applied.",
                 {"n_mechanisms": len(mechanisms or []), "n_starts": len(starts or [])},
             )
+        edit_summary: list[str] = []
+        if edits:
+            # The edits apply to a stored record, HEAD's or `base_version`'s, and give the whole
+            # set the `statements` route builds from: the model is rebuilt, never patched, so a
+            # version built from edits is the same as one given whole.
+            base = _statement_record(session, base_version)
+            if base is None:
+                return ctx.reject_operation(
+                    "make_changes",
+                    "make_changes: `statement_edits` change a model built from statements, and "
+                    + (
+                        f"version {base_version} was not built from statements"
+                        if base_version is not None
+                        else "the current model was not: give the whole model as `statements`"
+                    )
+                    + ". NOTHING was applied.",
+                    {"base_version": base_version},
+                    cause="statement_edit",
+                )
+            try:
+                rows, starts, readouts, amounts, edit_summary = ops_mod.apply_statement_edits(
+                    base, edits
+                )
+            except PetabMcpError as exc:
+                return ctx.reject_operation(
+                    "make_changes",
+                    str(exc),
+                    {"n_edits": len(edits)},
+                    cause=getattr(exc, "cause", None),
+                )
         # One critical section for the change and its fit, so nothing can fit in between
         # (`session.lock` is an RLock, so the nested acquisitions inside each call are fine).
         with session.lock:
@@ -1334,6 +1442,8 @@ def _register_model_tools(
                 session.model_statements = statement_record
                 if written is not None:
                     session.mechanisms = written
+            if edit_summary:
+                out["statement_edits_applied"] = edit_summary
             if op_summary:
                 # The diff, PRE-CLASSIFIED. Every earlier analysis had to reconstruct this from
                 # re-rendered text with id- and regex-keyed heuristics, and four of those
