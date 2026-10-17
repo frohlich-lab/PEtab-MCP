@@ -213,9 +213,9 @@ def _observation_model_reuse_issues(problem) -> list[dict[str, Any]]:
 
 
 def _fixed_constant_role_issues(problem, protected_fixed_ids) -> list[dict[str, Any]]:
-    """Hard-error when a parameter that ships FIXED and is a mechanistic/structural constant —
-    a conservation total, a known rate, a measured concentration — has been REMOVED from the
-    model or turned ESTIMATED.
+    """Warn when a parameter that ships FIXED and is a mechanistic/structural constant — a
+    conservation total, a known rate, a measured concentration — is no longer read by the model,
+    and hard-error when it has been turned ESTIMATED.
 
     ``protected_fixed_ids`` is the caller-computed set of such constants (see
     :meth:`session.PetabSession.protected_fixed_parameter_ids`); it already excludes
@@ -248,18 +248,19 @@ def _fixed_constant_role_issues(problem, protected_fixed_ids) -> list[dict[str, 
     issues: list[dict[str, Any]] = []
     removed = [pid for pid in sorted(protected_fixed_ids) if pid not in current]
     if removed:
-        # ONE issue for every constant, the fix first: one per constant, each repeating the
-        # explanation, ran past the rejection's per-issue cut before the fix was reached, and
-        # read as Antimony-only ("rate law, rule") on the statements route.
+        # A WARNING, one for every constant. Refused, it made agents that did not know what a
+        # constant meant fake a use of it (`0*recruitment_rate`, a readout of constants only),
+        # which BIC cannot see; unread, the constant costs nothing and whatever the model
+        # estimates in its place costs k. A constant read again comes back fixed, from the
+        # shipped row (`reconcile.sync_parameter_table`).
         issues.append(
             {
-                "level": "error",
+                "level": "warning",
                 "message": (
-                    f"shipped FIXED constant(s) {removed} are no longer read by the model: read "
-                    "each in a rate, a start's amount or a readout, as the quantity it is (a "
-                    "conservation total, a measured dose, a fixed rate; a constant nothing reads "
-                    "is pruned). They are known constants of the experiment, part of the "
-                    "problem's structure, not parameters to fit."
+                    f"shipped FIXED constant(s) {removed} are not read by the model. They are "
+                    "known constants of the experiment (a conservation total, a measured dose, a "
+                    "fixed rate): a model that reads them, as the quantity each is, estimates "
+                    "nothing in their place."
                 ),
                 "check": "fixed_constant_removed",
             }
@@ -529,7 +530,9 @@ def validate_problem(problem, protected_fixed_ids=None) -> dict[str, Any]:
 
     role_issues = _fixed_constant_role_issues(problem, protected_fixed_ids)
     issues += role_issues
-    n_errors += len(role_issues)
+    role_errors = [i for i in role_issues if i["level"] == "error"]
+    n_errors += len(role_errors)
+    n_warnings += len(role_issues) - len(role_errors)
 
     readout_issues = _undefined_readout_issues(problem)
     issues += readout_issues
@@ -540,7 +543,7 @@ def validate_problem(problem, protected_fixed_ids=None) -> dict[str, Any]:
             (not has_errors)
             and sbml_errors == 0
             and not reuse_errors
-            and not role_issues
+            and not role_errors
             and not readout_issues
         ),
         "n_errors": n_errors,

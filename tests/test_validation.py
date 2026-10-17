@@ -44,11 +44,12 @@ def test_protected_fixed_constant_made_estimated_is_rejected(session):
     assert validate_problem(session.problem)["valid"] is True
 
 
-def test_protected_fixed_constant_removed_is_rejected(session):
+def test_protected_fixed_constant_removed_is_a_warning(session):
+    """Warned, not refused: refused, agents faked a use of a constant they could not place."""
     # A protected constant absent from the parameter table = it was removed from the model.
     issues = _fixed_constant_role_issues(session.problem, {"k_removed"})
     assert [i["check"] for i in issues] == ["fixed_constant_removed"]
-    assert "k_removed" in issues[0]["message"]
+    assert "k_removed" in issues[0]["message"] and issues[0]["level"] == "warning"
 
 
 def test_fixed_constant_check_is_noop_without_protected_set(session):
