@@ -915,11 +915,10 @@ def apply_statement_edits(
                 name = name_of(edit["start"])
                 starts[name] = {**edit["start"], "name": name}
                 summary.append(f"set_start {name}")
-            elif op in ("remove_start", "remove_amount", "remove_readout"):
+            elif op in ("remove_start", "remove_amount"):
                 table, key = {
                     "remove_start": (starts, edit.get("name")),
                     "remove_amount": (amounts, edit.get("name")),
-                    "remove_readout": (readouts, edit.get("readout")),
                 }[op]
                 if key not in table:
                     raise fail(i, edit, f"no `{key}`; there are {sorted(table)}")
