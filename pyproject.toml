@@ -69,14 +69,17 @@ dependencies = [
     # Imported directly for the chi2 goodness-of-fit p-value (residual_tests, fitting). Only
     # transitively present via pyPESTO otherwise.
     "scipy>=1.10",
-    # Pinned to the merge of AMICI-dev/AMICI#3312, not a release: it gives the PEtab v2 simulator
-    # per-parameter scales, which pyPESTO's importer hands it (below). It also contains
+    # Pinned to AMICI main (3ac052d), not a release. It has AMICI-dev/AMICI#3312, which gives the
+    # PEtab v2 simulator per-parameter scales, which pyPESTO's importer hands it (below), and
     # AMICI-dev/AMICI#3309, which 1.1.0 lacks, and without which a hierarchical PEtab v2 problem
     # cannot be unpickled once its objective has been evaluated (ICB-DCM/pyPESTO#1771) -- and every
     # fit evaluates the objective before its parallel multistart pickles the problem into the
-    # workers. Built from source (no wheel for a commit), which is why CI installs a toolchain
-    # before it. Move to a release once one contains both.
-    "amici @ git+https://github.com/AMICI-dev/AMICI.git@712c44a60753ea3910eac2a2753041dc0cf2ec6e#subdirectory=python/sdist",
+    # workers. And AMICI-dev/AMICI#3388: a noise formula that reads an assignment rule compiles
+    # (before it, `dsigmaydp.cpp` named the rule's target undeclared), which every proportional
+    # noise model does once its observable reads a readout rule (Armistead's). Built from source
+    # (no wheel for a commit), which is why CI installs a toolchain before it. Move to a release
+    # once one contains all three.
+    "amici @ git+https://github.com/AMICI-dev/AMICI.git@3ac052d1a4b5181d04e54115031818b40512feed#subdirectory=python/sdist",
     # The head of ICB-DCM/pyPESTO#1786 with main merged in, not a release. Main has #1782: the
     # PEtab v2 importer takes the estimation scales (`PetabImporter(parameter_scales=...)`), which
     # v2 dropped from the format; without it every v2 problem is optimised linearly, with start
