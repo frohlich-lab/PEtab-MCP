@@ -355,9 +355,11 @@ def _seed(model: pysb.Model, monomers: list[pysb.Monomer]) -> None:
         model.add_initial(pysb.Initial(monomer(**state), amount, _export=False))
 
 
-#: The most molecules one complex may hold. No reference formulation comes near it; a network that
-#: reaches it is one whose complexes grow without bound, which BioNetGen expands forever.
-MAX_COMPLEX = 10
+#: The most molecules one complex may hold. A network whose complexes reach it is taken for one
+#: whose complexes grow without bound, which BioNetGen expands forever. BioNetGen builds every
+#: complex up to the cap before the check can refuse, so the cap bounds the cost of finding out:
+#: reactions grow about with its square for a chain, exponentially for complexes that branch.
+MAX_COMPLEX = 20
 
 
 def _expand(model: pysb.Model) -> None:
