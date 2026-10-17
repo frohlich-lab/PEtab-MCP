@@ -267,6 +267,14 @@ def written(definition: dict, library: dict[tuple[str, str], Policy]) -> Policy:
     base_key = (stmt_type, definition.get("based_on", INDRA_DEFAULT))
     if (stmt_type, policy) in REGISTRY:
         raise MechanismError(f"{(stmt_type, policy)} is a built-in mechanism; name yours apart")
+    if definition.get("scheme"):
+        from .schemes import compile_scheme
+
+        if definition.get("rate"):
+            raise MechanismError(f"{policy!r} gives a scheme and a rate; a scheme carries its rates")
+        return compile_scheme(definition)
+    if not definition.get("rate"):
+        raise MechanismError(f"{policy!r} gives neither a `scheme` nor a `rate`")
     if base_key not in library:
         raise MechanismError(f"no mechanism {base_key} to base {policy!r} on")
     roles = list(get_statement_by_name(stmt_type)._agent_order)
@@ -394,6 +402,14 @@ def assemble(
     for *_, modifiers in rows:
         for agent in (modifiers or {}).values():
             agents.get_create_base_agent(agent)
+    # A scheme entry (:mod:`schemes`) names sites INDRA's pass does not give: its bonds, a
+    # molecule the statement does not mention.
+    for stmt, policy, *_ in rows:
+        entry = library.get((type(stmt).__name__, policy))
+        for agent, site, site_states in getattr(entry, "scheme_sites", lambda s: [])(stmt):
+            base = agents.get_create_base_agent(agent)
+            if site is not None:
+                base.create_site(site, site_states)
 
     model = pysb.Model(name="statements", _export=False)
     for base in agents.agents.values():
