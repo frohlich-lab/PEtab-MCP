@@ -44,6 +44,7 @@ from indra.statements import (
     RegulateAmount,
     Statement,
     activity_types,
+    get_all_descendants,
     get_statement_by_name,
     modtype_conditions,
 )
@@ -106,9 +107,10 @@ _CONDITIONS = {
 _ACTIVITY = ("activity_type", "is_active")
 
 
-def problems(statement: Any, types: Collection[str]) -> list[str]:
-    """What in ``statement`` (INDRA's JSON) INDRA would not read as written, each with what to write
-    instead; empty when nothing. ``types`` are the statement types a row may name.
+def problems(statement: Any) -> list[str]:
+    """What keeps ``statement`` (INDRA's JSON) from building as written, each with what to write
+    instead; empty when nothing. A type INDRA has and the library does not passes, so its row meets
+    the library-gap refusal, which counts it and says to write a mechanism.
 
     INDRA's reader skips a field it does not know and leaves a missing one ``None``, so a misspelt
     role (``enzyme``) built a model without its enzyme, a misspelt agent field (``mod``) an agent
@@ -116,6 +118,7 @@ def problems(statement: Any, types: Collection[str]) -> list[str]:
     if not isinstance(statement, dict):
         return [f"a statement is INDRA's JSON, an object with its `type`, not {statement!r}"]
     kind = statement.get("type")
+    types = {cls.__name__ for cls in get_all_descendants(Statement)}
     if not isinstance(kind, str) or kind not in types:
         return [f"`type` {kind!r} is no statement type{_close(kind, types)}"]
     cls = get_statement_by_name(kind)
@@ -153,7 +156,7 @@ def problems(statement: Any, types: Collection[str]) -> list[str]:
 
 
 def agent_problems(agent: Any, where: str) -> list[str]:
-    """What in ``agent`` (INDRA's Agent JSON, at ``where``) INDRA would not read as written."""
+    """What keeps ``agent`` (INDRA's Agent JSON, at ``where``) from building as written."""
     if not isinstance(agent, dict):
         return [f"`{where}` is an agent, an object like {{\"name\": \"MAPK1\"}}, not {agent!r}"]
     out = _unknown(agent, _AGENT, f"`{where}`", "an agent")
