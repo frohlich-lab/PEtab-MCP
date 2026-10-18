@@ -186,6 +186,65 @@ def test_a_problem_id_in_a_written_rate_says_how_it_enters():
         M.written(_BASE_WRITTEN_DEF | {"parameters": ["kcat", "Km", "d"]}, M.REGISTRY, ids)
 
 
+@pytest.mark.parametrize("rate", ["kcat,Km", "exp", "2kcat", "kcat Km", "exp()"])
+def test_a_written_rate_that_is_no_expression_is_refused(rate):
+    """Each passed the token check and crashed make_changes in sympify, at assembly."""
+    with pytest.raises(MechanismError, match="does not read as one expression"):
+        _written(f', "rate": "{rate}"')
+
+
+@pytest.mark.parametrize(
+    "extra, match",
+    [
+        ("k-1", "named by ASCII letters"),
+        ("lambda", "named by ASCII letters"),
+        ("base_kf", "names taken already"),
+        ("rate", "names taken already"),
+        ("sub", "names taken already"),
+        ("time", "names taken already"),
+        ("exp", "names taken already"),
+    ],
+)
+def test_a_declared_parameter_must_be_a_new_name(extra, match):
+    """`k-1` and `base_kf` crashed PySB; `sub`, `time`, `rate` and `exp` were made parameters
+    that the rate's own names then shadowed."""
+    with pytest.raises(MechanismError, match=match):
+        M.written(_BASE_WRITTEN_DEF | {"parameters": ["kcat", "Km", extra]}, M.REGISTRY)
+
+
+def test_a_declared_parameter_the_rate_never_names_is_refused():
+    with pytest.raises(MechanismError, match=r"declares \['Ki'\].*never names"):
+        M.written(_BASE_WRITTEN_DEF | {"parameters": ["kcat", "Km", "Ki"]}, M.REGISTRY)
+
+
+def test_a_rate_reading_a_role_the_row_leaves_empty_is_refused():
+    """A rate reading `enz` of an enzyme-less row, or `members` of a complex of two, became a free
+    symbol, and BioNetGen aborted naming neither the row nor the role."""
+    from indra.statements import Complex
+
+    library = dict(M.REGISTRY)
+    for stmt_type, base, rate in (("Phosphorylation", "basal", "k*enz"),
+                                  ("Complex", "assembly", "k*members")):
+        library[(stmt_type, "w")] = M.written(
+            {"statement_type": stmt_type, "policy": "w", "based_on": base, "rate": rate,
+             "parameters": ["k"]},
+            library,
+        )
+    for stmt, role in ((Phosphorylation(None, Agent("ERK"), "T", "185"), "enz"),
+                       (Complex([Agent("A"), Agent("B")]), "members")):
+        with pytest.raises(MechanismError, match=rf"row 'r1': .* reads \['{role}'\], which its "):
+            M.assemble([(stmt, "w", "r1")], library=library)
+
+
+def test_a_mechanism_for_no_statement_type_is_refused():
+    with pytest.raises(MechanismError, match="no statement type"):
+        M.written(
+            {"statement_type": "Phosphorylatoin", "policy": "w", "scheme": "sub() >> sub() @ k",
+             "parameters": ["k"]},
+            M.REGISTRY,
+        )
+
+
 def test_a_written_mechanism_cannot_shadow_a_built_in():
     """Rows recorded against a built-in entry would silently change meaning."""
     with pytest.raises(MechanismError, match="built-in"):
