@@ -18,8 +18,8 @@ be scored against it as it stands. This module is the difference, and it is all 
 The start rests on two assumptions, and a third check refuses the models they do not fit:
 
 1. **The start holds free monomers in INDRA's default state** (``set_base_initial_condition``):
-   unbound, unmodified, inactive, wild type, in the cytoplasm when that is a location. No complex
-   and no modified form exists at the start.
+   unbound, unmodified, inactive, wild type, in the cytoplasm when that is a location (else in
+   the first of its locations by name). No complex and no modified form exists at the start.
 2. **What the start makes is absent from it.** Every monomer no rule makes from other kinds is
    present (one that only proliferates included), and BioNetGen expands the rules from those. A
    made monomer that expansion reaches starts empty: Crauste's effectors exist only once naive
@@ -346,8 +346,10 @@ def _seed(model: pysb.Model, monomers: list[pysb.Monomer]) -> None:
         # `<monomer>_0` silently skips a monomer whose name is taken, and Fujita's EGF stimulus
         # column is `EGF_0`.
         state = {site: monomer.site_states.get(site, [None])[0] for site in monomer.sites}
-        if "cytoplasm" in monomer.site_states.get("loc", ()):
-            state["loc"] = "cytoplasm"
+        locations = monomer.site_states.get("loc", ())
+        if locations:
+            # Else the first by name, not the first INDRA met: that was whichever row came first.
+            state["loc"] = "cytoplasm" if "cytoplasm" in locations else min(locations)
         # Reconcile's own seed value, not 1, which it holds FIXED as a unit normalisation: the
         # first version started every Crauste population at one cell that way.
         amount = pysb.Parameter(f"{monomer.name}_init", SEED_INITIAL_VALUE, _export=False)
