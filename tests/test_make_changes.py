@@ -1386,3 +1386,71 @@ def test_a_map_holding_only_an_input_names_it_and_binds_nothing_else(tmp_path):
     description = next(t for t in asyncio.run(mcp.list_tools()) if t.name == "make_changes").description
     assert "NOTHING is bound" in description
     assert "`A` is HELD to the experiment's protocol, `A = piecewise(1, time <= 5, 0)`" in description
+
+
+def _concurrently(monkeypatch, mcp, *calls):
+    """The ``make_changes`` calls, each on its own thread, each pausing after it builds its
+    statements until every other has built too (or 3 s pass)."""
+    import threading
+
+    barrier = threading.Barrier(len(calls), timeout=3)
+    build = O.statements_to_antimony
+
+    def paused(*args, **kwargs):
+        built = build(*args, **kwargs)
+        try:
+            barrier.wait()
+        except threading.BrokenBarrierError:  # the other call waits on the session lock
+            pass
+        return built
+
+    monkeypatch.setattr(O, "statements_to_antimony", paused)
+    results = [None] * len(calls)
+
+    def run(i):
+        results[i] = _call(mcp, "make_changes", calls[i])
+
+    threads = [threading.Thread(target=run, args=(i,)) for i in range(len(calls))]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    return results
+
+
+def test_concurrent_calls_keep_every_mechanism_they_write(tmp_path, monkeypatch):
+    """Both calls built from the registry as it was before either committed: of two written
+    mechanisms one was lost, and two definitions of one name both committed."""
+    mcp = _statements_server(tmp_path)
+    other = {**_SATURATING, "policy": "hill", "rate": "vmax * source / (K + source)"}
+    calls = [
+        {"justification": m["policy"], "statements": [_statement_row(policy=m["policy"])],
+         "mechanisms": [m]}
+        for m in (_SATURATING, other)
+    ]
+    assert all(out["applied"] for out in _concurrently(monkeypatch, mcp, *calls))
+    rows = [{**_statement_row(policy=p), "prefix": p} for p in ("saturating", "hill")]
+    both = _call(mcp, "make_changes", {"justification": "both", "statements": rows})
+    assert both["applied"] is True, both.get("error")
+
+    (tmp_path / "redefined").mkdir()
+    mcp = _statements_server(tmp_path / "redefined")
+    changed = {**_SATURATING, "rate": "vmax"}
+    calls = [{**call, "mechanisms": [m]} for call, m in zip(calls, (_SATURATING, changed))]
+    calls[1]["statements"] = calls[0]["statements"]
+    outs = _concurrently(monkeypatch, mcp, *calls)
+    assert sorted(bool(out["applied"]) for out in outs) == [False, True]
+    assert [out.get("error_cause") for out in outs if not out["applied"]] == ["mechanism_redefined"]
+
+
+def test_concurrent_statement_edits_keep_each_others_rows(tmp_path, monkeypatch):
+    """Both edits read HEAD's rows before either committed, so the later commit dropped the
+    row the earlier one added."""
+    mcp = _built(tmp_path, [_CONV])
+    calls = [
+        {"justification": p, "statement_edits": [{"op": "add_row", "row": f"{p}: B becomes A | mass_action"}]}
+        for p in ("back", "back2")
+    ]
+    assert all(out["applied"] for out in _concurrently(monkeypatch, mcp, *calls))
+    text = _text(mcp, "get_model", {"format": "statements"})
+    assert "conv: A becomes B" in text and all(f"{p}: B becomes A" in text for p in ("back", "back2"))

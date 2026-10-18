@@ -1270,61 +1270,64 @@ def _register_model_tools(
                 + ". NOTHING was applied.",
                 {"n_mechanisms": len(mechanisms or []), "n_starts": len(starts or [])},
             )
-        edit_summary: list[str] = []
-        if edits:
-            # The edits apply to a stored record, HEAD's or `base_version`'s, and give the whole
-            # set the `statements` route builds from: the model is rebuilt, never patched, so a
-            # version built from edits is the same as one given whole.
-            base = _statement_record(session, base_version)
-            if base is None:
-                return ctx.reject_operation(
-                    "make_changes",
-                    "make_changes: `statement_edits` change a model built from statements, and "
-                    + (
-                        f"version {base_version} was not built from statements"
-                        if base_version is not None
-                        else "the current model was not: give the whole model as `statements`"
-                    )
-                    + ". NOTHING was applied.",
-                    {"base_version": base_version},
-                    cause="statement_edit",
-                )
-            try:
-                rows, starts, readouts, amounts, edit_summary = ops_mod.apply_statement_edits(
-                    base, edits
-                )
-            except PetabMcpError as exc:
-                return ctx.reject_operation(
-                    "make_changes",
-                    str(exc),
-                    {"n_edits": len(edits)},
-                    cause=getattr(exc, "cause", None),
-                )
-        if rows:
-            definitions = [
-                m.model_dump() if isinstance(m, MechanismDef) else m for m in (mechanisms or [])
-            ]
-            try:
-                antimony, statement_record, statement_warnings, written = (
-                    ops_mod.statements_to_antimony(
-                        session,
-                        rows,
-                        definitions,
-                        [s.model_dump() if isinstance(s, StartRow) else s for s in starts or []],
-                        readouts,
-                        amounts,
-                    )
-                )
-            except PetabMcpError as exc:
-                return ctx.reject_operation(
-                    "make_changes",
-                    str(exc),
-                    {"n_statements": len(rows)},
-                    cause=getattr(exc, "cause", None),
-                )
         # One critical section for the change and its fit, so nothing can fit in between
         # (`session.lock` is an RLock, so the nested acquisitions inside each call are fine).
         with session.lock:
+            # Inside the lock: the build reads HEAD's statements record and the run's written
+            # mechanisms, and the commit below replaces both, so a concurrent call must not
+            # build in between.
+            edit_summary: list[str] = []
+            if edits:
+                # The edits apply to a stored record, HEAD's or `base_version`'s, and give the whole
+                # set the `statements` route builds from: the model is rebuilt, never patched, so a
+                # version built from edits is the same as one given whole.
+                base = _statement_record(session, base_version)
+                if base is None:
+                    return ctx.reject_operation(
+                        "make_changes",
+                        "make_changes: `statement_edits` change a model built from statements, and "
+                        + (
+                            f"version {base_version} was not built from statements"
+                            if base_version is not None
+                            else "the current model was not: give the whole model as `statements`"
+                        )
+                        + ". NOTHING was applied.",
+                        {"base_version": base_version},
+                        cause="statement_edit",
+                    )
+                try:
+                    rows, starts, readouts, amounts, edit_summary = ops_mod.apply_statement_edits(
+                        base, edits
+                    )
+                except PetabMcpError as exc:
+                    return ctx.reject_operation(
+                        "make_changes",
+                        str(exc),
+                        {"n_edits": len(edits)},
+                        cause=getattr(exc, "cause", None),
+                    )
+            if rows:
+                definitions = [
+                    m.model_dump() if isinstance(m, MechanismDef) else m for m in (mechanisms or [])
+                ]
+                try:
+                    antimony, statement_record, statement_warnings, written = (
+                        ops_mod.statements_to_antimony(
+                            session,
+                            rows,
+                            definitions,
+                            [s.model_dump() if isinstance(s, StartRow) else s for s in starts or []],
+                            readouts,
+                            amounts,
+                        )
+                    )
+                except PetabMcpError as exc:
+                    return ctx.reject_operation(
+                        "make_changes",
+                        str(exc),
+                        {"n_statements": len(rows)},
+                        cause=getattr(exc, "cause", None),
+                    )
             op_summary: list[str] = []
             base_parameter_df = None
             if ops:
