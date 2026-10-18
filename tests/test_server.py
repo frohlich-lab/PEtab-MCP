@@ -179,6 +179,21 @@ def test_no_tool_mutates_fixed_tables(tmp_path):
         assert not (writes and touches_fixed), f"tool {name} could mutate fixed data"
 
 
+def test_only_the_two_writers_are_annotated_as_writes(tmp_path):
+    # A client auto-approves on `readOnlyHint`, so a new tool registered without annotations (or a
+    # writer mislabelled read-only) would either nag on every read or skip confirming a write.
+    tools = asyncio.run(_server(tmp_path).list_tools())
+    unannotated = [t.name for t in tools if t.annotations is None]
+    assert not unannotated, f"tools without annotations: {unannotated}"
+    writers = {t.name for t in tools if not t.annotations.readOnlyHint}
+    assert writers == {"make_changes", "restore_version"}
+    for t in tools:
+        if t.name in writers:
+            # Versioned: a write appends and erases nothing, and a repeat appends again.
+            assert t.annotations.destructiveHint is False
+            assert t.annotations.idempotentHint is False
+
+
 def test_describe_and_parameters(tmp_path):
     mcp = _server(tmp_path)
 
