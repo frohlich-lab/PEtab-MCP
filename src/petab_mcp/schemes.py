@@ -472,12 +472,16 @@ def describe(stmt_type: str, policy: str, library) -> str:
     stmt = placeholder(stmt_type)
     try:
         model, (emission,) = assemble([(stmt, policy, "r")], {}, library)
-    except MechanismError:
+    except MechanismError as exc:
         if getattr(stmt, "enz", None) is None:
             raise
         # An entry with no place for an enzyme refuses one: `basal`, and what is written on it.
+        # Any other refusal is the one to report.
         stmt = placeholder(stmt_type, enzyme=False)
-        model, (emission,) = assemble([(stmt, policy, "r")], {}, library)
+        try:
+            model, (emission,) = assemble([(stmt, policy, "r")], {}, library)
+        except MechanismError:
+            raise exc from None
     agents = role_agents(stmt)
     lines = [_describe_rule(stmt, model.rules[name], agents) for name in emission.rules]
     if not lines:
