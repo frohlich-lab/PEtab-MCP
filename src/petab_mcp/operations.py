@@ -730,8 +730,9 @@ def statements_to_antimony(
             if row.get("modifiers"):
                 row["modifiers"] = {k: agent_json(v) for k, v in row["modifiers"].items()}
         starts = [{**start, "agent": agent_json(start["agent"])} for start in starts or []]
-        readouts, amounts = _readout_amounts(readouts, amounts)
-        amounts = {k: agent_json(v) for k, v in (amounts or {}).items()}
+        given = {k: agent_json(v) for k, v in (amounts or {}).items()}
+        read, amounts = _readout_amounts(readouts, given)
+        amounts = {k: agent_json(v) for k, v in amounts.items()}
     except notation.NotationError as exc:
         raise OperationError(
             f"make_changes: {exc}. NOTHING was applied.", cause="unreadable_statement"
@@ -798,8 +799,8 @@ def statements_to_antimony(
         library,
         session.inputs,
         declared,
-        readouts,
-        {k: Agent._from_json(v) for k, v in (amounts or {}).items()},
+        read,
+        {k: Agent._from_json(v) for k, v in amounts.items()},
         notes=notes,
         targets=frozenset(R.condition_target_symbols(session.problem)),
     )
@@ -814,8 +815,9 @@ def statements_to_antimony(
             {"name": name, "agent": start["agent"], "amount": start["amount"]}
             for (name, _, _), start in zip(declared, starts or [])
         ],
+        # As written: the names `amount(...)` reads are made again from it, each build.
         "readouts": dict(readouts or {}),
-        "amounts": dict(amounts or {}),
+        "amounts": given,
     }
     warnings = [
         M.warning(M.SOURCE_EDIT, f"`statements[{i}]` agent(s) {names} carry no grounding.")
@@ -845,19 +847,38 @@ def statements_to_antimony(
 #: ``amount(<pattern>)`` in a readout formula: the amount of an agent pattern, written in place.
 _AMOUNT_CALL = re.compile(r"amount\(\s*([^()]+?)\s*\)")
 
+#: The name :func:`_readout_amounts` gives ``amount(<pattern>)``, read as a name.
+_AMOUNT_NAME = re.compile(r"\bamount_\w+")
+
 
 def _readout_amounts(readouts, amounts):
     """``readouts`` with each ``amount(<pattern>)`` in them replaced by a name in ``amounts``, and
     ``amounts`` with those names added: a readout may read a pattern's amount in place, as a
     scheme's rate does, where it used to need the pattern declared in ``amounts`` first (agents
-    wrote ``amount(HIV)`` 14 times in one sweep, and every one was refused)."""
+    wrote ``amount(HIV)`` 14 times in one sweep, and every one was refused).
+
+    A pattern is named by the agent it parses to, however it is spelled: the name of the amount
+    that holds that agent, or ``amount_<pattern>``. The names are made again from the readouts on
+    every build and stored nowhere, so one pattern reads one species across rows and edits. A
+    readout reading a name of that form that no amount holds is refused."""
+    from . import notation
+
     if not readouts:
-        return readouts, amounts
+        return readouts, dict(amounts or {})
     amounts = dict(amounts or {})
-    named = {v: k for k, v in amounts.items() if isinstance(v, str)}
+
+    def text(agent) -> str:
+        return notation.agent_text(notation.parse_agent(agent) if isinstance(agent, str) else agent)
+
+    named = {}
+    for name, agent in amounts.items():
+        try:
+            named.setdefault(text(agent), name)
+        except ValueError:  # an Agent JSON field the notation has no tag for: no pattern is it
+            pass
 
     def name_for(match):
-        pattern = match.group(1)
+        pattern = text(match.group(1))
         if pattern not in named:
             base = "amount_" + re.sub(r"\W+", "_", pattern).strip("_")
             name, i = base, 1
@@ -867,7 +888,19 @@ def _readout_amounts(readouts, amounts):
             amounts[name], named[pattern] = pattern, name
         return named[pattern]
 
-    return {k: _AMOUNT_CALL.sub(name_for, v) for k, v in readouts.items()}, amounts
+    readouts = {k: _AMOUNT_CALL.sub(name_for, v) for k, v in readouts.items()}
+    stray = sorted(
+        {n for formula in readouts.values() for n in _AMOUNT_NAME.findall(formula)} - set(amounts)
+    )
+    if stray:
+        raise OperationError(
+            f"make_changes: readouts read {stray}, named as the server names `amount(<pattern>)`, "
+            "but no readout reads that pattern now and `amounts` holds no such name, so each "
+            "would be a parameter fitted in place of the species. Write the amount in place, "
+            "`amount(<pattern>)`. NOTHING was applied.",
+            cause="unread_amount",
+        )
+    return readouts, amounts
 
 
 def _check_readouts_are_read(session, readouts) -> None:
