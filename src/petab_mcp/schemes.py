@@ -507,14 +507,17 @@ _EXTRA = {
 }
 
 
-def placeholder(stmt_type: str) -> Statement:
-    """A statement of ``stmt_type`` whose agents are named by role: what :func:`describe` builds."""
+def placeholder(stmt_type: str, enzyme: bool = True) -> Statement:
+    """A statement of ``stmt_type`` whose agents are named by role: what :func:`describe` builds.
+    Without ``enzyme``, a modification names none."""
     if stmt_type in ABSTRACT:
         raise MechanismError(f"{stmt_type} is no statement a row can use")
     cls = get_statement_by_name(stmt_type)
     args = dict(_EXTRA.get(stmt_type, {}))
     for role in cls._agent_order:
-        if role == "members":
+        if role == "enz" and not enzyme:
+            args[role] = None
+        elif role == "members":
             args[role] = [Agent("members_0"), Agent("members_1")]
         elif role in ("obj_from", "obj_to"):
             args[role] = [Agent(role)]
@@ -537,7 +540,18 @@ def describe(stmt_type: str, policy: str, library) -> str:
     from .mechanisms import assemble
 
     stmt = placeholder(stmt_type)
-    model, (emission,) = assemble([(stmt, policy, "r")], {}, library)
+    try:
+        model, (emission,) = assemble([(stmt, policy, "r")], {}, library)
+    except MechanismError as exc:
+        if getattr(stmt, "enz", None) is None:
+            raise
+        # An entry with no place for an enzyme refuses one: `basal`, and what is written on it.
+        # Any other refusal is the one to report.
+        stmt = placeholder(stmt_type, enzyme=False)
+        try:
+            model, (emission,) = assemble([(stmt, policy, "r")], {}, library)
+        except MechanismError:
+            raise exc from None
     agents = role_agents(stmt)
     lines = [_describe_rule(stmt, model.rules[name], agents) for name in emission.rules]
     if not lines:
