@@ -1587,6 +1587,42 @@ def test_base_version_takes_whole_statements_too(tmp_path):
     assert out["applied"] is True
 
 
+def test_a_base_version_fork_back_to_an_earlier_rate_is_fitted(tmp_path):
+    """A fork that rebuilds version 0 while HEAD holds another rate revisits version 0; it is no
+    duplicate of HEAD. The de-dup's fingerprint saw neither rate (each is an assignment rule the
+    rate law multiplies), so the fork came back as HEAD's duplicate and was never fitted."""
+    entity_map = tmp_path / "entities.json"
+    entity_map.write_text(_BASE_ENTITY_MAP.format(extra=""))
+    mcp = create_server(
+        str(YAML_PATH),
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+        auto_fit=True,
+        entity_map=str(entity_map),
+    )
+    row = _statement_row(policy="saturating")
+    steeper = {**_SATURATING, "policy": "steeper", "rate": "vmax / (K + source * source)"}
+    v0 = {"statements": [row], "mechanisms": [_SATURATING]}
+    _call(mcp, "make_changes", {"justification": "v0", "n_starts": 2, **v0})
+    v1 = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "v1",
+            "statement_edits": [{"op": "replace_row", "row": {**row, "policy": "steeper"}}],
+            "mechanisms": [steeper],
+            "n_starts": 2,
+        },
+    )
+    assert v1["version"] == 1, v1["message"]
+    out = _call(
+        mcp,
+        "make_changes",
+        {"justification": "v0 again", "base_version": 0, "statements": [row], "n_starts": 2},
+    )
+    assert out["committed"] is True and out["version"] == 2, out["message"]
+
+
 def _concurrently(monkeypatch, mcp, *calls):
     """The ``make_changes`` calls, each on its own thread, each pausing after it builds its
     statements until every other has built too (or 3 s pass)."""
