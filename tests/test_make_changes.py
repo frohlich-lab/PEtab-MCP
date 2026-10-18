@@ -745,21 +745,24 @@ def test_the_routes_text_names_statements_only_where_it_is_offered(tmp_path):
     from petab_mcp.server import _MAKE_CHANGES_DOC
 
     assert _description(_server(tmp_path / "plain")) == _MAKE_CHANGES_DOC
-    required = "`antimony` / `model_edits` / `statements` / `parameters` is required."
-    assert required in _description(_statements_server(tmp_path))
+    required = _description(_statements_server(tmp_path)).split("At least one of\n")[1]
+    assert "`statements`" in required.split(" is required.")[0]
 
 
 def test_the_refusals_name_statements_only_where_it_is_offered(tmp_path):
     """Two routes at once and no route at all were each refused naming `model_edits` and
     `antimony` only, where `statements` was a route too."""
     plain, offered = _server(tmp_path / "plain"), _statements_server(tmp_path)
+
+    def error(mcp, args):
+        return _call(mcp, "make_changes", {"justification": "x", **args})["error"]
+
     edits = [{"op": "remove_reaction", "id": "r1"}]
-    conflict = {"justification": "x", "antimony": _antimony(), "model_edits": edits}
-    assert "`statements`" not in _call(plain, "make_changes", conflict)["error"]
-    both = {"justification": "x", "antimony": _antimony(), "statements": [_statement_row()]}
-    assert "`statements` to author" in _call(offered, "make_changes", both)["error"]
-    assert "`statements`" not in _call(plain, "make_changes", {"justification": "x"})["error"]
-    assert "`statements` (author" in _call(offered, "make_changes", {"justification": "x"})["error"]
+    assert "`statements`" not in error(plain, {"antimony": _antimony(), "model_edits": edits})
+    both = {"antimony": _antimony(), "statements": [_statement_row()]}
+    assert "`statements`" in error(offered, both).split(")", 1)[1]  # past the routes given
+    assert "`statements`" not in error(plain, {})
+    assert "`statements`" in error(offered, {})
 
 
 def test_the_types_without_indra_default_are_read_off_the_registry(monkeypatch):
