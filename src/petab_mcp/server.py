@@ -728,7 +728,7 @@ _MAKE_CHANGES_SUMMARY = (
     "Change the model and/or its parameter search space, then FIT and snapshot a version."
 )
 
-_MAKE_CHANGES_ROUTES = """\
+_MAKE_CHANGES_ROUTES_BODY = """\
 The single editor, with TWO routes to a model change — give exactly ONE.
 
 `model_edits` is the route to use for every change after the first: a BATCH of
@@ -769,7 +769,17 @@ Give `parameters` to set estimation BOUNDS and/or SCALE: a list of
 `{parameter_id, lower_bound?, upper_bound?, scale?}` entries, applied atomically AFTER the
 reconcile — so an entry may target a parameter this very call introduces. Combine it with
 either model route for a structural change and the bounds it needs. At least one of
-`antimony` / `model_edits` / `parameters` is required."""
+"""
+
+_MAKE_CHANGES_ROUTES = (
+    _MAKE_CHANGES_ROUTES_BODY + "`antimony` / `model_edits` / `parameters` is required."
+)
+
+#: The same text where the `statements` route is offered too.
+_MAKE_CHANGES_STATEMENTS_ROUTES = (
+    _MAKE_CHANGES_ROUTES_BODY
+    + "`antimony` / `model_edits` / `statements` / `parameters` is required."
+)
 
 _MAKE_CHANGES_CONTRACT = """\
 There is no fit-free edit and no separate fit: one call is one coherent change, scored
@@ -820,12 +830,14 @@ def _make_changes_statements_doc() -> str:
     """The `statements` route's paragraph, naming the entries the library holds right now."""
     from . import mechanisms
 
-    from indra.statements import AddModification, RemoveModification, get_all_descendants
+    from indra.statements import AddModification, RemoveModification, Statement, get_all_descendants
 
     families = {
         base.__name__: {c.__name__ for c in get_all_descendants(base)}
         for base in (AddModification, RemoveModification)
     }
+    defaulted = {cls for cls, policy in mechanisms.REGISTRY if policy == mechanisms.INDRA_DEFAULT}
+    without = sorted({c.__name__ for c in get_all_descendants(Statement)} - defaulted)
     by_policy: dict[str, set[str]] = {}
     for cls, policy in sorted(mechanisms.REGISTRY):
         if policy != mechanisms.INDRA_DEFAULT:
@@ -848,7 +860,9 @@ def _make_changes_statements_doc() -> str:
         "parameters. A row may be one line instead of JSON: `r1: EGFR{pY1068} phosphorylates "
         "AKT1 at S473 | two_step kf=k_on`, agents as NAME{pY1068, -pS473, @nucleus, !BOUND, "
         "~UNBOUND} (see `get_model(format='statements')` for a model written that way)."
-        f"  Every INDRA statement type has `{mechanisms.INDRA_DEFAULT}`; the library "
+        "  Every INDRA statement type"
+        + (f" but {', '.join(without)}" if without else "")
+        + f" has `{mechanisms.INDRA_DEFAULT}`; the library "
         f"also holds {entries}. When none fits, WRITE one in `mechanisms` — it stays in the "
         "library for the rest of the run; its rate may read `modifiers`, agents each row names "
         "that take no part in the reaction (an inhibitor, a regulator). A row's `parameters` shares a rate constant with other "
@@ -910,6 +924,9 @@ def _statements_text(session, version: int | None) -> str:
 def _register_model_tools(
     mcp: FastMCP, route: Callable[[], _Ctx], statements: bool = False
 ) -> None:
+    # `make_changes` takes an argument named `statements`; the route flag goes by this name in it.
+    statements_route = statements
+
     @mcp.tool(annotations=_READ_ONLY)
     def get_model(format: str = "antimony", version: int | None = None) -> str:
         """Return a model as text — the CURRENT one, or a prior `version`'s stored source.
@@ -1031,9 +1048,10 @@ def _register_model_tools(
             return ctx.reject_operation(
                 "make_changes",
                 f"make_changes: give ONE model route, not {len(routes_given)} "
-                f"({', '.join('`' + r + '`' for r in routes_given)}). `model_edits` for a "
-                "structured change to an existing model, `antimony` to author one wholesale. "
-                "NOTHING was applied.",
+                f"({', '.join('`' + r + '`' for r in routes_given)}). "
+                + ("`statements` to author the whole model as rows, " if statements_route else "")
+                + "`model_edits` for a structured change to an existing model, `antimony` to "
+                "author one wholesale. NOTHING was applied.",
                 {"routes": routes_given},
                 cause="route_conflict",
             )
@@ -1058,7 +1076,8 @@ def _register_model_tools(
                 "make_changes",
                 "make_changes: nothing to do — give `model_edits` (structured operations on the "
                 "committed model — the usual route), `antimony` (author the model wholesale), "
-                "`parameters` (to set bounds/scale), or a combination.",
+                + ("`statements` (author the model as rows), " if statements_route else "")
+                + "`parameters` (to set bounds/scale), or a combination.",
                 {"antimony": None, "parameters": None},
             )
         rejected = ctx.check_n_starts("make_changes", n_starts)
@@ -1234,7 +1253,7 @@ def _register_model_tools(
             description="\n\n".join(
                 (
                     _MAKE_CHANGES_SUMMARY,
-                    _MAKE_CHANGES_ROUTES,
+                    _MAKE_CHANGES_STATEMENTS_ROUTES,
                     _make_changes_statements_doc(),
                     _MAKE_CHANGES_CONTRACT,
                 )
