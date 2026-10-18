@@ -873,7 +873,8 @@ def _readout_amounts(readouts, amounts):
             f"make_changes: readouts read {stray}, named as the server names `amount(<pattern>)`, "
             "but no readout reads that pattern now and `amounts` holds no such name, so each "
             "would be a parameter fitted in place of the species. Write the amount in place, "
-            "`amount(<pattern>)`. NOTHING was applied.",
+            "`amount(<pattern>)`; a parameter of your own needs a name that does not start with "
+            "`amount_`. NOTHING was applied.",
             cause="unread_amount",
         )
     return readouts, amounts
