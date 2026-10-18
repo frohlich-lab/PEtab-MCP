@@ -138,11 +138,12 @@ def to_antimony(
         never.append(f"readouts {unread} read no species")
     if never:
         raise ModelUpdateError(
-            f"In the model these statements build, {' and '.join(never)}. Everything starts as "
-            "free, unmodified molecules, except what the rules make from those, so a rule fires "
-            "only on what the statements form from there: one that never fires needs a complex "
-            "or a modified form that no statement forms, like a kinase active only while bound "
-            "to a partner nothing binds it to."
+            f"In the model these statements build, {' and '.join(never)}. The start holds free, "
+            "unmodified molecules and what `starts` declares, and a rule fires only on what the "
+            "statements form from there: one that never fires needs a complex or a modified form "
+            "that nothing forms, like a kinase active only while bound to a partner nothing binds "
+            "it to. Add the statement that forms it, or, if it is present at t=0, declare it in "
+            "`starts`."
         )
     sbml = export(model, "sbml")  # from the expansion above; BioNetGen does not run again
     base_names = {
