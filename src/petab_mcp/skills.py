@@ -37,6 +37,8 @@ from pathlib import Path
 from .errors import UnknownEntityError
 
 _SKILL_FILE = "SKILL.md"
+#: MCP tool annotations for the skill tools: they only read bundled files (cf. ``server._READ_ONLY``).
+_READ_ONLY = {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False}
 
 
 @dataclass
@@ -222,7 +224,7 @@ def register_skills(mcp, skills: list[Skill]) -> list[Skill]:
             )
         return skill
 
-    @mcp.tool()
+    @mcp.tool(annotations=_READ_ONLY)
     def list_skills() -> list[dict[str, object]]:
         """List the skills this server exposes (name, description, supporting files).
 
@@ -231,7 +233,7 @@ def register_skills(mcp, skills: list[Skill]) -> list[Skill]:
         """
         return [s.summary() for s in skills]
 
-    @mcp.tool()
+    @mcp.tool(annotations=_READ_ONLY)
     def get_skill(name: str, file: str | None = None) -> str:
         """Return a skill's SKILL.md, or one of its supporting files.
 
