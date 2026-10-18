@@ -177,6 +177,8 @@ def test_a_rate_may_read_amounts_and_time():
         ("enz() + sub(mod=1.5) >> enz() + sub() @ kf", "site value"),
         ("enz() + sub() >> enz() + sub() @ hill(kf)", "no function"),
         ("enz() + sub() + enz() @ kf", "reactants >> products"),
+        ("enz() + sub() >> enz() + sub() @ kf | kf", "is not allowed"),
+        ("enz() + sub() >> enz() + sub() @ kf*exp()", "takes one argument"),
     ],
 )
 def test_a_scheme_that_does_not_read_is_refused(scheme, match):
@@ -207,6 +209,8 @@ def test_a_scheme_rate_names_only_the_parameters_it_declares():
         _scheme("kff")
     with pytest.raises(MechanismError, match=r"`parameters`"):
         _scheme("kf*kr")
+    with pytest.raises(MechanismError, match=r"declares \['kr'\].*never names"):
+        _scheme("kf", ("kf", "kr"))
 
 
 def test_a_scheme_rate_reads_a_role_only_as_its_amount():

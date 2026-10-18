@@ -60,6 +60,8 @@ MOD, ACT = "mod", "act"
 _OFF_ON = ("off", "on")
 _ACTIVITY = ("inactive", "active")
 _FUNCTIONS = {"exp": sympy.exp, "log": sympy.log, "sqrt": sympy.sqrt}
+#: The operators a rate takes (``^`` is a power, as in a written ``rate``).
+_ARITHMETIC = (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow, ast.BitXor)
 _SITE_VALUE_NAMES = {"None": None, "ANY": ANY, "WILD": WILD}
 
 
@@ -257,14 +259,17 @@ def _rate(text: str) -> _Rate:
                 return  # its names are molecules and sites
             if fn not in _FUNCTIONS:
                 raise MechanismError(f"rate {text!r}: no function {fn!r}; amount, exp, log, sqrt")
+            if node.keywords or not 1 <= len(node.args) <= (2 if fn == "log" else 1):
+                takes = "one argument, or a base too" if fn == "log" else "one argument"
+                raise MechanismError(f"rate {text!r}: {fn}() takes {takes}")
             for arg in node.args:
                 visit(arg)
         elif isinstance(node, ast.Name):
             if node.id != "time":
                 names.append(node.id)
-        elif isinstance(node, ast.BinOp):
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, _ARITHMETIC):
             visit(node.left), visit(node.right)
-        elif isinstance(node, ast.UnaryOp):
+        elif isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
             visit(node.operand)
         elif not (isinstance(node, ast.Constant) and isinstance(node.value, (int, float))):
             raise MechanismError(f"rate {text!r}: {ast.unparse(node)!r} is not allowed")
@@ -278,7 +283,7 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
     built for each row from its own agents (see the module docstring). A rate naming anything but
     the declared ``parameters`` is refused as :func:`mechanisms.written` refuses one, with
     ``problem_ids``."""
-    from .mechanisms import refuse_rate_names
+    from .mechanisms import refuse_rate_names, refuse_unread
 
     stmt_type, policy = definition["statement_type"], definition["policy"]
     lines = parse(definition["scheme"])
@@ -291,6 +296,7 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
                 also = ", `amount(<pattern>)` and exp/log/sqrt"
                 refuse_rate_names(text, policy, unknown, [*declared, "time"], also,
                                   "`amount(<pattern>)`", problem_ids, known_roles)
+    refuse_unread(policy, declared, {n for rs in rates for r in rs for n in r.names})
 
     def policy_fn(stmt: Statement, model: pysb.Model, prefix: str):
         from .mechanisms import Emission, _add
