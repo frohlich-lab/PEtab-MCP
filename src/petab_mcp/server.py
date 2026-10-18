@@ -1003,29 +1003,35 @@ def _register_model_tools(
                 "together. NOTHING was applied.",
                 {"n_mechanisms": len(mechanisms or []), "n_starts": len(starts or [])},
             )
-        if rows:
-            definitions = [
-                m.model_dump() if isinstance(m, MechanismDef) else m for m in (mechanisms or [])
-            ]
-            try:
-                antimony, statement_record, statement_warnings, written = (
-                    ops_mod.statements_to_antimony(
-                        session,
-                        rows,
-                        definitions,
-                        [s.model_dump() if isinstance(s, StartRow) else s for s in starts or []],
-                    )
-                )
-            except PetabMcpError as exc:
-                return ctx.reject_operation(
-                    "make_changes",
-                    str(exc),
-                    {"n_statements": len(rows)},
-                    cause=getattr(exc, "cause", None),
-                )
         # One critical section for the change and its fit, so nothing can fit in between
         # (`session.lock` is an RLock, so the nested acquisitions inside each call are fine).
         with session.lock:
+            if rows:
+                # Inside the lock: the build reads the run's written mechanisms and the commit
+                # below replaces them, so a concurrent call must not build in between.
+                definitions = [
+                    m.model_dump() if isinstance(m, MechanismDef) else m
+                    for m in (mechanisms or [])
+                ]
+                try:
+                    antimony, statement_record, statement_warnings, written = (
+                        ops_mod.statements_to_antimony(
+                            session,
+                            rows,
+                            definitions,
+                            [
+                                s.model_dump() if isinstance(s, StartRow) else s
+                                for s in starts or []
+                            ],
+                        )
+                    )
+                except PetabMcpError as exc:
+                    return ctx.reject_operation(
+                        "make_changes",
+                        str(exc),
+                        {"n_statements": len(rows)},
+                        cause=getattr(exc, "cause", None),
+                    )
             op_summary: list[str] = []
             base_parameter_df = None
             if ops:
