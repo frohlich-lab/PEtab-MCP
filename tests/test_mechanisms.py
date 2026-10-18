@@ -191,6 +191,35 @@ def test_rows_bound_to_one_id_share_one_parameter():
     assert emissions[0].bound == {"k": "k_shared"}
 
 
+_FORWARD = PopulationTransition(Agent("A"), Agent("B"))
+_BACKWARD = PopulationTransition(Agent("B"), Agent("A"))
+
+
+def test_a_row_may_share_a_later_rows_parameter():
+    """Bound as each row was built, a row sharing `back_k` before the row minting it renamed its
+    own to `back_k`, and that row's own then clashed with it: PySB's duplicate name, raw."""
+    params, emissions = _sbml_parameters(
+        [(_FORWARD, "mass_action", "fwd", {"k": "back_k"}), (_BACKWARD, "mass_action", "back")]
+    )
+    assert "back_k" in params and "fwd_k" not in params
+    assert [e.parameters for e in emissions] == [("back_k",), ("back_k",)]
+
+
+def test_a_row_shares_what_the_row_it_names_reads():
+    """In either order: sharing a pinned row's rate reads the pin, not the constant it replaced,
+    which nothing else reads, and a row renamed to a shared id is found by its own name too."""
+    for rows in (
+        [(_BACKWARD, "mass_action", "back", {"k": 0.5}), (_FORWARD, "mass_action", "fwd", {"k": "back_k"})],
+        [(_FORWARD, "mass_action", "fwd", {"k": "back_k"}), (_BACKWARD, "mass_action", "back", {"k": 0.5})],
+    ):
+        model, _ = M.assemble(rows)
+        assert {rule.rate_forward.name for rule in model.rules} == {"back_k_pinned"}
+    model, _ = M.assemble(
+        [(_FORWARD, "mass_action", "fwd", {"k": "k_on"}), (_BACKWARD, "mass_action", "back", {"k": "fwd_k"})]
+    )
+    assert {rule.rate_forward.name for rule in model.rules} == {"k_on"}
+
+
 def test_a_row_bound_to_a_number_estimates_nothing():
     """Perelson's infection runs at a rate fixed to 1; a minted constant there is a k."""
     params, emissions = _sbml_parameters([(_TRANSITION, "mass_action", "r1", {"k": 1.0})])

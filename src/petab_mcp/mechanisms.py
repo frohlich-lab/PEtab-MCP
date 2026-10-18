@@ -136,11 +136,9 @@ def instantiate(
     policy: str,
     prefix: str,
     library: dict[tuple[str, str], Policy] = REGISTRY,
-    binding: dict[str, str | float] | None = None,
 ) -> Emission:
-    """Apply one entry of ``library`` (the registered entries plus any the agent wrote), then the
-    row's ``binding`` (:func:`bind`). Raises :class:`MechanismError` when the pair is not in it —
-    the agent's signal to write one."""
+    """Apply one entry of ``library`` (the registered entries plus any the agent wrote). Raises
+    :class:`MechanismError` when the pair is not in it — the agent's signal to write one."""
     key = (type(stmt).__name__, policy)
     if key not in library:
         known = sorted(p for c, p in library if c == key[0])
@@ -150,11 +148,15 @@ def instantiate(
             "write one with `mechanisms`.",
             cause="malformed_mechanism" if typo else "library_gap",
         )
-    emission = library[key](stmt, model, prefix)
-    return bind(model, emission, binding) if binding else emission
+    return library[key](stmt, model, prefix)
 
 
-def bind(model: pysb.Model, emission: Emission, binding: dict[str, str | float]) -> Emission:
+def bind(
+    model: pysb.Model,
+    emission: Emission,
+    binding: dict[str, str | float],
+    merged: dict[str, object] | None = None,
+) -> Emission:
     """Replace parameters a row minted (``<prefix>_<kind>``) by a SHARED one or a NUMBER.
 
     Every row mints its own rate constants, so one rate a reference uses in many reactions became
@@ -167,7 +169,12 @@ def bind(model: pysb.Model, emission: Emission, binding: dict[str, str | float])
     parameters are the reference's own and keep their rows. Bound for every entry alike, INDRA's
     and written ones, so no entry needs sharing of its own. What a row no longer reads stays behind
     unreferenced, and the SBML export drops it (as it drops a written mechanism's base constant).
+
+    ``merged`` carries, across the rows of one model, each name an earlier binding renamed or
+    replaced to what now stands for it, so a row that names another row's parameter shares what
+    that row reads, whichever order they bind in.
     """
+    merged = {} if merged is None else merged
     minted = {name.removeprefix(f"{emission.prefix}_"): name for name in emission.parameters}
     unknown = sorted(set(binding) - set(minted))
     if unknown:
@@ -184,13 +191,15 @@ def bind(model: pysb.Model, emission: Emission, binding: dict[str, str | float])
         if isinstance(target, bool) or not isinstance(target, (str, int, float)):
             raise MechanismError(f"row {emission.prefix!r} binds {kind!r} to {target!r}")
         if isinstance(target, str) and not _IDENTIFIER.fullmatch(target):
-            new, names = _bound_expression(model, name, target, emission.prefix)
+            new, names = _bound_expression(model, name, target, emission.prefix, merged)
             _redirect(model, old, new)
+            merged[name] = new
             parameters += [n for n in names if n not in parameters]
             continue
         if isinstance(target, str):
-            existing = model.parameters.get(target) or model.expressions.get(target)
+            existing = _held(model, target, merged)
             if existing is None:
+                merged[name] = old
                 old._export = False  # INDRA builds with PySB's export off; see `_indra`
                 old.rename(target)
                 # A new shared id starts where any new name does (an entity-map `initial` or
@@ -208,6 +217,7 @@ def bind(model: pysb.Model, emission: Emission, binding: dict[str, str | float])
             new = pysb.Expression(f"{name}_pinned", sympy.Float(target), _export=False)
             _add(model, new)
         _redirect(model, old, new)
+        merged[name] = new
         if isinstance(target, str):
             parameters.append(target)
     return replace(emission, parameters=tuple(parameters), bound=dict(binding))
@@ -216,9 +226,21 @@ def bind(model: pysb.Model, emission: Emission, binding: dict[str, str | float])
 _IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
 
 
-def _shared(model: pysb.Model, name: str):
+def _held(model: pysb.Model, name: str, merged: dict[str, object]):
+    """The component a shared id names now: what an earlier binding renamed or replaced it by,
+    followed on, else the parameter or expression of that name; ``None`` when nothing holds it."""
+    component = None
+    while name in merged and merged[name] is not component:
+        component = merged[name]
+        name = component.name
+    if component is not None:
+        return component
+    return model.parameters.get(name) or model.expressions.get(name)
+
+
+def _shared(model: pysb.Model, name: str, merged: dict[str, object]):
     """The component a shared id names, made at reconcile's seed when nothing holds it yet."""
-    existing = model.parameters.get(name) or model.expressions.get(name)
+    existing = _held(model, name, merged)
     if existing is None:
         from .reconcile import SEED_INITIAL_VALUE
 
@@ -227,13 +249,15 @@ def _shared(model: pysb.Model, name: str):
     return existing
 
 
-def _bound_expression(model: pysb.Model, name: str, text: str, prefix: str):
+def _bound_expression(
+    model: pysb.Model, name: str, text: str, prefix: str, merged: dict[str, object]
+):
     """``text`` as an Expression over shared ids, named after the parameter it replaces."""
     tokens = _RATE_TOKENS.findall(text)
     names = sorted({t for t in tokens if _IDENTIFIER.fullmatch(t)} - set(_RATE_FUNCTIONS))
     if "".join(tokens) != text:
         raise MechanismError(f"row {prefix!r} binds {name!r} to {text!r}, which is no expression")
-    symbols = {n: _shared(model, n) for n in names}
+    symbols = {n: _shared(model, n, merged) for n in names}
     value = sympy.sympify(text.replace("^", "**"), locals={**symbols, **_RATE_FUNCTIONS})
     expression = pysb.Expression(f"{name}_bound", value, _export=False)
     _add(model, expression)
@@ -372,11 +396,16 @@ def assemble(
             if annotation is not None:
                 model.add_annotation(annotation)
     emissions = [
-        instantiate(stmt, model, policy, prefix, library, binding)
-        for stmt, policy, prefix, binding in rows
+        instantiate(stmt, model, policy, prefix, library) for stmt, policy, prefix, _ in rows
     ]
     _refuse_ruleless(rows, emissions)
-    return model, emissions
+    # Bound once every row has minted its own: bound as each row was built, a row sharing a LATER
+    # row's `back_k` made it a new shared id, and that row's own `back_k` then clashed with it.
+    merged: dict[str, object] = {}
+    return model, [
+        bind(model, emission, row[3], merged) if row[3] else emission
+        for emission, row in zip(emissions, rows)
+    ]
 
 
 def _monomer_policy(policy: str, library: dict[tuple[str, str], Policy]) -> str:
