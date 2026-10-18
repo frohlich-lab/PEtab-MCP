@@ -1296,6 +1296,7 @@ def test_a_scheme_rate_reads_a_molecule_written_in_the_row_notation(tmp_path):
                     "statement_type": "PopulationTransition",
                     "policy": "fb",
                     "scheme": "source() >> target() @ k/(1 + amount(ERK{pT202})/K_fb)",
+                    "parameters": ["k", "K_fb"],
                 }
             ],
         },
