@@ -315,7 +315,7 @@ class PetabSession:
 
         # The mechanisms the agent has WRITTEN this run, keyed (statement type, policy): the run's
         # additions to the library (:func:`mechanisms.written`), usable by every later call.
-        # Each version's statements.json carries the definitions its rows used.
+        # Each version's statements.json carries the definitions its call wrote.
         self.mechanisms: dict[tuple[str, str], dict[str, Any]] = {}
 
         # Species id -> INDRA Agent (:func:`seeding.load_entity_map`): what binds a model built
@@ -359,14 +359,16 @@ class PetabSession:
             )
             # durable resume: restore the working state from the latest version
             self.apply_version(self.provenance.current_version)
-            # ...and the mechanisms the run wrote, off every version's rows, since a row naming
-            # one must still build and none may be redefined. Oldest first, so the first
-            # definition of a name wins, as it does live.
+            # ...and the mechanisms the run wrote, off every version's record, since a row naming
+            # one must still build and none may be redefined: those its call wrote, which a row
+            # need not use, and those its rows used (a record may predate `mechanisms`). Oldest
+            # first, so the first definition of a name wins, as it does live.
             for meta in self.provenance.list_versions():
-                for row in (self.provenance.get_statements(meta["version"]) or {}).get("rows", []):
-                    if "mechanism" in row:
-                        d = row["mechanism"]
-                        self.mechanisms.setdefault((d["statement_type"], d["policy"]), d)
+                record = self.provenance.get_statements(meta["version"]) or {}
+                for d in record.get("mechanisms", []) + [
+                    row["mechanism"] for row in record.get("rows", []) if "mechanism" in row
+                ]:
+                    self.mechanisms.setdefault((d["statement_type"], d["policy"]), d)
             # apply_version restores `model_source` too, so a durable resume (or recover_run.py)
             # keeps editing the SOURCE rather than silently adopting the render as its base —
             # which would break `child.source == parent.source + ops` exactly at the resume
