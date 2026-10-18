@@ -525,8 +525,8 @@ def _register_read_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
     def describe_problem() -> dict[str, Any]:
         """Summarize the problem: model size, tables, and free parameters.
 
-        `readouts_to_define` lists the `readout_*` measurement mappings (see `list_observables`)
-        your model does not define yet.
+        `readouts_to_define` lists the `readout_*` measurement mappings your model does not
+        define yet.
 
         Also reports `fit_n_starts_default` — the pyPESTO multistart count a fit uses when
         `n_starts` is omitted. Read it before passing `n_starts` anywhere: that argument REPLACES
