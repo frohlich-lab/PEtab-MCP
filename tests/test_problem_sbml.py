@@ -7,6 +7,7 @@ import pytest
 from indra.statements import Agent, BoundCondition, Phosphorylation
 from petab.v1.models.sbml_model import SbmlModel
 
+from petab_mcp import mechanisms as M
 from petab_mcp import problem_sbml as PS
 from petab_mcp.errors import ModelUpdateError
 from petab_mcp.mechanisms import INDRA_DEFAULT
@@ -76,6 +77,37 @@ def test_a_blinded_readout_stays_a_rule():
     )
     sbml = SbmlModel.from_antimony(antimony).sbml_model
     assert sbml.getAssignmentRuleByVariable("readout_naive") is not None
+
+
+def test_a_rate_may_read_time():
+    """PySB lists `time` in a rate as a modifier species, which no species is, so every model
+    whose written rate read `time` was unreadable SBML (Oliveira, Crauste, Rahman, Fujita)."""
+    library = dict(M.REGISTRY)
+    library[("PopulationTransition", "waning")] = M.written(
+        {
+            "statement_type": "PopulationTransition",
+            "policy": "waning",
+            "based_on": "mass_action",
+            "rate": "k*exp(-time)",
+            "parameters": ["k"],
+        },
+        library,
+    )
+    antimony, _ = PS.to_antimony([(_TRANSITION, "waning", "r1")], {}, library)
+    assert "r1_rate := r1_k/exp(time);" in antimony
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    assert [r.getNumModifiers() for r in sbml.getListOfReactions()] == [0]
+
+
+def test_reaction_ids_never_collide_with_the_models_own():
+    """PySB numbers reactions `r0`, `r1`... whatever else bears the name: an agent's shared rate
+    `r8` made every Blasi model unreadable SBML. Here the readout `r0` takes it."""
+    antimony, _ = PS.to_antimony([(_TRANSITION, "mass_action", "conv")], {"r0": Agent("naive")})
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    assert sbml.getSpecies("r0").getName() == "naive()"
+    assert [r.getId() for r in sbml.getListOfReactions()] == ["r_0"]
+    antimony, _ = PS.to_antimony([(_TRANSITION, "mass_action", "conv")], {})
+    assert "r0: __s0 => __s1; conv_k*__s0;" in antimony
 
 
 def test_what_the_start_cannot_reach_starts_present():
