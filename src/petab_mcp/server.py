@@ -1566,8 +1566,8 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         """List all model versions (fit snapshots) with kind/label/timestamp and fit metrics
         (neg_log_likelihood, chi2, bic/aic/aicc/caic/hqc/tic, criterion_value, is_new_best) — use it to
         rank versions by `criterion_value` and find the best-scoring one. Every version is a fit
-        snapshot (or the `rollback` snapshots); `is_new_best` tracks that same score (gated on a
-        minimum effect size)."""
+        snapshot; `is_new_best` tracks that same score: true when its `improvement_vs_best_prior`
+        (over `best_prior_criterion_value`) reached `new_best_min_improvement`."""
         ctx = route()
         session = ctx.session
         return session.provenance.list_versions()

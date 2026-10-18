@@ -2006,7 +2006,9 @@ def compute_improvement(
     canonical ``bic``, and is stamped into the fit event and the version meta — which is what
     lets a resumed run and the de-dup registry recover the score. Only those three: this block
     rides on every fit result and is re-sent in the agent's history each turn, and the full
-    criterion table is already on the fit block (and in the version meta) one level up.
+    criterion table is already on the fit block (and in the version meta) one level up. It also
+    states its own gate: ``is_new_best`` is ``improvement_vs_best_prior`` (over
+    ``best_prior_criterion_value``) reaching ``new_best_min_improvement``.
     """
     fitsim = fitsim or {}
     scores = goodness_of_fit(
@@ -2052,6 +2054,9 @@ def compute_improvement(
         "best_prior_criterion_value": best_prior_score,
         "best_prior_neg_log_likelihood": best_prior_nllh,
         "improvement_vs_best_prior": improvement_vs_best_prior,
+        # The gate itself, so an `is_new_best: false` says what the fit needed: an improvement
+        # over `best_prior_criterion_value` of at least this.
+        "new_best_min_improvement": NEW_BEST_MIN_DELTA_SCORE,
         "is_new_best": is_new_best,
     }
 
