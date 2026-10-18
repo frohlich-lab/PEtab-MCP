@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import pysb
 import pytest
-from indra.statements import Activation, Agent, Phosphorylation
+from indra.statements import Activation, Agent, Dephosphorylation, Phosphorylation
 
 from petab_mcp import mechanisms as M
 from petab_mcp.errors import MechanismError
@@ -40,13 +41,46 @@ def test_modified_substrate_gets_its_site():
 
 def test_unregistered_pair_is_a_mechanism_error():
     """A library gap must stay distinguishable from a bug, so it is not a bare ``KeyError``."""
-    with pytest.raises(MechanismError, match="no mechanism"):
+    with pytest.raises(MechanismError, match="no mechanism") as exc:
         M.assemble([(_TRANSITION, "no_such_mechanism", "r1")])
+    assert exc.value.cause == "library_gap"
+
+
+def test_a_malformed_request_is_not_a_library_gap():
+    """Every refusal counted as a library gap, so the library's to-do list was mostly typos."""
+    with pytest.raises(MechanismError, match="built-in") as exc:
+        M.written(
+            {"statement_type": "PopulationTransition", "policy": "mass_action", "rate": "k"},
+            M.REGISTRY,
+        )
+    assert exc.value.cause == "malformed_mechanism"
+
+
+def test_basal_refuses_a_statement_that_names_an_enzyme():
+    """`PTEN dephosphorylates AKT1 | basal` built a rule without PTEN."""
+    stmt = Dephosphorylation(Agent("PTEN"), Agent("AKT1"), "S", "473")
+    with pytest.raises(MechanismError, match="names PTEN, which it would leave out") as exc:
+        M.assemble([(stmt, M.BASAL, "r1")])
+    assert exc.value.cause == "malformed_mechanism"
+
+
+def test_basal_addition_refuses_an_enzyme_too_and_builds_without_one():
+    with pytest.raises(MechanismError, match="names MEK, which it would leave out"):
+        M.assemble([(_PHOSPHO, M.BASAL, "r1")])
+    _, (emission,) = M.assemble([(Phosphorylation(None, Agent("ERK"), "T", "185"), M.BASAL, "r1")])
+    assert emission.rules
+
+
+def test_a_policy_indra_cannot_assemble_is_a_library_gap():
+    with pytest.raises(MechanismError, match="INDRA has no default assembly") as exc:
+        M._indra("default")(_TRANSITION, pysb.Model(_export=False), "r1")
+    assert exc.value.cause == "library_gap"
 
 
 def test_reregistering_an_entry_raises():
-    """A silent override builds whichever policy imported last."""
-    with pytest.raises(MechanismError, match="already registered"):
+    """A silent override builds whichever policy imported last. A programming error, not a
+    refusal: no agent call reaches it."""
+    with pytest.raises(RuntimeError, match="already registered"):
         M.mechanism(PopulationTransition, "mass_action")(lambda *a: None)
 
 
