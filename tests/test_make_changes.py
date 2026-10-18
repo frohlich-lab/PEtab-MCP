@@ -1207,15 +1207,15 @@ def test_an_unread_condition_target_is_explained():
 
 
 # -- readouts, bindings and written mechanisms, as one sweep's traces found them --------
-def _readout_server(tmp_path):
+def _readout_server(tmp_path, extra=""):
     """The toy with its observable reading a blinded `readout_B`, and an empty entity map: what
-    a PEtabAgentBench problem is on the indra_statements arm."""
+    a PEtabAgentBench problem is on the indra_statements arm. ``extra`` adds observable rows."""
     import shutil
 
     data = tmp_path / "toy"
     shutil.copytree(YAML_PATH.parent, data)
     (data / "observables.tsv").write_text(
-        "observableId\tobservableFormula\tnoiseFormula\nobs_B\treadout_B\tsigma_B\n"
+        "observableId\tobservableFormula\tnoiseFormula\nobs_B\treadout_B\tsigma_B\n" + extra
     )
     entity_map = tmp_path / "entities.json"
     entity_map.write_text("{}")
@@ -1240,7 +1240,74 @@ def test_a_readout_may_read_an_amount_in_place(tmp_path):
         },
     )
     assert out["applied"] is True
-    assert _stored_rows(tmp_path, 0)["amounts"] == {"amount_B": {"name": "B"}}
+    stored = _stored_rows(tmp_path, 0)
+    assert stored["readouts"] == {"readout_B": "scale_B*amount(B)"} and stored["amounts"] == {}
+
+
+def _set_readout(mcp, readout, formula):
+    edit = {"op": "set_readout", "readout": readout, "formula": formula}
+    out = _call(mcp, "make_changes", {"justification": formula, "statement_edits": [edit]})
+    assert out["applied"] is True, out.get("error")
+
+
+def _amount_symbols(mcp):
+    """The current model's `amount_*` species, its `amount_*` parameters, and the `amount_*`
+    rows its parameter table estimates."""
+    import libsbml
+
+    model = libsbml.readSBMLFromString(_text(mcp, "get_model", {"format": "sbml"})).getModel()
+    rows = _call(mcp, "get_parameters", {})["result"]
+    return (
+        {s.getId() for s in model.getListOfSpecies() if s.getId().startswith("amount_")},
+        {p.getId() for p in model.getListOfParameters() if p.getId().startswith("amount_")},
+        {r["parameterId"] for r in rows if r.get("estimate") and r["parameterId"].startswith("amount_")},
+    )
+
+
+def test_an_amount_read_in_place_keeps_its_name_across_edits(tmp_path):
+    """Each edit re-writing `amount(B)` minted the next name (amount_B_2, amount_B_3), and the
+    record kept them all."""
+    mcp = _readout_server(tmp_path)
+    out = _call(
+        mcp,
+        "make_changes",
+        {"justification": "v0", "statements": [_CONV], "readouts": {"readout_B": "scale_B*amount(B)"}},
+    )
+    assert out["applied"] is True
+    _set_readout(mcp, "readout_B", "scale_B*amount(B) + offset")
+    _set_readout(mcp, "readout_B", "scale_B*(amount(B) + offset)")
+    assert _amount_symbols(mcp) == ({"amount_B"}, set(), set())
+    assert _stored_rows(tmp_path, 2)["amounts"] == {}
+
+
+def test_an_amount_no_readout_reads_is_gone(tmp_path):
+    mcp = _readout_server(tmp_path)
+    out = _call(
+        mcp,
+        "make_changes",
+        {"justification": "v0", "statements": [_CONV], "readouts": {"readout_B": "scale_B*amount(B)"}},
+    )
+    assert out["applied"] is True
+    _set_readout(mcp, "readout_B", "scale_B*amount(A)")
+    assert _amount_symbols(mcp) == ({"amount_A"}, set(), set())
+
+
+def test_a_readout_left_alone_still_reads_the_species(tmp_path):
+    """gemot, boehm r2: re-writing one readout of STAT5B gave the species a new name, and the other
+    readout, still reading the old name, read a parameter fitted in place of the species."""
+    mcp = _readout_server(tmp_path, "obs_C\treadout_C\tsigma_B\n")
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "v0",
+            "statements": [_CONV],
+            "readouts": {"readout_B": "scale_B*amount(B)", "readout_C": "amount(B)"},
+        },
+    )
+    assert out["applied"] is True
+    _set_readout(mcp, "readout_C", "amount(B)/scale_C")
+    assert _amount_symbols(mcp) == ({"amount_B"}, set(), set())
 
 
 def test_a_readout_that_reads_no_amount_is_refused(tmp_path):
@@ -1442,6 +1509,26 @@ def test_amount_names_keep_the_notations_negations():
 
     readouts, amounts = _readout_amounts({"r": "amount(S{pY694}) + amount(S{-pY694})"}, None)
     assert sorted(amounts) == ["amount_S_no_pY694", "amount_S_pY694"]
+
+
+def test_an_amount_in_place_reads_the_amount_that_holds_its_pattern():
+    """A pattern is named by the agent it reads, however it is spelled."""
+    from petab_mcp.operations import _readout_amounts
+
+    readouts, amounts = _readout_amounts(
+        {"r": "amount(S{@nucleus, pY694}) / amount( S{pY694,@nucleus} )"},
+        {"pS_nuc": "S{pY694, @nucleus}"},
+    )
+    assert readouts == {"r": "pS_nuc / pS_nuc"} and list(amounts) == ["pS_nuc"]
+
+
+def test_a_server_amount_name_no_amount_holds_is_refused():
+    """Read where no `amount(...)` names it, `amount_B` would be a parameter fitted in place of B."""
+    from petab_mcp.operations import _readout_amounts
+
+    with pytest.raises(OperationError, match=r"\['amount_B'\]"):
+        _readout_amounts({"r": "scale*amount_B + amount(A)"}, None)
+    assert _readout_amounts({"r": "amount_B + amount(B)"}, None)[0] == {"r": "amount_B + amount_B"}
 
 
 def test_translocates_is_moves():
