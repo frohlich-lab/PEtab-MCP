@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pysb
 import pytest
 from indra.statements import Activation, ActiveForm, Agent, Dephosphorylation, Phosphorylation
@@ -128,9 +130,10 @@ _BASE_WRITTEN = (
 )
 
 
-def _written(extra=""):
-    import json
+_BASE_WRITTEN_DEF = json.loads(_BASE_WRITTEN.format(extra=""))
 
+
+def _written(extra=""):
     library = dict(M.REGISTRY)
     definition = json.loads(_BASE_WRITTEN.format(extra=extra))
     library[("Phosphorylation", definition["policy"])] = M.written(definition, library)
@@ -160,6 +163,27 @@ def test_a_written_rate_names_only_what_the_mechanism_allows():
     for rate in ("kcat / (Km + substrate)", "__import__('os')", "kcat.real"):
         with pytest.raises(MechanismError, match="may name only"):
             _written(f', "rate": "{rate}"')  # a repeated JSON key: the later one wins
+
+
+def test_a_refused_rate_name_comes_with_the_names_it_could_have_meant():
+    with pytest.raises(MechanismError, match=r"Did you mean: kcatt -> 'kcat'"):
+        _written(', "rate": "kcatt / (Km + enz)"')
+
+
+def test_a_written_rate_does_not_read_a_starting_amount():
+    """`<name>_init` is a species' start; a rate reads amounts through its roles and modifiers."""
+    with pytest.raises(MechanismError, match=r"\['ERK_init'\].*amount a species starts at"):
+        _written(', "rate": "kcat * ERK_init / (Km + enz)"')
+
+
+def test_a_problem_id_in_a_written_rate_says_how_it_enters():
+    """Blasi's shipped FIXED `d` was refused with only the names a rate may read, so the agent
+    declared `d` and got a new estimated one."""
+    ids = {"d": M.SHIPPED}
+    with pytest.raises(MechanismError, match=r"`d` is a parameter the problem ships.*row's binding"):
+        M.written(_BASE_WRITTEN_DEF | {"rate": "kcat * d / (Km + enz)"}, M.REGISTRY, ids)
+    with pytest.raises(MechanismError, match=r"declares \['d'\].*name yours apart"):
+        M.written(_BASE_WRITTEN_DEF | {"parameters": ["kcat", "Km", "d"]}, M.REGISTRY, ids)
 
 
 def test_a_written_mechanism_cannot_shadow_a_built_in():

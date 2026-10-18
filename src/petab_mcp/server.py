@@ -234,8 +234,9 @@ class MechanismDef(BaseModel):
         "statement's modification, 'off'/'on'), `act` ('inactive'/'active') or a partner role's "
         "name (the binding site for it): `enz(sub=None) + sub(enz=None, mod='off') >> "
         "enz(sub=1) % sub(enz=1, mod='off') @ kf`. `list_mechanisms` shows every library entry "
-        "this way: start from one. A rate is a parameter's name or an expression over parameters, "
-        "`amount(<pattern>)`, `time` and exp/log/sqrt. Give `scheme` or `rate`, not both.",
+        "this way, with the `parameters` it declares: start from one. A rate is an expression "
+        "over your `parameters`, `amount(<pattern>)`, `time` and exp/log/sqrt. Give `scheme` or "
+        "`rate`, not both.",
     )
     rate: str | None = Field(
         default=None,
@@ -247,8 +248,10 @@ class MechanismDef(BaseModel):
     )
     parameters: list[str] = Field(
         default_factory=list,
-        description="the parameter names `rate` uses; each becomes `<prefix>_<name>`, estimated "
-        "unless a row's `parameters` shares or fixes it.",
+        description="every constant the `scheme` or `rate` names; each becomes "
+        "`<prefix>_<name>`, estimated unless a row's `parameters` shares or fixes it. A parameter "
+        "the problem ships or a condition input is none of them: it enters through a row's "
+        "binding.",
     )
     modifiers: list[str] = Field(
         default_factory=list,
@@ -900,7 +903,8 @@ def _make_changes_statements_doc() -> str:
         + f" has `{mechanisms.INDRA_DEFAULT}`; the library "
         f"also holds {entries}. `list_mechanisms` shows each as the PySB rules it builds. When "
         "none fits, WRITE one in `mechanisms`, either as a `scheme` (its own rules, written like "
-        "those) or as a `rate` on an existing entry's reaction, whose rate may read `modifiers`, "
+        "those, declaring their constants in `parameters`) or as a `rate` on an existing entry's "
+        "reaction, whose rate may read `modifiers`, "
         "agents each row names that take no part in the reaction (an inhibitor, a regulator); "
         "it stays in the library for the rest of the run. A row's `parameters` shares a rate constant with other "
         "rows, or with a parameter the problem ships, or fixes it to a number. The species the "
@@ -934,7 +938,10 @@ def _mechanisms_text(session, statement_type: str | None) -> str:
             text = schemes.describe(stmt_type, policy, library)
         except MechanismError as exc:
             text = f"({exc})"
-        blocks.append(f"{stmt_type} | {policy}{written}\n" + "\n".join(f"  {line}" for line in text.splitlines()))
+        header = f"{stmt_type} | {policy}{written}"
+        if not text.startswith("(") and (names := schemes.rate_parameters(text)):
+            header += f" | parameters: {', '.join(names)}"
+        blocks.append(header + "\n" + "\n".join(f"  {line}" for line in text.splitlines()))
     return "\n".join(blocks)
 
 
@@ -962,7 +969,8 @@ def _statements_text(session, version: int | None) -> str:
     for d in written.values():
         library[(d["statement_type"], d["policy"])] = None
         if d.get("scheme"):
-            lines.append(f"mechanism {d['policy']}: {d['statement_type']}, scheme")
+            declared = f", parameters {', '.join(d['parameters'])}" if d.get("parameters") else ""
+            lines.append(f"mechanism {d['policy']}: {d['statement_type']}, scheme{declared}")
             lines += [f"  {line.strip()}" for line in d["scheme"].strip().splitlines() if line.strip()]
             continue
         reads = f"  reads {', '.join(d['modifiers'])}" if d.get("modifiers") else ""
@@ -1001,8 +1009,8 @@ def _register_model_tools(
             `make_changes(mechanisms=...)` is written, so a mechanism you need is one of these
             edited: `mod` is the statement's own modification ('off'/'on'), `act` an activity
             ('inactive'/'active'), a site named after a role the binding site for it; `@` gives
-            the rate (mass action over the reactants; a name is a parameter a row binds as
-            `kf=...`).
+            the rate (mass action over the reactants; a name is one of the `parameters` its header
+            lists, which a scheme you write declares too, and a row binds as `kf=...`).
             """
             return _mechanisms_text(route().session, statement_type)
 

@@ -363,7 +363,69 @@ _RATE_TOKENS = re.compile(r"\s+|(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?|[A-Za-z_]\w
 _RATE_FUNCTIONS = {"exp": sympy.exp, "log": sympy.log, "sqrt": sympy.sqrt}
 
 
-def written(definition: dict, library: dict[tuple[str, str], Policy]) -> Policy:
+#: What an id of the problem is (``problem_ids`` of :func:`written`). A rate reads none of them.
+SHIPPED, CONDITION, SPECIES = (
+    "a parameter the problem ships",
+    "a condition input",
+    "a species of the entity map",
+)
+
+
+def _how_ids_enter(names, problem_ids: dict[str, str], amounts: str) -> list[str]:
+    """How each of ``names`` that is an id of the problem enters a rate instead."""
+    bound = [n for n in names if problem_ids.get(n) in (SHIPPED, CONDITION)]
+    species = [n for n in names if problem_ids.get(n) == SPECIES]
+    return [
+        f"{', '.join(f'`{n}` is {problem_ids[n]}' for n in bound)}. A problem parameter or "
+        "condition input enters through a row's binding: declare a parameter of your own and "
+        f'bind it on the row, `parameters={{"K": "{bound[0]}"}}`, or `kf="k*{bound[0]}"`.'
+        if bound else "",
+        f"{', '.join(f'`{n}`' for n in species)}: {SPECIES}; read its amount, {amounts}."
+        if species else "",
+    ]
+
+
+def refuse_rate_names(
+    rate: str,
+    policy: str,
+    unknown: list[str],
+    allowed: list[str],
+    also: str,
+    amounts: str,
+    problem_ids: dict[str, str] | None = None,
+    roles=(),
+) -> None:
+    """Refuse a rate naming ``unknown``, names other than the ``allowed`` (``also`` says what else
+    it may contain), with the closest allowed ones; and for a starting amount, an id of the problem
+    or one of the ``roles`` (a scheme reads them only as amounts), how ``amounts`` are read."""
+    from .model_edits import closest_symbols
+
+    problem_ids = problem_ids or {}
+    close = [
+        f"{u} -> {' or '.join(map(repr, c))}"
+        for u in unknown
+        if (c := closest_symbols(u, allowed + list(_RATE_FUNCTIONS)))
+    ]
+    starts = [n for n in unknown if n.endswith("_init")]
+    new = [n for n in unknown if n not in (*starts, *roles, *problem_ids)]
+    sentences = [
+        f"rate {rate!r} of {policy!r} may name only {allowed}{also}; it names {unknown}.",
+        f"Did you mean: {'; '.join(close)}?" if close else "",
+        f"{starts}: `<name>_init` is the amount a species starts at, and a rate does not read it; "
+        f"read the amount itself, {amounts}." if starts else "",
+        *(f"`{r}` is a role: read its amount, `amount({r})`." for r in unknown if r in roles),
+        *_how_ids_enter(unknown, problem_ids, amounts),
+        "Declare each new constant in the mechanism's `parameters`; it is minted per row as "
+        "`<prefix>_<name>`." if new else "",
+    ]
+    raise MechanismError(" ".join(s for s in sentences if s))
+
+
+def written(
+    definition: dict,
+    library: dict[tuple[str, str], Policy],
+    problem_ids: dict[str, str] | None = None,
+) -> Policy:
     """Compile a mechanism the agent wrote: the reaction of an existing entry (``based_on``) with
     a new ``rate``.
 
@@ -376,18 +438,30 @@ def written(definition: dict, library: dict[tuple[str, str], Policy]) -> Policy:
     definition's ``parameters``, each minted as ``<prefix>_<name>`` (and shared by a row's
     binding, :func:`bind`); its ``modifiers``, each the amount of an agent the ROW names, which
     takes no part in the reaction (Fiedler's sorafenib slowing RAF, the SMAD complexes regulating
-    Lucarelli's genes, Sneyd's IP3 and calcium); ``time``; exp, log, sqrt.
+    Lucarelli's genes, Sneyd's IP3 and calcium); ``time``; exp, log, sqrt. A scheme
+    (:func:`schemes.compile_scheme`) declares the constants its rates name the same way.
+
+    ``problem_ids`` (id to :data:`SHIPPED`, :data:`CONDITION` or :data:`SPECIES`) are names no
+    rate reads and no declared parameter takes: a refusal naming one says how it enters instead,
+    through a row's binding or as an amount.
     """
     stmt_type, policy = definition["statement_type"], definition["policy"]
     base_key = (stmt_type, definition.get("based_on", INDRA_DEFAULT))
     if (stmt_type, policy) in REGISTRY:
         raise MechanismError(f"{(stmt_type, policy)} is a built-in mechanism; name yours apart")
+    amounts = "`amount(<pattern>)`" if definition.get("scheme") else "a role (`sub`) or a modifier"
+    if shadow := sorted(set(definition.get("parameters") or []) & set(problem_ids or {})):
+        raise MechanismError(
+            f"{policy!r} declares {shadow} in `parameters`, each a new parameter minted per row "
+            "as `<prefix>_<name>`: name yours apart. "
+            + " ".join(h for h in _how_ids_enter(shadow, problem_ids, amounts) if h)
+        )
     if definition.get("scheme"):
         from .schemes import compile_scheme
 
         if definition.get("rate"):
             raise MechanismError(f"{policy!r} gives a scheme and a rate; a scheme carries its rates")
-        return compile_scheme(definition)
+        return compile_scheme(definition, problem_ids)
     if not definition.get("rate"):
         raise MechanismError(f"{policy!r} gives neither a `scheme` nor a `rate`")
     if base_key not in library:
@@ -410,12 +484,12 @@ def written(definition: dict, library: dict[tuple[str, str], Policy]) -> Policy:
         - {"time"}
         - {t for t in tokens if positional.match(t)}
     )
-    if "".join(tokens) != rate or unknown:
-        raise MechanismError(
-            f"rate {rate!r} of {policy!r} may name only {sorted(names) + slots + roles + ['time']}"
-            f" (a list role by position, e.g. obj_from_0) and exp/log/sqrt"
-            f"{f'; it names {unknown}' if unknown else ''}"
-        )
+    allowed = sorted(names) + slots + roles + ["time"]
+    also = " (a list role by position, e.g. obj_from_0) and exp/log/sqrt"
+    if unknown:
+        refuse_rate_names(rate, policy, unknown, allowed, also, amounts, problem_ids)
+    if "".join(tokens) != rate:
+        raise MechanismError(f"rate {rate!r} of {policy!r} may name only {allowed}{also}")
     base = library[base_key]
 
     def policy_fn(
