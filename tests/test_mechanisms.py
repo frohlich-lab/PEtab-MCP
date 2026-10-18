@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pysb
 import pytest
-from indra.statements import Activation, Agent, Dephosphorylation, Phosphorylation
+from indra.statements import Activation, ActiveForm, Agent, Dephosphorylation, Phosphorylation
 
 from petab_mcp import mechanisms as M
 from petab_mcp.errors import MechanismError
@@ -94,6 +94,17 @@ def test_every_indra_statement_has_its_default_entry():
     assert emission.rules and emission.parameters == ("r1_kf",)
     assert {p.name for p in model.parameters} == {"r1_kf"}
 
+
+
+def test_a_row_that_builds_no_rule_is_refused():
+    """INDRA builds a rule once and none for an ActiveForm, so a repeated statement built nothing
+    beside an orphan `r2_kf`, and an ActiveForm row nothing at all, both without a word."""
+    activation = Activation(Agent("EGFR"), Agent("AKT"))
+    twin = Activation(Agent("EGFR"), Agent("AKT"))
+    with pytest.raises(MechanismError, match="row 'r2' asserts the statement of row 'r1' again"):
+        M.assemble([(activation, M.INDRA_DEFAULT, "r1"), (twin, M.INDRA_DEFAULT, "r2")])
+    with pytest.raises(MechanismError, match="row 'r1': ActiveForm under 'indra_default' builds no rule"):
+        M.assemble([(ActiveForm(Agent("AKT"), "kinase", True), M.INDRA_DEFAULT, "r1")])
 
 # A mechanism the agent writes; ``{extra}`` splices more fields into the definition.
 _BASE_WRITTEN = (

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 
 import pytest
 
@@ -294,10 +295,115 @@ def test_dedup_skip_reports_no_change(tmp_path):
     assert again["no_change"] is True
     assert again["duplicate_of_version"] == 0
     assert again["version"] == 0
-    # NOT reverted: the resulting model IS an existing version, byte-identical to it, so there is
-    # nothing unscored to undo — which is why the no-op reports applied: true.
+    # applied: the change gives version 0's model, and version 0 is the working model
     head = _head(mcp)
     assert head["current_version"] == 0
+
+
+def _ruled(rate: str) -> str:
+    """The toy with r1's rate written the way the statements route writes every rate: an
+    assignment rule the rate law multiplies, so the rate law itself never changes."""
+    return _antimony(f"k_eff := {rate};").replace("r1: A => B; k1 * A;", "r1: A => B; k_eff * A;")
+
+
+def _set_rate(rate: str) -> dict:
+    return {"op": "set_assignment", "id": "k_eff", "antimony": rate}
+
+
+def test_a_rate_only_edit_is_fitted_not_deduplicated(tmp_path):
+    """REGRESSION: the de-dup's fingerprint hashed each rate law's form, and a rate changed through
+    the rule that rate law multiplies left every form as it was. The change came back as a duplicate
+    of HEAD and was never fitted (rahman, schwen, oliveira, blasi on the statements route)."""
+    mcp = _server(tmp_path, auto_fit=True)
+    first = _call(
+        mcp, "make_changes", {"antimony": _ruled("k1"), "justification": "linear", "n_starts": 2}
+    )
+    assert first["committed"] is True
+    res = _call(
+        mcp,
+        "make_changes",
+        {"model_edits": [_set_rate("k1 / (1 + A)")], "justification": "saturating", "n_starts": 2},
+    )
+    assert res["committed"] is True and res["version"] == 1, res["message"]
+
+
+def test_a_readout_only_edit_is_fitted_not_deduplicated(tmp_path):
+    """The same blind spot for a readout: a `readout_*` mapping is an assignment rule, so a model
+    that changed only what the data measure fingerprinted as its predecessor."""
+    import shutil
+
+    problem = tmp_path / "problem"
+    shutil.copytree(YAML_PATH.parent, problem)
+    (problem / "observables.tsv").write_text(
+        "observableId\tobservableFormula\tnoiseFormula\nobs_B\treadout_B\tsigma_B\n"
+    )
+    mcp = create_server(
+        str(problem / "problem.yaml"),
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+        auto_fit=True,
+    )
+    first = _call(
+        mcp,
+        "make_changes",
+        {"antimony": _antimony("readout_B := B;"), "justification": "B", "n_starts": 2},
+    )
+    assert first["committed"] is True, first["message"]
+    res = _call(
+        mcp,
+        "make_changes",
+        {
+            "model_edits": [{"op": "set_assignment", "id": "readout_B", "antimony": "A + B"}],
+            "justification": "the antibody sees A too",
+            "n_starts": 2,
+        },
+    )
+    assert res["committed"] is True and res["version"] == 1, res["message"]
+
+
+def test_a_duplicate_leaves_the_session_as_it_was(tmp_path):
+    """REGRESSION: the de-dup no-op kept the change's text and authored values as the working
+    model, though no version holds them, so the next edit built on a model nothing had accepted.
+    A duplicate now leaves the session on the version it duplicates, exactly as stored."""
+    mcp = _server(tmp_path, auto_fit=True)
+    _call(mcp, "make_changes", {"antimony": _antimony(), "justification": "v0", "n_starts": 2})
+    model = _listed(_call(mcp, "get_model", {"format": "antimony"}))
+    parameters = _listed(_call(mcp, "get_parameters", {}))
+
+    # the same equations under another reaction id and another starting value
+    renamed = _antimony().replace("r2:", "back:").replace("k1 = 0.5", "k1 = 0.7")
+    res = _call(mcp, "make_changes", {"antimony": renamed, "justification": "dup", "n_starts": 2})
+    assert res["no_change"] is True and res["duplicate_of_version"] == 0
+
+    assert _listed(_call(mcp, "get_model", {"format": "antimony"})) == model
+    assert _listed(_call(mcp, "get_parameters", {})) == parameters
+    # ...and the source the next structured edit applies to is version 0's, not the duplicate's
+    stale = _call(
+        mcp,
+        "make_changes",
+        {"model_edits": [{"op": "remove_reaction", "id": "back"}], "justification": "x"},
+    )
+    assert stale["applied"] is False and "back" in stale["error"]
+
+
+def test_a_revert_to_an_earlier_model_is_not_a_duplicate_of_head(tmp_path):
+    """REGRESSION: with rates invisible to the fingerprint, going back to an earlier rate was
+    refused as a duplicate of HEAD, which holds a different one. It is fitted, and named as a
+    revisit of the version it returns to."""
+    mcp = _server(tmp_path, auto_fit=True)
+    _call(mcp, "make_changes", {"antimony": _ruled("k1"), "justification": "v0", "n_starts": 2})
+    _call(
+        mcp,
+        "make_changes",
+        {"model_edits": [_set_rate("k1 / (1 + A)")], "justification": "v1", "n_starts": 2},
+    )
+    back = _call(
+        mcp,
+        "make_changes",
+        {"model_edits": [_set_rate("k1")], "justification": "back", "n_starts": 2},
+    )
+    assert back["committed"] is True and back["version"] == 2, back["message"]
+    assert any("version(s) [0]" in m["message"] for m in back["messages"])
 
 
 def test_a_fit_failure_reverts_the_edit(tmp_path, monkeypatch):
@@ -710,11 +816,11 @@ def _statement_row(type_="PopulationTransition", policy="mass_action"):
     }
 
 
-def _statements_server(tmp_path, extra=""):
+def _statements_server(tmp_path, extra="", yaml_path=YAML_PATH):
     entity_map = tmp_path / "entities.json"
     entity_map.write_text(_BASE_ENTITY_MAP.format(extra=extra))
     return create_server(
-        str(YAML_PATH),
+        str(yaml_path),
         provenance_dir=str(tmp_path / "prov"),
         resolver=StubReferenceResolver(),
         auto_fit=False,
@@ -1024,6 +1130,41 @@ def test_a_declared_unit_start_is_fixed_not_estimated(tmp_path):
     assert not any(int(rows[p]["estimate"]) for p in ("A_start_init", "A_init") if p in rows)
     stored = json.loads((tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text())
     assert stored["starts"] == [{"name": "A_start", "agent": {"name": "A"}, "amount": 1}]
+
+
+def test_a_redeclared_start_moves_its_row(tmp_path):
+    """Fujita r2: a start declared at 1 stayed FIXED at 1 through every later declaration."""
+    mcp = _statements_server(tmp_path)
+    rows = []
+    for amount in (1, 5, 1):
+        start = {"agent": {"name": "A"}, "amount": amount, "name": "A_start"}
+        args = {"justification": "A starts", "statements": [_statement_row()], "starts": [start]}
+        assert _call(mcp, "make_changes", args)["applied"] is True
+        params = {r["parameterId"]: r for r in _call(mcp, "get_parameters", {})["result"]}
+        row = params["A_start_init"]
+        rows.append((row["nominalValue"], int(row["estimate"])))
+        structure = _call(mcp, "get_model_structure", {})
+        view = {r["species"]: r for r in structure["initial_conditions"]}["A"]
+        assert (view["ic_parameter"], view["t0"]) == ("A_start_init", row["nominalValue"])
+    assert rows == [(1.0, 0), (5.0, 1), (1.0, 0)]
+
+
+def test_a_held_input_is_reported_at_its_condition_value(tmp_path, add_condition):
+    """Fujita r2: the view reported the held EGF input as starting empty, though the condition
+    table held it at its dose."""
+    shutil.copytree(YAML_PATH.parent, tmp_path / "problem")
+    add_condition(tmp_path / "problem" / "problem.yaml", "E_0", 3.0)
+    mcp = _statements_server(
+        tmp_path, ', "E": {"name": "E", "input": "E_0"}', tmp_path / "problem" / "problem.yaml"
+    )
+    feed = {**_statement_row(), "prefix": "feed"}
+    feed["statement"] = {**feed["statement"], "source": {"name": "E"}}
+    out = _call(
+        mcp, "make_changes", {"justification": "E feeds B", "statements": [_statement_row(), feed]}
+    )
+    assert out["applied"] is True, out
+    ics = {r["species"]: r for r in _call(mcp, "get_model_structure", {})["initial_conditions"]}
+    assert (ics["E"]["t0_source"], ics["E"]["t0"]) == ("rule", 3.0)
 
 
 def test_an_empty_entity_map_still_offers_the_route(tmp_path):
