@@ -115,6 +115,26 @@ def mechanism(stmt_cls: type[Statement], policy: str) -> Callable[[Policy], Poli
     return register
 
 
+def _misspelt(
+    key: tuple[str, str], own: list[str], library: dict[tuple[str, str], Policy]
+) -> str:
+    """What the refusal of ``key`` says when its policy is named nowhere — no entry of any type
+    (INDRA's own policies are entries) — with the names closest to it, the type's ``own`` first;
+    empty when the policy exists, and the pair is a library gap. Counted as gaps, misspellings
+    (``indra_defualt``) filled the library's to-do list."""
+    from .model_edits import closest_symbols
+
+    stmt_type, policy = key
+    named = {p for _, p in library}
+    if policy in named:
+        return ""
+    close = closest_symbols(policy, own)
+    other = "" if close else f", which {stmt_type} lacks"
+    close = close or closest_symbols(policy, sorted(named - set(own)))
+    guess = f" (did you mean {' or '.join(map(repr, close))}{other}?)" if close else ""
+    return f": no policy is named {policy!r}{guess}"
+
+
 def instantiate(
     stmt: Statement,
     model: pysb.Model,
@@ -129,10 +149,11 @@ def instantiate(
     key = (type(stmt).__name__, policy)
     if key not in library:
         known = sorted(p for c, p in library if c == key[0])
+        typo = _misspelt(key, known, library)
         raise MechanismError(
-            f"no mechanism {key}; the library has {known or 'none'} for {key[0]}. If none fits, "
+            f"no mechanism {key}{typo}; the library has {known or 'none'} for {key[0]}. If none fits, "
             "write one with `mechanisms`.",
-            cause="library_gap",
+            cause="malformed_mechanism" if typo else "library_gap",
         )
     entry = library[key]
     if modifiers:

@@ -102,6 +102,12 @@ def test_a_policy_keeps_its_prefix_where_dropping_it_is_ambiguous():
     assert "| indra_default " in N.render(row, library)
 
 
+def test_a_bare_indra_policy_is_indras_where_the_type_lacks_it():
+    """`A becomes B | two_step` kept `two_step`, a name no entry has, so asking INDRA's policy of
+    a type without it was refused as a misspelling, not counted as the library gap it is."""
+    assert N.parse("conv: A becomes B | two_step", library=M.REGISTRY)["policy"] == "indra_two_step"
+
+
 def test_what_the_notation_cannot_write_stays_json():
     """Evidence beyond one source and text, or a statement type it has no verb for, renders as
     None: the caller keeps JSON."""

@@ -82,8 +82,8 @@ def test_a_duplicate_leaves_no_rows_behind(tmp_path):
     assert res["no_change"] is True and res["duplicate_of_version"] == 0
 
     assert _rows(mcp) == rows
-    gap = _change(mcp, "renamed")
-    assert gap["applied"] is False and gap["error_cause"] == "library_gap"
+    unknown = _change(mcp, "renamed")
+    assert unknown["applied"] is False and "no policy is named 'renamed'" in unknown["error"]
 
 
 def test_a_revert_to_an_earlier_rate_is_not_a_duplicate_of_head(tmp_path):
