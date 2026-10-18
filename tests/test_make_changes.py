@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 
 import pytest
 
@@ -710,11 +711,11 @@ def _statement_row(type_="PopulationTransition", policy="mass_action"):
     }
 
 
-def _statements_server(tmp_path, extra=""):
+def _statements_server(tmp_path, extra="", yaml_path=YAML_PATH):
     entity_map = tmp_path / "entities.json"
     entity_map.write_text(_BASE_ENTITY_MAP.format(extra=extra))
     return create_server(
-        str(YAML_PATH),
+        str(yaml_path),
         provenance_dir=str(tmp_path / "prov"),
         resolver=StubReferenceResolver(),
         auto_fit=False,
@@ -853,6 +854,41 @@ def test_a_declared_unit_start_is_fixed_not_estimated(tmp_path):
     assert not any(int(rows[p]["estimate"]) for p in ("A_start_init", "A_init") if p in rows)
     stored = json.loads((tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text())
     assert stored["starts"] == [{"name": "A_start", "agent": {"name": "A"}, "amount": 1}]
+
+
+def test_a_redeclared_start_moves_its_row(tmp_path):
+    """Fujita r2: a start declared at 1 stayed FIXED at 1 through every later declaration."""
+    mcp = _statements_server(tmp_path)
+    rows = []
+    for amount in (1, 5, 1):
+        start = {"agent": {"name": "A"}, "amount": amount, "name": "A_start"}
+        args = {"justification": "A starts", "statements": [_statement_row()], "starts": [start]}
+        assert _call(mcp, "make_changes", args)["applied"] is True
+        params = {r["parameterId"]: r for r in _call(mcp, "get_parameters", {})["result"]}
+        row = params["A_start_init"]
+        rows.append((row["nominalValue"], int(row["estimate"])))
+        structure = _call(mcp, "get_model_structure", {})
+        view = {r["species"]: r for r in structure["initial_conditions"]}["A"]
+        assert (view["ic_parameter"], view["t0"]) == ("A_start_init", row["nominalValue"])
+    assert rows == [(1.0, 0), (5.0, 1), (1.0, 0)]
+
+
+def test_a_held_input_is_reported_at_its_condition_value(tmp_path, add_condition):
+    """Fujita r2: the view reported the held EGF input as starting empty, though the condition
+    table held it at its dose."""
+    shutil.copytree(YAML_PATH.parent, tmp_path / "problem")
+    add_condition(tmp_path / "problem" / "problem.yaml", "E_0", 3.0)
+    mcp = _statements_server(
+        tmp_path, ', "E": {"name": "E", "input": "E_0"}', tmp_path / "problem" / "problem.yaml"
+    )
+    feed = {**_statement_row(), "prefix": "feed"}
+    feed["statement"] = {**feed["statement"], "source": {"name": "E"}}
+    out = _call(
+        mcp, "make_changes", {"justification": "E feeds B", "statements": [_statement_row(), feed]}
+    )
+    assert out["applied"] is True, out
+    ics = {r["species"]: r for r in _call(mcp, "get_model_structure", {})["initial_conditions"]}
+    assert (ics["E"]["t0_source"], ics["E"]["t0"]) == ("rule", 3.0)
 
 
 def test_an_empty_entity_map_still_offers_the_route(tmp_path):
