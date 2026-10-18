@@ -108,6 +108,21 @@ def test_is_new_best_rejects_nll_gain_that_worsens_bic(session):
     assert imp["is_new_best"] is False
 
 
+def test_a_fit_short_of_a_new_best_says_what_it_needed(session):
+    """`is_new_best: false` named no threshold, so a real but sub-threshold gain read as a flag
+    that never fires. The fit result the agent reads names the gate beside the score it had to
+    beat and the gain it made."""
+    best = fitting.goodness_of_fit(-50.0, 18.0, 2, 20)["criterion_value"]
+    session.best = _checkpoint(score=best, version=1, nll=-50.0)
+    fs = _fitsim(-50.0 - NEW_BEST_MIN_DELTA_SCORE / 4, 18.0)  # ΔBIC = half the gate
+    imp = fitting.compute_improvement(session, nllh=fs["neg_log_likelihood"], fitsim=fs)
+    shown = fitting.fit_result_block(fs, imp)["improvement"]
+    assert shown["is_new_best"] is False
+    assert shown["new_best_min_improvement"] == NEW_BEST_MIN_DELTA_SCORE
+    assert shown["best_prior_criterion_value"] == pytest.approx(best)
+    assert shown["improvement_vs_best_prior"] == pytest.approx(NEW_BEST_MIN_DELTA_SCORE / 2)
+
+
 # --- (b) streak cap + plateau + (c) best-BIC checkpoint ------------------------------------
 def test_first_fitted_op_sets_checkpoint_and_resets_streak(session):
     session.record_fit_progress(1, _fitsim(-50.0, 18.0), {"is_new_best": True})
