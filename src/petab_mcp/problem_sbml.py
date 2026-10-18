@@ -132,19 +132,27 @@ def to_antimony(
             sbml_model.getSpecies(assignment.getSymbol()).setInitialAmount(0.0)
             sbml_model.removeParameter(amount)
             assignment.removeFromParentAndDelete()
+    named = set()
     for parameter in list(sbml_model.getListOfParameters()):
         if parameter.getName() not in readouts:
             continue
         old, new = parameter.getId(), readouts[parameter.getName()]
         rule = sbml_model.getAssignmentRuleByVariable(old)
         species = sbml_model.getSpecies(rule.getMath().getName() or "")
-        if rule.getMath().isName() and species is not None and not new.startswith("readout_"):
+        if (
+            rule.getMath().isName()
+            and species is not None
+            and species.getId() not in named
+            and not new.startswith("readout_")
+        ):
             # A readout that IS one species names that species, rather than leaving a rule over
             # it: the reachability checks in `reconcile` and `operations` follow reactions, not
             # rules, and warned that every species was disconnected from the data. Except a
             # blinded `readout_*` mapping, which the lint requires to stay a rule
             # (`validation`'s measurement-mapping check refused Fujita's pS6 as a species).
+            # A species takes one name: each further readout of it stays a rule over that name.
             old, renamed = species.getId(), species
+            named.add(new)
             rule.removeFromParentAndDelete()
             parameter.removeFromParentAndDelete()
         else:
