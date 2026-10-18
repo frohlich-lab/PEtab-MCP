@@ -819,7 +819,8 @@ def statements_to_antimony(
         warnings.append(M.warning(
             M.SOURCE_EDIT,
             f"schemes added sites no row or entity gives: {listed}. A molecule starts in a site's "
-            "first state (on `loc`, in cytoplasm when it is one), and free on a binding site.",
+            "first state (on `loc`, in cytoplasm when it is one, else in its first location "
+            "by name), and free on a binding site.",
         ))
     return antimony, record, warnings, definitions
 
