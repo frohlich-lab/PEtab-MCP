@@ -680,7 +680,7 @@ def statements_to_antimony(
     from indra.statements import Agent, stmts_from_json
 
     from . import mechanisms, problem_sbml
-    from .statements import ungrounded
+    from .statements import agent_problems, problems, ungrounded, with_defaults
 
     definitions = dict(session.mechanisms)
     for definition in written or []:
@@ -729,6 +729,29 @@ def statements_to_antimony(
             "parameters, so they must be unique. NOTHING was applied.",
             cause="duplicate_prefix",
         )
+    # Read here, each problem named, rather than by INDRA's reader, which skips a field it does not
+    # know, leaves a missing one None, and drops a statement it cannot build with a logged warning.
+    types = {stmt_type for stmt_type, _ in library}
+    unread = [
+        f"`{row['prefix']}`: {problem}"
+        for row in rows
+        for problem in problems(row["statement"], types)
+        + [
+            p
+            for slot, agent in (row.get("modifiers") or {}).items()
+            for p in agent_problems(agent, f"modifiers.{slot}")
+        ]
+    ]
+    unread += [p for i, s in enumerate(starts) for p in agent_problems(s["agent"], f"starts[{i}].agent")]
+    unread += [p for name, a in amounts.items() for p in agent_problems(a, f"amounts.{name}")]
+    if unread:
+        raise OperationError(
+            f"make_changes: INDRA would not read these as written: {'; '.join(unread)}. NOTHING "
+            "was applied.",
+            cause="unreadable_statement",
+        )
+    for row in rows:
+        row["statement"] = with_defaults(row["statement"])
     stmts = stmts_from_json([row["statement"] for row in rows])
     # INDRA drops a statement it cannot read with only a logged warning; refuse instead.
     if len(stmts) != len(rows):
