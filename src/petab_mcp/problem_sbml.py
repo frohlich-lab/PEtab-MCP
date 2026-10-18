@@ -121,6 +121,11 @@ def to_antimony(
     }
     document = libsbml.readSBMLFromString(sbml)
     sbml_model = document.getModel()
+    for reaction in sbml_model.getListOfReactions():
+        # PySB lists every symbol a rate expression reads that is no parameter as a modifier
+        # species, `time` too, which no species is: the SBML did not read.
+        while reaction.removeModifier("time") is not None:
+            pass
     base = {
         base_names[sp.getName()]: sp
         for sp in sbml_model.getListOfSpecies()
