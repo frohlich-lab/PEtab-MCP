@@ -69,6 +69,19 @@ def test_what_is_made_starts_empty_and_what_is_modified_starts_present():
     assert present == {"naive_init", "MEK_init", "ERK_init"}
 
 
+def test_a_species_two_readouts_read_is_named_once():
+    """Renamed once per readout, the species took the second name and left the first defined by
+    nothing, so what read the first read a parameter fitted in place of the species (gemot,
+    boehm r2: two names for STAT5B)."""
+    antimony, _ = PS.to_antimony(
+        [(_TRANSITION, "mass_action", "r1")],
+        {"naive": Agent("naive"), "naive_total": Agent("naive")},
+    )
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    assert sbml.getSpecies("naive") is not None
+    assert sbml.getAssignmentRuleByVariable("naive_total").getMath().getName() == "naive"
+
+
 def test_a_blinded_readout_stays_a_rule():
     """A `readout_*` symbol is a measurement mapping, which the lint accepts only as an assignment
     rule; renamed to the species it reads, Fujita's whole statement model was rejected."""
