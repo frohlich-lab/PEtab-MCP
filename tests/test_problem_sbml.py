@@ -236,6 +236,37 @@ def test_a_declared_empty_start_has_no_parameter():
     assert sbml.getSpecies("naive").getInitialAmount() == 0.0
 
 
+def test_what_rules_make_from_nothing_is_noted_as_starting_empty():
+    """Fujita r2's EGFR, made by zero-order synthesis, started at 0 with nothing said. A start
+    declared at 0 says it, and drops the note."""
+    from indra.statements import IncreaseAmount
+
+    rows = [(IncreaseAmount(None, Agent("EGFR")), INDRA_DEFAULT, "r1")]
+    notes = []
+    PS.to_antimony(rows, {}, notes=notes)
+    assert len(notes) == 1 and "EGFR" in notes[0] and "`starts`" in notes[0]
+    notes = []
+    PS.to_antimony(rows, {}, starts=[("EGFR", Agent("EGFR"), 0)], notes=notes)
+    assert notes == []
+
+
+def test_a_start_location_chosen_among_several_is_noted():
+    """With no cytoplasm among its locations, where a monomer started went unsaid."""
+    from indra.statements import Translocation
+
+    x = Agent("X")
+    notes = []
+    PS.to_antimony(
+        [
+            (Translocation(x, "nucleus", "mitochondria"), INDRA_DEFAULT, "r1"),
+            (Translocation(x, "mitochondria", "nucleus"), INDRA_DEFAULT, "r2"),
+        ],
+        {},
+        notes=notes,
+    )
+    assert len(notes) == 1 and notes[0].startswith("X starts in mitochondria")
+
+
 def test_indra_padded_rules_build():
     """INDRA pads one-step Conversion and subject-driven amount rules with None for Kappa; the
     trace read every side as a complex and every such statement failed to build (Bachmann's
