@@ -99,14 +99,14 @@ def mechanism(stmt_cls: type[Statement], policy: str) -> Callable[[Policy], Poli
 def _misspelt(
     key: tuple[str, str], own: list[str], library: dict[tuple[str, str], Policy]
 ) -> str:
-    """What the refusal of ``key`` says when its policy is named nowhere — no entry of any type,
-    none of INDRA's own policies — with the names closest to it, the type's ``own`` first; empty
-    when the policy exists, and the pair is a library gap. Counted as gaps, misspellings
+    """What the refusal of ``key`` says when its policy is named nowhere — no entry of any type
+    (INDRA's own policies are entries) — with the names closest to it, the type's ``own`` first;
+    empty when the policy exists, and the pair is a library gap. Counted as gaps, misspellings
     (``indra_defualt``) filled the library's to-do list."""
     from .model_edits import closest_symbols
 
     stmt_type, policy = key
-    named = {p for _, p in library} | {f"indra_{n.split('_assemble_')[1]}" for n in _INDRA_ASSEMBLY}
+    named = {p for _, p in library}
     if policy in named:
         return ""
     close = closest_symbols(policy, own)
