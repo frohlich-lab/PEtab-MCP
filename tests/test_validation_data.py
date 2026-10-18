@@ -6,9 +6,8 @@ up. The objective evaluation past those guards needs an AMICI build; its correct
 re-deriving a reference structure's own held-out score through the same functions. Assembling a
 held-out set, and what the caller does with the score, are the caller's to test.
 
-Held-out sets in v1 form (`validation_data.read_held_out` + `as_v2`): held-out files written for
-PEtab v1 predate the v2 server, so they are keyed onto experiments the way the problem's own
-upgrade keys its training measurements.
+Held-out sets are PEtab v2 (`validation_data.read_held_out`); a v1 set is refused
+(`v2_required`), since only a conversion together with its training problem keys it alike.
 """
 
 from __future__ import annotations
@@ -28,68 +27,51 @@ def _write(path: Path, rows: list[list]) -> None:
     path.write_text("".join("\t".join(map(str, r)) + "\n" for r in rows))
 
 
-def test_a_v1_held_out_set_lands_in_the_experiments_the_upgrade_makes(tmp_path):
-    """A pair whose conditions change something (the set's own or the training problem's) becomes
-    the experiment libpetab's ``petab1to2`` names for it; a pair that changes nothing simulates the
-    model's defaults, keyed by ``""`` however many such pairs there are."""
-    m = tmp_path / "measurements.tsv"
+def test_a_v1_held_out_set_is_refused_with_how_to_convert_it(tmp_path, monkeypatch):
+    """A v1 set names conditions, not experiments, and which experiment a v1 condition becomes
+    depends on how the training problem was upgraded, so it is converted with that problem before
+    it reaches the server. Read from disk it is refused, measurements and a wide condition table
+    alike; handed to the scorer it is ``v2_required``, before anything is built."""
+    _never_build(monkeypatch)
+    v1_rows = _rows("c1").rename(columns={"experimentId": "simulationConditionId"})
+    v1_rows.to_csv(tmp_path / "measurements.tsv", sep="\t", index=False)
+    with pytest.raises(ValueError, match="petab1to2"):
+        V.read_held_out(tmp_path / "measurements.tsv")
+
+    _rows("e1").to_csv(tmp_path / "measurements.tsv", sep="\t", index=False)
+    _write(tmp_path / V.HELD_OUT_CONDITIONS, [["conditionId", "dose"], ["c1", 0.5]])
+    with pytest.raises(ValueError, match="v1 condition table"):
+        V.read_held_out(tmp_path / "measurements.tsv")
+
+    problem = WorkingProblem.from_yaml(DATA / "toy_v2" / "problem.yaml")
+    out = V.score_problem(problem, v1_rows, build_dir="/tmp/x", model_name="m")
+    assert out["status"] == V.STATUS_V2_REQUIRED and "petab1to2" in out["reason"]
+
+
+def test_a_native_v2_fixed_set_is_read_from_disk_and_scored(session, engine, tmp_path):
+    """AMICI-backed: a fixed-θ set as PEtab v2 writes it -- measurements by experimentId
+    and its own experiments.tsv, here one pre-equilibrated experiment -- read through
+    ``read_held_out`` and scored at the training point."""
+    import math
+
+    training = session.problem.measurement_df
+    training.assign(experimentId="e_pre").to_csv(
+        tmp_path / "measurements.tsv", sep="\t", index=False
+    )
     _write(
-        m,
-        [
-            [
-                "observableId",
-                "preequilibrationConditionId",
-                "simulationConditionId",
-                "time",
-                "measurement",
-            ],
-            ["obs_B", "", "c_new", 1.0, 0.3],
-            ["obs_B", "", "c_dose", 2.0, 0.4],
-            ["obs_B", "c_dose", "c_new", 2.5, 0.45],
-            ["obs_B", "", "basal", 3.0, 0.5],
-            ["obs_B", "", "other_basal", 4.0, 0.6],
-        ],
+        tmp_path / V.HELD_OUT_EXPERIMENTS,
+        [["experimentId", "time", "conditionId"], ["e_pre", "-inf", ""], ["e_pre", 0, ""]],
     )
-    _write(tmp_path / "conditions.tsv", [["conditionId", "A_init"], ["c_new", 3.0]])
-    _write(tmp_path / "units.tsv", [["conditionId", "unitId"], ["c_new", "u1"], ["c_dose", "u2"]])
-    held_out = V.read_held_out(m)
-    assert held_out.condition_df[["conditionId", "targetId"]].values.tolist() == [
-        ["c_new", "A_init"]
-    ]
 
-    training = WorkingProblem.from_yaml(DATA / "toy_v2" / "problem.yaml")
-    training.condition_df = pd.DataFrame(
-        {"conditionId": ["c_dose"], "targetId": ["A_init"], "targetValue": [2.0]}
-    )
-    upgraded = V.as_v2(held_out, training)
-    new, dose, pre = "experiment____c_new", "experiment____c_dose", "experiment__c_dose___c_new"
-    assert upgraded.measurement_df["experimentId"].tolist() == [new, dose, pre, "", ""]
-    edf = upgraded.experiment_df
-    assert edf[edf["experimentId"] == pre]["conditionId"].tolist() == ["c_dose", "c_new"]
-    assert sorted(edf["experimentId"].unique()) == sorted([new, dose, pre])
-    assert upgraded.units == {new: "u1", dose: "u2", pre: "u1"}
-    assert V.as_v2(upgraded, training) is upgraded  # already v2
+    held = V.read_held_out(tmp_path / "measurements.tsv")
 
-
-def test_a_v1_held_out_row_on_a_training_design_lands_in_the_training_experiment(tmp_path):
-    """The training problem is upgraded by ``petab1to2``; a held-out row on one of its condition
-    pairs must be keyed to the very experiment that made, or the scorer would add a second one."""
-    import shutil
-
-    work = tmp_path / "toy"
-    shutil.copytree(DATA / "toy_v1", work)
-    _write(work / "conditions.tsv", [["conditionId", "A"], ["c0", 1.0]])
-    held = pd.read_csv(work / "measurements.tsv", sep="\t")
-    held["preequilibrationConditionId"] = ["c0"] * 3 + [""] * 3
-    held.to_csv(work / "measurements.tsv", sep="\t", index=False)
-    training = WorkingProblem.from_yaml(work / "problem.yaml")
-    trained = training.measurement_df["experimentId"].tolist()
-    assert trained == ["experiment__c0___c0"] * 3 + ["experiment____c0"] * 3
-
-    upgraded = V.as_v2(V.HeldOut(held), training)
-
-    assert upgraded.measurement_df["experimentId"].tolist() == trained
-    assert V._with_held_out_design(training.replace(), None, upgraded.experiment_df) is None
+    assert held.mode == V.MODE_FIXED and held.condition_df is None
+    assert V._periods(held.experiment_df, "e_pre") == [(float("-inf"), ""), (0.0, "")]
+    out = V.score_session(session, engine, held)
+    assert out["status"] == V.STATUS_OK, out
+    assert out["n"] == len(training) and out["n_experiments"] == 1
+    assert math.isfinite(out["nll"])
+    assert session.problem.experiment_df is None
 
 
 def test_a_curated_scaling_is_solved_for_a_held_out_experiment(tmp_path):
@@ -508,14 +490,12 @@ def test_score_session_hands_a_fixed_sets_design_to_the_scorer(monkeypatch):
 
 def test_read_held_out_gives_a_fixed_set_its_condition_rows(tmp_path):
     """On disk: measurements.tsv + conditions.tsv and NO parameters.tsv is a fixed-θ set with rows
-    of its own — what a caller writes for such a set and what the server reads back, a v1
-    condition table upgraded to v2's changes."""
-    _rows("e_knockdown").rename(columns={"experimentId": "simulationConditionId"}).to_csv(
-        tmp_path / "measurements.tsv", sep="\t", index=False
-    )
-    pd.DataFrame({"conditionId": ["c_knockdown"], "dose": [0.5]}).to_csv(
-        tmp_path / V.HELD_OUT_CONDITIONS, sep="\t", index=False
-    )
+    of its own — what a caller writes for such a set and what the server reads back, a v2
+    condition table."""
+    _rows("e_knockdown").to_csv(tmp_path / "measurements.tsv", sep="\t", index=False)
+    pd.DataFrame(
+        {"conditionId": ["c_knockdown"], "targetId": ["dose"], "targetValue": [0.5]}
+    ).to_csv(tmp_path / V.HELD_OUT_CONDITIONS, sep="\t", index=False)
 
     held = V.read_held_out(tmp_path / "measurements.tsv")
 

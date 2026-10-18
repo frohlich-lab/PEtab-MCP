@@ -2094,7 +2094,7 @@ def _register_validation_data_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> 
         brings its own parameter table) REFITS the model's estimated parameters on the held-out
         system with an ``n_starts`` multistart (the session's default when omitted) and reports the
         optimum; the fitted point is not written back. Returns
-        ``{status, mode, nll, k, n, chi2, n_conditions, observables, ...}``; see
+        ``{status, mode, nll, k, n, chi2, n_experiments, observables, ...}``; see
         :mod:`petab_mcp.validation_data` for the statuses and the two modes.
         """
         ctx = route()
