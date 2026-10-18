@@ -89,6 +89,12 @@ def test_a_misspelt_name_is_answered_with_the_names_it_may_be():
     ]
     (problem,) = S.problems({"type": "Conversion", "obj_from": {"name": "A"}}, _TYPES)
     assert problem.startswith("`obj_from` is a list of agents")
+    activation = {"type": "Activation", "subj": {"name": "A"}, "obj": {"name": "B"}}
+    assert S.problems({**activation, "obj_activity": "kinas"}, _TYPES) == [
+        "`obj_activity` 'kinas' (did you mean 'kinase'?) is none of INDRA's activities "
+        "['activity', 'catalytic', 'gap', 'gef', 'gtpbound', 'kinase', 'phosphatase', "
+        "'transcription']"
+    ]
 
 
 def test_ungrounded_ignores_reader_text():

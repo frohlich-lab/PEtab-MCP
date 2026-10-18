@@ -43,6 +43,7 @@ from indra.statements import (
     RegulateActivity,
     RegulateAmount,
     Statement,
+    activity_types,
     get_statement_by_name,
     modtype_conditions,
 )
@@ -145,6 +146,9 @@ def problems(statement: Any, types: Collection[str]) -> list[str]:
             out.append(f"{kind} needs `{role}`, an agent: {{\"name\": \"A\"}}")
     if "residue" in fields:
         out += _residue(statement.get("residue"), "`residue`")
+    for field in ("obj_activity", "activity"):
+        if field in fields and statement.get(field) is not None:
+            out += _activity(statement[field], f"`{field}`")
     return out
 
 
@@ -183,6 +187,8 @@ def agent_problems(agent: Any, where: str) -> list[str]:
         out.append(f"`{where}.activity` is an object with {list(_ACTIVITY)}")
     elif activity is not None:
         out += _unknown(activity, _ACTIVITY, f"`{where}.activity`", "it")
+        if activity.get("activity_type") is not None:
+            out += _activity(activity["activity_type"], f"`{where}.activity.activity_type`")
     return out
 
 
@@ -208,6 +214,15 @@ def _residue(residue: Any, where: str) -> list[str]:
     except (InvalidResidueError, AttributeError):
         return [f"{where} {residue!r} is no amino acid, write its one-letter code ('S')"]
     return []
+
+
+def _activity(value: Any, where: str) -> list[str]:
+    """An activity outside INDRA's vocabulary names a site no other statement writes, so the rule
+    reading it never fired (the notation refuses one too)."""
+    if isinstance(value, str) and value in activity_types:
+        return []
+    known = sorted(activity_types)
+    return [f"{where} {value!r}{_close(value, known)} is none of INDRA's activities {known}"]
 
 
 def _close(word: Any, known: Collection[str]) -> str:
