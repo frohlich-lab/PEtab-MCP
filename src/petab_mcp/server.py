@@ -847,7 +847,7 @@ _MAKE_CHANGES_ROUTES = (
 #: The same text where the `statements` route is offered too.
 _MAKE_CHANGES_STATEMENTS_ROUTES = (
     _MAKE_CHANGES_ROUTES_BODY
-    + "`antimony` / `model_edits` / `statements` / `parameters` is required."
+    + "`antimony` / `model_edits` / `statements` / `statement_edits` / `parameters` is required."
 )
 
 _MAKE_CHANGES_CONTRACT = """\
