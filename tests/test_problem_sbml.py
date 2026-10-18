@@ -125,6 +125,14 @@ def test_a_complex_nothing_forms_is_refused():
         )
 
 
+def test_a_rule_that_never_fires_points_to_starts():
+    """The refusal said everything starts free, which `starts` made untrue, and never named it as
+    the way to have the missing form present at t=0."""
+    raf = Agent("RAF", bound_conditions=[BoundCondition(Agent("RAS"))])
+    with pytest.raises(ModelUpdateError, match="declare it in `starts`"):
+        PS.to_antimony([(Phosphorylation(raf, Agent("MEK")), INDRA_DEFAULT, "r1")], {})
+
+
 # -- declared starts (make_changes' `starts`) ----------------------------------------
 def _ia(sbml, sid):
     ia = sbml.getInitialAssignmentBySymbol(sid)
