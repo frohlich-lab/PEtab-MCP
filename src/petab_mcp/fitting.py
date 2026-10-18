@@ -2007,8 +2007,8 @@ def compute_improvement(
     lets a resumed run and the de-dup registry recover the score. Only those three: this block
     rides on every fit result and is re-sent in the agent's history each turn, and the full
     criterion table is already on the fit block (and in the version meta) one level up. It also
-    states its own gate: ``is_new_best`` is ``improvement_vs_best_prior`` (over
-    ``best_prior_criterion_value``) reaching ``new_best_min_improvement``.
+    states its own gate: past the first fit, ``is_new_best`` is ``improvement_vs_best_prior``
+    (over ``best_prior_criterion_value``) reaching ``new_best_min_improvement``.
     """
     fitsim = fitsim or {}
     scores = goodness_of_fit(
