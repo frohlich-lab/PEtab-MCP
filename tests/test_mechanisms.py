@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from indra.statements import Activation, Agent, Phosphorylation
+from indra.statements import Activation, Agent, Dephosphorylation, Phosphorylation
 
 from petab_mcp import mechanisms as M
 from petab_mcp.errors import MechanismError
@@ -52,6 +52,14 @@ def test_a_malformed_request_is_not_a_library_gap():
             {"statement_type": "PopulationTransition", "policy": "mass_action", "rate": "k"},
             M.REGISTRY,
         )
+    assert exc.value.cause == "malformed_mechanism"
+
+
+def test_basal_refuses_a_statement_that_names_an_enzyme():
+    """`PTEN dephosphorylates AKT1 | basal` built a rule without PTEN."""
+    stmt = Dephosphorylation(Agent("PTEN"), Agent("AKT1"), "S", "473")
+    with pytest.raises(MechanismError, match="names PTEN, which it would leave out") as exc:
+        M.assemble([(stmt, M.BASAL, "r1")])
     assert exc.value.cause == "malformed_mechanism"
 
 
