@@ -813,13 +813,13 @@ def statements_to_antimony(
                 added.setdefault((molecule, site), (states, []))[1].append(i)
     if added:
         listed = ", ".join(
-            f"{molecule} {site}{f' {states}' if states else ''} (`statements[{', '.join(map(str, at))}]`)"
+            f"{molecule} {site} {states or '(binding)'} (`statements[{', '.join(map(str, at))}]`)"
             for (molecule, site), (states, at) in added.items()
         )
         warnings.append(M.warning(
             M.SOURCE_EDIT,
             f"schemes added sites no row or entity gives: {listed}. A molecule starts in a site's "
-            "first state, and free on a site without states.",
+            "first state (on `loc`, in cytoplasm when it is one), and free on a binding site.",
         ))
     return antimony, record, warnings, definitions
 

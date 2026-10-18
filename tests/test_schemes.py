@@ -16,6 +16,7 @@ import pytest
 from indra.statements import (
     Activation,
     Agent,
+    BoundCondition,
     Complex,
     Conversion,
     Dephosphorylation,
@@ -210,6 +211,28 @@ def test_a_scheme_names_only_states_its_molecules_take(scheme, match):
     )
     with pytest.raises(MechanismError, match=match):
         M.assemble([(_PHOSPHO(), "bad", "r1")], {}, library)
+
+
+def _assemble_written(scheme, entities=None):
+    library = dict(M.REGISTRY)
+    library[("Phosphorylation", "w")] = M.written(
+        {"statement_type": "Phosphorylation", "policy": "w", "scheme": scheme}, library
+    )
+    return M.assemble([(_PHOSPHO(), "w", "r1")], entities or {}, library)
+
+
+def test_numbered_sites_a_scheme_adds_are_not_slips_of_each_other():
+    """`dom1` and `dom2` differ by one character but are two sites, not a slip of one name."""
+    model, _ = _assemble_written(
+        "enz() + sub(mod='off', dom1='a', dom2='a') >> enz() + sub(mod='on', dom1='b', dom2='b') @ kf"
+    )
+    assert model.monomers["AKT1"].site_states["dom2"] == ["a", "b"]
+
+
+def test_a_state_on_a_binding_site_is_refused_naming_it_one():
+    entities = {"AKT1": Agent("AKT1", bound_conditions=[BoundCondition(Agent("PDK1"))])}
+    with pytest.raises(MechanismError, match=r"site 'pdk1' does not take; .*pdk1 \(binding\)"):
+        _assemble_written("enz() + sub(pdk1='x') >> enz() + sub(pdk1='x') @ kf", entities)
 
 
 def test_a_scheme_and_a_rate_together_are_refused():

@@ -340,16 +340,16 @@ def compile_scheme(definition: dict):
                 if isinstance(value, str):
                     state = _site_value(stmt, site, value)
                     written = f"mechanism {policy!r}: `{mol.name}({site}={value!r})`"
-                    held = _sites_text(agent.name, sites, site_states)
                     if name in sites:
                         if state not in site_states.get(name, ()):
                             raise MechanismError(
                                 f"{written} names a state {agent.name}'s site {name!r} does not "
-                                f"take; {held}"
+                                f"take; {_sites_text(agent.name, sites, site_states)}"
                             )
                     elif site in (MOD, ACT):
                         raise MechanismError(
-                            f"{written} is site {name!r}, which {agent.name} does not have; {held}"
+                            f"{written} is site {name!r}, which {agent.name} does not have; "
+                            f"{_sites_text(agent.name, sites, site_states)}"
                         )
                     elif state not in added.setdefault((agent.name, name), []):
                         added[(agent.name, name)].append(state)
@@ -390,19 +390,22 @@ def compile_scheme(definition: dict):
 
 
 def _sites_text(molecule: str, sites, site_states) -> str:
-    """``molecule``'s sites, each with its states (a binding site has none)."""
-    listed = ", ".join(f"{s} {site_states[s]}" if site_states.get(s) else s for s in sites)
+    """``molecule``'s sites, each with its states or marked a binding site."""
+    listed = ", ".join(
+        f"{s} {site_states[s]}" if site_states.get(s) else f"{s} (binding)" for s in sites
+    )
     return f"{molecule}'s sites are {listed}" if listed else f"{molecule} has no sites"
 
 
 def _near(a: str, b: str) -> bool:
     """Whether two site names read as one name mistyped: equal but for case and separators, or one
     edit apart (a letter changed, added, dropped or two swapped) when both are four letters or
-    more and not both a residue, where neighbours (``T308``, ``T309``) are distinct sites."""
+    more. Names that differ only in their digits are numbered siblings, not slips: residues
+    (``T308``, ``T309``), domains (``dom1``, ``dom2``)."""
     a, b = (re.sub(r"[\W_]", "", s.lower()) for s in (a, b))
     if a == b:
         return True
-    if min(len(a), len(b)) < 4 or all(re.fullmatch(r"[a-z]\d+", s) for s in (a, b)):
+    if min(len(a), len(b)) < 4 or re.sub(r"\d", "", a) == re.sub(r"\d", "", b):
         return False
     if len(a) == len(b):
         diff = [i for i, (x, y) in enumerate(zip(a, b)) if x != y]
