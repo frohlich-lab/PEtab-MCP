@@ -162,8 +162,8 @@ def bind(
 
     ``merged`` carries, across the rows of one model, each name an earlier binding renamed or
     replaced to what now stands for it, so a row that names another row's parameter shares what
-    that row reads, whichever order they bind in. ``species`` are the entity map's ids, which name
-    amounts, so no binding reads one (:func:`_not_a_parameter`).
+    that row reads, whichever order they bind in. ``species`` are the ids the model names amounts
+    by, the entity map's and ``amounts``', so no binding reads one (:func:`_not_a_parameter`).
     """
     merged = {} if merged is None else merged
     minted = {name.removeprefix(f"{emission.prefix}_"): name for name in emission.parameters}
@@ -227,32 +227,33 @@ def _not_a_parameter(
     model: pysb.Model, ident: str, prefix: str, name: str, species=frozenset()
 ) -> None:
     """Refuse a binding that reads ``ident`` as a parameter when it names something else: a
-    molecule or one of ``species``, the entity map's ids (a parameter of its name clashed with it
-    in the SBML), a starting amount ``<x>_init`` (the start made it again, a duplicate in PySB), a
-    rate function, or ``time`` (which BioNetGen refused as a parameter name)."""
+    molecule or one of ``species``, the ids the model names amounts by (a parameter of its name
+    clashed with it in the SBML), a starting amount ``<x>_init`` (the start made it again, a
+    duplicate in PySB), a rate function, or ``time`` (which BioNetGen refused as a parameter
+    name). A row's own ``<prefix>_init`` constant is shared like any other."""
     held = model.components.get(ident)
     instead = ""
     if isinstance(held, pysb.Monomer):
         what = "a molecule"
     elif ident in species:
-        what = "a species of the entity map"
+        what = "a species"
         instead = (
-            " It is read as the amount of the agent it maps to, written by that agent's own name "
-            "and sites, not by this id."
+            f" `{ident}` is the amount of the agent the entity map (or `amounts`) maps it to, "
+            "read by that agent's own name and sites, not by this id."
         )
+    elif isinstance(held, (pysb.Parameter, pysb.Expression)):
+        return
     elif ident.endswith("_init"):
         what = "a starting amount"
         instead = " `<name>_init` is the amount a species starts at, which only `starts` declares."
-    elif isinstance(held, (pysb.Parameter, pysb.Expression)) or (
-        held is None and ident not in _RATE_FUNCTIONS and ident != "time"
-    ):
-        return
+    elif held is not None:
+        what = f"the model's {type(held).__name__.lower()}"
+    elif ident == "time":
+        what = "time"
+    elif ident in _RATE_FUNCTIONS:
+        what = "a function"
     else:
-        what = (
-            f"the model's {type(held).__name__.lower()}" if held is not None
-            else "time" if ident == "time"
-            else "a function"
-        )
+        return
     raise MechanismError(
         f"row {prefix!r} binds {name!r} over {ident!r}, which names {what}, not a parameter. A "
         "binding reads parameters: a shared id, a problem parameter, a condition-table input."
