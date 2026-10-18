@@ -770,15 +770,13 @@ STALE_NOTE = (
     "in the working state now (a restore). Commit the current model with make_changes "
     "(which fits it) to get its own diagnosis."
 )
-#: Said when the working parameter TABLE has moved but the structure has not — the de-dup no-op's new
-#: starting guess, or an edit to a bound. The geometry still describes this structure at its fitted
+#: Said when the working parameter TABLE has moved but the structure has not — a restored version of
+#: the same structure with other values. The geometry still describes this structure at its fitted
 #: optimum, which is the only fit there is: nothing has been fitted on the table in front of you.
 WORKING_TABLE_NOTE = (
     "your working parameter table is not the one this fit left (a value, a bound or "
     "a scale has changed since), and nothing has been fitted on it: these numbers "
-    "are the fitted optimum of the SAME structure. A re-authored starting guess in "
-    "particular is not a fit — it de-duplicated against the committed fit of the "
-    "identical structure."
+    "are the fitted optimum of the SAME structure."
 )
 #: Said on a hierarchical fit, where the objective inner-solves the noise sigmas / observable
 #: scalings and the FIM has no coordinate for them. Stated because their ABSENCE from `parameters`,
