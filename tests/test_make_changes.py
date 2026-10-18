@@ -1115,6 +1115,35 @@ def test_statement_species_take_the_problems_own_initial_conditions(tmp_path):
     assert not {i for i in ids if i.endswith("_0")}
 
 
+def test_a_binding_to_a_start_or_a_species_is_refused_saying_what_reads_it(tmp_path):
+    """Crauste's `k="Naive_init"` met PySB's duplicate name once the start made `Naive_init`
+    again, and `kf="pERK"` libSBML's duplicate id beside the readout: both escaped make_changes
+    raw. The toy ships `A_init` as Crauste ships `Naive_init`; `Btot` is a readout id as `pERK`
+    is."""
+    mcp = _statements_server(tmp_path, extra=', "Btot": {"name": "B"}')
+    for binding, ident, what, instead in (
+        ("A_init", "A_init", "a starting amount", "which only `starts` declares"),
+        ("Btot", "Btot", "a species", "`Btot` is the amount of the agent the entity map"),
+        ("k1*Btot", "Btot", "a species", "by that agent's own name and sites"),
+    ):
+        row = {**_statement_row(), "parameters": {"k": binding}}
+        out = _call(mcp, "make_changes", {"justification": "x", "statements": [row]})
+        assert out["error_cause"] == "malformed_mechanism", out
+        assert f"row 'conv' binds 'conv_k' over '{ident}', which names {what}," in out["error"]
+        assert instead in out["error"]
+
+
+def test_a_binding_to_a_shipped_parameter_reads_its_row(tmp_path):
+    """How a problem id enters a rate: the row's `k` becomes the toy's own `k1`, which keeps its
+    row, and nothing is minted beside it."""
+    mcp = _statements_server(tmp_path)
+    row = {**_statement_row(), "parameters": {"k": "k1"}}
+    out = _call(mcp, "make_changes", {"justification": "x", "statements": [row]})
+    assert out["applied"] is True, out
+    rows = {r["parameterId"]: r for r in _call(mcp, "get_parameters", {})["result"]}
+    assert "conv_k" not in rows and rows["k1"]["nominalValue"] == 0.5
+
+
 _SATURATING = {
     "statement_type": "PopulationTransition",
     "policy": "saturating",
