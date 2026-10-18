@@ -549,9 +549,24 @@ class _Ctx:
         return fitting_mod.ensure_simulation(self.session, self.engine)
 
 
+# MCP tool annotations: hints a client may use to auto-approve reads and to confirm writes. A
+# "read-only" tool may still log a failed call or cache the on-demand simulation; neither changes
+# what any later call returns. The writers are NOT destructive: each appends a version and
+# erases nothing (see ``provenance``), and neither is idempotent, since a repeat appends again.
+_READ_ONLY = {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False}
+#: ``make_changes`` reaches PubMed when given ``references``, hence open-world.
+_MAKE_CHANGES_ANNOTATIONS = {
+    "readOnlyHint": False,
+    "destructiveHint": False,
+    "idempotentHint": False,
+    "openWorldHint": True,
+}
+_RESTORE_ANNOTATIONS = {**_MAKE_CHANGES_ANNOTATIONS, "openWorldHint": False}
+
+
 # ------------------------------------------------------------------- read tools
 def _register_read_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
-    @mcp.tool()
+    @mcp.tool(annotations=_READ_ONLY)
     def describe_problem() -> dict[str, Any]:
         """Summarize the problem: model size, tables, and free parameters.
 
@@ -563,7 +578,7 @@ def _register_read_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         session = ctx.session
         return session.describe()
 
-    @mcp.tool()
+    @mcp.tool(annotations=_READ_ONLY)
     def list_observables() -> list[dict[str, Any]]:
         """List the (fixed) observables and their formulas/noise models.
 
@@ -580,7 +595,7 @@ def _register_read_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         session = ctx.session
         return df_to_records(session.problem.observable_df)
 
-    @mcp.tool()
+    @mcp.tool(annotations=_READ_ONLY)
     def list_conditions() -> list[dict[str, Any]]:
         """List the (fixed) conditions: one row per change a condition makes — it sets
         `targetId` (a model parameter, species or compartment) to `targetValue`. When a condition
@@ -589,7 +604,7 @@ def _register_read_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         session = ctx.session
         return df_to_records(session.problem.condition_df)
 
-    @mcp.tool()
+    @mcp.tool(annotations=_READ_ONLY)
     def list_experiments() -> list[dict[str, Any]]:
         """List the (fixed) experiments: one row per period — from `time` on, experiment
         `experimentId` applies condition `conditionId` (none: the model as is). `time` -inf is a
@@ -599,7 +614,7 @@ def _register_read_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         session = ctx.session
         return df_to_records(session.problem.experiment_df)
 
-    @mcp.tool()
+    @mcp.tool(annotations=_READ_ONLY)
     def get_measurements(
         experiment_id: str | None = None,
         observable_id: str | None = None,
@@ -789,7 +804,7 @@ def _make_changes_statements_doc() -> str:
 def _register_model_tools(
     mcp: FastMCP, route: Callable[[], _Ctx], statements: bool = False
 ) -> None:
-    @mcp.tool()
+    @mcp.tool(annotations=_READ_ONLY)
     def get_model(format: str = "antimony", version: int | None = None) -> str:
         """Return a model as text — the CURRENT one, or a prior `version`'s stored source.
 
@@ -851,7 +866,7 @@ def _register_model_tools(
                 raise exc from None
         return text
 
-    @mcp.tool()
+    @mcp.tool(annotations=_READ_ONLY)
     def get_model_structure() -> dict[str, Any]:
         """Structured view of the model: species, parameters, reactions — plus the per-species
         `initial_conditions` account.
@@ -1098,7 +1113,8 @@ def _register_model_tools(
                     _make_changes_statements_doc(),
                     _MAKE_CHANGES_CONTRACT,
                 )
-            )
+            ),
+            annotations=_MAKE_CHANGES_ANNOTATIONS,
         )(make_changes)
         return
 
@@ -1126,12 +1142,16 @@ def _register_model_tools(
             n_starts=n_starts,
         )
 
-    mcp.tool(name="make_changes", description=_MAKE_CHANGES_DOC)(make_changes_text)
+    mcp.tool(
+        name="make_changes",
+        description=_MAKE_CHANGES_DOC,
+        annotations=_MAKE_CHANGES_ANNOTATIONS,
+    )(make_changes_text)
 
 
 # -------------------------------------------------------------- parameter tools
 def _register_parameter_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
-    @mcp.tool()
+    @mcp.tool(annotations=_READ_ONLY)
     def get_parameters(
         parameter_ids: Annotated[list[str] | None, BeforeValidator(_unwrap_listish)] = None,
         role: Literal[
@@ -1239,7 +1259,7 @@ def _diagnosis_sections(sections: Any) -> frozenset[str]:
 
 # ------------------------------------------------------- fit + simulation tools
 def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
-    @mcp.tool()
+    @mcp.tool(annotations=_READ_ONLY)
     def get_fit_summary() -> dict[str, Any]:
         """Return just the current fit metrics — no per-point records (a cheap read).
 
@@ -1297,7 +1317,7 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         engine = ctx.engine
         return ctx.run("get_fit_summary", lambda: fitting_mod.fit_summary(session, engine))
 
-    @mcp.tool()
+    @mcp.tool(annotations=_READ_ONLY)
     def get_run_timing() -> dict[str, Any]:
         """Cumulative server-side timing for this run, split by cost kind.
 
@@ -1325,7 +1345,7 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
 
         return ctx.run("get_run_timing", run)
 
-    @mcp.tool()
+    @mcp.tool(annotations=_READ_ONLY)
     def get_data_regimes(observables: str | None = None) -> dict[str, Any]:
         """What the MEASUREMENTS require of any model — computed from the data alone, no model, no
         fit, no simulation. Valid BEFORE the first model exists.
@@ -1366,7 +1386,7 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
             {"observables": observables},
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=_READ_ONLY)
     def list_data_tables() -> dict[str, Any]:
         """List the SQL tables `query_data` exposes: name, description, columns, row count.
 
@@ -1381,7 +1401,7 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         session = ctx.session
         return ctx.run("list_data_tables", lambda: data_mod.table_schema(session))
 
-    @mcp.tool()
+    @mcp.tool(annotations=_READ_ONLY)
     def get_fitting_log(tail_lines: int = 200) -> dict[str, Any]:
         """Return the tail of the pyPESTO/Fides optimizer log for the fits run so far.
 
@@ -1404,7 +1424,7 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
 
         return ctx.run("get_fitting_log", run, {"tail_lines": tail_lines})
 
-    @mcp.tool()
+    @mcp.tool(annotations=_READ_ONLY)
     def query_data(sql: str, max_rows: int = 50, offset: int = 0) -> dict[str, Any]:
         """Run a SQL query (DuckDB) over the PEtab tables and the simulation dataframe.
 
@@ -1511,7 +1531,7 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
             "query_data", run, {"sql": logged_sql, "max_rows": max_rows, "offset": offset}
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=_READ_ONLY)
     def get_fit_diagnosis(
         sections: str = "residuals",
         worst_n: int = 8,
@@ -1646,7 +1666,7 @@ def _register_validation_data_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> 
     there.
     """
 
-    @mcp.tool()
+    @mcp.tool(annotations=_READ_ONLY)
     def evaluate_validation_data(n_starts: int | None = None) -> dict[str, Any]:
         """Score the CURRENT model against HELD-OUT measurements, in the held-out set's own mode.
 
@@ -1674,21 +1694,21 @@ def _register_validation_data_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> 
 
 # ------------------------------------------------------ provenance/version tools
 def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
-    @mcp.tool()
+    @mcp.tool(annotations=_READ_ONLY)
     def get_provenance(limit: int = 50) -> list[dict[str, Any]]:
         """Return the most recent provenance events (edits, fits, rollbacks)."""
         ctx = route()
         session = ctx.session
         return session.provenance.recent_events(limit)
 
-    @mcp.tool()
+    @mcp.tool(annotations=_READ_ONLY)
     def get_errors(limit: int = 50) -> list[dict[str, Any]]:
         """Return the most recent logged errors (rejected operations / failed tool calls)."""
         ctx = route()
         session = ctx.session
         return session.provenance.recent_errors(limit)
 
-    @mcp.tool()
+    @mcp.tool(annotations=_READ_ONLY)
     def list_versions() -> list[dict[str, Any]]:
         """List all model versions (fit snapshots) with kind/label/timestamp and fit metrics
         (neg_log_likelihood, chi2, bic/aic/aicc/caic/hqc/tic, criterion_value, is_new_best) — use it to
@@ -1699,7 +1719,7 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         session = ctx.session
         return session.provenance.list_versions()
 
-    @mcp.tool()
+    @mcp.tool(annotations=_READ_ONLY)
     def get_version(version: int) -> dict[str, Any]:
         """Return a version's Antimony model and parameter table."""
         ctx = route()
@@ -1708,7 +1728,7 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
             "get_version", lambda: session.provenance.get_version(version), {"version": version}
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=_READ_ONLY)
     def diff_versions(from_version: int, to_version: int) -> dict[str, Any]:
         """Diff two versions: Antimony unified diff + parameter add/remove/change + a `fit`
         block with each version's neg_log_likelihood/chi2 and the neg-log-likelihood delta
@@ -1723,7 +1743,7 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
 
     # NOTE: `current_version` is not a tool — `describe_problem` already returns it. A second tool
     # costs a JSON schema in every client's context on every turn and a docstring to keep in sync.
-    @mcp.tool()
+    @mcp.tool(annotations=_RESTORE_ANNOTATIONS)
     def restore_version(version: int, justification: str = "") -> dict[str, Any]:
         """Bring a prior version's model + parameters back as the working state, WITHOUT refitting.
 
@@ -1742,7 +1762,7 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
             {"version": version},
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=_READ_ONLY)
     def get_progress() -> dict[str, Any]:
         """Early-stop-chain progress for this run — a cheap counter read (no fit/simulation).
 
