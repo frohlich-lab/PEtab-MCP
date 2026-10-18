@@ -708,14 +708,11 @@ def _require_positive_for_log(problem, parameter_id: str, scale: str) -> None:
                     hint = (
                         " `nominalValue` is not settable here (allowed keys: parameter_id, "
                         "lower_bound, upper_bound, scale) — a parameter's VALUE comes from the "
-                        "model text or the fit. An initial-condition row is created from the "
-                        "initial value the model declares AT THE MOMENT IT IS FIRST CREATED: 0 "
-                        "(or no initial value) means FIXED at 0, 1 means FIXED at 1, any other "
-                        "positive value means ESTIMATED on log10. A row already created at 0 does "
-                        "NOT re-open when you later declare a positive initial — only a species "
-                        "authored under a DIFFERENT name gets a fresh row. So either drop this "
-                        "scale entry (a species that starts empty is correctly fixed at 0), or "
-                        "author the species under a different name with a positive initial value."
+                        "model text or the fit. An initial-condition row follows the initial "
+                        "value the model declares: 0 (or no initial value) means FIXED at 0, 1 "
+                        "means FIXED at 1, any other positive value means ESTIMATED on log10. So "
+                        "either drop this scale entry (a species that starts empty is correctly "
+                        "fixed at 0), or declare a positive initial value."
                     )
                 raise OperationError(
                     f"Cannot use {scale} scale for {parameter_id!r}: {field}={val} must be > 0."
