@@ -87,6 +87,9 @@ class Emission:
     #: The row's binding (:func:`bind`): kind -> the shared id or the number that replaced
     #: ``<prefix>_<kind>``. Empty for a row that binds nothing.
     bound: dict[str, str | float] = field(default_factory=dict)
+    #: The sites the row's scheme (:mod:`schemes`) gave molecules that had none such, and no
+    #: earlier row's scheme had: molecule -> site -> its states (none for a binding site).
+    sites_added: dict[str, dict[str, list[str]]] = field(default_factory=dict)
 
 
 Policy = Callable[[Statement, pysb.Model, str], Emission]
@@ -403,13 +406,27 @@ def assemble(
         for agent in (modifiers or {}).values():
             agents.get_create_base_agent(agent)
     # A scheme entry (:mod:`schemes`) names sites INDRA's pass does not give: its bonds, a
-    # molecule the statement does not mention.
+    # molecule the statement does not mention. Its states are checked against the sites the
+    # molecule has without any scheme's.
+    given = {
+        name: (list(base.sites), {s: list(v) for s, v in base.site_states.items()})
+        for name, base in agents.agents.items()
+    }
+    added: list[dict[str, list[str]]] = []
     for stmt, policy, *_ in rows:
         entry = library.get((type(stmt).__name__, policy))
-        for agent, site, site_states in getattr(entry, "scheme_sites", lambda s: [])(stmt):
+        added.append({})
+        if not hasattr(entry, "scheme_sites"):
+            continue
+        before = {name: set(base.sites) for name, base in agents.agents.items()}
+        for agent, site, site_states in entry.scheme_sites(stmt, given):
             base = agents.get_create_base_agent(agent)
             if site is not None:
                 base.create_site(site, site_states)
+        added[-1] = {
+            name: [s for s in base.sites if s not in before.get(name, ())]
+            for name, base in agents.agents.items()
+        }
 
     model = pysb.Model(name="statements", _export=False)
     for base in agents.agents.values():
@@ -419,9 +436,16 @@ def assemble(
             annotation = get_annotation(monomer, db_name, db_ref)
             if annotation is not None:
                 model.add_annotation(annotation)
-    return model, [
+    emissions = [
         instantiate(stmt, model, policy, prefix, library, binding, modifiers)
         for stmt, policy, prefix, binding, modifiers in rows
+    ]
+    return model, [
+        replace(e, sites_added={
+            name: {site: list(agents.agents[name].site_states.get(site, [])) for site in sites}
+            for name, sites in names.items() if sites
+        })
+        for e, names in zip(emissions, added)
     ]
 
 

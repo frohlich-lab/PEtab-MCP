@@ -15,7 +15,10 @@ type::
 - A site is ``mod``, the statement's own modification (``'off'``, ``'on'``); ``act``, the role's
   activity (``'inactive'``, ``'active'``): the statement's ``obj_activity`` on its object, the
   activity the modification implies on an enzyme (``kinase`` for a phosphorylation); a role's
-  name, the binding site for that partner; or any other name, taken as written.
+  name, the binding site for that partner; or any other name, taken as written. Written with a
+  state, a site is one its molecule has, in a state it takes (``mod`` and ``act`` always are), or
+  one the scheme adds with every state it takes, the one it starts in first, under a name that is
+  no slip of one the molecule has.
 - A site's value is a state, a bond number, ``None`` (free), ``ANY`` (bound to something) or
   ``WILD``; a ``(state, bond)`` pair is both. ``>>`` is one-way, ``|`` both ways, ``%`` joins a
   complex, ``None`` is nothing.
@@ -318,18 +321,38 @@ def compile_scheme(definition: dict):
             parameters=tuple(p.name for p in params.values()),
         )
 
-    def scheme_sites(stmt: Statement) -> list[tuple[Agent, str, list | None]]:
-        """The sites the scheme's molecules need on each monomer, for the monomer pass."""
+    def scheme_sites(stmt: Statement, given: dict) -> list[tuple[Agent, str, list | None]]:
+        """The sites the scheme's molecules need on each monomer, for the monomer pass. A state
+        it writes is checked against ``given``, each monomer's sites and their states before any
+        scheme adds its own (``{name: (sites, site_states)}``; see the module docstring)."""
         agents = role_agents(stmt)
         need = []
+        added: dict[tuple[str, str], list] = {}
         patterns = [m for line in lines for side in (line.lhs, line.rhs) for c in side for m in c]
         patterns += [_molecule(n) for rs in rates for r in rs for a in r.amounts
                      for n in _complex_nodes(a)]
         for mol in patterns:
             agent = agents.get(mol.name) or Agent(mol.name)
+            sites, site_states = given.get(_n(agent.name), ((), {}))
             for site, value in mol.sites:
                 name = _site_name(stmt, mol.name, site, agents)
                 value = value[0] if isinstance(value, tuple) else value
+                if isinstance(value, str):
+                    state = _site_value(stmt, site, value)
+                    written = f"mechanism {policy!r}: `{mol.name}({site}={value!r})`"
+                    if name in sites:
+                        if state not in site_states.get(name, ()):
+                            raise MechanismError(
+                                f"{written} names a state {agent.name}'s site {name!r} does not "
+                                f"take; {_sites_text(agent.name, sites, site_states)}"
+                            )
+                    elif site in (MOD, ACT):
+                        raise MechanismError(
+                            f"{written} is site {name!r}, which {agent.name} does not have; "
+                            f"{_sites_text(agent.name, sites, site_states)}"
+                        )
+                    elif state not in added.setdefault((agent.name, name), []):
+                        added[(agent.name, name)].append(state)
                 if site == MOD:
                     need.append((agent, name, list(_mod_states(stmt))))
                 elif site == ACT:
@@ -340,6 +363,23 @@ def compile_scheme(definition: dict):
                     need.append((agent, name, None))
             if not mol.sites:
                 need.append((agent, None, None))
+        for (molecule, name), taken in added.items():
+            sites, site_states = given.get(_n(molecule), ((), {}))
+            held = _sites_text(molecule, sites, site_states)
+            others = [*sites, *(n for m, n in added if m == molecule and n != name)]
+            close = [s for s in others if _near(name, s)]
+            if close:
+                raise MechanismError(
+                    f"mechanism {policy!r} adds site {name!r} to {molecule}: did you mean "
+                    f"{' or '.join(map(repr, close))}? {held}; a site the scheme adds needs a "
+                    "name no other site is a slip of"
+                )
+            if len(taken) < 2:
+                raise MechanismError(
+                    f"mechanism {policy!r} adds site {name!r} to {molecule} with the one state "
+                    f"{taken[0]!r}, so every {molecule} would start in it; write every state it "
+                    f"takes, the one it starts in first, or name a site it has: {held}"
+                )
         return need
 
     policy_fn.indra_policy = "default"
@@ -347,6 +387,36 @@ def compile_scheme(definition: dict):
     policy_fn.scheme_sites = scheme_sites
     policy_fn.scheme = definition["scheme"]
     return policy_fn
+
+
+def _sites_text(molecule: str, sites, site_states) -> str:
+    """``molecule``'s sites, each with its states or marked a binding site."""
+    listed = ", ".join(
+        f"{s} {site_states[s]}" if site_states.get(s) else f"{s} (binding)" for s in sites
+    )
+    return f"{molecule}'s sites are {listed}" if listed else f"{molecule} has no sites"
+
+
+def _near(a: str, b: str) -> bool:
+    """Whether two site names read as one name mistyped: equal but for case and separators, or one
+    edit apart (a letter changed, added, dropped or two swapped) when both are four letters or
+    more. Names that differ only in their digits are numbered siblings, not slips: residues
+    (``T308``, ``T309``), domains (``dom1``, ``dom2``)."""
+    a, b = (re.sub(r"[\W_]", "", s.lower()) for s in (a, b))
+    if a == b:
+        return True
+    if min(len(a), len(b)) < 4 or re.sub(r"\d", "", a) == re.sub(r"\d", "", b):
+        return False
+    if len(a) == len(b):
+        diff = [i for i, (x, y) in enumerate(zip(a, b)) if x != y]
+        return len(diff) == 1 or (
+            len(diff) == 2 and diff[1] == diff[0] + 1 and a[diff[0]] == b[diff[1]]
+            and a[diff[1]] == b[diff[0]]
+        )
+    short, long_ = sorted((a, b), key=len)
+    return len(long_) - len(short) == 1 and any(
+        long_[:i] + long_[i + 1:] == short for i in range(len(long_))
+    )
 
 
 def _complex_nodes(text: str):

@@ -16,6 +16,7 @@ import pytest
 from indra.statements import (
     Activation,
     Agent,
+    BoundCondition,
     Complex,
     Conversion,
     Dephosphorylation,
@@ -147,6 +148,7 @@ def test_a_scheme_writes_a_shape_no_entry_has():
     assert len(emission.rules) == 3
     assert set(emission.parameters) == {"r1_kf", "r1_kr", "r1_kc1", "r1_kc2"}
     assert model.monomers["AKT1"].site_states["T308"] == ["u", "p"]
+    assert emission.sites_added["AKT1"]["T308"] == ["u", "p"]
     assert model.rules[emission.rules[0]].is_reversible
 
 
@@ -180,6 +182,57 @@ def test_a_scheme_that_does_not_read_is_refused(scheme, match):
             {"statement_type": "Phosphorylation", "policy": "bad", "scheme": scheme}, library
         )
         M.assemble([(_PHOSPHO(), "bad", "r1")], {}, library)
+
+
+@pytest.mark.parametrize(
+    "scheme, match",
+    [
+        # AKT1's S473 takes 'u' and 'p': a rule needing 'x' never fires.
+        ("enz() + sub(S473='x') >> enz() + sub(S473='p') @ kf",
+         r"state AKT1's site 'S473' does not take; AKT1's sites are S473 \['u', 'p'\]"),
+        # Nothing gives EGFR a kinase activity, so nothing would ever make it active.
+        ("enz(act='active') + sub(mod='off') >> enz(act='active') + sub(mod='on') @ kf",
+         "site 'kinase', which EGFR does not have; EGFR has no sites"),
+        # A site added with one state starts every AKT1 phosphorylated at T308.
+        ("enz() + sub(mod='off', T308='p') >> enz() + sub(mod='on', T308='p') @ kf",
+         "adds site 'T308' to AKT1 with the one state 'p'"),
+        # Slips of AKT1's own S473, each a new two-state site the rules would move alone.
+        ("enz() + sub(mod='off', s473='u') >> enz() + sub(mod='on', s473='p') @ kf",
+         r"adds site 's473' to AKT1: did you mean 'S473'\? AKT1's sites are S473"),
+        ("enz() + sub(mod='off', pS473='u') >> enz() + sub(mod='on', pS473='p') @ kf",
+         "did you mean 'S473'"),
+    ],
+)
+def test_a_scheme_names_only_states_its_molecules_take(scheme, match):
+    """A rule naming a state its molecule never takes never fires, and nothing said so."""
+    library = dict(M.REGISTRY)
+    library[("Phosphorylation", "bad")] = M.written(
+        {"statement_type": "Phosphorylation", "policy": "bad", "scheme": scheme}, library
+    )
+    with pytest.raises(MechanismError, match=match):
+        M.assemble([(_PHOSPHO(), "bad", "r1")], {}, library)
+
+
+def _assemble_written(scheme, entities=None):
+    library = dict(M.REGISTRY)
+    library[("Phosphorylation", "w")] = M.written(
+        {"statement_type": "Phosphorylation", "policy": "w", "scheme": scheme}, library
+    )
+    return M.assemble([(_PHOSPHO(), "w", "r1")], entities or {}, library)
+
+
+def test_numbered_sites_a_scheme_adds_are_not_slips_of_each_other():
+    """`dom1` and `dom2` differ by one character but are two sites, not a slip of one name."""
+    model, _ = _assemble_written(
+        "enz() + sub(mod='off', dom1='a', dom2='a') >> enz() + sub(mod='on', dom1='b', dom2='b') @ kf"
+    )
+    assert model.monomers["AKT1"].site_states["dom2"] == ["a", "b"]
+
+
+def test_a_state_on_a_binding_site_is_refused_naming_it_one():
+    entities = {"AKT1": Agent("AKT1", bound_conditions=[BoundCondition(Agent("PDK1"))])}
+    with pytest.raises(MechanismError, match=r"site 'pdk1' does not take; .*pdk1 \(binding\)"):
+        _assemble_written("enz() + sub(pdk1='x') >> enz() + sub(pdk1='x') @ kf", entities)
 
 
 def test_a_scheme_and_a_rate_together_are_refused():
