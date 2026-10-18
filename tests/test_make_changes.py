@@ -1121,14 +1121,15 @@ def test_a_binding_to_a_start_or_a_species_is_refused_saying_what_reads_it(tmp_p
     raw. The toy ships `A_init` as Crauste ships `Naive_init`; `Btot` is a readout id as `pERK`
     is."""
     mcp = _statements_server(tmp_path, extra=', "Btot": {"name": "B"}')
-    for target, what, instead in (
-        ("A_init", "a starting amount", "which only `starts` declares"),
-        ("Btot", "a species of the entity map", "by that agent's own name and sites"),
+    for binding, ident, what, instead in (
+        ("A_init", "A_init", "a starting amount", "which only `starts` declares"),
+        ("Btot", "Btot", "a species", "`Btot` is the amount of the agent the entity map"),
+        ("k1*Btot", "Btot", "a species", "by that agent's own name and sites"),
     ):
-        row = {**_statement_row(), "parameters": {"k": target}}
+        row = {**_statement_row(), "parameters": {"k": binding}}
         out = _call(mcp, "make_changes", {"justification": "x", "statements": [row]})
         assert out["error_cause"] == "malformed_mechanism", out
-        assert f"row 'conv' binds 'conv_k' over '{target}', which names {what}" in out["error"]
+        assert f"row 'conv' binds 'conv_k' over '{ident}', which names {what}," in out["error"]
         assert instead in out["error"]
 
 
