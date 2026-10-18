@@ -1142,6 +1142,18 @@ def test_a_mechanism_the_agent_writes_stays_in_the_run_library(tmp_path):
     assert again["applied"] is True
 
 
+def test_a_written_mechanism_no_row_uses_survives_a_resume(tmp_path):
+    """The run keeps a mechanism it wrote whether or not a row uses it. A resume read them back
+    off the rows alone, so one no row used was in the library live and gone after a resume."""
+    mcp = _statements_server(tmp_path)
+    args = {"justification": "x", "statements": [_statement_row()], "mechanisms": [_SATURATING]}
+    assert _call(mcp, "make_changes", args)["committed"] is True
+    row = {**_statement_row(policy="saturating"), "prefix": "conv2"}
+    resumed = _statements_server(tmp_path)
+    out = _call(resumed, "make_changes", {"justification": "y", "statements": [row]})
+    assert out["applied"] is True, out.get("error")
+
+
 def test_a_kind_made_from_nothing_is_said_to_start_empty(tmp_path):
     """Fujita r2's EGFR, made by zero-order synthesis, started at 0 and the result said nothing."""
     rows = [_statement_row(), "syn: B is produced | default"]
@@ -1496,6 +1508,28 @@ def test_base_version_applies_edits_to_that_versions_rows(tmp_path):
     )
     assert out["applied"] is True
     assert [r["prefix"] for r in _stored_rows(tmp_path, 2)["rows"]] == ["conv", "back2"]
+
+
+def test_a_restore_brings_back_that_versions_rows(tmp_path):
+    """After `restore_version(v)`, the rows the session shows and edits are v's, not those of
+    the HEAD it left; a version built from model text holds none."""
+    mcp = _built(tmp_path, [_CONV])
+
+    def add_row(row):
+        edits = [{"op": "add_row", "row": row}]
+        return _call(mcp, "make_changes", {"justification": row, "statement_edits": edits})
+
+    assert add_row(_BACK)["applied"] is True
+    antimony = {"justification": "by hand", "antimony": _antimony()}
+    assert _call(mcp, "make_changes", antimony)["committed"] is True
+    _call(mcp, "restore_version", {"version": 0})
+    text = _text(mcp, "get_model", {"format": "statements"})
+    assert "conv: A becomes B" in text and "back:" not in text
+    assert add_row("back2: B becomes A | mass_action")["applied"] is True
+    assert [r["prefix"] for r in _stored_rows(tmp_path, 3)["rows"]] == ["conv", "back2"]
+    _call(mcp, "restore_version", {"version": 2})
+    out = add_row(_BACK)
+    assert out["applied"] is False and "the current model was not" in out["error"]
 
 
 def test_base_version_takes_whole_statements_too(tmp_path):
