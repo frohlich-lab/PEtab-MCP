@@ -782,6 +782,48 @@ def test_a_scheme_mechanism_builds_and_is_listed_as_written(tmp_path):
     assert "mechanism hop: PopulationTransition, scheme\n  source() >> target() @ k_hop" in model
 
 
+def test_a_scheme_naming_a_state_its_molecule_lacks_is_refused(tmp_path):
+    """Refused at the call, naming the molecule's sites, rather than built into rules that never
+    fire."""
+    out = _call(
+        _statements_server(tmp_path),
+        "make_changes",
+        {
+            "justification": "A becomes B once primed",
+            "statements": [_statement_row(policy="primed")],
+            "mechanisms": [
+                {"statement_type": "PopulationTransition", "policy": "primed",
+                 "scheme": "source(primed='yes') >> target() @ k"}
+            ],
+        },
+    )
+    assert out["applied"] is False
+    assert "adds site 'primed' to A with the one state 'yes'" in out["error"]
+    assert "A has no sites" in out["error"]
+
+
+def test_the_result_names_the_sites_a_scheme_added(tmp_path):
+    out = _call(
+        _statements_server(tmp_path),
+        "make_changes",
+        {
+            "justification": "A primes, then becomes B",
+            "statements": [_statement_row(policy="primed")],
+            "mechanisms": [
+                {"statement_type": "PopulationTransition", "policy": "primed",
+                 "scheme": "source(phase='naive') >> source(phase='primed') @ kp\n"
+                           "source(phase='primed') >> target() @ k"}
+            ],
+        },
+    )
+    assert out["applied"] is True, out
+    assert any(
+        "schemes added sites no row or entity gives: A phase ['naive', 'primed'] (`statements[0]`)"
+        in m["message"]
+        for m in out["messages"]
+    )
+
+
 def test_list_mechanisms_exists_only_with_the_route(tmp_path):
     names = lambda mcp: {t.name for t in asyncio.run(mcp.list_tools())}  # noqa: E731
     assert "list_mechanisms" not in names(_server(tmp_path / "plain"))
