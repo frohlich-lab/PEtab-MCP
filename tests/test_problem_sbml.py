@@ -156,6 +156,24 @@ def test_reaction_ids_never_collide_with_the_models_own():
     assert "r0: __s0 => __s1; conv_k*__s0;" in antimony
 
 
+def test_a_start_location_does_not_depend_on_row_order():
+    """Without a cytoplasm among its locations, a monomer started in the first location INDRA met,
+    so swapping two rows moved where it started."""
+    from indra.statements import Translocation
+
+    x = Agent("X")
+    rows = [
+        (Translocation(x, "nucleus", "mitochondria"), INDRA_DEFAULT, "r1"),
+        (Translocation(x, "mitochondria", "nucleus"), INDRA_DEFAULT, "r2"),
+    ]
+
+    def started(rows):
+        sbml = SbmlModel.from_antimony(PS.to_antimony(rows, {})[0]).sbml_model
+        return [sbml.getSpecies(a.getSymbol()).getName() for a in sbml.getListOfInitialAssignments()]
+
+    assert started(rows) == started(rows[::-1]) == ["X(loc='mitochondria')"]
+
+
 def test_what_the_start_cannot_reach_starts_present():
     """Populations that only interconvert are each made by a rule, but nothing at the start makes
     them; with every made monomer started empty, as a diff of each rule's names had it, the model
