@@ -864,6 +864,8 @@ def test_a_mechanism_the_agent_writes_stays_in_the_run_library(tmp_path):
         (tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text()
     )["rows"]
     assert stored["mechanism"]["rate"] == "vmax / (K + source)"
+    model = _text(mcp, "get_model", {"format": "statements"})
+    assert "like mass_action, rate vmax / (K + source), parameters vmax, K" in model
     row["prefix"] = "conv2"  # a different structure, so the de-dup does not refuse the refit
     again = _call(mcp, "make_changes", {"justification": "reuse", "statements": [row]})
     assert again["applied"] is True
