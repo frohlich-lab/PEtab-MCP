@@ -150,7 +150,7 @@ class ProvenanceStore:
         kind: str = "snapshot",
         parent: int | None = None,
         model_source: str | None = None,
-        statements: list[dict[str, Any]] | None = None,
+        statements: dict[str, Any] | None = None,
         meta: dict[str, Any] | None = None,
         simulation: dict[str, Any] | None = None,
         optimization: dict[str, Any] | None = None,
@@ -180,7 +180,8 @@ class ProvenanceStore:
             (vdir / "model_source.ant").write_text(model_source, encoding="utf-8")
         # What a `statements` commit asserted, beside the source it generated: the row is what
         # a later `revise` addresses and the corpus harvest counts, and neither is recoverable
-        # from the expanded model.
+        # from the expanded model. A commit that submits no model text inherits its rows, like
+        # its source (see session._snapshot_version).
         if statements:
             (vdir / "statements.json").write_text(
                 json.dumps(statements, indent=2), encoding="utf-8"
@@ -272,6 +273,12 @@ class ProvenanceStore:
         not a missing source, and callers must not silently treat it as one."""
         f = self._version_dir(n) / "model_source.ant"
         return f.read_text(encoding="utf-8") if f.is_file() else None
+
+    def get_statements(self, n: int) -> dict[str, Any] | None:
+        """A version's statements record (``statements.json``), or None for a model not built
+        from statements. Raises ``UnknownEntityError`` for a version that does not exist."""
+        f = self._version_dir(n) / "statements.json"
+        return json.loads(f.read_text(encoding="utf-8")) if f.is_file() else None
 
     def get_model_antimony(self, n: int) -> str:
         """Read a version's ``model.ant`` ONLY — cheap, unlike :meth:`get_version`, which also
