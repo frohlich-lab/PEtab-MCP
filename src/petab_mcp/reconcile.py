@@ -67,11 +67,11 @@ _IDENT_RE = re.compile(r"(?<![\w.])[A-Za-z_]\w*")
 #: multistart ignores a nominal value anyway — but it may not be 0 or 1. An explicit 0 is the
 #: author's-design skip in :func:`ensure_parametric_initial_conditions` (no ``<sid>_init`` is
 #: minted at all — the state starts empty), and 1 is the unit-normalization convention
-#: :func:`sync_parameter_table` holds an IC FIXED at; reconcile never re-touches a row once it
-#: exists. A seed at either value would therefore leave every seeded species' initial condition
-#: constant for the rest of the run — silently reinstating the frozen-IC trap of issue #90, on
-#: exactly the species the caller is about to build a mechanism around. Any other positive value
-#: lands on the ordinary path: estimated, on log10.
+#: :func:`sync_parameter_table` holds an IC FIXED at. A seed at either value would therefore hold
+#: every seeded species' initial condition constant until the caller declares another — silently
+#: reinstating the frozen-IC trap of issue #90, on exactly the species the caller is about to
+#: build a mechanism around. Any other positive value lands on the ordinary path: estimated, on
+#: log10.
 SEED_INITIAL_VALUE = 0.1
 
 #: The ``model_id`` a model-less problem's model is created under; the same id gemot gives the
@@ -2141,6 +2141,14 @@ def _direct_ic_parameter_ids(sm) -> set[str]:
     return ic
 
 
+def _ic_convention(v0: float) -> tuple[str, bool]:
+    """The scale and estimate flag a direct initial condition declared at ``v0`` takes (see
+    :func:`sync_parameter_table`)."""
+    if v0 in (0.0, 1.0):
+        return LIN, False  # empty pool / unit normalization: FIXED
+    return (LOG10 if v0 > 0.0 else LIN), True  # a guess: estimated, on log10 when it can be
+
+
 def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
     """Add rows for new model parameters; remove rows for parameters gone from the model
     (keeping observable/noise parameters). Returns the add/remove diff.
@@ -2157,8 +2165,9 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
     Initial conditions are ESTIMATED by default -- a declared t=0 is only a guess and must never
     be silently frozen (issue #90). Two leak-free VALUE conventions stay FIXED: an IC of exactly
     ``0`` (an empty pool -- nothing to estimate) and an IC of exactly ``1`` (a unit normalization,
-    e.g. a conserved-total set to 1). A caller that needs some other IC fixed ships it as a fixed
-    parameter row (reconcile never re-touches existing rows)."""
+    e.g. a conserved-total set to 1). A row follows the value the model declares on every sync, so
+    re-declaring an IC moves it. A caller that needs some other IC fixed ships it as a fixed
+    parameter row, which reconcile never re-touches."""
     sm = problem.model.sbml_model
     valid = set(problem.model.get_valid_parameters_for_parameter_table())
     # A parameter that is a CONDITION TARGET is set per condition (a PEtab condition change),
@@ -2226,12 +2235,7 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
             except (TypeError, ValueError):
                 v0 = 0.0
             lb, ub = _default_bounds(value)
-            if v0 == 0.0 or v0 == 1.0:
-                scale, estimate = LIN, False  # empty pool / unit normalization: FIXED
-            elif v0 > 0.0:
-                scale, estimate = LOG10, True  # positive seed/guess: estimate on log10
-            else:
-                scale, estimate = LIN, True  # nonzero but non-positive: cannot live on log10
+            scale, estimate = _ic_convention(v0)
         elif pid in exp_params:
             # An exponent (Hill coefficient): estimate on a LINEAR scale with tight bounds so it
             # cannot run off to a near-step-function on the wide default log10 range.
@@ -2255,44 +2259,43 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
         problem.parameter_df.loc[pid, ESTIMATE] = estimate
         added.append(pid)
 
-    # Enforce the leak-free {0,1} IC-fix convention on IC rows that ALREADY EXIST — the add-loop
-    # above only reaches params in `valid - table_ids`, so an IC parameter that was in the table
-    # before this sync never gets the value-based treatment. That is not hypothetical: a model-less
-    # problem is seeded with a content-free model whose species come from the observables, and
-    # reconcile parametrises their ICs into ESTIMATED `<sid>_init` rows (nominal 0.1). When the
-    # agent then authors the real mechanism using the SAME state names (e.g. blasi's 16 acetylation
-    # states x_0ac..x_4ac), those seed rows are already present, so the {0,1}->FIXED convention was
-    # SILENTLY SKIPPED and every steady-state IC stayed estimated — 16 structurally non-identifiable
-    # free parameters the agent has no tool to remove (a parameters-arg edit sets bounds/scale only,
-    # never estimate). Re-derive the FIXED convention here for a non-shipped IC row whose current
-    # model value is exactly 0 (empty pool) or 1 (unit normalization); a shipped row is left as the
-    # problem defined it, and an IC with any other value stays estimated (its fitted nominal, which
-    # we must not clobber, is never exactly 0 or 1). Restricted to DIRECT ICs (`<sid> = <param>`):
-    # a participant of a COMPOUND parametric IC (`Rec = ini_R1*ini_R2fold`) valued 1 is a fold /
-    # normalisation seed to estimate, not a unit-normalisation IC to fix.
+    # Re-derive the convention on IC rows that ALREADY EXIST, from the value the model declares
+    # NOW: the add-loop above only reaches params in `valid - table_ids`. Two ways a row outlived
+    # the value it was derived from:
+    #   * a model-less problem's seed rows. Reconcile parametrises the content-free seed's ICs into
+    #     ESTIMATED `<sid>_init` rows (nominal 0.1), and the agent then authors the real mechanism
+    #     under the SAME state names (blasi's 16 acetylation states x_0ac..x_4ac, each at 1): every
+    #     steady-state IC stayed estimated, 16 structurally non-identifiable free parameters.
+    #   * a re-declared start (fujita r2): a protein declared at 1 was fixed there, and the row
+    #     stayed FIXED at 1 through every later declaration, about 2 hours of a run spent on a
+    #     value no edit could move.
+    # Neither was reachable from the agent's side: a parameters-arg edit sets bounds/scale only,
+    # never estimate. A shipped row is left as the problem defined it, and an estimated row whose
+    # value is still neither 0 nor 1 keeps its fitted nominal and bounds. Restricted to DIRECT ICs
+    # (`<sid> = <param>`): a participant of a COMPOUND parametric IC (`Rec = ini_R1*ini_R2fold`)
+    # valued 1 is a fold / normalisation seed to estimate, not a unit-normalisation IC to fix.
+    df = problem.parameter_df
     for pid in sorted((_direct_ic_parameter_ids(sm) & table_ids) - shipped_ids):
-        if pid not in problem.parameter_df.index:
+        if pid not in df.index:
             continue
         try:
             v0 = float(problem.model.get_parameter_value(pid))
         except (TypeError, ValueError):
             continue
-        if v0 == 0.0 or v0 == 1.0:
-            cur = problem.parameter_df.loc[pid, ESTIMATE]
-            try:
-                already_fixed = not as_bool(cur)
-            except (TypeError, ValueError):
-                already_fixed = False
-            if not already_fixed:
-                # Re-derive bounds to bracket the new nominal (exactly as the add-loop does via
-                # _default_bounds) — otherwise the stale positive-log10 seed bounds are left, so an
-                # empty-pool IC ends fixed at 0.0 with a lowerBound of 1e-4 ABOVE it.
-                lb, ub = _default_bounds(v0)
-                problem.parameter_df.loc[pid, PARAMETER_SCALE] = LIN
-                problem.parameter_df.loc[pid, LOWER_BOUND] = lb
-                problem.parameter_df.loc[pid, UPPER_BOUND] = ub
-                problem.parameter_df.loc[pid, NOMINAL_VALUE] = v0
-                problem.parameter_df.loc[pid, ESTIMATE] = False
+        scale, estimate = _ic_convention(v0)
+        estimated = is_parameter_estimated(problem, pid)
+        if estimate and estimated:
+            continue  # still a guess: its fitted nominal and bounds stand
+        if not estimate and not estimated and df.loc[pid, NOMINAL_VALUE] == v0:
+            continue
+        # Bounds bracket the new nominal, as in the add-loop: stale positive-log10 seed bounds left
+        # an empty-pool IC fixed at 0.0 with a lowerBound of 1e-4 ABOVE it.
+        lb, ub = _default_bounds(v0)
+        df.loc[pid, PARAMETER_SCALE] = scale
+        df.loc[pid, LOWER_BOUND] = lb
+        df.loc[pid, UPPER_BOUND] = ub
+        df.loc[pid, NOMINAL_VALUE] = v0
+        df.loc[pid, ESTIMATE] = estimate
 
     for pid in sorted(table_ids - valid - keep_table):
         problem.parameter_df = problem.parameter_df.drop(index=pid)

@@ -263,6 +263,26 @@ def test_ic_convention_fixes_a_pre_existing_estimated_row():
     assert pdf.loc["G_init", ESTIMATE] == 1
 
 
+def test_an_ic_row_follows_each_redeclared_initial():
+    """Fujita r2: an IC row took FIXED/ESTIMATED from the first value declared and moved only from
+    estimated to fixed, so a protein once declared at 1 stayed FIXED at 1 through every later
+    declaration — about 2 hours of a run on a value no edit could move, the agent having no
+    estimate toggle. The row follows the value the model declares now."""
+    from petab.v2.C import ESTIMATE, NOMINAL_VALUE
+    from petab_mcp.problem import LIN, LOG10, PARAMETER_SCALE
+
+    ant = "model m\n  compartment c = 1;\n  species P in c; P = P_init; P_init = {};\n"
+    ant += "  kd = 0.1;\n  deg: P -> ; kd*P;\nend\n"
+    prob = _bare_problem(ant.format(1.0))
+    rows = []
+    for value in (1.0, 5.0, 0.0, 1.0):
+        prob.model = SbmlModel.from_antimony(ant.format(value))
+        R.reconcile(prob)
+        row = prob.parameter_df.loc["P_init"]
+        rows.append((row[NOMINAL_VALUE], bool(row[ESTIMATE]), row[PARAMETER_SCALE]))
+    assert rows == [(1.0, False, LIN), (5.0, True, LOG10), (0.0, False, LIN), (1.0, False, LIN)]
+
+
 def test_ic_convention_does_not_fix_a_compound_expression_participant():
     """The pre-existing-row {0,1}->FIXED pass is restricted to DIRECT ICs (`<sid> = <param>`). A
     participant of a COMPOUND parametric IC (`r2 = a*b`) valued exactly 1 is a fold/normalisation
