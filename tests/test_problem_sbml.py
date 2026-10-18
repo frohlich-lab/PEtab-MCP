@@ -99,6 +99,17 @@ def test_a_rate_may_read_time():
     assert [r.getNumModifiers() for r in sbml.getListOfReactions()] == [0]
 
 
+def test_reaction_ids_never_collide_with_the_models_own():
+    """PySB numbers reactions `r0`, `r1`... whatever else bears the name: an agent's shared rate
+    `r8` made every Blasi model unreadable SBML. Here the readout `r0` takes it."""
+    antimony, _ = PS.to_antimony([(_TRANSITION, "mass_action", "conv")], {"r0": Agent("naive")})
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    assert sbml.getSpecies("r0").getName() == "naive()"
+    assert [r.getId() for r in sbml.getListOfReactions()] == ["r_0"]
+    antimony, _ = PS.to_antimony([(_TRANSITION, "mass_action", "conv")], {})
+    assert "r0: __s0 => __s1; conv_k*__s0;" in antimony
+
+
 def test_what_the_start_cannot_reach_starts_present():
     """Populations that only interconvert are each made by a rule, but nothing at the start makes
     them; with every made monomer started empty, as a diff of each rule's names had it, the model

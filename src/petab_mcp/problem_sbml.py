@@ -122,6 +122,9 @@ def to_antimony(
     document = libsbml.readSBMLFromString(sbml)
     sbml_model = document.getModel()
     for reaction in sbml_model.getListOfReactions():
+        # PySB numbers reactions `r0`, `r1`... whatever else the model names so; they hold
+        # PySB's internal form until :func:`_number_reactions` numbers them against the rest.
+        reaction.setId(f"__{reaction.getId()}")
         # PySB lists every symbol a rate expression reads that is no parameter as a modifier
         # species, `time` too, which no species is: the SBML did not read.
         while reaction.removeModifier("time") is not None:
@@ -178,6 +181,7 @@ def to_antimony(
         rule = sbml_model.createAssignmentRule()
         rule.setVariable(species.getId())
         rule.setMath(protocol)
+    _number_reactions(sbml_model)
     return SbmlModel.from_string(libsbml.writeSBMLToString(document)).to_antimony(), emissions
 
 
@@ -238,6 +242,22 @@ def _rename(sbml_model, element, new: str) -> None:
     for other in sbml_model.getListOfAllElements():
         other.renameSIdRefs(old, new)
     element.setId(new)
+
+
+def _number_reactions(sbml_model) -> None:
+    """Number the reactions ``r0``, ``r1``..., or ``r_0``... when another id already has that form:
+    a shared rate an agent named ``r8`` made every Blasi model's SBML unreadable."""
+    taken = {
+        element.getId()
+        for element in sbml_model.getListOfAllElements()
+        if element.getTypeCode() != libsbml.SBML_REACTION and element.isSetId()
+    }
+    reactions = list(sbml_model.getListOfReactions())
+    prefix = "r"
+    while any(f"{prefix}{i}" in taken for i in range(len(reactions))):
+        prefix += "_"
+    for i, reaction in enumerate(reactions):
+        reaction.setId(f"{prefix}{i}")
 
 
 def _monomer_names(reaction_pattern) -> set[str]:
