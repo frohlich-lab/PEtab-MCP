@@ -1084,6 +1084,18 @@ def test_a_mechanism_the_agent_writes_stays_in_the_run_library(tmp_path):
     assert again["applied"] is True
 
 
+def test_a_written_mechanism_no_row_uses_survives_a_resume(tmp_path):
+    """The run keeps a mechanism it wrote whether or not a row uses it. A resume read them back
+    off the rows alone, so one no row used was in the library live and gone after a resume."""
+    mcp = _statements_server(tmp_path)
+    args = {"justification": "x", "statements": [_statement_row()], "mechanisms": [_SATURATING]}
+    assert _call(mcp, "make_changes", args)["committed"] is True
+    row = {**_statement_row(policy="saturating"), "prefix": "conv2"}
+    resumed = _statements_server(tmp_path)
+    out = _call(resumed, "make_changes", {"justification": "y", "statements": [row]})
+    assert out["applied"] is True, out.get("error")
+
+
 def test_a_written_mechanism_is_not_redefined_in_place(tmp_path):
     """Earlier versions were built with the first definition; changing it under the same name
     would change what their records mean."""
