@@ -38,20 +38,19 @@ def test_same_pair_deduplicates_and_reversed_pair_does_not():
 
 
 # -- a statement as written ----------------------------------------------------------
-_TYPES = {"Phosphorylation", "Activation", "Conversion", "PopulationTransition"}
 # A phosphorylation as a row writes it; ``{sub}`` is its substrate, ``{extra}`` splices fields.
 _BASE_PHOSPHO = '{{"type": "Phosphorylation", "enz": {{"name": "MEK"}}, "sub": {sub}{extra}}}'
 
 
 def _problems(sub: str = '{"name": "ERK"}', extra: str = "") -> list[str]:
-    return S.problems(json.loads(_BASE_PHOSPHO.format(sub=sub, extra=extra)), _TYPES)
+    return S.problems(json.loads(_BASE_PHOSPHO.format(sub=sub, extra=extra)))
 
 
 def test_what_indra_writes_reads_as_written():
     """INDRA's own JSON (ids, belief, evidence) is what a stored row and a warm start hold."""
     assert _problems() == []
     stmt = S.PopulationTransition(_agent("a"), _agent("b"))
-    assert S.problems(stmt.to_json(), _TYPES) == []
+    assert S.problems(stmt.to_json()) == []
 
 
 def test_a_missing_field_is_named_with_what_it_takes():
@@ -59,7 +58,7 @@ def test_a_missing_field_is_named_with_what_it_takes():
     'residue'); a phosphorylation without its substrate reached INDRA's reader as None."""
     (problem,) = _problems(sub='{"name": "ERK", "mods": [{"residue": "T"}]}')
     assert problem.startswith("`sub.mods[0]` has no `mod_type`, one of ['acetylation', ")
-    (problem,) = S.problems({"type": "Phosphorylation", "enz": {"name": "MEK"}}, _TYPES)
+    (problem,) = S.problems({"type": "Phosphorylation", "enz": {"name": "MEK"}})
     assert problem == 'Phosphorylation needs `sub`, an agent: {"name": "A"}'
 
 
@@ -67,7 +66,7 @@ def test_a_regulated_activity_defaults_as_its_constructor_does():
     """INDRA's `Activation` defaults `obj_activity` to `activity`, but its JSON reader passes the
     missing field on as None, and the assembly failed raw on it."""
     statement = {"type": "Activation", "subj": {"name": "A"}, "obj": {"name": "B"}}
-    assert S.problems(statement, _TYPES) == []
+    assert S.problems(statement) == []
     assert S.with_defaults(statement)["obj_activity"] == "activity"
     assert S.with_defaults({**statement, "obj_activity": "kinase"})["obj_activity"] == "kinase"
 
@@ -84,13 +83,12 @@ def test_a_misspelt_name_is_answered_with_the_names_it_may_be():
     assert problem.startswith("`sub` has no field 'mod' (did you mean 'mods'?), an agent has [")
     (problem,) = _problems(sub='{"name": "ERK", "mods": [{"mod_type": "phosphorilation"}]}')
     assert "`mod_type` 'phosphorilation' (did you mean 'phosphorylation'?)" in problem
-    assert S.problems({"type": "Phosphorilation"}, _TYPES) == [
-        "`type` 'Phosphorilation' is no statement type (did you mean 'Phosphorylation'?)"
-    ]
-    (problem,) = S.problems({"type": "Conversion", "obj_from": {"name": "A"}}, _TYPES)
+    (problem,) = S.problems({"type": "Phosphorilation"})
+    assert problem.startswith("`type` 'Phosphorilation' is no statement type (did you mean 'Phosph")
+    (problem,) = S.problems({"type": "Conversion", "obj_from": {"name": "A"}})
     assert problem.startswith("`obj_from` is a list of agents")
     activation = {"type": "Activation", "subj": {"name": "A"}, "obj": {"name": "B"}}
-    assert S.problems({**activation, "obj_activity": "kinas"}, _TYPES) == [
+    assert S.problems({**activation, "obj_activity": "kinas"}) == [
         "`obj_activity` 'kinas' (did you mean 'kinase'?) is none of INDRA's activities "
         "['activity', 'catalytic', 'gap', 'gef', 'gtpbound', 'kinase', 'phosphatase', "
         "'transcription']"

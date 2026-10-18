@@ -948,6 +948,21 @@ def test_a_statement_missing_a_field_is_refused_by_name(tmp_path):
     assert "`p`: `sub.mods[0]` has no `mod_type`, one of [" in out["error"]
 
 
+def test_a_type_the_library_lacks_is_a_library_gap(tmp_path):
+    """INDRA's own types are statement types whether or not the library has a mechanism for them:
+    refused as no statement type, RegulateAmount was neither counted as a gap nor pointed at
+    `mechanisms`."""
+    row = {
+        "statement": {"type": "RegulateAmount", "subj": {"name": "A"}, "obj": {"name": "B"}},
+        "policy": "indra_default",
+        "prefix": "h",
+    }
+    out = _call(
+        _statements_server(tmp_path), "make_changes", {"justification": "x", "statements": [row]}
+    )
+    assert out["applied"] is False and out["error_cause"] == "library_gap", out
+
+
 def test_an_activation_without_obj_activity_builds(tmp_path):
     """The default the statement type documents is filled before INDRA reads the row, and stored
     with it, so the model builds and the row renders as it was read."""

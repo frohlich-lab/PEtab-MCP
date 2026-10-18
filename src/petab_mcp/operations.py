@@ -731,11 +731,10 @@ def statements_to_antimony(
         )
     # Read here, each problem named, rather than by INDRA's reader, which skips a field it does not
     # know, leaves a missing one None, and drops a statement it cannot build with a logged warning.
-    types = {stmt_type for stmt_type, _ in library}
     unread = [
         f"`{row['prefix']}`: {problem}"
         for row in rows
-        for problem in problems(row["statement"], types)
+        for problem in problems(row["statement"])
         + [
             p
             for slot, agent in (row.get("modifiers") or {}).items()
@@ -746,8 +745,8 @@ def statements_to_antimony(
     unread += [p for name, a in amounts.items() for p in agent_problems(a, f"amounts.{name}")]
     if unread:
         raise OperationError(
-            f"make_changes: INDRA would not read these as written: {'; '.join(unread)}. NOTHING "
-            "was applied.",
+            f"make_changes: these `statements` do not build as written: {'; '.join(unread)}. "
+            "NOTHING was applied.",
             cause="unreadable_statement",
         )
     for row in rows:
