@@ -707,7 +707,7 @@ def structure_moved(session, structure_hash: str | None) -> bool:
     """Is the working structure a DIFFERENT one from ``structure_hash``?
 
     The one staleness question this module asks, of a frozen record and of a stored verdict alike —
-    a COMPARISON, never a rebuild key. STRUCTURE (the reaction network plus the estimated-parameter
+    a COMPARISON, never a rebuild key. STRUCTURE (the model's equations plus the estimated-parameter
     set) is what decides whether a geometry describes the model in front of the lead. A restore points
     the working state at another version's model and does move it: the diagnosis then belongs to the
     last fit, says so, and is not re-priced (pricing the current structure would mean fitting, and
@@ -770,15 +770,13 @@ STALE_NOTE = (
     "in the working state now (a restore). Commit the current model with make_changes "
     "(which fits it) to get its own diagnosis."
 )
-#: Said when the working parameter TABLE has moved but the structure has not — the de-dup no-op's new
-#: starting guess, or an edit to a bound. The geometry still describes this structure at its fitted
+#: Said when the working parameter TABLE has moved but the structure has not — a restored version of
+#: the same structure with other values. The geometry still describes this structure at its fitted
 #: optimum, which is the only fit there is: nothing has been fitted on the table in front of you.
 WORKING_TABLE_NOTE = (
     "your working parameter table is not the one this fit left (a value, a bound or "
     "a scale has changed since), and nothing has been fitted on it: these numbers "
-    "are the fitted optimum of the SAME structure. A re-authored starting guess in "
-    "particular is not a fit — it de-duplicated against the committed fit of the "
-    "identical structure."
+    "are the fitted optimum of the SAME structure."
 )
 #: Said on a hierarchical fit, where the objective inner-solves the noise sigmas / observable
 #: scalings and the FIM has no coordinate for them. Stated because their ABSENCE from `parameters`,

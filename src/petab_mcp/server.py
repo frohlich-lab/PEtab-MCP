@@ -452,8 +452,11 @@ class _Ctx:
         the :func:`operations.working_state` snapshot taken before it applied). A change is either
         scored or gone, so the working model is never a state nothing has verified.
 
-        The de-dup no-op is not a failure and is not reverted: the resulting model IS an existing
-        version, byte-identical to it, so there is nothing unscored to undo.
+        The de-dup no-op is undone too, though it is not a failure: the change gives the same model
+        as an existing version, so that version's scored state stands for it. The de-dup compares
+        equations and estimation setup, not the text, the authored starting values or the rows the
+        change was written as; keeping those would leave a working model no version holds, and the
+        next edit would build on it.
         """
         # HEAD before the fit — the only signal for "was a version created" that survives a
         # failure between the snapshot and the end of `session.fit`.
@@ -485,6 +488,12 @@ class _Ctx:
                 self.session,
                 before,
                 f"the fit produced no version: {fit_result.get('error') or 'no error message'}",
+            )
+        elif fit_result.get("no_change"):
+            ops_mod.revert_working_state(
+                self.session,
+                before,
+                f"identical to version {fit_result.get('duplicate_of_version')}, which stands for it",
             )
         return ops_mod.bundle_result(self.session, edit_result, fit_result, head_before)
 
@@ -590,6 +599,9 @@ def _register_read_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
     @mcp.tool(annotations=_READ_ONLY)
     def describe_problem() -> dict[str, Any]:
         """Summarize the problem: model size, tables, and free parameters.
+
+        `readouts_to_define` lists the `readout_*` measurement mappings your model does not
+        define yet.
 
         Also reports `fit_n_starts_default` — the pyPESTO multistart count a fit uses when
         `n_starts` is omitted. Read it before passing `n_starts` anywhere: that argument REPLACES
@@ -711,7 +723,7 @@ _MAKE_CHANGES_SUMMARY = (
     "Change the model and/or its parameter search space, then FIT and snapshot a version."
 )
 
-_MAKE_CHANGES_ROUTES = """\
+_MAKE_CHANGES_ROUTES_BODY = """\
 The single editor, with TWO routes to a model change — give exactly ONE.
 
 `model_edits` is the route to use for every change after the first: a BATCH of
@@ -752,7 +764,17 @@ Give `parameters` to set estimation BOUNDS and/or SCALE: a list of
 `{parameter_id, lower_bound?, upper_bound?, scale?}` entries, applied atomically AFTER the
 reconcile — so an entry may target a parameter this very call introduces. Combine it with
 either model route for a structural change and the bounds it needs. At least one of
-`antimony` / `model_edits` / `parameters` is required."""
+"""
+
+_MAKE_CHANGES_ROUTES = (
+    _MAKE_CHANGES_ROUTES_BODY + "`antimony` / `model_edits` / `parameters` is required."
+)
+
+#: The same text where the `statements` route is offered too.
+_MAKE_CHANGES_STATEMENTS_ROUTES = (
+    _MAKE_CHANGES_ROUTES_BODY
+    + "`antimony` / `model_edits` / `statements` / `parameters` is required."
+)
 
 _MAKE_CHANGES_CONTRACT = """\
 There is no fit-free edit and no separate fit: one call is one coherent change, scored
@@ -767,8 +789,8 @@ scored one, and there is never an edit waiting to be fit.
 The result IS the fit, flat — the same field names `get_fit_summary` uses — plus two
 flags. Read `applied`: `false` → the change is NOT in the model, either rejected before it
 applied or reverted because the fit failed; `error`/`issues` says which. Then `committed`:
-`true` → a version exists, read `bic`; `false` with `no_change` → the change applied but
-this structure already IS a version, so change something else.
+`true` → a version exists, read `bic`; `false` with `no_change` → this model already IS a
+version, which stays the working model as stored, so change something else.
 `bic` charges `k` = `n_estimated` + `hardcoded_constants`: a numeric literal in your
 model's math is a parameter too, bar a few structural ones, so freezing a fitted value
 costs what estimating it costs — estimate it. What you pay for is listed.
@@ -801,7 +823,12 @@ _MAKE_CHANGES_DOC = "\n\n".join(
 
 def _make_changes_statements_doc() -> str:
     """The `statements` route's paragraph, naming the entries the library holds right now."""
+    from indra.statements import Statement, get_all_descendants
+
     from . import mechanisms
+
+    defaulted = {cls for cls, policy in mechanisms.REGISTRY if policy == mechanisms.INDRA_DEFAULT}
+    without = sorted({c.__name__ for c in get_all_descendants(Statement)} - defaulted)
 
     by_policy: dict[str, list[str]] = {}
     for cls, policy in sorted(mechanisms.REGISTRY):
@@ -812,8 +839,9 @@ def _make_changes_statements_doc() -> str:
         "`statements` is a third model route, and still exactly ONE route per call: it authors "
         "the WHOLE model from mechanism assertions rather than text, each an INDRA statement "
         "with the `policy` (mechanism) that turns it into reactions and a `prefix` naming its "
-        f"parameters. Every INDRA statement type has `{mechanisms.INDRA_DEFAULT}`; the library "
-        f"also holds {entries}. When none fits, WRITE one in `mechanisms` — it stays in the "
+        "parameters. Every INDRA statement type"
+        + (f" but {', '.join(without)}" if without else "")
+        + f" has `{mechanisms.INDRA_DEFAULT}`; the library also holds {entries}. When none fits, WRITE one in `mechanisms` — it stays in the "
         "library for the rest of the run. The species the observables read, and the inputs the "
         "experiments set (a dose), are bound by the problem's entity map: name agents as it "
         "does, and do not assert an input — it is already held to its protocol. `starts` "
@@ -827,6 +855,9 @@ def _make_changes_statements_doc() -> str:
 def _register_model_tools(
     mcp: FastMCP, route: Callable[[], _Ctx], statements: bool = False
 ) -> None:
+    # `make_changes` takes an argument named `statements`; the route flag goes by this name in it.
+    statements_route = statements
+
     @mcp.tool(annotations=_READ_ONLY)
     def get_model(format: str = "antimony", version: int | None = None) -> str:
         """Return a model as text — the CURRENT one, or a prior `version`'s stored source.
@@ -892,15 +923,17 @@ def _register_model_tools(
     @mcp.tool(annotations=_READ_ONLY)
     def get_model_structure() -> dict[str, Any]:
         """Structured view of the model: species, parameters, reactions — plus the per-species
-        `initial_conditions` account.
+        `initial_conditions` account, and `readouts`: each `readout_*` measurement mapping to the
+        expression your model defines it by, or null while it has none.
 
-        Each initial-condition entry reports whether that species' declared t=0 actually governs
-        the simulated state: `t0_source` is `fixed` (the declared value is used), `estimated` (the
-        fit sets it — the DEFAULT, so a declared t=0 is only a starting guess) or
-        `condition_table` (a condition target overrides it per condition), with `ic_parameter`
-        naming the parameter that carries it. Read it to check whether a t=0 you meant to pin
-        actually took, and to see which species are driven per-condition — those have no
-        parameter-table row at all, so `get_parameters` cannot show them.
+        Each initial-condition entry reports what the simulation starts that species at, `t0` (one
+        value, or one per experiment where they differ), and whether the declared t=0 governs it:
+        `t0_source` is `fixed` (the parameter table's value is used), `estimated` (the fit sets it
+        — the DEFAULT, so a declared t=0 is only a starting guess), `condition_table` (a condition
+        target overrides it per condition) or `rule` (an assignment rule holds it, as it does an
+        input), with `ic_parameter` naming the parameter that carries it. Read it to check whether
+        a t=0 you meant to pin actually took, and to see which species are driven per-condition —
+        those have no parameter-table row at all, so `get_parameters` cannot show them.
         """
         ctx = route()
         session = ctx.session
@@ -941,9 +974,10 @@ def _register_model_tools(
             return ctx.reject_operation(
                 "make_changes",
                 f"make_changes: give ONE model route, not {len(routes_given)} "
-                f"({', '.join('`' + r + '`' for r in routes_given)}). `model_edits` for a "
-                "structured change to an existing model, `antimony` to author one wholesale. "
-                "NOTHING was applied.",
+                f"({', '.join('`' + r + '`' for r in routes_given)}). "
+                + ("`statements` to author the whole model as rows, " if statements_route else "")
+                + "`model_edits` for a structured change to an existing model, `antimony` to "
+                "author one wholesale. NOTHING was applied.",
                 {"routes": routes_given},
                 cause="route_conflict",
             )
@@ -968,7 +1002,8 @@ def _register_model_tools(
                 "make_changes",
                 "make_changes: nothing to do — give `model_edits` (structured operations on the "
                 "committed model — the usual route), `antimony` (author the model wholesale), "
-                "`parameters` (to set bounds/scale), or a combination.",
+                + ("`statements` (author the model as rows), " if statements_route else "")
+                + "`parameters` (to set bounds/scale), or a combination.",
                 {"antimony": None, "parameters": None},
             )
         rejected = ctx.check_n_starts("make_changes", n_starts)
@@ -1122,13 +1157,11 @@ def _register_model_tools(
                 session.derived_from = None
                 session.submitted_source = None
                 session.submitted_statements = None
-            if out.get("applied") and antimony:
+            if out.get("applied") and not out.get("no_change") and antimony:
                 # The submitted text becomes this branch's source for the next structured edit.
-                # Keyed on APPLIED, not committed: a de-duplicated commit (`applied: true,
-                # committed: false, no_change`) still moves the WORKING model, and leaving the
-                # source behind would make the next batch of operations silently revert it.
-                # A rejected or fit-reverted call leaves the model where it was, and `applied`
-                # is false there, so the source correctly stays put.
+                # A rejected or fit-reverted call leaves the model where it was (`applied` false),
+                # and a de-dup no-op leaves the session on the version it duplicates (see
+                # `edit_then_fit`), so in both the source correctly stays put.
                 session.model_source = antimony
                 if written is not None:
                     session.mechanisms = written
@@ -1144,7 +1177,7 @@ def _register_model_tools(
             description="\n\n".join(
                 (
                     _MAKE_CHANGES_SUMMARY,
-                    _MAKE_CHANGES_ROUTES,
+                    _MAKE_CHANGES_STATEMENTS_ROUTES,
                     _make_changes_statements_doc(),
                     _MAKE_CHANGES_CONTRACT,
                 )
@@ -1748,8 +1781,9 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         """List all model versions (fit snapshots) with kind/label/timestamp and fit metrics
         (neg_log_likelihood, chi2, bic/aic/aicc/caic/hqc/tic, criterion_value, is_new_best) — use it to
         rank versions by `criterion_value` and find the best-scoring one. Every version is a fit
-        snapshot (or the `rollback` snapshots); `is_new_best` tracks that same score (gated on a
-        minimum effect size)."""
+        snapshot; `is_new_best` tracks that same score: true for the first, then when its
+        `improvement_vs_best_prior` (over `best_prior_criterion_value`) reached
+        `new_best_min_improvement`."""
         ctx = route()
         session = ctx.session
         return session.provenance.list_versions()
@@ -1940,6 +1974,7 @@ def _open_ctx(
 
         session.entities = seeding_mod.load_entity_map(entity_map)
         session.inputs = seeding_mod.load_inputs(entity_map)
+        seeding_mod.check_inputs(entity_map, session.inputs, session.problem)
     if score_shipped_model and session.model_authored():
         fitting_mod.score_at_nominal(session, engine)
     held_out = None

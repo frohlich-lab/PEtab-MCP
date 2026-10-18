@@ -295,10 +295,115 @@ def test_dedup_skip_reports_no_change(tmp_path):
     assert again["no_change"] is True
     assert again["duplicate_of_version"] == 0
     assert again["version"] == 0
-    # NOT reverted: the resulting model IS an existing version, byte-identical to it, so there is
-    # nothing unscored to undo — which is why the no-op reports applied: true.
+    # applied: the change gives version 0's model, and version 0 is the working model
     head = _head(mcp)
     assert head["current_version"] == 0
+
+
+def _ruled(rate: str) -> str:
+    """The toy with r1's rate written the way the statements route writes every rate: an
+    assignment rule the rate law multiplies, so the rate law itself never changes."""
+    return _antimony(f"k_eff := {rate};").replace("r1: A => B; k1 * A;", "r1: A => B; k_eff * A;")
+
+
+def _set_rate(rate: str) -> dict:
+    return {"op": "set_assignment", "id": "k_eff", "antimony": rate}
+
+
+def test_a_rate_only_edit_is_fitted_not_deduplicated(tmp_path):
+    """REGRESSION: the de-dup's fingerprint hashed each rate law's form, and a rate changed through
+    the rule that rate law multiplies left every form as it was. The change came back as a duplicate
+    of HEAD and was never fitted (rahman, schwen, oliveira, blasi on the statements route)."""
+    mcp = _server(tmp_path, auto_fit=True)
+    first = _call(
+        mcp, "make_changes", {"antimony": _ruled("k1"), "justification": "linear", "n_starts": 2}
+    )
+    assert first["committed"] is True
+    res = _call(
+        mcp,
+        "make_changes",
+        {"model_edits": [_set_rate("k1 / (1 + A)")], "justification": "saturating", "n_starts": 2},
+    )
+    assert res["committed"] is True and res["version"] == 1, res["message"]
+
+
+def test_a_readout_only_edit_is_fitted_not_deduplicated(tmp_path):
+    """The same blind spot for a readout: a `readout_*` mapping is an assignment rule, so a model
+    that changed only what the data measure fingerprinted as its predecessor."""
+    import shutil
+
+    problem = tmp_path / "problem"
+    shutil.copytree(YAML_PATH.parent, problem)
+    (problem / "observables.tsv").write_text(
+        "observableId\tobservableFormula\tnoiseFormula\nobs_B\treadout_B\tsigma_B\n"
+    )
+    mcp = create_server(
+        str(problem / "problem.yaml"),
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+        auto_fit=True,
+    )
+    first = _call(
+        mcp,
+        "make_changes",
+        {"antimony": _antimony("readout_B := B;"), "justification": "B", "n_starts": 2},
+    )
+    assert first["committed"] is True, first["message"]
+    res = _call(
+        mcp,
+        "make_changes",
+        {
+            "model_edits": [{"op": "set_assignment", "id": "readout_B", "antimony": "A + B"}],
+            "justification": "the antibody sees A too",
+            "n_starts": 2,
+        },
+    )
+    assert res["committed"] is True and res["version"] == 1, res["message"]
+
+
+def test_a_duplicate_leaves_the_session_as_it_was(tmp_path):
+    """REGRESSION: the de-dup no-op kept the change's text and authored values as the working
+    model, though no version holds them, so the next edit built on a model nothing had accepted.
+    A duplicate now leaves the session on the version it duplicates, exactly as stored."""
+    mcp = _server(tmp_path, auto_fit=True)
+    _call(mcp, "make_changes", {"antimony": _antimony(), "justification": "v0", "n_starts": 2})
+    model = _listed(_call(mcp, "get_model", {"format": "antimony"}))
+    parameters = _listed(_call(mcp, "get_parameters", {}))
+
+    # the same equations under another reaction id and another starting value
+    renamed = _antimony().replace("r2:", "back:").replace("k1 = 0.5", "k1 = 0.7")
+    res = _call(mcp, "make_changes", {"antimony": renamed, "justification": "dup", "n_starts": 2})
+    assert res["no_change"] is True and res["duplicate_of_version"] == 0
+
+    assert _listed(_call(mcp, "get_model", {"format": "antimony"})) == model
+    assert _listed(_call(mcp, "get_parameters", {})) == parameters
+    # ...and the source the next structured edit applies to is version 0's, not the duplicate's
+    stale = _call(
+        mcp,
+        "make_changes",
+        {"model_edits": [{"op": "remove_reaction", "id": "back"}], "justification": "x"},
+    )
+    assert stale["applied"] is False and "back" in stale["error"]
+
+
+def test_a_revert_to_an_earlier_model_is_not_a_duplicate_of_head(tmp_path):
+    """REGRESSION: with rates invisible to the fingerprint, going back to an earlier rate was
+    refused as a duplicate of HEAD, which holds a different one. It is fitted, and named as a
+    revisit of the version it returns to."""
+    mcp = _server(tmp_path, auto_fit=True)
+    _call(mcp, "make_changes", {"antimony": _ruled("k1"), "justification": "v0", "n_starts": 2})
+    _call(
+        mcp,
+        "make_changes",
+        {"model_edits": [_set_rate("k1 / (1 + A)")], "justification": "v1", "n_starts": 2},
+    )
+    back = _call(
+        mcp,
+        "make_changes",
+        {"model_edits": [_set_rate("k1")], "justification": "back", "n_starts": 2},
+    )
+    assert back["committed"] is True and back["version"] == 2, back["message"]
+    assert any("version(s) [0]" in m["message"] for m in back["messages"])
 
 
 def test_a_fit_failure_reverts_the_edit(tmp_path, monkeypatch):
@@ -733,6 +838,52 @@ def test_statements_route_exists_only_with_an_entity_map(tmp_path):
     route would offer a call that always fails."""
     assert "statements" not in _make_changes_schema(_server(tmp_path / "plain"))
     assert "statements" in _make_changes_schema(_statements_server(tmp_path))
+
+
+def _description(mcp):
+    tools = asyncio.run(mcp.list_tools())
+    return next(t for t in tools if t.name == "make_changes").description
+
+
+def test_the_routes_text_names_statements_only_where_it_is_offered(tmp_path):
+    """It required one of `antimony` / `model_edits` / `parameters` on a server whose third
+    route is `statements`; without the route the description is the one it was before."""
+    from petab_mcp.server import _MAKE_CHANGES_DOC
+
+    assert _description(_server(tmp_path / "plain")) == _MAKE_CHANGES_DOC
+    required = _description(_statements_server(tmp_path)).split("At least one of\n")[1]
+    assert "`statements`" in required.split(" is required.")[0]
+
+
+def test_the_refusals_name_statements_only_where_it_is_offered(tmp_path):
+    """Two routes at once and no route at all were each refused naming `model_edits` and
+    `antimony` only, where `statements` was a route too."""
+    plain, offered = _server(tmp_path / "plain"), _statements_server(tmp_path)
+
+    def error(mcp, args):
+        return _call(mcp, "make_changes", {"justification": "x", **args})["error"]
+
+    edits = [{"op": "remove_reaction", "id": "r1"}]
+    assert "`statements`" not in error(plain, {"antimony": _antimony(), "model_edits": edits})
+    both = {"antimony": _antimony(), "statements": [_statement_row()]}
+    assert "`statements`" in error(offered, both).split(")", 1)[1]  # past the routes given
+    assert "`statements`" not in error(plain, {})
+    assert "`statements`" in error(offered, {})
+
+
+def test_the_types_without_indra_default_are_read_off_the_registry(monkeypatch):
+    """The paragraph said every INDRA statement type has `indra_default`; 6 of 50 had none, and a
+    row trying one came back a library_gap."""
+    from petab_mcp import mechanisms as M
+    from petab_mcp.server import _make_changes_statements_doc
+
+    def without():
+        doc = _make_changes_statements_doc()
+        return doc.split(f" has `{M.INDRA_DEFAULT}`")[0].split("Every INDRA statement type")[1]
+
+    assert "Phosphorylation" not in without()
+    monkeypatch.delitem(M.REGISTRY, ("Phosphorylation", M.INDRA_DEFAULT))
+    assert "Phosphorylation" in without()
 
 
 def test_statements_commit_records_what_was_asserted(tmp_path):

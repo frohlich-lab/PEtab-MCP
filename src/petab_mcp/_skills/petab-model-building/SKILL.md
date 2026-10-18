@@ -17,7 +17,9 @@ say what was measured and what the data can determine. Most mistakes confuse tho
 
 Symbols resolved through the **observable**/**noise** formulas — or the measurement table's
 `observableParameters`/`noiseParameters` columns — are scaling factors and noise sigmas: they
-describe how the readout relates to the state, not how the system evolves.
+describe how the readout relates to the state, not how the system evolves. A `readout_*` symbol
+is neither: it is what the assay measures of your model's state, defined from your species and
+never from itself.
 
 **Never let one stand in for a rate constant.** A rate law that uses an observation symbol and
 declares no parameter of its own is rejected — that is how a model fakes a fit by repurposing the
@@ -60,7 +62,8 @@ You do not write that table — the sync does, and it excludes both forbidden sy
 - **A condition target**: an input supplied per condition, not fitted.
 
 Observable/noise symbols are the opposite case: a `sigma_*` or scaling factor **belongs** in the
-table (only `observableParameter1_*` placeholders don't) — out of the mechanism.
+table (only `observableParameter1_*` placeholders and `readout_*` mappings don't) — out of the
+mechanism.
 
 **Missing**/**Extraneous** parameters in a rejection mean the model and tables disagree about a
 NAME — usually one you renamed on one side only.

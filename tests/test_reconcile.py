@@ -263,6 +263,57 @@ def test_ic_convention_fixes_a_pre_existing_estimated_row():
     assert pdf.loc["G_init", ESTIMATE] == 1
 
 
+# A species started at a parametric IC ``P_init`` declared at ``{}``.
+_DECLARED_P = (
+    "model m\n  compartment c = 1;\n  species P in c; P = P_init; P_init = {};\n"
+    "  kd = 0.1;\n  deg: P -> ; kd*P;\nend\n"
+)
+
+
+def test_an_ic_row_follows_each_redeclared_initial():
+    """Fujita r2: a start declared at 1 stayed FIXED at 1 through every later declaration. The row
+    follows the value the model declares now."""
+    from petab.v2.C import ESTIMATE, NOMINAL_VALUE
+    from petab_mcp.problem import LIN, LOG10, PARAMETER_SCALE
+
+    prob = _bare_problem(_DECLARED_P.format(1.0))
+    rows = []
+    for value in (1.0, 5.0, 0.0, 1.0):
+        prob.model = SbmlModel.from_antimony(_DECLARED_P.format(value))
+        R.reconcile(prob)
+        row = prob.parameter_df.loc["P_init"]
+        rows.append((row[NOMINAL_VALUE], bool(row[ESTIMATE]), row[PARAMETER_SCALE]))
+    assert rows == [(1.0, False, LIN), (5.0, True, LOG10), (0.0, False, LIN), (1.0, False, LIN)]
+
+
+def test_a_redeclared_guess_keeps_its_fit():
+    """Re-declaring an estimated IC at another guess must not discard its fitted value or bounds."""
+    from petab.v2.C import ESTIMATE, LOWER_BOUND, NOMINAL_VALUE, UPPER_BOUND
+
+    prob = _bare_problem(_DECLARED_P.format(5.0))
+    R.reconcile(prob)
+    prob.parameter_df.loc["P_init", [NOMINAL_VALUE, LOWER_BOUND, UPPER_BOUND]] = [7.3, 0.01, 50.0]
+    prob.model = SbmlModel.from_antimony(_DECLARED_P.format(3.0))
+    R.reconcile(prob)
+    row = prob.parameter_df.loc["P_init"]
+    assert bool(row[ESTIMATE]) and row[NOMINAL_VALUE] == 7.3
+    assert (row[LOWER_BOUND], row[UPPER_BOUND]) == (0.01, 50.0)
+
+
+def test_a_shipped_ic_row_does_not_follow_the_declaration():
+    """A row the problem ships is its author's: it stays FIXED at its value whatever is declared."""
+    from petab.v2.C import ESTIMATE, NOMINAL_VALUE
+
+    prob = _bare_problem(_DECLARED_P.format(1.0))
+    shipped = prob.parameter_df.copy()
+    shipped.loc["P_init"] = ["lin", 0.0, 10.0, 2.0, False]
+    for value in (1.0, 5.0):
+        prob.model = SbmlModel.from_antimony(_DECLARED_P.format(value))
+        R.reconcile(prob, shipped=shipped)
+        row = prob.parameter_df.loc["P_init"]
+        assert (row[NOMINAL_VALUE], bool(row[ESTIMATE])) == (2.0, False)
+
+
 def test_ic_convention_does_not_fix_a_compound_expression_participant():
     """The pre-existing-row {0,1}->FIXED pass is restricted to DIRECT ICs (`<sid> = <param>`). A
     participant of a COMPOUND parametric IC (`r2 = a*b`) valued exactly 1 is a fold/normalisation
@@ -373,7 +424,7 @@ _CONDCOL_ANTIMONY = """model m
 end"""
 
 
-def _condcol_problem():
+def _condcol_problem(antimony=_CONDCOL_ANTIMONY):
     import pandas as pd
     from petab_mcp.problem import WorkingProblem
 
@@ -405,7 +456,7 @@ def _condcol_problem():
         }
     ).set_index("parameterId")
     return WorkingProblem(
-        model=SbmlModel.from_antimony(_CONDCOL_ANTIMONY),
+        model=SbmlModel.from_antimony(antimony),
         condition_df=cond,
         experiment_df=exps,
         observable_df=obs,
@@ -447,6 +498,27 @@ def test_initial_conditions_report_flags_estimated_ic(session):
     assert a["declared_t0_used"] is False
 
 
+def test_initial_conditions_report_says_a_synthesised_species_starts_empty():
+    """Fujita r2's EGFR, made by zero-order synthesis, was reported as an empty pool with nothing
+    to say that its start was a default, not a fact."""
+    prob = _bare_problem(
+        "model m\n  compartment c = 1;\n  species P in c; species Q in c; P = 0; Q = 0;\n"
+        "  ks = 0.1; kd = 0.1;\n  syn: -> P; ks;\n  conv: P -> Q; kd*P;\nend\n"
+    )
+    R.reconcile(prob)
+    rep = {r["species"]: r for r in R.initial_conditions_report(prob)}
+    assert "`starts`" in rep["P"]["note"] and "`starts`" not in rep["Q"]["note"]
+
+
+def test_initial_conditions_report_needs_no_nominal_column(session):
+    """`nominalValue` is optional in PEtab v2; read unguarded, its absence raised on every edit."""
+    from petab.v2.C import NOMINAL_VALUE
+
+    session.problem.parameter_df = session.problem.parameter_df.drop(columns=NOMINAL_VALUE)
+    a = {r["species"]: r for r in R.initial_conditions_report(session.problem)}["A"]
+    assert a["t0"] == 1.0
+
+
 def test_initial_conditions_report_marks_newly_added(session):
     """`added` (the reconcile diff) flags which ICs this op introduced."""
     rep = {r["species"]: r for r in R.initial_conditions_report(session.problem, added={"A_init"})}
@@ -464,6 +536,28 @@ def test_initial_conditions_report_condition_target_override():
     assert x["set_by_condition"] is True
     assert x["t0_source"] == "condition_table"
     assert x["declared_t0_used"] is False
+    assert x["t0"] == {"e1": 1.0, "e2": 5.0}
+
+
+def test_initial_conditions_report_reads_a_held_input_off_its_rule():
+    """Fujita r2: an input an assignment rule holds at a condition column was reported as an empty
+    pool, from the literal 0 its species keeps and nothing reads."""
+    head, _ = _CONDCOL_ANTIMONY.rsplit("end", 1)
+    prob = _condcol_problem(head + "  species E in c; E := piecewise(dose, time < 10, 0);\nend")
+    R.reconcile(prob)
+    e = {r["species"]: r for r in R.initial_conditions_report(prob)}["E"]
+    assert e["t0_source"] == "rule" and e["declared_t0"] is None
+    assert e["t0"] == {"e1": 1.0, "e2": 5.0}
+    assert "piecewise(dose, time < 10, 0)" in e["note"]
+
+
+def test_initial_conditions_report_reads_a_fixed_t0_off_the_parameter_table(session):
+    """A FIXED IC's parameter-table row, not the model text, sets t=0; the view reported the
+    declared value as governing it."""
+    session.problem.model.sbml_model.getParameter("A_init").setValue(5.0)
+    a = {r["species"]: r for r in R.initial_conditions_report(session.problem)}["A"]
+    assert (a["declared_t0"], a["t0"], a["declared_t0_used"]) == (5.0, 1.0, False)
+    assert "NOT at the declared 5.0" in a["note"]
 
 
 def test_condition_target_parameter_not_synced_into_parameter_table():
