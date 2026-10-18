@@ -656,6 +656,7 @@ def _basal_addition(stmt: Statement, model: pysb.Model, prefix: str) -> Emission
     """``k·[unmodified]``: the modification goes on at a steady rate, with no named enzyme —
     Blasi's acetylations, Brannmark's insulin-independent receptor phosphorylation. The
     counterpart of :func:`_basal_removal`."""
+    _no_enzyme(stmt, prefix)
     mod = stmt._get_mod_condition()
     site = get_mod_site_name(mod)
     unmod, modified = states[mod.mod_type]
@@ -931,7 +932,7 @@ def _indra(name: str) -> Policy:
             indra._dispatch(stmt, "assemble", model, BaseAgentSet(), {})
         except UnknownPolicyError as exc:
             raise MechanismError(
-                f"INDRA has no {name} assembly for {type(stmt).__name__}"
+                f"INDRA has no {name} assembly for {type(stmt).__name__}", cause="library_gap"
             ) from exc
         added = [c for c in model.all_components() if c.name not in before]
         for parameter in (c for c in added if isinstance(c, pysb.Parameter)):

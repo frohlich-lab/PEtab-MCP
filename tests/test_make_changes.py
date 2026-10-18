@@ -759,6 +759,18 @@ def test_a_library_gap_is_its_own_rejection(tmp_path):
     assert out["applied"] is False and out["error_cause"] == "library_gap"
 
 
+def test_a_malformed_mechanism_is_not_counted_as_a_library_gap(tmp_path):
+    """Every MechanismError counted as a gap, so the library's to-do list was mostly typos."""
+    bad = {**_SATURATING, "rate": "vmax / (K + nowhere)"}
+    out = _call(
+        _statements_server(tmp_path),
+        "make_changes",
+        {"justification": "x", "statements": [_statement_row(policy="saturating")],
+         "mechanisms": [bad]},
+    )
+    assert out["applied"] is False and out["error_cause"] == "malformed_mechanism"
+
+
 def test_an_unreadable_statement_is_refused_not_dropped(tmp_path):
     """INDRA's reader drops what it cannot parse with only a logged warning; a silently shorter
     model would then be fitted and committed."""
