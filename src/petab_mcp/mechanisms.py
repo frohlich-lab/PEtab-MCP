@@ -372,15 +372,19 @@ SHIPPED, CONDITION, SPECIES = (
 
 
 def _how_ids_enter(names, problem_ids: dict[str, str], amounts: str) -> list[str]:
-    """How each of ``names`` that is an id of the problem enters a rate instead."""
-    bound = [n for n in names if problem_ids.get(n) in (SHIPPED, CONDITION)]
+    """How each of ``names`` that is an id of the problem enters a rate instead. A starting
+    amount (``<x>_init``) is not offered the binding: it is read as the amount itself."""
+    bound = [
+        n for n in names if problem_ids.get(n) in (SHIPPED, CONDITION) and not n.endswith("_init")
+    ]
     species = [n for n in names if problem_ids.get(n) == SPECIES]
     return [
         f"{', '.join(f'`{n}` is {problem_ids[n]}' for n in bound)}. A problem parameter or "
         "condition input enters through a row's binding: declare a parameter of your own and "
         f'bind it on the row, `parameters={{"K": "{bound[0]}"}}`, or `kf="k*{bound[0]}"`.'
         if bound else "",
-        f"{', '.join(f'`{n}`' for n in species)}: {SPECIES}; read its amount, {amounts}."
+        f"{', '.join(f'`{n}`' for n in species)}: {SPECIES}, read as the amount of the agent it "
+        f"maps to, written by that agent's own name and sites, not by this id: {amounts}."
         if species else "",
     ]
 
@@ -401,13 +405,13 @@ def refuse_rate_names(
     from .model_edits import closest_symbols
 
     problem_ids = problem_ids or {}
-    close = [
-        f"{u} -> {' or '.join(map(repr, c))}"
-        for u in unknown
-        if (c := closest_symbols(u, allowed + list(_RATE_FUNCTIONS)))
-    ]
     starts = [n for n in unknown if n.endswith("_init")]
     new = [n for n in unknown if n not in (*starts, *roles, *problem_ids)]
+    close = [
+        f"{u} -> {' or '.join(map(repr, c))}"
+        for u in new
+        if (c := closest_symbols(u, allowed + list(_RATE_FUNCTIONS)))
+    ]
     sentences = [
         f"rate {rate!r} of {policy!r} may name only {allowed}{also}; it names {unknown}.",
         f"Did you mean: {'; '.join(close)}?" if close else "",
@@ -452,9 +456,13 @@ def written(
     amounts = "`amount(<pattern>)`" if definition.get("scheme") else "a role (`sub`) or a modifier"
     if shadow := sorted(set(definition.get("parameters") or []) & set(problem_ids or {})):
         raise MechanismError(
-            f"{policy!r} declares {shadow} in `parameters`, each a new parameter minted per row "
-            "as `<prefix>_<name>`: name yours apart. "
-            + " ".join(h for h in _how_ids_enter(shadow, problem_ids, amounts) if h)
+            " ".join(
+                [
+                    f"{policy!r} declares {shadow} in `parameters`, each a new parameter minted "
+                    "per row as `<prefix>_<name>`: name yours apart.",
+                    *(h for h in _how_ids_enter(shadow, problem_ids, amounts) if h),
+                ]
+            )
         )
     if definition.get("scheme"):
         from .schemes import compile_scheme

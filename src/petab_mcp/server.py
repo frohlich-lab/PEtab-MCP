@@ -968,15 +968,15 @@ def _statements_text(session, version: int | None) -> str:
             written[(d["statement_type"], d["policy"])] = d
     for d in written.values():
         library[(d["statement_type"], d["policy"])] = None
+        declared = f", parameters {', '.join(d['parameters'])}" if d.get("parameters") else ""
         if d.get("scheme"):
-            declared = f", parameters {', '.join(d['parameters'])}" if d.get("parameters") else ""
             lines.append(f"mechanism {d['policy']}: {d['statement_type']}, scheme{declared}")
             lines += [f"  {line.strip()}" for line in d["scheme"].strip().splitlines() if line.strip()]
             continue
         reads = f"  reads {', '.join(d['modifiers'])}" if d.get("modifiers") else ""
         lines.append(
             f"mechanism {d['policy']}: {d['statement_type']} like "
-            f"{d.get('based_on', mechanisms.INDRA_DEFAULT)}, rate {d['rate']}{reads}"
+            f"{d.get('based_on', mechanisms.INDRA_DEFAULT)}, rate {d['rate']}{declared}{reads}"
         )
     for row in record["rows"]:
         bare = {k: row[k] for k in ("statement", "policy", "prefix", "parameters", "modifiers")

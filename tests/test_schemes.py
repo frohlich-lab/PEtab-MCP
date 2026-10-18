@@ -288,13 +288,26 @@ _IDS = {"d": M.SHIPPED, "EGF_0": M.CONDITION, "pERK": M.SPECIES}
         ("d", r"`d` is a parameter the problem ships\. A problem parameter or condition input "
               r"enters through a row's binding"),
         ("EGF_0", r"`EGF_0` is a condition input\. .*`parameters=\{\"K\": \"EGF_0\"\}`"),
-        ("pERK", r"`pERK`: a species of the entity map; read its amount"),
+        ("pERK", r"`pERK`: a species of the entity map, read as the amount of the agent it maps "
+                 r"to, written by that agent's own name and sites, not by this id"),
     ],
 )
 def test_a_problem_id_in_a_scheme_rate_says_how_it_enters(name, match):
     """Blasi's shipped FIXED `d`, written in a scheme's rate, became a new estimated `r_d`."""
     with pytest.raises(MechanismError, match=match):
         _scheme(f"kf*{name}", problem_ids=_IDS)
+
+
+def test_a_problem_id_gets_only_its_own_remedy():
+    """Crauste's shipped `Naive_init` was offered the binding, which then failed where the seed
+    makes `Naive_init` again; a shipped `kd` beside a declared `k` was offered "did you mean 'k'"."""
+    ids = {"Naive_init": M.SHIPPED, "kd": M.SHIPPED}
+    with pytest.raises(MechanismError) as refused:
+        _scheme("kf*Naive_init", problem_ids=ids)
+    assert "starts at" in str(refused.value) and "binding" not in str(refused.value)
+    with pytest.raises(MechanismError) as refused:
+        _scheme("k*kd", ("k",), ids)
+    assert "binding" in str(refused.value) and "Did you mean" not in str(refused.value)
 
 
 def test_a_declared_parameter_may_not_take_a_problem_id():
