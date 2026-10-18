@@ -79,6 +79,7 @@ def to_antimony(
     starts: list[tuple[str, Agent, float | str]] | None = None,
     formulas: dict[str, str] | None = None,
     amounts: dict[str, Agent] | None = None,
+    notes: list[str] | None = None,
 ) -> tuple[str, list[M.Emission]]:
     """The model ``rows`` build, as Antimony the ``antimony`` route accepts unchanged.
 
@@ -97,6 +98,10 @@ def to_antimony(
     assignment rule over ``amounts`` (name to the agent whose amount it is), the entity map's ids
     — each a symbol of the model by then — and parameter ids, a name the model does not hold
     becoming a parameter as in a declared start.
+
+    ``notes``, when given, collects what the start holds that nothing declared and the caller may
+    not expect: kinds the rules make from nothing, which start empty, and a start location chosen
+    among several.
     """
     starts = starts or []
     clash = sorted(set(amounts or {}) & set(entities))
@@ -112,11 +117,13 @@ def to_antimony(
     )
     held = {entities[species].name: formula for species, formula in (inputs or {}).items()}
     _refuse_chains(model, emissions)
-    made = set()
+    made, synthesised = set(), set()
     for rule in model.rules:
         reactants = _monomer_names(rule.reactant_pattern)
         products = _monomer_names(rule.product_pattern)
         made |= products - reactants
+        if reactants <= products:  # consumes nothing it does not give back
+            synthesised |= products - reactants
         if rule.is_reversible:
             made |= reactants - products
     # Readouts are named apart from the species they stand for, which may share a monomer's
@@ -139,6 +146,25 @@ def to_antimony(
         _seed(model, unreached)
         model.reset_equations()
         _expand(model)
+    if notes is not None:
+        empty = sorted((synthesised & reached) - held.keys() - declared)
+        if empty:
+            notes.append(
+                f"These start at 0, because rules make them from nothing and no `starts` entry "
+                f"declares them: {', '.join(empty)}. Declare each one present at t=0 (a protein "
+                "made at a steady rate is) in `starts`; one declared at 0 stays empty and leaves "
+                "this list."
+            )
+        for initial in model.initials:
+            pattern = initial.pattern.monomer_patterns[0]
+            locations = pattern.monomer.site_states.get("loc", ())
+            if pattern.monomer.name in declared or len(locations) < 2 or "cytoplasm" in locations:
+                continue
+            notes.append(
+                f"{pattern.monomer.name} starts in {pattern.site_conditions['loc']}, the first of "
+                f"its locations {sorted(locations)} by name, since no statement puts it in the "
+                "cytoplasm. To start it elsewhere, declare it in `starts`."
+            )
     fired = {name for reaction in model.reactions for name in reaction["rule"]}
     never = []
     stuck = sorted({e.prefix for e in emissions if not fired.issuperset(e.rules)})

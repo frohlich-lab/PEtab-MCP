@@ -765,6 +765,7 @@ def statements_to_antimony(
          start["amount"])
         for start in starts or []
     ]
+    notes: list[str] = []
     antimony, emissions = problem_sbml.to_antimony(
         [
             (
@@ -782,6 +783,7 @@ def statements_to_antimony(
         declared,
         readouts,
         {k: Agent._from_json(v) for k, v in (amounts or {}).items()},
+        notes=notes,
     )
     record = {
         "rows": [
@@ -801,7 +803,7 @@ def statements_to_antimony(
         M.warning(M.SOURCE_EDIT, f"`statements[{i}]` agent(s) {names} carry no grounding.")
         for i, names in enumerate(map(ungrounded, stmts))
         if names
-    ]
+    ] + [M.warning(M.SOURCE_EDIT, note) for note in notes]
     return antimony, record, warnings, definitions
 
 
