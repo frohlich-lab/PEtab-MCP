@@ -156,7 +156,9 @@ def to_antimony(
         for initial in model.initials:
             pattern = initial.pattern.monomer_patterns[0]
             locations = pattern.monomer.site_states.get("loc", ())
-            if pattern.monomer.name in declared or len(locations) < 2 or "cytoplasm" in locations:
+            if pattern.monomer.name in declared.union(held) or len(locations) < 2:
+                continue
+            if "cytoplasm" in locations:
                 continue
             notes.append(
                 f"{pattern.monomer.name} starts in {pattern.site_conditions['loc']}, the first of "
