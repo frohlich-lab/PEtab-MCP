@@ -298,6 +298,18 @@ def test_a_readout_formula_names_a_new_symbol():
         )
 
 
+def test_a_readout_formula_never_reads_the_readout():
+    """`readout_x := readout_x * X` made a parameter of the readout's own name before the rule's,
+    and libSBML failed on the duplicate id ("id must be unique")."""
+    with pytest.raises(ModelUpdateError, match="'readout_total' = .* reads itself"):
+        PS.to_antimony(
+            [(_PHOSPHO, INDRA_DEFAULT, "r1")],
+            {},
+            formulas={"readout_total": "readout_total * tERK"},
+            amounts={"tERK": Agent("ERK")},
+        )
+
+
 # -- entries written from the statement's own agents ---------------------------------
 def _reactions(rows, entities):
     antimony, _ = PS.to_antimony(rows, entities)

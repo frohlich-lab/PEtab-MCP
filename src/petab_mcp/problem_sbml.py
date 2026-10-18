@@ -292,6 +292,12 @@ def _readout_formula(sbml_model, readout: str, formula: str, agents=frozenset())
     math = libsbml.parseL3Formula(formula)
     if math is None:
         raise ModelUpdateError(f"readout {readout!r} is no formula: {formula!r}")
+    if any(node.isName() and node.getName() == readout for node in _ast_nodes(math)):
+        raise ModelUpdateError(
+            f"readout {readout!r} = {formula!r} reads itself. A readout is not a parameter to "
+            "scale: it is what the assay measures of the model's state, a formula over the "
+            "amounts it reads."
+        )
     unread = sorted(
         {
             node.getName()
