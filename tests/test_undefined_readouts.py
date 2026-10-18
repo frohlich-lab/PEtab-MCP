@@ -19,6 +19,7 @@ import pytest
 from petab_mcp import model as model_mod
 from petab_mcp import operations as O
 from petab_mcp import reconcile as R
+from petab_mcp.operations import OperationError
 from petab_mcp.references import StubReferenceResolver
 from petab_mcp.server import create_server
 from petab_mcp.session import PetabSession
@@ -284,3 +285,26 @@ def test_a_defined_readout_is_shown_by_its_rule_and_never_gets_a_row(blinded, tm
     assert "readout_B" not in session.problem.parameter_df.index
     assert session.describe()["readouts_to_define"] == []
     assert model_mod.model_structure(session)["readouts"] == {"readout_B": "2 * B"}
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        {"antimony": _MODEL.format(rule="readout_B := readout_B * B;")},
+        {"model_edits": [{"op": "set_assignment", "id": "readout_B", "antimony": "readout_B*B"}]},
+    ],
+    ids=["antimony", "set_assignment"],
+)
+def test_a_readout_that_reads_itself_is_refused_with_what_a_readout_is(blinded, tmp_path, route):
+    """libantimony only reports a loop, which says nothing about what the readout is."""
+    mcp = _server(blinded, tmp_path)
+    res = _call(mcp, "make_changes", {**route, "justification": "scale the readout"})
+    assert res["applied"] is False
+    assert "'readout_B' is not a parameter to scale" in res["error"]
+    assert _call(mcp, "describe_problem")["model_authored"] is False
+
+
+def test_any_symbol_that_assigns_itself_is_refused(session):
+    with pytest.raises(OperationError, match="'x' reads the symbol it assigns") as exc:
+        O.set_model(session, _MODEL.format(rule="x := 2 * x + B;"), justification="loop")
+    assert exc.value.cause == "self_assignment" and "not a parameter to scale" not in str(exc.value)
