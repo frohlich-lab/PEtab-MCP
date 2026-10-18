@@ -826,3 +826,58 @@ def test_a_written_mechanism_is_not_redefined_in_place(tmp_path):
         mcp, "make_changes", {"justification": "y", "statements": [row], "mechanisms": [changed]}
     )
     assert out["applied"] is False and out["error_cause"] == "mechanism_redefined"
+
+
+def _concurrently(monkeypatch, mcp, *calls):
+    """The ``make_changes`` calls, each on its own thread, each pausing after it builds its
+    statements until every other has built too (or 3 s pass)."""
+    import threading
+
+    barrier = threading.Barrier(len(calls), timeout=3)
+    build = O.statements_to_antimony
+
+    def paused(*args, **kwargs):
+        built = build(*args, **kwargs)
+        try:
+            barrier.wait()
+        except threading.BrokenBarrierError:  # the other call waits on the session lock
+            pass
+        return built
+
+    monkeypatch.setattr(O, "statements_to_antimony", paused)
+    results = [None] * len(calls)
+
+    def run(i):
+        results[i] = _call(mcp, "make_changes", calls[i])
+
+    threads = [threading.Thread(target=run, args=(i,)) for i in range(len(calls))]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    return results
+
+
+def test_concurrent_calls_keep_every_mechanism_they_write(tmp_path, monkeypatch):
+    """Both calls built from the registry as it was before either committed: of two written
+    mechanisms one was lost, and two definitions of one name both committed."""
+    mcp = _statements_server(tmp_path)
+    other = {**_SATURATING, "policy": "hill", "rate": "vmax * source / (K + source)"}
+    calls = [
+        {"justification": m["policy"], "statements": [_statement_row(policy=m["policy"])],
+         "mechanisms": [m]}
+        for m in (_SATURATING, other)
+    ]
+    assert all(out["applied"] for out in _concurrently(monkeypatch, mcp, *calls))
+    rows = [{**_statement_row(policy=p), "prefix": p} for p in ("saturating", "hill")]
+    both = _call(mcp, "make_changes", {"justification": "both", "statements": rows})
+    assert both["applied"] is True, both.get("error")
+
+    (tmp_path / "redefined").mkdir()
+    mcp = _statements_server(tmp_path / "redefined")
+    changed = {**_SATURATING, "rate": "vmax"}
+    calls = [{**call, "mechanisms": [m]} for call, m in zip(calls, (_SATURATING, changed))]
+    calls[1]["statements"] = calls[0]["statements"]
+    outs = _concurrently(monkeypatch, mcp, *calls)
+    assert sorted(bool(out["applied"]) for out in outs) == [False, True]
+    assert [out.get("error_cause") for out in outs if not out["applied"]] == ["mechanism_redefined"]
