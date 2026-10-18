@@ -521,6 +521,7 @@ def _basal_addition(stmt: Statement, model: pysb.Model, prefix: str) -> Emission
     """``k·[unmodified]``: the modification goes on at a steady rate, with no named enzyme —
     Blasi's acetylations, Brannmark's insulin-independent receptor phosphorylation. The
     counterpart of :func:`_basal_removal`."""
+    _no_enzyme(stmt, prefix)
     mod = stmt._get_mod_condition()
     site = get_mod_site_name(mod)
     unmod, modified = states[mod.mod_type]
