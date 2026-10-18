@@ -873,7 +873,8 @@ def _make_changes_statements_doc() -> str:
         + (f" but {', '.join(without)}" if without else "")
         + f" has `{mechanisms.INDRA_DEFAULT}`; the library "
         f"also holds {entries}. When none fits, WRITE one in `mechanisms` — it stays in the "
-        "library for the rest of the run. A row's `parameters` shares a rate constant with other "
+        "library for the rest of the run; its rate may read `modifiers`, agents each row names "
+        "that take no part in the reaction (an inhibitor, a regulator). A row's `parameters` shares a rate constant with other "
         "rows, or with a parameter the problem ships, or fixes it to a number. The species the "
         "observables read, and the inputs the "
         "experiments set (a dose), are bound by the problem's entity map: name agents as it "
