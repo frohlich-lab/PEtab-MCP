@@ -1956,6 +1956,13 @@ def initial_conditions_report(problem, added: set[str] | None = None) -> list[di
         | {target: _evaluate(value, values | {"time": start}) for target, value in targets.items()}
         for eid, (start, targets) in experiment_starts(problem).items()
     }
+    # Species a reaction makes while consuming nothing it does not give back: a synthesis.
+    synthesised: set[str] = set()
+    for reaction in sm.getListOfReactions():
+        reactants = {r.getSpecies() for r in reaction.getListOfReactants()}
+        products = {p.getSpecies() for p in reaction.getListOfProducts()}
+        if reactants <= products:
+            synthesised |= products - reactants
     out: list[dict[str, Any]] = []
     for i in range(sm.getNumSpecies()):
         sp = sm.getSpecies(i)
@@ -2033,6 +2040,12 @@ def initial_conditions_report(problem, added: set[str] | None = None) -> list[di
                 else f"FIXED at {t0!r} by its parameter-table row, NOT at the declared "
                 f"{declared!r} — the row governs the simulated t=0 state."
             )
+            if t0 == 0.0 and ic is None and assignment is None and sid in synthesised:
+                note += (
+                    " A reaction makes it from nothing and nothing declares it present at the "
+                    "start: if it is (a protein made at a steady rate is), declare its starting "
+                    "amount, in `starts` on the statements route."
+                )
         out.append(
             {
                 "species": sid,

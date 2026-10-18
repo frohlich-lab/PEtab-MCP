@@ -498,6 +498,18 @@ def test_initial_conditions_report_flags_estimated_ic(session):
     assert a["declared_t0_used"] is False
 
 
+def test_initial_conditions_report_says_a_synthesised_species_starts_empty():
+    """Fujita r2's EGFR, made by zero-order synthesis, was reported as an empty pool with nothing
+    to say that its start was a default, not a fact."""
+    prob = _bare_problem(
+        "model m\n  compartment c = 1;\n  species P in c; species Q in c; P = 0; Q = 0;\n"
+        "  ks = 0.1; kd = 0.1;\n  syn: -> P; ks;\n  conv: P -> Q; kd*P;\nend\n"
+    )
+    R.reconcile(prob)
+    rep = {r["species"]: r for r in R.initial_conditions_report(prob)}
+    assert "`starts`" in rep["P"]["note"] and "`starts`" not in rep["Q"]["note"]
+
+
 def test_initial_conditions_report_needs_no_nominal_column(session):
     """`nominalValue` is optional in PEtab v2; read unguarded, its absence raised on every edit."""
     from petab.v2.C import NOMINAL_VALUE
