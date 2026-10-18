@@ -999,8 +999,8 @@ def test_list_mechanisms_shows_two_step_as_its_rules(tmp_path):
 
 def test_a_library_gap_is_its_own_rejection(tmp_path):
     """A pair the library does not hold must stay countable apart from a malformed call — it is
-    the to-do list for the library."""
-    row = _statement_row(policy="no_such_mechanism")
+    the to-do list for the library. INDRA's default asked of a type INDRA does not have is one."""
+    row = _statement_row(policy="indra_default")
     out = _call(
         _statements_server(tmp_path), "make_changes", {"justification": "x", "statements": [row]}
     )
@@ -1104,6 +1104,17 @@ def test_a_repeated_prefix_is_refused_before_assembly(tmp_path):
     assert out["applied"] is False and out["error_cause"] == "duplicate_prefix"
 
 
+def test_a_misspelt_policy_is_not_counted_as_a_library_gap(tmp_path):
+    """Every pair the library lacked was a gap, so a typo (`mass_actoin`) joined the library's
+    to-do list. It is malformed, and the refusal names the policy meant."""
+    row = _statement_row(policy="mass_actoin")
+    out = _call(
+        _statements_server(tmp_path), "make_changes", {"justification": "x", "statements": [row]}
+    )
+    assert out["applied"] is False and out["error_cause"] == "malformed_mechanism"
+    assert "(did you mean 'mass_action'?)" in out["error"]
+
+
 def test_statement_species_take_the_problems_own_initial_conditions(tmp_path):
     """The first version minted a fixed one-unit initial amount per species, so Crauste's
     populations all started at one cell and its shipped `Naive_init` (8090) went unused. The
@@ -1169,6 +1180,18 @@ def test_a_mechanism_the_agent_writes_stays_in_the_run_library(tmp_path):
     row["prefix"] = "conv2"  # a different structure, so the de-dup does not refuse the refit
     again = _call(mcp, "make_changes", {"justification": "reuse", "statements": [row]})
     assert again["applied"] is True
+
+
+def test_a_written_mechanism_no_row_uses_survives_a_resume(tmp_path):
+    """The run keeps a mechanism it wrote whether or not a row uses it. A resume read them back
+    off the rows alone, so one no row used was in the library live and gone after a resume."""
+    mcp = _statements_server(tmp_path)
+    args = {"justification": "x", "statements": [_statement_row()], "mechanisms": [_SATURATING]}
+    assert _call(mcp, "make_changes", args)["committed"] is True
+    row = {**_statement_row(policy="saturating"), "prefix": "conv2"}
+    resumed = _statements_server(tmp_path)
+    out = _call(resumed, "make_changes", {"justification": "y", "statements": [row]})
+    assert out["applied"] is True, out.get("error")
 
 
 def test_a_kind_made_from_nothing_is_said_to_start_empty(tmp_path):
