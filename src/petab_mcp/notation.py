@@ -520,7 +520,7 @@ def parse(
     t = _Reader(tail, groundings)
     policy = t.name()
     if library is not None and (st["type"], policy) not in library:
-        if (st["type"], "indra_" + policy) in library:
+        if any(p == "indra_" + policy for _, p in library):
             policy = "indra_" + policy
     row: dict[str, Any] = {"statement": st, "policy": policy, "prefix": m.group(1)}
     while not t.done():
