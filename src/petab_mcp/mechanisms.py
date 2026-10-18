@@ -106,11 +106,7 @@ def _misspelt(
     from .model_edits import closest_symbols
 
     stmt_type, policy = key
-    named = {p for _, p in library} | {
-        f"indra_{n.split('_assemble_')[1]}"
-        for n, f in vars(_indra_assembler).items()
-        if "_assemble_" in n and callable(f)
-    }
+    named = {p for _, p in library} | {f"indra_{n.split('_assemble_')[1]}" for n in _INDRA_ASSEMBLY}
     if policy in named:
         return ""
     close = closest_symbols(policy, own)
