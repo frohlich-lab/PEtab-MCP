@@ -55,6 +55,39 @@ def test_an_input_is_held_to_its_protocol():
     assert {"EGF_0", "EGF_rate", "EGF_end"} <= {p.getId() for p in sbml.getListOfParameters()}
 
 
+def test_chained_dimers_are_refused_before_the_expansion():
+    """STAT5A and STAT5B each dimerising with itself and with the other chain without end;
+    refused only once BioNetGen had built every complex up to the cap, the refusal took 19 s on
+    an idle machine and 251 s on a loaded one. The dimers its advice writes still build."""
+    import time
+
+    from indra.statements import Complex
+
+    a, b = "STAT5A", "STAT5B"
+    entities = {a: Agent(a), b: Agent(b)}
+    start = time.perf_counter()
+    with pytest.raises(ModelUpdateError, match=r"rows \['aa', 'ab', 'bb'\] bind .* into chains"):
+        PS.to_antimony(
+            [
+                (Complex([Agent(a), Agent(a)]), INDRA_DEFAULT, "aa"),
+                (Complex([Agent(a), Agent(b)]), INDRA_DEFAULT, "ab"),
+                (Complex([Agent(b), Agent(b)]), INDRA_DEFAULT, "bb"),
+            ],
+            entities,
+        )
+    assert time.perf_counter() - start < 10
+
+    def free(name, of):
+        return Agent(name, bound_conditions=[BoundCondition(Agent(of), False)])
+
+    rows = [
+        (Complex([free(a, b), free(a, b)]), INDRA_DEFAULT, "aa"),
+        (Complex([free(a, a), free(b, b)]), INDRA_DEFAULT, "ab"),
+        (Complex([free(b, a), free(b, a)]), INDRA_DEFAULT, "bb"),
+    ]
+    assert "STAT5A" in PS.to_antimony(rows, entities)[0]
+
+
 def test_what_is_made_starts_empty_and_what_is_modified_starts_present():
     """Crauste's effectors exist only once naive cells convert; a kinase that is only ever
     modified must be there at the start. The modified one's amount is `<monomer>_init`, not

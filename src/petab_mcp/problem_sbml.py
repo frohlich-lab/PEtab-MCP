@@ -51,6 +51,7 @@ import pysb
 from indra.assemblers.pysb.assembler import get_monomer_pattern
 from indra.statements import Agent, Statement
 from petab.v1.models.sbml_model import SbmlModel
+from pysb import ANY
 from pysb.bng import NoInitialConditionsError, generate_equations
 from pysb.export import export
 
@@ -77,6 +78,7 @@ def to_antimony(
     """
     model, emissions = M.assemble(rows, entities, library)
     held = {entities[species].name: formula for species, formula in (inputs or {}).items()}
+    _refuse_chains(model, emissions)
     made = set()
     for rule in model.rules:
         reactants = _monomer_names(rule.reactant_pattern)
@@ -209,12 +211,24 @@ def _seed(model: pysb.Model, monomers: list[pysb.Monomer]) -> None:
         model.add_initial(pysb.Initial(monomer(**state), amount, _export=False))
 
 
+#: The most molecules one complex may hold. A network whose complexes reach it is taken for one
+#: whose complexes grow without bound, which BioNetGen expands forever. BioNetGen builds every
+#: complex up to the cap before the check can refuse, so the cap bounds the cost of finding out:
+#: reactions grow about with its square for a chain, exponentially for complexes that branch.
+MAX_COMPLEX = 20
+
+
 def _expand(model: pysb.Model) -> None:
     """Fill in BioNetGen's expansion of ``model`` from its start. Left empty when nothing starts
     (populations that only interconvert), which PySB refuses to expand, or nothing fires, whose
-    network BioNetGen refuses to write."""
+    network BioNetGen refuses to write.
+
+    Expanded with complexes capped at :data:`MAX_COMPLEX` molecules, and refused when one reaches
+    it: statements that let complexes chain without end (STAT5A and STAT5B each dimerising with
+    itself and with the other, every molecule then holding a free site for the next) otherwise
+    keep BioNetGen expanding until the client gives up, call after call, with nothing said."""
     try:
-        generate_equations(model)
+        generate_equations(model, max_agg=MAX_COMPLEX)
     except NoInitialConditionsError:
         pass
     except Exception as exc:  # BioNetGen fails as a bare Exception or an OSError
@@ -222,6 +236,16 @@ def _expand(model: pysb.Model) -> None:
             raise ModelUpdateError(
                 f"Expanding the statements into reactions failed: {exc}"
             ) from exc
+    grown = [sp for sp in model.species if len(sp.monomer_patterns) >= MAX_COMPLEX]
+    if grown:
+        kinds = sorted({mp.monomer.name for mp in grown[0].monomer_patterns})
+        raise ModelUpdateError(
+            f"These statements form complexes that grow without bound: complexes of {kinds} reach "
+            f"{MAX_COMPLEX} molecules and would keep growing. A molecule that binds several "
+            "partners has a free site for each, so bindings chain (A binds A, A binds B and B "
+            "binds B make A-A-B-B-A-...). Require each partner to be free of its other partners "
+            "where it binds: `A{~B} binds A{~B}`, `A{~A} binds B{~B}`, `B{~A} binds B{~A}`."
+        )
 
 
 def _drop_unreferenced_parameters(sbml_model) -> None:
@@ -242,6 +266,124 @@ def _ast_nodes(node):
     for i in range(node.getNumChildren()):
         yield from _ast_nodes(node.getChild(i))
 
+
+def _refuse_chains(model: pysb.Model, emissions: list[M.Emission]) -> None:
+    """Refuse, before BioNetGen runs, rules whose complexes can chain without end.
+
+    A complex can grow without bound when a cycle of bonds lets each molecule on it be bound on
+    one site while binding on another: STAT5A and STAT5B each dimerising with itself and with the
+    other make STAT5A-STAT5A-STAT5B-STAT5B-STAT5A-... The rules say this at once, where the
+    capped expansion (:data:`MAX_COMPLEX`) only finds it out after building every complex up to
+    the cap, which took 19 s on that pair alone and 251 s on a loaded laptop. The cap stays as
+    the backstop for growth the bonds alone do not show.
+    """
+    formed: dict[tuple, set[str]] = {}  # bond, as its two (monomer, site) ends -> rules forming it
+    holds: set[tuple[str, str, str]] = set()  # (monomer, s, t): bound on s and t at once
+    for rule in model.rules:
+        sides = [(rule.reactant_pattern, rule.product_pattern)]
+        if rule.is_reversible:
+            sides.append((rule.product_pattern, rule.reactant_pattern))
+        for before, after in sides:
+            for molecule in _molecules(before) + _molecules(after):
+                bound = sorted(s for s, v in molecule.site_conditions.items() if _is_bond(v))
+                holds |= {(molecule.monomer.name, s, t) for s in bound for t in bound if s != t}
+            new = _bonds(after)
+            for bond in _bonds(before):
+                if bond in new:
+                    new.remove(bond)
+            for bond in new:
+                formed.setdefault(bond, set()).add(rule.name)
+                for name, site in bond:
+                    # The molecule taking the bond holds every bond its pattern does not forbid.
+                    for molecule in _molecules(before):
+                        conditions = molecule.site_conditions
+                        if molecule.monomer.name == name and _is_free(conditions.get(site, ANY)):
+                            holds |= {
+                                pair
+                                for other in molecule.monomer.sites
+                                if other != site and not _is_free(conditions.get(other, ANY))
+                                for pair in ((name, site, other), (name, other, site))
+                            }
+    # From "bound on s", a molecule that may also bind on t reaches its partner on t's bond.
+    steps: dict[tuple[str, str], list[tuple[tuple[str, str], tuple]]] = {}
+    for bond in formed:
+        for (name, site), partner in ((bond[0], bond[1]), (bond[1], bond[0])):
+            for held_name, s, t in holds:
+                if held_name == name and t == site:
+                    steps.setdefault((name, s), []).append((partner, bond))
+    cycle = _cycle(steps)
+    if cycle is None:
+        return
+    rules = set().union(*(formed[bond] for _, bond in cycle))
+    rows = sorted({e.prefix for e in emissions if rules & set(e.rules)})
+    chain = "-".join(node[0] for node, _ in cycle) + f"-{cycle[0][0][0]}-..."
+    raise ModelUpdateError(
+        f"These statements form complexes that grow without bound: rows {rows} bind "
+        f"{sorted({node[0] for node, _ in cycle})} into chains ({chain}), each molecule bound on "
+        "one site still free to bind on another. Require each partner to be free of its other "
+        "partners where it binds: `A{~B} binds A{~B}`, `A{~A} binds B{~B}`, `B{~A} binds B{~A}`."
+    )
+
+
+def _molecules(reaction_pattern) -> list:
+    return [
+        mp for cp in reaction_pattern.complex_patterns if cp is not None for mp in cp.monomer_patterns
+    ]
+
+
+def _is_free(value) -> bool:
+    """Whether a site condition requires the site unbound (``None``, or ``(state, None)``)."""
+    return value is None or (isinstance(value, tuple) and value[1] is None)
+
+
+def _is_bond(value) -> bool:
+    if isinstance(value, tuple):
+        value = value[1]
+    return value is ANY or (isinstance(value, int) and not isinstance(value, bool))
+
+
+def _bonds(reaction_pattern) -> list[tuple]:
+    """Each bond of the pattern as its two ``(monomer, site)`` ends, sorted."""
+    bonds = []
+    for cp in reaction_pattern.complex_patterns:
+        if cp is None:
+            continue
+        ends: dict[int, list] = {}
+        for mp in cp.monomer_patterns:
+            for site, value in mp.site_conditions.items():
+                number = value[1] if isinstance(value, tuple) else value
+                if isinstance(number, int) and not isinstance(number, bool):
+                    ends.setdefault(number, []).append((mp.monomer.name, site))
+        bonds += [tuple(sorted(pair)) for pair in ends.values() if len(pair) == 2]
+    return bonds
+
+
+def _cycle(steps: dict) -> list | None:
+    """A cycle in ``steps`` as its ``(node, bond)`` steps, or ``None``."""
+    state: dict = {}
+    path: list = []
+
+    def visit(node) -> list | None:
+        state[node] = "open"
+        for partner, bond in steps.get(node, []):
+            path.append((node, bond))
+            if state.get(partner) == "open":
+                start = next(i for i, (n, _) in enumerate(path) if n == partner)
+                return path[start:]
+            if partner not in state:
+                found = visit(partner)
+                if found:
+                    return found
+            path.pop()
+        state[node] = "done"
+        return None
+
+    for node in list(steps):
+        if node not in state:
+            found = visit(node)
+            if found:
+                return found
+    return None
 
 def _rename(sbml_model, element, new: str) -> None:
     """Rename ``element`` and every reference to it. Element by element: the model's own
