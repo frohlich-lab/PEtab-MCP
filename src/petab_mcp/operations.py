@@ -567,6 +567,24 @@ def set_model(
         raise OperationError(
             "make_changes requires a non-empty Antimony model string when `antimony` is given."
         )
+    from .model_edits import self_assignments
+
+    looped = self_assignments(antimony)
+    if looped:
+        readout = next((s for s in looped if s.startswith(R.READOUT_PREFIX)), None)
+        raise OperationError(
+            f"make_changes: the assignment rule of {', '.join(map(repr, looped))} reads the "
+            "symbol it assigns. A rule computes its symbol from OTHER quantities, so this is a "
+            "loop no model can hold."
+            + (
+                f" {readout!r} is not a parameter to scale: it is what the assay measures of the "
+                f"model's state, `{readout} := <expression of your species>`."
+                if readout
+                else ""
+            )
+            + " NOTHING was applied.",
+            cause="self_assignment",
+        )
 
     normalized = _normalize_parameter_changes(parameters, arg="parameters") if parameters else []
 

@@ -360,6 +360,15 @@ def rule_target_symbols(text: str) -> set[str]:
     return {m.group("id") for m in _RULE_STMT.finditer(masked)}
 
 
+def self_assignments(text: str) -> list[str]:
+    """Symbols whose assignment rule reads the symbol itself (`x := 2*x`), in order."""
+    masked = mask_comments(text or "")
+    rules = re.finditer(r"(?<![\w.])(?P<id>[A-Za-z_]\w*)\s*:=\s*(?P<expr>[^;\n]*)", masked)
+    return [
+        m["id"] for m in rules if re.search(rf"(?<![\w.]){re.escape(m['id'])}(?!\w)", m["expr"])
+    ]
+
+
 def assigned_symbols(text: str) -> list[str]:
     """Every symbol given a value — the remedy list `set_initial` owes a caller whose id missed."""
     masked = mask_comments(text or "")

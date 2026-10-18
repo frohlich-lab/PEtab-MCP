@@ -40,12 +40,14 @@ def model_structure(session) -> dict[str, Any]:
     from . import reconcile as R
 
     sm = session.model.sbml_model
+    readouts = R.readouts(session.problem)
     return {
         "model_id": session.model.model_id,
         "initial_conditions": R.initial_conditions_report(session.problem),
         "compartments": [sm.getCompartment(i).getId() for i in range(sm.getNumCompartments())],
         "species": [sm.getSpecies(i).getId() for i in range(sm.getNumSpecies())],
-        "parameters": list(session.model.get_parameter_ids()),
+        "parameters": [p for p in session.model.get_parameter_ids() if p not in readouts],
+        "readouts": readouts,
         "reactions": [
             {
                 "id": sm.getReaction(i).getId(),
