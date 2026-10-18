@@ -1115,6 +1115,12 @@ def _register_model_tools(
                     {"n_statements": len(rows)},
                     cause=getattr(exc, "cause", None),
                 )
+            except Exception as exc:
+                # A crash, not a refusal: logged where every tool's crash lands (`_Ctx.run`), so a
+                # sweep's errors.jsonl shows it, and raised. It escaped unlogged before.
+                ctx.log_error("make_changes", {"n_statements": len(rows)}, exc)
+                session.logger.exception("make_changes crashed building the statements' model")
+                raise
         # One critical section for the change and its fit, so nothing can fit in between
         # (`session.lock` is an RLock, so the nested acquisitions inside each call are fine).
         with session.lock:
