@@ -778,7 +778,7 @@ _MAKE_CHANGES_SUMMARY = (
     "Change the model and/or its parameter search space, then FIT and snapshot a version."
 )
 
-_MAKE_CHANGES_ROUTES = """\
+_MAKE_CHANGES_ROUTES_BODY = """\
 The single editor, with TWO routes to a model change — give exactly ONE.
 
 `model_edits` is the route to use for every change after the first: a BATCH of
@@ -819,7 +819,17 @@ Give `parameters` to set estimation BOUNDS and/or SCALE: a list of
 `{parameter_id, lower_bound?, upper_bound?, scale?}` entries, applied atomically AFTER the
 reconcile — so an entry may target a parameter this very call introduces. Combine it with
 either model route for a structural change and the bounds it needs. At least one of
-`antimony` / `model_edits` / `parameters` is required."""
+"""
+
+_MAKE_CHANGES_ROUTES = (
+    _MAKE_CHANGES_ROUTES_BODY + "`antimony` / `model_edits` / `parameters` is required."
+)
+
+#: The same text where the `statements` route is offered too.
+_MAKE_CHANGES_STATEMENTS_ROUTES = (
+    _MAKE_CHANGES_ROUTES_BODY
+    + "`antimony` / `model_edits` / `statements` / `statement_edits` / `parameters` is required."
+)
 
 _MAKE_CHANGES_CONTRACT = """\
 There is no fit-free edit and no separate fit: one call is one coherent change, scored
@@ -876,12 +886,14 @@ def _make_changes_statements_doc(bound: bool = True, held: dict[str, str] | None
     protocol (Fujita's EGF ramp)."""
     from . import mechanisms
 
-    from indra.statements import AddModification, RemoveModification, get_all_descendants
+    from indra.statements import AddModification, RemoveModification, Statement, get_all_descendants
 
     families = {
         base.__name__: {c.__name__ for c in get_all_descendants(base)}
         for base in (AddModification, RemoveModification)
     }
+    defaulted = {cls for cls, policy in mechanisms.REGISTRY if policy == mechanisms.INDRA_DEFAULT}
+    without = sorted({c.__name__ for c in get_all_descendants(Statement)} - defaulted)
     by_policy: dict[str, set[str]] = {}
     for cls, policy in sorted(mechanisms.REGISTRY):
         if policy != mechanisms.INDRA_DEFAULT:
@@ -904,7 +916,9 @@ def _make_changes_statements_doc(bound: bool = True, held: dict[str, str] | None
         "parameters. A row may be one line instead of JSON: `r1: EGFR{pY1068} phosphorylates "
         "AKT1 at S473 | two_step kf=k_on`, agents as NAME{pY1068, -pS473, @nucleus, !BOUND, "
         "~UNBOUND} (see `get_model(format='statements')` for a model written that way)."
-        f"  Every INDRA statement type has `{mechanisms.INDRA_DEFAULT}`; the library "
+        "  Every INDRA statement type"
+        + (f" but {', '.join(without)}" if without else "")
+        + f" has `{mechanisms.INDRA_DEFAULT}`; the library "
         f"also holds {entries}. `list_mechanisms` shows each as the PySB rules it builds. When "
         "none fits, WRITE one in `mechanisms`, either as a `scheme` (its own rules, written like "
         "those) or as a `rate` on an existing entry's reaction, whose rate may read `modifiers`, "
@@ -1452,7 +1466,7 @@ def _register_model_tools(
             description="\n\n".join(
                 (
                     _MAKE_CHANGES_SUMMARY,
-                    _MAKE_CHANGES_ROUTES,
+                    _MAKE_CHANGES_STATEMENTS_ROUTES,
                     _make_changes_statements_doc(
                         bound=bool(set(route().session.entities) - set(route().session.inputs)),
                         held={
