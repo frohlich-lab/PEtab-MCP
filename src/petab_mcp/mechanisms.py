@@ -192,8 +192,11 @@ def bind(
             raise MechanismError(f"row {emission.prefix!r} binds {kind!r} to {target!r}")
         if isinstance(target, str) and not _IDENTIFIER.fullmatch(target):
             new, names = _bound_expression(model, name, target, emission.prefix, merged)
+            # A binding that scales the row's own constant (`kf="mek_kf*(1 - Sorafenib/K)"`)
+            # keeps that constant, and a row naming it shares the constant, not the scaling.
+            if old not in new.expr.free_symbols:
+                merged[name] = new
             _redirect(model, old, new)
-            merged[name] = new
             parameters += [n for n in names if n not in parameters]
             continue
         if isinstance(target, str):

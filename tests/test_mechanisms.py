@@ -220,6 +220,20 @@ def test_a_row_shares_what_the_row_it_names_reads():
     assert {rule.rate_forward.name for rule in model.rules} == {"k_on"}
 
 
+def test_a_row_sharing_a_scaled_constant_shares_the_constant():
+    """A binding may scale the constant it replaces (Fiedler's `kf="mek_kf*(1 - Sorafenib/K)"`);
+    the constant stays, and a row naming it shares the constant, not the drug's scaling."""
+    model, _ = M.assemble(
+        [
+            (_FORWARD, "mass_action", "fwd", {"k": "fwd_k*(1 - drug/K)"}),
+            (_BACKWARD, "mass_action", "back", {"k": "fwd_k"}),
+        ]
+    )
+    forward, backward = model.rules
+    assert forward.rate_forward.name == "fwd_k_bound"
+    assert backward.rate_forward is model.parameters["fwd_k"]
+
+
 def test_a_row_bound_to_a_number_estimates_nothing():
     """Perelson's infection runs at a rate fixed to 1; a minted constant there is a k."""
     params, emissions = _sbml_parameters([(_TRANSITION, "mass_action", "r1", {"k": 1.0})])
