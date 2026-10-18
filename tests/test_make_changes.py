@@ -1606,3 +1606,16 @@ def test_concurrent_calls_keep_every_mechanism_they_write(tmp_path, monkeypatch)
     outs = _concurrently(monkeypatch, mcp, *calls)
     assert sorted(bool(out["applied"]) for out in outs) == [False, True]
     assert [out.get("error_cause") for out in outs if not out["applied"]] == ["mechanism_redefined"]
+
+
+def test_concurrent_statement_edits_keep_each_others_rows(tmp_path, monkeypatch):
+    """Both edits read HEAD's rows before either committed, so the later commit dropped the
+    row the earlier one added."""
+    mcp = _built(tmp_path, [_CONV])
+    calls = [
+        {"justification": p, "statement_edits": [{"op": "add_row", "row": f"{p}: B becomes A | mass_action"}]}
+        for p in ("back", "back2")
+    ]
+    assert all(out["applied"] for out in _concurrently(monkeypatch, mcp, *calls))
+    text = _text(mcp, "get_model", {"format": "statements"})
+    assert "conv: A becomes B" in text and all(f"{p}: B becomes A" in text for p in ("back", "back2"))
