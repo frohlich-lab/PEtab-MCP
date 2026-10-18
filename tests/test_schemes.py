@@ -65,7 +65,9 @@ def _round_trip(make, stmt_type, policy):
     text = S.describe(stmt_type, policy, M.REGISTRY)
     library = dict(M.REGISTRY)
     library[(stmt_type, "written")] = M.written(
-        {"statement_type": stmt_type, "policy": "written", "scheme": text}, library
+        {"statement_type": stmt_type, "policy": "written", "scheme": text,
+         "parameters": S.rate_parameters(text)},
+        library,
     )
     original, (e1,) = M.assemble([(make(), policy, "r")], {}, M.REGISTRY)
     compiled, (e2,) = M.assemble([(make(), "written", "r")], {}, library)
@@ -141,7 +143,9 @@ def test_a_scheme_writes_a_shape_no_entry_has():
     """
     library = dict(M.REGISTRY)
     library[("Phosphorylation", "ordered")] = M.written(
-        {"statement_type": "Phosphorylation", "policy": "ordered", "scheme": scheme}, library
+        {"statement_type": "Phosphorylation", "policy": "ordered", "scheme": scheme,
+         "parameters": ["kf", "kr", "kc1", "kc2"]},
+        library,
     )
     model, (emission,) = M.assemble([(_PHOSPHO(), "ordered", "r1")], {}, library)
     assert len(emission.rules) == 3
@@ -154,7 +158,9 @@ def test_a_rate_may_read_amounts_and_time():
     scheme = "enz() + sub(mod='off') >> enz() + sub(mod='on') @ kc/(Km + amount(sub(mod='off'))) * exp(-time/tau)"
     library = dict(M.REGISTRY)
     library[("Phosphorylation", "decaying_mm")] = M.written(
-        {"statement_type": "Phosphorylation", "policy": "decaying_mm", "scheme": scheme}, library
+        {"statement_type": "Phosphorylation", "policy": "decaying_mm", "scheme": scheme,
+         "parameters": ["kc", "Km", "tau"]},
+        library,
     )
     model, (emission,) = M.assemble([(_PHOSPHO(), "decaying_mm", "r1")], {}, library)
     assert set(emission.parameters) == {"r1_kc", "r1_Km", "r1_tau"}
@@ -177,9 +183,64 @@ def test_a_scheme_that_does_not_read_is_refused(scheme, match):
     with pytest.raises(MechanismError, match=match):
         library = dict(M.REGISTRY)
         library[("Phosphorylation", "bad")] = M.written(
-            {"statement_type": "Phosphorylation", "policy": "bad", "scheme": scheme}, library
+            {"statement_type": "Phosphorylation", "policy": "bad", "scheme": scheme,
+             "parameters": ["kf"]},
+            library,
         )
         M.assemble([(_PHOSPHO(), "bad", "r1")], {}, library)
+
+
+def _scheme(rate, parameters=("kf",), problem_ids=None):
+    """A phosphorylation at ``rate``, written as a scheme declaring ``parameters``."""
+    return M.written(
+        {"statement_type": "Phosphorylation", "policy": "s", "parameters": list(parameters),
+         "scheme": f"enz() + sub(mod='off') >> enz() + sub(mod='on') @ {rate}"},
+        M.REGISTRY,
+        problem_ids,
+    )
+
+
+def test_a_scheme_rate_names_only_the_parameters_it_declares():
+    """A scheme minted every name it met, so a typo or a problem's own id became a new constant
+    fitted in its place."""
+    with pytest.raises(MechanismError, match=r"names \['kff'\].*Did you mean: kff -> 'kf'"):
+        _scheme("kff")
+    with pytest.raises(MechanismError, match=r"`parameters`"):
+        _scheme("kf*kr")
+
+
+def test_a_scheme_rate_reads_a_role_only_as_its_amount():
+    with pytest.raises(MechanismError, match=r"`sub` is a role: read its amount, `amount\(sub\)`"):
+        _scheme("kf*sub")
+
+
+def test_a_scheme_rate_does_not_read_a_starting_amount():
+    """A scheme minted `@ kf*EGF_init` as a constant `r1_EGF_init`, fitted apart from EGF's start."""
+    with pytest.raises(MechanismError, match=r"\['EGF_init'\].*`amount\(<pattern>\)`"):
+        _scheme("kf*EGF_init")
+
+
+_IDS = {"d": M.SHIPPED, "EGF_0": M.CONDITION, "pERK": M.SPECIES}
+
+
+@pytest.mark.parametrize(
+    "name, match",
+    [
+        ("d", r"`d` is a parameter the problem ships\. A problem parameter or condition input "
+              r"enters through a row's binding"),
+        ("EGF_0", r"`EGF_0` is a condition input\. .*`parameters=\{\"K\": \"EGF_0\"\}`"),
+        ("pERK", r"`pERK`: a species of the entity map; read its amount"),
+    ],
+)
+def test_a_problem_id_in_a_scheme_rate_says_how_it_enters(name, match):
+    """Blasi's shipped FIXED `d`, written in a scheme's rate, became a new estimated `r_d`."""
+    with pytest.raises(MechanismError, match=match):
+        _scheme(f"kf*{name}", problem_ids=_IDS)
+
+
+def test_a_declared_parameter_may_not_take_a_problem_id():
+    with pytest.raises(MechanismError, match=r"declares \['d'\].*name yours apart.*row's binding"):
+        _scheme("kf*d", ("kf", "d"), _IDS)
 
 
 def test_a_scheme_and_a_rate_together_are_refused():

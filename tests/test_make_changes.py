@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 
 import pytest
 
@@ -710,11 +711,11 @@ def _statement_row(type_="PopulationTransition", policy="mass_action"):
     }
 
 
-def _statements_server(tmp_path, extra=""):
+def _statements_server(tmp_path, extra="", yaml=YAML_PATH):
     entity_map = tmp_path / "entities.json"
     entity_map.write_text(_BASE_ENTITY_MAP.format(extra=extra))
     return create_server(
-        str(YAML_PATH),
+        str(yaml),
         provenance_dir=str(tmp_path / "prov"),
         resolver=StubReferenceResolver(),
         auto_fit=False,
@@ -766,7 +767,7 @@ def test_a_scheme_mechanism_builds_and_is_listed_as_written(tmp_path):
             "statements": [_statement_row(policy="hop")],
             "mechanisms": [
                 {"statement_type": "PopulationTransition", "policy": "hop",
-                 "scheme": "source() >> target() @ k_hop"}
+                 "scheme": "source() >> target() @ k_hop", "parameters": ["k_hop"]}
             ],
         },
     )
@@ -776,10 +777,16 @@ def test_a_scheme_mechanism_builds_and_is_listed_as_written(tmp_path):
     )["rows"]
     assert stored["emission"]["parameters"] == ["conv_k_hop"]
     listed = _text(mcp, "list_mechanisms", {"statement_type": "PopulationTransition"})
-    assert "PopulationTransition | hop (written this run)\n  source() >> target() @ k_hop" in listed
-    assert "PopulationTransition | mass_action\n" in listed
+    assert (
+        "PopulationTransition | hop (written this run) | parameters: k_hop\n"
+        "  source() >> target() @ k_hop"
+    ) in listed
+    assert "PopulationTransition | mass_action | parameters: k\n" in listed
     model = _text(mcp, "get_model", {"format": "statements"})
-    assert "mechanism hop: PopulationTransition, scheme\n  source() >> target() @ k_hop" in model
+    assert (
+        "mechanism hop: PopulationTransition, scheme, parameters k_hop\n"
+        "  source() >> target() @ k_hop"
+    ) in model
 
 
 def test_list_mechanisms_exists_only_with_the_route(tmp_path):
@@ -791,7 +798,7 @@ def test_list_mechanisms_exists_only_with_the_route(tmp_path):
 def test_list_mechanisms_shows_two_step_as_its_rules(tmp_path):
     listed = _text(_statements_server(tmp_path), "list_mechanisms", {"statement_type": "Phosphorylation"})
     assert (
-        "Phosphorylation | indra_two_step\n"
+        "Phosphorylation | indra_two_step | parameters: kc, kf, kr\n"
         "  enz(sub=None) + sub(mod='off', enz=None) >> enz(sub=1) % sub(mod='off', enz=1) @ kf"
     ) in listed
 
@@ -915,6 +922,79 @@ def test_an_empty_entity_map_still_offers_the_route(tmp_path):
         entity_map=str(entity_map),
     )
     assert "statements" in _make_changes_schema(mcp)
+
+
+def _benchmark_ids_server(tmp_path, add_condition, *, fixed_d=False, dose=False):
+    """The toy with the ids issue 5 met: Blasi's shipped FIXED `d`, and Fujita's dose column
+    `EGF_0`, which the entity map's EGF input reads."""
+    work = tmp_path / "problem"
+    shutil.copytree(YAML_PATH.parent, work)
+    extra = ""
+    if fixed_d:
+        with (work / "parameters.tsv").open("a") as fh:
+            fh.write("d\tlog10\t1e-12\t1000.0\t1.0\tfalse\n")
+    if dose:
+        add_condition(work / "problem.yaml", "EGF_0", 1.0)
+        extra = ', "EGF": {"name": "EGF", "input": "EGF_0"}'
+    return _statements_server(tmp_path, extra, work / "problem.yaml")
+
+
+def _hop(mcp, route, rate, parameters=("k",), binding=None):
+    """`A becomes B` at ``rate``, written as a `scheme` or as a `rate` on mass action, its row
+    bound by ``binding``."""
+    definition = {"statement_type": "PopulationTransition", "policy": "hop",
+                  "parameters": list(parameters)}
+    if route == "scheme":
+        definition["scheme"] = f"source() >> target() @ {rate}"
+    else:
+        definition |= {"based_on": "mass_action", "rate": rate}
+    row = {**_statement_row(policy="hop"), "parameters": binding}
+    return _call(mcp, "make_changes", {"justification": "A becomes B", "statements": [row],
+                                       "mechanisms": [definition]})
+
+
+_ROUTES = pytest.mark.parametrize("route", ["scheme", "rate"])
+
+
+@_ROUTES
+def test_a_shipped_fixed_parameter_enters_a_written_rate_through_the_binding(
+    tmp_path, add_condition, route
+):
+    """Blasi r2: `d` in a scheme's rate, meaning the shipped FIXED `d`, became a new estimated
+    `conv_d` in its place; a `rate` naming `d` was refused with no way in."""
+    mcp = _benchmark_ids_server(tmp_path, add_condition, fixed_d=True)
+    out = _hop(mcp, route, "k*d")
+    assert out["applied"] is False
+    assert "`d` is a parameter the problem ships" in out["error"]
+    assert "enters through a row's binding" in out["error"]
+    out = _hop(mcp, route, "k*kd", ("k", "kd"), {"kd": "d"})
+    assert out["applied"] is True, out.get("error")
+    rows = {r["parameterId"]: r for r in _call(mcp, "get_parameters", {})["result"]}
+    assert not int(rows["d"]["estimate"]) and "conv_kd" not in rows and "conv_d" not in rows
+
+
+@_ROUTES
+def test_a_condition_input_enters_a_written_rate_through_the_binding(
+    tmp_path, add_condition, route
+):
+    """Fujita's dose column `EGF_0`, in a scheme's rate, became a constant `conv_EGF_0` the
+    condition table never set."""
+    mcp = _benchmark_ids_server(tmp_path, add_condition, dose=True)
+    out = _hop(mcp, route, "k*EGF_0")
+    assert out["applied"] is False
+    assert "`EGF_0` is a condition input" in out["error"]
+    out = _hop(mcp, route, "k*dose", ("k", "dose"), {"dose": "EGF_0"})
+    assert out["applied"] is True, out.get("error")
+    rows = {r["parameterId"] for r in _call(mcp, "get_parameters", {})["result"]}
+    assert "EGF_0" not in rows and "conv_dose" not in rows  # the condition table sets it
+
+
+@_ROUTES
+def test_an_unknown_rate_name_is_refused_with_what_the_rate_may_name(tmp_path, route):
+    """`clock`, meaning the simulation time, became a constant `conv_clock`."""
+    out = _hop(_statements_server(tmp_path), route, "k*clock")
+    assert out["applied"] is False
+    assert "it names ['clock']" in out["error"] and "'time'" in out["error"]
 
 
 def test_a_row_may_be_written_in_the_notation(tmp_path):
