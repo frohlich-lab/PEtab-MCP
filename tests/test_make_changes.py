@@ -867,6 +867,9 @@ def test_a_redeclared_start_moves_its_row(tmp_path):
         params = {r["parameterId"]: r for r in _call(mcp, "get_parameters", {})["result"]}
         row = params["A_start_init"]
         rows.append((row["nominalValue"], int(row["estimate"])))
+        structure = _call(mcp, "get_model_structure", {})
+        view = {r["species"]: r for r in structure["initial_conditions"]}["A"]
+        assert (view["ic_parameter"], view["t0"]) == ("A_start_init", row["nominalValue"])
     assert rows == [(1.0, 0), (5.0, 1), (1.0, 0)]
 
 
