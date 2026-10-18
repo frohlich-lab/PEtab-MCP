@@ -1262,8 +1262,8 @@ def bundle_result(
     returns. It is not "did the edit apply" — an edit that applies and then fails to fit is
     reverted (see :func:`revert_working_state`), so that call reports ``applied: false``, and the
     agent never has to reason about a half-done state. ``committed`` is the separate question of
-    whether a VERSION was created; the two differ only for the de-dup no-op, where the change is
-    in place but is byte-identical to an existing version.
+    whether a VERSION was created; the two differ only for the de-dup no-op, where the change gives
+    the same model as an existing version and the working model is that version, exactly as stored.
 
     Both halves' diagnostics are merged into ONE ordered ``messages`` stack (see :mod:`messages`) —
     the edit's advisories and lint warnings first, then the fit's — so a caller reads every
@@ -1290,9 +1290,11 @@ def bundle_result(
     elif no_change:
         applied = True
         message = (
-            "Change applied, but the fit was a no-op: the resulting model is identical to version "
-            f"{fit_result.get('duplicate_of_version')}, so its stored metrics stand. Make a "
-            "genuinely different change; that version is kept and scored regardless."
+            "No new version: this change gives the same model as version "
+            f"{fit_result.get('duplicate_of_version')} (the same equations and estimated "
+            "parameters), so the working model stays that version exactly as stored and its "
+            "metrics stand. Make a genuinely different change; that version is kept and scored "
+            "regardless."
         )
     elif snapshotted:
         # The fit broke only AFTER snapshotting, so HEAD moved: report where it landed rather than
