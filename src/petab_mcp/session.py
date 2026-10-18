@@ -359,6 +359,14 @@ class PetabSession:
             )
             # durable resume: restore the working state from the latest version
             self.apply_version(self.provenance.current_version)
+            # ...and the mechanisms the run wrote, off every version's rows, since a row naming
+            # one must still build and none may be redefined. Oldest first, so the first
+            # definition of a name wins, as it does live.
+            for meta in self.provenance.list_versions():
+                for row in (self.provenance.get_statements(meta["version"]) or {}).get("rows", []):
+                    if "mechanism" in row:
+                        d = row["mechanism"]
+                        self.mechanisms.setdefault((d["statement_type"], d["policy"]), d)
             # apply_version restores `model_source` too, so a durable resume (or recover_run.py)
             # keeps editing the SOURCE rather than silently adopting the render as its base —
             # which would break `child.source == parent.source + ops` exactly at the resume
@@ -707,14 +715,8 @@ class PetabSession:
             # resurrects it. Falls back to the restored render for versions stored before
             # sources existed, which is the correct base for them.
             self.model_source = self.provenance.get_model_source(version) or snap["model_antimony"]
-            # ...and so do its rows, with the mechanisms they were written with: a durable resume
-            # starts with none of the run's written mechanisms, and a row naming one must still
-            # build. Never replaced: a written mechanism is not redefined in place.
+            # ...and so do its rows.
             self.model_statements = self.provenance.get_statements(version)
-            for row in (self.model_statements or {}).get("rows", []):
-                if "mechanism" in row:
-                    d = row["mechanism"]
-                    self.mechanisms.setdefault((d["statement_type"], d["policy"]), d)
             # Restore this version's fit artifacts too: the optimization traces/results are
             # persisted per version (``None`` for legacy/unfitted versions), so a rollback or
             # durable resume brings them back rather than dropping them.

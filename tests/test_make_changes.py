@@ -1127,6 +1127,18 @@ def test_a_version_without_new_rows_keeps_its_parents(tmp_path):
     out = _call(resumed, "make_changes", {"justification": "by hand", "antimony": _antimony()})
     assert out["committed"] is True
     assert not (versions / "v3" / "statements.json").exists()
+    # Resumed at v3, which has no rows, the run's written mechanisms still come back: a row names
+    # one, and it may not be redefined.
+    again = _statements_server(tmp_path)
+    row["prefix"] = "conv3"
+    assert _call(again, "make_changes", {"justification": "back", "statements": [row]})[
+        "applied"
+    ] is True
+    changed = {**_SATURATING, "rate": "vmax"}
+    out = _call(
+        again, "make_changes", {"justification": "y", "statements": [row], "mechanisms": [changed]}
+    )
+    assert out["error_cause"] == "mechanism_redefined"
 
 
 def test_a_declared_unit_start_is_fixed_not_estimated(tmp_path):
