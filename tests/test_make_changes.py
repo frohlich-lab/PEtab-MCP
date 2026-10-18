@@ -1530,6 +1530,28 @@ def test_whole_sets_ride_with_statements_not_with_edits(tmp_path):
     assert out["applied"] is False and "`set_start`" in out["error"]
 
 
+def test_a_restore_brings_back_that_versions_rows(tmp_path):
+    """After `restore_version(v)`, the rows the session shows and edits are v's, not those of
+    the HEAD it left; a version built from model text holds none."""
+    mcp = _built(tmp_path, [_CONV])
+
+    def add_row(row):
+        edits = [{"op": "add_row", "row": row}]
+        return _call(mcp, "make_changes", {"justification": row, "statement_edits": edits})
+
+    assert add_row(_BACK)["applied"] is True
+    antimony = {"justification": "by hand", "antimony": _antimony()}
+    assert _call(mcp, "make_changes", antimony)["committed"] is True
+    _call(mcp, "restore_version", {"version": 0})
+    text = _text(mcp, "get_model", {"format": "statements"})
+    assert "conv: A becomes B" in text and "back:" not in text
+    assert add_row("back2: B becomes A | mass_action")["applied"] is True
+    assert [r["prefix"] for r in _stored_rows(tmp_path, 3)["rows"]] == ["conv", "back2"]
+    _call(mcp, "restore_version", {"version": 2})
+    out = add_row(_BACK)
+    assert out["applied"] is False and "the current model was not" in out["error"]
+
+
 def _concurrently(monkeypatch, mcp, *calls):
     """The ``make_changes`` calls, each on its own thread, each pausing after it builds its
     statements until every other has built too (or 3 s pass)."""
