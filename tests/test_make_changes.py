@@ -903,8 +903,8 @@ def test_statements_commit_records_what_was_asserted(tmp_path):
 
 def test_a_library_gap_is_its_own_rejection(tmp_path):
     """A pair the library does not hold must stay countable apart from a malformed call — it is
-    the to-do list for the library."""
-    row = _statement_row(policy="no_such_mechanism")
+    the to-do list for the library. INDRA's default asked of a type INDRA does not have is one."""
+    row = _statement_row(policy="indra_default")
     out = _call(
         _statements_server(tmp_path), "make_changes", {"justification": "x", "statements": [row]}
     )
@@ -929,6 +929,17 @@ def test_a_repeated_prefix_is_refused_before_assembly(tmp_path):
         _statements_server(tmp_path), "make_changes", {"justification": "x", "statements": rows}
     )
     assert out["applied"] is False and out["error_cause"] == "duplicate_prefix"
+
+
+def test_a_misspelt_policy_is_not_counted_as_a_library_gap(tmp_path):
+    """Every pair the library lacked was a gap, so a typo (`mass_actoin`) joined the library's
+    to-do list. It is malformed, and the refusal names the policy meant."""
+    row = _statement_row(policy="mass_actoin")
+    out = _call(
+        _statements_server(tmp_path), "make_changes", {"justification": "x", "statements": [row]}
+    )
+    assert out["applied"] is False and out["error_cause"] == "malformed_mechanism"
+    assert "(did you mean 'mass_action'?)" in out["error"]
 
 
 def test_statement_species_take_the_problems_own_initial_conditions(tmp_path):
