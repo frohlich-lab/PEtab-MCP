@@ -33,7 +33,8 @@ carries libpetab v1's column as an extension, which is what pyPESTO's importer t
 
 A PEtab v1 problem is upgraded on load by libpetab's ``petab1to2`` (:func:`_from_v1`), with its
 lint off: a benchmark problem ships its model unwritten -- an empty or partial SBML whose
-observables name readouts the agent defines -- so it fails v1 lint until the agent writes it.
+observables name readouts the agent defines -- so it fails v1 lint until the agent writes it. Its
+assignments that switch with time then become experiment periods, where libpetab can move them.
 """
 
 from __future__ import annotations
@@ -188,7 +189,12 @@ def normalize_measurement_df(df: pd.DataFrame | None) -> pd.DataFrame | None:
 
 class WorkingProblem:
     """The model plus the PEtab v2 tables. The design tables are fixed for the life of a session;
-    the model and ``parameter_df`` are what edits change."""
+    the model and ``parameter_df`` are what edits change.
+
+    ``converted_assignments`` names the time-switched assignments the v1 upgrade moved into the
+    experiment table (:func:`_from_v1`), empty for every other problem. Its experiments then have
+    periods no v1 condition pair has, so a held-out set that names v1 conditions cannot be keyed
+    onto them."""
 
     def __init__(
         self,
@@ -200,6 +206,7 @@ class WorkingProblem:
         condition_df: pd.DataFrame | None = None,
         experiment_df: pd.DataFrame | None = None,
         mapping_df: pd.DataFrame | None = None,
+        converted_assignments: tuple[str, ...] = (),
     ) -> None:
         self.model = model
         self.parameter_df = (
@@ -210,6 +217,7 @@ class WorkingProblem:
         self.condition_df = condition_df
         self.experiment_df = experiment_df
         self.mapping_df = mapping_df
+        self.converted_assignments = tuple(converted_assignments)
 
     @property
     def parameter_df(self) -> pd.DataFrame:
@@ -225,7 +233,8 @@ class WorkingProblem:
 
     def replace(self, **tables) -> WorkingProblem:
         """A new problem with ``tables`` (keyword per table, e.g. ``measurement_df=``) in place of
-        this one's: the model is shared, every table not given is carried over."""
+        this one's: the model is shared, every table not given is carried over, and so is
+        ``converted_assignments``."""
         current = {
             name: getattr(self, name)
             for name in (
@@ -237,7 +246,11 @@ class WorkingProblem:
                 "mapping_df",
             )
         }
-        return WorkingProblem(model=self.model, **{**current, **tables})
+        return WorkingProblem(
+            model=self.model,
+            converted_assignments=self.converted_assignments,
+            **{**current, **tables},
+        )
 
     # -- parameter vector ------------------------------------------------------
     @property
@@ -379,7 +392,12 @@ def _from_v1(yaml_path: Path) -> WorkingProblem:
     with the noise rescaled by ln(10) (#535, the fix for #529). This function applied that factor
     itself before #535, and would now apply it twice -- 64.7 nats on one benchmark state.
 
+    v1 had no experiments, so a protocol (a stimulus switched on at t = 10, a dose given twice) was
+    written into the model as an assignment that switches with time. Those move into the experiment
+    table (:func:`_assignments_to_experiments`), and ``converted_assignments`` names them.
+
     One correction remains: ``petab1to2`` drops ``parameterScale``, which the server estimates on.
+    Neither upgrade adds or removes a parameter-table row, so the v1 scales carry over by id.
     """
     import tempfile
 
@@ -389,11 +407,99 @@ def _from_v1(yaml_path: Path) -> WorkingProblem:
     old = v1.Problem.from_yaml(str(yaml_path))
     with tempfile.TemporaryDirectory() as tmp:
         petab1to2(yaml_path, tmp, validate=False)
-        new = WorkingProblem.from_yaml(Path(tmp) / yaml_path.name)
+        upgraded = Path(tmp) / yaml_path.name
+        converted, moved = _assignments_to_experiments(old, upgraded, Path(tmp) / "converted")
+        new = WorkingProblem.from_yaml(converted or upgraded)
     new.parameter_df = new.parameter_df.assign(
         **{PARAMETER_SCALE: old.parameter_df[PARAMETER_SCALE]}
     )
+    new.converted_assignments = moved
     return new
+
+
+def _assignments_to_experiments(
+    old, yaml_path: Path, out_dir: Path
+) -> tuple[Path | None, tuple[str, ...]]:
+    """The upgraded problem at ``yaml_path`` with its time-switched assignments moved into its
+    experiments by libpetab's ``assignments_to_experiments``, written to ``out_dir``, and the ids of
+    the assignments it moved; ``(None, ())`` where the problem keeps them.
+
+    It keeps them where it has none (``old``, the v1 problem, holds the same model), and where the
+    helper cannot move them: it raises ``NotImplementedError`` for a switching time the fit
+    estimates (Oliveira's), and it lints what it returns, which a problem whose model the agent
+    has yet to write fails. Such an assignment is still a valid v2 model, only not an experiment,
+    so the problem is served as ``petab1to2`` made it.
+    """
+    from petab.v2.converters import assignments_to_experiments
+
+    if old.model is None or not (switched := _time_switched(old.model.sbml_model)):
+        return None, ()
+    problem = v2.Problem.from_yaml(yaml_path)
+    errors = [i for i in problem.validate() if i.level >= v2.lint.ValidationIssueSeverity.ERROR]
+    if errors:
+        logger.info(
+            "%s keeps its time-switched assignments %s: assignments_to_experiments returns only a "
+            "problem that lints, and this one does not (%s)",
+            yaml_path.name,
+            switched,
+            errors[0].message,
+        )
+        return None, ()
+    try:
+        converted = assignments_to_experiments(problem)
+    except NotImplementedError as exc:
+        logger.info("%s keeps its time-switched assignments %s: %s", yaml_path.name, switched, exc)
+        return None, ()
+    sbml = converted.model.sbml_model
+    moved = tuple(
+        target
+        for target in switched
+        if sbml.getAssignmentRuleByVariable(target) is None
+        and sbml.getInitialAssignmentBySymbol(target) is None
+    )
+    if not moved:
+        return None, ()
+    # A v1 simulation starts at t = 0. The helper drops a first period that only sets what the model
+    # already holds, so `piecewise(0, time < 5, 2)` gives an experiment whose one period starts at
+    # 5 -- and a v2 period's time overrides the model's initial time, so AMICI simulated from 5 and
+    # scored the measurements before it off by 35 nats on the toy. An empty period at 0 restores the
+    # start; it changes nothing else.
+    for experiment in converted.experiments:
+        starts = [p.time for p in experiment.periods if not p.is_preequilibration]
+        if not starts or min(starts) > 0:
+            experiment.periods.append(v2.ExperimentPeriod(time=0))
+            experiment.sort_periods()
+    # A table the upgrade did not write (a problem without conditions, or without experiments) has
+    # no file name, and `to_files` skips such a table along with what the conversion put in it.
+    for tables, name in (
+        (converted.condition_tables, "conditions.tsv"),
+        (converted.experiment_tables, "experiments.tsv"),
+    ):
+        for table in tables:
+            if table.elements and not table.rel_path:
+                table.rel_path = name
+    out_dir.mkdir()
+    # Without the columns no row fills (`modelId`, `parameterName`), as `petab1to2` writes them.
+    converted.to_files(out_dir, columns="non_empty")
+    return out_dir / yaml_path.name, moved
+
+
+def _time_switched(sbml_model) -> list[str]:
+    """The targets of ``sbml_model``'s assignment rules and initial assignments whose math reads
+    ``time`` inside a piecewise function: v1's encoding of a protocol."""
+    import libsbml
+
+    def switches(node, in_piecewise: bool = False) -> bool:
+        in_piecewise = in_piecewise or node.getType() == libsbml.AST_FUNCTION_PIECEWISE
+        if in_piecewise and node.getType() == libsbml.AST_NAME_TIME:
+            return True
+        return any(switches(node.getChild(i), in_piecewise) for i in range(node.getNumChildren()))
+
+    assignments = [
+        *(r for r in sbml_model.getListOfRules() if r.isAssignment()),
+        *sbml_model.getListOfInitialAssignments(),
+    ]
+    return [a.getId() for a in assignments if a.isSetMath() and switches(a.getMath())]
 
 
 def placeholders(observable_df, obs_id, kind: str) -> list[str]:

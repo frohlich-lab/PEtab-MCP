@@ -99,6 +99,75 @@ def test_a_v1_problem_that_does_not_lint_still_upgrades(tmp_path):
     assert new.observable_df.iloc[0]["observableFormula"] == "readout_B"
 
 
+def _v1_toy_with_stimulus(path: Path, stimulus: str) -> Path:
+    """toy_v1 at ``path`` with ``k1`` scaled by ``1 + stim`` and ``stim := stimulus``: v1's way to
+    write a protocol, since v1 had no experiments."""
+    from petab.v2.models.sbml_model import SbmlModel
+
+    shutil.copytree(DATA / "toy_v1", path, dirs_exist_ok=True)
+    ant = (DATA / "toy_v1" / "model.ant").read_text()
+    ant = ant.replace("k1 * A;", f"k1 * A * (1 + stim);\n  stim := {stimulus};\n  t_on = 5;")
+    sbml = SbmlModel.from_antimony(ant, model_id="conversion_reaction").to_sbml_str()
+    (path / "conversion_reaction.xml").write_text(sbml)
+    return path / "problem.yaml"
+
+
+def test_a_time_switched_assignment_becomes_an_experiment_period(tmp_path):
+    """v1 wrote a protocol into the model as an assignment that switches with time;
+    ``assignments_to_experiments`` moves it into the experiment table, as v2 writes protocols, and
+    the problem says it did (held-out sets keyed by v1 conditions cannot follow it)."""
+    new = P.WorkingProblem.from_yaml(_v1_toy_with_stimulus(tmp_path, "piecewise(0, time < 5, 2)"))
+
+    assert new.converted_assignments == ("stim",)
+    assert new.model.sbml_model.getAssignmentRuleByVariable("stim") is None
+    edf, cdf = new.experiment_df, new.condition_df
+    assert (
+        set(new.measurement_df["experimentId"])
+        == set(edf["experimentId"])
+        == {"default_experiment"}
+    )
+    switch = cdf.loc[cdf["conditionId"] == edf.loc[edf["time"] == 5, "conditionId"].item()]
+    assert switch[["targetId", "targetValue"]].values.tolist() == [["stim", 2.0]]
+    # The experiment still starts at 0. libpetab dropped that period, since the model already
+    # holds stim = 0, and a v2 experiment starts at its first period: AMICI simulated from 5, and
+    # the toy's measurements at 0-4 scored 35 nats worse than under the rule.
+    assert (
+        sorted(edf["time"]) == [0.0, 5.0] and edf.loc[edf["time"] == 0, "conditionId"].isna().all()
+    )
+    assert "modelId" not in new.measurement_df.columns  # written like petab1to2 writes tables
+    # the scales petab1to2 drops still carry over: the conversion adds no parameter-table row
+    assert new.parameter_df.loc[["k1", "k2"], P.PARAMETER_SCALE].tolist() == ["log10", "log10"]
+    assert new.replace().converted_assignments == ("stim",)
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["estimated switching time", "does not lint"],
+)
+def test_an_assignment_that_cannot_move_keeps_its_rule(tmp_path, case):
+    """The rule is a valid v2 model, only not an experiment, so the problem is served as
+    ``petab1to2`` made it. ``assignments_to_experiments`` raises NotImplementedError for a
+    switching time the fit estimates (Oliveira's), and it lints what it returns, which a problem
+    whose model the agent has yet to write fails -- calling it there would refuse the problem."""
+    stimulus = "piecewise(0, time < 5, 2)"
+    if case == "estimated switching time":
+        stimulus = "piecewise(0, time < t_on, 2)"
+    yaml = _v1_toy_with_stimulus(tmp_path, stimulus)
+    if case == "estimated switching time":
+        with open(tmp_path / "parameters.tsv", "a") as f:
+            f.write("t_on\tlin\t0\t10\t5\t1\n")
+    else:
+        odf = pd.read_csv(tmp_path / "observables.tsv", sep="\t")
+        odf.loc[0, "observableFormula"] = "readout_B"
+        odf.to_csv(tmp_path / "observables.tsv", sep="\t", index=False)
+
+    new = P.WorkingProblem.from_yaml(yaml)
+
+    assert new.converted_assignments == ()
+    assert new.model.sbml_model.getAssignmentRuleByVariable("stim") is not None
+    assert new.experiment_df is None and set(new.measurement_df["experimentId"]) == {""}
+
+
 def test_parameter_table_conventions_hold_on_every_assignment():
     """``estimate`` a bool (v2's strings and v1's 0/1 alike), numeric columns float, the scale
     always present, priors and a reader's stray ``index`` column gone."""
