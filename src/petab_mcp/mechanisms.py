@@ -87,6 +87,9 @@ class Emission:
     #: The row's binding (:func:`bind`): kind -> the shared id or the number that replaced
     #: ``<prefix>_<kind>``. Empty for a row that binds nothing.
     bound: dict[str, str | float] = field(default_factory=dict)
+    #: The sites the row's scheme (:mod:`schemes`) gave molecules that lacked them: molecule ->
+    #: site -> its states (none for a binding site). Empty for every other entry.
+    sites_added: dict[str, dict[str, list[str]]] = field(default_factory=dict)
 
 
 Policy = Callable[[Statement, pysb.Model, str], Emission]
@@ -515,13 +518,23 @@ def assemble(
         for agent in (modifiers or {}).values():
             agents.get_create_base_agent(agent)
     # A scheme entry (:mod:`schemes`) names sites INDRA's pass does not give: its bonds, a
-    # molecule the statement does not mention.
+    # molecule the statement does not mention. Its states are checked against the sites the
+    # molecule has without any scheme's.
+    given = {
+        name: (list(base.sites), {s: list(v) for s, v in base.site_states.items()})
+        for name, base in agents.agents.items()
+    }
+    added: list[dict[str, list[str]]] = []
     for stmt, policy, *_ in rows:
         entry = library.get((type(stmt).__name__, policy))
-        for agent, site, site_states in getattr(entry, "scheme_sites", lambda s: [])(stmt):
+        added.append({})
+        for agent, site, site_states in getattr(entry, "scheme_sites", lambda s, g: [])(stmt, given):
             base = agents.get_create_base_agent(agent)
             if site is not None:
                 base.create_site(site, site_states)
+                new = added[-1].setdefault(base.name, [])
+                if site not in given.get(base.name, ((), {}))[0] and site not in new:
+                    new.append(site)
 
     model = pysb.Model(name="statements", _export=False)
     for base in agents.agents.values():
@@ -539,9 +552,16 @@ def assemble(
     # Bound once every row has minted its own: bound as each row was built, a row sharing a LATER
     # row's `back_k` made it a new shared id, and that row's own `back_k` then clashed with it.
     merged: dict[str, object] = {}
-    return model, [
+    emissions = [
         bind(model, emission, row[3], merged, set(entities or {})) if row[3] else emission
         for emission, row in zip(emissions, rows)
+    ]
+    return model, [
+        replace(e, sites_added={
+            name: {site: list(agents.agents[name].site_states.get(site, [])) for site in sites}
+            for name, sites in names.items() if sites
+        })
+        for e, names in zip(emissions, added)
     ]
 
 
