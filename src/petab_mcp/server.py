@@ -386,8 +386,11 @@ class _Ctx:
         the :func:`operations.working_state` snapshot taken before it applied). A change is either
         scored or gone, so the working model is never a state nothing has verified.
 
-        The de-dup no-op is not a failure and is not reverted: the resulting model IS an existing
-        version, byte-identical to it, so there is nothing unscored to undo.
+        The de-dup no-op is undone too, though it is not a failure: the change gives the same model
+        as an existing version, so that version's scored state stands for it. The de-dup compares
+        equations and estimation setup, not the text, the authored starting values or the rows the
+        change was written as; keeping those would leave a working model no version holds, and the
+        next edit would build on it.
         """
         # HEAD before the fit — the only signal for "was a version created" that survives a
         # failure between the snapshot and the end of `session.fit`.
@@ -419,6 +422,12 @@ class _Ctx:
                 self.session,
                 before,
                 f"the fit produced no version: {fit_result.get('error') or 'no error message'}",
+            )
+        elif fit_result.get("no_change"):
+            ops_mod.revert_working_state(
+                self.session,
+                before,
+                f"identical to version {fit_result.get('duplicate_of_version')}, which stands for it",
             )
         return ops_mod.bundle_result(self.session, edit_result, fit_result, head_before)
 
@@ -701,8 +710,8 @@ scored one, and there is never an edit waiting to be fit.
 The result IS the fit, flat — the same field names `get_fit_summary` uses — plus two
 flags. Read `applied`: `false` → the change is NOT in the model, either rejected before it
 applied or reverted because the fit failed; `error`/`issues` says which. Then `committed`:
-`true` → a version exists, read `bic`; `false` with `no_change` → the change applied but
-this structure already IS a version, so change something else.
+`true` → a version exists, read `bic`; `false` with `no_change` → this model already IS a
+version, which stays the working model as stored, so change something else.
 `bic` charges `k` = `n_estimated` + `hardcoded_constants`: a numeric literal in your
 model's math is a parameter too, bar a few structural ones, so freezing a fitted value
 costs what estimating it costs — estimate it. What you pay for is listed.
@@ -986,13 +995,11 @@ def _register_model_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
             finally:
                 session.derived_from = None
                 session.submitted_source = None
-            if out.get("applied") and antimony:
+            if out.get("applied") and not out.get("no_change") and antimony:
                 # The submitted text becomes this branch's source for the next structured edit.
-                # Keyed on APPLIED, not committed: a de-duplicated commit (`applied: true,
-                # committed: false, no_change`) still moves the WORKING model, and leaving the
-                # source behind would make the next batch of operations silently revert it.
-                # A rejected or fit-reverted call leaves the model where it was, and `applied`
-                # is false there, so the source correctly stays put.
+                # A rejected or fit-reverted call leaves the model where it was (`applied` false),
+                # and a de-dup no-op leaves the session on the version it duplicates (see
+                # `edit_then_fit`), so in both the source correctly stays put.
                 session.model_source = antimony
             if op_summary:
                 # The diff, PRE-CLASSIFIED. Every earlier analysis had to reconstruct this from

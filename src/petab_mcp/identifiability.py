@@ -707,7 +707,7 @@ def structure_moved(session, structure_hash: str | None) -> bool:
     """Is the working structure a DIFFERENT one from ``structure_hash``?
 
     The one staleness question this module asks, of a frozen record and of a stored verdict alike —
-    a COMPARISON, never a rebuild key. STRUCTURE (the reaction network plus the estimated-parameter
+    a COMPARISON, never a rebuild key. STRUCTURE (the model's equations plus the estimated-parameter
     set) is what decides whether a geometry describes the model in front of the lead. A restore points
     the working state at another version's model and does move it: the diagnosis then belongs to the
     last fit, says so, and is not re-priced (pricing the current structure would mean fitting, and

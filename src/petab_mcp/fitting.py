@@ -685,7 +685,7 @@ class FitRecord:
 
     The two fingerprints are COMPARISONS only — never keys to rebuild anything with — and they
     answer different questions, which is why both are here. ``structure_hash``
-    (:func:`parameters.structure_fingerprint`) is the reaction network plus the estimated-parameter
+    (:func:`parameters.structure_fingerprint`) is the model's equations plus the estimated-parameter
     set, so it says whether the geometry frozen here still describes the model in front of the
     lead; a diagnosis is STALE exactly when that moved. ``problem_hash`` also covers the parameter
     table, so it additionally moves when the working table alone does — which happens on the de-dup
