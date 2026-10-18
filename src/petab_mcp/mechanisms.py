@@ -86,7 +86,7 @@ def mechanism(stmt_cls: type[Statement], policy: str) -> Callable[[Policy], Poli
 
     def register(fn: Policy) -> Policy:
         if key in REGISTRY:
-            raise MechanismError(f"mechanism {key} is already registered")
+            raise RuntimeError(f"mechanism {key} is already registered")
         REGISTRY[key] = fn
         return fn
 
@@ -107,7 +107,8 @@ def instantiate(
         known = sorted(p for c, p in library if c == key[0])
         raise MechanismError(
             f"no mechanism {key}; the library has {known or 'none'} for {key[0]}. If none fits, "
-            "write one with `mechanisms`."
+            "write one with `mechanisms`.",
+            cause="library_gap",
         )
     return library[key](stmt, model, prefix)
 
@@ -221,9 +222,33 @@ def assemble(
             annotation = get_annotation(monomer, db_name, db_ref)
             if annotation is not None:
                 model.add_annotation(annotation)
-    return model, [
+    emissions = [
         instantiate(stmt, model, policy, prefix, library) for stmt, policy, prefix in rows
     ]
+    _refuse_ruleless(rows, emissions)
+    return model, emissions
+
+
+def _refuse_ruleless(rows: list[tuple], emissions: list[Emission]) -> None:
+    """Refuse a row whose entry built no rule: the model would not contain what it asserts, and a
+    constant it minted would be fitted to nothing. INDRA builds a rule once, so the same statement
+    in a second row built nothing beside an orphan ``kf``, and it builds none for an ActiveForm."""
+    for i, (row, emission) in enumerate(zip(rows, emissions)):
+        if emission.rules:
+            continue
+        stmt, policy, prefix = row[:3]
+        twin = next((r[2] for r in rows[:i] if r[0].matches_key() == stmt.matches_key()), None)
+        if twin is not None:
+            raise MechanismError(
+                f"row {prefix!r} asserts the statement of row {twin!r} again, and INDRA builds its "
+                "rule once, so this row builds nothing: merge the two rows, or give one another "
+                "policy"
+            )
+        raise MechanismError(
+            f"row {prefix!r}: {type(stmt).__name__} under {policy!r} builds no rule, so the "
+            "model would not contain it. Give it a policy that builds one, or write one with "
+            "`mechanisms`"
+        )
 
 
 def _add(model: pysb.Model, *components) -> None:
@@ -252,10 +277,23 @@ def _transition(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
 BASAL = "basal"
 
 
+def _no_enzyme(stmt: Statement, prefix: str) -> None:
+    """Refuse a `basal` row whose statement names an enzyme: the rule has no place for one, so the
+    enzyme the row asserts would be left out of the model without a word."""
+    if stmt.enz is not None:
+        others = sorted(p for c, p in REGISTRY if c == type(stmt).__name__ and p != BASAL)
+        raise MechanismError(
+            f"row {prefix!r}: `{BASAL}` is a modification with no enzyme, and this statement names "
+            f"{stmt.enz.name}, which it would leave out of the model. Drop the enzyme from the "
+            f"statement, or give the row a policy that uses it: {others}"
+        )
+
+
 def _basal_removal(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
     """``k·[modified]``: the modification comes off at a steady rate. INDRA's own default builds
     nothing for a removal with no enzyme, so without this a modification can only accumulate —
     and Fujita's phospho-EGFR peaks at one minute and is gone by the hour."""
+    _no_enzyme(stmt, prefix)
     mod = stmt._get_mod_condition()
     site = get_mod_site_name(mod)
     unmod, modified = states[mod.mod_type]
@@ -294,7 +332,9 @@ def _indra_default(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
     try:
         indra._dispatch(stmt, "assemble", model, BaseAgentSet(), {})
     except UnknownPolicyError as exc:
-        raise MechanismError(f"INDRA has no default assembly for {type(stmt).__name__}") from exc
+        raise MechanismError(
+            f"INDRA has no default assembly for {type(stmt).__name__}", cause="library_gap"
+        ) from exc
     added = [c for c in model.all_components() if c.name not in before]
     for parameter in (c for c in added if isinstance(c, pysb.Parameter)):
         name = f"{prefix}_{parameter.name.split('_')[0]}"
