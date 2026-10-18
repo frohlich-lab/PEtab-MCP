@@ -95,7 +95,9 @@ dependencies = [
     # policies construct Rule, Expression and Observable directly.
     "pysb @ git+https://github.com/pysb/pysb.git@9fc6bcb118683ad851e0a4d5604abe646f77cae3",
     # Never imported here: it ships the BioNetGen that pysb finds and runs to expand the rules into
-    # reactions (`problem_sbml`). 0.8.7 is what the suite is measured against.
+    # reactions (`problem_sbml`). 0.8.7 is what the suite is measured against. BioNetGen is a Perl
+    # program pysb runs as `perl BNG2.pl`, so `perl` must be on PATH or every expansion fails
+    # (README, Install); pip cannot provide it.
     "bionetgen>=0.8.7",
 ]
 

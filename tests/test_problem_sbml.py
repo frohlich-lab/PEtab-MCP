@@ -56,6 +56,39 @@ def test_an_input_is_held_to_its_protocol():
     assert {"EGF_0", "EGF_rate", "EGF_end"} <= {p.getId() for p in sbml.getListOfParameters()}
 
 
+def test_chained_dimers_are_refused_before_the_expansion():
+    """STAT5A and STAT5B each dimerising with itself and with the other chain without end;
+    refused only once BioNetGen had built every complex up to the cap, the refusal took 19 s on
+    an idle machine and 251 s on a loaded one. The dimers its advice writes still build."""
+    import time
+
+    from indra.statements import Complex
+
+    a, b = "STAT5A", "STAT5B"
+    entities = {a: Agent(a), b: Agent(b)}
+    start = time.perf_counter()
+    with pytest.raises(ModelUpdateError, match=r"rows \['aa', 'ab', 'bb'\] bind .* into chains"):
+        PS.to_antimony(
+            [
+                (Complex([Agent(a), Agent(a)]), INDRA_DEFAULT, "aa"),
+                (Complex([Agent(a), Agent(b)]), INDRA_DEFAULT, "ab"),
+                (Complex([Agent(b), Agent(b)]), INDRA_DEFAULT, "bb"),
+            ],
+            entities,
+        )
+    assert time.perf_counter() - start < 10
+
+    def free(name, of):
+        return Agent(name, bound_conditions=[BoundCondition(Agent(of), False)])
+
+    rows = [
+        (Complex([free(a, b), free(a, b)]), INDRA_DEFAULT, "aa"),
+        (Complex([free(a, a), free(b, b)]), INDRA_DEFAULT, "ab"),
+        (Complex([free(b, a), free(b, a)]), INDRA_DEFAULT, "bb"),
+    ]
+    assert "STAT5A" in PS.to_antimony(rows, entities)[0]
+
+
 def test_what_is_made_starts_empty_and_what_is_modified_starts_present():
     """Crauste's effectors exist only once naive cells convert; a kinase that is only ever
     modified must be there at the start. The modified one's amount is `<monomer>_init`, not
@@ -70,6 +103,19 @@ def test_what_is_made_starts_empty_and_what_is_modified_starts_present():
     assert present == {"naive_init", "MEK_init", "ERK_init"}
 
 
+def test_a_species_two_readouts_read_is_named_once():
+    """Renamed once per readout, the species took the second name and left the first defined by
+    nothing, so what read the first read a parameter fitted in place of the species (gemot,
+    boehm r2: two names for STAT5B)."""
+    antimony, _ = PS.to_antimony(
+        [(_TRANSITION, "mass_action", "r1")],
+        {"naive": Agent("naive"), "naive_total": Agent("naive")},
+    )
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    assert sbml.getSpecies("naive") is not None
+    assert sbml.getAssignmentRuleByVariable("naive_total").getMath().getName() == "naive"
+
+
 def test_a_blinded_readout_stays_a_rule():
     """A `readout_*` symbol is a measurement mapping, which the lint accepts only as an assignment
     rule; renamed to the species it reads, Fujita's whole statement model was rejected."""
@@ -78,6 +124,55 @@ def test_a_blinded_readout_stays_a_rule():
     )
     sbml = SbmlModel.from_antimony(antimony).sbml_model
     assert sbml.getAssignmentRuleByVariable("readout_naive") is not None
+
+
+def test_a_rate_may_read_time():
+    """PySB lists `time` in a rate as a modifier species, which no species is, so every model
+    whose written rate read `time` was unreadable SBML (Oliveira, Crauste, Rahman, Fujita)."""
+    library = dict(M.REGISTRY)
+    library[("PopulationTransition", "waning")] = M.written(
+        {
+            "statement_type": "PopulationTransition",
+            "policy": "waning",
+            "based_on": "mass_action",
+            "rate": "k*exp(-time)",
+            "parameters": ["k"],
+        },
+        library,
+    )
+    antimony, _ = PS.to_antimony([(_TRANSITION, "waning", "r1")], {}, library)
+    assert "r1_rate := r1_k/exp(time);" in antimony
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    assert [r.getNumModifiers() for r in sbml.getListOfReactions()] == [0]
+
+
+def test_reaction_ids_never_collide_with_the_models_own():
+    """PySB numbers reactions `r0`, `r1`... whatever else bears the name: an agent's shared rate
+    `r8` made every Blasi model unreadable SBML. Here the readout `r0` takes it."""
+    antimony, _ = PS.to_antimony([(_TRANSITION, "mass_action", "conv")], {"r0": Agent("naive")})
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    assert sbml.getSpecies("r0").getName() == "naive()"
+    assert [r.getId() for r in sbml.getListOfReactions()] == ["r_0"]
+    antimony, _ = PS.to_antimony([(_TRANSITION, "mass_action", "conv")], {})
+    assert "r0: __s0 => __s1; conv_k*__s0;" in antimony
+
+
+def test_a_start_location_does_not_depend_on_row_order():
+    """Without a cytoplasm among its locations, a monomer started in the first location INDRA met,
+    so swapping two rows moved where it started."""
+    from indra.statements import Translocation
+
+    x = Agent("X")
+    rows = [
+        (Translocation(x, "nucleus", "mitochondria"), INDRA_DEFAULT, "r1"),
+        (Translocation(x, "mitochondria", "nucleus"), INDRA_DEFAULT, "r2"),
+    ]
+
+    def started(rows):
+        sbml = SbmlModel.from_antimony(PS.to_antimony(rows, {})[0]).sbml_model
+        return [sbml.getSpecies(a.getSymbol()).getName() for a in sbml.getListOfInitialAssignments()]
+
+    assert started(rows) == started(rows[::-1]) == ["X(loc='mitochondria')"]
 
 
 def test_what_the_start_cannot_reach_starts_present():
@@ -105,6 +200,14 @@ def test_a_complex_nothing_forms_is_refused():
         PS.to_antimony(
             [(Phosphorylation(raf, Agent("MEK")), INDRA_DEFAULT, "r1")], {"RAF_RAS": raf}
         )
+
+
+def test_a_rule_that_never_fires_points_to_starts():
+    """The refusal said everything starts free, which `starts` made untrue, and never named it as
+    the way to have the missing form present at t=0."""
+    raf = Agent("RAF", bound_conditions=[BoundCondition(Agent("RAS"))])
+    with pytest.raises(ModelUpdateError, match="declare it in `starts`"):
+        PS.to_antimony([(Phosphorylation(raf, Agent("MEK")), INDRA_DEFAULT, "r1")], {})
 
 
 # -- declared starts (make_changes' `starts`) ----------------------------------------
@@ -210,6 +313,37 @@ def test_a_declared_empty_start_has_no_parameter():
     assert sbml.getSpecies("naive").getInitialAmount() == 0.0
 
 
+def test_what_rules_make_from_nothing_is_noted_as_starting_empty():
+    """Fujita r2's EGFR, made by zero-order synthesis, started at 0 with nothing said. A start
+    declared at 0 says it, and drops the note."""
+    from indra.statements import IncreaseAmount
+
+    rows = [(IncreaseAmount(None, Agent("EGFR")), INDRA_DEFAULT, "r1")]
+    notes = []
+    PS.to_antimony(rows, {}, notes=notes)
+    assert len(notes) == 1 and "EGFR" in notes[0] and "`starts`" in notes[0]
+    notes = []
+    PS.to_antimony(rows, {}, starts=[("EGFR", Agent("EGFR"), 0)], notes=notes)
+    assert notes == []
+
+
+def test_a_start_location_chosen_among_several_is_noted():
+    """With no cytoplasm among its locations, where a monomer started went unsaid."""
+    from indra.statements import Translocation
+
+    x = Agent("X")
+    notes = []
+    PS.to_antimony(
+        [
+            (Translocation(x, "nucleus", "mitochondria"), INDRA_DEFAULT, "r1"),
+            (Translocation(x, "mitochondria", "nucleus"), INDRA_DEFAULT, "r2"),
+        ],
+        {},
+        notes=notes,
+    )
+    assert len(notes) == 1 and notes[0].startswith("X starts in mitochondria")
+
+
 def test_indra_padded_rules_build():
     """INDRA pads one-step Conversion and subject-driven amount rules with None for Kappa; the
     trace read every side as a complex and every such statement failed to build (Bachmann's
@@ -295,6 +429,18 @@ def test_a_readout_formula_names_a_new_symbol():
             [(_TRANSITION, "mass_action", "r1")],
             {"naive": Agent("naive")},
             formulas={"naive": "2 * naive"},
+        )
+
+
+def test_a_readout_formula_never_reads_the_readout():
+    """`readout_x := readout_x * X` made a parameter of the readout's own name before the rule's,
+    and libSBML failed on the duplicate id ("id must be unique")."""
+    with pytest.raises(ModelUpdateError, match="'readout_total' = .* reads itself"):
+        PS.to_antimony(
+            [(_PHOSPHO, INDRA_DEFAULT, "r1")],
+            {},
+            formulas={"readout_total": "readout_total * tERK"},
+            amounts={"tERK": Agent("ERK")},
         )
 
 

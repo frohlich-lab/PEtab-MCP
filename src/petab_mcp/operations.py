@@ -590,6 +590,24 @@ def set_model(
         raise OperationError(
             "make_changes requires a non-empty Antimony model string when `antimony` is given."
         )
+    from .model_edits import self_assignments
+
+    looped = self_assignments(antimony)
+    if looped:
+        readout = next((s for s in looped if s.startswith(R.READOUT_PREFIX)), None)
+        raise OperationError(
+            f"make_changes: the assignment rule of {', '.join(map(repr, looped))} reads the "
+            "symbol it assigns. A rule computes its symbol from OTHER quantities, so this is a "
+            "loop no model can hold."
+            + (
+                f" {readout!r} is not a parameter to scale: it is what the assay measures of the "
+                f"model's state, `{readout} := <expression of your species>`."
+                if readout
+                else ""
+            )
+            + " NOTHING was applied.",
+            cause="self_assignment",
+        )
 
     normalized = _normalize_parameter_changes(parameters, arg="parameters") if parameters else []
 
@@ -659,6 +677,20 @@ def set_model(
     return result
 
 
+def _problem_ids(session) -> dict[str, str]:
+    """The problem's own ids a written mechanism's rate may not name, each to what it is
+    (:data:`mechanisms.SHIPPED` ...): its shipped parameters, its condition inputs, and the species
+    of its entity map, which win where a condition sets one."""
+    from . import mechanisms as M
+    from .reconcile import condition_target_symbols
+
+    return {
+        **{p: M.SHIPPED for p in session.shipped_parameter_df.index},
+        **{t: M.CONDITION for t in condition_target_symbols(session.problem)},
+        **{e: M.SPECIES for e in session.entities},
+    }
+
+
 def statements_to_antimony(
     session,
     rows: list[dict[str, Any]],
@@ -685,7 +717,7 @@ def statements_to_antimony(
     from indra.statements import Agent, stmts_from_json
 
     from . import mechanisms, problem_sbml
-    from .statements import ungrounded
+    from .statements import agent_problems, problems, ungrounded, with_defaults
 
     definitions = dict(session.mechanisms)
     for definition in written or []:
@@ -699,8 +731,9 @@ def statements_to_antimony(
                 cause="mechanism_redefined",
             )
     library = dict(mechanisms.REGISTRY)
+    problem_ids = _problem_ids(session)
     for key, definition in definitions.items():
-        library[key] = mechanisms.written(definition, library)
+        library[key] = mechanisms.written(definition, library, problem_ids)
     # A row, or an agent, may be written in the notation (:mod:`notation`): read here, against the
     # library (a policy written without its `indra_` prefix) and the entity map's groundings.
     from . import notation
@@ -738,6 +771,28 @@ def statements_to_antimony(
             "parameters, so they must be unique. NOTHING was applied.",
             cause="duplicate_prefix",
         )
+    # Read here, each problem named, rather than by INDRA's reader, which skips a field it does not
+    # know, leaves a missing one None, and drops a statement it cannot build with a logged warning.
+    unread = [
+        f"`{row['prefix']}`: {problem}"
+        for row in rows
+        for problem in problems(row["statement"])
+        + [
+            p
+            for slot, agent in (row.get("modifiers") or {}).items()
+            for p in agent_problems(agent, f"modifiers.{slot}")
+        ]
+    ]
+    unread += [p for i, s in enumerate(starts) for p in agent_problems(s["agent"], f"starts[{i}].agent")]
+    unread += [p for name, a in amounts.items() for p in agent_problems(a, f"amounts.{name}")]
+    if unread:
+        raise OperationError(
+            f"make_changes: these `statements` do not build as written: {'; '.join(unread)}. "
+            "NOTHING was applied.",
+            cause="unreadable_statement",
+        )
+    for row in rows:
+        row["statement"] = with_defaults(row["statement"])
     stmts = stmts_from_json([row["statement"] for row in rows])
     # INDRA drops a statement it cannot read with only a logged warning; refuse instead, naming
     # each one: "2 of 9 entries" sent MiMo probing the schema call by call.
@@ -759,6 +814,7 @@ def statements_to_antimony(
          start["amount"])
         for start in starts or []
     ]
+    notes: list[str] = []
     antimony, emissions = problem_sbml.to_antimony(
         [
             (
@@ -776,6 +832,7 @@ def statements_to_antimony(
         declared,
         read,
         {k: Agent._from_json(v) for k, v in amounts.items()},
+        notes=notes,
     )
     record = {
         "rows": [
@@ -795,7 +852,24 @@ def statements_to_antimony(
         M.warning(M.SOURCE_EDIT, f"`statements[{i}]` agent(s) {names} carry no grounding.")
         for i, names in enumerate(map(ungrounded, stmts))
         if names
-    ]
+    ] + [M.warning(M.SOURCE_EDIT, note) for note in notes]
+    # What a scheme gave a molecule that nothing else gives it, so the agent sees it happen.
+    added: dict[tuple[str, str], tuple[list[str], list[int]]] = {}
+    for i, e in enumerate(emissions):
+        for molecule, sites in e.sites_added.items():
+            for site, states in sites.items():
+                added.setdefault((molecule, site), (states, []))[1].append(i)
+    if added:
+        listed = ", ".join(
+            f"{molecule} {site} {states or '(binding)'} (`statements[{', '.join(map(str, at))}]`)"
+            for (molecule, site), (states, at) in added.items()
+        )
+        warnings.append(M.warning(
+            M.SOURCE_EDIT,
+            f"schemes added sites no row or entity gives: {listed}. A molecule starts in a site's "
+            "first state (on `loc`, in cytoplasm when it is one, else in its first location "
+            "by name), and free on a binding site.",
+        ))
     return antimony, record, warnings, definitions
 
 
@@ -1070,14 +1144,11 @@ def _require_positive_for_log(problem, parameter_id: str, scale: str) -> None:
                     hint = (
                         " `nominalValue` is not settable here (allowed keys: parameter_id, "
                         "lower_bound, upper_bound, scale) — a parameter's VALUE comes from the "
-                        "model text or the fit. An initial-condition row is created from the "
-                        "initial value the model declares AT THE MOMENT IT IS FIRST CREATED: 0 "
-                        "(or no initial value) means FIXED at 0, 1 means FIXED at 1, any other "
-                        "positive value means ESTIMATED on log10. A row already created at 0 does "
-                        "NOT re-open when you later declare a positive initial — only a species "
-                        "authored under a DIFFERENT name gets a fresh row. So either drop this "
-                        "scale entry (a species that starts empty is correctly fixed at 0), or "
-                        "author the species under a different name with a positive initial value."
+                        "model text or the fit. An initial-condition row follows the initial "
+                        "value the model declares: 0 (or no initial value) means FIXED at 0, 1 "
+                        "means FIXED at 1, any other positive value means ESTIMATED on log10. So "
+                        "either drop this scale entry (a species that starts empty is correctly "
+                        "fixed at 0), or declare a positive initial value."
                     )
                 raise OperationError(
                     f"Cannot use {scale} scale for {parameter_id!r}: {field}={val} must be > 0."
@@ -1624,8 +1695,8 @@ def bundle_result(
     returns. It is not "did the edit apply" — an edit that applies and then fails to fit is
     reverted (see :func:`revert_working_state`), so that call reports ``applied: false``, and the
     agent never has to reason about a half-done state. ``committed`` is the separate question of
-    whether a VERSION was created; the two differ only for the de-dup no-op, where the change is
-    in place but is byte-identical to an existing version.
+    whether a VERSION was created; the two differ only for the de-dup no-op, where the change gives
+    the same model as an existing version and the working model is that version, exactly as stored.
 
     Both halves' diagnostics are merged into ONE ordered ``messages`` stack (see :mod:`messages`) —
     the edit's advisories and lint warnings first, then the fit's — so a caller reads every
@@ -1652,9 +1723,11 @@ def bundle_result(
     elif no_change:
         applied = True
         message = (
-            "Change applied, but the fit was a no-op: the resulting model is identical to version "
-            f"{fit_result.get('duplicate_of_version')}, so its stored metrics stand. Make a "
-            "genuinely different change; that version is kept and scored regardless."
+            "No new version: this change gives the same model as version "
+            f"{fit_result.get('duplicate_of_version')} (the same equations and estimated "
+            "parameters), so the working model stays that version exactly as stored and its "
+            "metrics stand. Make a genuinely different change; that version is kept and scored "
+            "regardless."
         )
     elif snapshotted:
         # The fit broke only AFTER snapshotting, so HEAD moved: report where it landed rather than

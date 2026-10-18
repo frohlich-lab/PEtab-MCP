@@ -18,8 +18,8 @@ be scored against it as it stands. This module is the difference, and it is all 
 The start rests on two assumptions, and a third check refuses the models they do not fit:
 
 1. **The start holds free monomers in INDRA's default state** (``set_base_initial_condition``):
-   unbound, unmodified, inactive, wild type, in the cytoplasm when that is a location. No complex
-   and no modified form exists at the start.
+   unbound, unmodified, inactive, wild type, in the cytoplasm when that is a location (else in
+   the first of its locations by name). No complex and no modified form exists at the start.
 2. **What the start makes is absent from it.** Every monomer no rule makes from other kinds is
    present (one that only proliferates included), and BioNetGen expands the rules from those. A
    made monomer that expansion reaches starts empty: Crauste's effectors exist only once naive
@@ -62,6 +62,7 @@ import pysb
 from indra.assemblers.pysb.assembler import get_monomer_pattern
 from indra.statements import Agent
 from petab.v1.models.sbml_model import SbmlModel
+from pysb import ANY
 from pysb.bng import NoInitialConditionsError, generate_equations
 from pysb.export import export
 
@@ -78,6 +79,7 @@ def to_antimony(
     starts: list[tuple[str, Agent, float | str]] | None = None,
     formulas: dict[str, str] | None = None,
     amounts: dict[str, Agent] | None = None,
+    notes: list[str] | None = None,
 ) -> tuple[str, list[M.Emission]]:
     """The model ``rows`` build, as Antimony the ``antimony`` route accepts unchanged.
 
@@ -96,6 +98,10 @@ def to_antimony(
     assignment rule over ``amounts`` (name to the agent whose amount it is), the entity map's ids
     — each a symbol of the model by then — and parameter ids, a name the model does not hold
     becoming a parameter as in a declared start.
+
+    ``notes``, when given, collects what the start holds that nothing declared and the caller may
+    not expect: kinds the rules make from nothing, which start empty, and a start location chosen
+    among several.
     """
     starts = starts or []
     clash = sorted(set(amounts or {}) & set(entities))
@@ -110,11 +116,14 @@ def to_antimony(
         rows, {**entities, **{f"__start_{name}": agent for name, agent, _ in starts}}, library
     )
     held = {entities[species].name: formula for species, formula in (inputs or {}).items()}
-    made = set()
+    _refuse_chains(model, emissions)
+    made, synthesised = set(), set()
     for rule in model.rules:
         reactants = _monomer_names(rule.reactant_pattern)
         products = _monomer_names(rule.product_pattern)
         made |= products - reactants
+        if reactants <= products:  # consumes nothing it does not give back
+            synthesised |= products - reactants
         if rule.is_reversible:
             made |= reactants - products
     # Readouts are named apart from the species they stand for, which may share a monomer's
@@ -137,6 +146,27 @@ def to_antimony(
         _seed(model, unreached)
         model.reset_equations()
         _expand(model)
+    if notes is not None:
+        empty = sorted((synthesised & reached) - held.keys() - declared)
+        if empty:
+            notes.append(
+                f"These start at 0, because rules make them from nothing and no `starts` entry "
+                f"declares them: {', '.join(empty)}. Declare each one present at t=0 (a protein "
+                "made at a steady rate is) in `starts`; one declared at 0 stays empty and leaves "
+                "this list."
+            )
+        for initial in model.initials:
+            pattern = initial.pattern.monomer_patterns[0]
+            locations = pattern.monomer.site_states.get("loc", ())
+            if pattern.monomer.name in declared.union(held) or len(locations) < 2:
+                continue
+            if "cytoplasm" in locations:
+                continue
+            notes.append(
+                f"{pattern.monomer.name} starts in {pattern.site_conditions['loc']}, the first of "
+                f"its locations {sorted(locations)} by name, since no statement puts it in the "
+                "cytoplasm. To start it elsewhere, declare it in `starts`."
+            )
     fired = {name for reaction in model.reactions for name in reaction["rule"]}
     never = []
     stuck = sorted({e.prefix for e in emissions if not fired.issuperset(e.rules)})
@@ -156,11 +186,12 @@ def to_antimony(
         never.append(f"readouts {unread} read no species ({patterns})")
     if never:
         raise ModelUpdateError(
-            f"In the model these statements build, {' and '.join(never)}. Everything starts as "
-            "free, unmodified molecules, except what the rules make from those, so a rule fires "
-            "only on what the statements form from there: one that never fires needs a complex "
-            "or a modified form that no statement forms, like a kinase active only while bound "
-            "to a partner nothing binds it to."
+            f"In the model these statements build, {' and '.join(never)}. The start holds free, "
+            "unmodified molecules and what `starts` declares, and a rule fires only on what the "
+            "statements form from there: one that never fires needs a complex or a modified form "
+            "that nothing forms, like a kinase active only while bound to a partner nothing binds "
+            "it to. Add the statement that forms it, or, if it is present at t=0, declare it in "
+            "`starts`."
         )
     sbml = export(model, "sbml")  # from the expansion above; BioNetGen does not run again
     base_names = {
@@ -169,6 +200,14 @@ def to_antimony(
     }
     document = libsbml.readSBMLFromString(sbml)
     sbml_model = document.getModel()
+    for reaction in sbml_model.getListOfReactions():
+        # PySB numbers reactions `r0`, `r1`... whatever else the model names so; they hold
+        # PySB's internal form until :func:`_number_reactions` numbers them against the rest.
+        reaction.setId(f"__{reaction.getId()}")
+        # PySB lists every symbol a rate expression reads that is no parameter as a modifier
+        # species, `time` too, which no species is: the SBML did not read.
+        while reaction.removeModifier("time") is not None:
+            pass
     base = {
         base_names[sp.getName()]: sp
         for sp in sbml_model.getListOfSpecies()
@@ -180,19 +219,27 @@ def to_antimony(
             sbml_model.getSpecies(assignment.getSymbol()).setInitialAmount(0.0)
             sbml_model.removeParameter(amount)
             assignment.removeFromParentAndDelete()
+    named = set()
     for parameter in list(sbml_model.getListOfParameters()):
         if parameter.getName() not in readouts:
             continue
         old, new = parameter.getId(), readouts[parameter.getName()]
         rule = sbml_model.getAssignmentRuleByVariable(old)
         species = sbml_model.getSpecies(rule.getMath().getName() or "")
-        if rule.getMath().isName() and species is not None and not new.startswith("readout_"):
+        if (
+            rule.getMath().isName()
+            and species is not None
+            and species.getId() not in named
+            and not new.startswith("readout_")
+        ):
             # A readout that IS one species names that species, rather than leaving a rule over
             # it: the reachability checks in `reconcile` and `operations` follow reactions, not
             # rules, and warned that every species was disconnected from the data. Except a
             # blinded `readout_*` mapping, which the lint requires to stay a rule
             # (`validation`'s measurement-mapping check refused Fujita's pS6 as a species).
+            # A species takes one name: each further readout of it stays a rule over that name.
             old, renamed = species.getId(), species
+            named.add(new)
             rule.removeFromParentAndDelete()
             parameter.removeFromParentAndDelete()
         else:
@@ -229,6 +276,7 @@ def to_antimony(
         rule = sbml_model.createAssignmentRule()
         rule.setVariable(species.getId())
         rule.setMath(protocol)
+    _number_reactions(sbml_model)
     return SbmlModel.from_string(libsbml.writeSBMLToString(document)).to_antimony(), emissions
 
 
@@ -328,6 +376,12 @@ def _readout_formula(
     math = libsbml.parseL3Formula(formula)
     if math is None:
         raise ModelUpdateError(f"readout {readout!r} is no formula: {formula!r}")
+    if any(node.isName() and node.getName() == readout for node in _ast_nodes(math)):
+        raise ModelUpdateError(
+            f"readout {readout!r} = {formula!r} reads itself. A readout is not a parameter to "
+            "scale: it is what the assay measures of the model's state, a formula over the "
+            "amounts it reads."
+        )
     unread = sorted(
         {
             node.getName()
@@ -391,8 +445,10 @@ def _seed(model: pysb.Model, monomers: list[pysb.Monomer]) -> None:
         # `<monomer>_0` silently skips a monomer whose name is taken, and Fujita's EGF stimulus
         # column is `EGF_0`.
         state = {site: monomer.site_states.get(site, [None])[0] for site in monomer.sites}
-        if "cytoplasm" in monomer.site_states.get("loc", ()):
-            state["loc"] = "cytoplasm"
+        locations = monomer.site_states.get("loc", ())
+        if locations:
+            # Else the first by name, not the first INDRA met: that was whichever row came first.
+            state["loc"] = "cytoplasm" if "cytoplasm" in locations else min(locations)
         # Reconcile's own seed value, not 1, which it holds FIXED as a unit normalisation: the
         # first version started every Crauste population at one cell that way.
         amount = pysb.Parameter(f"{monomer.name}_init", SEED_INITIAL_VALUE, _export=False)
@@ -474,6 +530,124 @@ def _ast_nodes(node):
         yield from _ast_nodes(node.getChild(i))
 
 
+def _refuse_chains(model: pysb.Model, emissions: list[M.Emission]) -> None:
+    """Refuse, before BioNetGen runs, rules whose complexes can chain without end.
+
+    A complex can grow without bound when a cycle of bonds lets each molecule on it be bound on
+    one site while binding on another: STAT5A and STAT5B each dimerising with itself and with the
+    other make STAT5A-STAT5A-STAT5B-STAT5B-STAT5A-... The rules say this at once, where the
+    capped expansion (:data:`MAX_COMPLEX`) only finds it out after building every complex up to
+    the cap, which took 19 s on that pair alone and 251 s on a loaded laptop. The cap stays as
+    the backstop for growth the bonds alone do not show.
+    """
+    formed: dict[tuple, set[str]] = {}  # bond, as its two (monomer, site) ends -> rules forming it
+    holds: set[tuple[str, str, str]] = set()  # (monomer, s, t): bound on s and t at once
+    for rule in model.rules:
+        sides = [(rule.reactant_pattern, rule.product_pattern)]
+        if rule.is_reversible:
+            sides.append((rule.product_pattern, rule.reactant_pattern))
+        for before, after in sides:
+            for molecule in _molecules(before) + _molecules(after):
+                bound = sorted(s for s, v in molecule.site_conditions.items() if _is_bond(v))
+                holds |= {(molecule.monomer.name, s, t) for s in bound for t in bound if s != t}
+            new = _bonds(after)
+            for bond in _bonds(before):
+                if bond in new:
+                    new.remove(bond)
+            for bond in new:
+                formed.setdefault(bond, set()).add(rule.name)
+                for name, site in bond:
+                    # The molecule taking the bond holds every bond its pattern does not forbid.
+                    for molecule in _molecules(before):
+                        conditions = molecule.site_conditions
+                        if molecule.monomer.name == name and _is_free(conditions.get(site, ANY)):
+                            holds |= {
+                                pair
+                                for other in molecule.monomer.sites
+                                if other != site and not _is_free(conditions.get(other, ANY))
+                                for pair in ((name, site, other), (name, other, site))
+                            }
+    # From "bound on s", a molecule that may also bind on t reaches its partner on t's bond.
+    steps: dict[tuple[str, str], list[tuple[tuple[str, str], tuple]]] = {}
+    for bond in formed:
+        for (name, site), partner in ((bond[0], bond[1]), (bond[1], bond[0])):
+            for held_name, s, t in holds:
+                if held_name == name and t == site:
+                    steps.setdefault((name, s), []).append((partner, bond))
+    cycle = _cycle(steps)
+    if cycle is None:
+        return
+    rules = set().union(*(formed[bond] for _, bond in cycle))
+    rows = sorted({e.prefix for e in emissions if rules & set(e.rules)})
+    chain = "-".join(node[0] for node, _ in cycle) + f"-{cycle[0][0][0]}-..."
+    raise ModelUpdateError(
+        f"These statements form complexes that grow without bound: rows {rows} bind "
+        f"{sorted({node[0] for node, _ in cycle})} into chains ({chain}), each molecule bound on "
+        "one site still free to bind on another. Require each partner to be free of its other "
+        "partners where it binds: `A{~B} binds A{~B}`, `A{~A} binds B{~B}`, `B{~A} binds B{~A}`."
+    )
+
+
+def _molecules(reaction_pattern) -> list:
+    return [
+        mp for cp in reaction_pattern.complex_patterns if cp is not None for mp in cp.monomer_patterns
+    ]
+
+
+def _is_free(value) -> bool:
+    """Whether a site condition requires the site unbound (``None``, or ``(state, None)``)."""
+    return value is None or (isinstance(value, tuple) and value[1] is None)
+
+
+def _is_bond(value) -> bool:
+    if isinstance(value, tuple):
+        value = value[1]
+    return value is ANY or (isinstance(value, int) and not isinstance(value, bool))
+
+
+def _bonds(reaction_pattern) -> list[tuple]:
+    """Each bond of the pattern as its two ``(monomer, site)`` ends, sorted."""
+    bonds = []
+    for cp in reaction_pattern.complex_patterns:
+        if cp is None:
+            continue
+        ends: dict[int, list] = {}
+        for mp in cp.monomer_patterns:
+            for site, value in mp.site_conditions.items():
+                number = value[1] if isinstance(value, tuple) else value
+                if isinstance(number, int) and not isinstance(number, bool):
+                    ends.setdefault(number, []).append((mp.monomer.name, site))
+        bonds += [tuple(sorted(pair)) for pair in ends.values() if len(pair) == 2]
+    return bonds
+
+
+def _cycle(steps: dict) -> list | None:
+    """A cycle in ``steps`` as its ``(node, bond)`` steps, or ``None``."""
+    state: dict = {}
+    path: list = []
+
+    def visit(node) -> list | None:
+        state[node] = "open"
+        for partner, bond in steps.get(node, []):
+            path.append((node, bond))
+            if state.get(partner) == "open":
+                start = next(i for i, (n, _) in enumerate(path) if n == partner)
+                return path[start:]
+            if partner not in state:
+                found = visit(partner)
+                if found:
+                    return found
+            path.pop()
+        state[node] = "done"
+        return None
+
+    for node in list(steps):
+        if node not in state:
+            found = visit(node)
+            if found:
+                return found
+    return None
+
 def _rename(sbml_model, element, new: str) -> None:
     """Rename ``element`` and every reference to it. Element by element: the model's own
     ``renameSIdRefs`` reaches neither a reaction's species references nor a rule's target."""
@@ -481,6 +655,22 @@ def _rename(sbml_model, element, new: str) -> None:
     for other in sbml_model.getListOfAllElements():
         other.renameSIdRefs(old, new)
     element.setId(new)
+
+
+def _number_reactions(sbml_model) -> None:
+    """Number the reactions ``r0``, ``r1``..., or ``r_0``... when another id already has that form:
+    a shared rate an agent named ``r8`` made every Blasi model's SBML unreadable."""
+    taken = {
+        element.getId()
+        for element in sbml_model.getListOfAllElements()
+        if element.getTypeCode() != libsbml.SBML_REACTION and element.isSetId()
+    }
+    reactions = list(sbml_model.getListOfReactions())
+    prefix = "r"
+    while any(f"{prefix}{i}" in taken for i in range(len(reactions))):
+        prefix += "_"
+    for i, reaction in enumerate(reactions):
+        reaction.setId(f"{prefix}{i}")
 
 
 def _monomer_names(reaction_pattern) -> set[str]:

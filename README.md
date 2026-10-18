@@ -39,6 +39,13 @@ pip `swig` binary on `PATH`. AMICI and pyPESTO are pinned to commits on their `m
 until releases carry the PEtab v2 fixes named in `pyproject.toml`, so AMICI itself is built from
 source on install (BLAS comes from the `scipy-openblas64` wheel, or Accelerate on macOS).
 
+A model built from statements (`make_changes`' `statements` route, `petab_mcp.problem_sbml`)
+has its rules expanded into reactions by BioNetGen, which the `bionetgen` package ships.
+BioNetGen is a Perl program, so `perl` must be on `PATH`. Without it every statements build is
+refused with `Expanding the statements into reactions failed: [Errno 2] No such file or
+directory: 'perl'`; the Antimony routes do not use it. macOS and most Linux distributions ship
+perl, slim container images do not.
+
 ## Run
 
 ```bash

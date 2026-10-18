@@ -302,8 +302,8 @@ def _undefined_readout_issues(problem, statements: bool = False) -> list[dict[st
     agent the fix is one ``set_assignment`` op, and nothing repeats what the readout measures at
     the moment that information is needed. Burned turns follow. This check owns the remedy.
 
-    A model with no dynamics yet (the v0 seed) declares every referenced identifier as a species,
-    so this fires only once the agent has authored a model that forgot a mapping. Best-effort:
+    A model with no dynamics yet (the v0 seed) declares every readout a constant, so this fires
+    only once the agent has authored a model that forgot a mapping. Best-effort:
     any failure returns ``[]`` rather than breaking validation.
 
     ``statements``: the model came from make_changes' ``statements`` route, where a readout is
@@ -319,8 +319,8 @@ def _undefined_readout_issues(problem, statements: bool = False) -> list[dict[st
         sm = getattr(problem.model, "sbml_model", None)
         if odf is None or sm is None or OBSERVABLE_FORMULA not in odf.columns:
             return []
-        # The SEED declares one species per observable-formula identifier so v0 lints and
-        # simulates, and that includes every readout_*. So "the id resolves to some SBML element"
+        # The SEED declares every observable-formula identifier so v0 lints and simulates, and
+        # that includes every readout_*. So "the id resolves to some SBML element"
         # is satisfied by construction and cannot be the test -- checking it made this whole guard
         # a no-op, which is how a model leaving every readout a FREE CONSTANT would have committed:
         # on blasi that is 16 constants against 16 steady-state observable means, fitting them

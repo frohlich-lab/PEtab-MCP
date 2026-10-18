@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
+
+import pysb
 import pytest
-from indra.statements import Activation, Agent, Phosphorylation
+from indra.statements import Activation, ActiveForm, Agent, Dephosphorylation, Phosphorylation
 
 from petab_mcp import mechanisms as M
 from petab_mcp.errors import MechanismError
@@ -40,13 +43,46 @@ def test_modified_substrate_gets_its_site():
 
 def test_unregistered_pair_is_a_mechanism_error():
     """A library gap must stay distinguishable from a bug, so it is not a bare ``KeyError``."""
-    with pytest.raises(MechanismError, match="no mechanism"):
+    with pytest.raises(MechanismError, match="no mechanism") as exc:
         M.assemble([(_TRANSITION, "no_such_mechanism", "r1")])
+    assert exc.value.cause == "library_gap"
+
+
+def test_a_malformed_request_is_not_a_library_gap():
+    """Every refusal counted as a library gap, so the library's to-do list was mostly typos."""
+    with pytest.raises(MechanismError, match="built-in") as exc:
+        M.written(
+            {"statement_type": "PopulationTransition", "policy": "mass_action", "rate": "k"},
+            M.REGISTRY,
+        )
+    assert exc.value.cause == "malformed_mechanism"
+
+
+def test_basal_refuses_a_statement_that_names_an_enzyme():
+    """`PTEN dephosphorylates AKT1 | basal` built a rule without PTEN."""
+    stmt = Dephosphorylation(Agent("PTEN"), Agent("AKT1"), "S", "473")
+    with pytest.raises(MechanismError, match="names PTEN, which it would leave out") as exc:
+        M.assemble([(stmt, M.BASAL, "r1")])
+    assert exc.value.cause == "malformed_mechanism"
+
+
+def test_basal_addition_refuses_an_enzyme_too_and_builds_without_one():
+    with pytest.raises(MechanismError, match="names MEK, which it would leave out"):
+        M.assemble([(_PHOSPHO, M.BASAL, "r1")])
+    _, (emission,) = M.assemble([(Phosphorylation(None, Agent("ERK"), "T", "185"), M.BASAL, "r1")])
+    assert emission.rules
+
+
+def test_a_policy_indra_cannot_assemble_is_a_library_gap():
+    with pytest.raises(MechanismError, match="INDRA has no default assembly") as exc:
+        M._indra("default")(_TRANSITION, pysb.Model(_export=False), "r1")
+    assert exc.value.cause == "library_gap"
 
 
 def test_reregistering_an_entry_raises():
-    """A silent override builds whichever policy imported last."""
-    with pytest.raises(MechanismError, match="already registered"):
+    """A silent override builds whichever policy imported last. A programming error, not a
+    refusal: no agent call reaches it."""
+    with pytest.raises(RuntimeError, match="already registered"):
         M.mechanism(PopulationTransition, "mass_action")(lambda *a: None)
 
 
@@ -61,6 +97,17 @@ def test_every_indra_statement_has_its_default_entry():
     assert {p.name for p in model.parameters} == {"r1_kf"}
 
 
+
+def test_a_row_that_builds_no_rule_is_refused():
+    """INDRA builds a rule once and none for an ActiveForm, so a repeated statement built nothing
+    beside an orphan `r2_kf`, and an ActiveForm row nothing at all, both without a word."""
+    activation = Activation(Agent("EGFR"), Agent("AKT"))
+    twin = Activation(Agent("EGFR"), Agent("AKT"))
+    with pytest.raises(MechanismError, match="row 'r2' asserts the statement of row 'r1' again"):
+        M.assemble([(activation, M.INDRA_DEFAULT, "r1"), (twin, M.INDRA_DEFAULT, "r2")])
+    with pytest.raises(MechanismError, match="row 'r1': ActiveForm under 'indra_default' builds no rule"):
+        M.assemble([(ActiveForm(Agent("AKT"), "kinase", True), M.INDRA_DEFAULT, "r1")])
+
 # A mechanism the agent writes; ``{extra}`` splices more fields into the definition.
 _BASE_WRITTEN = (
     '{{"statement_type": "Phosphorylation", "policy": "saturating", "rate": "kcat / (Km + enz)", '
@@ -68,9 +115,10 @@ _BASE_WRITTEN = (
 )
 
 
-def _written(extra=""):
-    import json
+_BASE_WRITTEN_DEF = json.loads(_BASE_WRITTEN.format(extra=""))
 
+
+def _written(extra=""):
     library = dict(M.REGISTRY)
     definition = json.loads(_BASE_WRITTEN.format(extra=extra))
     library[("Phosphorylation", definition["policy"])] = M.written(definition, library)
@@ -93,6 +141,86 @@ def test_a_written_rate_names_only_what_the_mechanism_allows():
     for rate in ("kcat / (Km + substrate)", "__import__('os')", "kcat.real"):
         with pytest.raises(MechanismError, match="may name only"):
             _written(f', "rate": "{rate}"')  # a repeated JSON key: the later one wins
+
+
+def test_a_refused_rate_name_comes_with_the_names_it_could_have_meant():
+    with pytest.raises(MechanismError, match=r"Did you mean: kcatt -> 'kcat'"):
+        _written(', "rate": "kcatt / (Km + enz)"')
+
+
+def test_a_written_rate_does_not_read_a_starting_amount():
+    """`<name>_init` is a species' start; a rate reads amounts through its roles and modifiers."""
+    with pytest.raises(MechanismError, match=r"\['ERK_init'\].*amount a species starts at"):
+        _written(', "rate": "kcat * ERK_init / (Km + enz)"')
+
+
+def test_a_problem_id_in_a_written_rate_says_how_it_enters():
+    """Blasi's shipped FIXED `d` was refused with only the names a rate may read, so the agent
+    declared `d` and got a new estimated one."""
+    ids = {"d": M.SHIPPED}
+    with pytest.raises(MechanismError, match=r"`d` is a parameter the problem ships.*row's binding"):
+        M.written(_BASE_WRITTEN_DEF | {"rate": "kcat * d / (Km + enz)"}, M.REGISTRY, ids)
+    with pytest.raises(MechanismError, match=r"declares \['d'\].*name yours apart"):
+        M.written(_BASE_WRITTEN_DEF | {"parameters": ["kcat", "Km", "d"]}, M.REGISTRY, ids)
+
+
+@pytest.mark.parametrize("rate", ["kcat,Km", "exp", "2kcat", "kcat Km", "exp()"])
+def test_a_written_rate_that_is_no_expression_is_refused(rate):
+    """Each passed the token check and crashed make_changes in sympify, at assembly."""
+    with pytest.raises(MechanismError, match="does not read as one expression"):
+        _written(f', "rate": "{rate}"')
+
+
+@pytest.mark.parametrize(
+    "extra, match",
+    [
+        ("k-1", "named by ASCII letters"),
+        ("lambda", "named by ASCII letters"),
+        ("base_kf", "names taken already"),
+        ("rate", "names taken already"),
+        ("sub", "names taken already"),
+        ("time", "names taken already"),
+        ("exp", "names taken already"),
+    ],
+)
+def test_a_declared_parameter_must_be_a_new_name(extra, match):
+    """`k-1` and `base_kf` crashed PySB; `sub`, `time`, `rate` and `exp` were made parameters
+    that the rate's own names then shadowed."""
+    with pytest.raises(MechanismError, match=match):
+        M.written(_BASE_WRITTEN_DEF | {"parameters": ["kcat", "Km", extra]}, M.REGISTRY)
+
+
+def test_a_declared_parameter_the_rate_never_names_is_refused():
+    with pytest.raises(MechanismError, match=r"declares \['Ki'\].*never names"):
+        M.written(_BASE_WRITTEN_DEF | {"parameters": ["kcat", "Km", "Ki"]}, M.REGISTRY)
+
+
+def test_a_rate_reading_a_role_the_row_leaves_empty_is_refused():
+    """A rate reading `enz` of an enzyme-less row, or `members` of a complex of two, became a free
+    symbol, and BioNetGen aborted naming neither the row nor the role."""
+    from indra.statements import Complex
+
+    library = dict(M.REGISTRY)
+    for stmt_type, base, rate in (("Phosphorylation", "basal", "k*enz"),
+                                  ("Complex", "assembly", "k*members")):
+        library[(stmt_type, "w")] = M.written(
+            {"statement_type": stmt_type, "policy": "w", "based_on": base, "rate": rate,
+             "parameters": ["k"]},
+            library,
+        )
+    for stmt, role in ((Phosphorylation(None, Agent("ERK"), "T", "185"), "enz"),
+                       (Complex([Agent("A"), Agent("B")]), "members")):
+        with pytest.raises(MechanismError, match=rf"row 'r1': .* reads \['{role}'\], which its "):
+            M.assemble([(stmt, "w", "r1")], library=library)
+
+
+def test_a_mechanism_for_no_statement_type_is_refused():
+    with pytest.raises(MechanismError, match="no statement type"):
+        M.written(
+            {"statement_type": "Phosphorylatoin", "policy": "w", "scheme": "sub() >> sub() @ k",
+             "parameters": ["k"]},
+            M.REGISTRY,
+        )
 
 
 def test_a_written_mechanism_cannot_shadow_a_built_in():
@@ -124,6 +252,49 @@ def test_rows_bound_to_one_id_share_one_parameter():
     assert emissions[0].bound == {"k": "k_shared"}
 
 
+_FORWARD = PopulationTransition(Agent("A"), Agent("B"))
+_BACKWARD = PopulationTransition(Agent("B"), Agent("A"))
+
+
+def test_a_row_may_share_a_later_rows_parameter():
+    """Bound as each row was built, a row sharing `back_k` before the row minting it renamed its
+    own to `back_k`, and that row's own then clashed with it: PySB's duplicate name, raw."""
+    params, emissions = _sbml_parameters(
+        [(_FORWARD, "mass_action", "fwd", {"k": "back_k"}), (_BACKWARD, "mass_action", "back")]
+    )
+    assert "back_k" in params and "fwd_k" not in params
+    assert [e.parameters for e in emissions] == [("back_k",), ("back_k",)]
+
+
+def test_a_row_shares_what_the_row_it_names_reads():
+    """In either order: sharing a pinned row's rate reads the pin, not the constant it replaced,
+    which nothing else reads, and a row renamed to a shared id is found by its own name too."""
+    for rows in (
+        [(_BACKWARD, "mass_action", "back", {"k": 0.5}), (_FORWARD, "mass_action", "fwd", {"k": "back_k"})],
+        [(_FORWARD, "mass_action", "fwd", {"k": "back_k"}), (_BACKWARD, "mass_action", "back", {"k": 0.5})],
+    ):
+        model, _ = M.assemble(rows)
+        assert {rule.rate_forward.name for rule in model.rules} == {"back_k_pinned"}
+    model, _ = M.assemble(
+        [(_FORWARD, "mass_action", "fwd", {"k": "k_on"}), (_BACKWARD, "mass_action", "back", {"k": "fwd_k"})]
+    )
+    assert {rule.rate_forward.name for rule in model.rules} == {"k_on"}
+
+
+def test_a_row_sharing_a_scaled_constant_shares_the_constant():
+    """A binding may scale the constant it replaces (Fiedler's `kf="mek_kf*(1 - Sorafenib/K)"`);
+    the constant stays, and a row naming it shares the constant, not the drug's scaling."""
+    model, _ = M.assemble(
+        [
+            (_FORWARD, "mass_action", "fwd", {"k": "fwd_k*(1 - drug/K)"}),
+            (_BACKWARD, "mass_action", "back", {"k": "fwd_k"}),
+        ]
+    )
+    forward, backward = model.rules
+    assert forward.rate_forward.name == "fwd_k_bound"
+    assert backward.rate_forward is model.parameters["fwd_k"]
+
+
 def test_a_row_bound_to_a_number_estimates_nothing():
     """Perelson's infection runs at a rate fixed to 1; a minted constant there is a k."""
     params, emissions = _sbml_parameters([(_TRANSITION, "mass_action", "r1", {"k": 1.0})])
@@ -134,6 +305,19 @@ def test_a_binding_names_only_what_the_row_makes():
     """A misspelt kind would bind nothing and leave the rate unshared without a word."""
     with pytest.raises(MechanismError, match=r"binds \['kcat'\], but its mechanism makes only"):
         M.assemble([(_TRANSITION, "mass_action", "r1", {"kcat": "k"})])
+
+
+def test_a_binding_reads_as_an_expression_over_parameters_or_is_refused():
+    """Checked token by token only, `kcat Km` and `2kcat` reached sympy and `kcat,Km` PySB, which
+    raised out of make_changes unexplained; a molecule's name became a parameter clashing with it,
+    and `time` one BioNetGen refused."""
+    for text in ("kcat Km", "2kcat", "kcat,Km", "kcat/(Km+"):
+        with pytest.raises(MechanismError, match="which is no expression: a binding is a shared"):
+            M.assemble([(_TRANSITION, "mass_action", "r1", {"k": text})])
+    for text, what in (("2*naive", "a molecule"), ("naive", "a molecule"), ("exp", "a function"),
+                       ("k*time", "time")):
+        with pytest.raises(MechanismError, match=f"which names {what}, not a parameter"):
+            M.assemble([(_TRANSITION, "mass_action", "r1", {"k": text})])
 
 
 def test_a_written_mechanism_binds_like_any_entry():
