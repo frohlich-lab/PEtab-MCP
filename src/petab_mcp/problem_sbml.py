@@ -192,12 +192,24 @@ def _seed(model: pysb.Model, monomers: list[pysb.Monomer]) -> None:
         model.add_initial(pysb.Initial(monomer(**state), amount, _export=False))
 
 
+#: The most molecules one complex may hold. A network whose complexes reach it is taken for one
+#: whose complexes grow without bound, which BioNetGen expands forever. BioNetGen builds every
+#: complex up to the cap before the check can refuse, so the cap bounds the cost of finding out:
+#: reactions grow about with its square for a chain, exponentially for complexes that branch.
+MAX_COMPLEX = 20
+
+
 def _expand(model: pysb.Model) -> None:
     """Fill in BioNetGen's expansion of ``model`` from its start. Left empty when nothing starts
     (populations that only interconvert), which PySB refuses to expand, or nothing fires, whose
-    network BioNetGen refuses to write."""
+    network BioNetGen refuses to write.
+
+    Expanded with complexes capped at :data:`MAX_COMPLEX` molecules, and refused when one reaches
+    it: statements that let complexes chain without end (STAT5A and STAT5B each dimerising with
+    itself and with the other, every molecule then holding a free site for the next) otherwise
+    keep BioNetGen expanding until the client gives up, call after call, with nothing said."""
     try:
-        generate_equations(model)
+        generate_equations(model, max_agg=MAX_COMPLEX)
     except NoInitialConditionsError:
         pass
     except Exception as exc:  # BioNetGen fails as a bare Exception or an OSError
@@ -205,6 +217,16 @@ def _expand(model: pysb.Model) -> None:
             raise ModelUpdateError(
                 f"Expanding the statements into reactions failed: {exc}"
             ) from exc
+    grown = [sp for sp in model.species if len(sp.monomer_patterns) >= MAX_COMPLEX]
+    if grown:
+        kinds = sorted({mp.monomer.name for mp in grown[0].monomer_patterns})
+        raise ModelUpdateError(
+            f"These statements form complexes that grow without bound: complexes of {kinds} reach "
+            f"{MAX_COMPLEX} molecules and would keep growing. A molecule that binds several "
+            "partners has a free site for each, so bindings chain (A binds A, A binds B and B "
+            "binds B make A-A-B-B-A-...). Require each partner to be free of its other partners "
+            "where it binds: `A{~B} binds A{~B}`, `A{~A} binds B{~B}`, `B{~A} binds B{~A}`."
+        )
 
 
 def _drop_unreferenced_parameters(sbml_model) -> None:
