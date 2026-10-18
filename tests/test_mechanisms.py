@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from indra.statements import Activation, Agent, Phosphorylation
+from indra.statements import Activation, ActiveForm, Agent, Dephosphorylation, Phosphorylation
 
 from petab_mcp import mechanisms as M
 from petab_mcp.errors import MechanismError
@@ -40,13 +40,33 @@ def test_modified_substrate_gets_its_site():
 
 def test_unregistered_pair_is_a_mechanism_error():
     """A library gap must stay distinguishable from a bug, so it is not a bare ``KeyError``."""
-    with pytest.raises(MechanismError, match="no mechanism"):
+    with pytest.raises(MechanismError, match="no mechanism") as exc:
         M.assemble([(_TRANSITION, "no_such_mechanism", "r1")])
+    assert exc.value.cause == "library_gap"
+
+
+def test_a_malformed_request_is_not_a_library_gap():
+    """Every refusal counted as a library gap, so the library's to-do list was mostly typos."""
+    with pytest.raises(MechanismError, match="built-in") as exc:
+        M.written(
+            {"statement_type": "PopulationTransition", "policy": "mass_action", "rate": "k"},
+            M.REGISTRY,
+        )
+    assert exc.value.cause == "malformed_mechanism"
+
+
+def test_basal_refuses_a_statement_that_names_an_enzyme():
+    """`PTEN dephosphorylates AKT1 | basal` built a rule without PTEN."""
+    stmt = Dephosphorylation(Agent("PTEN"), Agent("AKT1"), "S", "473")
+    with pytest.raises(MechanismError, match="names PTEN, which it would leave out") as exc:
+        M.assemble([(stmt, M.BASAL, "r1")])
+    assert exc.value.cause == "malformed_mechanism"
 
 
 def test_reregistering_an_entry_raises():
-    """A silent override builds whichever policy imported last."""
-    with pytest.raises(MechanismError, match="already registered"):
+    """A silent override builds whichever policy imported last. A programming error, not a
+    refusal: no agent call reaches it."""
+    with pytest.raises(RuntimeError, match="already registered"):
         M.mechanism(PopulationTransition, "mass_action")(lambda *a: None)
 
 
@@ -60,6 +80,17 @@ def test_every_indra_statement_has_its_default_entry():
     assert emission.rules and emission.parameters == ("r1_kf",)
     assert {p.name for p in model.parameters} == {"r1_kf"}
 
+
+
+def test_a_row_that_builds_no_rule_is_refused():
+    """INDRA builds a rule once and none for an ActiveForm, so a repeated statement built nothing
+    beside an orphan `r2_kf`, and an ActiveForm row nothing at all, both without a word."""
+    activation = Activation(Agent("EGFR"), Agent("AKT"))
+    twin = Activation(Agent("EGFR"), Agent("AKT"))
+    with pytest.raises(MechanismError, match="row 'r2' asserts the statement of row 'r1' again"):
+        M.assemble([(activation, M.INDRA_DEFAULT, "r1"), (twin, M.INDRA_DEFAULT, "r2")])
+    with pytest.raises(MechanismError, match="row 'r1': ActiveForm under 'indra_default' builds no rule"):
+        M.assemble([(ActiveForm(Agent("AKT"), "kinase", True), M.INDRA_DEFAULT, "r1")])
 
 # A mechanism the agent writes; ``{extra}`` splices more fields into the definition.
 _BASE_WRITTEN = (

@@ -650,6 +650,8 @@ class PetabSession:
         Backs the ``describe_problem`` tool. ``neg_log_likelihood``/``chi2`` come from the
         stored simulation and are ``None`` until the first commit/simulation.
         """
+        from . import reconcile as R
+
         p = self.problem
         sm = self.model.sbml_model
         return {
@@ -665,6 +667,7 @@ class PetabSession:
             "n_table_parameters": int(len(p.parameter_df)),
             "n_estimated": int(p.n_estimated),
             "free_parameters": [str(x) for x in p.x_free_ids],
+            "readouts_to_define": [r for r, rule in R.readouts(p).items() if rule is None],
             "observables": [str(x) for x in getattr(p.observable_df, "index", [])],
             "n_conditions": _n_unique(p.condition_df, CONDITION_ID),
             "n_experiments": _n_unique(p.experiment_df, EXPERIMENT_ID),
