@@ -832,6 +832,34 @@ def test_a_written_mechanism_is_not_redefined_in_place(tmp_path):
     assert out["applied"] is False and out["error_cause"] == "mechanism_redefined"
 
 
+def test_a_version_without_new_rows_keeps_its_parents(tmp_path):
+    """A bounds-only commit keeps the model its rows built, so it keeps the rows and the
+    mechanisms they name. It stored none, so restoring it restored none: the model no longer read
+    as built from statements, and a row naming the written mechanism was refused."""
+    mcp = _statements_server(tmp_path)
+    row = _statement_row(policy="saturating")
+    args = {"justification": "saturating", "statements": [row], "mechanisms": [_SATURATING]}
+    assert _call(mcp, "make_changes", args)["committed"] is True
+    widen = [{"parameter_id": "conv_vmax", "lower_bound": 1e-3, "upper_bound": 100.0}]
+    out = _call(mcp, "make_changes", {"justification": "widen", "parameters": widen})
+    assert out["committed"] is True
+    versions = tmp_path / "prov" / "versions"
+    stored = (versions / "v0" / "statements.json").read_text()
+    assert (versions / "v1" / "statements.json").read_text() == stored
+    # A durable resume restores HEAD, v1: its rows, and the mechanism they were written with.
+    resumed = _statements_server(tmp_path)
+    model = _call(resumed, "get_model", {"format": "statements"})["result"]
+    assert "mechanism saturating" in model
+    row["prefix"] = "conv2"
+    assert _call(resumed, "make_changes", {"justification": "reuse", "statements": [row]})[
+        "applied"
+    ] is True
+    # Model text without rows changes the model under them: that version records none.
+    out = _call(resumed, "make_changes", {"justification": "by hand", "antimony": _antimony()})
+    assert out["committed"] is True
+    assert not (versions / "v3" / "statements.json").exists()
+
+
 def test_a_declared_unit_start_is_fixed_not_estimated(tmp_path):
     """`starts`: a population declared to start at 1 takes reconcile's unit
     normalisation, fixed, where the default seed would have estimated an `A_init` — Blasi's and
