@@ -90,7 +90,9 @@ def test_the_library_is_describable_but_for_abstract_types():
 
 @pytest.mark.parametrize("key", _DESCRIBABLE, ids=["/".join(k) for k in _DESCRIBABLE])
 def test_every_entry_round_trips_on_its_placeholder(key):
-    text, original, compiled = _round_trip(lambda: S.placeholder(key[0]), *key)
+    text, original, compiled = _round_trip(
+        lambda: S.placeholder(key[0], enzyme=key[1] != M.BASAL), *key
+    )
     assert compiled == original, text
 
 
@@ -99,9 +101,13 @@ _DEPHOSPHO = lambda: Dephosphorylation(Agent("PTEN"), Agent("AKT1"), "S", "473")
 _REAL = [
     (_PHOSPHO, p)
     for p in ("indra_two_step", "indra_default", "indra_michaelis_menten", "indra_atp_dependent",
-              "basal", "processive", "indra_interactions_only")
+              "processive", "indra_interactions_only")
 ] + [
-    (_DEPHOSPHO, p) for p in ("indra_two_step", "basal", "dissociative", "indra_default")
+    (_DEPHOSPHO, p) for p in ("indra_two_step", "dissociative", "indra_default")
+] + [
+    # `basal` refuses a statement that names an enzyme.
+    (lambda: Phosphorylation(None, Agent("AKT1"), "S", "473"), "basal"),
+    (lambda: Dephosphorylation(None, Agent("AKT1"), "S", "473"), "basal"),
 ] + [
     (lambda: Complex([Agent("EGF"), Agent("EGFR")]), p)
     for p in ("indra_default", "stated", "assembly", "nondepleting")
