@@ -264,10 +264,8 @@ def test_ic_convention_fixes_a_pre_existing_estimated_row():
 
 
 def test_an_ic_row_follows_each_redeclared_initial():
-    """Fujita r2: an IC row took FIXED/ESTIMATED from the first value declared and moved only from
-    estimated to fixed, so a protein once declared at 1 stayed FIXED at 1 through every later
-    declaration — about 2 hours of a run on a value no edit could move, the agent having no
-    estimate toggle. The row follows the value the model declares now."""
+    """Fujita r2: a start declared at 1 stayed FIXED at 1 through every later declaration. The row
+    follows the value the model declares now."""
     from petab.v2.C import ESTIMATE, NOMINAL_VALUE
     from petab_mcp.problem import LIN, LOG10, PARAMETER_SCALE
 
@@ -488,10 +486,8 @@ def test_initial_conditions_report_condition_target_override():
 
 
 def test_initial_conditions_report_reads_a_held_input_off_its_rule():
-    """Issue 6 (fujita r2): an input held by an assignment rule over a condition-table column was
-    reported as an empty pool, from the literal 0 initial the rule's target keeps and nothing
-    reads, while every experiment held it at its dose. The agent spent hours on a model it was
-    told started without its stimulus."""
+    """Fujita r2: an input an assignment rule holds at a condition column was reported as an empty
+    pool, from the literal 0 its species keeps and nothing reads."""
     head, _ = _CONDCOL_ANTIMONY.rsplit("end", 1)
     prob = _condcol_problem(head + "  species E in c; E := piecewise(dose, time < 10, 0);\nend")
     R.reconcile(prob)
@@ -502,9 +498,8 @@ def test_initial_conditions_report_reads_a_held_input_off_its_rule():
 
 
 def test_initial_conditions_report_reads_a_fixed_t0_off_the_parameter_table(session):
-    """The simulation reads a FIXED IC off its parameter-table row, not the model text; the view
-    read the model text, so a row holding another value (shipped, or left stale by an earlier
-    declaration) was reported as the declared value governing t=0."""
+    """A FIXED IC's parameter-table row, not the model text, sets t=0; the view reported the
+    declared value as governing it."""
     session.problem.model.sbml_model.getParameter("A_init").setValue(5.0)
     a = {r["species"]: r for r in R.initial_conditions_report(session.problem)}["A"]
     assert (a["declared_t0"], a["t0"], a["declared_t0_used"]) == (5.0, 1.0, False)

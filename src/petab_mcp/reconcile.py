@@ -2012,9 +2012,10 @@ def initial_conditions_report(problem, added: set[str] | None = None) -> list[di
             # fixed parameter row; say which, so the caller sees why it is not estimated.
             t0_source = "fixed"
             if ic is None and assignment is None:
+                value = "an empty pool (t=0 == 0)" if t0 == 0.0 else f"t=0 == {t0!r}"
                 why = (
-                    ("an empty pool (t=0 == 0)" if t0 == 0.0 else f"t=0 == {t0!r}")
-                    + ", carried as a literal — no `<species>_init` parameter exists for it, so it costs nothing in k"
+                    f"{value}, carried as a literal — no `<species>_init` parameter exists for "
+                    "it, so it costs nothing in k"
                 )
             elif ic is None:
                 why = f"`{formula}` over fixed parameters"
@@ -2260,20 +2261,14 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
         added.append(pid)
 
     # Re-derive the convention on IC rows that ALREADY EXIST, from the value the model declares
-    # NOW: the add-loop above only reaches params in `valid - table_ids`. Two ways a row outlived
-    # the value it was derived from:
-    #   * a model-less problem's seed rows. Reconcile parametrises the content-free seed's ICs into
-    #     ESTIMATED `<sid>_init` rows (nominal 0.1), and the agent then authors the real mechanism
-    #     under the SAME state names (blasi's 16 acetylation states x_0ac..x_4ac, each at 1): every
-    #     steady-state IC stayed estimated, 16 structurally non-identifiable free parameters.
-    #   * a re-declared start (fujita r2): a protein declared at 1 was fixed there, and the row
-    #     stayed FIXED at 1 through every later declaration, about 2 hours of a run spent on a
-    #     value no edit could move.
-    # Neither was reachable from the agent's side: a parameters-arg edit sets bounds/scale only,
-    # never estimate. A shipped row is left as the problem defined it, and an estimated row whose
-    # value is still neither 0 nor 1 keeps its fitted nominal and bounds. Restricted to DIRECT ICs
-    # (`<sid> = <param>`): a participant of a COMPOUND parametric IC (`Rec = ini_R1*ini_R2fold`)
-    # valued 1 is a fold / normalisation seed to estimate, not a unit-normalisation IC to fix.
+    # now — the add-loop above only reaches params in `valid - table_ids`. That covers a seed row
+    # re-authored under the same state name (blasi's x_0ac..x_4ac, each at 1) and a start
+    # re-declared at another value, neither of which the agent could move: a parameters-arg edit
+    # sets bounds/scale only. A shipped row is left as the problem defined it, and an estimated
+    # row whose value is still neither 0 nor 1 keeps its fitted nominal and bounds. Restricted to
+    # DIRECT ICs (`<sid> = <param>`): a participant of a COMPOUND parametric IC (`Rec =
+    # ini_R1*ini_R2fold`) valued 1 is a fold / normalisation seed to estimate, not a
+    # unit-normalisation IC to fix.
     df = problem.parameter_df
     for pid in sorted((_direct_ic_parameter_ids(sm) & table_ids) - shipped_ids):
         if pid not in df.index:
