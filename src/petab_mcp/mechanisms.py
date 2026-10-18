@@ -221,9 +221,33 @@ def assemble(
             annotation = get_annotation(monomer, db_name, db_ref)
             if annotation is not None:
                 model.add_annotation(annotation)
-    return model, [
+    emissions = [
         instantiate(stmt, model, policy, prefix, library) for stmt, policy, prefix in rows
     ]
+    _refuse_ruleless(rows, emissions)
+    return model, emissions
+
+
+def _refuse_ruleless(rows: list[tuple], emissions: list[Emission]) -> None:
+    """Refuse a row whose entry built no rule: the model would not contain what it asserts, and a
+    constant it minted would be fitted to nothing. INDRA builds a rule once, so the same statement
+    in a second row built nothing beside an orphan ``kf``, and it builds none for an ActiveForm."""
+    for i, (row, emission) in enumerate(zip(rows, emissions)):
+        if emission.rules:
+            continue
+        stmt, policy, prefix = row[:3]
+        twin = next((r[2] for r in rows[:i] if r[0].matches_key() == stmt.matches_key()), None)
+        if twin is not None:
+            raise MechanismError(
+                f"row {prefix!r} asserts the statement of row {twin!r} again, and INDRA builds its "
+                "rule once, so this row builds nothing: merge the two rows, or give one another "
+                "policy"
+            )
+        raise MechanismError(
+            f"row {prefix!r}: {type(stmt).__name__} under {policy!r} builds no rule, so the "
+            "model would not contain it. Give it a policy that builds one, or write one with "
+            "`mechanisms`"
+        )
 
 
 def _add(model: pysb.Model, *components) -> None:
