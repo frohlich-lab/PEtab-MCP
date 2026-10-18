@@ -1905,6 +1905,7 @@ def _open_ctx(
 
         session.entities = seeding_mod.load_entity_map(entity_map)
         session.inputs = seeding_mod.load_inputs(entity_map)
+        seeding_mod.check_inputs(entity_map, session.inputs, session.problem)
     if score_shipped_model and session.model_authored():
         fitting_mod.score_at_nominal(session, engine)
     held_out = None
