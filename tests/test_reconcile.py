@@ -498,6 +498,15 @@ def test_initial_conditions_report_flags_estimated_ic(session):
     assert a["declared_t0_used"] is False
 
 
+def test_initial_conditions_report_needs_no_nominal_column(session):
+    """`nominalValue` is optional in PEtab v2; read unguarded, its absence raised on every edit."""
+    from petab.v2.C import NOMINAL_VALUE
+
+    session.problem.parameter_df = session.problem.parameter_df.drop(columns=NOMINAL_VALUE)
+    a = {r["species"]: r for r in R.initial_conditions_report(session.problem)}["A"]
+    assert a["t0"] == 1.0
+
+
 def test_initial_conditions_report_marks_newly_added(session):
     """`added` (the reconcile diff) flags which ICs this op introduced."""
     rep = {r["species"]: r for r in R.initial_conditions_report(session.problem, added={"A_init"})}

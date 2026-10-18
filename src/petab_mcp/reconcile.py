@@ -1949,7 +1949,8 @@ def initial_conditions_report(problem, added: set[str] | None = None) -> list[di
     declared_values = {p.getId(): p.getValue() for p in sm.getListOfParameters()}
     declared_values |= {c.getId(): c.getSize() for c in sm.getListOfCompartments()}
     df = problem.parameter_df
-    values = declared_values | {str(p): v for p, v in df[NOMINAL_VALUE].items() if v == v}
+    nominal = df[NOMINAL_VALUE].items() if NOMINAL_VALUE in df.columns else ()
+    values = declared_values | {str(p): v for p, v in nominal if v == v}
     starts = {
         eid: {"time": start}
         | {target: _evaluate(value, values | {"time": start}) for target, value in targets.items()}
@@ -1990,8 +1991,8 @@ def initial_conditions_report(problem, added: set[str] | None = None) -> list[di
         if rule is not None:
             t0_source, note = (
                 "rule",
-                f"held to `{formula}` by an assignment rule (an input) — `t0` is that formula at "
-                "the start of each experiment; no declared initial is used.",
+                f"held to `{formula}` by an assignment rule — `t0` is that formula at the start "
+                "of each experiment; no declared initial is used.",
             )
         elif set_by_condition:
             t0_source, note = (
@@ -2003,8 +2004,8 @@ def initial_conditions_report(problem, added: set[str] | None = None) -> list[di
             t0_source, note = (
                 "estimated",
                 "ESTIMATED free parameter (the default for initial conditions) — the fit sets "
-                "t=0 (`t0` is the current fit's value); the declared value is only the starting "
-                "guess.",
+                "t=0 (`t0` is its current value, the last fit's); the declared value is only the "
+                "starting guess.",
             )
         else:
             # FIXED. Under the always-on default, an IC is only fixed at the two leak-free value
@@ -2281,7 +2282,7 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
         estimated = is_parameter_estimated(problem, pid)
         if estimate and estimated:
             continue  # still a guess: its fitted nominal and bounds stand
-        if not estimate and not estimated and df.loc[pid, NOMINAL_VALUE] == v0:
+        if not estimate and not estimated and df.get(NOMINAL_VALUE, {}).get(pid) == v0:
             continue
         # Bounds bracket the new nominal, as in the add-loop: stale positive-log10 seed bounds left
         # an empty-pool IC fixed at 0.0 with a lowerBound of 1e-4 ABOVE it.
