@@ -263,22 +263,55 @@ def test_ic_convention_fixes_a_pre_existing_estimated_row():
     assert pdf.loc["G_init", ESTIMATE] == 1
 
 
+# A species started at a parametric IC ``P_init`` declared at ``{}``.
+_DECLARED_P = (
+    "model m\n  compartment c = 1;\n  species P in c; P = P_init; P_init = {};\n"
+    "  kd = 0.1;\n  deg: P -> ; kd*P;\nend\n"
+)
+
+
 def test_an_ic_row_follows_each_redeclared_initial():
     """Fujita r2: a start declared at 1 stayed FIXED at 1 through every later declaration. The row
     follows the value the model declares now."""
     from petab.v2.C import ESTIMATE, NOMINAL_VALUE
     from petab_mcp.problem import LIN, LOG10, PARAMETER_SCALE
 
-    ant = "model m\n  compartment c = 1;\n  species P in c; P = P_init; P_init = {};\n"
-    ant += "  kd = 0.1;\n  deg: P -> ; kd*P;\nend\n"
-    prob = _bare_problem(ant.format(1.0))
+    prob = _bare_problem(_DECLARED_P.format(1.0))
     rows = []
     for value in (1.0, 5.0, 0.0, 1.0):
-        prob.model = SbmlModel.from_antimony(ant.format(value))
+        prob.model = SbmlModel.from_antimony(_DECLARED_P.format(value))
         R.reconcile(prob)
         row = prob.parameter_df.loc["P_init"]
         rows.append((row[NOMINAL_VALUE], bool(row[ESTIMATE]), row[PARAMETER_SCALE]))
     assert rows == [(1.0, False, LIN), (5.0, True, LOG10), (0.0, False, LIN), (1.0, False, LIN)]
+
+
+def test_a_redeclared_guess_keeps_its_fit():
+    """Re-declaring an estimated IC at another guess must not discard its fitted value or bounds."""
+    from petab.v2.C import ESTIMATE, LOWER_BOUND, NOMINAL_VALUE, UPPER_BOUND
+
+    prob = _bare_problem(_DECLARED_P.format(5.0))
+    R.reconcile(prob)
+    prob.parameter_df.loc["P_init", [NOMINAL_VALUE, LOWER_BOUND, UPPER_BOUND]] = [7.3, 0.01, 50.0]
+    prob.model = SbmlModel.from_antimony(_DECLARED_P.format(3.0))
+    R.reconcile(prob)
+    row = prob.parameter_df.loc["P_init"]
+    assert bool(row[ESTIMATE]) and row[NOMINAL_VALUE] == 7.3
+    assert (row[LOWER_BOUND], row[UPPER_BOUND]) == (0.01, 50.0)
+
+
+def test_a_shipped_ic_row_does_not_follow_the_declaration():
+    """A row the problem ships is its author's: it stays FIXED at its value whatever is declared."""
+    from petab.v2.C import ESTIMATE, NOMINAL_VALUE
+
+    prob = _bare_problem(_DECLARED_P.format(1.0))
+    shipped = prob.parameter_df.copy()
+    shipped.loc["P_init"] = ["lin", 0.0, 10.0, 2.0, False]
+    for value in (1.0, 5.0):
+        prob.model = SbmlModel.from_antimony(_DECLARED_P.format(value))
+        R.reconcile(prob, shipped=shipped)
+        row = prob.parameter_df.loc["P_init"]
+        assert (row[NOMINAL_VALUE], bool(row[ESTIMATE])) == (2.0, False)
 
 
 def test_ic_convention_does_not_fix_a_compound_expression_participant():
