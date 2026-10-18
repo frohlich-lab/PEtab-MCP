@@ -734,6 +734,49 @@ def test_statements_route_exists_only_with_an_entity_map(tmp_path):
     assert "statements" in _make_changes_schema(_statements_server(tmp_path))
 
 
+def _description(mcp):
+    tools = asyncio.run(mcp.list_tools())
+    return next(t for t in tools if t.name == "make_changes").description
+
+
+def test_the_routes_text_names_statements_only_where_it_is_offered(tmp_path):
+    """It required one of `antimony` / `model_edits` / `parameters` on a server whose third
+    route is `statements`; without the route the description is the one it was before."""
+    from petab_mcp.server import _MAKE_CHANGES_DOC
+
+    assert _description(_server(tmp_path / "plain")) == _MAKE_CHANGES_DOC
+    required = "`antimony` / `model_edits` / `statements` / `parameters` is required."
+    assert required in _description(_statements_server(tmp_path))
+
+
+def test_the_refusals_name_statements_only_where_it_is_offered(tmp_path):
+    """Two routes at once and no route at all were each refused naming `model_edits` and
+    `antimony` only, where `statements` was a route too."""
+    plain, offered = _server(tmp_path / "plain"), _statements_server(tmp_path)
+    edits = [{"op": "remove_reaction", "id": "r1"}]
+    conflict = {"justification": "x", "antimony": _antimony(), "model_edits": edits}
+    assert "`statements`" not in _call(plain, "make_changes", conflict)["error"]
+    both = {"justification": "x", "antimony": _antimony(), "statements": [_statement_row()]}
+    assert "`statements` to author" in _call(offered, "make_changes", both)["error"]
+    assert "`statements`" not in _call(plain, "make_changes", {"justification": "x"})["error"]
+    assert "`statements` (author" in _call(offered, "make_changes", {"justification": "x"})["error"]
+
+
+def test_the_types_without_indra_default_are_read_off_the_registry(monkeypatch):
+    """The paragraph said every INDRA statement type has `indra_default`; 6 of 50 had none, and a
+    row trying one came back a library_gap."""
+    from petab_mcp import mechanisms as M
+    from petab_mcp.server import _make_changes_statements_doc
+
+    def without():
+        doc = _make_changes_statements_doc()
+        return doc.split(f" has `{M.INDRA_DEFAULT}`")[0].split("Every INDRA statement type")[1]
+
+    assert "Phosphorylation" not in without()
+    monkeypatch.delitem(M.REGISTRY, ("Phosphorylation", M.INDRA_DEFAULT))
+    assert "Phosphorylation" in without()
+
+
 def test_statements_commit_records_what_was_asserted(tmp_path):
     """The row and its Emission are stored beside the generated source: a later ``revise``
     addresses the row, and neither is recoverable from the expanded model."""
