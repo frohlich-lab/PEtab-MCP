@@ -963,6 +963,23 @@ def test_a_type_the_library_lacks_is_a_library_gap(tmp_path):
     assert out["applied"] is False and out["error_cause"] == "library_gap", out
 
 
+def test_a_crash_building_statements_is_logged_and_raised(tmp_path, monkeypatch):
+    """Only refusals were caught there, so a crash building the model escaped make_changes with
+    nothing in errors.jsonl, where a sweep looks for crashes; it is still raised, not refused."""
+
+    def crash(*args, **kwargs):
+        raise RuntimeError("UNIQUE_CRASH")
+
+    monkeypatch.setattr(O, "statements_to_antimony", crash)
+    with pytest.raises(Exception, match="UNIQUE_CRASH"):
+        _call(
+            _statements_server(tmp_path),
+            "make_changes",
+            {"justification": "x", "statements": [_statement_row()]},
+        )
+    assert "UNIQUE_CRASH" in (tmp_path / "prov" / "errors.jsonl").read_text()
+
+
 def test_an_activation_without_obj_activity_builds(tmp_path):
     """The default the statement type documents is filled before INDRA reads the row, and stored
     with it, so the model builds and the row renders as it was read."""
