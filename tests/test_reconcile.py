@@ -373,7 +373,7 @@ _CONDCOL_ANTIMONY = """model m
 end"""
 
 
-def _condcol_problem():
+def _condcol_problem(antimony=_CONDCOL_ANTIMONY):
     import pandas as pd
     from petab_mcp.problem import WorkingProblem
 
@@ -405,7 +405,7 @@ def _condcol_problem():
         }
     ).set_index("parameterId")
     return WorkingProblem(
-        model=SbmlModel.from_antimony(_CONDCOL_ANTIMONY),
+        model=SbmlModel.from_antimony(antimony),
         condition_df=cond,
         experiment_df=exps,
         observable_df=obs,
@@ -464,6 +464,31 @@ def test_initial_conditions_report_condition_target_override():
     assert x["set_by_condition"] is True
     assert x["t0_source"] == "condition_table"
     assert x["declared_t0_used"] is False
+    assert x["t0"] == {"e1": 1.0, "e2": 5.0}
+
+
+def test_initial_conditions_report_reads_a_held_input_off_its_rule():
+    """Issue 6 (fujita r2): an input held by an assignment rule over a condition-table column was
+    reported as an empty pool, from the literal 0 initial the rule's target keeps and nothing
+    reads, while every experiment held it at its dose. The agent spent hours on a model it was
+    told started without its stimulus."""
+    head, _ = _CONDCOL_ANTIMONY.rsplit("end", 1)
+    prob = _condcol_problem(head + "  species E in c; E := piecewise(dose, time < 10, 0);\nend")
+    R.reconcile(prob)
+    e = {r["species"]: r for r in R.initial_conditions_report(prob)}["E"]
+    assert e["t0_source"] == "rule" and e["declared_t0"] is None
+    assert e["t0"] == {"e1": 1.0, "e2": 5.0}
+    assert "piecewise(dose, time < 10, 0)" in e["note"]
+
+
+def test_initial_conditions_report_reads_a_fixed_t0_off_the_parameter_table(session):
+    """The simulation reads a FIXED IC off its parameter-table row, not the model text; the view
+    read the model text, so a row holding another value (shipped, or left stale by an earlier
+    declaration) was reported as the declared value governing t=0."""
+    session.problem.model.sbml_model.getParameter("A_init").setValue(5.0)
+    a = {r["species"]: r for r in R.initial_conditions_report(session.problem)}["A"]
+    assert (a["declared_t0"], a["t0"], a["declared_t0_used"]) == (5.0, 1.0, False)
+    assert "NOT at the declared 5.0" in a["note"]
 
 
 def test_condition_target_parameter_not_synced_into_parameter_table():

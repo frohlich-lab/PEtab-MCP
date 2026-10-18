@@ -802,13 +802,14 @@ def _register_model_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         """Structured view of the model: species, parameters, reactions — plus the per-species
         `initial_conditions` account.
 
-        Each initial-condition entry reports whether that species' declared t=0 actually governs
-        the simulated state: `t0_source` is `fixed` (the declared value is used), `estimated` (the
-        fit sets it — the DEFAULT, so a declared t=0 is only a starting guess) or
-        `condition_table` (a condition target overrides it per condition), with `ic_parameter`
-        naming the parameter that carries it. Read it to check whether a t=0 you meant to pin
-        actually took, and to see which species are driven per-condition — those have no
-        parameter-table row at all, so `get_parameters` cannot show them.
+        Each initial-condition entry reports what the simulation starts that species at, `t0` (one
+        value, or one per experiment where they differ), and whether the declared t=0 governs it:
+        `t0_source` is `fixed` (the parameter table's value is used), `estimated` (the fit sets it
+        — the DEFAULT, so a declared t=0 is only a starting guess), `condition_table` (a condition
+        target overrides it per condition) or `rule` (an assignment rule holds it, as it does an
+        input), with `ic_parameter` naming the parameter that carries it. Read it to check whether
+        a t=0 you meant to pin actually took, and to see which species are driven per-condition —
+        those have no parameter-table row at all, so `get_parameters` cannot show them.
         """
         ctx = route()
         session = ctx.session

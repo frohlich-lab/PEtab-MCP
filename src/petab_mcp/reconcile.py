@@ -50,6 +50,7 @@ from .problem import (
     LOG10,
     PARAMETER_SCALE,
     as_bool,
+    experiment_starts,
     observable_transformation,
     placeholder_ids,
     placeholders,
@@ -1892,111 +1893,154 @@ def is_parameter_estimated(problem, pid: str) -> bool:
 
 
 # -- initial-condition report ----------------------------------------------
+def _evaluate(formula, values: dict[str, Any]) -> float | None:
+    """``formula`` (PEtab math, parsed or not, or a number) at ``values``; ``None`` when a name in
+    it has none."""
+    import sympy as sp
+    from petab.v2.math import sympify_petab
+
+    try:
+        expr = formula if isinstance(formula, sp.Basic) else sympify_petab(formula)
+        return float(expr.subs({s: values[s.name] for s in expr.free_symbols if s.name in values}))
+    except Exception:  # noqa: BLE001 - unparseable or unresolved: the report says None
+        return None
+
+
 def initial_conditions_report(problem, added: set[str] | None = None) -> list[dict[str, Any]]:
-    """Per-species account of how each t=0 initial condition is resolved *after* reconcile.
+    """Per-species account of what each species starts at *after* reconcile, and why.
 
     Antimony can only declare a species' t=0 *value* — it has no way to say "estimate this
-    initial condition". Whether that declared value actually governs the simulated t=0 state is
-    decided by the reconcile/parameter/condition tables, not the model text, and the outcome is
-    otherwise invisible: a declared t=0 is silently OVERRIDDEN when its ``<species>_init``
-    parameter is estimated (the fit then sets t=0, the declared value is only the start) or when
-    the species is driven per-condition by a condition target. Surfacing this after every
-    model op is what lets the caller see immediately whether a t=0 "fix" took — instead of
-    re-authoring the model under a series of different IC naming schemes that all fit identically
-    because none of them ever changed the estimate status (see issue #57). ICs are ESTIMATED by
-    default; an IC of exactly 1 (a unit normalization) is held FIXED, and an IC of exactly 0 (an
-    empty pool, including an unwritten initial) is not parametrised at all. Decided by value in
-    reconcile, not switchable from the model text.
+    initial condition". What the simulation starts from is decided by the reconcile/parameter/
+    condition tables, not the model text, and the outcome is otherwise invisible: a declared t=0
+    is silently OVERRIDDEN when its ``<species>_init`` parameter is estimated (the fit then sets
+    t=0, the declared value is only the start), when its parameter-table row holds another value,
+    when the species is driven per-condition by a condition target, or when an assignment rule
+    holds it (an input). Surfacing this is what lets the caller see whether a t=0 "fix" took —
+    instead of re-authoring the model under a series of different IC naming schemes that all fit
+    identically because none of them ever changed the estimate status (see issue #57). ICs are
+    ESTIMATED by default; an IC of exactly 1 (a unit normalization) is held FIXED, and an IC of
+    exactly 0 (an empty pool, including an unwritten initial) is not parametrised at all. Decided
+    by value in reconcile, not switchable from the model text.
 
-    For each species returns ``{species, ic_parameter, declared_t0, estimated, set_by_condition,
-    t0_source, declared_t0_used, newly_added, note}``:
+    For each species returns ``{species, ic_parameter, declared_t0, t0, estimated,
+    set_by_condition, t0_source, declared_t0_used, newly_added, note}``:
 
-    * ``declared_t0`` — the t=0 value declared in the Antimony (the IC parameter's value);
+    * ``declared_t0`` — the t=0 value the model text declares (the IC parameter's value), ``None``
+      for a species an assignment rule holds;
+    * ``t0`` — what the simulation starts it at, under the parameter table (an estimated IC's
+      current value: the last fit's) and each simulated experiment's starting conditions: a
+      number, or ``{experimentId: value}`` where experiments differ, ``None`` where it cannot be
+      read off the tables (it depends on another species);
     * ``estimated`` — whether the IC parameter is a FREE (fit) parameter or FIXED;
     * ``set_by_condition`` — whether the species (or its IC parameter) is a condition target,
       i.e. set per condition, which overrides the Antimony t=0;
-    * ``t0_source`` — ``"fixed"`` | ``"estimated"`` | ``"condition_table"``;
+    * ``t0_source`` — ``"fixed"`` | ``"estimated"`` | ``"condition_table"`` | ``"rule"``;
     * ``declared_t0_used`` — the bottom line: does the declared t=0 govern the simulated t=0 state
-      (``True`` only for a plain FIXED IC), or is it overridden;
+      (``True`` only for a FIXED IC whose ``t0`` is the declared value), or is it overridden;
     * ``newly_added`` — whether this op introduced the IC parameter (from the reconcile diff).
     """
+    from petab.v2.math import sympify_petab
+
     sm = problem.model.sbml_model
     cond_targets = condition_target_symbols(problem)
     added = added or set()
+    # What the model text says, then what the simulation reads: the parameter table, and each
+    # experiment's starting conditions over it.
+    declared_values = {p.getId(): p.getValue() for p in sm.getListOfParameters()}
+    declared_values |= {c.getId(): c.getSize() for c in sm.getListOfCompartments()}
+    df = problem.parameter_df
+    values = declared_values | {str(p): v for p, v in df[NOMINAL_VALUE].items() if v == v}
+    starts = {
+        eid: {"time": start}
+        | {target: _evaluate(value, values | {"time": start}) for target, value in targets.items()}
+        for eid, (start, targets) in experiment_starts(problem).items()
+    }
     out: list[dict[str, Any]] = []
     for i in range(sm.getNumSpecies()):
         sp = sm.getSpecies(i)
         sid = sp.getId()
         ic = _ic_symbol_for(sm, sid)
-        declared: float | None = None
-        if ic is not None and sm.getParameter(ic) is not None:
-            declared = float(sm.getParameter(ic).getValue())
+        rule = sm.getAssignmentRuleByVariable(sid)
+        assignment = sm.getInitialAssignmentBySymbol(sid)
+        if rule is not None:
+            formula = libsbml.formulaToL3String(rule.getMath())
+        elif assignment is not None:
+            formula = libsbml.formulaToL3String(assignment.getMath())
         elif sp.isSetInitialConcentration():
-            declared = float(sp.getInitialConcentration())
+            formula = sp.getInitialConcentration()
         elif sp.isSetInitialAmount():
-            declared = float(sp.getInitialAmount())
-        elif ic is None:
-            # No IC parameter AND no declared initial: an unset species is an empty pool in SBML,
-            # and `ensure_parametric_initial_conditions` deliberately mints nothing for it. Report
-            # the value it actually simulates from rather than None, which would otherwise fall
-            # through the FIXED branch below and be described as "shipped as a fixed parameter".
-            declared = 0.0
-        estimated = ic is not None and is_parameter_estimated(problem, ic)
-        set_by_condition = sid in cond_targets or (ic is not None and ic in cond_targets)
-        if set_by_condition:
-            t0_source, declared_t0_used, note = (
+            formula = sp.getInitialAmount()
+        else:
+            # An unset species is an empty pool in SBML, and `ensure_parametric_initial_conditions`
+            # deliberately mints nothing for it.
+            formula = 0.0
+        try:
+            expr = sympify_petab(formula)
+        except Exception:  # noqa: BLE001 - unparseable: evaluates to None below
+            expr = formula
+        declared = None if rule is not None else _evaluate(expr, declared_values)
+        per = {
+            eid: at[sid] if sid in at else _evaluate(expr, values | at)
+            for eid, at in starts.items()
+        }
+        t0 = per.popitem()[1] if len(set(per.values())) == 1 else per
+        ic_params = {ic} if ic else set(_ic_expression_params(sm, sid))
+        estimated = any(is_parameter_estimated(problem, p) for p in ic_params)
+        set_by_condition = sid in cond_targets or bool(ic_params & cond_targets)
+        if rule is not None:
+            t0_source, note = (
+                "rule",
+                f"held to `{formula}` by an assignment rule (an input) — `t0` is that formula at "
+                "the start of each experiment; no declared initial is used.",
+            )
+        elif set_by_condition:
+            t0_source, note = (
                 "condition_table",
-                False,
-                "set per condition by the condition table — the Antimony t=0 is NOT used.",
+                "set per condition by the condition table — the Antimony t=0 is NOT used; `t0` "
+                "is each experiment's value.",
             )
         elif estimated:
-            t0_source, declared_t0_used, note = (
+            t0_source, note = (
                 "estimated",
-                False,
                 "ESTIMATED free parameter (the default for initial conditions) — the fit sets "
-                "t=0; the declared value is only the starting guess.",
+                "t=0 (`t0` is the current fit's value); the declared value is only the starting "
+                "guess.",
             )
         else:
             # FIXED. Under the always-on default, an IC is only fixed at the two leak-free value
             # conventions (0 = empty pool, 1 = unit normalization) or because it was shipped as a
             # fixed parameter row; say which, so the caller sees why it is not estimated.
-            if ic is None and declared in (None, 0.0):
+            t0_source = "fixed"
+            if ic is None and assignment is None:
                 why = (
-                    "an empty pool (t=0 == 0), carried as a literal — no `<species>_init` "
-                    "parameter exists for it, so it costs nothing in k"
+                    ("an empty pool (t=0 == 0)" if t0 == 0.0 else f"t=0 == {t0!r}")
+                    + ", carried as a literal — no `<species>_init` parameter exists for it, so it costs nothing in k"
                 )
             elif ic is None:
-                # No minted `<species>_init` does NOT imply a zero initial. An assignment-rule
-                # target reaches here with `ic` None (ensure_parametric_initial_conditions drops
-                # the initial assignment and continues) while the species still declares a
-                # non-zero concentration. Claiming "t=0 == 0" then contradicted `declared_t0` in
-                # the very same record — a self-contradicting answer to the one question this
-                # report exists to settle.
-                why = (
-                    f"carried as a literal (t=0 == {declared:g}) — no `<species>_init` "
-                    "parameter exists for it, so it costs nothing in k"
-                )
-            elif declared == 0.0:
+                why = f"`{formula}` over fixed parameters"
+            elif t0 == 0.0:
                 why = "an empty pool (t=0 == 0)"
-            elif declared == 1.0:
+            elif t0 == 1.0:
                 why = "a unit normalization (t=0 == 1)"
             else:
                 why = "shipped as a fixed parameter"
-            t0_source, declared_t0_used, note = (
-                "fixed",
-                True,
+            note = (
                 f"FIXED at the declared t=0 value ({why}) — this value governs the simulated "
-                "t=0 state.",
+                "t=0 state."
+                if t0 == declared
+                else f"FIXED at {t0!r} by its parameter-table row, NOT at the declared "
+                f"{declared!r} — the row governs the simulated t=0 state."
             )
         out.append(
             {
                 "species": sid,
                 "ic_parameter": ic,
                 "declared_t0": declared,
+                "t0": t0,
                 "estimated": bool(estimated),
                 "set_by_condition": bool(set_by_condition),
                 "t0_source": t0_source,
-                "declared_t0_used": bool(declared_t0_used),
+                "declared_t0_used": t0_source == "fixed" and t0 == declared,
                 "newly_added": bool(ic in added) if ic else False,
                 "note": note,
             }
