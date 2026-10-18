@@ -38,11 +38,26 @@ def test_modified_substrate_gets_its_site():
     assert model.monomers["ERK"].site_states == {"T185": ["u", "p"]}
 
 
-def test_unregistered_pair_is_a_mechanism_error():
-    """A library gap must stay distinguishable from a bug, so it is not a bare ``KeyError``."""
+@pytest.mark.parametrize("policy", [M.INDRA_DEFAULT, "indra_two_step"])
+def test_unregistered_pair_is_a_mechanism_error(policy):
+    """A library gap must stay distinguishable from a bug, so it is not a bare ``KeyError``. It is
+    a policy another statement type has, or one INDRA implements, asked of a type that lacks it."""
     with pytest.raises(MechanismError, match="no mechanism") as exc:
-        M.assemble([(_TRANSITION, "no_such_mechanism", "r1")])
+        M.assemble([(_TRANSITION, policy, "r1")])
     assert exc.value.cause == "library_gap"
+
+
+def test_a_misspelt_policy_is_malformed_not_a_library_gap():
+    """`indra_defualt` was refused as "no mechanism" and counted as a library gap, so typos
+    inflated the library's to-do list. It is malformed, and says what it is closest to: the type's
+    own policies first, then the others, saying the type lacks them."""
+    with pytest.raises(MechanismError, match="did you mean 'indra_default'") as exc:
+        M.assemble([(_PHOSPHO, "indra_defualt", "r1")])
+    assert exc.value.cause == "malformed_mechanism"
+    with pytest.raises(MechanismError, match="'mass_action', which Phosphorylation lacks") as exc:
+        M.assemble([(_PHOSPHO, "mass_actoin", "r1")])
+    assert exc.value.cause == "malformed_mechanism"
+    assert "write one with `mechanisms`" in str(exc.value)
 
 
 def test_a_malformed_request_is_not_a_library_gap():
@@ -106,6 +121,13 @@ def _written(extra=""):
     definition = json.loads(_BASE_WRITTEN.format(extra=extra))
     library[("Phosphorylation", definition["policy"])] = M.written(definition, library)
     return library
+
+
+def test_a_policy_written_for_another_type_is_a_library_gap():
+    """What the agent wrote is a policy like the library's own: asked of another type, a gap."""
+    with pytest.raises(MechanismError, match="no mechanism") as exc:
+        M.assemble([(_TRANSITION, "saturating", "r1")], library=_written())
+    assert exc.value.cause == "library_gap"
 
 
 def test_a_written_mechanism_keeps_the_reaction_and_takes_the_rate():
