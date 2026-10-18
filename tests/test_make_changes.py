@@ -1469,7 +1469,8 @@ def test_concurrent_calls_keep_every_mechanism_they_write(tmp_path, monkeypatch)
 
     (tmp_path / "redefined").mkdir()
     mcp = _statements_server(tmp_path / "redefined")
-    changed = {**_SATURATING, "rate": "vmax"}
+    # Valid on its own: a definition that drops `K` is malformed, refused first when it wins the lock.
+    changed = {**_SATURATING, "rate": "2 * vmax / (K + source)"}
     calls = [{**call, "mechanisms": [m]} for call, m in zip(calls, (_SATURATING, changed))]
     calls[1]["statements"] = calls[0]["statements"]
     outs = _concurrently(monkeypatch, mcp, *calls)
