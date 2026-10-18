@@ -86,7 +86,7 @@ def mechanism(stmt_cls: type[Statement], policy: str) -> Callable[[Policy], Poli
 
     def register(fn: Policy) -> Policy:
         if key in REGISTRY:
-            raise MechanismError(f"mechanism {key} is already registered")
+            raise RuntimeError(f"mechanism {key} is already registered")
         REGISTRY[key] = fn
         return fn
 
@@ -107,7 +107,8 @@ def instantiate(
         known = sorted(p for c, p in library if c == key[0])
         raise MechanismError(
             f"no mechanism {key}; the library has {known or 'none'} for {key[0]}. If none fits, "
-            "write one with `mechanisms`."
+            "write one with `mechanisms`.",
+            cause="library_gap",
         )
     return library[key](stmt, model, prefix)
 
@@ -294,7 +295,9 @@ def _indra_default(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
     try:
         indra._dispatch(stmt, "assemble", model, BaseAgentSet(), {})
     except UnknownPolicyError as exc:
-        raise MechanismError(f"INDRA has no default assembly for {type(stmt).__name__}") from exc
+        raise MechanismError(
+            f"INDRA has no default assembly for {type(stmt).__name__}", cause="library_gap"
+        ) from exc
     added = [c for c in model.all_components() if c.name not in before]
     for parameter in (c for c in added if isinstance(c, pysb.Parameter)):
         name = f"{prefix}_{parameter.name.split('_')[0]}"

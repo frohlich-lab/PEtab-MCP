@@ -40,13 +40,25 @@ def test_modified_substrate_gets_its_site():
 
 def test_unregistered_pair_is_a_mechanism_error():
     """A library gap must stay distinguishable from a bug, so it is not a bare ``KeyError``."""
-    with pytest.raises(MechanismError, match="no mechanism"):
+    with pytest.raises(MechanismError, match="no mechanism") as exc:
         M.assemble([(_TRANSITION, "no_such_mechanism", "r1")])
+    assert exc.value.cause == "library_gap"
+
+
+def test_a_malformed_request_is_not_a_library_gap():
+    """Every refusal counted as a library gap, so the library's to-do list was mostly typos."""
+    with pytest.raises(MechanismError, match="built-in") as exc:
+        M.written(
+            {"statement_type": "PopulationTransition", "policy": "mass_action", "rate": "k"},
+            M.REGISTRY,
+        )
+    assert exc.value.cause == "malformed_mechanism"
 
 
 def test_reregistering_an_entry_raises():
-    """A silent override builds whichever policy imported last."""
-    with pytest.raises(MechanismError, match="already registered"):
+    """A silent override builds whichever policy imported last. A programming error, not a
+    refusal: no agent call reaches it."""
+    with pytest.raises(RuntimeError, match="already registered"):
         M.mechanism(PopulationTransition, "mass_action")(lambda *a: None)
 
 
