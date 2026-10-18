@@ -7,9 +7,10 @@ Enforces the invariants:
   is PRESERVED — whether a single parameter (``S = S_0``) or a COMPOUND expression of parameters
   (``Rec2 = ini_R1*ini_R2fold``, ``Exposed = exposed_init_conc*population``). Its parameters are
   the settable/estimatable IC and are synced into the parameter table.
-* **Parameter-table sync** — every model parameter (rate constants + IC parameters) has a
-  row in the parameter table; parameters no longer in the model are removed, *except*
-  those used by the fixed observable/noise formulas (e.g. ``sigma_*``).
+* **Parameter-table sync** — every model parameter (rate constants + IC parameters) but a
+  ``readout_*`` measurement mapping (:func:`readouts`) has a row in the parameter table;
+  parameters no longer in the model are removed, *except* those used by the fixed
+  observable/noise formulas (e.g. ``sigma_*``).
 * **Orphan pruning** — species/parameters left unreferenced by any reaction, rule,
   initial assignment, or fixed table are dropped.
 """
@@ -246,6 +247,31 @@ def formula_identifiers(formula: Any) -> set[str]:
     return _ast_names(ast)
 
 
+#: How a blinded benchmark names a measurement mapping: the observable formula reads
+#: ``readout_<observableId>``, and the model defines it with an assignment rule.
+READOUT_PREFIX = "readout_"
+
+
+def readouts(problem) -> dict[str, str | None]:
+    """Each ``readout_*`` measurement mapping the observable formulas read, to the expression
+    the model's assignment rule defines it by, or ``None`` while the model leaves it undefined.
+
+    A mapping is not a parameter, defined or not, so :func:`sync_parameter_table` gives none a
+    row. Undefined, it is the seed's constant (:func:`seed_model_antimony`), which a model with
+    dynamics may not keep (``validation._undefined_readout_issues``).
+    """
+    odf = getattr(problem, "observable_df", None)
+    if odf is None or OBSERVABLE_FORMULA not in odf.columns:
+        return {}
+    ids = {sid for f in odf[OBSERVABLE_FORMULA] for sid in formula_identifiers(f)}
+    sm = problem.model.sbml_model
+    out: dict[str, str | None] = {}
+    for sid in sorted(i for i in ids if i.startswith(READOUT_PREFIX)):
+        rule = sm.getAssignmentRuleByVariable(sid)
+        out[sid] = libsbml.formulaToL3String(rule.getMath()) if rule is not None else None
+    return out
+
+
 def seed_model_antimony(problem) -> str | None:
     """A CONTENT-FREE but VALID initial model for a problem that ships without one, or ``None``
     when the fixed tables name nothing to declare.
@@ -330,10 +356,13 @@ def seed_model_antimony(problem) -> str | None:
     # broke a pure-readout problem outright), then keyed on "does a non-readout entity exist?",
     # which quietly left every readout a species on boehm, blasi, crauste, perelson and rahman —
     # boehm's mappings being as non-identity as fujita's.
-    demote = {sid for sid in species if sid.startswith("readout_")}
+    #
+    # Its display name says what it is, so the model text does not read as a constant to scale.
+    demote = {sid for sid in species if sid.startswith(READOUT_PREFIX)}
     body = "\n".join(
         (
-            f"  {sid} = {SEED_INITIAL_VALUE:g};"
+            f"  {sid} = {SEED_INITIAL_VALUE:g};\n"
+            f'  {sid} is "measurement mapping, which your model defines from its species";'
             if sid in demote
             else f"  species {sid};\n  {sid} = {SEED_INITIAL_VALUE:g};"
         )
@@ -2123,6 +2152,9 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
     # (see condition_target_symbols); without this, reconcile force-added them and petab lint then
     # rejected the problem ("… not allowed to occur in the parameters table").
     valid -= condition_target_symbols(problem)
+    # A measurement mapping is not a parameter: no row, even while the seed holds it a constant.
+    mappings = set(readouts(problem))
+    valid -= mappings
     table_ids = set(problem.parameter_df.index)
     ic_params = _ic_parameter_ids(sm)
     exp_params = _exponent_symbols(sm)  # cooperativity/Hill exponents -> lin scale, tight bounds
@@ -2148,6 +2180,7 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
     # Critically the agent had NO WAY OUT: no tool in the surface can delete a parameter-table row,
     # so the state was unreachable from the agent side and the retry could only fail again.
     keep_table -= species_ids(sm)
+    keep_table -= mappings
 
     added, removed = [], []
 

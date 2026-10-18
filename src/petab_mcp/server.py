@@ -525,6 +525,9 @@ def _register_read_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
     def describe_problem() -> dict[str, Any]:
         """Summarize the problem: model size, tables, and free parameters.
 
+        `readouts_to_define` lists the `readout_*` measurement mappings (see `list_observables`)
+        your model does not define yet.
+
         Also reports `fit_n_starts_default` — the pyPESTO multistart count a fit uses when
         `n_starts` is omitted. Read it before passing `n_starts` anywhere: that argument REPLACES
         this default rather than adding to it, so a value below it fits less hard.
@@ -800,7 +803,8 @@ def _register_model_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
     @mcp.tool(annotations=_READ_ONLY)
     def get_model_structure() -> dict[str, Any]:
         """Structured view of the model: species, parameters, reactions — plus the per-species
-        `initial_conditions` account.
+        `initial_conditions` account, and `readouts`: each `readout_*` measurement mapping to the
+        expression your model defines it by, or null while it has none.
 
         Each initial-condition entry reports whether that species' declared t=0 actually governs
         the simulated state: `t0_source` is `fixed` (the declared value is used), `estimated` (the

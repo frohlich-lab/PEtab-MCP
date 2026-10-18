@@ -1,6 +1,7 @@
 """A readout the observable table names but the model never defines: the commit-time remedy
-(``validation._undefined_readout_issues``) and the seed model's handling of readouts
-(``reconcile.seed_model_antimony``).
+(``validation._undefined_readout_issues``), the seed model's handling of readouts
+(``reconcile.seed_model_antimony``), how the tools show one before the first build, and the
+refusal of a readout that reads itself.
 
 The harness blinds observables to ``readout_*`` symbols, so a model that forgets to define one
 must be refused with the remedy and the biology attached, and a seed must declare a readout as a
@@ -9,9 +10,18 @@ parameter rather than a species. The blinding itself is tested in gemot.
 
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
 
 import pandas as pd
+import pytest
 
+from petab_mcp import model as model_mod
+from petab_mcp import operations as O
+from petab_mcp import reconcile as R
+from petab_mcp.references import StubReferenceResolver
+from petab_mcp.server import create_server
+from petab_mcp.session import PetabSession
 from petab_mcp.validation import _undefined_readout_issues
 
 
@@ -215,3 +225,62 @@ def test_a_rate_rule_model_that_defines_its_readout_passes():
         rules=["readout_a"],
     )
     assert _undefined_readout_issues(prob) == []
+
+
+# -- a blinded problem shipped without a model -----------------------------------
+_MODEL = """model blinded
+  compartment c = 1;
+  species A in c, B in c;
+  A = 1;
+  B = 0;
+  k1 = 0.5;
+  r1: A => B; k1 * A;
+  {rule}
+end
+"""
+
+
+@pytest.fixture
+def blinded(empty_yaml):
+    """The toy as a blinded benchmark ships: no model, its observable reading ``readout_B``."""
+    observables = Path(empty_yaml).parent / "observables.tsv"
+    observables.write_text(observables.read_text().replace("\tB\t", "\treadout_B\t"))
+    return empty_yaml
+
+
+def _call(mcp, name, args=None):
+    return asyncio.run(mcp.call_tool(name, args or {})).structured_content
+
+
+def _server(yaml_path, tmp_path):
+    return create_server(
+        yaml_path, provenance_dir=str(tmp_path / "prov"), resolver=StubReferenceResolver()
+    )
+
+
+def test_before_the_first_build_a_readout_is_a_mapping_to_define(blinded, tmp_path):
+    """The seed's constant `readout_B` got an estimated row, so every listing called it a free
+    `observable_scaling` parameter and agents scaled it by itself (`readout_x := readout_x * X`)."""
+    mcp = _server(blinded, tmp_path)
+    described = _call(mcp, "describe_problem")
+    assert described["free_parameters"] == []
+    assert described["readouts_to_define"] == ["readout_B"]
+    rows = _call(mcp, "get_parameters")["result"]
+    assert "readout_B" not in {r["parameterId"] for r in rows}
+    structure = _call(mcp, "get_model_structure")
+    assert structure["readouts"] == {"readout_B": None}
+    assert "readout_B" not in structure["parameters"]
+    model = _call(mcp, "get_model")["result"]
+    assert 'readout_B is "measurement mapping, which your model defines' in model
+
+
+def test_a_defined_readout_is_shown_by_its_rule_and_never_gets_a_row(blinded, tmp_path):
+    session = PetabSession(
+        blinded, provenance_dir=str(tmp_path / "prov"), resolver=StubReferenceResolver()
+    )
+    assert "readout_B" not in R.classify_inner_parameters(session.problem)
+    res = O.set_model(session, _MODEL.format(rule="readout_B := 2 * B;"), justification="B")
+    assert res["applied"] is True
+    assert "readout_B" not in session.problem.parameter_df.index
+    assert session.describe()["readouts_to_define"] == []
+    assert model_mod.model_structure(session)["readouts"] == {"readout_B": "2 * B"}
