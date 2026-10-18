@@ -56,6 +56,11 @@ class UnknownEntityError(PetabMcpError):
     """A referenced id (parameter, observable, experiment, ...) does not exist."""
 
 
+class EntityMapError(PetabMcpError):
+    """The entity map (``--entity-map``) would not be read as written (:mod:`petab_mcp.seeding`).
+    Raised as the server opens, before any tool runs."""
+
+
 class MechanismError(PetabMcpError):
     """No registered mechanism expresses a ``(statement class, policy)`` pair.
 
