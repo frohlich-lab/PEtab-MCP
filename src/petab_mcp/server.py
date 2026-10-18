@@ -484,8 +484,11 @@ class _Ctx:
         the :func:`operations.working_state` snapshot taken before it applied). A change is either
         scored or gone, so the working model is never a state nothing has verified.
 
-        The de-dup no-op is not a failure and is not reverted: the resulting model IS an existing
-        version, byte-identical to it, so there is nothing unscored to undo.
+        The de-dup no-op is undone too, though it is not a failure: the change gives the same model
+        as an existing version, so that version's scored state stands for it. The de-dup compares
+        equations and estimation setup, not the text, the authored starting values or the rows the
+        change was written as; keeping those would leave a working model no version holds, and the
+        next edit would build on it.
         """
         # HEAD before the fit — the only signal for "was a version created" that survives a
         # failure between the snapshot and the end of `session.fit`.
@@ -517,6 +520,12 @@ class _Ctx:
                 self.session,
                 before,
                 f"the fit produced no version: {fit_result.get('error') or 'no error message'}",
+            )
+        elif fit_result.get("no_change"):
+            ops_mod.revert_working_state(
+                self.session,
+                before,
+                f"identical to version {fit_result.get('duplicate_of_version')}, which stands for it",
             )
         return ops_mod.bundle_result(self.session, edit_result, fit_result, head_before)
 
@@ -622,6 +631,9 @@ def _register_read_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
     @mcp.tool(annotations=_READ_ONLY)
     def describe_problem() -> dict[str, Any]:
         """Summarize the problem: model size, tables, and free parameters.
+
+        `readouts_to_define` lists the `readout_*` measurement mappings your model does not
+        define yet.
 
         Also reports `fit_n_starts_default` — the pyPESTO multistart count a fit uses when
         `n_starts` is omitted. Read it before passing `n_starts` anywhere: that argument REPLACES
@@ -809,8 +821,8 @@ scored one, and there is never an edit waiting to be fit.
 The result IS the fit, flat — the same field names `get_fit_summary` uses — plus two
 flags. Read `applied`: `false` → the change is NOT in the model, either rejected before it
 applied or reverted because the fit failed; `error`/`issues` says which. Then `committed`:
-`true` → a version exists, read `bic`; `false` with `no_change` → the change applied but
-this structure already IS a version, so change something else.
+`true` → a version exists, read `bic`; `false` with `no_change` → this model already IS a
+version, which stays the working model as stored, so change something else.
 `bic` charges `k` = `n_estimated` + `hardcoded_constants`: a numeric literal in your
 model's math is a parameter too, bar a few structural ones, so freezing a fitted value
 costs what estimating it costs — estimate it. What you pay for is listed.
@@ -1059,15 +1071,17 @@ def _register_model_tools(
     @mcp.tool(annotations=_READ_ONLY)
     def get_model_structure() -> dict[str, Any]:
         """Structured view of the model: species, parameters, reactions — plus the per-species
-        `initial_conditions` account.
+        `initial_conditions` account, and `readouts`: each `readout_*` measurement mapping to the
+        expression your model defines it by, or null while it has none.
 
-        Each initial-condition entry reports whether that species' declared t=0 actually governs
-        the simulated state: `t0_source` is `fixed` (the declared value is used), `estimated` (the
-        fit sets it — the DEFAULT, so a declared t=0 is only a starting guess) or
-        `condition_table` (a condition target overrides it per condition), with `ic_parameter`
-        naming the parameter that carries it. Read it to check whether a t=0 you meant to pin
-        actually took, and to see which species are driven per-condition — those have no
-        parameter-table row at all, so `get_parameters` cannot show them.
+        Each initial-condition entry reports what the simulation starts that species at, `t0` (one
+        value, or one per experiment where they differ), and whether the declared t=0 governs it:
+        `t0_source` is `fixed` (the parameter table's value is used), `estimated` (the fit sets it
+        — the DEFAULT, so a declared t=0 is only a starting guess), `condition_table` (a condition
+        target overrides it per condition) or `rule` (an assignment rule holds it, as it does an
+        input), with `ic_parameter` naming the parameter that carries it. Read it to check whether
+        a t=0 you meant to pin actually took, and to see which species are driven per-condition —
+        those have no parameter-table row at all, so `get_parameters` cannot show them.
         """
         ctx = route()
         session = ctx.session
@@ -1176,31 +1190,40 @@ def _register_model_tools(
                 "`statements` rows; send them together. NOTHING was applied.",
                 {"n_mechanisms": len(mechanisms or []), "n_starts": len(starts or [])},
             )
-        if rows:
-            definitions = [
-                m.model_dump() if isinstance(m, MechanismDef) else m for m in (mechanisms or [])
-            ]
-            try:
-                antimony, statement_record, statement_warnings, written = (
-                    ops_mod.statements_to_antimony(
-                        session,
-                        rows,
-                        definitions,
-                        [s.model_dump() if isinstance(s, StartRow) else s for s in starts or []],
-                        readouts,
-                        amounts,
-                    )
-                )
-            except PetabMcpError as exc:
-                return ctx.reject_operation(
-                    "make_changes",
-                    str(exc),
-                    {"n_statements": len(rows)},
-                    cause=getattr(exc, "cause", None),
-                )
         # One critical section for the change and its fit, so nothing can fit in between
         # (`session.lock` is an RLock, so the nested acquisitions inside each call are fine).
         with session.lock:
+            if rows:
+                # Inside the lock: the build reads the run's written mechanisms and the commit
+                # below replaces them, so a concurrent call must not build in between.
+                definitions = [
+                    m.model_dump() if isinstance(m, MechanismDef) else m
+                    for m in (mechanisms or [])
+                ]
+                try:
+                    antimony, statement_record, statement_warnings, written = (
+                        ops_mod.statements_to_antimony(
+                            session,
+                            rows,
+                            definitions,
+                            [s.model_dump() if isinstance(s, StartRow) else s for s in starts or []],
+                            readouts,
+                            amounts,
+                        )
+                    )
+                except PetabMcpError as exc:
+                    return ctx.reject_operation(
+                        "make_changes",
+                        str(exc),
+                        {"n_statements": len(rows)},
+                        cause=getattr(exc, "cause", None),
+                    )
+                except Exception as exc:
+                    # A crash, not a refusal: logged where every tool's crash lands (`_Ctx.run`),
+                    # so a sweep's errors.jsonl shows it, and raised. It escaped unlogged before.
+                    ctx.log_error("make_changes", {"n_statements": len(rows)}, exc)
+                    session.logger.exception("make_changes crashed building the statements' model")
+                    raise
             op_summary: list[str] = []
             base_parameter_df = None
             if ops:
@@ -1291,13 +1314,11 @@ def _register_model_tools(
                 session.derived_from = None
                 session.submitted_source = None
                 session.submitted_statements = None
-            if out.get("applied") and antimony:
+            if out.get("applied") and not out.get("no_change") and antimony:
                 # The submitted text becomes this branch's source for the next structured edit.
-                # Keyed on APPLIED, not committed: a de-duplicated commit (`applied: true,
-                # committed: false, no_change`) still moves the WORKING model, and leaving the
-                # source behind would make the next batch of operations silently revert it.
-                # A rejected or fit-reverted call leaves the model where it was, and `applied`
-                # is false there, so the source correctly stays put.
+                # A rejected or fit-reverted call leaves the model where it was (`applied` false),
+                # and a de-dup no-op leaves the session on the version it duplicates (see
+                # `edit_then_fit`), so in both the source correctly stays put.
                 session.model_source = antimony
                 session.model_statements = statement_record
                 if written is not None:
@@ -1918,8 +1939,9 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         """List all model versions (fit snapshots) with kind/label/timestamp and fit metrics
         (neg_log_likelihood, chi2, bic/aic/aicc/caic/hqc/tic, criterion_value, is_new_best) — use it to
         rank versions by `criterion_value` and find the best-scoring one. Every version is a fit
-        snapshot (or the `rollback` snapshots); `is_new_best` tracks that same score (gated on a
-        minimum effect size)."""
+        snapshot; `is_new_best` tracks that same score: true for the first, then when its
+        `improvement_vs_best_prior` (over `best_prior_criterion_value`) reached
+        `new_best_min_improvement`."""
         ctx = route()
         session = ctx.session
         return session.provenance.list_versions()
@@ -2110,6 +2132,7 @@ def _open_ctx(
 
         session.entities = seeding_mod.load_entity_map(entity_map)
         session.inputs = seeding_mod.load_inputs(entity_map)
+        seeding_mod.check_inputs(entity_map, session.inputs, session.problem)
     if score_shipped_model and session.model_authored():
         fitting_mod.score_at_nominal(session, engine)
     held_out = None

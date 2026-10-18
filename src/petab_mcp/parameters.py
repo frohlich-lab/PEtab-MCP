@@ -175,25 +175,49 @@ def estimated_ids(parameter_df) -> list[str]:
 
 
 def structure_fingerprint(sbml_model, parameter_df) -> str:
-    """Short hash of the model STRUCTURE: the reaction network (each reaction's reactant/product
-    stoichiometry + rate-law FORM) plus the SET of estimated parameters — deliberately IGNORING
-    nominal (starting) values, bounds, and scales.
+    """Short hash of the model STRUCTURE: every equation that shapes the simulated trajectory or a
+    readout, plus the SET of estimated parameters — deliberately IGNORING nominal (starting)
+    values, bounds, and scales.
+
+    The equations are the species (with the flags that change how reactions move them), each
+    reaction's reactant/product stoichiometry + rate-law FORM, every rule (assignment, rate,
+    algebraic), initial assignment and event, with function calls expanded. Rules carry most of a
+    model built from statements — each rate is an assignment rule the rate law multiplies, and each
+    ``readout_*`` mapping is one too — so a fingerprint of the reactions alone called a changed rate
+    or readout a duplicate and the change was never fitted.
 
     This is the identity used to recognise a *re-authored structure* across ``set_model`` calls:
-    two authorings that describe the same reactions and rate laws with the same estimated-parameter
-    set share a fingerprint even if their starting guesses or bounds differ. That "ignore nominal
-    values" property is essential — the automatic fit overwrites an estimated parameter's
-    ``nominalValue`` with the fitted optimum, so a re-author's *authored* starting values never
-    match the committed version's *fitted* ones; a value-sensitive hash (``problem_fingerprint``)
-    would therefore never recognise the duplicate. It is coarser than ``problem_fingerprint`` (the
-    exact fit) — it answers "have we visited this structure before?", which is what de-duplicating
-    re-authors, warning on revisited worse families, and stopping identical-re-author loops need
-    (see :mod:`petab_mcp.dedup`).
+    two authorings that describe the same equations with the same estimated-parameter set share a
+    fingerprint even if their starting guesses or bounds differ. That "ignore nominal values"
+    property is essential — the automatic fit overwrites an estimated parameter's ``nominalValue``
+    with the fitted optimum, so a re-author's *authored* starting values never match the committed
+    version's *fitted* ones; a value-sensitive hash (``problem_fingerprint``) would therefore never
+    recognise the duplicate. It is coarser than ``problem_fingerprint`` (the exact fit) — it answers
+    "have we visited this structure before?", which is what de-duplicating re-authors, warning on
+    revisited worse families, and stopping identical-re-author loops need (see
+    :mod:`petab_mcp.dedup`). Component ids that nothing references (a reaction's, an event's) are
+    excluded for the same reason: the same model authored under other names is the same structure.
     """
     import libsbml
 
     sm = sbml_model
-    species = sorted(sm.getSpecies(i).getId() for i in range(sm.getNumSpecies()))
+    functions = sm.getListOfFunctionDefinitions()
+
+    def form(math) -> str:
+        # Canonical infix form, whitespace stripped so trivial spacing differences don't change
+        # the structural identity. Calls are expanded: a version is stored as an Antimony render,
+        # which inlines every function, so the restored model calls none the authored one did.
+        if math is None:
+            return ""
+        if functions.size():
+            math = math.deepCopy()
+            libsbml.SBMLTransforms.replaceFD(math, functions)
+        return (libsbml.formulaToL3String(math) or "").replace(" ", "")
+
+    species = sorted(
+        (s.getId(), s.getBoundaryCondition(), s.getHasOnlySubstanceUnits())
+        for s in sm.getListOfSpecies()
+    )
     reactions: list[tuple] = []
     for i in range(sm.getNumReactions()):
         rxn = sm.getReaction(i)
@@ -206,19 +230,41 @@ def structure_fingerprint(sbml_model, parameter_df) -> str:
             for j in range(rxn.getNumProducts())
         )
         kl = rxn.getKineticLaw()
-        law = ""
-        if kl is not None and kl.getMath() is not None:
-            # Canonical infix form of the rate-law math tree; strip whitespace so trivial
-            # spacing differences don't change the structural identity.
-            law = (libsbml.formulaToL3String(kl.getMath()) or "").replace(" ", "")
+        law = form(kl.getMath()) if kl is not None else ""
         # Reaction id is deliberately excluded — an identical network authored with different
         # reaction ids (J1 vs r1) is the same structure. Sorting makes it order-independent.
         reactions.append((tuple(reactants), tuple(products), law))
     reactions.sort()
+    events = []
+    for ev in sm.getListOfEvents():
+        trigger, delay, priority = ev.getTrigger(), ev.getDelay(), ev.getPriority()
+        events.append(
+            (
+                form(trigger.getMath()) if trigger is not None else "",
+                trigger.getInitialValue() if trigger is not None else None,
+                trigger.getPersistent() if trigger is not None else None,
+                form(delay.getMath()) if delay is not None else "",
+                form(priority.getMath()) if priority is not None else "",
+                ev.getUseValuesFromTriggerTime(),
+                tuple(
+                    sorted(
+                        (a.getVariable(), form(a.getMath())) for a in ev.getListOfEventAssignments()
+                    )
+                ),
+            )
+        )
     payload = repr(
         {
             "species": species,
             "reactions": reactions,
+            "rules": sorted(
+                (r.getElementName(), r.getVariable(), form(r.getMath()))
+                for r in sm.getListOfRules()
+            ),
+            "initial_assignments": sorted(
+                (ia.getSymbol(), form(ia.getMath())) for ia in sm.getListOfInitialAssignments()
+            ),
+            "events": sorted(events, key=repr),
             "estimated": estimated_ids(parameter_df),
         }
     )

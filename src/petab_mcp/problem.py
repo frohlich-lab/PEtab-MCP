@@ -445,6 +445,35 @@ def experiment_inputs(problem) -> pd.DataFrame | None:
     return pd.DataFrame.from_dict(rows, orient="index")
 
 
+def experiment_starts(problem) -> dict[str, tuple[float, dict[str, Any]]]:
+    """Per experiment id the measurements simulate (``""`` for none), the time its first simulated
+    period starts and the condition targets in effect then: the pre-equilibration period's and the
+    first period's, the latter winning. A later period's changes are not in it."""
+    edf, cdf = problem.experiment_df, problem.condition_df
+    changes = {}
+    if cdf is not None and len(cdf):
+        changes = {
+            str(cid): dict(zip(sub[TARGET_ID], sub[TARGET_VALUE]))
+            for cid, sub in cdf.groupby(CONDITION_ID, sort=False)
+        }
+    mdf = problem.measurement_df
+    out: dict[str, tuple[float, dict[str, Any]]] = {}
+    for eid in sorted(set(mdf[EXPERIMENT_ID])) if mdf is not None and len(mdf) else [""]:
+        periods = (
+            edf[edf[EXPERIMENT_ID] == eid]
+            if edf is not None and eid
+            else pd.DataFrame(columns=[TIME, CONDITION_ID])
+        )
+        times = sorted({float(t) for t in periods[TIME]})
+        start = min((t for t in times if t != TIME_PREEQUILIBRATION), default=0.0)
+        applied: dict[str, Any] = {}
+        for t in (t for t in times if t <= start):
+            for cid in periods.loc[periods[TIME] == t, CONDITION_ID].dropna():
+                applied.update(changes.get(str(cid), {}))
+        out[eid] = (start, applied)
+    return out
+
+
 def placeholder_ids(observable_df) -> set[str]:
     """Every placeholder any observable declares — names the measurement table fills, never
     entities of the model."""

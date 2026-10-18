@@ -295,10 +295,115 @@ def test_dedup_skip_reports_no_change(tmp_path):
     assert again["no_change"] is True
     assert again["duplicate_of_version"] == 0
     assert again["version"] == 0
-    # NOT reverted: the resulting model IS an existing version, byte-identical to it, so there is
-    # nothing unscored to undo — which is why the no-op reports applied: true.
+    # applied: the change gives version 0's model, and version 0 is the working model
     head = _head(mcp)
     assert head["current_version"] == 0
+
+
+def _ruled(rate: str) -> str:
+    """The toy with r1's rate written the way the statements route writes every rate: an
+    assignment rule the rate law multiplies, so the rate law itself never changes."""
+    return _antimony(f"k_eff := {rate};").replace("r1: A => B; k1 * A;", "r1: A => B; k_eff * A;")
+
+
+def _set_rate(rate: str) -> dict:
+    return {"op": "set_assignment", "id": "k_eff", "antimony": rate}
+
+
+def test_a_rate_only_edit_is_fitted_not_deduplicated(tmp_path):
+    """REGRESSION: the de-dup's fingerprint hashed each rate law's form, and a rate changed through
+    the rule that rate law multiplies left every form as it was. The change came back as a duplicate
+    of HEAD and was never fitted (rahman, schwen, oliveira, blasi on the statements route)."""
+    mcp = _server(tmp_path, auto_fit=True)
+    first = _call(
+        mcp, "make_changes", {"antimony": _ruled("k1"), "justification": "linear", "n_starts": 2}
+    )
+    assert first["committed"] is True
+    res = _call(
+        mcp,
+        "make_changes",
+        {"model_edits": [_set_rate("k1 / (1 + A)")], "justification": "saturating", "n_starts": 2},
+    )
+    assert res["committed"] is True and res["version"] == 1, res["message"]
+
+
+def test_a_readout_only_edit_is_fitted_not_deduplicated(tmp_path):
+    """The same blind spot for a readout: a `readout_*` mapping is an assignment rule, so a model
+    that changed only what the data measure fingerprinted as its predecessor."""
+    import shutil
+
+    problem = tmp_path / "problem"
+    shutil.copytree(YAML_PATH.parent, problem)
+    (problem / "observables.tsv").write_text(
+        "observableId\tobservableFormula\tnoiseFormula\nobs_B\treadout_B\tsigma_B\n"
+    )
+    mcp = create_server(
+        str(problem / "problem.yaml"),
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+        auto_fit=True,
+    )
+    first = _call(
+        mcp,
+        "make_changes",
+        {"antimony": _antimony("readout_B := B;"), "justification": "B", "n_starts": 2},
+    )
+    assert first["committed"] is True, first["message"]
+    res = _call(
+        mcp,
+        "make_changes",
+        {
+            "model_edits": [{"op": "set_assignment", "id": "readout_B", "antimony": "A + B"}],
+            "justification": "the antibody sees A too",
+            "n_starts": 2,
+        },
+    )
+    assert res["committed"] is True and res["version"] == 1, res["message"]
+
+
+def test_a_duplicate_leaves_the_session_as_it_was(tmp_path):
+    """REGRESSION: the de-dup no-op kept the change's text and authored values as the working
+    model, though no version holds them, so the next edit built on a model nothing had accepted.
+    A duplicate now leaves the session on the version it duplicates, exactly as stored."""
+    mcp = _server(tmp_path, auto_fit=True)
+    _call(mcp, "make_changes", {"antimony": _antimony(), "justification": "v0", "n_starts": 2})
+    model = _listed(_call(mcp, "get_model", {"format": "antimony"}))
+    parameters = _listed(_call(mcp, "get_parameters", {}))
+
+    # the same equations under another reaction id and another starting value
+    renamed = _antimony().replace("r2:", "back:").replace("k1 = 0.5", "k1 = 0.7")
+    res = _call(mcp, "make_changes", {"antimony": renamed, "justification": "dup", "n_starts": 2})
+    assert res["no_change"] is True and res["duplicate_of_version"] == 0
+
+    assert _listed(_call(mcp, "get_model", {"format": "antimony"})) == model
+    assert _listed(_call(mcp, "get_parameters", {})) == parameters
+    # ...and the source the next structured edit applies to is version 0's, not the duplicate's
+    stale = _call(
+        mcp,
+        "make_changes",
+        {"model_edits": [{"op": "remove_reaction", "id": "back"}], "justification": "x"},
+    )
+    assert stale["applied"] is False and "back" in stale["error"]
+
+
+def test_a_revert_to_an_earlier_model_is_not_a_duplicate_of_head(tmp_path):
+    """REGRESSION: with rates invisible to the fingerprint, going back to an earlier rate was
+    refused as a duplicate of HEAD, which holds a different one. It is fitted, and named as a
+    revisit of the version it returns to."""
+    mcp = _server(tmp_path, auto_fit=True)
+    _call(mcp, "make_changes", {"antimony": _ruled("k1"), "justification": "v0", "n_starts": 2})
+    _call(
+        mcp,
+        "make_changes",
+        {"model_edits": [_set_rate("k1 / (1 + A)")], "justification": "v1", "n_starts": 2},
+    )
+    back = _call(
+        mcp,
+        "make_changes",
+        {"model_edits": [_set_rate("k1")], "justification": "back", "n_starts": 2},
+    )
+    assert back["committed"] is True and back["version"] == 2, back["message"]
+    assert any("version(s) [0]" in m["message"] for m in back["messages"])
 
 
 def test_a_fit_failure_reverts_the_edit(tmp_path, monkeypatch):
@@ -711,11 +816,11 @@ def _statement_row(type_="PopulationTransition", policy="mass_action"):
     }
 
 
-def _statements_server(tmp_path, extra="", yaml=YAML_PATH):
+def _statements_server(tmp_path, extra="", yaml_path=YAML_PATH):
     entity_map = tmp_path / "entities.json"
     entity_map.write_text(_BASE_ENTITY_MAP.format(extra=extra))
     return create_server(
-        str(yaml),
+        str(yaml_path),
         provenance_dir=str(tmp_path / "prov"),
         resolver=StubReferenceResolver(),
         auto_fit=False,
@@ -902,6 +1007,18 @@ def test_a_library_gap_is_its_own_rejection(tmp_path):
     assert out["applied"] is False and out["error_cause"] == "library_gap"
 
 
+def test_a_malformed_mechanism_is_not_counted_as_a_library_gap(tmp_path):
+    """Every MechanismError counted as a gap, so the library's to-do list was mostly typos."""
+    bad = {**_SATURATING, "rate": "vmax / (K + nowhere)"}
+    out = _call(
+        _statements_server(tmp_path),
+        "make_changes",
+        {"justification": "x", "statements": [_statement_row(policy="saturating")],
+         "mechanisms": [bad]},
+    )
+    assert out["applied"] is False and out["error_cause"] == "malformed_mechanism"
+
+
 def test_an_unreadable_statement_is_refused_not_dropped(tmp_path):
     """INDRA's reader drops what it cannot parse with only a logged warning; a silently shorter
     model would then be fitted and committed."""
@@ -910,6 +1027,71 @@ def test_an_unreadable_statement_is_refused_not_dropped(tmp_path):
         _statements_server(tmp_path), "make_changes", {"justification": "x", "statements": [row]}
     )
     assert out["applied"] is False and out["error_cause"] == "unreadable_statement"
+
+
+def test_a_statement_missing_a_field_is_refused_by_name(tmp_path):
+    """A mod without `mod_type` escaped make_changes as a raw AttributeError; it is refused, the
+    row and the field named, before INDRA reads anything."""
+    row = {
+        "statement": {"type": "Phosphorylation", "enz": {"name": "A"}, "sub": {"name": "B", "mods": [{}]}},
+        "policy": "indra_default",
+        "prefix": "p",
+    }
+    out = _call(
+        _statements_server(tmp_path), "make_changes", {"justification": "x", "statements": [row]}
+    )
+    assert out["applied"] is False and out["error_cause"] == "unreadable_statement"
+    assert "`p`: `sub.mods[0]` has no `mod_type`, one of [" in out["error"]
+
+
+def test_a_type_the_library_lacks_is_a_library_gap(tmp_path):
+    """INDRA's own types are statement types whether or not the library has a mechanism for them:
+    refused as no statement type, RegulateAmount was neither counted as a gap nor pointed at
+    `mechanisms`."""
+    row = {
+        "statement": {"type": "RegulateAmount", "subj": {"name": "A"}, "obj": {"name": "B"}},
+        "policy": "indra_default",
+        "prefix": "h",
+    }
+    out = _call(
+        _statements_server(tmp_path), "make_changes", {"justification": "x", "statements": [row]}
+    )
+    assert out["applied"] is False and out["error_cause"] == "library_gap", out
+
+
+def test_a_crash_building_statements_is_logged_and_raised(tmp_path, monkeypatch):
+    """Only refusals were caught there, so a crash building the model escaped make_changes with
+    nothing in errors.jsonl, where a sweep looks for crashes; it is still raised, not refused."""
+
+    def crash(*args, **kwargs):
+        raise RuntimeError("UNIQUE_CRASH")
+
+    monkeypatch.setattr(O, "statements_to_antimony", crash)
+    with pytest.raises(Exception, match="UNIQUE_CRASH"):
+        _call(
+            _statements_server(tmp_path),
+            "make_changes",
+            {"justification": "x", "statements": [_statement_row()]},
+        )
+    assert "UNIQUE_CRASH" in (tmp_path / "prov" / "errors.jsonl").read_text()
+
+
+def test_an_activation_without_obj_activity_builds(tmp_path):
+    """The default the statement type documents is filled before INDRA reads the row, and stored
+    with it, so the model builds and the row renders as it was read."""
+    row = {
+        "statement": {"type": "Activation", "subj": {"name": "A"}, "obj": {"name": "B"}},
+        "policy": "indra_default",
+        "prefix": "act",
+    }
+    out = _call(
+        _statements_server(tmp_path), "make_changes", {"justification": "x", "statements": [row]}
+    )
+    assert out["applied"] is True, out
+    (stored,) = json.loads(
+        (tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text()
+    )["rows"]
+    assert stored["statement"]["obj_activity"] == "activity"
 
 
 def test_a_repeated_prefix_is_refused_before_assembly(tmp_path):
@@ -960,6 +1142,14 @@ def test_a_mechanism_the_agent_writes_stays_in_the_run_library(tmp_path):
     assert again["applied"] is True
 
 
+def test_a_kind_made_from_nothing_is_said_to_start_empty(tmp_path):
+    """Fujita r2's EGFR, made by zero-order synthesis, started at 0 and the result said nothing."""
+    rows = [_statement_row(), "syn: B is produced | default"]
+    out = _call(_statements_server(tmp_path), "make_changes", {"justification": "x", "statements": rows})
+    assert out["applied"] is True, out
+    assert any("from nothing" in m["message"] and ": B." in m["message"] for m in out["messages"])
+
+
 def test_a_written_mechanism_is_not_redefined_in_place(tmp_path):
     """Earlier versions were built with the first definition; changing it under the same name
     would change what their records mean."""
@@ -975,6 +1165,46 @@ def test_a_written_mechanism_is_not_redefined_in_place(tmp_path):
         mcp, "make_changes", {"justification": "y", "statements": [row], "mechanisms": [changed]}
     )
     assert out["applied"] is False and out["error_cause"] == "mechanism_redefined"
+
+
+def test_a_version_without_new_rows_keeps_its_parents(tmp_path):
+    """A bounds-only commit keeps the model its rows built, so it keeps the rows and the
+    mechanisms they name. It stored none, so restoring it restored none: the model no longer read
+    as built from statements, and a row naming the written mechanism was refused."""
+    mcp = _statements_server(tmp_path)
+    row = _statement_row(policy="saturating")
+    args = {"justification": "saturating", "statements": [row], "mechanisms": [_SATURATING]}
+    assert _call(mcp, "make_changes", args)["committed"] is True
+    widen = [{"parameter_id": "conv_vmax", "lower_bound": 1e-3, "upper_bound": 100.0}]
+    out = _call(mcp, "make_changes", {"justification": "widen", "parameters": widen})
+    assert out["committed"] is True
+    versions = tmp_path / "prov" / "versions"
+    stored = (versions / "v0" / "statements.json").read_text()
+    assert (versions / "v1" / "statements.json").read_text() == stored
+    # A durable resume restores HEAD, v1: its rows, and the mechanism they were written with.
+    resumed = _statements_server(tmp_path)
+    model = _call(resumed, "get_model", {"format": "statements"})["result"]
+    assert "mechanism saturating" in model
+    row["prefix"] = "conv2"
+    assert _call(resumed, "make_changes", {"justification": "reuse", "statements": [row]})[
+        "applied"
+    ] is True
+    # Model text without rows changes the model under them: that version records none.
+    out = _call(resumed, "make_changes", {"justification": "by hand", "antimony": _antimony()})
+    assert out["committed"] is True
+    assert not (versions / "v3" / "statements.json").exists()
+    # Resumed at v3, which has no rows, the run's written mechanisms still come back: a row names
+    # one, and it may not be redefined.
+    again = _statements_server(tmp_path)
+    row["prefix"] = "conv3"
+    assert _call(again, "make_changes", {"justification": "back", "statements": [row]})[
+        "applied"
+    ] is True
+    changed = {**_SATURATING, "rate": "vmax"}
+    out = _call(
+        again, "make_changes", {"justification": "y", "statements": [row], "mechanisms": [changed]}
+    )
+    assert out["error_cause"] == "mechanism_redefined"
 
 
 def test_a_declared_unit_start_is_fixed_not_estimated(tmp_path):
@@ -998,6 +1228,41 @@ def test_a_declared_unit_start_is_fixed_not_estimated(tmp_path):
     assert not any(int(rows[p]["estimate"]) for p in ("A_start_init", "A_init") if p in rows)
     stored = json.loads((tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text())
     assert stored["starts"] == [{"name": "A_start", "agent": {"name": "A"}, "amount": 1}]
+
+
+def test_a_redeclared_start_moves_its_row(tmp_path):
+    """Fujita r2: a start declared at 1 stayed FIXED at 1 through every later declaration."""
+    mcp = _statements_server(tmp_path)
+    rows = []
+    for amount in (1, 5, 1):
+        start = {"agent": {"name": "A"}, "amount": amount, "name": "A_start"}
+        args = {"justification": "A starts", "statements": [_statement_row()], "starts": [start]}
+        assert _call(mcp, "make_changes", args)["applied"] is True
+        params = {r["parameterId"]: r for r in _call(mcp, "get_parameters", {})["result"]}
+        row = params["A_start_init"]
+        rows.append((row["nominalValue"], int(row["estimate"])))
+        structure = _call(mcp, "get_model_structure", {})
+        view = {r["species"]: r for r in structure["initial_conditions"]}["A"]
+        assert (view["ic_parameter"], view["t0"]) == ("A_start_init", row["nominalValue"])
+    assert rows == [(1.0, 0), (5.0, 1), (1.0, 0)]
+
+
+def test_a_held_input_is_reported_at_its_condition_value(tmp_path, add_condition):
+    """Fujita r2: the view reported the held EGF input as starting empty, though the condition
+    table held it at its dose."""
+    shutil.copytree(YAML_PATH.parent, tmp_path / "problem")
+    add_condition(tmp_path / "problem" / "problem.yaml", "E_0", 3.0)
+    mcp = _statements_server(
+        tmp_path, ', "E": {"name": "E", "input": "E_0"}', tmp_path / "problem" / "problem.yaml"
+    )
+    feed = {**_statement_row(), "prefix": "feed"}
+    feed["statement"] = {**feed["statement"], "source": {"name": "E"}}
+    out = _call(
+        mcp, "make_changes", {"justification": "E feeds B", "statements": [_statement_row(), feed]}
+    )
+    assert out["applied"] is True, out
+    ics = {r["species"]: r for r in _call(mcp, "get_model_structure", {})["initial_conditions"]}
+    assert (ics["E"]["t0_source"], ics["E"]["t0"]) == ("rule", 3.0)
 
 
 def test_an_empty_entity_map_still_offers_the_route(tmp_path):
@@ -1103,3 +1368,58 @@ def test_a_row_may_be_written_in_the_notation(tmp_path):
     assert stored["statement"]["type"] == "PopulationTransition"
     text = _call(mcp, "get_model", {"format": "statements"})["result"]
     assert "conv: A becomes B | mass_action" in text
+
+
+def _concurrently(monkeypatch, mcp, *calls):
+    """The ``make_changes`` calls, each on its own thread, each pausing after it builds its
+    statements until every other has built too (or 3 s pass)."""
+    import threading
+
+    barrier = threading.Barrier(len(calls), timeout=3)
+    build = O.statements_to_antimony
+
+    def paused(*args, **kwargs):
+        built = build(*args, **kwargs)
+        try:
+            barrier.wait()
+        except threading.BrokenBarrierError:  # the other call waits on the session lock
+            pass
+        return built
+
+    monkeypatch.setattr(O, "statements_to_antimony", paused)
+    results = [None] * len(calls)
+
+    def run(i):
+        results[i] = _call(mcp, "make_changes", calls[i])
+
+    threads = [threading.Thread(target=run, args=(i,)) for i in range(len(calls))]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    return results
+
+
+def test_concurrent_calls_keep_every_mechanism_they_write(tmp_path, monkeypatch):
+    """Both calls built from the registry as it was before either committed: of two written
+    mechanisms one was lost, and two definitions of one name both committed."""
+    mcp = _statements_server(tmp_path)
+    other = {**_SATURATING, "policy": "hill", "rate": "vmax * source / (K + source)"}
+    calls = [
+        {"justification": m["policy"], "statements": [_statement_row(policy=m["policy"])],
+         "mechanisms": [m]}
+        for m in (_SATURATING, other)
+    ]
+    assert all(out["applied"] for out in _concurrently(monkeypatch, mcp, *calls))
+    rows = [{**_statement_row(policy=p), "prefix": p} for p in ("saturating", "hill")]
+    both = _call(mcp, "make_changes", {"justification": "both", "statements": rows})
+    assert both["applied"] is True, both.get("error")
+
+    (tmp_path / "redefined").mkdir()
+    mcp = _statements_server(tmp_path / "redefined")
+    changed = {**_SATURATING, "rate": "vmax"}
+    calls = [{**call, "mechanisms": [m]} for call, m in zip(calls, (_SATURATING, changed))]
+    calls[1]["statements"] = calls[0]["statements"]
+    outs = _concurrently(monkeypatch, mcp, *calls)
+    assert sorted(bool(out["applied"]) for out in outs) == [False, True]
+    assert [out.get("error_cause") for out in outs if not out["applied"]] == ["mechanism_redefined"]

@@ -56,15 +56,23 @@ class UnknownEntityError(PetabMcpError):
     """A referenced id (parameter, observable, experiment, ...) does not exist."""
 
 
-class MechanismError(PetabMcpError):
-    """No registered mechanism expresses a ``(statement class, policy)`` pair.
+class EntityMapError(PetabMcpError):
+    """The entity map (``--entity-map``) would not be read as written (:mod:`petab_mcp.seeding`).
+    Raised as the server opens, before any tool runs."""
 
-    A gap in the library, not a malformed request: it is the signal that the library needs an
-    entry, so it stays distinguishable from every other rejection — ``cause`` is the label
-    ``edit_rejects.by_cause`` counts it under.
+
+class MechanismError(PetabMcpError):
+    """A row's mechanism cannot be built.
+
+    ``cause`` is the label ``edit_rejects.by_cause`` counts it under. ``library_gap`` is a gap in
+    the library — no entry expresses the ``(statement class, policy)`` pair — and the signal that
+    the library needs one, so its raisers name it. Every other refusal is a request to fix,
+    ``malformed_mechanism``, and that is the default, so a new refusal never inflates the gaps.
     """
 
-    cause = "library_gap"
+    def __init__(self, *args, cause: str = "malformed_mechanism"):
+        super().__init__(*args)
+        self.cause = cause
 
 
 class FitBackendError(PetabMcpError):
