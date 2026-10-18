@@ -18,8 +18,8 @@ be scored against it as it stands. This module is the difference, and it is all 
 The start rests on two assumptions, and a third check refuses the models they do not fit:
 
 1. **The start holds free monomers in INDRA's default state** (``set_base_initial_condition``):
-   unbound, unmodified, inactive, wild type, in the cytoplasm when that is a location. No complex
-   and no modified form exists at the start.
+   unbound, unmodified, inactive, wild type, in the cytoplasm when that is a location (else in
+   the first of its locations by name). No complex and no modified form exists at the start.
 2. **What the start makes is absent from it.** Every monomer no rule makes from other kinds is
    present (one that only proliferates included), and BioNetGen expands the rules from those. A
    made monomer that expansion reaches starts empty: Crauste's effectors exist only once naive
@@ -78,6 +78,7 @@ def to_antimony(
     starts: list[tuple[str, Agent, float | str]] | None = None,
     formulas: dict[str, str] | None = None,
     amounts: dict[str, Agent] | None = None,
+    notes: list[str] | None = None,
 ) -> tuple[str, list[M.Emission]]:
     """The model ``rows`` build, as Antimony the ``antimony`` route accepts unchanged.
 
@@ -96,6 +97,10 @@ def to_antimony(
     assignment rule over ``amounts`` (name to the agent whose amount it is), the entity map's ids
     — each a symbol of the model by then — and parameter ids, a name the model does not hold
     becoming a parameter as in a declared start.
+
+    ``notes``, when given, collects what the start holds that nothing declared and the caller may
+    not expect: kinds the rules make from nothing, which start empty, and a start location chosen
+    among several.
     """
     starts = starts or []
     clash = sorted(set(amounts or {}) & set(entities))
@@ -110,11 +115,13 @@ def to_antimony(
         rows, {**entities, **{f"__start_{name}": agent for name, agent, _ in starts}}, library
     )
     held = {entities[species].name: formula for species, formula in (inputs or {}).items()}
-    made = set()
+    made, synthesised = set(), set()
     for rule in model.rules:
         reactants = _monomer_names(rule.reactant_pattern)
         products = _monomer_names(rule.product_pattern)
         made |= products - reactants
+        if reactants <= products:  # consumes nothing it does not give back
+            synthesised |= products - reactants
         if rule.is_reversible:
             made |= reactants - products
     # Readouts are named apart from the species they stand for, which may share a monomer's
@@ -137,6 +144,27 @@ def to_antimony(
         _seed(model, unreached)
         model.reset_equations()
         _expand(model)
+    if notes is not None:
+        empty = sorted((synthesised & reached) - held.keys() - declared)
+        if empty:
+            notes.append(
+                f"These start at 0, because rules make them from nothing and no `starts` entry "
+                f"declares them: {', '.join(empty)}. Declare each one present at t=0 (a protein "
+                "made at a steady rate is) in `starts`; one declared at 0 stays empty and leaves "
+                "this list."
+            )
+        for initial in model.initials:
+            pattern = initial.pattern.monomer_patterns[0]
+            locations = pattern.monomer.site_states.get("loc", ())
+            if pattern.monomer.name in declared.union(held) or len(locations) < 2:
+                continue
+            if "cytoplasm" in locations:
+                continue
+            notes.append(
+                f"{pattern.monomer.name} starts in {pattern.site_conditions['loc']}, the first of "
+                f"its locations {sorted(locations)} by name, since no statement puts it in the "
+                "cytoplasm. To start it elsewhere, declare it in `starts`."
+            )
     fired = {name for reaction in model.reactions for name in reaction["rule"]}
     never = []
     stuck = sorted({e.prefix for e in emissions if not fired.issuperset(e.rules)})
@@ -147,11 +175,12 @@ def to_antimony(
         never.append(f"readouts {unread} read no species")
     if never:
         raise ModelUpdateError(
-            f"In the model these statements build, {' and '.join(never)}. Everything starts as "
-            "free, unmodified molecules, except what the rules make from those, so a rule fires "
-            "only on what the statements form from there: one that never fires needs a complex "
-            "or a modified form that no statement forms, like a kinase active only while bound "
-            "to a partner nothing binds it to."
+            f"In the model these statements build, {' and '.join(never)}. The start holds free, "
+            "unmodified molecules and what `starts` declares, and a rule fires only on what the "
+            "statements form from there: one that never fires needs a complex or a modified form "
+            "that nothing forms, like a kinase active only while bound to a partner nothing binds "
+            "it to. Add the statement that forms it, or, if it is present at t=0, declare it in "
+            "`starts`."
         )
     sbml = export(model, "sbml")  # from the expansion above; BioNetGen does not run again
     base_names = {
@@ -352,8 +381,10 @@ def _seed(model: pysb.Model, monomers: list[pysb.Monomer]) -> None:
         # `<monomer>_0` silently skips a monomer whose name is taken, and Fujita's EGF stimulus
         # column is `EGF_0`.
         state = {site: monomer.site_states.get(site, [None])[0] for site in monomer.sites}
-        if "cytoplasm" in monomer.site_states.get("loc", ()):
-            state["loc"] = "cytoplasm"
+        locations = monomer.site_states.get("loc", ())
+        if locations:
+            # Else the first by name, not the first INDRA met: that was whichever row came first.
+            state["loc"] = "cytoplasm" if "cytoplasm" in locations else min(locations)
         # Reconcile's own seed value, not 1, which it holds FIXED as a unit normalisation: the
         # first version started every Crauste population at one cell that way.
         amount = pysb.Parameter(f"{monomer.name}_init", SEED_INITIAL_VALUE, _export=False)

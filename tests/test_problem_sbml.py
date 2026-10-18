@@ -80,6 +80,24 @@ def test_a_blinded_readout_stays_a_rule():
     assert sbml.getAssignmentRuleByVariable("readout_naive") is not None
 
 
+def test_a_start_location_does_not_depend_on_row_order():
+    """Without a cytoplasm among its locations, a monomer started in the first location INDRA met,
+    so swapping two rows moved where it started."""
+    from indra.statements import Translocation
+
+    x = Agent("X")
+    rows = [
+        (Translocation(x, "nucleus", "mitochondria"), INDRA_DEFAULT, "r1"),
+        (Translocation(x, "mitochondria", "nucleus"), INDRA_DEFAULT, "r2"),
+    ]
+
+    def started(rows):
+        sbml = SbmlModel.from_antimony(PS.to_antimony(rows, {})[0]).sbml_model
+        return [sbml.getSpecies(a.getSymbol()).getName() for a in sbml.getListOfInitialAssignments()]
+
+    assert started(rows) == started(rows[::-1]) == ["X(loc='mitochondria')"]
+
+
 def test_what_the_start_cannot_reach_starts_present():
     """Populations that only interconvert are each made by a rule, but nothing at the start makes
     them; with every made monomer started empty, as a diff of each rule's names had it, the model
@@ -105,6 +123,14 @@ def test_a_complex_nothing_forms_is_refused():
         PS.to_antimony(
             [(Phosphorylation(raf, Agent("MEK")), INDRA_DEFAULT, "r1")], {"RAF_RAS": raf}
         )
+
+
+def test_a_rule_that_never_fires_points_to_starts():
+    """The refusal said everything starts free, which `starts` made untrue, and never named it as
+    the way to have the missing form present at t=0."""
+    raf = Agent("RAF", bound_conditions=[BoundCondition(Agent("RAS"))])
+    with pytest.raises(ModelUpdateError, match="declare it in `starts`"):
+        PS.to_antimony([(Phosphorylation(raf, Agent("MEK")), INDRA_DEFAULT, "r1")], {})
 
 
 # -- declared starts (make_changes' `starts`) ----------------------------------------
@@ -208,6 +234,37 @@ def test_a_declared_empty_start_has_no_parameter():
     sbml = SbmlModel.from_antimony(antimony).sbml_model
     assert _ia(sbml, "naive") is None and sbml.getParameter("naive_init") is None
     assert sbml.getSpecies("naive").getInitialAmount() == 0.0
+
+
+def test_what_rules_make_from_nothing_is_noted_as_starting_empty():
+    """Fujita r2's EGFR, made by zero-order synthesis, started at 0 with nothing said. A start
+    declared at 0 says it, and drops the note."""
+    from indra.statements import IncreaseAmount
+
+    rows = [(IncreaseAmount(None, Agent("EGFR")), INDRA_DEFAULT, "r1")]
+    notes = []
+    PS.to_antimony(rows, {}, notes=notes)
+    assert len(notes) == 1 and "EGFR" in notes[0] and "`starts`" in notes[0]
+    notes = []
+    PS.to_antimony(rows, {}, starts=[("EGFR", Agent("EGFR"), 0)], notes=notes)
+    assert notes == []
+
+
+def test_a_start_location_chosen_among_several_is_noted():
+    """With no cytoplasm among its locations, where a monomer started went unsaid."""
+    from indra.statements import Translocation
+
+    x = Agent("X")
+    notes = []
+    PS.to_antimony(
+        [
+            (Translocation(x, "nucleus", "mitochondria"), INDRA_DEFAULT, "r1"),
+            (Translocation(x, "mitochondria", "nucleus"), INDRA_DEFAULT, "r2"),
+        ],
+        {},
+        notes=notes,
+    )
+    assert len(notes) == 1 and notes[0].startswith("X starts in mitochondria")
 
 
 def test_indra_padded_rules_build():

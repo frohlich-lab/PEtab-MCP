@@ -938,6 +938,14 @@ def test_a_mechanism_the_agent_writes_stays_in_the_run_library(tmp_path):
     assert again["applied"] is True
 
 
+def test_a_kind_made_from_nothing_is_said_to_start_empty(tmp_path):
+    """Fujita r2's EGFR, made by zero-order synthesis, started at 0 and the result said nothing."""
+    rows = [_statement_row(), "syn: B is produced | default"]
+    out = _call(_statements_server(tmp_path), "make_changes", {"justification": "x", "statements": rows})
+    assert out["applied"] is True, out
+    assert any("from nothing" in m["message"] and ": B." in m["message"] for m in out["messages"])
+
+
 def test_a_written_mechanism_is_not_redefined_in_place(tmp_path):
     """Earlier versions were built with the first definition; changing it under the same name
     would change what their records mean."""
