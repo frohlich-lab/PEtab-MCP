@@ -1087,7 +1087,7 @@ def _register_model_tools(
         session = ctx.session
         return model_mod.model_structure(session)
 
-    def make_changes(
+    def make_changes_indra(
         justification: str,
         antimony: str | None = None,
         model_edits: Annotated[list[ModelOp] | None, BeforeValidator(_unwrap_listish)] = None,
@@ -1330,6 +1330,9 @@ def _register_model_tools(
                 out["model_edits_applied"] = op_summary
             return out
 
+    # One tool, `make_changes`, either way: FastMCP builds its input schema from the function's
+    # signature, so the statements route (`statements`, `mechanisms`) is offered by registering
+    # `make_changes_indra`, and withheld by registering `make_changes_antimony`, which lacks them.
     if statements:
         mcp.tool(
             description="\n\n".join(
@@ -1340,14 +1343,15 @@ def _register_model_tools(
                     _MAKE_CHANGES_CONTRACT,
                 )
             ),
+            name="make_changes",
             annotations=_MAKE_CHANGES_ANNOTATIONS,
-        )(make_changes)
+        )(make_changes_indra)
         return
 
     # No entity map: nothing binds a statement-built model to the observables, so the route would
     # fail every call. Withheld at the schema like every other route, which also leaves this
     # registration byte-identical to the one before the route existed.
-    def make_changes_text(
+    def make_changes_antimony(
         justification: str,
         antimony: str | None = None,
         model_edits: Annotated[list[ModelOp] | None, BeforeValidator(_unwrap_listish)] = None,
@@ -1358,7 +1362,7 @@ def _register_model_tools(
         references: Annotated[list[str] | None, BeforeValidator(_unwrap_listish)] = None,
         n_starts: int | None = None,
     ) -> dict[str, Any]:
-        return make_changes(
+        return make_changes_indra(
             justification=justification,
             antimony=antimony,
             model_edits=model_edits,
@@ -1372,7 +1376,7 @@ def _register_model_tools(
         name="make_changes",
         description=_MAKE_CHANGES_DOC,
         annotations=_MAKE_CHANGES_ANNOTATIONS,
-    )(make_changes_text)
+    )(make_changes_antimony)
 
 
 # -------------------------------------------------------------- parameter tools
