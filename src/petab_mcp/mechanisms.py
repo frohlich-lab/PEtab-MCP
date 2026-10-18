@@ -415,15 +415,18 @@ def assemble(
     added: list[dict[str, list[str]]] = []
     for stmt, policy, *_ in rows:
         entry = library.get((type(stmt).__name__, policy))
+        added.append({})
+        if not hasattr(entry, "scheme_sites"):
+            continue
         before = {name: set(base.sites) for name, base in agents.agents.items()}
-        for agent, site, site_states in getattr(entry, "scheme_sites", lambda s, g: [])(stmt, given):
+        for agent, site, site_states in entry.scheme_sites(stmt, given):
             base = agents.get_create_base_agent(agent)
             if site is not None:
                 base.create_site(site, site_states)
-        added.append({
+        added[-1] = {
             name: [s for s in base.sites if s not in before.get(name, ())]
             for name, base in agents.agents.items()
-        })
+        }
 
     model = pysb.Model(name="statements", _export=False)
     for base in agents.agents.values():
