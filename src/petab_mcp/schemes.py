@@ -22,16 +22,18 @@ type::
 - A site's value is a state, a bond number, ``None`` (free), ``ANY`` (bound to something) or
   ``WILD``; a ``(state, bond)`` pair is both. ``>>`` is one-way, ``|`` both ways, ``%`` joins a
   complex, ``None`` is nothing.
-- ``@`` gives the rate: one for ``>>``, two for ``|``. A rate is a parameter's name, minted per
-  row as ``<prefix>_<name>`` and shared or fixed like any (``kf=k_on`` on the row), or an
-  expression over parameters, ``amount(<pattern>)`` (the amount of what the pattern matches),
-  ``time`` and exp/log/sqrt; mass action multiplies it by every reactant's amount, as PySB does.
-  ``delete_molecules`` after the rates removes only the molecules that vanish, not their
-  complex.
+- ``@`` gives the rate: one for ``>>``, two for ``|``. A rate is an expression over the
+  definition's ``parameters`` (each minted per row as ``<prefix>_<name>`` and shared or fixed
+  like any, ``kf=k_on`` on the row), ``amount(<pattern>)`` (the amount of what the pattern
+  matches), ``time`` and exp/log/sqrt; mass action multiplies it by every reactant's amount, as
+  PySB does. A name it does not declare is refused: a parameter the problem ships or a condition
+  input enters through a row's binding, as for a written ``rate``. ``delete_molecules`` after
+  the rates removes only the molecules that vanish, not their complex.
 
 :func:`describe` writes any library entry this way, from a statement of placeholder agents named
-by role; :func:`compile_scheme` turns a scheme into a library entry. The two invert each other:
-an entry's description, compiled, builds the same rules (``tests/test_schemes.py``).
+by role, and :func:`rate_parameters` reads the parameters it names; :func:`compile_scheme` turns a
+scheme and those parameters into a library entry. The two invert each other: an entry's
+description, compiled, builds the same rules (``tests/test_schemes.py``).
 """
 
 from __future__ import annotations
@@ -61,6 +63,8 @@ MOD, ACT = "mod", "act"
 _OFF_ON = ("off", "on")
 _ACTIVITY = ("inactive", "active")
 _FUNCTIONS = {"exp": sympy.exp, "log": sympy.log, "sqrt": sympy.sqrt}
+#: The operators a rate takes (``^`` is a power, as in a written ``rate``).
+_ARITHMETIC = (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow, ast.BitXor)
 _SITE_VALUE_NAMES = {"None": None, "ANY": ANY, "WILD": WILD}
 
 
@@ -258,14 +262,17 @@ def _rate(text: str) -> _Rate:
                 return  # its names are molecules and sites
             if fn not in _FUNCTIONS:
                 raise MechanismError(f"rate {text!r}: no function {fn!r}; amount, exp, log, sqrt")
+            if node.keywords or not 1 <= len(node.args) <= (2 if fn == "log" else 1):
+                takes = "one argument, or a base too" if fn == "log" else "one argument"
+                raise MechanismError(f"rate {text!r}: {fn}() takes {takes}")
             for arg in node.args:
                 visit(arg)
         elif isinstance(node, ast.Name):
             if node.id != "time":
                 names.append(node.id)
-        elif isinstance(node, ast.BinOp):
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, _ARITHMETIC):
             visit(node.left), visit(node.right)
-        elif isinstance(node, ast.UnaryOp):
+        elif isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
             visit(node.operand)
         elif not (isinstance(node, ast.Constant) and isinstance(node.value, (int, float))):
             raise MechanismError(f"rate {text!r}: {ast.unparse(node)!r} is not allowed")
@@ -274,13 +281,25 @@ def _rate(text: str) -> _Rate:
     return _Rate(tuple(sorted(set(names))), tuple(amounts), text)
 
 
-def compile_scheme(definition: dict):
-    """A library entry from ``{statement_type, policy, scheme}``: the scheme's rules, built for
-    each row from its own agents (see the module docstring)."""
+def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
+    """A library entry from ``{statement_type, policy, scheme, parameters}``: the scheme's rules,
+    built for each row from its own agents (see the module docstring). A rate naming anything but
+    the declared ``parameters`` is refused as :func:`mechanisms.written` refuses one, with
+    ``problem_ids``."""
+    from .mechanisms import refuse_rate_names, refuse_unread
+
     stmt_type, policy = definition["statement_type"], definition["policy"]
     lines = parse(definition["scheme"])
     known_roles = roles(stmt_type)
     rates = [[_rate(r) for r in line.rates] for line in lines]
+    declared = list(definition.get("parameters") or [])
+    for line, line_rates in zip(lines, rates):
+        for text, rate in zip(line.rates, line_rates):
+            if unknown := sorted(set(rate.names) - set(declared)):
+                also = ", `amount(<pattern>)` and exp/log/sqrt"
+                refuse_rate_names(text, policy, unknown, [*declared, "time"], also,
+                                  "`amount(<pattern>)`", problem_ids, known_roles)
+    refuse_unread(policy, declared, {n for rs in rates for r in rs for n in r.names})
 
     def policy_fn(stmt: Statement, model: pysb.Model, prefix: str):
         from .mechanisms import Emission, _add
@@ -532,6 +551,11 @@ def placeholder(stmt_type: str, enzyme: bool = True) -> Statement:
         return cls(**args)
     except TypeError as exc:
         raise MechanismError(f"{stmt_type} takes more than its agents ({exc}); build it to see") from None
+
+
+def rate_parameters(scheme: str) -> list[str]:
+    """The parameters ``scheme``'s rates name: what its definition declares."""
+    return sorted({n for line in parse(scheme) for r in line.rates for n in _rate(r).names})
 
 
 def describe(stmt_type: str, policy: str, library) -> str:

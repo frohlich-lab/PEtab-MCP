@@ -32,6 +32,7 @@ so the entries agents had to invent can be counted and promoted into this module
 
 from __future__ import annotations
 
+import keyword
 import re
 from collections.abc import Callable
 from collections import Counter
@@ -59,6 +60,7 @@ from indra.statements import (
     DecreaseAmount,
     IncreaseAmount,
     Modification,
+    NotAStatementName,
     RegulateActivity,
     RemoveModification,
     Statement,
@@ -251,7 +253,140 @@ _RATE_TOKENS = re.compile(r"\s+|(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?|[A-Za-z_]\w
 _RATE_FUNCTIONS = {"exp": sympy.exp, "log": sympy.log, "sqrt": sympy.sqrt}
 
 
-def written(definition: dict, library: dict[tuple[str, str], Policy]) -> Policy:
+#: What an id of the problem is (``problem_ids`` of :func:`written`). A rate reads none of them.
+SHIPPED, CONDITION, SPECIES = (
+    "a parameter the problem ships",
+    "a condition input",
+    "a species of the entity map",
+)
+
+
+def _how_ids_enter(names, problem_ids: dict[str, str], amounts: str) -> list[str]:
+    """How each of ``names`` that is an id of the problem enters a rate instead. A starting
+    amount (``<x>_init``) is not offered the binding: it is read as the amount itself."""
+    bound = [
+        n for n in names if problem_ids.get(n) in (SHIPPED, CONDITION) and not n.endswith("_init")
+    ]
+    species = [n for n in names if problem_ids.get(n) == SPECIES]
+    return [
+        f"{', '.join(f'`{n}` is {problem_ids[n]}' for n in bound)}. A problem parameter or "
+        "condition input enters through a row's binding: declare a parameter of your own and "
+        f'bind it on the row, `parameters={{"K": "{bound[0]}"}}`, or `kf="k*{bound[0]}"`.'
+        if bound else "",
+        f"{', '.join(f'`{n}`' for n in species)}: {SPECIES}, read as the amount of the agent it "
+        f"maps to, written by that agent's own name and sites, not by this id: {amounts}."
+        if species else "",
+    ]
+
+
+def refuse_rate_names(
+    rate: str,
+    policy: str,
+    unknown: list[str],
+    allowed: list[str],
+    also: str,
+    amounts: str,
+    problem_ids: dict[str, str] | None = None,
+    roles=(),
+) -> None:
+    """Refuse a rate naming ``unknown``, names other than the ``allowed`` (``also`` says what else
+    it may contain), with the closest allowed ones; and for a starting amount, an id of the problem
+    or one of the ``roles`` (a scheme reads them only as amounts), how ``amounts`` are read."""
+    from .model_edits import closest_symbols
+
+    problem_ids = problem_ids or {}
+    starts = [n for n in unknown if n.endswith("_init")]
+    new = [n for n in unknown if n not in (*starts, *roles, *problem_ids)]
+    close = [
+        f"{u} -> {' or '.join(map(repr, c))}"
+        for u in new
+        if (c := closest_symbols(u, allowed + list(_RATE_FUNCTIONS)))
+    ]
+    sentences = [
+        f"rate {rate!r} of {policy!r} may name only {allowed}{also}; it names {unknown}.",
+        f"Did you mean: {'; '.join(close)}?" if close else "",
+        f"{starts}: `<name>_init` is the amount a species starts at, and a rate does not read it; "
+        f"read the amount itself, {amounts}." if starts else "",
+        *(f"`{r}` is a role: read its amount, `amount({r})`." for r in unknown if r in roles),
+        *_how_ids_enter(unknown, problem_ids, amounts),
+        "Declare each new constant in the mechanism's `parameters`; it is minted per row as "
+        "`<prefix>_<name>`." if new else "",
+    ]
+    raise MechanismError(" ".join(s for s in sentences if s))
+
+
+#: A name a written mechanism's own parameter may take: ASCII, as SBML ids are.
+_PARAMETER_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+#: Names a written mechanism's parameter may not take: what a rate reads otherwise, and the
+#: components the mechanism builds beside its parameters (``<prefix>_rate``, the base entry's
+#: ``<prefix>_base_<kind>``; a scheme's rules ``<prefix>_r<i>`` and rates ``<prefix>_rate<i>_<j>``).
+_TAKEN = re.compile(r"time|amount|exp|log|sqrt|rate(?:\d+_\d+\w*)?|r\d+|base_\w*")
+
+
+def refuse_declared(policy: str, declared, roles) -> None:
+    """Refuse ``declared`` parameters that cannot be new constants: a name no SBML id takes, or
+    one the rate reads otherwise (a role, a list role by position) or a component the mechanism
+    builds takes."""
+    bad = sorted(n for n in declared if not _PARAMETER_NAME.fullmatch(n) or keyword.iskeyword(n))
+    if bad:
+        raise MechanismError(
+            f"{policy!r} declares {bad} in `parameters`: a parameter is named by ASCII letters, "
+            "digits and `_`, not starting with a digit and no Python keyword (`k_1`, not `k-1`)"
+        )
+    role = re.compile(rf"(?:{'|'.join(map(re.escape, roles))})(?:_\d+)?") if roles else None
+    taken = sorted(n for n in declared if _TAKEN.fullmatch(n) or (role and role.fullmatch(n)))
+    if taken:
+        raise MechanismError(
+            f"{policy!r} declares {taken} in `parameters`, names taken already: `time`, `amount` "
+            "and exp/log/sqrt are the rate's own, a role is read as its amount, and `rate`, "
+            "`r<i>`, `rate<i>_<j>` and `base_...` name what the mechanism builds. Name each "
+            f"apart, e.g. `k_{taken[0]}`"
+        )
+
+
+def refuse_unread(policy: str, declared, named) -> None:
+    """Refuse ``declared`` parameters the rate never ``named``: each would be a parameter of every
+    row that nothing reads."""
+    if unread := sorted(set(declared) - set(named)):
+        raise MechanismError(
+            f"{policy!r} declares {unread} in `parameters`, which its rate never names: each would "
+            "be a parameter of every row that nothing reads. Name it in the rate or leave it out"
+        )
+
+
+def parse_rate(text: str) -> sympy.Expr:
+    """``text`` as ONE sympy expression, each name in it a placeholder symbol and exp/log/sqrt the
+    functions: what a rate, or a binding's expression, must read as before its names become
+    components. Checked against :data:`_RATE_TOKENS` first, since sympy evaluates the text.
+    Raises :class:`MechanismError` saying how to write it."""
+    tokens = _RATE_TOKENS.findall(text)
+    if "".join(tokens) != text:
+        raise MechanismError(
+            f"rate {text!r} holds characters no rate takes: names, numbers, `+ - * / ^`, "
+            "parentheses, and commas only between a function's arguments"
+        )
+    names = {t for t in tokens if _IDENTIFIER.fullmatch(t)} - set(_RATE_FUNCTIONS)
+    try:
+        value = sympy.sympify(
+            text.replace("^", "**"),
+            locals={**{n: sympy.Symbol(n) for n in names}, **_RATE_FUNCTIONS},
+        )
+    except (sympy.SympifyError, SyntaxError, TypeError, ValueError, AttributeError):
+        value = None
+    if not isinstance(value, sympy.Expr):
+        raise MechanismError(
+            f"rate {text!r} does not read as one expression: write `*` between factors "
+            "(`kcat*Km`, not `kcat Km` or `2kcat`), apply a function to its argument "
+            "(`exp(-k*time)`), and join terms instead of listing them with commas"
+        )
+    return value
+
+
+def written(
+    definition: dict,
+    library: dict[tuple[str, str], Policy],
+    problem_ids: dict[str, str] | None = None,
+) -> Policy:
     """Compile a mechanism the agent wrote: the reaction of an existing entry (``based_on``) with
     a new ``rate``.
 
@@ -264,24 +399,47 @@ def written(definition: dict, library: dict[tuple[str, str], Policy]) -> Policy:
     definition's ``parameters``, each minted as ``<prefix>_<name>`` (and shared by a row's
     binding, :func:`bind`); its ``modifiers``, each the amount of an agent the ROW names, which
     takes no part in the reaction (Fiedler's sorafenib slowing RAF, the SMAD complexes regulating
-    Lucarelli's genes, Sneyd's IP3 and calcium); ``time``; exp, log, sqrt.
+    Lucarelli's genes, Sneyd's IP3 and calcium); ``time``; exp, log, sqrt. A scheme
+    (:func:`schemes.compile_scheme`) declares the constants its rates name the same way.
+
+    ``problem_ids`` (id to :data:`SHIPPED`, :data:`CONDITION` or :data:`SPECIES`) are names no
+    rate reads and no declared parameter takes: a refusal naming one says how it enters instead,
+    through a row's binding or as an amount.
     """
     stmt_type, policy = definition["statement_type"], definition["policy"]
     base_key = (stmt_type, definition.get("based_on", INDRA_DEFAULT))
     if (stmt_type, policy) in REGISTRY:
         raise MechanismError(f"{(stmt_type, policy)} is a built-in mechanism; name yours apart")
+    try:
+        roles = list(get_statement_by_name(stmt_type)._agent_order)
+    except NotAStatementName:
+        raise MechanismError(
+            f"{stmt_type!r} is no statement type; `list_mechanisms` names them"
+        ) from None
+    amounts = "`amount(<pattern>)`" if definition.get("scheme") else "a role (`sub`) or a modifier"
+    declared = list(definition.get("parameters") or [])
+    refuse_declared(policy, declared, roles)
+    if shadow := sorted(set(declared) & set(problem_ids or {})):
+        raise MechanismError(
+            " ".join(
+                [
+                    f"{policy!r} declares {shadow} in `parameters`, each a new parameter minted "
+                    "per row as `<prefix>_<name>`: name yours apart.",
+                    *(h for h in _how_ids_enter(shadow, problem_ids, amounts) if h),
+                ]
+            )
+        )
     if definition.get("scheme"):
         from .schemes import compile_scheme
 
         if definition.get("rate"):
             raise MechanismError(f"{policy!r} gives a scheme and a rate; a scheme carries its rates")
-        return compile_scheme(definition)
+        return compile_scheme(definition, problem_ids)
     if not definition.get("rate"):
         raise MechanismError(f"{policy!r} gives neither a `scheme` nor a `rate`")
     if base_key not in library:
         raise MechanismError(f"no mechanism {base_key} to base {policy!r} on")
-    roles = list(get_statement_by_name(stmt_type)._agent_order)
-    names = set(definition.get("parameters") or [])
+    names = set(declared)
     slots = list(definition.get("modifiers") or [])
     clash = sorted(set(slots) & (names | set(roles)))
     if clash:
@@ -298,12 +456,12 @@ def written(definition: dict, library: dict[tuple[str, str], Policy]) -> Policy:
         - {"time"}
         - {t for t in tokens if positional.match(t)}
     )
-    if "".join(tokens) != rate or unknown:
-        raise MechanismError(
-            f"rate {rate!r} of {policy!r} may name only {sorted(names) + slots + roles + ['time']}"
-            f" (a list role by position, e.g. obj_from_0) and exp/log/sqrt"
-            f"{f'; it names {unknown}' if unknown else ''}"
-        )
+    allowed = sorted(names) + slots + roles + ["time"]
+    also = " (a list role by position, e.g. obj_from_0) and exp/log/sqrt"
+    if unknown:
+        refuse_rate_names(rate, policy, unknown, allowed, also, amounts, problem_ids)
+    parse_rate(rate)
+    refuse_unread(policy, declared, tokens)
     base = library[base_key]
 
     def policy_fn(
@@ -337,11 +495,12 @@ def written(definition: dict, library: dict[tuple[str, str], Policy]) -> Policy:
                     agents[role] = value[0]
         agents |= given
         used = {t for t in tokens if t in agents}
-        missing = sorted(
-            t for t in tokens if positional.match(t) and t not in agents and t not in names
-        )
-        if missing:
-            raise MechanismError(f"row {prefix!r}: its statement has no {missing}")
+        if missing := sorted({t for t in tokens if t in roles or positional.match(t)} - set(agents)):
+            raise MechanismError(
+                f"row {prefix!r}: the rate of {policy!r} reads {missing}, which its statement "
+                "leaves empty; a role holding several agents is read by position (`obj_from_0`). "
+                "Give the statement that agent, or use a mechanism whose rate does not read it"
+            )
         amounts = {
             name: pysb.Observable(
                 f"{prefix}_{name}", get_monomer_pattern(model, agents[name]), _export=False
