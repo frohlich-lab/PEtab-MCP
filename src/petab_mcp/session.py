@@ -315,7 +315,7 @@ class PetabSession:
 
         # The mechanisms the agent has WRITTEN this run, keyed (statement type, policy): the run's
         # additions to the library (:func:`mechanisms.written`), usable by every later call.
-        # Each version's statements.json carries the definitions its call wrote.
+        # Each version's statements.json carries those the call that built its rows wrote.
         self.mechanisms: dict[tuple[str, str], dict[str, Any]] = {}
 
         # Species id -> INDRA Agent (:func:`seeding.load_entity_map`): what binds a model built
