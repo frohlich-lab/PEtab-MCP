@@ -556,7 +556,8 @@ def written(
             # none" (17 refusals in one sweep, none recovered).
             raise MechanismError(
                 f"{policy!r} is a scheme with `modifiers`; a scheme reads any agent in its rates "
-                "as `amount(<pattern>)` instead, `@ kf/(1 + amount(Inhibitor)/K_i)`"
+                "as `amount(<pattern>)` instead, `@ kf/(1 + amount(Inhibitor)/K_i)` with `kf` and "
+                "`K_i` in its `parameters`"
             )
         return compile_scheme(definition, problem_ids)
     if not definition.get("rate"):
