@@ -200,6 +200,7 @@ def bind(
             parameters += [n for n in names if n not in parameters]
             continue
         if isinstance(target, str):
+            _not_a_parameter(model, target, emission.prefix, name)
             existing = _held(model, target, merged)
             if existing is None:
                 merged[name] = old
@@ -229,6 +230,29 @@ def bind(
 _IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
 
 
+def _not_a_parameter(model: pysb.Model, ident: str, prefix: str, name: str) -> None:
+    """Refuse a binding that reads ``ident`` as a parameter when it names something else: a
+    molecule (a parameter of its name clashed with it in the SBML), a rate function, or ``time``
+    (which BioNetGen refused as a parameter name)."""
+    held = model.components.get(ident)
+    if held is None and ident not in _RATE_FUNCTIONS and ident != "time":
+        return
+    if isinstance(held, (pysb.Parameter, pysb.Expression)):
+        return
+    what = (
+        "a molecule" if isinstance(held, pysb.Monomer)
+        else f"the model's {type(held).__name__.lower()}" if held is not None
+        else "time" if ident == "time"
+        else "a function"
+    )
+    raise MechanismError(
+        f"row {prefix!r} binds {name!r} over {ident!r}, which names {what}, not a parameter. A "
+        "binding reads parameters: a shared id, a problem parameter, a condition-table input. A "
+        "rate that reads an amount or `time` is a written mechanism (its `rate`, or a scheme's "
+        f"`amount(<pattern>)`)"
+    )
+
+
 def _held(model: pysb.Model, name: str, merged: dict[str, object]):
     """The component a shared id names now: what an earlier binding renamed or replaced it by,
     followed on, else the parameter or expression of that name; ``None`` when nothing holds it."""
@@ -255,11 +279,26 @@ def _shared(model: pysb.Model, name: str, merged: dict[str, object]):
 def _bound_expression(
     model: pysb.Model, name: str, text: str, prefix: str, merged: dict[str, object]
 ):
-    """``text`` as an Expression over shared ids, named after the parameter it replaces."""
+    """``text`` as an Expression over shared ids, named after the parameter it replaces. Read
+    over placeholder symbols first: sympy raised on `kcat Km` and `2kcat`, and PySB on `kcat,Km`
+    (a tuple), out of make_changes unexplained."""
     tokens = _RATE_TOKENS.findall(text)
     names = sorted({t for t in tokens if _IDENTIFIER.fullmatch(t)} - set(_RATE_FUNCTIONS))
-    if "".join(tokens) != text:
-        raise MechanismError(f"row {prefix!r} binds {name!r} to {text!r}, which is no expression")
+    try:
+        trial = sympy.sympify(
+            text.replace("^", "**"),
+            locals={**{n: sympy.Symbol(n) for n in names}, **_RATE_FUNCTIONS},
+        )
+    except (sympy.SympifyError, SyntaxError, TypeError, ValueError):
+        trial = None
+    if "".join(tokens) != text or not isinstance(trial, sympy.Expr):
+        raise MechanismError(
+            f"row {prefix!r} binds {name!r} to {text!r}, which is no expression: a binding is a "
+            "shared id (`k_on`), a number, or arithmetic over ids and numbers with exp/log/sqrt "
+            "(`KD*kf_on`)"
+        )
+    for n in names:
+        _not_a_parameter(model, n, prefix, name)
     symbols = {n: _shared(model, n, merged) for n in names}
     value = sympy.sympify(text.replace("^", "**"), locals={**symbols, **_RATE_FUNCTIONS})
     expression = pysb.Expression(f"{name}_bound", value, _export=False)

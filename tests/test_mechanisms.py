@@ -246,6 +246,19 @@ def test_a_binding_names_only_what_the_row_makes():
         M.assemble([(_TRANSITION, "mass_action", "r1", {"kcat": "k"})])
 
 
+def test_a_binding_reads_as_an_expression_over_parameters_or_is_refused():
+    """Checked token by token only, `kcat Km` and `2kcat` reached sympy and `kcat,Km` PySB, which
+    raised out of make_changes unexplained; a molecule's name became a parameter clashing with it,
+    and `time` one BioNetGen refused."""
+    for text in ("kcat Km", "2kcat", "kcat,Km", "kcat/(Km+"):
+        with pytest.raises(MechanismError, match="which is no expression: a binding is a shared"):
+            M.assemble([(_TRANSITION, "mass_action", "r1", {"k": text})])
+    for text, what in (("2*naive", "a molecule"), ("naive", "a molecule"), ("exp", "a function"),
+                       ("k*time", "time")):
+        with pytest.raises(MechanismError, match=f"which names {what}, not a parameter"):
+            M.assemble([(_TRANSITION, "mass_action", "r1", {"k": text})])
+
+
 def test_a_written_mechanism_binds_like_any_entry():
     """Sneyd's gating steps are written rates over constants the reference shares."""
     library = dict(M.REGISTRY)
