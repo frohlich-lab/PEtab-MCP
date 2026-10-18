@@ -87,8 +87,8 @@ class Emission:
     #: The row's binding (:func:`bind`): kind -> the shared id or the number that replaced
     #: ``<prefix>_<kind>``. Empty for a row that binds nothing.
     bound: dict[str, str | float] = field(default_factory=dict)
-    #: The sites the row's scheme (:mod:`schemes`) gave molecules that lacked them: molecule ->
-    #: site -> its states (none for a binding site). Empty for every other entry.
+    #: The sites the row's scheme (:mod:`schemes`) gave molecules that had none such, and no
+    #: earlier row's scheme had: molecule -> site -> its states (none for a binding site).
     sites_added: dict[str, dict[str, list[str]]] = field(default_factory=dict)
 
 
@@ -527,14 +527,15 @@ def assemble(
     added: list[dict[str, list[str]]] = []
     for stmt, policy, *_ in rows:
         entry = library.get((type(stmt).__name__, policy))
-        added.append({})
+        before = {name: set(base.sites) for name, base in agents.agents.items()}
         for agent, site, site_states in getattr(entry, "scheme_sites", lambda s, g: [])(stmt, given):
             base = agents.get_create_base_agent(agent)
             if site is not None:
                 base.create_site(site, site_states)
-                new = added[-1].setdefault(base.name, [])
-                if site not in given.get(base.name, ((), {}))[0] and site not in new:
-                    new.append(site)
+        added.append({
+            name: [s for s in base.sites if s not in before.get(name, ())]
+            for name, base in agents.agents.items()
+        })
 
     model = pysb.Model(name="statements", _export=False)
     for base in agents.agents.values():
