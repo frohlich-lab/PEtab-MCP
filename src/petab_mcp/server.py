@@ -185,7 +185,7 @@ class StatementRow(BaseModel):
         "a SHARED id (another row's, a problem parameter's, or a new name several rows use) or "
         "to a NUMBER, which fixes it — one rate constant across many reactions is one parameter.",
     )
-    modifiers: dict[str, dict[str, Any]] | None = Field(
+    modifiers: dict[str, dict[str, Any] | str] | None = Field(
         default=None,
         description="the agents (INDRA Agent JSON) filling the modifier slots of a written "
         "mechanism's rate: an inhibitor, a regulating complex, an input it reads.",
@@ -197,9 +197,9 @@ class StartRow(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    agent: dict[str, Any] = Field(
-        description="the species, as an INDRA Agent's JSON in the state it starts in: its mods, "
-        "location, and the complex its bound_conditions form, e.g. {name: 'H4'}."
+    agent: dict[str, Any] | str = Field(
+        description="the species in the state it starts in: INDRA Agent JSON or the notation, "
+        "e.g. 'H4' or 'EGFR{-pY1068}'; a complex through its bound partners ('RAF{!RAS}')."
     )
     amount: float | str = Field(
         description="its starting amount: a number (1 is a fixed unit pool, 0 an empty start, "
@@ -880,7 +880,10 @@ def _make_changes_statements_doc() -> str:
         "`statements` is a third model route, and still exactly ONE route per call: it authors "
         "the WHOLE model from mechanism assertions rather than text, each an INDRA statement "
         "with the `policy` (mechanism) that turns it into reactions and a `prefix` naming its "
-        "parameters. Every INDRA statement type"
+        "parameters. A row may be one line instead of JSON: `r1: EGFR{pY1068} phosphorylates "
+        "AKT1 at S473 | two_step kf=k_on`, agents as NAME{pY1068, -pS473, @nucleus, !BOUND, "
+        "~UNBOUND} (see `get_model(format='statements')` for a model written that way)."
+        "  Every INDRA statement type"
         + (f" but {', '.join(without)}" if without else "")
         + f" has `{mechanisms.INDRA_DEFAULT}`; the library "
         f"also holds {entries}. When none fits, WRITE one in `mechanisms` — it stays in the "
@@ -898,6 +901,48 @@ def _make_changes_statements_doc() -> str:
     )
 
 
+def _statements_text(session, version: int | None) -> str:
+    """A model built from statements, as the notation (:mod:`notation`): its written mechanisms,
+    its rows one per line (INDRA JSON where the notation has no lossless form), its starts,
+    amounts and readouts. The current model, or a stored ``version``."""
+    import json
+
+    from . import mechanisms, notation
+
+    if version is None:
+        record = session.model_statements
+    else:
+        path = session.provenance.versions_dir / f"v{int(version)}" / "statements.json"
+        record = json.loads(path.read_text()) if path.is_file() else None
+    if not record:
+        return "(this model was not built from statements)"
+    library = dict(mechanisms.REGISTRY)
+    lines, written = [], {}
+    for row in record["rows"]:
+        if "mechanism" in row:
+            d = row["mechanism"]
+            written[(d["statement_type"], d["policy"])] = d
+    for d in written.values():
+        library[(d["statement_type"], d["policy"])] = None
+        reads = f"  reads {', '.join(d['modifiers'])}" if d.get("modifiers") else ""
+        lines.append(
+            f"mechanism {d['policy']}: {d['statement_type']} like "
+            f"{d.get('based_on', mechanisms.INDRA_DEFAULT)}, rate {d['rate']}{reads}"
+        )
+    for row in record["rows"]:
+        bare = {k: row[k] for k in ("statement", "policy", "prefix", "parameters", "modifiers")
+                if row.get(k)}
+        lines.append(notation.render(bare, library) or json.dumps(bare))
+    for start in record.get("starts") or []:
+        lines.append(f"start {start['name']}: {notation.agent_text(start['agent'])} = "
+                     f"{start['amount']}")
+    for name, agent in (record.get("amounts") or {}).items():
+        lines.append(f"amount {name} = {notation.agent_text(agent)}")
+    for readout, formula in (record.get("readouts") or {}).items():
+        lines.append(f"readout {readout} = {formula}")
+    return "\n".join(lines)
+
+
 # ------------------------------------------------------------------ model tools
 def _register_model_tools(
     mcp: FastMCP, route: Callable[[], _Ctx], statements: bool = False
@@ -909,7 +954,8 @@ def _register_model_tools(
     def get_model(format: str = "antimony", version: int | None = None) -> str:
         """Return a model as text — the CURRENT one, or a prior `version`'s stored source.
 
-        `format` is 'antimony' (canonical) or 'sbml'. `version` reads that version's stored
+        `format` is 'antimony' (canonical), 'sbml', or 'statements' — a model built from
+        statements, one line per row in the notation `make_changes` also accepts. `version` reads that version's stored
         model TEXT and nothing else — a plain read of a prior version, and much cheaper than
         `get_version`, which also returns that version's per-point simulation and full
         optimization trace. On a problem with a few hundred measurements that payload is
@@ -921,6 +967,8 @@ def _register_model_tools(
         """
         ctx = route()
         session = ctx.session
+        if (format or "").lower() == "statements":
+            return _statements_text(session, version)
         if version is None:
             # The RECONCILED model — what is actually fitted, and what `test_make_changes` pins
             # as identical to the stored version ("the working model is always a scored one").
@@ -996,11 +1044,13 @@ def _register_model_tools(
         ] = None,
         references: Annotated[list[str] | None, BeforeValidator(_unwrap_listish)] = None,
         n_starts: int | None = None,
-        statements: Annotated[list[StatementRow] | None, BeforeValidator(_unwrap_listish)] = None,
+        statements: Annotated[
+            list[StatementRow | str] | None, BeforeValidator(_unwrap_listish)
+        ] = None,
         mechanisms: Annotated[list[MechanismDef] | None, BeforeValidator(_unwrap_listish)] = None,
         starts: Annotated[list[StartRow] | None, BeforeValidator(_unwrap_listish)] = None,
         readouts: dict[str, str] | None = None,
-        amounts: dict[str, dict[str, Any]] | None = None,
+        amounts: dict[str, dict[str, Any] | str] | None = None,
     ) -> dict[str, Any]:
         ctx = route()
         session = ctx.session
@@ -1211,6 +1261,7 @@ def _register_model_tools(
                 # and a de-dup no-op leaves the session on the version it duplicates (see
                 # `edit_then_fit`), so in both the source correctly stays put.
                 session.model_source = antimony
+                session.model_statements = statement_record
                 if written is not None:
                     session.mechanisms = written
             if op_summary:

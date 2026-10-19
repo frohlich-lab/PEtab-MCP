@@ -682,16 +682,6 @@ def statements_to_antimony(
     from . import mechanisms, problem_sbml
     from .statements import ungrounded
 
-    prefixes = [row["prefix"] for row in rows]
-    repeated = sorted({p for p in prefixes if prefixes.count(p) > 1})
-    if repeated:
-        # Caught here rather than met inside PySB as a component-name clash, which is not a
-        # PetabMcpError and would escape the tool as an opaque failure.
-        raise OperationError(
-            f"make_changes: `statements` prefixes {repeated} repeat; each row's prefix names its "
-            "parameters, so they must be unique. NOTHING was applied.",
-            cause="duplicate_prefix",
-        )
     definitions = dict(session.mechanisms)
     for definition in written or []:
         key = (definition["statement_type"], definition["policy"])
@@ -706,6 +696,39 @@ def statements_to_antimony(
     library = dict(mechanisms.REGISTRY)
     for key, definition in definitions.items():
         library[key] = mechanisms.written(definition, library)
+    # A row, or an agent, may be written in the notation (:mod:`notation`): read here, against the
+    # library (a policy written without its `indra_` prefix) and the entity map's groundings.
+    from . import notation
+
+    groundings = {agent.name: dict(agent.db_refs) for agent in session.entities.values()}
+
+    def agent_json(value):
+        return notation.parse_agent(value, groundings) if isinstance(value, str) else value
+
+    try:
+        rows = [
+            notation.parse(row, groundings, library) if isinstance(row, str) else dict(row)
+            for row in rows
+        ]
+        for row in rows:
+            if row.get("modifiers"):
+                row["modifiers"] = {k: agent_json(v) for k, v in row["modifiers"].items()}
+        starts = [{**start, "agent": agent_json(start["agent"])} for start in starts or []]
+        amounts = {k: agent_json(v) for k, v in (amounts or {}).items()}
+    except notation.NotationError as exc:
+        raise OperationError(
+            f"make_changes: {exc}. NOTHING was applied.", cause="unreadable_statement"
+        ) from exc
+    prefixes = [row["prefix"] for row in rows]
+    repeated = sorted({p for p in prefixes if prefixes.count(p) > 1})
+    if repeated:
+        # Caught here rather than met inside PySB as a component-name clash, which is not a
+        # PetabMcpError and would escape the tool as an opaque failure.
+        raise OperationError(
+            f"make_changes: `statements` prefixes {repeated} repeat; each row's prefix names its "
+            "parameters, so they must be unique. NOTHING was applied.",
+            cause="duplicate_prefix",
+        )
     stmts = stmts_from_json([row["statement"] for row in rows])
     # INDRA drops a statement it cannot read with only a logged warning; refuse instead.
     if len(stmts) != len(rows):

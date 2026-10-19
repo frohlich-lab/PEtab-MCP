@@ -1110,6 +1110,23 @@ def test_an_empty_entity_map_still_offers_the_route(tmp_path):
     assert "statements" in _make_changes_schema(mcp)
 
 
+def test_a_row_may_be_written_in_the_notation(tmp_path):
+    """The same model, sent as one line instead of JSON, and read back the same way."""
+    mcp = _statements_server(tmp_path)
+    out = _call(
+        mcp,
+        "make_changes",
+        {"justification": "A becomes B", "statements": ["conv: A becomes B | mass_action"]},
+    )
+    assert out["applied"] is True
+    (stored,) = json.loads(
+        (tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text()
+    )["rows"]
+    assert stored["statement"]["type"] == "PopulationTransition"
+    text = _call(mcp, "get_model", {"format": "statements"})["result"]
+    assert "conv: A becomes B | mass_action" in text
+
+
 def _concurrently(monkeypatch, mcp, *calls):
     """The ``make_changes`` calls, each on its own thread, each pausing after it builds its
     statements until every other has built too (or 3 s pass)."""
