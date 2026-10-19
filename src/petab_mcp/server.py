@@ -71,8 +71,8 @@ SERVER_INSTRUCTIONS = (
     "FITS and snapshots a version. There is no fit-free edit and no separate fit call: one "
     "call is one coherent change, scored once. Parameter VALUES come only from that fit, never "
     "by hand. Everything is logged: audit with `list_versions` / `diff_versions` / "
-    "`get_provenance` / `get_errors`. Every fitted version is kept and the run is scored on the "
-    "best-bic one regardless, so an earlier fitted model re-authored exactly is refused, not "
+    "`get_provenance` / `get_errors`. Every fitted version is kept and the best one stands "
+    "whatever comes after it, so an earlier fitted model re-authored exactly is refused, not "
     "re-fitted: that version already stands for it."
 )
 
@@ -87,11 +87,11 @@ _SKILLS_INSTRUCTION = (
 
 # A TYPED model rather than `dict[str, Any]`, because the JSON schema is the only part of a tool
 # contract a model is actually constrained by — a docstring is prose it may or may not read.
-# Advertised as a bare dict this argument named NONE of its keys, and across the August benchmark
-# runs 527 of 889 `make_changes` calls were rejected for guessing them: `id` for `parameter_id`
-# (484 on its own, the single largest rejection class), plus `lowerBound`, `estimate`,
-# `nominalValue`, `parameterScale`. Five unrelated model families made the same class of mistake,
-# which is the signature of a contract problem rather than a model one.
+# Advertised as a bare dict this argument named NONE of its keys, and 527 of 889 `make_changes`
+# calls were rejected for guessing them: `id` for `parameter_id` (484 on its own, the single
+# largest rejection class), plus `lowerBound`, `estimate`, `nominalValue`, `parameterScale`. Five
+# unrelated clients made the same class of mistake, which is the signature of a contract problem
+# rather than a client one.
 #
 # `extra="forbid"` is load-bearing twice: it puts `additionalProperties: false` in the schema (so
 # tool-calling is constrained up front), and it preserves the existing behaviour that a misspelled
@@ -298,15 +298,15 @@ class StatementEdit(BaseModel):
     formula: str | None = Field(default=None, description="set_readout: its formula.")
 
 
-# Provider serialisation artefact: some models emit a list-typed argument wrapped in a
+# Provider serialisation artefact: some clients emit a list-typed argument wrapped in a
 # single-key object -- `{"parameters": {"item": [{...}, {...}]}}` instead of
 # `{"parameters": [{...}, {...}]}` -- or as a JSON string containing the array. pydantic then
 # rejects the whole call with `Input should be a valid list [type=list_type]`, and because the
-# wrapper is how that model serialises lists, the retry is byte-identical. In the Aug 8-10 sweep
-# this produced 28 client-side ToolExceptions that KILLED 3 runs outright (0 fits, 0 versions) and
-# recursion-limited a 4th; the escalation guard told the model "REPEATING THIS CALL WILL FAIL
+# wrapper is how that client serialises lists, the retry is byte-identical. This once produced 28
+# client-side ToolExceptions that ended 3 sessions outright (0 fits, 0 versions) and
+# recursion-limited a 4th; an escalation guard told the client "REPEATING THIS CALL WILL FAIL
 # AGAIN" three times and the wrapper came back each time. Prompting cannot fix a serialiser, so
-# accept the shape and unwrap it. Applied as a BeforeValidator so the JSON schema the model is
+# accept the shape and unwrap it. Applied as a BeforeValidator so the JSON schema the client is
 # shown still says `array` -- we are tolerating a malformed encoding, not documenting it as valid.
 _LIST_WRAPPER_KEYS = ("item", "items", "value", "values", "list")
 
@@ -366,11 +366,11 @@ def _shorten(value: Any, limit: int = 200, _depth: int = 0) -> Any:
     return value
 
 
-# Over this many ids the list is truncated. The ceiling is real — lucarelli's 118-row parameter
-# table, re-sent in the caller's history every turn thereafter, was a measured top-3 context cost
-# — but it sits where a normal problem's table fits WHOLE. The previous cap of 12 elided the
-# answer from the message whose entire job was to give it, and runs re-guessed: one burned six
-# get_parameters calls in the 2026-08-17 sweep, another four.
+# Over this many ids the list is truncated. The ceiling is real — a 118-row parameter table,
+# re-sent in the caller's history every turn thereafter, was a measured top-3 context cost — but
+# it sits where a normal problem's table fits WHOLE. The previous cap of 12 elided the answer
+# from the message whose entire job was to give it, and callers re-guessed: one burned six
+# get_parameters calls, another four.
 _ID_LIST_CAP = model_edits_mod._ID_LIST_CAP
 
 
@@ -435,9 +435,9 @@ class _Ctx:
 
         RECURSES into lists and dicts, because the bulky arguments on this server are mostly
         containers: `parameters` is up to ~130 entries on a large problem. Truncating only top-level strings let those through whole,
-        which mattered little while the log was ephemeral and matters now that `archive_run`
-        copies errors.jsonl into every run's permanent archive. The element cap is separate from
-        the string cap: a list is summarised, not just its members shortened.
+        which mattered little while the log was ephemeral and matters now that errors.jsonl is
+        kept for good. The element cap is separate from the string cap: a list is summarised, not
+        just its members shortened.
         """
         return _shorten(value, limit, _depth)
 
@@ -590,7 +590,7 @@ class _Ctx:
             "messages": [msg_mod.error(msg_mod.SOURCE_TOOL, message)],
         }
         if cause:
-            # Machine-readable rejection class for the harness's `edit_rejects.by_cause`. The
+            # Machine-readable rejection class, for a client that tallies rejections by cause. The
             # alternative — substring-matching the English message — put three buckets on an
             # unreachable branch in one day, because a needle shared with an earlier entry
             # steals every match. See operations.OperationError.cause.
@@ -628,19 +628,25 @@ class _Ctx:
             )
         return None
 
-    def run(self, tool: str, fn, args: dict[str, Any] | None = None):
-        """Run a non-operation tool; log failures (return {ok:false} or re-raise)."""
+    def run(self, tool: str, fn, args: dict[str, Any] | None = None, *, record: bool = True):
+        """Run a non-operation tool; log failures (return {ok:false} or re-raise).
+
+        ``record=False`` keeps a failure out of ``errors.jsonl``, which ``get_errors`` hands the
+        agent, for a tool the agent must not read: it still reaches the session's
+        ``petab_mcp.log`` and the caller."""
         try:
             return fn()
         except PetabMcpError as exc:
-            self.log_error(tool, args or {}, exc)
+            if record:
+                self.log_error(tool, args or {}, exc)
             self.session.logger.warning("%s failed: %s", tool, exc)
             out = {"ok": False, "error": str(exc)}
             if getattr(exc, "issues", None):
                 out["issues"] = exc.issues
             return out
         except Exception as exc:
-            self.log_error(tool, args or {}, exc)
+            if record:
+                self.log_error(tool, args or {}, exc)
             self.session.logger.exception("%s crashed", tool)
             raise
 
@@ -738,10 +744,10 @@ def _register_read_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
 
         ``summarize=False`` returns raw per-point records, PAGED:
         ``{rows, row_count, total_rows, offset, truncated, next_offset?}``. Paging is not
-        cosmetic — an unpaged dump measured 73k tokens on isensee and 81k on lucarelli, in ONE
-        tool result that then re-enters the context on every later turn; one such call has
-        ended a run with the provider's "prompt exceeds max length". Page with ``offset`` (feed
-        back ``next_offset``) or, better, narrow with ``experiment_id``/``observable_id`` first.
+        cosmetic — an unpaged dump of a large problem measured 73-81k tokens in ONE tool result
+        that then re-enters the context on every later turn, and one such call can overflow the
+        context window outright. Page with ``offset`` (feed back ``next_offset``) or, better,
+        narrow with ``experiment_id``/``observable_id`` first.
         Row order is the measurement table's own and is stable across pages.
         """
         ctx = route()
@@ -776,8 +782,9 @@ def _register_read_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
 
         # Through ctx.run like every other validated tool: a bad max_rows/offset must come back
         # as the logged {ok: false, error} shape, not as a raw exception. An unwrapped raise is
-        # invisible to get_errors AND counts as a tool error against the circuit breaker, so
-        # three argument typos in a row would disable get_measurements for the rest of the run.
+        # invisible to get_errors AND counts as a tool error against a client's circuit breaker,
+        # so three argument typos in a row could disable get_measurements for the rest of the
+        # session.
         return ctx.run(
             "get_measurements",
             run,
@@ -888,8 +895,8 @@ sigma past its data-driven cap is advisory (a warning, not a rejection); a THIRD
 of a still-pinned parameter is rejected — such a parameter is unidentifiable, not
 under-explored (see `get_fit_diagnosis`).
 
-Every fitted version is kept and the run is scored on the best-bic one regardless, so
-re-authoring an earlier structure to go back only recompiles and refits to the same result."""
+Every fitted version is kept and the best one stands regardless, so re-authoring an
+earlier structure to go back only recompiles and refits to the same result."""
 
 _MAKE_CHANGES_DOC = "\n\n".join(
     (_MAKE_CHANGES_SUMMARY, _MAKE_CHANGES_ROUTES, _MAKE_CHANGES_CONTRACT)
@@ -1120,8 +1127,7 @@ def _register_model_tools(
             if (format or "antimony").lower() != "antimony":
                 # RECORDED, for the same reason the unknown-version rejection below is: this tool
                 # is registered without `ctx.run`, so a rejection raised straight out of here
-                # burns the caller's turns while showing zero errors in `get_errors` and in
-                # result.json's error block.
+                # burns the caller's turns while showing zero errors in `get_errors`.
                 exc = ValidationError(
                     "get_model: a stored `version` is only available as antimony (SBML is "
                     "derived from it); omit `format` or pass 'antimony'."
@@ -1137,9 +1143,9 @@ def _register_model_tools(
             # raises for it, so the `or` fallback below can only ever cover a version that exists
             # without a stored source. Say which versions there are, and RECORD it — this tool is
             # registered without `ctx.run`, so a rejection raised straight out of here would burn
-            # the caller's turns while showing zero errors in `get_errors` and in result.json's
-            # error block. The prompt actively tells the lead to make this call before a
-            # `base_version=N` fork, so a wrong N is a reachable, ordinary mistake.
+            # the caller's turns while showing zero errors in `get_errors`. This call is the
+            # natural read before a `base_version=N` fork, so a wrong N is a reachable, ordinary
+            # mistake.
             try:
                 text = session.provenance.get_model_source(
                     int(version)
@@ -1240,8 +1246,8 @@ def _register_model_tools(
             )
         if base_version is not None and not (ops or rows or edits):
             # Names NO other tool. The obvious advice here — "to re-fit it unchanged use
-            # restore_version" — would send the LEAD to a tool it does not hold (see
-            # agent/tools.py: restore_version is deliberately withheld), which is the
+            # restore_version" — would send the agent to a tool its client may withhold (a
+            # client can leave restore_version out of the agent's tools), which is the
             # defection-trigger class the sibling rejections below are written to avoid, and
             # re-fitting an existing structure is a no-op the de-dup refuses anyway.
             return ctx.reject_operation(
@@ -1256,7 +1262,7 @@ def _register_model_tools(
                 + "; a prior version re-committed unchanged is already a version "
                 "and is refused, not re-fitted. If you wanted to RETURN to that "
                 "version because it was better: you do not need to — every fitted version is "
-                "kept and the run is scored on the BEST one, wherever HEAD ends up.",
+                "kept and the BEST one stands, wherever HEAD ends up.",
                 {"base_version": base_version},
             )
         if not antimony and not ops and not rows and not edits and not parameters:
@@ -1456,15 +1462,15 @@ def _register_model_tools(
                         parameters,
                         # A `base_version=N` fork restores that version's SEARCH SPACE too, not
                         # just its model: before this, a fork inherited whatever the abandoned
-                        # branch had widened and the prompt had to ask the agent to retype the old
-                        # bounds. Tolerant of a changed symbol set, and applied BEFORE this call's
-                        # own `parameters` entries so an explicit bound still wins (see
+                        # branch had widened and the agent had to retype the old bounds. Tolerant
+                        # of a changed symbol set, and applied BEFORE this call's own `parameters`
+                        # entries so an explicit bound still wins (see
                         # operations._composed_parameter_edit).
                         #
                         # POSITIONAL, not a keyword: `run_operation` is `(op_name, fn, *args)` with
                         # no **kwargs, so a keyword here raises TypeError on EVERY model-changing
                         # call — outside both except paths, so it escapes make_changes entirely and
-                        # the run cannot edit the model at all.
+                        # no session can edit the model at all.
                         base_parameter_df,
                     )
                 else:
@@ -1583,7 +1589,7 @@ def _register_parameter_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
 
         `role` names what the parameter IS — `kinetic` (a mechanistic rate constant used in a
         rate law), `noise_sigma` or `observable_scaling` (fixed observation-model factors, never
-        to be wired into a reaction), `initial_condition`, `exponent` (a Hill coefficient), or
+        to be wired into a reaction), `initial_condition`, `exponent` (a power in a rate law), or
         `constant` (an otherwise-unreferenced constant). `status` is `"estimated"` or `"fixed"`.
         Use these to keep roles straight: don't repurpose a scaling/offset factor as a rate
         constant, and don't spend an estimated parameter on a value you already know — a parameter
@@ -1595,13 +1601,14 @@ def _register_parameter_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
 
         `in_model` says whether the parameter is currently DECLARED by your model. A row with
         `in_model: false` is one the PROBLEM ships that your model does not use yet — on a
-        zero-shot build that is every shipped kinetic / initial-condition parameter, since there
-        is no mechanism to reference them. They are shown because they were handed to you: they
-        are the constants you may build on, and a shipped-FIXED one must stay declared or the
-        change is rejected. Declare the name in your Antimony and the row comes back exactly as
-        shown here — its bounds, scale and estimated/fixed status — so re-introducing
-        a shipped parameter never costs you its definition. (`query_data`'s `parameters` table is
-        the LIVE table only, so a count there is the real estimation problem.)
+        problem that ships without a model that is every shipped kinetic / initial-condition
+        parameter, since there is no mechanism to reference them. They are shown because they were
+        handed to you: they are the constants you may build on, and a shipped-FIXED one must stay
+        declared or the change is rejected. Declare the name in your Antimony and the row comes
+        back exactly as shown here — its bounds, scale and estimated/fixed status — so
+        re-introducing a shipped parameter never costs you its definition. (`query_data`'s
+        `parameters` table is the LIVE table only, so a count there is the real estimation
+        problem.)
 
         Values (`nominalValue`) are set by the automatic fit on commit; adjust bounds and
         scale through `make_changes` (one batched call: a `parameters` list whose entries
@@ -1612,7 +1619,7 @@ def _register_parameter_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         rows = param_mod.parameters_to_records(
             session.problem, shipped=session.shipped_parameter_df
         )
-        # Server-side filters, added when the 118-row lucarelli table (re-sent in the caller's
+        # Server-side filters, added when a 118-row parameter table (re-sent in the caller's
         # history every turn thereafter) turned out to be a top-3 context cost. Filtering here
         # rather than telling the model to ignore rows: unread tokens still bill.
         if parameter_ids:
@@ -1626,15 +1633,14 @@ def _register_parameter_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
                 # see `unknown_ids_message`, which owns both rules and is tested on its output.
                 # RAISED, not returned. This tool's declared return type is a LIST, so FastMCP
                 # validates its structured output against an array schema and a `ctx.run`
-                # {ok:false,...} dict fails that validation with a RuntimeError that KILLS THE
-                # RUN — observed 6/14 runs in the 2026-08-16 sneyd/fujita sweep, which had to be
-                # cancelled. A raise is the shape a list-returning tool can express: FastMCP
-                # turns it into a tool error and langchain-mcp-adapters into a ToolMessage the
-                # model reads and corrects, exactly like any other rejected argument.
+                # {ok:false,...} dict fails that validation with a RuntimeError that ENDS THE
+                # CLIENT'S SESSION — observed on 6 of 14. A raise is the shape a list-returning
+                # tool can express: FastMCP turns it into a tool error, which the client hands
+                # back to read and correct, exactly like any other rejected argument.
                 exc = ValidationError(unknown_ids_message(unknown, known_ids))
                 # RECORD it before raising. ctx.run would have done this; raising past it meant
-                # a run that burned turns on bad ids showed ZERO errors in get_errors and in
-                # result.json's error block — invisible in the post-mortem artefact.
+                # a session that burned turns on bad ids showed ZERO errors in get_errors —
+                # invisible afterwards too.
                 ctx.log_error("get_parameters", {"parameter_ids": parameter_ids}, exc)
                 raise exc
             rows = [r for r in rows if r.get("parameterId") in want]
@@ -1648,7 +1654,7 @@ def _register_parameter_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
 #: CHEAP one is the default: the parameter half is several kB on a k=30 model plus a FIM evaluation,
 #: and the payload of every tool call is re-sent in the agent's history on every later turn (PR #23
 #: cut ~40% of the per-call prompt by removing exactly that kind of duplication). It is one argument
-#: away, and the prompt says to ask for it when BIC stalls — which is when it has something to say.
+#: away, for when BIC stalls — which is when it has something to say.
 _DIAGNOSIS_SECTIONS = {
     "residuals": frozenset({"residuals"}),
     "parameters": frozenset({"parameters"}),
@@ -1677,7 +1683,7 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         `{status, neg_log_likelihood, chi2, n_data_points, fitted_parameters_changed,
         parameter_scales, version}` plus the complexity-penalised scores `{bic, aic, aicc, caic,
         hqc, tic, criterion, criterion_value, chi2_dof, reduced_chi2, chi2_gof_pvalue}` (lower is
-        better). `criterion` names the penalty this run ranks by (`bic` unless configured
+        better). `criterion` names the penalty this session ranks by (`bic` unless configured
         otherwise) and `criterion_value` is that score — the one to rank models by; the named
         scores are always reported at their textbook weight whichever is active. The `k` they
         charge rides with its two addends: `n_estimated` (the estimated parameter rows) and
@@ -1730,7 +1736,7 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
 
     @mcp.tool(annotations=_READ_ONLY)
     def get_run_timing() -> dict[str, Any]:
-        """Cumulative server-side timing for this run, split by cost kind.
+        """Cumulative server-side timing for this session, split by cost kind.
 
         `{compile_seconds, fit_seconds, n_compiles, n_fits}`. `compile_seconds` is the AMICI
         model-BUILD time (the one-time C++ compile per unique structure — ONE build, shared by
@@ -1745,7 +1751,7 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
 
         def run() -> dict[str, Any]:
             # Read under the lock so the four accumulators are a consistent snapshot even if a
-            # fit is mid-update on another thread (the panel dispatches tool calls concurrently).
+            # fit is mid-update on another thread (a client may dispatch tool calls concurrently).
             with session.lock:
                 return {
                     "compile_seconds": round(float(session.compile_seconds), 3),
@@ -1984,7 +1990,7 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         scores pin near their null however wrong the FORM is); they read only residual SIGNS, and
         have low power on few points, so treat a `low_power` non-significant result as weak
         evidence, NOT a pass. The rolled-up `residual_structure` verdict over them — the one that
-        blocks the run's early plateau stop, replicate lack-of-fit arm included — is NOT repeated
+        blocks the early plateau stop, replicate lack-of-fit arm included — is NOT repeated
         here: it rides on the fit result. Call this for which points, how big, which observable
         carries the chi2 — not to ask WHETHER the residuals are structured.
 
@@ -2035,8 +2041,8 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
                 )
             if "parameters" in want:
                 # Guarded, and guarded SEPARATELY: before the two were one tool a FIM failure could
-                # not take the residual half with it, and the caller that pays most for this half
-                # dropping (the judge's result.json block) needs the other one regardless. The
+                # not take the residual half with it, and a caller that reads only the residual
+                # half must not lose it to a FIM failure. The
                 # no-fit case is the diagnosis's own answer (`available: false`), not a branch here:
                 # it reads the frozen fit record, so there is no live state left to gate on.
                 try:
@@ -2057,32 +2063,31 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         )
 
 
-# ------------------------------------------------- held-out validation (harness-only)
+# ------------------------------------------------- held-out validation (not the agent's)
 def _register_validation_data_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
-    """Register ``evaluate_validation_data`` — the HARNESS's read, never the agent's.
+    """Register ``evaluate_validation_data`` — a read for whoever runs the session, never the
+    agent's.
 
-    Registered only when :func:`create_server` was given a held-out measurement file, and
-    deliberately ABSENT from ``petab_harness.agent.tools.ALLOWED_TOOLS``, which is a strict
-    allowlist: the panel is handed the intersection of that set with the server's tools, so a tool
-    missing from it cannot reach any agent's context — not the lead's, not an analyst's. Two things
-    have to stay out of the agent's reach for a held-out score to mean anything: the held-out DATA
-    (which never enters the problem tree the server is pointed at, because the harness keeps it in
-    a sibling directory of ``problem/``) and the SCORE (which would otherwise be a fitness signal the
-    agent could optimise against by trial and error, turning the held-out set into training data
-    one tool call at a time).
+    Registered only when :func:`create_server` was given a held-out measurement file. A client that
+    puts an agent on this server must leave the tool out of the agent's tool set. Three things have
+    to stay out of the agent's reach for a held-out score to mean anything: the held-out DATA (kept
+    outside the problem tree the server is pointed at, so no tool reads it), the SCORE (which would
+    otherwise be a fitness signal the agent could optimise against by trial and error, turning the
+    held-out set into training data one tool call at a time), and the tool's FAILURES, whose
+    messages can name held-out experiments, conditions and observables. Those are therefore kept out
+    of ``errors.jsonl``, which ``get_errors`` returns (see :meth:`_Ctx.run`).
 
-    Registering it as a normal MCP tool anyway, rather than reaching into the server's internals
-    from the harness, because the harness has no other way in: the session lives in a separate
-    process (see ``petab_harness.runner.server``), and the model + its fitted values exist only
-    there.
+    Registering it as a normal MCP tool anyway, rather than reaching into the server's internals,
+    because a client has no other way in: the session lives in the server's process, and the model
+    + its fitted values exist only there.
     """
 
     @mcp.tool(annotations=_READ_ONLY)
     def evaluate_validation_data(n_starts: int | None = None) -> dict[str, Any]:
         """Score the CURRENT model against HELD-OUT measurements, in the held-out set's own mode.
 
-        Harness-only (see the registrar's docstring): this is the benchmark judge's predictive
-        check, not a modelling tool, and it is not offered to the panel.
+        For whoever runs the session, not for the agent building the model (see the registrar's
+        docstring): a predictive check, not a modelling tool.
 
         Changes nothing. A fixed-θ set is one objective evaluation of the model as it stands, at
         its current fitted values, against data it was not fitted to. A TRANSFER set (one that
@@ -2100,6 +2105,7 @@ def _register_validation_data_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> 
                 session, ctx.engine, ctx.held_out, n_starts=n_starts
             ),
             {"n_starts": n_starts},
+            record=False,
         )
 
 
@@ -2175,16 +2181,17 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
 
     @mcp.tool(annotations=_READ_ONLY)
     def get_progress() -> dict[str, Any]:
-        """Early-stop-chain progress for this run — a cheap counter read (no fit/simulation).
+        """Early-stop-chain progress for this session — a cheap counter read (no fit/simulation).
 
         `{n_fitted_ops, non_improving_streak, streak_cap, best_version, criterion, best_score,
         best_gof_pvalue, score_improvement_over_last_n, plateau_window, should_stop, stop_reason}`.
-        `best_score` is under `criterion` — the complexity penalty this run ranks by.
-        `best_version` is the best-scoring fitted model committed so far (the checkpoint to score);
+        `best_score` is under `criterion` — the complexity penalty this session ranks by.
+        `best_version` is the best-scoring fitted model committed so far (the session's result);
         `non_improving_streak` counts consecutive fitted ops since the last real new best.
-        `should_stop` is set (with a `stop_reason`) once the run has stopped making progress — the
-        hard non-improving-streak cap, or a plateau once the best model is statistically adequate.
-        There is no cap on the TOTAL number of fits: a run that keeps genuinely improving keeps
+        `should_stop` is set (with a `stop_reason`) once the session has stopped making progress —
+        the hard non-improving-streak cap, or a plateau once the best model is statistically
+        adequate.
+        There is no cap on the TOTAL number of fits: a session that keeps genuinely improving keeps
         going, and only a stall stops it.
         A plateaued `stop_reason` also carries the structural-inadequacy nudge: when the score
         stops moving and the best model is still not adequate, the misfit is the model's FORM — the
@@ -2320,8 +2327,8 @@ def _open_ctx(
     held_out = None
     if validation_measurements:
         # Read ONCE, as the session opens: a per-call read would make the score depend on a file
-        # the run can no longer see (the harness runs from a scratch copy on the cluster) and would
-        # let a mid-run edit of the file change the bar under the judge.
+        # the session may no longer see (a server can run from a scratch copy of the problem) and
+        # would let a mid-session edit of the file move the bar the model is held to.
         held_out = validation_data_mod.read_held_out(validation_measurements)
     return _Ctx(session, engine, held_out)
 
@@ -2350,7 +2357,7 @@ def create_server(
     ``auto_fit_starts`` is the default pyPESTO multistart count (overridable per commit via
     ``n_starts``). Set ``auto_fit=False`` to skip the compile-heavy fit hook (tests/dev).
 
-    ``criterion`` chooses the complexity penalty the run ranks models by — ``bic`` (default),
+    ``criterion`` chooses the complexity penalty the session ranks models by — ``bic`` (default),
     ``caic``, ``aic``, ``aicc``, ``hqc`` or ``tic`` (see :mod:`criteria`). ``None`` means "as the
     environment says" (``PETAB_MCP_CRITERION``, else plain BIC). Resolved once by the session
     and held as ``session.criterion``, which every scorer is handed: there is no process state,
@@ -2360,9 +2367,9 @@ def create_server(
     ``validation_measurements`` is a PEtab measurement TSV of HELD-OUT data — data the model is
     never fitted to — with the set's own condition/parameter tables beside it where it has any
     (:func:`petab_mcp.validation_data.read_held_out`). Giving it registers
-    ``evaluate_validation_data``, which the benchmark judge calls to score the finished model on
-    that data; it is not offered to the agent (see ``_register_validation_data_tools``). Omit it and
-    no such tool exists.
+    ``evaluate_validation_data``, which scores the session's model on that data for whoever runs
+    the session; it is not for the agent (see ``_register_validation_data_tools``). Omit it and no
+    such tool exists.
 
     Initial conditions are ESTIMATED by default; an IC of exactly 1 (a unit normalization) is held
     FIXED and an IC of exactly 0 (an empty pool) gets no parameter at all (see

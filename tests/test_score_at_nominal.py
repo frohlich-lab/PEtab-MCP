@@ -7,7 +7,7 @@ being judged. Refitting would score a different model than the one delivered, so
 simulates only and reports those nominal values as the fitted point.
 
 Reporting them matters as much as the score: `noise_sigma_report` and the at-bound check read
-`fitted_parameters`, and an empty one would quietly exempt the delivery from the judge's gates.
+`fitted_parameters`, and an empty one would quietly exempt the delivery from those gates.
 """
 
 from __future__ import annotations

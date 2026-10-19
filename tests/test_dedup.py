@@ -209,7 +209,7 @@ def test_decide_skips_identical_head():
     d = _decide(_reg((3, "X", 1.0)), head_version=3)
     assert d["action"] == "skip"
     assert d["duplicate_of"] == 3
-    assert "kept and scored" in d["message"]
+    assert "kept regardless" in d["message"]
 
 
 def test_decide_no_skip_when_setup_differs():
@@ -228,7 +228,7 @@ def test_decide_no_skip_against_an_unfitted_version():
 def test_decide_terminates_after_repeated_reauthors():
     d = _decide(_reg((5, "Y", 1.0)), head_version=5, prior_attempts=D.MAX_IDENTICAL_REAUTHORS)
     assert d["action"] == "terminate"
-    assert "kept and scored" in d["message"]
+    assert "kept regardless" in d["message"]
 
 
 def test_decide_refuses_an_earlier_version_with_the_same_setup():

@@ -3,9 +3,9 @@
 (``reconcile.seed_model_antimony``), how the tools show one before the first build, and the
 refusal of a readout that reads itself.
 
-The harness blinds observables to ``readout_*`` symbols, so a model that forgets to define one
+A blinded problem's observables read ``readout_*`` symbols, so a model that forgets to define one
 must be refused with the remedy and the biology attached, and a seed must declare a readout as a
-parameter rather than a species. The blinding itself is tested in gemot.
+parameter rather than a species. The blinding itself happens upstream, and is tested there.
 """
 
 from __future__ import annotations
@@ -126,8 +126,8 @@ def test_a_readout_declared_as_a_SPECIES_is_still_undefined():
     """The regression that made this whole guard a no-op. The seed declares one species per
     observable-formula identifier so v0 lints — which includes every `readout_*` — so "the id
     resolves to an SBML element" is true by construction. A model leaving each readout a free
-    constant would then commit: on blasi that is 16 constants against 16 steady-state observable
-    means, fitting them exactly while skipping the measurement-mapping task entirely."""
+    constant would then commit: on one problem that is 16 constants against 16 steady-state
+    observable means, fitting them exactly while skipping the measurement-mapping task entirely."""
     prob = _lintable({"a": "readout_a"}, model_ids=["readout_a"], with_reaction=True)
     issues = _undefined_readout_issues(prob)
     assert len(issues) == 1, "a readout declared as a species must NOT count as defined"
@@ -152,10 +152,10 @@ def test_a_missing_description_does_not_render_as_nan():
 
 
 def test_the_seed_declares_a_readout_as_a_parameter_not_a_species():
-    """The trap the first blinded sweep measured: the seed declared `readout_*` as SPECIES, agents
-    copied that into their own models, wired the readout into reactions as a state, and then could
-    not assign it — 4 of the sweep's 27 rejections were exactly this over-determination refusal,
-    all on fujita (the example with non-identity mappings). A constant parameter lints and
+    """The trap the first blinded sessions measured: the seed declared `readout_*` as SPECIES,
+    agents copied that into their own models, wired the readout into reactions as a state, and then
+    could not assign it — 4 of their 27 rejections were exactly this over-determination refusal,
+    all on the one problem with non-identity mappings. A constant parameter lints and
     simulates identically at v0 and suggests nothing about being a state. The seed must also stay
     DYNAMICS-FREE, so a `:=` rule (which would flip `has_dynamics` and with it `model_authored`)
     is not an option."""
@@ -184,8 +184,8 @@ def test_a_pure_readout_table_demotes_every_readout():
     """No readout is ever a species, even when the formulas name nothing else.
 
     Two earlier attempts tied this to the AMICI zero-species segfault: keeping ALL readouts as
-    species (which left boehm, blasi, crauste, perelson and rahman with the trap the demotion
-    exists to remove), then keeping exactly one. `reconcile.ensure_one_species` carries that
+    species (which left five problems with the trap the demotion exists to remove), then keeping
+    exactly one. `reconcile.ensure_one_species` carries that
     invariant with a placeholder instead, so the seed is free to say what is true — a measurement
     mapping is not a state."""
     from petab_mcp.reconcile import seed_model_antimony

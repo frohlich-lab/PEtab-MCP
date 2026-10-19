@@ -6,7 +6,7 @@ edits. Its table views are rebuilt from pydantic objects on every access, so
 ``problem.parameter_df.loc[p, c] = v`` writes into a temporary and is silently lost; they come
 back with ``estimate`` as the strings ``"true"``/``"false"`` and override cells re-printed by
 sympy (``0.100000000000000``); and every table read from a file gains an ``index`` column. The
-server reads and writes its tables thousands of times per run and fingerprints their exact text,
+server reads and writes its tables thousands of times per session and fingerprints their exact text,
 so it holds them as plain DataFrames — the shape petab v1's ``Problem`` had — and crosses into
 libpetab's object model only at :meth:`WorkingProblem.to_petab`.
 
@@ -32,7 +32,7 @@ carries libpetab v1's column as an extension, which is what pyPESTO's importer t
 ``parameter_scales``. Missing or blank reads as ``lin``.
 
 A PEtab v1 problem is upgraded on load by libpetab's ``petab1to2`` (:func:`_from_v1`), with its
-lint off: a benchmark problem ships its model unwritten -- an empty or partial SBML whose
+lint off: a blinded problem ships its model unwritten -- an empty or partial SBML whose
 observables name readouts the agent defines -- so it fails v1 lint until the agent writes it.
 """
 
@@ -373,11 +373,11 @@ def _from_v1(yaml_path: Path) -> WorkingProblem:
     """A v1 problem, upgraded by libpetab's ``petab1to2`` and read back like any v2 problem.
 
     Unlinted (``validate=False``, PEtab-dev/libpetab-python#534): ``petab1to2`` otherwise refuses a
-    problem that fails v1 lint, which is every PEtabAgentBench problem as shipped (its observables
+    problem that fails v1 lint, which is every blinded problem as shipped (its observables
     name ``readout_*`` symbols the agent's model has yet to define), so the server could start on
     none of them. The likelihood is libpetab's to keep: it maps v1's log10-normal onto log-normal
     with the noise rescaled by ln(10) (#535, the fix for #529). This function applied that factor
-    itself before #535, and would now apply it twice -- 64.7 nats on one benchmark state.
+    itself before #535, and would now apply it twice -- 64.7 nats on one problem's state.
 
     One correction remains: ``petab1to2`` drops ``parameterScale``, which the server estimates on.
     """

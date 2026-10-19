@@ -85,7 +85,7 @@ def test_a_v1_observable_keeps_its_likelihood(tmp_path, transformation):
 
 
 def test_a_v1_problem_that_does_not_lint_still_upgrades(tmp_path):
-    """Every benchmark problem fails v1 lint as shipped: its observables name readouts the agent's
+    """Every blinded problem fails v1 lint as shipped: its observables name readouts the agent's
     model has yet to define. petab1to2 refused all of them while it linted, so the server could
     start on none (PEtab-dev/libpetab-python#534 made the lint optional)."""
     from petab import v1

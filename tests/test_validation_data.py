@@ -1,14 +1,14 @@
 """The fixed-θ HELD-OUT check: :func:`petab_mcp.validation_data.score_problem` and its guards.
 
-Tested at the boundary rather than through an end-to-end run: which tables the scorer copies, what
-it declines before paying for a build, and how it refuses a parameter vector it cannot line up.
-The objective evaluation past those guards needs an AMICI build; its correctness is pinned by the
-reference's own held-out score, re-derived by the benchmark's ``setup.py --refit``. The harness's
-materialisation of a held-out set, and its judge's projection of the score, are tested in gemot.
+Tested at the boundary rather than through an end-to-end session: which tables the scorer copies,
+what it declines before paying for a build, and how it refuses a parameter vector it cannot line
+up. The objective evaluation past those guards needs an AMICI build; its correctness is pinned by
+re-deriving a reference structure's own held-out score through the same functions. Assembling a
+held-out set, and what the caller does with the score, are the caller's to test.
 
-Held-out sets in v1 form (`validation_data.read_held_out` + `as_v2`): the benchmark's held-out
-files predate the v2 server, so they are keyed onto experiments the way the problem's own upgrade
-keys its training measurements.
+Held-out sets in v1 form (`validation_data.read_held_out` + `as_v2`): held-out files written for
+PEtab v1 predate the v2 server, so they are keyed onto experiments the way the problem's own
+upgrade keys its training measurements.
 """
 
 from __future__ import annotations
@@ -230,8 +230,8 @@ def _never_build(monkeypatch):
 
 def test_scoring_never_mutates_the_problem_it_was_handed(monkeypatch):
     """``score_session`` runs against the LIVE session problem, so a table it swapped in place would
-    change what the agent reads and what the judge scores on the training data — the held-out check
-    would corrupt the very run it is reporting on. The scorer builds a view with its own
+    change what the agent reads and what the caller scores on the training data — the held-out
+    check would corrupt the very session it is reporting on. The scorer builds a view with its own
     dataframe objects; this pins that, without paying for an AMICI build, by intercepting the
     build and inspecting the view it was handed.
     """
@@ -299,8 +299,8 @@ def test_an_empty_or_foreign_held_out_table_is_declined_before_any_build(monkeyp
 def test_the_server_only_registers_the_tool_when_given_held_out_data(
     monkeypatch, yaml_path, tmp_path
 ):
-    """No held-out file, no tool — so an example without a validation set cannot accidentally be
-    scored against a stale or unrelated table, and the judge's "unavailable" status is reached by
+    """No held-out file, no tool — so a problem without a validation set cannot accidentally be
+    scored against a stale or unrelated table, and the caller's "unavailable" status is reached by
     the tool genuinely not existing.
 
     Asserted through the registrar actually being CALLED, not by grepping ``create_server``'s
@@ -508,7 +508,7 @@ def test_score_session_hands_a_fixed_sets_design_to_the_scorer(monkeypatch):
 
 def test_read_held_out_gives_a_fixed_set_its_condition_rows(tmp_path):
     """On disk: measurements.tsv + conditions.tsv and NO parameters.tsv is a fixed-θ set with rows
-    of its own — what `materialize` writes for such a set and what the server reads back, a v1
+    of its own — what a caller writes for such a set and what the server reads back, a v1
     condition table upgraded to v2's changes."""
     _rows("e_knockdown").rename(columns={"experimentId": "simulationConditionId"}).to_csv(
         tmp_path / "measurements.tsv", sep="\t", index=False
@@ -575,7 +575,7 @@ def _scaled_problem(formula="observableParameter1_obs_A * x"):
 
 def test_held_out_scalings_are_the_overrides_the_problem_does_not_define():
     """A held-out blot's scale factor is whatever override the parameter table lacks; a shipped
-    scaling (fujita's rows) or a number is an ordinary PEtab override and not touched."""
+    scaling (``s_train`` here) or a number is an ordinary PEtab override and not touched."""
     held = pd.concat(
         [
             _rows("e_test").assign(observableParameters="s_blot"),
@@ -591,7 +591,7 @@ def test_held_out_scalings_are_solved_hierarchically_then_written_in_as_numbers(
     problem whose only estimated rows the model does not already have are the held-out scalings,
     tagged `parameterType: scaling` (the model's own parameters keep their values); pass two is
     the ordinary joint objective with the solved values substituted as plain numbers, so the
-    reported nll/chi2 come off the same code path as for an example without held-out scalings."""
+    reported nll/chi2 come off the same code path as for a set without held-out scalings."""
 
     class _Calc:
         def get_interpretable_inner_par_ids(self):

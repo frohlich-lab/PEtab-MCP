@@ -2,7 +2,7 @@
 
 This is the tripwire for a specific, silent failure: the optimizer and the objective evaluation
 each ending up with their OWN AMICI model or solver. `fitting.estimation_problem` unified them
-for exactly this reason — while they were separate, a crauste fit converged at nll 266.62 while
+for exactly this reason — while they were separate, a fit converged at nll 266.62 while
 re-simulating its optimum failed to integrate past t=22 and reported NaN.
 
 `_reconcile_objective` already computes the comparison on every fit and records a disagreement as
@@ -59,7 +59,7 @@ def test_the_fit_and_the_resimulation_agree_after_a_reauthor(fit_session, reauth
 
 def test_the_payload_carries_both_numbers_so_a_gap_stays_visible(fit_session):
     """The optimizer's value is authoritative, but the re-simulated one is kept beside it —
-    resolving the two silently is what made the crauste gap invisible."""
+    resolving the two silently is what made that gap invisible."""
     fit_session.fit(n_starts=2)
     sim = fit_session.simulation
     assert sim["neg_log_likelihood"] is not None

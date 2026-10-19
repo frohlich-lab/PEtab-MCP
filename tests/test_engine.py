@@ -228,14 +228,14 @@ def test_a_problem_that_cannot_be_seeded_refuses_to_load(tmp_path):
 
 
 def test_fit_objective_and_reported_nll_are_the_same_number(fit_session):
-    """The fit's objective and the harness's reported nll must be the same likelihood.
+    """The fit's objective and the reported nll must be the same likelihood.
 
     They are the same likelihood at the same parameters, but they used to be computed by two
     different AMICI models with two different solvers — the fit through pyPESTO's objective,
-    the report by re-simulating via simulate_petab. That let them disagree: a crauste fit
-    converged at nll 266.62 while the re-simulation of its own optimum failed to integrate past
-    t=22 and reported NaN, which then poisoned the best-BIC checkpoint and cost the run its
-    score. Both now go through one shared objective (fitting.estimation_problem).
+    the report by re-simulating via simulate_petab. That let them disagree: a fit converged at nll
+    266.62 while the re-simulation of its own optimum failed to integrate past t=22 and reported
+    NaN, which then poisoned the best-BIC checkpoint and cost the session its score. Both now go
+    through one shared objective (fitting.estimation_problem).
 
     Sharing that objective makes the FORMULA and the parameters identical, but each side still
     runs its own adaptive integration, so the agreement is bounded by the ODE solver's tolerance,
@@ -266,7 +266,7 @@ def test_one_amici_build_per_structure(fit_session):
     """The fit and the objective evaluation must share ONE compiled model.
 
     They used to build two (`petab_mcp_<hash>` and `petab_mcp_pp_<hash>`) from the same SBML —
-    at ~80s a build on a cluster node, that was ~20 minutes of a 73-minute benchmark run spent
+    at ~80s a build on a cluster node, that was ~20 minutes of a 73-minute session spent
     compiling the same structure twice.
     """
     fit_session.fit(justification="test")
@@ -295,8 +295,8 @@ def _log_text(session) -> str:
 def test_the_model_is_dumped_before_the_amici_import(engine, session):
     """AMICI's SBML import + C++ codegen can kill the process outright — a segfault-class
     failure that raises nothing and leaves no traceback, so the client just sees the connection
-    drop. The only forensic trail is a dump written BEFORE the import call; a blasi sweep run
-    died exactly this way with no record of which model did it.
+    drop. The only forensic trail is a dump written BEFORE the import call; a session once died
+    exactly this way with no record of which model did it.
 
     `pypesto_importer_kwargs` is the choke point: the ONE build site (the fit) constructs its
     importer on the next line, so dumping here covers every AMICI build without a second hook.
@@ -374,8 +374,8 @@ class _DeadRData:
 
     Feeding this to `rdatas_to_simulation_df` raised a bare `TypeError: 'NoneType' object is not
     iterable`, which `_compile_fit_failure_message` then reported to the agent as an ill-posed ODE
-    -- sending it to rewrite a structurally fine model. 32 rejected `make_changes` calls in the
-    Aug 8-10 sweep, every one of them AFTER a successful compile (~94 min of wasted builds).
+    -- sending it to rewrite a structurally fine model. 32 rejected `make_changes` calls in one
+    batch of sessions, every one of them AFTER a successful compile (~94 min of wasted builds).
     """
 
     ts = None

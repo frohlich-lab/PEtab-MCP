@@ -2,12 +2,12 @@
 
 These encode decisions that a plain refactor can silently reverse in either direction:
 
-* tightening back to a blanket rejection re-breaks the published Bachmann mechanism (its total
-  abundances are BOTH initial conditions and the relative observables' normalisers), which would
-  reject any agent that rediscovers it;
-* loosening to a blanket warning re-opens the Brannmark cheat a sweep actually caught — two runs
-  wired the fixed observable-scaling factors straight into their rate laws instead of introducing
-  the ~14 real kinetic parameters.
+* tightening back to a blanket rejection re-breaks a published mechanism whose total abundances
+  are BOTH initial conditions and the relative observables' normalisers, which would reject any
+  agent that rediscovers it;
+* loosening to a blanket warning re-opens the scaling-factor cheat actually caught in practice —
+  two agents wired the fixed observable-scaling factors straight into their rate laws instead of
+  introducing the ~14 real kinetic parameters.
 
 The discriminator is the symbol's ROLE, not where it appears, so the fixtures below are the two
 shapes side by side: a scaling used AS the rate constant (error) versus the same scaling used as a
@@ -147,13 +147,13 @@ end
 
 
 def test_scaling_as_rate_constant_is_an_error():
-    """The Brannmark shape: the observable scaling IS the reaction's rate constant."""
+    """The cheat's shape: the observable scaling IS the reaction's rate constant."""
     problem = _problem(CHEAT, observable_formula="A * scale_obs", noise_formula="sd_obs")
     assert "scale_obs" in _levels(problem)["error"]
 
 
 def test_scaling_as_normaliser_is_only_a_warning():
-    """The bachmann shape: the same symbol normalising alongside a dedicated rate constant."""
+    """The legitimate shape: the same symbol normalising alongside a dedicated rate constant."""
     problem = _problem(
         NORMALISER,
         observable_formula="A * scale_obs",
@@ -237,7 +237,7 @@ def test_sigma_gate_abstains_below_the_minimum_sample_size():
     `sigma_data_std` is a POPULATION std (``ddof=0``), the same functional form as the Gaussian
     MLE for sigma, so once the model reproduces a small group's mean and resolves nothing within
     it the two are equal BY CONSTRUCTION and `fraction_of_data_std` is 1 — a property of the
-    estimator, not of the fit. bachmann is the real case: four absolute readouts with n=3 all land
+    estimator, not of the fit. Seen on a real problem: four absolute readouts with n=3 all land
     on 0.999994, agreeing to six significant figures across four different observables, while the
     model-free Rice estimator puts them at 0.67-1.09.
 

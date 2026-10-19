@@ -1,6 +1,6 @@
 """Parameter-identifiability diagnosis of the current fit.
 
-Which estimated parameters are superfluous? The lead over-parameterises because raw nll/score
+Which estimated parameters are superfluous? An agent over-parameterises because raw nll/score
 don't say WHICH parameters are unconstrained or trading off. The ``parameters`` section of
 ``get_fit_diagnosis`` (see :mod:`petab_mcp.server`) answers that from two cheap, complementary
 signals at the fitted optimum:
@@ -17,13 +17,13 @@ models, so the two are meant to be read together. All output is bounded (top-N p
 One verdict off that diagnosis rides on EVERY fit result instead of waiting to be asked for:
 :func:`fit_merge_hints` names the parameter ties whose cost the complexity penalty already pays for (see
 :func:`merge_hints`). It is the same computation the section reports, condensed — a tool called
-once a run cannot inform a decision made every turn.
+once a session cannot inform a decision made every turn.
 
 NOTHING HERE MAY BUILD A MODEL. A diagnosis describes a fit that already happened, and the module
 that fit was compiled with already exists, so every entry point reads the frozen
 :class:`fitting.FitRecord` the fit left behind — its pyPESTO problem, its point, its tables — and
 never re-derives an AMICI output folder from live session state. That is the whole reason the
-record exists; see its docstring for the build a live read used to pay for. A run outlives its
+record exists; see its docstring for the build a live read used to pay for. A session outlives its
 process, so where there is no record the verdict the fit STORED is re-served instead
 (:func:`fit_diagnosis_block`) — again computing nothing. The working model having moved since is
 reported (``stale``), never re-priced. ``tests/test_diagnosis_never_compiles.py`` holds that line.
@@ -419,7 +419,7 @@ def effective_parameter_count(problem, x_free, *, k: int | None = None) -> float
     that gives the diagnosis its FIM, so the matrix inverted here and the one the agent reads
     standard errors and merge prices off cannot disagree.
 
-    ``k`` is the estimated-parameter count the run charges for; a hierarchical fit's inner-solved
+    ``k`` is the estimated-parameter count the score charges for; a hierarchical fit's inner-solved
     parameters (sigmas, scalings, offsets) have no coordinate in ``x_free`` and no row in ``H``,
     and are charged one unit each (the ``k − m`` of them) rather than dropped, because a profiled
     parameter the data pin is exactly where the count and the trace agree. Best-effort in the
@@ -611,7 +611,7 @@ def merge_candidates(
     curv = d[:, None] + d[None, :] - 2.0 * Hinv  # c @ inv(H) @ c for every c = e_i - e_j at once
     gap = th[:, None] - th[None, :]  # c @ theta likewise
 
-    # What the run's criterion charges for the k-th parameter, in nll (see
+    # What the session's criterion charges for the k-th parameter, in nll (see
     # :meth:`criteria.Criterion.parameter_price`): ln(n)/2 under BIC, 1 under AIC, k-dependent
     # under AICc. A merge that costs less than this pays for itself by deleting a parameter.
     _price = crit.parameter_price(k, n_data)
@@ -649,7 +649,7 @@ def merge_candidates(
             with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
                 exact = float(gap[i, j] ** 2 / (2.0 * curv[i, j]))
                 # the constrained optimum is -(c@theta) inv(H) c / (c@inv(H)@c); report its
-                # largest component, the move the panel would have to believe.
+                # largest component, the move an agent would have to believe.
                 move = float(abs(gap[i, j]) * np.abs(Hinv[:, i] - Hinv[:, j]).max() / curv[i, j])
             # 2*dnll is the score charge, so a cost within a factor of two of the double ceiling is
             # `Infinity` in the payload — not valid strict JSON, and not a merge candidate either.
@@ -691,14 +691,14 @@ def fit_record(session):
     Every number in this module is a LOCAL expansion around a stationary point: the standard
     errors, the flat directions and, most sharply, the ONE-SHARED-VALUE merge price
     (:func:`merge_candidates`), which has no gradient term. Away from an optimum that price does
-    not degrade gracefully, it gets monotonically cheaper — on blasi, the fitted model prices its
-    cheapest tie at 0.001 nll and the same structure at 3x its parameter values at 7e-05 — so an
-    un-fitted point advertises free merges that are not there.
+    not degrade gracefully, it gets monotonically cheaper — in one measured case, the fitted model
+    prices its cheapest tie at 0.001 nll and the same structure at 3x its parameter values at
+    7e-05 — so an un-fitted point advertises free merges that are not there.
 
-    ``None`` therefore means "no optimum of this process's own to expand around": a run that has
-    authored nothing, an ``auto_fit``-off commit, and a process that RESUMED a run. The last of those
-    still HAS a fit to report on, so it is not left undiagnosed — the fit's own verdict travels with
-    the fit (see :func:`fit_diagnosis_block`) and is re-served from there.
+    ``None`` therefore means "no optimum of this process's own to expand around": a session that
+    has authored nothing, an ``auto_fit``-off commit, and a process that RESUMED a session. The last
+    of those still HAS a fit to report on, so it is not left undiagnosed — the fit's own verdict
+    travels with the fit (see :func:`fit_diagnosis_block`) and is re-served from there.
     """
     return getattr(session, "fit_record", None)
 
@@ -708,17 +708,17 @@ def structure_moved(session, structure_hash: str | None) -> bool:
 
     The one staleness question this module asks, of a frozen record and of a stored verdict alike —
     a COMPARISON, never a rebuild key. STRUCTURE (the model's equations plus the estimated-parameter
-    set) is what decides whether a geometry describes the model in front of the lead. A restore points
-    the working state at another version's model and does move it: the diagnosis then belongs to the
-    last fit, says so, and is not re-priced (pricing the current structure would mean fitting, and
-    building, it).
+    set) is what decides whether a geometry describes the model in front of the agent. A restore
+    points the working state at another version's model and does move it: the diagnosis then belongs
+    to the last fit, says so, and is not re-priced (pricing the current structure would mean
+    fitting, and building, it).
 
     The de-dup no-op deliberately does NOT move it. It re-authors the same structure with a new
     starting guess — which is why ``problem_hash`` differs and why no fit ran — so the frozen optimum
     is still HEAD's, still this structure's, and still the only fit there is to report on. Calling
-    that stale is what silently switched off the parsimony finish gate on the one drift a lead can
-    cause inside a run: the same rank-deficient FIM, refused before the no-op and ignored after it.
-    A table-only drift is reported instead (see :data:`WORKING_TABLE_NOTE`).
+    that stale is what silently switched off a client's parsimony finish gate on the one drift an
+    agent can cause inside a session: the same rank-deficient FIM, refused before the no-op and
+    ignored after it. A table-only drift is reported instead (see :data:`WORKING_TABLE_NOTE`).
 
     An unknown ``structure_hash`` reads as moved: unable to say the geometry still applies is not the
     same as saying it does.
@@ -906,7 +906,7 @@ def merge_hints(
     diagnosis: "dict[str, Any] | None", *, limit: int = MERGE_HINT_LIMIT
 ) -> list[dict[str, Any]] | None:
     """The ties worth reporting beside a fit's score: up to ``limit`` cheapest ONE-SHARED-VALUE
-    merges whose ``dnll`` is below what the run's criterion charges for the parameter each deletes
+    merges whose ``dnll`` is below what the criterion charges for the parameter each deletes
     — or ``None``.
 
     ``diagnosis`` is an :func:`identifiability` payload, so the hints cannot say anything the
@@ -921,16 +921,17 @@ def merge_hints(
 
     ALL of them, not just the cheapest, because one hint per fit taught the caller to merge one pair
     per refit while the rest of the redundancy sat unnamed — and on this problem class the ties come
-    in GROUPS (blasi: a saturated model whose parameters are jointly redundant), so naming one is
+    in GROUPS (a saturated model's parameters are jointly redundant), so naming one is
     naming an arbitrary member of a set the caller should be looking at whole.
 
     Each price is still an INDEPENDENT one, computed for that tie alone at this optimum: the list is
     not a menu whose ``dscore`` values add up. Rows sharing no parameter are separable edits and may be
     taken together; rows SHARING one are not. What is priced is the ONE SHARED VALUE of a PAIR —
     :func:`merge_candidates` prices ``theta_i == theta_j`` and no higher-order constraint — so tying
-    three symbols to one value is an unpriced extrapolation whose cost is not the sum of its pairs. Measured on blasi: three pairs each within 0.02 nll of free, collapsed into one
-    symbol, cost +186 bic and reintroduced lack-of-fit. Take the cheapest pair of such a group and
-    refit — the next fit prices what is left, and the criterion adjudicates each step.
+    three symbols to one value is an unpriced extrapolation whose cost is not the sum of its pairs.
+    Measured: three pairs each within 0.02 nll of free, collapsed into one symbol, cost +186 bic and
+    reintroduced lack-of-fit. Take the cheapest pair of such a group and refit — the next fit prices
+    what is left, and the criterion adjudicates each step.
 
     ``None`` covers every case the list has nothing to claim in — no FIM, no priceable pair, or no
     tie that beats the charge — so its ABSENCE is not a certificate of parsimony. Only the section
@@ -961,12 +962,13 @@ def fit_diagnosis_block(session) -> dict[str, Any] | None:
 
     This is how the parameter verdict outlives the process that computed it, exactly as the residual
     verdict does (:func:`data_access.residual_structure_rollup` rides on the same payload, and the
-    payload is snapshotted per version). A run RESUMED in a new process restores HEAD's payload but
-    no :class:`fitting.FitRecord` — the optimizer ran elsewhere — and re-deriving one there means
-    naming an AMICI output folder from live state, which is a full C++ build of a structure that was
-    already built once, under a different SBML serialisation. Storing the verdict removes the need:
-    nothing is recomputed, so nothing can be compiled, and the finish gate's parsimony refusal keeps
-    working across a resume instead of quietly going dark for the rest of the run.
+    payload is snapshotted per version). A session RESUMED in a new process restores HEAD's payload
+    but no :class:`fitting.FitRecord` — the optimizer ran elsewhere — and re-deriving one there
+    means naming an AMICI output folder from live state, which is a full C++ build of a structure
+    that was already built once, under a different SBML serialisation. Storing the verdict removes
+    the need: nothing is recomputed, so nothing can be compiled, and a client's parsimony refusal
+    at finish keeps working across a resume instead of quietly going dark for the rest of the
+    session.
 
     ``structure_hash`` travels with it because a stored verdict has to be able to say whether it still
     applies (see :func:`structure_moved`); it is the record's, i.e. the structure that was fitted.
@@ -974,9 +976,9 @@ def fit_diagnosis_block(session) -> dict[str, Any] | None:
     Best-effort in the strong sense: ANY failure returns ``None``. A parameter-geometry advisory must
     never fail a commit, so it is guarded here rather than at each call site — and it needs no compile
     guard, since :func:`identifiability` evaluates the FROZEN problem, which is already built. It runs
-    the whole diagnosis (the FIM is the cost either way: measured at 0.085 s on blasi's k=11, n=252
+    the whole diagnosis (the FIM is the cost either way: measured at 0.085 s on a k=11, n=252
     steady-state model, 6% of a single-start fit there) so the stored verdict, the hint on the result
-    and the section the lead reads are one computation at one optimum and cannot disagree.
+    and the section the agent reads are one computation at one optimum and cannot disagree.
     """
     try:
         record = fit_record(session)
@@ -1022,11 +1024,11 @@ def stored_merge_hints(session) -> list[dict[str, Any]] | None:
     """The hints the last fit already priced, for a later READ of the same score
     (:func:`fitting.fit_summary`) to report without pricing them a second time — or ``None``.
 
-    Read off the STORED verdict, never recomputed: the score read is the cheapest call in the run and
-    the gate makes it on every finish attempt, so it must not cost a FIM. ``None`` once the STRUCTURE
-    has drifted from the fit that priced them, so a restore does not re-serve another model's ties as
-    if they were this state's — but a de-dup no-op does not drop them: HEAD is still that fit, and the
-    score read beside it is still that fit's score.
+    Read off the STORED verdict, never recomputed: the score read is the cheapest call in the
+    session and a client's finish gate makes it on every finish attempt, so it must not cost a FIM.
+    ``None`` once the STRUCTURE has drifted from the fit that priced them, so a restore does not
+    re-serve another model's ties as if they were this state's — but a de-dup no-op does not drop
+    them: HEAD is still that fit, and the score read beside it is still that fit's score.
     """
     diagnosis = stored_diagnosis(session)
     if not diagnosis.get("available") or diagnosis.get("stale"):

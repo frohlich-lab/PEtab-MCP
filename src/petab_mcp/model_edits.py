@@ -1,6 +1,6 @@
 """STRUCTURED edits to a model: say WHAT changes, not which characters to replace.
 
-The substring-patch surface this replaces was measured over 30 runs and 1,063 patches, and every
+The substring-patch surface this replaces was measured over 30 sessions and 1,063 patches, and every
 one of its failure classes came from addressing a structured object by its text:
 
 * 20% of all patches targeted the ``const ...;`` declaration — a DERIVED line libantimony
@@ -8,8 +8,8 @@ one of its failure classes came from addressing a structured object by its text:
   and is never the text the agent last saw. It caused 71% of all patch failures.
 * Of the failures that remained, 81% quoted text present in NEITHER the rendered model nor the
   agent's own submission — a plausible-looking anchor rather than a copied one. Patching turns
-  authoring (which the model does well) into exact reproduction (which it does badly); nothing
-  in the prompt fixes that, because the text was already in its context.
+  authoring (which the model does well) into exact reproduction (which it does badly); no
+  instruction fixes that, because the text was already in its context.
 * Reaction IDs churn when a model is re-authored, so a purely additive change reads as a
   wholesale rewrite: 55% of the "coordinated rewrite" steps in an earlier analysis were nothing
   but renumbering.
@@ -54,8 +54,8 @@ from typing import Any
 from .operations import OperationError
 
 #: Ceiling on any id list in an error message. Same rule and reason as `server._ID_LIST_CAP`:
-#: lucarelli's 118-symbol table is a measured top-3 context cost, and an unbounded list lands in
-#: the caller's history for the rest of the run.
+#: a 118-symbol parameter table was a measured top-3 context cost, and an unbounded list lands in
+#: the caller's history for the rest of the session.
 _ID_LIST_CAP = 60
 
 #: Antimony syntax that a `rename` must never treat as a symbol, on EITHER side. Not exhaustive —
@@ -168,7 +168,7 @@ _PROTECTED_SYMBOLS = _ANTIMONY_KEYWORDS | frozenset(
 #: The law admits COMPARISONS (`>=`, `<=`, `==`, `!=`) but never a bare `=`. Both halves matter:
 #: excluding `=` outright made every time-gated law unmatchable — `r1: A -> B; k*A*piecewise(0,
 #: time >= t0, 1);` returned NO reaction ids and was reported as UNNAMED, so the wholesale path
-#: rejected exactly the models the isensee/raimundez prompts instruct the agent to write. Allowing
+#: rejected exactly the time-gated models an agent is routinely asked to write. Allowing
 #: a bare `=` would let a law-less reaction swallow the assignment after it (`r1: A -> B;` +
 #: `k1 = 0.5;` must stay two statements). The two-char alternative is tried FIRST so `>=` is
 #: consumed as a unit rather than backtracked into.
@@ -203,7 +203,7 @@ OPS = (
 #: `add_reaction` masks via `_reactions`, `unnamed_reactions`, `reaction_ids`, `model_symbols`
 #: (twice, once through `assigned_symbols`), `assigned_symbols`, and the leftover check — so the
 #: same source was re-walked character by character in a Python list six or more times per
-#: operation, all under `session.lock`, and a batch over alkan's 53-reaction models re-walked it
+#: operation, all under `session.lock`, and a batch over a 53-reaction model re-walked it
 #: dozens of times. The masking is a pure function of the text, so remembering the LAST result
 #: collapses all of that: within one operation every call passes the identical string. One entry
 #: rather than an lru_cache because model sources are large and only the current one is ever hot.
@@ -265,7 +265,7 @@ def closest_symbols(wanted: str, known: list[str], n: int = 2, cutoff: float = 0
 
     Token overlap alongside character similarity, taking whichever is kinder: the commonest real
     miss is the right concept under a swapped convention (`X2_scaling` for `scaling_X2` —
-    agents wrote both orderings across runs), and character-order matching scores a swap as a
+    agents wrote both orderings across sessions), and character-order matching scores a swap as a
     near-total mismatch, then confidently suggests a DIFFERENT symbol instead.
 
     One definition, used by every surface that reports an unknown id — see
@@ -393,7 +393,7 @@ def model_symbols(text: str) -> set[str]:
     for m in _RXN_STMT.finditer(masked):
         names.add(m.group("id"))
         # BOTH sides. Rate-law-only symbols are precisely the ones the reconcile MINTS (measured at
-        # 19 per run), so a guard that reads only the stoichiometry misses its commonest case:
+        # 19 per session), so a guard that reads only the stoichiometry misses its commonest case:
         # `add_reaction('k_deg: B -> C; k2*B;')` against a model whose only `k_deg` is in a rate
         # law was accepted, redefining it as a reaction id and turning the refusal this function
         # exists to give into an opaque libantimony error at reconcile time.
@@ -521,9 +521,9 @@ def _op_add_reaction(text, op, where):
         )
     m = found[0]
     # A redundant `id` used to be REJECTED outright ("takes its id from the statement — drop
-    # `id`"), which is interface pedantry the trace corpus paid for: 12 rejections across the
-    # 2026-08-20 sweep, and on bachmann task 2 the burned turn was the FIRST attempt at the
-    # nuclear-RNA delay chain — the single most valuable mechanism for that problem. A matching
+    # `id`"), which is interface pedantry agent traces paid for: 12 rejections in one set of
+    # sessions, and in one of them the burned turn was the FIRST attempt at a delay chain — the
+    # single most valuable mechanism for that problem. A matching
     # id states the caller's intent twice, consistently; only a MISMATCH is ambiguous (which name
     # would later operations address?), so only a mismatch is refused.
     given = str(op.get("id") or "").strip()
@@ -798,7 +798,7 @@ def _op_rename(text, op, where):
             cause="rename_target_missing",
         )
     # A collision MERGES two symbols, and whether that is legitimate depends on WHAT they are:
-    #   * two PARAMETERS -> a real move. Measured: a winning run merged two rate constants this
+    #   * two PARAMETERS -> a real move. Measured: a winning session merged two rate constants this
     #     way and priced it itself at dBIC -2.668. Allowed.
     #   * a SPECIES onto another species -> structural corruption reported as success, because
     #     `A => B` silently becomes `B => B`. Refused.
@@ -853,7 +853,7 @@ def _op_rename(text, op, where):
 def _op_set_assignment(text, op, where):
     """Write or replace an ASSIGNMENT RULE — ``id := expr;``.
 
-    The op behind measurement-mapping (``readout_*``) symbols: a blinded benchmark ships each
+    The op behind measurement-mapping (``readout_*``) symbols: a blinded problem ships each
     observable formula referencing ``readout_<observableId>`` instead of the reference model's own
     species combination, and the caller must say what that readout IS in terms of its model —
     which in Antimony/SBML is an assignment rule, not an initial value (``set_initial`` writes

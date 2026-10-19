@@ -1,6 +1,6 @@
 """``make_changes``: the single editor, and the fit it always runs.
 
-The lead's step budget used to be dominated by a ``set_model -> change_parameters -> fit``
+An agent's step budget used to be dominated by a ``set_model -> change_parameters -> fit``
 cycle that was almost always one logical action, and each seam was a way to leave work
 unscored — an edit nobody fit, an ``n_starts`` on a call that did not fit, a fit of a model
 nobody had changed. ``make_changes`` removes the seams: ``antimony`` and/or ``parameters`` in
@@ -776,10 +776,10 @@ def test_a_model_with_no_dynamics_is_rejected(tmp_path):
 
 
 def test_the_single_editor_carries_the_whole_change(tmp_path):
-    """The prompt promises ONE call can author the model, set bounds, and score the result.
+    """An agent is told ONE call can author the model, set bounds, and score the result.
 
     That used to be a claim about two schemas agreeing — and it was false: `change_parameters`
-    took `changes=` while `set_model` took `parameters=`, so a lead following the prompt sent the
+    took `changes=` while `set_model` took `parameters=`, so an agent acting on it sent the
     wrong kwarg and lost a step to a tool-arg rejection. Collapsing the editors removes the class
     of bug rather than re-pinning it: there is one schema, so there is nothing to diverge. What is
     left to assert is that the one schema really carries every part of the promise — and that no

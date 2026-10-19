@@ -94,9 +94,9 @@ class AmiciEngine:
         # The server's DaskEngine, which every fit and held-out refit of the session runs its starts
         # on; None runs them in local processes (see fitting._fit_engine).
         self.fit_engine = fit_engine
-        # Module hashes pyPESTO has already built a problem for this run: it lets the fitter charge
-        # the (one-time) model build to ``compile_seconds`` only the FIRST time a structure is
-        # seen, so a re-fit of the same structure (a parameter-only edit) doesn't over-count
+        # Module hashes pyPESTO has already built a problem for this session: it lets the fitter
+        # charge the (one-time) model build to ``compile_seconds`` only the FIRST time a structure
+        # is seen, so a re-fit of the same structure (a parameter-only edit) doesn't over-count
         # compiles.
         self._pypesto_hashes: set[str] = set()
         # Module hashes already written to the log by :meth:`_log_pending_import`.
@@ -134,7 +134,7 @@ class AmiciEngine:
         exists" — hundredths of a second — from "compile a structure nobody has built", which is
         tens of seconds and which no read may pay (see :func:`fitting.ensure_simulation`).
 
-        Two sources, because a run outlives a process: ``_pypesto_hashes`` for what this session
+        Two sources, because a session outlives its process: ``_pypesto_hashes`` for what this one
         built, and the build root for what an earlier one did. What is looked for on disk is the
         built ``.so`` inside the model package, not the output folder — a crashed or half-written
         build leaves the folder and its generated C++ behind, and importing THAT recompiles.
@@ -142,7 +142,7 @@ class AmiciEngine:
         The disk half is not a resume story, and deliberately not treated as one: a restored model's
         SBML comes back with its parameter declarations in a different ORDER, so it hashes to a
         module nobody built even though the same structure sits compiled next to it. That is why the
-        parameter diagnosis of a resumed run is re-served from what the fit stored rather than
+        parameter diagnosis of a resumed session is re-served from what the fit stored rather than
         recomputed (see :func:`identifiability.fit_diagnosis_block`) — this only keeps a READ from
         paying for the mismatch.
         """
@@ -158,7 +158,7 @@ class AmiciEngine:
         libsbml/codegen on a pathological model) that no Python exception can catch and that
         leaves no traceback — the MCP client just sees the connection drop (``httpx.ReadError``).
         When that happens this INFO line is the last thing in ``petab_mcp.log`` and pinpoints the
-        offending model; a blasi sweep run died exactly this way with no record of the culprit.
+        offending model; a session once died exactly this way with no record of the culprit.
 
         Emitted once per module hash, so it costs one write per STRUCTURE rather than per fit: a
         re-fit or a bounds-only edit rebuilds the pyPESTO problem but reuses the compiled module,
@@ -469,11 +469,12 @@ class AmiciEngine:
         # and is not: flattening is triggered PRECISELY when two rows share
         # (observable, experiment, time) with different overrides, so in the natural vocabulary
         # those rows are not replicates and their simulated values differ — the positional
-        # `cumcount` pairing below would match them by row order. Measured on fiedler under v1:
-        # with the gel rows in a different but perfectly legal TSV order, 72/72 rows mispaired
-        # (one measurement drew a simulation 26x off), silently corrupting every residual, chi2
-        # and sigma check. In the FLATTENED vocabulary the override lives in the observable id, so
-        # (observable, experiment, time) is unique per design point and the merge cannot mispair.
+        # `cumcount` pairing below would match them by row order. Measured under v1 on a problem
+        # with per-gel overrides: with the gel rows in a different but perfectly legal TSV order,
+        # 72/72 rows mispaired (one measurement drew a simulation 26x off), silently corrupting
+        # every residual, chi2 and sigma check. In the FLATTENED vocabulary the override lives in
+        # the observable id, so (observable, experiment, time) is unique per design point and the
+        # merge cannot mispair.
         # The simulation frame carries exactly one row per measurement row, but replicate
         # measurements share the same (observableId, experimentId, time) key. Merging on ``keys``
         # alone would cross-join each size-r replicate group into r*r rows, inflating

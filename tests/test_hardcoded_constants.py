@@ -1,12 +1,12 @@
 """Hardcoded constants are priced into ``k`` (``petab_mcp.literals``, issue #180).
 
 Every complexity-penalised score charged ``k = n_estimated``, so a value written straight into a
-rate law cost nothing however it was obtained: fujita run ``53685907_4`` had 21 reactions, 10
-species and ``k = 4`` — its rate laws read ``0.000878``, ``2.69e-5``, ``1.333``… — and scored best
-of 29 runs. Two halves are pinned here: the RULE (which literals count, on libsbml ASTs built the
+rate law cost nothing however it was obtained: one agent's model had 21 reactions, 10 species and
+``k = 4`` — its rate laws read ``0.000878``, ``2.69e-5``, ``1.333``… — and scored best of 29
+sessions. Two halves are pinned here: the RULE (which literals count, on libsbml ASTs built the
 way the server builds them, from Antimony) and the ASSEMBLY (every place ``k`` is derived reads the
-same addend, from the fit payload to the stored version's bic). The harness judge's own derivation
-of ``k`` is pinned against this one in gemot.
+same addend, from the fit payload to the stored version's bic). A caller that derives ``k`` on its
+own pins that derivation against this one.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ def _rate_law(law: str) -> str:
 @pytest.mark.parametrize(
     "law, priced",
     [
-        # the literals of the motivating run: fitted values, frozen in
+        # the literals of the motivating model: fitted values, frozen in
         ("0.000878*A", ["0.000878"]),
         ("2.69e-5*A", ["2.69e-5"]),
         ("kf*A^1.333", ["1.333"]),
@@ -95,7 +95,7 @@ def test_the_free_set_is_closed_under_sign_and_reciprocal():
 
 
 def test_each_distinct_value_is_charged_once_however_written():
-    """`1.333` appears in three of the motivating run's rate laws as ONE shared exponent — one
+    """`1.333` appears in three of the motivating model's rate laws as ONE shared exponent — one
     degree of freedom, one parameter. Two spellings of the same value are the same constant."""
     ant = (
         "model m\n  species A, B, C;\n  A = 5; B = 0; C = 0;\n  kf = 0.5;\n"
@@ -178,9 +178,9 @@ def test_a_new_best_is_judged_on_the_priced_bic(session):
 
 
 def test_the_streak_checkpoint_and_the_stored_version_use_the_same_k(session):
-    """The early-stop checkpoint (`record_fit_progress`) and the version meta the judge scans
+    """The early-stop checkpoint (`record_fit_progress`) and the version meta a caller scans
     (`_snapshot_version`) must price the literals too, or a frozen model would become the
-    best-BIC checkpoint the judge restores while the fit block said otherwise."""
+    best-BIC checkpoint a caller restores while the fit block said otherwise."""
     fitsim = {
         "status": "fit",
         "neg_log_likelihood": -50.0,
@@ -192,7 +192,7 @@ def test_the_streak_checkpoint_and_the_stored_version_use_the_same_k(session):
     }
     expected = 6 * math.log(100) + 2 * -50.0
     session.record_fit_progress(0, fitsim, {"is_new_best": True})
-    # Checkpoint.score is the run's criterion — bic under the default the session resolves to.
+    # Checkpoint.score is the session's criterion — bic under the default the session resolves to.
     assert session.best.score == pytest.approx(expected)
     v = session._snapshot_version(meta={"neg_log_likelihood": -50.0}, sim=fitsim)
     assert session.provenance.get_meta(v)["bic"] == pytest.approx(expected)

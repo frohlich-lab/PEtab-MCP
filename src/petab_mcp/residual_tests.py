@@ -8,7 +8,7 @@ With a free σ the optimizer inflates the noise to absorb misfit, so every weigh
 shrinks uniformly toward zero and the magnitude scores pin near their null regardless of how
 wrong the model's FORM is (issue #54). Both tests here look only at the SIGN of each residual,
 so a uniform rescaling of the residuals leaves them unchanged — they detect a wrong form that
-the magnitude scores are blind to, using only the run's own residuals (no reference model, so
+the magnitude scores are blind to, using only the fit's own residuals (no reference model, so
 no answer leak).
 
 * **Sign test** — of the non-zero residuals for an observable, how many are positive? Under a
@@ -19,8 +19,8 @@ no answer leak).
   (maximal same-sign stretches). Too FEW runs means long same-sign stretches: the model drifts
   systematically across the time course (positive serial correlation — the signature of a
   missing dynamic term). Computed from the EXACT small-sample distribution of the run count,
-  because the usual normal approximation is invalid at the handful of points per series these
-  benchmarks have.
+  because the usual normal approximation is invalid at the handful of points per series a typical
+  problem has.
 
 * **Replicate lack-of-fit** — where a design point was measured SEVERAL times, its replicates
   differ by noise alone, so their scatter is a model-free yardstick for how far the prediction is
@@ -36,8 +36,8 @@ out through ``get_fit_diagnosis``).
 
 ALL THREE TESTS FEED THE SESSION'S PLATEAU-ADEQUACY GATE, through the one ``flagged_observables``
 list ``session.py`` reads via ``data_access.residual_flag`` — the sign/runs tests have fed it since
-PR #111 (the sneyd case: underfits that plateau-stopped as "adequate" with a plausible sigma while
-flagging structured residuals), and the replicate test joins the same list rather than adding a gate.
+PR #111 (underfits that plateau-stopped as "adequate" with a plausible sigma while flagging
+structured residuals), and the replicate test joins the same list rather than adding a gate.
 So loosening any alpha here loosens a STOP CONDITION; none of this is merely advisory. What differs
 is POWER, not consequence: at these sample sizes the sign/runs tests are weak, so a non-significant
 result there is reported as ``low_power`` rather than as a pass, while the replicate test has real
@@ -48,7 +48,7 @@ WHOLE-PROBLEM count — replicated points add across noise families while the st
 are shared — so :func:`replicate_lack_of_fit` here judges NO df at all: it tests one family's points
 and ``data_access._merge_lof_verdicts`` applies :func:`lof_power` once, to the pooled total. It is
 the FLAG that gates, on all three tests; ``weak`` and ``low_power`` are advisory qualifications of a
-non-flag, read by the prose and by result.json and by no stop condition.
+non-flag, read by the prose and by no stop condition.
 """
 
 from __future__ import annotations
@@ -217,18 +217,19 @@ def fisher_combine(pvalues: list[float]) -> float | None:
 def student_t_two_sided_p(t: float, df: float) -> float | None:
     """``P(|T| >= |t|)`` for ``T ~ Student-t(df)``.
 
-    Student-t and not a normal tail because ``df_i = n_i - 1`` is a handful here (blasi 11-17,
-    armistead 3-4): the sd in the denominator is estimated from the very replicates being tested, and
-    a normal tail would over-state the significance of every point. ``None`` on a non-finite ``t`` or
-    ``df < 1`` (fail open — a diagnostic must never manufacture a verdict from bad input).
+    Student-t and not a normal tail because ``df_i = n_i - 1`` is a handful here (11-17 on one
+    problem, 3-4 on another): the sd in the denominator is estimated from the very replicates being
+    tested, and a normal tail would over-state the significance of every point. ``None`` on a
+    non-finite ``t`` or ``df < 1`` (fail open — a diagnostic must never manufacture a verdict from
+    bad input).
 
     scipy, not a hand-rolled incomplete beta: the binomial and runs tails above are hand-rolled to
     keep this module scipy-free, but that premise does not hold — importing :mod:`petab_mcp` at all
     already puts ``scipy.stats`` in ``sys.modules`` (via pypesto), so no import was ever saved on any
     path and 85 lines of Numerical-Recipes continued fraction bought nothing. (NOT because
     :func:`fisher_combine` imports ``scipy.stats.chi2`` on the same per-fit path: it returns before
-    that import whenever it has a single p-value, which is blasi, and on a collapsed sigma the
-    sign/runs tests do not run at all.) Degrades to ``None`` if the import ever fails, like
+    that import whenever it has a single p-value, the steady-state case, and on a collapsed sigma
+    the sign/runs tests do not run at all.) Degrades to ``None`` if the import ever fails, like
     fisher_combine.
     """
     try:
@@ -299,9 +300,9 @@ def lof_power(
 
     THE one owner of the lack-of-fit-df rule — one function, one threshold comparison, one place the
     default ``REPLICATE_LOF_MIN_LOF_DF`` is read. The rule lived in two code paths before (the
-    per-family statistic and the merge) computing it from two different point counts, so the arm and
-    the payload the lead was shown could disagree about the same pass; and the merge's copy read the
-    module constant, discarding a caller's ``min_lof_df=`` override.
+    per-family statistic and the merge) computing it from two different point counts, so the arm
+    and the payload the agent was shown could disagree about the same pass; and the merge's copy
+    read the module constant, discarding a caller's ``min_lof_df=`` override.
 
     ``lof_df = n_points - n_structural`` is what a pass is worth: a fit with nearly as many free
     structural parameters as replicated points can place its predictions on the replicate means in
@@ -324,9 +325,9 @@ def lof_power(
     (each has its own set of them) while every estimated parameter is free to move every family's
     predictions, and no per-family split of them exists. Applying this per family instead both
     understated the df (two families of 15 points at 14 structural reported 2, not 30 - 14 = 16) and
-    called armistead's three 4-point families vacuous one by one, telling the lead the model "has as
-    many estimated structural parameters as there are replicated design points" of 12 points against
-    10 — a sentence that was simply false.
+    called one problem's three 4-point families vacuous one by one, telling the agent the model "has
+    as many estimated structural parameters as there are replicated design points" of 12 points
+    against 10 — a sentence that was simply false.
     """
     min_lof_df = REPLICATE_LOF_MIN_LOF_DF if min_lof_df is None else min_lof_df
     if n_structural is None:
@@ -364,10 +365,10 @@ def replicate_lack_of_fit(
     matter how its parameters move, which is missing STRUCTURE, not noise.
 
     Why this arm exists and why it is scoped this way is in ``constants.REPLICATE_LOF_ALPHA``. The
-    guards, each with the benchmark example that forces it:
+    guards, each with the measured case that forces it:
 
-    * ``min_df`` — a point needs df_i >= 2 (schwen: 126 points, every n_i = 2, technical replicates
-      of a calibration whose reference sigma is 7.8x their pure error).
+    * ``min_df`` — a point needs df_i >= 2 (one problem: 126 points, every n_i = 2, technical
+      replicates of a calibration whose reference sigma is 7.8x their pure error).
     * ``min_points`` — fewer than 3 usable points and there is no family to correct over.
     * anything non-finite or missing is DROPPED, and an empty family reports NO EVIDENCE
       (``available: False``) — never a pass.
@@ -380,7 +381,7 @@ def replicate_lack_of_fit(
     is also where ``vacuous`` (df <= 0, nothing tested at all) and ``weak`` (a thin pass) are
     decided. Judging it here as well was two owners of one rule computing it from two different
     point counts: they disagreed on 22 of 48 measured (families x points x parameters) cells, and
-    the per-family version called armistead's three 4-point families vacuous one at a time — NO
+    the per-family version called one problem's three 4-point families vacuous one at a time — NO
     EVIDENCE, with a summary line claiming as many parameters as replicated points, for 12 pooled
     points against 10 parameters (pooled df 2, a thin pass but a real test).
 
@@ -389,7 +390,7 @@ def replicate_lack_of_fit(
     ``{available, status, n_points, alpha, flagged, tested, max_abs_z, min_p_holm, points}``. Keep
     this list complete when adding a key: an assembler that REBUILDS the verdict from a list like
     it and silently dropped ``lof_df``/``weak``, which left the summary claiming "this arm IS
-    powered" on a df = 1 pass through three blasi runs.
+    powered" on a df = 1 pass, in three sessions on one problem.
 
     Fixed shape HERE, not on the wire: what rides on a fit result is a projection of the MERGED
     verdict (``data_access._lof_payload``), and that one omits every key with nothing to say — this
@@ -406,7 +407,7 @@ def replicate_lack_of_fit(
     # Counted so that "nothing to test" can name WHICH kind of nothing it was — each unavailable
     # status has to mean exactly one thing (see replicate_lof_unavailable).
     n_replicated = 0  # design points measured more than once at all
-    n_thin = 0  # ...of those, the ones below min_df (schwen's every-n_i-is-2)
+    n_thin = 0  # ...of those, the ones below min_df (e.g. a problem whose every n_i is 2)
     for p in points or []:
         try:
             n = int(p["n"])

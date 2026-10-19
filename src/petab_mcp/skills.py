@@ -174,10 +174,9 @@ def default_skills_dir() -> Path | None:
 def skill_texts(skills_dir: str | Path | None = None) -> dict[str, str]:
     """Every bundled skill as ``{name: full text}``, support files included.
 
-    A skill is *instructions*, not reference docs: the modeling lead is told to read them before
+    A skill is *instructions*, not reference docs: an agent is told to read them before
     authoring. So a change here changes what an agent is told, exactly like editing a prompt —
-    which is why the harness versions these alongside ``prompt_version`` and registers them in
-    Phoenix (see ``petab_harness.experiments``).
+    which is why a client should version these alongside its own prompt.
     """
     skills = load_skills(skills_dir or default_skills_dir())
     out: dict[str, str] = {}
@@ -190,9 +189,8 @@ def skill_texts(skills_dir: str | Path | None = None) -> dict[str, str]:
 def skills_version(skills_dir: str | Path | None = None) -> str:
     """A stable 12-char content hash over every bundled skill — the *skills version*.
 
-    Same framing scheme as ``petab_harness.prompts.prompt_version`` (sorted name, NUL, text),
-    kept separate rather than folded into it: ``prompts.py`` is deliberately dependency-free and
-    must not read this package's files, and two numbers say WHICH surface moved.
+    Framed as sorted name, NUL, text, so a client can hash its prompt the same way; kept separate
+    rather than folded into that hash, because two numbers say WHICH surface moved.
     """
     import hashlib
 

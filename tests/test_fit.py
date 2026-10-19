@@ -110,7 +110,7 @@ def test_fit_is_a_noop_when_model_unchanged(fit_session):
     assert again["residual_structure"] == first["residual_structure"]
     # ...and so does the NOISE verdict. It must not be omitted: `noise_sigma_advice` is absent
     # when the noise model is plausible, so a no-op carrying none of these keys would read as
-    # "plausible" — and the lead has no get_fit_summary to check against.
+    # "plausible" — and the agent may have no get_fit_summary to check against.
     for key in ("noise_sigma_report", "noise_sigma_inflated", "noise_sigma_collapsed"):
         assert key in again, key
         assert again[key] == first[key]
@@ -161,7 +161,7 @@ def test_fit_returns_the_compact_residual_structure_verdict(fit_session):
 def test_fit_result_omits_the_detailed_diagnosis(fit_session):
     """COMPACT means compact: the per-observable table and worst_points stay behind
     get_fit_diagnosis, so they don't ride on every fit and pile up in the agent's re-sent
-    history (the input-token cost the ORCHESTRATOR_TOOLS curation exists to avoid)."""
+    history (an input-token cost paid again on every later turn)."""
     res = fit_session.fit(n_starts=2)
     assert "per_observable" not in res and "worst_points" not in res
     assert "per_observable" not in res["residual_structure"]
@@ -169,10 +169,10 @@ def test_fit_result_omits_the_detailed_diagnosis(fit_session):
 
 # -- the merge hint rides on the fit result too -------------------------------
 # Same reasoning as the residual verdict above, for the model's PARAMETERISATION. Measured: across
-# three blasi runs on 3491be9 the identifiability tool was called 3, 0 and 1 times out of 190, 149
-# and 94 tool calls, while the residual verdict — which rides on every fit — was quoted back in the
-# panel's own justifications. The run that came CLOSEST (dBIC +11.6 against a <=10 bar) never called
-# it and had a merge in its own FIM costing 0.001 nll against a 5.53 penalty.
+# three sessions on one problem the identifiability tool was called 3, 0 and 1 times out of 190,
+# 149 and 94 tool calls, while the residual verdict — which rides on every fit — was quoted back in
+# the agents' own justifications. The session that came CLOSEST (dBIC +11.6 against a <=10 bar)
+# never called it and had a merge in its own FIM costing 0.001 nll against a 5.53 penalty.
 #: The toy model with k1's STARTING value as a slot — a re-author that moves the SBML hash without
 #: moving the structure fingerprint, i.e. the de-dup no-op that drifts.
 _TOY_WITH_K1 = """model conversion_reaction
@@ -216,7 +216,7 @@ def _stub_fim(monkeypatch, curvature, *, counter=None):
 
 def test_a_near_free_tie_reaches_the_fit_result_as_a_merge_hint_row(fit_session, monkeypatch):
     """The result carries a LIST — every tie the BIC charge covers, capped at
-    identifiability.MERGE_HINT_LIMIT — so a lead is never shown one member of a redundant group as
+    identifiability.MERGE_HINT_LIMIT — so an agent is never shown one member of a redundant group as
     if it were the only merge available. This toy has one priceable pair, so the list has one row.
     """
     from petab_mcp import identifiability as I
@@ -236,8 +236,8 @@ def test_a_near_free_tie_reaches_the_fit_result_as_a_merge_hint_row(fit_session,
     ties = I.identifiability(sess)["merge_candidates"]["ties"]
     assert {k: ties[0][k] for k in ("parameters", "dnll", "dscore", "move_scaled")} == hint
     assert set(hint) == {"parameters", "dnll", "dscore", "move_scaled"}  # ~110 B on every fit
-    # ...and the SCORE read carries the same one, so a caller that did not run the fit (the
-    # analysts, the harness finish gate, the final scoring) sees the tie the lead was shown.
+    # ...and the SCORE read carries the same one, so a caller that did not run the fit (another
+    # agent, a client's finish gate, a final scoring) sees the tie the agent was shown.
     from petab_mcp import fitting
 
     assert fitting.fit_summary(sess, sess.engine)["merge_hints"] == hints
@@ -339,7 +339,7 @@ def test_a_fit_that_never_ran_prices_no_tie(fit_session, monkeypatch):
 def test_the_fim_is_evaluated_on_the_fits_own_problem(fit_session, monkeypatch):
     """No pyPESTO problem is CONSTRUCTED for a diagnosis at all — it evaluates the one the optimizer
     minimised, held on the frozen fit record. Construction used to dominate the hint's cost (0.33 s
-    of 0.70 s on schwen, k=30) and, when the working SBML had drifted, came with a full C++ build."""
+    of 0.70 s at k=30) and, when the working SBML had drifted, came with a full C++ build."""
     import pypesto.petab
     from petab.v2.C import UPPER_BOUND
 
@@ -388,8 +388,8 @@ def test_a_restore_reports_the_restored_versions_own_tie(fit_session, monkeypatc
 def test_a_restore_diagnoses_the_version_it_restored_not_the_last_fit(fit_session, monkeypatch):
     """Two sources of one verdict must not be able to name two fits. After a restore, the in-memory
     record still holds the LAST fit — another structure — while the restored payload carries the fit
-    HEAD now IS; the score read serves that one, so the section has to as well, or the lead is shown a
-    tie for a model it is not looking at."""
+    HEAD now IS; the score read serves that one, so the section has to as well, or the agent is
+    shown a tie for a model it is not looking at."""
     from petab_mcp import fitting, identifiability as I
     from petab_mcp import operations as O
 
@@ -427,7 +427,7 @@ def test_fit_writes_the_structure_flag_into_the_version_meta(fit_session):
 
 def test_restore_version_carries_the_verdict_too(fit_session):
     """rollback/restore share fit_result_block with fit, so the shape is identical everywhere —
-    the lead restoring a prior best sees that version's structure verdict without a follow-up
+    an agent restoring a prior best sees that version's structure verdict without a follow-up
     call."""
     sess = fit_session
     sess.fit(n_starts=2)
@@ -442,7 +442,7 @@ def test_restore_version_carries_the_verdict_too(fit_session):
 
 def test_untested_residuals_are_recorded_as_unknown_not_as_clean(session, monkeypatch):
     """A version whose residual tests could not run must store `residual_flagged: None`, not
-    False — recording "untested" as "nothing found" would let a later reader (or the judge) treat
+    False — recording "untested" as "nothing found" would let a later reader (or a scorer) treat
     an undiagnosed model as structurally sound. Uses the engine-free session, whose `fit` snapshots
     a version without a real simulation, so the tests genuinely have nothing to run on."""
     from petab_mcp import data_access
@@ -497,7 +497,7 @@ def test_get_fit_summary_carries_the_residual_structure_verdict(fit_session):
     summary = fitting.fit_summary(sess, sess.engine)
 
     assert "residual_structure" in summary, (
-        "get_fit_summary must carry the residual-structure verdict — the finish gate reads it here"
+        "get_fit_summary must carry the residual-structure verdict — a finish gate reads it here"
     )
     rs = summary["residual_structure"]
     assert isinstance(rs, dict) and "summary" in rs

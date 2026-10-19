@@ -45,9 +45,9 @@ from .validation import frozen_parametric_stoichiometry_issues, validate_problem
 # which it almost always is. An agent told to rename writes `tau`, `tau` has nothing binding it to
 # simulation time, reconcile mints it as an ESTIMATED parameter, and every `piecewise(level,
 # tau >= X_time, 0)` gate silently becomes a comparison against a fitted CONSTANT — all inputs go
-# time-invariant while the model still compiles, fits and commits. Measured on the 2026-08-17
-# isensee sweep: 4 of 16 runs hit the collision, and the one that followed the "rename to tau"
-# hint lost ~512 nll to it, recovering the whole amount in one edit once it switched to `time`.
+# time-invariant while the model still compiles, fits and commits. Measured on one problem: 4 of
+# 16 sessions hit the collision, and the one that followed the "rename to tau" hint lost ~512 nll
+# to it, recovering the whole amount in one edit once it switched to `time`.
 # So `t` maps to an INSTRUCTION, not a replacement name.
 _AMICI_RESERVED_HINTS = {
     "h": "n_hill or hill_coeff",
@@ -86,7 +86,7 @@ def _build_output_tail(exc: BaseException, max_lines: int = 25) -> str:
     header, the link error, the cmake refusal — sits on the exception object and never reached
     anyone reading the rejection. Losing it cost several rounds of diagnosing a CI failure from
     the wrapper alone; surfacing the tail makes a build failure self-diagnosing wherever the
-    message lands (agent, result.json, test log).
+    message lands (agent, client log, test log).
 
     The TAIL, because a compiler dumps pages of progress before the error that stopped it.
     """
@@ -125,8 +125,8 @@ def _compile_fit_failure_message(exc: Exception) -> str:
     A model symbol whose name collides with an AMICI-reserved codegen name (``h``, ``t``,
     ``x`` …) fails compilation with a cryptic ``'amici_<name>'`` KeyError that reads nothing
     like a name clash — the generic message below blamed an "ill-posed ODE" and sent the agent
-    off to debug the maths (which is why the repressilator's first, correct model, whose Hill
-    exponent was named ``h``, was abandoned). Detect the clash (a *short* symbol after the
+    off to debug the maths (which is why a first, correct model, whose Hill exponent was named
+    ``h``, was abandoned). Detect the clash (a *short* symbol after the
     ``amici_`` codegen prefix — long ones like ``amici_model`` are internals, not user symbols)
     and tell it to rename; otherwise fall back to the ill-posed hint, which does describe the
     genuine non-integrable-ODE case.
@@ -140,9 +140,9 @@ def _compile_fit_failure_message(exc: Exception) -> str:
             # to simulation time, so reconcile mints it as an ESTIMATED parameter and every
             # `piecewise(level, tau >= X_time, 0)` gate becomes a comparison against a fitted
             # CONSTANT — the inputs go time-invariant while the model still compiles and fits.
-            # Measured on the 2026-08-17 isensee sweep: 4 of 16 runs hit this, and the one that
-            # took the old "rename to tau" advice lost ~512 nll, recovering it all in one edit
-            # once it switched to `time`.
+            # Measured on one problem: 4 of 16 sessions hit this, and the one that took the old
+            # "rename to tau" advice lost ~512 nll, recovering it all in one edit once it switched
+            # to `time`.
             return (
                 "the model uses a symbol named 't', which collides with a name AMICI reserves for "
                 "its generated code. If 't' stands for TIME, do NOT rename it: write the built-in "
@@ -188,7 +188,7 @@ class OperationError(PetabMcpError):
     """An invalid model operation (bad justification, unparseable reaction, ...).
 
     ``cause`` is an optional MACHINE-READABLE label for the rejection class, carried through to
-    ``result.json``'s ``edit_rejects.by_cause``. It exists because classifying rejections by
+    a client's ``edit_rejects.by_cause`` count. It exists because classifying rejections by
     substring-matching their English text put three separate buckets on an unreachable branch in
     one day — a needle that also appears in an earlier entry silently steals every match, and the
     prose is free to change under the classifier. When a raiser sets this, the classifier uses it
@@ -209,11 +209,11 @@ def _observed_symbol_ids(problem) -> set[str]:
     like ``1e5`` never leaks a bogus ``e5`` identifier — matching every other
     formula-symbol site in the package.
 
-    The rules matter on every blinded benchmark: each formula reads a ``readout_*`` measurement
+    The rules matter on every blinded problem: each formula reads a ``readout_*`` measurement
     mapping, which the model must define by an assignment rule (see
     :func:`validation._undefined_readout_issues`), so the formula itself names no species. Read
     off the formula alone, every species a commit added was reported as feeding no observable —
-    all ten of a Fujita model whose three readouts summed them.
+    all ten of a model whose three readouts summed them.
     """
     from petab.v2.C import OBSERVABLE_FORMULA
 
@@ -261,8 +261,8 @@ def _parsimony_warnings(problem, old_species: set[str]) -> list[str]:
     edit.
 
     We deliberately do NOT flag species that are legitimately unobserved, because doing so
-    trained the agent to ignore the warning entirely (it fired 62× on correct choices in one
-    benchmark). Suppressed:
+    trained the agent to ignore the warning entirely (it fired 62× on correct choices on one
+    problem). Suppressed:
 
     * **condition-table inputs** — a species set per-condition (a dose/genotype column);
     * **held const/boundary species and rule-driven forcing terms** — model INPUTS, not free
@@ -308,9 +308,9 @@ def _rejection_summary(issues: list[str]) -> str:
 
     `issues` already travelled next to the error, but the bare
     "the resulting problem is invalid." carried no reason, and that class recovered on the next
-    call only 60.4% of the time against 83-100% for rejections whose message names the fix (Aug
-    8-10 sweep, 197 calls). Folding the leading reasons into the text the agent reads first is one
-    concatenation and needs no new machinery.
+    call only 60.4% of the time against 83-100% for rejections whose message names the fix (197
+    calls). Folding the leading reasons into the text the agent reads first is one concatenation
+    and needs no new machinery.
 
     Truncated per issue and capped in count: libSBML emits multi-paragraph messages, and a wall of
     them costs the context it is meant to save. The full list stays on `issues`, and the count of
@@ -362,7 +362,7 @@ def _commit_change(
     """Apply one model/parameter edit to the working model — WITHOUT fitting or versioning.
 
     ``model_build()`` returns a brand-new ``(SbmlModel, apply_result)`` that *replaces*
-    the model wholesale (both re-authoring an existing model and zero-shotting one when none
+    the model wholesale (both re-authoring an existing model and authoring one when none
     exists — reconciled either way); ``param_edit(problem)`` edits the parameter table in place.
     A ``param_edit`` may accompany a
     model build (``set_model(parameters=[...])``, issue #114): both then land in the SAME
@@ -1078,11 +1078,11 @@ def _antimony_parse_hint(text: str, exc: Exception) -> str:
     """Echo the offending SOURCE LINE, plus a likely cause when the line's shape is recognisable.
 
     Antimony reports a line NUMBER and the unexpected token, never the line — so the agent is left
-    matching a bison tail against a model it has to re-read. 267 parse rejections in the August
-    corpus, 11 traces, 4 model families, 7 distinct tails.
+    matching a bison tail against a model it has to re-read. 267 parse rejections across 11 agent
+    traces, 7 distinct tails.
 
     Gated on the source LINE rather than the token, because token→construct is not 1:1:
-    `parameter V_init;` reports "unexpected ';'", which the token alone misdiagnoses. Hints are
+    `parameter A_init;` reports "unexpected ';'", which the token alone misdiagnoses. Hints are
     worded "likely cause" and never as a verdict; the echo alone is useful even when none matches.
     """
     m = re.search(r"line (\d+)", str(exc))
@@ -1097,24 +1097,24 @@ def _antimony_parse_hint(text: str, exc: Exception) -> str:
     if re.match(r"^(param|parameter)\b", src):
         parts.append(
             "likely cause: `parameter`/`param` is not an Antimony keyword — a parameter "
-            "is a plain assignment (`NN = 480;`); a comma list needs a real keyword "
+            "is a plain assignment (`k1 = 0.1;`); a comma list needs a real keyword "
             "(`const a = 1, b = 2;`). Keep `species`, `compartment`, `var`, `const`."
         )
     elif re.search(r"^\w+\s*:.*;.*\w+\s*=", src):
         parts.append(
             "likely cause: a rate law is a bare expression and cannot be named — write "
-            "`R: -> V; k_prod;`, not `R: -> V; v_prod = k_prod;`."
+            "`r: -> B; k_syn;`, not `r: -> B; v_syn = k_syn;`."
         )
     elif re.search(r"(->|=>)", src) and re.search(r"\b\w+\s*\*\s*\w+", src.split(";")[0]):
         parts.append(
             "likely cause: stoichiometry is a numeric literal separated by a space, not "
-            "a `*` — and never a parameter. A burst size belongs in the rate law: "
-            "`r: -> V; NN*delta*I;`."
+            "a `*` — and never a parameter. A yield or gain belongs in the rate law: "
+            "`r: -> B; Y*kp*A;`."
         )
     elif re.match(r"^\w+\s*;", src):
         parts.append(
-            "likely cause: a name on its own is not a declaration — use `species V;`, "
-            "`var gamma;`, or an assignment `gamma = 0.1;`."
+            "likely cause: a name on its own is not a declaration — use `species B;`, "
+            "`var k1;`, or an assignment `k1 = 0.1;`."
         )
     return " ".join(parts)
 
@@ -1131,9 +1131,9 @@ def _require_positive_for_log(problem, parameter_id: str, scale: str) -> None:
             except (TypeError, ValueError):
                 continue
             if fval == fval and fval <= 0:  # not NaN and non-positive
-                # The bare rejection is the ONE mode in the August trace corpus where the agent
+                # The bare rejection is the ONE mode in a corpus of agent traces where the agent
                 # could not recover from the message it was given: it names `nominalValue`, which
-                # no argument can set, so a run alternated this rejection with an unknown-key
+                # no argument can set, so a session alternated this rejection with an unknown-key
                 # rejection 41 times each and spent its whole budget without a single fit. Name
                 # the exits that actually work.
                 if field == "lowerBound":
@@ -1163,7 +1163,7 @@ def _warn_sigma_bound_widening(problem, parameter_id: str, upper_bound: float) -
     affect a fit it is never optimized over.
 
     WARNS rather than rejects (#118). The cap is a fraction of the observable's MARGINAL data std,
-    which conflates variance the model explains with variance it can't: across the benchmark, the
+    which conflates variance the model explains with variance it can't: on reference problems, the
     true models' own sigmas span ~0.0004-0.59 of that std, so any band wide enough to be safe is
     too wide to be decisive. On a real problem there is no reference to check it against, so a hard
     rejection could block a legitimate edit with no recourse. The load-bearing evidence for "sigma
@@ -1193,9 +1193,10 @@ def _warn_sigma_bound_widening(problem, parameter_id: str, upper_bound: float) -
     if float(upper_bound) <= cap:
         return None
     # Only warn about an actual WIDENING. Without comparing to the CURRENT bound this fires on a
-    # TIGHTENING that merely lands above the cap — e.g. perelson ships [1e-10, 1e10] against a cap
-    # of ~0.31, so an agent correctly narrowing to [1e-3, 1.0] would be told its improvement is a
-    # dangerous widening. A bound that was already past the cap and is moving DOWN is progress.
+    # TIGHTENING that merely lands above the cap — e.g. a problem shipping [1e-10, 1e10] against a
+    # cap of ~0.31, where an agent correctly narrowing to [1e-3, 1.0] would be told its
+    # improvement is a dangerous widening. A bound that was already past the cap and is moving
+    # DOWN is progress.
     try:
         current = float(problem.parameter_df.loc[parameter_id, UPPER_BOUND])
     except (KeyError, TypeError, ValueError):
@@ -1417,7 +1418,7 @@ def _restore_parameter_edit(
     """A ``param_edit`` that puts a STORED version's search space back.
 
     Used by a `base_version=N` fork so that going back to a version restores its bounds, scales
-    and nominal values along with its model — the prompt used to tell the agent that
+    and nominal values along with its model — the agent used to be told that
     `base_version` "rolls back the MODEL only" and to re-send `parameters` by hand, which meant a
     fork silently inherited whatever the abandoned branch had widened, and re-started the search
     from the abandoned branch's optimum.

@@ -3,19 +3,20 @@
 NOT :mod:`petab_mcp.validation`, which lints a PEtab problem for structural errors.
 
 * **fixed-θ** (:func:`score_problem`) — the same problem under experiments the training set does
-  not cover, so the fitted parameters carry over and the model is EVALUATED at them (fujita's EGF
-  pulses and ramps; lucarelli's other cell types, which bring new values of the training table's
+  not cover, so the fitted parameters carry over and the model is EVALUATED at them (an input
+  given as pulses and ramps; other cell types, which bring new values of the training table's
   inputs). Nothing is fitted, and no inner solve either.
 * **transfer** (:func:`refit_problem`) — the same MECHANISM on a different system, whose parameters
-  are not the training ones (oliveira's Bahia). The fitted point means nothing there, so both the
+  are not the training ones (another population). The fitted point means nothing there, so both the
   candidate and the reference structure are REFIT on the held-out data and compared by nll and by
   BIC over ``k`` estimated parameters and ``n`` held-out rows. A held-out set that brings its own
   parameter table IS a transfer set (:class:`HeldOut`).
 
 One implementation serves both sides: the candidate through the server tool, the reference through
-``petab_harness.benchmark``, so no solver setting or chi2 convention can drift between the two
-numbers that get subtracted. Report-only — the judge records it and never gates on it, and the
-tool is absent from the panel's ``ALLOWED_TOOLS``. Rationale in ``docs/RATIONALE.md``.
+the same functions called by whoever runs the session, so no solver setting or chi2 convention can
+drift between the two numbers that get subtracted. Report-only — the caller records it and never
+gates on it, and the tool is left out of the agent's tool set (see
+``server._register_validation_data_tools``). Rationale in ``docs/RATIONALE.md``.
 
 A held-out set is read in either PEtab version (:func:`read_held_out`). A v1 set names conditions,
 not experiments, and is moved onto the problem it is scored against by :func:`as_v2` — which has to
@@ -55,7 +56,7 @@ from .problem import (
 
 
 #: ``status`` values a score can come back with — named rather than folded into ``nll: None``,
-#: because each is a distinct thing to see in a sweep:
+#: because each is a distinct thing to see across many scores:
 #:
 #: * ``ok`` — integrated on the held-out conditions and scored.
 #: * ``no_data`` — no held-out measurements.
@@ -73,7 +74,7 @@ STATUS_NON_FINITE = "non_finite"
 STATUS_INPUT_MISSING = "input_missing"
 
 #: ``mode`` values a score carries — which of the two comparisons it is (module docstring);
-#: :mod:`petab_harness.runner.scoring` reads it to refuse subtracting across kinds.
+#: a caller reads it to refuse subtracting across kinds.
 MODE_FIXED = "fixed"
 MODE_TRANSFER = "transfer"
 
@@ -91,7 +92,7 @@ class HeldOut:
     values of the inputs the training table already sets, and the experiments that apply them
     (:func:`_with_held_out_design`) — and ``None`` means the training table already has it.
     ``units`` names the SYSTEMS a transfer set is refit on — ``{experimentId: unitId}``,
-    lucarelli's three cell types each with its treated and untreated experiment — and ``None``
+    e.g. three cell types each with its treated and untreated experiment — and ``None``
     refits the whole table as one system.
 
     A set read from v1 files still names conditions, not experiments, in its measurement table
@@ -109,8 +110,8 @@ class HeldOut:
         return MODE_TRANSFER if self.parameter_df is not None else MODE_FIXED
 
 
-#: File names next to the measurements. Written by ``petab_harness.benchmark.materialize``, read
-#: back by :func:`read_held_out`; the two agree through these names and nowhere else.
+#: The files a held-out set ships beside its measurements, read back by :func:`read_held_out`;
+#: whoever writes a set and this reader agree through these names and nowhere else.
 HELD_OUT_CONDITIONS = "conditions.tsv"
 HELD_OUT_EXPERIMENTS = "experiments.tsv"
 HELD_OUT_PARAMETERS = "parameters.tsv"
@@ -183,9 +184,9 @@ def _unsupported_reason(problem, view) -> str | None:
     different vocabularies. Refused loudly rather than rebuilt, because the comparability problem
     survives the rebuild.
 
-    Unreachable via the shipped paths, because the harness refuses such an example when it
-    assembles the held-out set (which is where the UNFLATTENED problem is still available), and
-    kept as a cheap guard for any other caller.
+    Unreachable when whoever assembles the held-out set refuses such a problem there (which is
+    where the UNFLATTENED problem is still available), and kept as a cheap guard for any caller
+    that does not.
     """
     from .fitting import needs_flattening
 
@@ -224,14 +225,14 @@ def _with_held_out_design(view, condition_df, experiment_df) -> str | None:
     cannot be added.
 
     A held-out condition sets new VALUES of inputs the training table already sets (another cell
-    type's Smad abundances, a knockdown level), which a model that takes those inputs predicts
+    type's protein abundances, a knockdown level), which a model that takes those inputs predicts
     without a refit. A new TARGET is a new input, i.e. a different model, and a condition id the
     training table already defines would redefine a condition the model was fitted under; both are
     refused. A held-out experiment either is new or repeats a training one exactly (a v1 set
     naming a training condition upgrades to the training experiment, see :func:`as_v2`); one that
-    redefines a training experiment is refused. Shared by the server's scorer and the harness's
-    setup check (``petab_harness.benchmark._curated_held_out``), so the two cannot disagree about
-    what a fixed-θ set may bring.
+    redefines a training experiment is refused. Shared by the server's scorer and whoever assembles
+    a held-out set, as its setup check, so the two cannot disagree about what a fixed-θ set may
+    bring.
     """
     import pandas as pd
 
@@ -294,8 +295,8 @@ HELD_OUT_SCALING_UPPER_BOUND = 1e12
 
 def held_out_scalings(problem, measurement_df) -> "set[str]":
     """The ``observableParameters`` overrides in the held-out table that ``problem`` does NOT
-    define — the per-blot scale factors of a held-out Western blot. Empty for fujita, whose
-    held-out pulse/ramp rows re-use the shipped scalings (measured on the calibration's scale).
+    define — the per-blot scale factors of a held-out Western blot. Empty for a set whose held-out
+    rows re-use the shipped scalings (measured on the calibration's scale).
 
     A token counts when it is not numeric, not a parameter-table row and not a model entity;
     anything else is an ordinary PEtab override and left alone.
@@ -335,7 +336,7 @@ def _is_number(token: str) -> bool:
 def _without_extraneous(view):
     """``view``'s parameter table minus the rows petab's lint would call EXTRANEOUS.
 
-    Swapping a held-out table in retires the overrides the training rows carried (raimundez's 79
+    Swapping a held-out table in retires the overrides the training rows carried (e.g. 79
     per-gel scalings), and petab refuses a parameter table with rows nothing references — the
     same lint that protects every other swap, so it is satisfied rather than disabled. Only rows
     the held-out problem cannot use are dropped; the kinetics stay, and a caller's vector is
@@ -631,7 +632,7 @@ def score_problem(
     }
     if solved is not None:
         # The solved per-blot factors, recorded so a held-out score can be read back against the
-        # scale it was computed on. Absent for an example with no curated scalings.
+        # scale it was computed on. Absent for a set with no curated scalings.
         out["held_out_scalings"] = solved
     return out
 
@@ -660,8 +661,8 @@ def _reject_untransferable_table(
     rows are permitted — and a table identical to the
     published one in every value, bound, scale and estimate flag, unless ``system_differs`` says
     the set's condition table already makes it another system (new values of the published inputs
-    under the published parameters: lucarelli's cell types). This check cannot run against the
-    zero-shot shipped subset, which omits kinetics, or the candidate, whose rates may have different
+    under the published parameters, e.g. other cell types). This check cannot run against the
+    shipped subset, which omits kinetics, or the candidate, whose rates may have different
     names. Candidate refits retain their own estimated values instead.
     """
     from . import reconcile as _reconcile
@@ -723,7 +724,7 @@ def transfer_view(problem, held_out: HeldOut, shipped_parameter_df):
       different model;
     * the FIXED INPUTS that CHANGE between the systems are carried into the candidate's parameter
       table by name — a row fixed in both the held-out and the shipped training table
-      (``shipped_parameter_df``) with a different value there, e.g. oliveira's ``population``.
+      (``shipped_parameter_df``) with a different value there, e.g. a population size.
 
     Every other held-out row is left alone, and the held-out table's ESTIMATED values are never
     used as the candidate's start. A required input the candidate has no fixed row to receive is
@@ -794,7 +795,7 @@ def refit_problem(
     """REFIT ``problem`` on its own measurements and report the optimum — the transfer score.
 
     ``problem`` is already the held-out problem, and its ``nominalValue``\\ s are the START point
-    (the candidate's training optimum via :func:`transfer_view`; the collection's published values
+    (the candidate's training optimum via :func:`transfer_view`; the published values
     for the reference). Every estimated row is refit and ``k`` counts exactly those, so it is
     the same ``k`` the training score uses. Nothing is written back.
 
@@ -988,15 +989,15 @@ def score_session(
     """The session's CURRENT model against ``held_out``, in the set's own mode.
 
     Fixed-θ: :func:`score_problem` at the parameter table's ``nominalValue``\\ s, which is where
-    every fit writes its optimum back — so this scores exactly the model the judge is about to score
-    on the training data. Transfer: :func:`transfer_view` then :func:`refit_problem`, with the
-    session's own default multistart when ``n_starts`` is ``None``.
+    every fit writes its optimum back — so this scores exactly the model the caller is about to
+    score on the training data. Transfer: :func:`transfer_view` then :func:`refit_problem`, with
+    the session's own default multistart when ``n_starts`` is ``None``.
 
     Held under ``session.lock`` so the model and the table are one snapshot. The build target is
     the session's own (:meth:`session.PetabSession.module_hash`), so a held-out view that compiles
     to the training module reuses it; one whose design differs — every held-out set that brings
     experiments the training problem has no events for — is built beside it (:func:`_build_target`),
-    bounded, once per run, after the agent has finished.
+    bounded, once per session, after the agent has finished.
     """
     with session.lock:
         kwargs = engine.pypesto_importer_kwargs(session.module_hash())
@@ -1031,8 +1032,8 @@ def read_held_out(measurements_path: str | Path) -> HeldOut:
     ``experiments.tsv`` / ``parameters.tsv`` in the same directory are the set's own condition,
     experiment and parameter tables (:data:`HELD_OUT_CONDITIONS`, :data:`HELD_OUT_EXPERIMENTS`,
     :data:`HELD_OUT_PARAMETERS`), a ``units.tsv`` the systems a transfer set is refit on
-    (:data:`HELD_OUT_UNITS`). Read with PEtab's own readers, so the server and the harness
-    parse the files identically.
+    (:data:`HELD_OUT_UNITS`). Read with PEtab's own readers, so the server and whoever wrote the
+    set parse the files identically.
 
     Either PEtab version: a v1 set (its measurements name ``simulationConditionId``) has its
     condition and parameter tables upgraded here and its measurements keyed by experiment when it
@@ -1086,7 +1087,7 @@ def read_units(path: str | Path) -> dict[str, str]:
 def read_measurements(path: str | Path):
     """Load a held-out PEtab measurement table from ``path``.
 
-    A thin, single-place reader so the server and the harness parse the file identically (PEtab's
+    A thin, single-place reader so the server and its caller parse the file identically (PEtab's
     own TSV conventions, not ``pd.read_csv`` defaults spelled out twice).
     """
     from petab import v2

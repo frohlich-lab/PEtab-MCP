@@ -7,10 +7,10 @@ re-simulation goes through ``simulate_petab`` with AMICI's default solver settin
 the ones pyPESTO's objective was built with — so they can disagree, and at a stiff optimum the
 re-simulation can fail outright while the fit itself converged.
 
-Regression for the crauste sweep run where exactly that happened: pyPESTO reported
+Regression for the session where exactly that happened: pyPESTO reported
 ``best value: 266.62`` over 50 starts ("Converged according to fval difference"), the
-re-simulation failed to integrate past t=22, and the harness recorded the fit's likelihood as
-NaN — which then poisoned the best-BIC checkpoint (see test_early_stop.py) and cost the run
+re-simulation failed to integrate past t=22, and the fit's likelihood was recorded as
+NaN — which then poisoned the best-BIC checkpoint (see test_early_stop.py) and cost the session
 its score. This is pure bookkeeping over two payloads, so no AMICI/pyPESTO fit is needed.
 """
 
@@ -50,7 +50,7 @@ def _sim(nll, *, missing=0, expected=21):
 
 
 def test_optimizer_value_wins_when_resimulation_fails(sess):
-    """The lost-run case: a converged fit whose re-simulation could not be evaluated."""
+    """The lost-score case: a converged fit whose re-simulation could not be evaluated."""
     nllh, note = fitting._reconcile_objective(
         sess, {"neg_log_likelihood": 266.6246503480759}, _sim(float("nan"), missing=5)
     )

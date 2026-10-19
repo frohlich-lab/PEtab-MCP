@@ -30,9 +30,9 @@ from .parameters import estimated_ids
 
 # The same structure may be authored at most this many times before ``set_model`` refuses
 # further identical re-authors: an identical structure recompiles + refits to the SAME result
-# and cannot improve the fit, so a run that keeps emitting it is stuck. The way out is a
-# genuinely different structural change; the best model is kept and scored regardless, so there
-# is nothing to go back to.
+# and cannot improve the fit, so a caller that keeps emitting it is stuck. The way out is a
+# genuinely different structural change; the best model is kept regardless, so there is nothing
+# to go back to.
 MAX_IDENTICAL_REAUTHORS = 3
 
 # Warn when re-authoring a structure family whose best (lowest) score was at least this much
@@ -96,7 +96,7 @@ def build_registry(session) -> list[dict[str, Any]]:
     neg_log_likelihood, score, criterion}`` dicts, read from each version's stored meta and
     parameter table.
 
-    ``score`` is the version's value under the run's criterion (see
+    ``score`` is the version's value under the session's criterion (see
     :meth:`criteria.Criterion.score_of`) — ``None`` for a version stored without one, which just
     leaves it out of the ranking — and ``criterion`` is that criterion's label, carried ON the
     entry so :func:`decide` can name it without a session in hand. ``setup`` is the
@@ -168,10 +168,10 @@ def decide(
         starts: the multistart count this fit would run with.
         head_version: the current HEAD version number.
         registry: prior committed versions (see :func:`build_registry`).
-        prior_attempts: how many times this exact structure has already been authored this run.
+        prior_attempts: how many times this exact structure has already been authored this session.
 
     Returns one of:
-        ``{"action": "terminate", "message": ...}`` — refuse; the run is looping on one structure.
+        ``{"action": "terminate", "message": ...}`` — refuse; the caller loops on one structure.
         ``{"action": "skip", "duplicate_of": v, "message": ..., "warnings": [...]}`` —
             byte-identical to the current HEAD: skip the recompile+fit and the new version.
         ``{"action": "refuse", "duplicate_of": v, "message": ...}`` — byte-identical to an
@@ -187,7 +187,7 @@ def decide(
             "message": (
                 f"This same model structure has already been fit {prior_attempts} times. Re-fitting an "
                 "identical structure recompiles and refits to the SAME result — it cannot improve the "
-                "fit. Stop re-fitting it: your best model is kept and scored regardless (see "
+                "fit. Stop re-fitting it: your best model is kept regardless (see "
                 "list_versions), so make a genuinely different structural change and fit THAT."
             ),
         }
@@ -211,7 +211,7 @@ def decide(
                 f"This model is identical to the current version (v{head_version}); the fit was "
                 "not re-run (its metrics are unchanged — see get_fit_summary). To improve the fit, "
                 "change the STRUCTURE and fit again; an earlier model you already committed is "
-                "kept and scored regardless."
+                "kept regardless."
             ),
         }
     if standing:
@@ -245,7 +245,7 @@ def decide(
     if prior_versions:
         warnings.append(
             f"This model structure was already committed at version(s) {prior_versions} and is "
-            "kept and scored regardless; re-fitting it just creates a duplicate — make a genuinely "
+            "kept regardless; re-fitting it just creates a duplicate — make a genuinely "
             "different change instead."
         )
     # (b) The structure family already scored materially worse than the best model so far.
@@ -263,7 +263,7 @@ def decide(
                 f"This structure family previously scored {name}≈{fb:.1f}, {fb - gb:.1f} WORSE "
                 f"than the best model so far ({name}≈{gb:.1f}, v{best.get('version')}). "
                 f"Revisiting it is "
-                f"unlikely to beat the best (v{best.get('version')} is kept and scored regardless) "
+                f"unlikely to beat the best (v{best.get('version')} is kept regardless) "
                 "— try a different structure."
             )
     return {"action": "proceed", "warnings": warnings}

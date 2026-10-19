@@ -48,14 +48,15 @@ no. It is common: a dose-response slope needs several dose levels, a conserved t
 observable measured together, and a shape verdict needs enough time points. Steady-state and
 combinatorial problems may return almost nothing.
 
-There, fall back to deriving the check yourself, and note that as the lead you cannot read the
-measurement table — ask an analyst for a NUMBER, not a characterisation:
+There, fall back to deriving the check yourself, and ask the data for a NUMBER, not a
+characterisation:
 
 > "From the measured data only, not the simulation: compute <quantity> per <group>. Return the value
 >  and its spread — across replicates where the design has them, else the successive-difference
 >  scatter, saying which. Nothing else."
 
-A vague ask returns prose you cannot compare against a prediction; a numeric ask returns a number.
+A vague question returns prose you cannot compare against a prediction; a numeric one returns a
+number.
 Pick a quantity your current factorisation forces to a particular value *whatever the parameters
 are* — a ratio, a slope bound, an invariance — so the comparison tests the structure rather than the
 fit.

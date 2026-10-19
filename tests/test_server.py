@@ -408,6 +408,46 @@ def test_query_data_logs_sql_on_error(tmp_path):
     asyncio.run(go())
 
 
+@pytest.mark.parametrize("raised", ["refusal", "crash"])
+def test_a_held_out_failure_stays_out_of_get_errors(tmp_path, monkeypatch, raised):
+    """`evaluate_validation_data` is not the agent's tool, but `get_errors` is, and the held-out
+    check's failures name held-out experiments, conditions and observables. Logged to errors.jsonl
+    like any other tool's, every failure of the check handed the agent part of the held-out design.
+    The caller still gets the message: a refusal as `{ok: false}`, a crash raised."""
+    from petab_mcp import validation_data
+    from petab_mcp.errors import ValidationError
+
+    secret = "held-out experiment(s) ['e_held_out_7'] belong to no refit unit"
+
+    def fail(*args, **kwargs):
+        raise ValidationError(secret) if raised == "refusal" else ValueError(secret)
+
+    monkeypatch.setattr(validation_data, "score_session", fail)
+    held_out = tmp_path / "validation"
+    held_out.mkdir()
+    shutil.copy(DATA_DIR / "measurements.tsv", held_out / "measurements.tsv")
+    mcp = create_server(
+        str(YAML_PATH),
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+        auto_fit=False,
+        validation_measurements=str(held_out / "measurements.tsv"),
+    )
+
+    async def go():
+        if raised == "refusal":
+            res = _structured(await mcp.call_tool("evaluate_validation_data", {}))
+            assert res["ok"] is False and "e_held_out_7" in res["error"]
+        else:
+            with pytest.raises(Exception, match="e_held_out_7"):
+                await mcp.call_tool("evaluate_validation_data", {})
+        errs = _structured(await mcp.call_tool("get_errors", {}))
+        elist = errs["result"] if isinstance(errs, dict) and "result" in errs else errs
+        assert "e_held_out_7" not in json.dumps(elist)
+
+    asyncio.run(go())
+
+
 def test_query_data_runs_on_copy(tmp_path):
     # Mutating SQL runs against a disposable copy: it succeeds and does not affect the
     # session — a fresh query still sees the full table.
@@ -439,10 +479,10 @@ def test_query_data_blocks_file_access(tmp_path):
 
 
 def test_get_measurements_raw_is_paged(tmp_path):
-    # The unpaged dump measured 73k tokens on isensee and 81k on lucarelli, in ONE tool result
-    # that then re-enters context every later turn — one such call has ended a run on the
-    # provider's "prompt exceeds max length". Raw reads are paged; the summary is not (it is
-    # already compact) and keeps its list/dict shape.
+    # An unpaged dump of a large problem measured 73-81k tokens in ONE tool result that then
+    # re-enters context every later turn — one such call can overflow the context window
+    # outright. Raw reads are paged; the summary is not (it is already compact) and keeps its
+    # list/dict shape.
     mcp = _server(tmp_path)
 
     def _page(res):
@@ -642,12 +682,12 @@ def test_make_changes_builds_the_first_model_via_tool(tmp_path, sbml):
 
 
 def test_an_unauthored_model_gets_no_parameter_diagnosis(tmp_path):
-    """REGRESSION: the parameter diagnosis of a run that has authored nothing used to answer with a
-    confident FIM of the SEEDED skeleton — ranked candidates, a rank-deficient FIM and merges between
-    initial conditions of a model that does not exist — and paid an AMICI build (12.5 s measured on
-    blasi) for it, while the same payload said "commit a model first". It is a local expansion around
-    an optimum; with no frozen fit to expand around it reports `available: false` and computes
-    nothing."""
+    """REGRESSION: the parameter diagnosis of a session that has authored nothing used to answer
+    with a confident FIM of the SEEDED skeleton — ranked candidates, a rank-deficient FIM and merges
+    between initial conditions of a model that does not exist — and paid an AMICI build (12.5 s
+    measured on one problem) for it, while the same payload said "commit a model first". It is a
+    local expansion around an optimum; with no frozen fit to expand around it reports
+    `available: false` and computes nothing."""
     from petab_mcp import identifiability as ident_mod
 
     mcp = _empty_model_server(tmp_path)
@@ -886,7 +926,7 @@ def test_fit_tools(tmp_path):
             "replicate_lack_of_fit",
         }
         assert "per_observable" not in res and "worst_points" not in res
-        # `parameters_at_bound` stays HERE, on every fit result: it is the at-bound signal the lead
+        # `parameters_at_bound` stays HERE, on every fit result: it is the at-bound signal the agent
         # acts on (get_parameters carries none), and it costs ~25 bytes when empty.
         assert "parameters_at_bound" in res
         # ...and the tool returns the detail, in two sections, WITHOUT a second copy of the verdict.
@@ -906,8 +946,8 @@ def test_fit_tools(tmp_path):
         bad = _structured(await mcp.call_tool("get_fit_diagnosis", {"sections": "resid"}))
         assert bad["ok"] is False and "residuals" in bad["error"]
         # a FIM failure must not take the residual half with it: before the consolidation these
-        # were two tools, so one could not break the other, and the judge's result.json block (the
-        # only record of whether the replicate arm fired) rides on the residual half.
+        # were two tools, so one could not break the other, and a caller that records only the
+        # residual half (whether the replicate arm fired) must still get it.
         from petab_mcp import identifiability as ident_mod
 
         broken = getattr(ident_mod, "identifiability")
@@ -952,7 +992,7 @@ def test_fit_tools(tmp_path):
 
 
 def test_get_parameters_filters_rows(tmp_path):
-    """`parameter_ids`/`role` filter server-side. On 100+-row tables (lucarelli: 118) the
+    """`parameter_ids`/`role` filter server-side. On 100+-row tables (one has 118) the
     unfiltered payload was a top-3 context cost, re-sent in the caller's history every later
     turn — and telling the model to ignore rows does not un-bill the tokens."""
     mcp = _server(tmp_path)
@@ -980,9 +1020,9 @@ def test_get_parameters_filters_rows(tmp_path):
         # An unknown id RAISES. It must not return [] (indistinguishable from a real empty
         # table) and it must not return a ctx.run {ok:false} dict either: this tool declares a
         # LIST return, so FastMCP validates its structured output against an array schema and a
-        # dict fails validation with a RuntimeError that KILLS THE RUN — that regression
-        # cost 6 of 14 runs in the 2026-08-16 sweep before it was caught. The raise becomes a
-        # ToolMessage the model reads and corrects.
+        # dict fails validation with a RuntimeError that ENDS THE CLIENT'S SESSION — that
+        # regression ended 6 of 14 sessions before it was caught. The raise becomes a tool error
+        # the agent reads and corrects.
         raised = None
         try:
             await mcp.call_tool("get_parameters", {"parameter_ids": ["no_such_parameter"]})
@@ -1028,9 +1068,9 @@ def test_get_parameters_filters_rows(tmp_path):
 
 
 def test_an_unknown_id_suggests_the_one_the_caller_meant_even_when_the_tokens_are_SWAPPED():
-    """Measured on the 2026-08-17 sweep: all 18 unknown-id errors invented the right CONCEPT under
-    the wrong convention, and the agent tried BOTH token orderings across runs (`pEGFR_scaling`
-    5x, `scaling_pEGFR` 4x). Plain difflib fails exactly there — it compares characters in order,
+    """Measured: all 18 unknown-id errors in one batch of sessions invented the right CONCEPT under
+    the wrong convention, and agents tried BOTH token orderings (`pEGFR_scaling` 5x,
+    `scaling_pEGFR` 4x). Plain difflib fails exactly there — it compares characters in order,
     so a swap reads as a mismatch and it suggests a DIFFERENT parameter (`EGFR_init`) with
     confidence. That is worse than no hint."""
     # ONE definition of the rule, shared by every surface that reports an unknown id — a second
@@ -1061,7 +1101,7 @@ def test_the_unknown_id_message_carries_its_own_remedy():
     big_msg = unknown_ids_message(["nope_xyz"], big)
     assert "(+20 more" in big_msg
     assert "call get_parameters() with no parameter_ids" in big_msg
-    assert "p079_rate" not in big_msg, "the ceiling must still bind — lucarelli is 118 rows"
+    assert "p079_rate" not in big_msg, "the ceiling must still bind — real tables reach 118 rows"
 
     # No false confidence when nothing is close.
     assert "Did you mean" not in unknown_ids_message(["totally_unrelated_xyz"], small)
@@ -1070,7 +1110,7 @@ def test_the_unknown_id_message_carries_its_own_remedy():
 def test_the_reserved_t_hint_says_use_the_builtin_time_not_a_rename():
     """`t` collides because the caller is expressing TIME, and renaming is the wrong fix: a free
     symbol has nothing binding it to simulation time, so it is estimated as a parameter and the
-    time dependence silently disappears. 4 of 16 isensee runs hit this collision on 2026-08-17 and
+    time dependence silently disappears. 4 of 16 sessions on one problem hit this collision, and
     the one that took the old 'rename to tau' advice lost ~512 nll to it."""
     from petab_mcp.operations import _compile_fit_failure_message
 

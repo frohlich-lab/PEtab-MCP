@@ -1,6 +1,6 @@
 """The process-wide libantimony lock (antimony_guard).
 
-The 2026-08-15 sneyd A/B lost 20/20 draft-arm runs to signal 11: three FastMCP worker threads
+Sessions driving the draft tools lost 20 of 20 to signal 11: three FastMCP worker threads
 simultaneously inside ``antimony.clearPreviousLoads`` (libantimony state is process-global and
 not thread-safe). A segfault cannot be asserted from inside the process, so these tests pin the
 structural properties that prevent it: the lock is installed on both conversion entry points,

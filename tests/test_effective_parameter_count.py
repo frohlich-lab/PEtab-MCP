@@ -185,8 +185,8 @@ def test_no_result_the_agent_reads_carries_the_count():
 
 
 def test_a_snapshot_keeps_the_count_out_of_the_meta_and_in_the_stored_simulation(session):
-    """`list_versions` returns the meta, so it stays out; the stored simulation is what the harness
-    judge reads back through `get_version`. Exercised through `_snapshot_version` itself."""
+    """`list_versions` returns the meta, so it stays out; the stored simulation is what a client's
+    scoring reads back through `get_version`. Exercised through `_snapshot_version` itself."""
     version = session._snapshot_version(meta={}, sim=_fitsim(100.0))
     assert "k_eff" not in session.provenance.get_meta(version)
     assert session.provenance.get_version(version)["simulation"]["k_eff"] == 2.5

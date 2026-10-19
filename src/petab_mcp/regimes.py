@@ -12,11 +12,11 @@ the model, the parameter table or any simulation, which has two consequences wor
 * nothing it reports can leak an answer, because everything it reports is a property of the shipped
   data. The same code produces the same kind of verdict on a problem nobody has looked at.
 
-Why a tool and not an instruction: in the Aug 8-10 sweep, 49% of the pivotal element-instances in
-passing runs were harness-computed telemetry the agent RELAYED (verified — the quoted `(dnll, dscore)`
-pairs satisfy the harness's own identity to <0.06, which an agent cannot fake), while no provenance
-class distinguished passing runs from failing ones. Numbers the harness computes get used;
-procedures the prompt describes are a lottery. So compute the numbers.
+Why a tool and not an instruction: in one measurement, 49% of the pivotal element-instances in
+passing sessions were tool-computed telemetry the agent RELAYED (verified — the quoted
+`(dnll, dscore)` pairs satisfy the tool's own identity to <0.06, which an agent cannot fake), while
+no provenance class distinguished passing sessions from failing ones. Numbers a tool computes get
+used; procedures an instruction describes are a lottery. So compute the numbers.
 
 THE ANALYSIS COORDINATE. Every verdict is computed where the noise is ADDITIVE, not on the raw
 linear scale: an observable with a log noise distribution is transformed first, and its noise floor
@@ -50,10 +50,10 @@ _WEAK_SIGMA = 2.0
 _EXCURSION_K = 2.25
 
 # A second exponential has to earn its two extra parameters on the usual BIC evidence scale.
-# Deliberately BIC and not the run's model-selection criterion (:mod:`criteria`): this is a fixed
-# TEST on one observable's shape, run against its own threshold, not a score models are ranked by
-# — a diagnostic whose verdict moved when the search objective was reconfigured would be reporting
-# the configuration rather than the data.
+# Deliberately BIC and not the session's model-selection criterion (:mod:`criteria`): this is a
+# fixed TEST on one observable's shape, run against its own threshold, not a score models are
+# ranked by — a diagnostic whose verdict moved when the search objective was reconfigured would be
+# reporting the configuration rather than the data.
 _TIMESCALE_MIN_DELTA_BIC = 6.0
 
 _MIN_POINTS_SHAPE = 5
@@ -65,10 +65,10 @@ _MIN_POINTS_TIMESCALE = 13
 _MIN_POINTS_CONSERVATION = 5
 _MIN_DOSES = 3
 
-# Payload budget. Every result the lead requests is re-sent in its history on EVERY later turn, so an
-# unbounded per-observable report is a standing tax: measured at 61 kB (~15k tokens) on isensee's 123
-# observables. Reported observables are capped and the omission is stated, and `observables=` scopes
-# the call to the ones actually being reasoned about.
+# Payload budget. Every result the agent requests is re-sent in its history on EVERY later turn, so
+# an unbounded per-observable report is a standing tax: measured at 61 kB (~15k tokens) on a problem
+# with 123 observables. Reported observables are capped and the omission is stated, and
+# `observables=` scopes the call to the ones actually being reasoned about.
 _MAX_OBSERVABLES = 12
 
 
@@ -150,7 +150,7 @@ def _extremum_legs(y, idx) -> tuple[float, float]:
 
     Measuring from the first and last samples instead silently discards every trace that starts or
     ends near its peak — an oscillator, or any readout already rising when observation began. On the
-    shipped predator_prey data that turned an 11-sigma excursion into "flat/indeterminate".
+    shipped oscillator data that turned an 11-sigma excursion into "flat/indeterminate".
     """
     import numpy as np
 
@@ -195,12 +195,12 @@ def _shape(series, sigma) -> dict[str, Any]:
         #
         # Calibrated END TO END through this module (200 pure-noise problems, 12 points, 2
         # replicates, sigma estimated from the replicates exactly as a caller's would be) against
-        # whether fujita's real pulses survive:
+        # whether a real problem's pulses survive:
         #
-        #        k    false positives on pure noise    fujita excursions
+        #        k    false positives on pure noise      real excursions
         #      2.00              6.5%                          4
         #      2.25              3.0%                          2   <- chosen
-        #      2.50              1.5%                          0   (loses the flagship case)
+        #      2.50              1.5%                          0   (loses every real pulse)
         #
         # Note the rate is ~15x the idealised one (0.2% at k=2.25 with a KNOWN sigma) because sigma
         # is itself estimated here, and an underestimate inflates every feature. Quote 3%, not 0.2%.
@@ -231,10 +231,10 @@ def _shape(series, sigma) -> dict[str, Any]:
     # the reason the fields exist at all: an interior excursion is the module's only SINGLE-
     # COUNTEREXAMPLE finding (no rate constants make constant production plus first-order decay
     # rise and fall), so it is the one test that routinely establishes anything -- and it was the
-    # one test that never filled the field the tool description, the lead prompt and the server
-    # docstring all tell the agent to act on. The agent was reading None for the only real finding
-    # it gets, while the two tests that can essentially never fire were the only ones able to
-    # report. Absence stays absence: monotone/flat set `requirement: None`.
+    # one test that never filled the field the tool description and the server docstring both
+    # tell the agent to act on. The agent was reading None for the only real finding it gets,
+    # while the two tests that can essentially never fire were the only ones able to report.
+    # Absence stays absence: monotone/flat set `requirement: None`.
     _EXCURSION = (
         "the response must rise AND fall — constant production with first-order decay "
         "cannot produce this at any rate constants, so a depletable pool, a second "
@@ -267,13 +267,14 @@ def _timescales(series, sigma) -> dict[str, Any]:
     """One relaxation timescale, or more? Compared by BIC so the extra pair of parameters must be
     earned, on a series long enough that the 5-parameter form cannot simply interpolate.
 
-    LIKE `_dose_response`, THIS NEVER FIRED ON ANY PROBLEM WE HAVE, and for the same reason: the
-    bar sits above what these designs can clear. Measured over 184 calls in 20 traced runs -- fujita
-    is `testable: false` 188/188 (8 points per series, under `_MIN_POINTS_TIMESCALE`), and sneyd
-    is `testable` but lands at margin -4.2 in ALL 90 calls: it has exactly 13 points, the bare
-    minimum, where a 5-parameter two-exponential is BIC-penalised out of existence. Not near the
-    threshold -- the wrong side of it, deterministically, on a problem whose reference model has
-    k=15. So `support: none` here is a statement about the gate, not about the system.
+    LIKE `_dose_response`, THIS NEVER FIRED ON ANY PROBLEM IT WAS MEASURED ON, and for the same
+    reason: the bar sits above what these designs can clear. Measured over 184 calls in 20 traced
+    sessions -- one problem is `testable: false` 188/188 (8 points per series, under
+    `_MIN_POINTS_TIMESCALE`), and another is `testable` but lands at margin -4.2 in ALL 90 calls:
+    it has exactly 13 points, the bare minimum, where a 5-parameter two-exponential is
+    BIC-penalised out of existence. Not near the threshold -- the wrong side of it,
+    deterministically, on a problem whose reference model has k=15. So `support: none` here is a
+    statement about the gate, not about the system.
     Read the note on `z` in `_dose_response` for why a null verdict is not a neutral one."""
     import numpy as np
 
@@ -393,7 +394,7 @@ def _dose_response(frame, inputs, sigma, coordinate) -> dict[str, Any]:
     # `peak` is a MEAN of replicates, so its noise is sigma/sqrt(reps). Propagating the raw
     # per-measurement sigma widened the slope band by ~sqrt(reps) and turned a genuinely cooperative
     # dose-response into "consistent with a single binding step" — a false negative in the direction
-    # that costs the run the insight. `_shape` and `_conservation` both make this correction.
+    # that costs the agent the insight. `_shape` and `_conservation` both make this correction.
     _reps = int(grouped.count().min() or 1)
     sigma = sigma / math.sqrt(max(_reps, 1))
     best, n_comparisons = None, 0
@@ -414,7 +415,7 @@ def _dose_response(frame, inputs, sigma, coordinate) -> dict[str, Any]:
             continue
         # In a log coordinate the response IS already log; in a linear one it must be logged, which
         # requires positivity. A non-positive response is not an error and must not crash the tool:
-        # skip the column and say so. (alkan ships 384 non-positive measurements.)
+        # skip the column and say so. (One problem ships 384 non-positive measurements.)
         if coordinate in ("log", "log10"):
             ly = y / math.log(10.0) if coordinate == "log" else y
             ly_sigma = sigma / math.log(10.0) if coordinate == "log" else sigma
@@ -461,51 +462,56 @@ def _dose_response(frame, inputs, sigma, coordinate) -> dict[str, Any]:
         }
     # Bonferroni over every (column, adjacent-pair) slope the maximum was taken over.
     #
-    # THIS `z` IS WHY THE ARM MEASURED HARMFUL. Read before touching the verdict wording below:
-    # the wording was already rewritten once and it did NOT fix the arm (sneyd 1/20 -> 4/10, still
-    # short of 15/20 with the tool OFF). The binding constraint is this line.
+    # THIS `z` IS WHY OFFERING THE TOOL MEASURED HARMFUL. Read before touching the verdict wording
+    # below: the wording was already rewritten once and it did NOT fix that (1/20 -> 4/10 on the
+    # steep case below, still short of 15/20 with the tool OFF). The binding constraint is this
+    # line.
     #
-    # At the sizes these designs give, `established` is unreachable. sneyd: slope 1.85 +- 0.89 with
-    # z=3.97 over 7 comparisons, so calling it needs slope > 1 + 3.97*0.89 = 4.53. fujita pEGFR:
-    # 1.19 +- 1.35, needs > 6.12. No biochemical dose-response has a log-log slope of 4.5-6, so the
-    # probe returns `requirement: null` on every problem we have -- while the CENTRAL estimate of
-    # 1.85 is most of a second binding step and is really there.
+    # At the sizes these designs give, `established` is unreachable. The steep case: slope
+    # 1.85 +- 0.89 with z=3.97 over 7 comparisons, so calling it needs slope > 1 + 3.97*0.89 = 4.53.
+    # The shallow case: 1.19 +- 1.35, needs > 6.12. No biochemical dose-response has a log-log slope
+    # of 4.5-6, so the probe returns `requirement: null` on every problem measured -- while the
+    # CENTRAL estimate of 1.85 is most of a second binding step and is really there.
     #
-    # A null here is not neutral, which is the part that cost a 115-run A/B to learn. Traced over
-    # 40 runs: the discriminating feature on sneyd is a power in a rate law (present in 80% of best
-    # models with the tool off vs 35% with it on, and worth 26-33 bic in BOTH arms).
+    # A null here is not neutral, which is the part that cost a 115-session comparison to learn.
+    # Traced over 40 sessions: the discriminating feature on the steep case is a power in a rate law
+    # (present in 80% of best models with the tool off vs 35% with it on, and worth 26-33 bic either
+    # way).
     #
     # NOTE WHAT THAT EXPONENT IS, because the obvious reading is wrong: the reference model has NO
-    # exponent anywhere. It is the six-state Sneyd-Falcke gating network with SATURATING rate laws
-    # (`(k4*L5 + l6)*Ca/(L5 + Ca)`), k=15. The agent's exponent is a SURROGATE for the states it has
-    # not built -- a way to sharpen a too-broad bell-shaped Ca response at k~9 without adding a
-    # species, in the agent's own words. So this test does not suppress "a correct cooperativity
-    # prior"; it suppresses the cheapest available REPAIR for a model that is still too small. That
-    # repair is what buys the bic, which is why the harm survives however the verdict is worded.
+    # exponent anywhere. It is a six-state gating network with SATURATING rate laws, k=15. The
+    # agent's exponent is a SURROGATE for the states it has not built -- a way to sharpen a
+    # too-broad bell-shaped response at k~9 without adding a species, in the agent's own words. So
+    # this test does not suppress "a correct cooperativity prior"; it suppresses the cheapest
+    # available REPAIR for a model that is still too small. That repair is what buys the bic, which
+    # is why the harm survives however the verdict is worded.
     #
-    # WHERE the exponent comes from, and why the timing is everything (sneyd, 20 runs per arm):
+    # WHERE the exponent comes from, and why the timing is everything (steep case, 20 sessions
+    # each):
     #
     #                                      tool OFF   tool ON
-    #   at fit 1, from the pre-fit panel        12         1
+    #   at fit 1, from pre-fit reasoning        12         1
     #   later, forced by residual structure      7        10
     #   never                                    1         9
     #
-    # Two routes, and this test decides which one the run gets. `get_data_regimes` is consulted
-    # BEFORE the first model in 10/10 traced runs -- that is its whole selling point, valid with no
-    # model -- so its only chance to speak lands exactly where the pre-fit route would fire, and
+    # Two routes, and this test decides which one the agent takes. `get_data_regimes` is consulted
+    # BEFORE the first model in 10/10 traced sessions -- that is its whole selling point, valid with
+    # no model -- so its only chance to speak lands exactly where the pre-fit route would fire, and
     # what it says there is "this design does not establish a slope above one". The up-front route
-    # collapses 12 -> 1 and the run is left re-deriving the same structure from residuals fit by
-    # fit, 9/20 times never getting there. The arms' bic curves are identical over fits 1-3 and
+    # collapses 12 -> 1 and the agent is left re-deriving the same structure from residuals fit by
+    # fit, 9/20 times never getting there. The two bic curves are identical over fits 1-3 and
     # separate from fit 5 onward, which is exactly that delay.
     #
-    # It is NOT literature-driven, so do not look for the fix in the biocurator: only 2 of 19
-    # introductions cite curated biology or a PMID, and BOTH arms cite PMIDs in 20/20 first models.
-    # The attribution is the systems-scientist mechanistic lens up front, residual diagnostics late.
+    # It is NOT literature-driven, so do not look for the fix in literature lookup: only 2 of 19
+    # introductions cite curated biology or a PMID, and sessions with and without the tool both
+    # cite PMIDs in 20/20 first models. The exponent comes from mechanistic reasoning up front, or
+    # from residual diagnostics late.
     #
     # The damage is therefore confined to problems that HAVE the structure this test is too weak to
-    # establish. fujita's slopes are 0.58-1.19 — shallow, so the null is roughly right there and the
-    # arms come out level (median best bic +141.1 on vs +143.9 off). sneyd's 1.85 is the case that
-    # costs. Do not validate a fix on fujita: it cannot tell the arms apart.
+    # establish. The shallow case's slopes are 0.58-1.19 — so the null is roughly right there and
+    # tool on and off come out level (median best bic +141.1 on vs +143.9 off). The steep case's
+    # 1.85 is the one that costs. Do not validate a fix on a shallow case: it cannot tell the two
+    # apart.
     #
     # So: do not re-litigate the phrasing. Either make this test able to fire at realistic effect
     # sizes and design sizes, or keep `get_data_regimes` out of the agent's toolset.
@@ -520,9 +526,10 @@ def _dose_response(frame, inputs, sigma, coordinate) -> dict[str, Any]:
     established = raw_slope - z * raw_unc > 1.0
     # SUGGESTIVE clears the selection bias but not the confidence margin. It used to be the raw
     # `slope > 1.0`, which is the un-widened comparison this function's own docstring says "the
-    # winner crosses on noise alone" -- so fujita pEGFR, 1.19 +- 1.35 with the uncertainty LARGER
-    # than the distance to one, was returning "WEAK SUPPORT ... a reason to TRY it" on nothing.
-    # Pushing structure in on noise is the one failure this tool must not add to the one it has.
+    # winner crosses on noise alone" -- so the shallow case, 1.19 +- 1.35 with the uncertainty
+    # LARGER than the distance to one, was returning "WEAK SUPPORT ... a reason to TRY it" on
+    # nothing. Pushing structure in on noise is the one failure this tool must not add to the one
+    # it has.
     suggestive = raw_slope - selection * raw_unc > 1.0
     _STEEP = "steeper than one binding step (cooperativity / cascade / saturation elsewhere)"
     if established:
@@ -532,7 +539,7 @@ def _dose_response(frame, inputs, sigma, coordinate) -> dict[str, Any]:
         # "consistent with a single binding step" states the one reading the data leans AGAINST, and
         # that phrasing is what had to go: a model built to a single binding step would start from a
         # shape the data disputes.
-        # round(z): the raw float renders as `+-3.9704896987915534x0.89` in text the lead re-sends
+        # round(z): the raw float renders as `+-3.9704896987915534x0.89` in text the agent re-sends
         # in its history every later turn, and `band_z` beside it is already rounded to 2 dp.
         verdict = (
             f"central slope {slope} exceeds one by more than the selection bias alone "
@@ -570,7 +577,7 @@ def _conservation(by_obs) -> dict[str, Any]:
       totals, and pooling them measures the between-experiment step instead of the law.
     * LIKE FOR LIKE. The sum's peak-to-trough is compared against the components' peak-to-trough.
       Comparing a standard deviation against a range passes on the unit mismatch alone -- that is
-      exactly how the three-gene repressilator, which has no conservation law at all, read as
+      exactly how a three-gene ring oscillator, which has no conservation law at all, read as
       conserved because its species are ~120 degrees out of phase.
     * The components must MOVE, or the sum of two constants is trivially constant.
     """
@@ -578,9 +585,9 @@ def _conservation(by_obs) -> dict[str, Any]:
 
     # A conserved total is a statement about a SUM, which only means anything if the terms share
     # units. Every observable here carries its own analysis coordinate, so an all-log problem
-    # (blasi, schwen, and 100 of bachmann's 101) would be testing whether sum(log y) = log(prod y)
-    # is constant -- a different law entirely -- and a mixed problem (lucarelli) would be adding
-    # log values to linear ones outright. Restrict to the linear-coordinate observables and say so.
+    # would be testing whether sum(log y) = log(prod y) is constant -- a different law entirely --
+    # and a mixed problem would be adding log values to linear ones outright. Restrict to the
+    # linear-coordinate observables and say so.
     linear = sorted(o for o in by_obs if by_obs[o].get("coordinate", "lin") == "lin")
     skipped = len(by_obs) - len(linear)
     obs = linear
@@ -602,7 +609,7 @@ def _conservation(by_obs) -> dict[str, Any]:
     exps = {e for o in obs for e, _, _, _ in by_obs[o]["series"]}
     for eid in sorted(exps):
         # The observables co-measured in THIS experiment, at their common time points. Requiring all
-        # observables at one time is hopeless on a real design (bachmann has 101, isensee 123).
+        # observables at one time is hopeless on a real design (some have 100+ observables).
         curves = {}
         for o in obs:
             for e, t, y, reps in by_obs[o]["series"]:
@@ -638,16 +645,16 @@ def _conservation(by_obs) -> dict[str, Any]:
         # "Does THIS component move" is judged against ITS OWN noise, not the pooled sigma of the
         # sum, and against one expected noise range rather than two. Judging it against the sum's
         # sigma made the bar scale with the number of observables and their combined noise, so it
-        # was unreachable on every shipped example -- repressilator's three species swing ~14x their
-        # own noise floor and still scored `n_moving: 0`. That made `holds` (which needs >=2 moving)
-        # impossible in production, i.e. the one verdict advertised as making a model CHEAPER could
-        # never fire. The SUM's constancy is still judged against the pooled sigma below, which is
-        # the right yardstick for a sum.
+        # was unreachable on every problem measured -- a ring oscillator's three species swing ~14x
+        # their own noise floor and still scored `n_moving: 0`. That made `holds` (which needs >=2
+        # moving) impossible in production, i.e. the one verdict advertised as making a model
+        # CHEAPER could never fire. The SUM's constancy is still judged against the pooled sigma
+        # below, which is the right yardstick for a sum.
         # 1.5x the expected noise range of ITS OWN noise. Judging against the sum's pooled sigma
-        # (and a 2x bar) made this unreachable on every shipped example; dropping the margin
+        # (and a 2x bar) made this unreachable on every problem measured; dropping the margin
         # altogether put a genuinely FLAT pair right on the boundary, since the observed range of n
         # noise samples lands at its expectation about half the time. 1.5x clears both: flat pairs
-        # stay still, and repressilator's ~14-sigma swings still count as moving.
+        # stay still, and the oscillator's ~14-sigma swings still count as moving.
         moving = [
             o
             for o in ranges

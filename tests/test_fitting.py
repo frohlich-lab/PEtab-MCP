@@ -202,7 +202,7 @@ def test_slim_fitted_parameters_diffs_against_previous_version():
     class _Prov:
         """Two reads now: get_meta(version) for the PARENT pointer, then get_meta(parent) for
         its fitted values — the baseline is the recorded parent, not version-1, so a rollback
-        does not diff against the branch the run abandoned."""
+        does not diff against the branch the session abandoned."""
 
         def get_meta(self, n):
             if n == 5:
@@ -302,7 +302,7 @@ def test_exitflag_counts_reaches_the_fit_result_block(monkeypatch):
     assert payload["exitflag_counts"] == expected
     # survives per version, or a restored version cannot answer "optimiser- or structure-limited?"
     assert fitting.build_optimization_payload_for_version(payload)["exitflag_counts"] == expected
-    # and reaches the block the agent and judge actually read
+    # and reaches the block the agent and a scorer actually read
     fitsim = {
         "status": "fit",
         "neg_log_likelihood": -5.0,
@@ -330,7 +330,7 @@ def _problem(mdf):
 
 def test_numeric_per_timepoint_sigmas_do_not_force_flattening():
     """AMICI writes a numeric sigma straight into the ExpData, so per-timepoint numbers are
-    already exact. MEASURED on upstream crauste: the nominal llh is bit-identical flattened and
+    already exact. MEASURED on a published problem: the nominal llh is bit-identical flattened and
     unflattened (-190.96512533983716). Flattening them would be pure cost -- it multiplies the
     observable count, and the same predicate gates the observable merge."""
     from petab_mcp.fitting import needs_flattening
