@@ -2035,15 +2035,17 @@ def test_translocates_is_moves():
     assert row["statement"]["to_location"] == "nucleus"
 
 
-def test_a_map_holding_only_an_input_names_it_and_binds_nothing_else(tmp_path):
+def test_an_empty_map_names_the_held_inputs_and_binds_nothing_else(tmp_path):
     """Fujita on the indra_statements arm: the server holds EGF to its ramp, and the route's
     paragraph says so, without claiming the map binds the observables."""
-    entity_map = tmp_path / "entities.json"
-    entity_map.write_text(
-        '{"A": {"name": "A", "input": "piecewise(1, time <= 5, 0)"}}'
+    shutil.copytree(YAML_PATH.parent, tmp_path / "problem")
+    (tmp_path / "problem" / "inputs.tsv").write_text(
+        "inputId\tformula\tconditionInputs\nA\tpiecewise(1, time <= 5, 0)\t\n"
     )
+    entity_map = tmp_path / "entities.json"
+    entity_map.write_text("{}")
     mcp = create_server(
-        str(YAML_PATH),
+        str(tmp_path / "problem" / "problem.yaml"),
         provenance_dir=str(tmp_path / "prov"),
         resolver=StubReferenceResolver(),
         auto_fit=False,
