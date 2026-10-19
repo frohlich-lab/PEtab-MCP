@@ -804,6 +804,13 @@ _MAKE_CHANGES_DOC = "\n\n".join(
 )
 
 
+# What the statements route holds, said once for every version of its paragraph.
+_HELD_INPUTS = (
+    "A species the conditions set stays at what they set while your rows only read it (bind, "
+    "catalyse, regulate); a row that makes or converts it makes it a state they only start. Each "
+    "of `describe_problem`'s `inputs` follows its rule."
+)
+
 def _make_changes_statements_doc() -> str:
     """The `statements` route's paragraph, naming the entries the library holds right now."""
     from indra.statements import Statement, get_all_descendants
@@ -826,10 +833,9 @@ def _make_changes_statements_doc() -> str:
         + (f" but {', '.join(without)}" if without else "")
         + f" has `{mechanisms.INDRA_DEFAULT}`; the library also holds {entries}. When none fits, WRITE one in `mechanisms` — it stays in the "
         "library for the rest of the run. The species the observables read are bound by the "
-        "problem's entity map, and the inputs the experiments set are held, each one the "
-        "conditions set and each `describe_problem`'s `inputs` give a rule: name agents as the "
-        "map does, and do not assert an input. The result is an ordinary model: `model_edits` "
-        "can edit it next."
+        "problem's entity map: name agents as it does. "
+        + _HELD_INPUTS
+        + " The result is an ordinary model: `model_edits` can edit it next."
     )
 
 
