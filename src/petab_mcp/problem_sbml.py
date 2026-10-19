@@ -10,9 +10,9 @@ be scored against it as it stands. This module is the difference, and it is all 
 * **Starting amounts.** What is present at the start is traced (below); each present monomer
   starts at an estimated ``<monomer>_init``, or at the row the problem ships (Crauste's fixed
   ``Naive_init``) — unless the statements DECLARE what is there (``starts``, below).
-* **Inputs.** A species the experiment sets (Fujita's EGF dose) is held to the protocol formula
-  the entity map declares, and the condition-table columns it reads are declared for the table
-  to fill.
+* **Inputs.** A species the experiment sets is held rather than built: one the condition table
+  targets (Isensee's ``Fsk``), which its periods set, and one the problem's ``inputs.tsv`` holds to
+  a protocol (Fujita's EGF ramp, :func:`protocols.hold`).
 * **Leftovers.** A rate constant an agent-written mechanism replaced is removed.
 
 The start rests on two assumptions, and a third check refuses the models they do not fit:
@@ -68,6 +68,7 @@ from pysb.export import export
 
 from . import mechanisms as M
 from .errors import ModelUpdateError
+from .protocols import Input, hold
 from .reconcile import SEED_INITIAL_VALUE
 
 
@@ -75,10 +76,12 @@ def to_antimony(
     rows: list[tuple],
     entities: dict[str, Agent],
     library: dict[tuple[str, str], M.Policy] = M.REGISTRY,
-    inputs: dict[str, str] | None = None,
+    inputs: tuple[Input, ...] = (),
     starts: list[tuple[str, Agent, float | str]] | None = None,
     formulas: dict[str, str] | None = None,
     amounts: dict[str, Agent] | None = None,
+    *,
+    targets: frozenset[str] = frozenset(),
 ) -> tuple[str, list[M.Emission]]:
     """The model ``rows`` build, as Antimony the ``antimony`` route accepts unchanged.
 
@@ -86,9 +89,10 @@ def to_antimony(
     because that name is what the fixed observable table reads. The start is traced as the module
     docstring sets out, and :class:`ModelUpdateError` names the rows a model breaking it fails on.
 
-    An experiment's INPUT (``inputs``: species id to the protocol formula the problem's entity map
-    declares) is held to that formula instead. It has no starting amount of its own, and each
-    column the formula names becomes a parameter the condition table sets.
+    An experiment's INPUT is held instead, with no starting amount of its own: a species of
+    ``entities`` among ``targets`` (the problem's condition targets), which its periods set, and
+    each of ``inputs`` (the problem's :mod:`protocols`), under its protocol. An input the entity
+    map does not name is the agent of its id.
 
     ``starts`` (``(name, agent, amount)``: a number or an expression over parameter ids) declare
     what is present at the start, as the module docstring sets out; each is ``<name>_init``.
@@ -99,9 +103,10 @@ def to_antimony(
     becoming a parameter as in a declared start.
     """
     starts = starts or []
+    entities = {**{item.id: Agent(item.id) for item in inputs}, **entities}
     clash = sorted(set(amounts or {}) & set(entities))
     if clash:
-        raise ModelUpdateError(f"amounts {clash} are also entity-map ids; name them apart")
+        raise ModelUpdateError(f"amounts {clash} are also entity-map or input ids; name them apart")
     # An amount a readout formula reads is named like an entity-map readout (below), for this
     # model only: the map itself is the problem's, and amounts are the agent's.
     entities = {**entities, **(amounts or {})}
@@ -110,7 +115,10 @@ def to_antimony(
     model, emissions = M.assemble(
         rows, {**entities, **{f"__start_{name}": agent for name, agent, _ in starts}}, library
     )
-    held = {entities[species].name: formula for species, formula in (inputs or {}).items()}
+    protocol = {item.id: item for item in inputs}
+    held = {
+        entities[s].name: protocol.get(s) for s in entities if s in protocol or s in targets
+    }
     _refuse_chains(model, emissions)
     made = set()
     for rule in model.rules:
@@ -125,7 +133,7 @@ def to_antimony(
     for name, species in readouts.items():
         pattern = get_monomer_pattern(model, entities[species])
         model.add_component(pysb.Observable(name, pattern, _export=False))
-    declared = _declare(model, starts, {entities[s].name for s in inputs or {}})
+    declared = _declare(model, starts, set(held))
     _seed(
         model,
         [m for m in model.monomers if (m.name not in made or m.name in held) and m.name not in declared],
@@ -218,27 +226,13 @@ def to_antimony(
         elif float(amount) == 0.0:
             _initial_empty(sbml_model, f"{name}_init")
     _drop_unreferenced_parameters(sbml_model)
-    for monomer, formula in held.items():
-        protocol = libsbml.parseL3Formula(formula)
-        if protocol is None:
-            raise ModelUpdateError(
-                f"the entity map's input for {monomer} is no formula: {formula!r}"
-            )
-        for node in _ast_nodes(protocol):
-            if (
-                node.getType() == libsbml.AST_NAME
-                and sbml_model.getElementBySId(node.getName()) is None
-            ):
-                column = sbml_model.createParameter()
-                column.setId(node.getName())
-                column.setConstant(True)
-                column.setValue(0.0)
-        # A species may sit in reactions and under a rule only on the boundary.
-        species = base[monomer]
-        species.setBoundaryCondition(True)
-        rule = sbml_model.createAssignmentRule()
-        rule.setVariable(species.getId())
-        rule.setMath(protocol)
+    for monomer, item in held.items():
+        if item is None:
+            # A species may sit in reactions and be set by a condition, unchanged by them, only
+            # on the boundary.
+            base[monomer].setBoundaryCondition(True)
+        else:
+            hold(sbml_model, base[monomer].getId(), item)
     _number_reactions(sbml_model)
     return SbmlModel.from_string(libsbml.writeSBMLToString(document)).to_antimony(), emissions
 
