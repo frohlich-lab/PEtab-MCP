@@ -192,6 +192,69 @@ def test_fit_n_workers_env_precedence(monkeypatch):
         importlib.reload(fitting)
 
 
+_TOLERANCE_ENV = {
+    "PETAB_MCP_FIT_AMICI_RTOL": "FIT_AMICI_RTOL",
+    "PETAB_MCP_FIT_AMICI_RTOL_STEADY_STATE": "FIT_AMICI_RTOL_STEADY_STATE",
+    "PETAB_MCP_FIT_AMICI_ATOL_STEADY_STATE": "FIT_AMICI_ATOL_STEADY_STATE",
+}
+
+
+def test_the_amici_tolerance_knobs_are_read_from_the_env_and_default_to_amicis(monkeypatch):
+    """Unset (or unreadable), a knob is ``None`` and AMICI's own default holds, so no problem that
+    does not ask for a tolerance is integrated differently. The env names are what a launcher
+    exports; renaming one silently drops a tolerance a problem needs."""
+    import importlib
+
+    try:
+        for env in _TOLERANCE_ENV:
+            monkeypatch.delenv(env, raising=False)
+        importlib.reload(fitting)
+        assert all(getattr(fitting, name) is None for name in _TOLERANCE_ENV.values())
+
+        for i, env in enumerate(_TOLERANCE_ENV):
+            monkeypatch.setenv(env, f"1e-{7 + i}")
+        importlib.reload(fitting)
+        assert [getattr(fitting, name) for name in _TOLERANCE_ENV.values()] == [1e-7, 1e-8, 1e-9]
+
+        monkeypatch.setenv("PETAB_MCP_FIT_AMICI_RTOL", "garbage")
+        importlib.reload(fitting)
+        assert fitting.FIT_AMICI_RTOL is None
+    finally:
+        monkeypatch.undo()
+        importlib.reload(fitting)
+
+
+def test_each_amici_tolerance_knob_reaches_the_solver(monkeypatch):
+    """Every knob that is set lands on the objective's AMICI solver, and one that is not is never
+    set: AMICI's default is not a value to restate."""
+    from types import SimpleNamespace
+
+    calls = {}
+
+    class _Solver:
+        def __getattr__(self, name):
+            if not name.startswith("set_"):
+                raise AttributeError(name)
+            return lambda value: calls.__setitem__(name, value)
+
+    problem = SimpleNamespace(objective=SimpleNamespace(amici_solver=_Solver()))
+    for name in _TOLERANCE_ENV.values():
+        monkeypatch.setattr(fitting, name, None)
+    fitting._apply_amici_solver_defaults(problem)
+    assert calls == {"set_absolute_tolerance": fitting.FIT_AMICI_ATOL}
+
+    monkeypatch.setattr(fitting, "FIT_AMICI_RTOL", 1e-7)
+    monkeypatch.setattr(fitting, "FIT_AMICI_RTOL_STEADY_STATE", 1e-9)
+    monkeypatch.setattr(fitting, "FIT_AMICI_ATOL_STEADY_STATE", 1e-11)
+    fitting._apply_amici_solver_defaults(problem)
+    assert calls == {
+        "set_absolute_tolerance": fitting.FIT_AMICI_ATOL,
+        "set_relative_tolerance": 1e-7,
+        "set_relative_tolerance_steady_state": 1e-9,
+        "set_absolute_tolerance_steady_state": 1e-11,
+    }
+
+
 # ------------------------------------------------------- fitted-parameters diff (payload diet)
 def test_slim_fitted_parameters_diffs_against_previous_version():
     """The 84-118-entry fitted dict rode on every make_changes/get_fit_summary payload, re-sent

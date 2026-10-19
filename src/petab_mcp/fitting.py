@@ -66,7 +66,7 @@ from .problem import (
 _PARAMETER_TYPE_COL = "parameterType"
 
 
-def _env_float(name: str, default: float) -> float:
+def _env_float(name: str, default: float | None) -> float | None:
     """A finite, strictly-positive float from ``name``, or ``default`` when the env var is unset,
     non-numeric, or not a finite positive number — a bad override can't NaN/Inf/<=0 the cap or
     crash import."""
@@ -145,17 +145,42 @@ FIT_STARTS_PER_TASK = _env_int("PETAB_MCP_FIT_STARTS_PER_TASK", 0)
 # comparison.
 FIT_AMICI_ATOL = _env_float("PETAB_MCP_FIT_AMICI_ATOL", 1e-10)
 
+# AMICI's relative integration tolerance and its steady-state relative and absolute tolerances for
+# every candidate fit and held-out score (env PETAB_MCP_FIT_AMICI_RTOL,
+# PETAB_MCP_FIT_AMICI_RTOL_STEADY_STATE, PETAB_MCP_FIT_AMICI_ATOL_STEADY_STATE). Unset, AMICI's own
+# default holds. A problem whose pre-equilibration does not converge at the defaults states its own
+# tolerances, and whoever starts the server exports them here, so the server integrates it as the
+# problem's own scoring does: at the defaults such a problem can score ~0.2 nats from its converged
+# value, and differently on PEtab v1 and v2; a steady-state rtol of 1e-9 brought both to 1.4e-5.
+FIT_AMICI_RTOL = _env_float("PETAB_MCP_FIT_AMICI_RTOL", None)
+FIT_AMICI_RTOL_STEADY_STATE = _env_float("PETAB_MCP_FIT_AMICI_RTOL_STEADY_STATE", None)
+FIT_AMICI_ATOL_STEADY_STATE = _env_float("PETAB_MCP_FIT_AMICI_ATOL_STEADY_STATE", None)
+
 
 def _apply_amici_solver_defaults(problem) -> None:
-    """Set :data:`FIT_AMICI_ATOL` on ``problem``'s AMICI solver, in place. Best-effort: a problem
-    whose objective exposes no AMICI solver is left alone rather than raising, since a missing
-    tolerance degrades a fit while a raise here would break every fit path at once."""
+    """Set :data:`FIT_AMICI_ATOL`, and each of the tolerances above that is set, on ``problem``'s
+    AMICI solver, in place. Best-effort: a problem whose objective exposes no AMICI solver is left
+    alone rather than raising, since a missing tolerance degrades a fit while a raise here would
+    break every fit path at once.
+
+    Set on the server's solver, before a fit's starts are pickled: AMICI pickles a solver with its
+    settings, so a dask or SLURM worker integrates with them without reading the environment."""
     solver = getattr(getattr(problem, "objective", None), "amici_solver", None)
-    setter = getattr(solver, "set_absolute_tolerance", None) or getattr(
-        solver, "setAbsoluteTolerance", None
-    )
-    if setter is not None:
-        setter(FIT_AMICI_ATOL)
+    for setters, value in (
+        (("set_absolute_tolerance", "setAbsoluteTolerance"), FIT_AMICI_ATOL),
+        (("set_relative_tolerance", "setRelativeTolerance"), FIT_AMICI_RTOL),
+        (
+            ("set_relative_tolerance_steady_state", "setRelativeToleranceSteadyState"),
+            FIT_AMICI_RTOL_STEADY_STATE,
+        ),
+        (
+            ("set_absolute_tolerance_steady_state", "setAbsoluteToleranceSteadyState"),
+            FIT_AMICI_ATOL_STEADY_STATE,
+        ),
+    ):
+        setter = next((getattr(solver, s) for s in setters if hasattr(solver, s)), None)
+        if setter is not None and value is not None:
+            setter(value)
 
 
 # The warm-start jitter's seed and the multistart's optimizer. Named constants rather than
