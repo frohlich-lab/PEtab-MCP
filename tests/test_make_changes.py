@@ -1335,17 +1335,18 @@ def test_an_empty_entity_map_still_offers_the_route(tmp_path):
 
 def _benchmark_ids_server(tmp_path, add_condition, *, fixed_d=False, dose=False):
     """The toy with the ids issue 5 met: Blasi's shipped FIXED `d`, and Fujita's dose column
-    `EGF_0`, which the entity map's EGF input reads."""
+    `EGF_0`, which Fujita's EGF ramp reads."""
     work = tmp_path / "problem"
     shutil.copytree(YAML_PATH.parent, work)
-    extra = ""
     if fixed_d:
         with (work / "parameters.tsv").open("a") as fh:
             fh.write("d\tlog10\t1e-12\t1000.0\t1.0\tfalse\n")
     if dose:
         add_condition(work / "problem.yaml", "EGF_0", 1.0)
-        extra = ', "EGF": {"name": "EGF", "input": "EGF_0"}'
-    return _statements_server(tmp_path, extra, work / "problem.yaml")
+        (work / "inputs.tsv").write_text(
+            "inputId\tformula\tconditionInputs\nEGF\tpiecewise(EGF_0, time <= 10, 0)\tEGF_0\n"
+        )
+    return _statements_server(tmp_path, yaml_path=work / "problem.yaml")
 
 
 def _hop(mcp, route, rate, parameters=("k",), binding=None):
