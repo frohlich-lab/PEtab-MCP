@@ -11,6 +11,7 @@ from petab_mcp import mechanisms as M
 from petab_mcp import problem_sbml as PS
 from petab_mcp.errors import ModelUpdateError
 from petab_mcp.mechanisms import INDRA_DEFAULT
+from petab_mcp.protocols import Input
 from petab_mcp.statements import PopulationTransition
 
 _PHOSPHO = Phosphorylation(Agent("MEK", db_refs={"HGNC": "6840"}), Agent("ERK"), "T", "185")
@@ -38,21 +39,35 @@ def test_readouts_name_the_species_the_observables_read():
 
 
 def test_an_input_is_held_to_its_protocol():
-    """A dose is a fact about the experiment: its species sits under the protocol the entity map
-    declares, with no starting amount of its own, and every condition-table column the protocol
-    names exists for the table to set — Fujita's warm start was refused for a column `EGF_0` it
-    had nowhere to put."""
-    egf, akt = Agent("EGF"), Agent("AKT")
+    """A dose is a fact about the experiment: its species sits under the protocol inputs.tsv
+    declares, with no starting amount of its own, and every condition target the protocol names
+    exists for the table to set — Fujita's warm start was refused for a column `EGF_0` it had
+    nowhere to put. The entity map need not name it: gemot's statements arm passes an empty one."""
+    ramp = "piecewise(EGF_0 + EGF_rate*time, time < EGF_end, 0)"
     antimony, _ = PS.to_antimony(
-        [(Phosphorylation(egf, akt), INDRA_DEFAULT, "r1")],
-        {"EGF": egf},
-        inputs={"EGF": "piecewise(EGF_0 + EGF_rate*time, time < EGF_end, 0)"},
+        [(Phosphorylation(Agent("EGF"), Agent("AKT")), INDRA_DEFAULT, "r1")],
+        {},
+        inputs=(Input("EGF", ramp, ("EGF_0", "EGF_rate", "EGF_end")),),
     )
     sbml = SbmlModel.from_antimony(antimony).sbml_model
     assert sbml.getSpecies("EGF").getBoundaryCondition()
     assert sbml.getAssignmentRuleByVariable("EGF") is not None
     assert sbml.getInitialAssignmentBySymbol("EGF") is None
     assert {"EGF_0", "EGF_rate", "EGF_end"} <= {p.getId() for p in sbml.getListOfParameters()}
+
+
+def test_a_species_the_conditions_set_is_held_without_a_rule():
+    """Isensee's converted experiments set `Fsk` itself, so the problem says it is an input: no
+    file declares it a second time, and a rule `Fsk := Fsk` would read itself."""
+    antimony, _ = PS.to_antimony(
+        [(Phosphorylation(Agent("forskolin"), Agent("AKT")), INDRA_DEFAULT, "r1")],
+        {"Fsk": Agent("forskolin")},
+        targets=frozenset({"Fsk"}),
+    )
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    assert sbml.getSpecies("Fsk").getBoundaryCondition()
+    assert sbml.getAssignmentRuleByVariable("Fsk") is None
+    assert sbml.getInitialAssignmentBySymbol("Fsk") is None
 
 
 def test_chained_dimers_are_refused_before_the_expansion():
