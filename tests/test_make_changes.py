@@ -1084,6 +1084,18 @@ def test_a_mechanism_the_agent_writes_stays_in_the_run_library(tmp_path):
     assert again["applied"] is True
 
 
+def test_a_written_mechanism_no_row_uses_survives_a_resume(tmp_path):
+    """The run keeps a mechanism it wrote whether or not a row uses it. A resume read them back
+    off the rows alone, so one no row used was in the library live and gone after a resume."""
+    mcp = _statements_server(tmp_path)
+    args = {"justification": "x", "statements": [_statement_row()], "mechanisms": [_SATURATING]}
+    assert _call(mcp, "make_changes", args)["committed"] is True
+    row = {**_statement_row(policy="saturating"), "prefix": "conv2"}
+    resumed = _statements_server(tmp_path)
+    out = _call(resumed, "make_changes", {"justification": "y", "statements": [row]})
+    assert out["applied"] is True, out.get("error")
+
+
 def test_a_written_mechanism_is_not_redefined_in_place(tmp_path):
     """Earlier versions were built with the first definition; changing it under the same name
     would change what their records mean."""
@@ -1099,6 +1111,46 @@ def test_a_written_mechanism_is_not_redefined_in_place(tmp_path):
         mcp, "make_changes", {"justification": "y", "statements": [row], "mechanisms": [changed]}
     )
     assert out["applied"] is False and out["error_cause"] == "mechanism_redefined"
+
+
+def test_a_version_without_new_rows_keeps_its_parents(tmp_path):
+    """A bounds-only commit keeps the model its rows built, so it keeps the rows and the
+    mechanisms they name. It stored none, so restoring it restored none: the model no longer read
+    as built from statements, and a row naming the written mechanism was refused."""
+    mcp = _statements_server(tmp_path)
+    row = _statement_row(policy="saturating")
+    args = {"justification": "saturating", "statements": [row], "mechanisms": [_SATURATING]}
+    assert _call(mcp, "make_changes", args)["committed"] is True
+    widen = [{"parameter_id": "conv_vmax", "lower_bound": 1e-3, "upper_bound": 100.0}]
+    out = _call(mcp, "make_changes", {"justification": "widen", "parameters": widen})
+    assert out["committed"] is True
+    versions = tmp_path / "prov" / "versions"
+    stored = (versions / "v0" / "statements.json").read_text()
+    assert (versions / "v1" / "statements.json").read_text() == stored
+    # A durable resume restores HEAD, v1: its rows, and the mechanism they were written with.
+    resumed = _statements_server(tmp_path)
+    model = _call(resumed, "get_model", {"format": "statements"})["result"]
+    assert "mechanism saturating" in model
+    row["prefix"] = "conv2"
+    assert _call(resumed, "make_changes", {"justification": "reuse", "statements": [row]})[
+        "applied"
+    ] is True
+    # Model text without rows changes the model under them: that version records none.
+    out = _call(resumed, "make_changes", {"justification": "by hand", "antimony": _antimony()})
+    assert out["committed"] is True
+    assert not (versions / "v3" / "statements.json").exists()
+    # Resumed at v3, which has no rows, the run's written mechanisms still come back: a row names
+    # one, and it may not be redefined.
+    again = _statements_server(tmp_path)
+    row["prefix"] = "conv3"
+    assert _call(again, "make_changes", {"justification": "back", "statements": [row]})[
+        "applied"
+    ] is True
+    changed = {**_SATURATING, "rate": "vmax"}
+    out = _call(
+        again, "make_changes", {"justification": "y", "statements": [row], "mechanisms": [changed]}
+    )
+    assert out["error_cause"] == "mechanism_redefined"
 
 
 def test_a_declared_unit_start_is_fixed_not_estimated(tmp_path):

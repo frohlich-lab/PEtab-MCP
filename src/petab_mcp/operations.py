@@ -670,7 +670,8 @@ def statements_to_antimony(
     the start, ``readouts`` (id to formula) the measurement mappings that are not one pattern's
     amount, over ``amounts`` (name to agent) (:func:`problem_sbml.to_antimony`). Returns the Antimony; the provenance record —
     ``rows``, each with the :class:`mechanisms.Emission` it produced and with its definition when
-    the agent wrote its mechanism, and ``starts``; a warning per ungrounded agent, since grounding is
+    the agent wrote its mechanism, ``mechanisms``, the ``written`` ones whether a row uses them or
+    not, and ``starts``; a warning per ungrounded agent, since grounding is
     optional and its absence is reported, never refused; and the run's written mechanisms, for
     the caller to keep once the change applies.
     """
@@ -789,6 +790,7 @@ def statements_to_antimony(
             | ({"mechanism": definitions[e.entry]} if e.entry in definitions else {})
             for row, e in zip(rows, emissions)
         ],
+        "mechanisms": list(written or []),
         "starts": [
             {"name": name, "agent": start["agent"], "amount": start["amount"]}
             for (name, _, _), start in zip(declared, starts or [])

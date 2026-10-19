@@ -308,17 +308,18 @@ class PetabSession:
         # re-derive it from the render. Restored on rollback with the rest of the state.
         self.model_source: str | None = None
         # The statements record (:func:`operations.statements_to_antimony`) of the model last built
-        # from statements, beside its source: what `get_model(format='statements')` renders.
+        # from statements, beside its source: what `get_model(format='statements')` renders, what
+        # a commit that submits no model text inherits, and restored with the version.
         self.model_statements: dict[str, Any] | None = None
 
         # What the `statements` route asserted for the next commit: each row with the Emission
         # it produced (:func:`operations.statements_to_antimony`). Stored as ``statements.json``
         # beside the source it generated, and cleared with ``submitted_source``.
-        self.submitted_statements: list[dict[str, Any]] | None = None
+        self.submitted_statements: dict[str, Any] | None = None
 
         # The mechanisms the agent has WRITTEN this run, keyed (statement type, policy): the run's
         # additions to the library (:func:`mechanisms.written`), usable by every later call.
-        # Each version's statements.json carries the definitions its rows used.
+        # Each version's statements.json carries those the call that built its rows wrote.
         self.mechanisms: dict[tuple[str, str], dict[str, Any]] = {}
 
         # Species id -> INDRA Agent (:func:`seeding.load_entity_map`): what binds a model built
@@ -360,6 +361,16 @@ class PetabSession:
             )
             # durable resume: restore the working state from the latest version
             self.apply_version(self.provenance.current_version)
+            # ...and the mechanisms the run wrote, off every version's record, since a row naming
+            # one must still build and none may be redefined: those its call wrote, which a row
+            # need not use, and those its rows used (a record may predate `mechanisms`). Oldest
+            # first, so the first definition of a name wins, as it does live.
+            for meta in self.provenance.list_versions():
+                record = self.provenance.get_statements(meta["version"]) or {}
+                for d in record.get("mechanisms", []) + [
+                    row["mechanism"] for row in record.get("rows", []) if "mechanism" in row
+                ]:
+                    self.mechanisms.setdefault((d["statement_type"], d["policy"]), d)
             # apply_version restores `model_source` too, so a durable resume (or recover_run.py)
             # keeps editing the SOURCE rather than silently adopting the render as its base —
             # which would break `child.source == parent.source + ops` exactly at the resume
@@ -709,6 +720,8 @@ class PetabSession:
             # resurrects it. Falls back to the restored render for versions stored before
             # sources existed, which is the correct base for them.
             self.model_source = self.provenance.get_model_source(version) or snap["model_antimony"]
+            # ...and so do its rows.
+            self.model_statements = self.provenance.get_statements(version)
             # Restore this version's fit artifacts too: the optimization traces/results are
             # persisted per version (``None`` for legacy/unfitted versions), so a rollback or
             # durable resume brings them back rather than dropping them.
@@ -801,7 +814,12 @@ class PetabSession:
             # and nothing in the payload marks where it stopped. Carry the current source forward
             # so every version after the first authoring has one.
             model_source=self.submitted_source or self.model_source,
-            statements=self.submitted_statements,
+            # The same for the rows: a commit that submits no model text (bounds only, a refit)
+            # keeps the model its rows built, so it keeps the rows. One that submits text without
+            # rows (`antimony`, `model_edits`) changed the model under them and records none.
+            statements=(
+                self.submitted_statements if self.submitted_source else self.model_statements
+            ),
             meta=meta,
             simulation=fitting.build_sim_payload_for_version(sim),
             optimization=fitting.build_optimization_payload_for_version(self.optimization),
