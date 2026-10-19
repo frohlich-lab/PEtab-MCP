@@ -70,23 +70,22 @@ dependencies = [
     # Imported directly for the chi2 goodness-of-fit p-value (residual_tests, fitting). Only
     # transitively present via pyPESTO otherwise.
     "scipy>=1.10",
-    # AMICI-dev/AMICI#3408's head (0b16186) until it merges, then its merge commit on main; not a
-    # release. #3408 is AMICI main plus JAX code that compiles for `And`/`Or`: sympy's
-    # `logical_or.reduce((a, b))` is refused by jax, and libpetab#546's flat initial assignments
-    # produce an `Or` wherever two experiments set a target alike, so the JAX backend (gemot's
-    # neural-ODE route trains through it) could not build such a problem. Main has #3312, which
-    # gives the PEtab v2 simulator per-parameter scales, which pyPESTO's importer hands it (below),
-    # and #3309, which 1.1.0 lacks, and without which a hierarchical PEtab v2 problem cannot be
-    # unpickled once its objective has been evaluated (ICB-DCM/pyPESTO#1771) -- and every fit
-    # evaluates the objective before its parallel multistart pickles the problem into the workers.
-    # #3388: a noise formula that reads an assignment rule compiles (before it, `dsigmaydp.cpp`
-    # named the rule's target undeclared), which every proportional noise model does once its
-    # observable reads a readout rule (Armistead's). #3397: a trigger whose time an event sets
-    # fires at that time; the v2 import applies every condition by event, and root-finding switched
-    # such a trigger straight back off, so Isensee's v2 stimulus never stayed on. Built from source
-    # (no wheel for a commit), which is why CI installs a toolchain before it. Move to a release
-    # once one contains all five.
-    "amici @ git+https://github.com/AMICI-dev/AMICI.git@0b161860f1b45102cf727a99d9982fdc534b86f6#subdirectory=python/sdist",
+    # AMICI main at AMICI-dev/AMICI#3408's merge commit (a4dbb08); not a release. #3408 makes the
+    # JAX code compile for `And`/`Or`: sympy's `logical_or.reduce((a, b))` is refused by jax, and
+    # libpetab#546's flat initial assignments produce an `Or` wherever two experiments set a target
+    # alike, so the JAX backend (gemot's neural-ODE route trains through it) could not build such a
+    # problem. Main has #3312, which gives the PEtab v2 simulator per-parameter scales, which
+    # pyPESTO's importer hands it (below), and #3309, which 1.1.0 lacks, and without which a
+    # hierarchical PEtab v2 problem cannot be unpickled once its objective has been evaluated
+    # (ICB-DCM/pyPESTO#1771) -- and every fit evaluates the objective before its parallel multistart
+    # pickles the problem into the workers. #3388: a noise formula that reads an assignment rule
+    # compiles (before it, `dsigmaydp.cpp` named the rule's target undeclared), which every
+    # proportional noise model does once its observable reads a readout rule. #3397: a trigger whose
+    # time an event sets fires at that time; the v2 import applies every condition by event, and
+    # root-finding switched such a trigger straight back off, so a v2 stimulus applied that way
+    # never stayed on. Built from source (no wheel for a commit), which is why CI installs a
+    # toolchain before it. Move to a release once one contains all five.
+    "amici @ git+https://github.com/AMICI-dev/AMICI.git@a4dbb08da4d3c782ba3a2bab47c92586467ea5bc#subdirectory=python/sdist",
     # An integration commit, not a release: ICB-DCM/pyPESTO#1786's head with main merged in, on
     # pyPESTO's `integrate/1786-main` branch. Main has #1782: the PEtab v2 importer takes the
     # estimation scales (`PetabImporter(parameter_scales=...)`), which v2 dropped from the format;
