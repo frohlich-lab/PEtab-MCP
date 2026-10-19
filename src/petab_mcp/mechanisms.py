@@ -34,7 +34,9 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from collections import Counter
 from dataclasses import dataclass
+from itertools import count
 
 import pysb
 import sympy
@@ -50,7 +52,12 @@ from indra.assemblers.pysb.assembler import (
 from indra.assemblers.pysb.base_agents import BaseAgentSet
 from indra.assemblers.pysb.sites import get_mod_site_name, states
 from indra.statements import (
+    AddModification,
     Agent,
+    Conversion,
+    DecreaseAmount,
+    IncreaseAmount,
+    Modification,
     RegulateActivity,
     RemoveModification,
     Statement,
@@ -58,7 +65,10 @@ from indra.statements import (
     get_statement_by_name,
     modclass_to_modtype,
 )
-from pysb.core import time
+from indra.assemblers.pysb.assembler import _n, get_site_pattern
+from indra.assemblers.pysb.sites import get_binding_site_name
+from pysb import ANY
+from pysb.core import ReactionPattern, RuleExpression, time
 
 from .errors import MechanismError
 from .statements import PopulationTransition
@@ -240,6 +250,11 @@ def assemble(
             agents.get_create_base_agent(agent)
     for agent in (entities or {}).values():
         agents.get_create_base_agent(agent)
+    # INDRA's pass gives a substrate its modification site only through an enzyme; an
+    # enzyme-less modification (`basal`) would otherwise name a site its monomer lacks.
+    for stmt in stmts:
+        if isinstance(stmt, Modification) and stmt.sub is not None:
+            agents.get_create_base_agent(stmt.sub).create_mod_site(stmt._get_mod_condition())
 
     model = pysb.Model(name="statements", _export=False)
     for base in agents.agents.values():
@@ -290,13 +305,105 @@ def _add(model: pysb.Model, *components) -> None:
         model.add_component(component)
 
 
-@mechanism(PopulationTransition, "mass_action")
+def agent_pattern(
+    model: pysb.Model, agent: Agent, fresh=lambda name: False, partners: bool = True
+) -> list:
+    """``agent`` as the molecules it writes: its own stated sites (a modification as its state,
+    not INDRA's ``(state, WILD)``, which on a product bonds to nothing), and for each ``is_bound``
+    condition the partner, built the same way and bonded on the sites INDRA names after each other.
+
+    ``fresh(monomer name)`` says whether a molecule is NEW — made by the rule rather than carried
+    over from a reactant, which BioNetGen maps by type in order — and a new molecule is written in
+    full: every unstated site in its default state, every unbound site free. A pattern on the left,
+    or a molecule carried over, leaves unstated sites unstated, so they keep what they had.
+
+    With ``partners`` off a bound condition stays "bound to something" and builds no partner:
+    BioNetGen's DeleteMolecules deletes every molecule a pattern names, so a release names only
+    the molecule it removes.
+    """
+    bonds = count(1)
+
+    def visit(a: Agent, partner: tuple | None) -> list:
+        monomer = model.monomers[_n(a.name)]
+        stated = get_site_pattern(a)
+        unknown = sorted(set(stated) - set(monomer.sites))
+        if unknown:
+            raise MechanismError(f"{a.name} states sites {unknown} that no statement gives it")
+        state = {
+            site: value[0] if isinstance(value, tuple) else value
+            for site, value in stated.items()
+            if value is not ANY
+        }
+        if fresh(monomer.name):
+            for site in monomer.sites:
+                if site in state:
+                    continue
+                if site in monomer.site_states:
+                    states_ = monomer.site_states[site]
+                    state[site] = "cytoplasm" if site == "loc" and "cytoplasm" in states_ else states_[0]
+                else:
+                    state[site] = None
+        bound = []
+        for condition in a.bound_conditions:
+            if condition.is_bound and not partners:
+                state[get_binding_site_name(condition.agent)] = ANY
+            elif condition.is_bound:
+                bond = next(bonds)
+                state[get_binding_site_name(condition.agent)] = bond
+                bound += visit(condition.agent, (get_binding_site_name(a), bond))
+        if partner is not None:
+            state[partner[0]] = partner[1]
+        return [monomer(**state), *bound]
+
+    return visit(agent, None)
+
+
+def _sides(model: pysb.Model, before: list[Agent], after: list[Agent], partners: bool = True):
+    """The two sides of one rule turning ``before`` into ``after``, each agent a complex (or, with
+    ``partners`` off, the reactant molecule alone, :func:`agent_pattern`). A product molecule
+    beyond the reactant molecules of its type is new."""
+    lhs = [pysb.ComplexPattern(agent_pattern(model, a, partners=partners), None) for a in before]
+    carried = Counter(mp.monomer.name for cp in lhs for mp in cp.monomer_patterns)
+
+    def fresh(name: str) -> bool:
+        carried[name] -= 1
+        return carried[name] < 0
+
+    rhs = [pysb.ComplexPattern(agent_pattern(model, a, fresh), None) for a in after]
+    return ReactionPattern(lhs), ReactionPattern(rhs)
+
+
+def _one_rule(stmt, model, prefix, policy, before, after, name, roles, delete_molecules=False):
+    """One irreversible mass-action rule ``before >> after`` at ``<prefix>_k``."""
+    k = pysb.Parameter(f"{prefix}_k", 1.0, _export=False)
+    lhs, rhs = _sides(model, before, after, partners=not delete_molecules)
+    rule = pysb.Rule(
+        f"{prefix}_{name}",
+        RuleExpression(lhs, rhs, False),
+        k,
+        delete_molecules=delete_molecules,
+        _export=False,
+    )
+    _add(model, k, rule)
+    return Emission(
+        (type(stmt).__name__, policy), prefix, roles, rules=(rule.name,), parameters=(k.name,)
+    )
+
+
+#: Mass action written from the statement's own agents, as complexes in the states it writes.
+MASS_ACTION = "mass_action"
+#: The same rule, with BioNetGen's DeleteMolecules: a consumed molecule leaves its partners free.
+RELEASE = "release"
+
+
+@mechanism(PopulationTransition, MASS_ACTION)
 def _transition(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
     """First-order transfer, ``k·source``."""
     k = pysb.Parameter(f"{prefix}_k", 1.0, _export=False)
-    source = get_monomer_pattern(model, stmt.source)
-    target = get_monomer_pattern(model, stmt.target)
-    rule = pysb.Rule(f"{prefix}_transition", source >> target, k, _export=False)
+    source, target = _sides(model, [stmt.source], [stmt.target])
+    rule = pysb.Rule(
+        f"{prefix}_transition", RuleExpression(source, target, False), k, _export=False
+    )
     _add(model, k, rule)
     return Emission(
         ("PopulationTransition", "mass_action"),
@@ -344,6 +451,96 @@ def _basal_removal(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
         parameters=(k.name,),
     )
 
+
+def _conversion(policy: str, delete_molecules: bool) -> Policy:
+    def apply(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
+        """``k·[subj]·Π[obj_from]``: the reactants, each the complex its agent writes, become the
+        products in the states theirs write; ``subj`` catalyses. INDRA's own Conversion takes one
+        reactant and makes products in their base state, so Boehm's 2 STAT5A -> dimer, Bruno's
+        cleavage products and Raimundez's receptor dimer steps had no route."""
+        if not stmt.obj_from:
+            raise MechanismError(f"row {prefix!r}: a Conversion needs obj_from")
+        catalyst = [stmt.subj] if stmt.subj is not None else []
+        return _one_rule(
+            stmt,
+            model,
+            prefix,
+            policy,
+            catalyst + list(stmt.obj_from),
+            catalyst + list(stmt.obj_to or []),
+            "conversion",
+            {role: _role_names(getattr(stmt, role)) for role in stmt._agent_order},
+            delete_molecules,
+        )
+
+    return apply
+
+
+def _removal(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
+    """``k·[subj]·[obj]``, removing only the obj molecule: a partner it was bound to is freed
+    (Schwen's internalised insulin, Isensee's hydrolysed cAMP leave their receptor behind), where
+    INDRA's degradation deletes the whole complex."""
+    catalyst = [stmt.subj] if stmt.subj is not None else []
+    return _one_rule(
+        stmt,
+        model,
+        prefix,
+        RELEASE,
+        catalyst + [stmt.obj],
+        catalyst,
+        "release",
+        {"subj": _role_names(stmt.subj), "obj": stmt.obj.name},
+        delete_molecules=True,
+    )
+
+
+mechanism(Conversion, MASS_ACTION)(_conversion(MASS_ACTION, False))
+mechanism(Conversion, RELEASE)(_conversion(RELEASE, True))
+mechanism(DecreaseAmount, RELEASE)(_removal)
+
+
+@mechanism(IncreaseAmount, "self_renewal")
+def _self_renewal(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
+    """``k·[subj]·[obj]``: obj makes more of itself (Crauste's effector expansion, the prey
+    birth of Rosenzweig-MacArthur). INDRA reads "X increases X" as nothing, and IncreaseAmount
+    with no subject makes obj from nothing, which also starts it empty."""
+    catalyst = [stmt.subj] if stmt.subj is not None else []
+    return _one_rule(
+        stmt,
+        model,
+        prefix,
+        "self_renewal",
+        catalyst + [stmt.obj],
+        catalyst + [stmt.obj, stmt.obj],
+        "renewal",
+        {"subj": _role_names(stmt.subj), "obj": stmt.obj.name},
+    )
+
+
+def _basal_addition(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
+    """``k·[unmodified]``: the modification goes on at a steady rate, with no named enzyme —
+    Blasi's acetylations, Brannmark's insulin-independent receptor phosphorylation. The
+    counterpart of :func:`_basal_removal`."""
+    _no_enzyme(stmt, prefix)
+    mod = stmt._get_mod_condition()
+    site = get_mod_site_name(mod)
+    unmod, modified = states[mod.mod_type]
+    k = pysb.Parameter(f"{prefix}_k", 1.0, _export=False)
+    before = get_monomer_pattern(model, stmt.sub, extra_fields={site: unmod})
+    after = get_monomer_pattern(model, stmt.sub, extra_fields={site: modified})
+    rule = pysb.Rule(f"{prefix}_addition", before >> after, k, _export=False)
+    _add(model, k, rule)
+    return Emission(
+        (type(stmt).__name__, BASAL),
+        prefix,
+        {"sub": stmt.sub.name},
+        rules=(rule.name,),
+        parameters=(k.name,),
+    )
+
+
+for _cls in get_all_descendants(AddModification):
+    mechanism(_cls, BASAL)(_basal_addition)
 
 for _cls in get_all_descendants(RemoveModification):
     mechanism(_cls, BASAL)(_basal_removal)
