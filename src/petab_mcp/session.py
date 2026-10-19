@@ -17,7 +17,7 @@ from typing import Any
 from petab.v2.C import CONDITION_ID, ESTIMATE, EXPERIMENT_ID
 from petab.v2.models.sbml_model import SbmlModel
 
-from . import criteria, logging_setup
+from . import criteria, logging_setup, protocols
 from .constants import (
     ADEQUATE_GOF_PVALUE,
     DEFAULT_AUTO_FIT_STARTS,
@@ -183,6 +183,8 @@ class PetabSession:
         # the YAML's own table is true on every process start, resume included, because
         # `WorkingProblem.from_yaml` above always re-reads the shipped `parameters.tsv`.
         self.shipped_parameter_df = self.problem.parameter_df.copy(deep=True)
+        # What the experiments impose over time, from the `inputs.tsv` beside the YAML.
+        self.inputs: tuple[protocols.Input, ...] = protocols.load(self.yaml_path, self.problem)
 
         # Antimony is the canonical model form: prefer a model.ant next to the YAML.
         ant_file = self.yaml_path.parent / "model.ant"
@@ -661,6 +663,7 @@ class PetabSession:
             # and guessing low degrades every fit it makes.
             "fit_n_starts_default": int(self.auto_fit_starts),
             "fixed_tables": ["measurements", "conditions", "experiments", "observables"],
+            "inputs": [{"input": i.id, "rule": i.rule} for i in self.inputs],
             "neg_log_likelihood": (self.simulation or {}).get("neg_log_likelihood"),
             "chi2": (self.simulation or {}).get("chi2"),
         }

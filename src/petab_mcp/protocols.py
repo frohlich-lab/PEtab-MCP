@@ -1,0 +1,174 @@
+"""An experiment's input protocols: the one declaration of what the experiments impose over time.
+
+A problem whose experiments drive a quantity over time ships ``inputs.tsv`` beside
+``problem.yaml``, one row per input. Fujita's EGF ramp, set per experiment by three condition
+targets::
+
+    inputId  formula                                                conditionInputs
+    EGF      piecewise(EGF_rate*time + EGF_0, time <= EGF_end, 0)   EGF_0;EGF_rate;EGF_end
+
+``formula`` is PEtab math over ``time`` and the condition targets ``conditionInputs`` lists. PEtab
+has no place for it: a condition sets a target's value at the start of a period, and a ramp is no
+value. The file names no model, so every route reads the same protocol. The statements route holds
+the input to it (:func:`hold`), the Antimony route is shown it (``describe_problem``), and the
+agent harness's neural route evaluates it (:meth:`Input.evaluate`). Nothing else declares an input,
+because each other copy (an entity-map field, a sentence in a task text) is one that can disagree
+with this one.
+
+A row whose formula is its own id is DIRECT: the experiments' periods set the quantity itself
+(Isensee's ``Fsk``, once its dosing rule is converted to periods), so it is held with no rule.
+
+An input is a fact about the experiment, so its formula names only what the experiments set
+(:func:`check`). A constant the fit estimates would be a modelling claim the agent can neither see
+nor change, which hands it part of the reference's model (Boehm's Epo degradation, Fiedler's
+stimulus time constants and Oliveira's transmission steps did, in PEtabAgentBench#6).
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
+from pathlib import Path
+
+import libsbml
+import numpy as np
+import pandas as pd
+import sympy as sp
+from numpy.typing import ArrayLike
+from petab.math import sympify_petab
+from petab.v2.C import TARGET_ID
+
+from .errors import ProtocolError
+
+#: The file, beside ``problem.yaml``.
+FILENAME = "inputs.tsv"
+_COLUMNS = ("inputId", "formula", "conditionInputs")
+_ID = re.compile(r"[A-Za-z_]\w*")
+#: PEtab's ``log`` is the natural log; libSBML's L3 parser reads it as log10 unless told.
+_PETAB_MATH = libsbml.L3ParserSettings()
+_PETAB_MATH.setParseLog(libsbml.L3P_PARSE_LOG_AS_LN)
+
+
+@dataclass(frozen=True)
+class Input:
+    """One row of ``inputs.tsv``: ``id`` follows ``formula`` over ``time`` and the condition
+    targets ``targets``."""
+
+    id: str
+    formula: str
+    targets: tuple[str, ...]
+
+    @property
+    def timed(self) -> bool:
+        """Whether the protocol reads ``time``, rather than only what the periods set."""
+        return "time" in _names(self.formula)
+
+    @property
+    def direct(self) -> bool:
+        """Whether the periods set the input itself, so there is no rule to hold it to."""
+        return self.formula.strip() == self.id
+
+    @property
+    def rule(self) -> str | None:
+        """The protocol as an Antimony assignment rule; ``None`` for a direct input."""
+        return None if self.direct else f"{self.id} := {self.formula}"
+
+    def evaluate(self, values: Mapping[str, ArrayLike], time: ArrayLike) -> np.ndarray:
+        """The input at ``time``, each target at its value in ``values``, broadcast together."""
+        expr = sympify_petab(self.formula)
+        # By name: sympify_petab's symbols carry assumptions a bare `sp.Symbol` does not.
+        symbols = {str(s): s for s in expr.free_symbols}
+        names = ("time", *self.targets)
+        fn = sp.lambdify([symbols.get(n, sp.Symbol(n)) for n in names], expr, modules="numpy")
+        args = [
+            np.asarray(time, dtype=float),
+            *(np.asarray(values[t], float) for t in self.targets),
+        ]
+        return np.broadcast_to(np.asarray(fn(*args), dtype=float), np.broadcast(*args).shape).copy()
+
+
+def _names(formula: str) -> set[str]:
+    return {str(s) for s in sympify_petab(formula).free_symbols}
+
+
+def read(yaml_path: str | Path) -> tuple[Input, ...]:
+    """The inputs the ``inputs.tsv`` beside ``yaml_path`` declares, none without one; refused at
+    the first row that would not be read as written."""
+    path = Path(yaml_path).parent / FILENAME
+    if not path.is_file():
+        return ()
+    table = pd.read_csv(path, sep="\t", dtype=str, keep_default_na=False)
+    if missing := [c for c in _COLUMNS if c not in table.columns]:
+        raise ProtocolError(f"{path} has no {', '.join(missing)} column; its header is {_COLUMNS}")
+    inputs: list[Input] = []
+    for row in table.itertuples(index=False):
+        where = f"{path}, input {row.inputId!r}"
+        if not _ID.fullmatch(row.inputId):
+            raise ProtocolError(f"{where}: an inputId is the id of the quantity it holds")
+        if row.inputId in {i.id for i in inputs}:
+            raise ProtocolError(f"{where} is declared twice")
+        try:
+            names = _names(row.formula)
+        except ValueError:
+            raise ProtocolError(
+                f"{where}: {row.formula!r} is no PEtab math; write the protocol as "
+                "dose*piecewise(0, time < t_on, 1)"
+            ) from None
+        targets = tuple(t.strip() for t in row.conditionInputs.split(";") if t.strip())
+        if set(targets) != names - {"time"}:
+            raise ProtocolError(
+                f"{where}: conditionInputs lists {';'.join(targets) or 'nothing'}, but the formula "
+                f"reads {';'.join(sorted(names - {'time'})) or 'nothing'}; list what it reads"
+            )
+        inputs.append(Input(row.inputId, row.formula, targets))
+    return tuple(inputs)
+
+
+def check(inputs: Iterable[Input], problem) -> None:
+    """Refuse an input whose formula names anything but ``problem``'s condition targets and
+    ``time``."""
+    cdf = problem.condition_df
+    targets = set() if cdf is None else {str(t) for t in cdf[TARGET_ID].dropna()}
+    kinds = {p: "a fixed parameter row" for p in problem.parameter_df.index}
+    kinds |= {p: "estimated" for p in problem.x_free_ids}
+    named = []
+    for item in inputs:
+        others = [
+            f"{n} ({kinds.get(n, 'in no table, so the fit would estimate it')})"
+            for n in sorted(set(item.targets) - targets)
+        ]
+        if others:
+            named.append(f"{item.id!r} names {', '.join(others)}")
+    if named:
+        raise ProtocolError(
+            f"{FILENAME}: an input is a fact about the experiment, so it may name only the "
+            f"condition table's targets ({', '.join(sorted(targets)) or 'none'}) and time, but "
+            f"{'; '.join(named)}. Give a known value its own condition-table target; a value the "
+            "fit finds is a modelling claim, for the agent to write in its own rows."
+        )
+
+
+def load(yaml_path: str | Path, problem) -> tuple[Input, ...]:
+    """:func:`read` the inputs beside ``yaml_path`` and :func:`check` them against ``problem``."""
+    inputs = read(yaml_path)
+    check(inputs, problem)
+    return inputs
+
+
+def hold(model: libsbml.Model, species_id: str, item: Input) -> None:
+    """Hold species ``species_id`` of ``model`` to ``item``: on the boundary, where a species may
+    sit in reactions and under a rule, and set by its protocol's assignment rule unless it is
+    direct. Each target the model lacks becomes a parameter, for the condition table to set."""
+    model.getSpecies(species_id).setBoundaryCondition(True)
+    if item.direct:
+        return
+    for target in item.targets:
+        if model.getElementBySId(target) is None:
+            parameter = model.createParameter()
+            parameter.setId(target)
+            parameter.setConstant(True)
+            parameter.setValue(0.0)
+    rule = model.createAssignmentRule()
+    rule.setVariable(species_id)
+    rule.setMath(libsbml.parseL3FormulaWithSettings(item.formula, _PETAB_MATH))
