@@ -1534,8 +1534,8 @@ def test_whole_sets_ride_with_statements_not_with_edits(tmp_path):
 
 
 def test_base_version_applies_edits_to_that_versions_rows(tmp_path):
-    """The rollback-and-edit path the `model_edits` route has, on the statements route: refused
-    before, although the lead's prompt told it to use it."""
+    """The rollback-and-edit path the `model_edits` route has, on the statements route, where it
+    was refused before."""
     mcp = _built(tmp_path, [_CONV])
     _call(
         mcp,
