@@ -48,6 +48,11 @@ class ValidationError(PetabMcpError):
         super().__init__(message)
 
 
+class ProtocolError(PetabMcpError):
+    """The problem's ``inputs.tsv`` would not be read as written, or an input names what no
+    experiment sets (:mod:`petab_mcp.protocols`). Raised as the session opens."""
+
+
 class ParameterError(PetabMcpError):
     """An invalid parameter-table update (unknown id, bad bounds/scale, ...)."""
 
