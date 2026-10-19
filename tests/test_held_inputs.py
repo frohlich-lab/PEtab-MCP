@@ -49,3 +49,16 @@ def test_a_started_state_that_binds_is_its_free_form_too():
     assert sbml.getSpecies("EGF").getName() == "EGF(egfr=None)"
     assert not sbml.getSpecies("EGF").getBoundaryCondition()
     assert sbml.getAssignmentRuleByVariable("EGF") is None
+
+
+def test_a_started_state_the_rows_make_is_named_too():
+    """armistead's sphinganine is set by its conditions and made by its rows from ceramide, so it
+    has no start of its own to name; looking it up there crashed the build."""
+    antimony, _ = PS.to_antimony(
+        [(PopulationTransition(Agent("naive"), Agent("effector")), "mass_action", "r1")],
+        {"naive": Agent("naive"), "effector": Agent("effector")},
+        targets=frozenset({"effector"}),
+    )
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    assert sbml.getSpecies("effector").getName() == "effector()"
+    assert not sbml.getSpecies("effector").getBoundaryCondition()
