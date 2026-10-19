@@ -1533,6 +1533,28 @@ def test_whole_sets_ride_with_statements_not_with_edits(tmp_path):
     assert out["applied"] is False and "`set_start`" in out["error"]
 
 
+def test_base_version_applies_edits_to_that_versions_rows(tmp_path):
+    """The rollback-and-edit path the `model_edits` route has, on the statements route, where it
+    was refused before."""
+    mcp = _built(tmp_path, [_CONV])
+    _call(
+        mcp,
+        "make_changes",
+        {"justification": "v1", "statement_edits": [{"op": "add_row", "row": _BACK}]},
+    )
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "from v0 instead",
+            "base_version": 0,
+            "statement_edits": [{"op": "add_row", "row": "back2: B becomes A | mass_action"}],
+        },
+    )
+    assert out["applied"] is True
+    assert [r["prefix"] for r in _stored_rows(tmp_path, 2)["rows"]] == ["conv", "back2"]
+
+
 def test_a_restore_brings_back_that_versions_rows(tmp_path):
     """After `restore_version(v)`, the rows the session shows and edits are v's, not those of
     the HEAD it left; a version built from model text holds none."""
@@ -1553,6 +1575,79 @@ def test_a_restore_brings_back_that_versions_rows(tmp_path):
     _call(mcp, "restore_version", {"version": 2})
     out = add_row(_BACK)
     assert out["applied"] is False and "the current model was not" in out["error"]
+
+
+def test_base_version_takes_whole_statements_too(tmp_path):
+    mcp = _built(tmp_path, [_CONV])
+    out = _call(
+        mcp,
+        "make_changes",
+        {"justification": "afresh from v0", "base_version": 0, "statements": [_CONV, _BACK]},
+    )
+    assert out["applied"] is True
+
+
+def _two_rates(tmp_path):
+    """A fitted statements run: version 0 with the saturating rate, HEAD (version 1) with a
+    steeper one. Returns the server and version 0's row."""
+    entity_map = tmp_path / "entities.json"
+    entity_map.write_text(_BASE_ENTITY_MAP.format(extra=""))
+    mcp = create_server(
+        str(YAML_PATH),
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+        auto_fit=True,
+        entity_map=str(entity_map),
+    )
+    row = _statement_row(policy="saturating")
+    steeper = {**_SATURATING, "policy": "steeper", "rate": "vmax / (K + source * source)"}
+    v0 = {"statements": [row], "mechanisms": [_SATURATING]}
+    _call(mcp, "make_changes", {"justification": "v0", "n_starts": 2, **v0})
+    v1 = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "v1",
+            "statement_edits": [{"op": "replace_row", "row": {**row, "policy": "steeper"}}],
+            "mechanisms": [steeper],
+            "n_starts": 2,
+        },
+    )
+    assert v1["version"] == 1, v1["message"]
+    return mcp, row
+
+
+def test_a_base_version_fork_from_an_earlier_version_is_fitted(tmp_path):
+    """A fork from version 0 while HEAD holds another rate is no duplicate of HEAD. The de-dup's
+    fingerprint saw no rate (each is an assignment rule the rate law multiplies), so the fork came
+    back as HEAD's duplicate and was never fitted. Its rate is one neither version has."""
+    mcp, row = _two_rates(tmp_path)
+    other = {**_SATURATING, "policy": "other", "rate": "vmax * K / (K + source)"}
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "from v0, another rate",
+            "base_version": 0,
+            "statement_edits": [{"op": "replace_row", "row": {**row, "policy": "other"}}],
+            "mechanisms": [other],
+            "n_starts": 2,
+        },
+    )
+    assert out["committed"] is True and out["version"] == 2, out["message"]
+
+
+def test_a_base_version_fork_that_changes_nothing_is_refused_as_that_version(tmp_path):
+    """Version 0's own rows again, from version 0: version 0 stands for them, so nothing is
+    fitted and HEAD stays where it was."""
+    mcp, row = _two_rates(tmp_path)
+    out = _call(
+        mcp,
+        "make_changes",
+        {"justification": "v0 again", "base_version": 0, "statements": [row], "n_starts": 2},
+    )
+    assert out["applied"] is False and "identical to v0" in out["error"], out["message"]
+    assert out["version"] == 1
 
 
 def _concurrently(monkeypatch, mcp, *calls):
