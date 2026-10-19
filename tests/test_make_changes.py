@@ -1651,8 +1651,8 @@ def test_a_base_version_fork_that_changes_nothing_is_refused_as_that_version(tmp
 
 
 def test_on_the_statements_route_the_refusals_name_its_own_routes(tmp_path):
-    """Haiku, told "nothing to do — give `model_edits` ... `antimony`", wrote Antimony on an arm
-    that builds from statements."""
+    """Told "nothing to do — give `model_edits` ... `antimony`", an agent whose model was built
+    from statements wrote Antimony."""
     mcp = _built(tmp_path, [_CONV])
     out = _call(mcp, "make_changes", {"justification": "nothing"})
     assert "`statements`" in out["error"] and "`statement_edits`" in out["error"]
@@ -1839,8 +1839,8 @@ def test_a_readout_no_observable_reads_is_refused(tmp_path):
 
 
 def test_a_binding_may_scale_the_parameter_it_replaces(tmp_path):
-    """`kf="mek_phos_kf*(1 - Sorafenib/K)"` recursed without bottom: the binding's expression
-    was redirected into itself."""
+    """`k=conv_k*slow`, a binding that scales the constant it replaces, recursed without bottom:
+    the binding's expression was redirected into itself."""
     mcp = _built(tmp_path, [_CONV])
     out = _call(
         mcp,
@@ -1874,11 +1874,11 @@ def test_a_scheme_with_modifiers_is_refused_where_it_is_written():
 
 
 def test_an_unknown_activity_names_the_modification_tags():
-    """`STAT5A{mod:on}` (a scheme's site, written in a row) built an activity named "mod"."""
+    """`A{mod:on}` (a scheme's site, written in a row) built an activity named "mod"."""
     from petab_mcp import notation
 
     with pytest.raises(notation.NotationError, match="unknown activity 'mod'"):
-        notation.parse_agent("STAT5A{mod:on}")
+        notation.parse_agent("A{mod:on}")
 
 
 def test_an_amount_in_place_reads_the_amount_that_holds_its_pattern():

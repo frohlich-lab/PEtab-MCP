@@ -333,9 +333,8 @@ def _rejection_summary(issues: list[str]) -> str:
 
 
 #: A fix the agent can act on, for an issue libpetab states without one. "Condition table
-#: contains invalid targets" was 64 rejections in one sweep of the statements route, most of them
-#: repeated: the model never read an input the condition table sets (rit, Sorafenib), and the
-#: message names the targets without saying that the model has to.
+#: contains invalid targets" means the model never read an input the condition table sets, and
+#: the message names the targets without saying that the model has to.
 _ISSUE_HINTS = (
     (
         "Condition table contains invalid targets",
@@ -791,7 +790,7 @@ def statements_to_antimony(
         row["statement"] = with_defaults(row["statement"])
     stmts = stmts_from_json([row["statement"] for row in rows])
     # INDRA drops a statement it cannot read with only a logged warning; refuse instead, naming
-    # each one: "2 of 9 entries" sent MiMo probing the schema call by call.
+    # each one: a bare count of unread entries leaves the caller probing the schema call by call.
     if len(stmts) != len(rows):
         unread = [
             f"`{row['prefix']}` ({json.dumps(row['statement'])[:160]})"
@@ -873,9 +872,9 @@ def statements_to_antimony(
 
 _NOTATION_HINT = (
     "A row is `prefix: <statement> | <policy> kind=binding ...`; an agent NAME{tag, ...}, its tags "
-    "pY694 (modified; ac, me, ub ... for other modifications) or -pY694 (unmodified), "
+    "pS10 (modified; ac, me, ub ... for other modifications) or -pS10 (unmodified), "
     "kinase:on (an activity), @nucleus, !PARTNER (bound), ~PARTNER (not bound); a statement "
-    "`X phosphorylates Y at Y694`, `Y is dephosphorylated at Y694`, `A binds B`, `A becomes B`, "
+    "`X phosphorylates Y at S10`, `Y is dephosphorylated at S10`, `A binds B`, `A becomes B`, "
     "`X increases Y`, `Y is produced`, `Y is degraded`, `A + B -> C by X`, `X activates Y`, "
     "`X inhibits Y`, `A moves from cytoplasm to nucleus`."
 )

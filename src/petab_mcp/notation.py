@@ -347,11 +347,11 @@ class _Reader:
                 if state not in ("on", "off"):
                     self.fail("an activity is :on or :off")
                 if word not in ACTIVITIES:
-                    # `STAT5A{mod:on}` is how a scheme writes a molecule's modification site, and
+                    # `A{mod:on}` is how a scheme writes a molecule's modification site, and
                     # read here as an activity named "mod" it built a species no rule makes.
                     self.fail(
                         f"unknown activity {word!r}: an activity is one of {sorted(ACTIVITIES)}; a "
-                        "modification is a tag like pY694 (modified) or -pY694 (unmodified)"
+                        "modification is a tag like pS10 (modified) or -pS10 (unmodified)"
                     )
                 agent["activity"] = {"activity_type": word, "is_active": state == "on"}
                 return

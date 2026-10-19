@@ -160,9 +160,9 @@ def instantiate(
         if not getattr(entry, "modifiers", ()):
             raise MechanismError(
                 f"row {prefix!r} names modifiers, but {key} reads none: only a mechanism written "
-                "with a `rate` and `modifiers` reads them. A condition input (a drug dose) needs "
-                "no modifier: bind the row's rate to an expression over it, "
-                f'`kf="{prefix}_kf*(1 - Sorafenib/(K_i + Sorafenib))"`'
+                "with a `rate` and `modifiers` reads them. A condition input (a dose) needs no "
+                "modifier: bind the row's rate to an expression over it, "
+                f'`kf="{prefix}_kf*D"` with `D` the id of the input'
             )
         return entry(stmt, model, prefix, modifiers=modifiers)
     return entry(stmt, model, prefix)
@@ -350,9 +350,9 @@ def _bound_expression(
 
 def _redirect(model: pysb.Model, old, new) -> None:
     """Point every rule rate and expression that reads ``old`` at ``new``, except ``new`` itself:
-    a binding may read the parameter it replaces (``kf="mek_kf*(1 - Sorafenib/K)"`` scales the
-    row's own constant), and redirecting that read into ``new`` made it read itself, which PySB
-    met as a recursion with no bottom (three refusals in one sweep, none recovered)."""
+    a binding may read the parameter it replaces (``kf="r1_kf*(1 + D)"`` scales the row's own
+    constant), and redirecting that read into ``new`` made it read itself, which PySB met as a
+    recursion with no bottom."""
     for rule in model.rules:
         if rule.rate_forward is old:
             rule.rate_forward = new
@@ -553,11 +553,11 @@ def written(
             raise MechanismError(f"{policy!r} gives a scheme and a rate; a scheme carries its rates")
         if definition.get("modifiers"):
             # Accepted and then dropped, before: every row naming them was refused with "reads
-            # none" (17 refusals in one sweep, none recovered).
+            # none".
             raise MechanismError(
                 f"{policy!r} is a scheme with `modifiers`; a scheme reads any agent in its rates "
-                "as `amount(<pattern>)` instead, `@ kf/(1 + amount(Inhibitor)/K_i)` with `kf` and "
-                "`K_i` in its `parameters`"
+                "as `amount(<pattern>)` instead, `@ kf*amount(Regulator)` with `kf` in its "
+                "`parameters`"
             )
         return compile_scheme(definition, problem_ids)
     if not definition.get("rate"):
