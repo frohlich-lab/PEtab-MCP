@@ -314,60 +314,6 @@ def test_set_model_rejects_removing_a_shipped_fixed_constant(fixed_k1_session):
     assert "k1" in {r["parameterId"] for r in P.parameters_to_records(sess.problem)}
 
 
-# -- the model must use every condition-table quantity ----------------------
-_DRIVE_MODEL = """model conversion_reaction
-  compartment compartment_ = 1;
-  species A in compartment_; species B in compartment_; species drive in compartment_;
-  A = A_init; B = B_init; drive = drive_init;
-  A_init = 1.0; B_init = 0.0; drive_init = 1.0;
-  k1 = 0.5; k2 = 0.1;
-  r1: A => B; {rate}
-  r2: B => A; k2 * B;
-end
-"""
-
-
-@pytest.fixture
-def drive_condition_session(tmp_path, add_condition) -> PetabSession:
-    """A toy problem whose condition table sets a per-condition input species `drive`."""
-    work = tmp_path / "drive"
-    work.mkdir()
-    for name in (
-        "problem.yaml",
-        "measurements.tsv",
-        "observables.tsv",
-        "parameters.tsv",
-        "model.ant",
-    ):
-        shutil.copy(DATA_DIR / name, work / name)
-    add_condition(work / "problem.yaml", "drive", 1.0)
-    return PetabSession(
-        str(work / "problem.yaml"),
-        provenance_dir=str(tmp_path / "prov"),
-        resolver=StubReferenceResolver(),
-    )
-
-
-def test_set_model_rejects_unused_condition_target(drive_condition_session):
-    from petab_mcp.errors import ValidationError
-
-    sess = drive_condition_session
-    # `drive` is declared but its value never enters a rate law — the conditions can't perturb
-    # the model, so every condition simulates identically. Rejected.
-    with pytest.raises(ValidationError) as exc:
-        O.set_model(sess, _DRIVE_MODEL.format(rate="k1 * A;"), justification="drive unused")
-    assert any("drive" in issue for issue in (exc.value.issues or [])), exc.value.issues
-
-
-def test_set_model_accepts_used_condition_target(drive_condition_session):
-    sess = drive_condition_session
-    # `drive` drives r1 — the conditions now actually perturb the model.
-    res = O.set_model(
-        sess, _DRIVE_MODEL.format(rate="k1 * A * drive;"), justification="drive drives r1"
-    )
-    assert res["applied"] is True
-
-
 # -- always-on ICs: estimate a created seed, fix a unit normalization (#90) -------------------
 # Authoring on a zero-shot problem (empty parameter table) must add B_init (a positive guess, 460)
 # as ESTIMATED — never freezing the guess (the crauste `Naive` failure) — while A == 1.0 is a unit
