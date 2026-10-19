@@ -156,6 +156,7 @@ def bind(
     emission: Emission,
     binding: dict[str, str | float],
     merged: dict[str, object] | None = None,
+    species=frozenset(),
 ) -> Emission:
     """Replace parameters a row minted (``<prefix>_<kind>``) by a SHARED one or a NUMBER.
 
@@ -172,7 +173,8 @@ def bind(
 
     ``merged`` carries, across the rows of one model, each name an earlier binding renamed or
     replaced to what now stands for it, so a row that names another row's parameter shares what
-    that row reads, whichever order they bind in.
+    that row reads, whichever order they bind in. ``species`` are the ids the model names amounts
+    by, the entity map's and ``amounts``', so no binding reads one (:func:`_not_a_parameter`).
     """
     merged = {} if merged is None else merged
     minted = {name.removeprefix(f"{emission.prefix}_"): name for name in emission.parameters}
@@ -191,7 +193,9 @@ def bind(
         if isinstance(target, bool) or not isinstance(target, (str, int, float)):
             raise MechanismError(f"row {emission.prefix!r} binds {kind!r} to {target!r}")
         if isinstance(target, str) and not _IDENTIFIER.fullmatch(target):
-            new, names = _bound_expression(model, name, target, emission.prefix, merged)
+            new, names = _bound_expression(
+                model, name, target, emission.prefix, merged, species
+            )
             # A binding that scales the row's own constant (`kf="mek_kf*(1 - Sorafenib/K)"`)
             # keeps that constant, and a row naming it shares the constant, not the scaling.
             if old not in new.expr.free_symbols:
@@ -200,6 +204,7 @@ def bind(
             parameters += [n for n in names if n not in parameters]
             continue
         if isinstance(target, str):
+            _not_a_parameter(model, target, emission.prefix, name, species)
             existing = _held(model, target, merged)
             if existing is None:
                 merged[name] = old
@@ -229,6 +234,45 @@ def bind(
 _IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
 
 
+def _not_a_parameter(
+    model: pysb.Model, ident: str, prefix: str, name: str, species=frozenset()
+) -> None:
+    """Refuse a binding that reads ``ident`` as a parameter when it names something else: a
+    molecule or one of ``species``, the ids the model names amounts by (a parameter of its name
+    clashed with it in the SBML), a starting amount ``<x>_init`` (the start made it again, a
+    duplicate in PySB), a rate function, or ``time`` (which BioNetGen refused as a parameter
+    name). A row's own ``<prefix>_init`` constant is shared like any other."""
+    held = model.components.get(ident)
+    instead = ""
+    if isinstance(held, pysb.Monomer):
+        what = "a molecule"
+    elif ident in species:
+        what = "a species"
+        instead = (
+            f" `{ident}` is the amount of the agent the entity map (or `amounts`) maps it to, "
+            "read by that agent's own name and sites, not by this id."
+        )
+    elif isinstance(held, (pysb.Parameter, pysb.Expression)):
+        return
+    elif ident.endswith("_init"):
+        what = "a starting amount"
+        instead = " `<name>_init` is the amount a species starts at, which only `starts` declares."
+    elif held is not None:
+        what = f"the model's {type(held).__name__.lower()}"
+    elif ident == "time":
+        what = "time"
+    elif ident in _RATE_FUNCTIONS:
+        what = "a function"
+    else:
+        return
+    raise MechanismError(
+        f"row {prefix!r} binds {name!r} over {ident!r}, which names {what}, not a parameter. A "
+        "binding reads parameters: a shared id, a problem parameter, a condition-table input."
+        f"{instead} A rate that reads an amount or `time` is a written mechanism (its `rate`, or "
+        "a scheme's `amount(<pattern>)`)"
+    )
+
+
 def _held(model: pysb.Model, name: str, merged: dict[str, object]):
     """The component a shared id names now: what an earlier binding renamed or replaced it by,
     followed on, else the parameter or expression of that name; ``None`` when nothing holds it."""
@@ -253,13 +297,33 @@ def _shared(model: pysb.Model, name: str, merged: dict[str, object]):
 
 
 def _bound_expression(
-    model: pysb.Model, name: str, text: str, prefix: str, merged: dict[str, object]
+    model: pysb.Model,
+    name: str,
+    text: str,
+    prefix: str,
+    merged: dict[str, object],
+    species=frozenset(),
 ):
-    """``text`` as an Expression over shared ids, named after the parameter it replaces."""
+    """``text`` as an Expression over shared ids, named after the parameter it replaces. Read
+    over placeholder symbols first: sympy raised on `kcat Km` and `2kcat`, and PySB on `kcat,Km`
+    (a tuple), out of make_changes unexplained."""
     tokens = _RATE_TOKENS.findall(text)
     names = sorted({t for t in tokens if _IDENTIFIER.fullmatch(t)} - set(_RATE_FUNCTIONS))
-    if "".join(tokens) != text:
-        raise MechanismError(f"row {prefix!r} binds {name!r} to {text!r}, which is no expression")
+    try:
+        trial = sympy.sympify(
+            text.replace("^", "**"),
+            locals={**{n: sympy.Symbol(n) for n in names}, **_RATE_FUNCTIONS},
+        )
+    except (sympy.SympifyError, SyntaxError, TypeError, ValueError):
+        trial = None
+    if "".join(tokens) != text or not isinstance(trial, sympy.Expr):
+        raise MechanismError(
+            f"row {prefix!r} binds {name!r} to {text!r}, which is no expression: a binding is a "
+            "shared id (`k_on`), a number, or arithmetic over ids and numbers with exp/log/sqrt "
+            "(`KD*kf_on`)"
+        )
+    for n in names:
+        _not_a_parameter(model, n, prefix, name, species)
     symbols = {n: _shared(model, n, merged) for n in names}
     value = sympy.sympify(text.replace("^", "**"), locals={**symbols, **_RATE_FUNCTIONS})
     expression = pysb.Expression(f"{name}_bound", value, _export=False)
@@ -406,7 +470,7 @@ def assemble(
     # row's `back_k` made it a new shared id, and that row's own `back_k` then clashed with it.
     merged: dict[str, object] = {}
     return model, [
-        bind(model, emission, row[3], merged) if row[3] else emission
+        bind(model, emission, row[3], merged, set(entities or {})) if row[3] else emission
         for emission, row in zip(emissions, rows)
     ]
 
