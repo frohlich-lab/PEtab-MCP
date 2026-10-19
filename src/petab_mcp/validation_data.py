@@ -349,6 +349,49 @@ def _without_extraneous(view):
     return view.parameter_df.loc[[pid for pid in view.parameter_df.index if pid in valid]]
 
 
+def _fix_at_point(view, x_full, x_names) -> None:
+    """Cut ``view`` down to what its measurements use and fix every parameter at the point it is
+    scored at, so that it is a valid PEtab problem of its own.
+
+    A fixed-θ view starts from the training tables, and a held-out set that measures part of them
+    leaves rows nothing references — fontaine's one pulse experiment uses the scale, offset and
+    noise of one cytometry day out of nine — which libpetab's lint refuses as EXTRANEOUS when
+    pyPESTO imports the view. So the view keeps the experiments its rows were measured in, the
+    conditions those experiments apply, and the parameter rows the lint keeps for what is left
+    (:func:`_without_extraneous`). Every remaining row is then fixed: at the caller's ``x_full``
+    (on its estimation scale, matched by name, :func:`_reduced_from_named`) where the table
+    estimates it, at its ``nominalValue`` otherwise. pyPESTO then builds the view with no free
+    coordinates, so no vector has to be lined up with its names. Deliberately not the training
+    problem's free/fixed split: the view never shares the training module (:func:`_build_target`),
+    which a view cut down to the measured design would all but never do anyway.
+    """
+    import types
+
+    from .problem import unscale
+
+    measured = set(view.measurement_df[EXPERIMENT_ID].astype(str))
+    if view.experiment_df is not None:
+        edf = view.experiment_df
+        view.experiment_df = edf[edf[EXPERIMENT_ID].astype(str).isin(measured)].reset_index(
+            drop=True
+        )
+        if view.condition_df is not None:
+            applied = set(view.experiment_df[CONDITION_ID].astype(str))
+            cdf = view.condition_df
+            view.condition_df = cdf[cdf[CONDITION_ID].astype(str).isin(applied)].reset_index(
+                drop=True
+            )
+    pdf = _without_extraneous(view).copy()
+    if x_full is not None:
+        free = [i for i, e in enumerate(pdf[ESTIMATE]) if as_bool(e)]
+        rows = types.SimpleNamespace(x_names=list(pdf.index), x_free_indices=free)
+        for i, value in zip(free, _reduced_from_named(rows, x_full, x_names)):
+            pid = pdf.index[i]
+            pdf.loc[pid, NOMINAL_VALUE] = unscale(value, pdf.loc[pid, PARAMETER_SCALE])
+    pdf[ESTIMATE] = False
+    view.parameter_df = pdf
+
+
 def _build_target(view, reference, build_dir, model_name) -> dict[str, str]:
     """The pyPESTO output kwargs ``view`` is built under: the caller's pair when ``view`` compiles
     to the same module as ``reference`` (the problem that pair was built for), a sibling keyed by
@@ -361,17 +404,15 @@ def _build_target(view, reference, build_dir, model_name) -> dict[str, str]:
     return {"output_folder": str(folder), "model_name": f"{model_name}_{tag[:8]}"}
 
 
-def _solve_held_out_scalings(view, scalings, *, target, point) -> dict | None:
-    """The held-out scalings at their analytical optimum for ``view``'s model at ``point``, or
-    ``None`` when the objective is not finite there.
+def _solve_held_out_scalings(view, scalings, *, target) -> dict | None:
+    """The held-out scalings at their analytical optimum for ``view``'s model, or ``None`` when
+    the objective is not finite there.
 
     pyPESTO's hierarchical importer does the work: the scalings are appended to the parameter
-    table as estimated ``parameterType: scaling`` rows, everything the model already has keeps its
-    value, and the inner solver returns the least-squares scale per row group — the same machinery
-    :func:`petab_mcp.fitting._build_hierarchical_problem` uses for a fit. ``point`` maps a pyPESTO
-    problem to the reduced vector its objective takes, so the outer parameters are evaluated at
-    exactly the point the caller asked for. ``target`` names the build for a view (see
-    :func:`_build_target`).
+    table as estimated ``parameterType: scaling`` rows, everything the model already has keeps the
+    value :func:`_fix_at_point` fixed it at, and the inner solver returns the least-squares scale
+    per row group — the same machinery :func:`petab_mcp.fitting._build_hierarchical_problem` uses
+    for a fit. ``target`` names the build for a view (see :func:`_build_target`).
     """
     import copy
 
@@ -384,7 +425,7 @@ def _solve_held_out_scalings(view, scalings, *, target, point) -> dict | None:
     from .problem import LIN
 
     hier = copy.copy(view)
-    pdf = _without_extraneous(view).copy()
+    pdf = view.parameter_df.copy()
     pdf[PARAMETER_TYPE] = None
     rows = pd.DataFrame(
         {
@@ -400,9 +441,8 @@ def _solve_held_out_scalings(view, scalings, *, target, point) -> dict | None:
     hier.parameter_df = pd.concat([pdf, rows])
     pp = pypesto_problem(hier, {**target(hier), "hierarchical": True})
     _apply_amici_solver_defaults(pp)
-    ret = pp.objective(
-        np.asarray(point(pp, hier.parameter_df), dtype=float), sensi_orders=(0,), return_dict=True
-    )
+    # The scalings are the only estimated rows, and they are inner: no outer coordinates.
+    ret = pp.objective(np.zeros(0), sensi_orders=(0,), return_dict=True)
     if not np.isfinite(float(ret[FVAL])):
         return None
     ids = pp.objective.calculator.get_interpretable_inner_par_ids()
@@ -424,12 +464,13 @@ def _with_solved_scalings(cells, solved: dict):
 
 
 def _reduced_from_named(pp, x_full, x_names) -> "list[float]":
-    """``pp``'s REDUCED vector from a caller's FULL vector, matched by NAME.
+    """``pp``'s REDUCED vector from a caller's FULL vector, matched by NAME — ``pp`` being
+    anything with ``x_names`` and ``x_free_indices``, here a view's parameter rows
+    (:func:`_fix_at_point`).
 
     By name rather than by list equality because ``pp.x_names`` is not always the caller's list:
-    a held-out view may carry FEWER parameter rows than the problem the caller fitted (petab
-    refuses a parameter table with rows nothing references, and swapping a curated held-out table
-    in retires the overrides the training rows carried), so ``pp.x_names`` can be a strict subset.
+    a held-out view carries only the parameter rows its measurements use (petab refuses a
+    parameter table with rows nothing references), so ``pp.x_names`` can be a strict subset.
     Requiring the two lists to be equal would refuse such a call outright, while matching by name
     serves it and still refuses the thing worth refusing: a name ``pp`` needs that the caller did
     not supply, which is what a silently re-ordered vector looks like from here.
@@ -472,7 +513,8 @@ def score_problem(
 
     ``problem`` supplies everything but the data, and its ``nominalValue``\\ s are the point —
     which is where every fit writes its optimum back, unless ``x_full`` overrides. Nothing is
-    optimised.
+    optimised: the problem scored is a view on what the held-out rows use, with every parameter
+    fixed at that point (:func:`_fix_at_point`).
 
     ``build_dir``/``model_name`` name the pyPESTO output target — pass the pair the TRAINING
     problem was built with: a view that compiles to the same module reuses it, and one whose
@@ -499,14 +541,13 @@ def score_problem(
     from pypesto.C import RDATAS as PP_RDATAS
 
     from .engine import AmiciEngine
-    from .fitting import _apply_amici_solver_defaults, problem_x_from_nominal, pypesto_problem
+    from .fitting import _apply_amici_solver_defaults, pypesto_problem
 
     if (x_full is None) != (x_names is None):
         raise ValueError("score_problem: pass both x_full and x_names, or neither")
-    # Arity UP FRONT, before anything is built: it is a pure statement about the caller's two
-    # arguments and needs no problem, and a curated set's scaling solve compiles a model before
-    # the point is ever reduced. `_reduced_from_named` re-checks it for callers that reach it
-    # directly.
+    # Arity UP FRONT: it is a pure statement about the caller's two arguments and needs no
+    # problem, so a bad call is refused even where the table would be declined first.
+    # `_reduced_from_named` re-checks it for callers that reach it directly.
     if x_full is not None and len(x_full) != len(x_names):
         raise ValueError(
             f"score_problem: x_full has {len(x_full)} value(s) for {len(x_names)} name(s); it "
@@ -541,21 +582,14 @@ def score_problem(
     unsupported = _unsupported_reason(problem, view)
     if unsupported:
         return {"status": STATUS_FLATTENING_REQUIRED, "reason": unsupported}
-
-    def _point(pp, parameter_df) -> "list[float]":
-        """The REDUCED vector ``pp``'s objective takes, at the caller's point or the table's
-        nominals — a closure because the scaling solve below needs the SAME point as the final
-        evaluation, one pyPESTO problem apart."""
-        if x_full is None:
-            return problem_x_from_nominal(pp, parameter_df)
-        return _reduced_from_named(pp, x_full, x_names)
+    _fix_at_point(view, x_full, x_names)
 
     solved = None
     if scalings:
         # The blots' own scale factors, solved for THIS model at THIS point, then written into the
         # table as numbers — so the joint evaluation below is the same code path as for an example
         # that has none, and `nll`/`chi2` come off that one path either way.
-        solved = _solve_held_out_scalings(view, scalings, target=target, point=_point)
+        solved = _solve_held_out_scalings(view, scalings, target=target)
         if solved is None:
             return {
                 "status": STATUS_NON_FINITE,
@@ -572,29 +606,12 @@ def score_problem(
                 }
             )
         )
-        # Swapping the held-out table in retires the overrides the TRAINING rows carried, and petab
-        # refuses a parameter table with rows nothing references. Only on this path: an example
-        # without curated scalings re-uses the shipped ones, so nothing is retired.
-        view.parameter_df = _without_extraneous(view)
 
-    # AFTER the scalings branch, deliberately: it rewrites the measurement table and drops the
-    # parameter rows the held-out data retires, and petab's lint — which the build runs — rejects
-    # a table with rows nothing references. Building first would fail on the very rows
-    # `_without_extraneous` exists to remove.
+    # AFTER the scalings branch, which rewrites the measurement table this build compiles from.
     pp = pypesto_problem(view, target(view))
     _apply_amici_solver_defaults(pp)
-
-    if x_full is None:
-        # `problem_x_from_nominal` owns the reduction convention and the scale question. Read off
-        # the VIEW's table, not the caller's problem: the two are the same today, but the view is
-        # what `pp` was built from, so any path that adds or drops a parameter row on it (a curated
-        # held-out set retires the training rows' overrides) would otherwise take the point from a
-        # table that no longer describes this problem — and report a plausible, wrong likelihood.
-        reduced = problem_x_from_nominal(pp, view.parameter_df)
-    else:
-        reduced = _reduced_from_named(pp, x_full, x_names)
-
-    ret = pp.objective(np.asarray(reduced, dtype=float), sensi_orders=(0,), return_dict=True)
+    # Every parameter is fixed at the point (`_fix_at_point`): no free coordinates.
+    ret = pp.objective(np.zeros(0), sensi_orders=(0,), return_dict=True)
     nll = float(ret[FVAL])
     if not np.isfinite(nll):
         return {
