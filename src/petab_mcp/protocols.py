@@ -3,23 +3,23 @@
 An input a period sets is PEtab v2's own: a condition sets a target's value at the start of a
 period, and the problem's tables show it to every route. An input that changes WITHIN a period has
 no place there, because a ramp is no value. A problem with one ships ``inputs.tsv`` beside
-``problem.yaml``, one row per input. Fujita's EGF ramp, set per experiment by three condition
+``problem.yaml``, one row per input. A stimulus ramp, set per experiment by three condition
 targets::
 
-    inputId  formula                                                conditionInputs
-    EGF      piecewise(EGF_rate*time + EGF_0, time <= EGF_end, 0)   EGF_0;EGF_rate;EGF_end
+    inputId  formula                                          conditionInputs
+    S        piecewise(S_rate*time + S_0, time <= S_end, 0)   S_0;S_rate;S_end
 
 ``formula`` is PEtab math over ``time`` and the condition targets ``conditionInputs`` lists. A
 formula that does not read ``time`` is refused, since a period expresses it. The file names no
 model, so every route reads the same protocol. The statements route holds the input to it
-(:func:`hold`), the Antimony route is shown it (``describe_problem``), and the agent harness's
-neural route evaluates it (:meth:`Input.evaluate`). Nothing else declares an input, because each
-other copy (an entity-map field, a sentence in a task text) is one that can disagree with this one.
+(:func:`hold`), the Antimony route is shown it (``describe_problem``), and a caller simulating
+the protocol outside a model evaluates it (:meth:`Input.evaluate`). Nothing else declares an
+input, because each other copy (an entity-map field, a sentence in a task text) is one that can
+disagree with this one.
 
 An input is a fact about the experiment, so its formula names only what the experiments set
 (:func:`check`). A constant the fit estimates would be a modelling claim the agent can neither see
-nor change, which hands it part of the reference's model (Boehm's Epo degradation, Fiedler's
-stimulus time constants and Oliveira's transmission steps did, in PEtabAgentBench#6).
+nor change: part of a model handed to it.
 """
 
 from __future__ import annotations

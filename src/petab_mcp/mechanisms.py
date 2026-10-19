@@ -1,4 +1,4 @@
-"""The mechanism library (``M``) and the assembler that applies it.
+"""The mechanism library and the assembler that applies it.
 
 A mechanism is a policy: it receives one statement and the model under construction, and emits
 the PySB rules and parameters that statement implies. That is the shape of
@@ -9,7 +9,7 @@ Entries are keyed ``(statement class name, policy)``, and the two halves are del
 separate. ``Phosphorylation`` with INDRA's mass action and with an agent-written
 Michaelis-Menten are two entries making the same biological claim through different mathematics;
 collapsing them would leave the library unable to express "the same mechanism, simplified",
-which is the axis several of the reported wins moved along.
+which is an axis model revision often moves along.
 
 Why a policy RETURNS what it emitted rather than leaving it to be found: the PEtab parameter
 table must list every estimated parameter, and that list is currently recovered by scanning the
@@ -18,7 +18,7 @@ generator knows what it generated. :class:`Emission` is that record, and it doub
 per-instantiation binding that makes a cross-instance ``revise`` addressable at all.
 
 Policies must emit CONCRETE rules. An unbound site pattern is where rule-based models blow up
-under ``generate_equations``, and the larger benchmarks are where that would be discovered.
+under ``generate_equations``, and larger models are where that would surface.
 
 Assembly is two passes because a PySB monomer is declared once with ALL its sites, before any
 rule names one: :func:`assemble` first runs INDRA's own monomer pass over every row, then the
@@ -120,8 +120,8 @@ def _misspelt(
 ) -> str:
     """What the refusal of ``key`` says when its policy is named nowhere — no entry of any type
     (INDRA's own policies are entries) — with the names closest to it, the type's ``own`` first;
-    empty when the policy exists, and the pair is a library gap. Counted as gaps, misspellings
-    (``indra_defualt``) filled the library's to-do list."""
+    empty when the policy exists, and the pair is a library gap. Counted as gaps, a misspelling
+    (``indra_defualt``) would read as a missing entry."""
     from .model_edits import closest_symbols
 
     stmt_type, policy = key
@@ -177,16 +177,16 @@ def bind(
 ) -> Emission:
     """Replace parameters a row minted (``<prefix>_<kind>``) by a SHARED one or a NUMBER.
 
-    Every row mints its own rate constants, so one rate a reference uses in many reactions became
-    many estimated parameters: Blasi's single ``a_basal`` in 25 acetylations, the 14 constants
-    Sneyd's ten gating steps share, the shipped fixed rates Rahman's deaths run at. A string
-    binds the kind to that id: a parameter an earlier row bound, or a new one of that name — which
-    reconcile then takes from the problem's own row when the problem ships it. A number pins the
-    kind to that value; it is no longer estimated. Any other string is an EXPRESSION over such ids
-    (Isensee's off-rates ``KD_cAMP*kf_cAMP``), each name resolved as a shared id is, so the
-    parameters are the reference's own and keep their rows. Bound for every entry alike, INDRA's
-    and written ones, so no entry needs sharing of its own. What a row no longer reads stays behind
-    unreferenced, and the SBML export drops it (as it drops a written mechanism's base constant).
+    Every row mints its own rate constants, so one rate a model uses in many reactions became
+    many estimated parameters: one constant shared by many steps of the same kind, or a fixed rate
+    the problem ships. A string binds the kind to that id: a parameter an earlier row bound, or a
+    new one of that name — which reconcile then takes from the problem's own row when the problem
+    ships it. A number pins the kind to that value; it is no longer estimated. Any other string is
+    an EXPRESSION over such ids (an off-rate written ``KD*kf_on``), each name resolved as a shared
+    id is, so the parameters are the problem's own and keep their rows. Bound for every entry
+    alike, INDRA's and written ones, so no entry needs sharing of its own. What a row no longer
+    reads stays behind unreferenced, and the SBML export drops it (as it drops a written
+    mechanism's base constant).
 
     ``merged`` carries, across the rows of one model, each name an earlier binding renamed or
     replaced to what now stands for it, so a row that names another row's parameter shares what
@@ -213,7 +213,7 @@ def bind(
             new, names = _bound_expression(
                 model, name, target, emission.prefix, merged, species
             )
-            # A binding that scales the row's own constant (`kf="mek_kf*(1 - Sorafenib/K)"`)
+            # A binding that scales the row's own constant (`kf="r1_kf*(1 + D)"`)
             # keeps that constant, and a row naming it shares the constant, not the scaling.
             if old not in new.expr.free_symbols:
                 merged[name] = new
@@ -231,7 +231,7 @@ def bind(
                 # `formula` names one at reconcile's seed too), not at the 1.0 the row minted:
                 # reconcile fixes a starting-amount parameter that is exactly 1 as a unit
                 # normalisation, so a shared rate also read by an `initial` was fixed or
-                # estimated depending on which row named it first (Bachmann lost seven).
+                # estimated depending on which row named it first.
                 from .reconcile import SEED_INITIAL_VALUE
 
                 old.value = SEED_INITIAL_VALUE
@@ -515,9 +515,9 @@ def written(
     a list role by position (``obj_from_0``), or by its own name when it holds one agent; the
     definition's ``parameters``, each minted as ``<prefix>_<name>`` (and shared by a row's
     binding, :func:`bind`); its ``modifiers``, each the amount of an agent the ROW names, which
-    takes no part in the reaction (Fiedler's sorafenib slowing RAF, the SMAD complexes regulating
-    Lucarelli's genes, Sneyd's IP3 and calcium); ``time``; exp, log, sqrt. A scheme
-    (:func:`schemes.compile_scheme`) declares the constants its rates name the same way.
+    takes no part in the reaction (an inhibitor slowing a step, a regulator of a synthesis);
+    ``time``; exp, log, sqrt. A scheme (:func:`schemes.compile_scheme`) declares the constants its
+    rates name the same way.
 
     ``problem_ids`` (id to :data:`SHIPPED`, :data:`CONDITION` or :data:`SPECIES`) are names no
     rate reads and no declared parameter takes: a refusal naming one says how it enters instead,
@@ -911,7 +911,7 @@ def _no_enzyme(stmt: Statement, prefix: str) -> None:
 def _basal_removal(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
     """``k·[modified]``: the modification comes off at a steady rate. INDRA's own default builds
     nothing for a removal with no enzyme, so without this a modification can only accumulate —
-    and Fujita's phospho-EGFR peaks at one minute and is gone by the hour."""
+    and a transient modification could never decay."""
     _no_enzyme(stmt, prefix)
     mod = stmt._get_mod_condition()
     site = get_mod_site_name(mod)
@@ -934,8 +934,8 @@ def _conversion(policy: str, delete_molecules: bool) -> Policy:
     def apply(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
         """``k·[subj]·Π[obj_from]``: the reactants, each the complex its agent writes, become the
         products in the states theirs write; ``subj`` catalyses. INDRA's own Conversion takes one
-        reactant and makes products in their base state, so Boehm's 2 STAT5A -> dimer, Bruno's
-        cleavage products and Raimundez's receptor dimer steps had no route."""
+        reactant and makes products in their base state, so a homodimerisation (2 A -> A:A), a
+        cleavage into two products, or a product made in a stated form had no route."""
         if not stmt.obj_from:
             raise MechanismError(f"row {prefix!r}: a Conversion needs obj_from")
         catalyst = [stmt.subj] if stmt.subj is not None else []
@@ -956,7 +956,7 @@ def _conversion(policy: str, delete_molecules: bool) -> Policy:
 
 def _removal(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
     """``k·[subj]·[obj]``, removing only the obj molecule: a partner it was bound to is freed
-    (Schwen's internalised insulin, Isensee's hydrolysed cAMP leave their receptor behind), where
+    (a ligand degraded while bound leaves its receptor behind), where
     INDRA's degradation deletes the whole complex."""
     catalyst = [stmt.subj] if stmt.subj is not None else []
     return _one_rule(
@@ -976,7 +976,7 @@ def _removal(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
 def _synthesis(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
     """``k·[subj]``: obj is made, from nothing or catalysed by ``subj``, in the state the
     statement writes — INDRA's own IncreaseAmount makes it in its base state, so a protein made
-    at a location or in a modified form (Alkan's per-phase p21 and Wip1) had no route."""
+    at a location or in a modified form had no route."""
     catalyst = [stmt.subj] if stmt.subj is not None else []
     return _one_rule(
         stmt,
@@ -997,8 +997,8 @@ mechanism(DecreaseAmount, RELEASE)(_removal)
 
 @mechanism(IncreaseAmount, "self_renewal")
 def _self_renewal(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
-    """``k·[subj]·[obj]``: obj makes more of itself (Crauste's effector expansion, the prey
-    birth of Rosenzweig-MacArthur). INDRA reads "X increases X" as nothing, and IncreaseAmount
+    """``k·[subj]·[obj]``: obj makes more of itself (a proliferating population). INDRA reads
+    "X increases X" as nothing, and IncreaseAmount
     with no subject makes obj from nothing, which also starts it empty."""
     catalyst = [stmt.subj] if stmt.subj is not None else []
     return _one_rule(
@@ -1014,9 +1014,8 @@ def _self_renewal(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
 
 
 def _basal_addition(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
-    """``k·[unmodified]``: the modification goes on at a steady rate, with no named enzyme —
-    Blasi's acetylations, Brannmark's insulin-independent receptor phosphorylation. The
-    counterpart of :func:`_basal_removal`."""
+    """``k·[unmodified]``: the modification goes on at a steady rate, with no named enzyme — a
+    basal, ligand-independent modification. The counterpart of :func:`_basal_removal`."""
     _no_enzyme(stmt, prefix)
     mod = stmt._get_mod_condition()
     site = get_mod_site_name(mod)
@@ -1058,7 +1057,7 @@ def _rate_constants(model: pysb.Model, prefix: str, *kinds: str) -> list[pysb.Pa
 def _stated_binding(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
     """``kf·[a]·[b] - kr·[a:b]``, both directions in the states the members write. INDRA's own
     dissociation reads unconditioned members, so a complex comes apart at the same rate in every
-    state — Schwen's internalised insulin-receptor complexes dissociating at the surface rate. A
+    state — an internalised receptor–ligand complex dissociating at the surface rate. A
     one-way dissociation is this entry with ``kf`` bound to 0 (:func:`bind`)."""
     if len(stmt.members) != 2:
         raise MechanismError(f"row {prefix!r}: `stated` binds exactly two members; see `assembly`")
@@ -1088,7 +1087,7 @@ def _stated_binding(stmt: Statement, model: pysb.Model, prefix: str) -> Emission
 def _assembly(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
     """``kf·Π[member]``: every member, free, joins the whole complex in one irreversible step,
     bonded as a spanning tree — each member to the first earlier one with which it shares a free
-    pair of sites. Members may repeat (Lucarelli's SMAD2 with two SMAD3), which INDRA's
+    pair of sites. Members may repeat (A with two B), which INDRA's
     ``multi_way`` cannot: it gives a monomer one site per partner type and overwrites it. Note
     BioNetGen's symmetry factor for identical reactants (``A + A`` runs at ``kf/2``)."""
     members = stmt.members
@@ -1129,7 +1128,7 @@ def _assembly(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
 def _nondepleting(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
     """The receptor (first member) binds a copy of the ligand (second) at ``kf·[R]·[L]``, the free
     ligand pool unchanged, and the bound copy is removed at ``kr`` from any receptor state, the
-    receptor freed: a ligand in excess, Isensee's cAMP and its analogues occupying RII."""
+    receptor freed: a ligand in excess, its free pool unchanged by binding."""
     if len(stmt.members) != 2:
         raise MechanismError(f"row {prefix!r}: `nondepleting` takes a receptor and a ligand")
     receptor, ligand = stmt.members
@@ -1169,8 +1168,8 @@ def _nondepleting(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
 
 def _processive(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
     """``kf·[enz]·[sub]``: one step sets the stated site and every other site of the same type
-    the substrate writes as unmodified — Lucarelli's SMAD2/3 C-terminal SxS motif, which single-site
-    steps cannot take from S to ppS without an intermediate the reference does not have."""
+    the substrate writes as unmodified — a multi-site motif modified in one step, which single-site
+    steps cannot take from unmodified to fully modified without an intermediate."""
     mod = stmt._get_mod_condition()
     unmod, modified = states[mod.mod_type]
     site = get_mod_site_name(mod)
@@ -1205,8 +1204,8 @@ for _cls in get_all_descendants(AddModification):
 
 def _dissociative(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
     """``k·[modified]``, with no enzyme, for the free substrate AND for every complex an EARLIER
-    row forms around it, which then falls apart into its free members: Lucarelli's phospho-SMAD
-    trimers, dephosphorylated in the nucleus and released. Only complexes earlier rows have built
+    row forms around it, which then falls apart into its free members: a modified complex that
+    comes apart once the modification is removed. Only complexes earlier rows have built
     are seen, so list this row after them."""
     mod = stmt._get_mod_condition()
     site = get_mod_site_name(mod)
@@ -1274,7 +1273,7 @@ for _cls in get_all_descendants(RemoveModification):
 
 #: The policy name every INDRA statement type answers to: INDRA's own default assembly, so every
 #: statement INDRA can read has at least one entry. It is what an INDRA warm start is built with,
-#: and the floor the library's own entries are measured against.
+#: and the baseline the library's own entries extend.
 INDRA_DEFAULT = "indra_default"
 
 
@@ -1282,7 +1281,7 @@ def _indra(name: str) -> Policy:
     """INDRA's own ``name`` policy for a statement; what it added is read off the model, before
     against after. Its parameters are renamed ``<prefix>_<kind>`` (``kf``, ``kr``, ``Km``...):
     INDRA's own names (``kf_ar_phosphorylation_1``) say neither which row minted them nor which
-    statement, and an agent widening a bound on Fujita had to look each one up."""
+    statement, and an agent widening a bound had to look each one up."""
     entry = INDRA_DEFAULT if name == "default" else f"indra_{name}"
 
     def apply(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:

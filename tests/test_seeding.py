@@ -54,8 +54,8 @@ def test_a_map_that_would_be_misread_is_refused(tmp_path, text, refusal):
 
 
 def test_a_key_read_elsewhere_is_kept(tmp_path):
-    """PEtabAgentBench's maps carry ``ptms`` for their own use; only a near-miss of a key read here
-    is a typo."""
+    """A map may carry keys other tools read (``ptms``); only a near-miss of a key read here is a
+    typo."""
     extra = ', "S6": {"name": "RPS6", "ptms": [["S", "235"]]}'
     assert Sd.load_entity_map(_map_file(tmp_path, _BASE_ENTITY_MAP.format(extra=extra)))["S6"]
 
@@ -76,10 +76,10 @@ _CONVERSION = {
 def test_a_species_the_conditions_set_is_held_while_the_rows_only_read_it(
     tmp_path, add_condition, row, held
 ):
-    """Isensee's drugs and brannmark's insulin are set by the conditions and only read by the
-    rows. Built as molecules, the doses were used up by what they drive and started at an amount
-    every condition overwrites. armistead's metabolites and an enzyme's substrate are started by
-    the conditions and converted: held for being condition targets, they never changed."""
+    """Drugs and hormones the conditions set and the rows only read: built as molecules, the
+    doses were used up by what they drive and started at an amount every condition overwrites.
+    Metabolites or a substrate the conditions start and the rows convert: held for being
+    condition targets, they never changed."""
     shutil.copytree(Path(__file__).parent / "data" / "toy_v2", tmp_path / "problem")
     yaml_path = tmp_path / "problem" / "problem.yaml"
     add_condition(yaml_path, "A", 2.0)

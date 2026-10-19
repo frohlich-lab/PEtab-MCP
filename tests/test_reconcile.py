@@ -271,8 +271,8 @@ _DECLARED_P = (
 
 
 def test_an_ic_row_follows_each_redeclared_initial():
-    """Fujita r2: a start declared at 1 stayed FIXED at 1 through every later declaration. The row
-    follows the value the model declares now."""
+    """A start declared at 1 stayed FIXED at 1 through every later declaration. The row follows
+    the value the model declares now."""
     from petab.v2.C import ESTIMATE, NOMINAL_VALUE
     from petab_mcp.problem import LIN, LOG10, PARAMETER_SCALE
 
@@ -499,8 +499,8 @@ def test_initial_conditions_report_flags_estimated_ic(session):
 
 
 def test_initial_conditions_report_says_a_synthesised_species_starts_empty():
-    """Fujita r2's EGFR, made by zero-order synthesis, was reported as an empty pool with nothing
-    to say that its start was a default, not a fact."""
+    """A species made by zero-order synthesis was reported as an empty pool with nothing to say
+    that its start was a default, not a fact."""
     prob = _bare_problem(
         "model m\n  compartment c = 1;\n  species P in c; species Q in c; P = 0; Q = 0;\n"
         "  ks = 0.1; kd = 0.1;\n  syn: -> P; ks;\n  conv: P -> Q; kd*P;\nend\n"
@@ -540,8 +540,8 @@ def test_initial_conditions_report_condition_target_override():
 
 
 def test_initial_conditions_report_reads_a_held_input_off_its_rule():
-    """Fujita r2: an input an assignment rule holds at a condition column was reported as an empty
-    pool, from the literal 0 its species keeps and nothing reads."""
+    """An input an assignment rule holds at a condition column was reported as an empty pool,
+    from the literal 0 its species keeps and nothing reads."""
     head, _ = _CONDCOL_ANTIMONY.rsplit("end", 1)
     prob = _condcol_problem(head + "  species E in c; E := piecewise(dose, time < 10, 0);\nend")
     R.reconcile(prob)

@@ -690,7 +690,7 @@ def test_the_extraneous_prune_is_petabs_lint_not_ours():
 
 
 def test_a_held_out_set_using_part_of_the_observation_model_scores(tmp_path, monkeypatch):
-    """fontaine's held-out pulse references the scale and noise of ONE of nine cytometry days. The
+    """A held-out set may reference the scale and noise of ONE of several measurement days. The
     view kept every training day's rows and the training-only conditions, and libpetab refused the
     rows nothing referenced: ``ValueError: Invalid PEtab v2 problem``. Here the training rows split
     over two days, one experiment each, and the held-out ones use day 2's; the view must lint

@@ -243,7 +243,7 @@ end
 
 @pytest.fixture
 def blinded(empty_yaml):
-    """The toy as a blinded benchmark ships: no model, its observable reading ``readout_B``."""
+    """The toy as a blinded problem ships: no model, its observable reading ``readout_B``."""
     observables = Path(empty_yaml).parent / "observables.tsv"
     observables.write_text(observables.read_text().replace("\tB\t", "\treadout_B\t"))
     return empty_yaml

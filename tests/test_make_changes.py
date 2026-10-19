@@ -313,7 +313,7 @@ def _set_rate(rate: str) -> dict:
 def test_a_rate_only_edit_is_fitted_not_deduplicated(tmp_path):
     """REGRESSION: the de-dup's fingerprint hashed each rate law's form, and a rate changed through
     the rule that rate law multiplies left every form as it was. The change came back as a duplicate
-    of HEAD and was never fitted (rahman, schwen, oliveira, blasi on the statements route)."""
+    of HEAD and was never fitted."""
     mcp = _server(tmp_path, auto_fit=True)
     first = _call(
         mcp, "make_changes", {"antimony": _ruled("k1"), "justification": "linear", "n_starts": 2}
@@ -1064,7 +1064,7 @@ def test_a_type_the_library_lacks_is_a_library_gap(tmp_path):
 
 def test_a_crash_building_statements_is_logged_and_raised(tmp_path, monkeypatch):
     """Only refusals were caught there, so a crash building the model escaped make_changes with
-    nothing in errors.jsonl, where a sweep looks for crashes; it is still raised, not refused."""
+    nothing in errors.jsonl, the run's record of crashes; it is still raised, not refused."""
 
     def crash(*args, **kwargs):
         raise RuntimeError("UNIQUE_CRASH")
@@ -1119,9 +1119,9 @@ def test_a_misspelt_policy_is_not_counted_as_a_library_gap(tmp_path):
 
 
 def test_statement_species_take_the_problems_own_initial_conditions(tmp_path):
-    """The first version minted a fixed one-unit initial amount per species, so Crauste's
-    populations all started at one cell and its shipped `Naive_init` (8090) went unused. The
-    toy ships `A_init` and `B_init` fixed; both must survive, and no other IC row may appear."""
+    """The first version minted a fixed one-unit initial amount per species, so every population
+    started at one unit and the initial amounts the problem ships went unused. The toy ships
+    `A_init` and `B_init` fixed; both must survive, and no other IC row may appear."""
     mcp = _statements_server(tmp_path)
     _call(mcp, "make_changes", {"justification": "A becomes B", "statements": [_statement_row()]})
     ids = {r["parameterId"] for r in _call(mcp, "get_parameters", {})["result"]}
@@ -1130,10 +1130,9 @@ def test_statement_species_take_the_problems_own_initial_conditions(tmp_path):
 
 
 def test_a_binding_to_a_start_or_a_species_is_refused_saying_what_reads_it(tmp_path):
-    """Crauste's `k="Naive_init"` met PySB's duplicate name once the start made `Naive_init`
-    again, and `kf="pERK"` libSBML's duplicate id beside the readout: both escaped make_changes
-    raw. The toy ships `A_init` as Crauste ships `Naive_init`; `Btot` is a readout id as `pERK`
-    is."""
+    """A binding to a shipped start, `k="A_init"`, met PySB's duplicate name once the start made
+    `A_init` again, and one to a readout id, `k="Btot"`, libSBML's duplicate id beside the
+    readout: both escaped make_changes raw."""
     mcp = _statements_server(tmp_path, extra=', "Btot": {"name": "B"}')
     for binding, ident, what, instead in (
         ("A_init", "A_init", "a starting amount", "which only `starts` declares"),
@@ -1198,7 +1197,7 @@ def test_a_written_mechanism_no_row_uses_survives_a_resume(tmp_path):
 
 
 def test_a_kind_made_from_nothing_is_said_to_start_empty(tmp_path):
-    """Fujita r2's EGFR, made by zero-order synthesis, started at 0 and the result said nothing."""
+    """A kind made by zero-order synthesis started at 0 and the result said nothing."""
     rows = [_statement_row(), "syn: B is produced | default"]
     out = _call(_statements_server(tmp_path), "make_changes", {"justification": "x", "statements": rows})
     assert out["applied"] is True, out
@@ -1264,8 +1263,8 @@ def test_a_version_without_new_rows_keeps_its_parents(tmp_path):
 
 def test_a_declared_unit_start_is_fixed_not_estimated(tmp_path):
     """`starts`: a population declared to start at 1 takes reconcile's unit
-    normalisation, fixed, where the default seed would have estimated an `A_init` — Blasi's and
-    Sneyd's extra k."""
+    normalisation, fixed, where the default seed would have estimated an `A_init`: one parameter
+    too many."""
     mcp = _statements_server(tmp_path)
     out = _call(
         mcp,
@@ -1286,7 +1285,7 @@ def test_a_declared_unit_start_is_fixed_not_estimated(tmp_path):
 
 
 def test_a_redeclared_start_moves_its_row(tmp_path):
-    """Fujita r2: a start declared at 1 stayed FIXED at 1 through every later declaration."""
+    """A start declared at 1 stayed FIXED at 1 through every later declaration."""
     mcp = _statements_server(tmp_path)
     rows = []
     for amount in (1, 5, 1):
@@ -1303,8 +1302,8 @@ def test_a_redeclared_start_moves_its_row(tmp_path):
 
 
 def test_a_held_input_is_reported_at_its_condition_value(tmp_path, add_condition):
-    """Fujita r2: the view reported the held EGF input as starting empty, though the condition
-    table held it at its dose."""
+    """The view reported a held input as starting empty, though the condition table held it at
+    its dose."""
     shutil.copytree(YAML_PATH.parent, tmp_path / "problem")
     add_condition(tmp_path / "problem" / "problem.yaml", "E_0", 3.0)
     (tmp_path / "problem" / "inputs.tsv").write_text(
@@ -1323,7 +1322,7 @@ def test_a_held_input_is_reported_at_its_condition_value(tmp_path, add_condition
 
 def test_an_empty_entity_map_still_offers_the_route(tmp_path):
     """Starts travel with the statements, so a problem may need nothing from its map; withheld on
-    an EMPTY map, Rahman's route did not exist and every statements call was refused."""
+    an EMPTY map, the route did not exist and every statements call was refused."""
     entity_map = tmp_path / "entities.json"
     entity_map.write_text("{}")
     mcp = create_server(
@@ -1336,9 +1335,8 @@ def test_an_empty_entity_map_still_offers_the_route(tmp_path):
     assert "statements" in _make_changes_schema(mcp)
 
 
-def _benchmark_ids_server(tmp_path, add_condition, *, fixed_d=False, dose=False):
-    """The toy with the ids issue 5 met: Blasi's shipped FIXED `d`, and Fujita's dose column
-    `EGF_0`, which Fujita's EGF ramp reads."""
+def _problem_ids_server(tmp_path, add_condition, *, fixed_d=False, dose=False):
+    """The toy with a shipped FIXED `d`, or a dose column `EGF_0` that an input's ramp reads."""
     work = tmp_path / "problem"
     shutil.copytree(YAML_PATH.parent, work)
     if fixed_d:
@@ -1373,9 +1371,9 @@ _ROUTES = pytest.mark.parametrize("route", ["scheme", "rate"])
 def test_a_shipped_fixed_parameter_enters_a_written_rate_through_the_binding(
     tmp_path, add_condition, route
 ):
-    """Blasi r2: `d` in a scheme's rate, meaning the shipped FIXED `d`, became a new estimated
-    `conv_d` in its place; a `rate` naming `d` was refused with no way in."""
-    mcp = _benchmark_ids_server(tmp_path, add_condition, fixed_d=True)
+    """`d` in a scheme's rate, meaning the shipped FIXED `d`, became a new estimated `conv_d` in
+    its place; a `rate` naming `d` was refused with no way in."""
+    mcp = _problem_ids_server(tmp_path, add_condition, fixed_d=True)
     out = _hop(mcp, route, "k*d")
     assert out["applied"] is False
     assert "`d` is a parameter the problem ships" in out["error"]
@@ -1390,9 +1388,9 @@ def test_a_shipped_fixed_parameter_enters_a_written_rate_through_the_binding(
 def test_a_condition_input_enters_a_written_rate_through_the_binding(
     tmp_path, add_condition, route
 ):
-    """Fujita's dose column `EGF_0`, in a scheme's rate, became a constant `conv_EGF_0` the
-    condition table never set."""
-    mcp = _benchmark_ids_server(tmp_path, add_condition, dose=True)
+    """A dose column, `EGF_0`, in a scheme's rate became a constant `conv_EGF_0` the condition
+    table never set."""
+    mcp = _problem_ids_server(tmp_path, add_condition, dose=True)
     out = _hop(mcp, route, "k*EGF_0")
     assert out["applied"] is False
     assert "`EGF_0` is a condition input" in out["error"]

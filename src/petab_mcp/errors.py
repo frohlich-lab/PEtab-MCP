@@ -69,11 +69,11 @@ class EntityMapError(PetabMcpError):
 class MechanismError(PetabMcpError):
     """A row's mechanism cannot be built.
 
-    ``cause`` is the label ``edit_rejects.by_cause`` counts it under. ``library_gap`` is a gap in
-    the library — the policy exists, but no entry expresses it for the statement class — and the
-    signal that the library needs one, so its raisers name it. Every other refusal, a policy named
-    nowhere among them, is a request to fix, ``malformed_mechanism``, and that is the default, so
-    a new refusal never inflates the gaps.
+    ``cause`` is the machine-readable rejection class a refused call carries as ``error_cause``.
+    ``library_gap`` is a gap in the library — the policy exists, but no entry expresses it for the
+    statement class — and the signal that the library needs one, so its raisers name it. Every
+    other refusal, a policy named nowhere among them, is a request to fix, ``malformed_mechanism``,
+    and that is the default, so a new refusal never inflates the gaps.
     """
 
     def __init__(self, *args, cause: str = "malformed_mechanism"):

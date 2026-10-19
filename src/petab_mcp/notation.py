@@ -1,33 +1,33 @@
 """A one-line notation for `statements` rows, readable and lossless for the model it builds.
 
 INDRA's statement JSON spells every agent out — each modification a dict, each bound partner a
-nested agent, every grounding repeated — so formulating the 21 PEtabAgentBench references took
-330k characters, 5x what the same rows take written as::
+nested agent, every grounding repeated — so a row takes several times the characters it takes
+written as::
 
-    r23: EGFR{pY1068} phosphorylates AKT1 at S473 | two_step kf=k_on kr=k_off kc=k_cat
-    r10: EGFR{-pY1068, ~EGF} is degraded | default kf=EGFR_turnover
-    v12: Cell{-mod"G1"} + DNA -> Cell{mod"G1"} by CDK2 | mass_action k=k_g1
-     m1: RAF{~SORAF} phosphorylates MEK at S218 | inhibited k=k1 Ki=K_sor inh:=SORAF
+    r1: A{pY10} phosphorylates B at S10 | two_step kf=k_on kr=k_off kc=k_cat
+    r2: A{-pY10, ~C} is degraded | default kf=A_turnover
+    v1: A{-mod"P1"} + B -> A{mod"P1"} by E | mass_action k=k_p1
+    m1: E{~C} phosphorylates S at T20 | inhibited k=k1 Ki=K_i inh:=C
 
 ``<prefix>: <statement> | <policy> <kind>=<binding> ... <slot>:=<agent> ... # [source] text`` —
 the row's prefix, its statement, the mechanism, its parameter bindings (:func:`mechanisms.bind`),
 the agents filling a written mechanism's modifier slots, and the statement's evidence: one
-``source_api`` and text, both optional (``# Boehm et al. 2014``).
+``source_api`` and text, both optional (``# Author et al. 2000``).
 
 An agent is ``NAME{tag, ...}``, ``NAME`` quoted when it is not an identifier. Tags:
 
-* ``pY1068`` modified, ``-pY1068`` unmodified: the modification's abbreviation (:data:`ABBREV`)
+* ``pY10`` modified, ``-pY10`` unmodified: the modification's abbreviation (:data:`ABBREV`)
   then its site — a residue and position, a residue alone (``pS``), a position that is not one
   (``mod"G2"``), or nothing (``p``);
 * ``kinase:on`` / ``kinase:off``: an activity;
 * ``@nucleus`` (``@"plasma membrane"``): a location;
-* ``!AKT1`` bound to, ``~AKT1`` not bound to — any agent, tags and all;
+* ``!B`` bound to, ``~B`` not bound to — any agent, tags and all;
 * ``mut:V600E``: a mutation (``_`` for a part INDRA leaves unset).
 
 Groundings are not written: an agent takes the ``db_refs`` the entity map gives its name.
 
-Statements read as what they assert — ``X phosphorylates Y at S473``, ``Y is dephosphorylated at
-S473``, ``X autophosphorylates at Y1068``, ``A binds B binds C``, ``X increases Y`` / ``Y is
+Statements read as what they assert — ``X phosphorylates Y at S10``, ``Y is dephosphorylated at
+S10``, ``X autophosphorylates at Y10``, ``A binds B binds C``, ``X increases Y`` / ``Y is
 produced``, ``X decreases Y`` / ``Y is degraded``, ``A + B -> C + D by X`` (``nothing`` for an
 empty side), ``A becomes B``, ``A moves from cytoplasm to nucleus``, ``X activates Y`` (``Y as
 kinase`` for an activity other than ``activity``), ``X inhibits Y``. A policy INDRA implements is
