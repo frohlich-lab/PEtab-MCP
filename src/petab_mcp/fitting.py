@@ -93,12 +93,11 @@ def _env_int(name: str, default: int) -> int:
 
 # Per-start wall-clock cap for a single Fides optimization start (seconds; env
 # PETAB_MCP_FIT_PER_START_TIMEOUT, default 180). Fides defaults MAXTIME to inf, so one stiff start
-# can run unbounded and out-idle the MCP transport, which the harness then mistakes for a hang.
-# Bounding each start makes a full multistart fit's worst-case duration finite and predictable,
-# which the harness sizes its sse_read_timeout + stall watchdog to (see
-# petab_harness/fit_budget.py). The harness exports its own resolved values onto this server's environment, so
-# both sides use the SAME cap + worker count. Kept generous — Fides returns best-so-far for a
-# capped start, so too tight a cap would silently degrade fit quality.
+# can run unbounded and out-idle the MCP transport, which a client then mistakes for a hang.
+# Bounding each start makes a full multistart fit's worst-case duration finite and predictable, so
+# a client can size its read timeout and stall watchdog to it; one that exports its own values onto
+# this server's environment has both sides use the SAME cap + worker count. Kept generous — Fides
+# returns best-so-far for a capped start, so too tight a cap would silently degrade fit quality.
 FIT_PER_START_TIMEOUT_S = _env_float("PETAB_MCP_FIT_PER_START_TIMEOUT", 180.0)
 
 
@@ -119,13 +118,11 @@ def _default_fit_workers() -> int:
 
 
 # Max pyPESTO worker processes for the multistart (env PETAB_MCP_FIT_N_WORKERS; default =
-# SLURM_CPUS_PER_TASK when set, else box minus one core — see _default_fit_workers). The batch
-# runner dispatches examples one at a time, so a fit has the whole machine; running the starts in
-# parallel cuts wall-clock to ~ceil(n_starts / workers) waves. Set to 1 to force sequential
-# fitting. petab_harness/fit_budget.py keeps the SAME default (its _default_workers mirrors
-# _default_fit_workers) and, when the harness drives a run, also exports its resolved value as
-# PETAB_MCP_FIT_N_WORKERS onto this server — so the harness's budget matches the real parallelism
-# whether the value comes from the shared default or the export.
+# SLURM_CPUS_PER_TASK when set, else box minus one core — see _default_fit_workers). A fit is
+# assumed to have the whole machine; running the starts in parallel cuts wall-clock to
+# ~ceil(n_starts / workers) waves. Set to 1 to force sequential fitting. A client that budgets a
+# fit's wall-clock in those waves should export its own value as PETAB_MCP_FIT_N_WORKERS onto this
+# server, so its budget matches the real parallelism.
 FIT_N_WORKERS = _env_int("PETAB_MCP_FIT_N_WORKERS", _default_fit_workers())
 
 # Expected seconds of starts one dask task runs back to back (env PETAB_MCP_FIT_TASK_SECONDS,
@@ -142,18 +139,16 @@ FIT_STARTS_PER_TASK = _env_int("PETAB_MCP_FIT_STARTS_PER_TASK", 0)
 # AMICI's stock 1e-16 is tight enough that on a stiff model the forward-sensitivity solve cannot
 # make progress: the objective VALUE evaluates, the GRADIENT comes back non-finite, and Fides
 # reads +INF at iteration 0 — a start that reports as failed when really the solver could not
-# differentiate there. petab_harness/fit_budget.py keeps the SAME default in FIT_AMICI_ATOL and
-# applies it to the REFERENCE fit; both sides must use one tolerance or the reference and the
-# candidate are optimized against different objectives and ΔBIC stops being a comparison. See
-# that constant for the lucarelli measurement that set the value.
+# differentiate there. A REFERENCE fit made outside this server must use the same tolerance, or the
+# reference and the candidate are optimized against different objectives and ΔBIC stops being a
+# comparison.
 FIT_AMICI_ATOL = _env_float("PETAB_MCP_FIT_AMICI_ATOL", 1e-10)
 
 
 def _apply_amici_solver_defaults(problem) -> None:
     """Set :data:`FIT_AMICI_ATOL` on ``problem``'s AMICI solver, in place. Best-effort: a problem
     whose objective exposes no AMICI solver is left alone rather than raising, since a missing
-    tolerance degrades a fit while a raise here would break every fit path at once. Mirrors
-    ``petab_harness.fit_budget.apply_amici_solver_defaults``."""
+    tolerance degrades a fit while a raise here would break every fit path at once."""
     solver = getattr(getattr(problem, "objective", None), "amici_solver", None)
     setter = getattr(solver, "set_absolute_tolerance", None) or getattr(
         solver, "setAbsoluteTolerance", None
@@ -176,7 +171,7 @@ FIT_OPTIMIZER = "fides"
 # converge WORSE than its parent unless the added structure genuinely cannot help. That is the
 # whole point: an "adding this term made the fit worse" result is otherwise indistinguishable
 # from an under-converged multistart that never found the parent's basin (see :mod:`nesting`),
-# and the panel has read the latter as the former. Re-entering the OTHER basins matters for the
+# and an agent has read the latter as the former. Re-entering the OTHER basins matters for the
 # same reason one notch down: they are the local optima the parent's own multistart paid to find,
 # and an additive edit does not destroy them.
 # The other half stays FRESH random: an added parameter can create new local optima that none of
@@ -184,7 +179,7 @@ FIT_OPTIMIZER = "fides"
 WARM_START_FRACTION = 0.5
 # Spread of the FALLBACK warm starts, as a fraction of each parameter's box width in ESTIMATION
 # scale. Used only to fill the warm budget when the previous fit cannot supply enough DISTINCT
-# optima — the run's first fit, or a multistart that converged everything to one point — so the
+# optima — the session's first fit, or a multistart that converged everything to one point — so the
 # warm half explores that point's neighbourhood instead of re-running one optimization N times.
 WARM_START_JITTER = 0.05
 
@@ -310,8 +305,8 @@ def _build_hierarchical_problem(session, importer_kwargs: dict[str, Any], petab_
 
     The whole win is optimization efficiency/robustness: the inner parameters (noise sigmas,
     observable-scaling factors) are solved analytically per objective evaluation instead of by
-    the outer multistart, shrinking the outer search (e.g. a benchmark's 13 estimated params →
-    5 outer). It does NOT change what the parameters converge to — a sigma's analytic optimum is
+    the outer multistart, shrinking the outer search (e.g. 13 estimated params → 5 outer). It
+    does NOT change what the parameters converge to — a sigma's analytic optimum is
     the same RMS the joint optimizer finds — so the fit's nllh/identity is unchanged. pyPESTO
     solves inner parameters in linear space whatever their ``parameterScale``.
 
@@ -504,9 +499,9 @@ def needs_flattening(problem) -> bool:
     per-experiment overrides are handled natively, so only TIMEPOINT-specific overrides — two
     rows of the same observable in the same experiment carrying different overrides — force
     ``flatten_timepoint_specific_output_overrides``. Grouping by observable alone would flatten
-    bachmann (20 observables -> 101), isensee (3 -> 123) and schwen (4 -> 22) for overrides AMICI
-    takes as shipped; measured across the collection, only fiedler genuinely trips this
-    predicate.
+    problems whose overrides AMICI takes as shipped, multiplying their observables (measured:
+    20 -> 101, 3 -> 123, 4 -> 22); of the problems this was measured on, only one genuinely
+    trips this predicate.
 
     Flattening is an AMICI implementation detail, so it happens HERE, on a copy, at the compile
     boundary (:func:`amici_facing_problem`) — the problem the session holds, the agent reads and
@@ -517,7 +512,7 @@ def needs_flattening(problem) -> bool:
         return False
     keys = [OBSERVABLE_ID, EXPERIMENT_ID]
     if V1_SIMULATION_CONDITION_ID in mdf.columns:
-        # A v1 table — the harness checks published problems before anything upgrades them —
+        # A v1 table — a published problem can be checked before anything upgrades it —
         # simulates once per (simulation, pre-equilibration) condition pair.
         keys = [
             OBSERVABLE_ID,
@@ -533,15 +528,15 @@ def needs_flattening(problem) -> bool:
     # * noiseParameters: a single numeric sigma never enters the parameter mapping at all --
     #   AMICI writes it straight into the ExpData as that datapoint's standard deviation, so
     #   per-timepoint numbers are already exact, and AMICI's own check lets a group of them
-    #   through. MEASURED under v1, not assumed: on upstream crauste (4 groups with 4 distinct
-    #   numeric sigmas each) the nominal llh was bit-identical flattened and unflattened. Bruno,
-    #   Chen, Fujita and Salazar-Cavazos are the collection's other numeric-sigma problems and
-    #   would all be flattened for nothing, which is not free: it multiplies the observable count.
+    #   through. MEASURED under v1, not assumed: on a problem with 4 groups of 4 distinct numeric
+    #   sigmas each, the nominal llh was bit-identical flattened and unflattened. Every other
+    #   numeric-sigma problem would be flattened for nothing, which is not free: it multiplies the
+    #   observable count.
     #   Only a group whose overrides are ALL single numbers is exempt; one symbolic override
     #   among them is a mapping AMICI refuses to vary.
     # * observableParameters: these DO become mapped parameters, one value per experiment, so a
-    #   number that varies between timepoints of one experiment has nowhere to live. No benchmark
-    #   in the collection does this today, so it is untested rather than measured -- which is
+    #   number that varies between timepoints of one experiment has nowhere to live. No problem
+    #   this was measured on does that, so it is untested rather than measured -- which is
     #   exactly why it errs toward flattening: an unnecessary flatten costs observables, a missed
     #   one cannot be imported at all.
     for col in (OBSERVABLE_PARAMETERS, NOISE_PARAMETERS):
@@ -612,7 +607,7 @@ def estimation_problem(session, engine):
     :meth:`AmiciEngine.residuals`). That unification is the fix for a class of bug, not just an
     optimisation — while the fit and the evaluation each built their own AMICI model and their
     own solver, the two could disagree about the very same likelihood at the very same
-    parameters, and did: a crauste fit converged at nll 266.62 while re-simulating its optimum
+    parameters, and did: a fit converged at nll 266.62 while re-simulating its optimum
     failed to integrate past t=22 and reported NaN. Sharing the objective makes "the nll of
     this fit" a single number computed one way.
 
@@ -687,7 +682,7 @@ class FitRecord:
     answer different questions, which is why both are here. ``structure_hash``
     (:func:`parameters.structure_fingerprint`) is the model's equations plus the estimated-parameter
     set, so it says whether the geometry frozen here still describes the model in front of the
-    lead; a diagnosis is STALE exactly when that moved. ``problem_hash`` also covers the parameter
+    agent; a diagnosis is STALE exactly when that moved. ``problem_hash`` also covers the parameter
     table, so it additionally moves when the working table alone does — which happens on the de-dup
     no-op, where the same structure is re-authored with a new starting guess and no fit runs. That
     is not a stale diagnosis: the optimum, the structure and HEAD's fit are all still this record's.
@@ -811,7 +806,7 @@ def previous_optima(problem, optimization: dict[str, Any] | None, x0) -> list[li
     its value from ``x0``, the current nominal point. For an additive edit that means every
     previous local optimum is re-entered with the new parameter at its neutral value.
 
-    Returns ``[]`` when there is no usable previous fit: no payload (the run's first fit), or one
+    Returns ``[]`` when there is no usable previous fit: no payload (the first fit), or one
     written before ``x_names``/``x_scales`` were recorded — remapping without the scales would
     silently mix log10 and linear coordinates, which is worse than not warm-starting at all.
     Starts whose objective or vector is non-finite are dropped: a failed start is not a basin.
@@ -858,9 +853,9 @@ def warm_start_guesses(problem, parameter_df, n_starts: int, optimization=None):
     The warm starts are seeded from the PREVIOUS fit's optima — and any parameter the previous
     fit did not have (one this edit just introduced) is NOT left at the reconcile-minted default.
     A minted mid-range default enters the model FULLY ACTIVE, which is the opposite of a nested
-    comparison: measured on the 2026-08-20 bachmann sweep, additive edits warm-"started" at
-    objective_before +1220 and +2740 against parents at -158, so every such comparison reported a
-    false negative and the agents responded by buying 300-400 random starts per fit.
+    comparison: measured on one problem, additive edits warm-"started" at objective_before +1220
+    and +2740 against parents at -158, so every such comparison reported a false negative and
+    agents responded by buying 300-400 random starts per fit.
 
     A new parameter's NEUTRAL value depends on its role, which cannot be inferred: a gate
     neutralises at its LOWER bound (mechanism off), a transfer/pass-through rate at its UPPER
@@ -882,7 +877,7 @@ def warm_start_guesses(problem, parameter_df, n_starts: int, optimization=None):
     optima follow, best-first (see :func:`previous_optima`), deduplicated against each other. Those are real, converged basins
     of the parent likelihood — under an additive edit they stay basins — so re-entering them is a
     far better use of the warm half than perturbing one point at random. Only when the previous
-    fit cannot supply enough distinct optima (the run's first fit, or a multistart that converged
+    fit cannot supply enough distinct optima (the first fit, or a multistart that converged
     everything to one point) is the remainder filled by jittering start 0 (Gaussian,
     ``WARM_START_JITTER`` of each box's width in estimation scale), so the warm/fresh split still
     holds. Every start is clipped into the box.
@@ -1058,9 +1053,9 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     free = getattr(problem, "x_free_indices", None)
     n_free = len(free) if free is not None else len(problem.x_names)
     # Parallelise the multistart across worker processes when more than one is warranted; None runs
-    # pyPESTO's sequential engine. Sized so the harness's fit budget (ceil(n_starts/workers) waves)
-    # matches the real wall-clock — see petab_harness/fit_budget.py. A server with a cluster runs
-    # every start there instead.
+    # pyPESTO's sequential engine. Sized so a client's fit budget (ceil(n_starts/workers) waves)
+    # matches the real wall-clock — see FIT_N_WORKERS. A server with a cluster runs every start
+    # there instead.
     pp_engine = _fit_engine(n_starts, engine.fit_engine, session.optimization)
     workers = getattr(pp_engine, "n_procs", 1) or 1
     if engine.fit_engine is not None:
@@ -1079,8 +1074,8 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     # newly-minted parameter entering fully active (a mid-range default making the ODE
     # non-integrable, or driving a log observable to -inf), and the neutral candidates are
     # exactly the points that switch that mechanism off and recover the parent's integrable
-    # model. Skipping them threw away the rescue in the one case it was built for -- the bachmann
-    # RNA-delay chain, abandoned as "numerically invalid", took this path.
+    # model. Skipping them threw away the rescue in the one case it was built for -- an added
+    # delay chain, abandoned as "numerically invalid", took this path.
     #
     # `problem` is cached on the engine, so ALWAYS assign — an empty array clears guesses left by
     # a previous fit rather than silently reusing them.
@@ -1113,10 +1108,9 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     # transport; Fides returns that start's best-so-far when the cap is hit.
     #
     # WARNING, not INFO. At INFO fides emits one line PER ITERATION PER START: a single
-    # lucarelli run wrote a 1.85 GB server.log, and ten concurrent runs put ~18 GB on a SHARED
-    # lab filesystem. On 2026-08-23 that filesystem hit its quota and five tasks of the terra
-    # sweep died -- another job was the proximate cause, but this was the project's own
-    # contribution to the pressure.
+    # session wrote a 1.85 GB server.log, and ten concurrent sessions put ~18 GB on a SHARED
+    # filesystem. That filesystem once hit its quota and five concurrent jobs died -- another
+    # job was the proximate cause, but this was the server's own contribution to the pressure.
     #
     # This level is the only lever that reaches the volume. fides names each optimizer's logger
     # `fides_<n>` (fides/logging.py) with its OWN StreamHandler, so `logging_setup`'s handler on
@@ -1129,7 +1123,7 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     # are `logger.info` (623/632/641/649) while only MAXITER/MAXTIME/DELTA_TOO_SMALL are
     # `logger.warning` (673/685/693), so grepping the text log after this change would see
     # truncations and no convergences -- reporting ~0% converged and inverting the very
-    # converged-vs-truncated reading that showed lucarelli's gap is structural.
+    # converged-vs-truncated reading that tells a structural gap from an under-converged fit.
     #
     # Do not read that from the log. Every start's outcome is recorded STRUCTURALLY: pyPESTO
     # returns each start's `exitflag` (an enumerated ExitFlag.FTOL / EXCEEDED_BOUNDARY / ...),
@@ -1166,7 +1160,7 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
         # (pickling/spawn issues, a worker dying). That is a parallel-only failure — the same fit
         # runs fine on the sequential engine — so fall back to it rather than failing the whole
         # commit. Sequential is slower, so this can exceed the parallel-sized fit budget on a big
-        # n_starts; that is an acceptable rare-path cost vs. a hard failure (the run's resume logic
+        # n_starts; that is an acceptable rare-path cost vs. a hard failure (resuming the session
         # backstops a timeout). A sequential fit that itself fails re-raises normally. A cluster
         # failure is not retried: that would run every start on the server node.
         if pp_engine is None or isinstance(exc, FitBackendError):
@@ -1206,9 +1200,9 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     if best.get("x") is None:
         # Branch the diagnosis on what actually failed, using the objective already evaluated at
         # the nominal point above. The old message led unconditionally with the log-transform
-        # hypothesis; followed literally on the 2026-08-20 bachmann sweep, it sent an agent to
-        # re-initialise RNA pools twice while the real failure was AMICI FORWARD_FAILURE
-        # (integration), and the correct delay mechanism was abandoned as "numerically invalid".
+        # hypothesis; followed literally, it sent an agent to re-initialise its pools twice while
+        # the real failure was AMICI FORWARD_FAILURE (integration), and the correct delay mechanism
+        # was abandoned as "numerically invalid".
         # Two causes produce this, and they need OPPOSITE fixes. `objective_before` cannot
         # arbitrate: engine._objective_evaluate stores
         # finite_float(fval), so it is None for a failed SIMULATION *and* for a finite simulation
@@ -1219,9 +1213,8 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
             "the fit produced NO usable optimum: every multistart failed, so the best result "
             "carries no parameter vector. The objective was non-finite at EVERY start — a "
             "property of the problem, not the optimizer. There are two causes and they need "
-            "OPPOSITE fixes, so check which one this is BEFORE editing — and you cannot read the "
-            "log yourself, so DELEGATE the check (`task` an analyst to run `get_fitting_log` and "
-            "report which of these two it is): (a) the SIMULATION "
+            "OPPOSITE fixes, so check which one this is BEFORE editing — the fitting log tells "
+            "them apart (have it read if you cannot read it yourself): (a) the SIMULATION "
             "fails — 'FORWARD_FAILURE' / 'AMICI simulation failed' appears in the log; the ODE "
             "is non-integrable or extremely stiff, usually from the last structural change (a "
             "new pool with no sink, a rate at an extreme default, or writing into a symbol the "
@@ -1367,7 +1360,7 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
     with session.lock:
         fit = _run_fit(session, engine, n_starts) if do_fit else None
         # The effective parameter count at the optimum the fit just froze (see
-        # identifiability.effective_parameter_count). It reaches the harness through the stored
+        # identifiability.effective_parameter_count). It reaches a client through the stored
         # version (build_sim_payload_for_version) and no agent-facing result — docs/RATIONALE.md.
         # Computed here rather than beside the diagnosis in the session because compute_improvement
         # ranks THIS payload, and under TIC it needs the count to rank at all. None on a
@@ -1390,7 +1383,7 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
             # fitted_parameters are always LINEAR (unscaled) values. parameter_scales gives each
             # one's ESTIMATION scale (lin/log10), co-located so a reader never mistakes a linear
             # value for its log10 coordinate — e.g. a Hill coefficient fitted to 15.3 (linear) is
-            # 15.3, NOT 10**15.3. (An analyst once made exactly that error.)
+            # 15.3, NOT 10**15.3. (An agent once made exactly that error.)
             "fitted_parameters": fit["fitted"] if fit else None,
             "parameter_scales": (
                 {
@@ -1406,11 +1399,11 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
             "n_estimated": int(session.problem.n_estimated),
             "hardcoded_constants": _literals.hardcoded_constants(session.model.sbml_model),
             # ...and the count the data actually see, which is what TIC charges for. Otherwise
-            # harness-facing: fit_result_block and goodness_of_fit deliberately do not copy it.
+            # not agent-facing: fit_result_block and goodness_of_fit deliberately do not copy it.
             "k_eff": k_eff,
             # The OPTIMIZER's objective at its best start when that is available (see
             # _reconcile_objective) — the quantity actually minimised, and the one every
-            # downstream score (bic, is_new_best, the judge) must agree with.
+            # downstream score (bic, is_new_best, a client's own scoring) must agree with.
             "neg_log_likelihood": nllh,
             # What re-simulating the fitted point produced, kept alongside so a
             # disagreement between the two stays visible rather than silently resolved.
@@ -1438,7 +1431,7 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
         # The frozen record of the fit, for every later diagnosis of it (see FitRecord). A
         # simulate-only pass does NOT clear it: it produced no optimum of its own, and the record
         # a diagnosis reads is labelled STALE by comparison rather than thrown away — otherwise a
-        # restore would leave the parameter diagnosis unavailable for the rest of the run.
+        # restore would leave the parameter diagnosis unavailable for the rest of the session.
         if fit is not None:
             session.fit_record = fit["record"]
         session.logger.info(
@@ -1454,8 +1447,8 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
 def score_at_nominal(session, engine) -> dict[str, Any]:
     """Score a SHIPPED model at its table's ``nominalValue``s: compile, simulate, and report the
     estimated parameters' nominal values as the fitted point (``{id: linear value}`` + scales),
-    labelled ``scored_at_nominal``. No optimiser runs. Used to judge a problem that arrives
-    finished (the harness's ``barebones`` driver); see ``docs/RATIONALE.md``."""
+    labelled ``scored_at_nominal``. No optimiser runs. Used to score a problem that arrives
+    finished; see ``docs/RATIONALE.md``."""
     with session.lock:
         payload = fit_and_simulate(session, engine, do_fit=False, n_starts=0)
         pdf = session.problem.parameter_df
@@ -1478,7 +1471,7 @@ def ensure_simulation(session, engine) -> dict[str, Any] | None:
     already exists costs an integration (hundredths of a second) and is a legitimate on-demand read.
     Simulating one nothing has built costs a full C++ build — 16 s on the toy, and it is a build for a
     structure NOBODY FITTED on the path that reaches here without a simulation: the de-dup no-op
-    re-authors the working SBML, so the read would compile a model the run never scored, to describe
+    re-authors the working SBML, so the read would compile a model no fit ever scored, to describe
     a fit that happened on another one.
 
     Returns ``None`` (no records) in both refusing cases — an unauthored model, whose content-free
@@ -1554,14 +1547,14 @@ def parameters_at_bound(
 def _entry_inflated(entry: "dict[str, Any]") -> bool:
     """Whether ONE noise_sigma_report entry is inflated: fitted above its data-driven cap (the
     noise absorbing model misfit). Shared by the per-entry ``status`` and :func:`noise_sigma_inflated`
-    so the agent-facing status can't drift from the gate that fails the run.
+    so the agent-facing status can't drift from the adequacy gate built on it.
 
     The data-std cap is the ONLY arm, and NO ratio against a noise floor is one: #140 added such an
     arm (sigma above 1.5x the pure-error replicate floor); it is gone. Dividing two point
-    estimates discards the denominator's uncertainty, so no single threshold survives the suite —
-    blasi needs <=1.004 for any power, schwen >7.83 not to condemn its own reference. The sharp test
-    keeps each point's df instead (per-design-point lack-of-fit, in the residual-structure verdict).
-    Evidence: BENCHMARK_NOTES, "Pure-error replicate noise floor".
+    estimates discards the denominator's uncertainty, so no single threshold survives the problems
+    it was measured on — one needs <=1.004 for any power, another >7.83 not to condemn its own
+    reference. The sharp test keeps each point's df instead (per-design-point lack-of-fit, in the
+    residual-structure verdict).
     """
     # Judge the EFFECTIVE sd (noiseFormula evaluated at the fitted value) against the cap, which is
     # a fraction of the same-scale data std; `fitted` alone is dimensionally wrong for
@@ -1609,9 +1602,9 @@ def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[st
     # ESTIMATED sigmas only. A FIXED sigma is a declared constant of the problem — the agent
     # cannot inflate or collapse it — so judging its plausibility can only produce false positives,
     # and it also made `noise_sigma_estimated` (bool of this report) true for problems whose sigmas
-    # are all fixed. oliveira is the case: sd_cumulative_cases ships fixed at 1.0 against cumulative
-    # counts whose marginal std is 390 (dominated by the trend the model explains), so it read
-    # "collapsed" at 0.0026 for a noise level the benchmark declared, not one any fit chose.
+    # are all fixed. The case: a sigma shipped fixed at 1.0 against cumulative counts whose
+    # marginal std is 390 (dominated by the trend the model explains), so it read "collapsed" at
+    # 0.0026 for a noise level the problem declared, not one any fit chose.
     for pid in sorted(R.plausibility_sigma_ids(problem) & set(fitted)):
         # Fail OPEN when there is no parameter table to consult (a bare observable+measurement
         # problem, whose table is empty): unknown estimate status must not silently drop the
@@ -1648,14 +1641,13 @@ def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[st
         # other, and its sampling spread is set by this count: pooled over 100 points a fitted sigma
         # is pinned within a few percent, over 7 it can land a factor of 3 off the truth by chance
         # alone. Any reader comparing a fitted sigma against a reference needs the count to know
-        # what a discrepancy is worth (see petab_harness.runner.scoring._reference_sigma_flag), and
-        # below NOISE_SIGMA_MIN_POINTS the LOCAL verdict is withheld as degenerate too (see
-        # upper_bound_cap).
+        # what a discrepancy is worth, and below NOISE_SIGMA_MIN_POINTS the LOCAL verdict is
+        # withheld as degenerate too (see upper_bound_cap).
         #
         # Best-effort like every other field here: this is the ONE call in the loop that reaches
         # into the measurement table directly, so a problem without one (or with a shape it cannot
-        # read) must cost the count, not the report. A missing count is a supported state — the
-        # judge's band falls back to its fixed tolerance — while a raise here fails the commit.
+        # read) must cost the count, not the report. A missing count is a supported state — a
+        # reader falls back to a fixed tolerance — while a raise here fails the commit.
         #
         # ``too_few`` is tracked separately rather than derived from ``n_points``, because the two
         # consumers have to read a missing count differently.
@@ -1696,7 +1688,7 @@ def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[st
         }
         # Per-entry plausibility from the SAME predicates the top-level noise_sigma_inflated/
         # collapsed use (single source of truth, so the agent-facing status can't drift from the
-        # gate that fails the run). "unknown" when the observable's std can't be computed (data_std
+        # adequacy gate). "unknown" when the observable's std can't be computed (data_std
         # None -> nothing to assess against): report that honestly rather than a reassuring "ok".
         if too_few:
             entry["status"] = "unknown"
@@ -1714,8 +1706,8 @@ def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[st
         else:
             entry["status"] = "ok"
         # Whether this sigma's NUMBER can be compared to another model's fitted sigma at all. The
-        # data-driven verdicts above are unaffected (the gain cancels from sd/spread), but the
-        # judge's reference-sigma gate divides one model's sigma by another's, and that ratio is
+        # data-driven verdicts above are unaffected (the gain cancels from sd/spread), but a
+        # comparison against a reference divides one model's sigma by another's, and that ratio is
         # meaningless when an estimated gain shares the formula -- see reconcile.sigma_scale_coupled.
         try:
             entry["scale_coupled"] = R.sigma_scale_coupled(problem, pid)
@@ -1729,7 +1721,7 @@ def noise_sigma_inflated(report: "dict[str, Any] | None") -> bool:
     """True if any ESTIMATED noise sigma in a ``noise_sigma_report`` is fitted ABOVE its
     data-driven cap — i.e. the noise is absorbing model misfit rather than measuring it. The single
     source of truth for "this sigma is inflated", used by the session's plateau-adequacy gate AND
-    the judge's success gate so they can't drift apart. Best-effort: an empty/unreadable report or
+    a client's success gate so they can't drift apart. Best-effort: an empty/unreadable report or
     a non-numeric entry is treated as NOT inflated."""
     if not isinstance(report, dict):
         return False
@@ -1741,7 +1733,7 @@ def noise_sigma_collapsed(report: "dict[str, Any] | None") -> bool:
     ``constants.NOISE_SIGMA_COLLAPSE_FRACTION`` of its observable's own data std, i.e. the model is
     explaining nearly all the data's variability (overfitting the noise for a suspiciously good BIC).
     The other tail of :func:`noise_sigma_inflated`, and likewise the single source of truth shared by
-    the session's adequacy gate and the judge's success gate. Best-effort: an empty/unreadable report
+    the session's adequacy gate and a client's success gate. Best-effort: an empty/unreadable report
     or a non-numeric ``fraction_of_data_std`` is treated as NOT collapsed."""
     if not isinstance(report, dict):
         return False
@@ -1749,7 +1741,7 @@ def noise_sigma_collapsed(report: "dict[str, Any] | None") -> bool:
 
 
 # Agent-facing advice when the fit's noise model is implausible. Surfaced proactively on every
-# get_fit_summary (not just at a plateau stop) and echoed by the harness finish gate, so the agent
+# get_fit_summary (not just at a plateau stop) and echoed by a client's finish gate, so the agent
 # learns WHY a good-looking BIC won't be accepted and fixes the mechanism instead of the noise.
 NOISE_SIGMA_INFLATED_ADVICE = (
     "an ESTIMATED noise sigma is inflated above its data-driven cap, absorbing the model misfit — "
@@ -1787,7 +1779,7 @@ def slim_fit_payload(session, out: dict, version: int | None = None) -> dict:
     """Public entry point: slim ``out`` in place and return it, for callers that assemble a fit
     payload themselves (``session._fit_result`` and friends build it via
     :func:`fit_result_block`, which has no session and so cannot do this itself). The
-    make_changes result is the payload the lead sees MOST — slimming only get_fit_summary left
+    make_changes result is the payload the agent sees MOST — slimming only get_fit_summary left
     the dominant instance untouched, and shipped two different shapes for the same quantity.
 
     ``version`` MUST be passed by those callers. The diff needs to know which version this fit
@@ -1809,8 +1801,8 @@ def _slim_fitted_parameters(session, out: dict) -> None:
     """Replace the full fitted-values dict with a CHANGED-vs-previous-commit view, in place.
 
     The full dict is 84-118 entries on the large problems and rides on every make_changes /
-    get_fit_summary payload, each re-sent in the caller's history on every later turn — on
-    lucarelli the lead's history grew ~15.5k tokens/turn and three of nine runs died on the
+    get_fit_summary payload, each re-sent in the caller's history on every later turn — on one
+    such problem an agent's history grew ~15.5k tokens/turn and three of nine sessions died on the
     context window before their fit budget. Most entries barely move between commits; the
     caller acts on the ones that DID. Full values stay one call away (`get_parameters` serves
     nominalValue = the last fit) and the ARCHIVE keeps the complete dict per version
@@ -1896,7 +1888,7 @@ def fit_summary(session, engine) -> dict[str, Any]:
     linear value is never misread as a log10 one.
 
     Both adequacy verdicts ride on this read: it is the score read for every caller that did not
-    run the fit — the analysts, the harness finish gate, the final scoring.
+    run the fit — another agent, a client's finish gate, a final scoring.
     """
     sim = ensure_simulation(session, engine) or {}
     out = {
@@ -1937,7 +1929,7 @@ def fit_summary(session, engine) -> dict[str, Any]:
     out["noise_sigma_report"] = _report
     # Proactive plausibility verdict on EVERY read (not just at a plateau stop): a good BIC bought
     # with an inflated/collapsed estimated sigma is not real adequacy and will not be accepted as
-    # finished. Surfaced here so the agent can act on it, and read by the harness finish gate.
+    # finished. Surfaced here so the agent can act on it, and read by a client's finish gate.
     _inflated = noise_sigma_inflated(_report)
     _collapsed = noise_sigma_collapsed(_report)
     out["noise_sigma_inflated"] = _inflated
@@ -1951,8 +1943,8 @@ def fit_summary(session, engine) -> dict[str, Any]:
     out["residual_structure"] = residual_structure_rollup(session, sims=None)
     # The PARAMETERISATION counterpart, on the same reasoning: the cheapest ties BIC would pay for
     # (see :func:`identifiability.merge_hints`). They ride on the fit RESULT, which only the caller
-    # that RAN the fit holds — so a caller reading the score afterwards (the analysts, the harness
-    # finish gate, the final scoring) had no way to see them. Re-serving the stored hints costs
+    # that RAN the fit holds — so a caller reading the score afterwards (another agent, a client's
+    # finish gate, a final scoring) had no way to see them. Re-serving the stored hints costs
     # nothing: `stored_merge_hints` returns them only while the working problem still IS the one that
     # priced them, and None otherwise. ABSENT when there are none, like `noise_sigma_advice`.
     from .identifiability import stored_merge_hints
@@ -1960,20 +1952,20 @@ def fit_summary(session, engine) -> dict[str, Any]:
     _hints = stored_merge_hints(session)
     if _hints:
         out["merge_hints"] = _hints
-    # The run's OUTSTANDING invalid "does adding structure help?" experiment, if any (see
+    # The session's OUTSTANDING invalid "does adding structure help?" experiment, if any (see
     # :mod:`nesting`): a commit that gained parameters yet fit WORSE than its parent, which for a
-    # nested model is impossible. Sticky across the rollback that usually follows, so the harness
-    # finish gate can surface it at the ARM step and a finish cannot rest on that comparison.
+    # nested model is impossible. Sticky across the rollback that usually follows, so a client's
+    # finish gate can surface it and a finish cannot rest on that comparison.
     # ABSENT when there is none — an omitted key must read as "nothing outstanding".
     _invalid = session.invalid_comparison
     if _invalid:
         out["invalid_comparison"] = _invalid
     # LAST, after every field derived FROM the fitted values has been computed. Slimming earlier
     # silently disabled the noise-sigma verdict: noise_sigma_report(problem, None) returns {},
-    # which zeroes noise_sigma_inflated/collapsed — the finish gate's gamed-noise refusal and the
-    # judge's sigma-implausibility check both read exactly those keys, so a run that bought a good
-    # BIC with an inflated sigma would have scored success. A payload diet must be the last step,
-    # never an input to one.
+    # which zeroes noise_sigma_inflated/collapsed — a finish gate's gamed-noise refusal and a
+    # scorer's sigma-implausibility check both read exactly those keys, so a session that bought a
+    # good BIC with an inflated sigma would have scored success. A payload diet must be the last
+    # step, never an input to one.
     _slim_fitted_parameters(session, out)
     return out
 
@@ -1984,7 +1976,7 @@ def compute_improvement(
     objective_before: float | None = None,
     fitsim: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Improvement metrics for a fit, ranking it against the best model so far **by the run's
+    """Improvement metrics for a fit, ranking it against the best model so far **by the session's
     complexity criterion** (``bic`` unless configured otherwise — see :mod:`criteria`).
 
     ``is_new_best`` tracks ``criterion_value`` — the same complexity-penalised score the
@@ -2004,7 +1996,7 @@ def compute_improvement(
 
     The returned block carries the ranked pair ``criterion``/``criterion_value`` beside the
     canonical ``bic``, and is stamped into the fit event and the version meta — which is what
-    lets a resumed run and the de-dup registry recover the score. Only those three: this block
+    lets a resumed session and the de-dup registry recover the score. Only those three: this block
     rides on every fit result and is re-sent in the agent's history each turn, and the full
     criterion table is already on the fit block (and in the version meta) one level up. It also
     states its own gate: past the first fit, ``is_new_best`` is ``improvement_vs_best_prior``
@@ -2093,10 +2085,10 @@ def goodness_of_fit(
       (Takeuchi: ``2*k_eff + 2*nll``, charging the EFFECTIVE count ``k_eff`` the fit reports
       rather than ``k``) — see :mod:`criteria`. Lower is better; each charges for every free
       parameter, so an edit that adds a parameter for a marginal nll drop scores WORSE. All of
-      them ride on every result at their textbook weight, whichever one the run ranks by, so a
+      them ride on every result at their textbook weight, whichever one the session ranks by, so a
       fit can be re-read under a criterion it was not run with. ``k_eff`` itself is an INPUT
-      here and not an output: it is for the harness, and is on no result the agent reads.
-    * ``criterion`` names the one the run ACTUALLY ranks by — the session's
+      here and not an output: it is for a client's own scoring, and is on no result the agent reads.
+    * ``criterion`` names the one ACTUALLY ranked by — the session's
       (``PetabSession.criterion``, which every session caller passes; plain BIC when a bare score
       is read outside a session) — and ``criterion_value`` is that score. Every gate in the loop
       — ``is_new_best``, the best-score checkpoint, the plateau stop, the de-dup registry — reads
@@ -2129,7 +2121,7 @@ def goodness_of_fit(
     # Non-finite inputs are MISSING scores, not scores. A NaN nll would otherwise produce
     # a score of k*ln(n) + 2*NaN = NaN, which is a float and passes every `is not None` guard
     # downstream — and because NaN compares False against everything, a NaN adopted as the
-    # best-score checkpoint locks out every subsequent fit for the rest of the run (the
+    # best-score checkpoint locks out every subsequent fit for the rest of the session (the
     # `is_new_best` test can never fire again). Coercing to None here is the single upstream
     # chokepoint that keeps a failed evaluation from masquerading as a real score.
     nll = _flt(nll)
@@ -2238,7 +2230,7 @@ def fit_result_block(
         "n_missing_simulations": fitsim.get("n_missing_simulations"),
         "objective_note": fitsim.get("objective_note"),
         # Surface k next to the scores so the parameter penalty in bic = k*ln(n) + 2*nll (or
-        # whichever criterion the run ranks by) is legible — adding a free parameter must earn
+        # whichever criterion the session ranks by) is legible — adding a free parameter must earn
         # its keep — and its two addends, so a k that exceeds n_estimated is explained by the
         # literals listed rather than read as a bug. The list rides only when non-empty: it is
         # re-sent in the caller's history every later turn.
@@ -2277,8 +2269,8 @@ def fit_result_block(
     # when there are none — like `noise_sigma_advice` and `nesting_advisory`: this rides on every fit
     # and is re-sent in the agent's history each turn (PR #23), so it is a few lines only when there
     # is something to act on. Only a real fit carries them: a restore and a de-dup no-op ran no
-    # optimizer, so they have no optimum to price a tie at, and the finish gate names any tie still
-    # outstanding at the ARM step (petab_harness.prompts.FINISH_ARMED_MERGE_TMPL) instead.
+    # optimizer, so they have no optimum to price a tie at, and a finish gate reading the score
+    # (fit_summary's `merge_hints`) names any tie still outstanding instead.
     hints = fitsim.get("merge_hints")
     if hints:
         block["merge_hints"] = hints
@@ -2299,8 +2291,8 @@ def noise_sigma_block(
 
     Shared by :func:`fit_result_block` and the ``fit`` no-op deliberately: because the advice key
     is ABSENT when the noise model is plausible, a result that omits these keys entirely reads to
-    an agent as "plausible". Any fit-bearing shape must therefore carry the whole verdict or none
-    of it, and the lead has no ``get_fit_summary`` to fall back on. ``report`` short-circuits the
+    an agent as "plausible". Any fit-bearing shape must therefore carry the whole verdict or none of
+    it, and the agent may have no ``get_fit_summary`` to fall back on. ``report`` short-circuits the
     computation for a caller that already has one.
     """
     if report is None:
@@ -2338,25 +2330,26 @@ def build_sim_payload_for_version(payload: dict[str, Any] | None) -> dict[str, A
         "n_missing_simulations": payload.get("n_missing_simulations"),
         # The effective parameter count TIC charges for. Persisted like the diagnosis below: it
         # is a statistic of the built objective at the optimum, which a later process (a resume, a
-        # restore) cannot reproduce without a build. This blob is where the harness judge reads it.
+        # restore) cannot reproduce without a build. This blob is where a client's scoring reads it.
         "k_eff": payload.get("k_eff"),
         "fitted_parameters": payload.get("fitted_parameters"),
         "records": payload.get("records"),
     }
     # The PARAMETER-GEOMETRY verdict of this fit (see identifiability.fit_diagnosis_block). Persisted
     # because it cannot be recomputed later without the built problem the optimizer used: a process
-    # that RESUMED the run has no fit record, and re-deriving one there names an AMICI output folder
-    # from live state — a full C++ build. The residual verdict beside it is recomputed instead, from
-    # the records right here. Omitted when absent, so a key present always means a verdict.
+    # that RESUMED the session has no fit record, and re-deriving one there names an AMICI output
+    # folder from live state — a full C++ build. The residual verdict beside it is recomputed
+    # instead, from the records right here. Omitted when absent, so a key present always means a
+    # verdict.
     block = payload.get(STORED_DIAGNOSIS_KEY)
     if block:
         out[STORED_DIAGNOSIS_KEY] = block
     # The NOISE-model report of this fit: which sigmas were estimated, what they came out at, and
     # each one's data-driven cap and fraction of its observable's std. Persisted for the same reason
     # as the diagnosis above — a later reader cannot reproduce it. Recomputing needs the fitted
-    # values AND the per-observable data spread of the fit that produced them, and the judge, which
-    # is the reader that matters, would otherwise have to RESTORE each version to see it: N restores
-    # that mutate the working state and write N entries into the run's own provenance, to answer a
+    # values AND the per-observable data spread of the fit that produced them, and a scorer reading
+    # the stored versions would otherwise have to RESTORE each version to see it: N restores that
+    # mutate the working state and write N entries into the session's own provenance, to answer a
     # question the fit already answered. Small (a handful of numbers per sigma) and omitted when
     # absent, so a key present always means a report.
     report = payload.get("noise_sigma_report")

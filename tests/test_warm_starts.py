@@ -326,7 +326,7 @@ def test_a_previous_fit_without_scales_falls_back_to_jitter():
 
 
 def test_no_previous_fit_still_warm_starts_from_the_nominal_point():
-    # The run's FIRST fit has no previous optima; the nominal point plus jitter is still better
+    # The session's FIRST fit has no previous optima; the nominal point plus jitter is still better
     # than nothing, and keeps the warm/fresh split intact.
     g = fitting.warm_start_guesses(_nested_problem(), _nested_pdf(), 8, optimization=None)
     assert g.shape == (4, 3)

@@ -1,17 +1,17 @@
 """The replicate lack-of-fit arm end to end: the PEtab-shaped plumbing, the assembler, and the two
-MEASURED blasi verdicts it exists to separate.
+MEASURED verdicts it exists to separate.
 
-The blasi fixture below is not synthetic. ``POINTS`` are the exact per-design-point replicate
-statistics of the shipped Blasi_CellSystems2016 tables (252 measurements, 15 steady-state design
+The steady-state fixture below is not synthetic. ``POINTS`` are the exact per-design-point
+replicate statistics of a published problem's tables (252 measurements, 15 steady-state design
 points, 12-18 replicates each) on the coordinate the noise is additive on (natural log), and the two
-prediction vectors are the analytic steady states of (a) the true benchmark model at its ML rates and
-(b) the k=7 model a luna-pro run FINISHED EARLY on, +194 delta_BIC from the truth. Every existing gate
-passed that run: its chi2 GoF p-value was 0.366 (structurally blind — with one shared sigma at its ML
+prediction vectors are the analytic steady states of (a) the true model at its ML rates and (b) the
+k=7 model one session FINISHED EARLY on, +194 delta_BIC from the truth. Every existing gate passed
+that fit: its chi2 GoF p-value was 0.366 (structurally blind — with one shared sigma at its ML
 value chi2 == n identically, so the p is a function of (n, k) alone and is 252 for BOTH models), its
 fitted/pure-error sigma ratio was 1.4759 against a 1.5 threshold, and the sign/runs tests were
 degenerate (one condition at t = inf, so every per-observable series has length 1: n = 1, p = 1.0,
 runs test undefined). This arm is the axis that does separate them — 5.3x on max|z| — and these two
-tests pin BOTH sides of it, since an arm that only flagged would deadlock the example.
+tests pin BOTH sides of it, since an arm that only flagged would deadlock the problem.
 """
 
 from __future__ import annotations
@@ -28,78 +28,79 @@ from petab_mcp import residual_tests as rt
 
 # (observable_id, n_i, ybar_i, s_i) — mean and sample sd of ln(measurement) per design point.
 POINTS = (
-    ("observable_0ac", 18, -0.311863269728, 0.036101003463),
-    ("observable_4ac", 18, -5.744799819267, 0.372613753422),
-    ("observable_k12", 18, -2.611454859236, 0.112692916352),
-    ("observable_k12k16", 18, -4.827318442081, 0.152629120103),
-    ("observable_k16", 18, -3.391665176881, 0.089759344772),
-    ("observable_k5", 18, -3.365558081462, 0.090215958257),
-    ("observable_k5k12", 12, -3.051510292724, 0.190013889404),
-    ("observable_k5k12k16", 18, -6.021776754099, 0.396673194850),
-    ("observable_k5k8", 18, -5.123188389731, 0.189632683880),
-    ("observable_k5k8k12", 18, -5.064471621570, 0.217571224812),
-    ("observable_k5k8k16", 18, -6.664247257430, 0.249307902193),
-    ("observable_k8", 18, -3.459907704182, 0.158533682324),
-    ("observable_k8k12", 12, -4.872181822718, 0.319077430247),
-    ("observable_k8k12k16", 18, -5.695979797840, 0.306448993080),
-    ("observable_k8k16", 12, -5.486528063759, 0.588239737943),
+    ("obs_01", 18, -0.311863269728, 0.036101003463),
+    ("obs_02", 18, -5.744799819267, 0.372613753422),
+    ("obs_03", 18, -2.611454859236, 0.112692916352),
+    ("obs_04", 18, -4.827318442081, 0.152629120103),
+    ("obs_05", 18, -3.391665176881, 0.089759344772),
+    ("obs_06", 18, -3.365558081462, 0.090215958257),
+    ("obs_07", 12, -3.051510292724, 0.190013889404),
+    ("obs_08", 18, -6.021776754099, 0.396673194850),
+    ("obs_09", 18, -5.123188389731, 0.189632683880),
+    ("obs_10", 18, -5.064471621570, 0.217571224812),
+    ("obs_11", 18, -6.664247257430, 0.249307902193),
+    ("obs_12", 18, -3.459907704182, 0.158533682324),
+    ("obs_13", 12, -4.872181822718, 0.319077430247),
+    ("obs_14", 18, -5.695979797840, 0.306448993080),
+    ("obs_15", 12, -5.486528063759, 0.588239737943),
 )
 
-# ln f_i of the TRUE model at its ML rates (analytic steady state of the 16-state acetylation
-# lattice; the fit it comes from reproduces reference.json's sigma to 4e-6 relative).
+# ln f_i of the TRUE model at its ML rates (analytic steady state of the 16-state lattice; the fit
+# it comes from reproduces the reference sigma to 4e-6 relative).
 TRUTH_LOG_PREDICTIONS = {
-    "observable_0ac": -0.304128311163,
-    "observable_4ac": -5.749325368864,
-    "observable_k12": -2.701577549184,
-    "observable_k12k16": -4.799570332862,
-    "observable_k16": -3.326784579852,
-    "observable_k5": -3.398962034961,
-    "observable_k5k12": -3.037730675204,
-    "observable_k5k12k16": -6.054943509061,
-    "observable_k5k8": -5.173557290812,
-    "observable_k5k8k12": -5.049248235691,
-    "observable_k5k8k16": -6.614709872525,
-    "observable_k8": -3.459066210193,
-    "observable_k8k12": -4.871116165067,
-    "observable_k8k12k16": -5.696037699444,
-    "observable_k8k16": -5.446641319354,
+    "obs_01": -0.304128311163,
+    "obs_02": -5.749325368864,
+    "obs_03": -2.701577549184,
+    "obs_04": -4.799570332862,
+    "obs_05": -3.326784579852,
+    "obs_06": -3.398962034961,
+    "obs_07": -3.037730675204,
+    "obs_08": -6.054943509061,
+    "obs_09": -5.173557290812,
+    "obs_10": -5.049248235691,
+    "obs_11": -6.614709872525,
+    "obs_12": -3.459066210193,
+    "obs_13": -4.871116165067,
+    "obs_14": -5.696037699444,
+    "obs_15": -5.446641319354,
 }
 
-# ln f_i of the run's 6-structural-parameter model (from its own committed simulations, v5).
-RUN_LOG_PREDICTIONS = {
-    "observable_0ac": -0.420760661015,
-    "observable_4ac": -5.598210361989,
-    "observable_k12": -2.251076300578,
-    "observable_k12k16": -5.043182772857,
-    "observable_k16": -3.145348828195,
-    "observable_k5": -3.077413116003,
-    "observable_k5k12": -3.121376070903,
-    "observable_k5k12k16": -5.687968786988,
-    "observable_k5k8": -5.351771717759,
-    "observable_k5k8k12": -5.371534277646,
-    "observable_k5k8k16": -6.818728908224,
-    "observable_k8": -2.788212473906,
-    "observable_k8k12": -4.667378149055,
-    "observable_k8k12k16": -5.857326402023,
-    "observable_k8k16": -5.602262443320,
+# ln f_i of the early-finish fit's 6-structural-parameter model (from its own committed
+# simulations, v5).
+EARLY_LOG_PREDICTIONS = {
+    "obs_01": -0.420760661015,
+    "obs_02": -5.598210361989,
+    "obs_03": -2.251076300578,
+    "obs_04": -5.043182772857,
+    "obs_05": -3.145348828195,
+    "obs_06": -3.077413116003,
+    "obs_07": -3.121376070903,
+    "obs_08": -5.687968786988,
+    "obs_09": -5.351771717759,
+    "obs_10": -5.371534277646,
+    "obs_11": -6.818728908224,
+    "obs_12": -2.788212473906,
+    "obs_13": -4.667378149055,
+    "obs_14": -5.857326402023,
+    "obs_15": -5.602262443320,
 }
 
 
-def _blasi_points(predictions):
+def _measured_points(predictions):
     return [
         {"label": obs, "n": n, "ybar": ybar, "s": s, "prediction": predictions[obs]}
         for obs, n, ybar, s in POINTS
     ]
 
 
-def test_blasi_true_model_is_not_flagged():
+def test_steady_state_true_model_is_not_flagged():
     """The truth's worst design point sits 3.393 SE out (Holm p 0.0519) — INSIDE alpha 0.01, with
     ~5x margin. This is the side that matters most: at alpha 0.05 the truth lands at 0.0519, a coin
-    flip that would deadlock the example about half the time.
+    flip that would deadlock the problem about half the time.
 
     ...and at its 9 structural parameters over 15 points the pass is a POWERED one (df 6), which is
     the whole-problem judgement, so it is asserted where it is made — on the merge."""
-    out = rt.replicate_lack_of_fit(_blasi_points(TRUTH_LOG_PREDICTIONS))
+    out = rt.replicate_lack_of_fit(_measured_points(TRUTH_LOG_PREDICTIONS))
     assert out["available"] is True
     assert out["status"] == "pass" and out["flagged"] == []
     assert out["n_points"] == 15
@@ -110,60 +111,62 @@ def test_blasi_true_model_is_not_flagged():
     assert merged["lof_df"] == 6 and "weak" not in merged, merged
 
 
-def test_blasi_early_finish_run_is_flagged():
-    """The run every other gate passed: worst point 17.976 SE out at observable_k8, Holm p 2.55e-11
+def test_steady_state_early_finish_is_flagged():
+    """The fit every other gate passed: worst point 17.976 SE out at obs_12, Holm p 2.55e-11
     — nine orders of magnitude past alpha, and the flagged points NAME the states whose structure is
     missing."""
-    out = rt.replicate_lack_of_fit(_blasi_points(RUN_LOG_PREDICTIONS))
+    out = rt.replicate_lack_of_fit(_measured_points(EARLY_LOG_PREDICTIONS))
     assert out["available"] is True and out["status"] == "flagged"
     assert out["max_abs_z"] == pytest.approx(17.976, abs=5e-3)
     assert out["min_p_holm"] == pytest.approx(2.55e-11, rel=1e-2)
-    assert out["points"][0]["label"] == "observable_k8"
+    assert out["points"][0]["label"] == "obs_12"
     assert out["points"][0]["z"] == pytest.approx(-17.976, abs=5e-3)
     # the reported points are the worst FIVE, in the measured order
     assert [p["label"] for p in out["points"]] == [
-        "observable_k8",
-        "observable_k12",
-        "observable_k5",
-        "observable_0ac",
-        "observable_k16",
+        "obs_12",
+        "obs_03",
+        "obs_06",
+        "obs_01",
+        "obs_05",
     ]
     assert set(out["flagged"]) >= {
-        "observable_k8",
-        "observable_k12",
-        "observable_k5",
-        "observable_0ac",
-        "observable_k16",
+        "obs_12",
+        "obs_03",
+        "obs_06",
+        "obs_01",
+        "obs_05",
     }
 
 
-def test_blasi_separation_is_on_this_axis_and_not_the_sigma_ratio():
+def test_separation_is_on_this_axis_and_not_the_sigma_ratio():
     """5.3x on max|z|, against 1.50x on the fitted/pure-error sigma axis the existing gate uses (the
-    run sat at 1.4759 against a 1.5 threshold — it missed by 0.0024). Pinning the ratio here is what
-    keeps a future retuning from quietly collapsing the separation."""
-    truth = rt.replicate_lack_of_fit(_blasi_points(TRUTH_LOG_PREDICTIONS))
-    run = rt.replicate_lack_of_fit(_blasi_points(RUN_LOG_PREDICTIONS))
-    assert run["max_abs_z"] / truth["max_abs_z"] == pytest.approx(5.30, abs=0.05)
+    early-finish fit sat at 1.4759 against a 1.5 threshold — it missed by 0.0024). Pinning the ratio
+    here is what keeps a future retuning from quietly collapsing the separation."""
+    truth = rt.replicate_lack_of_fit(_measured_points(TRUTH_LOG_PREDICTIONS))
+    early = rt.replicate_lack_of_fit(_measured_points(EARLY_LOG_PREDICTIONS))
+    assert early["max_abs_z"] / truth["max_abs_z"] == pytest.approx(5.30, abs=0.05)
 
 
-def test_blasi_z_is_exactly_invariant_to_the_sigma_convention():
-    """The run's fitted-over-pure-error ratio moves between the ML (1.4759) and RSS/(n-k) (1.4968)
-    conventions — straddling the 1.5 threshold. z_i never touches the model sigma, so it cannot."""
-    run = _blasi_points(RUN_LOG_PREDICTIONS)
-    assert rt.replicate_lack_of_fit(run) == rt.replicate_lack_of_fit(run)
-    arm = rt.replicate_lack_of_fit(run)
+def test_z_is_exactly_invariant_to_the_sigma_convention():
+    """The early-finish fit's fitted-over-pure-error ratio moves between the ML (1.4759) and
+    RSS/(n-k) (1.4968) conventions — straddling the 1.5 threshold. z_i never touches the model
+    sigma, so it cannot."""
+    early = _measured_points(EARLY_LOG_PREDICTIONS)
+    assert rt.replicate_lack_of_fit(early) == rt.replicate_lack_of_fit(early)
+    arm = rt.replicate_lack_of_fit(early)
     assert (
         data_access._merge_lof_verdicts([arm], {}, n_structural=7)["max_abs_z"]
         == data_access._merge_lof_verdicts([arm], {}, n_structural=6)["max_abs_z"]
     )
 
 
-def test_blasi_holm_does_not_use_a_lack_of_fit_f_statistic():
-    """Not an F on m - p degrees of freedom. That rule MANUFACTURES a rejection of blasi's own true
-    model (sum z_i^2 = 27.12 over m - p = 15 - 8 = 7 gives p = 0.0016) because the shared-sigma fit's
-    projection is OBLIQUE to this statistic's weighting and removes almost no df (exact E[T|H0] =
-    13.60, not 7). The per-point Holm rule needs no df bookkeeping, and it passes the truth."""
-    truth = _blasi_points(TRUTH_LOG_PREDICTIONS)
+def test_holm_does_not_use_a_lack_of_fit_f_statistic():
+    """Not an F on m - p degrees of freedom. That rule MANUFACTURES a rejection of the problem's own
+    true model (sum z_i^2 = 27.12 over m - p = 15 - 8 = 7 gives p = 0.0016) because the shared-sigma
+    fit's projection is OBLIQUE to this statistic's weighting and removes almost no df (exact
+    E[T|H0] = 13.60, not 7). The per-point Holm rule needs no df bookkeeping, and it passes the
+    truth."""
+    truth = _measured_points(TRUTH_LOG_PREDICTIONS)
     total = sum(((p["ybar"] - p["prediction"]) / (p["s"] / math.sqrt(p["n"]))) ** 2 for p in truth)
     assert total == pytest.approx(27.12, abs=0.05)  # the statistic an F test would divide
     assert rt.replicate_lack_of_fit(truth)["status"] == "pass"
@@ -190,7 +193,7 @@ def _replicated_records(session, deviation: float, n_points: int = 3):
     each), with the model off by ``deviation`` at the last one. The toy problem estimates 2
     structural parameters, so n_points >= 5 is what leaves the arm enough lack-of-fit degrees of
     freedom (REPLICATE_LOF_MIN_LOF_DF) to report a pass as POWERED rather than weak — the default 3
-    is the blasi k=14 shape in miniature, df 1. Rewrites BOTH the measurement table (which
+    is the k=14-over-15-points shape in miniature, df 1. Rewrites BOTH the measurement table (which
     reconcile's pure-error grouping reads) and the simulation records, so the two agree the way a
     real commit's do."""
     import pandas as pd
@@ -220,7 +223,7 @@ def _replicated_records(session, deviation: float, n_points: int = 3):
 def test_rollup_flags_the_observable_from_the_replicate_arm(session):
     """The arm sets the flag through the EXISTING consumer: `flagged_observables` is what the
     session's plateau-adequacy gate reads (PR #111), so a lack-of-fit finding blocks an early
-    plateau stop with no new gate and no new prompt contract."""
+    plateau stop with no new gate and no new instruction to the agent."""
     _replicated_records(session, deviation=0.5)
     out = data_access.residual_structure_rollup(session)
     lof = out["replicate_lack_of_fit"]
@@ -276,10 +279,10 @@ def test_rollup_verdict_shape_is_the_same_on_every_path(session):
     The optional ones are omitted when they have nothing to say, and that is ONE policy for the whole
     verdict (`data_access._LOF_OMIT_WHEN_EMPTY_KEYS`) rather than a judgement per key: `advice` never
     rides on a fit at all, `untested_status` only when a sibling family really went untested, and
-    `lof_df`/`weak` only where the arm ran with a structural count to compare against. 13 of the 16
-    examples cannot run this arm, so a null on each of those is a per-fit tax forever (PR #23). The
-    STATISTIC keeps every key on every path — that shape is the assembler's contract, and rebuilding
-    it from a partial key list is how `weak` was dropped in the first place."""
+    `lof_df`/`weak` only where the arm ran with a structural count to compare against. 13 of 16
+    problems measured cannot run this arm, so a null on each of those is a per-fit tax forever
+    (PR #23). The STATISTIC keeps every key on every path — that shape is the assembler's contract,
+    and rebuilding it from a partial key list is how `weak` was dropped in the first place."""
     core = {
         "available",
         "status",
@@ -413,8 +416,8 @@ def test_rollup_does_not_claim_sign_randomness_when_the_sign_tests_could_not_run
 
 def test_low_power_survives_for_an_observable_the_replicate_arm_never_covered(session):
     """A powered arm is a genuine pass only WHERE IT RAN. Clearing `low_power` globally asserted
-    sign-randomness for observables with no replicates at all, and that over-claim reaches
-    result.json (runner.scoring._residual_structure_fields) and the armed finish gate.
+    sign-randomness for observables with no replicates at all, and that over-claim reaches a
+    client's scoring and its finish gate.
 
     `n_structural=0` here (a model with nothing estimated but its sigmas) so that 3 points make a
     POWERED arm — the coverage question this test asks is about WHICH observables, not about how many
@@ -431,7 +434,8 @@ def test_low_power_survives_for_an_observable_the_replicate_arm_never_covered(se
     assert out["low_power"] is True  # obs_A has no replicates; nothing tested it
     # ...and the prose NAMES it, because the same summary reports a genuine pass for the observable
     # the arm covered: a blanket "the tests are UNDERPOWERED at this sample size" beside "this arm IS
-    # powered, so that is a pass" is a contradiction the agent cannot resolve (armistead, every fit).
+    # powered, so that is a pass" is a contradiction the agent cannot resolve (measured: every fit
+    # of one problem).
     assert "UNDERPOWERED for obs_A" in out["summary"]
     assert "obs_B" not in out["summary"].split("replicate lack-of-fit")[0]
     assert "this arm IS powered" in out["summary"]
@@ -442,9 +446,10 @@ def test_low_power_survives_for_an_observable_the_replicate_arm_never_covered(se
 
 
 def test_merge_does_not_hide_a_family_the_arm_could_not_test():
-    """schwen's shape next to blasi's: 126 replicated points with one df each (untestable) beside 3
-    thick ones that pass. Keeping only the AVAILABLE arms dropped the other's status entirely and
-    emitted "this arm IS powered, so that is a pass" with 126 of 129 points never looked at."""
+    """Two measured shapes side by side: 126 replicated points with one df each (untestable)
+    beside 3 thick ones that pass. Keeping only the AVAILABLE arms dropped the other's status
+    entirely and emitted "this arm IS powered, so that is a pass" with 126 of 129 points never
+    looked at."""
     thin = rt.replicate_lack_of_fit([_point(f"thin{i}", 30.0, n=2) for i in range(126)])
     thick_points = [_point(f"obs_B[c0, t={t}]", 0.3) for t in (0.0, 1.0, 2.0)]
     thick = rt.replicate_lack_of_fit(thick_points)
@@ -475,7 +480,7 @@ def test_merge_keeps_a_flag_whose_point_has_no_observable_id():
 
 def test_the_summary_speaks_when_the_arm_could_not_run(session):
     """Silence is for the two unremarkable, PERMANENT cases — no repeated design points at all, and
-    no noise parameter to scope the arm by (13 of the 16 examples between them). The catch-all
+    no noise parameter to scope the arm by (13 of 16 problems measured, between them). The catch-all
     `unavailable` is a real failure ON a problem with replicates (the sigma's observables mix lin and
     log, a gain will not resolve, or no prediction is constant across a point's replicates) and was
     silent too, so the agent could not tell it apart from a pass."""
@@ -490,10 +495,10 @@ def test_the_summary_speaks_when_the_arm_could_not_run(session):
 
 
 def test_a_problem_whose_noise_is_fixed_data_says_nothing_every_fit(session):
-    """bruno, crauste, fujita and rahman: the noiseFormula is a `noiseParameter1_*` placeholder and
-    the measurement table's noiseParameters cells hold NUMBERS, so no noise parameter survives the
-    parameter-table intersection and the arm cannot be scoped at all. Measured on the shipped
-    problems, those four also have ZERO replicated design points. Reporting the catch-all there put
+    """Four measured problems: the noiseFormula is a `noiseParameter1_*` placeholder and the
+    measurement table's noiseParameters cells hold NUMBERS, so no noise parameter survives the
+    parameter-table intersection and the arm cannot be scoped at all. Measured, those four also
+    have ZERO replicated design points. Reporting the catch-all there put
     170 chars into the summary on EVERY fit, forever, for a condition no re-author can change — the
     exact per-fit tax PR #23 cut. Its own status, and silent."""
     import pandas as pd
@@ -572,7 +577,7 @@ def test_the_line_reports_a_flag_from_the_payload_that_rides_on_a_fit():
 
 def _split_sigma_records(session, deviation: float):
     """Two noise parameters governing different ROWS of ONE observable, through per-row
-    `noiseParameters` overrides (fiedler's per-gel shape): sigma_lo owns t in {0,1,2}, sigma_hi owns
+    `noiseParameters` overrides (a per-gel shape): sigma_lo owns t in {0,1,2}, sigma_hi owns
     t in {3,4,5}, four replicates each. The model is off by ``deviation`` at t=5 — one of sigma_hi's
     points, and none of sigma_lo's."""
     import pandas as pd
@@ -665,10 +670,10 @@ def test_labels_are_unique_across_noise_families(session):
 
 
 def test_design_points_match_across_a_steady_state_time(session):
-    """blasi's whole family sits at ``time = inf``, which the simulation records store as None (they
-    keep only finite floats). Scoping the records to the sigma's design points therefore has to
-    normalise the two sides to the same key, or blasi's 15 points would match nothing and the arm
-    would go dark on the very example it was built for."""
+    """A steady-state family sits at ``time = inf``, which the simulation records store as None
+    (they keep only finite floats). Scoping the records to the sigma's design points therefore has
+    to normalise the two sides to the same key, or the 15 points of the steady-state problem above
+    would match nothing and the arm would go dark on the very problem it was built for."""
     import pandas as pd
     from petab_mcp import reconcile as R
 
@@ -689,7 +694,7 @@ def test_design_points_match_across_a_steady_state_time(session):
 
 
 def test_structural_count_includes_a_dual_role_scaling_noise_symbol(session):
-    """fiedler's eight per-gel `s_pMek_*` factors sit in BOTH noiseParameters and
+    """Per-gel scale factors (eight on one measured problem) can sit in BOTH noiseParameters and
     observableParameters. `plausibility_sigma_ids` keeps them out of the noise families (scored as an
     sd they read 900x inflated), so the STRUCTURAL count must not exclude them as well — they move
     the prediction, which is exactly the flexibility the vacuous guard weighs. Excluded from both
@@ -726,7 +731,7 @@ def test_structural_count_includes_a_dual_role_scaling_noise_symbol(session):
 
 def test_the_pooled_noise_floor_ignores_a_design_point_with_a_missing_key(session):
     """`dropna=False` is needed only for the SIMULATION records, whose `time` stores finite floats
-    only (blasi's steady-state t = inf arrives as None). On the MEASUREMENT table a blank
+    only (a steady-state t = inf arrives as None). On the MEASUREMENT table a blank
     observable/time cell is missing data: pooling every such row into ONE NaN-keyed group counts
     its between-point spread as within-point noise, silently moving the floor the 1.5 inflation
     gate reads. (A blank experiment is not missing: it is the experiment-less design.)"""
@@ -781,7 +786,7 @@ def test_reconcile_exposes_per_point_pure_error_and_pools_to_the_same_floor(sess
     assert [p["ybar"] for p in with_pred] == pytest.approx([p["ybar"] for p in points])
 
 
-# -- the df guard (the 2026-08-02 blasi k=14 run) --------------------------
+# -- the df guard (a k=14 fit over 15 points) -------------------------------
 def _flat_points(m: int, z: float = 0.1):
     """``m`` replicated design points whose predictions all sit ``z`` SE from their own mean."""
     return [
@@ -805,9 +810,10 @@ def _merged_flat(m: int, n_structural, *, min_lof_df=None, families: int = 1, z:
 def test_a_pass_needs_lack_of_fit_degrees_of_freedom():
     """14 structural parameters over 15 points is not a pass, it is saturation.
 
-    Refusing only at EXACT saturation let df = 1 through, and that pass is what the finish gate
-    showed the lead as "this arm IS powered" on the k=14 blasi run — a model whose 14 free
-    parameters had placed every prediction within 0.107 SE of its replicate mean by construction.
+    Refusing only at EXACT saturation let df = 1 through, and that pass is what a client's finish
+    gate showed the agent as "this arm IS powered" on a k=14 fit of the steady-state problem — a
+    model whose 14 free parameters had placed every prediction within 0.107 SE of its replicate
+    mean by construction.
     """
     v = _merged_flat(15, 14)  # df = 1: evidence, but one direction
     assert v["status"] == "pass" and v["weak"] is True and v["lof_df"] == 1, v
@@ -837,8 +843,9 @@ def test_a_flag_stands_at_any_lack_of_fit_df():
 
 
 def test_the_df_guard_leaves_the_cases_that_motivated_the_arm_testable():
-    """blasi's truth (8-9 structural over 15 points, df 6-7) and the under-parameterised run that
-    motivated the arm (6-7, df 8-9) must both keep a real, un-weak test."""
+    """The steady-state problem's truth (8-9 structural over 15 points, df 6-7) and the
+    under-parameterised fit that motivated the arm (6-7, df 8-9) must both keep a real, un-weak
+    test."""
     for n_structural in (9, 8, 7, 6):
         v = _merged_flat(15, n_structural)
         assert v["available"] is True and "weak" not in v, (n_structural, v)
@@ -848,8 +855,8 @@ def test_an_uncountable_structural_count_is_not_a_powered_pass():
     """`_n_estimated_structural` returns None when the parameter table cannot answer, and an
     UNCOUNTED direction is not a spare one. The df keys are then absent — but absent `weak` used to
     read as "not weak" all the way out: the line said "this arm IS powered", the arm credited full
-    coverage and cleared `low_power`, and the history CSV recorded `lof_weak: False`. That is the
-    maximal claim on the least evidence, in a diagnostic whose whole job is to fail open."""
+    coverage and cleared `low_power`, and a client's record of it read `lof_weak: False`. That is
+    the maximal claim on the least evidence, in a diagnostic whose whole job is to fail open."""
     merged = _merged_flat(15, None)
     assert merged["status"] == "pass"
     assert "lof_df" not in merged and "weak" not in merged, merged
@@ -872,10 +879,11 @@ def test_the_weak_marking_reaches_the_summary_through_the_whole_assembly(session
     `_merge_lof_verdicts` and `_replicate_lof_line` by hand, which is not where the keys were lost.
 
     `_lof_payload` and `_lof_reported` project the verdict twice and `_structure_summary` rebuilds the
-    prose, and dropping `weak` anywhere along there left the finish gate saying "this arm IS powered"
-    on a df = 1 pass through all three blasi runs of 2026-08-02 — with the statistic already correct.
-    So this goes through `residual_structure_rollup` on a real session: 3 replicated design points
-    against the toy problem's 2 structural parameters is df 1, the blasi k=14 shape in miniature."""
+    prose, and dropping `weak` anywhere along there left a client's finish gate saying "this arm IS
+    powered" on a df = 1 pass, in three sessions on the steady-state problem — with the statistic
+    already correct. So this goes through `residual_structure_rollup` on a real session: 3
+    replicated design points against the toy problem's 2 structural parameters is df 1, the
+    k=14-over-15-points shape in miniature."""
     _replicated_records(session, deviation=0.0, n_points=3)
     out = data_access.residual_structure_rollup(session)
     lof = out["replicate_lack_of_fit"]
@@ -896,36 +904,36 @@ def test_lack_of_fit_df_subtracts_the_shared_parameters_once_across_noise_famili
     Judged per family the df was `family points - n_structural`, and summing those computed
     `total points - F * n_structural`, which is not a df either: two families of 15 replicated points
     at n_structural=14 reported df 2 and a WEAK pass, where the honest count is 30 - 14 = 16 and the
-    pass is strongly powered. That is the blasi shape with a second sigma, and the summary would have
-    told the lead its pass was weak when it was not."""
+    pass is strongly powered. That is the steady-state shape with a second sigma, and the summary
+    would have told the agent its pass was weak when it was not."""
     merged = _merged_flat(5, 3, families=2)
     assert merged["n_points"] == 10
     assert merged["lof_df"] == 7, merged  # 10 - 3, not (5 - 3) + (5 - 3)
     assert "weak" not in merged, merged  # 7 >= REPLICATE_LOF_MIN_LOF_DF
 
-    # the blasi shape, at one, two and three sigmas: F * 15 - 14, never F * (15 - 14)
+    # the steady-state shape, at one, two and three sigmas: F * 15 - 14, never F * (15 - 14)
     assert [_merged_flat(15, 14, families=f)["lof_df"] for f in (1, 2, 3)] == [1, 16, 31]
     twice = _merged_flat(15, 14, families=2)
     assert "weak" not in twice and "IS powered" in data_access._replicate_lof_line(twice)
 
 
 def test_a_pooled_family_that_is_powered_is_not_refused_as_vacuous():
-    """The other half of the same arithmetic, and the one that reached the lead as a FALSE sentence:
-    saturation is a property of the PROBLEM, not of one noise family.
+    """The other half of the same arithmetic, and the one that reached the agent as a FALSE
+    sentence: saturation is a property of the PROBLEM, not of one noise family.
 
     Judged per family, two families of 12 points against 20 shared parameters were each vacuous, so
     the merged verdict was NO EVIDENCE — "this model has as many estimated structural parameters as
     there are replicated design points" — of 24 points against 20, which leaves 4 directions and a
-    POWERED pass. armistead is the shipped example in this regime: three usable families of 4 points
+    POWERED pass. One measured problem sits in this regime: three usable families of 4 points
     against 10 structural parameters, pooled df 2, a thin pass rather than nothing at all."""
     v = _merged_flat(12, 20, families=2)
     assert v["available"] is True and v["status"] == "pass", v
     assert v["lof_df"] == 4 and "weak" not in v, v
 
-    armistead = _merged_flat(4, 10, families=3)
-    assert armistead["available"] is True and armistead["lof_df"] == 2, armistead
-    assert armistead["weak"] is True, armistead
-    assert "NO EVIDENCE" not in data_access._replicate_lof_line(armistead)
+    three_small = _merged_flat(4, 10, families=3)
+    assert three_small["available"] is True and three_small["lof_df"] == 2, three_small
+    assert three_small["weak"] is True, three_small
+    assert "NO EVIDENCE" not in data_access._replicate_lof_line(three_small)
     # ...and a problem that really IS saturated still reports nothing: 3 x 4 points against 12
     assert _merged_flat(4, 12, families=3)["status"] == "vacuous"
 
@@ -949,7 +957,7 @@ def test_an_underpowered_arm_credits_no_coverage_even_when_it_flagged():
     """Coverage follows the DF band, not the verdict. `weak` is forced False as soon as anything
     flagged, so keying the credit on it let a df = 1 arm that flagged obs_A certify obs_B as
     sign-random — on the strength of the same arm the summary calls too flexible to mean anything.
-    That over-claim reaches result.json and the armed finish gate."""
+    That over-claim reaches a client's scoring and its finish gate."""
     pts = [_point("obs_A", 8.0, n=18, s=1.0, observable="obs_A")]
     pts += [_point(f"obs_B[c0, t={i}]", 0.1, n=18, s=1.0) for i in range(14)]
     labels = {p["label"]: p["observable_id"] for p in pts}

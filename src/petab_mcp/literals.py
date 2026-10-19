@@ -32,8 +32,8 @@ import libsbml
 #: (dimer/trimer/tetramer/hexamer) that appear as stoichiometric factors and mass-action
 #: exponents. Five is absent because nothing here is a pentamer.
 _MULTIPLICITIES = (1, 2, 3, 4, 6)
-#: Percent. A readout in ``%`` needs a factor of 100 and has nothing to absorb it into (rahman's
-#: ``prevalence := (1 - S/N)*100`` is a pure function of states), so charging it would price a
+#: Percent. A readout in ``%`` needs a factor of 100 and has nothing to absorb it into
+#: (``frac := (1 - A/A_tot)*100`` is a pure function of states), so charging it would price a
 #: UNIT as a parameter with no free route to avoid it.
 _UNIT_FACTORS = (100,)
 #: Free as literals: zero, and each of the above with its sign and its reciprocal. Enumerated on

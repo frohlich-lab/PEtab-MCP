@@ -111,8 +111,8 @@ def test_parsimony_warning_still_fires_for_disconnected_sink(session):
 
 
 def _blinded_session(tmp_path):
-    """The toy problem blinded as the benchmarks ship: its observable reads ``readout_B``, a
-    measurement mapping the model must define by an assignment rule."""
+    """The toy problem, blinded: its observable reads ``readout_B``, a measurement mapping the
+    model must define by an assignment rule."""
     work = tmp_path / "blinded"
     shutil.copytree(Path(__file__).parent / "data" / "toy_v1", work)
     observables = work / "observables.tsv"
@@ -125,9 +125,9 @@ def _blinded_session(tmp_path):
 
 
 def test_a_readout_rule_carries_what_it_reads_into_the_observed_set(tmp_path):
-    # On a blinded benchmark the formula names only `readout_B`, never a species. Read off the
-    # formula alone, every added species was reported as feeding no observable — all ten of a
-    # Fujita model. C feeds B, which the readout reads; the sink D is still flagged.
+    # On a blinded problem the formula names only `readout_B`, never a species. Read off the
+    # formula alone, every added species was reported as feeding no observable — all ten, in one
+    # model. C feeds B, which the readout reads; the sink D is still flagged.
     session = _blinded_session(tmp_path)
     res = _set_model(session, ["readout_B := B;", "J: C => B; k3 * C;"], justification="C feeds B")
     assert res["applied"] is True
@@ -282,7 +282,7 @@ def test_change_parameters_batch_applies_bounds_and_scale_atomically(session):
 
 def test_change_parameters_single_entry_bounds_and_scale(session):
     # ONE entry carrying BOTH a bound change and a scale change (the merged-entry path that
-    # armistead's changes_by_id produces): bounds must apply AND the positive-box check must run
+    # a `changes_by_id` payload produces): bounds must apply AND the positive-box check must run
     # against the new scale+bounds. k1 = 0.5 with lb 1e-3 is a valid log10 box.
     res = O.change_parameters(
         session,

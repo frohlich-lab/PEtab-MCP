@@ -60,7 +60,7 @@ def test_the_seed_declares_the_symbols_the_fixed_tables_name(seeded):
 
 def test_the_seed_has_no_dynamics_so_nothing_reads_as_authored(seeded):
     """Content-free means no reactions and no rules: there IS a model (so AMICI is safe) but no
-    mechanism (so the zero-shot contract is unchanged)."""
+    mechanism (so the model-less contract is unchanged)."""
     sm = seeded.model.sbml_model
     assert sm.getNumReactions() == 0
     assert sm.getNumRules() == 0
@@ -244,7 +244,7 @@ def test_the_reserved_word_list_matches_libantimony():
 
 def test_design_only_lint_warnings_never_reach_the_caller(seeded):
     """petab warns about a condition or experiment no measurement uses — a statement about the
-    FIXED design (fujita ships its held-out pulses in the condition table), which no call can
+    FIXED design (a problem may ship held-out pulses in its condition table), which no call can
     change. Promoting it would put a fixed, unactionable string on the warnings of EVERY
     make_changes result."""
     import pandas as pd
@@ -290,7 +290,7 @@ def test_the_seed_is_reconciled_and_its_initial_conditions_are_estimated(tmp_pat
 
 
 def test_a_shipped_row_comes_back_as_the_problem_defined_it(tmp_path):
-    """The seed declares no mechanism, so every kinetic / initial-condition row a zero-shot
+    """The seed declares no mechanism, so every kinetic / initial-condition row a model-less
     problem ships is pruned at v0. That is only safe because re-declaring the parameter RESTORES
     the shipped row — bounds, scale and estimate — rather than minting defaults, so the candidate
     and the reference are fit over the same box. A shipped PRIOR is not part of the row: the

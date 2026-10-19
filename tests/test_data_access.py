@@ -52,7 +52,7 @@ def test_static_tables_queryable_without_simulation(session):
 
 
 def test_empty_parameter_table_does_not_break_queries(session):
-    # A model-less benchmark problem ships a header-only parameters.tsv, so the parameter
+    # A model-less problem ships a header-only parameters.tsv, so the parameter
     # table has zero rows — which turned into a zero-column DataFrame that DuckDB refuses to
     # register, making EVERY query_data call fail (even `SELECT 1`). Regression: with no
     # parameters, `SELECT 1` and the fixed tables must still be queryable.
@@ -323,7 +323,7 @@ def test_nan_values_cleaned_to_none(session):
     assert val is None or (isinstance(val, float) and not math.isnan(val))
 
 
-# -- fit_diagnosis: the compact, bounded residual read for the lead ---------
+# -- fit_diagnosis: the compact, bounded residual read for the agent --------
 def test_fit_diagnosis_empty_without_simulation(session):
     out = data_access.fit_diagnosis(session)
     assert out["per_observable"] == [] and out["worst_points"] == []
@@ -480,7 +480,7 @@ def test_residual_structure_rollup_agrees_with_fit_diagnosis_on_several_flagged(
     """The two callers walk the observables in DIFFERENT orders — fit_diagnosis marks a chi2-ranked
     per_observable, the rollup walks groupby order — so with more than one flagged observable the
     two must agree on WHICH observables are flagged, or the fit result's verdict and the rows the
-    lead reads next would name different ones."""
+    agent reads next would name different ones."""
     # obs_B carries the larger chi2, so fit_diagnosis ranks it first while groupby yields obs_A
     # first; both one-sided, so both flag.
     records = [_rec("obs_A", "e0", float(t), 1.0, 0.0, 1.0, 1.0, 1.0) for t in range(10)] + [
@@ -502,10 +502,11 @@ def test_the_two_rollup_callers_produce_IDENTICAL_verdicts(session, monkeypatch)
     """Not merely the same flagged SET: the same ``summary`` and the same ``low_power`` too.
 
     ``low_power`` is the field that stops "nothing flagged" being read as a pass, and it reaches
-    result.json from BOTH paths — the per-row ``structure_low_power`` from fit_diagnosis's own pass,
-    the rolled-up one from the fit path — so the two diverging is a silent over-claim. The verdicts
-    are captured AT the shared builder, so this pins what each caller actually hands it (the inputs
-    are what could drift now that the builder is shared) rather than a reconstruction of one.
+    a caller's record from BOTH paths — the per-row ``structure_low_power`` from fit_diagnosis's
+    own pass, the rolled-up one from the fit path — so the two diverging is a silent over-claim.
+    The verdicts are captured AT the shared builder, so this pins what each caller actually hands
+    it (the inputs are what could drift now that the builder is shared) rather than a
+    reconstruction of one.
     """
     verdicts: list[dict] = []
     real = data_access._rollup_structure
@@ -585,9 +586,9 @@ def test_residual_flag_separates_untested_from_unflagged(session):
 
 
 def test_fit_diagnosis_caps_per_observable_at_worst_12(session):
-    """One-row-per-observable stops being compact at scale: on lucarelli (65 observables) this
+    """One-row-per-observable stops being compact at scale: on a 65-observable problem this
     table alone was ~6-8 kB per call, re-sent in the caller's history every later turn — the
-    lead's history there grew ~15.5k tokens/turn and 3/9 runs died on the context window. The
+    agent's history there grew ~15.5k tokens/turn and 3/9 sessions died on the context window. The
     cap keeps the worst-12 by chi2 plus EVERY structure-flagged row (a cap must never hide a
     verdict), and the omission note keeps a truncated table from reading as complete."""
     recs = []
@@ -626,7 +627,7 @@ def test_fit_diagnosis_cap_is_bounded_even_when_everything_is_flagged(session):
     """The flagged-row escape must not reopen the payload it caps. On a badly-fitting
     65-observable problem the rollup can flag 50+ observables; an unbounded 'keep all flagged'
     rebuilt exactly the table the cap removes, in the regime where context pressure is worst.
-    The bias-rank keep also has to be honoured, since the finish gate ranks by bias, not chi2."""
+    The bias-rank keep also has to be honoured, since a finish gate ranks by bias, not chi2."""
     recs = []
     for i in range(30):
         for t, r in ((0.0, 2.0), (1.0, -2.0), (2.0, 2.0), (3.0, -2.0)):
@@ -640,7 +641,7 @@ def test_fit_diagnosis_cap_is_bounded_even_when_everything_is_flagged(session):
                     "residual_weighted": r * (30 - i) / 30,
                 }
             )
-    # one low-chi2 observable with a LARGE systematic bias — the finish gate's "worst"
+    # one low-chi2 observable with a LARGE systematic bias — a finish gate's "worst"
     for t in (0.0, 1.0, 2.0, 3.0):
         recs.append(
             {
@@ -693,7 +694,7 @@ def test_simulations_history_spans_versions(session):
     )
     assert out["rows"] == [{"version": v1, "n": 2}, {"version": v2, "n": 2}]
 
-    # The comparative query the analysts kept reconstructing by hand: per-point deltas.
+    # The comparative query agents kept reconstructing by hand: per-point deltas.
     out = data_access.run_query(
         session,
         f"""SELECT observable_id, time,
@@ -773,7 +774,7 @@ def test_simulations_history_positive_control(session, monkeypatch):
 def test_simulations_history_survives_corrupt_file(session):
     # A snapshot interrupted mid-write (wall-clock kill, disk full) leaves a truncated
     # simulations.json. It must degrade to "this version contributes no rows" — not take down
-    # every query_data/list_data_tables call for the rest of the run.
+    # every query_data/list_data_tables call for the rest of the session.
     v1 = _snapshot(session, SIM_RECORDS[:1], "good")
     v2 = _snapshot(session, SIM_RECORDS[:2], "corrupt")
     vdir = session.provenance.versions_dir / f"v{v2}"
@@ -818,7 +819,7 @@ def test_simulations_history_survives_bad_record_shape(session):
     # The blob parses as an object (so the store's isinstance guard passes) but `records` is
     # not a list of dicts — a hand-edited file, or an archive from an older schema. Splatting
     # a non-mapping would raise a TypeError that escapes into EVERY query for the rest of the
-    # run; the bad entries are skipped instead.
+    # session; the bad entries are skipped instead.
     import json as _json
 
     v1 = _snapshot(session, SIM_RECORDS[:1], "good")
@@ -857,7 +858,7 @@ def test_record_version_field_cannot_override_the_column(session):
 
 
 def test_table_schema_reports_history_without_building_it(session, monkeypatch):
-    # list_data_tables is the FIRST call the harness prompt prescribes: it must report the
+    # list_data_tables is typically an agent's FIRST call: it must report the
     # row count without concatenating a cross-version DataFrame it immediately discards.
     _snapshot(session, SIM_RECORDS[:2], "v1")
 

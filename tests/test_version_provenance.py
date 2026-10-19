@@ -4,14 +4,14 @@ Both exist because three separate investigations broke on their absence:
 
 * ``parent`` defaulted to HEAD and the commit path never passed ``base_version`` down, so a fork
   (patch version N's stored text while HEAD is elsewhere) was recorded as a child of HEAD.
-  Measured on 30 diff-edit runs: 207 of 311 ``base_version`` calls pointed at something older
+  Measured on 30 diff-edit sessions: 207 of 311 ``base_version`` calls pointed at something older
   than HEAD, and 30/30 version trees still looked perfectly linear. Everything that reasons
   parent-to-child then compares against a model the child never came from.
 * ``model.ant`` is the BUILD OUTPUT (reconciled, libantimony re-rendered), so lineage cannot be
-  recovered from it after the fact — inferring parents by text distance mis-assigned 43% on runs
-  that could not even fork. ``model_source.ant`` is what the caller authored or edited — and with structured
-  `model_edits` it IS a source of truth: operations apply to it, so a child's source is
-  its parent's source plus that call's operations.
+  recovered from it after the fact — inferring parents by text distance mis-assigned 43% on
+  sessions that could not even fork. ``model_source.ant`` is what the caller authored or edited
+  — and with structured `model_edits` it IS a source of truth: operations apply to it, so a
+  child's source is its parent's source plus that call's operations.
 """
 
 from __future__ import annotations
@@ -243,7 +243,7 @@ def test_a_fork_patches_its_BASE_not_head(served):
 
 def test_a_fork_restores_the_search_space_not_just_the_model(served):
     """`base_version=N` used to roll back the MODEL only, so a fork silently inherited whatever
-    bounds the abandoned branch had widened, and the prompt had to ask the agent to re-send
+    bounds the abandoned branch had widened, and the agent had to be asked to re-send
     `parameters` from memory. Going back to a version now brings its search space with it."""
     mcp, prov = served
     v0 = _call(

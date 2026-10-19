@@ -1,6 +1,6 @@
 """The agent-facing noise-sigma advice (fitting.noise_sigma_advice): a concise, actionable string
 when the fit's ESTIMATED noise model is implausible, else None. Surfaced proactively in
-get_fit_summary/get_fit_diagnosis and echoed by the harness finish gate, so the agent learns WHY a
+get_fit_summary/get_fit_diagnosis and echoed by a client's finish gate, so the agent learns WHY a
 good-looking BIC won't be accepted and fixes the mechanism instead of the noise. The inflated/
 collapsed predicates themselves are covered in test_result_fields; this pins the advice wiring.
 """
@@ -110,9 +110,9 @@ def test_the_pure_error_ratio_never_gates_however_large(ratio):
     replicate (pure-error) one (the arm #140 added is gone; see fitting._entry_inflated).
 
     The FORM is what is wrong, so this spans the measured range instead of bracketing a threshold:
-    0.98 is blasi's TRUE model, 1.476 a decisively wrong blasi run (ΔBIC +194) that the shipped 1.5
-    was ALSO silent on, 2.4 a blasi noise-gaming run, 7.83 schwen's own REFERENCE. No constant
-    separates those; the per-design-point lack-of-fit test does (see below).
+    0.98 is a steady-state problem's TRUE model, 1.476 a decisively wrong fit of it (ΔBIC +194) that
+    the shipped 1.5 was ALSO silent on, 2.4 a noise-gaming fit of it, 7.83 another problem's own
+    REFERENCE. No constant separates those; the per-design-point lack-of-fit test does (see below).
     """
     for method in ("replicate", "difference"):
         assert _entry_inflated(_ratio_entry(ratio, method)) is False, method
@@ -120,14 +120,15 @@ def test_the_pure_error_ratio_never_gates_however_large(ratio):
 
 
 # --- where the deleted arm's coverage went (#140 -> here) -------------------------------------
-# The two blasi runs #140 was written for. Each is (label, n_structural, sigma/pure-error ratio,
-# [(n_i, z_i) per replicated design point]) with z_i = (ȳ_i - f_i)/(s_i/√n_i). Both sat at 0.28/0.38
-# of the data-std cap, so the deleted ratio arm was their ONLY guard. n_i/s_i are model-free (blasi's
-# measurements.tsv); z_i is reconstructed from each run's recorded mean_weighted_residual × its
-# fitted sigma (exact: one design point per observable, one shared sigma). Literals because
-# examples/_runs_archive is gitignored. #144's own tests already cover the ΔBIC +194 run and the
-# truth from their real predictions — these two are this change's obligation, not that one's.
-_ARCHIVED_BLASI_GAMING_RUNS = [
+# The two fits of that steady-state problem #140 was written for. Each is (label, n_structural,
+# sigma/pure-error ratio, [(n_i, z_i) per replicated design point]) with
+# z_i = (ȳ_i - f_i)/(s_i/√n_i). Both sat at 0.28/0.38 of the data-std cap, so the deleted ratio arm
+# was their ONLY guard. n_i/s_i are model-free (the problem's measurement table); z_i is
+# reconstructed from each fit's recorded mean_weighted_residual × its fitted sigma (exact: one
+# design point per observable, one shared sigma). Literals because the archived fits are not in this
+# repository. #144's own tests already cover the ΔBIC +194 fit and the truth from their real
+# predictions — these two are this change's obligation, not that one's.
+_ARCHIVED_GAMING_FITS = [
     (
         "0a19fa0c k=6 ΔBIC +437",
         5,
@@ -184,10 +185,10 @@ def _lof_points(points):
     ]
 
 
-def test_the_replicate_lof_arm_condemns_the_run_the_ratio_arm_was_written_for():
+def test_the_replicate_lof_arm_condemns_the_fit_the_ratio_arm_was_written_for():
     """ΔBIC +437 at k=6: Holm p 1.5e-18 against alpha 0.01 — eighteen orders of magnitude, where the
     deleted ratio arm had it at 2.41 against a 1.5 threshold. This is the coverage transfer."""
-    label, n_structural, _ratio, points = _ARCHIVED_BLASI_GAMING_RUNS[0]
+    label, n_structural, _ratio, points = _ARCHIVED_GAMING_FITS[0]
     out = rt.replicate_lack_of_fit(_lof_points(points))
     assert out["available"] is True and out["status"] == "flagged", label
     assert out["max_abs_z"] == pytest.approx(48.85, abs=0.01)
@@ -200,20 +201,20 @@ def test_the_other_one_is_the_parsimony_gate_s_and_the_arm_says_so():
     parameters against 15 usable design points trips the vacuity guard, so the verdict is NO
     EVIDENCE (available False), not a pass.
 
-    That is the correct handoff rather than a hole. blasi's data are 15 distinct design points, so a
-    model with 22 structural parameters has a Jacobian of rank <= 15 and a rank-DEFICIENT FIM by
-    construction — which is the finish gate's parsimony refusal (#135), aimed at exactly this and
-    landed 2026-08-01, three hours AFTER this run. Both this guard and that gate turn on the same
-    condition (n_structural >= n_points), which is what makes the pair complete. What the deleted
-    ratio arm contributed here was a second-best proxy ("your noise is 1.8x the floor") for a
-    diagnosis that is really "you have 22 parameters for 15 points".
+    That is the correct handoff rather than a hole. The problem's data are 15 distinct design
+    points, so a model with 22 structural parameters has a Jacobian of rank <= 15 and a
+    rank-DEFICIENT FIM by construction — which is the parsimony refusal of a client's finish gate
+    (#135), aimed at exactly this and landed only AFTER this fit. Both this guard and that gate turn
+    on the same condition (n_structural >= n_points), which is what makes the pair complete. What
+    the deleted ratio arm contributed here was a second-best proxy ("your noise is 1.8x the floor")
+    for a diagnosis that is really "you have 22 parameters for 15 points".
 
-    Asserted on the MERGE, which is where the vacuity guard lives now: blasi has one noise family, so
-    its pooled point count is that family's, but the count the parameters are subtracted from is a
-    whole-problem one (data_access._merge_lof_verdicts)."""
+    Asserted on the MERGE, which is where the vacuity guard lives now: the problem has one noise
+    family, so its pooled point count is that family's, but the count the parameters are
+    subtracted from is a whole-problem one (data_access._merge_lof_verdicts)."""
     from petab_mcp import data_access
 
-    label, n_structural, _ratio, points = _ARCHIVED_BLASI_GAMING_RUNS[1]
+    label, n_structural, _ratio, points = _ARCHIVED_GAMING_FITS[1]
     arm = rt.replicate_lack_of_fit(_lof_points(points))
     out = data_access._merge_lof_verdicts([arm], {}, n_structural=n_structural)
     assert out["available"] is False and out["status"] == "vacuous", label
@@ -509,8 +510,8 @@ def test_effective_sigma_tracks_the_fitted_value():
 
 
 def test_composite_formula_multiplies_both_factors():
-    """A sd built as scale*sigma (fiedler's noiseParameter1*noiseParameter2): neither factor is an
-    sd alone, so the effective value must be their product."""
+    """A sd built as scale*sigma (noiseParameter1*noiseParameter2): neither factor is an sd alone,
+    so the effective value must be their product."""
     import pandas as pd
 
     from petab_mcp import reconcile as R
@@ -546,14 +547,14 @@ def test_composite_formula_multiplies_both_factors():
     assert R.sigma_effective_value(p, "sd_o", 0.25) == pytest.approx(1.0)  # 4.0 * 0.25
 
 
-# --- a per-gel AMPLITUDE in the noise formula (fiedler) --------------------------------------
+# --- a per-gel AMPLITUDE in the noise formula -----------------------------------------------
 def _two_gel_problem(
     noise_formula="noiseParameter1_{o}*noiseParameter2_{o}",
     gains=(1.0, 10.0),
     sigma=0.1,
     base=(1.0, 2.0, 3.0, 4.0),
 ):
-    """A fiedler-shaped problem: ONE sigma shared by two observables ("gels") whose measurements
+    """A per-gel problem: ONE sigma shared by two observables ("gels") whose measurements
     carry different multiplicative gains, each gain naming itself in BOTH the observable and the
     noise overrides. The underlying signal is identical, so everything that differs between the two
     observables is the gain — which is exactly what must NOT be read as data spread."""
@@ -600,8 +601,8 @@ def _two_gel_problem(
 
 def test_a_shared_sigma_with_per_gel_gains_is_summarisable():
     """Before this fix each gel implied its OWN effective sd (gain*sigma), the per-observable values
-    disagreed, and the whole entry failed open — fiedler's `noise_sigma_effective` was `{}` and its
-    sigmas were reported 'ok' on no evidence at all."""
+    disagreed, and the whole entry failed open — one per-gel problem's `noise_sigma_effective` was
+    `{}` and its sigmas were reported 'ok' on no evidence at all."""
     from petab_mcp import reconcile as R
 
     # NEITHER gain is 1.0, deliberately: with a leading gain of 1.0 the expected value coincides
@@ -616,8 +617,8 @@ def test_a_shared_sigma_with_per_gel_gains_is_summarisable():
 
 def test_the_gain_is_divided_out_of_the_data_std_too():
     """Both sides of the ratio must live in the same coordinate. Pooling the RAW measurements counts
-    the between-gel gain difference as spread (on fiedler: 0.096 -> 0.688, ~7x), which is not noise
-    the sigma has to cover, so the sigma reads far more plausible than it is."""
+    the between-gel gain difference as spread (on one per-gel problem: 0.096 -> 0.688, ~7x), which
+    is not noise the sigma has to cover, so the sigma reads far more plausible than it is."""
     from petab_mcp import reconcile as R
 
     p = _two_gel_problem(gains=(1.0, 10.0))
@@ -706,7 +707,7 @@ def test_the_report_wires_the_cap_to_the_fraction_it_reports():
 
 
 def _gain_and_ungained_problem():
-    """One sigma shared by a GAINED observable and an ungained one — blasi's shape (a single sigma
+    """One sigma shared by a GAINED observable and an ungained one — a common shape (a single sigma
     over many observables), where only some carry a gel scale."""
     import pandas as pd
 
@@ -873,5 +874,5 @@ def test_observable_formulas_with_function_calls_still_parse():
     for formula in ("scale * exp(-k*t) + offset", "log10(y)*s", "piecewise(a, t > 1, b)*gain"):
         assert _sympify_real(formula) is not None, formula
     # and the plain case the real=True binding exists for still resolves
-    expr = _sympify_real("s_pRII_Western * (2*RIIp_2 + x)")
+    expr = _sympify_real("s_A * (2*A_2 + x)")
     assert expr is not None and all(sym.is_real for sym in expr.free_symbols)

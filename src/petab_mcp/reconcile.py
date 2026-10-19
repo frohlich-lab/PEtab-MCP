@@ -5,8 +5,8 @@ Enforces the invariants:
 * **Parametric initial conditions** — every species ``S`` gets a parametric initial assignment.
   A literal IC is parametrised as a fresh ``S_init`` parameter, but an author's own parametric IC
   is PRESERVED — whether a single parameter (``S = S_0``) or a COMPOUND expression of parameters
-  (``Rec2 = ini_R1*ini_R2fold``, ``Exposed = exposed_init_conc*population``). Its parameters are
-  the settable/estimatable IC and are synced into the parameter table.
+  (``B = B_tot*B_fold``, ``E = e_frac*N``). Its parameters are the settable/estimatable IC and
+  are synced into the parameter table.
 * **Parameter-table sync** — every model parameter (rate constants + IC parameters) but a
   ``readout_*`` measurement mapping (:func:`readouts`) has a row in the parameter table;
   parameters no longer in the model are removed, *except* those used by the fixed
@@ -75,8 +75,8 @@ _IDENT_RE = re.compile(r"(?<![\w.])[A-Za-z_]\w*")
 #: log10.
 SEED_INITIAL_VALUE = 0.1
 
-#: The ``model_id`` a model-less problem's model is created under; the same id gemot gives the
-#: empty SBML it ships. Must not be an Antimony keyword.
+#: The ``model_id`` a model-less problem's model is created under; a problem that ships an empty
+#: model may use the same one. Must not be an Antimony keyword.
 ZERO_SHOT_MODEL_ID = "zero_shot_problem"
 
 # Antimony GRAMMAR keywords: `species species;` does not parse, so an entity with one of these
@@ -164,7 +164,7 @@ def _exponent_symbols(sm) -> set[str]:
 
     Such a parameter is a cooperativity / Hill exponent. On the default wide ``log10`` scale a
     fitted exponent can run to ~100 — a near-step-function that makes the ODE stiff and the fit
-    plateau (a repressilator run fitted a Hill coefficient of 15). Estimating it on a LINEAR
+    plateau (one fit landed a Hill coefficient of 15). Estimating it on a LINEAR
     scale with tight bounds keeps it in the biophysically sane range. Only ``base**exp`` powers
     count — ``exp(x)`` (AST_FUNCTION_EXP) is not a cooperativity exponent and is ignored.
     """
@@ -345,18 +345,18 @@ def seed_model_antimony(problem) -> str | None:
     # A `readout_*` identifier is a MEASUREMENT MAPPING the author must later define with an
     # assignment rule — seeding it as a SPECIES taught the wrong lesson: agents copied the
     # declaration into their own models, wired the readout into reactions as a state, and then
-    # could not assign it (4 of the first blinded sweep's 27 rejections were exactly this
-    # over-determination refusal, all on fujita, whose mappings are non-identity sums). A constant
-    # PARAMETER lints and simulates identically at v0 (flat, like a species with no reactions),
-    # keeps the seed dynamics-free (a seeded `:=` rule would flip `has_dynamics` and with it
-    # `model_authored`), and suggests nothing about being a state.
+    # could not assign it (4 of the first 27 rejections measured on `readout_*` problems were
+    # exactly this over-determination refusal, all on one whose mappings are non-identity sums).
+    # A constant PARAMETER lints and simulates identically at v0 (flat, like a species with no
+    # reactions), keeps the seed dynamics-free (a seeded `:=` rule would flip `has_dynamics` and
+    # with it `model_authored`), and suggests nothing about being a state.
     #
     # EVERY readout, with no exception: :func:`ensure_one_species` carries the "at least one
     # species" invariant now, so the seed never has to make a measurement mapping look like a
     # state to stay importable. The two earlier attempts both did: first unconditionally (which
     # broke a pure-readout problem outright), then keyed on "does a non-readout entity exist?",
-    # which quietly left every readout a species on boehm, blasi, crauste, perelson and rahman —
-    # boehm's mappings being as non-identity as fujita's.
+    # which quietly left every readout a species on any problem that also names a non-readout
+    # entity — including ones whose mappings are just as non-identity.
     #
     # Its display name says what it is, so the model text does not read as a constant to scale.
     demote = {sid for sid in species if sid.startswith(READOUT_PREFIX)}
@@ -425,10 +425,10 @@ def _ic_expression_params(sm, sid: str) -> list[str]:
     :func:`_ic_symbol_for`). Returns ``[]`` when the species has no initial assignment or the
     assignment references no model parameter (a bare literal, or an expression of only species).
 
-    Preserving such an assignment keeps a published compound initial condition — e.g. schwen's
-    ``Rec2 = ini_R1*ini_R2fold`` or oliveira's ``Exposed = exposed_init_conc*population`` — instead
-    of overwriting it with a fresh fixed ``<sid>_init`` and silently discarding the estimated
-    seed(s). Its parameters are picked up as IC parameters by :func:`_ic_parameter_ids`.
+    Preserving such an assignment keeps a published compound initial condition — e.g.
+    ``B = B_tot*B_fold`` or ``E = e_frac*N`` — instead of overwriting it with a fresh fixed
+    ``<sid>_init`` and silently discarding the estimated seed(s). Its parameters are picked up as
+    IC parameters by :func:`_ic_parameter_ids`.
     """
     for i in range(sm.getNumInitialAssignments()):
         ia = sm.getInitialAssignment(i)
@@ -469,7 +469,7 @@ def _drop_initial_assignment(sm, sid: str, *, drop_sole_parameter: bool = False)
     parameter it stays in the table as an ESTIMATED row that no longer affects the trajectory --
     a free ``ln(n)`` of BIC per fit with zero fit effect, which is precisely the artefact
     :func:`ensure_parametric_initial_conditions` exists to avoid. Not applied to a COMPOUND
-    expression (``Rec = ini_R1*ini_R2fold``): those symbols are the author's own estimated seeds
+    expression (``B = B_tot*B_fold``): those symbols are the author's own estimated seeds
     and may well be used elsewhere.
     """
     for i in range(sm.getNumInitialAssignments()):
@@ -513,7 +513,7 @@ def ensure_parametric_initial_conditions(
     """Give every species a parametric IC; returns the IC parameter ids created/kept.
 
     ``skip_species`` are species whose initial condition is set PER CONDITION by a condition-table
-    column (a PEtab species-initial override, e.g. armistead's per-genotype metabolite baselines).
+    column (a PEtab species-initial override, e.g. per-genotype baselines).
     Their IC is neither a free parameter nor a fixed literal — the condition table drives it — so we
     leave the declared initial in place and do NOT mint a ``<sid>_init``. Minting one would add an
     estimated, non-identifiable parameter that the per-condition override silently supersedes
@@ -522,7 +522,7 @@ def ensure_parametric_initial_conditions(
     Species driven by an ASSIGNMENT rule are skipped for a different and harder reason: minting an
     IA on them builds an SBML document that libSBML rejects, so the agent's own model — which
     validated cleanly on its own — was rejected for a construct the SERVER wrote. That accounted for
-    69 rejected ``make_changes`` calls in the Aug 8-10 sweep, and 48% of them were followed by a
+    69 rejected ``make_changes`` calls in one measurement, and 48% of them were followed by a
     byte-identical retry because the error described something the agent had not done. Verified by
     round-tripping all 152 affected models through libAntimony -> libsbml.checkConsistency():
     152/152 clean, 0 initialAssignment/rule-target collisions before reconcile touched them.
@@ -558,7 +558,7 @@ def ensure_parametric_initial_conditions(
             continue
         expr_params = _ic_expression_params(sm, sid)
         if expr_params:
-            # A COMPOUND parametric IC (e.g. Rec2 = ini_R1*ini_R2fold): keep the expression as-is;
+            # A COMPOUND parametric IC (e.g. B = B_tot*B_fold): keep the expression as-is;
             # its parameters ARE the settable/estimatable IC (synced by _ic_parameter_ids). Do NOT
             # clobber it with a fresh <sid>_init, which would discard the estimated seed(s).
             ic_params.extend(expr_params)
@@ -574,17 +574,17 @@ def ensure_parametric_initial_conditions(
         # otherwise the two spellings produce different parameter tables and the regenerating
         # `<sid>_init` artifact returns one omitted assignment later.
         if (value is None or value == 0.0) and f"{sid}_init" not in protect:
-            # An EXPLICIT zero initial ("IPR_I = 0;") is the author's design — the state starts
+            # An EXPLICIT zero initial ("B = 0;") is the author's design — the state starts
             # empty — not a missing value to parametrise. Same class of reason as the
             # condition-column skip above: minting `<sid>_init` here adds an estimated
             # zero-nominal parameter nobody asked for, and because this runs on EVERY commit and
             # the drafts are refreshed from the committed model, the row REGENERATES no matter
-            # how often it is edited away. Measured (sneyd/fujita A/B, draft arm): one lead
-            # re-delegated the deletion of a minted `IPR_S_init` 17 times, misattributing the
-            # server's artifact to its editor subagent; the only two unfixable lint dead-ends in
-            # the arm were log10-scale-on-zero-nominal conflicts on minted `_init` rows. A zero
-            # nominal also breaks log-scale estimation by construction, which is why these rows
-            # kept surfacing as lint issues no requested change could legally fix.
+            # how often it is edited away. Measured: one agent re-requested the deletion of a
+            # minted `B_init` 17 times, misattributing the server's artifact to its own edit; the
+            # only two unfixable lint dead-ends in that measurement were
+            # log10-scale-on-zero-nominal conflicts on minted `_init` rows. A zero nominal also
+            # breaks log-scale estimation by construction, which is why these rows kept surfacing
+            # as lint issues no requested change could legally fix.
             continue
         ic_params.append(_set_parametric_ic(sm, sid, value if value is not None else 0.0))
     return ic_params
@@ -639,7 +639,7 @@ def input_species(sm) -> set[str]:
 
     Their trajectory is imposed, not fitted — like a condition target — so they are
     legitimately absent from every observable and must NOT be flagged as an unconstrained
-    hidden state (e.g. a genotype flag ``S_on`` or an input/forcing level ``insulin_level``)."""
+    hidden state (e.g. a genotype flag ``G_on`` or an input/forcing level ``dose_level``)."""
     inputs: set[str] = set()
     for i in range(sm.getNumSpecies()):
         sp = sm.getSpecies(i)
@@ -715,10 +715,10 @@ def condition_target_symbols(problem) -> set[str]:
     A model parameter a condition targets is set PER CONDITION — a PEtab condition change — so it
     must NOT be written into the parameter table: PEtab rejects it there ("… present in both the
     condition table and the parameter table"). Excluding these from the parameter-table sync lets
-    a benchmark condition table with parametric inputs (EGF doses, insulin steps, rate multipliers,
-    genotype switches) ship VERBATIM instead of being rewritten onto species. Mirrors petab's own
-    lint, which forbids a target in both tables. Target *values* that reference an estimated
-    parameter (a shared dose amplitude) are a different thing — those stay, via
+    a shipped condition table with parametric inputs (ligand doses, stimulus steps, rate
+    multipliers, genotype switches) ship VERBATIM instead of being rewritten onto species. Mirrors
+    petab's own lint, which forbids a target in both tables. Target *values* that reference an
+    estimated parameter (a shared dose amplitude) are a different thing — those stay, via
     :func:`table_referenced_symbols`."""
     cdf = problem.condition_df
     if cdf is None or TARGET_ID not in cdf.columns:
@@ -735,9 +735,9 @@ def observation_model_symbols(problem) -> set[str]:
     e.g. a dose species set by a condition target — not observation-model constants).
     Used to catch a model that reuses one of these as a mechanistic rate constant instead of
     introducing a dedicated parameter for it (see ``validation._observation_model_reuse_issues``):
-    a run once "fit" the Brannmark benchmark by wiring its four fixed observable-scaling
-    factors directly into the reaction rate laws instead of the ~14 real kinetic parameters the
-    scenario expects, and by letting its noise sigmas float to 20-60x their nominal scale — both
+    an agent once "fit" a problem by wiring its four fixed observable-scaling factors directly
+    into the reaction rate laws instead of the ~14 real kinetic parameters its reference model
+    uses, and by letting its noise sigmas float to 20-60x their nominal scale — both
     let a fundamentally under-mechanistic model pass its own goodness-of-fit check.
     """
     return _observable_and_measurement_symbols(problem)
@@ -766,16 +766,16 @@ def plausibility_sigma_ids(problem) -> set[str]:
     are worth judging as a noise sd.
 
     A symbol that ALSO resolves through the observable side is a scaling factor whose product with
-    the real sigma forms the sd (fiedler's per-gel ``s_pMek_*`` appear in both ``noiseParameters``
-    and ``observableParameters``). Scoring each as if it WERE the sd flagged them 900x "inflated"
-    while the real sigmas read "collapsed", on a scale-degenerate manifold where which coordinate
-    looks large is arbitrary.
+    the real sigma forms the sd (per-gel scale factors ``s_gel*`` that appear in both
+    ``noiseParameters`` and ``observableParameters``). Scoring each as if it WERE the sd flagged
+    them 900x "inflated" while the real sigmas read "collapsed", on a scale-degenerate manifold
+    where which coordinate looks large is arbitrary.
 
     Deliberately a SEPARATE function rather than a narrowing of ``noise_sigma_ids`` itself: that
     primitive has other consumers with different needs. In particular
     :func:`classify_inner_parameters` relies on a parameter being in BOTH sets to detect the
     ambiguous dual-role case and leave it OUTER — narrowing the primitive made the two sets
-    disjoint by construction, silently reclassifying fiedler's 8 gel factors as hierarchical
+    disjoint by construction, silently reclassifying one problem's 8 gel factors as hierarchical
     scaling parameters and handing them to an inner solver whose independence assumption they
     violate.
     """
@@ -1003,19 +1003,19 @@ def sigma_data_std(problem, pid: str, fitted_values=None) -> float | None:
 
     When an observable carries a per-gel AMPLITUDE (see :func:`_observable_amplitude`), its
     measurements are divided by that gain BEFORE pooling and before any log transform. Pooling the
-    raw values instead would count the BETWEEN-GEL gain differences as data spread: on fiedler that
-    inflates the pERK std from 0.096 to 0.688 (~7x), which is not noise the sigma has to cover.
+    raw values instead would count the BETWEEN-GEL gain differences as data spread: on one problem
+    that inflates the std from 0.096 to 0.688 (~7x), which is not noise the sigma has to cover.
     Dividing in linear space is what makes it a pure normalisation — under log it is a per-gel
     offset, so the shift cancels the same way while the within-gel spread is untouched.
 
     KNOWN TRADE-OFF, do not "fix" one half without the other. Normalising by the FIT's gains is what
-    makes the sd/spread ratio invariant under a legitimate gain/sigma re-split (fiedler: gains x10
+    makes the sd/spread ratio invariant under a legitimate gain/sigma re-split (e.g. gains x10
     with sigma /10 leaves the fraction at 0.469619 exactly), and that invariance is the whole point.
     The price is that the denominator is no longer a property of the measurements alone: gains that
     do NOT match the data's gel structure scatter y/gain and inflate the pooled std, which raises the
     cap. Constructed case — gains {1, 0.001} where the truth is {1, 10} — lifts the std from 1.118 to
     14790 and lets a sigma 10,000x the truth read "ok". It is not a free win for an agent, since
-    gains also enter the observable formula, so distorting them wrecks the mean fit and the run
+    gains also enter the observable formula, so distorting them wrecks the mean fit and the fit
     fails on BIC instead; but the sigma gate alone does not catch it. Using NOMINAL gains would close
     that hole and reopen the bigger one: any honest fit whose gains land away from nominal would then
     be judged in a coordinate its sigma is not expressed in. There is no fit-independent choice that
@@ -1106,9 +1106,9 @@ def sigma_difference_noise_estimate(problem, pid: str, fitted_values=None) -> fl
     which conflates variance the model explains with variance it can't.
 
     ADVISORY ONLY, and BIASED UPWARD: whatever the mean function does between two samples is counted
-    as noise, so sparse or fast-varying series over-estimate (measured across this benchmark: ~1.9x
+    as noise, so sparse or fast-varying series over-estimate (measured across 16 problems: ~1.9x
     the shipped sigma at the median), and a CUMULATIVE series is pathological (its differences are
-    the increments — ~24x on oliveira). Returns ``None`` when there is too little data to difference.
+    the increments — ~24x on one). Returns ``None`` when there is too little data to difference.
 
     WHY THIS DETECTS INFLATION BUT NOT COLLAPSE (don't re-derive it):
 
@@ -1123,10 +1123,10 @@ def sigma_difference_noise_estimate(problem, pid: str, fitted_values=None) -> fl
       and never the residuals, so it returns the same number whether or not the model interpolated
       them. No in-sample statistic can certify overfitting — a flexible enough model matches any
       in-sample criterion. Only held-out/cross-validated likelihood can, at the cost of a refit per
-      fold (affordable post-run in a judge; not within an agent's ~11-fit budget).
+      fold (affordable offline, after the fact; not within an agent's ~11-fit budget).
     * Replicates are the exception: two measurements at the SAME design point differ by noise alone,
-      so pure error is UNBIASED and supports a two-sided lack-of-fit test. Only 3 of 16 benchmark
-      examples have any.
+      so pure error is UNBIASED and supports a two-sided lack-of-fit test. Only 3 of the 16
+      problems measured have any.
 
     So absent validation data, a collapsed sigma on a real problem is not detectable here, and BIC's
     ``k*ln(n)`` — itself a cheap surrogate for out-of-sample error — is the practical guard. It
@@ -1143,7 +1143,7 @@ def sigma_difference_noise_estimate(problem, pid: str, fitted_values=None) -> fl
 
     # Differences are taken on the SAME amplitude-normalised coordinate the fitted sigma is reported
     # in (see _gain_normalised_series). Differencing the RAW measurements while `effective_sigma` is
-    # normalised puts `fitted_over_data_noise` out by the gel gain — on fiedler's sigma_pMek that is
+    # normalised puts `fitted_over_data_noise` out by the gel gain — on a per-gel sigma that was
     # ~0.003 instead of ~1, i.e. this model-free yardstick would tell a correct model its noise is
     # ~300x too small, and inflating on that advice then trips the (correctly normalised) gate.
     gains = _gain_normalised_gains(problem, pid, rows, fitted_values)
@@ -1190,7 +1190,7 @@ def sigma_replicate_noise_estimate(problem, pid: str, fitted_values=None) -> flo
     biased upward.
 
     Returns ``None`` when the data cannot supply it: no time column to identify replicates, or fewer
-    than ``NOISE_SIGMA_REPLICATE_MIN_DOF`` pooled replicate residuals (most benchmark problems are
+    than ``NOISE_SIGMA_REPLICATE_MIN_DOF`` pooled replicate residuals (most published problems are
     single-measurement time series). The caller then falls back to the difference-based estimate.
     """
     points = replicate_pure_error_points(problem, pid, fitted_values)
@@ -1202,11 +1202,11 @@ def sigma_replicate_noise_estimate(problem, pid: str, fitted_values=None) -> flo
     # allows (see residual_tests.replicate_lack_of_fit).
     #
     # This is the SAME estimator as before the split, but not bit-for-bit the same number: fsum adds
-    # exactly where the old inline loop accumulated sequentially, which moves 4 of the 6 floors the
-    # benchmark suite has by 1-2 ULP (blasi 0.2579081404095943 -> 0.25790814040959437). Measured
-    # across all 16 examples, and kept: the new arithmetic is the more accurate one, and a 1e-16 shift
-    # cannot move a ratio the inflation gate reads at 1.5 (the run that motivated this arm sat 0.0024
-    # away). Anything comparing recorded floors across that boundary should compare with a tolerance.
+    # exactly where the old inline loop accumulated sequentially, which moved 4 of the 6 floors
+    # measured by 1-2 ULP (one went 0.2579081404095943 -> 0.25790814040959437). Measured across 16
+    # problems, and kept: the new arithmetic is the more accurate one, and a 1e-16 shift cannot move
+    # a ratio the inflation gate reads at 1.5 (the fit that motivated this arm sat 0.0024 away).
+    # Anything comparing recorded floors across that boundary should compare with a tolerance.
     ssq = math.fsum(p["ssq"] for p in points)
     dof = sum(p["df"] for p in points)
     if dof < NOISE_SIGMA_REPLICATE_MIN_DOF:
@@ -1226,7 +1226,7 @@ def replicate_pure_error_points(problem, pid: str, fitted_values=None, simulatio
     :func:`_gain_normalised_gains`) — so ``(ybar - prediction) / (s / sqrt(n))`` is a deviation in
     units of that point's OWN replicate scatter and never touches the fitted sigma at all. Points
     measured once carry no scatter and are omitted; a problem without repeats yields ``[]`` (only 3
-    of the 16 benchmark examples have any — see BENCHMARK_NOTES).
+    of 16 problems measured have any).
 
     ``simulations`` is the session's per-measurement simulation frame renamed to the PEtab column
     names (``data_access._replicate_lof`` does that); it carries one row per MEASUREMENT, so
@@ -1275,8 +1275,8 @@ def replicate_pure_error_points(problem, pid: str, fitted_values=None, simulatio
     # replicates of one true value, so their spread is pure noise. A single-measurement design point
     # (n_g = 1) contributes nothing — which is why a time series without repeats yields no points.
     # dropna only for the MEASUREMENT table. The simulation records store only FINITE floats, so
-    # blasi's steady-state `time = inf` arrives as None and every one of its 15 design points would
-    # be dropped — hence dropna=False there. On the measurement table a blank
+    # a steady-state `time = inf` arrives as None and all 15 design points of one steady-state
+    # problem would be dropped — hence dropna=False there. On the measurement table a blank
     # observable/condition/time cell is genuinely missing data, and pooling every such row into ONE
     # NaN-keyed group makes its BETWEEN-point spread read as within-point noise: that silently moves
     # the pooled floor `sigma_replicate_noise_estimate` hands the 1.5 inflation gate (a two-row toy
@@ -1322,7 +1322,7 @@ def _design_point_keys(frame) -> list[tuple]:
     table; see its comment).
 
     For matching, a non-finite or missing time collapses to ``None`` on both sides, because the
-    simulation records store only finite floats (blasi's steady-state ``time = inf`` arrives as None)
+    simulation records store only finite floats (a steady-state ``time = inf`` arrives as None)
     and because a NaN would never compare equal to itself anyway. A missing column contributes
     ``None``, so a frame without an experiment column still matches one whose experiment is blank. A
     measurement row with a blank time therefore contributes a key here and is still excluded from the
@@ -1394,8 +1394,8 @@ def _symbolic_noise_formulas(odf) -> dict:
     family covering an n-observable table paid n*n parses on every gain resolution, which is why
     :func:`_gain_normalised_gains` dominated both the replicate lack-of-fit arm and the pooled noise
     floor. Measured per sigma on this machine, gain resolution / whole
-    :func:`replicate_pure_error_points` call: blasi (16 observables, 256 parses) 35.8 -> 5.8 ms of
-    40.8 -> 11.2 ms; schwen/std (22 observables) 54.3 -> 10.9 ms of 88.6 -> 42.4 ms; armistead 1.4 ->
+    :func:`replicate_pure_error_points` call: 16 observables (256 parses) 35.8 -> 5.8 ms of
+    40.8 -> 11.2 ms; 22 observables 54.3 -> 10.9 ms of 88.6 -> 42.4 ms; a small problem 1.4 ->
     0.75 ms of 4.7 -> 3.0 ms. Both consumers run once per sigma per fit, so a two-sigma problem paid
     it four times.
 
@@ -1446,7 +1446,7 @@ def _noise_expr_and_observable(problem, pid: str, rows):
         if NOISE_PARAMETERS in rows.columns
         else set()
     )
-    # Differing override lists across rows (fiedler's per-gel scale factors) mean the covered rows
+    # Differing override lists across rows (per-gel scale factors) mean the covered rows
     # do not share one sd expression; the caller must fail open rather than pick one arbitrarily.
     if len(override_cells) > 1:
         return None
@@ -1465,7 +1465,7 @@ def _noise_expr_and_observable(problem, pid: str, rows):
         }
         expr = expr.subs(overrides)
         # The formula may name the observable id OR the model quantity the observable reports
-        # (armistead: observable `Cer_obs`, noiseFormula `noiseParameter1_Cer_obs*Cer`). Resolve
+        # (observable `A_obs`, noiseFormula `noiseParameter1_A_obs*A`). Resolve
         # the level symbol through observableFormula rather than guessing, so the derivative below
         # is taken with respect to the symbol actually present.
         candidates = [sp.Symbol(observable_id, real=True)]
@@ -1497,8 +1497,8 @@ def _sympify_real(formula: str):
     Swallowed by the caller's ``except``, that turned every observable whose formula uses ``exp`` /
     ``log`` / ``sqrt`` / ``piecewise`` into "no amplitude", losing gain normalisation entirely and
     judging its sigma in the un-normalised coordinate — the same wrong-coordinate verdict the
-    real=True change was made to fix. No shipped example has a call in an observableFormula today,
-    so nothing in the suite covers it; an agent-authored model will.
+    real=True change was made to fix. None of the problems this was measured on has a call in an
+    observableFormula, so none of them covers it; an agent-authored model will.
     """
     try:
         import sympy as sp
@@ -1522,7 +1522,7 @@ def _sympify_real(formula: str):
 
 def _observable_amplitude(problem, observable_id: str, noise_expr):
     """The multiplicative AMPLITUDE of ``observable_id`` — a factor appearing in BOTH the observable
-    formula and the noise formula (fiedler's per-gel ``s_pErk_20140430_gel1``) — as a sympy
+    formula and the noise formula (a per-gel ``s_gel1``) — as a sympy
     expression, or ``None`` when the observable has no such dual-role factor (the usual case).
 
     Such a factor is a nuisance gain of the ASSAY, not of the noise: the gel multiplies signal and
@@ -1530,8 +1530,8 @@ def _observable_amplitude(problem, observable_id: str, noise_expr):
     from the only quantity the plausibility gate uses — the dimensionless sd/spread ratio — and the
     honest way to compute that ratio is in the coordinate where it has already cancelled. Dividing it
     out is what lets a sigma SHARED across gels be summarised at all: without it each gel implies its
-    own effective sd, they disagree, and :func:`_per_observable_agreement` fails open (fiedler's
-    ``noise_sigma_effective`` was ``{}``).
+    own effective sd, they disagree, and :func:`_per_observable_agreement` fails open (one per-gel
+    problem's ``noise_sigma_effective`` was ``{}``).
 
     Requires exactly ONE such symbol, dividing BOTH formulas multiplicatively; anything else returns
     ``None`` so callers fail open instead of normalising by a factor that isn't a pure gain.
@@ -1547,24 +1547,25 @@ def _observable_amplitude(problem, observable_id: str, noise_expr):
         if not candidates:
             return None
         # EVERY qualifying candidate, not just a lone one. A noise formula may name more than one
-        # scaling symbol and only some of them be gains: isensee's flattened microscopy readout is
-        # `noiseParameter1_<obs> * s_pRII_global * rho`, whose override resolves noiseParameter1 to
-        # a PER-EXPERIMENT `s_pRII_JI09_<run>`. That per-experiment factor is a true assay gain --
-        # it multiplies the whole observable -- while `s_pRII_global` sits INSIDE the formula
-        # (`b_pRII_global + s_pRII_global * (...)`) and is not a multiplicative factor at all.
+        # scaling symbol and only some of them be gains: a flattened readout whose noise is
+        # `noiseParameter1_<obs> * s_global * rho`, with an override resolving noiseParameter1 to
+        # a PER-EXPERIMENT `s_<experiment>`. That per-experiment factor is a true assay gain --
+        # it multiplies the whole observable -- while `s_global` sits INSIDE the formula
+        # (`b_global + s_global * (...)`) and is not a multiplicative factor at all.
         # Requiring exactly one candidate bailed on that observable, so the gain was never divided
         # out, the three experiments implied three different effective sds,
         # `_per_observable_agreement` failed open, and `effective_sigma` came back None. That in
-        # turn made `_reference_sigma_flag` unpairable and dropped the judge onto the data-driven
-        # band -- which isensee's own REFERENCE sigma exceeds (0.165 against a 0.75*data_std cap of
-        # 0.092), so every candidate was flagged `inflated` on a threshold the truth fails.
+        # turn left a check against the reference sigma nothing to pair, dropping it onto the
+        # data-driven band -- which that problem's own REFERENCE sigma exceeds (0.165 against a
+        # 0.75*data_std cap of 0.092), so every candidate was flagged `inflated` on a threshold the
+        # truth fails.
         # The per-candidate tests below are exactly the ones this function already applied to a
         # lone candidate, so nothing that was not a pure dual-role gain becomes one.
         # real=True on every symbol, matching how petab builds its formulas. A bare `sympify`
         # yields assumption-free symbols, and `Symbol(x) != Symbol(x, real=True)`, so
         # `simplify(obs_expr / candidate)` would not cancel and `_is_pure_gain` would reject a
-        # gain the formula names DIRECTLY — isensee's Western readout (`s_pRII_Western * (...)`
-        # against `s_pRII_Western * rho_pRII_Western`) is exactly that case.
+        # gain the formula names DIRECTLY — a readout `s_A * (...)` with noise `s_A * rho_A` is
+        # exactly that case.
         obs_expr = _sympify_real(str(odf.loc[observable_id, OBSERVABLE_FORMULA]))
         if obs_expr is None:
             return None
@@ -1596,9 +1597,9 @@ def _resolve_observable_parameters(problem, observable_id: str, obs_expr):
 
     Unchanged when there is no measurement table, no override column, or the covered rows disagree
     about the override — the caller then tests against the raw formula, which is the pre-existing
-    behaviour for a gain the formula names directly (``materialize`` FLATTENS an example whose
-    overrides vary within an observable, writing the value into the formula and dropping the
-    placeholder; isensee's Western readout is exactly that).
+    behaviour for a gain the formula names directly (a problem whose overrides vary within an
+    observable may ship FLATTENED, the value written into the formula and the placeholder dropped;
+    a readout ``s_A * (...)`` with noise ``s_A * rho_A`` is exactly that).
     """
     try:
         import sympy as sp
@@ -1633,7 +1634,7 @@ def _is_pure_gain(candidate, noise_expr, obs_expr) -> bool:
 
     "Exactly" is the load-bearing word — a pure gain ``a`` satisfies ``sd/a`` free of ``a``, which
     ``sqrt(a**2 + s**2)`` would not, and likewise for the observable. A scaling symbol that appears
-    only additively inside the formula (isensee's ``b_pRII_global + s_pRII_global * (...)``) fails
+    only additively inside the formula (``b_global + s_global * (...)``) fails
     the observable half and is correctly declined.
     """
     try:
@@ -1691,7 +1692,7 @@ def _per_observable_agreement(problem, pid, rows, fn):
     """Apply ``fn(sub_rows)`` to each covered observable's rows and return the common result, or
     ``None`` if they disagree or any is ``None``.
 
-    A sigma shared across many observables (blasi: one ``sigma`` for 16 acetylation states) is the
+    A sigma shared across many observables (one ``sigma`` for 16 observables) is the
     normal case, and each observable declares its OWN noise placeholder, so the expression must be
     resolved per observable. Requiring agreement keeps the reported verdict
     meaningful: if one observable's noise is proportional and another's additive, no single scalar
@@ -1765,23 +1766,22 @@ def sigma_scale_coupled(problem, pid: str) -> bool:
     FIXED co-parameter is different and is not flagged: it is a declared constant of the problem,
     identical on both sides, so it cancels from the ratio.
 
-    fiedler is the live case: ``noiseFormula = noiseParameter1 * noiseParameter2`` resolves to
-    ``s_pMek_<gel> * sigma_pMek``, and the gels' ``s_pMek_*`` are estimated over 77.7 … 999.99. Only
-    the product is identified, so a model whose internal pMek units differ fits a proportionally
-    different sigma for the SAME noise. Note what IS comparable: the product is the noise sd in
-    measurement units (404.2 * 5.8e-4 = 0.235 against a pMek data std of 1.35 -- plausible), so the
-    reference basis is recoverable in principle; see
-    :func:`petab_harness.runner.scoring._reference_sigma_flag` for why it is declined today and what
-    recording it would take. :func:`sigma_effective_value` already documents the half of this that
-    was known -- "two models that split the same fit differently between gain and sigma report
-    different values here" -- which is harmless for the data-driven ratio (the gain cancels from
-    sd/spread) but not for a comparison against another model's fitted sigma.
+    The live case is a noise formula that multiplies a per-gel scale by a shared sigma:
+    ``noiseFormula = noiseParameter1 * noiseParameter2`` resolves to ``s_<gel> * sigma_A``, and the
+    gels' ``s_*`` are estimated over 77.7 … 999.99. Only the product is identified, so a model whose
+    internal units for ``A`` differ fits a proportionally different sigma for the SAME noise. Note
+    what IS comparable: the product is the noise sd in measurement units (404.2 * 5.8e-4 = 0.235
+    against a data std of 1.35 -- plausible), so the reference basis is recoverable in principle.
+    :func:`sigma_effective_value` already documents the half of this that was known -- "two models
+    that split the same fit differently between gain and sigma report different values here" --
+    which is harmless for the data-driven ratio (the gain cancels from sd/spread) but not for a
+    comparison against another model's fitted sigma.
 
-    Unflagged, this made the judge's reference-sigma gate fire on 19 of 20 fiedler runs in the Aug
-    8-10 sweep, silently failing 17 that had BEATEN the BIC bar (best dBIC -28.8, while the one
-    scored pass was +0.50). The candidates' own data-driven numbers said their noise was fine
+    Unflagged, this made a reference-sigma gate fire on 19 of 20 sessions on such a problem,
+    silently failing 17 that had BEATEN the BIC bar (best dBIC -28.8, while the one that passed was
+    +0.50). The candidates' own data-driven numbers said their noise was fine
     (fraction_of_data_std ~0.31, fitted_over_data_noise ~0.56); only the cross-model raw-sigma ratio
-    called them 179x inflated. Of the 21 examples here, fiedler is the ONLY one with this shape.
+    called them 179x inflated. Of 21 problems measured, that one is the ONLY one with this shape.
     """
     rows = _measurement_rows_for_sigma(problem, pid)
     if rows is None or rows.empty or NOISE_PARAMETERS not in rows.columns:
@@ -1803,12 +1803,12 @@ def sigma_effective_value(
 ) -> float | None:
     """The sd implied by ``pid = fitted``, expressed on the scale :func:`sigma_data_std` measures.
 
-    Evaluated from the noiseFormula, so a COMPOSITE sd (fiedler's
-    ``noiseParameter1*noiseParameter2`` — a per-gel scale times the sigma, where neither factor is
-    an sd alone) comes out right. For ``proportional`` noise the value returned is the coefficient
-    of variation, which is the sd in log space, matching the coordinate
-    :func:`sigma_noise_coordinate` reports for that form. ``None`` when the form is not one of the
-    two summarisable cases, or the expression will not reduce to a number.
+    Evaluated from the noiseFormula, so a COMPOSITE sd (``noiseParameter1*noiseParameter2`` — a
+    per-gel scale times the sigma, where neither factor is an sd alone) comes out right. For
+    ``proportional`` noise the value returned is the coefficient of variation, which is the sd in
+    log space, matching the coordinate :func:`sigma_noise_coordinate` reports for that form.
+    ``None`` when the form is not one of the two summarisable cases, or the expression will not
+    reduce to a number.
 
     A per-gel AMPLITUDE is divided out (see :func:`_observable_amplitude`), so what comes back is
     the sd in the amplitude-normalised coordinate — which is what makes it a SINGLE number when one
@@ -1816,8 +1816,9 @@ def sigma_effective_value(
     :func:`sigma_data_std`, measured in the same coordinate. Note this is a deliberate choice of
     coordinate, not "the sd in measurement units": the gain cancels from the sd/spread RATIO the
     gate uses, so the ratio is unaffected, but two models that split the same fit differently
-    between gain and sigma report different values here. For fiedler the amplitude is an exact
-    divisor of the formula, so the normalised value coincides with the raw sigma.
+    between gain and sigma report different values here. For a per-gel scale times a shared sigma
+    the amplitude is an exact divisor of the formula, so the normalised value coincides with the
+    raw sigma.
     """
     rows = _measurement_rows_for_sigma(problem, pid)
     if rows is None or rows.empty:
@@ -2122,9 +2123,9 @@ def prune_orphans(problem) -> dict[str, list[str]]:
     # it: removing it would leave the rule pointing at a deleted id, which is invalid SBML
     # ("the value of an <assignmentRule>'s 'variable' must be the identifier of an existing
     # <compartment>, <species>, <parameter> …") and the whole edit is then rejected. Published
-    # models really do carry such write-only quantities — an inert control compound's gated input
-    # (isensee's `fourABnOH`), or a pass-through alias of a condition target (raimundez's
-    # `FM`/`HM`) — and those rules are also what makes their condition targets count as USED.
+    # models really do carry such write-only quantities — an inert control compound's gated input,
+    # or a pass-through alias of a condition target — and those rules are also what makes their
+    # condition targets count as USED.
     # `_model_math_names` only walks rule MATH (the right-hand side), so add the targets here.
     keep_names = keep | _model_math_names(sm) | _reaction_species(sm) | rule_targets
     # keep IC params of remaining species
@@ -2139,13 +2140,13 @@ def prune_orphans(problem) -> dict[str, list[str]]:
         if pid in keep_names:
             continue
         # An initialAssignment's SYMBOL (its target) appears in none of the keep sets:
-        # `_model_math_names` walks IA *math* (the right-hand side), so `IPR_total = A*B` keeps A
-        # and B but not IPR_total itself. Removing the parameter while leaving its IA behind
+        # `_model_math_names` walks IA *math* (the right-hand side), so `A_tot = A*B` keeps A
+        # and B but not A_tot itself. Removing the parameter while leaving its IA behind
         # produced a dangling IA -- invalid SBML -- and the whole edit was then rejected for a
-        # corruption the server introduced (11 rejected calls in the Aug 8-10 sweep, on
-        # `IPR_total`, `k_bind_S6`, `delta`, `pEGFR_tot`). Drop the IA WITH its symbol rather than
-        # keeping a parameter nothing reads: an unreferenced parameter is a genuine orphan, and its
-        # IA is only meaningful while the parameter exists. Reported so the caller can say so.
+        # corruption the server introduced (11 rejected calls in one measurement, on four different
+        # parameters). Drop the IA WITH its symbol rather than keeping a parameter nothing reads:
+        # an unreferenced parameter is a genuine orphan, and its IA is only meaningful while the
+        # parameter exists. Reported so the caller can say so.
         if _drop_initial_assignment(sm, pid):
             removed_initial_assignments.append(pid)
         sm.removeParameter(pid)
@@ -2172,7 +2173,7 @@ def _ic_parameter_ids(sm) -> set[str]:
 def _direct_ic_parameter_ids(sm) -> set[str]:
     """IC parameters that are the SOLE symbol of a species initialAssignment (`<sid> = <param>` —
     the shape `_set_parametric_ic` and an author's own `A = A_init` produce): a directly settable
-    initial condition. Excludes participants of a COMPOUND expression (`Rec = ini_R1*ini_R2fold`),
+    initial condition. Excludes participants of a COMPOUND expression (`B = B_tot*B_fold`),
     which the {0,1} value convention must NOT fix individually — a participant valued 1 there is a
     fold/normalisation seed the author means to estimate, not a fixed unit-normalisation IC."""
     ic: set[str] = set()
@@ -2201,7 +2202,7 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
     (:attr:`session.PetabSession.shipped_parameter_df`). A parameter being added that appears
     there gets its SHIPPED row back — bounds, scale and estimate — instead of the defaults derived
     below. That matters because a row can leave the table and come back: the content-free seed
-    declares no mechanism, so every kinetic and initial-condition row a zero-shot problem ships is
+    declares no mechanism, so every kinetic and initial-condition row a model-less problem ships is
     pruned at v0 and re-added by the caller's first authoring. Minting defaults there would quietly
     replace the shipped search space, so the candidate and the reference would no longer be fit
     over the same box.
@@ -2233,18 +2234,18 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
     # "… is not allowed to occur in the parameters table". `keep_table` was overriding that
     # exclusion whenever an observable formula happened to reference the same symbol — the normal
     # shape for a rule-computed readout — so the row survived the sync and the whole edit was
-    # refused. Measured on one sweep: this was the single largest refusal cause, 85 rejections on
-    # `prevalence` alone (an assignment-rule target read by an observable), plus IR1in/IR2in/
-    # Deaths/Cumulative_cases in the same shape. The agent's model was legal; the sync produced a
-    # table petab forbids, so the fix belongs here and not in the model text.
+    # refused. Measured over one set of sessions: this was the single largest refusal cause, 85
+    # rejections on a single assignment-rule target read by an observable, plus four more targets
+    # in the same shape. The agent's model was legal; the sync produced a table petab forbids, so
+    # the fix belongs here and not in the model text.
     keep_table -= _rule_target_symbols(sm)
     # Same failure, second shape: a symbol that USED to be a parameter and is now a SPECIES. PEtab
     # forbids species in the parameter table exactly as it forbids rule targets, but `keep_table`
     # overrode that too whenever an observable formula referenced the symbol -- which is the normal
     # shape when the agent promotes a lumped parameter into an explicit state. The stale row then
     # survived the sync and lint refused the problem with "Extraneous parameter(s) in parameter
-    # table". 20 rejected calls in the Aug 8-10 sweep, every one of them the same fujita pair
-    # {'pEGFR_Akt', 'pAkt_S6'} (18 of them inside a single run, which looped on it for 18 calls).
+    # table". 20 rejected calls in one measurement, every one of them the same pair of promoted
+    # parameters (18 of them inside a single session, which looped on it for 18 calls).
     # Critically the agent had NO WAY OUT: no tool in the surface can delete a parameter-table row,
     # so the state was unreachable from the agent side and the retry could only fail again.
     keep_table -= species_ids(sm)
@@ -2265,17 +2266,17 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
         value = problem.model.get_parameter_value(pid)
         if pid in ic_params:
             # Initial conditions are ESTIMATED by default (issue #90): a declared t=0 is only a
-            # guess, and freezing it hands the optimizer a value it can never correct (crauste
-            # Naive: ~460 guess frozen where the truth is ~8090). A seeded/guessed IC is a
+            # guess, and freezing it hands the optimizer a value it can never correct (measured: a
+            # ~460 guess frozen where the truth is ~8090). A seeded/guessed IC is a
             # strictly-positive concentration, so it is estimated on LOG10 with the usual wide
             # bracketing bounds — exactly like a positive kinetic parameter — resolving seeds that
             # span many orders (a receptor pool ~1e7 beside a kinase ~1e-2).
             #   TWO leak-free VALUE conventions stay FIXED instead:
             #     v0 == 0.0  -> an empty pool: nothing to estimate, and it cannot live on log10.
             #     v0 == 1.0  -> a unit normalization: a conserved-total / normalization convention
-            #                   set to 1 (e.g. sneyd IPR_R, blasi x_0ac). Fixing it BY VALUE names
-            #                   no species, so — unlike shipping it as a fixed param — it leaks no
-            #                   hidden structure to a zero-shot agent.
+            #                   set to 1. Fixing it BY VALUE names no species, so — unlike shipping
+            #                   it as a fixed param — it leaks no hidden structure to the agent
+            #                   building the model.
             # Any OTHER IC that must stay fixed is shipped as a fixed parameter row (which this sync
             # never re-touches). A nonzero non-positive nominal can't live on log10 -> linear.
             try:
@@ -2360,8 +2361,8 @@ def ensure_one_species(sm) -> bool:
     ``ensure_simulation``, ``_restore_or_simulate`` and ``identifiability``.
 
     Minting a placeholder keeps the invariant without distorting what the model MEANS, which the
-    alternative — declaring observable-formula identifiers as species — does not: on a blinded
-    problem whose formulas name only ``readout_*`` measurement mappings, the mappings themselves
+    alternative — declaring observable-formula identifiers as species — does not: on a problem
+    whose formulas name only ``readout_*`` measurement mappings, the mappings themselves
     look like states, get wired into reactions, and can then never be assigned. Every readout is
     a constant instead, and this placeholder carries the invariant.
 

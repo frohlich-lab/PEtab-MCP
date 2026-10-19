@@ -4,8 +4,8 @@ The bug this exists for: `get_parameters` declares `-> list[dict]`, so FastMCP v
 structured output against an ARRAY schema. Returning `ctx.run`'s `{"ok": false, "error": ...}`
 dict from its unknown-id branch failed that validation with
 `RuntimeError: Invalid structured content ... is not of type 'array'`, which does not degrade —
-it KILLS THE RUN. Six of fourteen runs died that way in the 2026-08-16 sneyd/fujita sweep and it
-had to be cancelled, with 1130 unit tests green: every one of them called the python function
+it KILLS THE SESSION. Six of fourteen sessions died that way in one batch and it had to be
+cancelled, with 1130 unit tests green: every one of them called the python function
 directly, where the declared return type is never enforced.
 
 So this suite drives the tools THROUGH the MCP surface, on the paths most likely to produce a
@@ -60,12 +60,12 @@ def _violations(mcp, calls):
     output schema.
 
     The check has to VALIDATE, not just watch for an exception: `mcp.call_tool` hands back a
-    non-conforming payload without complaint — the enforcement happens client-side, in
-    langchain-mcp-adapters, against the schema the tool published. A first version of this file
-    only caught raised errors and passed happily when the original bug was reintroduced verbatim.
-    So: call, then validate structured_content against `tool.output_schema` exactly as the
-    client does. A RAISED rejection is fine (that is how a list-returning tool must refuse); a
-    returned payload of the wrong shape is the bug, because it kills the run.
+    non-conforming payload without complaint — the enforcement happens client-side (in
+    langchain-mcp-adapters, for one), against the schema the tool published. A first version of
+    this file only caught raised errors and passed happily when the original bug was reintroduced
+    verbatim. So: call, then validate structured_content against `tool.output_schema` exactly as
+    the client does. A RAISED rejection is fine (that is how a list-returning tool must refuse); a
+    returned payload of the wrong shape is the bug, because it kills the session.
     """
     import jsonschema
 
@@ -97,7 +97,7 @@ def test_no_tool_violates_its_own_output_schema_on_a_bad_call(tmp_path):
     bad = _violations(mcp, calls)
     assert not bad, (
         "tools returned payloads violating their declared output schema — this "
-        f"class of failure KILLS a run, it does not degrade: {bad}"
+        f"class of failure KILLS a session, it does not degrade: {bad}"
     )
 
 

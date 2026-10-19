@@ -103,10 +103,10 @@ SIMULATION_HISTORY_COLUMNS = ["version", *SIMULATION_COLUMNS]
 _OFFSET_SKIP_CHUNK = 1000
 
 #: Hard ceiling on any single page, whatever the caller asks for. Sized from the measured cost
-#: of the reads it bounds: the full raw measurement table is 35-81k tokens on the shipped
-#: benchmark problems (bachmann 541 rows, isensee 687, lucarelli 1755), so 1000 rows keeps the
-#: worst single tool result to roughly a quarter of the smallest of those while still returning
-#: whole small tables in one call. Callers page past it with ``next_offset``.
+#: of the reads it bounds: the full raw measurement table is 35-81k tokens on problems of 541,
+#: 687 and 1755 rows, so 1000 rows keeps the worst single tool result to roughly a quarter of the
+#: smallest of those while still returning whole small tables in one call. Callers page past it
+#: with ``next_offset``.
 MAX_PAGE_ROWS = 1000
 
 # Columns of the pyPESTO optimization tables (from the last fit). Fixing them keeps the
@@ -252,7 +252,7 @@ def _simulation_history_frame(session):
     file changed or appeared. Two properties hang off that key choice:
 
     * **rebuilds are O(new versions), not O(all)** — the store only grows, and re-parsing every
-      earlier blob after each commit would make a run's total history I/O quadratic in its
+      earlier blob after each commit would make a session's total history I/O quadratic in its
       version count;
     * **the mid-commit window cannot poison the cache** — ``snapshot_version`` writes
       ``meta.json`` before ``simulations.json`` and ``query_data`` takes no session lock, so a
@@ -267,7 +267,7 @@ def _simulation_history_frame(session):
 
     Cost, stated honestly: on a COLD cache both callers parse every version's
     ``simulations.json`` — ``table_schema`` skips only the DataFrame concat, not the parse, so
-    the first ``list_data_tables`` of a run with N committed versions reads N files. What the
+    the first ``list_data_tables`` of a session with N committed versions reads N files. What the
     fingerprint cache buys is every call AFTER that: a schema listing costs one stat per
     version, and a commit costs parsing only the version it added. Versions whose fit failed or
     was skipped store no simulation and contribute no rows.
@@ -288,7 +288,7 @@ def _simulation_history_rows(session) -> "dict[int, tuple[Any, list]]":
 
     Split from the frame builder so ``table_schema`` can report ``n_rows`` by summing lengths
     instead of materializing (and immediately discarding) a full cross-version DataFrame on
-    every ``list_data_tables`` — the FIRST call the harness prompt prescribes, on a store where
+    every ``list_data_tables`` — typically an agent's FIRST call, on a store where
     a single ``simulations.json`` can be hundreds of kB.
     """
     prov = getattr(session, "provenance", None)
@@ -309,7 +309,7 @@ def _simulation_history_rows(session) -> "dict[int, tuple[Any, list]]":
             # isinstance guard passes) and still hold `records: [1, 2, 3]` — a hand-edited
             # file, or an archive from an older schema. Splatting a non-mapping raises a
             # TypeError that would escape into every query_data AND list_data_tables call for
-            # the rest of the run, which is exactly the poisoning this path exists to avoid.
+            # the rest of the session, which is exactly the poisoning this path exists to avoid.
             for r in records if isinstance(records, list) else []:
                 if isinstance(r, dict):
                     # `version` LAST so the column is authoritative: a record carrying its own
@@ -356,7 +356,7 @@ def validate_page_args(max_rows: Any, offset: Any = 0) -> "tuple[int, int]":
 
     ``max_rows`` is CLAMPED to :data:`MAX_PAGE_ROWS`. Paging is a guarantee, not advice: without
     a ceiling the caller can simply ask for the whole table (``max_rows=100000`` returns all
-    1755 lucarelli rows, ~81k tokens) and reproduce the context blow-up paging exists to
+    1755 rows of a large problem, ~81k tokens) and reproduce the context blow-up paging exists to
     prevent — a tool description telling the model not to is not a bound. Clamped rather than
     rejected because the reply already reports ``truncated``/``next_offset``, so an over-large
     request degrades into a correct first page instead of an error the model must recover from.
@@ -400,16 +400,16 @@ def table_schema(session) -> dict[str, Any]:
         }
         for name, df in frames.items()
     ]
-    # The history is listed with a real row count — so an analyst deciding whether
+    # The history is listed with a real row count — so an agent deciding whether
     # cross-version comparison is even possible sees "0 rows" vs "N rows" here rather than
     # discovering it through an empty query result — but WITHOUT building the frame: the
     # columns are the declared schema and the count is a sum over the cache. This is the one
     # caller that touches the history without the query-names-it gate, and it is also the
-    # most frequent one (the harness prompt says to call list_data_tables FIRST), so it must
+    # most frequent one (an agent typically calls list_data_tables FIRST), so it must
     # not concatenate a cross-version DataFrame it would immediately discard.
     # Guarded: this is the one entry that touches DISK, and list_data_tables was previously
     # incapable of failing. A stale NFS handle or a permissions change on the version store
-    # must not break the run's opening move — degrade to an unknown count and let the caller
+    # must not break the session's opening move — degrade to an unknown count and let the caller
     # still learn every table's columns.
     try:
         n_history = sum(len(rows) for _, rows in _simulation_history_rows(session).values())
@@ -453,7 +453,7 @@ def run_query(session, sql: str, max_rows: int = 1000, offset: int = 0) -> dict[
         # Guarded like table_schema's read, and for the same reason: the version store lives on
         # shared storage, and an ESTALE/EIO from the glob must not surface as a raw exception —
         # ctx.run re-raises anything that is not a PetabMcpError, the circuit breaker counts it,
-        # and three in a row would disable query_data for the rest of the run over a transient
+        # and three in a row would disable query_data for the rest of the session over a transient
         # filesystem hiccup on a table the query merely mentioned.
         try:
             frames["simulations_history"] = _simulation_history_frame(session)
@@ -634,25 +634,25 @@ def fit_diagnosis(session, worst_n: int = 8, max_observables: int | None = 12) -
             o["structure_flag"] = True
 
     # SIZE CAP, worst-first, applied AFTER the structure flags exist. "One row per observable"
-    # stops being compact at scale: on lucarelli (65 observables) this table alone was ~6-8 kB
+    # stops being compact at scale: on a 65-observable problem this table alone was ~6-8 kB
     # per call, and it rides on payloads the caller re-sends in history on every later turn —
-    # the lead's history there grew 15.5k tokens/TURN and three of nine runs died on the context
-    # window before their fit budget. Worst-K keeps the rows the caller acts on (sorted by chi2,
-    # and every structure-FLAGGED row is retained regardless of rank, so the cap can never hide
-    # a verdict); the omission note says what was dropped, so a truncated table cannot read as a
-    # complete one.
+    # the agent's history there grew 15.5k tokens/TURN and three of nine sessions died on the
+    # context window before their fit budget. Worst-K keeps the rows the caller acts on (sorted by
+    # chi2, and every structure-FLAGGED row is retained regardless of rank, so the cap can never
+    # hide a verdict); the omission note says what was dropped, so a truncated table cannot read
+    # as a complete one.
     # Selection keeps the rows a caller ACTS on, under a HARD ceiling. Three ranks are unioned
     # because three different consumers each have their own notion of "worst" and a cap that
     # knows only one of them silently changes their answers: chi2 (this table's own sort),
-    # |mean_weighted_residual| (the finish gate picks its headline observable by bias), and the
-    # structure flags (the rolled-up verdict must never be contradicted by a truncated table).
+    # |mean_weighted_residual| (a client's finish gate picks its headline observable by bias), and
+    # the structure flags (the rolled-up verdict must never be contradicted by a truncated table).
     # The flagged set is CAPPED too — on a badly-fitting 65-observable problem the rollup can
     # flag 50+, and an unbounded "keep all flagged" escape reproduces exactly the payload the cap
     # exists to remove, in precisely the regime where context pressure is worst.
     # `max_observables=None` (or 0) means NO cap — for the OFFLINE readers. The cap exists for
-    # the agent's context window; the judge/scoring path has no such pressure and its projection
-    # into result.json is permanent, so truncating there loses rows for every future analysis of
-    # the run. Same function, different budget, chosen by the caller.
+    # the agent's context window; an offline scorer has no such pressure and what it records is
+    # permanent, so truncating there loses rows for every future analysis of the session. Same
+    # function, different budget, chosen by the caller.
     _CAP, _BIAS_KEEP, _FLAG_KEEP = (max_observables or 0), 3, 6
     omitted_note = None
     if _CAP and len(per_observable) > _CAP:
@@ -690,8 +690,9 @@ def fit_diagnosis(session, worst_n: int = 8, max_observables: int | None = 12) -
 
     # Noise-model plausibility, echoed here too (the agent reads this tool to see WHERE the fit is
     # off): an inflated/collapsed ESTIMATED sigma means a good BIC is not genuine adequacy — the fix
-    # is mechanistic, not noise-side. Best-effort; advisory only, never breaks the diagnosis (the
-    # judge calls this too). Empty {} when the problem has no estimated sigma or no fit yet.
+    # is mechanistic, not noise-side. Best-effort; advisory only, never breaks the diagnosis (a
+    # scorer outside the session calls this too). Empty {} when the problem has no estimated sigma
+    # or no fit yet.
     noise_sigma: dict[str, Any] = {}
     try:
         from . import fitting
@@ -720,7 +721,7 @@ def fit_diagnosis(session, worst_n: int = 8, max_observables: int | None = 12) -
             "replicate_lack_of_fit arm, whose PASS is worth only its lof_df (replicated points "
             "MINUS your estimated structural parameters): weak: true, or no lof_df, certifies "
             "nothing — is the residual_structure block on the fit result, not repeated here. "
-            "For a full breakdown or the optimizer log, delegate to an analyst."
+            "A full breakdown and the optimizer's log are separate reads."
         ),
     }
 
@@ -743,7 +744,7 @@ def residual_structure_rollup(session, sims=None) -> dict[str, Any]:
     * the sign test and the runs test, per observable, over the points WITHIN a residual series;
     * the replicate lack-of-fit test, per replicated design point, ACROSS that point's own
       replicates (:func:`_replicate_lof`) — the axis the sign tests cannot reach when a design point
-      IS an observable (blasi: one steady-state condition, so every series has length 1).
+      IS an observable (one steady-state condition, so every series has length 1).
 
     Computed on every commit, and returned on the ``fit`` result so the agent gets the verdict
     without spending a ``get_fit_diagnosis`` call at all (see issue #113). Computes ONLY the
@@ -814,14 +815,14 @@ def _rollup_structure(verdicts, replicate_lof: dict[str, Any] | None = None) -> 
     # directions to spare (`_merge_lof_verdicts` credits coverage only from a POWERED band), so an
     # unflagged verdict is a genuine pass rather than "we could not tell". Only for the covered
     # ones — clearing it globally as soon as ANY arm ran asserted sign-randomness for observables
-    # with no replicates at all, and that over-claim reaches result.json
-    # (runner.scoring._residual_structure_fields) and the armed finish gate.
+    # with no replicates at all, and that over-claim reaches every record of the verdict and any
+    # client's finish gate keyed on it.
     #
     # KNOWN LIMIT, accepted: ``covered`` is per OBSERVABLE while the sign/runs tests are per SERIES,
     # so an observable with one replicated condition and one single-measurement condition is credited
     # on the replicated one. Bounded, and the summary now names which observables the sign/runs arm
     # was underpowered for and which points the replicate arm actually tested, so the two claims can
-    # be told apart. Not reachable on the 16 benchmark examples (no example mixes a replicated and a
+    # be told apart. Not reached on any problem it was measured on (none mixes a replicated and a
     # non-replicated condition within one observable).
     # An arm with too few lack-of-fit directions to certify anything on its own axis credits NO
     # coverage, so it cannot stand in for the sign/runs tests being underpowered — decided once, in
@@ -848,7 +849,7 @@ def _rollup_structure(verdicts, replicate_lof: dict[str, Any] | None = None) -> 
             # halves of the summary contradict each other. With nothing
             # covered there is no competing claim to disambiguate, and
             # naming every underpowered observable would put a list of
-            # them on every fit (fiedler's 22: a 134 -> 1053 char
+            # them on every fit (22 on one problem: a 134 -> 1053 char
             # summary, forever, to say what `low_power` already says).
             low_power_observables=weak if covered else [],
         ),
@@ -896,9 +897,9 @@ _LOF_ROLLUP_ONLY_KEYS = (
 #: `lof_df` is never 0 on an available arm (df <= 0 is `vacuous`, which is not available), so dropping
 #: on falsy cannot hide a real count.
 #: Measured, so the next reader does not have to guess whether this pays: the arm's payload on a fit
-#: is 15-31 bytes smaller than carrying the nulls (184 -> 153 on the 13 examples that cannot run it,
-#: which is the case that repeats on every fit forever — PR #23), against ~27 more in the summary
-#: where the arm PASSES, because the powered sentence now names the df it rests on.
+#: is 15-31 bytes smaller than carrying the nulls (184 -> 153 on the 13 of 16 measured problems that
+#: cannot run it, which is the case that repeats on every fit forever — PR #23), against ~27 more in
+#: the summary where the arm PASSES, because the powered sentence now names the df it rests on.
 _LOF_OMIT_WHEN_EMPTY_KEYS = ("lof_df", "weak", "untested_status")
 
 
@@ -990,12 +991,12 @@ def _replicate_lof(session, sims=None) -> dict[str, Any]:
         # pooled noise floor (fitting.noise_sigma_report) calls the same function on the MEASUREMENT
         # table while this call groups the simulation subset, so there is no one result to share. The
         # duplicated prelude was dominated by resolving the noise-formula gains, which reconcile now
-        # memoises on the observable table's TEXT (measured per sigma, gain resolution: blasi 35.8 ->
-        # 5.8 ms, schwen/std 54.3 -> 10.9 ms; the whole call blasi 40.8 -> 11.2 ms). What is left to
-        # duplicate is single-digit ms per sigma against a multistart fit's seconds, so the remaining
-        # redundancy is not worth a (problem, pid, fitted) cache: the measurement table is rewritten
-        # between the two calls whenever the agent re-authors, and a stale row set feeding a stop gate
-        # is a worse failure than the cost.
+        # memoises on the observable table's TEXT (measured per sigma, gain resolution: 35.8 ->
+        # 5.8 ms on a 16-observable problem, 54.3 -> 10.9 ms on another; the whole call on the first
+        # 40.8 -> 11.2 ms). What is left to duplicate is single-digit ms per sigma against a
+        # multistart fit's seconds, so the remaining redundancy is not worth a (problem, pid,
+        # fitted) cache: the measurement table is rewritten between the two calls whenever the agent
+        # re-authors, and a stale row set feeding a stop gate is a worse failure than the cost.
         resolved = [
             (pid, R.replicate_pure_error_points(problem, pid, fitted, simulations=frame))
             for pid in _noise_parameter_ids(problem)
@@ -1022,11 +1023,11 @@ def _noise_parameter_ids(problem) -> list[str]:
     """The REAL noise parameters to scope the arm by, sorted.
 
     ``plausibility_sigma_ids`` also yields the ``noiseParameter1_<obsId>`` PLACEHOLDER symbols of
-    every noiseFormula (blasi: 16 of them beside the one real ``sigma``), and each placeholder
-    resolves to exactly one observable — so scoping by them would split blasi's single 15-point
-    family into 16 one-point families, none of which can be tested. Intersecting with the parameter
-    table is what ``fitting.noise_sigma_report`` does (against the fitted values) for the same
-    reason."""
+    every noiseFormula (16 of them beside the one real ``sigma`` on a 16-observable problem), and
+    each placeholder resolves to exactly one observable — so scoping by them would split its
+    single 15-point family into 16 one-point families, none of which can be tested. Intersecting
+    with the parameter table is what ``fitting.noise_sigma_report`` does (against the fitted
+    values) for the same reason."""
     from . import reconcile as R
 
     ids = R.plausibility_sigma_ids(problem)
@@ -1040,8 +1041,8 @@ def _labelled_points(
     points: list[dict[str, Any]], per_observable: "Counter[Any] | None" = None
 ) -> list[dict[str, Any]]:
     """Give each replicated design point a short unique label for the agent-facing payload: the bare
-    observable id where that observable has only one replicated point (blasi's 15 steady-state
-    points), qualified by experiment (where it has one) and time otherwise.
+    observable id where that observable has only one replicated point (e.g. steady-state
+    observables measured once each), qualified by experiment (where it has one) and time otherwise.
 
     ``per_observable`` is the point count per observable across EVERY noise family, so a label is
     unique in the merged verdict and not merely within its own family (:func:`_replicate_lof` builds
@@ -1061,15 +1062,15 @@ def _labelled_points(
 
 
 #: The two NO-EVIDENCE statuses whose absence is unremarkable and PERMANENT — a property of the
-#: problem's tables, not of the fit, so prose about them would be a per-fit tax forever (13 of the
-#: 16 benchmark examples are one of these; measured: 9 with no repeated design point at all, 4 whose
+#: problem's tables, not of the fit, so prose about them would be a per-fit tax forever (13 of 16
+#: problems measured are one of these: 9 with no repeated design point at all, 4 whose
 #: noiseFormula is a placeholder over NUMERIC noiseParameters cells and which also have 0 replicated
 #: design points). ONE source of truth for both places the policy applies: the summary line stays
 #: silent for them, and the merge never hedges a sibling's verdict against them.
 _LOF_SILENT_STATUSES = ("no_replicated_points", "no_noise_parameter")
 
 #: Unavailable statuses, most informative first — a merge keeps the one that says the most about WHY
-#: the arm could not run (armistead's vacuous saturation over blasi-style "no replicates at all").
+#: the arm could not run (a vacuous saturation over "no replicates at all").
 #: The catch-all ``unavailable`` outranks BOTH silent statuses even though it names the least: it is
 #: the only status that reports a real, fixable failure on a problem that DOES have replicates, and
 #: ranking it last let a benign sibling silence it — one sigma resolving to zero replicated points
@@ -1096,18 +1097,18 @@ def _merge_lof_verdicts(
     knows the POOLED point count: ``n_structural`` (the whole-model estimated-structural count from
     :func:`_n_estimated_structural`) is subtracted ONCE from the total the arms tested, and
     ``rt.lof_power`` turns that into the band. Per family it was neither — total points minus F times
-    the shared parameters — which understated the df of a multi-sigma problem and refused
-    armistead's three 4-point families one at a time as vacuous, on a pooled count that leaves 2
-    directions. ``min_lof_df`` overrides the threshold for a caller that wants a different bar; the
-    default lives in ``rt.lof_power`` alone.
+    the shared parameters — which understated the df of a multi-sigma problem and refused three
+    4-point families one at a time as vacuous, on a pooled count that leaves 2 directions.
+    ``min_lof_df`` overrides the threshold for a caller that wants a different bar; the default
+    lives in ``rt.lof_power`` alone.
 
     An arm that could NOT run is not dropped: its status survives as ``untested_status``, because a
     merge that kept only the available arms reported a bare "pass" for a problem where one family was
-    tested and another was never looked at (armistead, on every fit: three families of 4 points pass
-    while sd_S1P_obs's 2 points are too few to test). Only for a status the summary is willing to
-    SPEAK about, though (see ``_LOF_SILENT_STATUSES``): hedging a real pass against a family that has
-    no replicated design points at all says nothing — there is nothing there that could not be
-    tested."""
+    tested and another was never looked at (seen on every fit of one problem: three families of 4
+    points pass while a fourth family's 2 points are too few to test). Only for a status the summary
+    is willing to SPEAK about, though (see ``_LOF_SILENT_STATUSES``): hedging a real pass against a
+    family that has no replicated design points at all says nothing — there is nothing there that
+    could not be tested."""
     from . import residual_tests as rt
     from .constants import REPLICATE_LOF_MAX_REPORTED_POINTS
 
@@ -1128,7 +1129,7 @@ def _merge_lof_verdicts(
             # No noise family to scope the arm by at all — the whole loop never ran. Its own status,
             # not the catch-all: a numeric noiseFormula is fixed DATA, so there is nothing for a
             # re-author to resolve, and with a FIXED sigma the chi2 GoF this arm exists to backstop
-            # is not blind in the first place (bruno, crauste, fujita, rahman — which also have no
+            # is not blind in the first place (the four such problems measured also have no
             # replicated design point between them).
             return _lof_payload(rt.replicate_lof_unavailable("no_noise_parameter"))
         worst = _worst_status(untested)
@@ -1164,12 +1165,11 @@ def _merge_lof_verdicts(
         #
         # WHERE THE df BAND GOES, so nobody has to guess: the summary prose (_replicate_lof_line),
         # the coverage credit just below (which keys on the BAND, not on `weak` — see there), and
-        # result.json (runner.scoring._residual_structure_fields, plus the history CSV's lof_*
-        # columns). NO stop condition reads either — `residual_flag` keys on `flagged_observables`,
-        # `petab_mcp.session`'s plateau stop on `best_residual_flagged`, and
-        # `petab_harness.agent.finish_gate` on `available` + `n_flagged` — so a weak pass still clears
-        # every gate a powered one does, deliberately: the arm is advisory here, and the lead is an
-        # LLM that reads the prose, so the wording IS the mechanism.
+        # whatever a caller records off the fit payload. NO stop condition reads either —
+        # `residual_flag` keys on `flagged_observables`, `petab_mcp.session`'s plateau stop on
+        # `best_residual_flagged`, and a client's finish gate on `available` + `n_flagged` — so a
+        # weak pass still clears every gate a powered one does, deliberately: the arm is advisory
+        # here, and the agent is an LLM that reads the prose, so the wording IS the mechanism.
         "lof_df": lof_df,
         # A pass carried by too few lack-of-fit directions to mean much; never set on a FLAG, which is
         # conclusive however few directions remain. Absent (not False) when the df is UNKNOWN — see
@@ -1234,17 +1234,17 @@ def _replicate_lof_advice(verdict: dict[str, Any]) -> str:
 def _n_estimated_structural(problem) -> int | None:
     """Estimated parameters MINUS the noise sigmas: the structural degrees of freedom the replicate
     arm's df guard subtracts ONCE from the POOLED replicated-point count of every noise family
-    (``rt.lof_power``; armistead: 10 structural against 3 families of 4 points, so 2 lack-of-fit
-    directions survive its fit). ``None`` when the parameter table cannot answer — which does not
+    (``rt.lof_power``; e.g. 10 structural against 3 families of 4 points, so 2 lack-of-fit
+    directions survive the fit). ``None`` when the parameter table cannot answer — which does not
     turn the guard off but makes the arm's power UNKNOWN: no coverage credit, and the summary says
     the pass could not be weighed rather than calling it powered.
 
     Subtracts the SAME set :func:`_noise_parameter_ids` scopes the arm by — ``plausibility_sigma_ids``,
     i.e. the noise symbols that are not ALSO observable-scaling factors. Subtracting the wider
-    ``noise_sigma_ids`` here left the dual-role symbols (fiedler's eight per-gel ``s_pMek_*``, in both
-    noiseParameters and observableParameters) in NEITHER set: excluded from the noise families the arm
-    iterates AND from the structural count, though they move the PREDICTION, which is exactly the
-    flexibility this guard weighs."""
+    ``noise_sigma_ids`` here left the dual-role symbols (e.g. eight per-gel scales ``s_gel*``, in
+    both noiseParameters and observableParameters) in NEITHER set: excluded from the noise families
+    the arm iterates AND from the structural count, though they move the PREDICTION, which is
+    exactly the flexibility this guard weighs."""
     from . import reconcile as R
 
     df = getattr(problem, "parameter_df", None)
@@ -1288,7 +1288,7 @@ def _safe_residual_structure(group) -> dict[str, Any]:
     """:func:`_residual_structure`, but any failure in the added stats degrades to a
     tests-unavailable stub instead of taking down the whole diagnosis (which the magnitude
     aggregations above compute robustly). fit_diagnosis is called by the agent's
-    get_fit_diagnosis AND by the judge, so a raise here must not break either."""
+    get_fit_diagnosis AND by offline scorers, so a raise here must not break either."""
     try:
         return _residual_structure(group)
     except Exception:  # noqa: BLE001 - advisory stats; never fail the diagnosis on them
@@ -1405,7 +1405,8 @@ def _structure_summary(
         # may report a genuine pass for the observables it covered: a blanket "the tests are
         # UNDERPOWERED at this sample size" beside "this arm IS powered (N lack-of-fit degrees of
         # freedom remain), so that is a pass" is a flat contradiction the agent cannot resolve
-        # (armistead, on every fit: three observables covered, S1P_obs's family too small to test).
+        # (seen on every fit of one problem: three observables covered, a fourth's family too small
+        # to test).
         named = (low_power_observables or [])[:_MAX_NAMED_LOW_POWER]
         rest = len(low_power_observables or []) - len(named)
         where = f" for {', '.join(named)}{f' (+{rest} more)' if rest else ''}" if named else ""
@@ -1424,8 +1425,8 @@ def _replicate_lof_line(lof: dict[str, Any]) -> str:
     """The replicate arm's one line for the summary, or ``""``.
 
     Silent for the two statuses whose absence is unremarkable and PERMANENT — no repeated design
-    point at all, and no noise parameter to scope the arm by (``_LOF_SILENT_STATUSES``; 13 of the 16
-    benchmark examples, where the structured keys already carry ``available: false`` plus the reason
+    point at all, and no noise parameter to scope the arm by (``_LOF_SILENT_STATUSES``; 13 of 16
+    problems measured, where the structured keys already carry ``available: false`` plus the reason
     and prose would be a per-fit tax on every one of them, forever). Every other status speaks: a
     real pass, a flag, or the specific reason the arm could not be run — including the catch-all
     ``unavailable``, which used to be silent too and so hid real failures on problems that DO have
@@ -1435,9 +1436,9 @@ def _replicate_lof_line(lof: dict[str, Any]) -> str:
     if status in _LOF_SILENT_STATUSES:
         return ""
     # Whatever the arm DID test, it may not be read as a whole verdict while another family of the
-    # same problem went untested. Live on armistead every fit: three noise families of 4 replicated
-    # points are tested, sd_S1P_obs's 2 points are `too_few_usable_points`, and without this the
-    # 12-point pass read as a whole-problem pass.
+    # same problem went untested. Seen on every fit of one problem: three noise families of 4
+    # replicated points are tested, a fourth family's 2 points are `too_few_usable_points`, and
+    # without this the 12-point pass read as a whole-problem pass.
     partial = ""
     if lof.get("untested_status"):
         partial = (
@@ -1503,7 +1504,7 @@ def _replicate_lof_line(lof: dict[str, Any]) -> str:
     if status == "vacuous":
         # "at least as many", and counted over ALL the replicated design points this problem has:
         # said of one noise family at a time this sentence was simply false for a problem whose
-        # families add up (armistead: 12 points against 10 parameters).
+        # families add up (e.g. 12 points against 10 parameters).
         return (
             "replicate lack-of-fit: NO EVIDENCE — this model has at least as many estimated "
             f"structural parameters as it has replicated design points ({lof.get('n_points')}), "

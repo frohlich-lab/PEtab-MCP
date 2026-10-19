@@ -4,9 +4,9 @@ candidate and the reference are REFIT (``petab_mcp.validation_data``).
 Tested apart from each other, exactly as the fixed-θ kind is in ``test_validation_data.py``:
 which tables move onto the candidate's view and which do not, how a bundle's units are read, and
 what the registered tool accepts. The AMICI-backed tests drive the whole server-side path
-(``score_session``) on the toy problem, because "the refit runs and returns the shape the judge
-reads" is not something a mocked build can establish. The harness's materialisation of a
-transfer set, and what its judge does with the payload, are tested in gemot.
+(``score_session``) on the toy problem, because "the refit runs and returns the shape the caller
+reads" is not something a mocked build can establish. Assembling a transfer set, and what the
+caller does with the payload, are the caller's to test.
 """
 
 from __future__ import annotations
@@ -158,10 +158,11 @@ def test_the_view_moves_only_the_changed_fixed_inputs_and_never_the_start_point(
 
 
 def test_a_candidate_that_cannot_receive_a_changed_input_is_a_finding_not_a_crash():
-    """oliveira's `population` changes between the interior and the whole state. A model that
-    hard-coded it (no row), renamed it, or freed it has no fixed parameter to receive the new value,
-    so it cannot be moved to the held-out system at all — reported as its own status, because a
-    refit at the TRAINING population would be a plausible, wrong number."""
+    """A fixed input (here `A_init`; a population size, say) can change between the training and
+    the held-out system. A model that hard-coded it (no row), renamed it, or freed it has no fixed
+    parameter to receive the new value, so it cannot be moved to the held-out system at all —
+    reported as its own status, because a refit at the TRAINING value would be a plausible, wrong
+    number."""
     no_row = _candidate()
     no_row.parameter_df = no_row.parameter_df.drop(index="A_init")
     view, failed = V.transfer_view(no_row, _held_out(), _SHIPPED)
@@ -175,7 +176,7 @@ def test_a_candidate_that_cannot_receive_a_changed_input_is_a_finding_not_a_cras
 
 
 @pytest.mark.parametrize("rate", ["k1", "candidate_rate"])
-def test_zero_shot_transfer_keeps_the_candidates_own_kinetic_parameters(rate):
+def test_a_transfer_keeps_the_candidates_own_kinetic_parameters(rate):
     """The shipped subset omits kinetics; a candidate may also rename them. Neither permits
     copying the reference's fitted rates into the candidate or rejecting its transfer refit."""
     problem = _candidate()
@@ -252,10 +253,10 @@ def test_score_session_refits_the_toy_on_a_transfer_set_and_leaves_the_session_a
 ):
     """The one AMICI-backed test of a single system: the toy model, its A_init doubled, is REFIT on
     measurements it never saw — a v1 set, whose condition `c1` changes nothing and so lands on the
-    toy's own experiment-less design. Pins the payload SHAPE the judge reads (`mode`, `k`, `n`, a
+    toy's own experiment-less design. Pins the payload SHAPE the caller reads (`mode`, `k`, `n`, a
     finite `nll`), that `k` is the count of estimated rows (k1, k2 — not sigma_B or A_init), and
     that the session's own table and model are exactly as they were: a transfer refit that wrote
-    its optimum back would change what the judge scores on the training data."""
+    its optimum back would change what the caller scores on the training data."""
     meas = session.problem.measurement_df
     held_meas = meas.drop(columns="experimentId").assign(
         simulationConditionId="c1", measurement=meas["measurement"] * 2.0
@@ -288,9 +289,9 @@ def test_score_session_refits_the_toy_on_a_transfer_set_and_leaves_the_session_a
 
 
 def test_the_server_tool_takes_n_starts_and_refits_a_transfer_bundle(tmp_path):
-    """The registered tool is what the judge reaches over MCP: it must accept `n_starts` (or the
-    judge's call fails and the run records `unavailable`) and must read the bundle as a transfer
-    set. Driven in-process through `create_server` like the doc-consistency tests."""
+    """The registered tool is what whoever runs the session reaches over MCP: it must accept
+    `n_starts` (or that call fails and the caller records `unavailable`) and must read the bundle
+    as a transfer set. Driven in-process through `create_server` like the doc-consistency tests."""
     import asyncio
 
     from petab_mcp.server import create_server
@@ -316,9 +317,9 @@ def test_the_server_tool_takes_n_starts_and_refits_a_transfer_bundle(tmp_path):
 
 
 def test_read_held_out_reads_the_sets_units(tmp_path):
-    """`units.tsv` beside the bundle: {conditionId: unitId} for a v1 set, the file the harness
-    writes and the server reads, so the two agree on the split through the file and nowhere
-    else."""
+    """`units.tsv` beside the bundle: {conditionId: unitId} for a v1 set, the file whoever
+    assembles the set writes and the server reads, so the two agree on the split through the file
+    and nowhere else."""
     _rows("c1").rename(columns={"experimentId": "simulationConditionId"}).to_csv(
         tmp_path / "measurements.tsv", sep="\t", index=False
     )

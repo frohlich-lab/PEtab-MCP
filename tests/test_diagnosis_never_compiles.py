@@ -4,8 +4,9 @@ A diagnosis describes a fit that already happened, and the module that fit was c
 already exists — so asking "which parameters can this fit not pin?" must never cost a build. It did:
 the de-dup no-op re-authors the working SBML into a hash nothing is built for, and a diagnosis that
 resolved its AMICI output folder from live session state then compiled that never-fitted structure.
-Measured on the reviewed candidate: 22.4 s (blasi no-op), 57 s (toy, auto_fit off) and 12.5 s
-(unauthored blasi), charged to no clock at all when it went through the finish gate's un-timed probe.
+Measured on the reviewed candidate: 22.4 s (a 16-observable problem, no-op), 57 s (toy, auto_fit
+off) and 12.5 s (the same problem unauthored), charged to no clock at all when it went through a
+client's un-timed finish probe.
 
 The fix is :class:`petab_mcp.fitting.FitRecord` — a diagnosis reads the built problem the fit left
 behind, so there is no hash to resolve. This file is what keeps that true: it enumerates EVERY
@@ -132,9 +133,9 @@ _ENTRY_POINTS = {
     "diagnosis_residuals": lambda fx: fx.call("get_fit_diagnosis", sections="residuals"),
     "diagnosis_parameters": lambda fx: fx.call("get_fit_diagnosis", sections="parameters"),
     "diagnosis_all": lambda fx: fx.call("get_fit_diagnosis", sections="all"),
-    # the harness judge's literal call (gemot's runner/judge.py); gemot pins its finish gate's own
-    # un-timed probe through this same check
-    "judge": lambda fx: fx.call("get_fit_diagnosis", sections="residuals"),
+    # the literal call a scorer outside the session makes; a client pins its own un-timed finish
+    # probe through this same check
+    "scorer_residuals": lambda fx: fx.call("get_fit_diagnosis", sections="residuals"),
 }
 
 
@@ -170,19 +171,20 @@ _CASES = [
 
 @pytest.mark.parametrize("case", _CASES)
 def test_no_diagnosis_entry_point_builds_a_model(tmp_path, case):
-    """Every entry point, in every state a run reaches, against the build root.
+    """Every entry point, in every state a session reaches, against the build root.
 
     Three of these built. ``dedup_noop``: HEAD is a real fit, the working SBML has been re-authored to
     the same structure with a different starting value, so the fit is SKIPPED while
     ``session.sbml_hash()`` names a module nobody built — a diagnosis that resolved its own build
-    target compiled it there (22.4 s on blasi). ``dedup_noop_unsimulated`` is the same state without a
-    stored simulation, where the RESIDUAL half materialises one: 19.4 s, of a structure never fitted.
-    ``resumed`` is a restarted process, whose restored model serialises in a different declaration
-    order and so hashes to a module nothing built: another 19.4 s, charged to no clock.
+    target compiled it there (22.4 s on a 16-observable problem). ``dedup_noop_unsimulated`` is the
+    same state without a stored simulation, where the RESIDUAL half materialises one: 19.4 s, of a
+    structure never fitted. ``resumed`` is a restarted process, whose restored model serialises in
+    a different declaration order and so hashes to a module nothing built: another 19.4 s, charged
+    to no clock.
     """
     fx = _Fixture(tmp_path, auto_fit=(case != "auto_fit_off"), model_less=(case == "unauthored"))
     if case == "unauthored":
-        # Nothing authored, nothing fitted: the state a run is in before its first make_changes.
+        # Nothing authored, nothing fitted: the state a session is in before its first make_changes.
         assert fx.session.model_authored() is False
     else:
         O.set_model(fx.session, _TOY.format(k1=0.5), justification="build the toy")
@@ -224,8 +226,8 @@ def test_the_diagnosis_still_answers_where_it_refuses_to_build(tmp_path):
 def test_a_resumed_process_still_reports_the_fits_parameter_geometry(tmp_path):
     """Failing open must not become failing SILENT. The freeze made the parameter half depend on
     in-process state, so a restarted process reported `available: false` for a fit that HAD happened —
-    and the harness parsimony gate, which refuses a finish on a rank-deficient FIM, stopped refusing
-    for the rest of the run. The verdict therefore travels with the fit
+    and a client's parsimony gate, which refuses a finish on a rank-deficient FIM, stopped refusing
+    for the rest of the session. The verdict therefore travels with the fit
     (identifiability.fit_diagnosis_block), and is re-served without recomputing anything."""
     fx = _Fixture(tmp_path)
     O.set_model(fx.session, _TOY.format(k1=0.5), justification="build the toy")

@@ -100,7 +100,7 @@ def parameters_to_records(problem, shipped=None) -> list[dict[str, Any]]:
     does not declare is appended with ``in_model: false``, carrying the values the problem gave
     it. Those rows are NOT in the live parameter table — PEtab has no place for a parameter no
     model uses, so reconcile prunes them — but they are still parameters the problem HANDED the
-    caller, and a zero-shot run starts with every one of them pruned (the content-free seed
+    caller, and a model-less session starts with every one of them pruned (the content-free seed
     declares no mechanism). Without this they would be invisible until the caller happened to
     guess the name: it could not see the constants it is required to build on, nor the ones it
     is required to keep declared. Re-declaring such a parameter in the model restores exactly

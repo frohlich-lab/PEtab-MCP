@@ -1,7 +1,7 @@
 """Model-free regime diagnostics (`petab_mcp.regimes`).
 
 Every case is SYNTHETIC and built from a known generating process, so the expected verdict is known
-independently of any benchmark example — the point of the tool is that it reports a property of the
+independently of any real problem — the point of the tool is that it reports a property of the
 data, so its tests should not need a model either.
 """
 
@@ -76,7 +76,8 @@ def test_a_monotone_decay_is_not_called_pulsatile():
     shape = r["observables"]["obs"]["shape"]
     assert shape["n_excursions"] == 0
     # Absence of evidence stays absence: no requirement, no support, and the text must NOT read as
-    # a licence to keep the model simple — that phrasing is what the A/B measured as harmful.
+    # a licence to keep the model simple — that phrasing measured as harmful when the tool was
+    # offered.
     assert shape["requirement"] is None
     assert shape["support_for_extension"] == "none"
     assert shape["verdict"].startswith("monotone")
@@ -172,7 +173,7 @@ def test_a_single_step_dose_response_is_not_flagged():
     assert dr["max_log_log_slope"] < 1.5
     assert dr["requirement"] is None
     # Neither direction may be claimed. No affirmative ceiling ("consistent with a single ...", the
-    # phrasing the A/B measured as harmful), AND no false positive: a Hill-1 dose-response must not
+    # phrasing that measured as harmful), AND no false positive: a Hill-1 dose-response must not
     # come back as WEAK SUPPORT for cooperativity. Stable at "none" across seeds (slope ~0.71).
     assert "consistent with a single" not in dr["verdict"]
     assert dr["support_for_extension"] == "none"
@@ -223,7 +224,7 @@ def test_two_flat_observables_are_not_a_conserved_total():
 
 def test_unrelated_observables_are_not_a_conserved_total():
     """Two independent decays on different scales: both move, the sum is not markedly steadier than
-    its largest component. This is the fujita shape (three unrelated phospho-readouts)."""
+    its largest component. This is the shape of a problem with three unrelated phospho-readouts."""
     t = np.linspace(0, 10, 12)
     rows = _series("A", "e0", t, 5.0 * np.exp(-0.5 * t), noise=0.005, seed=1) + _series(
         "B", "e0", t, 3.0 * np.exp(-0.2 * t), noise=0.005, seed=2

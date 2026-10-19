@@ -5,7 +5,7 @@ The arithmetic is checked against the textbook formulae written out independentl
 against :mod:`petab_mcp.criteria`'s own helpers, so a sign slip or a factor of two cannot be
 self-consistent. The wiring tests are the other half and the load-bearing ones: every gate in the
 loop is supposed to read ONE score, and a criterion nothing consults would pass every arithmetic
-test while changing nothing about what a run prefers.
+test while changing nothing about what a session prefers.
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ def test_each_criterion_is_two_nll_plus_its_textbook_penalty(name, penalty):
 
 
 def test_caic_is_bic_plus_one_unit_per_parameter():
-    """The stricter-than-BIC arm, for where BIC still buys structure the data cannot support."""
+    """The stricter-than-BIC option, for where BIC still buys structure the data cannot support."""
     assert Criterion("caic").penalty(5, 200) == pytest.approx(Criterion("bic").penalty(5, 200) + 5)
 
 
@@ -61,8 +61,8 @@ def test_tic_charges_the_effective_count_and_has_no_value_without_one():
 
 
 def test_the_penalties_are_ordered_aic_below_hqc_below_bic_only_above_e_to_the_e():
-    """Not decoration: it is WHY the choice matters. The same fit is ranked differently, so a run
-    under AIC buys structure a run under BIC refuses.
+    """Not decoration: it is WHY the choice matters. The same fit is ranked differently, so a
+    session under AIC buys structure a session under BIC refuses.
 
     But the ordering is NOT global. HQC charges 2*ln(ln(n)) per parameter, which crosses AIC's
     flat 2 at n = e**e ~ 15.2: BELOW that HQC is the LOOSEST of the three, not the middle one.
@@ -170,13 +170,13 @@ def test_a_non_finite_stored_score_is_no_score():
 
 # -- the reported score table ----------------------------------------------
 def test_every_criterion_rides_on_a_fit_beside_the_one_being_ranked():
-    """All four, whichever is active — so a finished run can be re-read under a criterion it was
-    not run with."""
+    """All four, whichever is active — so a finished session can be re-read under a criterion it
+    was not run with."""
     scores = fitting.goodness_of_fit(10.0, 18.0, 3, 100, criterion=Criterion("aicc"), k_eff=2.5)
     assert set(criteria.PENALTIES) <= set(scores)
     assert scores["bic"] == pytest.approx(2 * 10.0 + 3 * math.log(100))
     assert scores["tic"] == pytest.approx(2 * 10.0 + 2 * 2.5)
-    assert "k_eff" not in scores, "TIC's input is for the harness, not a number the agent sees"
+    assert "k_eff" not in scores, "TIC's input is for a client, not a number the agent sees"
     assert scores["criterion"] == "aicc"
     assert scores["criterion_value"] == pytest.approx(scores["aicc"])
 
@@ -189,7 +189,7 @@ def test_a_fit_without_an_effective_count_has_no_tic_but_every_other_score():
 
 def test_an_unscoreable_fit_still_names_the_criterion_it_would_have_been_ranked_by():
     """The early return must not drop the name: a reader that sees no ``criterion`` cannot tell
-    "this run ranks by aicc and this fit failed" from "no criterion was configured"."""
+    "this session ranks by aicc and this fit failed" from "no criterion was configured"."""
     scores = fitting.goodness_of_fit(None, None, 3, 100, criterion=Criterion("aicc"))
     assert scores["criterion"] == "aicc"
     assert scores["criterion_value"] is None
@@ -239,7 +239,7 @@ def test_is_new_best_is_decided_by_the_active_criterion_not_by_bic(session):
 
 
 def test_the_checkpoint_and_the_progress_report_agree_on_the_active_criterion(session):
-    """One score, read in one place: the checkpoint the judge restores, the value the progress
+    """One score, read in one place: the checkpoint a client restores, the value the progress
     report shows, and the name naming it must all come from the same criterion."""
     session.criterion = Criterion("aicc")
     fs = _fitsim(100.0)
@@ -254,7 +254,7 @@ def test_the_checkpoint_and_the_progress_report_agree_on_the_active_criterion(se
 
 
 def test_a_fit_records_the_ranked_pair_so_a_resume_can_pick_it_up(session):
-    """A run resumed under the criterion it was written with recovers its checkpoint from the
+    """A session resumed under the criterion it was written with recovers its checkpoint from the
     `criterion`/`criterion_value` pair the fit event carries."""
     fs = _fitsim(100.0)
     imp = fitting.compute_improvement(session, nllh=100.0, fitsim=fs)
@@ -277,7 +277,7 @@ def test_a_snapshot_stores_every_criterion_in_the_version_meta(session):
     assert meta["criterion"] == "aicc"
     for name in criteria.PENALTIES:
         assert meta[name] == pytest.approx(Criterion(name).value(100.0, 3, 40, 2.5)), name
-    assert "k_eff" not in meta, "list_versions returns the meta; the count is for the harness"
+    assert "k_eff" not in meta, "list_versions returns the meta; the count is for a client"
     assert meta["criterion_value"] == pytest.approx(meta["aicc"])
     # ...and that is exactly the number the de-dup registry ranks structure families on.
     entry = next(e for e in dedup.build_registry(session) if e["version"] == version)
@@ -287,7 +287,7 @@ def test_a_snapshot_stores_every_criterion_in_the_version_meta(session):
 def test_a_snapshot_keeps_the_scores_the_fit_already_computed(session):
     """The fill loop must not overwrite what `compute_improvement` put in the meta: it derives
     `k` independently (from the problem, when the payload carries none), so a recompute that won
-    would let the stored score disagree with the one the run ranked on."""
+    would let the stored score disagree with the one the session ranked on."""
     fs = _fitsim(100.0)
     imp = fitting.compute_improvement(session, nllh=100.0, fitsim=fs)
     version = session._snapshot_version(meta={**imp, "bic": -1.0}, sim=fs)
@@ -333,7 +333,7 @@ def test_the_criterion_comes_from_the_environment(monkeypatch):
 
 
 def test_an_unusable_environment_value_falls_back_to_bic_rather_than_failing_import(monkeypatch):
-    """A typo in a sweep's env must not take the server down — and the resolved criterion rides
+    """A typo in the env must not take the server down — and the resolved criterion rides
     on the very next fit result, so the fallback is visible immediately."""
     for bad in ("nonsense", "", "   ", "0.5*bic"):
         monkeypatch.setenv("PETAB_MCP_CRITERION", bad)
@@ -376,8 +376,8 @@ def test_each_session_holds_its_own_criterion(yaml_path, tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("name", ["bic", "caic", "aic", "aicc", "hqc", "tic", " AICc "])
 def test_a_reported_name_round_trips_through_from_name(name):
-    """The name is the IDENTITY of a scoring rule, and the harness judge reconstructs the rule
-    from the one the server REPORTS — so it has to parse back."""
+    """The name is the IDENTITY of a scoring rule, and a client reconstructs the rule from the
+    one the server REPORTS — so it has to parse back."""
     parsed = Criterion.from_name(name)
     assert parsed is not None and parsed.name == name.strip().lower()
 

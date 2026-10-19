@@ -1,6 +1,6 @@
 """The STRUCTURED edit surface: name the change, not the characters.
 
-Why it replaces substring patching, measured over 30 runs / 1,063 patches: 20% of all patches
+Why it replaces substring patching, measured over 30 sessions / 1,063 patches: 20% of all patches
 targeted the derived ``const`` line (71% of all failures), and 81% of the remaining failures
 quoted text that existed in neither the render nor the agent's own submission. Addressing a
 reaction by ID removes both classes — an ID exists or it does not, and the server can say which.
@@ -276,8 +276,8 @@ def test_rename_refuses_a_new_name_that_is_not_an_identifier():
 # ------------------------------------------------- contracts inherited from the deleted
 # ------------------------------------------------- substring-surface test module
 def test_base_version_alone_is_rejected_naming_no_withheld_tool(tool_env):
-    """The refusal must not point at `restore_version`, which the lead does not hold — naming an
-    uncallable tool is the defection-trigger class the draft-era A/B measured."""
+    """The refusal must not point at `restore_version`, which the agent may not hold — naming an
+    uncallable tool is the defection-trigger class measured in the draft era."""
     mcp, _ = tool_env
     res = _call(mcp, "make_changes", {"justification": "base_version alone", "base_version": 0})
     assert res["applied"] is False
@@ -303,7 +303,7 @@ def test_an_unknown_base_version_is_a_clean_rejection(tool_env):
 
 
 def test_every_rejection_reports_a_DISTINCT_machine_readable_cause(tool_env):
-    """`edit_rejects.by_cause` is the arm's central metric. It used to be derived by
+    """`edit_rejects.by_cause` is the edit surface's central metric. It used to be derived by
     substring-matching English prose in a hand-ordered tuple, which silently put three separate
     buckets on unreachable branches in one day (a needle shared with an earlier entry steals
     every match). The server now labels its own rejections; this pins that they are distinct."""
@@ -338,7 +338,7 @@ def test_every_rejection_reports_a_DISTINCT_machine_readable_cause(tool_env):
 
 
 def test_a_rejected_batch_does_not_write_the_operations_into_the_error_log(tool_env, tmp_path):
-    """`_Ctx.short` caps containers, and `archive_run` copies errors.jsonl into every run
+    """`_Ctx.short` caps containers, and a client may copy errors.jsonl into every session
     archive — so a rejected batch must log a COUNT, not the operations."""
     mcp, prov = tool_env
     marker = "UNIQUE_MARKER_" + "x" * 400
@@ -473,8 +473,8 @@ def test_an_assignment_without_a_trailing_semicolon_can_still_be_set():
 
 def test_no_operation_reads_or_writes_inside_a_comment():
     """Comments are free text. Editing one and reporting success is the worst failure shape here:
-    the run fits and commits a model whose initial condition never changed, while the summary says
-    it did."""
+    the session fits and commits a model whose initial condition never changed, while the summary
+    says it did."""
     src = "model m()\n  // A = 1; the literature value\n  A = 3;\nend\n"
     out, log = me.apply_model_edits(src, [{"op": "set_initial", "id": "A", "antimony": "9"}])
     assert "// A = 1; the literature value" in out, "the comment must be untouched"
@@ -543,7 +543,7 @@ def test_rename_refuses_time_and_the_math_builtins():
 def test_a_time_gated_rate_law_stays_addressable():
     """The law group excluded `=`, so `piecewise(0, time >= t0, 1)` made its reaction invisible to
     every operation AND falsely reported as unnamed — meaning the wholesale path rejected exactly
-    the time-gated models the isensee/raimundez prompts instruct the agent to write. Same class as
+    the time-gated models an agent is routinely asked to write. Same class as
     the `/` exclusion that broke every saturating law."""
     for law in (
         "k1*A*piecewise(0, time >= t0, 1)",

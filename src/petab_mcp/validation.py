@@ -43,11 +43,11 @@ _SBML_MSG_CAP = 300  # keep a single SBML message from bloating the (re-sent) to
 
 
 # petab lint checks that say nothing about THIS EDIT: they warn about the FIXED design (a
-# condition or experiment no measurement uses — fujita ships its held-out pulses in the condition
-# table), which no call can change. Promoting them would put a fixed, unactionable string on the
-# `warnings` of EVERY make_changes result, into a history nothing prunes, so they are dropped at
-# the capture site and reach neither `issues` nor the warning COUNT. Warnings only: an ERROR from
-# any check is kept.
+# condition or experiment no measurement uses — a problem may ship its held-out conditions in the
+# condition table), which no call can change. Promoting them would put a fixed, unactionable
+# string on the `warnings` of EVERY make_changes result, into a history nothing prunes, so they are
+# dropped at the capture site and reach neither `issues` nor the warning COUNT. Warnings only: an
+# ERROR from any check is kept.
 _DESIGN_ONLY_CHECKS = frozenset({"CheckUnusedConditions", "CheckUnusedExperiments"})
 
 
@@ -104,37 +104,36 @@ def _observation_model_reuse_issues(problem) -> list[dict[str, Any]]:
     reaction, rule, or initial assignment. Three-way outcome, see below: a hard error for a NOISE
     SIGMA or for a symbol acting AS a reaction's rate constant, a warning for legitimate reuse.
 
-    A benchmark sweep caught exactly this: two independent runs wired the Brannmark scenario's
-    four fixed observable-scaling factors directly into their reaction rate laws instead of
-    introducing the ~14 real kinetic parameters the scenario expects, ending up with a
-    severely under-mechanistic model that still passed its own chi2 goodness-of-fit check
-    (with help from noise sigmas inflated 20-60x). Gate this at commit time rather than relying
+    This was caught in practice: two independent agents wired a problem's four fixed
+    observable-scaling factors directly into their reaction rate laws instead of introducing the
+    ~14 real kinetic parameters the problem expects, ending up with a severely under-mechanistic
+    model that still passed its own chi2 goodness-of-fit check (with help from noise sigmas
+    inflated 20-60x). Gate this at commit time rather than relying
     on an agent to notice: reusing one of these symbols does not "cost" anything on its own
     metrics, so nothing else in the pipeline would catch it.
 
     Blanket rejection is wrong, because a published problem legitimately reuses these symbols: the
-    SAME physical quantity is often both a model quantity and the observable's normaliser.
-    Bachmann_MSB2011 is the reference case — the receptor/SHP1/STAT5 total abundances
-    (``init_EpoRJAK2``, ``init_SHP1``, ``init_STAT5``) set the initial conditions AND divide the
-    relative pEpoR/pJAK2/tSTAT5 observables, and the CIS/SOCS3 equilibrium constants (``CISEqc``,
-    ``SOCS3Eqc``, ``CISRNAEqc``, ``SOCS3RNAEqc``) scale both the species and their readouts. Making
+    SAME physical quantity is often both a model quantity and the observable's normaliser. The
+    reference case is a signalling model whose total abundances (``A_tot``, ``B_tot``, ``C_tot``)
+    set the initial conditions AND divide the relative pA/pB/C observables, and whose equilibrium
+    constants (``K1``, ``K2``, ``K3``, ``K4``) scale both the species and their readouts. Making
     that an error rejects the published mechanism itself, and with it any agent that finds it.
 
-    Restricting the exemption to INITIAL ASSIGNMENTS does not work either: all seven of bachmann's
-    symbols also appear in rate laws, and two of them (``CISRNAEqc``, ``SOCS3RNAEqc``) have no
-    initial assignment at all. Nor does "denominator only" — ``CISEqc`` and ``CISRNAEqc`` appear as
-    numerator factors. What actually separates the two cases is the symbol's ROLE:
+    Restricting the exemption to INITIAL ASSIGNMENTS does not work either: all seven of those
+    symbols also appear in rate laws, and two of them (``K3``, ``K4``) have no initial assignment
+    at all. Nor does "denominator only" — ``K1`` and ``K3`` appear as numerator factors. What
+    actually separates the two cases is the symbol's ROLE:
 
     * **noise sigma anywhere in model math** -> error. A sigma has no legitimate mechanistic role,
-      and reusing one only ever buys a looser noise model — the half of the Brannmark failure that
-      masks a wrong mechanism.
+      and reusing one only ever buys a looser noise model — the half of the scaling-factor failure
+      that masks a wrong mechanism.
     * **observable-side symbol in a rate law that declares NO parameter of its own** -> error. The
-      symbol is standing in for that reaction's rate constant, which is exactly the Brannmark cheat
-      (``IR => IRp; cell * IR * k_IRP_1Step``) and exactly what "dodging a real kinetic parameter"
+      symbol is standing in for that reaction's rate constant, which is exactly the scaling-factor
+      cheat (``A => pA; cell * A * s_A``) and exactly what "dodging a real kinetic parameter"
       means.
     * **anything else** -> warning. A legitimate reuse always sits ALONGSIDE a dedicated rate
-      constant (``CISRNAEqc * CISRNATurn * npSTAT5 * ActD / init_STAT5``), or is confined to an
-      initial assignment or rule.
+      constant (``K3 * k_turn * pB * D / B_tot``), or is confined to an initial assignment or
+      rule.
     """
     sm = problem.model.sbml_model
     obs_symbols = observation_model_symbols(problem)
@@ -142,17 +141,17 @@ def _observation_model_reuse_issues(problem) -> list[dict[str, Any]]:
     sigmas = in_math & noise_sigma_ids(problem)
 
     # A reaction whose rate law uses an observation-model parameter but declares NO dedicated
-    # parameter of its own is the Brannmark cheat: the observation symbol is standing in for the
-    # rate constant. A legitimate reuse always sits ALONGSIDE a real kinetic parameter — every
-    # bachmann rate law that normalises by an abundance still has its own turnover/activation
-    # constant (`CISRNAEqc * CISRNATurn * npSTAT5 * ActD / init_STAT5`; `Epo * EpoRJAK2 *
-    # JAK2ActEpo / (SOCS3 * SOCS3Inh / SOCS3Eqc + 1)`).
+    # parameter of its own is the scaling-factor cheat: the observation symbol is standing in for
+    # the rate constant. A legitimate reuse always sits ALONGSIDE a real kinetic parameter — every
+    # rate law of the reference case that normalises by an abundance still has its own
+    # turnover/activation constant (`K3 * k_turn * pB * D / B_tot`; `L * R * k_act /
+    # (C * k_inh / K2 + 1)`).
     # Hoisted: parameter_ids walks every SBML parameter, and validate_problem runs on every edit.
     all_params = parameter_ids(sm)
     # A condition target is an experimental INPUT (a dose, a switch), not a rate constant the model
-    # supplies, so it must not count as the reaction's "own" parameter — otherwise the Brannmark
-    # cheat escapes simply by multiplying the dose target in:
-    # `IR => IRp; cell*IR*k_IRP_1Step*insulin_level`.
+    # supplies, so it must not count as the reaction's "own" parameter — otherwise the
+    # scaling-factor cheat escapes simply by multiplying the dose target in:
+    # `A => pA; cell*A*s_A*dose`.
     own_params = all_params - obs_symbols - condition_target_symbols(problem)
     rate_constant_role: set[str] = set()
     for i in range(sm.getNumReactions()):
@@ -224,7 +223,7 @@ def _fixed_constant_role_issues(problem, protected_fixed_ids) -> list[dict[str, 
 
     * **removing** one drops a piece of the problem's structure (an orphaned conservation total
       or known rate silently pruned when its reaction is dropped/re-authored);
-    * **estimating** one lets its value DRIFT off the constant (a benchmark run let three
+    * **estimating** one lets its value DRIFT off the constant (one fit let three
       conservation totals fixed at 1 wander to 9 / 0.001 / 0.4) and adds to k, inflating BIC.
 
     Nothing toggles a parameter's estimated/fixed status directly (there is no such tool), and a
@@ -292,8 +291,8 @@ def _undefined_readout_issues(problem) -> list[dict[str, Any]]:
     """One error per ``readout_*`` symbol an observable formula references but the model leaves
     undefined — with the remedy and the observable's own biological description in the message.
 
-    ``readout_<observableId>`` is the blinded-benchmark measurement-mapping contract
-    (``petab_harness.benchmark._blind_observables``): the shipped observable formula references a
+    ``readout_<observableId>`` is the measurement-mapping contract of a problem that ships its
+    observables as ``readout_*`` mappings: the shipped observable formula references a
     symbol the MODEL must define via an assignment rule, so what the assay measures is stated
     (``observableName``) but how it maps onto the model's states is the modeller's to decide.
     petab's own lint already errors on the missing entity, but generically — nothing tells the
@@ -317,7 +316,7 @@ def _undefined_readout_issues(problem) -> list[dict[str, Any]]:
         # that includes every readout_*. So "the id resolves to some SBML element"
         # is satisfied by construction and cannot be the test -- checking it made this whole guard
         # a no-op, which is how a model leaving every readout a FREE CONSTANT would have committed:
-        # on blasi that is 16 constants against 16 steady-state observable means, fitting them
+        # on one problem that is 16 constants against 16 steady-state observable means, fitting them
         # exactly while skipping the measurement-mapping task entirely.
         #
         # The test is therefore an ASSIGNMENT RULE, and the seed is skipped by `has_dynamics`,
@@ -333,14 +332,14 @@ def _undefined_readout_issues(problem) -> list[dict[str, Any]]:
             if sm.getRule(i).isAssignment()
         }
         issues: list[dict[str, Any]] = []
-        # One issue per READOUT SYMBOL, not per observable. isensee references readout_pRII from
-        # 117 of its 123 rows, so per-row emission meant ~117 byte-identical errors (~100kB with
-        # its description) on a single rejected commit — the payload cap `_ID_LIST_CAP` exists to
-        # prevent elsewhere.
+        # One issue per READOUT SYMBOL, not per observable. One problem references one readout
+        # from 117 of its 123 rows, so per-row emission meant ~117 byte-identical errors (~100kB
+        # with its description) on a single rejected commit — the payload cap `_ID_LIST_CAP`
+        # exists to prevent elsewhere.
         seen_readouts: set[str] = set()
         for obs_id, row in odf.iterrows():
             formula = str(row[OBSERVABLE_FORMULA])
-            if "readout_" not in formula:  # skip the L3 parse on unblinded rows
+            if "readout_" not in formula:  # skip the L3 parse on rows with no readout
                 continue
             for name in sorted(formula_identifiers(formula)):
                 if not name.startswith("readout_") or name in seen_readouts:
@@ -378,7 +377,7 @@ def frozen_parametric_stoichiometry_issues(sbml_model) -> list[dict[str, Any]]:
     """Hard-error when a reaction stoichiometry was written as a PARAMETER/symbol in Antimony.
 
     When an Antimony reaction uses a symbol as a stoichiometry coefficient — e.g.
-    ``Naive -> N_burst EarlyEffector`` with ``N_burst`` a declared parameter — libantimony's SBML
+    ``A -> k_amp B`` with ``k_amp`` a declared parameter — libantimony's SBML
     export FREEZES the symbol's nominal value into a constant literal stoichiometry and DROPS the
     parameter: the intended estimable amplification factor silently becomes a fixed constant that
     never enters the fit, with no error (issue #89). It gets worse when the symbol is also used in

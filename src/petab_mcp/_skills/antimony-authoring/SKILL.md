@@ -37,9 +37,9 @@ only for a genuinely one-way step: synthesis, degradation, an irreversible catal
 
 A bare number in a rate law is frozen — the fit cannot touch it, so a wrong guess can never be
 corrected.
-Wrong: `prod: -> x1; 10 * K^2/(K^2 + x3^2)` — the max rate and both exponents are hard-coded.
-Right: `prod: -> x1; alpha * K^n/(K^n + x3^n)` — `n` estimated, so cooperativity is a finding.
-Exponents are the trap here: a literal `x^4` asserts cooperativity of 4 and no fit can revise it.
+Wrong: `r1: A -> B; 0.3 * A * D^2` — the rate constant and the exponent are hard-coded.
+Right: `r1: A -> B; k1 * A * D^m` — `k1` and `m` estimated, so the data decide both.
+Exponents are the easy ones to miss: a literal `D^2` asserts that power and no fit can revise it.
 
 ## Naming
 
@@ -48,8 +48,8 @@ Exponents are the trap here: a literal `x^4` asserts cooperativity of 4 and no f
   a parameter or a species. The clash is INVISIBLE until AMICI compiles — the model parses and
   validates, then the build fails and the whole edit is thrown away, costing a full edit-and-fit
   cycle, not a parse error. `k` and `p` bite most, being the textbook symbols for a rate constant
-  and a production rate: write `k_mat`, `p_vir`. Uppercase is unaffected — single-letter species
-  `A`, `S`, `P`, `V`, `T`, `I` are fine.
+  and a production rate: write `k_on`, `p_syn`. Uppercase is unaffected — single-letter species
+  `A`, `B`, `C`, `D` are fine.
 - **Time is the built-in `time`.** `t` is AMICI-reserved; any other name (`tau`) becomes a
   parameter the fit ESTIMATES, so the gate compiles and commits with its time dependence gone.
 - **A reaction id must not be an Antimony keyword** (`at`, `in`, `is`, `end`, `var`, `const`,
@@ -76,25 +76,25 @@ lives in the PEtab table. Write a plausible number yourself; an empty value land
 Antimony names the unexpected token, not the rule you broke — recognise them by shape.
 
 - **The rate law follows a `;`, never a `:`.** The colon only ends the reaction *name*.
-  Wrong: `R1: S -> E : foi;` — Right: `R1: S -> E; foi;`
+  Wrong: `r1: A -> B : k1*A;` — Right: `r1: A -> B; k1*A;`
 - **`param` is not a keyword** (nor `parameter`). A parameter is a plain assignment.
-  Wrong: `param S_on = 1.0;` — Right: `S_on = 1.0;`
+  Wrong: `param k1 = 0.1;` — Right: `k1 = 0.1;`
   (`species`, `compartment`, `var`, `const` ARE real keywords — keep those.) A comma list needs
-  one: `T0 = 11000, K0 = 3.9e-7;` is `unexpected ','`; write `const T0 = 11000, K0 = 3.9e-7;` or
-  one assignment per `;`.
+  one: `k1 = 0.1, k2 = 0.2;` is `unexpected ','`; write `const k1 = 0.1, k2 = 0.2;` or one
+  assignment per `;`.
 - **`:=` is a RULE (all times); `=` is an initial value.** A derived quantity (a total, a
   normalised signal) is `y := expr;`; with `=` it is a constant and its observable goes flat.
 - **There is no `<->` arrow.** Only `->` and `=>`. A reversible step is a net rate law
-  (see above). Wrong: `v: E + S <-> ES; ...` — Right: `v: E + S -> ES; k1*E*S - k_1*ES`
+  (see above). Wrong: `v: A + B <-> C; ...` — Right: `v: A + B -> C; kf*A*B - kr*C`
 - **Stoichiometry is a NUMERIC LITERAL after a space — never `*`, never a parameter.**
-  Wrong: `R: P -> 2*P;` — Right: `R: P -> 2 P;`
-  `I -> I + NN*V` fails to parse; "fixing" `*` to a space PARSES but freezes the coefficient at
-  NN's nominal and drops NN from the model. A burst size/yield/gain goes in the rate law:
-  Wrong: `r_burst: I -> I + NN V; delta*I;` — Right: `r_burst: -> V; NN*delta*I;` (production
-  only — `I` was on both sides, so never consumed; its loss stays its own reaction).
+  Wrong: `r: A -> 2*B;` — Right: `r: A -> 2 B;`
+  `A -> A + Y*B` fails to parse; "fixing" `*` to a space PARSES but freezes the coefficient at
+  Y's nominal and drops Y from the model. A yield or gain goes in the rate law:
+  Wrong: `r: A -> A + Y B; kp*A;` — Right: `r: -> B; Y*kp*A;` (production only — `A` was on
+  both sides, so never consumed; its loss stays its own reaction).
 - **Reactants and products are species lists, not expressions.** Wrong:
-  `v: (RAF_total - pRaf) -> pRaf;` — algebra goes in the rate law:
-  `v: Raf -> pRaf; kact*(RAF_total - pRaf)`.
+  `v: (A_tot - pA) -> pA;` — algebra goes in the rate law:
+  `v: A -> pA; kact*(A_tot - pA)`.
 - **Compartment placement is its own statement.** Wrong: `X = 3.64 in cell;` — Right:
   `species X in cell; X = 3.64;`
 

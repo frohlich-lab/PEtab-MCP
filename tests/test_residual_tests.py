@@ -4,8 +4,8 @@ Pure numeric code over residual lists, so no AMICI/pyPESTO fit is needed. Where 
 reference exists (scipy for the sign test's binomial tail, a runs-test PMF that must sum to 1), the
 test pins to it; the exact runs-test p-values are checked against hand-worked small cases, the
 Student-t tail against closed forms (it now calls scipy itself, so a scipy comparison would be an
-identity), and the replicate arm against the measured blasi verdicts (see ``test_replicate_lof.py``,
-which also covers the PEtab-shaped plumbing and the rollup).
+identity), and the replicate arm against the measured steady-state verdicts (see
+``test_replicate_lof.py``, which also covers the PEtab-shaped plumbing and the rollup).
 """
 
 from __future__ import annotations
@@ -122,7 +122,7 @@ def _z_point(label, z, n=18, s=0.1):
 def test_student_t_tail_matches_a_hand_computed_value():
     """The only reference with content now that the tail IS ``2 * scipy.stats.t.sf``: closed forms
     scipy is not party to. (A pinned comparison against ``scipy.t.sf`` would compare the
-    implementation with itself; the FAR tail this arm decides on is pinned end to end by blasi's
+    implementation with itself; the FAR tail this arm decides on is pinned end to end by the
     measured Holm p of 2.55e-11 at df 17 — see ``test_replicate_lof.py``.)"""
     # df = 1 is the Cauchy: P(|T| >= t) = 1 - (2/pi)*arctan(t), exactly.
     for t in (0.5, 1.0, 4.0):
@@ -224,18 +224,18 @@ def test_replicate_lack_of_fit_is_invariant_to_the_sigma_convention():
     )
 
 
-# -- the guards, each named after the benchmark example that forces it ----------------------------
+# -- the guards, each with the measured case that forces it --------------------------------------
 def test_replicate_lof_unavailable_without_replicates():
-    """No repeated design point (13 of the 16 benchmark examples) -> NO EVIDENCE, never a pass."""
+    """No repeated design point (13 of 16 problems measured) -> NO EVIDENCE, never a pass."""
     out = rt.replicate_lack_of_fit([])
     assert out["available"] is False and out["status"] == "no_replicated_points"
     assert out["flagged"] == [] and out["max_abs_z"] is None and out["points"] == []
 
 
 def test_replicate_lof_unavailable_at_one_degree_of_freedom():
-    """schwen: 126 replicated points, EVERY n_i = 2. One df cannot be a yardstick, and its pure
-    error there is 7.8x smaller than the problem's own reference sigma — so the arm must abstain
-    rather than reject schwen's true model."""
+    """One measured problem: 126 replicated points, EVERY n_i = 2. One df cannot be a yardstick, and
+    its pure error there is 7.8x smaller than the problem's own reference sigma — so the arm must
+    abstain rather than reject that problem's true model."""
     points = [_z_point(f"p{i}", 30.0, n=2) for i in range(126)]
     out = rt.replicate_lack_of_fit(points)
     assert out["available"] is False and out["status"] == "replicates_too_thin"
@@ -258,11 +258,11 @@ def test_replicate_lof_vacuous_when_the_fit_can_zero_every_point():
     once — by the assembler, to the pooled point count (data_access._merge_lof_verdicts, which is
     the only caller that knows every family).
 
-    armistead is why. Its four families are sd_Cer_obs, sd_Sphinga_obs and sd_Sphingo_obs with 4
-    replicated points each (df 3) and sd_S1P_obs with 2 (df 4), against 10 estimated structural
-    parameters. Per family, each 4-point arm looked saturated and the whole example reported NO
-    EVIDENCE with a summary line claiming as many parameters as replicated points — of 12 pooled
-    points against 10, which leaves 2 lack-of-fit directions and a (thin) real test."""
+    One measured problem is why. Its four families are three with 4 replicated points each (df 3)
+    and one with 2 (df 4), against 10 estimated structural parameters. Per family, each 4-point arm
+    looked saturated and the whole problem reported NO EVIDENCE with a summary line claiming as many
+    parameters as replicated points — of 12 pooled points against 10, which leaves 2 lack-of-fit
+    directions and a (thin) real test."""
     from petab_mcp import data_access
 
     def arms(n_points, families=1):
@@ -271,15 +271,16 @@ def test_replicate_lof_vacuous_when_the_fit_can_zero_every_point():
             for f in range(families)
         ]
 
-    armistead = data_access._merge_lof_verdicts(arms(4, families=3), {}, n_structural=10)
-    assert armistead["available"] is True and armistead["n_points"] == 12
-    assert armistead["lof_df"] == 2 and armistead["weak"] is True
+    pooled = data_access._merge_lof_verdicts(arms(4, families=3), {}, n_structural=10)
+    assert pooled["available"] is True and pooled["n_points"] == 12
+    assert pooled["lof_df"] == 2 and pooled["weak"] is True
     # ...while a family that really is outnumbered by the parameters tests nothing: 4 points, 10
     # structural, no siblings to pool with.
     out = data_access._merge_lof_verdicts(arms(4), {}, n_structural=10)
     assert out["available"] is False and out["status"] == "vacuous" and out["n_points"] == 4
-    # It is the COUNT that decides, not the example: one more point than there are structural
-    # parameters and the family carries information again (blasi: 15 points, 8-9 structural).
+    # It is the COUNT that decides, not the problem: one more point than there are structural
+    # parameters and the family carries information again (the steady-state case: 15 points, 8-9
+    # structural).
     assert data_access._merge_lof_verdicts(arms(11), {}, n_structural=10)["available"] is True
     # an unknown parameter count cannot make the test vacuous — it makes its POWER unknown
     unknown = data_access._merge_lof_verdicts(arms(4), {}, n_structural=None)

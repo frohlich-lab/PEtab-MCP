@@ -52,7 +52,7 @@ def test_chi2_prefers_res_when_weighted_incomplete():
 def test_chi2_none_when_simulation_incomplete():
     """A measured point the simulation never reached makes chi2 undefined.
 
-    Regression for the crauste run where AMICI stopped integrating at t=22: the 5 unreached
+    Regression for the fit where AMICI stopped integrating at t=22: the 5 unreached
     points were dropped before the completeness check, so chi2 was summed over the 16
     surviving points and reported against n_data_points=21 — a finite, plausible score for a
     model whose likelihood was in fact NaN.

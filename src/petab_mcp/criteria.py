@@ -9,14 +9,14 @@ count (below), and LOWER is better. That shared form is what makes the criterion
 whole model-building loop (``is_new_best``, the best-score checkpoint, the plateau stop, the de-dup
 registry, the merge price) reads ONE number and one effect-size threshold, and those thresholds are
 in the same 2·Δnll deviance units under every criterion — so switching the penalty changes what the
-run prefers, not how the machinery works.
+session prefers, not how the machinery works.
 
 The penalties differ only in what a parameter costs:
 
 * ``bic``  — ``k*ln(n)``: consistent (picks the true model as n grows), the default because
   over-parameterisation is this project's failure mode.
 * ``caic`` — ``k*(ln(n)+1)``: Bozdogan's consistent AIC, BIC plus one more unit per parameter —
-  the stricter-than-BIC arm, for the runs where BIC still buys structure the data cannot support.
+  the stricter-than-BIC option, for where BIC still buys structure the data cannot support.
 * ``aic``  — ``2k``: efficient rather than consistent, and a flat 2 per parameter — much cheaper
   than BIC for n > 7, so it buys structure BIC would refuse.
 * ``aicc`` — AIC with the small-sample correction ``2k(k+1)/(n-k-1)``: what AIC should be whenever
@@ -32,7 +32,7 @@ The penalties differ only in what a parameter costs:
   below it where the data do not determine a parameter — TIC does not charge for a redundant
   parameter, it does not see one, which makes it the wrong criterion for the parsimony failure
   mode and the right one for asking whether the residual structure supports the parameter count.
-  ``None`` whenever the fit produced no ``k_eff`` (a resumed run, a version stored before it was
+  ``None`` whenever the fit produced no ``k_eff`` (a resumed session, a version stored before it was
   recorded).
 
 These names and nothing between them: there is no scalar weight on the penalty term, and
@@ -115,7 +115,7 @@ PENALTIES: dict[str, Penalty] = {
 
 @dataclass(frozen=True)
 class Criterion:
-    """A complexity penalty — the run's notion of "better", in one object.
+    """A complexity penalty — the session's notion of "better", in one object.
 
     Frozen and comparable so ``name`` identifies the scoring rule exactly: a score persisted under
     one criterion must never be ranked against a score computed under another, and
@@ -140,9 +140,9 @@ class Criterion:
     def from_name(cls, name: "str | None") -> "Criterion | None":
         """The criterion a REPORTED name refers to, or ``None`` when it is missing/unrecognised.
 
-        The harness judge reconstructs the scoring rule this way, from the ``criterion`` the fit
-        result carries. ``None`` rather than a guess for anything unrecognised, so a caller falls
-        back to a criterion it names itself instead of scoring under a different one.
+        A client scoring a fit reconstructs the scoring rule this way, from the ``criterion`` the
+        fit result carries. ``None`` rather than a guess for anything unrecognised, so a caller
+        falls back to a criterion it names itself instead of scoring under a different one.
         """
         try:
             return cls(name) if isinstance(name, str) and name.strip() else None
@@ -166,7 +166,7 @@ class Criterion:
 
         ``None`` rather than NaN is load-bearing: a NaN is a float and passes every
         ``is not None`` guard downstream, and because NaN compares False against everything, a NaN
-        adopted as the best-score checkpoint locks out every later fit for the rest of the run.
+        adopted as the best-score checkpoint locks out every later fit for the rest of the session.
         """
         nll = finite_float(nll)
         pen = self.penalty(k, n, k_eff)
@@ -194,11 +194,11 @@ class Criterion:
         self, nll: float | None, k: int | None, n: int | None, k_eff: float | None = None
     ) -> dict[str, float | None]:
         """Every criterion by name, PLUS this criterion's ``name`` and the ``criterion_value``
-        the run actually ranks on.
+        the session actually ranks on.
 
-        All of them ride on every fit result and every stored VERSION META, so a finished run can
-        be re-read under a criterion it was not run with. Only ``criterion_value`` is privileged:
-        it is the one the loop compares, and it equals the entry named by ``criterion``.
+        All of them ride on every fit result and every stored VERSION META, so a finished session
+        can be re-read under a criterion it was not run with. Only ``criterion_value`` is
+        privileged: it is the one the loop compares, and it equals the entry named by ``criterion``.
 
         NOT the fit EVENT, which carries only ``bic`` plus the ranked pair (see
         :func:`fitting.compute_improvement`, kept small because it is re-sent in the agent's
@@ -233,7 +233,7 @@ class Criterion:
 
 
 #: One instance per criterion — what :meth:`Criterion.values` reports by name, so a fit carries
-#: every score however the run was configured.
+#: every score however the server was configured.
 CANONICAL: dict[str, Criterion] = {name: Criterion(name) for name in PENALTIES}
 
 
@@ -241,7 +241,7 @@ def from_env() -> Criterion:
     """The criterion named by ``PETAB_MCP_CRITERION``.
 
     Falls back to plain BIC on anything unusable rather than failing startup: a typo in an env var
-    must not take the server down mid-sweep, and the resolved criterion is reported on every fit,
+    must not take the server down, and the resolved criterion is reported on every fit,
     so a fallback is visible in the very next result.
     """
     return Criterion.from_name(os.environ.get("PETAB_MCP_CRITERION")) or Criterion()

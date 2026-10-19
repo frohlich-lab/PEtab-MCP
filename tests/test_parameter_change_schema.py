@@ -2,8 +2,8 @@
 
 It pins behaviour that is invisible without a test: the schema guards the tool CONTRACT --
 the JSON schema is what a model is constrained by, and when this argument was `list[dict[str,
-Any]]` it named none of its keys, so 527 of 889 `make_changes` calls in the August benchmark runs
-were rejected for guessing them. Nothing failed loudly; the runs just scored badly.
+Any]]` it named none of its keys, so 527 of 889 `make_changes` calls across a set of sessions
+were rejected for guessing them. Nothing failed loudly; the sessions just scored badly.
 """
 
 import asyncio
@@ -81,9 +81,9 @@ def test_entries_pass_dicts_through_and_none_stays_none():
     assert _parameter_entries(None) is None
 
 
-# Real payloads from the Aug 8-10 sweep. Each killed a whole run: `make_changes` is the only tool
+# Real payloads from agent sessions. Each killed a whole session: `make_changes` is the only tool
 # that can change the model, so it stays available after a tool error, and the model re-emitted the
-# same wrapper until the run died (3 runs at 0 fits, 1 recursion-limited).
+# same wrapper until the session died (3 sessions at 0 fits, 1 at the client's step limit).
 def test_unwrap_listish_recovers_the_item_wrapper():
     from petab_mcp.server import _unwrap_listish
 
@@ -92,7 +92,7 @@ def test_unwrap_listish_recovers_the_item_wrapper():
     }
     assert _unwrap_listish(payload) == payload["item"]
     # references saw the same shape
-    refs = {"item": ["PMID:1547331 (Fujita 2010)", "Cell 166:461 (reduction)"]}
+    refs = {"item": ["PMID:1547331 (Author 2010)", "Cell 166:461 (reduction)"]}
     assert _unwrap_listish(refs) == refs["item"]
 
 

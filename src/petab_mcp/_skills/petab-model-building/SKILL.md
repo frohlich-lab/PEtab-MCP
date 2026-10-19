@@ -58,7 +58,7 @@ A condition-set initial value is an experimental *input*, not a value to fit.
 
 You do not write that table — the sync does, and it excludes both forbidden symbols:
 
-- **A quantity the model computes**: an assignment- or rate-rule target (`prevalence := I/N;`).
+- **A quantity the model computes**: an assignment- or rate-rule target (`frac := A/(A + B);`).
 - **A condition target**: an input supplied per condition, not fitted.
 
 Observable/noise symbols are the opposite case: a `sigma_*` or scaling factor **belongs** in the
@@ -78,7 +78,7 @@ initial value *or* compute it with a rule, never both.
 
 With all times `inf` only the equilibrium is fit: it ignores where you started and is unchanged
 by scaling every rate, so ICs and the absolute rate scale are unidentifiable. Give each species
-its physical start (`x_0 = 1`, rest `0`, which fixes those rows) rather than estimating it, and
+its physical start (`A = 1`, `B = 0`, which fixes those rows) rather than estimating it, and
 keep the one fixed rate as the scale.
 
 ## A fitted value is linear, whatever the scale
@@ -94,7 +94,7 @@ factor of 1000, and is the usual reason a healthy parameter gets called patholog
 
 A rate (must stay positive) suits `log10`. A **fraction, efficiency, or bounded multiplier** does
 not — on a wide log10 box it drifts past its physical range (an inhibition fraction above 1 flips
-a rate negative); put those on a linear scale with physical bounds. Exponents (Hill) likewise:
+a rate negative); put those on a linear scale with physical bounds. Exponents likewise:
 **linear**, tight bounds (≈1–8) — on log10 they fit a near-step function that stiffens the ODE.
 
 ## Estimated noise sigmas make goodness-of-fit meaningless

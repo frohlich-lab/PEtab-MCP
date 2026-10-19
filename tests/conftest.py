@@ -168,7 +168,7 @@ def _write_empty_sbml(path: Path, model_id: str = "conversion_reaction") -> None
 
 
 def with_empty_sbml(yaml_path) -> None:
-    """Point a copy of the toy's YAML at an EMPTY SBML model, the shape a zero-shot problem ships
+    """Point a copy of the toy's YAML at an EMPTY SBML model, the shape a model-less problem ships
     in (the toy itself ships Antimony)."""
     yaml_path = Path(yaml_path)
     _write_empty_sbml(yaml_path.parent / "conversion_reaction.xml")

@@ -1,8 +1,8 @@
 """The rate limit on AMICI's own warnings (``logging_setup.configure_amici``).
 
 AMICI logs one warning per non-finite value and the solver re-evaluates a failing right-hand
-side many times per step, so one bad start emits the same line without bound: the 2026-09-04
-sweep left a >5 GB ``server.log`` that was ~28M copies of two ``AMICI:NaN`` lines. What these
+side many times per step, so one bad start emits the same line without bound: one session left
+a >5 GB ``server.log`` that was ~28M copies of two ``AMICI:NaN`` lines. What these
 lock in is the throttle itself, and the three things it quietly depends on — that we own the
 `amici` logger instead of AMICI's unfiltered one, that the filter sits on the HANDLER so it sees
 records propagating from `amici.sim.sundials._swig_wrappers`, and that a forked pyPESTO worker
@@ -146,7 +146,7 @@ def test_amici_log_env_var_still_works(monkeypatch, raw, expected):
 def test_a_bad_amici_log_value_does_not_take_the_server_down(monkeypatch, tmp_path):
     """Deliberately more lenient than AMICI, which raises on an unparseable value. This runs once
     per session construction on a batch node, so a raise is not a bad log level — it is every
-    task in the sweep failing to start. Drive the real constructor, since that is where it broke.
+    session in the batch failing to start. Drive the real constructor, since that is where it broke.
     """
     monkeypatch.setenv("AMICI_LOG", "not-a-level")
     shutil.copytree(Path(__file__).parent / "data" / "toy_v2", tmp_path / "p")

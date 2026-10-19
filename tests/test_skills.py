@@ -202,12 +202,12 @@ def test_the_skills_stay_short():
     """They are read by an AGENT, into a history nothing prunes — so every character is re-sent
     on every subsequent turn. Length is a correctness property here, not a style preference.
 
-    Raised 6000 -> 6500 on 2026-08-19 to fit three silent-failure rules in antimony-authoring
+    Raised 6000 -> 6500 to fit three silent-failure rules in antimony-authoring
     (time must be the built-in `time`; a reaction id must not be an Antimony keyword; never assign
     a symbol to itself). Each one costs a whole edit-and-fit cycle when it fires and gives an error
     that points somewhere else, so they earn their characters — but the budget is a real cost, so
-    keep new entries at rule-plus-consequence length and put the measured evidence in
-    examples/BENCHMARK_NOTES.md instead."""
+    keep new entries at rule-plus-consequence length and keep the measured evidence out of the
+    skill."""
     for skill_dir in sorted(SKILLS_DIR.iterdir()):
         md = skill_dir / "SKILL.md"
         if md.is_file():

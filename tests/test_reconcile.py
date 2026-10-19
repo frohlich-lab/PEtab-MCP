@@ -68,14 +68,14 @@ IC_LITERAL_ANTIMONY = """model ic_lit
 end
 """
 
-# The author parametrises an IC as a COMPOUND expression of parameters (r2 = ini_R1*ini_R2fold),
-# as several benchmark models do — it must be preserved, not clobbered with a fresh r2_init=0.
+# The author parametrises an IC as a COMPOUND expression of parameters (r2 = r_tot*r2_fold),
+# as several published models do — it must be preserved, not clobbered with a fresh r2_init=0.
 IC_COMPOUND_ANTIMONY = """model ic_compound
   compartment c = 1;
   species r1 in c; species r2 in c;
-  r1 = ini_R1;
-  r2 = ini_R1 * ini_R2fold;
-  ini_R1 = 5.0; ini_R2fold = 3.0;
+  r1 = r_tot;
+  r2 = r_tot * r2_fold;
+  r_tot = 5.0; r2_fold = 3.0;
   koff = 0.1;
   deg1: r1 -> ; koff * r1;
   deg2: r2 -> ; koff * r2;
@@ -101,20 +101,20 @@ def test_reconcile_parametrises_a_literal_ic():
 
 
 def test_reconcile_preserves_a_compound_parametric_ic():
-    # r2 = ini_R1*ini_R2fold must be KEPT: no r2_init clobber, and both parameters surface as IC
+    # r2 = r_tot*r2_fold must be KEPT: no r2_init clobber, and both parameters surface as IC
     # parameters (so the parameter-table sync keeps/estimates them rather than dropping the seed).
     sm = SbmlModel.from_antimony(IC_COMPOUND_ANTIMONY).sbml_model
     ic = R.ensure_parametric_initial_conditions(sm)
     assert sm.getParameter("r2_init") is None  # the compound IC is NOT clobbered
-    assert {"ini_R1", "ini_R2fold"} <= set(ic)  # both compound-IC params reported
-    assert set(R._ic_parameter_ids(sm)) >= {"ini_R1", "ini_R2fold"}
+    assert {"r_tot", "r2_fold"} <= set(ic)  # both compound-IC params reported
+    assert set(R._ic_parameter_ids(sm)) >= {"r_tot", "r2_fold"}
     # the initial assignment still evaluates to the product (expression untouched)
     ia = next(
         sm.getInitialAssignment(i)
         for i in range(sm.getNumInitialAssignments())
         if sm.getInitialAssignment(i).getSymbol() == "r2"
     )
-    assert R._ast_names(ia.getMath()) == {"ini_R1", "ini_R2fold"}
+    assert R._ast_names(ia.getMath()) == {"r_tot", "r2_fold"}
 
 
 def test_sync_parameter_table_uses_linear_for_nonpositive_nominal(session):
@@ -158,8 +158,8 @@ def _bare_problem(antimony):
 def test_ic_estimated_by_default_empty_pool_unminted():
     """ICs are ESTIMATED by default: a positive seed is estimated on log10; an EXPLICIT zero
     (empty pool) gets NO `<sid>_init` at all — the literal 0 is the author's design, and a minted
-    row regenerated into the draft TSV on every commit (the draft-arm A/B measured one lead
-    re-delegating the deletion of a minted `IPR_S_init` 17 times)."""
+    row regenerated into the draft TSV on every commit (one agent was measured re-requesting the
+    deletion of a minted `B_init` 17 times)."""
     from petab.v2.C import ESTIMATE, NOMINAL_VALUE
     from petab_mcp.problem import LOG10, PARAMETER_SCALE
 
@@ -214,7 +214,7 @@ def test_ic_convention_fixes_a_pre_existing_estimated_row():
     When the agent then authors the real mechanism with the SAME state names, those rows are
     already in the table, so the add-loop (which only reaches `valid - table_ids`) skips them and
     the value-based convention never runs — leaving a 0/1 IC spuriously ESTIMATED and
-    structurally non-identifiable (blasi's 16 steady-state acetylation states; the agent has no
+    structurally non-identifiable (e.g. 16 steady-state states that sum to 1; the agent has no
     tool to fix them, since a parameters-arg edit sets bounds/scale only). Reconcile must re-derive
     the FIXED convention for such a row.
     """
@@ -351,7 +351,7 @@ def test_ic_convention_does_not_fix_a_compound_expression_participant():
 
 def test_condition_target_species_ic_not_parametrised():
     """A species whose initial value is set PER CONDITION by a condition target (a PEtab
-    species-initial override, e.g. armistead's per-genotype metabolite baselines) is driven by the
+    species-initial override, e.g. per-genotype baselines) is driven by the
     condition table — reconcile must NOT mint an estimated ``<sid>_init`` for it (the per-condition
     override would silently supersede it, inflating k with a non-identifiable parameter)."""
     import pandas as pd
@@ -413,8 +413,8 @@ def test_ic_estimate_is_value_based_not_observation_based():
 
 
 # A model driven by a per-condition input parameter ``dose`` that is ALSO a condition-table target,
-# plus a genuine kinetic ``k``. This is how benchmark condition tables carry parametric inputs
-# (EGF doses, insulin steps, rate multipliers).
+# plus a genuine kinetic ``k``. This is how published condition tables carry parametric inputs
+# (ligand doses, stimulus steps, rate multipliers).
 _CONDCOL_ANTIMONY = """model m
   compartment c = 1;
   species X in c; X = 0;
@@ -563,7 +563,7 @@ def test_initial_conditions_report_reads_a_fixed_t0_off_the_parameter_table(sess
 def test_condition_target_parameter_not_synced_into_parameter_table():
     """A parameter a condition targets is a per-condition PEtab change, so reconcile must NOT write
     it into the parameter table (PEtab forbids it there) while still syncing a real kinetic — so a
-    benchmark condition table with parametric inputs ships verbatim."""
+    shipped condition table with parametric inputs ships verbatim."""
     prob = _condcol_problem()
     diff = R.sync_parameter_table(prob)
     assert "dose" not in prob.parameter_df.index  # condition-target param stays out of the table
@@ -617,9 +617,9 @@ def test_symbolic_noise_formulas_are_memoised_on_the_TABLE_TEXT(session):
     """``petab.get_symbolic_noise_formulas`` parses the WHOLE observable table, and the gain
     resolution needs it once per OBSERVABLE — an n-observable table paid n*n antlr parses on every
     call, which dominated what both the replicate lack-of-fit arm and the pooled noise floor spend
-    resolving gains (measured per sigma: blasi 35.8 -> 5.8 ms). The cache is keyed on the formulas' TEXT
-    and not on the frame's identity, because the agent RE-AUTHORS the observable table mid-session
-    and a stale expression would feed a stop gate."""
+    resolving gains (measured per sigma on 16 observables: 35.8 -> 5.8 ms). The cache is keyed on
+    the formulas' TEXT and not on the frame's identity, because the agent RE-AUTHORS the observable
+    table mid-session and a stale expression would feed a stop gate."""
     odf = session.problem.observable_df.copy()
     first = R._symbolic_noise_formulas(odf)
     assert R._symbolic_noise_formulas(odf) is first  # same text -> same object, no re-parse
@@ -632,18 +632,18 @@ def test_symbolic_noise_formulas_are_memoised_on_the_TABLE_TEXT(session):
 
 
 # -- assignment-rule targets must not get a parametric IC (#158 follow-up) -------------------
-# Verbatim shape of the construct that produced 69 rejected `make_changes` calls in the Aug 8-10
-# sweep (smallest real instance: 51526222_113 seq 16, deepseek-v4-flash on sneyd). The agent's own
-# SBML is legal; the server then minted `IPR_A_init` + an initialAssignment on a symbol that already
-# carries an assignment rule, which libSBML rejects with "Cannot set a value using both an initial
-# assignment and an assignment rule simultaneously" -- and the agent was blamed for it.
+# Verbatim shape of the construct that produced 69 rejected `make_changes` calls in one
+# measurement (taken from its smallest real instance). The agent's own SBML is legal; the server
+# then minted `R_A_init` + an initialAssignment on a symbol that already carries an assignment rule,
+# which libSBML rejects with "Cannot set a value using both an initial assignment and an assignment
+# rule simultaneously" -- and the agent was blamed for it.
 RULE_TARGET_ANTIMONY = """model rule_target
   compartment cell = 1;
   species x in cell; species y in cell; species z in cell;
-  species IPR_A in cell; species IPR_O in cell;
+  species R_A in cell; species R_O in cell;
   x = 0.5; y = 0.3; z = 0.1;
-  IPR_A := x*y*(1-z);
-  IPR_O := 0.0;
+  R_A := x*y*(1-z);
+  R_O := 0.0;
   kf = 1.0;
   decay: x => ; kf * x;
 end
@@ -684,14 +684,14 @@ def test_assignment_rule_targets_get_no_parametric_ic():
     sm = _sm(RULE_TARGET_ANTIMONY)
     ic = R.ensure_parametric_initial_conditions(sm)
     # No <sid>_init minted for either rule-driven species...
-    assert sm.getParameter("IPR_A_init") is None
-    assert sm.getParameter("IPR_O_init") is None
-    assert "IPR_A_init" not in ic and "IPR_O_init" not in ic
+    assert sm.getParameter("R_A_init") is None
+    assert sm.getParameter("R_O_init") is None
+    assert "R_A_init" not in ic and "R_O_init" not in ic
     # ...and no initialAssignment on them either, which is what libSBML actually objects to.
     ia_symbols = {
         sm.getInitialAssignment(i).getSymbol() for i in range(sm.getNumInitialAssignments())
     }
-    assert ia_symbols.isdisjoint({"IPR_A", "IPR_O"})
+    assert ia_symbols.isdisjoint({"R_A", "R_O"})
     # The free dynamic species are untouched -- the fix must not stop parametrising ordinary ICs.
     assert {"x_init", "y_init", "z_init"} <= set(ic)
 
@@ -719,22 +719,22 @@ def test_reconcile_heals_a_store_that_already_carries_the_illegal_initial_assign
     # A version store written before this fix can carry the illegal IA. Re-authoring over it must
     # repair the document rather than inherit the fault.
     sm = _sm(RULE_TARGET_ANTIMONY)
-    R._set_parametric_ic(sm, "IPR_A", 0.0)  # simulate the old buggy reconcile
+    R._set_parametric_ic(sm, "R_A", 0.0)  # simulate the old buggy reconcile
     assert _consistency_errors(sm) != []  # document is now genuinely broken
     R.ensure_parametric_initial_conditions(sm)
     assert _consistency_errors(sm) == []  # healed
     ia_symbols = {
         sm.getInitialAssignment(i).getSymbol() for i in range(sm.getNumInitialAssignments())
     }
-    assert "IPR_A" not in ia_symbols  # the illegal IA is gone...
-    # ...AND so is the parameter it pointed at. Leaving `IPR_A_init` behind would keep an ESTIMATED
+    assert "R_A" not in ia_symbols  # the illegal IA is gone...
+    # ...AND so is the parameter it pointed at. Leaving `R_A_init` behind would keep an ESTIMATED
     # row that the assignment rule overrides at t=0 — a free ln(n) of BIC on every subsequent fit
     # with zero effect on the trajectory, which is exactly the artefact
     # `ensure_parametric_initial_conditions` exists to prevent.
-    assert sm.getParameter("IPR_A_init") is None
+    assert sm.getParameter("R_A_init") is None
 
 
-# -- prune/sync bugs the Aug 8-10 sweep exposed ----------------------------------------------
+# -- prune/sync bugs measured sessions exposed ------------------------------------------------
 # A parameter that is the TARGET of an initialAssignment, and that nothing else references.
 # `_model_math_names` walks IA math (so `a`/`b` are kept) but not IA symbols, so `total` was pruned
 # and its IA left dangling -> invalid SBML -> the whole edit rejected (11 calls).

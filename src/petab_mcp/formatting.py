@@ -82,10 +82,10 @@ def summarize_measurements(df: "pd.DataFrame | None", *, preview: int = 4) -> di
     """Compact summary of a measurement table: per observable×experiment, the point count,
     time span, value min/max/mean, and a small evenly-spaced ``preview`` of points.
 
-    Returned by ``get_measurements`` by default so the panel sees the data's SHAPE (dynamics,
+    Returned by ``get_measurements`` by default so the agent sees the data's SHAPE (dynamics,
     ranges, sampling) without every raw point re-entering the LLM context on every turn — a
-    full measurement dump is 35-81k tokens on the shipped benchmark problems (measured:
-    bachmann 541 rows/35k, isensee 687/73k, lucarelli 1755/81k) and compounds as history, which
+    full measurement dump is 35-81k tokens on problems of a few hundred to two thousand rows
+    (measured: 541 rows/35k, 687/73k, 1755/81k) and compounds as history, which
     is why the raw read is PAGED. Raw records come from ``get_measurements(summarize=False)``
     one page at a time, or from SQL over the ``measurements`` table.
     """

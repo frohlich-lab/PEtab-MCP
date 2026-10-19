@@ -2,8 +2,8 @@
 
 These exercise the pure math — FIM -> SE / marginal & partial correlations / flat eigen-directions
 / candidates, plus the multistart-spread signal — with hand-built matrices, so no AMICI/pyPESTO
-fit is needed. The pyPESTO glue (`_compute_fim`, `identifiability`) is covered by the live
-harness run, not here.
+fit is needed. The pyPESTO glue (`_compute_fim`, `identifiability`) is covered by the tests that
+run a real fit, not here.
 """
 
 from __future__ import annotations
@@ -557,10 +557,10 @@ def test_merge_hints_are_the_cheapest_ties_bic_would_pay_for():
 
 
 def test_merge_hints_report_every_tie_the_charge_covers_up_to_the_cap():
-    """One hint per fit taught the lead to merge ONE pair per refit while the rest of the redundancy
-    sat unnamed — and the ties come in groups (blasi's jointly-redundant parameterisation), so the
-    cheapest alone is an arbitrary member of a set. Cheapest-first, and capped because this rides on
-    every fit result and is re-sent in history every later turn."""
+    """One hint per fit taught an agent to merge ONE pair per refit while the rest of the redundancy
+    sat unnamed — and the ties come in groups (a saturated model's jointly-redundant
+    parameterisation), so the cheapest alone is an arbitrary member of a set. Cheapest-first, and
+    capped because this rides on every fit result and is re-sent in history every later turn."""
     import petab_mcp.identifiability as I
 
     # Five parameters at one shared value with a near-singular FIM: every pair ties for free, so the
@@ -619,7 +619,7 @@ def test_fit_merge_hints_never_raises(session, monkeypatch):
 # -- the frozen fit record: what a diagnosis is allowed to read ---------------------------------
 def test_only_a_frozen_fit_may_be_diagnosed(session):
     """REGRESSION: the whole module is a local expansion around an optimum — the merge price has no
-    gradient term, so off one it gets monotonically CHEAPER (blasi: 0.001 nll at the fitted optimum,
+    gradient term, so off one it gets monotonically CHEAPER (measured: 0.001 nll at the optimum,
     7e-05 at 3x those values) and advertises merges that are not there. With no record there is
     nothing to expand around, and no fallback may reconstruct a problem from live state: that
     reconstruction is what paid a 12.5 s AMICI build to price a model nobody had fitted."""
@@ -657,7 +657,7 @@ def test_the_diagnosed_point_is_the_fits_own_optimum_not_the_live_table(session)
 
 def test_another_structure_in_the_working_state_is_labelled_not_re_priced(session):
     """A restore points the working state at another version's model, so the geometry in hand
-    describes a structure that is no longer in front of the lead. The diagnosis then belongs to the
+    describes a structure that is no longer in front of the agent. The diagnosis then belongs to the
     LAST FIT and says so — re-pricing the current structure would mean building it."""
     import petab_mcp.identifiability as I
 
@@ -678,7 +678,7 @@ def test_another_structure_in_the_working_state_is_labelled_not_re_priced(sessio
 
 def test_a_table_only_drift_keeps_the_verdict_and_says_the_table_moved(session):
     """REGRESSION: staleness used to compare `problem_hash` (the model AND the parameter table), so
-    the ONE drift a lead can cause inside a run — the de-dup no-op, which re-authors the SAME
+    the ONE drift an agent can cause inside a session — the de-dup no-op, which re-authors the SAME
     structure with a new starting guess and therefore runs no fit — read as "this describes another
     model". That dropped the merge hint from the score read and switched OFF the parsimony finish
     gate for a rank deficiency the frozen FIM still reported, for the same structure, at HEAD's own
@@ -707,7 +707,7 @@ def test_a_table_only_drift_keeps_the_verdict_and_says_the_table_moved(session):
 
 def test_a_process_that_ran_no_fit_serves_the_verdict_the_fit_stored(session):
     """REGRESSION: a durable RESUME restores HEAD's payload but not the in-memory fit record, so the
-    parameter half went dark for the rest of the run — and the finish gate stopped refusing a
+    parameter half went dark for the rest of the session — and a finish gate stopped refusing a
     rank-deficient model it refuses in-process. Re-deriving a record there is what the invariant
     forbids: measured on the pre-fix code, a resumed diagnosis paid 19.4 s of AMICI codegen (122 new
     files under the build root, charged to no clock), because a restored model's SBML is serialised

@@ -18,16 +18,16 @@ finite objective, still leaves the fresh sample to do the work — so both cause
 Either way the comparison the agent is about to reason from is INVALID, and reading the worse
 score as "the extra structure does not help" is a mistake. Nothing else in the payload surfaces
 it: BIC only says the variant lost, which is exactly how a legitimately-unhelpful parameter
-looks. The motivating case (blasi, run 80ccf20e): an edit meant to add a new ``c816`` factor to
-``r5_12_16_8`` OVERWROTE the ``c81216`` already in that rate law, so v4 gained a parameter, lost
-3.984 nll, and was read as evidence the model was complete — the run's only "does adding
-structure help?" experiment, spent on a variant that could not answer the question.
+looks. The motivating case: an edit meant to add a new ``c2`` factor to a rate law OVERWROTE the
+``c1`` already in it, so v4 gained a parameter, lost 3.984 nll, and was read as evidence the model
+was complete — the session's only "does adding structure help?" experiment, spent on a variant
+that could not answer the question.
 
 This is ADVISORY ONLY. Exploring a genuinely non-nested variant is legitimate, so the commit is
 never blocked; the agent is only told that this particular comparison cannot support the
 conclusion it looks like it supports. Where the culprit is cheaply identifiable — a parent
 parameter that stopped being estimated, or one that lost a reference in the rate laws — it is
-NAMED, so "c81216 no longer appears" is stated outright instead of left as a guess.
+NAMED, so "c1 no longer appears" is stated outright instead of left as a guess.
 """
 
 from __future__ import annotations
@@ -44,10 +44,9 @@ _NLL_WORSE_TOLERANCE = 1e-3
 
 # Agent-facing text, hoisted like the other server-side advisories (see
 # ``fitting.NOISE_SIGMA_INFLATED_ADVICE``) so what the agent reads is greppable and reviewable
-# without stepping through the logic. It cannot live in ``petab_harness.prompts``: that registry
-# is the HARNESS's own standing messages, and this server never imports the harness. The harness
-# side of this signal — what an outstanding invalid comparison means for a `finish` — does live
-# there, as ``FINISH_ARMED_INVALID_COMPARISON_TMPL``, and quotes this string verbatim.
+# without stepping through the logic. What an outstanding invalid comparison means for a
+# `finish` is a client's side of this signal, not this server's; a client that says so can quote
+# this string verbatim.
 #
 # Rides on every fit payload that fires it, and is re-sent in the agent's history each turn (PR
 # #23), so it stays ONE line: the numbers, the cause, and what NOT to conclude.
@@ -89,7 +88,7 @@ def _displacement_note(
 
     Two checks, cheapest first. A parent parameter that is no longer ESTIMATED in the child is
     unambiguous. Otherwise the displacement is inside the rate laws — the motivating case, where
-    ``c81216`` stayed in the parameter table but lost one of its nine references — so compare
+    ``k1`` stayed in the parameter table but lost one of its nine references — so compare
     whole-symbol reference counts in the two Antimony sources. The models are resolved HERE (see
     :func:`_model_text`), so a caller that has to read one off disk only does so on this path.
     """
@@ -151,8 +150,8 @@ def valid_added_parameter_experiment(parent: dict[str, Any], child: dict[str, An
     """True when ``child`` adds parameters to ``parent`` AND its nll did not worsen — i.e. a
     comparison that CAN answer "does adding this structure help?".
 
-    The counterpart to :func:`nesting_advisory`: one of these clears the run's outstanding
-    invalid-comparison flag (see ``session.invalid_comparison``), so a lead that redoes the
+    The counterpart to :func:`nesting_advisory`: one of these clears the session's outstanding
+    invalid-comparison flag (see ``session.invalid_comparison``), so an agent that redoes the
     experiment properly is no longer told it has none.
     """
     parent_k, child_k = parent.get("n_estimated"), child.get("n_estimated")

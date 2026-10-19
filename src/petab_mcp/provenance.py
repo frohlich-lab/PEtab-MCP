@@ -79,7 +79,7 @@ class ProvenanceStore:
                 raise PetabMcpError(
                     f"the provenance store at {self.root} is in format {found or 'petab-v1'!r}, "
                     f"not {STORE_FORMAT!r}: it was written by an earlier server and cannot be "
-                    "resumed. Start the run with a fresh --provenance-dir."
+                    "resumed. Start the server with a fresh --provenance-dir."
                 )
         self.versions_dir.mkdir(parents=True, exist_ok=True)
         format_path.write_text(STORE_FORMAT)
@@ -169,7 +169,7 @@ class ProvenanceStore:
         # render and the submitted text was therefore render(base) + patches. Operating on the
         # source directly was the behaviour change that fixed it.)
         #
-        # It also keeps the reconcile's contribution visible — measured at 19 symbols per run,
+        # It also keeps the reconcile's contribution visible — measured at 19 symbols per session,
         # 3 of them minted `*_init` parameters the fit actually estimates — by giving the
         # before-text to compare the render against.
         #
@@ -311,7 +311,7 @@ class ProvenanceStore:
         an absent file (a failed/skipped fit stores no simulation), an unreadable or corrupt
         one (a snapshot interrupted mid-write — wall-clock kill, disk full — must degrade this
         read, not poison every ``query_data``/``list_data_tables`` call for the rest of the
-        run), and a file that parses to a non-object. That is :meth:`list_versions`'s
+        session), and a file that parses to a non-object. That is :meth:`list_versions`'s
         per-file defensiveness, NOT :meth:`get_model_source`'s raise-on-bad-argument contract:
         history assembly iterates versions it did not choose, so a bad one is skippable data
         here, never a caller error.
