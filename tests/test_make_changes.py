@@ -1587,10 +1587,9 @@ def test_base_version_takes_whole_statements_too(tmp_path):
     assert out["applied"] is True
 
 
-def test_a_base_version_fork_back_to_an_earlier_rate_is_fitted(tmp_path):
-    """A fork that rebuilds version 0 while HEAD holds another rate revisits version 0; it is no
-    duplicate of HEAD. The de-dup's fingerprint saw neither rate (each is an assignment rule the
-    rate law multiplies), so the fork came back as HEAD's duplicate and was never fitted."""
+def _two_rates(tmp_path):
+    """A fitted statements run: version 0 with the saturating rate, HEAD (version 1) with a
+    steeper one. Returns the server and version 0's row."""
     entity_map = tmp_path / "entities.json"
     entity_map.write_text(_BASE_ENTITY_MAP.format(extra=""))
     mcp = create_server(
@@ -1615,12 +1614,40 @@ def test_a_base_version_fork_back_to_an_earlier_rate_is_fitted(tmp_path):
         },
     )
     assert v1["version"] == 1, v1["message"]
+    return mcp, row
+
+
+def test_a_base_version_fork_from_an_earlier_version_is_fitted(tmp_path):
+    """A fork from version 0 while HEAD holds another rate is no duplicate of HEAD. The de-dup's
+    fingerprint saw no rate (each is an assignment rule the rate law multiplies), so the fork came
+    back as HEAD's duplicate and was never fitted. Its rate is one neither version has."""
+    mcp, row = _two_rates(tmp_path)
+    other = {**_SATURATING, "policy": "other", "rate": "vmax * K / (K + source)"}
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "from v0, another rate",
+            "base_version": 0,
+            "statement_edits": [{"op": "replace_row", "row": {**row, "policy": "other"}}],
+            "mechanisms": [other],
+            "n_starts": 2,
+        },
+    )
+    assert out["committed"] is True and out["version"] == 2, out["message"]
+
+
+def test_a_base_version_fork_that_changes_nothing_is_refused_as_that_version(tmp_path):
+    """Version 0's own rows again, from version 0: version 0 stands for them, so nothing is
+    fitted and HEAD stays where it was."""
+    mcp, row = _two_rates(tmp_path)
     out = _call(
         mcp,
         "make_changes",
         {"justification": "v0 again", "base_version": 0, "statements": [row], "n_starts": 2},
     )
-    assert out["committed"] is True and out["version"] == 2, out["message"]
+    assert out["applied"] is False and "identical to v0" in out["error"], out["message"]
+    assert out["version"] == 1
 
 
 def _concurrently(monkeypatch, mcp, *calls):

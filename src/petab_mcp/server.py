@@ -1223,7 +1223,12 @@ def _register_model_tools(
                 "make_changes",
                 "make_changes: `base_version` selects the version whose STORED model the "
                 "edits apply to — it does nothing on its own. Send the change you want as "
-                "`model_edits`; a prior version re-committed unchanged is already a version "
+                + (
+                    "`statement_edits` (or the whole revised `statements`)"
+                    if statements_route
+                    else "`model_edits`"
+                )
+                + "; a prior version re-committed unchanged is already a version "
                 "and is refused, not re-fitted. If you wanted to RETURN to that "
                 "version because it was better: you do not need to — every fitted version is "
                 "kept and the run is scored on the BEST one, wherever HEAD ends up.",
