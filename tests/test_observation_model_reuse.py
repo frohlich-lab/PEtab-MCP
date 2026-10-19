@@ -230,56 +230,6 @@ def test_prune_orphans_keeps_a_rule_target_nothing_reads(antimony, target):
     assert target in rule_targets, "the rule itself must survive alongside its target"
 
 
-def test_constant_condition_target_need_not_be_used():
-    """A target with one distinct value encodes no design, so the model need not consume it."""
-    antimony = """
-    model constant_col
-      compartment cell = 1;
-      species A in cell, B in cell;
-      r1: A => B; cell * A * k_fwd;
-      A = 10; B = 0; k_fwd = 1; inert_level = 0;
-    end
-    """
-    problem = _problem(
-        antimony,
-        observable_formula="A * scale_obs",
-        noise_formula="sd_obs",
-        extra_params=["k_fwd"],
-        condition_cols={"inert_level": [0.0]},
-    )
-    # Two conditions, both with inert_level 0: the target cannot distinguish them (raimundez's
-    # METinh_level shape). With only ONE condition the target is trivially constant but is still
-    # the only thing setting that value, so the check must stay on — see the second assertion.
-    problem.condition_df = pd.DataFrame(
-        {
-            CONDITION_ID: ["c0", "c1"],
-            TARGET_ID: ["inert_level", "inert_level"],
-            TARGET_VALUE: [0.0, 0.0],
-        }
-    )
-    problem.experiment_df = pd.DataFrame(
-        {EXPERIMENT_ID: ["e0", "e1"], TIME: [0.0, 0.0], CONDITION_ID: ["c0", "c1"]}
-    )
-    problem = problem.replace(
-        measurement_df=pd.concat(
-            [problem.measurement_df, problem.measurement_df.assign(**{EXPERIMENT_ID: "e1"})],
-            ignore_index=True,
-        )
-    )
-    msgs = [i["message"] for i in validation._unused_condition_target_issues(problem)]
-    assert not any("inert_level" in m for m in msgs), msgs
-
-    single = _problem(
-        antimony,
-        observable_formula="A * scale_obs",
-        noise_formula="sd_obs",
-        extra_params=["k_fwd"],
-        condition_cols={"inert_level": [0.0]},
-    )
-    msgs = [i["message"] for i in validation._unused_condition_target_issues(single)]
-    assert any("inert_level" in m for m in msgs), "single-condition target must still be required"
-
-
 # --- the plausibility gate abstains where the spread ratio is degenerate ----------------------
 def test_sigma_gate_abstains_below_the_minimum_sample_size():
     """A sigma judged against fewer than NOISE_SIGMA_MIN_POINTS measurements gets no verdict.

@@ -567,6 +567,24 @@ def set_model(
         raise OperationError(
             "make_changes requires a non-empty Antimony model string when `antimony` is given."
         )
+    from .model_edits import self_assignments
+
+    looped = self_assignments(antimony)
+    if looped:
+        readout = next((s for s in looped if s.startswith(R.READOUT_PREFIX)), None)
+        raise OperationError(
+            f"make_changes: the assignment rule of {', '.join(map(repr, looped))} reads the "
+            "symbol it assigns. A rule computes its symbol from OTHER quantities, so this is a "
+            "loop no model can hold."
+            + (
+                f" {readout!r} is not a parameter to scale: it is what the assay measures of the "
+                f"model's state, `{readout} := <expression of your species>`."
+                if readout
+                else ""
+            )
+            + " NOTHING was applied.",
+            cause="self_assignment",
+        )
 
     normalized = _normalize_parameter_changes(parameters, arg="parameters") if parameters else []
 
@@ -708,14 +726,11 @@ def _require_positive_for_log(problem, parameter_id: str, scale: str) -> None:
                     hint = (
                         " `nominalValue` is not settable here (allowed keys: parameter_id, "
                         "lower_bound, upper_bound, scale) — a parameter's VALUE comes from the "
-                        "model text or the fit. An initial-condition row is created from the "
-                        "initial value the model declares AT THE MOMENT IT IS FIRST CREATED: 0 "
-                        "(or no initial value) means FIXED at 0, 1 means FIXED at 1, any other "
-                        "positive value means ESTIMATED on log10. A row already created at 0 does "
-                        "NOT re-open when you later declare a positive initial — only a species "
-                        "authored under a DIFFERENT name gets a fresh row. So either drop this "
-                        "scale entry (a species that starts empty is correctly fixed at 0), or "
-                        "author the species under a different name with a positive initial value."
+                        "model text or the fit. An initial-condition row follows the initial "
+                        "value the model declares: 0 (or no initial value) means FIXED at 0, 1 "
+                        "means FIXED at 1, any other positive value means ESTIMATED on log10. So "
+                        "either drop this scale entry (a species that starts empty is correctly "
+                        "fixed at 0), or declare a positive initial value."
                     )
                 raise OperationError(
                     f"Cannot use {scale} scale for {parameter_id!r}: {field}={val} must be > 0."
@@ -1262,8 +1277,8 @@ def bundle_result(
     returns. It is not "did the edit apply" — an edit that applies and then fails to fit is
     reverted (see :func:`revert_working_state`), so that call reports ``applied: false``, and the
     agent never has to reason about a half-done state. ``committed`` is the separate question of
-    whether a VERSION was created; the two differ only for the de-dup no-op, where the change is
-    in place but is byte-identical to an existing version.
+    whether a VERSION was created; the two differ only for the de-dup no-op, where the change gives
+    the same model as an existing version and the working model is that version, exactly as stored.
 
     Both halves' diagnostics are merged into ONE ordered ``messages`` stack (see :mod:`messages`) —
     the edit's advisories and lint warnings first, then the fit's — so a caller reads every
@@ -1290,9 +1305,11 @@ def bundle_result(
     elif no_change:
         applied = True
         message = (
-            "Change applied, but the fit was a no-op: the resulting model is identical to version "
-            f"{fit_result.get('duplicate_of_version')}, so its stored metrics stand. Make a "
-            "genuinely different change; that version is kept and scored regardless."
+            "No new version: this change gives the same model as version "
+            f"{fit_result.get('duplicate_of_version')} (the same equations and estimated "
+            "parameters), so the working model stays that version exactly as stored and its "
+            "metrics stand. Make a genuinely different change; that version is kept and scored "
+            "regardless."
         )
     elif snapshotted:
         # The fit broke only AFTER snapshotting, so HEAD moved: report where it landed rather than

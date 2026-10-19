@@ -7,9 +7,10 @@ Enforces the invariants:
   is PRESERVED — whether a single parameter (``S = S_0``) or a COMPOUND expression of parameters
   (``Rec2 = ini_R1*ini_R2fold``, ``Exposed = exposed_init_conc*population``). Its parameters are
   the settable/estimatable IC and are synced into the parameter table.
-* **Parameter-table sync** — every model parameter (rate constants + IC parameters) has a
-  row in the parameter table; parameters no longer in the model are removed, *except*
-  those used by the fixed observable/noise formulas (e.g. ``sigma_*``).
+* **Parameter-table sync** — every model parameter (rate constants + IC parameters) but a
+  ``readout_*`` measurement mapping (:func:`readouts`) has a row in the parameter table;
+  parameters no longer in the model are removed, *except* those used by the fixed
+  observable/noise formulas (e.g. ``sigma_*``).
 * **Orphan pruning** — species/parameters left unreferenced by any reaction, rule,
   initial assignment, or fixed table are dropped.
 """
@@ -50,6 +51,7 @@ from .problem import (
     LOG10,
     PARAMETER_SCALE,
     as_bool,
+    experiment_starts,
     observable_transformation,
     placeholder_ids,
     placeholders,
@@ -66,11 +68,11 @@ _IDENT_RE = re.compile(r"(?<![\w.])[A-Za-z_]\w*")
 #: multistart ignores a nominal value anyway — but it may not be 0 or 1. An explicit 0 is the
 #: author's-design skip in :func:`ensure_parametric_initial_conditions` (no ``<sid>_init`` is
 #: minted at all — the state starts empty), and 1 is the unit-normalization convention
-#: :func:`sync_parameter_table` holds an IC FIXED at; reconcile never re-touches a row once it
-#: exists. A seed at either value would therefore leave every seeded species' initial condition
-#: constant for the rest of the run — silently reinstating the frozen-IC trap of issue #90, on
-#: exactly the species the caller is about to build a mechanism around. Any other positive value
-#: lands on the ordinary path: estimated, on log10.
+#: :func:`sync_parameter_table` holds an IC FIXED at. A seed at either value would therefore hold
+#: every seeded species' initial condition constant until the caller declares another — silently
+#: reinstating the frozen-IC trap of issue #90, on exactly the species the caller is about to
+#: build a mechanism around. Any other positive value lands on the ordinary path: estimated, on
+#: log10.
 SEED_INITIAL_VALUE = 0.1
 
 #: The ``model_id`` a model-less problem's model is created under; the same id gemot gives the
@@ -246,6 +248,31 @@ def formula_identifiers(formula: Any) -> set[str]:
     return _ast_names(ast)
 
 
+#: How a blinded benchmark names a measurement mapping: the observable formula reads
+#: ``readout_<observableId>``, and the model defines it with an assignment rule.
+READOUT_PREFIX = "readout_"
+
+
+def readouts(problem) -> dict[str, str | None]:
+    """Each ``readout_*`` measurement mapping the observable formulas read, to the expression
+    the model's assignment rule defines it by, or ``None`` while the model leaves it undefined.
+
+    A mapping is not a parameter, defined or not, so :func:`sync_parameter_table` gives none a
+    row. Undefined, it is the seed's constant (:func:`seed_model_antimony`), which a model with
+    dynamics may not keep (``validation._undefined_readout_issues``).
+    """
+    odf = getattr(problem, "observable_df", None)
+    if odf is None or OBSERVABLE_FORMULA not in odf.columns:
+        return {}
+    ids = {sid for f in odf[OBSERVABLE_FORMULA] for sid in formula_identifiers(f)}
+    sm = problem.model.sbml_model
+    out: dict[str, str | None] = {}
+    for sid in sorted(i for i in ids if i.startswith(READOUT_PREFIX)):
+        rule = sm.getAssignmentRuleByVariable(sid)
+        out[sid] = libsbml.formulaToL3String(rule.getMath()) if rule is not None else None
+    return out
+
+
 def seed_model_antimony(problem) -> str | None:
     """A CONTENT-FREE but VALID initial model for a problem that ships without one, or ``None``
     when the fixed tables name nothing to declare.
@@ -330,10 +357,13 @@ def seed_model_antimony(problem) -> str | None:
     # broke a pure-readout problem outright), then keyed on "does a non-readout entity exist?",
     # which quietly left every readout a species on boehm, blasi, crauste, perelson and rahman —
     # boehm's mappings being as non-identity as fujita's.
-    demote = {sid for sid in species if sid.startswith("readout_")}
+    #
+    # Its display name says what it is, so the model text does not read as a constant to scale.
+    demote = {sid for sid in species if sid.startswith(READOUT_PREFIX)}
     body = "\n".join(
         (
-            f"  {sid} = {SEED_INITIAL_VALUE:g};"
+            f"  {sid} = {SEED_INITIAL_VALUE:g};\n"
+            f'  {sid} is "measurement mapping, which your model defines from its species";'
             if sid in demote
             else f"  species {sid};\n  {sid} = {SEED_INITIAL_VALUE:g};"
         )
@@ -345,13 +375,13 @@ def seed_model_antimony(problem) -> str | None:
 def has_dynamics(sm) -> bool:
     """Whether the model can MOVE: it has at least one reaction, or a rate/assignment rule.
 
-    The single definition of "a mechanism has been authored", shared by three places that must
+    The single definition of "a mechanism has been authored", shared by the places that must
     agree or the invariant they form comes apart: ``session.model_authored`` (what
     ``describe_problem`` reports), the ``make_changes`` guard that REFUSES to commit a model
-    without dynamics, and :func:`validation._unused_condition_target_issues` (which asks a
-    question only a mechanism can answer). Because the guard refuses exactly what this returns
-    False for, a dynamics-free model can only ever be the content-free seed — never something a
-    caller authored.
+    without dynamics, and :func:`validation._undefined_readout_issues` (which asks a question
+    only a mechanism can answer). Because the guard refuses exactly what this returns False for,
+    a dynamics-free model can only ever be the content-free seed — never something a caller
+    authored.
 
     Initial assignments deliberately do NOT count: reconcile gives every species a parametric IC,
     so counting them would make any bag of species look like a mechanism.
@@ -1892,111 +1922,169 @@ def is_parameter_estimated(problem, pid: str) -> bool:
 
 
 # -- initial-condition report ----------------------------------------------
+def _evaluate(formula, values: dict[str, Any]) -> float | None:
+    """``formula`` (PEtab math, parsed or not, or a number) at ``values``; ``None`` when a name in
+    it has none."""
+    import sympy as sp
+    from petab.v2.math import sympify_petab
+
+    try:
+        expr = formula if isinstance(formula, sp.Basic) else sympify_petab(formula)
+        return float(expr.subs({s: values[s.name] for s in expr.free_symbols if s.name in values}))
+    except Exception:  # noqa: BLE001 - unparseable or unresolved: the report says None
+        return None
+
+
 def initial_conditions_report(problem, added: set[str] | None = None) -> list[dict[str, Any]]:
-    """Per-species account of how each t=0 initial condition is resolved *after* reconcile.
+    """Per-species account of what each species starts at *after* reconcile, and why.
 
     Antimony can only declare a species' t=0 *value* — it has no way to say "estimate this
-    initial condition". Whether that declared value actually governs the simulated t=0 state is
-    decided by the reconcile/parameter/condition tables, not the model text, and the outcome is
-    otherwise invisible: a declared t=0 is silently OVERRIDDEN when its ``<species>_init``
-    parameter is estimated (the fit then sets t=0, the declared value is only the start) or when
-    the species is driven per-condition by a condition target. Surfacing this after every
-    model op is what lets the caller see immediately whether a t=0 "fix" took — instead of
-    re-authoring the model under a series of different IC naming schemes that all fit identically
-    because none of them ever changed the estimate status (see issue #57). ICs are ESTIMATED by
-    default; an IC of exactly 1 (a unit normalization) is held FIXED, and an IC of exactly 0 (an
-    empty pool, including an unwritten initial) is not parametrised at all. Decided by value in
-    reconcile, not switchable from the model text.
+    initial condition". What the simulation starts from is decided by the reconcile/parameter/
+    condition tables, not the model text, and the outcome is otherwise invisible: a declared t=0
+    is silently OVERRIDDEN when its ``<species>_init`` parameter is estimated (the fit then sets
+    t=0, the declared value is only the start), when its parameter-table row holds another value,
+    when the species is driven per-condition by a condition target, or when an assignment rule
+    holds it (an input). Surfacing this is what lets the caller see whether a t=0 "fix" took —
+    instead of re-authoring the model under a series of different IC naming schemes that all fit
+    identically because none of them ever changed the estimate status (see issue #57). ICs are
+    ESTIMATED by default; an IC of exactly 1 (a unit normalization) is held FIXED, and an IC of
+    exactly 0 (an empty pool, including an unwritten initial) is not parametrised at all. Decided
+    by value in reconcile, not switchable from the model text.
 
-    For each species returns ``{species, ic_parameter, declared_t0, estimated, set_by_condition,
-    t0_source, declared_t0_used, newly_added, note}``:
+    For each species returns ``{species, ic_parameter, declared_t0, t0, estimated,
+    set_by_condition, t0_source, declared_t0_used, newly_added, note}``:
 
-    * ``declared_t0`` — the t=0 value declared in the Antimony (the IC parameter's value);
+    * ``declared_t0`` — the t=0 value the model text declares (the IC parameter's value), ``None``
+      for a species an assignment rule holds;
+    * ``t0`` — what the simulation starts it at, under the parameter table (an estimated IC's
+      current value: the last fit's) and each simulated experiment's starting conditions: a
+      number, or ``{experimentId: value}`` where experiments differ, ``None`` where it cannot be
+      read off the tables (it depends on another species);
     * ``estimated`` — whether the IC parameter is a FREE (fit) parameter or FIXED;
     * ``set_by_condition`` — whether the species (or its IC parameter) is a condition target,
       i.e. set per condition, which overrides the Antimony t=0;
-    * ``t0_source`` — ``"fixed"`` | ``"estimated"`` | ``"condition_table"``;
+    * ``t0_source`` — ``"fixed"`` | ``"estimated"`` | ``"condition_table"`` | ``"rule"``;
     * ``declared_t0_used`` — the bottom line: does the declared t=0 govern the simulated t=0 state
-      (``True`` only for a plain FIXED IC), or is it overridden;
+      (``True`` only for a FIXED IC whose ``t0`` is the declared value), or is it overridden;
     * ``newly_added`` — whether this op introduced the IC parameter (from the reconcile diff).
     """
+    from petab.v2.math import sympify_petab
+
     sm = problem.model.sbml_model
     cond_targets = condition_target_symbols(problem)
     added = added or set()
+    # What the model text says, then what the simulation reads: the parameter table, and each
+    # experiment's starting conditions over it.
+    declared_values = {p.getId(): p.getValue() for p in sm.getListOfParameters()}
+    declared_values |= {c.getId(): c.getSize() for c in sm.getListOfCompartments()}
+    df = problem.parameter_df
+    nominal = df[NOMINAL_VALUE].items() if NOMINAL_VALUE in df.columns else ()
+    values = declared_values | {str(p): v for p, v in nominal if v == v}
+    starts = {
+        eid: {"time": start}
+        | {target: _evaluate(value, values | {"time": start}) for target, value in targets.items()}
+        for eid, (start, targets) in experiment_starts(problem).items()
+    }
+    # Species a reaction makes while consuming nothing it does not give back: a synthesis.
+    synthesised: set[str] = set()
+    for reaction in sm.getListOfReactions():
+        reactants = {r.getSpecies() for r in reaction.getListOfReactants()}
+        products = {p.getSpecies() for p in reaction.getListOfProducts()}
+        if reactants <= products:
+            synthesised |= products - reactants
     out: list[dict[str, Any]] = []
     for i in range(sm.getNumSpecies()):
         sp = sm.getSpecies(i)
         sid = sp.getId()
         ic = _ic_symbol_for(sm, sid)
-        declared: float | None = None
-        if ic is not None and sm.getParameter(ic) is not None:
-            declared = float(sm.getParameter(ic).getValue())
+        rule = sm.getAssignmentRuleByVariable(sid)
+        assignment = sm.getInitialAssignmentBySymbol(sid)
+        if rule is not None:
+            formula = libsbml.formulaToL3String(rule.getMath())
+        elif assignment is not None:
+            formula = libsbml.formulaToL3String(assignment.getMath())
         elif sp.isSetInitialConcentration():
-            declared = float(sp.getInitialConcentration())
+            formula = sp.getInitialConcentration()
         elif sp.isSetInitialAmount():
-            declared = float(sp.getInitialAmount())
-        elif ic is None:
-            # No IC parameter AND no declared initial: an unset species is an empty pool in SBML,
-            # and `ensure_parametric_initial_conditions` deliberately mints nothing for it. Report
-            # the value it actually simulates from rather than None, which would otherwise fall
-            # through the FIXED branch below and be described as "shipped as a fixed parameter".
-            declared = 0.0
-        estimated = ic is not None and is_parameter_estimated(problem, ic)
-        set_by_condition = sid in cond_targets or (ic is not None and ic in cond_targets)
-        if set_by_condition:
-            t0_source, declared_t0_used, note = (
+            formula = sp.getInitialAmount()
+        else:
+            # An unset species is an empty pool in SBML, and `ensure_parametric_initial_conditions`
+            # deliberately mints nothing for it.
+            formula = 0.0
+        try:
+            expr = sympify_petab(formula)
+        except Exception:  # noqa: BLE001 - unparseable: evaluates to None below
+            expr = formula
+        declared = None if rule is not None else _evaluate(expr, declared_values)
+        per = {
+            eid: at[sid] if sid in at else _evaluate(expr, values | at)
+            for eid, at in starts.items()
+        }
+        t0 = per.popitem()[1] if len(set(per.values())) == 1 else per
+        ic_params = {ic} if ic else set(_ic_expression_params(sm, sid))
+        estimated = any(is_parameter_estimated(problem, p) for p in ic_params)
+        set_by_condition = sid in cond_targets or bool(ic_params & cond_targets)
+        if rule is not None:
+            t0_source, note = (
+                "rule",
+                f"held to `{formula}` by an assignment rule — `t0` is that formula at the start "
+                "of each experiment; no declared initial is used.",
+            )
+        elif set_by_condition:
+            t0_source, note = (
                 "condition_table",
-                False,
-                "set per condition by the condition table — the Antimony t=0 is NOT used.",
+                "set per condition by the condition table — the Antimony t=0 is NOT used; `t0` "
+                "is each experiment's value.",
             )
         elif estimated:
-            t0_source, declared_t0_used, note = (
+            t0_source, note = (
                 "estimated",
-                False,
                 "ESTIMATED free parameter (the default for initial conditions) — the fit sets "
-                "t=0; the declared value is only the starting guess.",
+                "t=0 (`t0` is its current value, the last fit's); the declared value is only the "
+                "starting guess.",
             )
         else:
             # FIXED. Under the always-on default, an IC is only fixed at the two leak-free value
             # conventions (0 = empty pool, 1 = unit normalization) or because it was shipped as a
             # fixed parameter row; say which, so the caller sees why it is not estimated.
-            if ic is None and declared in (None, 0.0):
+            t0_source = "fixed"
+            if ic is None and assignment is None:
+                value = "an empty pool (t=0 == 0)" if t0 == 0.0 else f"t=0 == {t0!r}"
                 why = (
-                    "an empty pool (t=0 == 0), carried as a literal — no `<species>_init` "
-                    "parameter exists for it, so it costs nothing in k"
+                    f"{value}, carried as a literal — no `<species>_init` parameter exists for "
+                    "it, so it costs nothing in k"
                 )
             elif ic is None:
-                # No minted `<species>_init` does NOT imply a zero initial. An assignment-rule
-                # target reaches here with `ic` None (ensure_parametric_initial_conditions drops
-                # the initial assignment and continues) while the species still declares a
-                # non-zero concentration. Claiming "t=0 == 0" then contradicted `declared_t0` in
-                # the very same record — a self-contradicting answer to the one question this
-                # report exists to settle.
-                why = (
-                    f"carried as a literal (t=0 == {declared:g}) — no `<species>_init` "
-                    "parameter exists for it, so it costs nothing in k"
-                )
-            elif declared == 0.0:
+                why = f"`{formula}` over fixed parameters"
+            elif t0 == 0.0:
                 why = "an empty pool (t=0 == 0)"
-            elif declared == 1.0:
+            elif t0 == 1.0:
                 why = "a unit normalization (t=0 == 1)"
             else:
                 why = "shipped as a fixed parameter"
-            t0_source, declared_t0_used, note = (
-                "fixed",
-                True,
+            note = (
                 f"FIXED at the declared t=0 value ({why}) — this value governs the simulated "
-                "t=0 state.",
+                "t=0 state."
+                if t0 == declared
+                else f"FIXED at {t0!r} by its parameter-table row, NOT at the declared "
+                f"{declared!r} — the row governs the simulated t=0 state."
             )
+            if t0 == 0.0 and ic is None and assignment is None and sid in synthesised:
+                note += (
+                    " A reaction makes it from nothing and nothing declares it present at the "
+                    "start: if it is (a protein made at a steady rate is), declare its starting "
+                    "amount, in `starts` on the statements route."
+                )
         out.append(
             {
                 "species": sid,
                 "ic_parameter": ic,
                 "declared_t0": declared,
+                "t0": t0,
                 "estimated": bool(estimated),
                 "set_by_condition": bool(set_by_condition),
                 "t0_source": t0_source,
-                "declared_t0_used": bool(declared_t0_used),
+                "declared_t0_used": t0_source == "fixed" and t0 == declared,
                 "newly_added": bool(ic in added) if ic else False,
                 "note": note,
             }
@@ -2097,6 +2185,14 @@ def _direct_ic_parameter_ids(sm) -> set[str]:
     return ic
 
 
+def _ic_convention(v0: float) -> tuple[str, bool]:
+    """The scale and estimate flag a direct initial condition declared at ``v0`` takes (see
+    :func:`sync_parameter_table`)."""
+    if v0 in (0.0, 1.0):
+        return LIN, False  # empty pool / unit normalization: FIXED
+    return (LOG10 if v0 > 0.0 else LIN), True  # a guess: estimated, on log10 when it can be
+
+
 def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
     """Add rows for new model parameters; remove rows for parameters gone from the model
     (keeping observable/noise parameters). Returns the add/remove diff.
@@ -2113,8 +2209,9 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
     Initial conditions are ESTIMATED by default -- a declared t=0 is only a guess and must never
     be silently frozen (issue #90). Two leak-free VALUE conventions stay FIXED: an IC of exactly
     ``0`` (an empty pool -- nothing to estimate) and an IC of exactly ``1`` (a unit normalization,
-    e.g. a conserved-total set to 1). A caller that needs some other IC fixed ships it as a fixed
-    parameter row (reconcile never re-touches existing rows)."""
+    e.g. a conserved-total set to 1). A row follows the value the model declares on every sync, so
+    re-declaring an IC moves it. A caller that needs some other IC fixed ships it as a fixed
+    parameter row, which reconcile never re-touches."""
     sm = problem.model.sbml_model
     valid = set(problem.model.get_valid_parameters_for_parameter_table())
     # A parameter that is a CONDITION TARGET is set per condition (a PEtab condition change),
@@ -2123,6 +2220,9 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
     # (see condition_target_symbols); without this, reconcile force-added them and petab lint then
     # rejected the problem ("… not allowed to occur in the parameters table").
     valid -= condition_target_symbols(problem)
+    # A measurement mapping is not a parameter: no row, even while the seed holds it a constant.
+    mappings = set(readouts(problem))
+    valid -= mappings
     table_ids = set(problem.parameter_df.index)
     ic_params = _ic_parameter_ids(sm)
     exp_params = _exponent_symbols(sm)  # cooperativity/Hill exponents -> lin scale, tight bounds
@@ -2148,6 +2248,7 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
     # Critically the agent had NO WAY OUT: no tool in the surface can delete a parameter-table row,
     # so the state was unreachable from the agent side and the retry could only fail again.
     keep_table -= species_ids(sm)
+    keep_table -= mappings
 
     added, removed = [], []
 
@@ -2182,12 +2283,7 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
             except (TypeError, ValueError):
                 v0 = 0.0
             lb, ub = _default_bounds(value)
-            if v0 == 0.0 or v0 == 1.0:
-                scale, estimate = LIN, False  # empty pool / unit normalization: FIXED
-            elif v0 > 0.0:
-                scale, estimate = LOG10, True  # positive seed/guess: estimate on log10
-            else:
-                scale, estimate = LIN, True  # nonzero but non-positive: cannot live on log10
+            scale, estimate = _ic_convention(v0)
         elif pid in exp_params:
             # An exponent (Hill coefficient): estimate on a LINEAR scale with tight bounds so it
             # cannot run off to a near-step-function on the wide default log10 range.
@@ -2211,44 +2307,37 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
         problem.parameter_df.loc[pid, ESTIMATE] = estimate
         added.append(pid)
 
-    # Enforce the leak-free {0,1} IC-fix convention on IC rows that ALREADY EXIST — the add-loop
-    # above only reaches params in `valid - table_ids`, so an IC parameter that was in the table
-    # before this sync never gets the value-based treatment. That is not hypothetical: a model-less
-    # problem is seeded with a content-free model whose species come from the observables, and
-    # reconcile parametrises their ICs into ESTIMATED `<sid>_init` rows (nominal 0.1). When the
-    # agent then authors the real mechanism using the SAME state names (e.g. blasi's 16 acetylation
-    # states x_0ac..x_4ac), those seed rows are already present, so the {0,1}->FIXED convention was
-    # SILENTLY SKIPPED and every steady-state IC stayed estimated — 16 structurally non-identifiable
-    # free parameters the agent has no tool to remove (a parameters-arg edit sets bounds/scale only,
-    # never estimate). Re-derive the FIXED convention here for a non-shipped IC row whose current
-    # model value is exactly 0 (empty pool) or 1 (unit normalization); a shipped row is left as the
-    # problem defined it, and an IC with any other value stays estimated (its fitted nominal, which
-    # we must not clobber, is never exactly 0 or 1). Restricted to DIRECT ICs (`<sid> = <param>`):
-    # a participant of a COMPOUND parametric IC (`Rec = ini_R1*ini_R2fold`) valued 1 is a fold /
-    # normalisation seed to estimate, not a unit-normalisation IC to fix.
+    # Re-derive the convention on IC rows that ALREADY EXIST, from the value the model declares
+    # now — the add-loop above only reaches params in `valid - table_ids`. That covers a seed row
+    # re-authored under the same state name (blasi's x_0ac..x_4ac, each at 1) and a start
+    # re-declared at another value, neither of which the agent could move: a parameters-arg edit
+    # sets bounds/scale only. A shipped row is left as the problem defined it, and an estimated
+    # row whose value is still neither 0 nor 1 keeps its fitted nominal and bounds. Restricted to
+    # DIRECT ICs (`<sid> = <param>`): a participant of a COMPOUND parametric IC (`Rec =
+    # ini_R1*ini_R2fold`) valued 1 is a fold / normalisation seed to estimate, not a
+    # unit-normalisation IC to fix.
+    df = problem.parameter_df
     for pid in sorted((_direct_ic_parameter_ids(sm) & table_ids) - shipped_ids):
-        if pid not in problem.parameter_df.index:
+        if pid not in df.index:
             continue
         try:
             v0 = float(problem.model.get_parameter_value(pid))
         except (TypeError, ValueError):
             continue
-        if v0 == 0.0 or v0 == 1.0:
-            cur = problem.parameter_df.loc[pid, ESTIMATE]
-            try:
-                already_fixed = not as_bool(cur)
-            except (TypeError, ValueError):
-                already_fixed = False
-            if not already_fixed:
-                # Re-derive bounds to bracket the new nominal (exactly as the add-loop does via
-                # _default_bounds) — otherwise the stale positive-log10 seed bounds are left, so an
-                # empty-pool IC ends fixed at 0.0 with a lowerBound of 1e-4 ABOVE it.
-                lb, ub = _default_bounds(v0)
-                problem.parameter_df.loc[pid, PARAMETER_SCALE] = LIN
-                problem.parameter_df.loc[pid, LOWER_BOUND] = lb
-                problem.parameter_df.loc[pid, UPPER_BOUND] = ub
-                problem.parameter_df.loc[pid, NOMINAL_VALUE] = v0
-                problem.parameter_df.loc[pid, ESTIMATE] = False
+        scale, estimate = _ic_convention(v0)
+        estimated = is_parameter_estimated(problem, pid)
+        if estimate and estimated:
+            continue  # still a guess: its fitted nominal and bounds stand
+        if not estimate and not estimated and df.get(NOMINAL_VALUE, {}).get(pid) == v0:
+            continue
+        # Bounds bracket the new nominal, as in the add-loop: stale positive-log10 seed bounds left
+        # an empty-pool IC fixed at 0.0 with a lowerBound of 1e-4 ABOVE it.
+        lb, ub = _default_bounds(v0)
+        df.loc[pid, PARAMETER_SCALE] = scale
+        df.loc[pid, LOWER_BOUND] = lb
+        df.loc[pid, UPPER_BOUND] = ub
+        df.loc[pid, NOMINAL_VALUE] = v0
+        df.loc[pid, ESTIMATE] = estimate
 
     for pid in sorted(table_ids - valid - keep_table):
         problem.parameter_df = problem.parameter_df.drop(index=pid)

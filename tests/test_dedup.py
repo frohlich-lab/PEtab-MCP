@@ -9,6 +9,8 @@ fit-free edit (no dedup at edit time) and that ``restore_version`` still goes ba
 
 from __future__ import annotations
 
+import pytest
+
 from petab_mcp import dedup as D
 from petab_mcp import operations as O
 from petab_mcp import parameters as P
@@ -78,6 +80,63 @@ def test_structure_fingerprint_changes_with_estimated_set(session):
     base = P.structure_fingerprint(sm, df)
     df.loc["k2", ESTIMATE] = False
     assert P.structure_fingerprint(sm, df) != base
+
+
+def _with(*lines: str, model: str = REVERSIBLE) -> str:
+    return model.replace("end\n", "".join(f"  {line}\n" for line in lines) + "end\n")
+
+
+_FUNCTION = "function f(x)\n  x / (1 + x)\nend\n"
+
+# Pairs of models whose ONLY difference is one equation the reactions do not show: each changes
+# the trajectory or what is measured, so neither may pass as the other's duplicate.
+_UNSEEN_BY_THE_REACTIONS = {
+    # every rate on the statements route: a rule the rate law multiplies
+    "assignment rule": (
+        _with("k_eff := k1;").replace("k1 * A", "k_eff * A"),
+        _with("k_eff := k1 / (1 + A);").replace("k1 * A", "k_eff * A"),
+    ),
+    "readout": (_with("readout_B := B;"), _with("readout_B := A + B;")),
+    "rate rule": (_with("C' = k1 * A;", "C = 0;"), _with("C' = k2 * B;", "C = 0;")),
+    "initial assignment": (REVERSIBLE, REVERSIBLE.replace("A = A_init;", "A = 2 * A_init;")),
+    "event": (_with("E1: at time > 5: A = 0;"), _with("E1: at time > 6: A = 0;")),
+    "boundary species": (REVERSIBLE, REVERSIBLE.replace("r1: A => B", "r1: $A => B")),
+    "function body": (
+        _FUNCTION + REVERSIBLE.replace("k1 * A", "k1 * f(A)"),
+        _FUNCTION.replace("1 + x", "2 + x") + REVERSIBLE.replace("k1 * A", "k1 * f(A)"),
+    ),
+}
+
+
+@pytest.mark.parametrize("pair", _UNSEEN_BY_THE_REACTIONS.values(), ids=_UNSEEN_BY_THE_REACTIONS)
+def test_structure_fingerprint_sees_every_equation(session, pair):
+    """REGRESSION: hashing the reactions alone called a changed rate or readout a duplicate, so
+    the change was refused and never fitted."""
+    df = session.problem.parameter_df
+    a, b = (P.structure_fingerprint(_sm(m), df) for m in pair)
+    assert a != b
+
+
+@pytest.mark.parametrize("pair", _UNSEEN_BY_THE_REACTIONS.values(), ids=_UNSEEN_BY_THE_REACTIONS)
+def test_structure_fingerprint_survives_a_render_round_trip(session, pair):
+    """A version is stored as its Antimony render and restored by parsing it back; a fingerprint
+    that moved on that round trip would call a restored model a different structure."""
+    df = session.problem.parameter_df
+    for antimony in pair:
+        model = SbmlModel.from_antimony(antimony, model_id=None)
+        again = SbmlModel.from_antimony(model.to_antimony(), model_id=None)
+        assert P.structure_fingerprint(model.sbml_model, df) == P.structure_fingerprint(
+            again.sbml_model, df
+        )
+
+
+def test_structure_fingerprint_ignores_starting_values_inside_rules(session):
+    """The added equations keep the fingerprint's blindness to values: a rule re-authored under
+    other starting guesses is still the same structure."""
+    df = session.problem.parameter_df
+    ruled = _with("k_eff := k1 / (1 + A);").replace("k1 * A", "k_eff * A")
+    other = ruled.replace("k1 = 0.25", "k1 = 3.0")
+    assert P.structure_fingerprint(_sm(ruled), df) == P.structure_fingerprint(_sm(other), df)
 
 
 # -- estimation_setup_signature ---------------------------------------------

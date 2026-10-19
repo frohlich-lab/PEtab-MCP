@@ -56,6 +56,21 @@ class UnknownEntityError(PetabMcpError):
     """A referenced id (parameter, observable, experiment, ...) does not exist."""
 
 
+class MechanismError(PetabMcpError):
+    """A row's mechanism cannot be built.
+
+    ``cause`` is the label ``edit_rejects.by_cause`` counts it under. ``library_gap`` is a gap in
+    the library — the policy exists, but no entry expresses it for the statement class — and the
+    signal that the library needs one, so its raisers name it. Every other refusal, a policy named
+    nowhere among them, is a request to fix, ``malformed_mechanism``, and that is the default, so
+    a new refusal never inflates the gaps.
+    """
+
+    def __init__(self, *args, cause: str = "malformed_mechanism"):
+        super().__init__(*args)
+        self.cause = cause
+
+
 class FitBackendError(PetabMcpError):
     """The cluster a fit's starts run on failed them (scheduler gone, a worker killed, a start
     cancelled or unable to run on a worker), or cannot run them at all because this AMICI cannot
