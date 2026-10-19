@@ -5,7 +5,6 @@ import shutil
 from pathlib import Path
 
 import libsbml
-import numpy as np
 import pytest
 
 from petab_mcp import protocols as Pr
@@ -44,7 +43,6 @@ def test_fujitas_ramp_is_evaluated_and_shown_to_the_antimony_route(tmp_path):
     yaml = _problem(tmp_path, f"EGF\t{_RAMP}\tEGF_0;EGF_rate;EGF_end")
     session = PetabSession(yaml, provenance_dir=tmp_path / "prov", resolver=StubReferenceResolver())
     (egf,) = session.inputs
-    assert egf.timed and not egf.direct
     values = {"EGF_0": 1.0, "EGF_rate": 2.0, "EGF_end": 1.5}
     assert egf.evaluate(values, [0.0, 1.0, 2.0]).tolist() == [1.0, 3.0, 0.0]
     assert session.describe()["inputs"] == [{"input": "EGF", "rule": f"EGF := {_RAMP}"}]
@@ -70,12 +68,14 @@ def test_an_input_names_only_condition_targets_and_time(tmp_path):
     [
         (f"EGF\t{_RAMP}\tEGF_0;EGF_rate", "but the formula reads EGF_0;EGF_end;EGF_rate"),
         ("EGF\tpiecewise(EGF_0, time <\tEGF_0", "is no PEtab math"),
-        (f"EGF\t{_RAMP}\tEGF_0;EGF_rate;EGF_end\nEGF\tEGF_0\tEGF_0", "declared twice"),
+        ("INS\tEGF_0\tEGF_0", "does not change within a period; set it in the condition table"),
+        (f"EGF\t{_RAMP}\tEGF_0;EGF_rate;EGF_end\nEGF\t{_RAMP}\tEGF_0;EGF_rate;EGF_end", "twice"),
     ],
 )
 def test_a_row_is_read_as_written_or_refused(tmp_path, row, refusal):
     """conditionInputs restates the formula's targets, so a stale list must not pass as another
-    protocol's."""
+    protocol's; and an input a period expresses is the condition table's, not a second declaration
+    of it here."""
     with pytest.raises(ProtocolError, match=re.escape(refusal)):
         Pr.read(_problem(tmp_path, row).parent)
 
@@ -98,13 +98,3 @@ def test_a_held_input_follows_its_rule_in_petab_math():
     assert libsbml.formulaToL3String(rule.getMath()) == "ln(dose) * time"
     assert model.getParameter("dose") is not None
     assert model.getSpecies("S").getBoundaryCondition()
-
-
-def test_a_direct_input_is_held_without_a_rule():
-    """Isensee's converted periods set `Fsk` itself: a rule `Fsk := Fsk` would read itself."""
-    fsk = Pr.Input("Fsk", "Fsk", ("Fsk",))
-    document = _held(fsk)
-    model = document.getModel()
-    assert fsk.direct and fsk.rule is None and not fsk.timed
-    assert model.getNumRules() == 0 and model.getSpecies("Fsk").getBoundaryCondition()
-    assert np.array_equal(fsk.evaluate({"Fsk": [0.0, 2.0]}, 5.0), [0.0, 2.0])

@@ -529,9 +529,9 @@ def _register_read_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         `n_starts` is omitted. Read it before passing `n_starts` anywhere: that argument REPLACES
         this default rather than adding to it, so a value below it fits less hard.
 
-        `inputs` are what the experiments impose over time, each read in your model by its id:
-        define it by its `rule` exactly as given, and never estimate the condition targets the
-        rule reads. An input whose `rule` is null is set by the experiments' periods themselves.
+        `inputs` are what the experiments impose within a period, each read in your model by its
+        id: define it by its `rule` exactly as given, and never estimate the condition targets the
+        rule reads.
         """
         ctx = route()
         session = ctx.session

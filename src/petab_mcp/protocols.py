@@ -1,22 +1,20 @@
-"""An experiment's input protocols: the one declaration of what the experiments impose over time.
+"""An experiment's input protocols: the inputs PEtab cannot express, declared once.
 
-A problem whose experiments drive a quantity over time ships ``inputs.tsv`` beside
+An input a period sets is PEtab v2's own: a condition sets a target's value at the start of a
+period, and the problem's tables show it to every route. An input that changes WITHIN a period has
+no place there, because a ramp is no value. A problem with one ships ``inputs.tsv`` beside
 ``problem.yaml``, one row per input. Fujita's EGF ramp, set per experiment by three condition
 targets::
 
     inputId  formula                                                conditionInputs
     EGF      piecewise(EGF_rate*time + EGF_0, time <= EGF_end, 0)   EGF_0;EGF_rate;EGF_end
 
-``formula`` is PEtab math over ``time`` and the condition targets ``conditionInputs`` lists. PEtab
-has no place for it: a condition sets a target's value at the start of a period, and a ramp is no
-value. The file names no model, so every route reads the same protocol. The statements route holds
-the input to it (:func:`hold`), the Antimony route is shown it (``describe_problem``), and the
-agent harness's neural route evaluates it (:meth:`Input.evaluate`). Nothing else declares an input,
-because each other copy (an entity-map field, a sentence in a task text) is one that can disagree
-with this one.
-
-A row whose formula is its own id is DIRECT: the experiments' periods set the quantity itself
-(Isensee's ``Fsk``, once its dosing rule is converted to periods), so it is held with no rule.
+``formula`` is PEtab math over ``time`` and the condition targets ``conditionInputs`` lists. A
+formula that does not read ``time`` is refused, since a period expresses it. The file names no
+model, so every route reads the same protocol. The statements route holds the input to it
+(:func:`hold`), the Antimony route is shown it (``describe_problem``), and the agent harness's
+neural route evaluates it (:meth:`Input.evaluate`). Nothing else declares an input, because each
+other copy (an entity-map field, a sentence in a task text) is one that can disagree with this one.
 
 An input is a fact about the experiment, so its formula names only what the experiments set
 (:func:`check`). A constant the fit estimates would be a modelling claim the agent can neither see
@@ -60,19 +58,9 @@ class Input:
     targets: tuple[str, ...]
 
     @property
-    def timed(self) -> bool:
-        """Whether the protocol reads ``time``, rather than only what the periods set."""
-        return "time" in _names(self.formula)
-
-    @property
-    def direct(self) -> bool:
-        """Whether the periods set the input itself, so there is no rule to hold it to."""
-        return self.formula.strip() == self.id
-
-    @property
-    def rule(self) -> str | None:
-        """The protocol as an Antimony assignment rule; ``None`` for a direct input."""
-        return None if self.direct else f"{self.id} := {self.formula}"
+    def rule(self) -> str:
+        """The protocol as an Antimony assignment rule."""
+        return f"{self.id} := {self.formula}"
 
     def evaluate(self, values: Mapping[str, ArrayLike], time: ArrayLike) -> np.ndarray:
         """The input at ``time``, each target at its value in ``values``, broadcast together."""
@@ -115,6 +103,11 @@ def read(directory: str | Path) -> tuple[Input, ...]:
                 f"{where}: {row.formula!r} is no PEtab math; write the protocol as "
                 "dose*piecewise(0, time < t_on, 1)"
             ) from None
+        if "time" not in names:
+            raise ProtocolError(
+                f"{where}: {row.formula!r} does not change within a period; set it in the "
+                "condition table, whose periods express it"
+            )
         targets = tuple(t.strip() for t in row.conditionInputs.split(";") if t.strip())
         if set(targets) != names - {"time"}:
             raise ProtocolError(
@@ -159,11 +152,9 @@ def load(directory: str | Path, problem) -> tuple[Input, ...]:
 
 def hold(model: libsbml.Model, species_id: str, item: Input) -> None:
     """Hold species ``species_id`` of ``model`` to ``item``: on the boundary, where a species may
-    sit in reactions and under a rule, and set by its protocol's assignment rule unless it is
-    direct. Each target the model lacks becomes a parameter, for the condition table to set."""
+    sit in reactions and under a rule, and set by its protocol's assignment rule. Each target the
+    model lacks becomes a parameter, for the condition table to set."""
     model.getSpecies(species_id).setBoundaryCondition(True)
-    if item.direct:
-        return
     for target in item.targets:
         if model.getElementBySId(target) is None:
             parameter = model.createParameter()
