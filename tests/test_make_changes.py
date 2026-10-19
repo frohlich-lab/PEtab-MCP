@@ -933,6 +933,71 @@ def test_an_unreadable_statement_is_refused_not_dropped(tmp_path):
     assert out["applied"] is False and out["error_cause"] == "unreadable_statement"
 
 
+def test_a_statement_missing_a_field_is_refused_by_name(tmp_path):
+    """A mod without `mod_type` escaped make_changes as a raw AttributeError; it is refused, the
+    row and the field named, before INDRA reads anything."""
+    row = {
+        "statement": {"type": "Phosphorylation", "enz": {"name": "A"}, "sub": {"name": "B", "mods": [{}]}},
+        "policy": "indra_default",
+        "prefix": "p",
+    }
+    out = _call(
+        _statements_server(tmp_path), "make_changes", {"justification": "x", "statements": [row]}
+    )
+    assert out["applied"] is False and out["error_cause"] == "unreadable_statement"
+    assert "`p`: `sub.mods[0]` has no `mod_type`, one of [" in out["error"]
+
+
+def test_a_type_the_library_lacks_is_a_library_gap(tmp_path):
+    """INDRA's own types are statement types whether or not the library has a mechanism for them:
+    refused as no statement type, RegulateAmount was neither counted as a gap nor pointed at
+    `mechanisms`."""
+    row = {
+        "statement": {"type": "RegulateAmount", "subj": {"name": "A"}, "obj": {"name": "B"}},
+        "policy": "indra_default",
+        "prefix": "h",
+    }
+    out = _call(
+        _statements_server(tmp_path), "make_changes", {"justification": "x", "statements": [row]}
+    )
+    assert out["applied"] is False and out["error_cause"] == "library_gap", out
+
+
+def test_a_crash_building_statements_is_logged_and_raised(tmp_path, monkeypatch):
+    """Only refusals were caught there, so a crash building the model escaped make_changes with
+    nothing in errors.jsonl, where a sweep looks for crashes; it is still raised, not refused."""
+
+    def crash(*args, **kwargs):
+        raise RuntimeError("UNIQUE_CRASH")
+
+    monkeypatch.setattr(O, "statements_to_antimony", crash)
+    with pytest.raises(Exception, match="UNIQUE_CRASH"):
+        _call(
+            _statements_server(tmp_path),
+            "make_changes",
+            {"justification": "x", "statements": [_statement_row()]},
+        )
+    assert "UNIQUE_CRASH" in (tmp_path / "prov" / "errors.jsonl").read_text()
+
+
+def test_an_activation_without_obj_activity_builds(tmp_path):
+    """The default the statement type documents is filled before INDRA reads the row, and stored
+    with it, so the model builds and the row renders as it was read."""
+    row = {
+        "statement": {"type": "Activation", "subj": {"name": "A"}, "obj": {"name": "B"}},
+        "policy": "indra_default",
+        "prefix": "act",
+    }
+    out = _call(
+        _statements_server(tmp_path), "make_changes", {"justification": "x", "statements": [row]}
+    )
+    assert out["applied"] is True, out
+    (stored,) = json.loads(
+        (tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text()
+    )["rows"]
+    assert stored["statement"]["obj_activity"] == "activity"
+
+
 def test_a_repeated_prefix_is_refused_before_assembly(tmp_path):
     """Two rows minting the same parameter names clash inside PySB, whose error is not one the
     tool boundary catches."""
