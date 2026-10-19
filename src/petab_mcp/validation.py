@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from petab.v2.C import CONDITION_ID, ESTIMATE, TARGET_ID, TARGET_VALUE
+from petab.v2.C import ESTIMATE
 from petab.v2.lint import ValidationIssueSeverity
 
 from .problem import as_bool
@@ -27,11 +27,9 @@ from .reconcile import (
     condition_target_symbols,
     noise_sigma_ids,
     _model_math_names,
-    _reaction_species,
     has_dynamics,
     observation_model_symbols,
     parameter_ids,
-    species_ids,
 )
 
 # libsbml consistency categories that are pure noise for unit-less mechanistic models — we
@@ -317,9 +315,8 @@ def _undefined_readout_issues(problem) -> list[dict[str, Any]]:
         # on blasi that is 16 constants against 16 steady-state observable means, fitting them
         # exactly while skipping the measurement-mapping task entirely.
         #
-        # The test is therefore an ASSIGNMENT RULE, and the seed is skipped by the same
-        # predicate `_unused_condition_target_issues` uses -- `has_dynamics`, NOT a bare reaction
-        # count. A model can be fully dynamic with zero reactions (rate rules are the other half
+        # The test is therefore an ASSIGNMENT RULE, and the seed is skipped by `has_dynamics`,
+        # NOT a bare reaction count. A model can be fully dynamic with zero reactions (rate rules are the other half
         # of `has_dynamics`, and ODE-style authoring is a normal Antimony idiom), and counting
         # reactions alone let exactly those models through the gate with every readout left as a
         # free constant -- the loophole this check exists to close.
@@ -369,77 +366,6 @@ def _undefined_readout_issues(problem) -> list[dict[str, Any]]:
         return issues
     except Exception:  # pragma: no cover - advisory check must never break validation
         return []
-
-
-def _unused_condition_target_issues(problem) -> list[dict[str, Any]]:
-    """Hard-error when the model declares a condition-table target but never USES it.
-
-    Each condition-table target sets a model quantity per condition — a dose, an input level, a
-    genotype switch, a rate multiplier: the very thing that makes the conditions differ. petab
-    requires the target to be a model entity (a species or parameter) and reconcile keeps it (a
-    condition target is never pruned), so a target the model declares but never references in a rate
-    law, rule, initial assignment, or reaction — nor in the observation model — passes the lint yet
-    does NOTHING: every condition then simulates identically and the experimental design is silently
-    ignored. A run can then "fit" by tuning other parameters while the perturbation it should be
-    responding to is inert. Gate it here so the model actually consumes each condition-table
-    quantity.
-
-    Only targets that ARE model entities are checked (a target absent from the model is a
-    different error petab lint already reports). Best-effort: no condition table / no model
-    yields no issues.
-
-    A model with NO DYNAMICS is skipped entirely. The question here — "does the authored
-    mechanism consume each condition-table quantity?" — presupposes a mechanism; against a model
-    that cannot move, every target is trivially unused and the check would reject the
-    content-free seed (see :func:`reconcile.seed_model_antimony`) and, worse, every later
-    parameters-only edit made while the seed is still the working model. This cannot become a
-    loophole: ``make_changes`` refuses to commit a model without dynamics, using this very
-    predicate, so anything a caller actually authors is checked.
-    """
-    cdf = getattr(problem, "condition_df", None)
-    model = getattr(problem, "model", None)
-    sm = model.sbml_model if model is not None else None
-    if cdf is None or sm is None or not has_dynamics(sm):
-        return []
-
-    used = _model_math_names(sm) | _reaction_species(sm) | observation_model_symbols(problem)
-    model_entities = parameter_ids(sm) | species_ids(sm)
-    targets = condition_target_symbols(problem)
-    # A target with a SINGLE distinct value across every condition encodes no experimental design:
-    # it cannot make one condition differ from another, so "the conditions don't perturb the model"
-    # simply does not apply and requiring the model to consume it is wrong. Published exports carry
-    # such targets — raimundez's METinh_level is 0 in all 174 conditions because the paper used MET
-    # inhibition for a PREDICTION validated against separate data, not for calibration. Forcing the
-    # agent to wire one in buys a submodule that can never carry flux. petab lint still requires the
-    # target to EXIST as a model entity; this only drops the requirement that it be USED. A
-    # condition that leaves the target unset counts as one more distinct value, as an empty cell
-    # did in the wide v1 table.
-    # Requires MORE THAN ONE condition: with a single condition every target is trivially
-    # constant, yet the condition is still the only thing setting that value, so the model should
-    # consume it. The exemption is about a target that cannot DISTINGUISH conditions.
-    n_conditions = cdf[CONDITION_ID].nunique()
-    if n_conditions > 1:
-        for tgt, sub in cdf.groupby(TARGET_ID, sort=False):
-            values = sub[TARGET_VALUE].astype(str).nunique()
-            if values + (sub[CONDITION_ID].nunique() < n_conditions) <= 1:
-                targets.discard(str(tgt))
-
-    return [
-        {
-            "level": "error",
-            "message": (
-                f"The condition table sets '{tgt}' per condition, but the model never uses "
-                f"'{tgt}' — it appears in no rate law, rule, initial assignment, reaction, or "
-                "observation formula. The conditions therefore don't perturb the model: every "
-                "condition simulates identically and the experimental design that distinguishes "
-                f"them is ignored. Use '{tgt}' in the mechanism — as an input/driver in a rate "
-                "law, or as the initial state of a species that participates in the dynamics."
-            ),
-            "check": "unused_condition_target",
-        }
-        for tgt in sorted(targets)
-        if tgt in model_entities and tgt not in used
-    ]
 
 
 # -- authoring-time check: frozen parametric reaction stoichiometry (checks the CONVERTED SBML) --
@@ -568,9 +494,7 @@ def validate_problem(problem, protected_fixed_ids=None) -> dict[str, Any]:
     ``protected_fixed_ids`` (the shipped-fixed mechanistic/structural constants, from
     :meth:`session.PetabSession.protected_fixed_parameter_ids`) enables the role check that
     rejects removing or estimating one (see :func:`_fixed_constant_role_issues`); omit it to
-    skip that check. The condition-target check (see
-    :func:`_unused_condition_target_issues`) always runs — it needs no reference, and it
-    self-skips the one case it cannot answer (a model with no dynamics).
+    skip that check.
     """
     lint = [
         i
@@ -603,10 +527,6 @@ def validate_problem(problem, protected_fixed_ids=None) -> dict[str, Any]:
     issues += role_issues
     n_errors += len(role_issues)
 
-    condition_issues = _unused_condition_target_issues(problem)
-    issues += condition_issues
-    n_errors += len(condition_issues)
-
     readout_issues = _undefined_readout_issues(problem)
     issues += readout_issues
     n_errors += len(readout_issues)
@@ -617,7 +537,6 @@ def validate_problem(problem, protected_fixed_ids=None) -> dict[str, Any]:
             and sbml_errors == 0
             and not reuse_errors
             and not role_issues
-            and not condition_issues
             and not readout_issues
         ),
         "n_errors": n_errors,

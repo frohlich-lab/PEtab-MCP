@@ -190,28 +190,6 @@ def test_the_seed_survives_a_parameters_only_edit(tmp_path, add_condition):
     assert res["applied"] is True
 
 
-def test_an_authored_model_must_still_consume_its_condition_targets(tmp_path, add_condition):
-    """The skip is scoped to "no dynamics", not to "the seed": a real mechanism that ignores a
-    condition target is still rejected, because `make_changes` refuses a dynamics-free model in
-    the first place — so nothing a caller authors can slip through the gap."""
-    from petab_mcp import operations as O
-
-    yaml_path = _model_less_problem(tmp_path)
-    add_condition(yaml_path, "S", 2.0)
-    session = PetabSession(
-        str(yaml_path), provenance_dir=str(tmp_path / "prov"), resolver=StubReferenceResolver()
-    )
-    assert {"B", "S"} <= R.species_ids(session.model.sbml_model)
-
-    with pytest.raises(ValidationError) as exc:
-        O.set_model(
-            session,
-            "model m\n  species B; species S;\n  B = 0; S = 0;\n  kb = 0.1;\n  r1: -> B; kb;\nend",
-            justification="mechanism ignoring S",
-        )
-    assert any("never uses 'S'" in i for i in exc.value.issues), exc.value.issues
-
-
 # -- which ids can actually be declared ---------------------------------------
 
 

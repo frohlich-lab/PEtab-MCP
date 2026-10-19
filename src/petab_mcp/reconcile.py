@@ -345,13 +345,13 @@ def seed_model_antimony(problem) -> str | None:
 def has_dynamics(sm) -> bool:
     """Whether the model can MOVE: it has at least one reaction, or a rate/assignment rule.
 
-    The single definition of "a mechanism has been authored", shared by three places that must
+    The single definition of "a mechanism has been authored", shared by the places that must
     agree or the invariant they form comes apart: ``session.model_authored`` (what
     ``describe_problem`` reports), the ``make_changes`` guard that REFUSES to commit a model
-    without dynamics, and :func:`validation._unused_condition_target_issues` (which asks a
-    question only a mechanism can answer). Because the guard refuses exactly what this returns
-    False for, a dynamics-free model can only ever be the content-free seed — never something a
-    caller authored.
+    without dynamics, and :func:`validation._undefined_readout_issues` (which asks a question
+    only a mechanism can answer). Because the guard refuses exactly what this returns False for,
+    a dynamics-free model can only ever be the content-free seed — never something a caller
+    authored.
 
     Initial assignments deliberately do NOT count: reconcile gives every species a parametric IC,
     so counting them would make any bag of species look like a mechanism.
