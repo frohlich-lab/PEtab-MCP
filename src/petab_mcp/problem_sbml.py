@@ -165,13 +165,10 @@ def to_antimony(
         # A species the conditions or a protocol set is its free form, held or only started: named
         # for the sum over the complexes it binds into, Isensee's `Fsk` left the condition target
         # setting nothing.
-        species = (
-            base[entities[new].name]
-            if new in set_keys
-            else sbml_model.getSpecies(rule.getMath().getName() or "")
-        )
+        free = _free_form(model, sbml_model, base, entities[new].name) if new in set_keys else None
+        species = free or sbml_model.getSpecies(rule.getMath().getName() or "")
         if (
-            (new in set_keys or rule.getMath().isName())
+            (free is not None or rule.getMath().isName())
             and species is not None
             and species.getId() not in named
             and not new.startswith("readout_")
@@ -201,6 +198,25 @@ def to_antimony(
     _number_reactions(sbml_model)
     return SbmlModel.from_string(libsbml.writeSBMLToString(document)).to_antimony(), emissions
 
+
+def _free_form(model: pysb.Model, sbml_model, base: dict, monomer: str):
+    """The SBML species that is ``monomer`` alone and bound to nothing: its start, or, for one only
+    the rules make (armistead's sphinganine), the one such species the expansion reached; else
+    ``None``."""
+    if monomer in base:
+        return base[monomer]
+    names = {
+        str(cp)
+        for cp in model.species
+        if len(cp.monomer_patterns) == 1
+        and cp.monomer_patterns[0].monomer.name == monomer
+        and not any(
+            isinstance(v, int) or (isinstance(v, tuple) and isinstance(v[1], int))
+            for v in cp.monomer_patterns[0].site_conditions.values()
+        )
+    }
+    found = [sp for sp in sbml_model.getListOfSpecies() if sp.getName() in names]
+    return found[0] if len(found) == 1 else None
 
 def _seed(model: pysb.Model, monomers: list[pysb.Monomer]) -> None:
     """Start each of ``monomers`` present, as assumption 1 of the module docstring sets out."""
