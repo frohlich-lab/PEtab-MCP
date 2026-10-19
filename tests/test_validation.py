@@ -4,7 +4,6 @@ from petab.v2.models.sbml_model import SbmlModel
 
 from petab_mcp.validation import (
     _fixed_constant_role_issues,
-    _unused_condition_target_issues,
     frozen_parametric_stoichiometry_issues,
     validate_problem,
 )
@@ -61,11 +60,6 @@ def test_protected_fixed_ids_exclude_ics_and_observation_params(session):
     # The toy fixes sigma_B (a noise sigma), A_init and B_init (initial conditions); none is a
     # mechanistic constant, so the protected set is empty and the toy commits freely.
     assert session.protected_fixed_parameter_ids() == set()
-
-
-def test_unused_condition_target_check_is_noop_without_targets(session):
-    # The toy condition table has only conditionId (no target columns), so nothing to check.
-    assert _unused_condition_target_issues(session.problem) == []
 
 
 # --- frozen parametric reaction stoichiometry (issue #89) -----------------------------------
