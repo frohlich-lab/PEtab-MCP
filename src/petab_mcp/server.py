@@ -842,6 +842,13 @@ _MAKE_CHANGES_DOC = "\n\n".join(
 )
 
 
+# What the statements route holds, said once for every version of its paragraph.
+_HELD_INPUTS = (
+    "A species the conditions set stays at what they set while your rows only read it (bind, "
+    "catalyse, regulate); a row that makes or converts it makes it a state they only start. Each "
+    "of `describe_problem`'s `inputs` follows its rule."
+)
+
 def _make_changes_statements_doc() -> str:
     """The `statements` route's paragraph, naming the entries the library holds right now."""
     from . import mechanisms
@@ -883,9 +890,9 @@ def _make_changes_statements_doc() -> str:
         "library for the rest of the run; its rate may read `modifiers`, agents each row names "
         "that take no part in the reaction (an inhibitor, a regulator). A row's `parameters` shares a rate constant with other "
         "rows, or with a parameter the problem ships, or fixes it to a number. The species the "
-        "observables read are bound by the problem's entity map, and the inputs the experiments "
-        "set are held, each one the conditions set and each `describe_problem`'s `inputs` give a "
-        "rule: name agents as the map does, and do not assert an input. `starts` "
+        "observables read are bound by the problem's entity map: name agents as it does. "
+        + _HELD_INPUTS
+        + " `starts` "
         "declares what is present at the start, in the state its agent writes; without it every "
         "species no rule makes starts at an estimated `<name>_init` and every made one empty. "
         "`readouts` defines a measurement mapping that is not one pattern's amount as a formula "
