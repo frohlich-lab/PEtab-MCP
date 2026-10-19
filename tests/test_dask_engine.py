@@ -161,6 +161,39 @@ def test_a_server_given_a_cluster_fits_there_and_each_start_ends_as_it_would_her
     assert len(local) == 4 and remote == local
 
 
+class _Tolerances(Task):
+    """A start that reports the tolerances its problem's AMICI solver carries on its worker."""
+
+    def __init__(self, problem) -> None:
+        super().__init__()
+        self.problem = problem
+
+    def execute(self):
+        solver = self.problem.objective.amici_solver
+        return (
+            solver.get_absolute_tolerance(),
+            solver.get_relative_tolerance(),
+            solver.get_relative_tolerance_steady_state(),
+            solver.get_absolute_tolerance_steady_state(),
+        )
+
+
+def test_a_fits_amici_tolerances_reach_its_starts_on_a_worker(fit_session, monkeypatch):
+    """The tolerance knobs are read from the SERVER's environment, which a dask or SLURM worker
+    does not share. They reach a start because they are set on the solver before its problem is
+    pickled, and AMICI pickles a solver with its settings; a start that integrated at AMICI's
+    defaults could score such a problem ~0.2 nats off."""
+    monkeypatch.setattr(fitting, "FIT_AMICI_RTOL", 1e-7)
+    monkeypatch.setattr(fitting, "FIT_AMICI_RTOL_STEADY_STATE", 1e-9)
+    monkeypatch.setattr(fitting, "FIT_AMICI_ATOL_STEADY_STATE", 1e-11)
+    problem, _ = fitting.estimation_problem(fit_session, fit_session.engine)
+
+    with _engine(n_workers=1) as engine:
+        (on_worker,) = engine.execute([_Tolerances(problem)])
+
+    assert on_worker == (fitting.FIT_AMICI_ATOL, 1e-7, 1e-9, 1e-11)
+
+
 def test_a_fit_arriving_during_another_takes_turns_with_it():
     """A fit arriving while another runs alternates with it start by start (9 turns here), not
     after all of its starts as at one priority (1 turn)."""
