@@ -83,9 +83,8 @@ def to_antimony(
     entities = {**{item.id: Agent(item.id) for item in inputs}, **entities}
     model, emissions = M.assemble(rows, entities, library)
     protocol = {item.id: item for item in inputs}
-    held = {
-        entities[s].name: protocol.get(s) for s in entities if s in protocol or s in targets
-    }
+    keys = {s for s in entities if s in protocol or s in targets}
+    held = {entities[s].name: protocol.get(s) for s in keys}
     _refuse_chains(model, emissions)
     made = set()
     for rule in model.rules:
@@ -156,9 +155,15 @@ def to_antimony(
             continue
         old, new = parameter.getId(), readouts[parameter.getName()]
         rule = sbml_model.getAssignmentRuleByVariable(old)
-        species = sbml_model.getSpecies(rule.getMath().getName() or "")
+        # A held input is its free form, the one the conditions set: named for the sum over the
+        # complexes it binds into, Isensee's `Fsk` left the condition target setting nothing.
+        species = (
+            base[entities[new].name]
+            if new in keys
+            else sbml_model.getSpecies(rule.getMath().getName() or "")
+        )
         if (
-            rule.getMath().isName()
+            (new in keys or rule.getMath().isName())
             and species is not None
             and species.getId() not in named
             and not new.startswith("readout_")
