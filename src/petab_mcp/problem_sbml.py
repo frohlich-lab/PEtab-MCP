@@ -203,10 +203,19 @@ def to_antimony(
     never = []
     stuck = sorted({e.prefix for e in emissions if not fired.issuperset(e.rules)})
     if stuck:
-        never.append(f"rows {stuck} build rules that never fire")
+        # Named with the form each needs, which nothing forms: "never fire" alone does not say
+        # what to add (a translocation row whose cargo must first be modified).
+        needs = _unformed_reactants(model, emissions, fired, stuck)
+        never.append(
+            f"rows {stuck} build rules that never fire"
+            + (f" (nothing forms {'; '.join(f'{p}: {n}' for p, n in needs.items())})" if needs else "")
+        )
     unread = sorted(sp for name, sp in readouts.items() if not model.observables[name].species)
     if unread:
-        never.append(f"readouts {unread} read no species")
+        patterns = "; ".join(
+            f"{sp}: {model.observables[f'readout_{sp}'].reaction_pattern}" for sp in unread
+        )
+        never.append(f"readouts {unread} read no species ({patterns})")
     if never:
         raise ModelUpdateError(
             f"In the model these statements build, {' and '.join(never)}. The start holds free, "
@@ -345,6 +354,27 @@ def _initial_expression(sbml_model, placeholder: str, species: str, formula: str
     for assignment in sbml_model.getListOfInitialAssignments():
         if assignment.getMath().isName() and assignment.getMath().getName() == placeholder:
             assignment.setMath(math)
+
+
+def _unformed_reactants(model, emissions, fired, stuck) -> dict[str, str]:
+    """For each stuck row, a reactant pattern of one of its unfired rules that no species of the
+    expanded network matches, as PySB writes it."""
+    from pysb.pattern import match_complex_pattern
+
+    needs = {}
+    for e in emissions:
+        if e.prefix not in stuck:
+            continue
+        for rule_name in e.rules:
+            if rule_name in fired:
+                continue
+            for cp in model.rules[rule_name].reactant_pattern.complex_patterns:
+                if not any(match_complex_pattern(cp, sp) for sp in model.species):
+                    needs[e.prefix] = str(cp)
+                    break
+            if e.prefix in needs:
+                break
+    return needs
 
 
 def _readout_formula(

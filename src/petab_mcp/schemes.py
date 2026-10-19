@@ -241,14 +241,47 @@ class _Rate:
     names: tuple[str, ...]  # parameters
     amounts: tuple[str, ...]  # amount(...) patterns, as written
     text: str
+    #: amount(...) patterns written in the row notation (`A{pS10}`), each read in ``text`` as
+    #: the name `__agent<k>`
+    agents: tuple[str, ...] = ()
+
+
+def _notation_amounts(text: str) -> tuple[str, tuple[str, ...]]:
+    """``text`` with every ``amount(<pattern in the row notation>)`` replaced by ``__agent<k>``,
+    and those patterns. The notation's braces are no Python, so before this a rate reading
+    `amount(A{pS10})` did not parse at all."""
+    out, agents, i = [], [], 0
+    while (j := text.find("amount(", i)) >= 0:
+        depth, k = 0, j + len("amount")
+        for k in range(j + len("amount"), len(text)):
+            depth += {"(": 1, ")": -1}.get(text[k], 0)
+            if depth == 0:
+                break
+        if depth:  # unbalanced: left as written, for the parse below to refuse
+            break
+        inner = text[j + len("amount("):k]
+        if "{" in inner:
+            out.append(text[i:j] + f"__agent{len(agents)}")
+            agents.append(inner.strip())
+        else:
+            out.append(text[i:k + 1])
+        i = k + 1
+    out.append(text[i:])
+    return "".join(out), tuple(agents)
 
 
 def _rate(text: str) -> _Rate:
     """A rate's parameters (its names outside ``amount()``) and its ``amount()`` patterns."""
+    written = text
+    text, agents = _notation_amounts(text)
     try:
         tree = ast.parse(text, mode="eval").body
     except SyntaxError:
-        raise MechanismError(f"rate {text!r} does not read") from None
+        raise MechanismError(
+            f"rate {written!r} does not read: an expression over the rate's parameters, `time`, "
+            "exp/log/sqrt and `amount(<molecule>)`, the molecule written as in a row "
+            "(`amount(A{pS10})`) or as in the scheme (`amount(sub(mod='on'))`)"
+        ) from None
     names: list[str] = []
     amounts: list[str] = []
 
@@ -268,7 +301,7 @@ def _rate(text: str) -> _Rate:
             for arg in node.args:
                 visit(arg)
         elif isinstance(node, ast.Name):
-            if node.id != "time":
+            if node.id != "time" and not node.id.startswith("__agent"):
                 names.append(node.id)
         elif isinstance(node, ast.BinOp) and isinstance(node.op, _ARITHMETIC):
             visit(node.left), visit(node.right)
@@ -278,7 +311,7 @@ def _rate(text: str) -> _Rate:
             raise MechanismError(f"rate {text!r}: {ast.unparse(node)!r} is not allowed")
 
     visit(tree)
-    return _Rate(tuple(sorted(set(names))), tuple(amounts), text)
+    return _Rate(tuple(sorted(set(names))), tuple(amounts), text, agents)
 
 
 def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
@@ -350,6 +383,8 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
         patterns = [m for line in lines for side in (line.lhs, line.rhs) for c in side for m in c]
         patterns += [_molecule(n) for rs in rates for r in rs for a in r.amounts
                      for n in _complex_nodes(a)]
+        # A molecule a rate reads in the row notation brings the sites its pattern names.
+        need += [(_notation_agent(a), None, None) for rs in rates for r in rs for a in r.agents]
         for mol in patterns:
             agent = agents.get(mol.name) or Agent(mol.name)
             sites, site_states = given.get(_n(agent.name), ((), {}))
@@ -490,12 +525,31 @@ def _pattern_side(stmt, model, side, agents, known_roles, fresh):
     return out
 
 
+def _notation_agent(text: str) -> Agent:
+    from . import notation
+
+    try:
+        return Agent._from_json(notation.parse_agent(text))
+    except notation.NotationError as exc:
+        raise MechanismError(f"amount({text}): {exc}") from None
+
+
 def _rate_value(stmt, model, rate: _Rate, params, agents, known_roles, name):
+    from indra.assemblers.pysb.assembler import get_monomer_pattern
+
     from .mechanisms import _add
 
-    if not rate.amounts and re.fullmatch(r"[A-Za-z_]\w*", rate.text):
+    if not rate.amounts and not rate.agents and re.fullmatch(r"[A-Za-z_]\w*", rate.text):
         return params[rate.text]
     observables = {}
+    for k, written in enumerate(rate.agents):
+        obs = pysb.Observable(
+            f"{name}_agent{k}",
+            get_monomer_pattern(model, _notation_agent(written)),
+            _export=False,
+        )
+        _add(model, obs)
+        observables[f"__agent{k}"] = obs
     text = rate.text
     for k, pattern in enumerate(rate.amounts):
         (cp,) = _pattern_side(stmt, model, (tuple(_molecule(n) for n in _complex_nodes(pattern)),),

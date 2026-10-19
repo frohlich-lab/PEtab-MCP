@@ -423,7 +423,8 @@ def statement(r: _Reader) -> dict[str, Any]:
         return {"type": "Complex", "members": members}
     if r.take("becomes"):
         return {"type": "PopulationTransition", "source": first, "target": r.agent()}
-    if r.take("moves"):
+    # `translocates` is a word agents reach for, so it reads as `moves`.
+    if r.take("moves") or r.take("translocates"):
         st = {"type": "Translocation", "agent": first, "from_location": None, "to_location": None}
         if r.take("from"):
             st["from_location"] = r.name()
