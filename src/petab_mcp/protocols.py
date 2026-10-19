@@ -34,7 +34,7 @@ import numpy as np
 import pandas as pd
 import sympy as sp
 from numpy.typing import ArrayLike
-from petab.math import sympify_petab
+from petab.v1.math import sympify_petab
 from petab.v2.C import TARGET_ID
 
 from .errors import ProtocolError
