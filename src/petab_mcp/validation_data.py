@@ -1042,7 +1042,7 @@ def read_held_out(measurements_path: str | Path) -> HeldOut:
     from petab import v2
     from petab.v2.petab1to2 import v1v2_condition_df
 
-    from .problem import normalize_parameter_df
+    from .problem import normalize_parameter_df, refuse_priors
 
     path = Path(measurements_path)
     cond = path.with_name(HELD_OUT_CONDITIONS)
@@ -1054,12 +1054,12 @@ def read_held_out(measurements_path: str | Path) -> HeldOut:
     if condition_df is not None and TARGET_ID not in condition_df.columns:
         condition_df = v1v2_condition_df(condition_df.set_index(CONDITION_ID), None)
         condition_df = condition_df.reset_index(drop=True) if len(condition_df) else None
+    parameter_df = v2.get_parameter_df(str(pars)) if pars.is_file() else None
+    refuse_priors(parameter_df, pars)
     return HeldOut(
         measurement_df=measurement_df,
         condition_df=condition_df,
-        parameter_df=normalize_parameter_df(v2.get_parameter_df(str(pars)))
-        if pars.is_file()
-        else None,
+        parameter_df=normalize_parameter_df(parameter_df) if parameter_df is not None else None,
         units=read_units(units) if units.is_file() else None,
         experiment_df=v2.get_experiment_df(str(exps)) if exps.is_file() else None,
     )

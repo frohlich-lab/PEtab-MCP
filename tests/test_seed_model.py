@@ -293,16 +293,16 @@ def test_a_shipped_row_comes_back_as_the_problem_defined_it(tmp_path):
     """The seed declares no mechanism, so every kinetic / initial-condition row a model-less
     problem ships is pruned at v0. That is only safe because re-declaring the parameter RESTORES
     the shipped row — bounds, scale and estimate — rather than minting defaults, so the candidate
-    and the reference are fit over the same box. A shipped PRIOR is not part of the row: the
-    objective is the likelihood the criterion scores, so the table does not carry one at all."""
+    and the reference are fit over the same box. Empty prior columns are not part of the row: a
+    problem that states a prior is refused at load, so the table does not carry them at all."""
     from petab_mcp import operations as O
 
     yaml_path = _model_less_problem(tmp_path)
     params = yaml_path.parent / "parameters.tsv"
-    # k1 ships a distinctive box + a prior; the box must come back, the prior must not.
+    # k1 ships a distinctive box and empty prior columns; the box must come back, the columns not.
     rows = params.read_text().rstrip().splitlines()
     header = rows[0] + "\tpriorDistribution\tpriorParameters"
-    body = [(r + "\tnormal\t0.5;0.2") if r.startswith("k1\t") else (r + "\t\t") for r in rows[1:]]
+    body = [r + "\t\t" for r in rows[1:]]
     params.write_text("\n".join([header, *body]) + "\n", encoding="utf-8")
 
     session = PetabSession(
