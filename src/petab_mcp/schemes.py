@@ -241,7 +241,7 @@ class _Rate:
     names: tuple[str, ...]  # parameters
     amounts: tuple[str, ...]  # amount(...) patterns, as written
     text: str
-    #: amount(...) patterns written in the row notation (`ERK{pT202}`), each read in ``text`` as
+    #: amount(...) patterns written in the row notation (`A{pS10}`), each read in ``text`` as
     #: the name `__agent<k>`
     agents: tuple[str, ...] = ()
 
@@ -249,8 +249,7 @@ class _Rate:
 def _notation_amounts(text: str) -> tuple[str, tuple[str, ...]]:
     """``text`` with every ``amount(<pattern in the row notation>)`` replaced by ``__agent<k>``,
     and those patterns. The notation's braces are no Python, so before this a rate reading
-    `amount(ERK{pT202})` -- what GLM wrote for Fiedler's ERK feedback, again and again -- did not
-    parse at all."""
+    `amount(A{pS10})` did not parse at all."""
     out, agents, i = [], [], 0
     while (j := text.find("amount(", i)) >= 0:
         depth, k = 0, j + len("amount")
@@ -281,7 +280,7 @@ def _rate(text: str) -> _Rate:
         raise MechanismError(
             f"rate {written!r} does not read: an expression over the rate's parameters, `time`, "
             "exp/log/sqrt and `amount(<molecule>)`, the molecule written as in a row "
-            "(`amount(ERK{pT202})`) or as in the scheme (`amount(sub(mod='on'))`)"
+            "(`amount(A{pS10})`) or as in the scheme (`amount(sub(mod='on'))`)"
         ) from None
     names: list[str] = []
     amounts: list[str] = []

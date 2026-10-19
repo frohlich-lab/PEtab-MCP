@@ -203,8 +203,8 @@ def to_antimony(
     never = []
     stuck = sorted({e.prefix for e in emissions if not fired.issuperset(e.rules)})
     if stuck:
-        # Named with the form each needs, which nothing forms: "never fire" alone left GLM on
-        # Boehm resending import/export rows that needed STAT5A phosphorylated in the cytoplasm.
+        # Named with the form each needs, which nothing forms: "never fire" alone does not say
+        # what to add (a translocation row whose cargo must first be modified).
         needs = _unformed_reactants(model, emissions, fired, stuck)
         never.append(
             f"rows {stuck} build rules that never fire"

@@ -908,8 +908,7 @@ def _readout_amounts(readouts, amounts):
 
     if not readouts:
         return readouts, dict(amounts or {})
-    # A readout given as a bare pattern (`"readout_pErk": "MAPK1{pT202}"`, GLM on Fiedler) is that
-    # pattern's amount.
+    # A readout given as a bare pattern (`"readout_X": "A{pS10}"`) is that pattern's amount.
     readouts = {
         k: f"amount({v.strip()})" if isinstance(v, str) and _BARE_PATTERN.fullmatch(v.strip()) else v
         for k, v in readouts.items()
@@ -929,8 +928,8 @@ def _readout_amounts(readouts, amounts):
     def name_for(match):
         pattern = text(match.group(1))
         if pattern not in named:
-            # The notation's negations kept in the name: dropped, `X{pY694}` and `X{-pY694}` came
-            # out as amount_X_pY694 and amount_X_pY694_2.
+            # The notation's negations kept in the name: dropped, `X{pS10}` and `X{-pS10}` came
+            # out as amount_X_pS10 and amount_X_pS10_2.
             spelled = pattern.replace("-", " no ").replace("~", " without ").replace("!", " with ")
             base = "amount_" + re.sub(r"\W+", "_", spelled).strip("_")
             name, i = base, 1

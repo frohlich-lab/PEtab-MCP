@@ -911,7 +911,7 @@ def _make_changes_statements_doc(bound: bool = True, held: dict[str, Any] | None
     binds nothing of the model: the readouts, and how the condition targets enter, are the
     caller's own, and saying the map binds them would send it looking for names that do not exist.
     ``held`` (agent name to :class:`protocols.Input`) are the inputs held all the same, named with
-    their protocol (Fujita's EGF ramp)."""
+    their protocol (e.g. a stimulus ramped within a period)."""
     from . import mechanisms
 
     from indra.statements import AddModification, RemoveModification, Statement, get_all_descendants

@@ -1925,22 +1925,22 @@ def test_a_failed_fit_names_the_points_a_readout_leaves_undefined():
     assert _undefined_points(session, [dict(r, simulation=None) for r in records]) == ""
 
 
-# -- what GLM met on Fiedler and Boehm in the max-effort sweep ----------------------
+# -- rates, rules and readouts written in the row notation --------------------------
 def test_a_scheme_rate_reads_a_molecule_written_in_the_row_notation(tmp_path):
-    """Fiedler's ERK feedback as GLM wrote it, `amount(ERK{pT202})` in a scheme's rate, did not
-    parse: the notation's braces are no Python."""
-    mcp = _statements_server(tmp_path, extra=', "ERK": {"name": "ERK"}')
+    """A feedback written `amount(A{pS10})` in a scheme's rate did not parse: the notation's
+    braces are no Python."""
+    mcp = _statements_server(tmp_path)
     out = _call(
         mcp,
         "make_changes",
         {
-            "justification": "A becomes B, slowed by phosphorylated ERK",
-            "statements": ["conv: A becomes B | fb", "erk_p: ERK is phosphorylated at T202 | basal"],
+            "justification": "A becomes B, slowed by its own phosphorylated form",
+            "statements": ["conv: A becomes B | fb", "ap: A is phosphorylated at S10 | basal"],
             "mechanisms": [
                 {
                     "statement_type": "PopulationTransition",
                     "policy": "fb",
-                    "scheme": "source() >> target() @ k/(1 + amount(ERK{pT202})/K_fb)",
+                    "scheme": "source() >> target() @ k/(1 + amount(A{pS10})/K_fb)",
                     "parameters": ["k", "K_fb"],
                 }
             ],
@@ -1955,13 +1955,13 @@ def test_a_rate_that_does_not_read_says_how_one_is_written():
     from petab_mcp import schemes
     from petab_mcp.errors import MechanismError
 
-    with pytest.raises(MechanismError, match=r"amount\(ERK\{pT202\}\)"):
-        schemes._rate("k*amount(ERK{pT202}")
+    with pytest.raises(MechanismError, match="the molecule written as in a row"):
+        schemes._rate("k*amount(A{pS10}")
 
 
 def test_a_rule_that_never_fires_names_the_form_nothing_makes(tmp_path):
-    """Boehm: import and export rows needed STAT5A phosphorylated in the cytoplasm, and the
-    refusal only said that such forms exist."""
+    """A row moving a form out of a compartment nothing puts it in never fires, and the refusal
+    only said that such forms exist."""
     mcp = _statements_server(tmp_path)
     out = _call(
         mcp,
@@ -1992,12 +1992,12 @@ def test_an_enzyme_less_modification_under_a_written_rate_names_basal(tmp_path):
 
 
 def test_a_readout_given_as_a_bare_pattern_is_its_amount():
-    """`"readout_pErk": "MAPK1{pT202}"` (GLM on Fiedler) was refused as no formula."""
+    """`"readout_pA": "A{pS10}"` was refused as no formula."""
     from petab_mcp.operations import _readout_amounts
 
-    readouts, amounts = _readout_amounts({"readout_pErk": "MAPK1{pT202}"}, None)
-    assert readouts == {"readout_pErk": "amount_MAPK1_pT202"}
-    assert amounts == {"amount_MAPK1_pT202": "MAPK1{pT202}"}
+    readouts, amounts = _readout_amounts({"readout_pA": "A{pS10}"}, None)
+    assert readouts == {"readout_pA": "amount_A_pS10"}
+    assert amounts == {"amount_A_pS10": "A{pS10}"}
 
 
 def test_amount_names_keep_the_notations_negations():
@@ -2036,8 +2036,8 @@ def test_translocates_is_moves():
 
 
 def test_an_empty_map_names_the_held_inputs_and_binds_nothing_else(tmp_path):
-    """Fujita on the indra_statements arm: the server holds EGF to its ramp, and the route's
-    paragraph says so, without claiming the map binds the observables."""
+    """With an empty map the server holds an input to its protocol, and the route's paragraph
+    says so, without claiming the map binds the observables."""
     shutil.copytree(YAML_PATH.parent, tmp_path / "problem")
     (tmp_path / "problem" / "inputs.tsv").write_text(
         "inputId\tformula\tconditionInputs\nA\tpiecewise(1, time <= 5, 0)\t\n"
