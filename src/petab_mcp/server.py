@@ -975,7 +975,7 @@ def _register_model_tools(
         session = ctx.session
         return model_mod.model_structure(session)
 
-    def make_changes_indra(
+    def _make_changes(
         justification: str,
         antimony: str | None = None,
         model_edits: Annotated[list[ModelOp] | None, BeforeValidator(_unwrap_listish)] = None,
@@ -1209,9 +1209,10 @@ def _register_model_tools(
                 out["model_edits_applied"] = op_summary
             return out
 
-    # One tool, `make_changes`, either way: FastMCP builds its input schema from the function's
-    # signature, so the statements route (`statements`, `mechanisms`) is offered by registering
-    # `make_changes_indra`, and withheld by registering `make_changes_antimony`, which lacks them.
+    # One tool, `make_changes`, either way, and one implementation, `_make_changes`. FastMCP builds
+    # the input schema from the registered function's signature, so the statements route is offered
+    # by registering `_make_changes` itself and withheld by registering `make_changes_antimony`,
+    # which takes only the text routes and passes them on.
     if statements:
         mcp.tool(
             description="\n\n".join(
@@ -1224,7 +1225,7 @@ def _register_model_tools(
             ),
             name="make_changes",
             annotations=_MAKE_CHANGES_ANNOTATIONS,
-        )(make_changes_indra)
+        )(_make_changes)
         return
 
     # No entity map: nothing binds a statement-built model to the observables, so the route would
@@ -1241,7 +1242,7 @@ def _register_model_tools(
         references: Annotated[list[str] | None, BeforeValidator(_unwrap_listish)] = None,
         n_starts: int | None = None,
     ) -> dict[str, Any]:
-        return make_changes_indra(
+        return _make_changes(
             justification=justification,
             antimony=antimony,
             model_edits=model_edits,
