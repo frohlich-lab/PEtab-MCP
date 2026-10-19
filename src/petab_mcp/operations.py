@@ -805,6 +805,23 @@ def statements_to_antimony(
         for i, names in enumerate(map(ungrounded, stmts))
         if names
     ] + [M.warning(M.SOURCE_EDIT, note) for note in notes]
+    # What a scheme gave a molecule that nothing else gives it, so the agent sees it happen.
+    added: dict[tuple[str, str], tuple[list[str], list[int]]] = {}
+    for i, e in enumerate(emissions):
+        for molecule, sites in e.sites_added.items():
+            for site, states in sites.items():
+                added.setdefault((molecule, site), (states, []))[1].append(i)
+    if added:
+        listed = ", ".join(
+            f"{molecule} {site} {states or '(binding)'} (`statements[{', '.join(map(str, at))}]`)"
+            for (molecule, site), (states, at) in added.items()
+        )
+        warnings.append(M.warning(
+            M.SOURCE_EDIT,
+            f"schemes added sites no row or entity gives: {listed}. A molecule starts in a site's "
+            "first state (on `loc`, in cytoplasm when it is one, else in its first location "
+            "by name), and free on a binding site.",
+        ))
     return antimony, record, warnings, definitions
 
 

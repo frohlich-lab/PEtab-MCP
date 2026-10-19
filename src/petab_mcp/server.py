@@ -214,8 +214,8 @@ class StartRow(BaseModel):
 
 
 class MechanismDef(BaseModel):
-    """A mechanism you write when none in the library fits: an existing mechanism's reaction with
-    your own rate."""
+    """A mechanism you write when none in the library fits: its own reactions (`scheme`), or an
+    existing mechanism's reaction with your own rate (`rate`)."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -226,8 +226,20 @@ class MechanismDef(BaseModel):
         description="the existing mechanism whose reaction (what is consumed, what is made) "
         "this keeps; only the rate is yours.",
     )
-    rate: str = Field(
-        description="the rate COEFFICIENT, over the statement type's role names (each the amount "
+    scheme: str | None = Field(
+        default=None,
+        description="the mechanism's own reactions: one PySB rule per line, `reactants >> "
+        "products @ rate` (`|` and two rates for both ways), molecules named by the statement "
+        "type's ROLES (`enz`, `sub`, `subj`, `obj`, `members_0`...) and their sites `mod` (the "
+        "statement's modification, 'off'/'on'), `act` ('inactive'/'active') or a partner role's "
+        "name (the binding site for it): `enz(sub=None) + sub(enz=None, mod='off') >> "
+        "enz(sub=1) % sub(enz=1, mod='off') @ kf`. `list_mechanisms` shows every library entry "
+        "this way: start from one. A rate is a parameter's name or an expression over parameters, "
+        "`amount(<pattern>)`, `time` and exp/log/sqrt. Give `scheme` or `rate`, not both.",
+    )
+    rate: str | None = Field(
+        default=None,
+        description="(instead of `scheme`) the rate COEFFICIENT, over the statement type's role names (each the amount "
         "of that agent: `enz`, `sub`, `subj`, `source`, ...), your `parameters`, `time`, and "
         "exp/log/sqrt. It is multiplied by every reactant's amount, catalysts included, so a "
         "rate that stays non-negative cannot drive an amount negative: `kcat / (Km + sub)` is "
@@ -886,9 +898,11 @@ def _make_changes_statements_doc() -> str:
         "  Every INDRA statement type"
         + (f" but {', '.join(without)}" if without else "")
         + f" has `{mechanisms.INDRA_DEFAULT}`; the library "
-        f"also holds {entries}. When none fits, WRITE one in `mechanisms` — it stays in the "
-        "library for the rest of the run; its rate may read `modifiers`, agents each row names "
-        "that take no part in the reaction (an inhibitor, a regulator). A row's `parameters` shares a rate constant with other "
+        f"also holds {entries}. `list_mechanisms` shows each as the PySB rules it builds. When "
+        "none fits, WRITE one in `mechanisms`, either as a `scheme` (its own rules, written like "
+        "those) or as a `rate` on an existing entry's reaction, whose rate may read `modifiers`, "
+        "agents each row names that take no part in the reaction (an inhibitor, a regulator); "
+        "it stays in the library for the rest of the run. A row's `parameters` shares a rate constant with other "
         "rows, or with a parameter the problem ships, or fixes it to a number. The species the "
         "observables read are bound by the problem's entity map: name agents as it does. "
         + _HELD_INPUTS
@@ -899,6 +913,29 @@ def _make_changes_statements_doc() -> str:
         "over `amounts` (agents whose amounts it reads), entity-map ids and parameter ids. The result is "
         "an ordinary model: `model_edits` can edit it next."
     )
+
+
+def _mechanisms_text(session, statement_type: str | None) -> str:
+    """The library, and the run's written mechanisms, each as its scheme (:mod:`schemes`)."""
+    from . import mechanisms, schemes
+    from .errors import MechanismError
+
+    library = dict(mechanisms.REGISTRY)
+    for key, definition in session.mechanisms.items():
+        library[key] = mechanisms.written(definition, library)
+    keys = sorted(k for k in library if statement_type in (None, k[0]) and k[0] not in schemes.ABSTRACT)
+    if not keys:
+        known = sorted({t for t, _ in library} - schemes.ABSTRACT)
+        return f"no mechanism for {statement_type!r}; the statement types are {known}"
+    blocks = []
+    for stmt_type, policy in keys:
+        written = " (written this run)" if (stmt_type, policy) in session.mechanisms else ""
+        try:
+            text = schemes.describe(stmt_type, policy, library)
+        except MechanismError as exc:
+            text = f"({exc})"
+        blocks.append(f"{stmt_type} | {policy}{written}\n" + "\n".join(f"  {line}" for line in text.splitlines()))
+    return "\n".join(blocks)
 
 
 def _statements_text(session, version: int | None) -> str:
@@ -924,6 +961,10 @@ def _statements_text(session, version: int | None) -> str:
             written[(d["statement_type"], d["policy"])] = d
     for d in written.values():
         library[(d["statement_type"], d["policy"])] = None
+        if d.get("scheme"):
+            lines.append(f"mechanism {d['policy']}: {d['statement_type']}, scheme")
+            lines += [f"  {line.strip()}" for line in d["scheme"].strip().splitlines() if line.strip()]
+            continue
         reads = f"  reads {', '.join(d['modifiers'])}" if d.get("modifiers") else ""
         lines.append(
             f"mechanism {d['policy']}: {d['statement_type']} like "
@@ -949,6 +990,21 @@ def _register_model_tools(
 ) -> None:
     # `make_changes` takes an argument named `statements`; the route flag goes by this name in it.
     statements_route = statements
+    if statements:
+
+        @mcp.tool(annotations=_READ_ONLY)
+        def list_mechanisms(statement_type: str | None = None) -> str:
+            """Every mechanism a `statements` row can use, as the PySB rules it builds: the
+            library's own and those written this run, for one `statement_type` or all.
+
+            Each is written over the statement type's ROLES, the way a `scheme` in
+            `make_changes(mechanisms=...)` is written, so a mechanism you need is one of these
+            edited: `mod` is the statement's own modification ('off'/'on'), `act` an activity
+            ('inactive'/'active'), a site named after a role the binding site for it; `@` gives
+            the rate (mass action over the reactants; a name is a parameter a row binds as
+            `kf=...`).
+            """
+            return _mechanisms_text(route().session, statement_type)
 
     @mcp.tool(annotations=_READ_ONLY)
     def get_model(format: str = "antimony", version: int | None = None) -> str:
