@@ -9,15 +9,10 @@ INDRA's own JSON, so the state rides in INDRA's own ``mods``::
               "mods": [{"mod_type": "phosphorylation", "residue": "S", "position": "473"}]}}
 
 The same map names each species' PySB pattern (:func:`problem_sbml.to_antimony`), which is what
-binds a model built from statements to the fixed observable table. An entry may also declare its
-species an experimental INPUT, with the protocol that sets it over the condition table's columns
-(:func:`load_inputs`)::
-
-    {"EGF": {"name": "EGF", "db_refs": {"HGNC": "3229"},
-             "input": "piecewise(EGF_0 + EGF_rate*time, time < EGF_end, 0)"}}
-
-An input is a fact about the experiment, like a readout, so it is declared beside the readouts
-rather than asserted as a statement or built by a mechanism (see RATIONALE.md).
+binds a model built from statements to the fixed observable table. It does not declare which
+species the experiment sets: the problem does, by its condition targets and, for an input that
+changes within a period, its ``inputs.tsv`` (:mod:`protocols`), which every route reads (see
+RATIONALE.md).
 
 The module is named for the INDRA warm start, which seeds a model from a pinned statement corpus
 filtered to this map. That comes later, with its wiring and a pinned corpus (PEtab-MCP#43); until
@@ -34,9 +29,9 @@ from indra.statements import Agent
 
 from .errors import EntityMapError
 
-#: The keys an entry is read by: INDRA's ``Agent`` JSON, and ``input``. Any other key is left to
-#: the map's other readers (PEtabAgentBench's ``ptms``), except one close to these, which is a typo
-#: that would otherwise be dropped without a word.
+#: The keys an entry is read by: INDRA's ``Agent`` JSON. Any other key is left to the map's other
+#: readers (PEtabAgentBench's ``ptms``), except one close to these, which is a typo that would
+#: otherwise be dropped without a word.
 ENTRY_KEYS = (
     "name",
     "db_refs",
@@ -45,7 +40,6 @@ ENTRY_KEYS = (
     "bound_conditions",
     "activity",
     "location",
-    "input",
 )
 
 
@@ -67,11 +61,10 @@ def _entries(path: str) -> dict[str, dict]:
             raise EntityMapError(
                 f'{where} needs the name of the INDRA agent it is: "name": "MAPK1"'
             )
-        if not isinstance(entry.get("input", ""), str):
+        if "input" in entry:
             raise EntityMapError(
-                f"{where}: input {entry['input']!r} is no formula; write the protocol as a string "
-                "over the condition table's columns and time: "
-                '"input": "dose*piecewise(0, time < t_on, 1)"'
+                f"{where} declares an input; declare it in the inputs.tsv beside problem.yaml, "
+                "which every route reads"
             )
         for key in sorted(entry.keys() - set(ENTRY_KEYS)):
             if near := difflib.get_close_matches(key, ENTRY_KEYS, n=1):
@@ -84,9 +77,3 @@ def _entries(path: str) -> dict[str, dict]:
 def load_entity_map(path: str) -> dict[str, Agent]:
     """Species id to the INDRA ``Agent`` it is, from the JSON file at ``path``."""
     return {k: Agent._from_json(v) for k, v in _entries(path).items()}
-
-
-def load_inputs(path: str) -> dict[str, str]:
-    """Species id to the protocol formula an experiment sets it by, for each entry of the entity
-    map at ``path`` that declares one."""
-    return {k: v["input"] for k, v in _entries(path).items() if "input" in v}
