@@ -903,8 +903,13 @@ _HELD_INPUTS = (
     "of `describe_problem`'s `inputs` follows its rule."
 )
 
-def _make_changes_statements_doc() -> str:
-    """The `statements` route's paragraph, naming the entries the library holds right now."""
+
+def _make_changes_statements_doc(bound: bool = True) -> str:
+    """The `statements` route's paragraph, naming the entries the library holds right now.
+
+    ``bound`` says whether the problem's entity map binds anything. An empty one binds nothing:
+    the readouts, and how the condition targets enter, are the caller's own, and saying the map
+    binds them would send it looking for names that do not exist."""
     from . import mechanisms
 
     from indra.statements import AddModification, RemoveModification, Statement, get_all_descendants
@@ -946,15 +951,22 @@ def _make_changes_statements_doc() -> str:
         "reaction, whose rate may read `modifiers`, "
         "agents each row names that take no part in the reaction (an inhibitor, a regulator); "
         "it stays in the library for the rest of the run. A row's `parameters` shares a rate constant with other "
-        "rows, or with a parameter the problem ships, or fixes it to a number. The species the "
-        "observables read are bound by the problem's entity map: name agents as it does. "
-        + _HELD_INPUTS
-        + " `starts` "
-        "declares what is present at the start, in the state its agent writes; without it every "
-        "species no rule makes starts at an estimated `<name>_init` and every made one empty. "
-        "`readouts` defines a measurement mapping as a formula over `amounts` (agents whose "
-        "amounts it reads, or `amount(<pattern>)` in place; every readout reads at least one), "
-        "entity-map ids and parameter ids.\n\n"
+        "rows, or with a parameter the problem ships, or fixes it to a number. "
+        + (
+            "The species the observables read are bound by the problem's entity map: name agents "
+            "as it does. " + _HELD_INPUTS + " "
+            if bound
+            else "NOTHING is bound: every readout the observables read is yours to define in "
+            "`readouts`, and every target the condition table sets is a parameter id your rows "
+            "must read, in a binding (`kf=\"k*dose\"`) or a start's amount. "
+        )
+        + "`starts` declares what is present at the start, in the state its agent writes; "
+        "without it every species no rule makes starts at an estimated `<name>_init` and every "
+        "made one empty. `readouts` defines a measurement mapping as a formula over `amounts` "
+        "(agents whose amounts it reads, or `amount(<pattern>)` in place; every readout reads "
+        "at least one)"
+        + (", entity-map ids" if bound else "")
+        + " and parameter ids.\n\n"
         "`statement_edits` CHANGES the current rows instead of giving them all again: "
         "`add_row`/`replace_row` a row (one line; `replace_row` takes the row with that prefix, "
         "so a new policy or binding is the row rewritten), `remove_row` by prefix, and "
@@ -1208,9 +1220,14 @@ def _register_model_tools(
                 "make_changes",
                 f"make_changes: give ONE model route, not {len(routes_given)} "
                 f"({', '.join('`' + r + '`' for r in routes_given)}). "
-                + ("`statements` to author the whole model as rows, " if statements_route else "")
-                + "`model_edits` for a structured change to an existing model, `antimony` to "
-                "author one wholesale. NOTHING was applied.",
+                + (
+                    "`statement_edits` for a change to the current rows, `statements` to give "
+                    "the whole model as rows. "
+                    if statements_route
+                    else "`model_edits` for a structured change to an existing model, "
+                    "`antimony` to author one wholesale. "
+                )
+                + "NOTHING was applied.",
                 {"routes": routes_given},
                 cause="route_conflict",
             )
@@ -1238,9 +1255,14 @@ def _register_model_tools(
         if not antimony and not ops and not rows and not edits and not parameters:
             return ctx.reject_operation(
                 "make_changes",
-                "make_changes: nothing to do — give `model_edits` (structured operations on the "
-                "committed model — the usual route), `antimony` (author the model wholesale), "
-                + ("`statements` (author the model as rows), " if statements_route else "")
+                "make_changes: nothing to do — give "
+                + (
+                    "`statements` (the whole model as rows), `statement_edits` (changes to the "
+                    "current rows, starts, amounts and readouts), "
+                    if statements_route
+                    else "`model_edits` (structured operations on the committed model — the "
+                    "usual route), `antimony` (author the model wholesale), "
+                )
                 + "`parameters` (to set bounds/scale), or a combination.",
                 {"antimony": None, "parameters": None},
             )
@@ -1482,7 +1504,7 @@ def _register_model_tools(
                 (
                     _MAKE_CHANGES_SUMMARY,
                     _MAKE_CHANGES_STATEMENTS_ROUTES,
-                    _make_changes_statements_doc(),
+                    _make_changes_statements_doc(bound=bool(route().session.entities)),
                     _MAKE_CHANGES_CONTRACT,
                 )
             ),
