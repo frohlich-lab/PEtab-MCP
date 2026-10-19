@@ -66,3 +66,16 @@ def test_the_notes_say_which_condition_targets_are_held(degraded, says):
     PS.to_antimony(rows, {"Fsk": Agent("forskolin")}, targets=frozenset({"Fsk"}), notes=notes)
     (note,) = [n for n in notes if "conditions" in n]
     assert note.startswith(says) and note.endswith("Fsk.")
+
+
+def test_a_started_state_the_rows_make_is_named_too():
+    """armistead's sphinganine is set by its conditions and made by its rows from ceramide, so it
+    has no start of its own to name; looking it up there crashed the build."""
+    antimony, _ = PS.to_antimony(
+        [(PopulationTransition(Agent("naive"), Agent("effector")), "mass_action", "r1")],
+        {"naive": Agent("naive"), "effector": Agent("effector")},
+        targets=frozenset({"effector"}),
+    )
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    assert sbml.getSpecies("effector").getName() == "effector()"
+    assert not sbml.getSpecies("effector").getBoundaryCondition()
