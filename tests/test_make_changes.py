@@ -1881,6 +1881,50 @@ def test_an_unknown_activity_names_the_modification_tags():
         notation.parse_agent("A{mod:on}")
 
 
+def test_an_undefined_readout_is_remedied_in_the_routes_own_terms(tmp_path):
+    """On the statements route a readout is given in `readouts`; the assignment-rule remedy sent
+    agents to an Antimony op their editor does not take."""
+    mcp = _readout_server(tmp_path)
+    out = _call(mcp, "make_changes", {"justification": "no readout", "statements": [_CONV]})
+    assert out["applied"] is False
+    assert "in `readouts`" in out["error"] and "set_assignment" not in out["error"]
+
+
+def test_a_failed_fit_names_the_points_a_readout_leaves_undefined():
+    """`pA/(pA + pB)` with both starting at 0 is 0/0 at t=0; every start of the hierarchical fit
+    failed, and the refusal named only two other causes."""
+    import types
+
+    import libsbml
+    import pandas as pd
+
+    from petab_mcp.fitting import _undefined_points
+
+    doc = libsbml.SBMLDocument(3, 2)
+    sm = doc.createModel()
+    rule = sm.createAssignmentRule()
+    rule.setVariable("readout_r")
+    rule.setMath(libsbml.parseL3Formula("pA/(pA + pB)"))
+    session = types.SimpleNamespace(
+        problem=types.SimpleNamespace(
+            observable_df=pd.DataFrame(
+                {"observableFormula": ["100*readout_r", "readout_p"]},
+                index=pd.Index(["r", "p"], name="observableId"),
+            ),
+            model=types.SimpleNamespace(sbml_model=sm),
+        )
+    )
+    records = [
+        {"observable_id": "r", "time": 0.0, "measurement": 14.7, "simulation": None},
+        {"observable_id": "r", "time": 2.5, "measurement": 15.0, "simulation": 0.4},
+        {"observable_id": "p", "time": 0.0, "measurement": 1.0, "simulation": 0.0},
+    ]
+    text = _undefined_points(session, records)
+    assert text == "`r` at t=0; it reads `readout_r := pA / (pA + pB)`"
+    # Nothing simulated: an integration failure, the other message's case.
+    assert _undefined_points(session, [dict(r, simulation=None) for r in records]) == ""
+
+
 def test_an_amount_in_place_reads_the_amount_that_holds_its_pattern():
     """A pattern is named by the agent it reads, however it is spelled."""
     from petab_mcp.operations import _readout_amounts

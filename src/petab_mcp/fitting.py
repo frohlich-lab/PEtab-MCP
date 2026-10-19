@@ -32,6 +32,7 @@ from petab.v2.C import (
     NOISE_PARAMETERS,
     NOMINAL_VALUE,
     NORMAL,
+    OBSERVABLE_FORMULA,
     OBSERVABLE_ID,
     OBSERVABLE_PARAMETERS,
     UPPER_BOUND,
@@ -1046,7 +1047,8 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     # good optimum — so carry the missing value through (compute_improvement and _fmt both
     # handle None) instead of `float(None)`, which would abort the fit and, via
     # `_compile_fit_failure_message`, tell the agent its model is ill-posed for estimation.
-    objective_before = _flt(engine.evaluate_objective()["neg_log_likelihood"])
+    before = engine.evaluate_objective()
+    objective_before = _flt(before["neg_log_likelihood"])
 
     # The SAME problem the engine evaluates the objective against (see estimation_problem):
     # one AMICI model, one solver, one notion of this model's likelihood.
@@ -1215,6 +1217,21 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
         # whose objective is inf (log10(0) at a measured point) -- branching on it would state the
         # wrong cause confidently in exactly the case the original text was written for. So name
         # both, and name the log line that distinguishes them, rather than guessing.
+        #
+        # Except where the nominal evaluation already shows a third cause: a measured point the
+        # model leaves UNDEFINED while the rest simulate, a readout that is 0/0 there (a ratio
+        # `A/(A + B)` with both starting at 0, measured at t=0). The plain objective drops such a
+        # point and stays finite; the hierarchical one, which solves the noise from every residual,
+        # is non-finite at every start. Named, with the readout.
+        undefined = _undefined_points(session, before.get("simulations") or [])
+        if undefined:
+            raise ModelUpdateError(
+                "the fit produced NO usable optimum: every multistart failed, because the model "
+                f"leaves measured points UNDEFINED: {undefined}. A readout there is not a number "
+                "(NaN or infinite): a division by an amount that is 0 at that time (0/0 where "
+                "every species in a ratio starts at 0) or a log of 0. "
+                "Define each readout so it holds at every measured time, t=0 included."
+            )
         raise ModelUpdateError(
             "the fit produced NO usable optimum: every multistart failed, so the best result "
             "carries no parameter vector. The objective was non-finite at EVERY start — a "
@@ -1294,6 +1311,38 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
 #: so anything past a loose numerical tolerance means the two evaluations differ in substance
 #: (solver settings, or a parameter that did not round-trip), not in rounding.
 OBJECTIVE_AGREEMENT_RTOL = 1e-3
+
+
+def _undefined_points(session, records: list[dict[str, Any]]) -> str:
+    """The measured points a simulation that otherwise ran leaves without a value, by observable,
+    with the readout each reads; ``""`` when there are none, or when nothing simulated at all (an
+    integration failure, a different cause)."""
+    missing = [r for r in records if r.get("measurement") is not None and r.get("simulation") is None]
+    if not missing or len(missing) == len(records):
+        return ""
+    import libsbml
+
+    from .reconcile import formula_identifiers
+
+    obs = session.problem.observable_df
+    sm = getattr(session.problem.model, "sbml_model", None)
+    rules = {}
+    if sm is not None:
+        for i in range(sm.getNumRules()):
+            rule = sm.getRule(i)
+            if rule.isAssignment():
+                rules[rule.getVariable()] = libsbml.formulaToL3String(rule.getMath())
+    parts = []
+    for obs_id in sorted({str(r["observable_id"]) for r in missing}):
+        times = sorted({r["time"] for r in missing if str(r["observable_id"]) == obs_id})
+        shown = ", ".join(f"t={t:g}" for t in times[:4]) + (", ..." if len(times) > 4 else "")
+        reads = ""
+        if obs is not None and obs_id in obs.index:
+            for name in sorted(formula_identifiers(obs.loc[obs_id, OBSERVABLE_FORMULA])):
+                if name in rules:
+                    reads += f"; it reads `{name} := {rules[name]}`"
+        parts.append(f"`{obs_id}` at {shown}{reads}")
+    return "; ".join(parts)
 
 
 def _reconcile_objective(

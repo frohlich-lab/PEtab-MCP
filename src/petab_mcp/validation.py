@@ -288,7 +288,7 @@ def _fixed_constant_role_issues(problem, protected_fixed_ids) -> list[dict[str, 
     return issues
 
 
-def _undefined_readout_issues(problem) -> list[dict[str, Any]]:
+def _undefined_readout_issues(problem, statements: bool = False) -> list[dict[str, Any]]:
     """One error per ``readout_*`` symbol an observable formula references but the model leaves
     undefined — with the remedy and the observable's own biological description in the message.
 
@@ -303,6 +303,10 @@ def _undefined_readout_issues(problem) -> list[dict[str, Any]]:
     A model with no dynamics yet (the v0 seed) declares every readout a constant, so this fires
     only once the agent has authored a model that forgot a mapping. Best-effort:
     any failure returns ``[]`` rather than breaking validation.
+
+    ``statements``: the model came from make_changes' ``statements`` route, where a readout is
+    given in ``readouts``; the assignment-rule remedy (``set_assignment``) is the Antimony routes'
+    and is not offered there.
     """
     from petab.v2.C import OBSERVABLE_FORMULA, OBSERVABLE_NAME
 
@@ -354,16 +358,21 @@ def _undefined_readout_issues(problem) -> list[dict[str, Any]]:
                 raw = row.get(OBSERVABLE_NAME, "")
                 measures = raw.strip() if isinstance(raw, str) else ""
                 measured = f" It measures: {measures}." if measures else ""
+                how = (
+                    f"in `readouts`, a formula over the amounts it reads (`\"{name}\": "
+                    f"\"amount(<agent pattern>)\"`, or over names declared in `amounts`)"
+                    if statements
+                    else f"with an ASSIGNMENT RULE: `{name} := <expression of your species>` (op "
+                    f"set_assignment)"
+                )
                 issues.append(
                     {
                         "level": "error",
                         "message": (
                             f"observable {obs_id!r} references {name!r}, a MEASUREMENT MAPPING your "
                             f"model must define — say what this readout is in terms of YOUR model's "
-                            f"states with an ASSIGNMENT RULE: `{name} := <expression of your "
-                            f"species>` (op set_assignment). Declaring it as a species or a "
-                            f"parameter does NOT define it: a free constant is not a "
-                            f"measurement.{measured}"
+                            f"states {how}. Declaring it as a species or a parameter does NOT "
+                            f"define it: a free constant is not a measurement.{measured}"
                         ),
                         "check": "readout_mapping",
                     }
@@ -490,7 +499,7 @@ def _frozen_stoichiometry_message(rid, side: str, species: str, symbol: str, fro
     )
 
 
-def validate_problem(problem, protected_fixed_ids=None) -> dict[str, Any]:
+def validate_problem(problem, protected_fixed_ids=None, statements: bool = False) -> dict[str, Any]:
     """Run PEtab v2 linting + libsbml SBML consistency and return a JSON-friendly report.
 
     Returns ``valid`` (no errors from either check), ``n_errors``/``n_warnings``, and the
@@ -499,7 +508,8 @@ def validate_problem(problem, protected_fixed_ids=None) -> dict[str, Any]:
     ``protected_fixed_ids`` (the shipped-fixed mechanistic/structural constants, from
     :meth:`session.PetabSession.protected_fixed_parameter_ids`) enables the role check that
     rejects removing or estimating one (see :func:`_fixed_constant_role_issues`); omit it to
-    skip that check.
+    skip that check. ``statements`` words the readout check's remedy for make_changes'
+    statements route.
     """
     lint = [
         i
@@ -534,7 +544,7 @@ def validate_problem(problem, protected_fixed_ids=None) -> dict[str, Any]:
     n_errors += len(role_errors)
     n_warnings += len(role_issues) - len(role_errors)
 
-    readout_issues = _undefined_readout_issues(problem)
+    readout_issues = _undefined_readout_issues(problem, statements)
     issues += readout_issues
     n_errors += len(readout_issues)
 
