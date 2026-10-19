@@ -142,8 +142,8 @@ Principles to hold onto when extending this package.
 - **The estimation scale is the server's.** PEtab v2 dropped `parameterScale`, so the server keeps
   the column as an extension of the parameter table and hands it to pyPESTO's v2 importer as its
   `parameter_scales`, which puts AMICI's simulator on it too — every pyPESTO problem is built
-  through `fitting.pypesto_problem`, never handed to pyPESTO linear. Priors are not carried at
-  all: the objective is the likelihood the criterion scores.
+  through `fitting.pypesto_problem`, never handed to pyPESTO linear. A problem that states a
+  prior is refused at load: the objective is the likelihood the criterion scores.
 - **A hardcoded constant is not free.** `k` is the estimated parameters plus every numeric
   literal in the model's math bar a few structural ones (each distinct value once — see
   [`src/petab_mcp/literals.py`](src/petab_mcp/literals.py)), so freezing a fitted value costs

@@ -1034,9 +1034,10 @@ def _read_parameters(path: Path, training_parameter_df):
     import numpy as np
     from petab import v2
 
-    from .problem import normalize_parameter_df
+    from .problem import normalize_parameter_df, refuse_priors
 
     raw = v2.get_parameter_df(str(path))
+    refuse_priors(raw, path)
     df = normalize_parameter_df(raw)
     stated = raw[PARAMETER_SCALE] if PARAMETER_SCALE in raw.columns else None
     unstated = [

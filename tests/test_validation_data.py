@@ -503,6 +503,25 @@ def test_read_held_out_gives_a_fixed_set_its_condition_rows(tmp_path):
     assert held.condition_df.values.tolist() == [["c_knockdown", "dose", 0.5]]
 
 
+def test_read_held_out_refuses_a_parameter_table_that_states_a_prior(tmp_path):
+    """A transfer set's refit would otherwise run on another objective than the one it states."""
+    _rows("e_knockdown").to_csv(tmp_path / "measurements.tsv", sep="\t", index=False)
+    pd.DataFrame(
+        {
+            "parameterId": ["k_new"],
+            "lowerBound": [0.1],
+            "upperBound": [10.0],
+            "nominalValue": [1.0],
+            "estimate": ["true"],
+            "priorDistribution": ["normal"],
+            "priorParameters": ["1;0.1"],
+        }
+    ).to_csv(tmp_path / V.HELD_OUT_PARAMETERS, sep="\t", index=False)
+
+    with pytest.raises(ValueError, match=r"gives k_new a prior.*remove the prior columns"):
+        V.read_held_out(tmp_path / "measurements.tsv")
+
+
 def test_score_session_scores_the_toy_at_its_fitted_point_on_an_experiment_of_the_sets_own(
     session, engine
 ):
