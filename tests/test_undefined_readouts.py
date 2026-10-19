@@ -135,8 +135,8 @@ def test_a_readout_declared_as_a_SPECIES_is_still_undefined():
 
 
 def test_the_dynamics_free_seed_is_not_flagged():
-    """v0 has no reactions and nothing to map a readout onto — the same self-skip
-    `_unused_condition_target_issues` uses. Flagging it would make the seed itself invalid."""
+    """v0 has no reactions and nothing to map a readout onto (`has_dynamics` is False). Flagging
+    it would make the seed itself invalid."""
     prob = _lintable({"a": "readout_a"}, model_ids=["readout_a"], with_reaction=False)
     assert _undefined_readout_issues(prob) == []
 
