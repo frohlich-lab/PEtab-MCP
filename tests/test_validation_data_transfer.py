@@ -252,15 +252,13 @@ def test_score_session_refits_the_toy_on_a_transfer_set_and_leaves_the_session_a
     session, engine
 ):
     """The one AMICI-backed test of a single system: the toy model, its A_init doubled, is REFIT on
-    measurements it never saw — a v1 set, whose condition `c1` changes nothing and so lands on the
-    toy's own experiment-less design. Pins the payload SHAPE the caller reads (`mode`, `k`, `n`, a
-    finite `nll`), that `k` is the count of estimated rows (k1, k2 — not sigma_B or A_init), and
+    measurements it never saw, on the toy's own experiment-less design. Pins the payload SHAPE the
+    caller reads (`mode`, `k`, `n`, a finite `nll`), that `k` is the count of estimated rows (k1,
+    k2 — not sigma_B or A_init), and
     that the session's own table and model are exactly as they were: a transfer refit that wrote
     its optimum back would change what the caller scores on the training data."""
     meas = session.problem.measurement_df
-    held_meas = meas.drop(columns="experimentId").assign(
-        simulationConditionId="c1", measurement=meas["measurement"] * 2.0
-    )
+    held_meas = meas.assign(measurement=meas["measurement"] * 2.0)
     held = V.HeldOut(
         measurement_df=held_meas,
         parameter_df=_params(
@@ -317,22 +315,25 @@ def test_the_server_tool_takes_n_starts_and_refits_a_transfer_bundle(tmp_path):
 
 
 def test_read_held_out_reads_the_sets_units(tmp_path):
-    """`units.tsv` beside the bundle: {conditionId: unitId} for a v1 set, the file whoever
-    assembles the set writes and the server reads, so the two agree on the split through the file
-    and nowhere else."""
-    _rows("c1").rename(columns={"experimentId": "simulationConditionId"}).to_csv(
-        tmp_path / "measurements.tsv", sep="\t", index=False
-    )
+    """`units.tsv` beside the bundle: {experimentId: unitId}, the file whoever assembles the set
+    writes and the server reads, so the two agree on the split through the file and nowhere else. A
+    v1 table keyed by conditionId is refused like a v1 set."""
+    _rows("e1").to_csv(tmp_path / "measurements.tsv", sep="\t", index=False)
     _params([("A_init", "lin", 0.0, 100.0, 2.0, 0)]).reset_index().to_csv(
         tmp_path / V.HELD_OUT_PARAMETERS, sep="\t", index=False
     )
-    pd.DataFrame({"conditionId": ["c1", "c2"], "unitId": ["u1", "u2"]}).to_csv(
+    pd.DataFrame({"experimentId": ["e1", "e2"], "unitId": ["u1", "u2"]}).to_csv(
         tmp_path / V.HELD_OUT_UNITS, sep="\t", index=False
     )
 
     held = V.read_held_out(tmp_path / "measurements.tsv")
 
-    assert held.mode == V.MODE_TRANSFER and held.units == {"c1": "u1", "c2": "u2"}
+    assert held.mode == V.MODE_TRANSFER and held.units == {"e1": "u1", "e2": "u2"}
+    pd.DataFrame({"conditionId": ["c1"], "unitId": ["u1"]}).to_csv(
+        tmp_path / V.HELD_OUT_UNITS, sep="\t", index=False
+    )
+    with pytest.raises(ValueError, match="keyed by experimentId"):
+        V.read_held_out(tmp_path / "measurements.tsv")
 
 
 def test_a_row_whose_experiment_is_in_no_unit_is_declined_before_any_build(monkeypatch):
@@ -411,11 +412,121 @@ def test_a_single_named_unit_is_still_carried_under_units(monkeypatch):
     assert len(seen) == 1
 
 
-def test_read_units_refuses_a_condition_in_two_units_or_a_blank(tmp_path):
-    (tmp_path / "u.tsv").write_text("conditionId\tunitId\nc1\tu1\nc1\tu2\n")
-    with pytest.raises(ValueError, match="c1"):
+def _fake_refit(monkeypatch):
+    """Replace one system's refit: record the view it was handed, report a fixed optimum."""
+    seen = []
+
+    def _fake_one(view, *, target, n_starts, fit_engine):
+        seen.append(view)
+        return {
+            "status": "ok",
+            "mode": "transfer",
+            "nll": 1.0,
+            "k": 1,
+            "n": len(view.measurement_df),
+            "chi2": 2.0,
+            "n_experiments": 1,
+            "observables": ["obs_B"],
+            "n_starts": n_starts,
+            "n_converged": 1,
+            "fitted": {},
+        }
+
+    monkeypatch.setattr(V, "_refit_one", _fake_one)
+    return seen
+
+
+def test_a_v1_transfer_set_is_refused_before_any_build(monkeypatch):
+    """The transfer side of the v1 refusal in ``test_validation_data.py``: the view is not built,
+    and the status says how to convert the set."""
+    _never_build(monkeypatch)
+    held = V.HeldOut(
+        measurement_df=_rows("c1").rename(columns={"experimentId": "simulationConditionId"}),
+        parameter_df=_HELD_OUT_PARAMS,
+    )
+
+    view, failed = V.transfer_view(_candidate(), held, _SHIPPED)
+
+    assert view is None and failed["status"] == V.STATUS_V2_REQUIRED
+    assert "petab1to2" in failed["reason"]
+
+
+def _write_v2_parameters(path: Path, rows, *, scale: bool) -> None:
+    """A v2 parameter table: ``true``/``false`` estimates, and libpetab v1's ``parameterScale``
+    column only if ``scale``."""
+    table = _params(rows).reset_index()
+    table["estimate"] = table["estimate"].map({1: "true", 0: "false"})
+    if not scale:
+        table = table.drop(columns="parameterScale")
+    table.to_csv(path, sep="\t", index=False)
+
+
+def test_a_v2_parameter_row_without_a_scale_takes_the_training_rows(tmp_path):
+    """v2 has no ``parameterScale``; a v2 table without the column read every row as ``lin``, so a
+    refit on it estimated a log10 rate linearly. A row without a scale takes the training
+    row's; one the training table lacks is refused, and without a training table the cell is left
+    blank rather than guessed. A scale the table states is kept."""
+    meas = tmp_path / "measurements.tsv"
+    _rows("e1").to_csv(meas, sep="\t", index=False)
+    rows = [("k1", "", 1e-4, 100.0, 7.0, 1), ("A_init", "", 0.0, 100.0, 2.0, 0)]
+    _write_v2_parameters(tmp_path / V.HELD_OUT_PARAMETERS, rows, scale=False)
+
+    held = V.read_held_out(meas, training_parameter_df=_SHIPPED)
+    assert held.parameter_df["parameterScale"].to_dict() == {"k1": "log10", "A_init": "lin"}
+    assert held.parameter_df["estimate"].tolist() == [True, False]
+    assert V.read_held_out(meas).parameter_df["parameterScale"].isna().all()
+
+    _write_v2_parameters(
+        tmp_path / V.HELD_OUT_PARAMETERS, [("k1", "lin", 1e-4, 100.0, 7.0, 1)], scale=True
+    )
+    held = V.read_held_out(meas, training_parameter_df=_SHIPPED)
+    assert held.parameter_df.loc["k1", "parameterScale"] == "lin"
+
+    rows.append(("sigma_extra", "", 1e-4, 100.0, 3.0, 0))
+    _write_v2_parameters(tmp_path / V.HELD_OUT_PARAMETERS, rows, scale=False)
+    with pytest.raises(ValueError, match="sigma_extra"):
+        V.read_held_out(meas, training_parameter_df=_SHIPPED)
+
+
+def test_a_native_v2_transfer_set_is_read_from_disk_and_refit_per_unit(tmp_path, monkeypatch):
+    """A transfer set as PEtab v2 writes it -- measurements, experiments, long-format
+    conditions, a parameter table without ``parameterScale`` and units, all by experimentId --
+    read through ``read_held_out`` and refit one unit at a time on
+    the set's own design, with the changed fixed input carried into the candidate."""
+    seen = _fake_refit(monkeypatch)
+    meas = tmp_path / "measurements.tsv"
+    pd.concat([_rows("e1"), _rows("e2")]).to_csv(meas, sep="\t", index=False)
+    _conditions(["c1", "c2"]).to_csv(tmp_path / V.HELD_OUT_CONDITIONS, sep="\t", index=False)
+    _experiments(["e1", "e2"], ["c1", "c2"]).to_csv(
+        tmp_path / V.HELD_OUT_EXPERIMENTS, sep="\t", index=False
+    )
+    _write_v2_parameters(
+        tmp_path / V.HELD_OUT_PARAMETERS, [("A_init", "", 0.0, 100.0, 2.0, 0)], scale=False
+    )
+    pd.DataFrame({"experimentId": ["e1", "e2"], "unitId": ["u1", "u2"]}).to_csv(
+        tmp_path / V.HELD_OUT_UNITS, sep="\t", index=False
+    )
+
+    held = V.read_held_out(meas, training_parameter_df=_SHIPPED)
+
+    assert held.mode == V.MODE_TRANSFER and held.units == {"e1": "u1", "e2": "u2"}
+    assert held.condition_df[["conditionId", "targetId"]].values.tolist() == [
+        ["c1", "dose"],
+        ["c2", "dose"],
+    ]
+    assert held.parameter_df.loc["A_init", "parameterScale"] == "lin"
+    view, failed = V.transfer_view(_candidate(), held, _SHIPPED)
+    assert failed is None and view.parameter_df.loc["A_init", "nominalValue"] == 2.0
+    out = V.refit_problem(view, build_dir="/tmp/x", model_name="m", n_starts=1, units=held.units)
+    assert out["status"] == V.STATUS_OK and set(out["units"]) == {"u1", "u2"}
+    assert [sorted(set(v.experiment_df["experimentId"])) for v in seen] == [["e1"], ["e2"]]
+
+
+def test_read_units_refuses_an_experiment_in_two_units_or_a_blank(tmp_path):
+    (tmp_path / "u.tsv").write_text("experimentId\tunitId\ne1\tu1\ne1\tu2\n")
+    with pytest.raises(ValueError, match="e1"):
         V.read_units(tmp_path / "u.tsv")
-    (tmp_path / "u.tsv").write_text("conditionId\tunitId\nc1\t\n")
+    (tmp_path / "u.tsv").write_text("experimentId\tunitId\ne1\t\n")
     with pytest.raises(ValueError, match="unitId"):
         V.read_units(tmp_path / "u.tsv")
 

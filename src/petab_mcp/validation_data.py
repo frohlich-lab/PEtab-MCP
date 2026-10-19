@@ -18,11 +18,10 @@ drift between the two numbers that get subtracted. Report-only — the caller re
 gates on it, and the tool is left out of the agent's tool set (see
 ``server._register_validation_data_tools``). Rationale in ``docs/RATIONALE.md``.
 
-A held-out set is read in either PEtab version (:func:`read_held_out`). A v1 set names conditions,
-not experiments, and is moved onto the problem it is scored against by :func:`as_v2` — which has to
-know that problem, because whether a v1 condition becomes an experiment depends on whether it
-changes anything, and a held-out row may name a TRAINING condition. Unlike under v1, a held-out
-view usually needs its OWN compiled module: AMICI's v2 import compiles every experiment into the
+A held-out set is PEtab v2 (:func:`read_held_out`). A v1 set names conditions, not experiments, and
+which experiment a v1 condition becomes depends on the upgrade of the training problem; so it is
+converted together with that problem, before it reaches the server, and refused here
+(:data:`STATUS_V2_REQUIRED`). Unlike under v1, a held-out view usually needs its OWN compiled module: AMICI's v2 import compiles every experiment into the
 model as events (see :meth:`problem.WorkingProblem.module_fingerprint`), so a view is built beside
 the training module whenever its design differs (:func:`_build_target`).
 """
@@ -49,7 +48,6 @@ from petab.v2.C import (
 
 from .problem import (
     PARAMETER_SCALE,
-    V1_PREEQUILIBRATION_CONDITION_ID,
     V1_SIMULATION_CONDITION_ID,
     as_bool,
 )
@@ -72,6 +70,10 @@ STATUS_NON_FINITE = "non_finite"
 #: * ``input_missing`` — transfer only: the held-out system changes a FIXED input the candidate has
 #:   no fixed parameter to receive. A finding about the model, not a table error.
 STATUS_INPUT_MISSING = "input_missing"
+#: * ``v2_required`` — the held-out set is PEtab v1: its measurements name conditions
+#:   (``simulationConditionId``), not experiments. Convert it with libpetab's ``petab1to2``,
+#:   together with the training problem, so the two name their experiments alike.
+STATUS_V2_REQUIRED = "v2_required"
 
 #: ``mode`` values a score carries — which of the two comparisons it is (module docstring);
 #: a caller reads it to refuse subtracting across kinds.
@@ -94,9 +96,6 @@ class HeldOut:
     ``units`` names the SYSTEMS a transfer set is refit on — ``{experimentId: unitId}``,
     e.g. three cell types each with its treated and untreated experiment — and ``None``
     refits the whole table as one system.
-
-    A set read from v1 files still names conditions, not experiments, in its measurement table
-    (and in ``units``) until :func:`as_v2` moves it onto a problem.
     """
 
     measurement_df: Any
@@ -118,61 +117,15 @@ HELD_OUT_PARAMETERS = "parameters.tsv"
 HELD_OUT_UNITS = "units.tsv"
 
 
-def as_v2(held_out: HeldOut, problem) -> HeldOut:
-    """``held_out`` with its measurements (and ``units``) keyed by EXPERIMENT, for scoring against
-    ``problem`` — the identity for a set that already is.
-
-    A v1 set names (pre-equilibration, simulation) condition pairs. Each becomes the experiment
-    libpetab's ``petab1to2`` makes of that pair when it upgrades the training problem
-    (``experiment__{preeq}___{sim}``, ``experiment____{sim}`` without a pre-equilibration), so a
-    held-out row that repeats a training design lands in the training experiment. A pair neither of
-    whose conditions changes anything is no experiment (``""``), and which conditions change
-    anything are the set's own plus the training problem's, unless a transfer set replaces those
-    (:func:`transfer_view`). A unit is the unit of its experiment's simulation condition.
-    """
-    import numpy as np
-    import pandas as pd
-    from petab.v2.C import TIME, TIME_PREEQUILIBRATION
-
-    mdf = held_out.measurement_df
-    if mdf is None or V1_SIMULATION_CONDITION_ID not in mdf.columns:
-        return held_out
-    changing = _condition_ids(held_out.condition_df)
-    if not (held_out.mode == MODE_TRANSFER and held_out.condition_df is not None):
-        changing |= _condition_ids(problem.condition_df)
-    sim = mdf[V1_SIMULATION_CONDITION_ID].fillna("").astype(str)
-    pre = mdf.get(V1_PREEQUILIBRATION_CONDITION_ID, pd.Series("", index=mdf.index))
-    pre = pre.fillna("").astype(str)
-
-    ids, rows = {}, []
-    for p, s in dict.fromkeys(zip(pre, sim)):
-        exp = f"experiment__{p}{'_' if p else ''}__{s}" if {p, s} & changing else ""
-        ids[(p, s)] = exp
-        if not exp:
-            continue
-        # A condition that changes nothing has no row in a v2 condition table: its period applies
-        # none.
-        for t, c in ([(TIME_PREEQUILIBRATION, p)] if p else []) + [(0.0, s)]:
-            rows.append({EXPERIMENT_ID: exp, TIME: t, CONDITION_ID: c if c in changing else np.nan})
-    measurement_df = mdf.drop(
-        columns=[V1_SIMULATION_CONDITION_ID, V1_PREEQUILIBRATION_CONDITION_ID], errors="ignore"
-    ).rename(columns={EXPERIMENT_ID: f"v1_{EXPERIMENT_ID}"})
-    measurement_df.insert(0, EXPERIMENT_ID, [ids[k] for k in zip(pre, sim)])
-    units = held_out.units
-    if units is not None:
-        units = {exp: units[s] for exp, s in zip(measurement_df[EXPERIMENT_ID], sim) if s in units}
-    return HeldOut(
-        measurement_df=measurement_df,
-        condition_df=held_out.condition_df,
-        parameter_df=held_out.parameter_df,
-        units=units,
-        experiment_df=pd.DataFrame(rows) if rows else None,
+def _v1_reason(measurement_df) -> str | None:
+    """Why ``measurement_df`` cannot be scored here (:data:`STATUS_V2_REQUIRED`), or ``None``."""
+    if measurement_df is None or V1_SIMULATION_CONDITION_ID not in measurement_df.columns:
+        return None
+    return (
+        f"the held-out set is PEtab v1: its measurements name {V1_SIMULATION_CONDITION_ID}, not "
+        f"{EXPERIMENT_ID}. Convert it with libpetab's petab1to2, together with the training "
+        "problem so that the two name their experiments alike"
     )
-
-
-def _condition_ids(condition_df) -> set[str]:
-    """The conditions of a v2 condition table — each of which changes something."""
-    return set() if condition_df is None else set(condition_df[CONDITION_ID].astype(str))
 
 
 def _unsupported_reason(problem, view) -> str | None:
@@ -228,8 +181,7 @@ def _with_held_out_design(view, condition_df, experiment_df) -> str | None:
     type's protein abundances, a knockdown level), which a model that takes those inputs predicts
     without a refit. A new TARGET is a new input, i.e. a different model, and a condition id the
     training table already defines would redefine a condition the model was fitted under; both are
-    refused. A held-out experiment either is new or repeats a training one exactly (a v1 set
-    naming a training condition upgrades to the training experiment, see :func:`as_v2`); one that
+    refused. A held-out experiment either is new or repeats a training one exactly; one that
     redefines a training experiment is refused. Shared by the server's scorer and whoever assembles
     a held-out set, as its setup check, so the two cannot disagree about what a fixed-θ set may
     bring.
@@ -530,8 +482,8 @@ def score_problem(
 
     ``condition_df``/``experiment_df`` are the held-out set's own design — what it ADDS to the
     problem's (:class:`HeldOut`, :func:`_with_held_out_design`); ``None`` where the training table
-    already has it. A v1 ``measurement_df`` (simulation condition ids) is moved onto the problem's
-    experiments first (:func:`as_v2`).
+    already has it. A v1 ``measurement_df`` (simulation condition ids) is refused
+    (:data:`STATUS_V2_REQUIRED`).
 
     Returns ``{status, nll, n, chi2, n_experiments, observables}`` or ``{status, reason}``. ``chi2``
     is the sum of squares of AMICI's weighted residual vector (via
@@ -556,10 +508,9 @@ def score_problem(
         )
     if measurement_df is None or len(measurement_df) == 0:
         return {"status": STATUS_NO_DATA, "reason": "the held-out measurement table is empty"}
-    held_out = as_v2(
-        HeldOut(measurement_df, condition_df=condition_df, experiment_df=experiment_df), problem
-    )
-    measurement_df = held_out.measurement_df
+    v1 = _v1_reason(measurement_df)
+    if v1:
+        return {"status": STATUS_V2_REQUIRED, "reason": v1}
 
     # A new problem, fresh tables: the model is shared (it is what we are scoring, and deep-copying
     # an SBML document per call is pure cost), but every dataframe pyPESTO reads is this call's own,
@@ -568,9 +519,9 @@ def score_problem(
     for name in ("condition_df", "experiment_df"):
         if getattr(problem, name) is not None:
             setattr(view, name, getattr(problem, name).copy())
-    mismatch = _with_held_out_design(
-        view, held_out.condition_df, held_out.experiment_df
-    ) or _table_mismatch(view, measurement_df)
+    mismatch = _with_held_out_design(view, condition_df, experiment_df) or _table_mismatch(
+        view, measurement_df
+    )
     if mismatch:
         return {"status": STATUS_TABLE_MISMATCH, "reason": mismatch}
     # A curated held-out blot names its own scale factor, which no training measurement can
@@ -717,8 +668,8 @@ def transfer_view(problem, held_out: HeldOut, shipped_parameter_df):
     The view shares the model and owns every table it changes, so the session's problem is never
     touched. These tables move:
 
-    * the held-out MEASUREMENTS replace the training ones (a v1 set is moved onto experiments
-      first, see :func:`as_v2`);
+    * the held-out MEASUREMENTS replace the training ones (a v1 set is refused,
+      :data:`STATUS_V2_REQUIRED`);
     * the held-out CONDITION and EXPERIMENT tables replace the training ones, and the conditions
       must set the training table's targets — a target is a model input, so a new one is a
       different model;
@@ -728,9 +679,12 @@ def transfer_view(problem, held_out: HeldOut, shipped_parameter_df):
 
     Every other held-out row is left alone, and the held-out table's ESTIMATED values are never
     used as the candidate's start. A required input the candidate has no fixed row to receive is
-    :data:`STATUS_INPUT_MISSING` — a result about the model, not a plumbing failure.
+    :data:`STATUS_INPUT_MISSING` — a result about the model, not a plumbing failure. Nor is a
+    held-out row's scale used, so none is required of it here (:func:`read_held_out`).
     """
-    held_out = as_v2(held_out, problem)
+    v1 = _v1_reason(held_out.measurement_df)
+    if v1:
+        return None, {"status": STATUS_V2_REQUIRED, "reason": v1}
     view = problem.replace(measurement_df=held_out.measurement_df)
     if held_out.condition_df is not None:
         if problem.condition_df is None:
@@ -1010,7 +964,6 @@ def score_session(
                 experiment_df=held_out.experiment_df,
                 **build,
             )
-        held_out = as_v2(held_out, session.problem)
         view, failed = transfer_view(session.problem, held_out, session.shipped_parameter_df)
         if failed:
             return {**failed, "mode": MODE_TRANSFER}
@@ -1025,7 +978,7 @@ def score_session(
         )
 
 
-def read_held_out(measurements_path: str | Path) -> HeldOut:
+def read_held_out(measurements_path: str | Path, training_parameter_df=None) -> HeldOut:
     """Load a held-out set from its measurement table and the optional tables beside it.
 
     ``measurements_path`` is the held-out measurement TSV; a ``conditions.tsv`` /
@@ -1035,14 +988,20 @@ def read_held_out(measurements_path: str | Path) -> HeldOut:
     (:data:`HELD_OUT_UNITS`). Read with PEtab's own readers, so the server and whoever wrote the
     set parse the files identically.
 
-    Either PEtab version: a v1 set (its measurements name ``simulationConditionId``) has its
-    condition and parameter tables upgraded here and its measurements keyed by experiment when it
-    is scored (:func:`as_v2`), since that needs the problem.
+    PEtab v2 only: a v1 set (its measurements name ``simulationConditionId``, or its condition
+    table is v1's wide one) is refused with ``ValueError``, saying how to convert it
+    (:data:`STATUS_V2_REQUIRED`).
+
+    A parameter row's scale is not v2's to state (see :mod:`petab_mcp.problem`): a v2 table states
+    it only in libpetab v1's ``parameterScale`` column, and a row without one has the TRAINING
+    row's scale, not ``lin`` — a log-scaled rate refit linearly starts nearly every multistart in
+    the top decade of its box. Given ``training_parameter_df``, such a row takes its scale by id,
+    and one the training table does not have is refused (``ValueError``); without it the cell
+    stays blank. A caller that refits on this table passes its training table; the
+    server passes none, since its transfer refit estimates on the candidate's table
+    (:func:`transfer_view`) and a zero-shot problem ships without the kinetics to look up.
     """
     from petab import v2
-    from petab.v2.petab1to2 import v1v2_condition_df
-
-    from .problem import normalize_parameter_df, refuse_priors
 
     path = Path(measurements_path)
     cond = path.with_name(HELD_OUT_CONDITIONS)
@@ -1050,29 +1009,69 @@ def read_held_out(measurements_path: str | Path) -> HeldOut:
     pars = path.with_name(HELD_OUT_PARAMETERS)
     units = path.with_name(HELD_OUT_UNITS)
     measurement_df = read_measurements(path)
+    v1 = _v1_reason(measurement_df)
+    if v1:
+        raise ValueError(f"{path}: {v1}")
     condition_df = v2.get_condition_df(str(cond)) if cond.is_file() else None
     if condition_df is not None and TARGET_ID not in condition_df.columns:
-        condition_df = v1v2_condition_df(condition_df.set_index(CONDITION_ID), None)
-        condition_df = condition_df.reset_index(drop=True) if len(condition_df) else None
-    parameter_df = v2.get_parameter_df(str(pars)) if pars.is_file() else None
-    refuse_priors(parameter_df, pars)
+        raise ValueError(
+            f"{cond}: a PEtab v1 condition table (one column per target, no {TARGET_ID}); convert "
+            "the set with libpetab's petab1to2, together with the training problem"
+        )
     return HeldOut(
         measurement_df=measurement_df,
         condition_df=condition_df,
-        parameter_df=normalize_parameter_df(parameter_df) if parameter_df is not None else None,
+        parameter_df=_read_parameters(pars, training_parameter_df) if pars.is_file() else None,
         units=read_units(units) if units.is_file() else None,
         experiment_df=v2.get_experiment_df(str(exps)) if exps.is_file() else None,
     )
 
 
+def _read_parameters(path: Path, training_parameter_df):
+    """A held-out parameter table in the server's conventions
+    (:func:`~petab_mcp.problem.normalize_parameter_df`), but for a row without a
+    ``parameterScale``: the training row's, or blank (see :func:`read_held_out`)."""
+    import numpy as np
+    from petab import v2
+
+    from .problem import normalize_parameter_df, refuse_priors
+
+    raw = v2.get_parameter_df(str(path))
+    refuse_priors(raw, path)
+    df = normalize_parameter_df(raw)
+    stated = raw[PARAMETER_SCALE] if PARAMETER_SCALE in raw.columns else None
+    unstated = [
+        pid
+        for pid in df.index
+        if stated is None or not (isinstance(stated[pid], str) and stated[pid].strip())
+    ]
+    df.loc[unstated, PARAMETER_SCALE] = np.nan
+    if training_parameter_df is None or not unstated:
+        return df
+    unknown = sorted(str(pid) for pid in unstated if pid not in training_parameter_df.index)
+    if unknown:
+        raise ValueError(
+            f"{path}: parameter(s) {unknown} state no {PARAMETER_SCALE} and are not in the "
+            "training table, whose scale a row without one takes; state it in the "
+            f"{PARAMETER_SCALE} column"
+        )
+    df.loc[unstated, PARAMETER_SCALE] = training_parameter_df.loc[unstated, PARAMETER_SCALE].values
+    return df
+
+
 def read_units(path: str | Path) -> dict[str, str]:
-    """``{experimentId: unitId}`` from a :data:`HELD_OUT_UNITS` table — ``{conditionId: unitId}``
-    for a v1 set, which :func:`as_v2` re-keys. An experiment belongs to exactly one unit, so a
-    repeated id or a blank cell is refused rather than letting the last row win."""
+    """``{experimentId: unitId}`` from a :data:`HELD_OUT_UNITS` table. An experiment belongs to
+    exactly one unit, so a repeated id or a blank cell is refused rather than letting the last row
+    win, and a v1 table keyed by ``conditionId`` is refused like a v1 set."""
     import pandas as pd
 
     table = pd.read_csv(path, sep="\t", dtype=str)
-    key = EXPERIMENT_ID if EXPERIMENT_ID in table.columns else CONDITION_ID
+    key = EXPERIMENT_ID
+    if key not in table.columns:
+        raise ValueError(
+            f"{path}: units are keyed by {EXPERIMENT_ID}; a v1 set's {CONDITION_ID} keys are not "
+            "read (convert the set with libpetab's petab1to2, together with the training problem)"
+        )
     if table[[key, "unitId"]].isna().any().any():
         raise ValueError(f"{path}: every row needs a {key} and a unitId")
     dupes = sorted(table[key][table[key].duplicated()])
