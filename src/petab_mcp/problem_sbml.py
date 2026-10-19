@@ -78,6 +78,8 @@ def to_antimony(
     library: dict[tuple[str, str], M.Policy] = M.REGISTRY,
     inputs: tuple[Input, ...] = (),
     starts: list[tuple[str, Agent, float | str]] | None = None,
+    formulas: dict[str, str] | None = None,
+    amounts: dict[str, Agent] | None = None,
     *,
     targets: frozenset[str] = frozenset(),
 ) -> tuple[str, list[M.Emission]]:
@@ -95,9 +97,20 @@ def to_antimony(
 
     ``starts`` (``(name, agent, amount)``: a number or an expression over parameter ids) declare
     what is present at the start, as the module docstring sets out; each is ``<name>_init``.
+
+    ``formulas`` (readout id to an expression; ``make_changes``' ``readouts``) define each readout that is not one pattern's amount as an
+    assignment rule over ``amounts`` (name to the agent whose amount it is), the entity map's ids
+    — each a symbol of the model by then — and parameter ids, a name the model does not hold
+    becoming a parameter as in a declared start.
     """
     starts = starts or []
     entities = {**{item.id: Agent(item.id) for item in inputs}, **entities}
+    clash = sorted(set(amounts or {}) & set(entities))
+    if clash:
+        raise ModelUpdateError(f"amounts {clash} are also entity-map or input ids; name them apart")
+    # An amount a readout formula reads is named like an entity-map readout (below), for this
+    # model only: the map itself is the problem's, and amounts are the agent's.
+    entities = {**entities, **(amounts or {})}
     # Start agents join the monomer pass (they may name a site or partner no row does); they are
     # not readouts, so they stay out of `entities` below.
     model, emissions = M.assemble(
@@ -214,6 +227,9 @@ def to_antimony(
             rule.setVariable(new)
             renamed = parameter
         _rename(sbml_model, renamed, new)
+    agents = {m.name for m in model.monomers}
+    for readout, formula in (formulas or {}).items():
+        _readout_formula(sbml_model, readout, formula, agents)
     for name, _, amount in starts:
         if isinstance(amount, str):
             _initial_expression(sbml_model, f"{name}_init", name, amount)
@@ -279,15 +295,69 @@ def _initial_expression(sbml_model, placeholder: str, species: str, formula: str
     math = libsbml.parseL3Formula(formula)
     if math is None:
         raise ModelUpdateError(f"start {species!r} is no formula: {formula!r}")
+    _parameters_for_unknown_names(sbml_model, math)
+    for assignment in sbml_model.getListOfInitialAssignments():
+        if assignment.getMath().isName() and assignment.getMath().getName() == placeholder:
+            assignment.setMath(math)
+
+
+def _readout_formula(sbml_model, readout: str, formula: str, agents=frozenset()) -> None:
+    """Define ``readout`` as ``formula``: an assignment rule, as the lint wants a measurement
+    mapping to be, over symbols of the model and parameters made for the names it lacks.
+
+    A name that is one of the model's ``agents`` is refused rather than made a parameter: a
+    formula reads an agent's amount only through ``amounts``, and a parameter of the agent's name
+    would read a constant, fitted silently in place of the species (``readout_viral_load :=
+    Virus`` measured an estimated ``Virus`` at its bound, not the virions)."""
+    if sbml_model.getElementBySId(readout) is not None:
+        raise ModelUpdateError(
+            f"readout {readout!r} is a formula and also names something else in the model"
+        )
+    math = libsbml.parseL3Formula(formula)
+    if math is None:
+        raise ModelUpdateError(f"readout {readout!r} is no formula: {formula!r}")
+    if any(node.isName() and node.getName() == readout for node in _ast_nodes(math)):
+        raise ModelUpdateError(
+            f"readout {readout!r} = {formula!r} reads itself. A readout is not a parameter to "
+            "scale: it is what the assay measures of the model's state, a formula over the "
+            "amounts it reads."
+        )
+    unread = sorted(
+        {
+            node.getName()
+            for node in _ast_nodes(math)
+            if node.getType() == libsbml.AST_NAME
+            and node.getName() in agents
+            and sbml_model.getElementBySId(node.getName()) is None
+        }
+    )
+    if unread:
+        example = ", ".join(f'"{n}": "{n}"' for n in unread)
+        raise ModelUpdateError(
+            f"readout {readout!r} reads {unread}, agent(s) of this model, by name. A readout "
+            "formula reads an agent's amount only through `amounts`: declare it there "
+            f"(`amounts={{{example}}}` for every state of it, or a pattern such as "
+            f'`"{unread[0]}{{p}}"` for one state) and read that name. Unread, it would be a '
+            "parameter, a constant, fitted in place of the species."
+        )
+    _parameters_for_unknown_names(sbml_model, math)
+    parameter = sbml_model.createParameter()
+    parameter.setId(readout)
+    parameter.setConstant(False)
+    rule = sbml_model.createAssignmentRule()
+    rule.setVariable(readout)
+    rule.setMath(math)
+
+
+def _parameters_for_unknown_names(sbml_model, math) -> None:
+    """A parameter for every name in ``math`` the model does not hold: a shipped row or a
+    condition-table column fills it, and anything else is estimated from reconcile's seed."""
     for node in _ast_nodes(math):
         if node.getType() == libsbml.AST_NAME and sbml_model.getElementBySId(node.getName()) is None:
             parameter = sbml_model.createParameter()
             parameter.setId(node.getName())
             parameter.setConstant(True)
             parameter.setValue(SEED_INITIAL_VALUE)
-    for assignment in sbml_model.getListOfInitialAssignments():
-        if assignment.getMath().isName() and assignment.getMath().getName() == placeholder:
-            assignment.setMath(math)
 
 
 def _initial_empty(sbml_model, placeholder: str) -> None:
