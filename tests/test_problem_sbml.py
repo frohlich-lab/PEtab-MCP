@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import libsbml
 import pytest
-from indra.statements import Agent, BoundCondition, Phosphorylation
+from indra.statements import Agent, BoundCondition, Phosphorylation, Translocation
 from petab.v1.models.sbml_model import SbmlModel
 
 from petab_mcp import mechanisms as M
@@ -344,6 +344,37 @@ def test_indra_padded_rules_build():
     assert SbmlModel.from_antimony(antimony).sbml_model.getNumReactions() == 2
 
 
+def test_complexes_that_grow_without_bound_are_refused():
+    """Homo- and heterodimers of two kinds chain without end; BioNetGen expanded such a network
+    until the client timed out (a gemot run on boehm, 1092 s per call, six calls)."""
+    from indra.statements import Complex
+
+    rows = [
+        (Complex([Agent("STAT5A"), Agent("STAT5A")]), "stated", "aa"),
+        (Complex([Agent("STAT5A"), Agent("STAT5B")]), "stated", "ab"),
+        (Complex([Agent("STAT5B"), Agent("STAT5B")]), "stated", "bb"),
+    ]
+    with pytest.raises(ModelUpdateError, match="grow without bound"):
+        PS.to_antimony(rows, {"STAT5A": Agent("STAT5A"), "STAT5B": Agent("STAT5B")})
+
+
+def test_the_dimers_the_refusal_advises_are_not_refused():
+    """The same three dimers, each partner free of its others where it binds: dimers only."""
+    from indra.statements import Complex
+
+    def free(name, of):
+        return Agent(name, bound_conditions=[BoundCondition(Agent(of), False)])
+
+    a, b = "STAT5A", "STAT5B"
+    rows = [
+        (Complex([free(a, b), free(a, b)]), "stated", "aa"),
+        (Complex([free(a, a), free(b, b)]), "stated", "ab"),
+        (Complex([free(b, a), free(b, a)]), "stated", "bb"),
+    ]
+    antimony, _ = PS.to_antimony(rows, {a: Agent(a), b: Agent(b)})
+    assert "STAT5A" in antimony and "STAT5B" in antimony
+
+
 # -- entries written from the statement's own agents ---------------------------------
 def _reactions(rows, entities):
     antimony, _ = PS.to_antimony(rows, entities)
@@ -409,3 +440,135 @@ def test_a_modification_goes_on_without_an_enzyme():
         [(Acetylation(None, Agent("H4"), "K", "5"), "basal", "r1")], {"H4": Agent("H4")}
     )
     assert reactions == [(["H4(K5='n')"], ["H4(K5='y')"])]  # INDRA's acetylation states
+
+
+def _p(name, residue="S", position="1", modified=True, **kwargs):
+    return Agent._from_json(
+        {
+            "name": name,
+            "mods": [
+                {
+                    "mod_type": "phosphorylation",
+                    "residue": residue,
+                    "position": position,
+                    "is_modified": modified,
+                }
+            ],
+            **kwargs,
+        }
+    )
+
+
+def test_a_stated_complex_comes_apart_only_as_stated():
+    """Schwen's internalised complexes must not dissociate at the surface rate: the reverse
+    reaction keeps the member's stated phospho-state, where INDRA's dissociates any complex."""
+    from indra.statements import Complex
+
+    reactions = _reactions(
+        [
+            (Phosphorylation(None, Agent("A"), "S", "1"), "basal", "p"),
+            (Complex([_p("A"), Agent("B")]), "stated", "bind"),
+        ],
+        {"A": Agent("A"), "B": Agent("B")},
+    )
+    bindings = [r for r in reactions if len(r[0]) == 2 or len(r[1]) == 2]
+    assert len(bindings) == 1  # only phospho-A binds, and only that complex dissociates
+    assert any("S1='p'" in s for s in bindings[0][0] + bindings[0][1])
+
+
+def test_an_assembly_joins_repeated_members_in_one_step():
+    """Lucarelli's SMAD2 + 2 SMAD3 trimer forms in one irreversible step; INDRA's multi_way has
+    one site per partner type and cannot hold the second SMAD3."""
+    from indra.statements import Complex
+
+    (reaction,) = _reactions(
+        [(Complex([Agent("A"), Agent("B"), Agent("B")]), "assembly", "tri")],
+        {"A": Agent("A"), "B": Agent("B")},
+    )
+    reactants, (product,) = reaction
+    assert sorted(m.split("(")[0] for m in reactants) == ["A", "B", "B"]
+    assert product.count("._br_") == 2
+
+
+def test_a_nondepleting_ligand_occupies_without_being_used_up():
+    """Isensee's cAMP is in excess: occupying RII leaves the free pool as it was, and vacating
+    deletes only the bound copy."""
+    from indra.statements import Complex
+
+    reactions = _reactions(
+        [(Complex([Agent("R"), Agent("L")]), "nondepleting", "occ")],
+        {"R": Agent("R"), "L": Agent("L")},
+    )
+    occupy = next(r for r in reactions if len(r[0]) == 2)
+    assert "L(r=None)" in occupy[0] and "L(r=None)" in occupy[1]
+    vacate = next(r for r in reactions if len(r[0]) == 1)
+    assert vacate[1] == ["R(l=None)"]
+
+
+def test_a_processive_step_sets_every_listed_site():
+    """Lucarelli's SMAD2 goes from S to ppS in one step at both C-terminal serines."""
+    sub = Agent._from_json(
+        {
+            "name": "S",
+            "mods": [
+                {"mod_type": "phosphorylation", "residue": "S", "position": "1", "is_modified": False},
+                {"mod_type": "phosphorylation", "residue": "S", "position": "2", "is_modified": False},
+            ],
+        }
+    )
+    reactions = _reactions(
+        [(Phosphorylation(Agent("K"), sub, "S", "1"), "processive", "pp")],
+        {"S": Agent("S"), "K": Agent("K")},
+    )
+    (reaction,) = reactions
+    assert any("S1='p'" in s and "S2='p'" in s for s in reaction[1])
+
+
+def test_a_dissociative_removal_dissolves_the_complexes_it_was_in():
+    """Lucarelli's nuclear phosphatase releases the trimer's members as it dephosphorylates SMAD2."""
+    from indra.statements import Complex, Dephosphorylation
+
+    reactions = _reactions(
+        [
+            (Phosphorylation(None, Agent("A"), "S", "1"), "basal", "p"),
+            (Complex([_p("A"), Agent("B")]), "assembly", "dimer"),
+            (Dephosphorylation(None, Agent("A"), "S", "1"), "dissociative", "dp"),
+        ],
+        {"A": Agent("A"), "B": Agent("B")},
+    )
+    released = [r for r in reactions if len(r[0]) == 1 and len(r[1]) == 2]
+    assert released and any("S1='u'" in s for s in released[0][1])
+
+
+def test_a_protein_is_made_in_the_state_it_is_written():
+    """Alkan's p21 is made in the S- or G2-phase cells it is measured in; INDRA's IncreaseAmount
+    makes the base state."""
+    from indra.statements import IncreaseAmount
+
+    nuclear = Agent("P", location="nucleus")
+    reactions = _reactions(
+        [
+            (IncreaseAmount(None, nuclear), "mass_action", "syn"),
+            (Translocation(Agent("P"), "nucleus", "cytoplasm"), INDRA_DEFAULT, "out"),
+        ],
+        {"P": Agent("P")},
+    )
+    assert ([], ["P(loc='nucleus')"]) in reactions
+
+
+def test_a_written_rate_leaves_no_unread_rules():
+    """The amounts a written rate reads are inlined into it; the observable rules PySB also
+    exports for them were read by nothing."""
+    library = dict(M.REGISTRY)
+    library[("PopulationTransition", "sat")] = M.written(
+        {
+            "statement_type": "PopulationTransition",
+            "policy": "sat",
+            "based_on": "mass_action",
+            "rate": "vmax / (K + source)",
+            "parameters": ["vmax", "K"],
+        },
+        library,
+    )
+    antimony, _ = PS.to_antimony([(_TRANSITION, "sat", "r1")], {"naive": Agent("naive")}, library)
+    assert "__obs" not in antimony

@@ -54,6 +54,7 @@ from indra.assemblers.pysb.sites import get_mod_site_name, states
 from indra.statements import (
     AddModification,
     Agent,
+    Complex,
     Conversion,
     DecreaseAmount,
     IncreaseAmount,
@@ -494,6 +495,24 @@ def _removal(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
     )
 
 
+@mechanism(IncreaseAmount, MASS_ACTION)
+def _synthesis(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
+    """``k·[subj]``: obj is made, from nothing or catalysed by ``subj``, in the state the
+    statement writes — INDRA's own IncreaseAmount makes it in its base state, so a protein made
+    at a location or in a modified form (Alkan's per-phase p21 and Wip1) had no route."""
+    catalyst = [stmt.subj] if stmt.subj is not None else []
+    return _one_rule(
+        stmt,
+        model,
+        prefix,
+        MASS_ACTION,
+        catalyst,
+        catalyst + [stmt.obj],
+        "synthesis",
+        {"subj": _role_names(stmt.subj), "obj": stmt.obj.name},
+    )
+
+
 mechanism(Conversion, MASS_ACTION)(_conversion(MASS_ACTION, False))
 mechanism(Conversion, RELEASE)(_conversion(RELEASE, True))
 mechanism(DecreaseAmount, RELEASE)(_removal)
@@ -541,6 +560,236 @@ def _basal_addition(stmt: Statement, model: pysb.Model, prefix: str) -> Emission
 
 for _cls in get_all_descendants(AddModification):
     mechanism(_cls, BASAL)(_basal_addition)
+
+
+def _plain(pattern: dict) -> dict:
+    """A site pattern with INDRA's ``(state, WILD)`` reduced to the state."""
+    return {site: value[0] if isinstance(value, tuple) else value for site, value in pattern.items()}
+
+
+def _binding_sites(monomer: pysb.Monomer) -> list[str]:
+    return [site for site in monomer.sites if site not in monomer.site_states]
+
+
+def _rate_constants(model: pysb.Model, prefix: str, *kinds: str) -> list[pysb.Parameter]:
+    parameters = [pysb.Parameter(f"{prefix}_{kind}", 1.0, _export=False) for kind in kinds]
+    _add(model, *parameters)
+    return parameters
+
+
+@mechanism(Complex, "stated")
+def _stated_binding(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
+    """``kf·[a]·[b] - kr·[a:b]``, both directions in the states the members write. INDRA's own
+    dissociation reads unconditioned members, so a complex comes apart at the same rate in every
+    state — Schwen's internalised insulin-receptor complexes dissociating at the surface rate. A
+    one-way dissociation is this entry with ``kf`` bound to 0 (:func:`bind`)."""
+    if len(stmt.members) != 2:
+        raise MechanismError(f"row {prefix!r}: `stated` binds exactly two members; see `assembly`")
+    a, b = stmt.members
+    pa = model.monomers[_n(a.name)](**_plain(get_site_pattern(a)))
+    pb = model.monomers[_n(b.name)](**_plain(get_site_pattern(b)))
+    sa, sb = get_binding_site_name(b), get_binding_site_name(a)
+    kf, kr = _rate_constants(model, prefix, "kf", "kr")
+    rule = pysb.Rule(
+        f"{prefix}_binding",
+        pa(**{sa: None}) + pb(**{sb: None}) | pa(**{sa: 1}) % pb(**{sb: 1}),
+        kf,
+        kr,
+        _export=False,
+    )
+    _add(model, rule)
+    return Emission(
+        ("Complex", "stated"),
+        prefix,
+        {"members": _role_names(stmt.members)},
+        rules=(rule.name,),
+        parameters=(kf.name, kr.name),
+    )
+
+
+@mechanism(Complex, "assembly")
+def _assembly(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
+    """``kf·Π[member]``: every member, free, joins the whole complex in one irreversible step,
+    bonded as a spanning tree — each member to the first earlier one with which it shares a free
+    pair of sites. Members may repeat (Lucarelli's SMAD2 with two SMAD3), which INDRA's
+    ``multi_way`` cannot: it gives a monomer one site per partner type and overwrites it. Note
+    BioNetGen's symmetry factor for identical reactants (``A + A`` runs at ``kf/2``)."""
+    members = stmt.members
+    monomers = [model.monomers[_n(m.name)] for m in members]
+    used: list[set] = [set() for _ in members]
+    bonds: list[dict] = [{} for _ in members]
+    for i in range(1, len(members)):
+        for j in range(i):
+            si, sj = get_binding_site_name(members[j]), get_binding_site_name(members[i])
+            if si in monomers[i].sites and sj in monomers[j].sites and si not in used[i] and sj not in used[j]:
+                n = sum(len(b) for b in bonds) // 2 + 1
+                used[i].add(si), used[j].add(sj)
+                bonds[i][si] = bonds[j][sj] = n
+                break
+        else:
+            raise MechanismError(
+                f"row {prefix!r}: {members[i].name} has no free binding site to join the complex by"
+            )
+    lhs = rhs = None
+    for agent, monomer, bond in zip(members, monomers, bonds):
+        stated = {**_plain(get_site_pattern(agent)), **{s: None for s in _binding_sites(monomer)}}
+        left, right = monomer(**stated), monomer(**{**stated, **bond})
+        lhs = left if lhs is None else lhs + left
+        rhs = right if rhs is None else rhs % right
+    (kf,) = _rate_constants(model, prefix, "kf")
+    rule = pysb.Rule(f"{prefix}_assembly", lhs >> rhs, kf, _export=False)
+    _add(model, rule)
+    return Emission(
+        ("Complex", "assembly"),
+        prefix,
+        {"members": _role_names(members)},
+        rules=(rule.name,),
+        parameters=(kf.name,),
+    )
+
+
+@mechanism(Complex, "nondepleting")
+def _nondepleting(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
+    """The receptor (first member) binds a copy of the ligand (second) at ``kf·[R]·[L]``, the free
+    ligand pool unchanged, and the bound copy is removed at ``kr`` from any receptor state, the
+    receptor freed: a ligand in excess, Isensee's cAMP and its analogues occupying RII."""
+    if len(stmt.members) != 2:
+        raise MechanismError(f"row {prefix!r}: `nondepleting` takes a receptor and a ligand")
+    receptor, ligand = stmt.members
+    rec = model.monomers[_n(receptor.name)]
+    lig = model.monomers[_n(ligand.name)]
+    r_site, l_site = get_binding_site_name(ligand), get_binding_site_name(receptor)
+    free = lig(**{**_plain(get_site_pattern(ligand)), l_site: None})
+    copy = pysb.ComplexPattern(
+        agent_pattern(model, Agent(ligand.name, db_refs=ligand.db_refs), fresh=lambda n: True),
+        None,
+    ).monomer_patterns[0]
+    stated = rec(**_plain(get_site_pattern(receptor)))
+    kf, kr = _rate_constants(model, prefix, "kf", "kr")
+    occupy = pysb.Rule(
+        f"{prefix}_occupy",
+        free + stated(**{r_site: None})
+        >> free + stated(**{r_site: 1}) % copy.monomer(**{**copy.site_conditions, l_site: 1}),
+        kf,
+        _export=False,
+    )
+    vacate = pysb.Rule(
+        f"{prefix}_vacate",
+        lig(**{l_site: ANY}) >> None,
+        kr,
+        delete_molecules=True,
+        _export=False,
+    )
+    _add(model, occupy, vacate)
+    return Emission(
+        ("Complex", "nondepleting"),
+        prefix,
+        {"members": _role_names(stmt.members)},
+        rules=(occupy.name, vacate.name),
+        parameters=(kf.name, kr.name),
+    )
+
+
+def _processive(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
+    """``kf·[enz]·[sub]``: one step sets the stated site and every other site of the same type
+    the substrate writes as unmodified — Lucarelli's SMAD2/3 C-terminal SxS motif, which single-site
+    steps cannot take from S to ppS without an intermediate the reference does not have."""
+    mod = stmt._get_mod_condition()
+    unmod, modified = states[mod.mod_type]
+    site = get_mod_site_name(mod)
+    sites = [site] + [
+        get_mod_site_name(m)
+        for m in stmt.sub.mods
+        if m.mod_type == mod.mod_type and not m.is_modified and get_mod_site_name(m) != site
+    ]
+    sub = model.monomers[_n(stmt.sub.name)]
+    stated = _plain(get_site_pattern(stmt.sub))
+    before = sub(**{**stated, **{s: unmod for s in sites}})
+    after = sub(**{**stated, **{s: modified for s in sites}})
+    (kf,) = _rate_constants(model, prefix, "kf")
+    if stmt.enz is None:
+        rule = pysb.Rule(f"{prefix}_processive", before >> after, kf, _export=False)
+    else:
+        enz = get_monomer_pattern(model, stmt.enz)
+        rule = pysb.Rule(f"{prefix}_processive", enz + before >> enz + after, kf, _export=False)
+    _add(model, rule)
+    return Emission(
+        (type(stmt).__name__, "processive"),
+        prefix,
+        {"enz": _role_names(stmt.enz), "sub": stmt.sub.name},
+        rules=(rule.name,),
+        parameters=(kf.name,),
+    )
+
+
+for _cls in get_all_descendants(AddModification):
+    mechanism(_cls, "processive")(_processive)
+
+
+def _dissociative(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
+    """``k·[modified]``, with no enzyme, for the free substrate AND for every complex an EARLIER
+    row forms around it, which then falls apart into its free members: Lucarelli's phospho-SMAD
+    trimers, dephosphorylated in the nucleus and released. Only complexes earlier rows have built
+    are seen, so list this row after them."""
+    mod = stmt._get_mod_condition()
+    site = get_mod_site_name(mod)
+    unmod, modified = states[mod.mod_type]
+    monomer = model.monomers[_n(stmt.sub.name)]
+    need = {**_plain(get_site_pattern(stmt.sub)), site: modified}
+    free = {b: None for b in _binding_sites(monomer)}
+    (k,) = _rate_constants(model, prefix, "k")
+    rules = [
+        pysb.Rule(
+            f"{prefix}_free",
+            monomer(**{**need, **free}) >> monomer(**{**need, **free, site: unmod}),
+            k,
+            _export=False,
+        )
+    ]
+    seen: list = []
+    for rule in list(model.rules):
+        for cp in rule.product_pattern.complex_patterns:
+            if cp is None or len(cp.monomer_patterns) < 2 or any(cp.is_equivalent_to(o) for o in seen):
+                continue
+            if not all(
+                isinstance(mp.site_conditions.get(b, "?"), int) or mp.site_conditions.get(b, "?") is None
+                for mp in cp.monomer_patterns
+                for b in _binding_sites(mp.monomer)
+            ):
+                continue
+            seen.append(cp)
+            for i, mp in enumerate(cp.monomer_patterns):
+                if mp.monomer is not monomer or any(
+                    _plain({s: mp.site_conditions.get(s)}).get(s) != v
+                    for s, v in need.items()
+                    if s not in free
+                ):
+                    continue
+                products = None
+                for j, other in enumerate(cp.monomer_patterns):
+                    state = {
+                        s: v for s, v in _plain(other.site_conditions).items()
+                        if s not in _binding_sites(other.monomer)
+                    }
+                    if j == i:
+                        state[site] = unmod
+                    part = other.monomer(**state, **{b: None for b in _binding_sites(other.monomer)})
+                    products = part if products is None else products + part
+                rules.append(
+                    pysb.Rule(f"{prefix}_release{len(rules)}", cp.copy() >> products, k, _export=False)
+                )
+    _add(model, *rules)
+    return Emission(
+        (type(stmt).__name__, "dissociative"),
+        prefix,
+        {"sub": stmt.sub.name},
+        rules=tuple(r.name for r in rules),
+        parameters=(k.name,),
+    )
+
+
+for _cls in get_all_descendants(RemoveModification):
+    mechanism(_cls, "dissociative")(_dissociative)
 
 for _cls in get_all_descendants(RemoveModification):
     mechanism(_cls, BASAL)(_basal_removal)
