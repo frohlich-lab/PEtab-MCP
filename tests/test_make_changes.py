@@ -1650,6 +1650,162 @@ def test_a_base_version_fork_that_changes_nothing_is_refused_as_that_version(tmp
     assert out["version"] == 1
 
 
+# -- readouts, bindings and written mechanisms -------------------------------------------
+def _readout_server(tmp_path, extra=""):
+    """The toy with its observable reading a blinded `readout_B`, and an empty entity map: a
+    blinded problem on the statements route. ``extra`` adds observable rows."""
+    import shutil
+
+    data = tmp_path / "toy"
+    shutil.copytree(YAML_PATH.parent, data)
+    (data / "observables.tsv").write_text(
+        "observableId\tobservableFormula\tnoiseFormula\nobs_B\treadout_B\tsigma_B\n" + extra
+    )
+    entity_map = tmp_path / "entities.json"
+    entity_map.write_text("{}")
+    return create_server(
+        str(data / "problem.yaml"),
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+        auto_fit=False,
+        entity_map=str(entity_map),
+    )
+
+
+def test_a_readout_may_read_an_amount_in_place(tmp_path):
+    mcp = _readout_server(tmp_path)
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "A becomes B, measured as B",
+            "statements": [_CONV],
+            "readouts": {"readout_B": "scale_B*amount(B)"},
+        },
+    )
+    assert out["applied"] is True
+    stored = _stored_rows(tmp_path, 0)
+    assert stored["readouts"] == {"readout_B": "scale_B*amount(B)"} and stored["amounts"] == {}
+
+
+def _set_readout(mcp, readout, formula):
+    edit = {"op": "set_readout", "readout": readout, "formula": formula}
+    out = _call(mcp, "make_changes", {"justification": formula, "statement_edits": [edit]})
+    assert out["applied"] is True, out.get("error")
+
+
+def _amount_symbols(mcp):
+    """The current model's `amount_*` species, its `amount_*` parameters, and the `amount_*`
+    rows its parameter table estimates."""
+    import libsbml
+
+    model = libsbml.readSBMLFromString(_text(mcp, "get_model", {"format": "sbml"})).getModel()
+    rows = _call(mcp, "get_parameters", {})["result"]
+    return (
+        {s.getId() for s in model.getListOfSpecies() if s.getId().startswith("amount_")},
+        {p.getId() for p in model.getListOfParameters() if p.getId().startswith("amount_")},
+        {r["parameterId"] for r in rows if r.get("estimate") and r["parameterId"].startswith("amount_")},
+    )
+
+
+def test_an_amount_read_in_place_keeps_its_name_across_edits(tmp_path):
+    """Each edit re-writing `amount(B)` minted the next name (amount_B_2, amount_B_3), and the
+    record kept them all."""
+    mcp = _readout_server(tmp_path)
+    out = _call(
+        mcp,
+        "make_changes",
+        {"justification": "v0", "statements": [_CONV], "readouts": {"readout_B": "scale_B*amount(B)"}},
+    )
+    assert out["applied"] is True
+    _set_readout(mcp, "readout_B", "scale_B*amount(B) + offset")
+    _set_readout(mcp, "readout_B", "scale_B*(amount(B) + offset)")
+    assert _amount_symbols(mcp) == ({"amount_B"}, set(), set())
+    assert _stored_rows(tmp_path, 2)["amounts"] == {}
+
+
+def test_an_amount_no_readout_reads_is_gone(tmp_path):
+    mcp = _readout_server(tmp_path)
+    out = _call(
+        mcp,
+        "make_changes",
+        {"justification": "v0", "statements": [_CONV], "readouts": {"readout_B": "scale_B*amount(B)"}},
+    )
+    assert out["applied"] is True
+    _set_readout(mcp, "readout_B", "scale_B*amount(A)")
+    assert _amount_symbols(mcp) == ({"amount_A"}, set(), set())
+
+
+def test_a_readout_left_alone_still_reads_the_species(tmp_path):
+    """Re-writing one of two readouts of a species gave the species a new name, and the other
+    readout, still reading the old name, read a parameter fitted in place of the species."""
+    mcp = _readout_server(tmp_path, "obs_C\treadout_C\tsigma_B\n")
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "v0",
+            "statements": [_CONV],
+            "readouts": {"readout_B": "scale_B*amount(B)", "readout_C": "amount(B)"},
+        },
+    )
+    assert out["applied"] is True
+    _set_readout(mcp, "readout_C", "amount(B)/scale_C")
+    assert _amount_symbols(mcp) == ({"amount_B"}, set(), set())
+
+
+def test_a_readout_that_reads_no_amount_is_refused(tmp_path):
+    """A readout of parameters alone measures nothing the model does, and its flat fit could
+    still be the best a run reached."""
+    mcp = _readout_server(tmp_path)
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "a constant readout",
+            "statements": [_CONV],
+            "readouts": {"readout_B": "k_level/(k_level + 1)"},
+        },
+    )
+    assert out["applied"] is False and "reads no amount" in out["error"]
+
+
+def test_a_readout_no_observable_reads_is_refused(tmp_path):
+    mcp = _readout_server(tmp_path)
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "an extra readout",
+            "statements": [_CONV],
+            "readouts": {"readout_B": "amount(B)", "readout_drugs": "amount(A)"},
+        },
+    )
+    assert out["applied"] is False
+    assert "['readout_drugs'] are read by no observable" in out["error"]
+    assert "['readout_B']" in out["error"]
+
+
+def test_an_amount_in_place_reads_the_amount_that_holds_its_pattern():
+    """A pattern is named by the agent it reads, however it is spelled."""
+    from petab_mcp.operations import _readout_amounts
+
+    readouts, amounts = _readout_amounts(
+        {"r": "amount(S{@nucleus, pY694}) / amount( S{pY694,@nucleus} )"},
+        {"pS_nuc": "S{pY694, @nucleus}"},
+    )
+    assert readouts == {"r": "pS_nuc / pS_nuc"} and list(amounts) == ["pS_nuc"]
+
+
+def test_a_server_amount_name_no_amount_holds_is_refused():
+    """Read where no `amount(...)` names it, `amount_B` would be a parameter fitted in place of B."""
+    from petab_mcp.operations import _readout_amounts
+
+    with pytest.raises(OperationError, match=r"\['amount_B'\]"):
+        _readout_amounts({"r": "scale*amount_B + amount(A)"}, None)
+    assert _readout_amounts({"r": "amount_B + amount(B)"}, None)[0] == {"r": "amount_B + amount_B"}
+
+
 def _concurrently(monkeypatch, mcp, *calls):
     """The ``make_changes`` calls, each on its own thread, each pausing after it builds its
     statements until every other has built too (or 3 s pass)."""
