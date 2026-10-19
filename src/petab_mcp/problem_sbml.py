@@ -91,9 +91,10 @@ def to_antimony(
     docstring sets out, and :class:`ModelUpdateError` names the rows a model breaking it fails on.
 
     An experiment's INPUT is held instead, with no starting amount of its own: a species of
-    ``entities`` among ``targets`` (the problem's condition targets), which its periods set, and
-    each of ``inputs`` (the problem's :mod:`protocols`), under its protocol. An input the entity
-    map does not name is the agent of its id.
+    ``entities`` among ``targets`` (the problem's condition targets) that no row makes or
+    converts, which its periods set, and each of ``inputs`` (the problem's :mod:`protocols`),
+    under its protocol. An input the entity map does not name is the agent of its id. A
+    condition target the rows make or convert is a state its periods only start.
 
     ``starts`` (``(name, agent, amount)``: a number or an expression over parameter ids) declare
     what is present at the start, as the module docstring sets out; each is ``<name>_init``.
@@ -105,18 +106,26 @@ def to_antimony(
     model, emissions = M.assemble(
         rows, {**entities, **{f"__start_{name}": agent for name, agent, _ in starts}}, library
     )
-    protocol = {item.id: item for item in inputs}
-    held = {
-        entities[s].name: protocol.get(s) for s in entities if s in protocol or s in targets
-    }
     _refuse_chains(model, emissions)
-    made = set()
+    made, converted = set(), set()
     for rule in model.rules:
         reactants = _monomer_names(rule.reactant_pattern)
         products = _monomer_names(rule.product_pattern)
         made |= products - reactants
+        converted |= reactants - products
         if rule.is_reversible:
             made |= reactants - products
+            converted |= products - reactants
+    # A species the conditions set is an input when the rows only read it (a drug that binds, a
+    # hormone that activates). One they make or convert is a state the conditions only start:
+    # held, armistead's metabolites never changed.
+    protocol = {item.id: item for item in inputs}
+    keys = {
+        s
+        for s in entities
+        if s in protocol or (s in targets and entities[s].name not in made | converted)
+    }
+    held = {entities[s].name: protocol.get(s) for s in keys}
     # Readouts are named apart from the species they stand for, which may share a monomer's
     # name; the SBML export numbers observables anyway, and the rename below restores them.
     readouts = {f"readout_{species}": species for species in entities}
@@ -186,9 +195,15 @@ def to_antimony(
             continue
         old, new = parameter.getId(), readouts[parameter.getName()]
         rule = sbml_model.getAssignmentRuleByVariable(old)
-        species = sbml_model.getSpecies(rule.getMath().getName() or "")
+        # A held input is its free form, the one the conditions set: named for the sum over the
+        # complexes it binds into, Isensee's `Fsk` left the condition target setting nothing.
+        species = (
+            base[entities[new].name]
+            if new in keys
+            else sbml_model.getSpecies(rule.getMath().getName() or "")
+        )
         if (
-            rule.getMath().isName()
+            (new in keys or rule.getMath().isName())
             and species is not None
             and species.getId() not in named
             and not new.startswith("readout_")
