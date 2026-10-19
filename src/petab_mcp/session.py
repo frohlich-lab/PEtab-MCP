@@ -17,7 +17,7 @@ from typing import Any
 from petab.v2.C import CONDITION_ID, ESTIMATE, EXPERIMENT_ID
 from petab.v2.models.sbml_model import SbmlModel
 
-from . import criteria, logging_setup
+from . import criteria, logging_setup, protocols
 from .constants import (
     ADEQUATE_GOF_PVALUE,
     DEFAULT_AUTO_FIT_STARTS,
@@ -183,6 +183,10 @@ class PetabSession:
         # the YAML's own table is true on every process start, resume included, because
         # `WorkingProblem.from_yaml` above always re-reads the shipped `parameters.tsv`.
         self.shipped_parameter_df = self.problem.parameter_df.copy(deep=True)
+        # What the experiments impose over time, from the `inputs.tsv` beside the YAML.
+        self.inputs: tuple[protocols.Input, ...] = protocols.load(
+            self.yaml_path.parent, self.problem
+        )
 
         # Antimony is the canonical model form: prefer a model.ant next to the YAML.
         ant_file = self.yaml_path.parent / "model.ant"
@@ -321,8 +325,6 @@ class PetabSession:
         # Species id -> INDRA Agent (:func:`seeding.load_entity_map`): what binds a model built
         # from statements to the fixed observable table. Empty unless the server was given one.
         self.entities: dict[str, Any] = {}
-        # Species id -> the protocol formula an experiment sets it by (:func:`seeding.load_inputs`).
-        self.inputs: dict[str, str] = {}
 
         # The version the NEXT commit descends from, or None for "whatever HEAD is".
         # `make_changes(edits=..., base_version=N)` patches version N's stored text, so the commit
@@ -694,6 +696,7 @@ class PetabSession:
             # and guessing low degrades every fit it makes.
             "fit_n_starts_default": int(self.auto_fit_starts),
             "fixed_tables": ["measurements", "conditions", "experiments", "observables"],
+            "inputs": [{"input": i.id, "rule": i.rule} for i in self.inputs],
             "neg_log_likelihood": (self.simulation or {}).get("neg_log_likelihood"),
             "chi2": (self.simulation or {}).get("chi2"),
         }

@@ -1206,9 +1206,10 @@ def test_a_held_input_is_reported_at_its_condition_value(tmp_path, add_condition
     table held it at its dose."""
     shutil.copytree(YAML_PATH.parent, tmp_path / "problem")
     add_condition(tmp_path / "problem" / "problem.yaml", "E_0", 3.0)
-    mcp = _statements_server(
-        tmp_path, ', "E": {"name": "E", "input": "E_0"}', tmp_path / "problem" / "problem.yaml"
+    (tmp_path / "problem" / "inputs.tsv").write_text(
+        "inputId\tformula\tconditionInputs\nE\tpiecewise(E_0, time <= 10, 0)\tE_0\n"
     )
+    mcp = _statements_server(tmp_path, yaml_path=tmp_path / "problem" / "problem.yaml")
     feed = {**_statement_row(), "prefix": "feed"}
     feed["statement"] = {**feed["statement"], "source": {"name": "E"}}
     out = _call(
