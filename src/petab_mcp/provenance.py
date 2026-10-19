@@ -150,6 +150,7 @@ class ProvenanceStore:
         kind: str = "snapshot",
         parent: int | None = None,
         model_source: str | None = None,
+        statements: list[dict[str, Any]] | None = None,
         meta: dict[str, Any] | None = None,
         simulation: dict[str, Any] | None = None,
         optimization: dict[str, Any] | None = None,
@@ -177,6 +178,13 @@ class ProvenanceStore:
         # one, and a rollback onto any of them lands on real source rather than a render.
         if model_source:
             (vdir / "model_source.ant").write_text(model_source, encoding="utf-8")
+        # What a `statements` commit asserted, beside the source it generated: the row is what
+        # a later `revise` addresses and the corpus harvest counts, and neither is recoverable
+        # from the expanded model.
+        if statements:
+            (vdir / "statements.json").write_text(
+                json.dumps(statements, indent=2), encoding="utf-8"
+            )
         # The parameter table is stored as a DataFrame (PEtab-style TSV), not JSON records,
         # so it round-trips as a real table with its dtypes intact.
         from .parameters import parameter_df_to_tsv

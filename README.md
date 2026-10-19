@@ -52,6 +52,7 @@ perl, slim container images do not.
 petab-mcp --petab-yaml path/to/problem.yaml
 # --provenance-dir DIR   --reference-validation {required,best_effort,off}
 # --build-root DIR       --skills-dir DIR
+# --entity-map PATH      (offers make_changes the `statements` route; see src/petab_mcp/seeding.py)
 # --transport {stdio,sse,streamable-http}
 # --criterion {bic,caic,aic,aicc,hqc,tic}   (env PETAB_MCP_CRITERION; default bic)
 # --slurm-max-jobs N     --slurm-min-jobs M   (see "Fitting on SLURM")

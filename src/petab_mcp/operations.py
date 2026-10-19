@@ -654,6 +654,79 @@ def set_model(
     return result
 
 
+def statements_to_antimony(
+    session, rows: list[dict[str, Any]], written: list[dict[str, Any]] | None = None
+) -> tuple[str, list[dict[str, Any]], list[dict[str, str]], dict[tuple[str, str], dict]]:
+    """The ``statements`` route: build the model the rows assert, as Antimony for :func:`set_model`.
+
+    Each row is ``{statement, policy, prefix}`` with the statement in INDRA's JSON. ``written``
+    are mechanisms the agent writes in this call (:func:`mechanisms.written`), joining those it
+    wrote earlier in the run. Returns the Antimony; the rows each with the
+    :class:`mechanisms.Emission` it produced, and with its definition when the agent wrote its
+    mechanism (the provenance record); a warning per ungrounded agent, since grounding is
+    optional and its absence is reported, never refused; and the run's written mechanisms, for
+    the caller to keep once the change applies.
+    """
+    from dataclasses import asdict
+
+    # Imported here: INDRA takes seconds to import, and only this route needs it.
+    from indra.statements import stmts_from_json
+
+    from . import mechanisms, problem_sbml
+    from .statements import ungrounded
+
+    prefixes = [row["prefix"] for row in rows]
+    repeated = sorted({p for p in prefixes if prefixes.count(p) > 1})
+    if repeated:
+        # Caught here rather than met inside PySB as a component-name clash, which is not a
+        # PetabMcpError and would escape the tool as an opaque failure.
+        raise OperationError(
+            f"make_changes: `statements` prefixes {repeated} repeat; each row's prefix names its "
+            "parameters, so they must be unique. NOTHING was applied.",
+            cause="duplicate_prefix",
+        )
+    definitions = dict(session.mechanisms)
+    for definition in written or []:
+        key = (definition["statement_type"], definition["policy"])
+        if definitions.setdefault(key, definition) != definition:
+            # Earlier versions were built with the first definition; replacing it in place would
+            # change what their records mean.
+            raise OperationError(
+                f"make_changes: you already wrote mechanism {key} differently; give the new one "
+                "another name. NOTHING was applied.",
+                cause="mechanism_redefined",
+            )
+    library = dict(mechanisms.REGISTRY)
+    for key, definition in definitions.items():
+        library[key] = mechanisms.written(definition, library)
+    stmts = stmts_from_json([row["statement"] for row in rows])
+    # INDRA drops a statement it cannot read with only a logged warning; refuse instead.
+    if len(stmts) != len(rows):
+        raise OperationError(
+            f"make_changes: {len(rows) - len(stmts)} of {len(rows)} `statements` entries are "
+            "not statements INDRA can read. NOTHING was applied.",
+            cause="unreadable_statement",
+        )
+    antimony, emissions = problem_sbml.to_antimony(
+        [(stmt, row["policy"], row["prefix"]) for stmt, row in zip(stmts, rows)],
+        session.entities,
+        library,
+        session.inputs,
+        targets=frozenset(R.condition_target_symbols(session.problem)),
+    )
+    record = [
+        {**row, "emission": asdict(e)}
+        | ({"mechanism": definitions[e.entry]} if e.entry in definitions else {})
+        for row, e in zip(rows, emissions)
+    ]
+    warnings = [
+        M.warning(M.SOURCE_EDIT, f"`statements[{i}]` agent(s) {names} carry no grounding.")
+        for i, names in enumerate(map(ungrounded, stmts))
+        if names
+    ]
+    return antimony, record, warnings, definitions
+
+
 # -- public operations: parameters (justification required, references optional) --
 def _antimony_parse_hint(text: str, exc: Exception) -> str:
     """Echo the offending SOURCE LINE, plus a likely cause when the line's shape is recognisable.

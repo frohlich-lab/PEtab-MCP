@@ -308,6 +308,20 @@ class PetabSession:
         # re-derive it from the render. Restored on rollback with the rest of the state.
         self.model_source: str | None = None
 
+        # What the `statements` route asserted for the next commit: each row with the Emission
+        # it produced (:func:`operations.statements_to_antimony`). Stored as ``statements.json``
+        # beside the source it generated, and cleared with ``submitted_source``.
+        self.submitted_statements: list[dict[str, Any]] | None = None
+
+        # The mechanisms the agent has WRITTEN this run, keyed (statement type, policy): the run's
+        # additions to the library (:func:`mechanisms.written`), usable by every later call.
+        # Each version's statements.json carries the definitions its rows used.
+        self.mechanisms: dict[tuple[str, str], dict[str, Any]] = {}
+
+        # Species id -> INDRA Agent (:func:`seeding.load_entity_map`): what binds a model built
+        # from statements to the fixed observable table. Empty unless the server was given one.
+        self.entities: dict[str, Any] = {}
+
         # The version the NEXT commit descends from, or None for "whatever HEAD is".
         # `make_changes(edits=..., base_version=N)` patches version N's stored text, so the commit
         # that follows is a child of N even when later versions exist. The server sets this for
@@ -784,6 +798,7 @@ class PetabSession:
             # and nothing in the payload marks where it stopped. Carry the current source forward
             # so every version after the first authoring has one.
             model_source=self.submitted_source or self.model_source,
+            statements=self.submitted_statements,
             meta=meta,
             simulation=fitting.build_sim_payload_for_version(sim),
             optimization=fitting.build_optimization_payload_for_version(self.optimization),

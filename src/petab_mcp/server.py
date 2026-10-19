@@ -162,6 +162,51 @@ class ModelOp(BaseModel):
     new: str | None = Field(default=None, description="rename only: the replacement name.")
 
 
+# The MECHANISM route (petab_mcp.mechanisms), typed for the same reason as ModelOp. `statement` is
+# left an open object: INDRA's statement JSON is a family of shapes keyed on `type`, and INDRA's
+# own reader validates it server-side (operations.statements_to_antimony).
+class StatementRow(BaseModel):
+    """One mechanism assertion and the mechanism that expresses it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    statement: dict[str, Any] = Field(
+        description="the assertion as an INDRA statement's JSON: its `type` and agents, e.g. "
+        "{type: 'Phosphorylation', enz: {name: 'MAP2K1'}, sub: {name: 'MAPK1'}, residue: 'T', "
+        "position: '185'}."
+    )
+    policy: str = Field(description="the mechanism expressing it, e.g. 'indra_default'.")
+    prefix: str = Field(
+        description="names this row's parameters and rules ('<prefix>_kcat'); unique per row."
+    )
+
+
+class MechanismDef(BaseModel):
+    """A mechanism you write when none in the library fits: an existing mechanism's reaction with
+    your own rate."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    statement_type: str = Field(description="the statement type it expresses, e.g. 'Conversion'.")
+    policy: str = Field(description="its name, new; `statements` rows then use it as `policy`.")
+    based_on: str = Field(
+        default="indra_default",
+        description="the existing mechanism whose reaction (what is consumed, what is made) "
+        "this keeps; only the rate is yours.",
+    )
+    rate: str = Field(
+        description="the rate COEFFICIENT, over the statement type's role names (each the amount "
+        "of that agent: `enz`, `sub`, `subj`, `source`, ...), your `parameters`, `time`, and "
+        "exp/log/sqrt. It is multiplied by every reactant's amount, catalysts included, so a "
+        "rate that stays non-negative cannot drive an amount negative: `kcat / (Km + sub)` is "
+        "Michaelis-Menten."
+    )
+    parameters: list[str] = Field(
+        default_factory=list,
+        description="the parameter names `rate` uses; each becomes `<prefix>_<name>`, estimated.",
+    )
+
+
 # Provider serialisation artefact: some models emit a list-typed argument wrapped in a
 # single-key object -- `{"parameters": {"item": [{...}, {...}]}}` instead of
 # `{"parameters": [{...}, {...}]}` -- or as a JSON string containing the array. pydantic then
@@ -661,7 +706,7 @@ _MAKE_CHANGES_SUMMARY = (
     "Change the model and/or its parameter search space, then FIT and snapshot a version."
 )
 
-_MAKE_CHANGES_ROUTES = """\
+_MAKE_CHANGES_ROUTES_BODY = """\
 The single editor, with TWO routes to a model change — give exactly ONE.
 
 `model_edits` is the route to use for every change after the first: a BATCH of
@@ -702,7 +747,17 @@ Give `parameters` to set estimation BOUNDS and/or SCALE: a list of
 `{parameter_id, lower_bound?, upper_bound?, scale?}` entries, applied atomically AFTER the
 reconcile — so an entry may target a parameter this very call introduces. Combine it with
 either model route for a structural change and the bounds it needs. At least one of
-`antimony` / `model_edits` / `parameters` is required."""
+"""
+
+_MAKE_CHANGES_ROUTES = (
+    _MAKE_CHANGES_ROUTES_BODY + "`antimony` / `model_edits` / `parameters` is required."
+)
+
+#: The same text where the `statements` route is offered too.
+_MAKE_CHANGES_STATEMENTS_ROUTES = (
+    _MAKE_CHANGES_ROUTES_BODY
+    + "`antimony` / `model_edits` / `statements` / `parameters` is required."
+)
 
 _MAKE_CHANGES_CONTRACT = """\
 There is no fit-free edit and no separate fit: one call is one coherent change, scored
@@ -749,8 +804,48 @@ _MAKE_CHANGES_DOC = "\n\n".join(
 )
 
 
+# What the statements route holds, said once for every version of its paragraph.
+_HELD_INPUTS = (
+    "A species the conditions set stays at what they set while your rows only read it (bind, "
+    "catalyse, regulate); a row that makes or converts it makes it a state they only start. Each "
+    "of `describe_problem`'s `inputs` follows its rule."
+)
+
+def _make_changes_statements_doc() -> str:
+    """The `statements` route's paragraph, naming the entries the library holds right now."""
+    from indra.statements import Statement, get_all_descendants
+
+    from . import mechanisms
+
+    defaulted = {cls for cls, policy in mechanisms.REGISTRY if policy == mechanisms.INDRA_DEFAULT}
+    without = sorted({c.__name__ for c in get_all_descendants(Statement)} - defaulted)
+
+    by_policy: dict[str, list[str]] = {}
+    for cls, policy in sorted(mechanisms.REGISTRY):
+        if policy != mechanisms.INDRA_DEFAULT:
+            by_policy.setdefault(policy, []).append(cls)
+    entries = "; ".join(f"`{policy}` for {', '.join(names)}" for policy, names in by_policy.items())
+    return (
+        "`statements` is a third model route, and still exactly ONE route per call: it authors "
+        "the WHOLE model from mechanism assertions rather than text, each an INDRA statement "
+        "with the `policy` (mechanism) that turns it into reactions and a `prefix` naming its "
+        "parameters. Every INDRA statement type"
+        + (f" but {', '.join(without)}" if without else "")
+        + f" has `{mechanisms.INDRA_DEFAULT}`; the library also holds {entries}. When none fits, WRITE one in `mechanisms` — it stays in the "
+        "library for the rest of the run. The species the observables read are bound by the "
+        "problem's entity map: name agents as it does. "
+        + _HELD_INPUTS
+        + " The result is an ordinary model: `model_edits` can edit it next."
+    )
+
+
 # ------------------------------------------------------------------ model tools
-def _register_model_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
+def _register_model_tools(
+    mcp: FastMCP, route: Callable[[], _Ctx], statements: bool = False
+) -> None:
+    # `make_changes` takes an argument named `statements`; the route flag goes by this name in it.
+    statements_route = statements
+
     @mcp.tool(annotations=_READ_ONLY)
     def get_model(format: str = "antimony", version: int | None = None) -> str:
         """Return a model as text — the CURRENT one, or a prior `version`'s stored source.
@@ -832,8 +927,7 @@ def _register_model_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         session = ctx.session
         return model_mod.model_structure(session)
 
-    @mcp.tool(description=_MAKE_CHANGES_DOC, annotations=_MAKE_CHANGES_ANNOTATIONS)
-    def make_changes(
+    def _make_changes(
         justification: str,
         antimony: str | None = None,
         model_edits: Annotated[list[ModelOp] | None, BeforeValidator(_unwrap_listish)] = None,
@@ -843,6 +937,8 @@ def _register_model_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         ] = None,
         references: Annotated[list[str] | None, BeforeValidator(_unwrap_listish)] = None,
         n_starts: int | None = None,
+        statements: Annotated[list[StatementRow] | None, BeforeValidator(_unwrap_listish)] = None,
+        mechanisms: Annotated[list[MechanismDef] | None, BeforeValidator(_unwrap_listish)] = None,
     ) -> dict[str, Any]:
         ctx = route()
         session = ctx.session
@@ -855,14 +951,20 @@ def _register_model_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
             o.model_dump(exclude_none=True) if isinstance(o, ModelOp) else o
             for o in (model_edits or [])
         ] or None
-        routes_given = [n for n, v in (("antimony", antimony), ("model_edits", ops)) if v]
+        rows = [
+            r.model_dump() if isinstance(r, StatementRow) else r for r in (statements or [])
+        ] or None
+        routes_given = [
+            n for n, v in (("antimony", antimony), ("model_edits", ops), ("statements", rows)) if v
+        ]
         if len(routes_given) > 1:
             return ctx.reject_operation(
                 "make_changes",
                 f"make_changes: give ONE model route, not {len(routes_given)} "
-                f"({', '.join('`' + r + '`' for r in routes_given)}). `model_edits` for a "
-                "structured change to an existing model, `antimony` to author one wholesale. "
-                "NOTHING was applied.",
+                f"({', '.join('`' + r + '`' for r in routes_given)}). "
+                + ("`statements` to author the whole model as rows, " if statements_route else "")
+                + "`model_edits` for a structured change to an existing model, `antimony` to "
+                "author one wholesale. NOTHING was applied.",
                 {"routes": routes_given},
                 cause="route_conflict",
             )
@@ -882,12 +984,13 @@ def _register_model_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
                 "kept and the run is scored on the BEST one, wherever HEAD ends up.",
                 {"base_version": base_version},
             )
-        if not antimony and not ops and not parameters:
+        if not antimony and not ops and not rows and not parameters:
             return ctx.reject_operation(
                 "make_changes",
                 "make_changes: nothing to do — give `model_edits` (structured operations on the "
                 "committed model — the usual route), `antimony` (author the model wholesale), "
-                "`parameters` (to set bounds/scale), or a combination.",
+                + ("`statements` (author the model as rows), " if statements_route else "")
+                + "`parameters` (to set bounds/scale), or a combination.",
                 {"antimony": None, "parameters": None},
             )
         rejected = ctx.check_n_starts("make_changes", n_starts)
@@ -914,9 +1017,35 @@ def _register_model_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
                     {"unnamed": unnamed[:5]},
                     cause="unnamed_reaction",
                 )
+        statement_record, statement_warnings, written = None, [], None
+        if mechanisms and not rows:
+            return ctx.reject_operation(
+                "make_changes",
+                "make_changes: `mechanisms` are used by `statements` rows; send them together. "
+                "NOTHING was applied.",
+                {"n_mechanisms": len(mechanisms)},
+            )
         # One critical section for the change and its fit, so nothing can fit in between
         # (`session.lock` is an RLock, so the nested acquisitions inside each call are fine).
         with session.lock:
+            if rows:
+                # Inside the lock: the build reads the run's written mechanisms and the commit
+                # below replaces them, so a concurrent call must not build in between.
+                definitions = [
+                    m.model_dump() if isinstance(m, MechanismDef) else m
+                    for m in (mechanisms or [])
+                ]
+                try:
+                    antimony, statement_record, statement_warnings, written = (
+                        ops_mod.statements_to_antimony(session, rows, definitions)
+                    )
+                except PetabMcpError as exc:
+                    return ctx.reject_operation(
+                        "make_changes",
+                        str(exc),
+                        {"n_statements": len(rows)},
+                        cause=getattr(exc, "cause", None),
+                    )
             op_summary: list[str] = []
             base_parameter_df = None
             if ops:
@@ -966,6 +1095,7 @@ def _register_model_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
             # the agent's own text: operations apply to the source, never to the re-render, so
             # `child.source == parent.source + ops` holds exactly.
             session.submitted_source = antimony
+            session.submitted_statements = statement_record
             try:
                 if antimony:
                     result = ctx.run_operation(
@@ -1000,22 +1130,75 @@ def _register_model_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
                     )
                 if not result.get("applied"):
                     return result
+                result["messages"] = statement_warnings + (result.get("messages") or [])
                 out = ctx.edit_then_fit(result, n_starts, justification, before)
             finally:
                 session.derived_from = None
                 session.submitted_source = None
+                session.submitted_statements = None
             if out.get("applied") and not out.get("no_change") and antimony:
                 # The submitted text becomes this branch's source for the next structured edit.
                 # A rejected or fit-reverted call leaves the model where it was (`applied` false),
                 # and a de-dup no-op leaves the session on the version it duplicates (see
                 # `edit_then_fit`), so in both the source correctly stays put.
                 session.model_source = antimony
+                if written is not None:
+                    session.mechanisms = written
             if op_summary:
                 # The diff, PRE-CLASSIFIED. Every earlier analysis had to reconstruct this from
                 # re-rendered text with id- and regex-keyed heuristics, and four of those
                 # reported artifacts as findings; here the operation IS the classification.
                 out["model_edits_applied"] = op_summary
             return out
+
+    # One tool, `make_changes`, either way, and one implementation, `_make_changes`. FastMCP builds
+    # the input schema from the registered function's signature, so the statements route is offered
+    # by registering `_make_changes` itself and withheld by registering `make_changes_antimony`,
+    # which takes only the text routes and passes them on.
+    if statements:
+        mcp.tool(
+            description="\n\n".join(
+                (
+                    _MAKE_CHANGES_SUMMARY,
+                    _MAKE_CHANGES_STATEMENTS_ROUTES,
+                    _make_changes_statements_doc(),
+                    _MAKE_CHANGES_CONTRACT,
+                )
+            ),
+            name="make_changes",
+            annotations=_MAKE_CHANGES_ANNOTATIONS,
+        )(_make_changes)
+        return
+
+    # No entity map: nothing binds a statement-built model to the observables, so the route would
+    # fail every call. Withheld at the schema like every other route, which also leaves this
+    # registration byte-identical to the one before the route existed.
+    def make_changes_antimony(
+        justification: str,
+        antimony: str | None = None,
+        model_edits: Annotated[list[ModelOp] | None, BeforeValidator(_unwrap_listish)] = None,
+        base_version: int | None = None,
+        parameters: Annotated[
+            list[ParameterChange] | None, BeforeValidator(_unwrap_listish)
+        ] = None,
+        references: Annotated[list[str] | None, BeforeValidator(_unwrap_listish)] = None,
+        n_starts: int | None = None,
+    ) -> dict[str, Any]:
+        return _make_changes(
+            justification=justification,
+            antimony=antimony,
+            model_edits=model_edits,
+            base_version=base_version,
+            parameters=parameters,
+            references=references,
+            n_starts=n_starts,
+        )
+
+    mcp.tool(
+        name="make_changes",
+        description=_MAKE_CHANGES_DOC,
+        annotations=_MAKE_CHANGES_ANNOTATIONS,
+    )(make_changes_antimony)
 
 
 # -------------------------------------------------------------- parameter tools
@@ -1751,6 +1934,7 @@ def _open_ctx(
     reference_mode: str,
     resolver: Any | None,
     auto_fit: bool,
+    entity_map: str | None,
     fit_engine: Any | None,
 ) -> _Ctx:
     """Open the session on the problem at ``yaml_path``: its :class:`PetabSession`, the
@@ -1769,6 +1953,10 @@ def _open_ctx(
     session.engine = engine
     session.auto_fit = auto_fit
     session.auto_fit_starts = auto_fit_starts
+    if entity_map:
+        from . import seeding as seeding_mod
+
+        session.entities = seeding_mod.load_entity_map(entity_map)
     if score_shipped_model and session.model_authored():
         fitting_mod.score_at_nominal(session, engine)
     held_out = None
@@ -1792,6 +1980,7 @@ def create_server(
     criterion: str | None = None,
     validation_measurements: str | None = None,
     score_shipped_model: bool = False,
+    entity_map: str | None = None,
     cluster: Any | None = None,
 ) -> FastMCP:
     """Build a FastMCP server bound to the PEtab problem at ``yaml_path``.
@@ -1826,6 +2015,10 @@ def create_server(
     the table's nominal values before serving, with no fit (:func:`fitting.score_at_nominal`); a
     model-less problem ignores it.
 
+    ``entity_map`` is a JSON file binding the problem's species to INDRA agents
+    (:func:`seeding.load_entity_map`). Giving it offers ``make_changes`` the ``statements`` route;
+    omit it and the route does not exist.
+
     ``cluster`` (a ``distributed`` cluster, the ``dask`` extra) runs every fit's starts on that
     cluster's workers through one client (:mod:`petab_mcp.dask_engine`); without one, each fit runs
     its starts in local processes. The workers import the compiled models from ``build_root``, so on
@@ -1848,6 +2041,7 @@ def create_server(
         reference_mode=reference_mode,
         resolver=resolver,
         auto_fit=auto_fit,
+        entity_map=entity_map,
         fit_engine=fit_engine,
     )
 
@@ -1863,7 +2057,7 @@ def create_server(
         return ctx
 
     _register_read_tools(mcp, route)
-    _register_model_tools(mcp, route)
+    _register_model_tools(mcp, route, statements=bool(ctx.session.entities))
     _register_parameter_tools(mcp, route)
     _register_fit_tools(mcp, route)
     if ctx.held_out is not None:
