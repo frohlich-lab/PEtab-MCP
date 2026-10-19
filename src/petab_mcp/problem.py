@@ -20,7 +20,9 @@ The tables follow the PEtab v2 schema, with three conventions every consumer may
   in a join, and "no experiment" is the commonest case there is (every problem without
   conditions);
 * priors are not carried. The objective is the likelihood the complexity criterion scores, so a
-  prior has nowhere to act, and a table that showed one would promise an effect it does not have.
+  prior has nowhere to act. A problem whose table states one is refused as it loads
+  (:func:`refuse_priors`): served without the prior, it would be fit to another objective than
+  the one it states. Empty prior columns are dropped.
 
 They are enforced when a problem is built and whenever ``parameter_df`` is assigned. The observable
 and measurement tables are read-only — a view with other ones is a new problem
@@ -38,7 +40,6 @@ observables name readouts the agent defines -- so it fails v1 lint until the age
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from typing import Any
 
@@ -75,8 +76,6 @@ from petab.v2.C import (
 )
 from petab.v2.models.sbml_model import SbmlModel
 
-logger = logging.getLogger("petab_mcp")
-
 #: Noise distributions whose residual lives in log space; every other one is linear.
 _LOG_DISTRIBUTIONS = ("log-normal", "log-laplace")
 
@@ -85,13 +84,16 @@ _LOG_DISTRIBUTIONS = ("log-normal", "log-laplace")
 V1_SIMULATION_CONDITION_ID = "simulationConditionId"
 V1_PREEQUILIBRATION_CONDITION_ID = "preequilibrationConditionId"
 
-#: The columns a v1 parameter table carries that have no place here (see the module docstring).
-_V1_PRIOR_COLUMNS = (
+#: The columns a parameter table states an objective prior in, v2's and v1's (see the module
+#: docstring).
+_PRIOR_COLUMNS = (
+    PRIOR_DISTRIBUTION,
+    PRIOR_PARAMETERS,
     "objectivePriorType",
     "objectivePriorParameters",
-    "initializationPriorType",
-    "initializationPriorParameters",
 )
+#: v1's start-point priors, which have no place here either: the server draws its own starts.
+_V1_INITIALIZATION_PRIOR_COLUMNS = ("initializationPriorType", "initializationPriorParameters")
 
 
 def observable_transformation(observable_df, obs_id) -> str:
@@ -125,23 +127,39 @@ def as_bool(value) -> bool:
     raise ValueError(f"cannot read estimate value {value!r} as true/false")
 
 
+def refuse_priors(df: pd.DataFrame | None, source) -> None:
+    """Raise if ``df``, a v1 or v2 parameter table read from ``source``, gives a parameter an
+    objective prior (see the module docstring)."""
+    columns = [c for c in _PRIOR_COLUMNS if df is not None and c in df.columns]
+    if not columns:
+        return
+    cells = df[columns]
+    defined = (cells.notna() & cells.astype(str).apply(lambda s: s.str.strip().ne(""))).any(axis=1)
+    if not defined.any():
+        return
+    ids = (df[PARAMETER_ID] if PARAMETER_ID in df.columns else df.index).to_numpy()
+    raise ValueError(
+        f"the parameter table of {source} gives {', '.join(map(str, ids[defined.to_numpy()]))} a "
+        "prior. The objective is the likelihood the complexity criterion scores, so a problem with "
+        f"priors is not served: remove the prior columns ({', '.join(columns)}) before serving "
+        "the problem."
+    )
+
+
 def normalize_parameter_df(df: pd.DataFrame) -> pd.DataFrame:
     """``df`` in this module's conventions: indexed by ``parameterId``, ``estimate`` bool,
     :data:`PARAMETER_SCALE` present, no prior columns and no stray ``index`` column. Returns a new
-    frame; idempotent, so anything that reads a parameter table from disk passes it through."""
+    frame; idempotent, so anything that reads a parameter table from disk passes it through. The
+    prior columns it drops hold no prior: a table that states one is refused where it is read
+    (:func:`refuse_priors`)."""
     df = df.copy()
     if df.index.name != PARAMETER_ID:
         if PARAMETER_ID in df.columns:
             df = df.set_index(PARAMETER_ID)
         df.index.name = PARAMETER_ID
-    dropped = [c for c in (PRIOR_DISTRIBUTION, PRIOR_PARAMETERS, *_V1_PRIOR_COLUMNS) if c in df]
-    if any(df[c].notna().any() and (df[c].astype(str).str.strip() != "").any() for c in dropped):
-        logger.warning(
-            "the parameter table defines priors (%s); they are dropped, because the objective is "
-            "the likelihood the complexity criterion scores",
-            ", ".join(dropped),
-        )
-    df = df.drop(columns=[*dropped, "index"], errors="ignore")
+    df = df.drop(
+        columns=[*_PRIOR_COLUMNS, *_V1_INITIALIZATION_PRIOR_COLUMNS, "index"], errors="ignore"
+    )
     # Explicit dtypes, because pandas 3 refuses to write a value of another dtype into a column:
     # a table whose bounds are all integers reads as int64 and would refuse the first fitted
     # value, and an EMPTY estimate column would come out float64 and refuse every bool.
@@ -339,9 +357,14 @@ def _read_tables(paths, base: Path, reader) -> pd.DataFrame | None:
     )
 
 
-def _from_v2(yaml_path: Path, config: dict) -> WorkingProblem:
+def _from_v2(yaml_path: Path, config: dict, *, upgraded: bool = False) -> WorkingProblem:
     """A v2 problem, read as the files have it. The YAML is validated by libpetab's own config
-    model, which also resolves the file list; a model file may be SBML or Antimony."""
+    model, which also resolves the file list; a model file may be SBML or Antimony.
+
+    A table that states a prior is refused (:func:`refuse_priors`), unless the problem was
+    ``upgraded`` by :func:`_from_v1`, which judged the v1 table: ``petab1to2`` gives every
+    parameter of a table with a prior column a uniform prior over its bounds, v2's default for a
+    parameter without one."""
     base = yaml_path.parent
     cfg = v2.ProblemConfig(**config, base_path=base, filepath=yaml_path)
     if len(cfg.model_files or {}) > 1:
@@ -356,10 +379,13 @@ def _from_v2(yaml_path: Path, config: dict) -> WorkingProblem:
         else:
             raise ValueError(f"only SBML and Antimony models are supported, not {info.language!r}")
         model.rel_path = info.location
+    parameter_df = _read_tables(cfg.parameter_files, base, v2.get_parameter_df)
+    if not upgraded:
+        refuse_priors(parameter_df, yaml_path)
     observable_df = _read_tables(cfg.observable_files, base, v2.get_observable_df)
     return WorkingProblem(
         model=model,
-        parameter_df=_read_tables(cfg.parameter_files, base, v2.get_parameter_df),
+        parameter_df=parameter_df,
         observable_df=observable_df,
         measurement_df=_read_tables(cfg.measurement_files, base, v2.get_measurement_df),
         condition_df=_read_tables(cfg.condition_files, base, v2.get_condition_df),
@@ -387,9 +413,11 @@ def _from_v1(yaml_path: Path) -> WorkingProblem:
     from petab.v2.petab1to2 import petab1to2
 
     old = v1.Problem.from_yaml(str(yaml_path))
+    refuse_priors(old.parameter_df, yaml_path)
     with tempfile.TemporaryDirectory() as tmp:
         petab1to2(yaml_path, tmp, validate=False)
-        new = WorkingProblem.from_yaml(Path(tmp) / yaml_path.name)
+        converted = Path(tmp) / yaml_path.name
+        new = _from_v2(converted, v2.load_yaml(str(converted)), upgraded=True)
     new.parameter_df = new.parameter_df.assign(
         **{PARAMETER_SCALE: old.parameter_df[PARAMETER_SCALE]}
     )

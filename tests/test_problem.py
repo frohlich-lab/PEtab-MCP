@@ -125,6 +125,42 @@ def test_parameter_table_conventions_hold_on_every_assignment():
     assert wp.x_free_ids == ["a", "b"]
 
 
+def _prior_on_k1(parameters: Path, columns: tuple[str, str], prior: tuple[str, str]) -> None:
+    """Give the toy's parameter table the two prior ``columns``: ``prior`` on k1, empty elsewhere."""
+    df = pd.read_csv(parameters, sep="\t")
+    k1 = df["parameterId"] == "k1"
+    for column, value in zip(columns, prior):
+        df[column] = k1.map({True: value, False: ""})
+    df.to_csv(parameters, sep="\t", index=False)
+
+
+@pytest.mark.parametrize(
+    "toy, columns",
+    [
+        ("toy_v2", ("priorDistribution", "priorParameters")),
+        ("toy_v1", ("objectivePriorType", "objectivePriorParameters")),
+    ],
+)
+def test_a_problem_that_states_a_prior_is_refused(tmp_path, toy, columns):
+    """Served without its prior, the problem would be fit to another objective than the one it
+    states. The refusal names the parameter and what to change."""
+    shutil.copytree(DATA / toy, tmp_path, dirs_exist_ok=True)
+    _prior_on_k1(tmp_path / "parameters.tsv", columns, ("normal", "0.5;0.2"))
+    with pytest.raises(ValueError, match=r"gives k1 a prior.*remove the prior columns"):
+        P.WorkingProblem.from_yaml(tmp_path / "problem.yaml")
+
+
+def test_a_v1_table_with_empty_prior_columns_loads(tmp_path):
+    """``petab1to2`` gives every parameter of such a table a uniform prior over its bounds, v2's
+    default for a parameter without one, so a v1 problem's priors are judged on its v1 table."""
+    shutil.copytree(DATA / "toy_v1", tmp_path, dirs_exist_ok=True)
+    columns = ("objectivePriorType", "objectivePriorParameters")
+    df = pd.read_csv(tmp_path / "parameters.tsv", sep="\t").assign(**dict.fromkeys(columns, ""))
+    df.to_csv(tmp_path / "parameters.tsv", sep="\t", index=False)
+    pdf = P.WorkingProblem.from_yaml(tmp_path / "problem.yaml").parameter_df
+    assert not {"priorDistribution", "priorParameters", *columns} & set(pdf.columns)
+
+
 def test_an_experiment_less_measurement_is_keyed_by_the_empty_string():
     """NaN would drop the row from every groupby and never equal itself in a SQL join."""
     wp = P.WorkingProblem.from_yaml(DATA / "toy_v2" / "problem.yaml")

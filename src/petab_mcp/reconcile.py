@@ -300,7 +300,7 @@ def seed_model_antimony(problem) -> str | None:
     that put a pile of parameters the caller never authored into ``get_model``, reading as
     structure the seed does not have. They are simply pruned at v0 instead; what made that safe
     is that :func:`sync_parameter_table` RESTORES a shipped row when the caller's model
-    reintroduces the parameter, so the shipped bounds/scale/priors come back with it rather than
+    reintroduces the parameter, so the shipped bounds/scale come back with it rather than
     being replaced by defaults.
 
     NO reactions and NO rules, deliberately: the seed has no dynamics, which is what keeps it

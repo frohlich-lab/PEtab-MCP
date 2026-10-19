@@ -401,7 +401,7 @@ class PetabSession:
         The seed is RECONCILED exactly like any other model — no special pass. It declares no
         mechanism, so the kinetic and initial-condition rows a model-less problem ships are pruned
         at v0; that is safe because :func:`reconcile.sync_parameter_table` RESTORES a shipped row
-        the moment the caller's model reintroduces that parameter, bounds and priors intact.
+        the moment the caller's model reintroduces that parameter, its bounds intact.
 
         It then LINTS, under the same rules every edit is held to, and a failure RAISES. It
         deliberately does not degrade to the empty skeleton: that state is the one nothing
