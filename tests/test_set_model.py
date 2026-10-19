@@ -305,7 +305,7 @@ def test_removing_a_shipped_fixed_constant_warns_and_reading_it_again_restores_i
     fixed_k1_session,
 ):
     """Warned, not refused: refused, agents that could not place a constant faked a use of it
-    (`0*recruitment_rate`). Read again, it comes back from the shipped row, fixed."""
+    (`0*k`). Read again, it comes back from the shipped row, fixed."""
     sess = fixed_k1_session
     res = O.set_model(sess, ONLY_R2_ANTIMONY, justification="drop r1/k1")
     assert res["applied"] is True

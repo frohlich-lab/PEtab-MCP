@@ -249,7 +249,7 @@ def _fixed_constant_role_issues(problem, protected_fixed_ids) -> list[dict[str, 
     removed = [pid for pid in sorted(protected_fixed_ids) if pid not in current]
     if removed:
         # A WARNING, one for every constant. Refused, it made agents that did not know what a
-        # constant meant fake a use of it (`0*recruitment_rate`, a readout of constants only),
+        # constant meant fake a use of it (`0*k_const`, a readout of constants only),
         # which BIC cannot see; unread, the constant costs nothing and whatever the model
         # estimates in its place costs k. A constant read again comes back fixed, from the
         # shipped row (`reconcile.sync_parameter_table`).
