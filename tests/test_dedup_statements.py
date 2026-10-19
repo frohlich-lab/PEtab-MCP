@@ -86,11 +86,14 @@ def test_a_duplicate_leaves_no_rows_behind(tmp_path):
     assert unknown["applied"] is False and "no policy is named 'renamed'" in unknown["error"]
 
 
-def test_a_revert_to_an_earlier_rate_is_not_a_duplicate_of_head(tmp_path):
+def test_a_revert_to_an_earlier_rate_is_refused_as_that_version(tmp_path):
     """REGRESSION: going back to version 0's rate was refused as a duplicate of HEAD, which holds
-    a different one."""
+    a different one. Version 0 stands for it: refused, naming version 0, and the rows stay HEAD's."""
     mcp = _server(tmp_path)
     _change(mcp, "saturating", [_SATURATING])
     _change(mcp, "steeper", [_STEEPER])
+    rows = _rows(mcp)
+
     back = _change(mcp, "saturating")
-    assert back["committed"] is True and back["version"] == 2, back["message"]
+    assert back["applied"] is False and "identical to v0" in back["error"], back["message"]
+    assert back["version"] == 1 and _rows(mcp) == rows

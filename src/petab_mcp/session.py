@@ -1307,66 +1307,22 @@ class PetabSession:
         proceeds to a real fit (so a no-op skip or a rejected fit never inflates the guard). Callers
         hold ``self.lock``.
 
-        ``starts`` is the multistart count this fit would run with. A skip is downgraded when it
-        is HIGHER than the count HEAD was fit with: the model is unchanged, but a bigger multistart
-        is a genuinely different (more thorough) search that can find a better optimum, so
-        returning HEAD's weaker stored metrics would silently ignore a deliberate "fit harder".
+        ``starts`` is the multistart count this fit would run with: a version fitted with fewer
+        does not stand for it (see :func:`dedup.decide`).
         """
         from . import dedup as D
         from .parameters import structure_fingerprint
 
         structure_hash = structure_fingerprint(self.model.sbml_model, self.problem.parameter_df)
-        head_version = self.provenance.current_version
-        try:
-            head_meta = self.provenance.get_meta(head_version)  # meta.json only — no heavy payload
-        except Exception:  # noqa: BLE001 - unreadable HEAD just disables the skip/warn logic
-            head_meta = {}
-        head_structure_hash = head_meta.get("structure_hash")
-        # A "skip" is only safe against a HEAD carrying a REAL optimized fit: a simulate-only or
-        # engine-free HEAD also records a neg_log_likelihood, so gate on fit_status == "fit" —
-        # else a real fit after a simulate-only one would be wrongly skipped, returning
-        # un-optimized metrics.
-        head_is_fit = head_meta.get("fit_status") == "fit"
-        try:
-            head_df = self.provenance.get_parameter_df(head_version)
-            same_setup = D.estimation_setup_signature(
-                self.problem.parameter_df
-            ) == D.estimation_setup_signature(head_df)
-        except Exception:  # noqa: BLE001 - can't read HEAD's table: treat setup as changed
-            same_setup = False
         fit_key = D.reauthor_key(structure_hash, self.problem.parameter_df)
-        prior_attempts = self._fit_attempts.get(fit_key, 0)  # READ only; incremented on proceed
         decision = D.decide(
             structure_hash=structure_hash,
-            head_structure_hash=head_structure_hash,
-            same_setup=same_setup,
-            head_version=head_version,
+            setup=D.estimation_setup_signature(self.problem.parameter_df),
+            starts=starts,
+            head_version=self.provenance.current_version,
             registry=D.build_registry(self),
-            prior_attempts=prior_attempts,
+            prior_attempts=self._fit_attempts.get(fit_key, 0),  # READ only; incremented on proceed
         )
-        # A "skip" means byte-identical to HEAD. Only honour it when HEAD is a real fit — otherwise
-        # (the initial/unfitted model, or a simulate-only HEAD) this is the FIRST real fit of the
-        # structure and must run.
-        if decision["action"] == "skip" and not head_is_fit:
-            decision = {"action": "proceed", "warnings": decision.get("warnings", [])}
-        # ... nor when this fit would search HARDER than HEAD's did. The structure hash and the
-        # setup signature both ignore the multistart count, so without this an explicit
-        # `fit(n_starts=10*default)` on an unchanged model would return HEAD's weaker stored
-        # metrics as if it had run. A HEAD from before n_starts was recorded (or a rollback
-        # snapshot) has no `n_starts` at all, which is unknown rather than smaller, so the
-        # isinstance check below keeps the skip.
-        if decision["action"] == "skip":
-            head_starts = head_meta.get("n_starts")
-            if isinstance(head_starts, int) and starts > head_starts:
-                decision = {
-                    "action": "proceed",
-                    "warnings": decision.get("warnings", [])
-                    + [
-                        f"The model is unchanged from v{head_version}, but this fit runs "
-                        f"{starts} multistarts against its {head_starts}, so it is being re-fit "
-                        "rather than skipped. If you did not mean to search harder, omit n_starts."
-                    ],
-                }
         return decision, fit_key
 
     def fit(
@@ -1404,10 +1360,12 @@ class PetabSession:
 
         Before the (expensive) fit it de-duplicates: if the working model is byte-identical to the
         current fitted version the refit is skipped and the stored metrics are returned
-        (``committed: false, no_change: true``) — unless this fit runs MORE multistarts than that
-        version did, which is a more thorough search and does run; a structure revisited from
-        history warns that it is already committed and scored; and the same structure fitted too
-        many times is refused, to break an unproductive loop.
+        (``committed: false, no_change: true``); a model identical to an EARLIER fitted version is
+        refused, naming it, and HEAD stays put — in both cases unless this fit runs MORE
+        multistarts than that version did, which is a more thorough search and does run; a
+        structure revisited under another estimation setup warns that it is already committed and
+        scored; and the same structure fitted too many times is refused, to break an unproductive
+        loop.
         """
         from . import fitting, identifiability
         from .operations import _compile_fit_failure_message
@@ -1422,7 +1380,7 @@ class PetabSession:
             # in `_auto_fit_and_improvement`.
             starts = self.auto_fit_starts if n_starts is None else n_starts
             decision, fit_key = self._fit_dedup(starts)
-            if decision["action"] == "terminate":
+            if decision["action"] in ("terminate", "refuse"):
                 raise ModelUpdateError(decision["message"])
             if decision["action"] == "skip":
                 return self._fit_noop_result(decision, staged_edits)

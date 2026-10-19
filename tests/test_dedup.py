@@ -167,13 +167,19 @@ def test_reauthor_key_distinguishes_different_bounds(session):
 
 
 # -- decide() (pure) --------------------------------------------------------
-def _reg(*entries):
-    """Build a registry from (version, structure_hash, score) tuples."""
+SETUP, NEW_SETUP = ("bounds",), ("wider bounds",)
+
+
+def _reg(*entries, setup=SETUP, fitted=True):
+    """Build a registry from (version, structure_hash, score) tuples, each fitted with 2 starts
+    under ``setup``."""
     return [
         {
             "version": v,
             "structure_hash": s,
-            "problem_hash": None,
+            "setup": setup,
+            "fitted": fitted,
+            "n_starts": 2,
             "neg_log_likelihood": None,
             "score": b,
         }
@@ -181,28 +187,26 @@ def _reg(*entries):
     ]
 
 
-def test_decide_proceeds_on_fresh_structure():
-    d = D.decide(
-        structure_hash="new",
-        head_structure_hash="head",
-        same_setup=False,
-        head_version=0,
-        registry=_reg((0, "head", 1.0)),
-        prior_attempts=0,
+def _decide(registry, *, head_version, setup=SETUP, starts=2, prior_attempts=1):
+    """``decide`` for a candidate of structure ``X``."""
+    return D.decide(
+        structure_hash="X",
+        setup=setup,
+        starts=starts,
+        head_version=head_version,
+        registry=registry,
+        prior_attempts=prior_attempts,
     )
+
+
+def test_decide_proceeds_on_fresh_structure():
+    d = _decide(_reg((0, "head", 1.0)), head_version=0, prior_attempts=0)
     assert d["action"] == "proceed"
     assert d["warnings"] == []
 
 
 def test_decide_skips_identical_head():
-    d = D.decide(
-        structure_hash="X",
-        head_structure_hash="X",
-        same_setup=True,
-        head_version=3,
-        registry=_reg((3, "X", 1.0)),
-        prior_attempts=1,
-    )
+    d = _decide(_reg((3, "X", 1.0)), head_version=3)
     assert d["action"] == "skip"
     assert d["duplicate_of"] == 3
     assert "kept and scored" in d["message"]
@@ -210,66 +214,52 @@ def test_decide_skips_identical_head():
 
 def test_decide_no_skip_when_setup_differs():
     # Same structure as HEAD but a bound changed — a real edit, not a no-op.
-    d = D.decide(
-        structure_hash="X",
-        head_structure_hash="X",
-        same_setup=False,
-        head_version=3,
-        registry=_reg((3, "X", 1.0)),
-        prior_attempts=1,
-    )
+    d = _decide(_reg((3, "X", 1.0)), setup=NEW_SETUP, head_version=3)
+    assert d["action"] == "proceed"
+
+
+def test_decide_no_skip_against_an_unfitted_version():
+    """A simulate-only version records a neg_log_likelihood too; standing in for a real fit would
+    return its un-optimized metrics."""
+    d = _decide(_reg((3, "X", 1.0), fitted=False), head_version=3)
     assert d["action"] == "proceed"
 
 
 def test_decide_terminates_after_repeated_reauthors():
-    d = D.decide(
-        structure_hash="X",
-        head_structure_hash="Y",
-        same_setup=False,
-        head_version=5,
-        registry=_reg((5, "Y", 1.0)),
-        prior_attempts=D.MAX_IDENTICAL_REAUTHORS,
-    )
+    d = _decide(_reg((5, "Y", 1.0)), head_version=5, prior_attempts=D.MAX_IDENTICAL_REAUTHORS)
     assert d["action"] == "terminate"
     assert "kept and scored" in d["message"]
 
 
-def test_decide_warns_on_revisiting_prior_version():
-    d = D.decide(
-        structure_hash="X",
-        head_structure_hash="Y",
-        same_setup=False,
-        head_version=2,
-        registry=_reg((1, "X", 1.0), (2, "Y", 1.0)),
-        prior_attempts=1,
-    )
+def test_decide_refuses_an_earlier_version_with_the_same_setup():
+    """REGRESSION: an earlier version's exact model, re-committed, was fitted again as a new
+    version with only a warning, though the version it repeats already stands for it."""
+    d = _decide(_reg((1, "X", 1.0), (2, "Y", 1.0)), head_version=2)
+    assert d["action"] == "refuse" and d["duplicate_of"] == 1
+    assert "identical to v1" in d["message"] and "base_version=1" in d["message"]
+
+
+def test_decide_warns_on_revisiting_a_structure_under_a_new_setup():
+    d = _decide(_reg((1, "X", 1.0), (2, "Y", 1.0)), setup=NEW_SETUP, head_version=2)
     assert d["action"] == "proceed"
     assert any("version(s) [1]" in w for w in d["warnings"])
 
 
+def test_decide_refits_an_earlier_version_to_search_harder():
+    d = _decide(_reg((1, "X", 1.0), (2, "Y", 1.0)), starts=4, head_version=2)
+    assert d["action"] == "proceed"
+    assert any("identical to v1" in w and "against its 2" in w for w in d["warnings"])
+
+
 def test_decide_warns_on_worse_family():
     # Structure X's best bic (20) is far worse than the global best (1, at v2).
-    d = D.decide(
-        structure_hash="X",
-        head_structure_hash="Y",
-        same_setup=False,
-        head_version=2,
-        registry=_reg((1, "X", 20.0), (2, "Y", 1.0)),
-        prior_attempts=1,
-    )
+    d = _decide(_reg((1, "X", 20.0), setup=NEW_SETUP) + _reg((2, "Y", 1.0)), head_version=2)
     assert d["action"] == "proceed"
     assert any("WORSE" in w for w in d["warnings"])
 
 
 def test_decide_no_worse_warning_within_margin():
-    d = D.decide(
-        structure_hash="X",
-        head_structure_hash="Y",
-        same_setup=False,
-        head_version=2,
-        registry=_reg((1, "X", 3.0), (2, "Y", 1.0)),
-        prior_attempts=1,
-    )
+    d = _decide(_reg((1, "X", 3.0), setup=NEW_SETUP) + _reg((2, "Y", 1.0)), head_version=2)
     assert not any("WORSE" in w for w in d["warnings"])
 
 
@@ -294,14 +284,7 @@ def test_decide_handles_numpy_bic_scalars():
             "score": np.float64(1.0),
         },
     ]
-    d = D.decide(
-        structure_hash="X",
-        head_structure_hash="Y",
-        same_setup=False,
-        head_version=2,
-        registry=reg,
-        prior_attempts=1,
-    )
+    d = _decide(reg, head_version=2)
     assert any("WORSE" in w for w in d["warnings"])
 
 

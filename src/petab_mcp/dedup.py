@@ -8,8 +8,11 @@ structure (see :func:`petab_mcp.parameters.structure_fingerprint`) and, BEFORE t
 recompile+fit, decides whether to
 
 * **skip** a no-op fit (byte-identical to the current version) — no fit, no new version;
-* **warn** when revisiting a structure already in the history, or a family whose best score was
-  materially worse than the best model so far (the best model is kept and scored regardless);
+* **refuse** a model byte-identical to an EARLIER fitted version — that version stands for it,
+  so there is no fit, no new version, and HEAD stays where it is;
+* **warn** when revisiting a structure already in the history under another estimation setup,
+  or a family whose best score was materially worse than the best model so far (the best model
+  is kept and scored regardless);
 * **terminate** an identical-fit loop after a few repeats (they cannot change anything).
 
 The heavy lifting is the pure :func:`decide` — it takes fingerprints + a small registry of
@@ -89,13 +92,19 @@ def reauthor_key(structure_hash: str, parameter_df) -> str:
 
 
 def build_registry(session) -> list[dict[str, Any]]:
-    """Prior FITTED versions as ``{version, structure_hash, neg_log_likelihood, score, criterion}``
-    dicts, read from each version's stored meta.
+    """Prior versions as ``{version, structure_hash, setup, fitted, n_starts,
+    neg_log_likelihood, score, criterion}`` dicts, read from each version's stored meta and
+    parameter table.
 
     ``score`` is the version's value under the run's criterion (see
     :meth:`criteria.Criterion.score_of`) — ``None`` for a version stored without one, which just
     leaves it out of the ranking — and ``criterion`` is that criterion's label, carried ON the
-    entry so :func:`decide` can name it without a session in hand.
+    entry so :func:`decide` can name it without a session in hand. ``setup`` is the
+    :func:`estimation_setup_signature` of the version's stored table (``None`` when unreadable,
+    which matches nothing), and ``fitted`` whether an optimizer ran (``fit_status == "fit"``):
+    only a fitted version can stand for a candidate. A simulate-only or engine-free version
+    records a ``neg_log_likelihood`` too, and standing in for a real fit would return its
+    un-optimized metrics.
 
     Every version is a fit, so every version competes. Versions written before the
     ``structure_hash`` field existed are skipped — they simply do not participate in
@@ -111,10 +120,19 @@ def build_registry(session) -> list[dict[str, Any]]:
         sh = meta.get("structure_hash")
         if not sh:
             continue
+        try:
+            setup = estimation_setup_signature(
+                session.provenance.get_parameter_df(meta.get("version"))
+            )
+        except Exception:  # noqa: BLE001 - an unreadable table only keeps this version from matching
+            setup = None
         registry.append(
             {
                 "version": meta.get("version"),
                 "structure_hash": sh,
+                "setup": setup,
+                "fitted": meta.get("fit_status") == "fit",
+                "n_starts": meta.get("n_starts"),
                 "neg_log_likelihood": meta.get("neg_log_likelihood"),
                 "score": criterion.score_of(meta),
                 "criterion": criterion.name,
@@ -135,8 +153,8 @@ def _min_score_entry(entries: list[dict[str, Any]]) -> dict[str, Any] | None:
 def decide(
     *,
     structure_hash: str,
-    head_structure_hash: str | None,
-    same_setup: bool,
+    setup: tuple,
+    starts: int,
     head_version: int,
     registry: list[dict[str, Any]],
     prior_attempts: int,
@@ -146,9 +164,8 @@ def decide(
 
     Arguments:
         structure_hash: the candidate's :func:`structure_fingerprint`.
-        head_structure_hash: the current HEAD version's structure fingerprint (``None`` if none).
-        same_setup: whether the candidate's estimation setup (bounds/scale/estimate + fixed
-            values) is identical to HEAD's — see :func:`estimation_setup_signature`.
+        setup: the candidate's :func:`estimation_setup_signature`.
+        starts: the multistart count this fit would run with.
         head_version: the current HEAD version number.
         registry: prior committed versions (see :func:`build_registry`).
         prior_attempts: how many times this exact structure has already been authored this run.
@@ -157,6 +174,8 @@ def decide(
         ``{"action": "terminate", "message": ...}`` — refuse; the run is looping on one structure.
         ``{"action": "skip", "duplicate_of": v, "message": ..., "warnings": [...]}`` —
             byte-identical to the current HEAD: skip the recompile+fit and the new version.
+        ``{"action": "refuse", "duplicate_of": v, "message": ...}`` — byte-identical to an
+            earlier fitted version ``v``: no fit, no new version, and HEAD stays where it is.
         ``{"action": "proceed", "warnings": [...]}`` — commit normally, attaching any advisories.
     """
     # (d) An identical structure fit too many times cannot change anything — stop the loop.
@@ -173,9 +192,17 @@ def decide(
             ),
         }
 
-    # (a) Byte-identical to the current HEAD (same structure AND same estimation setup): nothing
-    # would change — skip the recompile+fit+snapshot and report the no-op.
-    if head_structure_hash is not None and structure_hash == head_structure_hash and same_setup:
+    matches = [r for r in registry if r.get("structure_hash") == structure_hash]
+    # (a) A fitted version with the same structure AND estimation setup stands for the candidate:
+    # the fit would reproduce it. Unless this fit searches HARDER than that one did — neither hash
+    # sees the multistart count, and standing in for a bigger multistart would return the weaker
+    # metrics for a deliberate "fit harder". A version with no int `n_starts` (a rollback
+    # snapshot, one written before it was recorded) is unknown rather than smaller, so it stands.
+    twins = [r for r in matches if r.get("fitted") and r.get("setup") == setup]
+    standing = [
+        r for r in twins if not (isinstance(r.get("n_starts"), int) and starts > r["n_starts"])
+    ]
+    if any(r.get("version") == head_version for r in standing):
         return {
             "action": "skip",
             "duplicate_of": head_version,
@@ -187,13 +214,33 @@ def decide(
                 "kept and scored regardless."
             ),
         }
+    if standing:
+        k = max(r["version"] for r in standing)
+        return {
+            "action": "refuse",
+            "duplicate_of": k,
+            "message": (
+                f"This model is identical to v{k}, which is fitted, kept and scored; it was not "
+                f"re-fitted and no version was made. To build on it, send your next change with "
+                f"`base_version={k}`."
+            ),
+        }
 
     warnings: list[str] = []
-    matches = [r for r in registry if r.get("structure_hash") == structure_hash]
-    # Prior versions with this structure, excluding the current HEAD (re-authoring HEAD's own
-    # structure with new bounds is a deliberate edit, not a revisit to restore).
+    if twins:
+        hardest = max(twins, key=lambda r: r["n_starts"])
+        warnings.append(
+            f"The model is identical to v{hardest['version']}, but this fit runs {starts} "
+            f"multistarts against its {hardest['n_starts']}, so it is being re-fit rather than "
+            "skipped. If you did not mean to search harder, omit n_starts."
+        )
+    # Prior versions with this structure under ANOTHER setup, excluding the current HEAD
+    # (re-authoring HEAD's own structure with new bounds is a deliberate edit, not a revisit).
+    twin_versions = {r.get("version") for r in twins}
     prior_versions = sorted(
-        v for r in matches if (v := r.get("version")) is not None and v != head_version
+        v
+        for r in matches
+        if (v := r.get("version")) is not None and v != head_version and v not in twin_versions
     )
     if prior_versions:
         warnings.append(
