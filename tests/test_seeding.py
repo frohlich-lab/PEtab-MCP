@@ -60,11 +60,26 @@ def test_a_key_read_elsewhere_is_kept(tmp_path):
     assert Sd.load_entity_map(_map_file(tmp_path, _BASE_ENTITY_MAP.format(extra=extra)))["S6"]
 
 
-def test_a_species_the_conditions_set_is_held(tmp_path, add_condition):
-    """Isensee's converted experiments set each compound itself, so the problem says it is an
-    input, where the entity map used to declare it a second time. Built as a molecule, the dose
-    would be used up by the reaction it drives and started at an amount every condition
-    overwrites."""
+_CATALYSIS = {
+    "statement": {"type": "Phosphorylation", "enz": {"name": "A"}, "sub": {"name": "B"}},
+    "policy": "indra_default",
+    "prefix": "r1",
+}
+_CONVERSION = {
+    "statement": {"type": "PopulationTransition", "source": {"name": "A"}, "target": {"name": "B"}},
+    "policy": "mass_action",
+    "prefix": "r1",
+}
+
+
+@pytest.mark.parametrize(("row", "held"), [(_CATALYSIS, True), (_CONVERSION, False)])
+def test_a_species_the_conditions_set_is_held_while_the_rows_only_read_it(
+    tmp_path, add_condition, row, held
+):
+    """Isensee's drugs and brannmark's insulin are set by the conditions and only read by the
+    rows. Built as molecules, the doses were used up by what they drive and started at an amount
+    every condition overwrites. armistead's metabolites and an enzyme's substrate are started by
+    the conditions and converted: held for being condition targets, they never changed."""
     shutil.copytree(Path(__file__).parent / "data" / "toy_v2", tmp_path / "problem")
     yaml_path = tmp_path / "problem" / "problem.yaml"
     add_condition(yaml_path, "A", 2.0)
@@ -79,16 +94,8 @@ def test_a_species_the_conditions_set_is_held(tmp_path, add_condition):
     def call(name, args):
         return asyncio.run(mcp.call_tool(name, args)).structured_content
 
-    row = {
-        "statement": {
-            "type": "PopulationTransition",
-            "source": {"name": "A"},
-            "target": {"name": "B"},
-        },
-        "policy": "mass_action",
-        "prefix": "conv",
-    }
-    assert call("make_changes", {"justification": "A becomes B", "statements": [row]})["applied"]
-    assert "$A" in call("get_model", {})["result"]
+    assert call("make_changes", {"justification": "A acts on B", "statements": [row]})["applied"]
+    assert ("$A" in call("get_model", {})["result"]) is held
     ics = {r["species"]: r for r in call("get_model_structure", {})["initial_conditions"]}
-    assert (ics["A"]["ic_parameter"], ics["A"]["t0_source"]) == (None, "condition_table")
+    assert ics["A"]["t0_source"] == "condition_table"
+    assert (ics["A"]["ic_parameter"] is None) is held
