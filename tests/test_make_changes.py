@@ -1650,10 +1650,10 @@ def test_a_base_version_fork_that_changes_nothing_is_refused_as_that_version(tmp
     assert out["version"] == 1
 
 
-# -- readouts, bindings and written mechanisms, as one sweep's traces found them --------
+# -- readouts, bindings and written mechanisms -------------------------------------------
 def _readout_server(tmp_path, extra=""):
-    """The toy with its observable reading a blinded `readout_B`, and an empty entity map: what
-    a PEtabAgentBench problem is on the indra_statements arm. ``extra`` adds observable rows."""
+    """The toy with its observable reading a blinded `readout_B`, and an empty entity map: a
+    blinded problem on the statements route. ``extra`` adds observable rows."""
     import shutil
 
     data = tmp_path / "toy"
@@ -1737,7 +1737,7 @@ def test_an_amount_no_readout_reads_is_gone(tmp_path):
 
 
 def test_a_readout_left_alone_still_reads_the_species(tmp_path):
-    """gemot, boehm r2: re-writing one readout of STAT5B gave the species a new name, and the other
+    """Re-writing one of two readouts of a species gave the species a new name, and the other
     readout, still reading the old name, read a parameter fitted in place of the species."""
     mcp = _readout_server(tmp_path, "obs_C\treadout_C\tsigma_B\n")
     out = _call(
@@ -1755,8 +1755,8 @@ def test_a_readout_left_alone_still_reads_the_species(tmp_path):
 
 
 def test_a_readout_that_reads_no_amount_is_refused(tmp_path):
-    """43 committed versions in one sweep measured only parameters; the flat fits they gave were
-    the best some runs reached."""
+    """A readout of parameters alone measures nothing the model does, and its flat fit could
+    still be the best a run reached."""
     mcp = _readout_server(tmp_path)
     out = _call(
         mcp,

@@ -854,8 +854,8 @@ _AMOUNT_NAME = re.compile(r"\bamount_\w+")
 def _readout_amounts(readouts, amounts):
     """``readouts`` with each ``amount(<pattern>)`` in them replaced by a name in ``amounts``, and
     ``amounts`` with those names added: a readout may read a pattern's amount in place, as a
-    scheme's rate does, where it used to need the pattern declared in ``amounts`` first (agents
-    wrote ``amount(HIV)`` 14 times in one sweep, and every one was refused).
+    scheme's rate does, where it used to need the pattern declared in ``amounts`` first (a
+    pattern written in place used to be refused).
 
     A pattern is named by the agent it parses to, however it is spelled: the name of the amount
     that holds that agent, or ``amount_<pattern>``. The names are made again from the readouts on
@@ -906,7 +906,7 @@ def _readout_amounts(readouts, amounts):
 
 def _check_readouts_are_read(session, readouts) -> None:
     """Refuse a readout no observable reads: it measures nothing, and agents defined such ones to
-    reference shipped constants the lint requires used (``readout_drugs = Sorafenib + UO126``)."""
+    reference shipped constants the lint requires used (``readout_c = c1 + c2``)."""
     from petab.v2.C import OBSERVABLE_FORMULA
 
     from .reconcile import formula_identifiers

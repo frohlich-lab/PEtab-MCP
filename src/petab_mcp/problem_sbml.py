@@ -355,12 +355,12 @@ def _readout_formula(
 
     A name that is one of the model's ``agents`` is refused rather than made a parameter: a
     formula reads an agent's amount only through ``amounts``, and a parameter of the agent's name
-    would read a constant, fitted silently in place of the species (``readout_viral_load :=
-    Virus`` measured an estimated ``Virus`` at its bound, not the virions).
+    would read a constant, fitted silently in place of the species (``readout_X := A`` would
+    measure an estimated constant ``A``, not the species A).
 
     A formula that reads none of the model's ``states`` (the ``amounts``, and the entity map's ids)
-    is refused too: it measures parameters, a constant the fit tunes to the data's mean. One sweep
-    committed 43 such readouts, and the flat fits they gave were the best some runs reached."""
+    is refused too: it measures parameters, a constant the fit tunes to the data's mean, with a
+    flat trajectory that can look like a good fit."""
     if sbml_model.getElementBySId(readout) is not None:
         raise ModelUpdateError(
             f"readout {readout!r} is a formula and also names something else in the model"
