@@ -840,6 +840,105 @@ def statements_to_antimony(
     return antimony, record, warnings, definitions
 
 
+_ROW_FIELDS = ("statement", "policy", "prefix", "parameters", "modifiers")
+
+
+def apply_statement_edits(
+    record: dict[str, Any], edits: list[dict[str, Any]]
+) -> tuple[list, list[dict[str, Any]], dict[str, str], dict[str, Any], list[str]]:
+    """The whole set the ``statements`` route builds from — ``(rows, starts, readouts, amounts)``
+    — after ``edits`` change the stored statement ``record`` (:func:`statements_to_antimony`'s),
+    and one line per edit saying what it did.
+
+    A row is keyed by its prefix, which names its parameters: `replace_row` keeps the row's place
+    and, with the prefix, its parameters' ids and fitted values. A start is keyed by its name (the
+    agent's, by default), as :func:`statements_to_antimony` names it. Edits apply in order and an
+    edit that names nothing raises, so the batch applies whole or not at all.
+    """
+    from . import notation
+
+    def fail(i: int, edit: dict, why: str) -> OperationError:
+        return OperationError(
+            f"make_changes: `statement_edits[{i}]` ({edit.get('op')}): {why}. NOTHING was applied.",
+            cause="statement_edit",
+        )
+
+    def prefix_of(row) -> str | None:
+        if isinstance(row, str):
+            head = row.split(":", 1)[0].strip()
+            return head if ":" in row and head.isidentifier() else None
+        return row.get("prefix") if isinstance(row, dict) else None
+
+    def name_of(start: dict) -> str:
+        agent = start["agent"]
+        return start.get("name") or (
+            notation.parse_agent(agent)["name"] if isinstance(agent, str) else agent["name"]
+        )
+
+    rows = {
+        row["prefix"]: {k: row[k] for k in _ROW_FIELDS if row.get(k)} for row in record["rows"]
+    }
+    starts = {s["name"]: dict(s) for s in record.get("starts") or []}
+    amounts = dict(record.get("amounts") or {})
+    readouts = dict(record.get("readouts") or {})
+    summary = []
+    for i, edit in enumerate(edits):
+        op = edit.get("op")
+        try:
+            if op in ("add_row", "replace_row"):
+                prefix = prefix_of(edit.get("row"))
+                if prefix is None:
+                    raise fail(i, edit, "`row` is one row, `prefix: <statement> | <policy> ...`")
+                if op == "add_row" and prefix in rows:
+                    raise fail(i, edit, f"a row `{prefix}` exists; `replace_row` changes it")
+                if op == "replace_row" and prefix not in rows:
+                    raise fail(i, edit, f"no row `{prefix}`; the rows are {sorted(rows)}")
+                rows[prefix] = edit["row"]
+                summary.append(f"{op} {prefix}")
+            elif op == "remove_row":
+                if edit.get("prefix") not in rows:
+                    raise fail(i, edit, f"no row `{edit.get('prefix')}`; the rows are {sorted(rows)}")
+                del rows[edit["prefix"]]
+                summary.append(f"remove_row {edit['prefix']}")
+            elif op == "set_start":
+                if not edit.get("start"):
+                    raise fail(i, edit, "`start` is the start, `{agent, amount, name?}`")
+                name = name_of(edit["start"])
+                starts[name] = {**edit["start"], "name": name}
+                summary.append(f"set_start {name}")
+            elif op in ("remove_start", "remove_amount", "remove_readout"):
+                table, key = {
+                    "remove_start": (starts, edit.get("name")),
+                    "remove_amount": (amounts, edit.get("name")),
+                    "remove_readout": (readouts, edit.get("readout")),
+                }[op]
+                if key not in table:
+                    raise fail(i, edit, f"no `{key}`; there are {sorted(table)}")
+                del table[key]
+                summary.append(f"{op} {key}")
+            elif op == "set_amount":
+                if not edit.get("name") or not edit.get("agent"):
+                    raise fail(i, edit, "`name` and `agent` name the amount and its pattern")
+                amounts[edit["name"]] = edit["agent"]
+                summary.append(f"set_amount {edit['name']}")
+            elif op == "set_readout":
+                if not edit.get("readout") or not edit.get("formula"):
+                    raise fail(i, edit, "`readout` and `formula` give the readout")
+                readouts[edit["readout"]] = edit["formula"]
+                summary.append(f"set_readout {edit['readout']}")
+            else:
+                raise fail(i, edit, "not an edit")
+        except notation.NotationError as exc:
+            raise fail(i, edit, str(exc)) from exc
+    if not rows:
+        raise OperationError(
+            "make_changes: `statement_edits` remove every row, which leaves no model. NOTHING "
+            "was applied.",
+            cause="statement_edit",
+        )
+    return list(rows.values()), list(starts.values()), readouts, amounts, summary
+
+
 # -- public operations: parameters (justification required, references optional) --
 def _antimony_parse_hint(text: str, exc: Exception) -> str:
     """Echo the offending SOURCE LINE, plus a likely cause when the line's shape is recognisable.

@@ -1424,6 +1424,134 @@ def test_a_row_may_be_written_in_the_notation(tmp_path):
     assert "conv: A becomes B | mass_action" in text
 
 
+# -- `statement_edits`: changing a statements model by its rows ----------------------
+_CONV = "conv: A becomes B | mass_action"
+_BACK = "back: B becomes A | mass_action"
+
+
+def _stored_rows(tmp_path, version):
+    path = tmp_path / "prov" / "versions" / f"v{version}" / "statements.json"
+    return json.loads(path.read_text())
+
+
+def _built(tmp_path, rows):
+    mcp = _statements_server(tmp_path)
+    out = _call(mcp, "make_changes", {"justification": "build", "statements": rows})
+    assert out["applied"] is True
+    return mcp
+
+
+def test_statement_edits_change_the_rows_they_name_and_keep_the_rest(tmp_path):
+    """An edit names a row by its prefix; the rows it does not name are rebuilt as they were,
+    so a revision no longer means sending the whole model again."""
+    mcp = _built(tmp_path, [_CONV, _BACK])
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "drop the way back, then give it its own rate again",
+            "statement_edits": [
+                {"op": "remove_row", "prefix": "back"},
+                {"op": "add_row", "row": "back2: B becomes A | mass_action"},
+                {"op": "set_start", "start": {"agent": "A", "amount": 1, "name": "A_start"}},
+            ],
+        },
+    )
+    assert out["applied"] is True
+    assert out["statement_edits_applied"] == [
+        "remove_row back",
+        "add_row back2",
+        "set_start A_start",
+    ]
+    record = _stored_rows(tmp_path, 1)
+    assert [r["prefix"] for r in record["rows"]] == ["conv", "back2"]
+    assert [s["name"] for s in record["starts"]] == ["A_start"]
+
+
+def test_replace_row_rewrites_the_row_in_place(tmp_path):
+    mcp = _built(tmp_path, [_CONV, _BACK])
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "the way back shares the forward rate",
+            "statement_edits": [
+                {"op": "replace_row", "row": "back: B becomes A | mass_action k=conv_k"}
+            ],
+        },
+    )
+    assert out["applied"] is True
+    rows = _stored_rows(tmp_path, 1)["rows"]
+    assert [r["prefix"] for r in rows] == ["conv", "back"]
+    assert rows[1]["parameters"] == {"k": "conv_k"}
+
+
+def test_an_edit_that_names_nothing_applies_nothing(tmp_path):
+    mcp = _built(tmp_path, [_CONV])
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "edit a row that is not there",
+            "statement_edits": [
+                {"op": "add_row", "row": _BACK},
+                {"op": "replace_row", "row": "gone: B becomes A | mass_action"},
+            ],
+        },
+    )
+    assert out["applied"] is False
+    assert "`statement_edits[1]` (replace_row): no row `gone`" in out["error"]
+    assert "['back', 'conv']" in out["error"]
+    assert not (tmp_path / "prov" / "versions" / "v1").exists()
+
+
+def test_statement_edits_need_a_model_built_from_statements(tmp_path):
+    mcp = _statements_server(tmp_path)
+    out = _call(
+        mcp,
+        "make_changes",
+        {"justification": "edit nothing", "statement_edits": [{"op": "add_row", "row": _CONV}]},
+    )
+    assert out["applied"] is False
+    assert "give the whole model as `statements`" in out["error"]
+
+
+def test_whole_sets_ride_with_statements_not_with_edits(tmp_path):
+    mcp = _built(tmp_path, [_CONV])
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "mixed",
+            "statement_edits": [{"op": "add_row", "row": _BACK}],
+            "starts": [{"agent": "A", "amount": 1}],
+        },
+    )
+    assert out["applied"] is False and "`set_start`" in out["error"]
+
+
+def test_a_restore_brings_back_that_versions_rows(tmp_path):
+    """After `restore_version(v)`, the rows the session shows and edits are v's, not those of
+    the HEAD it left; a version built from model text holds none."""
+    mcp = _built(tmp_path, [_CONV])
+
+    def add_row(row):
+        edits = [{"op": "add_row", "row": row}]
+        return _call(mcp, "make_changes", {"justification": row, "statement_edits": edits})
+
+    assert add_row(_BACK)["applied"] is True
+    antimony = {"justification": "by hand", "antimony": _antimony()}
+    assert _call(mcp, "make_changes", antimony)["committed"] is True
+    _call(mcp, "restore_version", {"version": 0})
+    text = _text(mcp, "get_model", {"format": "statements"})
+    assert "conv: A becomes B" in text and "back:" not in text
+    assert add_row("back2: B becomes A | mass_action")["applied"] is True
+    assert [r["prefix"] for r in _stored_rows(tmp_path, 3)["rows"]] == ["conv", "back2"]
+    _call(mcp, "restore_version", {"version": 2})
+    out = add_row(_BACK)
+    assert out["applied"] is False and "the current model was not" in out["error"]
+
+
 def _concurrently(monkeypatch, mcp, *calls):
     """The ``make_changes`` calls, each on its own thread, each pausing after it builds its
     statements until every other has built too (or 3 s pass)."""
@@ -1478,3 +1606,16 @@ def test_concurrent_calls_keep_every_mechanism_they_write(tmp_path, monkeypatch)
     outs = _concurrently(monkeypatch, mcp, *calls)
     assert sorted(bool(out["applied"]) for out in outs) == [False, True]
     assert [out.get("error_cause") for out in outs if not out["applied"]] == ["mechanism_redefined"]
+
+
+def test_concurrent_statement_edits_keep_each_others_rows(tmp_path, monkeypatch):
+    """Both edits read HEAD's rows before either committed, so the later commit dropped the
+    row the earlier one added."""
+    mcp = _built(tmp_path, [_CONV])
+    calls = [
+        {"justification": p, "statement_edits": [{"op": "add_row", "row": f"{p}: B becomes A | mass_action"}]}
+        for p in ("back", "back2")
+    ]
+    assert all(out["applied"] for out in _concurrently(monkeypatch, mcp, *calls))
+    text = _text(mcp, "get_model", {"format": "statements"})
+    assert "conv: A becomes B" in text and all(f"{p}: B becomes A" in text for p in ("back", "back2"))
