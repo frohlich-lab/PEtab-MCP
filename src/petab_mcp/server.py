@@ -179,6 +179,12 @@ class StatementRow(BaseModel):
     prefix: str = Field(
         description="names this row's parameters and rules ('<prefix>_kcat'); unique per row."
     )
+    parameters: dict[str, str | float] | None = Field(
+        default=None,
+        description="binds a parameter this row makes, by its kind ('kf' for '<prefix>_kf'), to "
+        "a SHARED id (another row's, a problem parameter's, or a new name several rows use) or "
+        "to a NUMBER, which fixes it — one rate constant across many reactions is one parameter.",
+    )
 
 
 class StartRow(BaseModel):
@@ -865,9 +871,11 @@ def _make_changes_statements_doc() -> str:
         "with the `policy` (mechanism) that turns it into reactions and a `prefix` naming its "
         "parameters. Every INDRA statement type"
         + (f" but {', '.join(without)}" if without else "")
-        + f" has `{mechanisms.INDRA_DEFAULT}`; the library also holds {entries}. When none fits, WRITE one in `mechanisms` — it stays in the "
-        "library for the rest of the run. The species the observables read are bound by the "
-        "problem's entity map: name agents as it does. "
+        + f" has `{mechanisms.INDRA_DEFAULT}`; the library "
+        f"also holds {entries}. When none fits, WRITE one in `mechanisms` — it stays in the "
+        "library for the rest of the run. A row's `parameters` shares a rate constant with other "
+        "rows, or with a parameter the problem ships, or fixes it to a number. The species the "
+        "observables read are bound by the problem's entity map: name agents as it does. "
         + _HELD_INPUTS
         + " `starts` "
         "declares what is present at the start, in the state its agent writes; without it every "
