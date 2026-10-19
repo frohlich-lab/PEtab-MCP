@@ -37,6 +37,21 @@ def test_a_condition_target_the_rows_convert_is_a_state_not_an_input():
     assert not sbml.getSpecies("naive").getBoundaryCondition()
 
 
+def test_a_started_state_that_binds_is_its_free_form_too():
+    """A ligand a row also degrades is a state the conditions only start; named for the sum over
+    it and its complex, its condition target still set nothing (raimundez's EGF, before its rows
+    stopped degrading it with the receptor)."""
+    rows = [
+        (Complex([Agent("EGF"), Agent("EGFR")]), INDRA_DEFAULT, "r1"),
+        (DecreaseAmount(None, Agent("EGF")), INDRA_DEFAULT, "deg"),
+    ]
+    antimony, _ = PS.to_antimony(rows, {"EGF": Agent("EGF")}, targets=frozenset({"EGF"}))
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    assert sbml.getSpecies("EGF").getName() == "EGF(egfr=None)"
+    assert not sbml.getSpecies("EGF").getBoundaryCondition()
+    assert sbml.getAssignmentRuleByVariable("EGF") is None
+
+
 @pytest.mark.parametrize(
     ("degraded", "says"),
     [(False, "Held at what the conditions set"), (True, "Started by the conditions")],
