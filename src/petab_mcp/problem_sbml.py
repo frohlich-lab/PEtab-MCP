@@ -9,7 +9,7 @@ be scored against it as it stands. This module is the difference, and it is all 
   names is given that name, or for a blinded mapping an assignment rule of that name.
 * **Starting amounts.** What is present at the start is traced (below); each present monomer
   starts at an estimated ``<monomer>_init``, or at the row the problem ships (Crauste's fixed
-  ``Naive_init``).
+  ``Naive_init``) — unless the statements DECLARE what is there (``starts``, below).
 * **Inputs.** A species the experiment sets is held rather than built: one the condition table
   targets (Isensee's ``Fsk``), which its periods set, and one the problem's ``inputs.tsv`` holds to
   a protocol (Fujita's EGF ramp, :func:`protocols.hold`).
@@ -37,6 +37,17 @@ later step, splits each simulated species by origin. Here the only question is w
 exists, whether a monomer traces back to the start at all, and the expansion's reactions answer
 it without a site.
 
+A declared start (``make_changes``' ``starts``) replaces the trace for the monomers it names. The
+species its Agent writes starts at that amount, in exactly the state the Agent writes (mods, location, activity, and the complex its
+``bound_conditions`` form, partners in their default state), and no monomer named in any
+declaration is started any other way: declare each state it starts in. A number other than 0
+becomes ``<name>_init`` and reconcile treats it as any other starting value (1 a unit normalisation,
+fixed; anything else estimated from there), so Blasi's and Sneyd's unit pools cost nothing in k. A
+0 is an empty start with no parameter at all — what lets a species the condition table sets
+(Enzyme kinetics' substrate) carry no ``_init`` that every condition overrides. An expression is the starting amount itself, over parameter ids: a row the
+problem ships (Fiedler's fixed totals), a condition-table column (Lucarelli's ``init_S2``), or a new
+name, estimated. A declared monomer may also be one the rules make (Lucarelli's genes start at 1).
+
 It is a separate module because none of it is a mechanism: the same library rows would need
 none of this under a server that read PySB directly. This one reads SBML everywhere — reconcile,
 lint, de-duplication, versions — so a model built from statements enters as SBML and is from then
@@ -46,9 +57,12 @@ downstream has to know where a model came from.
 
 from __future__ import annotations
 
+from itertools import count
+
 import libsbml
 import pysb
-from indra.assemblers.pysb.assembler import get_monomer_pattern
+from indra.assemblers.pysb.assembler import _n, get_monomer_pattern, get_site_pattern
+from indra.assemblers.pysb.sites import get_binding_site_name
 from indra.statements import Agent, Statement
 from petab.v1.models.sbml_model import SbmlModel
 from pysb import ANY
@@ -66,6 +80,7 @@ def to_antimony(
     entities: dict[str, Agent],
     library: dict[tuple[str, str], M.Policy] = M.REGISTRY,
     inputs: tuple[Input, ...] = (),
+    starts: list[tuple[str, Agent, float | str]] | None = None,
     *,
     targets: frozenset[str] = frozenset(),
 ) -> tuple[str, list[M.Emission]]:
@@ -80,9 +95,17 @@ def to_antimony(
     converts, which its periods set, and each of ``inputs`` (the problem's :mod:`protocols`),
     under its protocol. An input the entity map does not name is the agent of its id. A
     condition target the rows make or convert is a state its periods only start.
+
+    ``starts`` (``(name, agent, amount)``: a number or an expression over parameter ids) declare
+    what is present at the start, as the module docstring sets out; each is ``<name>_init``.
     """
+    starts = starts or []
     entities = {**{item.id: Agent(item.id) for item in inputs}, **entities}
-    model, emissions = M.assemble(rows, entities, library)
+    # Start agents join the monomer pass (they may name a site or partner no row does); they are
+    # not readouts, so they stay out of `entities` below.
+    model, emissions = M.assemble(
+        rows, {**entities, **{f"__start_{name}": agent for name, agent, _ in starts}}, library
+    )
     _refuse_chains(model, emissions)
     made, converted = set(), set()
     for rule in model.rules:
@@ -106,10 +129,16 @@ def to_antimony(
     for name, species in readouts.items():
         pattern = get_monomer_pattern(model, entities[species])
         model.add_component(pysb.Observable(name, pattern, _export=False))
-    _seed(model, [m for m in model.monomers if m.name not in made or m.name in held])
+    declared = _declare(model, starts, set(held))
+    _seed(
+        model,
+        [m for m in model.monomers if (m.name not in made or m.name in held) and m.name not in declared],
+    )
     _expand(model)
     reached = {mp.monomer.name for sp in model.species for mp in sp.monomer_patterns}
-    unreached = [m for m in model.monomers if m.name in made - held.keys() - reached]
+    unreached = [
+        m for m in model.monomers if m.name in made - held.keys() - reached - declared
+    ]
     if unreached:
         _seed(model, unreached)
         model.reset_equations()
@@ -124,11 +153,12 @@ def to_antimony(
         never.append(f"readouts {unread} read no species")
     if never:
         raise ModelUpdateError(
-            f"In the model these statements build, {' and '.join(never)}. Everything starts as "
-            "free, unmodified molecules, except what the rules make from those, so a rule fires "
-            "only on what the statements form from there: one that never fires needs a complex "
-            "or a modified form that no statement forms, like a kinase active only while bound "
-            "to a partner nothing binds it to."
+            f"In the model these statements build, {' and '.join(never)}. The start holds free, "
+            "unmodified molecules and what `starts` declares, and a rule fires only on what the "
+            "statements form from there: one that never fires needs a complex or a modified form "
+            "that nothing forms, like a kinase active only while bound to a partner nothing binds "
+            "it to. Add the statement that forms it, or, if it is present at t=0, declare it in "
+            "`starts`."
         )
     sbml = export(model, "sbml")  # from the expansion above; BioNetGen does not run again
     base_names = {
@@ -187,6 +217,11 @@ def to_antimony(
             rule.setVariable(new)
             renamed = parameter
         _rename(sbml_model, renamed, new)
+    for name, _, amount in starts:
+        if isinstance(amount, str):
+            _initial_expression(sbml_model, f"{name}_init", name, amount)
+        elif float(amount) == 0.0:
+            _initial_empty(sbml_model, f"{name}_init")
     _drop_unreferenced_parameters(sbml_model)
     for monomer, item in held.items():
         if item is None:
@@ -197,6 +232,106 @@ def to_antimony(
             hold(sbml_model, base[monomer].getId(), item)
     _number_reactions(sbml_model)
     return SbmlModel.from_string(libsbml.writeSBMLToString(document)).to_antimony(), emissions
+
+
+def _declare(
+    model: pysb.Model, starts: list[tuple[str, Agent, float | str]], held: set[str]
+) -> set[str]:
+    """Start each declared species at ``<name>_init``, in the state its Agent writes; returns the
+    monomers the declarations name, which :func:`_seed` then leaves alone."""
+    named: set[str] = set()
+    names = [name for name, _, _ in starts]
+    repeated = sorted({n for n in names if names.count(n) > 1})
+    if repeated:
+        raise ModelUpdateError(
+            f"starts {repeated} are named twice; each start is `<name>_init`, so give a second "
+            "start of the same agent a name of its own"
+        )
+    for name, agent, amount in starts:
+        if agent.name in held:
+            raise ModelUpdateError(
+                f"start {name!r}: {agent.name} is an input, held to its protocol, so it has no "
+                "start of its own"
+            )
+        if not isinstance(amount, (int, float, str)) or isinstance(amount, bool):
+            raise ModelUpdateError(
+                f"start {name!r} is {amount!r}; give a number or an expression over parameter ids"
+            )
+        pattern = pysb.ComplexPattern(_concrete(model, agent, count(1)), None)
+        value = float(amount) if not isinstance(amount, str) else SEED_INITIAL_VALUE
+        parameter = pysb.Parameter(f"{name}_init", value, _export=False)
+        model.add_component(parameter)
+        try:
+            model.add_initial(pysb.Initial(pattern, parameter, _export=False))
+        except ValueError as exc:  # pysb: not concrete, or a duplicate species
+            raise ModelUpdateError(
+                f"start {name!r} is not a start PySB accepts: {exc}"
+            ) from exc
+        named |= {mp.monomer.name for mp in pattern.monomer_patterns}
+    return named
+
+
+def _concrete(model: pysb.Model, agent: Agent, bonds, partner: tuple | None = None) -> list:
+    """The species ``agent`` writes, as fully specified monomer patterns: the sites it states,
+    every other site in its default state and unbound, and a partner per bound condition, built
+    the same way and bonded on the sites INDRA names after each other. ``partner`` is the
+    ``(site, bond)`` that links this agent to the one that named it."""
+    monomer = model.monomers[_n(agent.name)]
+    stated = get_site_pattern(agent)
+    unknown = sorted(set(stated) - set(monomer.sites))
+    if unknown:
+        raise ModelUpdateError(
+            f"{agent.name} states sites {unknown} that no statement gives it"
+        )
+    state, partners = {}, []
+    for site in monomer.sites:
+        if site in stated and stated[site] is not ANY:
+            value = stated[site]
+            state[site] = value[0] if isinstance(value, tuple) else value
+        elif site in monomer.site_states:
+            default = monomer.site_states[site][0]
+            if site == "loc" and "cytoplasm" in monomer.site_states[site]:
+                default = "cytoplasm"
+            state[site] = default
+        else:
+            state[site] = None
+    for condition in agent.bound_conditions:
+        if condition.is_bound:
+            bond = next(bonds)
+            state[get_binding_site_name(condition.agent)] = bond
+            partners += _concrete(
+                model, condition.agent, bonds, (get_binding_site_name(agent), bond)
+            )
+    if partner is not None:
+        state[partner[0]] = partner[1]
+    return [monomer(**state), *partners]
+
+
+def _initial_expression(sbml_model, placeholder: str, species: str, formula: str) -> None:
+    """Replace the declared species' ``<key>_init`` with the expression its entry gives. A name
+    the model does not hold becomes a parameter: a shipped row or a condition-table column fills
+    it, and anything else is estimated from reconcile's seed."""
+    math = libsbml.parseL3Formula(formula)
+    if math is None:
+        raise ModelUpdateError(f"start {species!r} is no formula: {formula!r}")
+    for node in _ast_nodes(math):
+        if node.getType() == libsbml.AST_NAME and sbml_model.getElementBySId(node.getName()) is None:
+            parameter = sbml_model.createParameter()
+            parameter.setId(node.getName())
+            parameter.setConstant(True)
+            parameter.setValue(SEED_INITIAL_VALUE)
+    for assignment in sbml_model.getListOfInitialAssignments():
+        if assignment.getMath().isName() and assignment.getMath().getName() == placeholder:
+            assignment.setMath(math)
+
+
+def _initial_empty(sbml_model, placeholder: str) -> None:
+    """Start the declared species at a literal 0: no assignment, so no parameter for reconcile to
+    estimate or a condition to override."""
+    for assignment in list(sbml_model.getListOfInitialAssignments()):
+        if assignment.getMath().isName() and assignment.getMath().getName() == placeholder:
+            sbml_model.getSpecies(assignment.getSymbol()).setInitialAmount(0.0)
+            assignment.removeFromParentAndDelete()
 
 
 def _free_form(model: pysb.Model, sbml_model, base: dict, monomer: str):
