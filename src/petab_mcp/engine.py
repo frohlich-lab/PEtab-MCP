@@ -248,7 +248,8 @@ class AmiciEngine:
             # model: a MISSING score, as for a failed integration. Not the fval: pyPESTO's
             # hierarchical (relative-data) objective drops a NaN simulation from its sums and
             # returns a finite, LOWER value at sensitivity orders 0 and 1 (ICB-DCM/pyPESTO#1794;
-            # AMICI's own llh is NaN) -- Boehm's 0/0 readout at t=0 scored 244.97.
+            # AMICI's own llh is NaN) -- a 0/0 readout at t=0 scored finite and lower than any
+            # real fit.
             nllh = None
         return nllh, records, self._res_from_rdatas(rdatas)
 

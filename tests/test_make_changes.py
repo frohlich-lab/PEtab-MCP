@@ -1891,8 +1891,8 @@ def test_an_undefined_readout_is_remedied_in_the_routes_own_terms(tmp_path):
 
 
 def test_a_failed_fit_names_the_points_a_readout_leaves_undefined():
-    """Boehm: `pSTAT5A/(pSTAT5A + pSTAT5B)` with both starting at 0 is 0/0 at t=0; every start of
-    the hierarchical fit failed, and the refusal named only two other causes."""
+    """`pA/(pA + pB)` with both starting at 0 is 0/0 at t=0; every start of the hierarchical fit
+    failed, and the refusal named only two other causes."""
     import types
 
     import libsbml

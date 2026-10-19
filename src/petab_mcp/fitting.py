@@ -1219,10 +1219,10 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
         # both, and name the log line that distinguishes them, rather than guessing.
         #
         # Except where the nominal evaluation already shows a third cause: a measured point the
-        # model leaves UNDEFINED while the rest simulate, a readout that is 0/0 there (Boehm,
-        # `pSTAT5A/(pSTAT5A + pSTAT5B)` with both starting at 0, measured at t=0). The plain
-        # objective drops such a point and stays finite; the hierarchical one, which solves the
-        # noise from every residual, is non-finite at every start. Named, with the readout.
+        # model leaves UNDEFINED while the rest simulate, a readout that is 0/0 there (a ratio
+        # `A/(A + B)` with both starting at 0, measured at t=0). The plain objective drops such a
+        # point and stays finite; the hierarchical one, which solves the noise from every residual,
+        # is non-finite at every start. Named, with the readout.
         undefined = _undefined_points(session, before.get("simulations") or [])
         if undefined:
             raise ModelUpdateError(
