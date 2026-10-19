@@ -92,10 +92,10 @@ def _names(formula: str) -> set[str]:
     return {str(s) for s in sympify_petab(formula).free_symbols}
 
 
-def read(yaml_path: str | Path) -> tuple[Input, ...]:
-    """The inputs the ``inputs.tsv`` beside ``yaml_path`` declares, none without one; refused at
-    the first row that would not be read as written."""
-    path = Path(yaml_path).parent / FILENAME
+def read(directory: str | Path) -> tuple[Input, ...]:
+    """The inputs the ``inputs.tsv`` in the problem's ``directory`` declares, none without one;
+    refused at the first row that would not be read as written."""
+    path = Path(directory) / FILENAME
     if not path.is_file():
         return ()
     table = pd.read_csv(path, sep="\t", dtype=str, keep_default_na=False)
@@ -149,9 +149,10 @@ def check(inputs: Iterable[Input], problem) -> None:
         )
 
 
-def load(yaml_path: str | Path, problem) -> tuple[Input, ...]:
-    """:func:`read` the inputs beside ``yaml_path`` and :func:`check` them against ``problem``."""
-    inputs = read(yaml_path)
+def load(directory: str | Path, problem) -> tuple[Input, ...]:
+    """:func:`read` the inputs in ``directory`` and :func:`check` them against ``problem``, which
+    may be a view of the problem there (a held-out set's) that sets more targets."""
+    inputs = read(directory)
     check(inputs, problem)
     return inputs
 

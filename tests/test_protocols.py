@@ -53,7 +53,7 @@ def test_fujitas_ramp_is_evaluated_and_shown_to_the_antimony_route(tmp_path):
 def test_no_file_declares_no_inputs(tmp_path):
     yaml = _problem(tmp_path, "")
     (yaml.parent / Pr.FILENAME).unlink()
-    assert Pr.read(yaml) == ()
+    assert Pr.read(yaml.parent) == ()
 
 
 def test_an_input_names_only_condition_targets_and_time(tmp_path):
@@ -62,7 +62,7 @@ def test_an_input_names_only_condition_targets_and_time(tmp_path):
     agent part of the reference's model where it can neither see nor change it."""
     yaml = _problem(tmp_path, "S\tdose*exp(-k1*time)\tdose;k1", targets=("dose",))
     with pytest.raises(ProtocolError, match=re.escape("'S' names k1 (estimated)")):
-        Pr.load(yaml, WorkingProblem.from_yaml(yaml))
+        Pr.load(yaml.parent, WorkingProblem.from_yaml(yaml))
 
 
 @pytest.mark.parametrize(
@@ -77,7 +77,7 @@ def test_a_row_is_read_as_written_or_refused(tmp_path, row, refusal):
     """conditionInputs restates the formula's targets, so a stale list must not pass as another
     protocol's."""
     with pytest.raises(ProtocolError, match=re.escape(refusal)):
-        Pr.read(_problem(tmp_path, row))
+        Pr.read(_problem(tmp_path, row).parent)
 
 
 def _held(item: Pr.Input) -> libsbml.SBMLDocument:

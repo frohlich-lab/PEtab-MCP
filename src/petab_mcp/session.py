@@ -184,7 +184,9 @@ class PetabSession:
         # `WorkingProblem.from_yaml` above always re-reads the shipped `parameters.tsv`.
         self.shipped_parameter_df = self.problem.parameter_df.copy(deep=True)
         # What the experiments impose over time, from the `inputs.tsv` beside the YAML.
-        self.inputs: tuple[protocols.Input, ...] = protocols.load(self.yaml_path, self.problem)
+        self.inputs: tuple[protocols.Input, ...] = protocols.load(
+            self.yaml_path.parent, self.problem
+        )
 
         # Antimony is the canonical model form: prefer a model.ant next to the YAML.
         ant_file = self.yaml_path.parent / "model.ant"
