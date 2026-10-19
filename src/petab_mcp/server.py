@@ -185,6 +185,11 @@ class StatementRow(BaseModel):
         "a SHARED id (another row's, a problem parameter's, or a new name several rows use) or "
         "to a NUMBER, which fixes it — one rate constant across many reactions is one parameter.",
     )
+    modifiers: dict[str, dict[str, Any]] | None = Field(
+        default=None,
+        description="the agents (INDRA Agent JSON) filling the modifier slots of a written "
+        "mechanism's rate: an inhibitor, a regulating complex, an input it reads.",
+    )
 
 
 class StartRow(BaseModel):
@@ -230,7 +235,13 @@ class MechanismDef(BaseModel):
     )
     parameters: list[str] = Field(
         default_factory=list,
-        description="the parameter names `rate` uses; each becomes `<prefix>_<name>`, estimated.",
+        description="the parameter names `rate` uses; each becomes `<prefix>_<name>`, estimated "
+        "unless a row's `parameters` shares or fixes it.",
+    )
+    modifiers: list[str] = Field(
+        default_factory=list,
+        description="names in `rate` for the amount of an agent that takes no part in the "
+        "reaction (an inhibitor, a regulator); each row using this mechanism names the agent.",
     )
 
 
@@ -873,7 +884,8 @@ def _make_changes_statements_doc() -> str:
         + (f" but {', '.join(without)}" if without else "")
         + f" has `{mechanisms.INDRA_DEFAULT}`; the library "
         f"also holds {entries}. When none fits, WRITE one in `mechanisms` — it stays in the "
-        "library for the rest of the run. A row's `parameters` shares a rate constant with other "
+        "library for the rest of the run; its rate may read `modifiers`, agents each row names "
+        "that take no part in the reaction (an inhibitor, a regulator). A row's `parameters` shares a rate constant with other "
         "rows, or with a parameter the problem ships, or fixes it to a number. The species the "
         "observables read are bound by the problem's entity map: name agents as it does. "
         + _HELD_INPUTS
