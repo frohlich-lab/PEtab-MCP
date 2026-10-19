@@ -759,6 +759,7 @@ def statements_to_antimony(
         declared,
         readouts,
         {k: Agent._from_json(v) for k, v in (amounts or {}).items()},
+        targets=frozenset(R.condition_target_symbols(session.problem)),
     )
     record = {
         "rows": [

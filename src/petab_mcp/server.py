@@ -623,6 +623,10 @@ def _register_read_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         Also reports `fit_n_starts_default` — the pyPESTO multistart count a fit uses when
         `n_starts` is omitted. Read it before passing `n_starts` anywhere: that argument REPLACES
         this default rather than adding to it, so a value below it fits less hard.
+
+        `inputs` are what the experiments impose within a period, each read in your model by its
+        id: define it by its `rule` exactly as given, and never estimate the condition targets the
+        rule reads.
         """
         ctx = route()
         session = ctx.session
@@ -879,9 +883,9 @@ def _make_changes_statements_doc() -> str:
         "library for the rest of the run; its rate may read `modifiers`, agents each row names "
         "that take no part in the reaction (an inhibitor, a regulator). A row's `parameters` shares a rate constant with other "
         "rows, or with a parameter the problem ships, or fixes it to a number. The species the "
-        "observables read, and the inputs the "
-        "experiments set (a dose), are bound by the problem's entity map: name agents as it "
-        "does, and do not assert an input — it is already held to its protocol. `starts` "
+        "observables read are bound by the problem's entity map, and the inputs the experiments "
+        "set are held, each one the conditions set and each `describe_problem`'s `inputs` give a "
+        "rule: name agents as the map does, and do not assert an input. `starts` "
         "declares what is present at the start, in the state its agent writes; without it every "
         "species no rule makes starts at an estimated `<name>_init` and every made one empty. "
         "`readouts` defines a measurement mapping that is not one pattern's amount as a formula "
@@ -2066,8 +2070,6 @@ def _open_ctx(
         from . import seeding as seeding_mod
 
         session.entities = seeding_mod.load_entity_map(entity_map)
-        session.inputs = seeding_mod.load_inputs(entity_map)
-        seeding_mod.check_inputs(entity_map, session.inputs, session.problem)
     if score_shipped_model and session.model_authored():
         fitting_mod.score_at_nominal(session, engine)
     held_out = None
@@ -2127,8 +2129,7 @@ def create_server(
     model-less problem ignores it.
 
     ``entity_map`` is a JSON file binding the problem's species to INDRA agents
-    (:func:`seeding.load_entity_map`) and declaring its experimental inputs
-    (:func:`seeding.load_inputs`). Giving it offers ``make_changes`` the ``statements`` route;
+    (:func:`seeding.load_entity_map`). Giving it offers ``make_changes`` the ``statements`` route;
     omit it and the route does not exist.
 
     ``cluster`` (a ``distributed`` cluster, the ``dask`` extra) runs every fit's starts on that
