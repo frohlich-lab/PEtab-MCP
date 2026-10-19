@@ -825,10 +825,11 @@ def _make_changes_statements_doc() -> str:
         "parameters. Every INDRA statement type"
         + (f" but {', '.join(without)}" if without else "")
         + f" has `{mechanisms.INDRA_DEFAULT}`; the library also holds {entries}. When none fits, WRITE one in `mechanisms` — it stays in the "
-        "library for the rest of the run. The species the observables read, and the inputs the "
-        "experiments set (a dose), are bound by the problem's entity map: name agents as it "
-        "does, and do not assert an input — it is already held to its protocol. The result is "
-        "an ordinary model: `model_edits` can edit it next."
+        "library for the rest of the run. The species the observables read are bound by the "
+        "problem's entity map, and the inputs the experiments set are held, each one the "
+        "conditions set and each `describe_problem`'s `inputs` give a rule: name agents as the "
+        "map does, and do not assert an input. The result is an ordinary model: `model_edits` "
+        "can edit it next."
     )
 
 
@@ -1950,8 +1951,6 @@ def _open_ctx(
         from . import seeding as seeding_mod
 
         session.entities = seeding_mod.load_entity_map(entity_map)
-        session.inputs = seeding_mod.load_inputs(entity_map)
-        seeding_mod.check_inputs(entity_map, session.inputs, session.problem)
     if score_shipped_model and session.model_authored():
         fitting_mod.score_at_nominal(session, engine)
     held_out = None
@@ -2011,8 +2010,7 @@ def create_server(
     model-less problem ignores it.
 
     ``entity_map`` is a JSON file binding the problem's species to INDRA agents
-    (:func:`seeding.load_entity_map`) and declaring its experimental inputs
-    (:func:`seeding.load_inputs`). Giving it offers ``make_changes`` the ``statements`` route;
+    (:func:`seeding.load_entity_map`). Giving it offers ``make_changes`` the ``statements`` route;
     omit it and the route does not exist.
 
     ``cluster`` (a ``distributed`` cluster, the ``dask`` extra) runs every fit's starts on that

@@ -712,6 +712,7 @@ def statements_to_antimony(
         session.entities,
         library,
         session.inputs,
+        targets=frozenset(R.condition_target_symbols(session.problem)),
     )
     record = [
         {**row, "emission": asdict(e)}

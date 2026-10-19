@@ -321,8 +321,6 @@ class PetabSession:
         # Species id -> INDRA Agent (:func:`seeding.load_entity_map`): what binds a model built
         # from statements to the fixed observable table. Empty unless the server was given one.
         self.entities: dict[str, Any] = {}
-        # Species id -> the protocol formula an experiment sets it by (:func:`seeding.load_inputs`).
-        self.inputs: dict[str, str] = {}
 
         # The version the NEXT commit descends from, or None for "whatever HEAD is".
         # `make_changes(edits=..., base_version=N)` patches version N's stored text, so the commit

@@ -3,15 +3,11 @@
 from __future__ import annotations
 
 import re
-import shutil
-from pathlib import Path
 
 import pytest
 
 from petab_mcp import seeding as Sd
 from petab_mcp.errors import EntityMapError
-from petab_mcp.references import StubReferenceResolver
-from petab_mcp.server import create_server
 
 # The problem's species, as the entity-map file supplies them; ``{extra}`` splices more entries.
 _BASE_ENTITY_MAP = (
@@ -57,26 +53,3 @@ def test_a_key_read_elsewhere_is_kept(tmp_path):
     is a typo."""
     extra = ', "S6": {"name": "RPS6", "ptms": [["S", "235"]]}'
     assert Sd.load_entity_map(_map_file(tmp_path, _BASE_ENTITY_MAP.format(extra=extra)))["S6"]
-
-
-def test_an_input_names_only_condition_columns_and_time(tmp_path, add_condition):
-    """Three PEtabAgentBench#6 maps put fitted constants in an input (Boehm's Epo degradation,
-    Fiedler's stimulus time constants, Oliveira's transmission steps), handing the agent part of
-    the reference's model where it can neither see nor change it."""
-    shutil.copytree(Path(__file__).parent / "data" / "toy_v2", tmp_path / "problem")
-    yaml_path = tmp_path / "problem" / "problem.yaml"
-    add_condition(yaml_path, "dose", 1.0)
-
-    def open_with(name, protocol):
-        entities = f'{{"A": {{"name": "A"}}, "S": {{"name": "S", "input": "{protocol}"}}}}'
-        return create_server(
-            str(yaml_path),
-            provenance_dir=str(tmp_path / name),
-            resolver=StubReferenceResolver(),
-            auto_fit=False,
-            entity_map=_map_file(tmp_path, entities),
-        )
-
-    open_with("columns", "dose*exp(-time)")
-    with pytest.raises(EntityMapError, match=re.escape("'S' names k1 (estimated)")):
-        open_with("estimated", "dose*exp(-k1*time)")
