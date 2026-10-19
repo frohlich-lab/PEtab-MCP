@@ -654,6 +654,20 @@ def set_model(
     return result
 
 
+def _problem_ids(session) -> dict[str, str]:
+    """The problem's own ids a written mechanism's rate may not name, each to what it is
+    (:data:`mechanisms.SHIPPED` ...): its shipped parameters, its condition inputs, and the species
+    of its entity map, which win where a condition sets one."""
+    from . import mechanisms as M
+    from .reconcile import condition_target_symbols
+
+    return {
+        **{p: M.SHIPPED for p in session.shipped_parameter_df.index},
+        **{t: M.CONDITION for t in condition_target_symbols(session.problem)},
+        **{e: M.SPECIES for e in session.entities},
+    }
+
+
 def statements_to_antimony(
     session,
     rows: list[dict[str, Any]],
@@ -695,8 +709,9 @@ def statements_to_antimony(
                 cause="mechanism_redefined",
             )
     library = dict(mechanisms.REGISTRY)
+    problem_ids = _problem_ids(session)
     for key, definition in definitions.items():
-        library[key] = mechanisms.written(definition, library)
+        library[key] = mechanisms.written(definition, library, problem_ids)
     # A row, or an agent, may be written in the notation (:mod:`notation`): read here, against the
     # library (a policy written without its `indra_` prefix) and the entity map's groundings.
     from . import notation
