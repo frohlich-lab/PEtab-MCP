@@ -274,12 +274,12 @@ class StatementEdit(BaseModel):
         "set_amount",
         "remove_amount",
         "set_readout",
-        "remove_readout",
     ] = Field(
         description="`add_row` a new row; `replace_row` the row with that row's prefix (its "
         "statement, policy or bindings); `remove_row` by `prefix`; `set_start` adds or replaces "
-        "the start of that name; `set_amount`/`set_readout` add or replace one; `remove_*` by "
-        "`name` (`readout` for a readout)."
+        "the start of that name; `set_amount`/`set_readout` add or replace one; "
+        "`remove_start`/`remove_amount` by `name`. A readout is never removed: each is one an "
+        "observable reads."
     )
     row: StatementRow | str | None = Field(
         default=None, description="add_row/replace_row: the row, one line or JSON."
@@ -293,7 +293,7 @@ class StatementEdit(BaseModel):
         default=None, description="set_amount: the agent pattern whose amount it is."
     )
     readout: str | None = Field(
-        default=None, description="set_readout/remove_readout: the readout id."
+        default=None, description="set_readout: the readout id."
     )
     formula: str | None = Field(default=None, description="set_readout: its formula.")
 
@@ -970,8 +970,8 @@ def _make_changes_statements_doc(bound: bool = True) -> str:
         "`statement_edits` CHANGES the current rows instead of giving them all again: "
         "`add_row`/`replace_row` a row (one line; `replace_row` takes the row with that prefix, "
         "so a new policy or binding is the row rewritten), `remove_row` by prefix, and "
-        "`set_start`/`set_amount`/`set_readout` or `remove_start`/`remove_amount`/"
-        "`remove_readout`; with them `mechanisms` you write for the new rows. They apply in "
+        "`set_start`/`set_amount`/`set_readout` or `remove_start`/`remove_amount`; with them "
+        "`mechanisms` you write for the new rows. They apply in "
         "order, all or nothing, and the model is rebuilt from the edited set. `base_version=N` "
         "applies them to version N's rows instead (with `statements`, it is the whole set given "
         "afresh), and starts the fit from version N's search space and best fit. "
@@ -1295,7 +1295,8 @@ def _register_model_tools(
             return ctx.reject_operation(
                 "make_changes",
                 "make_changes: with `statement_edits`, change starts, amounts and readouts by "
-                "their own edits (`set_start`, `set_amount`, `set_readout`, `remove_*`), not "
+                "their own edits (`set_start`, `set_amount`, `set_readout`, `remove_start`, "
+                "`remove_amount`), not "
                 "`starts`/`amounts`/`readouts`, which give the whole set with `statements`. "
                 "NOTHING was applied.",
                 {"n_starts": len(starts or [])},

@@ -301,17 +301,21 @@ def test_shipped_fixed_constant_is_protected(fixed_k1_session):
     assert k1_row["status"] == "fixed" and k1_row["role"] == "kinetic"
 
 
-def test_set_model_rejects_removing_a_shipped_fixed_constant(fixed_k1_session):
-    from petab_mcp.errors import ValidationError
-
+def test_removing_a_shipped_fixed_constant_warns_and_reading_it_again_restores_it(
+    fixed_k1_session,
+):
+    """Warned, not refused: refused, agents that could not place a constant faked a use of it
+    (`0*k`). Read again, it comes back from the shipped row, fixed."""
     sess = fixed_k1_session
-    # Re-authoring with only r2 would prune the shipped-fixed constant k1 — a rejected edit.
-    with pytest.raises(ValidationError) as exc:
-        O.set_model(sess, ONLY_R2_ANTIMONY, justification="drop r1/k1")
-    assert any("k1" in issue for issue in (exc.value.issues or [])), exc.value.issues
-    # the rejected commit changed nothing: r1 (and k1) are still there
-    assert _reactions(sess) == {"r1", "r2"}
-    assert "k1" in {r["parameterId"] for r in P.parameters_to_records(sess.problem)}
+    res = O.set_model(sess, ONLY_R2_ANTIMONY, justification="drop r1/k1")
+    assert res["applied"] is True
+    warned = [m for m in res.get("messages") or [] if "k1" in m.get("message", "")]
+    assert warned and all(m["level"] == "warning" for m in warned), res.get("messages")
+    assert "k1" not in {r["parameterId"] for r in P.parameters_to_records(sess.problem)}
+    res = O.set_model(sess, REVERSIBLE_PLUS_DEG_ANTIMONY, justification="read k1 again")
+    assert res["applied"] is True
+    k1_row = {r["parameterId"]: r for r in P.parameters_to_records(sess.problem)}["k1"]
+    assert k1_row["status"] == "fixed"
 
 
 # -- always-on ICs: estimate a created seed, fix a unit normalization (#90) -------------------
