@@ -115,7 +115,8 @@ def test_a_fork_is_recorded_as_a_child_of_the_version_it_patched(served):
 
 def test_an_ordinary_commit_still_descends_from_head(served):
     """The fork parent must not leak: `derived_from` is per-call state, so the NEXT ordinary
-    commit has to go back to HEAD or every later version inherits a stale fork parent."""
+    commit has to go back to HEAD or every later version inherits a stale fork parent. The fork
+    writes r1 in a form neither version has: v0's own model again is refused as v0."""
     mcp, prov = served
 
     def op(justification, rid, law, **kw):
@@ -131,8 +132,9 @@ def test_an_ordinary_commit_still_descends_from_head(served):
 
     op("v0", "r1", "(k1*1.0)*A")
     op("v1", "r2", "(k2*1.0)*B")
-    forked = op("fork", "r1", "(k1*1.00)*A", base_version=0)
+    forked = op("fork", "r1", "(k1/2 + k1/2)*A", base_version=0)
     after = op("ordinary commit after a fork", "r2", "(k2*1.00)*B")
+    assert forked["committed"] is True and after["committed"] is True, (forked, after)
     assert _meta(prov, forked["version"])["parent"] == 0
     assert _meta(prov, after["version"])["parent"] == forked["version"], (
         "an ordinary commit inherited the fork's base instead of HEAD"
