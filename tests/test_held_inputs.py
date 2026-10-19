@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from indra.statements import Agent, Complex, DecreaseAmount
 from petab.v1.models.sbml_model import SbmlModel
 
@@ -49,6 +50,22 @@ def test_a_started_state_that_binds_is_its_free_form_too():
     assert sbml.getSpecies("EGF").getName() == "EGF(egfr=None)"
     assert not sbml.getSpecies("EGF").getBoundaryCondition()
     assert sbml.getAssignmentRuleByVariable("EGF") is None
+
+
+@pytest.mark.parametrize(
+    ("degraded", "says"),
+    [(False, "Held at what the conditions set"), (True, "Started by the conditions")],
+)
+def test_the_notes_say_which_condition_targets_are_held(degraded, says):
+    """A drug the rows degrade is a state the conditions only start, and nothing but the result
+    tells an agent that its degradation row did that."""
+    rows = [(Complex([Agent("forskolin"), Agent("ADCY")]), INDRA_DEFAULT, "r1")]
+    if degraded:
+        rows.append((DecreaseAmount(None, Agent("forskolin")), INDRA_DEFAULT, "deg"))
+    notes: list[str] = []
+    PS.to_antimony(rows, {"Fsk": Agent("forskolin")}, targets=frozenset({"Fsk"}), notes=notes)
+    (note,) = [n for n in notes if "conditions" in n]
+    assert note.startswith(says) and note.endswith("Fsk.")
 
 
 def test_a_started_state_the_rows_make_is_named_too():
