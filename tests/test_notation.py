@@ -135,12 +135,12 @@ def test_a_malformed_row_says_where(text, where):
 
 
 def test_a_statements_evidence_rides_as_a_comment():
-    """The formulations carry a source and a justification per statement; written as JSON only,
-    157 of 419 rows could not use the notation at all."""
+    """A statement may carry a source and a justification; written as JSON only, such a row
+    could not use the notation at all."""
     row = {**ROWS[2], "statement": {**ROWS[2]["statement"], "evidence": [
-        {"source_api": "curated", "text": "Boehm et al. 2014 (10.1021/pr5006923) | v4 # x"}]}}
+        {"source_api": "curated", "text": "Doe et al. 2020 (10.1000/xyz123) | v4 # x"}]}}
     text = N.render(row, M.REGISTRY)
-    assert text.endswith("# [curated] Boehm et al. 2014 (10.1021/pr5006923) | v4 # x")
+    assert text.endswith("# [curated] Doe et al. 2020 (10.1000/xyz123) | v4 # x")
     back = N.parse(text, _GROUND, M.REGISTRY)
     assert back["statement"]["evidence"] == row["statement"]["evidence"]
     assert _canonical(back) == _canonical(row)

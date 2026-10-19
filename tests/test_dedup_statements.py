@@ -62,8 +62,8 @@ def _rows(mcp):
 
 
 def test_a_rate_only_change_is_fitted_not_deduplicated(tmp_path):
-    """REGRESSION (rahman r2, schwen r2, oliveira r3, blasi r1): the change came back as a
-    duplicate of HEAD and was never fitted."""
+    """REGRESSION: a change to a rate alone came back as a duplicate of HEAD and was never
+    fitted."""
     mcp = _server(tmp_path)
     assert _change(mcp, "saturating", [_SATURATING])["committed"] is True
     res = _change(mcp, "steeper", [_STEEPER])

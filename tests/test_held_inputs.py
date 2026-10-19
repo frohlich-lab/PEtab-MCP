@@ -12,7 +12,7 @@ from petab_mcp.statements import PopulationTransition
 
 
 def test_a_held_input_that_binds_is_its_free_form():
-    """Isensee's forskolin binds adenylyl cyclase. Held as the free form under an anonymous id,
+    """A drug held as an input binds its target. Held as the free form under an anonymous id,
     with `Fsk` the sum over it and the complex, the condition target set nothing."""
     antimony, _ = PS.to_antimony(
         [(Complex([Agent("forskolin"), Agent("ADCY")]), INDRA_DEFAULT, "r1")],
@@ -26,8 +26,8 @@ def test_a_held_input_that_binds_is_its_free_form():
 
 
 def test_a_condition_target_the_rows_convert_is_a_state_not_an_input():
-    """armistead's conditions set the starting amounts of its measured metabolites, which convert
-    into each other; held on the boundary for being condition targets, they never changed."""
+    """Conditions that set the starting amounts of species the rows convert into each other:
+    held on the boundary for being condition targets, they never changed."""
     antimony, _ = PS.to_antimony(
         [(PopulationTransition(Agent("naive"), Agent("effector")), "mass_action", "r1")],
         {"naive": Agent("naive"), "effector": Agent("effector")},
@@ -39,8 +39,7 @@ def test_a_condition_target_the_rows_convert_is_a_state_not_an_input():
 
 def test_a_started_state_that_binds_is_its_free_form_too():
     """A ligand a row also degrades is a state the conditions only start; named for the sum over
-    it and its complex, its condition target still set nothing (raimundez's EGF, before its rows
-    stopped degrading it with the receptor)."""
+    it and its complex, its condition target still set nothing."""
     rows = [
         (Complex([Agent("EGF"), Agent("EGFR")]), INDRA_DEFAULT, "r1"),
         (DecreaseAmount(None, Agent("EGF")), INDRA_DEFAULT, "deg"),
@@ -69,8 +68,8 @@ def test_the_notes_say_which_condition_targets_are_held(degraded, says):
 
 
 def test_a_started_state_the_rows_make_is_named_too():
-    """armistead's sphinganine is set by its conditions and made by its rows from ceramide, so it
-    has no start of its own to name; looking it up there crashed the build."""
+    """A species the conditions set and the rows make from another has no start of its own to
+    name; looking it up there crashed the build."""
     antimony, _ = PS.to_antimony(
         [(PopulationTransition(Agent("naive"), Agent("effector")), "mass_action", "r1")],
         {"naive": Agent("naive"), "effector": Agent("effector")},

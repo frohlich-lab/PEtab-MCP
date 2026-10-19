@@ -103,9 +103,9 @@ def test_reregistering_an_entry_raises():
 
 def test_every_indra_statement_has_its_default_entry():
     """Without INDRA's own assembly as an entry, every INDRA statement but one phosphorylation
-    form was a library gap, and a seed drawn from the corpus could not be built at all. Its
+    form was a library gap, and a seed of INDRA statements could not be built at all. Its
     parameters carry the row's prefix: INDRA's own `kf_ea_activation_1` names no row, and
-    widening one bound on Fujita meant looking each name up."""
+    widening one bound meant looking each name up."""
     stmt = Activation(Agent("EGFR"), Agent("AKT"))
     model, (emission,) = M.assemble([(stmt, M.INDRA_DEFAULT, "r1")])
     assert emission.rules and emission.parameters == ("r1_kf",)
@@ -177,8 +177,8 @@ def test_a_written_rate_does_not_read_a_starting_amount():
 
 
 def test_a_problem_id_in_a_written_rate_says_how_it_enters():
-    """Blasi's shipped FIXED `d` was refused with only the names a rate may read, so the agent
-    declared `d` and got a new estimated one."""
+    """A shipped FIXED `d` was refused with only the names a rate may read, so the agent declared
+    `d` and got a new estimated one."""
     ids = {"d": M.SHIPPED}
     with pytest.raises(MechanismError, match=r"`d` is a parameter the problem ships.*row's binding"):
         M.written(_BASE_WRITTEN_DEF | {"rate": "kcat * d / (Km + enz)"}, M.REGISTRY, ids)
@@ -263,8 +263,8 @@ def _sbml_parameters(rows, entities=None):
 
 
 def test_rows_bound_to_one_id_share_one_parameter():
-    """Blasi's 25 acetylations run at one `a_basal`: unbound, each row minted its own and the
-    model estimated 25 constants for one."""
+    """Rows that run at one shared rate: unbound, each row minted its own and the model
+    estimated one constant per row for one."""
     a, b = PopulationTransition(Agent("A"), Agent("B")), PopulationTransition(Agent("B"), Agent("C"))
     params, emissions = _sbml_parameters(
         [(a, "mass_action", "ab", {"k": "k_shared"}), (b, "mass_action", "bc", {"k": "k_shared"})]
@@ -304,8 +304,8 @@ def test_a_row_shares_what_the_row_it_names_reads():
 
 
 def test_a_row_sharing_a_scaled_constant_shares_the_constant():
-    """A binding may scale the constant it replaces (Fiedler's `kf="mek_kf*(1 - Sorafenib/K)"`);
-    the constant stays, and a row naming it shares the constant, not the drug's scaling."""
+    """A binding may scale the constant it replaces (`k="fwd_k*(1 - drug/K)"`); the constant
+    stays, and a row naming it shares the constant, not the drug's scaling."""
     model, _ = M.assemble(
         [
             (_FORWARD, "mass_action", "fwd", {"k": "fwd_k*(1 - drug/K)"}),
@@ -318,7 +318,7 @@ def test_a_row_sharing_a_scaled_constant_shares_the_constant():
 
 
 def test_a_row_bound_to_a_number_estimates_nothing():
-    """Perelson's infection runs at a rate fixed to 1; a minted constant there is a k."""
+    """A reference may fix a rate to 1; a minted constant there is a k."""
     params, emissions = _sbml_parameters([(_TRANSITION, "mass_action", "r1", {"k": 1.0})])
     assert "r1_k" not in params and emissions[0].parameters == ()
 
@@ -343,7 +343,7 @@ def test_a_binding_reads_as_an_expression_over_parameters_or_is_refused():
 
 
 def test_a_written_mechanism_binds_like_any_entry():
-    """Sneyd's gating steps are written rates over constants the reference shares."""
+    """A written rate over a constant the reference shares binds like any entry's."""
     library = dict(M.REGISTRY)
     library[("PopulationTransition", "sat")] = M.written(
         {
@@ -379,8 +379,8 @@ _DIVISIVE = {
 
 
 def test_a_written_rate_reads_a_modifier_the_row_names():
-    """Fiedler's sorafenib slows RAF without taking part in the reaction: the rate reads the
-    amount of an agent no role holds, which the row names."""
+    """A drug that slows a reaction without taking part in it: the rate reads the amount of an
+    agent no role holds, which the row names."""
     library = _library_with(_DIVISIVE)
     model, _ = M.assemble(
         [(_TRANSITION, "inhibited", "r1", None, {"inh": Agent("drug")})], library=library
@@ -405,8 +405,8 @@ def test_modifiers_need_an_entry_that_reads_them():
 
 
 def test_a_written_rate_reads_a_list_role():
-    """Conversion's substrate is the list `obj_from`; a rate could not read it, so enzyme
-    kinetics' substrate inhibition had no route but a private entry."""
+    """Conversion's substrate is the list `obj_from`; a rate could not read it, so substrate
+    inhibition had no route but a private entry."""
     from indra.statements import Conversion
 
     library = _library_with(
@@ -426,7 +426,7 @@ def test_a_written_rate_reads_a_list_role():
 
 
 def test_a_row_binds_a_rate_to_an_expression_over_shared_ids():
-    """Isensee's off-rates are KD*kf of the reference's own parameters; minted per row instead,
+    """Off-rates written as KD*kf of the reference's own parameters; minted per row instead,
     they kept k but lost the reference's bounds."""
     params, emissions = _sbml_parameters(
         [(_TRANSITION, "mass_action", "r1", {"k": "KD * kf_on"})]

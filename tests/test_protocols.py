@@ -37,9 +37,9 @@ def _problem(tmp_path, rows: str, targets=("EGF_0", "EGF_rate", "EGF_end")) -> P
     return yaml
 
 
-def test_fujitas_ramp_is_evaluated_and_shown_to_the_antimony_route(tmp_path):
-    """The protocol reached the Antimony agent only as prose in PEtabAgentBench's task text, a
-    third copy beside inputs.tsv and the entity map; the server now serves it from the file."""
+def test_a_ramp_is_evaluated_and_shown_to_the_antimony_route(tmp_path):
+    """The protocol reached the Antimony route only as prose in a task's text, a third copy
+    beside inputs.tsv and the entity map; the server now serves it from the file."""
     yaml = _problem(tmp_path, f"EGF\t{_RAMP}\tEGF_0;EGF_rate;EGF_end")
     session = PetabSession(yaml, provenance_dir=tmp_path / "prov", resolver=StubReferenceResolver())
     (egf,) = session.inputs
@@ -55,9 +55,8 @@ def test_no_file_declares_no_inputs(tmp_path):
 
 
 def test_an_input_names_only_condition_targets_and_time(tmp_path):
-    """Three PEtabAgentBench#6 entity maps put fitted constants in an input (Boehm's Epo
-    degradation, Fiedler's stimulus time constants, Oliveira's transmission steps), handing the
-    agent part of the reference's model where it can neither see nor change it."""
+    """An input that names a fitted constant hands the agent part of the reference's model where
+    it can neither see nor change it."""
     yaml = _problem(tmp_path, "S\tdose*exp(-k1*time)\tdose;k1", targets=("dose",))
     with pytest.raises(ProtocolError, match=re.escape("'S' names k1 (estimated)")):
         Pr.load(yaml.parent, WorkingProblem.from_yaml(yaml))

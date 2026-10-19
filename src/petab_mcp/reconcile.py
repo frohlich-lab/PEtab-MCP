@@ -248,7 +248,7 @@ def formula_identifiers(formula: Any) -> set[str]:
     return _ast_names(ast)
 
 
-#: How a blinded benchmark names a measurement mapping: the observable formula reads
+#: How a problem names a measurement mapping its model must define: the observable formula reads
 #: ``readout_<observableId>``, and the model defines it with an assignment rule.
 READOUT_PREFIX = "readout_"
 
@@ -2309,7 +2309,7 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
 
     # Re-derive the convention on IC rows that ALREADY EXIST, from the value the model declares
     # now — the add-loop above only reaches params in `valid - table_ids`. That covers a seed row
-    # re-authored under the same state name (blasi's x_0ac..x_4ac, each at 1) and a start
+    # re-authored under the same state name (e.g. states x_0..x_4, each at 1) and a start
     # re-declared at another value, neither of which the agent could move: a parameters-arg edit
     # sets bounds/scale only. A shipped row is left as the problem defined it, and an estimated
     # row whose value is still neither 0 nor 1 keeps its fitted nominal and bounds. Restricted to

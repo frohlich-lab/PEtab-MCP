@@ -5,14 +5,14 @@ Neither knows anything about the PEtab problem the model is for, and the SBML th
 be scored against it as it stands. This module is the difference, and it is all problem-specific:
 
 * **Readouts.** PySB numbers every species (``__s0``, ``__s1`` ...), while the fixed observable
-  table reads names: ``pERK``, or a blinded ``readout_pS6_tot``. Each species the entity map
-  names is given that name, or for a blinded mapping an assignment rule of that name.
+  table reads names: ``A_p``, or a ``readout_<observableId>`` mapping. Each species the entity
+  map names is given that name, or for a ``readout_*`` mapping an assignment rule of that name.
 * **Starting amounts.** What is present at the start is traced (below); each present monomer
-  starts at an estimated ``<monomer>_init``, or at the row the problem ships (Crauste's fixed
-  ``Naive_init``) — unless the statements DECLARE what is there (``starts``, below).
+  starts at an estimated ``<monomer>_init``, or at the row the problem ships (a fixed
+  ``<monomer>_init`` row) — unless the statements DECLARE what is there (``starts``, below).
 * **Inputs.** A species the experiment sets is held rather than built: one the condition table
-  targets (Isensee's ``Fsk``), which its periods set, and one the problem's ``inputs.tsv`` holds to
-  a protocol (Fujita's EGF ramp, :func:`protocols.hold`).
+  targets (a drug dose), which its periods set, and one the problem's ``inputs.tsv`` holds to a
+  protocol (a stimulus ramp, :func:`protocols.hold`).
 * **Leftovers.** A rate constant an agent-written mechanism replaced is removed.
 
 The start rests on two assumptions, and a third check refuses the models they do not fit:
@@ -22,8 +22,8 @@ The start rests on two assumptions, and a third check refuses the models they do
    the first of its locations by name). No complex and no modified form exists at the start.
 2. **What the start makes is absent from it.** Every monomer no rule makes from other kinds is
    present (one that only proliferates included), and BioNetGen expands the rules from those. A
-   made monomer that expansion reaches starts empty: Crauste's effectors exist only once naive
-   cells convert. One it does not reach traces back to nothing at the start (populations that
+   made monomer that expansion reaches starts empty: a population that exists only once another
+   converts into it. One it does not reach traces back to nothing at the start (populations that
    only interconvert), so it is present too. A protein synthesised at a steady rate therefore
    starts at zero, not at its steady state; nothing here tells the two apart.
 3. **Every rule fires, and every readout reads a species,** in the expansion from that start. A
@@ -38,15 +38,16 @@ exists, whether a monomer traces back to the start at all, and the expansion's r
 it without a site.
 
 A declared start (``make_changes``' ``starts``) replaces the trace for the monomers it names. The
-species its Agent writes starts at that amount, in exactly the state the Agent writes (mods, location, activity, and the complex its
-``bound_conditions`` form, partners in their default state), and no monomer named in any
-declaration is started any other way: declare each state it starts in. A number other than 0
-becomes ``<name>_init`` and reconcile treats it as any other starting value (1 a unit normalisation,
-fixed; anything else estimated from there), so Blasi's and Sneyd's unit pools cost nothing in k. A
-0 is an empty start with no parameter at all — what lets a species the condition table sets
-(Enzyme kinetics' substrate) carry no ``_init`` that every condition overrides. An expression is the starting amount itself, over parameter ids: a row the
-problem ships (Fiedler's fixed totals), a condition-table column (Lucarelli's ``init_S2``), or a new
-name, estimated. A declared monomer may also be one the rules make (Lucarelli's genes start at 1).
+species its Agent writes starts at that amount, in exactly the state the Agent writes (mods,
+location, activity, and the complex its ``bound_conditions`` form, partners in their default
+state), and no monomer named in any declaration is started any other way: declare each state it
+starts in. A number other than 0 becomes ``<name>_init`` and reconcile treats it as any other
+starting value (1 a unit normalisation, fixed; anything else estimated from there), so a unit pool
+costs nothing in k. A 0 is an empty start with no parameter at all — what lets a species the
+condition table sets (a substrate the conditions dose) carry no ``_init`` that every condition
+overrides. An expression is the starting amount itself, over parameter ids: a row the problem
+ships (a fixed total), a condition-table column (``init_X``), or a new name, estimated. A declared
+monomer may also be one the rules make (e.g. a gene copy that starts at 1).
 
 It is a separate module because none of it is a mechanism: the same library rows would need
 none of this under a server that read PySB directly. This one reads SBML everywhere — reconcile,
@@ -135,7 +136,7 @@ def to_antimony(
             converted |= products - reactants
     # A species the conditions set is an input when the rows only read it (a drug that binds, a
     # hormone that activates). One they make or convert is a state the conditions only start:
-    # held, armistead's metabolites never changed.
+    # held, such a species would never change.
     protocol = {item.id: item for item in inputs}
     set_keys = {s for s in entities if s in protocol or s in targets}
     keys = {s for s in set_keys if s in protocol or entities[s].name not in made | converted}
@@ -258,8 +259,8 @@ def to_antimony(
         old, new = parameter.getId(), readouts[parameter.getName()]
         rule = sbml_model.getAssignmentRuleByVariable(old)
         # A species the conditions or a protocol set is its free form, held or only started: named
-        # for the sum over the complexes it binds into, Isensee's `Fsk` left the condition target
-        # setting nothing.
+        # for the sum over the complexes it binds into, a condition target that binds into
+        # complexes would set nothing.
         free = _free_form(model, sbml_model, base, entities[new].name) if new in set_keys else None
         species = free or sbml_model.getSpecies(rule.getMath().getName() or "")
         if (
@@ -271,8 +272,8 @@ def to_antimony(
             # A readout that IS one species names that species, rather than leaving a rule over
             # it: the reachability checks in `reconcile` and `operations` follow reactions, not
             # rules, and warned that every species was disconnected from the data. Except a
-            # blinded `readout_*` mapping, which the lint requires to stay a rule
-            # (`validation`'s measurement-mapping check refused Fujita's pS6 as a species).
+            # `readout_*` mapping, which `validation`'s measurement-mapping check requires to
+            # stay an assignment rule.
             # A species takes one name: each further readout of it stays a rule over that name.
             old, renamed = species.getId(), species
             named.add(new)
@@ -462,8 +463,8 @@ def _initial_empty(sbml_model, placeholder: str) -> None:
 
 def _free_form(model: pysb.Model, sbml_model, base: dict, monomer: str):
     """The SBML species that is ``monomer`` alone and bound to nothing: its start, or, for one only
-    the rules make (armistead's sphinganine), the one such species the expansion reached; else
-    ``None``."""
+    the rules make (a metabolite made from a precursor), the one such species the expansion
+    reached; else ``None``."""
     if monomer in base:
         return base[monomer]
     names = {
@@ -483,15 +484,15 @@ def _seed(model: pysb.Model, monomers: list[pysb.Monomer]) -> None:
     """Start each of ``monomers`` present, as assumption 1 of the module docstring sets out."""
     for monomer in monomers:
         # Not INDRA's `set_base_initial_condition` itself, whose state this is: its
-        # `<monomer>_0` silently skips a monomer whose name is taken, and Fujita's EGF stimulus
-        # column is `EGF_0`.
+        # `<monomer>_0` silently skips a monomer whose name is taken, and a condition column may
+        # already be named `<monomer>_0`.
         state = {site: monomer.site_states.get(site, [None])[0] for site in monomer.sites}
         locations = monomer.site_states.get("loc", ())
         if locations:
             # Else the first by name, not the first INDRA met: that was whichever row came first.
             state["loc"] = "cytoplasm" if "cytoplasm" in locations else min(locations)
-        # Reconcile's own seed value, not 1, which it holds FIXED as a unit normalisation: the
-        # first version started every Crauste population at one cell that way.
+        # Reconcile's own seed value, not 1, which it holds FIXED as a unit normalisation: a seed
+        # of 1 would have fixed every population at a unit start.
         amount = pysb.Parameter(f"{monomer.name}_init", SEED_INITIAL_VALUE, _export=False)
         model.add_component(amount)
         model.add_initial(pysb.Initial(monomer(**state), amount, _export=False))
@@ -510,7 +511,7 @@ def _expand(model: pysb.Model) -> None:
     network BioNetGen refuses to write.
 
     Expanded with complexes capped at :data:`MAX_COMPLEX` molecules, and refused when one reaches
-    it: statements that let complexes chain without end (STAT5A and STAT5B each dimerising with
+    it: statements that let complexes chain without end (A and B each dimerising with
     itself and with the other, every molecule then holding a free site for the next) otherwise
     keep BioNetGen expanding until the client gives up, call after call, with nothing said."""
     try:
@@ -575,11 +576,10 @@ def _refuse_chains(model: pysb.Model, emissions: list[M.Emission]) -> None:
     """Refuse, before BioNetGen runs, rules whose complexes can chain without end.
 
     A complex can grow without bound when a cycle of bonds lets each molecule on it be bound on
-    one site while binding on another: STAT5A and STAT5B each dimerising with itself and with the
-    other make STAT5A-STAT5A-STAT5B-STAT5B-STAT5A-... The rules say this at once, where the
-    capped expansion (:data:`MAX_COMPLEX`) only finds it out after building every complex up to
-    the cap, which took 19 s on that pair alone and 251 s on a loaded laptop. The cap stays as
-    the backstop for growth the bonds alone do not show.
+    one site while binding on another: A and B each dimerising with itself and with the other
+    make A-A-B-B-A-... The rules say this at once, where the capped expansion
+    (:data:`MAX_COMPLEX`) only finds it out after building every complex up to the cap, which can
+    take minutes. The cap stays as the backstop for growth the bonds alone do not show.
     """
     formed: dict[tuple, set[str]] = {}  # bond, as its two (monomer, site) ends -> rules forming it
     holds: set[tuple[str, str, str]] = set()  # (monomer, s, t): bound on s and t at once
@@ -700,7 +700,7 @@ def _rename(sbml_model, element, new: str) -> None:
 
 def _number_reactions(sbml_model) -> None:
     """Number the reactions ``r0``, ``r1``..., or ``r_0``... when another id already has that form:
-    a shared rate an agent named ``r8`` made every Blasi model's SBML unreadable."""
+    a parameter the caller named ``r8`` would otherwise clash with a reaction id."""
     taken = {
         element.getId()
         for element in sbml_model.getListOfAllElements()

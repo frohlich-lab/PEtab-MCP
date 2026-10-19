@@ -42,8 +42,8 @@ def test_readouts_name_the_species_the_observables_read():
 def test_an_input_is_held_to_its_protocol():
     """A dose is a fact about the experiment: its species sits under the protocol inputs.tsv
     declares, with no starting amount of its own, and every condition target the protocol names
-    exists for the table to set — Fujita's warm start was refused for a column `EGF_0` it had
-    nowhere to put. The entity map need not name it: gemot's statements arm passes an empty one."""
+    exists for the table to set — a warm start was refused for a condition column it had nowhere
+    to put. The entity map need not name it: an empty one is enough."""
     ramp = "piecewise(EGF_0 + EGF_rate*time, time < EGF_end, 0)"
     antimony, _ = PS.to_antimony(
         [(Phosphorylation(Agent("EGF"), Agent("AKT")), INDRA_DEFAULT, "r1")],
@@ -58,8 +58,8 @@ def test_an_input_is_held_to_its_protocol():
 
 
 def test_a_species_the_conditions_set_is_held_without_a_rule():
-    """Isensee's converted experiments set `Fsk` itself, so the problem says it is an input: no
-    file declares it a second time, and a rule `Fsk := Fsk` would read itself."""
+    """Conditions that set the species `Fsk` itself say it is an input: no file declares it a
+    second time, and a rule `Fsk := Fsk` would read itself."""
     antimony, _ = PS.to_antimony(
         [(Phosphorylation(Agent("forskolin"), Agent("AKT")), INDRA_DEFAULT, "r1")],
         {"Fsk": Agent("forskolin")},
@@ -72,7 +72,7 @@ def test_a_species_the_conditions_set_is_held_without_a_rule():
 
 
 def test_chained_dimers_are_refused_before_the_expansion():
-    """STAT5A and STAT5B each dimerising with itself and with the other chain without end;
+    """Two kinds each dimerising with itself and with the other chain without end;
     refused only once BioNetGen had built every complex up to the cap, the refusal took 19 s on
     an idle machine and 251 s on a loaded one. The dimers its advice writes still build."""
     import time
@@ -105,9 +105,9 @@ def test_chained_dimers_are_refused_before_the_expansion():
 
 
 def test_what_is_made_starts_empty_and_what_is_modified_starts_present():
-    """Crauste's effectors exist only once naive cells convert; a kinase that is only ever
-    modified must be there at the start. The modified one's amount is `<monomer>_init`, not
-    INDRA's `<monomer>_0`, which skipped EGF outright because Fujita's stimulus column is `EGF_0`."""
+    """Effectors exist only once naive cells convert; a kinase that is only ever modified must be
+    there at the start. The modified one's amount is `<monomer>_init`, not INDRA's
+    `<monomer>_0`, which skipped EGF outright where the stimulus column is `EGF_0`."""
     antimony, _ = PS.to_antimony(
         [(_TRANSITION, "mass_action", "r1"), (_PHOSPHO, INDRA_DEFAULT, "r2")],
         {"effector": Agent("effector")},
@@ -120,8 +120,7 @@ def test_what_is_made_starts_empty_and_what_is_modified_starts_present():
 
 def test_a_species_two_readouts_read_is_named_once():
     """Renamed once per readout, the species took the second name and left the first defined by
-    nothing, so what read the first read a parameter fitted in place of the species (gemot,
-    boehm r2: two names for STAT5B)."""
+    nothing, so what read the first read a parameter fitted in place of the species."""
     antimony, _ = PS.to_antimony(
         [(_TRANSITION, "mass_action", "r1")],
         {"naive": Agent("naive"), "naive_total": Agent("naive")},
@@ -133,7 +132,7 @@ def test_a_species_two_readouts_read_is_named_once():
 
 def test_a_blinded_readout_stays_a_rule():
     """A `readout_*` symbol is a measurement mapping, which the lint accepts only as an assignment
-    rule; renamed to the species it reads, Fujita's whole statement model was rejected."""
+    rule; renamed to the species it reads, the whole statement model was rejected."""
     antimony, _ = PS.to_antimony(
         [(_TRANSITION, "mass_action", "r1")], {"readout_naive": Agent("naive")}
     )
@@ -143,7 +142,7 @@ def test_a_blinded_readout_stays_a_rule():
 
 def test_a_rate_may_read_time():
     """PySB lists `time` in a rate as a modifier species, which no species is, so every model
-    whose written rate read `time` was unreadable SBML (Oliveira, Crauste, Rahman, Fujita)."""
+    whose written rate read `time` was unreadable SBML."""
     library = dict(M.REGISTRY)
     library[("PopulationTransition", "waning")] = M.written(
         {
@@ -163,7 +162,7 @@ def test_a_rate_may_read_time():
 
 def test_reaction_ids_never_collide_with_the_models_own():
     """PySB numbers reactions `r0`, `r1`... whatever else bears the name: an agent's shared rate
-    `r8` made every Blasi model unreadable SBML. Here the readout `r0` takes it."""
+    `r8` made the model unreadable SBML. Here the readout `r0` takes it."""
     antimony, _ = PS.to_antimony([(_TRANSITION, "mass_action", "conv")], {"r0": Agent("naive")})
     sbml = SbmlModel.from_antimony(antimony).sbml_model
     assert sbml.getSpecies("r0").getName() == "naive()"
@@ -232,8 +231,8 @@ def _ia(sbml, sid):
 
 
 def test_a_declared_unit_pool_replaces_the_estimated_seed():
-    """Blasi's unacetylated H4 and Sneyd's IPR start at 1, which reconcile fixes as a unit
-    normalisation; seeded at an estimated `<monomer>_init` instead, each cost one k for nothing."""
+    """A population that starts at 1 is a unit normalisation, which reconcile fixes; seeded at an
+    estimated `<monomer>_init` instead, each cost one k for nothing."""
     antimony, _ = PS.to_antimony(
         [(_PHOSPHO, INDRA_DEFAULT, "r1")],
         {"MEK": Agent("MEK", db_refs={"HGNC": "6840"})},
@@ -246,8 +245,8 @@ def test_a_declared_unit_pool_replaces_the_estimated_seed():
 
 
 def test_a_made_monomer_can_be_declared_present():
-    """Crauste's effectors start empty because naive cells make them; a population present at the
-    start despite being made (Lucarelli's genes at 1) must say so, and then it is present."""
+    """Effectors start empty because naive cells make them; a population present at the start
+    despite being made must say so, and then it is present."""
     antimony, _ = PS.to_antimony(
         [(_TRANSITION, "mass_action", "r1")],
         {"effector": Agent("effector")},
@@ -259,8 +258,8 @@ def test_a_made_monomer_can_be_declared_present():
 
 
 def test_a_declared_start_is_the_state_the_agent_writes():
-    """Perelson's virus starts infectious, Isensee's RII in each of its states: the start is the
-    Agent's own pattern, every unstated site in its default state."""
+    """A species may start modified, or in each of several states: the start is the Agent's own
+    pattern, every unstated site in its default state."""
     p_erk = Agent._from_json(
         {"name": "ERK", "mods": [{"mod_type": "phosphorylation", "residue": "T", "position": "185"}]}
     )
@@ -277,8 +276,8 @@ def test_a_declared_start_is_the_state_the_agent_writes():
 
 
 def test_a_declared_complex_starts_bound():
-    """Bachmann's EpoR:JAK2 exists before any rule runs; the partner is built on the sites INDRA
-    names after each other."""
+    """A receptor-kinase complex that exists before any rule runs; the partner is built on the
+    sites INDRA names after each other."""
     raf_ras = Agent("RAF", bound_conditions=[BoundCondition(Agent("RAS"))])
     antimony, _ = PS.to_antimony(
         [(Phosphorylation(raf_ras, Agent("MEK")), INDRA_DEFAULT, "r1")],
@@ -291,8 +290,8 @@ def test_a_declared_complex_starts_bound():
 
 
 def test_a_declared_expression_names_parameters_the_table_fills():
-    """Lucarelli's SMADs start at a condition column and Fiedler's kinases at a shipped total; the
-    names become parameters for the tables to fill, the placeholder goes."""
+    """A start at a condition column or at a shipped total: the names become parameters for the
+    tables to fill, the placeholder goes."""
     antimony, _ = PS.to_antimony(
         [(_TRANSITION, "mass_action", "r1")],
         {"naive": Agent("naive")},
@@ -317,8 +316,8 @@ def test_an_input_declares_no_start():
 
 
 def test_a_declared_empty_start_has_no_parameter():
-    """Enzyme kinetics' substrate is set by every condition; an `_init` behind it, even a zero one,
-    was an estimated row no condition left any effect to."""
+    """A substrate every condition sets: an `_init` behind it, even a zero one, was an estimated
+    row no condition left any effect to."""
     antimony, _ = PS.to_antimony(
         [(_TRANSITION, "mass_action", "r1")], {"naive": Agent("naive")},
         starts=[("naive", Agent("naive"), 0)],
@@ -329,8 +328,8 @@ def test_a_declared_empty_start_has_no_parameter():
 
 
 def test_what_rules_make_from_nothing_is_noted_as_starting_empty():
-    """Fujita r2's EGFR, made by zero-order synthesis, started at 0 with nothing said. A start
-    declared at 0 says it, and drops the note."""
+    """A kind made by zero-order synthesis started at 0 with nothing said. A start declared at 0
+    says it, and drops the note."""
     from indra.statements import IncreaseAmount
 
     rows = [(IncreaseAmount(None, Agent("EGFR")), INDRA_DEFAULT, "r1")]
@@ -361,8 +360,7 @@ def test_a_start_location_chosen_among_several_is_noted():
 
 def test_indra_padded_rules_build():
     """INDRA pads one-step Conversion and subject-driven amount rules with None for Kappa; the
-    trace read every side as a complex and every such statement failed to build (Bachmann's
-    SOCS3-driven degradation, Bruno's conversions, Sneyd's gating)."""
+    trace read every side as a complex and every such statement failed to build."""
     from indra.statements import Conversion, DecreaseAmount
 
     antimony, _ = PS.to_antimony(
@@ -377,7 +375,7 @@ def test_indra_padded_rules_build():
 
 def test_complexes_that_grow_without_bound_are_refused():
     """Homo- and heterodimers of two kinds chain without end; BioNetGen expanded such a network
-    until the client timed out (a gemot run on boehm, 1092 s per call, six calls)."""
+    until the client timed out."""
     from indra.statements import Complex
 
     rows = [
@@ -408,8 +406,8 @@ def test_the_dimers_the_refusal_advises_are_not_refused():
 
 # -- readout formulas (make_changes' `readouts` over `amounts`) ----------------------
 def test_a_readout_formula_reads_other_entries_and_parameters():
-    """Boehm's pSTAT5A readout is a ratio of two patterns scaled by a shipped constant; one
-    pattern's amount cannot say it."""
+    """A readout may be a ratio of two patterns scaled by a shipped constant; one pattern's
+    amount cannot say it."""
     p_erk = Agent._from_json(
         {"name": "ERK", "mods": [{"mod_type": "phosphorylation", "residue": "T", "position": "185"}]}
     )
@@ -427,8 +425,8 @@ def test_a_readout_formula_reads_other_entries_and_parameters():
 
 def test_a_readout_formula_reads_an_agent_only_through_amounts():
     """Naming an agent in a formula without declaring it in `amounts` made a parameter of that
-    name, so the readout measured a fitted constant instead of the species (a gemot run on
-    perelson: `readout_viral_load := Virus`, `Virus` estimated at its bound)."""
+    name, so the readout measured a fitted constant instead of the species (`readout_x := X`,
+    `X` estimated at its bound)."""
     with pytest.raises(ModelUpdateError, match="only through `amounts`"):
         PS.to_antimony(
             [(_PHOSPHO, INDRA_DEFAULT, "r1")],
@@ -474,7 +472,7 @@ def _reactions(rows, entities):
 
 
 def test_a_conversion_makes_its_products_in_the_states_they_write():
-    """Two reactants into one stated product: Boehm's phosphorylation-and-dimerisation step, which
+    """Two reactants into one stated product, a phosphorylation-and-dimerisation step, which
     INDRA's Conversion (one reactant, base-state products) could not build."""
     from indra.statements import Conversion
 
@@ -489,7 +487,7 @@ def test_a_conversion_makes_its_products_in_the_states_they_write():
 
 
 def test_a_release_frees_the_partner_it_was_bound_to():
-    """Schwen's internalised insulin is degraded and its receptor recycles; INDRA's degradation
+    """An internalised ligand is degraded and its receptor recycles; INDRA's degradation
     deletes the whole complex, receptor included."""
     from indra.statements import Complex, DecreaseAmount
 
@@ -506,7 +504,7 @@ def test_a_release_frees_the_partner_it_was_bound_to():
 
 
 def test_a_population_renews_itself():
-    """Crauste's effectors expand from themselves; INDRA reads "X increases X" as nothing."""
+    """A population expands from itself; INDRA reads "X increases X" as nothing."""
     from indra.statements import IncreaseAmount
 
     reactions = _reactions(
@@ -516,8 +514,8 @@ def test_a_population_renews_itself():
 
 
 def test_a_modification_goes_on_without_an_enzyme():
-    """Blasi's acetylations and Brannmark's basal receptor phosphorylation have no named enzyme;
-    `basal` existed only for removal."""
+    """Basal acetylations and phosphorylations have no named enzyme; `basal` existed only for
+    removal."""
     from indra.statements import Acetylation
 
     reactions = _reactions(
@@ -544,8 +542,8 @@ def _p(name, residue="S", position="1", modified=True, **kwargs):
 
 
 def test_a_stated_complex_comes_apart_only_as_stated():
-    """Schwen's internalised complexes must not dissociate at the surface rate: the reverse
-    reaction keeps the member's stated phospho-state, where INDRA's dissociates any complex."""
+    """An internalised complex must not dissociate at the surface rate: the reverse reaction
+    keeps the member's stated phospho-state, where INDRA's dissociates any complex."""
     from indra.statements import Complex
 
     reactions = _reactions(
@@ -561,8 +559,8 @@ def test_a_stated_complex_comes_apart_only_as_stated():
 
 
 def test_an_assembly_joins_repeated_members_in_one_step():
-    """Lucarelli's SMAD2 + 2 SMAD3 trimer forms in one irreversible step; INDRA's multi_way has
-    one site per partner type and cannot hold the second SMAD3."""
+    """An A + 2 B trimer forms in one irreversible step; INDRA's multi_way has one site per
+    partner type and cannot hold the second B."""
     from indra.statements import Complex
 
     (reaction,) = _reactions(
@@ -575,7 +573,7 @@ def test_an_assembly_joins_repeated_members_in_one_step():
 
 
 def test_a_nondepleting_ligand_occupies_without_being_used_up():
-    """Isensee's cAMP is in excess: occupying RII leaves the free pool as it was, and vacating
+    """A ligand in excess: occupying its receptor leaves the free pool as it was, and vacating
     deletes only the bound copy."""
     from indra.statements import Complex
 
@@ -590,7 +588,7 @@ def test_a_nondepleting_ligand_occupies_without_being_used_up():
 
 
 def test_a_processive_step_sets_every_listed_site():
-    """Lucarelli's SMAD2 goes from S to ppS in one step at both C-terminal serines."""
+    """A substrate goes from unmodified to modified at both of its sites in one step."""
     sub = Agent._from_json(
         {
             "name": "S",
@@ -609,7 +607,7 @@ def test_a_processive_step_sets_every_listed_site():
 
 
 def test_a_dissociative_removal_dissolves_the_complexes_it_was_in():
-    """Lucarelli's nuclear phosphatase releases the trimer's members as it dephosphorylates SMAD2."""
+    """A phosphatase releases a complex's members as it dephosphorylates the one it binds."""
     from indra.statements import Complex, Dephosphorylation
 
     reactions = _reactions(
@@ -625,8 +623,8 @@ def test_a_dissociative_removal_dissolves_the_complexes_it_was_in():
 
 
 def test_a_shared_rate_named_by_a_start_is_not_a_unit_pool():
-    """Bachmann's receptor total is both a rate constant several rows share and the receptor's
-    start; minted at 1.0 by the binding, reconcile read it as a unit normalisation and fixed it."""
+    """A receptor total that is both a rate constant several rows share and the receptor's start;
+    minted at 1.0 by the binding, reconcile read it as a unit normalisation and fixed it."""
     antimony, _ = PS.to_antimony(
         [(_TRANSITION, "mass_action", "r1", {"k": "total"})],
         {"naive": Agent("naive")},
@@ -637,7 +635,7 @@ def test_a_shared_rate_named_by_a_start_is_not_a_unit_pool():
 
 
 def test_a_protein_is_made_in_the_state_it_is_written():
-    """Alkan's p21 is made in the S- or G2-phase cells it is measured in; INDRA's IncreaseAmount
+    """A protein made in the state (here a location) it is measured in; INDRA's IncreaseAmount
     makes the base state."""
     from indra.statements import IncreaseAmount
 

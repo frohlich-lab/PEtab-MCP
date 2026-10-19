@@ -172,8 +172,8 @@ class StatementRow(BaseModel):
 
     statement: dict[str, Any] = Field(
         description="the assertion as an INDRA statement's JSON: its `type` and agents, e.g. "
-        "{type: 'Phosphorylation', enz: {name: 'MAP2K1'}, sub: {name: 'MAPK1'}, residue: 'T', "
-        "position: '185'}."
+        "{type: 'Phosphorylation', enz: {name: 'A'}, sub: {name: 'B'}, residue: 'S', "
+        "position: '10'}."
     )
     policy: str = Field(description="the mechanism expressing it, e.g. 'indra_default'.")
     prefix: str = Field(
@@ -199,7 +199,7 @@ class StartRow(BaseModel):
 
     agent: dict[str, Any] | str = Field(
         description="the species in the state it starts in: INDRA Agent JSON or the notation, "
-        "e.g. 'H4' or 'EGFR{-pY1068}'; a complex through its bound partners ('RAF{!RAS}')."
+        "e.g. 'A' or 'A{-pS10}'; a complex through its bound partners ('A{!B}')."
     )
     amount: float | str = Field(
         description="its starting amount: a number (1 is a fixed unit pool, 0 an empty start, "
@@ -240,11 +240,11 @@ class MechanismDef(BaseModel):
     )
     rate: str | None = Field(
         default=None,
-        description="(instead of `scheme`) the rate COEFFICIENT, over the statement type's role names (each the amount "
-        "of that agent: `enz`, `sub`, `subj`, `source`, ...), your `parameters`, `time`, and "
-        "exp/log/sqrt. It is multiplied by every reactant's amount, catalysts included, so a "
-        "rate that stays non-negative cannot drive an amount negative: `kcat / (Km + sub)` is "
-        "Michaelis-Menten."
+        description="(instead of `scheme`) the rate COEFFICIENT, over the statement type's role "
+        "names (each the amount of that agent: `enz`, `sub`, `subj`, `source`, ...), your "
+        "`parameters`, `time`, and exp/log/sqrt. It is multiplied by every reactant's amount, "
+        "catalysts included, so a rate that stays non-negative cannot drive an amount negative; "
+        "a constant `k` alone is mass action."
     )
     parameters: list[str] = Field(
         default_factory=list,
@@ -941,8 +941,8 @@ def _make_changes_statements_doc(bound: bool = True, held: dict[str, Any] | None
         "`statements` is a third model route, and still exactly ONE route per call: it authors "
         "the WHOLE model from mechanism assertions rather than text, each an INDRA statement "
         "with the `policy` (mechanism) that turns it into reactions and a `prefix` naming its "
-        "parameters. A row may be one line instead of JSON: `r1: EGFR{pY1068} phosphorylates "
-        "AKT1 at S473 | two_step kf=k_on`, agents as NAME{pY1068, -pS473, @nucleus, !BOUND, "
+        "parameters. A row may be one line instead of JSON: `r1: A{pS10} phosphorylates "
+        "B at T20 | two_step kf=k_on`, agents as NAME{pS10, -pT20, @LOCATION, !BOUND, "
         "~UNBOUND} (see `get_model(format='statements')` for a model written that way)."
         "  Every INDRA statement type"
         + (f" but {', '.join(without)}" if without else "")
@@ -1378,7 +1378,7 @@ def _register_model_tools(
                     )
                 except Exception as exc:
                     # A crash, not a refusal: logged where every tool's crash lands (`_Ctx.run`),
-                    # so a sweep's errors.jsonl shows it, and raised. It escaped unlogged before.
+                    # so the provenance error log (`get_errors`) records it, and raised.
                     ctx.log_error("make_changes", {"n_statements": len(rows)}, exc)
                     session.logger.exception("make_changes crashed building the statements' model")
                     raise
@@ -2416,7 +2416,7 @@ def create_server(
 
     _register_read_tools(mcp, route)
     # Offered whenever a map was given, even an empty one: a problem whose observables all read
-    # formulas, and whose starts are the statements' own, binds nothing in it (Rahman).
+    # formulas, and whose starts are the statements' own, binds nothing in it.
     _register_model_tools(mcp, route, statements=entity_map is not None)
     _register_parameter_tools(mcp, route)
     _register_fit_tools(mcp, route)

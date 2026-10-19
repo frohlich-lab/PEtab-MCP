@@ -354,9 +354,9 @@ def _fix_at_point(view, x_full, x_names) -> None:
     scored at, so that it is a valid PEtab problem of its own.
 
     A fixed-θ view starts from the training tables, and a held-out set that measures part of them
-    leaves rows nothing references — fontaine's one pulse experiment uses the scale, offset and
-    noise of one cytometry day out of nine — which libpetab's lint refuses as EXTRANEOUS when
-    pyPESTO imports the view. So the view keeps the experiments its rows were measured in, the
+    leaves rows nothing references — a held-out experiment measured on one day of several uses
+    only that day's scale, offset and noise rows — which libpetab's lint refuses as EXTRANEOUS
+    when pyPESTO imports the view. So the view keeps the experiments its rows were measured in, the
     conditions those experiments apply, and the parameter rows the lint keeps for what is left
     (:func:`_without_extraneous`). Every remaining row is then fixed: at the caller's ``x_full``
     (on its estimation scale, matched by name, :func:`_reduced_from_named`) where the table

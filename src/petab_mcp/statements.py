@@ -1,18 +1,17 @@
 """The mechanism vocabulary: what one model edit ASSERTS.
 
-This module owns the layer the paper's Appendix B.3 calls bindings (``S``) and records as not
-currently separable — today a binding exists only as a reference inside the authored model
-text, so nothing can be revised across its instances. Here it is declared by the agent at edit
-time and stored beside the model, never recovered from it: inference from finished rate laws is
-pattern matching run backwards, and the model does not record which species are modified forms
-of which.
+This module owns the bindings, which agents each mechanism applies to. Without it a binding
+exists only as a reference inside the authored model text, so nothing can be revised across its
+instances. Here it is declared by the agent at edit time and stored beside the model, never
+recovered from it: inference from finished rate laws is pattern matching run backwards, and the
+model does not record which species are modified forms of which.
 
 Statements are ``indra.statements.Statement`` instances. Nearly all are INDRA's own —
 Phosphorylation, Complex, Activation, IncreaseAmount, Translocation and the rest cover what a
 molecular model asserts. The one type here covers what INDRA's vocabulary does not, and the gap is
-not an oversight on INDRA's part: its types describe molecular biochemistry, while a third of the
-benchmark collection is cell-population and epidemiological dynamics. Confining the agent to
-INDRA's set would exclude those benchmarks outright.
+not an oversight on INDRA's part: its types describe molecular biochemistry, while much
+mechanistic modelling is cell-population and epidemiological dynamics. Confining the agent to
+INDRA's set would exclude those models outright.
 
 It is written as an INDRA subclass rather than as a parallel vocabulary so that one dispatch
 serves both: the PySB assembler, Agent grounding, ``Preassembler`` deduplication and belief all
@@ -21,7 +20,7 @@ services and network viewers, which enumerate the built-in types; nothing on the
 scoring path depends on them.
 
 Grounding is OPTIONAL here, deliberately. A molecular agent carries ``db_refs`` and stays
-comparable against the corpus; a T-cell compartment carries none, and neither does an unnamed
+comparable against the corpus; a population compartment carries none, and neither does an unnamed
 mediator — which needs no type of its own, being an ungrounded agent in an ordinary statement.
 An absent grounding warns rather than rejects (:func:`ungrounded`).
 
@@ -54,7 +53,7 @@ from indra.statements.statements import mk_str
 
 
 class PopulationTransition(Statement):
-    """One population becomes another: naive to effector, susceptible to infected.
+    """One population becomes another: a compartment, cell state or class moving to the next.
 
     Not INDRA's ``Conversion``, which converts molecular species with explicit reactant and
     product lists and carries a catalyst slot that has no reading here.
@@ -158,7 +157,7 @@ def problems(statement: Any) -> list[str]:
 def agent_problems(agent: Any, where: str) -> list[str]:
     """What keeps ``agent`` (INDRA's Agent JSON, at ``where``) from building as written."""
     if not isinstance(agent, dict):
-        return [f"`{where}` is an agent, an object like {{\"name\": \"MAPK1\"}}, not {agent!r}"]
+        return [f"`{where}` is an agent, an object like {{\"name\": \"A\"}}, not {agent!r}"]
     out = _unknown(agent, _AGENT, f"`{where}`", "an agent")
     if not isinstance(agent.get("name"), str) or not agent["name"]:
         out.append(f"`{where}` has no `name`")

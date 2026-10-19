@@ -179,9 +179,9 @@ class ProvenanceStore:
         if model_source:
             (vdir / "model_source.ant").write_text(model_source, encoding="utf-8")
         # What a `statements` commit asserted, beside the source it generated: the row is what
-        # a later `revise` addresses and the corpus harvest counts, and neither is recoverable
-        # from the expanded model. A commit that submits no model text inherits its rows, like
-        # its source (see session._snapshot_version).
+        # a later `revise` addresses, and it cannot be recovered from the expanded model. A
+        # commit that submits no model text inherits its rows, like its source (see
+        # session._snapshot_version).
         if statements:
             (vdir / "statements.json").write_text(
                 json.dumps(statements, indent=2), encoding="utf-8"

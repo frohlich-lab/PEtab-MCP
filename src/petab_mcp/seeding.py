@@ -1,12 +1,12 @@
 """The entity map: what links this PEtab problem to INDRA.
 
-The entity map is SUPPLIED, not derived: no corpus knows that this problem's ``pAkt`` means
-UniProt P31749 phosphorylated at S473. It is read from a path on the command line, so
+The entity map is SUPPLIED, not derived: no corpus knows that this problem's ``A_p`` means
+protein PROTA phosphorylated at S10. It is read from a path on the command line, so
 benchmark-specific data stays out of this package. Each species maps to an INDRA ``Agent`` in
 INDRA's own JSON, so the state rides in INDRA's own ``mods``::
 
-    {"pAkt": {"name": "AKT1", "db_refs": {"UP": "P31749"},
-              "mods": [{"mod_type": "phosphorylation", "residue": "S", "position": "473"}]}}
+    {"A_p": {"name": "PROTA", "db_refs": {"UP": "<accession>"},
+             "mods": [{"mod_type": "phosphorylation", "residue": "S", "position": "10"}]}}
 
 The same map names each species' PySB pattern (:func:`problem_sbml.to_antimony`), which is what
 binds a model built from statements to the fixed observable table. It does not declare which
@@ -30,8 +30,8 @@ from indra.statements import Agent
 from .errors import EntityMapError
 
 #: The keys an entry is read by: INDRA's ``Agent`` JSON. Any other key is left to the map's other
-#: readers (PEtabAgentBench's ``ptms``), except one close to these, which is a typo that would
-#: otherwise be dropped without a word.
+#: readers (a benchmark's own annotation keys), except one close to these, which is a typo that
+#: would otherwise be dropped without a word.
 ENTRY_KEYS = (
     "name",
     "db_refs",
@@ -49,17 +49,17 @@ def _entries(path: str) -> dict[str, dict]:
     if not isinstance(entries, dict):
         raise EntityMapError(
             f"entity map {path} is a JSON {type(entries).__name__}; write an object from each "
-            'species id to its INDRA agent: {"pERK": {"name": "MAPK1", ...}}'
+            'species id to its INDRA agent: {"A_p": {"name": "PROTA", ...}}'
         )
     for species, entry in entries.items():
         where = f"entity map {path}, entry {species!r}"
         if not isinstance(entry, dict):
             raise EntityMapError(
-                f'{where} is {entry!r}; write the INDRA agent it is: {{"name": "MAPK1", ...}}'
+                f'{where} is {entry!r}; write the INDRA agent it is: {{"name": "PROTA", ...}}'
             )
         if not entry.get("name") or not isinstance(entry["name"], str):
             raise EntityMapError(
-                f'{where} needs the name of the INDRA agent it is: "name": "MAPK1"'
+                f'{where} needs the name of the INDRA agent it is: "name": "PROTA"'
             )
         if "input" in entry:
             raise EntityMapError(
