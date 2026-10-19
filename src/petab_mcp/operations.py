@@ -725,6 +725,7 @@ def statements_to_antimony(
         library,
         session.inputs,
         declared,
+        targets=frozenset(R.condition_target_symbols(session.problem)),
     )
     record = {
         "rows": [
