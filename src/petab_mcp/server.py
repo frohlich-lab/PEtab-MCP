@@ -72,8 +72,8 @@ SERVER_INSTRUCTIONS = (
     "call is one coherent change, scored once. Parameter VALUES come only from that fit, never "
     "by hand. Everything is logged: audit with `list_versions` / `diff_versions` / "
     "`get_provenance` / `get_errors`. Every fitted version is kept and the run is scored on the "
-    "best-bic one regardless, so re-authoring an earlier structure to go back only recompiles, "
-    "refits to the same result, and appends a duplicate."
+    "best-bic one regardless, so an earlier fitted model re-authored exactly is refused, not "
+    "re-fitted: that version already stands for it."
 )
 
 
@@ -862,7 +862,8 @@ produces no version the change is REVERTED as well. So the working model is alwa
 scored one, and there is never an edit waiting to be fit.
 The result IS the fit, flat — the same field names `get_fit_summary` uses — plus two
 flags. Read `applied`: `false` → the change is NOT in the model, either rejected before it
-applied or reverted because the fit failed; `error`/`issues` says which. Then `committed`:
+applied or reverted because the fit failed or an earlier fitted version already IS this model;
+`error`/`issues` says which. Then `committed`:
 `true` → a version exists, read `bic`; `false` with `no_change` → this model already IS a
 version, which stays the working model as stored, so change something else.
 `bic` charges `k` = `n_estimated` + `hardcoded_constants`: a numeric literal in your
@@ -1221,7 +1222,7 @@ def _register_model_tools(
                 "make_changes: `base_version` selects the version whose STORED model the "
                 "edits apply to — it does nothing on its own. Send the change you want as "
                 "`model_edits`; a prior version re-committed unchanged is already a version "
-                "and would only re-fit to the same result. If you wanted to RETURN to that "
+                "and is refused, not re-fitted. If you wanted to RETURN to that "
                 "version because it was better: you do not need to — every fitted version is "
                 "kept and the run is scored on the BEST one, wherever HEAD ends up.",
                 {"base_version": base_version},
@@ -2102,9 +2103,8 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
 
         The cheap, correct way to go back to an earlier model: it restores that version's stored
         fit instead of recompiling and refitting. Prefer this over re-authoring an earlier model
-        with `make_changes` — a re-author recompiles, refits, and appends a byte-identical duplicate
-        version (which `make_changes` will warn about, then refuse, once it detects the repeat), whereas this
-        reuses the existing fit and records a clean restore. Find the target with `list_versions`
+        with `make_changes`, which refuses an exact re-author of a fitted version; this reuses the
+        existing fit and records a clean restore. Find the target with `list_versions`
         (pick the best-scoring / is_new_best version), then `restore_version(v)`. Appends a new
         version rather than erasing history, so a restore is itself auditable."""
         ctx = route()
