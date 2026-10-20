@@ -824,3 +824,69 @@ def test_a_shipped_ic_row_survives_the_zero_skip():
     sm = SbmlModel.from_antimony(ant).sbml_model
     ic = R.ensure_parametric_initial_conditions(sm, protect_ids={"C_init"})
     assert "C_init" in ic and sm.getParameter("C_init") is not None
+
+
+# -- a parameter the model never assigns still gets a value (#38) -------------------------
+# The shape a wholesale `antimony` edit with a `parameters` entry produced: `k_deg` and the
+# exponent `n` appear in a rate law and are never assigned. `k_third` has no value either, but an
+# initial assignment instead.
+_UNASSIGNED = (
+    "model unassigned\n  compartment c = 1;\n  species A in c; A = 2.5;\n  k_third = 1/3;\n"
+    "  deg: A -> ; k_deg*k_third*A^n;\nend\n"
+)
+
+
+def test_an_unassigned_parameter_is_seeded_not_exported_empty():
+    """An unassigned parameter kept no SBML value: its row's nominal was NaN and the stored model
+    read `k_deg = ;`, so anything simulating the model without the table got NaN (#38)."""
+    from petab.v2.C import ESTIMATE, LOWER_BOUND, NOMINAL_VALUE, UPPER_BOUND
+    from petab_mcp.constants import EXPONENT_LOWER_BOUND, EXPONENT_UPPER_BOUND
+    from petab_mcp.problem import LOG10, PARAMETER_SCALE
+
+    prob = _bare_problem(_UNASSIGNED)
+    R.reconcile(prob)
+    row = prob.parameter_df.loc["k_deg"]
+    assert (row[NOMINAL_VALUE], row[PARAMETER_SCALE]) == (R.SEED_INITIAL_VALUE, LOG10)
+    assert bool(row[ESTIMATE])
+    # An exponent's seed sits inside the exponent bracket rather than widening it.
+    row = prob.parameter_df.loc["n"]
+    bracket = (EXPONENT_LOWER_BOUND, EXPONENT_UPPER_BOUND)
+    assert (row[NOMINAL_VALUE], (row[LOWER_BOUND], row[UPPER_BOUND])) == (bracket[0], bracket)
+    sm = prob.model.sbml_model
+    assert sm.getParameter("k_deg").getValue() == R.SEED_INITIAL_VALUE
+    assert not sm.getParameter("k_third").isSetValue()  # its initial assignment is its value
+    ant = prob.model.to_antimony()
+    assert "= ;" not in ant and "k_third = 1/3;" in ant
+
+
+def test_an_unassigned_parameter_takes_its_rows_nominal():
+    """Re-authored without its assignment, a parameter takes the value its row already holds (a
+    fitted nominal, or the shipped one), not the seed, and the rows stay as they were."""
+    from petab.v2.C import NOMINAL_VALUE
+
+    prob = _bare_problem(_UNASSIGNED)
+    R.reconcile(prob)
+    prob.parameter_df.loc["k_deg", NOMINAL_VALUE] = 0.0019  # a fit's write-back
+    shipped = prob.parameter_df.loc[["n"]].copy()
+    shipped.loc["n", NOMINAL_VALUE] = 2.0
+    prob.parameter_df = prob.parameter_df.drop(index="n")
+    prob.model = SbmlModel.from_antimony(_UNASSIGNED)
+    R.reconcile(prob, shipped=shipped)
+    sm = prob.model.sbml_model
+    assert (sm.getParameter("k_deg").getValue(), sm.getParameter("n").getValue()) == (0.0019, 2.0)
+    assert prob.parameter_df.loc["k_deg", NOMINAL_VALUE] == 0.0019
+    assert prob.parameter_df.loc["n", NOMINAL_VALUE] == 2.0
+
+
+def test_an_ic_row_keeps_its_convention_when_its_value_is_dropped():
+    """Re-authored as `P = P_init;` with no value, a unit-normalisation IC read NaN through the
+    {0,1} convention and flipped to ESTIMATED with a NaN nominal (#38)."""
+    from petab.v2.C import ESTIMATE, NOMINAL_VALUE
+
+    prob = _bare_problem(_DECLARED_P.format(1.0))
+    R.reconcile(prob)
+    prob.model = SbmlModel.from_antimony(_DECLARED_P.replace(" P_init = {};", ""))
+    R.reconcile(prob)
+    row = prob.parameter_df.loc["P_init"]
+    assert (row[NOMINAL_VALUE], bool(row[ESTIMATE])) == (1.0, False)
+    assert prob.model.sbml_model.getParameter("P_init").getValue() == 1.0
