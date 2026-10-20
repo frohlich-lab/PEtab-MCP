@@ -1059,6 +1059,24 @@ def _statements_text(session, version: int | None) -> str:
     return "\n".join(lines)
 
 
+def _get_model_doc(statements: bool) -> str:
+    """``get_model``'s description, offering the ``statements`` format only where the route is."""
+    formats = (
+        "'antimony' (the default), 'sbml', or 'statements': a model built from statements as its "
+        "rows, in the notation `make_changes` takes"
+        if statements
+        else "'antimony' (the default) or 'sbml'"
+    )
+    return (
+        "A model as text: the CURRENT one, or with `version=N` a prior version's stored model — "
+        "read that before a `base_version=N` fork, not `get_version`, which also returns the "
+        f"version's per-point simulation and optimizer trace. `format` is {formats}. For the "
+        "structure alone `get_model_structure` is the cheaper read.\n\n"
+        "The trailing `const ...;` line is DERIVED (a parameter is constant unless declared "
+        "`var`): read past it; no operation addresses it."
+    )
+
+
 # ------------------------------------------------------------------ model tools
 def _register_model_tools(
     mcp: FastMCP,
@@ -1081,20 +1099,12 @@ def _register_model_tools(
             """
             return _mechanisms_text(route().session, statement_type)
 
-    @mcp.tool(annotations=_READ_ONLY)
+    @mcp.tool(annotations=_READ_ONLY, description=_get_model_doc(statements))
     def get_model(format: str = "antimony", version: int | None = None) -> str:
-        """A model as text: the CURRENT one, or with `version=N` a prior version's stored model —
-        read that before a `base_version=N` fork, not `get_version`, which also returns the
-        version's per-point simulation and optimizer trace. `format` is 'antimony' (the default),
-        'sbml', or 'statements': a model built from statements as its rows, in the notation
-        `make_changes` takes. For the structure alone `get_model_structure` is the cheaper read.
-
-        The trailing `const ...;` line is DERIVED (a parameter is constant unless declared `var`):
-        read past it; no operation addresses it.
-        """
         ctx = route()
         session = ctx.session
-        if (format or "").lower() == "statements":
+        # Without the route there is no statements format: it is refused as any unknown one is.
+        if statements_route and (format or "").lower() == "statements":
             return _statements_text(session, version)
         if version is None:
             # The RECONCILED model — what is actually fitted, and what `test_make_changes` pins

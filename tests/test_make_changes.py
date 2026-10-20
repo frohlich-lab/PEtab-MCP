@@ -878,6 +878,37 @@ def test_statements_only_documents_and_accepts_no_text_route(tmp_path):
         create_server(str(YAML_PATH), provenance_dir=str(tmp_path / "p2"), statements_only=True)
 
 
+def _agent_facing_text(mcp):
+    """Everything a client is shown before it calls anything: the instructions, every tool's
+    description and argument schema, and every listed skill in full."""
+    import json
+
+    from petab_mcp import skills as skills_mod
+
+    tools = asyncio.run(mcp.list_tools())
+    names = {t.name for t in tools}
+    skills = skills_mod.load_skills(skills_mod.default_skills_dir()) if "get_skill" in names else []
+    return "\n".join(
+        [mcp.instructions or ""]
+        + [f"{t.description}\n{json.dumps(t.parameters)}" for t in tools]
+        + [f"{s.description}\n{s.text}" for s in skills]
+    )
+
+
+def test_no_text_offers_the_statements_route_where_it_does_not_exist(tmp_path):
+    """`get_model` offered its 'statements' format on a server without the route, where the
+    format exists for no model the server can build."""
+    import re
+
+    route = re.compile(r"(?i)\bstatements\b|statement_edits|list_mechanisms|\bindra\b")
+    plain = _agent_facing_text(_server(tmp_path / "plain"))
+    assert not route.findall(plain), sorted(set(route.findall(plain)))
+    tools = asyncio.run(_statements_server(tmp_path).list_tools())
+    assert "'statements'" in next(t for t in tools if t.name == "get_model").description
+    with pytest.raises(Exception, match="Unknown model format 'statements'"):
+        asyncio.run(_server(tmp_path / "p2").call_tool("get_model", {"format": "statements"}))
+
+
 def test_the_refusals_name_statements_only_where_it_is_offered(tmp_path):
     """Two routes at once and no route at all were each refused naming `model_edits` and
     `antimony` only, where `statements` was a route too."""
