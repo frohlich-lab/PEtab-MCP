@@ -47,12 +47,15 @@ def _ensure_swig_on_path() -> None:
 def _build_finished(output_folder: str | Path, model_name: str) -> bool:
     """Did a build of the module ``model_name`` under ``output_folder`` finish: is its compiled
     extension there, with the mark its holder writes once the module imported (``.built``)? An
-    unreadable folder counts as not built."""
+    unreadable folder raises ``OSError``."""
     folder = Path(output_folder)
+    return (folder / ".built").exists() and any((folder / model_name).glob(f"_{model_name}*.so"))
+
+
+def _looks_finished(output_folder: str | Path, model_name: str) -> bool:
+    """:func:`_build_finished`, with an unreadable folder counted as not built."""
     try:
-        return (folder / ".built").exists() and any(
-            (folder / model_name).glob(f"_{model_name}*.so")
-        )
+        return _build_finished(output_folder, model_name)
     except OSError:
         return False
 
@@ -73,10 +76,11 @@ def build_lock(output_folder: str | Path, model_name: str) -> Iterator[None]:
     AMICI compiles only into a missing folder and imports whatever folder is there, so a build that
     stopped would fail every later build of its structure. Under the lock, an unfinished folder is
     one nobody is writing: it is removed before the build, and a build that raises removes its own.
-    A finished one is never removed, since other processes import it without the lock.
+    A finished one is never removed, since other processes import it without the lock, so the look
+    under the lock lets a read error through rather than count the folder unfinished.
     """
     folder = Path(output_folder)
-    if _build_finished(folder, model_name):
+    if _looks_finished(folder, model_name):
         yield
         return
     folder.parent.mkdir(parents=True, exist_ok=True)
@@ -169,7 +173,7 @@ class AmiciEngine:
         if module_hash in self._pypesto_hashes:
             return True
         # an unreadable build root reads as nothing built, rather than risk a build
-        return _build_finished(*self._module_target(module_hash))
+        return _looks_finished(*self._module_target(module_hash))
 
     def _log_pending_import(self, module_hash: str) -> None:
         """Dump the exact model about to be handed to AMICI, BEFORE the import call.

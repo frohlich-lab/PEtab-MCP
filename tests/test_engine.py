@@ -280,6 +280,11 @@ def test_one_amici_build_per_structure(fit_session):
         fit_session, fit_session.engine
     )
     assert problem.objective.amici_model is not None
+    # ...and the real build is one `build_lock` takes for finished; were the extension elsewhere,
+    # every later build would remove the module and compile again, while n_compiles stayed put.
+    from petab_mcp.engine import _build_finished
+
+    assert _build_finished(*fit_session.engine._module_target(fit_session.module_hash()))
 
 
 # -- pre-import model dump ----------------------------------------------------
@@ -341,9 +346,9 @@ def test_a_failing_dump_never_blocks_the_build(engine, session, monkeypatch):
 def test_module_built_asks_for_a_finished_build_not_the_folder(session, tmp_path):
     """The predicate a READ rests on: `ensure_simulation` will simulate a structure whose module
     exists and refuse one whose does not, because the second costs a C++ build (16 s on the toy) and
-    no read may pay one. A HALF-WRITTEN build must therefore read as absent — the output folder and
-    its generated C++ survive a crashed or interrupted build (see the .amici_build cache), and
-    importing that recompiles from scratch."""
+    no read may pay one. A HALF-WRITTEN build must therefore read as absent — the output folder, its
+    generated C++ and even its extension survive a crashed or interrupted build, and the next build
+    removes them and recompiles from scratch."""
     from petab_mcp.engine import AmiciEngine
 
     # a PRIVATE build root: the shared session-scoped one already holds the toy's module

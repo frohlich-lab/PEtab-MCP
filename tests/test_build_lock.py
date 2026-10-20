@@ -107,6 +107,7 @@ def test_an_extension_without_the_finished_mark_still_meets_the_lock(tmp_path):
     with pytest.raises(ModelBuildBusyError, match=name), build_lock(folder, name):
         pass
     os.close(held)
+    assert (folder / name / f"_{name}.so").exists()  # the holder's build, not the contender's
     with build_lock(folder, name):
         _install(folder, name)
     held = filelock.try_lock(f"{folder}.lock")
@@ -170,6 +171,23 @@ def test_a_finished_build_is_never_removed(tmp_path, monkeypatch):
     monkeypatch.setattr(filelock, "try_lock", try_lock)
     with pytest.raises(_Built), build_lock(folder, name):
         raise _Built
+    assert (folder / ".built").exists() and (folder / name / f"_{name}.so").exists()
+
+
+def test_an_unreadable_folder_is_not_taken_for_an_unfinished_one(tmp_path, monkeypatch):
+    """Under the lock the look decides a removal, so a read error there (too many open files)
+    fails the build instead of reading a finished module, which others import, as unfinished."""
+    folder, name = tmp_path / "pypesto_h", "petab_mcp_pp_h"
+    _install(folder, name)
+    (folder / ".built").touch()
+
+    def _emfile(self, *a, **k):
+        raise OSError(errno.EMFILE, "Too many open files")
+
+    monkeypatch.setattr(Path, "glob", _emfile)
+    with pytest.raises(OSError, match="Too many open files"), build_lock(folder, name):
+        pass
+    monkeypatch.undo()
     assert (folder / ".built").exists() and (folder / name / f"_{name}.so").exists()
 
 
