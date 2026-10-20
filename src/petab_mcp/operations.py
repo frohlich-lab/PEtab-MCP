@@ -714,7 +714,7 @@ def statements_to_antimony(
     amount, over ``amounts`` (name to agent) (:func:`problem_sbml.to_antimony`). Returns the Antimony; the provenance record —
     ``rows``, each with the :class:`mechanisms.Emission` it produced and with its definition when
     the agent wrote its mechanism, ``mechanisms``, the ``written`` ones whether a row uses them or
-    not, and ``starts``; a warning per ungrounded agent, since grounding is
+    not, and ``starts``; one warning naming the ungrounded agents, since grounding is
     optional and its absence is reported, never refused; and the run's written mechanisms, for
     the caller to keep once the change applies.
     """
@@ -857,11 +857,10 @@ def statements_to_antimony(
         "readouts": dict(readouts or {}),
         "amounts": given,
     }
-    warnings = [
-        M.warning(M.SOURCE_EDIT, f"`statements[{i}]` agent(s) {names} carry no grounding.")
-        for i, names in enumerate(map(ungrounded, stmts))
-        if names
-    ] + [M.warning(M.SOURCE_EDIT, note) for note in notes]
+    names = ", ".join(dict.fromkeys(name for stmt in stmts for name in ungrounded(stmt)))
+    warnings = M.warnings_from(
+        M.SOURCE_EDIT, [names and f"`statements` agents carry no grounding: {names}.", *notes]
+    )
     # What a scheme gave a molecule that nothing else gives it, so the agent sees it happen.
     added: dict[tuple[str, str], tuple[list[str], list[int]]] = {}
     for i, e in enumerate(emissions):
