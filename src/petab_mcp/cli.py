@@ -70,6 +70,12 @@ def build_parser() -> argparse.ArgumentParser:
         "`statements` route (see petab_mcp.seeding).",
     )
     parser.add_argument(
+        "--corpus",
+        default=None,
+        help="Pinned INDRA statement corpus (gzipped JSON); with --entity-map, a session with no "
+        "version yet starts from the INDRA warm start it seeds (see petab_mcp.seeding).",
+    )
+    parser.add_argument(
         "--transport",
         default="stdio",
         choices=["stdio", "sse", "streamable-http"],
@@ -179,6 +185,7 @@ def main(argv: list[str] | None = None) -> int:
             skills_dir=args.skills_dir,
             criterion=args.criterion,
             entity_map=args.entity_map,
+            corpus=args.corpus,
             cluster=cluster,
         )
         server.run(transport=args.transport)

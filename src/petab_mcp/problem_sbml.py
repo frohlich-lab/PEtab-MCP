@@ -224,7 +224,8 @@ def to_antimony(
             "statements form from there: one that never fires needs a complex or a modified form "
             "that nothing forms, like a kinase active only while bound to a partner nothing binds "
             "it to. Add the statement that forms it, or, if it is present at t=0, declare it in "
-            "`starts`."
+            "`starts`.",
+            rows=tuple(stuck),
         )
     sbml = export(model, "sbml")  # from the expansion above; BioNetGen does not run again
     base_names = {
@@ -625,7 +626,8 @@ def _refuse_chains(model: pysb.Model, emissions: list[M.Emission]) -> None:
         f"These statements form complexes that grow without bound: rows {rows} bind "
         f"{sorted({node[0] for node, _ in cycle})} into chains ({chain}), each molecule bound on "
         "one site still free to bind on another. Require each partner to be free of its other "
-        "partners where it binds: `A{~B} binds A{~B}`, `A{~A} binds B{~B}`, `B{~A} binds B{~A}`."
+        "partners where it binds: `A{~B} binds A{~B}`, `A{~A} binds B{~B}`, `B{~A} binds B{~A}`.",
+        rows=tuple(rows),
     )
 
 

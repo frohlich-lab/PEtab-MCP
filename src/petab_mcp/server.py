@@ -51,7 +51,7 @@ from . import skills as skills_mod
 from . import validation_data as validation_data_mod
 from .constants import DEFAULT_AUTO_FIT_STARTS
 from .engine import AmiciEngine
-from .errors import PetabMcpError, UnknownEntityError, ValidationError
+from .errors import PetabMcpError, SeedError, UnknownEntityError, ValidationError
 from .formatting import df_to_records, summarize_measurements
 from .session import PetabSession
 
@@ -1077,7 +1077,9 @@ def _statements_text(session, version: int | None) -> str:
 # ------------------------------------------------------------------ model tools
 def _register_model_tools(
     mcp: FastMCP, route: Callable[[], _Ctx], statements: bool = False
-) -> None:
+) -> Callable[..., dict[str, Any]]:
+    """Register the model tools; returns ``make_changes``' implementation, every route offered,
+    for the server's own commit of the warm start (:func:`_warm_start`)."""
     # `make_changes` takes an argument named `statements`; the route flag goes by this name in it.
     statements_route = statements
     if statements:
@@ -1533,7 +1535,7 @@ def _register_model_tools(
             name="make_changes",
             annotations=_MAKE_CHANGES_ANNOTATIONS,
         )(_make_changes)
-        return
+        return _make_changes
 
     # No entity map: nothing binds a statement-built model to the observables, so the route would
     # fail every call. Withheld at the schema like every other route, which also leaves this
@@ -1564,6 +1566,7 @@ def _register_model_tools(
         description=_MAKE_CHANGES_DOC,
         annotations=_MAKE_CHANGES_ANNOTATIONS,
     )(make_changes_antimony)
+    return _make_changes
 
 
 # -------------------------------------------------------------- parameter tools
@@ -2333,6 +2336,23 @@ def _open_ctx(
     return _Ctx(session, engine, held_out)
 
 
+def _warm_start(ctx: _Ctx, make_changes: Callable[..., dict[str, Any]], corpus: str) -> None:
+    """Commit the INDRA warm start from ``corpus`` (:func:`seeding.warm_start`) as a fresh
+    session's first version. It goes through ``make_changes``' ``statements`` route like the
+    agent's own models, so it is fitted, versioned and de-duplicated by the same code, and the
+    agent meets it as the current model, its rows in ``get_model(format='statements')`` and its
+    justification in ``get_provenance``, to edit from there. A resumed session already has its
+    versions and is left as it is."""
+    from . import seeding as seeding_mod
+
+    if ctx.session.provenance.current_version >= 0:
+        return
+    rows, justification = seeding_mod.warm_start(ctx.session, corpus)
+    out = make_changes(justification=justification, statements=rows)
+    if not out.get("applied"):
+        raise SeedError(f"corpus {corpus}: the warm start did not commit: {out.get('error', out)}")
+
+
 def create_server(
     yaml_path: str,
     build_root: str | None = None,
@@ -2347,6 +2367,7 @@ def create_server(
     score_shipped_model: bool = False,
     entity_map: str | None = None,
     cluster: Any | None = None,
+    corpus: str | None = None,
 ) -> FastMCP:
     """Build a FastMCP server bound to the PEtab problem at ``yaml_path``.
 
@@ -2384,12 +2405,21 @@ def create_server(
     (:func:`seeding.load_entity_map`). Giving it offers ``make_changes`` the ``statements`` route;
     omit it and the route does not exist.
 
+    ``corpus`` is a pinned INDRA statement corpus (gzipped JSON, :func:`seeding.load_corpus`); with
+    an ``entity_map``, a session with no version yet starts from the INDRA warm start it seeds,
+    committed as its first version before the server serves (:func:`_warm_start`), and fitted
+    there like any commit.
+
     ``cluster`` (a ``distributed`` cluster, the ``dask`` extra) runs every fit's starts on that
     cluster's workers through one client (:mod:`petab_mcp.dask_engine`); without one, each fit runs
     its starts in local processes. The workers import the compiled models from ``build_root``, so on
     more than one machine it must be on a filesystem they share. An AMICI built without HDF5 cannot
     send a start to a worker, so it refuses the cluster here.
     """
+    if corpus is not None and entity_map is None:
+        raise SeedError(
+            "a corpus seeds through the entity map's groundings and readouts; give `entity_map` too"
+        )
     fit_engine = None
     if cluster is not None:
         from .dask_engine import DaskEngine
@@ -2424,7 +2454,7 @@ def create_server(
     _register_read_tools(mcp, route)
     # Offered whenever a map was given, even an empty one: a problem whose observables all read
     # formulas, and whose starts are the statements' own, binds nothing in it.
-    _register_model_tools(mcp, route, statements=entity_map is not None)
+    make_changes = _register_model_tools(mcp, route, statements=entity_map is not None)
     _register_parameter_tools(mcp, route)
     _register_fit_tools(mcp, route)
     if ctx.held_out is not None:
@@ -2434,5 +2464,7 @@ def create_server(
     # Register the skills loaded above as `list_skills`/`get_skill` tools plus
     # `petab://skills` resources (no-op when no skills were found).
     skills_mod.register_skills(mcp, skills)
+    if corpus is not None:
+        _warm_start(ctx, make_changes, corpus)
 
     return mcp

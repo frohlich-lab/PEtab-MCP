@@ -37,7 +37,16 @@ class MissingDependencyError(PetabMcpError):
 
 
 class ModelUpdateError(PetabMcpError):
-    """An attempt to update the model failed (parse or conversion error)."""
+    """An attempt to update the model failed (parse or conversion error).
+
+    ``rows`` are the prefixes of the ``statements`` rows the failure belongs to, where it is
+    theirs (:mod:`petab_mcp.problem_sbml`); the warm start leaves those out
+    (:mod:`petab_mcp.seeding`).
+    """
+
+    def __init__(self, *args, rows: tuple[str, ...] = ()):
+        super().__init__(*args)
+        self.rows = rows
 
 
 class ValidationError(PetabMcpError):
@@ -64,6 +73,11 @@ class UnknownEntityError(PetabMcpError):
 class EntityMapError(PetabMcpError):
     """The entity map (``--entity-map``) would not be read as written (:mod:`petab_mcp.seeding`).
     Raised as the server opens, before any tool runs."""
+
+
+class SeedError(PetabMcpError):
+    """The pinned corpus (``--corpus``) seeds no model this problem can score
+    (:mod:`petab_mcp.seeding`). Raised as the server opens, before any tool runs."""
 
 
 class MechanismError(PetabMcpError):
