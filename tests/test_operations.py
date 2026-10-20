@@ -264,40 +264,31 @@ def test_change_parameters_bounds(session):
     assert float(recs["k1"]["upperBound"]) == 1e3
 
 
-def test_change_parameters_one_bound_keeps_the_other(session):
-    """A one-sided bound edit was refused with "needs BOTH" (9x in the indra sweep, #86); it keeps
-    the bound the table holds on the other side."""
-    df = session.problem.parameter_df
-    upper, lower = float(df.loc["k1", "upperBound"]), float(df.loc["k2", "lowerBound"])
-    res = O.change_parameters(
-        session,
-        [{"parameter_id": "k1", "lower_bound": 1e-3}, {"parameter_id": "k2", "upper_bound": 10.0}],
-        justification="one side each",
-    )
-    assert res["applied"] is True
-    recs = {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
-    assert (float(recs["k1"]["lowerBound"]), float(recs["k1"]["upperBound"])) == (1e-3, upper)
-    assert (float(recs["k2"]["lowerBound"]), float(recs["k2"]["upperBound"])) == (lower, 10.0)
-
-
-def test_a_one_sided_bound_past_the_kept_one_names_the_kept_one(session):
-    """The kept bound is one the caller never sent, so a crossing must say where it came from
-    rather than report update_parameters' zero-width-box text about it."""
-    with pytest.raises(OperationError, match="keeps its current lowerBound 0.0001.*give both"):
+def test_a_one_bound_edit_is_refused_quoting_the_current_box(session):
+    """The server never picks a bound the caller did not send, so a one-sided edit is refused. The
+    bare "needs BOTH" left agents guessing (9x, #86); the refusal now quotes the box to resend."""
+    before = P.parameters_to_records(session.problem)
+    with pytest.raises(OperationError, match=r"'k1' sets only one bound.*\[0\.0001, 100\]: send"):
         O.change_parameters(
-            session, [{"parameter_id": "k1", "upper_bound": 1e-5}], justification="too low"
+            session, [{"parameter_id": "k1", "lower_bound": 1e-3}], justification="one side"
         )
+    assert P.parameters_to_records(session.problem) == before
+    both = [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 100.0}]
+    assert O.change_parameters(session, both, justification="both sides")["applied"] is True
 
 
-def test_a_forks_one_sided_bound_keeps_the_forked_versions_other_bound(session):
-    """A `base_version` fork filled the other bound from HEAD, handing the fork the abandoned
-    branch's widening that restoring the version is there to undo."""
+def test_a_forks_one_bound_refusal_quotes_the_forked_versions_box(session):
+    """A `base_version` fork restores that version's box, so the box to resend is that one, not
+    the abandoned branch's."""
     stored = session.problem.parameter_df.copy()
     stored.loc["k1", "upperBound"] = 10.0  # the forked version's box; HEAD's upper is 100
-    entry = {"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": None, "scale": None}
-    O._composed_parameter_edit(session, [entry], stored)(session.problem)
-    df = session.problem.parameter_df
-    assert (float(df.loc["k1", "lowerBound"]), float(df.loc["k1", "upperBound"])) == (1e-3, 10.0)
+    with pytest.raises(OperationError, match=r"\[0\.0001, 10\]: send both"):
+        _set_model(
+            session,
+            justification="fork",
+            parameters=[{"parameter_id": "k1", "upper_bound": 5.0}],
+            restore_parameter_df=stored,
+        )
 
 
 def test_change_parameters_names_an_assignment_rule_symbol(session):
@@ -306,7 +297,9 @@ def test_change_parameters_names_an_assignment_rule_symbol(session):
     _set_model(session, ["r3: A => ; k3_bound * A;", "k3_bound := 2 * k1;"])
     with pytest.raises(PetabMcpError, match=r"assignment rule of the model.*it reads k1\."):
         O.change_parameters(
-            session, [{"parameter_id": "k3_bound", "lower_bound": 1e-3}], justification="x"
+            session,
+            [{"parameter_id": "k3_bound", "lower_bound": 1e-3, "upper_bound": 1.0}],
+            justification="x",
         )
 
 

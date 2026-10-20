@@ -112,10 +112,10 @@ class ParameterChange(BaseModel):
         "`antimony` introduces."
     )
     lower_bound: float | None = Field(
-        default=None, description="new lower bound of the estimation interval; omit to keep it."
+        default=None, description="new lower bound of the estimation interval."
     )
     upper_bound: float | None = Field(
-        default=None, description="new upper bound of the estimation interval; omit to keep it."
+        default=None, description="new upper bound of the estimation interval."
     )
     scale: Literal["lin", "log", "log10"] | None = Field(
         default=None,

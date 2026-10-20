@@ -608,7 +608,14 @@ def set_model(
             cause="self_assignment",
         )
 
-    normalized = _normalize_parameter_changes(parameters, arg="parameters") if parameters else []
+    # A fork quotes the forked version's box: that is the one it restores (#86).
+    forked = restore_parameter_df is not None and len(restore_parameter_df)
+    current = restore_parameter_df if forked else session.problem.parameter_df
+    normalized = (
+        _normalize_parameter_changes(parameters, arg="parameters", current=current)
+        if parameters
+        else []
+    )
 
     # Snapshot the currently-estimated parameter ids so we can flag any the re-author drops.
     from petab.v2.C import ESTIMATE
@@ -1346,12 +1353,14 @@ def _normalize_parameter_changes(
     changes: list[dict[str, Any]],
     label: str = "make_changes",
     arg: str = "parameters",
+    current=None,
 ) -> list[dict[str, Any]]:
     """Validate + normalize a ``parameters`` list into ``{parameter_id, lower_bound, upper_bound,
     scale}`` entries (missing fields as ``None``), raising :class:`OperationError` on anything
     malformed. Shared by both edit paths so they enforce exactly the same entry contract (issue
     #114); ``label``/``arg`` name the offending argument in the rejection message, which is why
-    they default to the TOOL's names rather than these functions'."""
+    they default to the TOOL's names rather than these functions'. ``current`` is the parameter
+    table a one-bound refusal quotes the box from, so the caller can resend both (#86)."""
     if not isinstance(changes, list) or not changes:
         raise OperationError(
             f"{label}: {arg!r} must be a non-empty list of "
@@ -1382,7 +1391,20 @@ def _normalize_parameter_changes(
         if lb is None and ub is None and scale is None:
             raise OperationError(
                 f"{label}: the entry for {pid!r} changes nothing — give "
-                "lower_bound, upper_bound and/or scale."
+                "lower_bound+upper_bound and/or scale."
+            )
+        if (lb is None) != (ub is None):
+            box = ""
+            if (
+                current is not None
+                and pid in current.index
+                and {LOWER_BOUND, UPPER_BOUND} <= set(current.columns)
+            ):
+                low, high = (float(current.loc[pid, c]) for c in (LOWER_BOUND, UPPER_BOUND))
+                box = f" Its current bounds are [{low:g}, {high:g}]: send both."
+            raise OperationError(
+                f"{label}: {pid!r} sets only one bound — a bound edit needs BOTH "
+                f"lower_bound and upper_bound (or neither).{box}"
             )
         # Bounds must be real numbers HERE, not at the point of writing them: `update_parameters`
         # coerces with a bare `float(value)`, whose ValueError is not a PetabMcpError and so
@@ -1505,9 +1527,6 @@ def _composed_parameter_edit(session, normalized, stored_df):
     a caller can fork a version AND change one bound in one transaction.
     """
     have_stored = stored_df is not None and len(stored_df)
-    if have_stored and normalized:
-        # A one-sided entry keeps the FORKED version's other bound, not the abandoned branch's.
-        normalized = _keep_other_bound(normalized, stored_df)
     apply_new = _parameter_edit(session, normalized) if normalized else None
     if not have_stored:
         return apply_new
@@ -1533,27 +1552,6 @@ def _composed_parameter_edit(session, normalized, stored_df):
     return edit
 
 
-def _keep_other_bound(normalized: list[dict[str, Any]], df) -> list[dict[str, Any]]:
-    """``normalized`` with each one-sided bound edit's other bound read off ``df`` (#86), for the
-    ids ``df`` has a row for. Refuses a pair that is then no interval — including a kept bound
-    that is blank — naming the kept bound, which the caller never sent."""
-    out = []
-    for ch in normalized:
-        pid, lb, ub = ch["parameter_id"], ch["lower_bound"], ch["upper_bound"]
-        kept = LOWER_BOUND if lb is None else UPPER_BOUND
-        if (lb is None) != (ub is None) and pid in df.index and kept in df.columns:
-            value = float(df.loc[pid, kept])
-            lb, ub = (value, ub) if lb is None else (lb, value)
-            if not lb < ub:  # NaN fails it too
-                raise OperationError(
-                    f"make_changes: {pid!r} gives one bound, so it keeps its current {kept} "
-                    f"{value:g}, and [{lb:g}, {ub:g}] is no interval — give both bounds."
-                )
-            ch = {**ch, "lower_bound": lb, "upper_bound": ub}
-        out.append(ch)
-    return out
-
-
 def _parameter_edit(session, normalized: list[dict[str, Any]]) -> Callable[[Any], dict[str, Any]]:
     """Build the ``param_edit(problem)`` callback that applies ``normalized`` (from
     :func:`_normalize_parameter_changes`) as ONE transactional write, with every per-parameter
@@ -1565,7 +1563,7 @@ def _parameter_edit(session, normalized: list[dict[str, Any]]) -> Callable[[Any]
         scale_checks: list[tuple[str, str]] = []  # (pid, scale) to verify AFTER the batched update
         changed = []
         warnings: list[str] = []
-        for ch in _keep_other_bound(normalized, problem.parameter_df):
+        for ch in normalized:
             pid, lb, ub, scale = (
                 ch["parameter_id"],
                 ch["lower_bound"],
@@ -1573,7 +1571,7 @@ def _parameter_edit(session, normalized: list[dict[str, Any]]) -> Callable[[Any]
                 ch["scale"],
             )
             update: dict[str, Any] = {"id": pid}
-            if lb is not None or ub is not None:
+            if ub is not None:
                 # Widening backstops read the pre-edit bound, so they must run BEFORE any update.
                 # Entries are distinct parameters, so checking them all against the pristine table
                 # (before the single batched write below) is equivalent to interleaving.
@@ -1590,7 +1588,7 @@ def _parameter_edit(session, normalized: list[dict[str, Any]]) -> Callable[[Any]
                 scale_checks.append((pid, scale))
             updates.append(update)
             summary: dict[str, Any] = {"parameter_id": pid}
-            if lb is not None or ub is not None:
+            if ub is not None:
                 summary["lower_bound"], summary["upper_bound"] = lb, ub
             if scale is not None:
                 summary["scale"] = scale
@@ -1625,13 +1623,13 @@ def change_parameters(
     """Batch-edit the bounds and/or scale of one or more parameters in ONE atomic edit.
 
     ``parameters`` is a non-empty list of per-parameter dicts, each naming ``parameter_id`` and any
-    of ``lower_bound`` / ``upper_bound`` (one alone keeps the table's other bound) and ``scale``
+    of ``lower_bound`` / ``upper_bound`` (a bound edit — give BOTH or neither) and ``scale``
     ('lin'|'log'|'log10'). Group everything that belongs to one coherent retuning into a single
     call. Every per-parameter backstop still applies (a re-pinned parameter's 3rd widening, a
     noise-sigma cap, a log scale on a non-positive box); because the whole batch is atomic, one
     rejected entry reverts ALL of them and nothing changes. An EDIT: mutates the parameter table
     but does NOT fit — the fit that scores it is wired at the server layer, not here."""
-    normalized = _normalize_parameter_changes(parameters)
+    normalized = _normalize_parameter_changes(parameters, current=session.problem.parameter_df)
     return _commit_change(
         session,
         "make_changes",
