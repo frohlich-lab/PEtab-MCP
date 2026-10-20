@@ -59,3 +59,46 @@ def test_score_shipped_model_reports_the_nominal_point(amici_build_root, tmp_pat
     summary = fitting.fit_summary(session, engine)
     assert summary["neg_log_likelihood"] == payload["neg_log_likelihood"]
     assert summary["bic"] is not None  # k came from the table, n from the simulation
+
+
+def test_a_delivered_sigma_is_scored_at_its_delivered_value(amici_build_root, tmp_path):
+    """The fit's hierarchical objective inner-solves an estimated sigma. Scoring a delivery
+    through it re-solved `sigma_B` instead of reading the delivered 0.3, and reported a score
+    10.7 deviance units better than the delivered model's (#8)."""
+    import math
+
+    import pandas as pd
+
+    from petab_mcp import fitting
+    from petab_mcp.engine import AmiciEngine
+    from petab_mcp.references import StubReferenceResolver
+    from petab_mcp.session import PetabSession
+
+    work = tmp_path / "work"
+    shutil.copytree(TOY, work)
+    (work / "observables.tsv").write_text(
+        "observableId\tobservableFormula\tnoiseFormula\tnoisePlaceholders\n"
+        "obs_B\tB\tnoiseParameter1_obs_B\tnoiseParameter1_obs_B\n"
+    )
+    meas = pd.read_csv(work / "measurements.tsv", sep="\t", keep_default_na=False)
+    meas.assign(noiseParameters="sigma_B").to_csv(work / "measurements.tsv", sep="\t", index=False)
+    pars = work / "parameters.tsv"
+    pars.write_text(pars.read_text().replace("0.1\tfalse", "0.3\ttrue"))  # sigma_B's row
+    session = PetabSession(
+        str(work / "problem.yaml"),
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+    )
+    engine = AmiciEngine(session, build_root=str(amici_build_root))
+    session.engine = engine
+
+    payload = fitting.score_at_nominal(session, engine)
+    assert payload["fitted_parameters"]["sigma_B"] == pytest.approx(0.3)
+    weighted = [r["residual_weighted"] for r in payload["records"]]
+    at_table = sum(0.5 * w * w + 0.5 * math.log(2 * math.pi * 0.3**2) for w in weighted)
+    assert payload["neg_log_likelihood"] == pytest.approx(at_table, rel=1e-6)
+
+    hierarchical, inner = fitting.estimation_problem(session, engine)
+    assert list(inner) == ["sigma_B"], "the fit would inner-solve it"
+    x = fitting.problem_x_from_nominal(hierarchical, session.problem.parameter_df)
+    assert float(hierarchical.objective(x)) < payload["neg_log_likelihood"] - 1

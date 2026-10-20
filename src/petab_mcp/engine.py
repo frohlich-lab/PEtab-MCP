@@ -217,7 +217,7 @@ class AmiciEngine:
             out.extend(float(v) for v in r)
         return out or None
 
-    def _objective_evaluate(self):
+    def _objective_evaluate(self, joint: bool = False):
         """``(nllh, records, res)`` from the pyPESTO objective at the current nominal values.
 
         The single evaluation path for "what is this model's likelihood". It deliberately does
@@ -236,7 +236,7 @@ class AmiciEngine:
 
         from . import fitting
 
-        problem, _ = fitting.estimation_problem(self.session, self)
+        problem, _ = fitting.estimation_problem(self.session, self, joint=joint)
         x = fitting.problem_x_from_nominal(problem, self.session.problem.parameter_df)
         ret = problem.objective(x, sensi_orders=(0,), return_dict=True)
         rdatas = ret[RDATAS]
@@ -267,8 +267,9 @@ class AmiciEngine:
             "simulations": records,
         }
 
-    def residuals(self) -> dict[str, Any]:
-        """Per-point residuals (raw + noise-weighted) with an objective summary.
+    def residuals(self, joint: bool = False) -> dict[str, Any]:
+        """Per-point residuals (raw + noise-weighted) with an objective summary. ``joint`` is
+        :func:`fitting.estimation_problem`'s.
 
         This is the data source for fit inspection: every measurement point is
         returned with its ``residual`` (natural units), noise-weighted
@@ -277,7 +278,7 @@ class AmiciEngine:
         :mod:`petab_mcp.data_access`.
         """
         with self.session.lock:
-            nllh, records, res = self._objective_evaluate()
+            nllh, records, res = self._objective_evaluate(joint)
 
         n_expected, n_missing = self.simulation_gap(records)
         return {

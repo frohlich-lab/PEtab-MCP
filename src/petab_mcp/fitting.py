@@ -625,7 +625,7 @@ def amici_facing_problem(session):
     return flat, True
 
 
-def estimation_problem(session, engine):
+def estimation_problem(session, engine, *, joint: bool = False):
     """The pyPESTO problem for the session's CURRENT estimation problem, cached on the engine.
 
     ONE pyPESTO problem now serves both jobs that need a likelihood: the multistart fit, and
@@ -647,10 +647,15 @@ def estimation_problem(session, engine):
     cheap relative to a compile: the AMICI module is keyed on :meth:`session.module_hash`, which
     a bounds or value edit does not move, and is reused.
 
+    ``joint`` builds the plain joint objective even where the fit would inner-solve. A pass with
+    no fit scores the table as it stands, and the hierarchical objective would re-solve its
+    sigmas and scalings instead of reading them: a shipped toy delivered at ``sigma_B`` = 0.3
+    scored 10.7 deviance units better than its own table (#8).
+
     Returns ``(problem, inner)`` — see :func:`_build_hierarchical_problem` for the latter
     (``{}`` for an ordinary joint problem).
     """
-    key = session.problem_hash()
+    key = (session.problem_hash(), joint)
     cached = getattr(engine, "_estimation_problem_cache", None)
     if cached is not None and cached[0] == key:
         return cached[1], cached[2]
@@ -666,8 +671,10 @@ def estimation_problem(session, engine):
     # factors, shrinking the outer search) when the problem has cleanly-separable inner
     # parameters; fall back to the ordinary joint objective otherwise.
     amici_problem, _ = amici_facing_problem(session)
-    problem, inner = _build_hierarchical_problem(
-        session, importer_kwargs, petab_problem=amici_problem
+    problem, inner = (
+        (None, {})
+        if joint
+        else _build_hierarchical_problem(session, importer_kwargs, petab_problem=amici_problem)
     )
     if problem is None:
         # Not linted again: every edit that produced this problem was (see validation).
@@ -1448,7 +1455,8 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
                 fit["record"].x_free,
                 k=int(session.problem.n_estimated),
             )
-        sim = engine.residuals()
+        # No fit, no inner solve: the table's sigmas and scalings are the ones scored.
+        sim = engine.residuals(joint=not do_fit)
         records = sim["records"]
         nllh, nll_note = _reconcile_objective(session, fit, sim)
 
