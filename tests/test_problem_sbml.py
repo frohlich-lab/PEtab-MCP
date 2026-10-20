@@ -383,8 +383,10 @@ def test_complexes_that_grow_without_bound_are_refused():
         (Complex([Agent("STAT5A"), Agent("STAT5B")]), "stated", "ab"),
         (Complex([Agent("STAT5B"), Agent("STAT5B")]), "stated", "bb"),
     ]
-    with pytest.raises(ModelUpdateError, match="grow without bound"):
+    with pytest.raises(ModelUpdateError, match="grow without bound") as refused:
         PS.to_antimony(rows, {"STAT5A": Agent("STAT5A"), "STAT5B": Agent("STAT5B")})
+    # Named, so the warm start can leave them out (seeding.warm_start).
+    assert refused.value.rows == ("aa", "ab", "bb")
 
 
 def test_the_dimers_the_refusal_advises_are_not_refused():

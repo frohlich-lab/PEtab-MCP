@@ -38,6 +38,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from indra.statements import (
+    ActiveForm,
     Agent,
     Autophosphorylation,
     Complex,
@@ -107,18 +108,17 @@ def _groundings(agent: Agent) -> set[str]:
     return {f"{ns}:{ref}" for ns, ref in agent.db_refs.items() if ns != "TEXT"}
 
 
-def load_corpus(path: str) -> tuple[list[Statement], dict]:
+def load_corpus(path: str | Path) -> tuple[list[Statement], dict]:
     """The statements of the pinned corpus at ``path`` (JSON, or gzipped JSON as corpora are
     pinned: an object whose ``statements`` are INDRA's JSON), and everything else it records —
     the query, the service and the date that pinned it.
 
     Each statement keeps the corpus's ``n_evidence`` as an attribute of that name: INDRA's reader
-    drops the field, and a pinned corpus lists only a sample of the evidence it counts. Read one
-    record at a time, because INDRA's reader drops a record it cannot read (a type this INDRA
-    lacks) with only a logged warning, and pairing a batch's statements with its records by
-    position then puts every later count on the wrong statement.
+    drops the field, and a pinned corpus lists only a sample of the evidence it counts. Records are
+    read one at a time, so one INDRA cannot read (a type it lacks, or no object at all) is skipped
+    and every count stays on its own statement.
     """
-    opener = gzip.open if path.endswith(".gz") else open
+    opener = gzip.open if str(path).endswith(".gz") else open
     with opener(path, "rt") as fh:
         corpus = json.load(fh)
     if not isinstance(corpus, dict) or not isinstance(corpus.get("statements"), list):
@@ -127,27 +127,40 @@ def load_corpus(path: str) -> tuple[list[Statement], dict]:
         )
     stmts = []
     for record in corpus["statements"]:
+        if not isinstance(record, dict):
+            continue
         for stmt in stmts_from_json([record]):
             stmt.n_evidence = record.get("n_evidence", len(stmt.evidence))
             stmts.append(stmt)
     return stmts, {k: v for k, v in corpus.items() if k != "statements"}
 
 
+def _agents(stmt: Statement) -> list[Agent]:
+    """Every agent ``stmt`` names: its roles, and the partners each must be bound to or free of."""
+    found, todo = [], list(stmt.real_agent_list())
+    while todo:
+        agent = todo.pop()
+        found.append(agent)
+        todo += [bc.agent for bc in agent.bound_conditions]
+    return found
+
+
 def filter_corpus(stmts: list[Statement], entities: dict[str, Agent]) -> list[Statement]:
-    """The statements all of whose agents carry a grounding in ``entities``, each agent named as
-    the map names it where its groundings point at one name: PySB keys a molecule on its name, so
-    a corpus ``AKT1`` beside a map ``Akt`` would build two molecules, and the readout would read
-    the one no statement touches."""
+    """The statements all of whose agents, bound partners included, carry a grounding in
+    ``entities``, each agent named as the map names it where its groundings point at one name:
+    PySB keys a molecule on its name, so a corpus ``AKT1`` beside a map ``Akt`` would build two
+    molecules, and the readout would read the one no statement touches. A partner the map does not
+    ground is one no seeded statement binds, so a rule that needs it would never fire."""
     names: dict[str, set[str]] = {}
     for agent in entities.values():
         for grounding in _groundings(agent):
             names.setdefault(grounding, set()).add(agent.name)
     kept = []
     for stmt in stmts:
-        if not all(_groundings(a) & names.keys() for a in stmt.real_agent_list()):
+        if not all(_groundings(a) & names.keys() for a in _agents(stmt)):
             continue
         stmt = deepcopy(stmt)
-        for agent in stmt.real_agent_list():
+        for agent in _agents(stmt):
             (name, *more) = set().union(*(names.get(g, set()) for g in _groundings(agent)))
             if not more and name != agent.name:
                 agent.name = name
@@ -167,23 +180,21 @@ def _substrate(stmt: Statement) -> Agent | None:
 
 
 def _usable(stmt: Statement, readouts: list[Agent]) -> bool:
-    """Whether ``stmt`` can stand as a seed: a type INDRA's default assembles, every role filled,
-    no complex of more than two, and no site that contradicts every one the readouts of its
-    substrate measure.
+    """Whether ``stmt`` can stand as a seed: a type INDRA's default builds a rule for, every role
+    filled, no complex of more than two, and a site some readout of its substrate measures.
 
     Each clause names what broke a Fujita seed: 11 of 25 statements had no cause ("AKT is
     phosphorylated on some threonine"), others modified AKT at T450 or EGFR at T678 where the data
     measures S473 and Y1068, and one EGF-EGFR-AKT complex kept BioNetGen expanding for minutes —
     INDRA assembles an n-ary complex as pairwise bonds, which chain without end, while the nine
-    statements beside it closed at 25 reactions. The sites are those of EVERY readout of the
-    substrate together: checked a readout at a time, pAKT-S473 and pAKT-T308 each refused the
-    other's site and AKT seeded nothing. An agent acting on itself (``AKT activates AKT``) is
+    statements beside it closed at 25 reactions. ``ActiveForm`` has a default but builds no rule,
+    so the statements route refuses its row. An agent acting on itself (``AKT activates AKT``) is
     deliberately NOT refused: at a coarse-grained level it is a feedback loop through steps the
     model does not name.
     """
     from .mechanisms import INDRA_DEFAULT, REGISTRY
 
-    if (type(stmt).__name__, INDRA_DEFAULT) not in REGISTRY:
+    if isinstance(stmt, ActiveForm) or (type(stmt).__name__, INDRA_DEFAULT) not in REGISTRY:
         return False
     agents = stmt.agent_list()
     if None in agents:
@@ -225,9 +236,8 @@ def _measured_site(stmt: Statement, readouts: list[Agent]) -> ModCondition | Non
 def _on_measured_site(stmt: Statement, readouts: list[Agent]) -> Statement:
     """``stmt`` with an unnamed site read as the measured one: ``EGFR phosphorylates AKT`` seeds
     as phosphorylation at S473, and ``PP2A dephosphorylates AKT`` as its removal. INDRA otherwise
-    names the site ``phospho``, a state no observable reads: Fujita's seeded pAKT stayed at zero,
-    and a seeded dephosphorylation never lowered it. A coarse-graining assumption, made only where
-    the statement leaves the site open."""
+    names the site ``phospho``, a state no observable reads. A coarse-graining assumption, made
+    only where the statement leaves the site open."""
     site = _measured_site(stmt, readouts)
     if site is None or (stmt.residue, stmt.position) == (site.residue, site.position):
         return stmt
@@ -251,9 +261,8 @@ def seed(
     Fujita's 717 tie at belief 1.0, so belief alone ranks almost nothing), then hash, so a corpus
     seeds the same model on every run.
 
-    One statement stands for each set of agent names, which makes the number of such sets
-    touching a readout the seed's real ceiling wherever it is below ``budget``: Fujita's four
-    entities make 12, and its seed of 12 was that ceiling, not the ranking (PEtab-MCP#43).
+    One statement stands for each set of agent names, so the number of such sets touching a
+    readout caps the seed wherever it is below ``budget``: four entities make at most 12.
     """
 
     def rank(stmt: Statement) -> tuple:
@@ -313,6 +322,12 @@ def warm_start(session, path: str) -> tuple[list[dict], str]:
     from . import operations
     from .mechanisms import INDRA_DEFAULT
 
+    read = readouts(session)
+    if not read:
+        raise SeedError(
+            "the entity map binds no species the observables read, so no seed can reach the data; "
+            "a warm start needs the map's readouts"
+        )
     stmts, pinned = load_corpus(path)
     kept = filter_corpus(stmts, session.entities)
     rows = [
@@ -325,7 +340,7 @@ def warm_start(session, path: str) -> tuple[list[dict], str]:
             "policy": INDRA_DEFAULT,
             "prefix": f"seed{rank}",
         }
-        for rank, stmt in enumerate(seed(kept, readouts(session)), 1)
+        for rank, stmt in enumerate(seed(kept, read), 1)
     ]
     left_out: list[str] = []
     while True:

@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 from indra.statements import (
     Activation,
+    ActiveForm,
     Agent,
     Autophosphorylation,
     Dephosphorylation,
@@ -167,10 +168,11 @@ def test_an_unreadable_record_leaves_every_count_on_its_own_statement(tmp_path):
     by position raised `zip() argument 2 is longer than argument 1` (PEtab-MCP#43, bug 3)."""
     records = [
         {"type": "NotAStatement", "id": "x"},
+        None,
         Phosphorylation(PDPK1, AKT1).to_json() | {"n_evidence": 7},
         Dephosphorylation(PP2A, AKT1).to_json() | {"n_evidence": 3},
     ]
-    stmts, pinned = Sd.load_corpus(_corpus_file(tmp_path, records, date="2026-10-20"))
+    stmts, pinned = Sd.load_corpus(Path(_corpus_file(tmp_path, records, date="2026-10-20")))
     assert [(type(s).__name__, s.n_evidence) for s in stmts] == [
         ("Phosphorylation", 7),
         ("Dephosphorylation", 3),
@@ -202,6 +204,24 @@ def test_a_corpus_agent_takes_the_name_the_map_grounds_it_by():
     entities = {"pAkt": _hgnc("Akt", "391", "S", "473"), "PDK1": PDPK1}
     [kept] = Sd.filter_corpus([Phosphorylation(PDPK1, AKT1), Phosphorylation(MTOR, AKT1)], entities)
     assert [a.name for a in kept.agent_list()] == ["PDPK1", "Akt"]
+
+
+def test_a_statement_needing_a_partner_the_map_does_not_ground_is_filtered_out():
+    """39 of Fujita's 348 statements need an agent bound to a partner outside the map (EGFR bound
+    to HSP90): nothing seeded binds it, so the row never fired, and as its pair's best reading it
+    had displaced the pair's buildable ones."""
+    entities = {"pAkt": PAKT1_S473, "PDK1": PDPK1}
+    needs_mtor, needs_akt = (
+        Phosphorylation(_hgnc("PDPK1", "8816", bound=partner), AKT1) for partner in (MTOR, AKT1)
+    )
+    [kept] = Sd.filter_corpus([needs_mtor, needs_akt], entities)
+    assert kept.enz.bound_conditions[0].agent.name == "AKT1"
+
+
+def test_an_active_form_is_no_seed():
+    """INDRA's default builds no rule for an ActiveForm, and the statements route refused the
+    seed's row, which kept the server from opening."""
+    assert Sd.seed([ActiveForm(PAKT1_S473, "kinase", True)], [PAKT1_S473]) == []
 
 
 _MEK, _ERK = _hgnc("MAP2K1", "6840"), _hgnc("MAPK1", "6871")
@@ -253,6 +273,24 @@ def test_a_fresh_session_starts_from_the_warm_start_and_a_resumed_one_is_left_al
     assert (
         len(asyncio.run(resumed.call_tool("list_versions", {})).structured_content["result"]) == 1
     )
+
+
+def test_a_corpus_without_a_map_or_a_map_without_readouts_is_refused(tmp_path, empty_yaml):
+    """The seed filters by the map's groundings and must reach its readouts; without either, the
+    refusal blamed the corpus."""
+    corpus = _corpus_file(tmp_path, [Phosphorylation(_MEK, _ERK).to_json()])
+    with pytest.raises(SeedError, match="give `entity_map` too"):
+        create_server(empty_yaml, provenance_dir=str(tmp_path / "prov"), corpus=corpus)
+    unread = _map_file(tmp_path, json.dumps({"A": _MEK.to_json()}))
+    with pytest.raises(SeedError, match="binds no species the observables read"):
+        create_server(
+            empty_yaml,
+            provenance_dir=str(tmp_path / "prov2"),
+            resolver=StubReferenceResolver(),
+            auto_fit=False,
+            entity_map=unread,
+            corpus=corpus,
+        )
 
 
 def test_a_corpus_that_produces_no_readout_is_refused_as_the_server_opens(tmp_path, empty_yaml):
