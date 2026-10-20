@@ -2265,13 +2265,17 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
     shipped_ids = set(getattr(shipped, "index", []))
     # A parameter the model uses but never assigns (`deg: A -> ; k*A;` with no `k = …`) loads
     # with no SBML value: NaN to anything that reads the model without this table, and `k = ;`
-    # in the Antimony the caller reads back (issue #38). It takes its row's nominal, else the seed
-    # every unassigned name gets on the statements route — an exponent at the bottom of its
-    # bracket, so the seed never widens the box it is fitted in. Seeded rather than refused: the
-    # row it lands in is estimated, so the value is only where the fit starts.
+    # in the Antimony the caller reads back (issue #38). It takes its row's nominal, else
+    # SEED_INITIAL_VALUE (the statements route's seed for an unknown name); an exponent takes the
+    # bottom of its bracket instead, so the seed never widens the box it is fitted in. Seeded
+    # rather than refused: the row it lands in is estimated, so the value is only where the fit
+    # starts. An initial-assignment target (`k = 1/3;`, `j = 2*q;`) has no value either, but its
+    # assignment is its value.
     for pid in sorted(valid):
         parameter = sm.getParameter(pid)
         if parameter is None or not math.isnan(parameter.getValue()):
+            continue
+        if sm.getInitialAssignmentBySymbol(pid) is not None:
             continue
         value = _finite_nominal(problem.parameter_df, pid)
         if value is None:
