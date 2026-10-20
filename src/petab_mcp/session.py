@@ -27,7 +27,14 @@ from .constants import (
     PLATEAU_WINDOW,
 )
 from .data_access import residual_flag, residual_structure_rollup
-from .errors import ModelBuildBusyError, ModelUpdateError, PetabMcpError, ValidationError
+from .errors import (
+    InfrastructureError,
+    ModelBuildBusyError,
+    ModelUpdateError,
+    PetabMcpError,
+    ValidationError,
+    disk_full_error,
+)
 from .fitting import noise_sigma_collapsed, noise_sigma_inflated
 from .parameters import problem_fingerprint, sha16
 from .problem import WorkingProblem, as_bool
@@ -1398,15 +1405,21 @@ class PetabSession:
 
             # Wrap any AMICI/pyPESTO failure (a model that lints clean but cannot be compiled — a
             # reserved-name codegen clash, an unsupported construct) as a ModelUpdateError, so the
-            # tool returns committed=false with an actionable message rather than crashing.
+            # tool returns committed=false with an actionable message rather than crashing. Unless
+            # the disk is full: the build directory is written to before the model is blamed,
+            # since a build whose install step hit the quota fails only at the import after it.
             try:
                 fitsim, improvement = self._auto_fit_and_improvement(n_starts)
-            except ModelBuildBusyError:
-                self._fit_attempts[fit_key] -= 1  # nothing was fitted, so a retry is not a loop
+            except (ModelBuildBusyError, InfrastructureError):
+                self._fit_attempts[fit_key] -= 1  # nothing was scored, so a retry is not a loop
                 raise
             except PetabMcpError:
                 raise
             except Exception as exc:  # noqa: BLE001 - surface as a clean, actionable rejection
+                disk_full = disk_full_error(exc, getattr(self.engine, "build_root", None))
+                if disk_full is not None:
+                    self._fit_attempts[fit_key] -= 1
+                    raise disk_full from exc
                 raise ModelUpdateError(_compile_fit_failure_message(exc)) from exc
 
             staged = list(staged_edits or [])

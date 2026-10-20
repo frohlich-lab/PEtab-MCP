@@ -48,7 +48,7 @@ from .constants import (
     PARAMETER_AT_BOUND_RELATIVE_TOL,
 )
 from .engine import build_lock
-from .errors import FitBackendError, ModelBuildBusyError, ModelUpdateError
+from .errors import FitBackendError, ModelBuildBusyError, ModelUpdateError, disk_full_error
 from .formatting import finite_float as _flt
 from .parameters import structure_fingerprint
 from .problem import (
@@ -415,7 +415,13 @@ def _write_pypesto_result(session, result, problem_hash: str) -> str | None:
     objective (an AMICI model) is not serialised (``problem=False``), and any storage
     failure is logged and swallowed so it never fails a fit; the JSON traces remain the
     primary, always-present artifact.
+
+    A full disk is the exception, and is looked for BEFORE the write: h5py segfaults closing a file
+    the disk refused, which no ``except`` catches, and took the server down in 15 runs of one sweep
+    (PEtab-MCP#83). It raises :class:`~petab_mcp.errors.InfrastructureError` instead.
     """
+    if (disk_full := disk_full_error(None, session.provenance.root)) is not None:
+        raise disk_full
     try:
         import pypesto.store as pypesto_store
 
