@@ -157,7 +157,6 @@ def instantiate(
             cause="malformed_mechanism" if typo else "library_gap",
         )
     entry = library[key]
-    stmt = _site_unwritten(stmt)
     if modifiers:
         if not getattr(entry, "modifiers", ()):
             raise MechanismError(
@@ -168,22 +167,6 @@ def instantiate(
             )
         return entry(stmt, model, prefix, modifiers=modifiers)
     return entry(stmt, model, prefix)
-
-
-def _site_unwritten(stmt: Statement) -> Statement:
-    """A modification with its substrate's written state on the modified site left out, so the
-    entry's state for that site holds. INDRA's patterns put an agent's written site over the one
-    a rule sets: "AKT1{pS473} is dephosphorylated at S473" built ``pS473 >> pS473``."""
-    if not isinstance(stmt, Modification) or stmt.sub is None:
-        return stmt
-    site = get_mod_site_name(stmt._get_mod_condition())
-    mods = [m for m in stmt.sub.mods if get_mod_site_name(m) != site]
-    if len(mods) == len(stmt.sub.mods):
-        return stmt
-    stmt = copy(stmt)
-    stmt.sub = copy(stmt.sub)
-    stmt.sub.mods = mods
-    return stmt
 
 
 def bind(
@@ -915,6 +898,23 @@ def _transition(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
 BASAL = "basal"
 
 
+def _site_unwritten(stmt: Statement) -> Statement:
+    """A modification with its substrate's written state on the modified site left out, for the
+    entries whose sides INDRA's ``get_monomer_pattern(..., extra_fields=...)`` builds: it puts the
+    agent's written site over the rule's, so "AKT1{pS473} is dephosphorylated at S473" built
+    ``pS473 >> pS473``. Schemes and written rates still read the substrate as written."""
+    if not isinstance(stmt, Modification) or stmt.sub is None:
+        return stmt
+    site = get_mod_site_name(stmt._get_mod_condition())
+    mods = [m for m in stmt.sub.mods if get_mod_site_name(m) != site]
+    if len(mods) == len(stmt.sub.mods):
+        return stmt
+    stmt = copy(stmt)
+    stmt.sub = copy(stmt.sub)
+    stmt.sub.mods = mods
+    return stmt
+
+
 def _no_enzyme(stmt: Statement, prefix: str) -> None:
     """Refuse a `basal` row whose statement names an enzyme: the rule has no place for one, so the
     enzyme the row asserts would be left out of the model without a word."""
@@ -936,8 +936,9 @@ def _basal_removal(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
     site = get_mod_site_name(mod)
     unmod, modified = states[mod.mod_type]
     k = pysb.Parameter(f"{prefix}_k", 1.0, _export=False)
-    before = get_monomer_pattern(model, stmt.sub, extra_fields={site: modified})
-    after = get_monomer_pattern(model, stmt.sub, extra_fields={site: unmod})
+    sub = _site_unwritten(stmt).sub
+    before = get_monomer_pattern(model, sub, extra_fields={site: modified})
+    after = get_monomer_pattern(model, sub, extra_fields={site: unmod})
     rule = pysb.Rule(f"{prefix}_removal", before >> after, k, _export=False)
     _add(model, k, rule)
     return Emission(
@@ -1040,8 +1041,9 @@ def _basal_addition(stmt: Statement, model: pysb.Model, prefix: str) -> Emission
     site = get_mod_site_name(mod)
     unmod, modified = states[mod.mod_type]
     k = pysb.Parameter(f"{prefix}_k", 1.0, _export=False)
-    before = get_monomer_pattern(model, stmt.sub, extra_fields={site: unmod})
-    after = get_monomer_pattern(model, stmt.sub, extra_fields={site: modified})
+    sub = _site_unwritten(stmt).sub
+    before = get_monomer_pattern(model, sub, extra_fields={site: unmod})
+    after = get_monomer_pattern(model, sub, extra_fields={site: modified})
     rule = pysb.Rule(f"{prefix}_addition", before >> after, k, _export=False)
     _add(model, k, rule)
     return Emission(
@@ -1308,7 +1310,7 @@ def _indra(name: str) -> Policy:
         indra = PysbAssembler()
         indra.processed_policies = {stmt.uuid: IndraPolicy(name)}
         try:
-            indra._dispatch(stmt, "assemble", model, BaseAgentSet(), {})
+            indra._dispatch(_site_unwritten(stmt), "assemble", model, BaseAgentSet(), {})
         except UnknownPolicyError as exc:
             raise MechanismError(
                 f"INDRA has no {name} assembly for {type(stmt).__name__}", cause="library_gap"

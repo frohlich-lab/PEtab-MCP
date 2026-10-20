@@ -95,10 +95,24 @@ def test_basal_addition_refuses_an_enzyme_too_and_builds_without_one():
     assert emission.rules
 
 
-def _akt1(s473: bool) -> Agent:
+def _akt1(phospho_s473: bool) -> Agent:
     """AKT1 written at S473, phosphorylated or not, and at pT308."""
-    s473 = ModCondition("phosphorylation", "S", "473", s473)
+    s473 = ModCondition("phosphorylation", "S", "473", phospho_s473)
     return Agent("AKT1", mods=[s473, ModCondition("phosphorylation", "T", "308")])
+
+
+def _akt1_sites(pattern) -> list[dict]:
+    """AKT1's sites in each of ``pattern``'s molecules, INDRA's ``(state, WILD)`` read as the
+    state; a rule's reactants and then its products."""
+    rule = isinstance(pattern, pysb.Rule)
+    sides = (pattern.reactant_pattern, pattern.product_pattern) if rule else (pattern,)
+    return [
+        M._plain(mp.site_conditions)
+        for side in sides
+        for cp in side.complex_patterns
+        for mp in cp.monomer_patterns
+        if mp.monomer.name == "AKT1"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -116,16 +130,36 @@ def test_a_substrate_written_in_the_state_it_leaves_still_changes(stmt, policy, 
     site is the rule's, every other written site stays, and the row's statement is untouched."""
     model, _ = M.assemble([(stmt, policy, "r1")])
     (rule,) = model.rules
-    sides = [
-        M._plain(mp.site_conditions)
-        for side in (rule.reactant_pattern, rule.product_pattern)
-        for cp in side.complex_patterns
-        for mp in cp.monomer_patterns
-        if mp.monomer.name == "AKT1"
-    ]
+    sides = _akt1_sites(rule)
     assert [s["S473"] for s in sides] == change
     assert [s["T308"] for s in sides] == ["p", "p"]
     assert len(stmt.sub.mods) == 2
+
+
+def test_a_scheme_and_a_written_rate_read_the_substrate_as_written():
+    """With the site left out for every entry, a written rate's `sub` read all AKT1, not the
+    pAKT1 the row names, and a scheme line that does not name `mod` took AKT1 in any state."""
+    library = dict(M.REGISTRY)
+    library[("Dephosphorylation", "mm")] = M.written(
+        {"statement_type": "Dephosphorylation", "policy": "mm", "based_on": M.BASAL,
+         "rate": "kc/(Km + sub)", "parameters": ["kc", "Km"]},
+        library,
+    )
+    library[("Dephosphorylation", "bound")] = M.written(
+        {"statement_type": "Dephosphorylation", "policy": "bound", "parameters": ["kf", "kc"],
+         "scheme": "enz(sub=None) + sub(enz=None) >> enz(sub=1) % sub(enz=1) @ kf\n"
+                   "enz(sub=1) % sub(enz=1) >> enz(sub=None) + sub(enz=None, mod='off') @ kc"},
+        library,
+    )
+    rows = [
+        (Dephosphorylation(None, _akt1(True), "S", "473"), "mm", "r1"),
+        (Dephosphorylation(Agent("PTEN"), _akt1(True), "S", "473"), "bound", "r2"),
+    ]
+    model, _ = M.assemble(rows, {}, library)
+    assert [s["S473"] for s in _akt1_sites(model.rules["r1_base_removal"])] == ["p", "u"]
+    assert [s["S473"] for s in _akt1_sites(model.observables["r1_sub"].reaction_pattern)] == ["p"]
+    assert [s["S473"] for s in _akt1_sites(model.rules["r2_r0"])] == ["p", "p"]
+    assert [s["S473"] for s in _akt1_sites(model.rules["r2_r1"])] == ["p", "u"]
 
 
 def test_rows_differing_only_in_the_written_modified_site_are_twins():
