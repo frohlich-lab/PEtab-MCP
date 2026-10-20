@@ -915,11 +915,11 @@ def test_ungrounded_agents_are_named_once_per_call(tmp_path):
     out = _call(
         mcp,
         "make_changes",
-        {"justification": "A and B interconvert", "statements": [_statement_row(), back]},
+        {"justification": "A and B interconvert", "statements": [back, _statement_row()]},
     )
     assert out["applied"] is True, out
     assert [m["message"] for m in out["messages"] if "grounding" in m["message"]] == [
-        "`statements` agents carry no grounding: A, B."
+        "`statements` agents carry no grounding: B, A."
     ]
 
 

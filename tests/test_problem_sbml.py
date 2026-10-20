@@ -342,20 +342,26 @@ def test_what_rules_make_from_nothing_is_noted_as_starting_empty():
 
 
 def test_a_start_location_chosen_among_several_is_noted():
-    """With no cytoplasm among its locations, where a monomer started went unsaid."""
+    """With no cytoplasm among its locations, where a monomer started went unsaid; then each
+    such monomer repeated the whole note."""
     from indra.statements import Translocation
 
-    x = Agent("X")
+    x, y = Agent("X"), Agent("Y")
     notes = []
     PS.to_antimony(
         [
             (Translocation(x, "nucleus", "mitochondria"), INDRA_DEFAULT, "r1"),
             (Translocation(x, "mitochondria", "nucleus"), INDRA_DEFAULT, "r2"),
+            (Translocation(y, "mitochondria", "nucleus"), INDRA_DEFAULT, "r3"),
         ],
         {},
         notes=notes,
     )
-    assert len(notes) == 1 and notes[0].startswith("X starts in mitochondria")
+    assert len(notes) == 1
+    assert (
+        ": X in mitochondria of ['mitochondria', 'nucleus']; "
+        "Y in mitochondria of ['mitochondria', 'nucleus']."
+    ) in notes[0]
 
 
 def test_indra_padded_rules_build():

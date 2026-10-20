@@ -850,11 +850,10 @@ def statements_to_antimony(
         "readouts": dict(readouts or {}),
         "amounts": given,
     }
-    names = list(dict.fromkeys(name for stmt in stmts for name in ungrounded(stmt)))
-    warnings = [
-        M.warning(M.SOURCE_EDIT, f"`statements` agents carry no grounding: {', '.join(names)}.")
-    ] if names else []
-    warnings += [M.warning(M.SOURCE_EDIT, note) for note in notes]
+    names = ", ".join(dict.fromkeys(name for stmt in stmts for name in ungrounded(stmt)))
+    warnings = M.warnings_from(
+        M.SOURCE_EDIT, [names and f"`statements` agents carry no grounding: {names}.", *notes]
+    )
     # What a scheme gave a molecule that nothing else gives it, so the agent sees it happen.
     added: dict[tuple[str, str], tuple[list[str], list[int]]] = {}
     for i, e in enumerate(emissions):
