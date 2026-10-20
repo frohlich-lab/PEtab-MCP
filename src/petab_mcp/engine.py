@@ -13,6 +13,7 @@ here are unconditional; ``swig`` is still located on ``PATH`` for the C++ build.
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import tempfile
@@ -43,11 +44,18 @@ def _ensure_swig_on_path() -> None:
         pass
 
 
-def _module_on_disk(output_folder: str | Path, model_name: str) -> bool:
-    """Is the compiled extension of the module ``model_name`` under ``output_folder`` there? An
-    unreadable folder counts as not built."""
+def _build_finished(output_folder: str | Path, model_name: str) -> bool:
+    """Did a build of the module ``model_name`` under ``output_folder`` finish: is its compiled
+    extension there, with the mark its holder writes once the module imported (``.built``)? An
+    unreadable folder raises ``OSError``."""
+    folder = Path(output_folder)
+    return (folder / ".built").exists() and any((folder / model_name).glob(f"_{model_name}*.so"))
+
+
+def _looks_finished(output_folder: str | Path, model_name: str) -> bool:
+    """:func:`_build_finished`, with an unreadable folder counted as not built."""
     try:
-        return any((Path(output_folder) / model_name).glob(f"_{model_name}*.so"))
+        return _build_finished(output_folder, model_name)
     except OSError:
         return False
 
@@ -64,10 +72,15 @@ def build_lock(output_folder: str | Path, model_name: str) -> Iterator[None]:
     is safe beside anything, and that is what every re-fit of a structure does. Finished means its
     holder marked it (``.built``) once its own import succeeded — the extension alone is no signal,
     since the install step writes it before the build is done.
+
+    AMICI compiles only into a missing folder and imports whatever folder is there, so a build that
+    stopped would fail every later build of its structure. Under the lock, an unfinished folder is
+    one nobody is writing: it is removed before the build, and a build that raises removes its own.
+    A finished one is never removed, since other processes import it without the lock, so the look
+    under the lock lets a read error through rather than count the folder unfinished.
     """
     folder = Path(output_folder)
-    done = folder / ".built"
-    if done.exists() and _module_on_disk(folder, model_name):
+    if _looks_finished(folder, model_name):
         yield
         return
     folder.parent.mkdir(parents=True, exist_ok=True)
@@ -76,8 +89,19 @@ def build_lock(output_folder: str | Path, model_name: str) -> Iterator[None]:
     except filelock.Held as held:
         raise ModelBuildBusyError(model_name, held.holder) from None
     try:
-        yield
-        done.touch()
+        if _build_finished(folder, model_name):  # its holder finished before we took the lock
+            yield
+            return
+        if folder.exists():
+            logging.getLogger("petab_mcp").info("removing %s, an unfinished build", folder)
+            shutil.rmtree(folder)
+        try:
+            yield
+        except BaseException:
+            if folder.exists():
+                shutil.rmtree(folder, ignore_errors=True)
+            raise
+        (folder / ".built").touch()
     finally:
         os.close(fd)
 
@@ -135,9 +159,9 @@ class AmiciEngine:
         tens of seconds and which no read may pay (see :func:`fitting.ensure_simulation`).
 
         Two sources, because a session outlives its process: ``_pypesto_hashes`` for what this one
-        built, and the build root for what an earlier one did. What is looked for on disk is the
-        built ``.so`` inside the model package, not the output folder — a crashed or half-written
-        build leaves the folder and its generated C++ behind, and importing THAT recompiles.
+        built, and the build root for what an earlier one did. What is looked for on disk is a
+        FINISHED build (see :func:`build_lock`), not the output folder or its ``.so`` — a crashed or
+        half-written build leaves those behind, and the next build removes them and recompiles.
 
         The disk half is not a resume story, and deliberately not treated as one: a restored model's
         SBML comes back with its parameter declarations in a different ORDER, so it hashes to a
@@ -149,7 +173,7 @@ class AmiciEngine:
         if module_hash in self._pypesto_hashes:
             return True
         # an unreadable build root reads as nothing built, rather than risk a build
-        return _module_on_disk(*self._module_target(module_hash))
+        return _looks_finished(*self._module_target(module_hash))
 
     def _log_pending_import(self, module_hash: str) -> None:
         """Dump the exact model about to be handed to AMICI, BEFORE the import call.
@@ -217,8 +241,11 @@ class AmiciEngine:
             out.extend(float(v) for v in r)
         return out or None
 
-    def _objective_evaluate(self):
+    def _objective_evaluate(self, solve_inner: bool = True):
         """``(nllh, records, res)`` from the pyPESTO objective at the current nominal values.
+        ``solve_inner`` (the fit's objective) solves the noise sigmas and observable scalings at
+        every evaluation instead of reading them; ``solve_inner=False`` evaluates at the table's
+        own values. See :func:`fitting.estimation_problem`.
 
         The single evaluation path for "what is this model's likelihood". It deliberately does
         NOT build a second AMICI model with its own default-configured solver (as a direct
@@ -236,7 +263,7 @@ class AmiciEngine:
 
         from . import fitting
 
-        problem, _ = fitting.estimation_problem(self.session, self)
+        problem, _ = fitting.estimation_problem(self.session, self, solve_inner=solve_inner)
         x = fitting.problem_x_from_nominal(problem, self.session.problem.parameter_df)
         ret = problem.objective(x, sensi_orders=(0,), return_dict=True)
         rdatas = ret[RDATAS]
@@ -267,8 +294,9 @@ class AmiciEngine:
             "simulations": records,
         }
 
-    def residuals(self) -> dict[str, Any]:
-        """Per-point residuals (raw + noise-weighted) with an objective summary.
+    def residuals(self, solve_inner: bool = True) -> dict[str, Any]:
+        """Per-point residuals (raw + noise-weighted) with an objective summary; ``solve_inner``
+        as in :meth:`_objective_evaluate`.
 
         This is the data source for fit inspection: every measurement point is
         returned with its ``residual`` (natural units), noise-weighted
@@ -277,7 +305,7 @@ class AmiciEngine:
         :mod:`petab_mcp.data_access`.
         """
         with self.session.lock:
-            nllh, records, res = self._objective_evaluate()
+            nllh, records, res = self._objective_evaluate(solve_inner)
 
         n_expected, n_missing = self.simulation_gap(records)
         return {

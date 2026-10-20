@@ -1085,6 +1085,37 @@ def test_an_unknown_id_suggests_the_one_the_caller_meant_even_when_the_tokens_ar
     assert closest_symbols("k_totally_unrelated_xyz", known) == []  # no false confidence
 
 
+def test_an_assignment_rule_symbol_names_the_parameters_it_reads(tmp_path):
+    """Analysts asked get_parameters for `d16_kf_pinned` / `a_act_k_bound`, symbols a statements
+    binding makes, and got near-miss guesses (4x, #86). Asserted on the tool error, so the SBML
+    lookup in get_parameters is covered and not just the message builder."""
+    work = tmp_path / "rules"
+    shutil.copytree(DATA_DIR, work)
+    model = (work / "model.ant").read_text(encoding="utf-8")
+    # r1_k_bound reads its parameters through another rule, as a row sharing a bound rate does.
+    model = model.replace(
+        "k1 * A;", "r1_k_bound * A;\n  r1_k_bound := 2 * r1_k;\n  r1_k := k1 * k2;"
+    )
+    model = model.replace("k2 * B;", "r2_k_pinned * B;\n  r2_k_pinned := 0.5;")
+    (work / "model.ant").write_text(model, encoding="utf-8")
+    mcp = create_server(
+        str(work / "problem.yaml"),
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+        auto_fit=False,
+    )
+
+    async def go():
+        with pytest.raises(Exception) as raised:
+            await mcp.call_tool("get_parameters", {"parameter_ids": ["r1_k_bound", "r2_k_pinned"]})
+        msg = str(raised.value)
+        assert "`r1_k_bound := 2 * r1_k`, not a parameter; it reads k1, k2." in msg
+        assert "`r2_k_pinned := 0.5`, not a parameter; it reads no parameter." in msg
+        assert "Did you mean" not in msg
+
+    asyncio.run(go())
+
+
 def test_the_unknown_id_message_carries_its_own_remedy():
     """Asserted on the MESSAGE the server builds, not on the helper beside it and not on the
     module source. Both of those weaker forms were written first and both passed while the hint

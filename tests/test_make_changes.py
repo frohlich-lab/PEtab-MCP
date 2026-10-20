@@ -904,6 +904,25 @@ def test_statements_commit_records_what_was_asserted(tmp_path):
     assert stored["emission"]["parameters"] == ["conv_k"]
 
 
+def test_ungrounded_agents_are_named_once_per_call(tmp_path):
+    """Rows sharing ungrounded agents give one warning naming each agent once, not one per row."""
+    mcp = _statements_server(tmp_path)
+    back = {
+        **_statement_row(),
+        "statement": {"type": "PopulationTransition", "source": {"name": "B"}, "target": {"name": "A"}},
+        "prefix": "back",
+    }
+    out = _call(
+        mcp,
+        "make_changes",
+        {"justification": "A and B interconvert", "statements": [back, _statement_row()]},
+    )
+    assert out["applied"] is True, out
+    assert [m["message"] for m in out["messages"] if "grounding" in m["message"]] == [
+        "`statements` agents carry no grounding: B, A."
+    ]
+
+
 def _text(mcp, name, args):
     """A tool's text return (FastMCP wraps a str in {"result": ...})."""
     return _listed(_call(mcp, name, args))

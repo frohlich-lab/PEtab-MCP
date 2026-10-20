@@ -188,6 +188,7 @@ def to_antimony(
                 "made at a steady rate is) in `starts`; one declared at 0 stays empty and leaves "
                 "this list."
             )
+        chosen = []
         for initial in model.initials:
             pattern = initial.pattern.monomer_patterns[0]
             locations = pattern.monomer.site_states.get("loc", ())
@@ -195,10 +196,14 @@ def to_antimony(
                 continue
             if "cytoplasm" in locations:
                 continue
+            chosen.append(
+                f"{pattern.monomer.name} in {pattern.site_conditions['loc']} of {sorted(locations)}"
+            )
+        if chosen:
             notes.append(
-                f"{pattern.monomer.name} starts in {pattern.site_conditions['loc']}, the first of "
-                f"its locations {sorted(locations)} by name, since no statement puts it in the "
-                "cytoplasm. To start it elsewhere, declare it in `starts`."
+                f"These start in the first of their locations by name, since no statement puts "
+                f"them in the cytoplasm: {'; '.join(chosen)}. To start one elsewhere, declare it "
+                "in `starts`."
             )
     fired = {name for reaction in model.reactions for name in reaction["rule"]}
     never = []

@@ -273,6 +273,45 @@ def readouts(problem) -> dict[str, str | None]:
     return out
 
 
+def not_a_parameter(problem, pid: str, known=None) -> str | None:
+    """Why ``pid``, a name the problem uses, has no parameter row, or ``None``. Agents read two
+    such names off the problem and asked for them as parameters (#86): an observable's placeholder
+    (``noiseParameter1_<obs>``), which the measurement table fills, and an assignment rule's target
+    (a statements binding's ``d16_kf_pinned`` / ``a_act_k_bound``), whose reads are followed
+    through other rules to the ids in ``known`` (default: the live parameter table)."""
+    odf = getattr(problem, "observable_df", None)
+    for oid in [] if odf is None else odf.index:
+        for kind, column in (("noise", NOISE_PARAMETERS), ("observable", OBSERVABLE_PARAMETERS)):
+            if pid in placeholders(odf, oid, kind):
+                return (
+                    f"{pid!r} is a {kind} placeholder of observable {oid!r}: the measurement "
+                    f"table's {column} column fills it row by row, so it has no bounds or scale "
+                    "of its own. Where that column names a parameter rather than a number, that "
+                    "parameter is the row to edit."
+                )
+    model = getattr(problem, "model", None)
+    sm = model.sbml_model if model is not None else None
+    rule = sm.getAssignmentRuleByVariable(pid) if sm is not None else None
+    if rule is None:
+        return None
+    known = set(problem.parameter_df.index if known is None else known)
+    reads, seen, todo = set(), {pid}, [rule]
+    while todo:
+        for name in _ast_names(todo.pop().getMath()) - seen:
+            seen.add(name)
+            inner = sm.getAssignmentRuleByVariable(name)
+            if name in known:
+                reads.add(name)
+            elif inner is not None:
+                todo.append(inner)
+    return (
+        f"{pid!r} is an assignment rule of the model, `{pid} := "
+        f"{libsbml.formulaToL3String(rule.getMath())}`, not a parameter; it reads "
+        + (", ".join(sorted(reads)) or "no parameter")
+        + "."
+    )
+
+
 def seed_model_antimony(problem) -> str | None:
     """A CONTENT-FREE but VALID initial model for a problem that ships without one, or ``None``
     when the fixed tables name nothing to declare.
@@ -2186,6 +2225,15 @@ def _direct_ic_parameter_ids(sm) -> set[str]:
     return ic
 
 
+def _finite_nominal(df, pid: str) -> float | None:
+    """The finite nominal value ``df`` holds for ``pid``; None for no table, row or value."""
+    try:
+        value = float(df.loc[pid, NOMINAL_VALUE])
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
 def _ic_convention(v0: float) -> tuple[str, bool]:
     """The scale and estimate flag a direct initial condition declared at ``v0`` takes (see
     :func:`sync_parameter_table`)."""
@@ -2254,6 +2302,28 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
     added, removed = [], []
 
     shipped_ids = set(getattr(shipped, "index", []))
+    # A parameter the model uses but never assigns (`deg: A -> ; k*A;` with no `k = …`) loads
+    # with no SBML value: NaN to anything that reads the model without this table, and `k = ;`
+    # in the Antimony the caller reads back (issue #38). It takes its row's nominal, else
+    # SEED_INITIAL_VALUE (the statements route's seed for an unknown name); an exponent takes the
+    # bottom of its bracket instead, so the seed never widens the box it is fitted in. Seeded
+    # rather than refused: the row it lands in is estimated, so the value is only where the fit
+    # starts. An initial-assignment target (`k = 1/3;`, `j = 2*q;`) has no value either, but its
+    # assignment is its value.
+    for pid in sorted(valid):
+        parameter = sm.getParameter(pid)
+        if parameter is None or not math.isnan(parameter.getValue()):
+            continue
+        if sm.getInitialAssignmentBySymbol(pid) is not None:
+            continue
+        value = _finite_nominal(problem.parameter_df, pid)
+        if value is None:
+            value = _finite_nominal(shipped, pid)
+        if value is None:
+            exponent = pid in exp_params and pid not in ic_params
+            value = EXPONENT_LOWER_BOUND if exponent else SEED_INITIAL_VALUE
+        parameter.setValue(value)
+
     for pid in sorted(valid - table_ids):
         if pid in shipped_ids:
             # The problem defined this parameter; reintroducing it restores that definition

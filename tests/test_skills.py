@@ -170,8 +170,24 @@ def test_get_skill_unknown_name_errors(tmp_path):
         # message carries our clear, actionable text.
         with pytest.raises(Exception, match="No skill named 'does-not-exist'"):
             await mcp.call_tool("get_skill", {"name": "does-not-exist"})
-        with pytest.raises(Exception, match="no file 'nope.md'"):
+        with pytest.raises(
+            Exception, match="no file 'nope.md'.*without `file` returns its SKILL.md"
+        ):
             await mcp.call_tool("get_skill", {"name": "petab-model-building", "file": "nope.md"})
+
+    asyncio.run(go())
+
+
+def test_get_skill_file_skill_md_is_the_skill(tmp_path):
+    """`file="SKILL.md"` was refused with `Files: []` (#86): the agent asked for the one file
+    every skill has, by the name `list_skills` describes it by."""
+    mcp = _server(tmp_path)
+
+    async def go():
+        args = {"name": "petab-model-building"}
+        plain = _unwrap(_structured(await mcp.call_tool("get_skill", args)))
+        named = _unwrap(_structured(await mcp.call_tool("get_skill", {**args, "file": "SKILL.md"})))
+        assert named == plain
 
     asyncio.run(go())
 
