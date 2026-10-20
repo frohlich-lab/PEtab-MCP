@@ -6,7 +6,14 @@ import json
 
 import pysb
 import pytest
-from indra.statements import Activation, ActiveForm, Agent, Dephosphorylation, Phosphorylation
+from indra.statements import (
+    Activation,
+    ActiveForm,
+    Agent,
+    Dephosphorylation,
+    ModCondition,
+    Phosphorylation,
+)
 
 from petab_mcp import mechanisms as M
 from petab_mcp.errors import MechanismError
@@ -86,6 +93,51 @@ def test_basal_addition_refuses_an_enzyme_too_and_builds_without_one():
         M.assemble([(_PHOSPHO, M.BASAL, "r1")])
     _, (emission,) = M.assemble([(Phosphorylation(None, Agent("ERK"), "T", "185"), M.BASAL, "r1")])
     assert emission.rules
+
+
+def _akt1(s473: bool) -> Agent:
+    """AKT1 written at S473, phosphorylated or not, and at pT308."""
+    s473 = ModCondition("phosphorylation", "S", "473", s473)
+    return Agent("AKT1", mods=[s473, ModCondition("phosphorylation", "T", "308")])
+
+
+@pytest.mark.parametrize(
+    "stmt, policy, change",
+    [
+        (Dephosphorylation(None, _akt1(True), "S", "473"), M.BASAL, ["p", "u"]),
+        (Dephosphorylation(Agent("PTEN"), _akt1(True), "S", "473"), M.INDRA_DEFAULT, ["p", "u"]),
+        (Phosphorylation(None, _akt1(False), "S", "473"), M.BASAL, ["u", "p"]),
+        (Phosphorylation(Agent("MTOR"), _akt1(False), "S", "473"), M.INDRA_DEFAULT, ["u", "p"]),
+    ],
+)
+def test_a_substrate_written_in_the_state_it_leaves_still_changes(stmt, policy, change):
+    """`AKT1{pS473} is dephosphorylated at S473` built `pS473 >> pS473`: the substrate's written
+    site overrode the state the rule sets, under `basal` and INDRA's policies alike. The modified
+    site is the rule's, every other written site stays, and the row's statement is untouched."""
+    model, _ = M.assemble([(stmt, policy, "r1")])
+    (rule,) = model.rules
+    sides = [
+        M._plain(mp.site_conditions)
+        for side in (rule.reactant_pattern, rule.product_pattern)
+        for cp in side.complex_patterns
+        for mp in cp.monomer_patterns
+        if mp.monomer.name == "AKT1"
+    ]
+    assert [s["S473"] for s in sides] == change
+    assert [s["T308"] for s in sides] == ["p", "p"]
+    assert len(stmt.sub.mods) == 2
+
+
+def test_rows_differing_only_in_the_written_modified_site_are_twins():
+    """Both build the same INDRA rule, so the second built nothing and was refused as a policy
+    that builds no rule, not as the repeat it is."""
+    written = Agent("AKT1", mods=[ModCondition("phosphorylation", "S", "473")])
+    rows = [
+        (Dephosphorylation(Agent("PTEN"), written, "S", "473"), M.INDRA_DEFAULT, "r1"),
+        (Dephosphorylation(Agent("PTEN"), Agent("AKT1"), "S", "473"), M.INDRA_DEFAULT, "r2"),
+    ]
+    with pytest.raises(MechanismError, match="asserts the statement of row 'r1' again"):
+        M.assemble(rows)
 
 
 def test_a_policy_indra_cannot_assemble_is_a_library_gap():

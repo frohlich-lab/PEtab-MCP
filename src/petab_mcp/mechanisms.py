@@ -36,6 +36,7 @@ import keyword
 import re
 from collections.abc import Callable
 from collections import Counter
+from copy import copy
 from dataclasses import dataclass, field, replace
 from itertools import count
 
@@ -156,6 +157,7 @@ def instantiate(
             cause="malformed_mechanism" if typo else "library_gap",
         )
     entry = library[key]
+    stmt = _site_unwritten(stmt)
     if modifiers:
         if not getattr(entry, "modifiers", ()):
             raise MechanismError(
@@ -166,6 +168,22 @@ def instantiate(
             )
         return entry(stmt, model, prefix, modifiers=modifiers)
     return entry(stmt, model, prefix)
+
+
+def _site_unwritten(stmt: Statement) -> Statement:
+    """A modification with its substrate's written state on the modified site left out, so the
+    entry's state for that site holds. INDRA's patterns put an agent's written site over the one
+    a rule sets: "AKT1{pS473} is dephosphorylated at S473" built ``pS473 >> pS473``."""
+    if not isinstance(stmt, Modification) or stmt.sub is None:
+        return stmt
+    site = get_mod_site_name(stmt._get_mod_condition())
+    mods = [m for m in stmt.sub.mods if get_mod_site_name(m) != site]
+    if len(mods) == len(stmt.sub.mods):
+        return stmt
+    stmt = copy(stmt)
+    stmt.sub = copy(stmt.sub)
+    stmt.sub.mods = mods
+    return stmt
 
 
 def bind(
@@ -764,7 +782,8 @@ def _refuse_ruleless(rows: list[tuple], emissions: list[Emission]) -> None:
         if emission.rules:
             continue
         stmt, policy, prefix = row[:3]
-        twin = next((r[2] for r in rows[:i] if r[0].matches_key() == stmt.matches_key()), None)
+        key = _site_unwritten(stmt).matches_key()
+        twin = next((r[2] for r in rows[:i] if _site_unwritten(r[0]).matches_key() == key), None)
         if twin is not None:
             raise MechanismError(
                 f"row {prefix!r} asserts the statement of row {twin!r} again, and INDRA builds its "
