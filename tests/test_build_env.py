@@ -20,8 +20,8 @@ import pytest
         "swig: command not found",
         # NOT included: a bare "[Errno 28] No space left on device" / "Permission denied". Those were
         # matched by the first version anywhere in the text, which caught fit-time OSErrors and told
-        # the agent not to re-author the model that WAS the problem. A disk-full during a BUILD still
-        # carries build context (setup.py / cmake) and is caught by those tokens instead.
+        # the agent not to re-author the model that WAS the problem. A full disk never reaches this
+        # message: it ends the call as an infrastructure error (errors.disk_full_error).
     ],
 )
 def test_a_toolchain_failure_is_not_blamed_on_the_model(message):

@@ -30,10 +30,13 @@ session, engine, and the error-wrapping helpers. The tools stay thin: the real w
 
 from __future__ import annotations
 
+import contextlib
 import json
 from typing import Annotated, Any, Callable, Literal
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
+from fastmcp.server.middleware import Middleware
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 from petab.v2.C import EXPERIMENT_ID, OBSERVABLE_ID
 
@@ -52,7 +55,7 @@ from . import skills as skills_mod
 from . import validation_data as validation_data_mod
 from .constants import DEFAULT_AUTO_FIT_STARTS
 from .engine import AmiciEngine
-from .errors import PetabMcpError, UnknownEntityError, ValidationError
+from .errors import PetabMcpError, UnknownEntityError, ValidationError, disk_full_error
 from .formatting import df_to_records, summarize_measurements
 from .session import PetabSession
 
@@ -407,6 +410,35 @@ def unknown_ids_message(
     return f"get_parameters: unknown parameter_ids {unknown}.{suggest} Known ids: [{known}{more}]."
 
 
+class _InfrastructureErrors(Middleware):
+    """Ends a tool call that failed for want of disk with the MCP error a client ends the run on,
+    whichever tool and wherever in it (:class:`~petab_mcp.errors.InfrastructureError`).
+
+    The one place every tool's exception passes, so a raw ``OSError`` from a path no :class:`_Ctx`
+    wrapper guards reads the same as a fit's. FastMCP has wrapped the exception by then (``Error
+    calling tool '<name>': ...``), so the error is found on its chain, and re-raised as a
+    ``ToolError``, whose text FastMCP sends as it is. A crash its chain does not explain is checked
+    against the disks the server writes to (``folders``): a build whose install step hit the quota
+    fails only at the import after it, in whichever tool built it (a held-out refit, a restore).
+    """
+
+    def __init__(self, logger, *folders) -> None:
+        self.logger = logger
+        self.folders = folders
+
+    async def on_call_tool(self, context, call_next):
+        try:
+            return await call_next(context)
+        except Exception as exc:
+            # A crash is FastMCP's ToolError around what the tool raised; a refusal of the
+            # arguments is not, and is not worth a write.
+            crashed = isinstance(exc, ToolError) and exc.__cause__ is not None
+            if (infra := disk_full_error(exc, *(self.folders if crashed else ()))) is None:
+                raise
+            self.logger.error("%s: %s", context.message.name, infra)
+            raise ToolError(str(infra)) from exc
+
+
 class _Ctx:
     """One session's state + the error-wrapping helpers a tool resolves through ``route``.
 
@@ -438,6 +470,17 @@ class _Ctx:
         )
 
     @staticmethod
+    def raise_if_infrastructure(exc: Exception) -> None:
+        """Re-raise ``exc`` as the :class:`~petab_mcp.errors.InfrastructureError` it is, if it is
+        one: a full disk, raised as such or wrapped in a refusal (BioNetGen's ``[Errno 28]``), is
+        never a rejection, and stays out of ``errors.jsonl``, which the agent reads."""
+        infra = disk_full_error(exc)
+        if infra is exc:
+            raise exc
+        if infra is not None:
+            raise infra from exc
+
+    @staticmethod
     def short(value: Any, limit: int = 200, _depth: int = 0) -> Any:
         """Truncate long strings before they go into the (persisted) error log, so a large
         argument — e.g. a whole Antimony model passed to `make_changes` — cannot bloat the
@@ -461,6 +504,7 @@ class _Ctx:
         try:
             return fn(*args)
         except PetabMcpError as exc:
+            self.raise_if_infrastructure(exc)
             self.log_error(
                 op_name,
                 {"args": [self.short(a) for a in args if isinstance(a, (str, int, float, list))]},
@@ -497,6 +541,7 @@ class _Ctx:
         try:
             return fn()
         except PetabMcpError as exc:
+            self.raise_if_infrastructure(exc)
             self.log_error("fit", args or {}, exc)
             self.session.logger.warning("fit rejected: %s", exc)
             out = {
@@ -553,6 +598,13 @@ class _Ctx:
                 {"n_starts": n_starts},
             )
         except Exception as exc:  # noqa: BLE001 - already logged by run_fit; see the docstring
+            if (infra := disk_full_error(exc)) is not None:
+                # An unscored edit goes, as below; its revert event may not reach a full disk, and
+                # the call ends either way.
+                if self.session.provenance.current_version == head_before:
+                    with contextlib.suppress(OSError):
+                        ops_mod.revert_working_state(self.session, before, str(infra))
+                raise
             crashed = f"the edit applied but the fit crashed unexpectedly: {exc}"
             fit_result = {
                 "committed": False,
@@ -647,6 +699,7 @@ class _Ctx:
         try:
             return fn()
         except PetabMcpError as exc:
+            self.raise_if_infrastructure(exc)
             if record:
                 self.log_error(tool, args or {}, exc)
             self.session.logger.warning("%s failed: %s", tool, exc)
@@ -1386,6 +1439,7 @@ def _register_model_tools(
                         )
                     )
                 except PetabMcpError as exc:
+                    ctx.raise_if_infrastructure(exc)
                     return ctx.reject_operation(
                         "make_changes",
                         str(exc),
@@ -2430,7 +2484,15 @@ def create_server(
     resolved_skills_dir = skills_dir or skills_mod.default_skills_dir()
     skills = skills_mod.load_skills(resolved_skills_dir)
     instructions = SERVER_INSTRUCTIONS + (_SKILLS_INSTRUCTION if skills else "")
-    mcp = FastMCP("petab-mcp", instructions=instructions)
+    mcp = FastMCP(
+        "petab-mcp",
+        instructions=instructions,
+        middleware=[
+            _InfrastructureErrors(
+                ctx.session.logger, ctx.engine.build_root, ctx.session.provenance.root
+            )
+        ],
+    )
 
     # Register the tool + resource groups; each tool asks `route` for the context per call.
     def route() -> _Ctx:

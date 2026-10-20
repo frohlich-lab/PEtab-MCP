@@ -4,9 +4,18 @@ These are caught at the MCP tool boundary and turned into clear, actionable
 error messages for the calling agent. Keeping them typed (rather than raising
 bare ``ValueError``) lets the server distinguish "the user asked for something
 impossible" (a 4xx-style problem) from an internal bug.
+
+:class:`InfrastructureError` is the third kind, the host failing the call, and the one that is not
+turned into a message for the agent: it ends the tool call as an MCP error a client can recognise.
 """
 
 from __future__ import annotations
+
+import errno
+import os
+import tempfile
+from collections.abc import Iterator
+from pathlib import Path
 
 
 class PetabMcpError(Exception):
@@ -123,3 +132,102 @@ class ModelBuildBusyError(PetabMcpError):
             f"held by {holder or 'unknown'}); nothing was built or scored here, so retrying the "
             "change is safe once that build finishes"
         )
+
+
+#: What every :class:`InfrastructureError` reads as, before its cause: the text of the MCP error a
+#: tool call ends with is ``infrastructure_error: <cause>: <detail>``.
+INFRASTRUCTURE_ERROR = "infrastructure_error"
+
+#: The cause a full disk or an exceeded quota (ENOSPC, EDQUOT) is reported under.
+DISK_FULL = "disk_full"
+
+_DISK_FULL_ERRNOS = frozenset({errno.ENOSPC, errno.EDQUOT})
+
+#: How a full disk reads where no ``OSError`` carries its errno: a linker's or ``cmake --install``'s
+#: output, h5py's message. glibc's wording, which a cluster's build prints, and this platform's own
+#: (macOS spells it "Disc quota exceeded").
+_DISK_FULL_TEXT = frozenset(
+    {"No space left on device", "Disk quota exceeded"} | {os.strerror(e) for e in _DISK_FULL_ERRNOS}
+)
+
+#: What :func:`disk_full_error` writes to tell whether a folder's disk takes a write. A MiB rather
+#: than the one block a full disk refuses, so a disk with only a few left fails here, not in h5py.
+_PROBE_BYTES = 1 << 20
+
+
+class InfrastructureError(PetabMcpError):
+    """The host failed the call, so nothing the agent can change fixes it: ``cause`` names how
+    (:data:`DISK_FULL`).
+
+    Not a rejection. The tool call ends as an MCP error reading ``infrastructure_error: <cause>:
+    <detail>``, which a client takes as the end of the run; the edit it carried is not counted
+    toward the identical-fit guard when it ends the fit. Raised for a full disk anywhere in edit,
+    build, fit or store (:func:`disk_full_error`).
+    """
+
+    def __init__(self, cause: str, detail: str) -> None:
+        self.cause = cause
+        super().__init__(f"{INFRASTRUCTURE_ERROR}: {cause}: {detail}")
+
+
+def _chain(exc: BaseException | None) -> Iterator[BaseException]:
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        yield exc
+        exc = exc.__cause__ or exc.__context__
+
+
+def _disk_full_line(exc: BaseException) -> str | None:
+    """The line naming a full disk in a failed command's output on ``exc``, or in ``exc``'s own text
+    if it is an ``OSError`` (h5py's carries no errno). Not in any other message: a refusal may quote
+    the agent's own text, as a SQL error quotes the table it names."""
+    output = getattr(exc, "output", None) or getattr(exc, "stderr", None) or ""
+    if isinstance(output, bytes):
+        output = output.decode("utf-8", "replace")
+    text = f"{exc}\n{output}" if isinstance(exc, OSError) else str(output)
+    for line in text.splitlines():
+        if any(sig in line for sig in _DISK_FULL_TEXT):
+            return line.strip()
+    return None
+
+
+def _probe(folder: Path) -> InfrastructureError | None:
+    try:
+        with tempfile.TemporaryFile(dir=folder, prefix=".disk_probe_") as probe:
+            probe.write(b"\xff" * _PROBE_BYTES)
+            probe.flush()
+            os.fsync(probe.fileno())
+    except OSError as exc:
+        if exc.errno in _DISK_FULL_ERRNOS:
+            return InfrastructureError(DISK_FULL, f"{exc} (writing in {folder})")
+    return None
+
+
+def disk_full_error(
+    exc: BaseException | None, *folders: str | Path | None
+) -> InfrastructureError | None:
+    """``exc`` as a :data:`DISK_FULL` :class:`InfrastructureError` if a full disk caused it, else
+    ``None``.
+
+    Read off ``exc``'s cause/context chain first: an :class:`InfrastructureError` already raised, an
+    ``OSError`` with ENOSPC or EDQUOT, then the text a full disk leaves in an ``OSError``'s message
+    or a failed build's output. Then a file is written and synced in each of ``folders``, for the
+    failures that name no disk at all: a build whose ``cmake --install`` failed exits 0, and only
+    the import after it fails (``Module file not found``, no ``get_model``). ``exc`` may be ``None``
+    to only probe.
+    """
+    chain = list(_chain(exc))
+    for e in chain:
+        if isinstance(e, InfrastructureError):
+            return e
+    for e in reversed(chain):  # the root cause first: the wrappers' text repeats it
+        if isinstance(e, OSError) and e.errno in _DISK_FULL_ERRNOS:
+            return InfrastructureError(DISK_FULL, str(e))
+    for e in reversed(chain):
+        if (line := _disk_full_line(e)) is not None:
+            return InfrastructureError(DISK_FULL, line)
+    for folder in folders:
+        if folder is not None and (found := _probe(Path(folder))) is not None:
+            return found
+    return None
