@@ -464,9 +464,12 @@ class PetabSession:
     def _seed_progress_from_provenance(self) -> None:
         """Seed the best-score :class:`Checkpoint` from prior events (durable resume).
 
-        Scans the log for the lowest score under the session's criterion (see
-        :meth:`criteria.Criterion.score_of`) so ``compute_improvement`` and the streak pick up
-        where the last process left off. The streak and ``op_history`` stay reset — they
+        Replays the fit events in the log, scored under the session's criterion (see
+        :meth:`criteria.Criterion.score_of`), through the live gates —
+        :func:`fitting.clears_new_best_bar` and :meth:`_adopt_checkpoint` — so the checkpoint is
+        the one the last process kept, not the lowest score it saw: that may be a sigma-gamed fit
+        the live run refused. ``compute_improvement`` and the streak then pick up where the last
+        process left off. The streak and ``op_history`` stay reset — they
         are within-session heuristics whose exact sequence isn't reconstructed. Best-effort: an
         event that carries no score under THIS criterion simply doesn't seed, which is also what
         makes resuming under a criterion the earlier process did not use safe — it starts fresh
@@ -479,6 +482,8 @@ class PetabSession:
         later valid additive experiment clears the flag without writing an advisory of its own,
         so replaying advisories alone would resurrect one already superseded.
         """
+        from . import fitting
+
         try:
             for ev in self.provenance.recent_events(0):
                 if "invalid_comparison" in ev:
@@ -501,13 +506,13 @@ class PetabSession:
                 score = self.criterion.score_of(ev)
                 if score is None:
                     continue
-                if self.best is None or score < self.best.score:
-                    nll = ev.get("neg_log_likelihood")
-                    gofp = ev.get("chi2_gof_pvalue")
-                    # The adequacy verdict is persisted alongside the score, so a resumed best
-                    # keeps it. An older event without these fields reads False (fixed / not
-                    # inflated), which falls back to the GoF branch of the gate.
-                    self.best = Checkpoint(
+                nll = ev.get("neg_log_likelihood")
+                gofp = ev.get("chi2_gof_pvalue")
+                # The adequacy verdict is persisted alongside the score, so a resumed best
+                # keeps it. An older event without these fields reads False (fixed / not
+                # inflated), which falls back to the GoF branch of the gate.
+                self._adopt_checkpoint(
+                    Checkpoint(
                         version=ev.get("version"),
                         score=score,
                         nll=float(nll) if nll is not None else None,
@@ -517,7 +522,9 @@ class PetabSession:
                         sigma_collapsed=bool(ev.get("noise_sigma_collapsed", False)),
                         sigma_assessable=bool(ev.get("noise_sigma_assessable", False)),
                         residual_flagged=bool(ev.get("residual_flagged", False)),
-                    )
+                    ),
+                    fitting.clears_new_best_bar(score, self.best.score if self.best else None),
+                )
         except Exception:  # noqa: BLE001 - seeding is best-effort; a resume must never fail on it
             self.logger.warning(
                 "could not seed best-score checkpoint from provenance", exc_info=True
@@ -1004,6 +1011,26 @@ class PetabSession:
         return advisory
 
     # -- early-stop chain --------------------------------------------------
+    def _adopt_checkpoint(self, candidate: Checkpoint, is_new_best: bool) -> bool:
+        """Make ``candidate`` the best-score checkpoint if the adoption rule allows; return
+        whether it did. The one rule, shared by :meth:`record_fit_progress` and the durable
+        resume's replay (:meth:`_seed_progress_from_provenance`), so a restart rebuilds the
+        checkpoint the live run kept.
+
+        Only a new best is adopted, and a sigma-GAMED one never OVERWRITES a currently-plausible
+        best: the sigma gate would fail the gamed model, so a plausible (would-pass) checkpoint
+        must survive a later, better-scoring gamed fit — else the extra search runway could demote
+        a passing best to a gamed one and flip a would-pass to a fail. A gamed fit IS still adopted
+        when there is no plausible best to protect (best is None, or is itself already gamed), so
+        an all-gamed session still records its best-scoring gamed model (the adequacy and sigma
+        gates then handle it), keeping the sigma-adequacy gate live rather than dead.
+        """
+        gamed = candidate.sigma_estimated and not candidate.sigma_plausible
+        if not is_new_best or (gamed and self.best is not None and self.best.sigma_plausible):
+            return False
+        self.best = candidate
+        return True
+
     def record_fit_progress(
         self,
         version: int,
@@ -1082,16 +1109,8 @@ class PetabSession:
             # so the checkpoint invariant — "score is a real, beatable number" — holds
             # locally no matter how the score was produced.
             usable = score is not None and math.isfinite(score)
-            # Don't let a sigma-GAMED fit OVERWRITE a currently-plausible best checkpoint: the sigma
-            # gate would fail the gamed model, so a plausible (would-pass) checkpoint must survive a
-            # later, better-scoring gamed fit — else the extra search runway could demote a passing
-            # best to a gamed one and flip a would-pass to a fail. A gamed fit IS still adopted when
-            # there is no plausible best to protect (best is None, or is itself already gamed), so an
-            # all-gamed session still records its best-scoring gamed model (the adequacy and sigma
-            # gates then handle it), keeping the sigma-adequacy gate live rather than dead.
-            best_is_plausible = self.best is not None and self.best.sigma_plausible
-            if is_new_best and usable and not (sigma_implausible and best_is_plausible):
-                self.best = Checkpoint(
+            if usable and self._adopt_checkpoint(
+                Checkpoint(
                     version=version,
                     score=score,
                     nll=nll,
@@ -1101,7 +1120,9 @@ class PetabSession:
                     sigma_collapsed=sig_collapsed,
                     sigma_assessable=sig_assessable,
                     residual_flagged=bool(fitsim.get("residual_flagged", False)),
-                )
+                ),
+                is_new_best,
+            ):
                 # A sigma-gamed "improvement" is not genuine progress even when adopted (it can
                 # only be adopted here over an absent/already-gamed best): it does NOT reset the
                 # non-improving streak, so an all-gamed session trips the streak cap instead of
@@ -1417,7 +1438,7 @@ class PetabSession:
             gof_pvalue = fitting.goodness_of_fit(
                 nllh,
                 fitsim.get("chi2"),
-                fitsim.get("n_estimated"),
+                fitting.complexity_k(fitsim),
                 fitsim.get("n_data_points"),
                 criterion=self.criterion,
             ).get("chi2_gof_pvalue")

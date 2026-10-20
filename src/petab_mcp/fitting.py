@@ -2102,12 +2102,7 @@ def compute_improvement(
     improvement_vs_best_prior = None
     if best_prior_score is not None and score is not None:
         improvement_vs_best_prior = best_prior_score - score
-    # ``<=`` so an improvement EXACTLY at the threshold counts as a new best — i.e. Δscore >= the
-    # gate, matching the docstring's "at least NEW_BEST_MIN_DELTA_SCORE" (a strict ``<`` would
-    # exclude the boundary and leave the streak un-reset there).
-    is_new_best = best_prior_score is None or (
-        score is not None and score <= best_prior_score - NEW_BEST_MIN_DELTA_SCORE
-    )
+    is_new_best = clears_new_best_bar(score, best_prior_score)
 
     return {
         "neg_log_likelihood": nllh,
@@ -2125,6 +2120,19 @@ def compute_improvement(
         "new_best_min_improvement": NEW_BEST_MIN_DELTA_SCORE,
         "is_new_best": is_new_best,
     }
+
+
+def clears_new_best_bar(score: float | None, best_score: float | None) -> bool:
+    """The ``is_new_best`` gate: there is no checkpoint yet, or ``score`` beats it by at least
+    ``NEW_BEST_MIN_DELTA_SCORE``. One function because a durable resume replays it over the fit
+    events (:meth:`session.PetabSession._seed_progress_from_provenance`), and a resume that gated
+    differently would rebuild a checkpoint the live run never had.
+    """
+    # ``<=`` so an improvement EXACTLY at the threshold counts as a new best — i.e. Δscore >= the
+    # gate (a strict ``<`` would exclude the boundary and leave the streak un-reset there).
+    return best_score is None or (
+        score is not None and score <= best_score - NEW_BEST_MIN_DELTA_SCORE
+    )
 
 
 def complexity_k(fitsim: dict[str, Any] | None) -> int | None:
