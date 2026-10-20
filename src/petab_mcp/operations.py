@@ -1382,12 +1382,7 @@ def _normalize_parameter_changes(
         if lb is None and ub is None and scale is None:
             raise OperationError(
                 f"{label}: the entry for {pid!r} changes nothing — give "
-                "lower_bound+upper_bound and/or scale."
-            )
-        if (lb is None) != (ub is None):
-            raise OperationError(
-                f"{label}: {pid!r} sets only one bound — a bound edit needs BOTH "
-                "lower_bound and upper_bound (or neither)."
+                "lower_bound, upper_bound and/or scale."
             )
         # Bounds must be real numbers HERE, not at the point of writing them: `update_parameters`
         # coerces with a bare `float(value)`, whose ValueError is not a PetabMcpError and so
@@ -1554,7 +1549,12 @@ def _parameter_edit(session, normalized: list[dict[str, Any]]) -> Callable[[Any]
                 ch["scale"],
             )
             update: dict[str, Any] = {"id": pid}
-            if ub is not None:
+            df = problem.parameter_df
+            if (lb is None) != (ub is None) and pid in df.index:
+                # A one-sided edit keeps the bound the table holds on the other side (#86).
+                lb = float(df.loc[pid, LOWER_BOUND]) if lb is None else lb
+                ub = float(df.loc[pid, UPPER_BOUND]) if ub is None else ub
+            if lb is not None or ub is not None:
                 # Widening backstops read the pre-edit bound, so they must run BEFORE any update.
                 # Entries are distinct parameters, so checking them all against the pristine table
                 # (before the single batched write below) is equivalent to interleaving.
@@ -1571,7 +1571,7 @@ def _parameter_edit(session, normalized: list[dict[str, Any]]) -> Callable[[Any]
                 scale_checks.append((pid, scale))
             updates.append(update)
             summary: dict[str, Any] = {"parameter_id": pid}
-            if ub is not None:
+            if lb is not None or ub is not None:
                 summary["lower_bound"], summary["upper_bound"] = lb, ub
             if scale is not None:
                 summary["scale"] = scale
@@ -1606,7 +1606,7 @@ def change_parameters(
     """Batch-edit the bounds and/or scale of one or more parameters in ONE atomic edit.
 
     ``parameters`` is a non-empty list of per-parameter dicts, each naming ``parameter_id`` and any
-    of ``lower_bound`` / ``upper_bound`` (a bound edit — give BOTH or neither) and ``scale``
+    of ``lower_bound`` / ``upper_bound`` (one alone keeps the table's other bound) and ``scale``
     ('lin'|'log'|'log10'). Group everything that belongs to one coherent retuning into a single
     call. Every per-parameter backstop still applies (a re-pinned parameter's 3rd widening, a
     noise-sigma cap, a log scale on a non-positive box); because the whole batch is atomic, one

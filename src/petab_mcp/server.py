@@ -31,8 +31,10 @@ session, engine, and the error-wrapping helpers. The tools stay thin: the real w
 from __future__ import annotations
 
 import json
+import re
 from typing import Annotated, Any, Callable, Literal
 
+import libsbml
 from fastmcp import FastMCP
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 from petab.v2.C import EXPERIMENT_ID, OBSERVABLE_ID
@@ -374,19 +376,36 @@ def _shorten(value: Any, limit: int = 200, _depth: int = 0) -> Any:
 _ID_LIST_CAP = model_edits_mod._ID_LIST_CAP
 
 
-def unknown_ids_message(unknown: list, known_ids: list[str]) -> str:
+def unknown_ids_message(
+    unknown: list, known_ids: list[str], rules: dict[str, str] | None = None
+) -> str:
     """The `get_parameters` unknown-id error text: what was wrong, what you probably meant, and
     what is valid. Built here rather than inline so it can be tested on the string a caller
     actually receives — the first version of this hint was assembled into a local variable and
     never interpolated, and shipped green because the tests around it called the scorer directly
     and grepped the module source.
+
+    ``rules`` maps the model's assignment-rule symbols to their formulas. A name read off the
+    model can be one — a statements binding's ``d16_kf_pinned`` / ``a_act_k_bound`` (#86) — and
+    is answered with the parameters its formula reads, not with near-miss guesses.
     """
-    hints = []
+    hints, ruled = [], []
     for u in unknown:
+        if rules and str(u) in rules:
+            formula = rules[str(u)]
+            reads = sorted(set(re.findall(r"[A-Za-z_]\w*", formula)) & set(known_ids))
+            ruled.append(
+                f"{u} := {formula}, which reads "
+                + (", ".join(reads) if reads else "no parameter")
+            )
+            continue
         close = model_edits_mod.closest_symbols(str(u), known_ids)
         if close:
             hints.append(f"{u} -> {' or '.join(repr(c) for c in close)}")
-    suggest = f" Did you mean: {'; '.join(hints)}." if hints else ""
+    suggest = (
+        f" Assignment rules of the model, not parameters: {'; '.join(ruled)}." if ruled else ""
+    )
+    suggest += f" Did you mean: {'; '.join(hints)}." if hints else ""
     known = ", ".join(known_ids[:_ID_LIST_CAP])
     more = (
         ""
@@ -1637,7 +1656,13 @@ def _register_parameter_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
                 # CLIENT'S SESSION — observed on 6 of 14. A raise is the shape a list-returning
                 # tool can express: FastMCP turns it into a tool error, which the client hands
                 # back to read and correct, exactly like any other rejected argument.
-                exc = ValidationError(unknown_ids_message(unknown, known_ids))
+                sm = session.model.sbml_model
+                rules = {
+                    u: libsbml.formulaToL3String(rule.getMath())
+                    for u in unknown
+                    if (rule := sm.getAssignmentRuleByVariable(u)) is not None
+                }
+                exc = ValidationError(unknown_ids_message(unknown, known_ids, rules))
                 # RECORD it before raising. ctx.run would have done this; raising past it meant
                 # a session that burned turns on bad ids showed ZERO errors in get_errors —
                 # invisible afterwards too.

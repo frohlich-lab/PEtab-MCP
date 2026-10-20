@@ -239,11 +239,13 @@ def register_skills(mcp, skills: list[Skill]) -> list[Skill]:
         listed in that skill's `files`.
         """
         skill = _find(name)
-        if file is None:
+        if file in (None, _SKILL_FILE):
             return skill.text
         if file not in skill.files:
             raise UnknownEntityError(
-                f"Skill {skill.name!r} has no file {file!r}. Files: {sorted(skill.files)}"
+                f"Skill {skill.name!r} has no file {file!r}. Files: {sorted(skill.files)}. "
+                f"get_skill(name) without `file` returns its {_SKILL_FILE}; `file` names one of "
+                "those listed files."
             )
         return skill.files[file]
 

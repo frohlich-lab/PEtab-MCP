@@ -264,6 +264,36 @@ def test_change_parameters_bounds(session):
     assert float(recs["k1"]["upperBound"]) == 1e3
 
 
+def test_change_parameters_one_bound_keeps_the_other(session):
+    """A one-sided bound edit was refused with "needs BOTH" (9x in the indra sweep, #86); it keeps
+    the bound the table holds on the other side."""
+    upper = float(session.problem.parameter_df.loc["k1", "upperBound"])
+    res = O.change_parameters(
+        session, [{"parameter_id": "k1", "lower_bound": 1e-4}], justification="lower floor"
+    )
+    assert res["applied"] is True
+    recs = {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
+    assert float(recs["k1"]["lowerBound"]) == 1e-4
+    assert float(recs["k1"]["upperBound"]) == upper
+
+
+def test_change_parameters_names_a_noise_placeholder(session):
+    """`noiseParameter1_<obs>` got "Unknown parameter id ... Known ids: [...]" (17x, #86), and the
+    agent kept trying to estimate a value the measurement table sets."""
+    odf = session.problem.observable_df.copy()
+    odf["noiseFormula"] = "noiseParameter1_obs_B"
+    odf["noisePlaceholders"] = "noiseParameter1_obs_B"
+    session.problem = session.problem.replace(observable_df=odf)
+    with pytest.raises(
+        PetabMcpError, match="noise placeholder of observable 'obs_B'.*noiseParameters"
+    ):
+        O.change_parameters(
+            session,
+            [{"parameter_id": "noiseParameter1_obs_B", "lower_bound": 1e-3, "upper_bound": 1.0}],
+            justification="estimate the noise",
+        )
+
+
 def test_change_parameters_batch_applies_bounds_and_scale_atomically(session):
     # One call retunes several parameters at once — the point of the batched editor.
     res = O.change_parameters(
