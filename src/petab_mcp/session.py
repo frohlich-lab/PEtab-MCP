@@ -144,6 +144,11 @@ class Checkpoint:
         """
         return not (self.sigma_inflated or self.sigma_collapsed)
 
+    @property
+    def sigma_gamed(self) -> bool:
+        """Whether the score was bought by an ESTIMATED sigma outside the plausibility band."""
+        return bool(self.sigma_estimated) and not self.sigma_plausible
+
 
 def store_root(yaml_path: str | Path, provenance_dir: str | Path | None = None) -> Path:
     """A problem's provenance store: ``provenance_dir``, else ``<problem dir>/.petab_mcp``."""
@@ -1025,8 +1030,9 @@ class PetabSession:
         an all-gamed session still records its best-scoring gamed model (the adequacy and sigma
         gates then handle it), keeping the sigma-adequacy gate live rather than dead.
         """
-        gamed = candidate.sigma_estimated and not candidate.sigma_plausible
-        if not is_new_best or (gamed and self.best is not None and self.best.sigma_plausible):
+        if not is_new_best or (
+            candidate.sigma_gamed and self.best is not None and self.best.sigma_plausible
+        ):
             return False
         self.best = candidate
         return True
@@ -1092,7 +1098,6 @@ class PetabSession:
             if "noise_sigma_assessable" in fitsim
             else _noise_sigma_assessable(report)
         )
-        sigma_implausible = bool(sigma_estimated and (sig_inflated or sig_collapsed))
 
         with self.lock:
             # Latch BEFORE the streak decision, off EVERY fit (not only new bests): one plausible
@@ -1109,7 +1114,7 @@ class PetabSession:
             # so the checkpoint invariant — "score is a real, beatable number" — holds
             # locally no matter how the score was produced.
             usable = score is not None and math.isfinite(score)
-            if usable and self._adopt_checkpoint(
+            candidate = (
                 Checkpoint(
                     version=version,
                     score=score,
@@ -1120,9 +1125,11 @@ class PetabSession:
                     sigma_collapsed=sig_collapsed,
                     sigma_assessable=sig_assessable,
                     residual_flagged=bool(fitsim.get("residual_flagged", False)),
-                ),
-                is_new_best,
-            ):
+                )
+                if usable
+                else None
+            )
+            if candidate is not None and self._adopt_checkpoint(candidate, is_new_best):
                 # A sigma-gamed "improvement" is not genuine progress even when adopted (it can
                 # only be adopted here over an absent/already-gamed best): it does NOT reset the
                 # non-improving streak, so an all-gamed session trips the streak cap instead of
@@ -1157,7 +1164,7 @@ class PetabSession:
                 # Hence: reset on an improvement whose only implausibility is inflation; keep the
                 # penalty when the sigma collapsed. Discounting both tails by a fixed fraction
                 # would be a magic constant guarding a runaway the inflated tail cannot produce.
-                if not sigma_implausible or (
+                if not candidate.sigma_gamed or (
                     sig_inflated and not sig_collapsed and not self.ever_sigma_plausible
                 ):
                     self.non_improving_streak = 0

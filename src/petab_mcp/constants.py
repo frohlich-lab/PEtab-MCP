@@ -33,7 +33,7 @@ DEFAULT_AUTO_FIT_STARTS = 5
 # They are literals rather than derived from the criterion; docs/RATIONALE.md says what that costs.
 #
 # (a) Minimum score improvement for a fit to count as a NEW BEST — the gate on ``is_new_best``
-# (see :func:`fitting.compute_improvement`). ``is_new_best`` tracks the same score the checkpoint
+# (see :func:`fitting.clears_new_best_bar`). ``is_new_best`` tracks the same score the checkpoint
 # stores, so the flag, the non-improving-streak reset, and the best-model
 # checkpoint all move on one coherent notion of "better". Without a threshold the flag fired on
 # ANY score twitch (down to ~1e-6, or an nll drop bought by an extra parameter that actually
