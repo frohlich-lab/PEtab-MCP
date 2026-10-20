@@ -608,7 +608,14 @@ def set_model(
             cause="self_assignment",
         )
 
-    normalized = _normalize_parameter_changes(parameters, arg="parameters") if parameters else []
+    # A fork quotes the forked version's box: that is the one it restores (#86).
+    forked = restore_parameter_df is not None and len(restore_parameter_df)
+    current = restore_parameter_df if forked else session.problem.parameter_df
+    normalized = (
+        _normalize_parameter_changes(parameters, arg="parameters", current=current)
+        if parameters
+        else []
+    )
 
     # Snapshot the currently-estimated parameter ids so we can flag any the re-author drops.
     from petab.v2.C import ESTIMATE
@@ -1346,12 +1353,14 @@ def _normalize_parameter_changes(
     changes: list[dict[str, Any]],
     label: str = "make_changes",
     arg: str = "parameters",
+    current=None,
 ) -> list[dict[str, Any]]:
     """Validate + normalize a ``parameters`` list into ``{parameter_id, lower_bound, upper_bound,
     scale}`` entries (missing fields as ``None``), raising :class:`OperationError` on anything
     malformed. Shared by both edit paths so they enforce exactly the same entry contract (issue
     #114); ``label``/``arg`` name the offending argument in the rejection message, which is why
-    they default to the TOOL's names rather than these functions'."""
+    they default to the TOOL's names rather than these functions'. ``current`` is the parameter
+    table a one-bound refusal quotes the box from, so the caller can resend both (#86)."""
     if not isinstance(changes, list) or not changes:
         raise OperationError(
             f"{label}: {arg!r} must be a non-empty list of "
@@ -1385,9 +1394,17 @@ def _normalize_parameter_changes(
                 "lower_bound+upper_bound and/or scale."
             )
         if (lb is None) != (ub is None):
+            box = ""
+            if (
+                current is not None
+                and pid in current.index
+                and {LOWER_BOUND, UPPER_BOUND} <= set(current.columns)
+            ):
+                low, high = (float(current.loc[pid, c]) for c in (LOWER_BOUND, UPPER_BOUND))
+                box = f" Its current bounds are [{low:g}, {high:g}]: send both."
             raise OperationError(
                 f"{label}: {pid!r} sets only one bound — a bound edit needs BOTH "
-                "lower_bound and upper_bound (or neither)."
+                f"lower_bound and upper_bound (or neither).{box}"
             )
         # Bounds must be real numbers HERE, not at the point of writing them: `update_parameters`
         # coerces with a bare `float(value)`, whose ValueError is not a PetabMcpError and so
@@ -1612,7 +1629,7 @@ def change_parameters(
     noise-sigma cap, a log scale on a non-positive box); because the whole batch is atomic, one
     rejected entry reverts ALL of them and nothing changes. An EDIT: mutates the parameter table
     but does NOT fit — the fit that scores it is wired at the server layer, not here."""
-    normalized = _normalize_parameter_changes(parameters)
+    normalized = _normalize_parameter_changes(parameters, current=session.problem.parameter_df)
     return _commit_change(
         session,
         "make_changes",

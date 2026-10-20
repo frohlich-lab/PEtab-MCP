@@ -264,6 +264,62 @@ def test_change_parameters_bounds(session):
     assert float(recs["k1"]["upperBound"]) == 1e3
 
 
+def test_a_one_bound_edit_is_refused_quoting_the_current_box(session):
+    """The server never picks a bound the caller did not send, so a one-sided edit is refused. The
+    bare "needs BOTH" left agents guessing (9x, #86); the refusal now quotes the box to resend."""
+    before = P.parameters_to_records(session.problem)
+    with pytest.raises(OperationError, match=r"'k1' sets only one bound.*\[0\.0001, 100\]: send"):
+        O.change_parameters(
+            session, [{"parameter_id": "k1", "lower_bound": 1e-3}], justification="one side"
+        )
+    assert P.parameters_to_records(session.problem) == before
+    both = [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 100.0}]
+    assert O.change_parameters(session, both, justification="both sides")["applied"] is True
+
+
+def test_a_forks_one_bound_refusal_quotes_the_forked_versions_box(session):
+    """A `base_version` fork restores that version's box, so the box to resend is that one, not
+    the abandoned branch's."""
+    stored = session.problem.parameter_df.copy()
+    stored.loc["k1", "upperBound"] = 10.0  # the forked version's box; HEAD's upper is 100
+    with pytest.raises(OperationError, match=r"\[0\.0001, 10\]: send both"):
+        _set_model(
+            session,
+            justification="fork",
+            parameters=[{"parameter_id": "k1", "upper_bound": 5.0}],
+            restore_parameter_df=stored,
+        )
+
+
+def test_change_parameters_names_an_assignment_rule_symbol(session):
+    """An analyst bounding `d16_kf_pinned`, a statements binding's rule, got the generic unknown-id
+    text on the edit path while get_parameters explained it (#86)."""
+    _set_model(session, ["r3: A => ; k3_bound * A;", "k3_bound := 2 * k1;"])
+    with pytest.raises(PetabMcpError, match=r"assignment rule of the model.*it reads k1\."):
+        O.change_parameters(
+            session,
+            [{"parameter_id": "k3_bound", "lower_bound": 1e-3, "upper_bound": 1.0}],
+            justification="x",
+        )
+
+
+def test_change_parameters_names_a_noise_placeholder(session):
+    """`noiseParameter1_<obs>` got "Unknown parameter id ... Known ids: [...]" (17x, #86), and the
+    agent kept trying to estimate a value the measurement table sets."""
+    odf = session.problem.observable_df.copy()
+    odf["noiseFormula"] = "noiseParameter1_obs_B"
+    odf["noisePlaceholders"] = "noiseParameter1_obs_B"
+    session.problem = session.problem.replace(observable_df=odf)
+    with pytest.raises(
+        PetabMcpError, match="noise placeholder of observable 'obs_B'.*noiseParameters"
+    ):
+        O.change_parameters(
+            session,
+            [{"parameter_id": "noiseParameter1_obs_B", "lower_bound": 1e-3, "upper_bound": 1.0}],
+            justification="estimate the noise",
+        )
+
+
 def test_change_parameters_batch_applies_bounds_and_scale_atomically(session):
     # One call retunes several parameters at once — the point of the batched editor.
     res = O.change_parameters(

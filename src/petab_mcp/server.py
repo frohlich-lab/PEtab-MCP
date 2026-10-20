@@ -46,6 +46,7 @@ from . import model as model_mod
 from . import model_edits as model_edits_mod
 from . import operations as ops_mod
 from . import parameters as param_mod
+from . import reconcile as reconcile_mod
 from . import regimes as regimes_mod
 from . import skills as skills_mod
 from . import validation_data as validation_data_mod
@@ -374,19 +375,28 @@ def _shorten(value: Any, limit: int = 200, _depth: int = 0) -> Any:
 _ID_LIST_CAP = model_edits_mod._ID_LIST_CAP
 
 
-def unknown_ids_message(unknown: list, known_ids: list[str]) -> str:
+def unknown_ids_message(
+    unknown: list, known_ids: list[str], explained: dict[str, str] | None = None
+) -> str:
     """The `get_parameters` unknown-id error text: what was wrong, what you probably meant, and
     what is valid. Built here rather than inline so it can be tested on the string a caller
     actually receives — the first version of this hint was assembled into a local variable and
     never interpolated, and shipped green because the tests around it called the scorer directly
     and grepped the module source.
+
+    ``explained`` holds, per unknown id the problem does use, why it has no row
+    (:func:`reconcile.not_a_parameter`); such an id gets that instead of near-miss guesses.
     """
+    explained = explained or {}
     hints = []
     for u in unknown:
+        if str(u) in explained:
+            continue
         close = model_edits_mod.closest_symbols(str(u), known_ids)
         if close:
             hints.append(f"{u} -> {' or '.join(repr(c) for c in close)}")
-    suggest = f" Did you mean: {'; '.join(hints)}." if hints else ""
+    suggest = "".join(f" {explained[str(u)]}" for u in unknown if str(u) in explained)
+    suggest += f" Did you mean: {'; '.join(hints)}." if hints else ""
     known = ", ".join(known_ids[:_ID_LIST_CAP])
     more = (
         ""
@@ -1637,7 +1647,12 @@ def _register_parameter_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
                 # CLIENT'S SESSION — observed on 6 of 14. A raise is the shape a list-returning
                 # tool can express: FastMCP turns it into a tool error, which the client hands
                 # back to read and correct, exactly like any other rejected argument.
-                exc = ValidationError(unknown_ids_message(unknown, known_ids))
+                explained = {
+                    u: why
+                    for u in unknown
+                    if (why := reconcile_mod.not_a_parameter(session.problem, u, known_ids))
+                }
+                exc = ValidationError(unknown_ids_message(unknown, known_ids, explained))
                 # RECORD it before raising. ctx.run would have done this; raising past it meant
                 # a session that burned turns on bad ids showed ZERO errors in get_errors —
                 # invisible afterwards too.

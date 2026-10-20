@@ -296,7 +296,10 @@ def update_parameters(problem, updates: list[dict[str, Any]]) -> dict[str, Any]:
         if pid is None:
             raise ParameterError("Each update must include an 'id'.")
         if pid not in df.index:
-            raise ParameterError(f"Unknown parameter id {pid!r}. Known ids: {sorted(df.index)}")
+            from .reconcile import not_a_parameter
+
+            why = not_a_parameter(problem, pid) or f"Known ids: {sorted(df.index)}"
+            raise ParameterError(f"Unknown parameter id {pid!r}. {why}")
         fields: dict[str, Any] = {}
         for field, value in upd.items():
             if field in ("id", PARAMETER_ID):
