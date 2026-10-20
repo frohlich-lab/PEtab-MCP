@@ -65,11 +65,8 @@ Exponents are the easy ones to miss: a literal `D^2` asserts that power and no f
 
 - A reaction **must** have a rate law: `J: A -> B;` alone is a parse error.
 - Degradation has no product (`deg: A -> ; kdeg*A`), synthesis no reactant (`syn: -> A; ksyn`).
-
-## A parameter can read back as `name = ;`
-
-A parameter with no SBML value serializes as `name = ;`: not corruption, not zero — the value
-lives in the PEtab table. Write a plausible number yourself; an empty value lands a NaN nominal.
+- A parameter the condition table sets reads back as `name = ;`: not corruption, each condition
+  sets its value.
 
 ## Parse errors that actually happen
 
