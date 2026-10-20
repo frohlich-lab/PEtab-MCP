@@ -759,3 +759,59 @@ def test_an_unscorable_session_is_diagnosed_by_the_streak_cap_not_the_budget(ses
     # The actionable finding — the fits are failing to EVALUATE, not the form failing to fit.
     assert "No fit in this session produced a" in reason
     assert "best scored version is kept" not in reason
+
+
+@pytest.mark.parametrize(
+    "fits, best",
+    [
+        # A lower-scoring fit with an inflated sigma is refused over a plausible best.
+        (
+            [
+                _fitsim_plausible_sigma(-50.0, 18.0),
+                _fitsim_inflated_sigma(-80.0, 18.0),
+                _fitsim_plausible_sigma(-50.0 - NEW_BEST_MIN_DELTA_SCORE / 4, 18.0),
+            ],
+            0,
+        ),
+        # With no plausible best to protect, a gamed new best is adopted, collapsed or inflated.
+        (
+            [
+                _fitsim_collapsed_sigma(-50.0, 18.0),
+                _fitsim_inflated_sigma(-80.0, 18.0),
+                _fitsim_plausible_sigma(-80.0 - NEW_BEST_MIN_DELTA_SCORE / 4, 18.0),
+            ],
+            1,
+        ),
+    ],
+    ids=["gamed-refused", "gamed-adopted"],
+)
+def test_a_resume_seeds_the_checkpoint_the_live_run_kept(
+    session, yaml_path, monkeypatch, fits, best
+):
+    """A restart on the same store rebuilds the best-score checkpoint the live run kept, not the
+    lowest score in the log (#9). Driven through `fit` (the optimizer stubbed) so the events are
+    the ones `fit` writes; the last fit of each script is plausible but short of the new-best bar.
+    Each fit prices a hardcoded constant, so the persisted gof p-value must use the same k as the
+    live checkpoint's."""
+    from petab_mcp.references import StubReferenceResolver
+    from petab_mcp.session import PetabSession
+
+    script = iter(fits)
+    reports = []
+
+    def _fit(n_starts=None):
+        fs = {**next(script), "hardcoded_constants": ["0.0987"], "n_starts": n_starts}
+        reports.append(fs.pop("noise_sigma_report"))
+        return fs, fitting.compute_improvement(session, fs["neg_log_likelihood"], fitsim=fs)
+
+    monkeypatch.setattr(session, "_auto_fit_and_improvement", _fit)
+    monkeypatch.setattr(fitting, "noise_sigma_report", lambda problem, fitted: reports[-1])
+    # Three fits of one structure is the de-dup's cap (dedup.MAX_IDENTICAL_REAUTHORS); each runs
+    # more starts than the last, or the de-dup skips it as a refit.
+    versions = [session.fit(n_starts=n)["version"] for n in (1, 2, 3)]
+    assert session.best.version == versions[best]
+
+    resumed = PetabSession(
+        yaml_path, provenance_dir=str(session.provenance.root), resolver=StubReferenceResolver()
+    )
+    assert resumed.best == session.best
