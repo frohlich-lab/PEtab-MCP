@@ -585,3 +585,23 @@ def test_a_log_normal_observable_keeps_the_fit_joint(session):
     p.parameter_df.loc["sigma_B", "estimate"] = True
     assert fitting._reconcile.classify_inner_parameters(p) == {"sigma_B": "sigma"}
     assert fitting._build_hierarchical_problem(session, {}) == (None, {})
+
+
+def test_every_inner_value_must_come_back_from_the_fit():
+    """Every inner parameter the server classified must come back from pyPESTO's result. A missing
+    one was skipped silently, leaving its pre-fit value in the table beside a score taken at the
+    inner optimum."""
+    from types import SimpleNamespace
+
+    from petab_mcp import fitting
+
+    calculator = SimpleNamespace(get_interpretable_inner_par_ids=lambda: ["sigma_B"])
+    problem = SimpleNamespace(objective=SimpleNamespace(calculator=calculator))
+    inner = {"sigma_B": "sigma"}
+    best = {"inner_parameters": [0.2]}
+    assert fitting._inner_fitted_values(problem, best, inner) == {"sigma_B": 0.2}
+    for lost in ({}, {"inner_parameters": None}, {"inner_parameters": [0.2, 1.0]}):
+        with pytest.raises(ModelUpdateError, match="sigma_B"):
+            fitting._inner_fitted_values(problem, lost, inner)
+    with pytest.raises(ModelUpdateError, match="s_B"):
+        fitting._inner_fitted_values(problem, best, {**inner, "s_B": "scaling"})

@@ -226,6 +226,9 @@ class PetabSession:
         # per-point simulation dataframe.
         self.engine: Any | None = None
         self.simulation: dict[str, Any] | None = None
+        # `(problem_hash, nll)` of the last version applied: the score it was committed with, and
+        # the state that score belongs to (see `fitting._committed_score_note`).
+        self.version_score: tuple[str, Any] | None = None
         # pyPESTO traces/results of the last fit (live diagnostic; not persisted per version).
         self.optimization: dict[str, Any] | None = None
         # The frozen record of the last fit — its built pyPESTO problem, its optimum, its tables
@@ -718,6 +721,7 @@ class PetabSession:
             self._set_model_from_antimony(snap["model_antimony"])
             self.problem.parameter_df = self.provenance.get_parameter_df(version)
             self.simulation = snap.get("simulation")
+            self.version_score = (self.problem_hash(), snap.get("neg_log_likelihood"))
             # The branch source moves WITH the model. Without this, a structured edit after a
             # rollback applies its operations to the abandoned branch's text and silently
             # resurrects it. Falls back to the restored render for versions stored before
