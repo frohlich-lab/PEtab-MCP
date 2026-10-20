@@ -9,10 +9,22 @@ import pytest
 from indra.statements import (
     Activation,
     ActiveForm,
+    ActivityCondition,
     Agent,
+    Autophosphorylation,
+    BoundCondition,
     Dephosphorylation,
+    Gap,
+    Gef,
+    Inhibition,
     ModCondition,
+    Modification,
     Phosphorylation,
+    RegulateActivity,
+    RemoveModification,
+    Translocation,
+    Transphosphorylation,
+    get_statement_by_name,
 )
 
 from petab_mcp import mechanisms as M
@@ -95,50 +107,183 @@ def test_basal_addition_refuses_an_enzyme_too_and_builds_without_one():
     assert emission.rules
 
 
-def _akt1(phospho_s473: bool) -> Agent:
-    """AKT1 written at S473, phosphorylated or not, and at pT308."""
-    s473 = ModCondition("phosphorylation", "S", "473", phospho_s473)
-    return Agent("AKT1", mods=[s473, ModCondition("phosphorylation", "T", "308")])
+#: The issue's substrate: AKT1 written phosphorylated at S473, the site it is dephosphorylated at.
+_P473 = ModCondition("phosphorylation", "S", "473")
+_U473 = ModCondition("phosphorylation", "S", "473", False)
+_PT308 = ModCondition("phosphorylation", "T", "308")
 
 
-def _akt1_sites(pattern) -> list[dict]:
-    """AKT1's sites in each of ``pattern``'s molecules, INDRA's ``(state, WILD)`` read as the
-    state; a rule's reactants and then its products."""
-    rule = isinstance(pattern, pysb.Rule)
-    sides = (pattern.reactant_pattern, pattern.product_pattern) if rule else (pattern,)
-    return [
-        M._plain(mp.site_conditions)
-        for side in sides
-        for cp in side.complex_patterns
-        for mp in cp.monomer_patterns
-        if mp.monomer.name == "AKT1"
-    ]
+def _akt1(*mods: ModCondition, **conditions) -> Agent:
+    return Agent("AKT1", mods=list(mods), **conditions)
+
+
+def _kras(active: bool) -> Agent:
+    return Agent("KRAS", activity=ActivityCondition("gtpbound", active))
 
 
 @pytest.mark.parametrize(
-    "stmt, policy, change",
+    "stmt, policy, rule",
     [
-        (Dephosphorylation(None, _akt1(True), "S", "473"), M.BASAL, ["p", "u"]),
-        (Dephosphorylation(Agent("PTEN"), _akt1(True), "S", "473"), M.INDRA_DEFAULT, ["p", "u"]),
-        (Phosphorylation(None, _akt1(False), "S", "473"), M.BASAL, ["u", "p"]),
-        (Phosphorylation(Agent("MTOR"), _akt1(False), "S", "473"), M.INDRA_DEFAULT, ["u", "p"]),
+        pytest.param(
+            Dephosphorylation(None, _akt1(_P473), "S", "473"), M.BASAL,
+            "AKT1(S473='p') >> AKT1(S473='u')", id="issue-basal",
+        ),
+        pytest.param(
+            Dephosphorylation(Agent("PTEN"), _akt1(_P473), "S", "473"), M.INDRA_DEFAULT,
+            "PTEN() + AKT1(S473='p') >> PTEN() + AKT1(S473='u')", id="issue-indra_default",
+        ),
+        pytest.param(
+            Dephosphorylation(None, _akt1(_P473, _PT308), "S", "473"), M.BASAL,
+            "AKT1(S473='p', T308=('p', WILD)) >> AKT1(S473='u', T308=('p', WILD))",
+            id="issue-basal-pT308",
+        ),
+        pytest.param(
+            Dephosphorylation(Agent("PTEN"), _akt1(_P473, _PT308), "S", "473"), M.INDRA_DEFAULT,
+            "PTEN() + AKT1(S473='p', T308=('p', WILD)) >> PTEN() + AKT1(S473='u', T308=('p', WILD))",
+            id="issue-indra_default-pT308",
+        ),
+        pytest.param(
+            Phosphorylation(None, _akt1(_U473), "S", "473"), M.BASAL,
+            "AKT1(S473='u') >> AKT1(S473='p')", id="addition-basal",
+        ),
+        pytest.param(
+            Phosphorylation(Agent("MTOR"), _akt1(_U473), "S", "473"), M.INDRA_DEFAULT,
+            "MTOR() + AKT1(S473='u') >> MTOR() + AKT1(S473='p')", id="addition-indra_default",
+        ),
+        pytest.param(
+            Autophosphorylation(_akt1(_P473), "S", "473"), M.INDRA_DEFAULT,
+            "AKT1(S473='u') >> AKT1(S473='p')", id="autophosphorylation",
+        ),
+        pytest.param(
+            Activation(Agent("EGFR"), _akt1(activity=ActivityCondition("activity", True))),
+            M.INDRA_DEFAULT,
+            "EGFR() + AKT1(activity='inactive') >> EGFR() + AKT1(activity='active')",
+            id="activation",
+        ),
+        pytest.param(
+            Inhibition(Agent("PTEN"), _akt1(activity=ActivityCondition("activity", True))),
+            M.INDRA_DEFAULT,
+            "PTEN() + AKT1(activity='active') >> PTEN() + AKT1(activity='inactive')",
+            id="inhibition",
+        ),
+        pytest.param(
+            Gef(Agent("SOS1"), _kras(False)), M.INDRA_DEFAULT,
+            "SOS1() + KRAS(gtpbound='inactive') >> SOS1() + KRAS(gtpbound='active')", id="gef",
+        ),
+        pytest.param(
+            Gap(Agent("NF1"), _kras(True)), M.INDRA_DEFAULT,
+            "NF1() + KRAS(gtpbound='active') >> NF1() + KRAS(gtpbound='inactive')", id="gap",
+        ),
+        pytest.param(
+            Translocation(_akt1(location="cytoplasm"), "cytoplasm", "nucleus"), M.INDRA_DEFAULT,
+            "AKT1(loc='cytoplasm') >> AKT1(loc='nucleus')", id="translocation",
+        ),
     ],
 )
-def test_a_substrate_written_in_the_state_it_leaves_still_changes(stmt, policy, change):
-    """`AKT1{pS473} is dephosphorylated at S473` built `pS473 >> pS473`: the substrate's written
-    site overrode the state the rule sets, under `basal` and INDRA's policies alike. The modified
-    site is the rule's, every other written site stays, and the row's statement is untouched."""
+def test_a_rule_sets_the_state_its_agent_is_written_in(stmt, policy, rule):
+    """`AKT1{pS473} is dephosphorylated at S473` built `AKT1(S473=('p', WILD)) >>
+    AKT1(S473=('p', WILD))`: INDRA puts an agent's written state over the state a rule sets, so
+    the rule changed nothing. The rule's own site, activity or location now wins, every other
+    written site stays, and the row's statement is untouched."""
+    written = str(stmt)
     model, _ = M.assemble([(stmt, policy, "r1")])
-    (rule,) = model.rules
-    sides = _akt1_sites(rule)
-    assert [s["S473"] for s in sides] == change
-    assert [s["T308"] for s in sides] == ["p", "p"]
-    assert len(stmt.sub.mods) == 2
+    assert [str(r.rule_expression) for r in model.rules] == [rule]
+    assert str(stmt) == written
+
+
+def test_transphosphorylation_sets_the_partners_site():
+    """The substrate of a transphosphorylation is the enzyme's bound partner, written inside it."""
+    partner = Agent("EGFR", mods=[ModCondition("phosphorylation", "Y", "1068")])
+    stmt = Transphosphorylation(Agent("EGFR", bound_conditions=[BoundCondition(partner)]), "Y", "1068")
+    model, _ = M.assemble([(stmt, M.INDRA_DEFAULT, "r1")])
+    assert [str(r.rule_expression) for r in model.rules] == [
+        "EGFR(egfr=ANY) % EGFR(Y1068='u') >> EGFR(egfr=ANY) % EGFR(Y1068='p')"
+    ]
+
+
+def _written_in(cls: type, policy: str, from_state: bool):
+    """A statement of ``cls`` whose agent is written in the state the rule takes it from (or to),
+    or None for a type that changes no state of an agent."""
+    if issubclass(cls, Modification):
+        enz = None if policy in (M.BASAL, "dissociative") else Agent("E")
+        stmt = cls(enz, Agent("S"))
+        mc = stmt._get_mod_condition()
+        on = issubclass(cls, RemoveModification) == from_state
+        stmt.sub.mods = [ModCondition(mc.mod_type, mc.residue, mc.position, on)]
+        return stmt
+    if cls is Autophosphorylation:
+        return cls(Agent("S", mods=[ModCondition("phosphorylation", None, None, not from_state)]))
+    if cls is Transphosphorylation:
+        sub = Agent("S", mods=[ModCondition("phosphorylation", None, None, not from_state)])
+        return cls(Agent("E", bound_conditions=[BoundCondition(sub)]))
+    if issubclass(cls, RegulateActivity):
+        stmt = cls(Agent("E"), Agent("S"))
+        stmt.obj.activity = ActivityCondition(stmt.obj_activity, issubclass(cls, Inhibition) == from_state)
+        return stmt
+    if cls in (Gef, Gap):
+        return cls(Agent("E"), Agent("S", activity=ActivityCondition("gtpbound", (cls is Gap) == from_state)))
+    if cls is Translocation:
+        return cls(Agent("S", location="cytoplasm" if from_state else "nucleus"), "cytoplasm", "nucleus")
+    return None
+
+
+#: INDRA's base classes, entries only because every INDRA type is; no row writes one.
+_BASES = {"Modification", "AddModification", "RemoveModification", "SelfModification", "RegulateActivity"}
+#: Types that change no state of an agent, so no written state can override one.
+_STATELESS = {
+    "ActiveForm", "Association", "Complex", "Conversion", "DecreaseAmount", "IncreaseAmount",
+    "Influence", "PopulationTransition",
+}
+_SWEPT = sorted(key for key in M.REGISTRY if key[0] not in _BASES | _STATELESS)
+
+
+def test_the_sweep_classifies_every_registered_type():
+    """A new type that changes a state joins the sweep below, or is named here as stateless."""
+    for stmt_type, policy in _SWEPT:
+        assert _written_in(get_statement_by_name(stmt_type), policy, True) is not None, stmt_type
+
+
+@pytest.mark.parametrize("from_state", [True, False], ids=["from", "to"])
+@pytest.mark.parametrize("stmt_type, policy", _SWEPT)
+def test_no_entry_builds_a_rule_that_changes_nothing(stmt_type, policy, from_state):
+    """Every entry for a type that changes a state, its agent written in the state the rule takes
+    it from or to: before #42's fix, 170 of these 326 built a rule whose two sides were the same."""
+    stmt = _written_in(get_statement_by_name(stmt_type), policy, from_state)
+    try:
+        model, _ = M.assemble([(stmt, policy, "r1")])
+    except MechanismError as exc:
+        assert "which changes nothing" in str(exc)
+        return
+    assert model.rules
+    for rule in model.rules:
+        assert str(rule.reactant_pattern) != str(rule.product_pattern), str(rule.rule_expression)
+
+
+def test_a_rule_that_changes_nothing_is_refused():
+    """The guard behind the override: an entry whose rule has the same two sides is refused,
+    naming the row and the written state, so a type the override misses cannot build one."""
+
+    def unchanging(stmt, model, prefix):
+        k = pysb.Parameter(f"{prefix}_k", 1.0, _export=False)
+        akt1 = model.monomers["AKT1"]
+        rule = pysb.Rule(f"{prefix}_noop", akt1(S473="p") >> akt1(S473="p"), k, _export=False)
+        model.add_component(k)
+        model.add_component(rule)
+        return M.Emission(("Dephosphorylation", "noop"), prefix, {}, (rule.name,), (k.name,))
+
+    library = {**M.REGISTRY, ("Dephosphorylation", "noop"): unchanging}
+    stmt = Dephosphorylation(None, _akt1(_P473), "S", "473")
+    with pytest.raises(MechanismError) as exc:
+        M.assemble([(stmt, "noop", "r1")], {}, library)
+    assert str(exc.value).startswith(
+        "row 'r1': Dephosphorylation under 'noop' builds `AKT1(S473='p') >> AKT1(S473='p')`, "
+        "which changes nothing: the row writes AKT1{pS473}"
+    )
 
 
 def test_a_scheme_and_a_written_rate_read_the_substrate_as_written():
-    """With the site left out for every entry, a written rate's `sub` read all AKT1, not the
-    pAKT1 the row names, and a scheme line that does not name `mod` took AKT1 in any state."""
+    """The override at the dispatch read a written rate's `sub` as all AKT1, not the pAKT1 the
+    row names, and let a scheme line that does not name `mod` take AKT1 in any state."""
     library = dict(M.REGISTRY)
     library[("Dephosphorylation", "mm")] = M.written(
         {"statement_type": "Dephosphorylation", "policy": "mm", "based_on": M.BASAL,
@@ -152,22 +297,24 @@ def test_a_scheme_and_a_written_rate_read_the_substrate_as_written():
         library,
     )
     rows = [
-        (Dephosphorylation(None, _akt1(True), "S", "473"), "mm", "r1"),
-        (Dephosphorylation(Agent("PTEN"), _akt1(True), "S", "473"), "bound", "r2"),
+        (Dephosphorylation(None, _akt1(_P473), "S", "473"), "mm", "r1"),
+        (Dephosphorylation(Agent("PTEN"), _akt1(_P473), "S", "473"), "bound", "r2"),
     ]
     model, _ = M.assemble(rows, {}, library)
-    assert [s["S473"] for s in _akt1_sites(model.rules["r1_base_removal"])] == ["p", "u"]
-    assert [s["S473"] for s in _akt1_sites(model.observables["r1_sub"].reaction_pattern)] == ["p"]
-    assert [s["S473"] for s in _akt1_sites(model.rules["r2_r0"])] == ["p", "p"]
-    assert [s["S473"] for s in _akt1_sites(model.rules["r2_r1"])] == ["p", "u"]
+    rules = {name: str(model.rules[name].rule_expression) for name in ("r1_base_removal", "r2_r0", "r2_r1")}
+    assert rules == {
+        "r1_base_removal": "AKT1(S473='p') >> AKT1(S473='u')",
+        "r2_r0": "PTEN(akt1=None) + AKT1(S473='p', pten=None) >> PTEN(akt1=1) % AKT1(S473='p', pten=1)",
+        "r2_r1": "PTEN(akt1=1) % AKT1(S473='p', pten=1) >> PTEN(akt1=None) + AKT1(S473='u', pten=None)",
+    }
+    assert str(model.observables["r1_sub"].reaction_pattern) == "AKT1(S473=('p', WILD))"
 
 
 def test_rows_differing_only_in_the_written_modified_site_are_twins():
     """Both build the same INDRA rule, so the second built nothing and was refused as a policy
     that builds no rule, not as the repeat it is."""
-    written = Agent("AKT1", mods=[ModCondition("phosphorylation", "S", "473")])
     rows = [
-        (Dephosphorylation(Agent("PTEN"), written, "S", "473"), M.INDRA_DEFAULT, "r1"),
+        (Dephosphorylation(Agent("PTEN"), _akt1(_P473), "S", "473"), M.INDRA_DEFAULT, "r1"),
         (Dephosphorylation(Agent("PTEN"), Agent("AKT1"), "S", "473"), M.INDRA_DEFAULT, "r2"),
     ]
     with pytest.raises(MechanismError, match="asserts the statement of row 'r1' again"):
