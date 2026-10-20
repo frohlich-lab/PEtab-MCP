@@ -14,9 +14,7 @@ from typing import Any
 from petab.v2.C import (
     ESTIMATE,
     LOWER_BOUND,
-    NOISE_PARAMETERS,
     NOMINAL_VALUE,
-    OBSERVABLE_PARAMETERS,
     PARAMETER_ID,
     UPPER_BOUND,
 )
@@ -24,7 +22,7 @@ from petab.v2.C import (
 from .constants import DEFAULT_PARAMETER_LOWER_BOUND, DEFAULT_PARAMETER_UPPER_BOUND
 from .errors import ParameterError
 from .formatting import _clean
-from .problem import PARAMETER_SCALE, SCALES, as_bool, placeholders
+from .problem import PARAMETER_SCALE, SCALES, as_bool
 
 _SCALES = set(SCALES)
 _NUMERIC_FIELDS = {LOWER_BOUND, UPPER_BOUND, NOMINAL_VALUE}
@@ -280,22 +278,6 @@ def _coerce_estimate(value: Any) -> bool:
         raise ParameterError(f"Cannot interpret estimate value {value!r} as true/false.") from None
 
 
-def _placeholder_message(problem, pid: str) -> str | None:
-    """Why ``pid`` has no row when it is an observable's placeholder, else ``None``. The agent
-    meets ``noiseParameter1_<obs>`` in the noise formula and takes it for a parameter (#86)."""
-    odf = getattr(problem, "observable_df", None)
-    for oid in [] if odf is None else odf.index:
-        for kind, column in (("noise", NOISE_PARAMETERS), ("observable", OBSERVABLE_PARAMETERS)):
-            if pid in placeholders(odf, oid, kind):
-                return (
-                    f"Unknown parameter id {pid!r}: it is a {kind} placeholder of observable "
-                    f"{oid!r}, which the measurement table's {column} column fills row by row, "
-                    "so it has no bounds or scale of its own. Where that column names a parameter "
-                    "rather than a number, that parameter is the row to edit."
-                )
-    return None
-
-
 def update_parameters(problem, updates: list[dict[str, Any]]) -> dict[str, Any]:
     """Apply a batch of parameter-table edits, transactionally.
 
@@ -314,10 +296,10 @@ def update_parameters(problem, updates: list[dict[str, Any]]) -> dict[str, Any]:
         if pid is None:
             raise ParameterError("Each update must include an 'id'.")
         if pid not in df.index:
-            raise ParameterError(
-                _placeholder_message(problem, pid)
-                or f"Unknown parameter id {pid!r}. Known ids: {sorted(df.index)}"
-            )
+            from .reconcile import not_a_parameter
+
+            why = not_a_parameter(problem, pid) or f"Known ids: {sorted(df.index)}"
+            raise ParameterError(f"Unknown parameter id {pid!r}. {why}")
         fields: dict[str, Any] = {}
         for field, value in upd.items():
             if field in ("id", PARAMETER_ID):

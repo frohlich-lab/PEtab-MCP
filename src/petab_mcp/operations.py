@@ -1505,6 +1505,9 @@ def _composed_parameter_edit(session, normalized, stored_df):
     a caller can fork a version AND change one bound in one transaction.
     """
     have_stored = stored_df is not None and len(stored_df)
+    if have_stored and normalized:
+        # A one-sided entry keeps the FORKED version's other bound, not the abandoned branch's.
+        normalized = _keep_other_bound(normalized, stored_df)
     apply_new = _parameter_edit(session, normalized) if normalized else None
     if not have_stored:
         return apply_new
@@ -1530,6 +1533,27 @@ def _composed_parameter_edit(session, normalized, stored_df):
     return edit
 
 
+def _keep_other_bound(normalized: list[dict[str, Any]], df) -> list[dict[str, Any]]:
+    """``normalized`` with each one-sided bound edit's other bound read off ``df`` (#86), for the
+    ids ``df`` has a row for. Refuses a pair that is then no interval — including a kept bound
+    that is blank — naming the kept bound, which the caller never sent."""
+    out = []
+    for ch in normalized:
+        pid, lb, ub = ch["parameter_id"], ch["lower_bound"], ch["upper_bound"]
+        kept = LOWER_BOUND if lb is None else UPPER_BOUND
+        if (lb is None) != (ub is None) and pid in df.index and kept in df.columns:
+            value = float(df.loc[pid, kept])
+            lb, ub = (value, ub) if lb is None else (lb, value)
+            if not lb < ub:  # NaN fails it too
+                raise OperationError(
+                    f"make_changes: {pid!r} gives one bound, so it keeps its current {kept} "
+                    f"{value:g}, and [{lb:g}, {ub:g}] is no interval — give both bounds."
+                )
+            ch = {**ch, "lower_bound": lb, "upper_bound": ub}
+        out.append(ch)
+    return out
+
+
 def _parameter_edit(session, normalized: list[dict[str, Any]]) -> Callable[[Any], dict[str, Any]]:
     """Build the ``param_edit(problem)`` callback that applies ``normalized`` (from
     :func:`_normalize_parameter_changes`) as ONE transactional write, with every per-parameter
@@ -1541,7 +1565,7 @@ def _parameter_edit(session, normalized: list[dict[str, Any]]) -> Callable[[Any]
         scale_checks: list[tuple[str, str]] = []  # (pid, scale) to verify AFTER the batched update
         changed = []
         warnings: list[str] = []
-        for ch in normalized:
+        for ch in _keep_other_bound(normalized, problem.parameter_df):
             pid, lb, ub, scale = (
                 ch["parameter_id"],
                 ch["lower_bound"],
@@ -1549,11 +1573,6 @@ def _parameter_edit(session, normalized: list[dict[str, Any]]) -> Callable[[Any]
                 ch["scale"],
             )
             update: dict[str, Any] = {"id": pid}
-            df = problem.parameter_df
-            if (lb is None) != (ub is None) and pid in df.index:
-                # A one-sided edit keeps the bound the table holds on the other side (#86).
-                lb = float(df.loc[pid, LOWER_BOUND]) if lb is None else lb
-                ub = float(df.loc[pid, UPPER_BOUND]) if ub is None else ub
             if lb is not None or ub is not None:
                 # Widening backstops read the pre-edit bound, so they must run BEFORE any update.
                 # Entries are distinct parameters, so checking them all against the pristine table

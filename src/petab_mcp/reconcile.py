@@ -273,6 +273,45 @@ def readouts(problem) -> dict[str, str | None]:
     return out
 
 
+def not_a_parameter(problem, pid: str, known=None) -> str | None:
+    """Why ``pid``, a name the problem uses, has no parameter row, or ``None``. Agents read two
+    such names off the problem and asked for them as parameters (#86): an observable's placeholder
+    (``noiseParameter1_<obs>``), which the measurement table fills, and an assignment rule's target
+    (a statements binding's ``d16_kf_pinned`` / ``a_act_k_bound``), whose reads are followed
+    through other rules to the ids in ``known`` (default: the live parameter table)."""
+    odf = getattr(problem, "observable_df", None)
+    for oid in [] if odf is None else odf.index:
+        for kind, column in (("noise", NOISE_PARAMETERS), ("observable", OBSERVABLE_PARAMETERS)):
+            if pid in placeholders(odf, oid, kind):
+                return (
+                    f"{pid!r} is a {kind} placeholder of observable {oid!r}: the measurement "
+                    f"table's {column} column fills it row by row, so it has no bounds or scale "
+                    "of its own. Where that column names a parameter rather than a number, that "
+                    "parameter is the row to edit."
+                )
+    model = getattr(problem, "model", None)
+    sm = model.sbml_model if model is not None else None
+    rule = sm.getAssignmentRuleByVariable(pid) if sm is not None else None
+    if rule is None:
+        return None
+    known = set(problem.parameter_df.index if known is None else known)
+    reads, seen, todo = set(), {pid}, [rule]
+    while todo:
+        for name in _ast_names(todo.pop().getMath()) - seen:
+            seen.add(name)
+            inner = sm.getAssignmentRuleByVariable(name)
+            if name in known:
+                reads.add(name)
+            elif inner is not None:
+                todo.append(inner)
+    return (
+        f"{pid!r} is an assignment rule of the model, `{pid} := "
+        f"{libsbml.formulaToL3String(rule.getMath())}`, not a parameter; it reads "
+        + (", ".join(sorted(reads)) or "no parameter")
+        + "."
+    )
+
+
 def seed_model_antimony(problem) -> str | None:
     """A CONTENT-FREE but VALID initial model for a problem that ships without one, or ``None``
     when the fixed tables name nothing to declare.

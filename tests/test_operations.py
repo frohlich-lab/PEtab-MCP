@@ -267,14 +267,47 @@ def test_change_parameters_bounds(session):
 def test_change_parameters_one_bound_keeps_the_other(session):
     """A one-sided bound edit was refused with "needs BOTH" (9x in the indra sweep, #86); it keeps
     the bound the table holds on the other side."""
-    upper = float(session.problem.parameter_df.loc["k1", "upperBound"])
+    df = session.problem.parameter_df
+    upper, lower = float(df.loc["k1", "upperBound"]), float(df.loc["k2", "lowerBound"])
     res = O.change_parameters(
-        session, [{"parameter_id": "k1", "lower_bound": 1e-4}], justification="lower floor"
+        session,
+        [{"parameter_id": "k1", "lower_bound": 1e-3}, {"parameter_id": "k2", "upper_bound": 10.0}],
+        justification="one side each",
     )
     assert res["applied"] is True
     recs = {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
-    assert float(recs["k1"]["lowerBound"]) == 1e-4
-    assert float(recs["k1"]["upperBound"]) == upper
+    assert (float(recs["k1"]["lowerBound"]), float(recs["k1"]["upperBound"])) == (1e-3, upper)
+    assert (float(recs["k2"]["lowerBound"]), float(recs["k2"]["upperBound"])) == (lower, 10.0)
+
+
+def test_a_one_sided_bound_past_the_kept_one_names_the_kept_one(session):
+    """The kept bound is one the caller never sent, so a crossing must say where it came from
+    rather than report update_parameters' zero-width-box text about it."""
+    with pytest.raises(OperationError, match="keeps its current lowerBound 0.0001.*give both"):
+        O.change_parameters(
+            session, [{"parameter_id": "k1", "upper_bound": 1e-5}], justification="too low"
+        )
+
+
+def test_a_forks_one_sided_bound_keeps_the_forked_versions_other_bound(session):
+    """A `base_version` fork filled the other bound from HEAD, handing the fork the abandoned
+    branch's widening that restoring the version is there to undo."""
+    stored = session.problem.parameter_df.copy()
+    stored.loc["k1", "upperBound"] = 10.0  # the forked version's box; HEAD's upper is 100
+    entry = {"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": None, "scale": None}
+    O._composed_parameter_edit(session, [entry], stored)(session.problem)
+    df = session.problem.parameter_df
+    assert (float(df.loc["k1", "lowerBound"]), float(df.loc["k1", "upperBound"])) == (1e-3, 10.0)
+
+
+def test_change_parameters_names_an_assignment_rule_symbol(session):
+    """An analyst bounding `d16_kf_pinned`, a statements binding's rule, got the generic unknown-id
+    text on the edit path while get_parameters explained it (#86)."""
+    _set_model(session, ["r3: A => ; k3_bound * A;", "k3_bound := 2 * k1;"])
+    with pytest.raises(PetabMcpError, match=r"assignment rule of the model.*it reads k1\."):
+        O.change_parameters(
+            session, [{"parameter_id": "k3_bound", "lower_bound": 1e-3}], justification="x"
+        )
 
 
 def test_change_parameters_names_a_noise_placeholder(session):

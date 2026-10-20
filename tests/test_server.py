@@ -1092,7 +1092,10 @@ def test_an_assignment_rule_symbol_names_the_parameters_it_reads(tmp_path):
     work = tmp_path / "rules"
     shutil.copytree(DATA_DIR, work)
     model = (work / "model.ant").read_text(encoding="utf-8")
-    model = model.replace("k1 * A;", "r1_k_bound * A;\n  r1_k_bound := k1 * k2;")
+    # r1_k_bound reads its parameters through another rule, as a row sharing a bound rate does.
+    model = model.replace(
+        "k1 * A;", "r1_k_bound * A;\n  r1_k_bound := 2 * r1_k;\n  r1_k := k1 * k2;"
+    )
     model = model.replace("k2 * B;", "r2_k_pinned * B;\n  r2_k_pinned := 0.5;")
     (work / "model.ant").write_text(model, encoding="utf-8")
     mcp = create_server(
@@ -1106,9 +1109,8 @@ def test_an_assignment_rule_symbol_names_the_parameters_it_reads(tmp_path):
         with pytest.raises(Exception) as raised:
             await mcp.call_tool("get_parameters", {"parameter_ids": ["r1_k_bound", "r2_k_pinned"]})
         msg = str(raised.value)
-        assert "Assignment rules of the model, not parameters" in msg
-        assert "r1_k_bound := k1 * k2, which reads k1, k2" in msg
-        assert "r2_k_pinned := 0.5, which reads no parameter" in msg
+        assert "`r1_k_bound := 2 * r1_k`, not a parameter; it reads k1, k2." in msg
+        assert "`r2_k_pinned := 0.5`, not a parameter; it reads no parameter." in msg
         assert "Did you mean" not in msg
 
     asyncio.run(go())
