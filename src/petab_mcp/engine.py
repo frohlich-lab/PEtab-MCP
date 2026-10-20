@@ -217,8 +217,11 @@ class AmiciEngine:
             out.extend(float(v) for v in r)
         return out or None
 
-    def _objective_evaluate(self):
+    def _objective_evaluate(self, solve_inner: bool = True):
         """``(nllh, records, res)`` from the pyPESTO objective at the current nominal values.
+        ``solve_inner`` (the fit's objective) solves the noise sigmas and observable scalings at
+        every evaluation instead of reading them; ``solve_inner=False`` evaluates at the table's
+        own values. See :func:`fitting.estimation_problem`.
 
         The single evaluation path for "what is this model's likelihood". It deliberately does
         NOT build a second AMICI model with its own default-configured solver (as a direct
@@ -236,7 +239,7 @@ class AmiciEngine:
 
         from . import fitting
 
-        problem, _ = fitting.estimation_problem(self.session, self)
+        problem, _ = fitting.estimation_problem(self.session, self, solve_inner=solve_inner)
         x = fitting.problem_x_from_nominal(problem, self.session.problem.parameter_df)
         ret = problem.objective(x, sensi_orders=(0,), return_dict=True)
         rdatas = ret[RDATAS]
@@ -267,8 +270,9 @@ class AmiciEngine:
             "simulations": records,
         }
 
-    def residuals(self) -> dict[str, Any]:
-        """Per-point residuals (raw + noise-weighted) with an objective summary.
+    def residuals(self, solve_inner: bool = True) -> dict[str, Any]:
+        """Per-point residuals (raw + noise-weighted) with an objective summary; ``solve_inner``
+        as in :meth:`_objective_evaluate`.
 
         This is the data source for fit inspection: every measurement point is
         returned with its ``residual`` (natural units), noise-weighted
@@ -277,7 +281,7 @@ class AmiciEngine:
         :mod:`petab_mcp.data_access`.
         """
         with self.session.lock:
-            nllh, records, res = self._objective_evaluate()
+            nllh, records, res = self._objective_evaluate(solve_inner)
 
         n_expected, n_missing = self.simulation_gap(records)
         return {
