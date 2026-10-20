@@ -218,7 +218,9 @@ class AmiciEngine:
         return out or None
 
     def _objective_evaluate(self, joint: bool = False):
-        """``(nllh, records, res)`` from the pyPESTO objective at the current nominal values.
+        """``(nllh, records, res)`` from the pyPESTO objective at the current nominal values. By
+        default that is the fit's objective, which re-solves inner sigmas and scalings rather than
+        reading them; ``joint`` reads every value off the table (:func:`fitting.estimation_problem`).
 
         The single evaluation path for "what is this model's likelihood". It deliberately does
         NOT build a second AMICI model with its own default-configured solver (as a direct
@@ -268,8 +270,8 @@ class AmiciEngine:
         }
 
     def residuals(self, joint: bool = False) -> dict[str, Any]:
-        """Per-point residuals (raw + noise-weighted) with an objective summary. ``joint`` is
-        :func:`fitting.estimation_problem`'s.
+        """Per-point residuals (raw + noise-weighted) with an objective summary; ``joint`` as in
+        :meth:`_objective_evaluate`.
 
         This is the data source for fit inspection: every measurement point is
         returned with its ``residual`` (natural units), noise-weighted

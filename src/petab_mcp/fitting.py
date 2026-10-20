@@ -628,8 +628,8 @@ def amici_facing_problem(session):
 def estimation_problem(session, engine, *, joint: bool = False):
     """The pyPESTO problem for the session's CURRENT estimation problem, cached on the engine.
 
-    ONE pyPESTO problem now serves both jobs that need a likelihood: the multistart fit, and
-    every plain evaluation of the objective (:meth:`AmiciEngine.evaluate_objective` /
+    ONE AMICI model and solver set-up now serve both jobs that need a likelihood: the multistart
+    fit, and every plain evaluation of the objective (:meth:`AmiciEngine.evaluate_objective` /
     :meth:`AmiciEngine.residuals`). That unification is the fix for a class of bug, not just an
     optimisation — while the fit and the evaluation each built their own AMICI model and their
     own solver, the two could disagree about the very same likelihood at the very same
@@ -641,11 +641,11 @@ def estimation_problem(session, engine, *, joint: bool = False):
     built ``petab_mcp_<hash>`` from the same SBML — two full C++ builds of one structure, ~80s
     each on a cluster node.
 
-    Cached on ``engine`` under :meth:`session.problem_hash` — the model AND the parameter table,
-    since pyPESTO bakes bounds/scales/fixed values into the problem at construction, so a
-    bounds edit (or the nominal-value write-back after a fit) must rebuild it. Rebuilding is
-    cheap relative to a compile: the AMICI module is keyed on :meth:`session.module_hash`, which
-    a bounds or value edit does not move, and is reused.
+    Cached on ``engine`` under :meth:`session.problem_hash` and ``joint`` — the model AND the
+    parameter table, since pyPESTO bakes bounds/scales/fixed values into the problem at
+    construction, so a bounds edit (or the nominal-value write-back after a fit) must rebuild it.
+    Rebuilding is cheap relative to a compile: the AMICI module is keyed on
+    :meth:`session.module_hash`, which a bounds or value edit does not move, and is reused.
 
     ``joint`` builds the plain joint objective even where the fit would inner-solve. A pass with
     no fit scores the table as it stands, and the hierarchical objective would re-solve its
