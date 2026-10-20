@@ -338,7 +338,7 @@ def test_a_failing_dump_never_blocks_the_build(engine, session, monkeypatch):
     assert "model dump unavailable" in _log_text(session)
 
 
-def test_module_built_asks_for_the_compiled_extension_not_the_folder(session, tmp_path):
+def test_module_built_asks_for_a_finished_build_not_the_folder(session, tmp_path):
     """The predicate a READ rests on: `ensure_simulation` will simulate a structure whose module
     exists and refuse one whose does not, because the second costs a C++ build (16 s on the toy) and
     no read may pay one. A HALF-WRITTEN build must therefore read as absent — the output folder and
@@ -359,6 +359,9 @@ def test_module_built_asks_for_the_compiled_extension_not_the_folder(session, tm
     assert engine.module_built(h) is False  # generated, not built
 
     (package / f"_petab_mcp_pp_{h}.cpython-312-darwin.so").write_bytes(b"\x00")
+    assert engine.module_built(h) is False  # installed, but its build never marked it finished
+
+    (folder / ".built").touch()
     assert engine.module_built(h) is True
 
     # ...and what THIS session built is known without going to disk at all

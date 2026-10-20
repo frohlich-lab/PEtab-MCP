@@ -13,6 +13,7 @@ here are unconditional; ``swig`` is still located on ``PATH`` for the C++ build.
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import tempfile
@@ -43,11 +44,15 @@ def _ensure_swig_on_path() -> None:
         pass
 
 
-def _module_on_disk(output_folder: str | Path, model_name: str) -> bool:
-    """Is the compiled extension of the module ``model_name`` under ``output_folder`` there? An
+def _build_finished(output_folder: str | Path, model_name: str) -> bool:
+    """Did a build of the module ``model_name`` under ``output_folder`` finish: is its compiled
+    extension there, with the mark its holder writes once the module imported (``.built``)? An
     unreadable folder counts as not built."""
+    folder = Path(output_folder)
     try:
-        return any((Path(output_folder) / model_name).glob(f"_{model_name}*.so"))
+        return (folder / ".built").exists() and any(
+            (folder / model_name).glob(f"_{model_name}*.so")
+        )
     except OSError:
         return False
 
@@ -64,10 +69,14 @@ def build_lock(output_folder: str | Path, model_name: str) -> Iterator[None]:
     is safe beside anything, and that is what every re-fit of a structure does. Finished means its
     holder marked it (``.built``) once its own import succeeded — the extension alone is no signal,
     since the install step writes it before the build is done.
+
+    AMICI compiles only into a missing folder and imports whatever folder is there, so a build that
+    stopped would fail every later build of its structure. Under the lock, an unfinished folder is
+    one nobody is writing: it is removed before the build, and a build that raises removes its own.
+    A finished one is never removed, since other processes import it without the lock.
     """
     folder = Path(output_folder)
-    done = folder / ".built"
-    if done.exists() and _module_on_disk(folder, model_name):
+    if _build_finished(folder, model_name):
         yield
         return
     folder.parent.mkdir(parents=True, exist_ok=True)
@@ -76,8 +85,19 @@ def build_lock(output_folder: str | Path, model_name: str) -> Iterator[None]:
     except filelock.Held as held:
         raise ModelBuildBusyError(model_name, held.holder) from None
     try:
-        yield
-        done.touch()
+        if _build_finished(folder, model_name):  # its holder finished before we took the lock
+            yield
+            return
+        if folder.exists():
+            logging.getLogger("petab_mcp").info("removing %s, an unfinished build", folder)
+            shutil.rmtree(folder)
+        try:
+            yield
+        except BaseException:
+            if folder.exists():
+                shutil.rmtree(folder, ignore_errors=True)
+            raise
+        (folder / ".built").touch()
     finally:
         os.close(fd)
 
@@ -135,9 +155,9 @@ class AmiciEngine:
         tens of seconds and which no read may pay (see :func:`fitting.ensure_simulation`).
 
         Two sources, because a session outlives its process: ``_pypesto_hashes`` for what this one
-        built, and the build root for what an earlier one did. What is looked for on disk is the
-        built ``.so`` inside the model package, not the output folder — a crashed or half-written
-        build leaves the folder and its generated C++ behind, and importing THAT recompiles.
+        built, and the build root for what an earlier one did. What is looked for on disk is a
+        FINISHED build (see :func:`build_lock`), not the output folder or its ``.so`` — a crashed or
+        half-written build leaves those behind, and the next build removes them and recompiles.
 
         The disk half is not a resume story, and deliberately not treated as one: a restored model's
         SBML comes back with its parameter declarations in a different ORDER, so it hashes to a
@@ -149,7 +169,7 @@ class AmiciEngine:
         if module_hash in self._pypesto_hashes:
             return True
         # an unreadable build root reads as nothing built, rather than risk a build
-        return _module_on_disk(*self._module_target(module_hash))
+        return _build_finished(*self._module_target(module_hash))
 
     def _log_pending_import(self, module_hash: str) -> None:
         """Dump the exact model about to be handed to AMICI, BEFORE the import call.

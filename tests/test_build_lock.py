@@ -7,6 +7,7 @@ one's and the held-out scorer's — with pyPESTO's builder replaced, so nothing 
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 from pathlib import Path
@@ -52,13 +53,18 @@ def _open(tmp_path, problem_dir=TOY):
     return session, AmiciEngine(session, build_root=str(tmp_path / "build"))
 
 
+def _install(folder, name):
+    """What AMICI's install step writes into ``folder`` for the module ``name``: its extension."""
+    (folder / name).mkdir(parents=True)
+    (folder / name / f"_{name}.so").write_bytes(b"\x00")
+
+
 def _build_lands(engine, h):
     """What a finished build of module ``h`` leaves behind: its compiled extension, and the mark its
     builder writes once that imported."""
-    package = engine.build_root / f"pypesto_{h}" / f"petab_mcp_pp_{h}"
-    package.mkdir(parents=True)
-    (package / f"_petab_mcp_pp_{h}.so").write_bytes(b"\x00")
-    (package.parent / ".built").touch()
+    folder = engine.build_root / f"pypesto_{h}"
+    _install(folder, f"petab_mcp_pp_{h}")
+    (folder / ".built").touch()
 
 
 def test_a_build_another_holds_fails_fast_and_touches_nothing(tmp_path, builds):
@@ -96,18 +102,75 @@ def test_an_extension_without_the_finished_mark_still_meets_the_lock(tmp_path):
     build finished: a caller still meets the holder's lock, and the error names the AMICI module. A
     build that returns marks the module, and the next import takes no lock."""
     folder, name = tmp_path / "pypesto_h", "petab_mcp_pp_h"
-    (folder / name).mkdir(parents=True)
-    (folder / name / f"_{name}.so").write_bytes(b"\x00")
+    _install(folder, name)
     held = filelock.try_lock(f"{folder}.lock")
     with pytest.raises(ModelBuildBusyError, match=name), build_lock(folder, name):
         pass
     os.close(held)
     with build_lock(folder, name):
-        pass
+        _install(folder, name)
     held = filelock.try_lock(f"{folder}.lock")
     with build_lock(folder, name):
         pass
     os.close(held)
+
+
+def test_a_failed_build_is_removed_so_the_next_one_compiles(tmp_path, monkeypatch):
+    """PEtab-MCP#84: AMICI compiles only into a missing folder and imports one that is there, so the
+    folder of a build whose install step hit the disk quota failed every later fit of its structure
+    (``has no attribute 'get_model'``). A build that raises removes its folder, so the next one
+    starts without it and nothing reads the structure as built."""
+    session, engine = _open(tmp_path)
+    h = session.module_hash()
+    folder = engine.build_root / f"pypesto_{h}"
+    found = []
+
+    def _quota_hit(self, *a, **k):
+        found.append(folder.exists())
+        _install(folder, f"petab_mcp_pp_{h}")
+        raise OSError(errno.EDQUOT, "Disk quota exceeded")
+
+    monkeypatch.setattr(pypesto.petab.PetabImporter, "create_problem", _quota_hit)
+    for _ in range(2):
+        with pytest.raises(OSError, match="Disk quota exceeded"):
+            fitting.estimation_problem(session, engine)
+        assert not folder.exists()
+    assert found == [False, False]
+    assert not engine.module_built(h)
+
+
+def test_a_build_that_stopped_is_removed_before_the_next(tmp_path):
+    """A build killed outright raises nothing in its process, so its folder stays, extension and
+    all, without the mark. The next holder removes it before building, and marks what it built."""
+    folder, name = tmp_path / "pypesto_h", "petab_mcp_pp_h"
+    _install(folder, name)
+    (folder / "wrapfunctions.cpp").write_text("// codegen ran")
+    with build_lock(folder, name):
+        assert not folder.exists()
+        _install(folder, name)
+    assert (folder / ".built").exists()
+
+
+def test_a_finished_build_is_never_removed(tmp_path, monkeypatch):
+    """Other processes import a finished module without the lock, so no failure removes it: not one
+    that follows its lock-free import, and not one that follows a build which landed between the
+    look for it and taking the lock."""
+    folder, name = tmp_path / "pypesto_h", "petab_mcp_pp_h"
+    try_lock = filelock.try_lock
+
+    def _lands_first(path):
+        _install(folder, name)
+        (folder / ".built").touch()
+        return try_lock(path)
+
+    monkeypatch.setattr(filelock, "try_lock", _lands_first)
+    with pytest.raises(_Built), build_lock(folder, name):
+        assert (folder / ".built").exists()
+        raise _Built
+    monkeypatch.setattr(filelock, "try_lock", try_lock)
+    with pytest.raises(_Built), build_lock(folder, name):
+        raise _Built
+    assert (folder / ".built").exists() and (folder / name / f"_{name}.so").exists()
 
 
 def test_a_busy_build_is_not_counted_as_a_fit_of_its_structure(tmp_path, builds):
