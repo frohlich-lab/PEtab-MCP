@@ -46,8 +46,9 @@ This log explains _why_. It does not restate what the source code does.
 
 A tool docstring is what every client's agent reads on every turn, the harness's panel
 included: the tool's contract and what an agent needs to use it, and nothing a client's own job
-adds (its stopping rule, its other agents). The longer reference (every result field, worked SQL)
-is a skill, `_skills/reading-fits`, which the docstring points at by name.
+adds (its stopping rule, its other agents). The longer reference (the result fields, worked SQL)
+is a skill, `_skills/reading-fits`, named in the server instructions, which name a skill only
+when skills are registered; a tool description does not, since a client may withhold `get_skill`.
 
 - **No argument lists.** The JSON schema is the signature and is sent alongside the description,
   so `Args: a, b, c` is a hand-maintained copy of it. Say what an argument MEANS when the name

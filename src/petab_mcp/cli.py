@@ -161,6 +161,12 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    if args.statements_only and not args.entity_map:
+        print(
+            "error: --statements-only needs --entity-map: it offers the `statements` route alone.",
+            file=sys.stderr,
+        )
+        return 2
     if args.slurm_max_jobs > 0 and not args.build_root:
         print(
             "error: --slurm-max-jobs needs --build-root (or PETAB_MCP_BUILD_ROOT) on storage the "

@@ -81,7 +81,9 @@ SERVER_INSTRUCTIONS = (
 # are never told to call `list_skills`/`get_skill` when those tools are absent.
 _SKILLS_INSTRUCTION = (
     " New to this server? Call `list_skills` and read "
-    "`get_skill('petab-model-building')` for the full tool-usage workflow."
+    "`get_skill('petab-model-building')` for the full tool-usage workflow; "
+    "`get_skill('reading-fits')` says what a fit result's scores, flags and diagnosis mean, and "
+    "how to summarise the fit's tables in SQL."
 )
 
 
@@ -328,6 +330,17 @@ def _unwrap_listish(v: Any) -> Any:
             if isinstance(parsed, list):
                 return parsed
     return v
+
+
+#: ``make_changes``' list arguments, typed once for its three registrations (see
+#: ``_register_model_tools``), each tolerating the wrapped encodings ``_unwrap_listish`` undoes.
+_ModelOps = Annotated[list[ModelOp] | None, BeforeValidator(_unwrap_listish)]
+_ParameterChanges = Annotated[list[ParameterChange] | None, BeforeValidator(_unwrap_listish)]
+_References = Annotated[list[str] | None, BeforeValidator(_unwrap_listish)]
+_StatementRows = Annotated[list[StatementRow | str] | None, BeforeValidator(_unwrap_listish)]
+_MechanismDefs = Annotated[list[MechanismDef] | None, BeforeValidator(_unwrap_listish)]
+_StartRows = Annotated[list[StartRow] | None, BeforeValidator(_unwrap_listish)]
+_StatementEdits = Annotated[list[StatementEdit] | None, BeforeValidator(_unwrap_listish)]
 
 
 def _parameter_entries(parameters: Any) -> list[dict[str, Any]] | None:
@@ -680,8 +693,8 @@ def _register_read_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         a fit uses when `n_starts` is omitted.
 
         `inputs` are what the experiments impose within a period, each read in your model by its
-        id: define it by its `rule` exactly as given (one without a rule the experiments set
-        themselves), and never estimate the condition targets the rule reads.
+        id: define it by its `rule` exactly as given, and never estimate the condition targets the
+        rule reads.
         """
         ctx = route()
         session = ctx.session
@@ -822,8 +835,8 @@ _MAKE_CHANGES_CONTRACT = """\
 LESS hard.
 
 ALL-OR-NOTHING: a change that is rejected, or whose fit produces no version, is REVERTED, so the \
-working model is always a scored one. The result IS the fit, flat, in `get_fit_summary`'s fields \
-(`get_skill('reading-fits')` explains each). Read `applied` first: `false` → nothing moved — \
+working model is always a scored one. The result IS the fit, flat, in `get_fit_summary`'s \
+fields. Read `applied` first: `false` → nothing moved — \
 rejected, reverted because the fit failed, or already an earlier fitted version; `error`/`issues` \
 says which, act on THAT. Then `committed`: `true` → a version exists, read its score; `false` \
 with `no_change` → this model already IS the current version, so change something else. \
@@ -1147,23 +1160,17 @@ def _register_model_tools(
     def _make_changes(
         justification: str,
         antimony: str | None = None,
-        model_edits: Annotated[list[ModelOp] | None, BeforeValidator(_unwrap_listish)] = None,
+        model_edits: _ModelOps = None,
         base_version: int | None = None,
-        parameters: Annotated[
-            list[ParameterChange] | None, BeforeValidator(_unwrap_listish)
-        ] = None,
-        references: Annotated[list[str] | None, BeforeValidator(_unwrap_listish)] = None,
+        parameters: _ParameterChanges = None,
+        references: _References = None,
         n_starts: int | None = None,
-        statements: Annotated[
-            list[StatementRow | str] | None, BeforeValidator(_unwrap_listish)
-        ] = None,
-        mechanisms: Annotated[list[MechanismDef] | None, BeforeValidator(_unwrap_listish)] = None,
-        starts: Annotated[list[StartRow] | None, BeforeValidator(_unwrap_listish)] = None,
+        statements: _StatementRows = None,
+        mechanisms: _MechanismDefs = None,
+        starts: _StartRows = None,
         readouts: dict[str, str] | None = None,
         amounts: dict[str, dict[str, Any] | str] | None = None,
-        statement_edits: Annotated[
-            list[StatementEdit] | None, BeforeValidator(_unwrap_listish)
-        ] = None,
+        statement_edits: _StatementEdits = None,
     ) -> dict[str, Any]:
         ctx = route()
         session = ctx.session
@@ -1496,23 +1503,15 @@ def _register_model_tools(
         def make_changes_statements(
             justification: str,
             base_version: int | None = None,
-            parameters: Annotated[
-                list[ParameterChange] | None, BeforeValidator(_unwrap_listish)
-            ] = None,
-            references: Annotated[list[str] | None, BeforeValidator(_unwrap_listish)] = None,
+            parameters: _ParameterChanges = None,
+            references: _References = None,
             n_starts: int | None = None,
-            statements: Annotated[
-                list[StatementRow | str] | None, BeforeValidator(_unwrap_listish)
-            ] = None,
-            mechanisms: Annotated[
-                list[MechanismDef] | None, BeforeValidator(_unwrap_listish)
-            ] = None,
-            starts: Annotated[list[StartRow] | None, BeforeValidator(_unwrap_listish)] = None,
+            statements: _StatementRows = None,
+            mechanisms: _MechanismDefs = None,
+            starts: _StartRows = None,
             readouts: dict[str, str] | None = None,
             amounts: dict[str, dict[str, Any] | str] | None = None,
-            statement_edits: Annotated[
-                list[StatementEdit] | None, BeforeValidator(_unwrap_listish)
-            ] = None,
+            statement_edits: _StatementEdits = None,
         ) -> dict[str, Any]:
             return _make_changes(
                 justification=justification,
@@ -1541,12 +1540,10 @@ def _register_model_tools(
     def make_changes_antimony(
         justification: str,
         antimony: str | None = None,
-        model_edits: Annotated[list[ModelOp] | None, BeforeValidator(_unwrap_listish)] = None,
+        model_edits: _ModelOps = None,
         base_version: int | None = None,
-        parameters: Annotated[
-            list[ParameterChange] | None, BeforeValidator(_unwrap_listish)
-        ] = None,
-        references: Annotated[list[str] | None, BeforeValidator(_unwrap_listish)] = None,
+        parameters: _ParameterChanges = None,
+        references: _References = None,
         n_starts: int | None = None,
     ) -> dict[str, Any]:
         return _make_changes(
@@ -1675,7 +1672,7 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         the model's form, not the noise), the `residual_structure` verdict, and `merge_hints`
         (parameter pairs the data cannot separate whose merge the criterion would pay for). With
         estimated sigmas, `reduced_chi2` and `chi2_gof_pvalue` sit near their null whatever the
-        fit and say nothing about adequacy. `get_skill('reading-fits')` explains every field.
+        fit and say nothing about adequacy.
         """
         ctx = route()
         session = ctx.session
@@ -1798,8 +1795,7 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         FROM simulations_history WHERE version IN (3, 4) GROUP BY 1, 2, 3
         ORDER BY abs(v4) - abs(v3) DESC`. A measurement reaches its inputs through its experiment:
         `measurements.experimentId = experiments.experimentId`, then `experiments.conditionId =
-        conditions.conditionId`. `list_data_tables` has every table's columns, and
-        `get_skill('reading-fits')` DuckDB's aggregates for one row per group.
+        conditions.conditionId`. `list_data_tables` has every table's columns.
 
         Aggregate only NUMERIC columns, filter `residual_weighted IS NOT NULL` for residual
         statistics, and prefer aggregations: rows are capped at `max_rows`. When `truncated` is
@@ -1874,7 +1870,7 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         combination the data constrain (`ka*kb` → one `kab`) or one shared value; last, for a pure
         scale degeneracy where every value fits equally well, write one member as 1 in the rate
         law (a 1 is never charged). The expansion is local, so refit and let the score decide
-        each. `get_skill('reading-fits')` explains every field.
+        each.
         """
         ctx = route()
         session = ctx.session
@@ -1988,9 +1984,11 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
     @mcp.tool(annotations=_READ_ONLY)
     def list_versions() -> list[dict[str, Any]]:
         """Every model version (each a fit snapshot) with its kind, label and fit metrics
-        (`neg_log_likelihood`, every score, `criterion_value`, `is_new_best`): which structures
-        have been tried and how they scored. Every version is kept, and the best-scoring one
-        stands whatever comes after it."""
+        (`neg_log_likelihood`, every score, `criterion_value`): which structures have been tried
+        and how they scored. `is_new_best` is true for the first, then where
+        `improvement_vs_best_prior` (over `best_prior_criterion_value`) reached
+        `new_best_min_improvement`. Every version is kept, and the best one stands whatever comes
+        after it."""
         ctx = route()
         session = ctx.session
         return session.provenance.list_versions()

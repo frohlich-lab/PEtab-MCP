@@ -100,8 +100,8 @@ exit on their own after jobqueue's `death-timeout` (60 s).
 
 `make_changes` is the single tool that changes the model or its parameter search space, and
 it always fits — see its docstring in [`src/petab_mcp/server.py`](src/petab_mcp/server.py),
-and the [`reading-fits`](src/petab_mcp/_skills/reading-fits/SKILL.md) skill for every field of
-its result. Everything else is read-only: problem/model/
+and the [`reading-fits`](src/petab_mcp/_skills/reading-fits/SKILL.md) skill for what its
+result's fields mean. Everything else is read-only: problem/model/
 parameter inspection (`describe_problem`, `list_conditions`, `list_experiments`, `get_model`,
 `get_parameters`, ...), fit
 inspection (`get_fit_summary`, `get_fit_diagnosis`, `query_data` — arbitrary SQL over the
