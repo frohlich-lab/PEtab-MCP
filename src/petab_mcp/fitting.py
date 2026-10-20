@@ -393,9 +393,9 @@ def _inner_fitted_values(pypesto_problem, best, inner: dict[str, str]) -> dict[s
     pyPESTO returns ``best["inner_parameters"]`` positionally; the calculator's
     ``get_interpretable_inner_par_ids()`` gives the matching id order, and each value is linear.
     Raises :class:`ModelUpdateError` unless every id in ``inner`` comes back: the table would keep
-    its pre-fit values beside a score taken at the inner optimum, and a pass with no fit scores
-    the table (see :func:`estimation_problem`). Failing the fit reverts the edit, so no version
-    records a score its table does not hold.
+    its pre-fit values beside a score taken at the inner optimum, and a pass with no fit scores the
+    table's sigmas and scalings as they stand (see :func:`estimation_problem`). Failing the fit
+    reverts the edit, so no version records a score its table does not hold.
     """
     try:
         values = best.get("inner_parameters")
@@ -633,7 +633,7 @@ def amici_facing_problem(session):
     return flat, True
 
 
-def estimation_problem(session, engine, *, joint: bool = False):
+def estimation_problem(session, engine, *, solve_inner: bool = True):
     """The pyPESTO problem for the session's CURRENT estimation problem, cached on the engine.
 
     ONE AMICI model and solver set-up now serve both jobs that need a likelihood: the multistart
@@ -649,21 +649,23 @@ def estimation_problem(session, engine, *, joint: bool = False):
     built ``petab_mcp_<hash>`` from the same SBML — two full C++ builds of one structure, ~80s
     each on a cluster node.
 
-    Cached on ``engine`` under :meth:`session.problem_hash` and ``joint`` — the model AND the
-    parameter table, since pyPESTO bakes bounds/scales/fixed values into the problem at
+    Cached on ``engine`` under :meth:`session.problem_hash` and ``solve_inner`` — the model AND
+    the parameter table, since pyPESTO bakes bounds/scales/fixed values into the problem at
     construction, so a bounds edit (or the nominal-value write-back after a fit) must rebuild it.
     Rebuilding is cheap relative to a compile: the AMICI module is keyed on
     :meth:`session.module_hash`, which a bounds or value edit does not move, and is reused.
 
-    ``joint`` builds the plain joint objective even where the fit would inner-solve. A pass with
-    no fit scores the table as it stands, and the hierarchical objective would re-solve its
-    sigmas and scalings instead of reading them: a shipped toy delivered at ``sigma_B`` = 0.3
-    scored 10.7 deviance units better than its own table (#8).
+    ``solve_inner`` (the fit's objective) prefers the hierarchical objective, which solves the
+    noise sigmas and observable scalings at every evaluation, and still falls back to the plain
+    objective when the problem has no inner parameters or the hierarchical build fails.
+    ``solve_inner=False`` evaluates at the table's own values: a pass with no fit scores the
+    table's sigmas and scalings as they stand. Solving them instead scored a shipped toy, delivered
+    at ``sigma_B`` = 0.3, 10.7 deviance units better than its own table (#8).
 
     Returns ``(problem, inner)`` — see :func:`_build_hierarchical_problem` for the latter
     (``{}`` for an ordinary joint problem).
     """
-    key = (session.problem_hash(), joint)
+    key = (session.problem_hash(), solve_inner)
     cached = getattr(engine, "_estimation_problem_cache", None)
     if cached is not None and cached[0] == key:
         return cached[1], cached[2]
@@ -680,9 +682,9 @@ def estimation_problem(session, engine, *, joint: bool = False):
     # parameters; fall back to the ordinary joint objective otherwise.
     amici_problem, _ = amici_facing_problem(session)
     problem, inner = (
-        (None, {})
-        if joint
-        else _build_hierarchical_problem(session, importer_kwargs, petab_problem=amici_problem)
+        _build_hierarchical_problem(session, importer_kwargs, petab_problem=amici_problem)
+        if solve_inner
+        else (None, {})
     )
     if problem is None:
         # Not linted again: every edit that produced this problem was (see validation).
@@ -1437,11 +1439,11 @@ def _disagree(expected: float, nll: float) -> bool:
 
 
 def _committed_score_note(session, nll_sim: float | None) -> str | None:
-    """A note, and a warning in the log, when a pass with no fit re-simulates the state of the
-    last version applied and does not reproduce the score that version was committed with;
-    ``None`` otherwise. A fit writes its optimum into the table, so the two agree unless the table
-    does not hold that point (a sigma or scaling the fit solved but never wrote back). The payload
-    keeps the re-simulated score, which is the table's."""
+    """A note, and a warning in the log, when a pass with no fit scores the state of the last
+    version applied at the table's own values and does not reproduce the score that version was
+    committed with; ``None`` otherwise. A fit writes the sigmas and scalings it solved into the
+    table, so the two agree unless the table does not hold that point. The payload keeps the
+    table's score."""
     committed = getattr(session, "version_score", None)
     if committed is None or committed[0] != session.problem_hash():
         return None
@@ -1449,9 +1451,9 @@ def _committed_score_note(session, nll_sim: float | None) -> str | None:
     if nll_committed is None or (nll_sim is not None and not _disagree(nll_committed, nll_sim)):
         return None
     note = (
-        f"this version was committed with nll {_fmt(nll_committed)}, but its parameter table "
-        f"re-simulates to {_fmt(nll_sim)}: the table does not hold the point that score was "
-        "taken at."
+        f"this version was committed with nll {_fmt(nll_committed)}, but scoring it at its table's "
+        f"own values (sigmas and scalings as they stand) gives {_fmt(nll_sim)}: the table does "
+        "not hold the point that score was taken at."
     )
     session.logger.warning("simulate-only: %s", note)
     return note
@@ -1488,8 +1490,8 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
                 fit["record"].x_free,
                 k=int(session.problem.n_estimated),
             )
-        # No fit, no inner solve: the table's sigmas and scalings are the ones scored.
-        sim = engine.residuals(joint=not do_fit)
+        # A pass with no fit scores the table's sigmas and scalings as they stand.
+        sim = engine.residuals(solve_inner=do_fit)
         records = sim["records"]
         nllh, nll_note = _reconcile_objective(session, fit, sim)
         if fit is None:
