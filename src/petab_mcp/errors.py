@@ -144,8 +144,8 @@ DISK_FULL = "disk_full"
 _DISK_FULL_ERRNOS = frozenset({errno.ENOSPC, errno.EDQUOT})
 
 #: How a full disk reads where no ``OSError`` carries its errno: a linker's or ``cmake --install``'s
-#: output, h5py's message, an error re-raised as text. glibc's wording, which a cluster's build
-#: prints, and this platform's own (macOS spells it "Disc quota exceeded").
+#: output, h5py's message. glibc's wording, which a cluster's build prints, and this platform's own
+#: (macOS spells it "Disc quota exceeded").
 _DISK_FULL_TEXT = frozenset(
     {"No space left on device", "Disk quota exceeded"} | {os.strerror(e) for e in _DISK_FULL_ERRNOS}
 )
@@ -179,11 +179,14 @@ def _chain(exc: BaseException | None) -> Iterator[BaseException]:
 
 
 def _disk_full_line(exc: BaseException) -> str | None:
-    """The line of ``exc``'s text, or of a failed command's output on it, that names a full disk."""
+    """The line naming a full disk in a failed command's output on ``exc``, or in ``exc``'s own text
+    if it is an ``OSError`` (h5py's carries no errno). Not in any other message: a refusal may quote
+    the agent's own text, as a SQL error quotes the table it names."""
     output = getattr(exc, "output", None) or getattr(exc, "stderr", None) or ""
     if isinstance(output, bytes):
         output = output.decode("utf-8", "replace")
-    for line in f"{exc}\n{output}".splitlines():
+    text = f"{exc}\n{output}" if isinstance(exc, OSError) else str(output)
+    for line in text.splitlines():
         if any(sig in line for sig in _DISK_FULL_TEXT):
             return line.strip()
     return None
@@ -208,10 +211,11 @@ def disk_full_error(
     ``None``.
 
     Read off ``exc``'s cause/context chain first: an :class:`InfrastructureError` already raised, an
-    ``OSError`` with ENOSPC or EDQUOT, then the text a full disk leaves in a message or a failed
-    build's output. Then a file is written and synced in each of ``folders``, for the failures that
-    name no disk at all: a build whose ``cmake --install`` failed exits 0, and only the import after
-    it fails (``Module file not found``, no ``get_model``). ``exc`` may be ``None`` to only probe.
+    ``OSError`` with ENOSPC or EDQUOT, then the text a full disk leaves in an ``OSError``'s message
+    or a failed build's output. Then a file is written and synced in each of ``folders``, for the
+    failures that name no disk at all: a build whose ``cmake --install`` failed exits 0, and only
+    the import after it fails (``Module file not found``, no ``get_model``). ``exc`` may be ``None``
+    to only probe.
     """
     chain = list(_chain(exc))
     for e in chain:

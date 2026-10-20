@@ -1410,17 +1410,19 @@ class PetabSession:
             # since a build whose install step hit the quota fails only at the import after it.
             try:
                 fitsim, improvement = self._auto_fit_and_improvement(n_starts)
-            except (ModelBuildBusyError, InfrastructureError):
-                self._fit_attempts[fit_key] -= 1  # nothing was scored, so a retry is not a loop
-                raise
-            except PetabMcpError:
-                raise
             except Exception as exc:  # noqa: BLE001 - surface as a clean, actionable rejection
-                disk_full = disk_full_error(exc, getattr(self.engine, "build_root", None))
-                if disk_full is not None:
-                    self._fit_attempts[fit_key] -= 1
-                    raise disk_full from exc
-                raise ModelUpdateError(_compile_fit_failure_message(exc)) from exc
+                if isinstance(exc, PetabMcpError):
+                    error = disk_full_error(exc) or exc
+                else:
+                    build_root = getattr(self.engine, "build_root", None)
+                    error = disk_full_error(exc, build_root) or ModelUpdateError(
+                        _compile_fit_failure_message(exc)
+                    )
+                if isinstance(error, (ModelBuildBusyError, InfrastructureError)):
+                    self._fit_attempts[fit_key] -= 1  # nothing was scored, so a retry is not a loop
+                if error is exc:
+                    raise
+                raise error from exc
 
             staged = list(staged_edits or [])
             nllh = fitsim.get("neg_log_likelihood")

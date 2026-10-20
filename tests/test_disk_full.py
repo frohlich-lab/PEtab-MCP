@@ -54,14 +54,18 @@ def _quota() -> OSError:
     return OSError(errno.EDQUOT, os.strerror(errno.EDQUOT))
 
 
-@pytest.fixture
-def disk_full(monkeypatch):
+def _refuse_writes(monkeypatch):
     """Every probe write is refused, as on a filesystem whose quota is used up."""
 
     def _refused(*a, **k):
         raise _quota()
 
     monkeypatch.setattr(tempfile, "TemporaryFile", _refused)
+
+
+@pytest.fixture
+def disk_full(monkeypatch):
+    _refuse_writes(monkeypatch)
 
 
 @pytest.fixture
@@ -128,6 +132,8 @@ def test_a_failed_install_on_a_full_disk_is_not_blamed_on_the_model(
 
 
 def test_a_failed_import_on_a_disk_with_room_is_still_the_models(tmp_path, install_failed):
+    """The probe must not take the case the ill-posed message was written for: a disk that takes
+    the write leaves the failure with the model."""
     session = _open(tmp_path)
     with pytest.raises(ModelUpdateError, match="ill-posed"):
         session.fit()
@@ -170,7 +176,7 @@ def test_make_changes_on_a_full_disk_ends_with_the_infrastructure_error(tmp_path
     assert str(ended.value).startswith(_PREFIX), ended.value
     params = _call(mcp, "get_parameters", {})
     assert "k3" not in {r["parameterId"] for r in params.get("result", params)}
-    assert "Disk quota" not in str(_call(mcp, "get_errors", {}))
+    assert os.strerror(errno.EDQUOT) not in str(_call(mcp, "get_errors", {}))
 
 
 def test_a_version_on_disk_before_the_disk_filled_is_kept(tmp_path, monkeypatch):
@@ -190,9 +196,35 @@ def test_a_version_on_disk_before_the_disk_filled_is_kept(tmp_path, monkeypatch)
 
 
 def test_a_full_disk_under_any_tool_reads_the_same(tmp_path, monkeypatch):
+    """The 40 raw `[Errno 122]` tool errors: an OSError from a path no wrapper classifies ends the
+    call with the same text as the fit's."""
+
     def _refused(self, *a, **k):
         raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
 
     monkeypatch.setattr(PetabSession, "describe", _refused)
     with pytest.raises(ToolError, match=f"^{_PREFIX}"):
         _call(_server(tmp_path), "describe_problem", {})
+
+
+def test_a_failed_install_outside_the_fit_reads_the_same(tmp_path, monkeypatch):
+    """A held-out refit or a restore builds too, and its failed install names no disk either: a
+    crash on a disk that refuses the write is the disk's."""
+
+    def _no_module(self, *a, **k):
+        raise ModuleNotFoundError("Module file not found: x.py")
+
+    monkeypatch.setattr(PetabSession, "describe", _no_module)
+    mcp = _server(tmp_path)
+    with pytest.raises(ToolError, match="Module file not found"):
+        _call(mcp, "describe_problem", {})
+    _refuse_writes(monkeypatch)
+    with pytest.raises(ToolError, match=f"^{_PREFIX}"):
+        _call(mcp, "describe_problem", {})
+
+
+def test_an_echo_of_the_agents_text_is_not_a_full_disk(tmp_path):
+    """A SQL error quotes the table it names, so the phrase in a refusal is the agent's, not the
+    host's: the call is refused, not ended."""
+    out = _call(_server(tmp_path), "query_data", {"sql": 'SELECT * FROM "Disk quota exceeded"'})
+    assert out["ok"] is False and "Disk quota exceeded" in out["error"]

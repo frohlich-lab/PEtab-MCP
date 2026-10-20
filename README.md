@@ -107,12 +107,12 @@ fit via DuckDB), and provenance (`get_provenance`, `list_versions`, `restore_ver
 A live server also exposes these as MCP resources under `petab://...`. Each submodule of
 [`src/petab_mcp`](src/petab_mcp/) is documented in its own docstrings.
 
-A refused call returns a result that says why (`applied: false`, `error`, and `error_cause` where
-the refusal has a class). A full disk or exceeded quota (ENOSPC, EDQUOT) is not a refusal: nothing
-the agent can change fixes it, so wherever it strikes (edit, AMICI build, fit, stored result) the
-call ends as an MCP tool error whose text starts with `infrastructure_error: disk_full: `. Any edit
-it carried is undone, and a fit it ends does not count against the identical-fit guard. A client
-should end the run on it and resubmit once the disk has room
+A refused call returns a result that says why (`error`, and `error_cause` where the refusal has a
+class). A full disk or exceeded quota (ENOSPC, EDQUOT) is not a refusal: nothing the agent can
+change fixes it, so wherever it strikes (edit, AMICI build, fit, stored result) the call ends as an
+MCP tool error whose text starts with `infrastructure_error: disk_full: `. Any edit it carried is
+undone, and a fit it ends does not count against the identical-fit guard. A client should end the
+run on it and resubmit once the disk has room
 ([`errors.InfrastructureError`](src/petab_mcp/errors.py)).
 
 ## Design notes

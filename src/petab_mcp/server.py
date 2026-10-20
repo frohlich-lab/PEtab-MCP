@@ -407,17 +407,23 @@ class _InfrastructureErrors(Middleware):
     The one place every tool's exception passes, so a raw ``OSError`` from a path no :class:`_Ctx`
     wrapper guards reads the same as a fit's. FastMCP has wrapped the exception by then (``Error
     calling tool '<name>': ...``), so the error is found on its chain, and re-raised as a
-    ``ToolError``, whose text FastMCP sends as it is.
+    ``ToolError``, whose text FastMCP sends as it is. A crash its chain does not explain is checked
+    against the disks the server writes to (``folders``): a build whose install step hit the quota
+    fails only at the import after it, in whichever tool built it (a held-out refit, a restore).
     """
 
-    def __init__(self, logger) -> None:
+    def __init__(self, logger, *folders) -> None:
         self.logger = logger
+        self.folders = folders
 
     async def on_call_tool(self, context, call_next):
         try:
             return await call_next(context)
         except Exception as exc:
-            if (infra := disk_full_error(exc)) is None:
+            # A crash is FastMCP's ToolError around what the tool raised; a refusal of the
+            # arguments is not, and is not worth a write.
+            crashed = isinstance(exc, ToolError) and exc.__cause__ is not None
+            if (infra := disk_full_error(exc, *(self.folders if crashed else ()))) is None:
                 raise
             self.logger.error("%s: %s", context.message.name, infra)
             raise ToolError(str(infra)) from exc
@@ -2466,7 +2472,11 @@ def create_server(
     mcp = FastMCP(
         "petab-mcp",
         instructions=instructions,
-        middleware=[_InfrastructureErrors(ctx.session.logger)],
+        middleware=[
+            _InfrastructureErrors(
+                ctx.session.logger, ctx.engine.build_root, ctx.session.provenance.root
+            )
+        ],
     )
 
     # Register the tool + resource groups; each tool asks `route` for the context per call.
