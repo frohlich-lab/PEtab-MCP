@@ -1869,9 +1869,12 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         value: `dnll`, cheapest first; `dscore`, NEGATIVE when the merge lowers the score;
         `move_scaled`, how far the tie moves a parameter. Only same-role, same-scale pairs with
         neither member at a bound are priced (`n_ties_skipped` counts the rest), and the fit
-        result's `merge_hints` are the cheapest few. Remedies are MODEL edits: drop the term, take
-        its limiting (irreversible or instantaneous) form, or merge a pair. The expansion is local,
-        so refit and let the score decide each. `get_skill('reading-fits')` explains every field.
+        result's `merge_hints` are the cheapest few. Remedies are MODEL edits, in this order: drop
+        the term; take its limiting (irreversible or instantaneous) form; merge a pair, into the
+        combination the data constrain (`ka*kb` → one `kab`) or one shared value; last, for a pure
+        scale degeneracy where every value fits equally well, write one member as 1 in the rate
+        law (a 1 is never charged). The expansion is local, so refit and let the score decide
+        each. `get_skill('reading-fits')` explains every field.
         """
         ctx = route()
         session = ctx.session
