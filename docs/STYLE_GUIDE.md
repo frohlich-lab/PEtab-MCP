@@ -44,11 +44,10 @@ This log explains _why_. It does not restate what the source code does.
 
 ## Agent-facing prose
 
-A tool docstring states the tool's CONTRACT (arguments, result shape, what it rejects) for any
-client. The agent harness ([frohlich-lab/petab_mcp](https://github.com/frohlich-lab/petab_mcp))
-replaces it for its panel with a `TOOL_DESCRIPTIONS` entry that states the same tool for the job
-the lead is doing. Neither restates the other, and the two packages cannot share a constant, so
-keep them from describing the same thing instead.
+A tool docstring is what every client's agent reads on every turn, the harness's panel
+included: the tool's contract and what an agent needs to use it, and nothing a client's own job
+adds (its stopping rule, its other agents). The longer reference (every result field, worked SQL)
+is a skill, `_skills/reading-fits`, which the docstring points at by name.
 
 - **No argument lists.** The JSON schema is the signature and is sent alongside the description,
   so `Args: a, b, c` is a hand-maintained copy of it. Say what an argument MEANS when the name

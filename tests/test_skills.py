@@ -132,6 +132,17 @@ def test_instructions_mention_skills_only_when_present(tmp_path):
     assert "list_skills" not in without_skills.instructions
 
 
+def test_every_skill_a_tool_names_is_bundled(tmp_path):
+    """The tool descriptions point at a skill for their long reference (#40); a renamed or dropped
+    skill must not leave the pointer reading nothing."""
+    import re
+
+    bundled = {s.name for s in skills_mod.load_skills(SKILLS_DIR)}
+    text = " ".join(t.description or "" for t in asyncio.run(_server(tmp_path).list_tools()))
+    named = set(re.findall(r"get_skill\('([^']+)'\)", text))
+    assert named and named <= bundled, sorted(named - bundled)
+
+
 # -- MCP exposure ----------------------------------------------------------
 def test_skill_tools_registered(tmp_path):
     mcp = _server(tmp_path)
