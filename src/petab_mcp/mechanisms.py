@@ -36,6 +36,7 @@ import keyword
 import re
 from collections.abc import Callable
 from collections import Counter
+from copy import copy
 from dataclasses import dataclass, field, replace
 from itertools import count
 
@@ -55,15 +56,21 @@ from indra.assemblers.pysb.sites import get_mod_site_name, states
 from indra.statements import (
     AddModification,
     Agent,
+    Autophosphorylation,
     Complex,
     Conversion,
     DecreaseAmount,
+    Gap,
+    Gef,
     IncreaseAmount,
+    ModCondition,
     Modification,
     NotAStatementName,
     RegulateActivity,
     RemoveModification,
     Statement,
+    Translocation,
+    Transphosphorylation,
     get_all_descendants,
     get_statement_by_name,
     modclass_to_modtype,
@@ -733,6 +740,7 @@ def assemble(
         for stmt, policy, prefix, _, modifiers in rows
     ]
     _refuse_ruleless(rows, emissions)
+    _refuse_unchanging(rows, emissions, model)
     # Bound once every row has minted its own: bound as each row was built, a row sharing a LATER
     # row's `back_k` made it a new shared id, and that row's own `back_k` then clashed with it.
     merged: dict[str, object] = {}
@@ -764,7 +772,8 @@ def _refuse_ruleless(rows: list[tuple], emissions: list[Emission]) -> None:
         if emission.rules:
             continue
         stmt, policy, prefix = row[:3]
-        twin = next((r[2] for r in rows[:i] if r[0].matches_key() == stmt.matches_key()), None)
+        key = _state_unwritten(stmt).matches_key()
+        twin = next((r[2] for r in rows[:i] if _state_unwritten(r[0]).matches_key() == key), None)
         if twin is not None:
             raise MechanismError(
                 f"row {prefix!r} asserts the statement of row {twin!r} again, and INDRA builds its "
@@ -776,6 +785,48 @@ def _refuse_ruleless(rows: list[tuple], emissions: list[Emission]) -> None:
             "model would not contain it. Give it a policy that builds one, or write one with "
             "`mechanisms`"
         )
+
+
+def _refuse_unchanging(rows: list[tuple], emissions: list[Emission], model: pysb.Model) -> None:
+    """Refuse a row that built a rule whose two sides are the same: the model would not contain
+    what the row asserts, and the rule's constant would be fitted to nothing. A state written on
+    an agent holds on both sides of a rule that sets it (:func:`_state_unwritten`), so the
+    message names the agents' written states."""
+    from .notation import agent_text
+
+    for row, emission in zip(rows, emissions):
+        stmt, policy, prefix = row[:3]
+        for name in emission.rules:
+            rule = model.rules[name]
+            if not _unchanging(rule):
+                continue
+            written = []
+            for agent in stmt.real_agent_list():
+                if agent.mods or agent.activity or agent.location or agent.bound_conditions:
+                    try:
+                        written.append(agent_text(agent.to_json()))
+                    except ValueError:
+                        written.append(str(agent))
+            raise MechanismError(
+                f"row {prefix!r}: {type(stmt).__name__} under {policy!r} builds "
+                f"`{rule.rule_expression}`, which changes nothing"
+                + (
+                    f": the row writes {', '.join(written)}, and a state written on an agent holds "
+                    "on both sides of a rule that sets it. Leave the state the statement changes "
+                    "off its agent, or give the row a mechanism that sets it"
+                    if written
+                    else ". Give the row a mechanism whose rule changes something"
+                )
+            )
+
+
+def _unchanging(rule: pysb.Rule) -> bool:
+    """Whether ``rule``'s products are its reactants written alike, complex for complex. Not
+    PySB's ``is_equivalent_to``, which refuses a pattern that is not concrete (INDRA's
+    transphosphorylation writes its enzyme ``egfr=ANY``)."""
+    return Counter(map(str, rule.reactant_pattern.complex_patterns)) == Counter(
+        map(str, rule.product_pattern.complex_patterns)
+    )
 
 
 def _add(model: pysb.Model, *components) -> None:
@@ -896,6 +947,47 @@ def _transition(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
 BASAL = "basal"
 
 
+def _state_unwritten(stmt: Statement) -> Statement:
+    """``stmt`` with the state it changes left off the agent it changes it on: the modified site,
+    the regulated activity, the location. For the entries whose sides INDRA's
+    ``get_monomer_pattern(..., extra_fields=...)`` builds, which puts the agent's written state
+    over the rule's, so "AKT1{pS473} is dephosphorylated at S473" built ``pS473 >> pS473``.
+    Schemes and written rates still read the agents as written."""
+    stmt = copy(stmt)
+    if isinstance(stmt, Modification) and stmt.sub is not None:
+        stmt.sub = _without_site(stmt.sub, stmt._get_mod_condition())
+    elif isinstance(stmt, Autophosphorylation):
+        stmt.enz = _without_site(stmt.enz, stmt._get_mod_condition())
+    elif isinstance(stmt, Transphosphorylation) and stmt.enz.bound_conditions:
+        first, *rest = stmt.enz.bound_conditions
+        first = copy(first)
+        first.agent = _without_site(first.agent, stmt._get_mod_condition())
+        stmt.enz = copy(stmt.enz)
+        stmt.enz.bound_conditions = [first, *rest]
+    elif isinstance(stmt, RegulateActivity):
+        stmt.obj = _without_activity(stmt.obj, stmt.obj_activity)
+    elif isinstance(stmt, (Gef, Gap)):
+        stmt.ras = _without_activity(stmt.ras, "gtpbound")
+    elif isinstance(stmt, Translocation):
+        stmt.agent = copy(stmt.agent)
+        stmt.agent.location = None
+    return stmt
+
+
+def _without_site(agent: Agent, mod: ModCondition) -> Agent:
+    site = get_mod_site_name(mod)
+    agent = copy(agent)
+    agent.mods = [m for m in agent.mods if get_mod_site_name(m) != site]
+    return agent
+
+
+def _without_activity(agent: Agent, activity: str) -> Agent:
+    agent = copy(agent)
+    if agent.activity is not None and agent.activity.activity_type == activity:
+        agent.activity = None
+    return agent
+
+
 def _no_enzyme(stmt: Statement, prefix: str) -> None:
     """Refuse a `basal` row whose statement names an enzyme: the rule has no place for one, so the
     enzyme the row asserts would be left out of the model without a word."""
@@ -917,8 +1009,9 @@ def _basal_removal(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
     site = get_mod_site_name(mod)
     unmod, modified = states[mod.mod_type]
     k = pysb.Parameter(f"{prefix}_k", 1.0, _export=False)
-    before = get_monomer_pattern(model, stmt.sub, extra_fields={site: modified})
-    after = get_monomer_pattern(model, stmt.sub, extra_fields={site: unmod})
+    sub = _state_unwritten(stmt).sub
+    before = get_monomer_pattern(model, sub, extra_fields={site: modified})
+    after = get_monomer_pattern(model, sub, extra_fields={site: unmod})
     rule = pysb.Rule(f"{prefix}_removal", before >> after, k, _export=False)
     _add(model, k, rule)
     return Emission(
@@ -1021,8 +1114,9 @@ def _basal_addition(stmt: Statement, model: pysb.Model, prefix: str) -> Emission
     site = get_mod_site_name(mod)
     unmod, modified = states[mod.mod_type]
     k = pysb.Parameter(f"{prefix}_k", 1.0, _export=False)
-    before = get_monomer_pattern(model, stmt.sub, extra_fields={site: unmod})
-    after = get_monomer_pattern(model, stmt.sub, extra_fields={site: modified})
+    sub = _state_unwritten(stmt).sub
+    before = get_monomer_pattern(model, sub, extra_fields={site: unmod})
+    after = get_monomer_pattern(model, sub, extra_fields={site: modified})
     rule = pysb.Rule(f"{prefix}_addition", before >> after, k, _export=False)
     _add(model, k, rule)
     return Emission(
@@ -1289,7 +1383,7 @@ def _indra(name: str) -> Policy:
         indra = PysbAssembler()
         indra.processed_policies = {stmt.uuid: IndraPolicy(name)}
         try:
-            indra._dispatch(stmt, "assemble", model, BaseAgentSet(), {})
+            indra._dispatch(_state_unwritten(stmt), "assemble", model, BaseAgentSet(), {})
         except UnknownPolicyError as exc:
             raise MechanismError(
                 f"INDRA has no {name} assembly for {type(stmt).__name__}", cause="library_gap"
