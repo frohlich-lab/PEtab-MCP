@@ -341,8 +341,8 @@ def lof_power(
     * ``"vacuous"`` — ``lof_df <= 0``: at saturation nothing was tested at all, so the arm reports NO
       EVIDENCE (``available: False``) rather than a pass.
     * ``"weak"`` — ``0 < lof_df < min_lof_df``: a PASS is real but thin evidence, reported ``weak``.
-      A FLAG stands unchanged at this band and at any df — a point beyond what its own replicate
-      scatter allows, after the fit had its way, is real evidence however few directions remain.
+      A FLAG stands unchanged at this band and at any df — a point beyond what replicate scatter
+      allows, after the fit had its way, is real evidence however few directions remain.
       Do NOT make these UNAVAILABLE instead: that converts legitimate flags on small
       families into no evidence, a worse error than the one it fixed.
     * ``"powered"`` — a pass worth reporting as one (and the only band that credits coverage).
