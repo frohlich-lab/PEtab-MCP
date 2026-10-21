@@ -1259,10 +1259,10 @@ class PetabSession:
                 best_adequate = gof_adequate
             # ...AND the residuals must not still show significant STRUCTURE. Every test behind that
             # flag survives estimated sigmas (unlike chi2 GoF): the sign/runs tests read only residual
-            # SIGNS, and the replicate lack-of-fit test measures each prediction against its design
-            # point's OWN replicate scatter. So a best model that fits the magnitude but is
-            # systematically biased/trended — or that cannot reach a replicated design point at all —
-            # has an incomplete FORM — not adequate, so the session keeps
+            # SIGNS, and the replicate lack-of-fit test measures each prediction against the
+            # replicate scatter pooled over its noise sigma. So a best model that fits the magnitude
+            # but is systematically biased/trended — or that cannot reach a replicated design point
+            # at all — has an incomplete FORM — not adequate, so the session keeps
             # searching rather than plateau-stopping (underfits used to stop as "adequate" with
             # a plausible sigma while flagging structured residuals). A genuinely-better-than-truth
             # model can still flag residuals (irreducible data structure); it simply forgoes the early

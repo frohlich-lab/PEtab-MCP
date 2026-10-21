@@ -10,7 +10,7 @@ that fit: its chi2 GoF p-value was 0.366 (structurally blind — with one shared
 value chi2 == n identically, so the p is a function of (n, k) alone and is 252 for BOTH models), its
 fitted/pure-error sigma ratio was 1.4759 against a 1.5 threshold, and the sign/runs tests were
 degenerate (one condition at t = inf, so every per-observable series has length 1: n = 1, p = 1.0,
-runs test undefined). This arm is the axis that does separate them — 5.3x on max|z| — and these two
+runs test undefined). This arm is the axis that does separate them — 7.5x on max|z| — and these two
 tests pin BOTH sides of it, since an arm that only flagged would deadlock the problem.
 """
 
@@ -93,10 +93,16 @@ def _measured_points(predictions):
     ]
 
 
+def _pooled_z(predictions):
+    """Each point's z against the scatter pooled over all 15 (one shared sigma), by hand."""
+    df = sum(n - 1 for _, n, _, _ in POINTS)  # 237
+    s_g = math.sqrt(sum((n - 1) * s * s for _, n, _, s in POINTS) / df)  # 0.257908
+    return {obs: (ybar - predictions[obs]) / (s_g / math.sqrt(n)) for obs, n, ybar, _ in POINTS}
+
+
 def test_steady_state_true_model_is_not_flagged():
-    """The truth's worst design point sits 3.393 SE out (Holm p 0.0519) — INSIDE alpha 0.01, with
-    ~5x margin. This is the side that matters most: at alpha 0.05 the truth lands at 0.0519, a coin
-    flip that would deadlock the problem about half the time.
+    """The truth's worst design point sits 1.483 SE out against a 1% Holm bar of 3.45 (Holm p 1).
+    This is the side that matters most: an arm that flags the truth deadlocks the problem.
 
     ...and at its 9 structural parameters over 15 points the pass is a POWERED one (df 6), which is
     the whole-problem judgement, so it is asserted where it is made — on the merge."""
@@ -104,47 +110,50 @@ def test_steady_state_true_model_is_not_flagged():
     assert out["available"] is True
     assert out["status"] == "pass" and out["flagged"] == []
     assert out["n_points"] == 15
-    assert out["max_abs_z"] == pytest.approx(3.393, abs=5e-3)
-    assert out["min_p_holm"] == pytest.approx(0.0519, rel=1e-2)
-    assert out["min_p_holm"] > rt.REPLICATE_LOF_ALPHA * 5  # margin, not a near miss
+    assert out["max_abs_z"] == pytest.approx(1.483, abs=5e-3)
+    assert out["max_abs_z"] == pytest.approx(
+        max(abs(z) for z in _pooled_z(TRUTH_LOG_PREDICTIONS).values()), abs=1e-3
+    )
+    assert out["min_p_holm"] == 1.0  # 15 x 0.139, capped
     merged = data_access._merge_lof_verdicts([out], {}, n_structural=9)
     assert merged["lof_df"] == 6 and "weak" not in merged, merged
 
 
 def test_steady_state_early_finish_is_flagged():
-    """The fit every other gate passed: worst point 17.976 SE out at obs_12, Holm p 2.55e-11
-    — nine orders of magnitude past alpha, and the flagged points NAME the states whose structure is
-    missing."""
+    """The fit every other gate passed: worst point 11.050 SE out at obs_12, Holm p 5.5e-22, and
+    the flagged points NAME the states whose structure is missing."""
     out = rt.replicate_lack_of_fit(_measured_points(EARLY_LOG_PREDICTIONS))
     assert out["available"] is True and out["status"] == "flagged"
-    assert out["max_abs_z"] == pytest.approx(17.976, abs=5e-3)
-    assert out["min_p_holm"] == pytest.approx(2.55e-11, rel=1e-2)
+    assert out["max_abs_z"] == pytest.approx(11.050, abs=5e-3)
+    assert out["min_p_holm"] == pytest.approx(5.46e-22, rel=1e-2)
+    by_hand = _pooled_z(EARLY_LOG_PREDICTIONS)
     assert out["points"][0]["label"] == "obs_12"
-    assert out["points"][0]["z"] == pytest.approx(-17.976, abs=5e-3)
+    assert out["points"][0]["z"] == pytest.approx(by_hand["obs_12"], abs=1e-3)  # -11.050
     # the reported points are the worst FIVE, in the measured order
-    assert [p["label"] for p in out["points"]] == [
-        "obs_12",
+    assert [p["label"] for p in out["points"]] == ["obs_12", "obs_03", "obs_08", "obs_10", "obs_06"]
+    assert sorted(out["flagged"]) == [
         "obs_03",
-        "obs_06",
-        "obs_01",
+        "obs_04",
         "obs_05",
+        "obs_06",
+        "obs_08",
+        "obs_09",
+        "obs_10",
+        "obs_12",
     ]
-    assert set(out["flagged"]) >= {
-        "obs_12",
-        "obs_03",
-        "obs_06",
-        "obs_01",
-        "obs_05",
-    }
+    # #99 on this problem: obs_01's 18 replicates are the tightest (s 0.036, 7x below the pooled
+    # 0.258), so its 0.11 ln miss read as 12.8 SE of its OWN scatter — 1.79 SE of its sigma's
+    assert by_hand["obs_01"] == pytest.approx(1.79, abs=5e-3)
+    assert "obs_01" not in out["flagged"]
 
 
 def test_separation_is_on_this_axis_and_not_the_sigma_ratio():
-    """5.3x on max|z|, against 1.50x on the fitted/pure-error sigma axis the existing gate uses (the
+    """7.5x on max|z|, against 1.50x on the fitted/pure-error sigma axis the existing gate uses (the
     early-finish fit sat at 1.4759 against a 1.5 threshold — it missed by 0.0024). Pinning the ratio
     here is what keeps a future retuning from quietly collapsing the separation."""
     truth = rt.replicate_lack_of_fit(_measured_points(TRUTH_LOG_PREDICTIONS))
     early = rt.replicate_lack_of_fit(_measured_points(EARLY_LOG_PREDICTIONS))
-    assert early["max_abs_z"] / truth["max_abs_z"] == pytest.approx(5.30, abs=0.05)
+    assert early["max_abs_z"] / truth["max_abs_z"] == pytest.approx(7.45, abs=0.05)
 
 
 def test_z_is_exactly_invariant_to_the_sigma_convention():
@@ -158,18 +167,6 @@ def test_z_is_exactly_invariant_to_the_sigma_convention():
         data_access._merge_lof_verdicts([arm], {}, n_structural=7)["max_abs_z"]
         == data_access._merge_lof_verdicts([arm], {}, n_structural=6)["max_abs_z"]
     )
-
-
-def test_holm_does_not_use_a_lack_of_fit_f_statistic():
-    """Not an F on m - p degrees of freedom. That rule MANUFACTURES a rejection of the problem's own
-    true model (sum z_i^2 = 27.12 over m - p = 15 - 8 = 7 gives p = 0.0016) because the shared-sigma
-    fit's projection is OBLIQUE to this statistic's weighting and removes almost no df (exact
-    E[T|H0] = 13.60, not 7). The per-point Holm rule needs no df bookkeeping, and it passes the
-    truth."""
-    truth = _measured_points(TRUTH_LOG_PREDICTIONS)
-    total = sum(((p["ybar"] - p["prediction"]) / (p["s"] / math.sqrt(p["n"]))) ** 2 for p in truth)
-    assert total == pytest.approx(27.12, abs=0.05)  # the statistic an F test would divide
-    assert rt.replicate_lack_of_fit(truth)["status"] == "pass"
 
 
 # -- the assembler: reconcile's per-point plumbing + the rollup that carries the verdict -----------
@@ -575,18 +572,19 @@ def test_the_line_reports_a_flag_from_the_payload_that_rides_on_a_fit():
     assert "pass" not in line and "1 of 3 replicated design points" in line
 
 
-def _split_sigma_records(session, deviation: float):
+def _split_sigma_records(session, deviations: dict[float, float], step_lo=0.01, step_hi=0.01):
     """Two noise parameters governing different ROWS of ONE observable, through per-row
     `noiseParameters` overrides (a per-gel shape): sigma_lo owns t in {0,1,2}, sigma_hi owns
-    t in {3,4,5}, four replicates each. The model is off by ``deviation`` at t=5 — one of sigma_hi's
-    points, and none of sigma_lo's."""
+    t in {3,4,5}, four replicates each, ``step`` apart. The model sits on every replicate mean
+    except where ``deviations`` moves the data at a time."""
     import pandas as pd
 
     recs, sigmas = [], []
     for i, t in enumerate((0.0, 1.0, 2.0, 3.0, 4.0, 5.0)):
+        step = step_lo if i < 3 else step_hi
         for rep in range(4):
-            off = deviation if t == 5.0 else 0.0
-            recs.append(_rec("obs_B", "", t, 1.0 + 0.01 * rep + off, 1.0 + 0.015))
+            off = deviations.get(t, 0.0)
+            recs.append(_rec("obs_B", "", t, 1.0 + step * rep + off, 1.0 + 1.5 * step))
             sigmas.append("sigma_lo" if i < 3 else "sigma_hi")
     odf = session.problem.observable_df.copy()
     odf.loc["obs_B", "noiseFormula"] = "noiseParameter1_obs_B"
@@ -617,13 +615,30 @@ def test_each_noise_parameter_tests_only_the_rows_it_governs(session):
     collapsed it to an OBSERVABLE-ID filter, so both sigmas tested all six of obs_B's design points:
     every count doubled, the reported points came back duplicated, and each arm Holm-corrected over
     — and applied its own gain and coordinate to — rows the other sigma governs."""
-    _split_sigma_records(session, deviation=0.5)
+    _split_sigma_records(session, {5.0: 0.5})
     lof = data_access.residual_structure_rollup(session)["replicate_lack_of_fit"]
     assert lof["available"] is True and lof["status"] == "flagged"
     assert lof["n_points"] == 6  # the six REAL design points, not 6 per sigma
     assert lof["n_flagged"] == 1  # one deviating point, flagged once
     labels = [p["label"] for p in lof["points"]]
     assert labels == ["obs_B[t=5.0]"] and len(labels) == len(set(labels))
+
+
+def test_each_noise_parameter_is_judged_by_its_own_pooled_scatter(session):
+    """#99: the yardstick is pooled per noise SIGMA, not over the family or the problem. sigma_lo's
+    replicates sit 0.001 apart and sigma_hi's 0.1 apart; the model misses one point of each, by 0.01
+    and by 0.05. Only the smaller miss is flagged, because it is 15 SE of ITS sigma's scatter while
+    the larger is 0.8 SE of its own — pooled over both sigmas, neither would be. And the yardstick is
+    the noise report's floor for that sigma, not a second pooling."""
+    from petab_mcp import reconcile as R
+
+    _split_sigma_records(session, {2.0: 0.01, 5.0: 0.05}, step_lo=0.001, step_hi=0.1)
+    lof = data_access.residual_structure_rollup(session)["replicate_lack_of_fit"]
+    assert lof["status"] == "flagged" and lof["n_points"] == 6
+    assert [p["label"] for p in lof["points"]] == ["obs_B[t=2.0]"]
+    floor_lo = R.sigma_replicate_noise_estimate(session.problem, "sigma_lo")
+    assert floor_lo == pytest.approx(math.sqrt(5e-6 / 3))  # sd of 1.000..1.003, every point
+    assert lof["points"][0]["z"] == pytest.approx(0.01 / (floor_lo / 2), abs=1e-3)  # 15.49
 
 
 def test_labels_are_unique_across_noise_families(session):
@@ -763,16 +778,14 @@ def test_the_pooled_noise_floor_ignores_a_design_point_with_a_missing_key(sessio
 
 
 def test_reconcile_exposes_per_point_pure_error_and_pools_to_the_same_floor(session):
-    """`sigma_replicate_noise_estimate`'s pooled number IS the pooling of these per-point sums of
-    squares — the refactor must not move the existing noise floor."""
+    """`sigma_replicate_noise_estimate`'s pooled number IS the pooling of these per-point scatters."""
     from petab_mcp import reconcile as R
 
     recs = _replicated_records(session, deviation=0.0)
     points = R.replicate_pure_error_points(session.problem, "sigma_B")
     assert [p["n"] for p in points] == [4, 4, 4]
-    assert all(p["df"] == 3 for p in points)
     assert all(p["prediction"] is None for p in points)  # no simulations passed -> unknown
-    pooled = math.sqrt(sum(p["ssq"] for p in points) / sum(p["df"] for p in points))
+    pooled = math.sqrt(sum(3 * p["s"] ** 2 for p in points) / 9)
     assert R.sigma_replicate_noise_estimate(session.problem, "sigma_B") == pytest.approx(pooled)
 
     # with the simulation records, each point also carries the prediction it is judged against
@@ -827,7 +840,7 @@ def test_a_pass_needs_lack_of_fit_degrees_of_freedom():
 
 def test_a_flag_stands_at_any_lack_of_fit_df():
     """One residual direction is weak evidence for a PASS but conclusive for a FLAG: the point
-    deviates by more than its own replicate noise allows AFTER the fit had its way."""
+    deviates by more than replicate noise allows AFTER the fit had its way."""
     pts = _flat_points(15)
     pts[0]["prediction"] = -8.0 / 18**0.5  # ~8 SE out
     arm = rt.replicate_lack_of_fit(pts)

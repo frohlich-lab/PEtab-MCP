@@ -150,46 +150,40 @@ NOISE_SIGMA_MIN_POINTS = 5
 NOISE_SIGMA_REPLICATE_MIN_DOF = 6
 
 # -- replicate lack-of-fit (the residual arm of the structure verdict) -------
-# The SAME repeated design points, used the other way round: instead of pooling their scatter into
-# one floor to judge sigma against, ask per point whether the PREDICTION sits further from the data
-# than that point's OWN scatter allows —
-#     z_i = (ybar_i - f_i) / (s_i / sqrt(n_i))   on the noise-additive coordinate.
+# The SAME repeated design points, used the other way round: instead of judging sigma against their
+# pooled scatter, ask per point whether the PREDICTION sits further from the data than that scatter
+# allows —
+#     z_i = (ybar_i - f_i) / (s_g / sqrt(n_i))   on the noise-additive coordinate,
+# with s_g pooled over every replicated point of the point's noise sigma
+# (residual_tests.pooled_replicate_scatter; the noise report's data_noise_estimate for that sigma).
 # This is the axis a premature finish hid behind on a problem whose 16 states sum to 1 (the worked
 # case throughout this block). The chi2 GoF p-value cannot see it (with one shared sigma at its ML
 # value chi2 == n identically, so the p-value is a function of (n, k) alone: 252 for the true model
 # AND for a 6-parameter fit 194 BIC worse), the sign/runs tests cannot see it (a single
 # steady-state condition makes every per-observable series length 1 — n=1, p=1.0, undefined runs
 # test), and the inflation ratio above barely separates them (1.4759 vs 1.5). z_i separates by
-# 5.3x on max|z| (truth 3.393 vs that fit 17.976) and 41x on sum z_i^2, and because it uses only
-# s_i it is EXACTLY invariant to the ML vs RSS/(n-k) sigma convention — which the ratio is not.
+# 7.5x on max|z| (truth 1.483 vs that fit 11.050) and 53x on sum z_i^2, and because it uses no
+# fitted sigma it is EXACTLY invariant to the ML vs RSS/(n-k) sigma convention — which the ratio
+# is not.
 #
-# Per-point two-sided Student-t p on df_i = n_i - 1, HOLM-adjusted across the replicated points of
-# ONE noise parameter, flagged below this alpha. 0.01, NOT 0.05: that problem's TRUE model lands at
-# Holm p = 0.0519, so a 5% rule is a coin flip that would deadlock the problem about half the time
-# (its MC-calibrated 5% critical value for max|z| is 3.97 against the truth's 3.393 — 15% headroom).
-# At 0.01 the truth keeps 2.2x headroom (MC crit 5.26) while the failing fit is flagged at
-# 2.55e-11, and that margin also absorbs the naive Holm null being ~2x anti-conservative versus the
-# MC one — so no Monte-Carlo calibration is needed at runtime.
-#
-# NOT a variance-ratio F test: the shared-sigma fit weights by diag(n_i) while sum z_i^2 weights by
-# diag(n_i / s_i^2), so the projection is OBLIQUE and removes almost no df (exact E[T|H0] = 13.60 at
-# m = 15 with rank J = 8, not m - p = 7). Dividing by m - p inflates F by up to 2.14x and
-# MANUFACTURES a rejection of that problem's true model at p = 0.0016. Per-point Holm needs no df
-# bookkeeping at all, which is why it is the rule here.
+# Per-point two-sided Student-t p on the pooled df, HOLM-adjusted across the replicated points of
+# ONE noise parameter, flagged below this alpha. On that problem (15 points, pooled df 237) the 1%
+# Holm bar is |z| > 3.45: the truth's worst point sits at 1.483 (Holm p 1) and the failing fit's at
+# 11.050 (Holm p 5.5e-22), with 8 of its 15 points flagged. 0.01 rather than 0.05 because the flag
+# is a STOP condition and these p-values are not exact (below). Per point rather than one
+# lack-of-fit F over the family because the advice has to NAME the points where the form is wrong.
 #
 # READ THE MARGINS ABOVE AS A FLOOR, NOT AS CALIBRATION. Every one of them assumes the n_i replicates
 # of a point are independent draws, and on that problem they are NOT: rows 1-12 and 13-18 of each
 # design point are two experimental blocks (the three n_i = 12 observables stop exactly at row 12;
 # Welch per observable, Fisher chi2 = 54.67 on 24 df, p = 3.5e-4; 12 of 14 shifts share a sign, with
 # the abundant state moving down while every minor state moves up — one compositional degree of
-# freedom, not noise). Within-block variance is 0.044704 against a naive within-point 0.0665166, so
-# s_i/sqrt(n_i) understates se(ybar_i) by a median 2.19x and by 10.3x at the abundant state;
-# block-aware, the truth's excess-variance ratio falls 3.330 -> 0.339 and the failing fit's
-# 98.5 -> 13.4. That bias runs the SAFE way here — it inflates every z_i, so the truth looks worse
-# than it is and still clears 0.01 — but it means these p-values are not exact, and a future
-# tightening toward 0.05 has less headroom than the numbers above suggest. Holm survives it for a
-# different reason: it controls FWER under ARBITRARY dependence, which matters because the z_i are
-# strongly correlated (the states sum to 1; top eigenvalue 6.2 of 15) — a Fisher combine or a
+# freedom, not noise). Within-block variance is 0.044704 against a naive within-point 0.0665166, and
+# a block shift moves a point's whole mean without averaging out over its n_i, so s_g/sqrt(n_i)
+# understates se(ybar_i). That bias runs the SAFE way here — it inflates every z_i, so the truth
+# looks worse than it is and still clears 0.01 — but it means these p-values are not exact. Holm
+# survives it for a different reason: it controls FWER under ARBITRARY dependence, which matters
+# because the z_i are strongly correlated (the states sum to 1; top eigenvalue 6.2 of 15) — a Fisher combine or a
 # sum-of-squares aggregate would NOT be valid here. Nothing corrects for the blocks on purpose:
 # block membership exists only in measurement ROW ORDER, which PEtab gives no meaning, so no shipped
 # code may read it. Subtracting within-point block means would move the pooled floor
@@ -197,12 +191,13 @@ NOISE_SIGMA_REPLICATE_MIN_DOF = 6
 # knowing, not worth depending on row order for.
 REPLICATE_LOF_ALPHA = 0.01
 
-# A design point's own scatter is only a usable yardstick from this many degrees of freedom
-# (df_i = n_i - 1) up. 2 EXCLUDES a problem whose 126 replicated points ALL have n_i = 2: those are
-# technical replicates of a bound-railed assay calibration whose reference sigma is 7.8x their pure
-# error, so a pure-error test there rejects that problem's OWN true model (pooled lack-of-fit
-# F = 156.2 on (98, 126), p = 1e-100). One df also cannot tell a real deviation from a lucky pair,
-# and Levene/Bartlett are degenerate there.
+# A design point is TESTED only from this many replicate degrees of freedom of its own (n_i - 1) up;
+# a thinner point still counts towards its sigma's pooled scatter, as it does towards the noise
+# report's floor. With REPLICATE_LOF_MIN_POINTS below, a tested family pools at least 6 df.
+# The guard is against technical duplicates, not a thin yardstick (s_g is pooled): 2 EXCLUDES a
+# problem whose 126 replicated points ALL have n_i = 2, technical replicates of a bound-railed assay
+# calibration whose reference sigma is 7.8x their pure error, so a pure-error test there rejects
+# that problem's OWN true model (pooled lack-of-fit F = 156.2 on (98, 126), p = 1e-100).
 REPLICATE_LOF_MIN_DF = 2
 
 # Below this many usable replicated points the Holm family is too small to conclude anything, so the
@@ -218,8 +213,8 @@ REPLICATE_LOF_MIN_POINTS = 3
 
 # Lack-of-fit degrees of freedom (POOLED usable points MINUS the whole-model structural parameter
 # count, subtracted once — residual_tests.lof_power) below which a PASS is too weak to report as one.
-# A FLAG is unaffected and stands at any df: a point that deviates by more than its own replicate
-# noise allows AFTER fitting is real evidence however few df remain.
+# A FLAG is unaffected and stands at any df: a point that deviates by more than replicate noise
+# allows AFTER fitting is real evidence however few df remain.
 #
 # The asymmetry is the whole point. Refusing only at exact saturation (df <= 0) lets df = 1 report a
 # pass, and a summary calling that "powered" endorses a model on the strength of its own flexibility.

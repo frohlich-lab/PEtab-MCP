@@ -186,14 +186,23 @@ def _lof_points(points):
 
 
 def test_the_replicate_lof_arm_condemns_the_fit_the_ratio_arm_was_written_for():
-    """ΔBIC +437 at k=6: Holm p 1.5e-18 against alpha 0.01 — eighteen orders of magnitude, where the
-    deleted ratio arm had it at 2.41 against a 1.5 threshold. This is the coverage transfer."""
+    """ΔBIC +437 at k=6: condemned at alpha 0.01, where the deleted ratio arm had it at 2.41 against
+    a 1.5 threshold. This is the coverage transfer.
+
+    The literals are z against each point's OWN scatter. Against the scatter pooled over the shared
+    sigma each z moves by s_i/s_g, which on that problem is at least 0.14 (its tightest point, 0.0361
+    against 0.2579) — and the fit is still condemned with every z shrunk by that much."""
     label, n_structural, _ratio, points = _ARCHIVED_GAMING_FITS[0]
     out = rt.replicate_lack_of_fit(_lof_points(points))
     assert out["available"] is True and out["status"] == "flagged", label
     assert out["max_abs_z"] == pytest.approx(48.85, abs=0.01)
-    assert out["min_p_holm"] < rt.REPLICATE_LOF_ALPHA
-    assert out["min_p_holm"] == pytest.approx(1.51e-18, rel=1e-2)
+    pooled_df = 12 * 17 + 3 * 11  # twelve points of 18 replicates, three of 12
+    assert out["min_p_holm"] == pytest.approx(
+        15 * rt.student_t_two_sided_p(48.847, pooled_df), rel=1e-2
+    )
+    shrunk = [(n, z * 0.036101 / 0.257908) for n, z in points]
+    worst_case = rt.replicate_lack_of_fit(_lof_points(shrunk))
+    assert worst_case["status"] == "flagged" and len(worst_case["flagged"]) == 3, worst_case
 
 
 def test_the_other_one_is_the_parsimony_gate_s_and_the_arm_says_so():

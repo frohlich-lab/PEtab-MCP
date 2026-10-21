@@ -152,14 +152,27 @@ def test_holm_adjusted_orders_and_stays_monotone():
 
 def test_replicate_pure_error():
     res = rt.replicate_pure_error([1.0, 2.0, 3.0])
-    assert res["n"] == 3 and res["df"] == 2
+    assert res["n"] == 3
     assert res["mean"] == pytest.approx(2.0)
-    assert res["ssq"] == pytest.approx(2.0)
     assert res["sd"] == pytest.approx(1.0)
     # non-finite values are dropped; a point measured once has no scatter of its own
     assert rt.replicate_pure_error([1.0, float("nan"), 3.0])["n"] == 2
     assert rt.replicate_pure_error([1.0]) is None
     assert rt.replicate_pure_error([]) is None
+
+
+def test_pooled_replicate_scatter():
+    # s^2 = (2 * 1^2 + 4 * 2^2) / (2 + 4) = 18 / 6 = 3; points that cannot pool add nothing
+    points = [
+        {"n": 3, "s": 1.0},
+        {"n": 5, "s": 2.0},
+        {"n": 1, "s": 9.0},
+        {"n": 4, "s": float("nan")},
+        {"s": 9.0},
+    ]
+    s, df = rt.pooled_replicate_scatter(points)
+    assert s == pytest.approx(math.sqrt(3.0)) and df == 6
+    assert rt.pooled_replicate_scatter([{"n": 1, "s": 1.0}]) is None
 
 
 def test_replicate_lack_of_fit_flags_the_deviating_point():
@@ -170,9 +183,29 @@ def test_replicate_lack_of_fit_flags_the_deviating_point():
     assert out["flagged"] == ["far"]
     assert out["n_points"] == 4
     assert out["max_abs_z"] == pytest.approx(12.0, rel=1e-3)
-    # Holm's smallest step is the family size times the raw tail
-    assert out["min_p_holm"] == pytest.approx(4 * rt.student_t_two_sided_p(12.0, 17), rel=1e-2)
+    # Holm's smallest step is the family size times the raw tail, on the pooled df 4 x 17
+    assert out["min_p_holm"] == pytest.approx(4 * rt.student_t_two_sided_p(12.0, 68), rel=1e-2)
     assert out["points"][0]["label"] == "far" and out["points"][0]["z"] == pytest.approx(12.0)
+
+
+def test_replicate_lack_of_fit_ranks_by_the_miss_not_by_how_tight_a_point_s_replicates_are():
+    """#99 (perica_egf): against each point's own scatter, triplicates that agreed to 1% scored
+    z = -161 on a modest miss and topped the flags, and the agent spent three model revisions on
+    them. Against the scatter pooled over the sigma's points, only the large miss is flagged."""
+    typical = [
+        {"label": f"p{i}", "n": 3, "ybar": 0.0, "s": 0.4, "prediction": 0.0} for i in range(20)
+    ]
+    tight = {"label": "tight", "n": 3, "ybar": -0.5, "s": 0.0091, "prediction": 0.0}
+    far = {"label": "far", "n": 3, "ybar": -2.17, "s": 0.4, "prediction": 0.0}
+    # the fixture's point: by its OWN scatter the tight point is the one 95 SE out
+    assert abs(-0.5 / (0.0091 / math.sqrt(3))) > 9 * abs(-2.17 / (0.4 / math.sqrt(3)))
+
+    out = rt.replicate_lack_of_fit(typical + [tight, far])
+    s_g = math.sqrt((21 * 2 * 0.4**2 + 2 * 0.0091**2) / 44)  # 22 points of n = 3: df 44
+    assert out["flagged"] == ["far"]
+    assert [p["label"] for p in out["points"]] == ["far"]
+    assert out["points"][0]["z"] == pytest.approx(-2.17 / (s_g / math.sqrt(3)), abs=1e-3)  # -9.617
+    assert out["min_p_holm"] == pytest.approx(22 * rt.student_t_two_sided_p(-9.617, 44), rel=1e-2)
 
 
 def test_replicate_lack_of_fit_reports_only_the_points_it_flagged():
@@ -211,8 +244,8 @@ def test_replicate_lack_of_fit_passes_a_model_that_sits_inside_the_scatter():
 
 
 def test_replicate_lack_of_fit_is_invariant_to_the_sigma_convention():
-    """z_i uses only the point's own replicate sd, so nothing about the model's noise parameter —
-    ML or RSS/(n-k) — can move this verdict. That is the whole reason for this arm."""
+    """z_i uses only replicate scatter, so nothing about the model's noise parameter — ML or
+    RSS/(n-k) — can move this verdict. That is the whole reason for this arm."""
     points = [_z_point("far", 6.0)] + [_z_point(f"near_{i}", 0.5) for i in range(4)]
     assert rt.replicate_lack_of_fit(points) == rt.replicate_lack_of_fit(points)
     # scaling every point's scatter AND its deviation together (a different noise convention) leaves
@@ -233,9 +266,9 @@ def test_replicate_lof_unavailable_without_replicates():
 
 
 def test_replicate_lof_unavailable_at_one_degree_of_freedom():
-    """One measured problem: 126 replicated points, EVERY n_i = 2. One df cannot be a yardstick, and
-    its pure error there is 7.8x smaller than the problem's own reference sigma — so the arm must
-    abstain rather than reject that problem's true model."""
+    """One measured problem: 126 replicated points, EVERY n_i = 2, technical duplicates whose pure
+    error is 7.8x smaller than the problem's own reference sigma — so the arm must abstain rather
+    than reject that problem's true model, although the duplicates pool to 126 df."""
     points = [_z_point(f"p{i}", 30.0, n=2) for i in range(126)]
     out = rt.replicate_lack_of_fit(points)
     assert out["available"] is False and out["status"] == "replicates_too_thin"
@@ -245,6 +278,17 @@ def test_replicate_lof_unavailable_at_one_degree_of_freedom():
         rt.replicate_lack_of_fit([_z_point(f"p{i}", 30.0, n=3) for i in range(126)])["available"]
         is True
     )
+
+
+def test_a_thin_point_is_not_tested_but_counts_towards_the_pooled_scatter():
+    """The noise report's floor pools every replicated point, so the yardstick does too: a duplicate
+    beside three triplicates is left out of the test but not out of s_g."""
+    thick = [{"label": f"p{i}", "n": 3, "ybar": 0.1, "s": 0.1, "prediction": 0.0} for i in range(3)]
+    thin = {"label": "dup", "n": 2, "ybar": 9.0, "s": 1.0, "prediction": 0.0}
+    out = rt.replicate_lack_of_fit(thick + [thin])
+    assert sorted(out["tested"]) == ["p0", "p1", "p2"]
+    s_g = math.sqrt((3 * 2 * 0.1**2 + 1 * 1.0**2) / 7)  # 0.389
+    assert out["max_abs_z"] == pytest.approx(0.1 / (s_g / math.sqrt(3)), abs=1e-3)
 
 
 def test_replicate_lof_unavailable_below_three_points():
@@ -291,7 +335,7 @@ def test_replicate_lof_fails_open_on_unusable_points():
     """A diagnostic must never manufacture a verdict from bad input, nor raise into the fit."""
     bad = [
         {"label": "no_prediction", "n": 18, "ybar": 1.0, "s": 0.1, "prediction": None},
-        {"label": "zero_scatter", "n": 18, "ybar": 1.0, "s": 0.0, "prediction": 0.0},
+        {"label": "nan_scatter", "n": 18, "ybar": 1.0, "s": float("nan"), "prediction": 0.0},
         {"label": "nan_mean", "n": 18, "ybar": float("nan"), "s": 0.1, "prediction": 0.0},
         {"label": "missing_n", "ybar": 1.0, "s": 0.1, "prediction": 0.0},
     ]
@@ -300,8 +344,15 @@ def test_replicate_lof_fails_open_on_unusable_points():
     # from "too thin", since each unavailable status has to mean exactly one thing
     assert out["available"] is False and out["status"] == "unavailable" and out["flagged"] == []
     # the usable points still count, and the unusable ones are simply dropped
-    mixed = rt.replicate_lack_of_fit(bad + [_z_point(f"ok{i}", 0.3) for i in range(3)])
+    ok = [_z_point(f"ok{i}", 0.3) for i in range(3)]
+    mixed = rt.replicate_lack_of_fit(bad + ok)
     assert mixed["available"] is True and mixed["n_points"] == 3
+    # replicates that agree EXACTLY are a point like any other; only a family with no scatter at
+    # all has no yardstick
+    exact = {"label": "exact", "n": 18, "ybar": 0.0, "s": 0.0, "prediction": 0.0}
+    assert "exact" in rt.replicate_lack_of_fit(ok + [exact])["tested"]
+    flat = [{**exact, "label": f"e{i}"} for i in range(3)]
+    assert rt.replicate_lack_of_fit(flat)["status"] == "unavailable"
 
 
 def test_replicate_lof_caps_the_reported_points():

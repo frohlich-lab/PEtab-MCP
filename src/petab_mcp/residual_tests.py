@@ -23,10 +23,12 @@ no answer leak).
   problem has.
 
 * **Replicate lack-of-fit** — where a design point was measured SEVERAL times, its replicates
-  differ by noise alone, so their scatter is a model-free yardstick for how far the prediction is
-  allowed to sit from the data: ``z_i = (ybar_i - f_i) / (s_i / sqrt(n_i))``. This is the axis the
-  two sign-based tests cannot reach on a steady-state problem, where a design point IS an
-  observable and every series has length 1 (see :func:`replicate_lack_of_fit`).
+  differ by noise alone, so replicate scatter is a model-free yardstick for how far the prediction
+  is allowed to sit from the data. It is pooled over every replicated point whose noise the same
+  sigma governs (``s_g``, :func:`pooled_replicate_scatter`):
+  ``z_i = (ybar_i - f_i) / (s_g / sqrt(n_i))``. This is the axis the two sign-based tests cannot
+  reach on a steady-state problem, where a design point IS an observable and every series has
+  length 1 (see :func:`replicate_lack_of_fit`).
 
 Everything here is pure numeric code over lists of numbers; :mod:`petab_mcp.data_access`
 feeds it the per-point residuals (and :mod:`petab_mcp.reconcile` the per-point replicate
@@ -217,9 +219,10 @@ def fisher_combine(pvalues: list[float]) -> float | None:
 def student_t_two_sided_p(t: float, df: float) -> float | None:
     """``P(|T| >= |t|)`` for ``T ~ Student-t(df)``.
 
-    Student-t and not a normal tail because ``df_i = n_i - 1`` is a handful here (11-17 on one
-    problem, 3-4 on another): the sd in the denominator is estimated from the very replicates being
-    tested, and a normal tail would over-state the significance of every point. ``None`` on a
+    Student-t and not a normal tail because the sd in the denominator is estimated from the
+    replicates themselves, on the noise sigma's pooled ``df = sum(n_i - 1)``: 6 on the smallest
+    family the replicate arm tests (3 points of 3 replicates), where a normal tail would over-state
+    the significance of every point; on a large family the two agree. ``None`` on a
     non-finite ``t`` or ``df < 1`` (fail open — a diagnostic must never manufacture a verdict from
     bad input).
 
@@ -270,11 +273,9 @@ def holm_adjusted(pvalues: list[float]) -> list[float]:
 
 
 def replicate_pure_error(values: list[float]) -> dict[str, Any] | None:
-    """Pure error of ONE design point's replicates: ``{n, mean, sd, df, ssq}``.
-
-    ``sd`` is the sample sd (``ddof = 1``) and ``ssq`` the raw sum of squared deviations, both kept
-    because the pooled floor sums ``ssq``/``df`` while the per-point test needs ``sd``. ``None``
-    below two finite values — a point measured once has no scatter of its own.
+    """Pure error of ONE design point's replicates: ``{n, mean, sd}``, ``sd`` the sample sd
+    (``ddof = 1``). ``None`` below two finite values — a point measured once has no scatter of its
+    own.
     """
     vals: list[float] = []
     for v in values:
@@ -288,8 +289,34 @@ def replicate_pure_error(values: list[float]) -> dict[str, Any] | None:
     if n < 2:
         return None
     mean = math.fsum(vals) / n
-    ssq = math.fsum((v - mean) ** 2 for v in vals)
-    return {"n": n, "mean": mean, "sd": math.sqrt(ssq / (n - 1)), "df": n - 1, "ssq": ssq}
+    sd = math.sqrt(math.fsum((v - mean) ** 2 for v in vals) / (n - 1))
+    return {"n": n, "mean": mean, "sd": sd}
+
+
+def pooled_replicate_scatter(points: list[dict[str, Any]]) -> tuple[float, int] | None:
+    """``(s, df)``: the replicate scatter pooled over ``points``, each ``{n, s}`` (one design point's
+    replicate count and sample sd)::
+
+        s^2 = sum (n_i - 1) * s_i^2 / sum (n_i - 1)        df = sum (n_i - 1)
+
+    THE one pooling: the noise report's floor
+    (:func:`petab_mcp.reconcile.sigma_replicate_noise_estimate`) and the lack-of-fit yardstick
+    (:func:`replicate_lack_of_fit`) both call it on the points of one noise sigma, so the two cannot
+    disagree. A point with ``n < 2`` or a non-finite or negative ``s`` adds nothing; ``None`` when
+    nothing is left to pool.
+    """
+    df = 0
+    ssq: list[float] = []
+    for p in points or []:
+        try:
+            n, s = int(p["n"]), float(p["s"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if n < 2 or not math.isfinite(s) or s < 0:
+            continue
+        df += n - 1
+        ssq.append((n - 1) * s * s)
+    return (math.sqrt(math.fsum(ssq) / df), df) if df else None
 
 
 def lof_power(
@@ -352,26 +379,28 @@ def replicate_lack_of_fit(
     min_points: int = REPLICATE_LOF_MIN_POINTS,
     max_reported: int = REPLICATE_LOF_MAX_REPORTED_POINTS,
 ) -> dict[str, Any]:
-    """Per-design-point lack-of-fit against each point's OWN replicate scatter.
+    """Per-design-point lack-of-fit against the replicate scatter of the point's noise sigma.
 
     ``points`` are the replicated design points of ONE noise parameter, each a mapping
     ``{label, n, ybar, s, prediction}`` on the coordinate where that parameter's noise is additive
-    (:func:`petab_mcp.reconcile.replicate_pure_error_points` builds them). Per point::
+    (:func:`petab_mcp.reconcile.replicate_pure_error_points` builds them). Their scatter is pooled
+    into ``s_g`` on ``df_g`` (:func:`pooled_replicate_scatter`, the noise report's
+    ``data_noise_estimate`` for that parameter), and per point::
 
-        se_i = s_i / sqrt(n_i)        z_i = (ybar_i - f_i) / se_i        df_i = n_i - 1
+        se_i = s_g / sqrt(n_i)        z_i = (ybar_i - f_i) / se_i
 
-    and ``p_i`` is the two-sided Student-t tail on ``df_i``, Holm-adjusted across the family. A
+    and ``p_i`` is the two-sided Student-t tail on ``df_g``, Holm-adjusted across the family. A
     point whose adjusted p falls below ``alpha`` is FLAGGED: the model cannot reach that point no
     matter how its parameters move, which is missing STRUCTURE, not noise.
 
     Why this arm exists and why it is scoped this way is in ``constants.REPLICATE_LOF_ALPHA``. The
     guards, each with the measured case that forces it:
 
-    * ``min_df`` — a point needs df_i >= 2 (one problem: 126 points, every n_i = 2, technical
-      replicates of a calibration whose reference sigma is 7.8x their pure error).
+    * ``min_df`` — a point is tested from n_i - 1 >= 2; thinner points still count towards
+      ``s_g`` (see ``constants.REPLICATE_LOF_MIN_DF``).
     * ``min_points`` — fewer than 3 usable points and there is no family to correct over.
-    * anything non-finite or missing is DROPPED, and an empty family reports NO EVIDENCE
-      (``available: False``) — never a pass.
+    * anything non-finite or missing is DROPPED, and a family with nothing usable (or no scatter
+      to pool) reports NO EVIDENCE (``available: False``) — never a pass.
 
     NO lack-of-fit-df judgement happens here, on purpose. How much a pass is worth is
     ``pooled points - n_structural`` (:func:`lof_power`), and neither operand is knowable from ONE
@@ -403,6 +432,8 @@ def replicate_lack_of_fit(
     credited for (:func:`petab_mcp.data_access._rollup_structure`); it is stripped before the
     verdict rides on a fit result, where only the bounded ``points`` list may go.
     """
+    pooled = pooled_replicate_scatter(points)
+    s_g, df_g = pooled if pooled and pooled[0] > 0 else (None, 0)
     usable: list[dict[str, Any]] = []
     # Counted so that "nothing to test" can name WHICH kind of nothing it was — each unavailable
     # status has to mean exactly one thing (see replicate_lof_unavailable).
@@ -425,13 +456,14 @@ def replicate_lack_of_fit(
             f = float(p["prediction"])
         except (KeyError, TypeError, ValueError):
             continue
-        if not (math.isfinite(ybar) and math.isfinite(f) and math.isfinite(s)) or s <= 0:
+        finite = math.isfinite(ybar) and math.isfinite(f) and math.isfinite(s)
+        if s_g is None or not finite or s < 0:
             continue
-        z = (ybar - f) / (s / math.sqrt(n))
-        pv = student_t_two_sided_p(z, n - 1)
+        z = (ybar - f) / (s_g / math.sqrt(n))
+        pv = student_t_two_sided_p(z, df_g)
         if pv is None:
             continue
-        usable.append({"label": p.get("label"), "n": n, "df": n - 1, "z": z, "p": pv})
+        usable.append({"label": p.get("label"), "n": n, "z": z, "p": pv})
 
     if not usable:
         if n_replicated == 0:
