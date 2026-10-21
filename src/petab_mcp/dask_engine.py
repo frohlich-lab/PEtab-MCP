@@ -146,9 +146,10 @@ class DaskEngine(Engine):
         self.client = Client(cluster)
         self.client.register_plugin(_NoBuild(), name="petab-mcp-no-build")
 
-    def batched(self, k: int, start_seconds: float) -> DaskEngine:
-        """This engine with ``k`` starts per dask task, each capped at ``start_seconds``: a copy,
-        as one engine serves every session's fits at once."""
+    def batched(self, k: int, start_seconds: float = math.inf) -> DaskEngine:
+        """This engine with ``k`` starts per dask task, each capped at ``start_seconds`` (by default
+        uncapped, so no batch is wedged): a copy, as one engine serves every session's fits at
+        once."""
         engine = copy.copy(self)
         engine.starts_per_task = k
         engine.start_seconds = start_seconds
