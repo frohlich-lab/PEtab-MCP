@@ -202,8 +202,8 @@ class _RateLimitFilter(logging.Filter):
     DELIBERATELY UNLOCKED. The counter is a plain int mutated without synchronisation: reads and
     writes are individually atomic under the GIL, so the worst a race costs is an occasionally
     miscounted record, which a rate limiter does not care about. A :class:`threading.Lock` here
-    would be held across ``fork`` — pyPESTO's ``MultiProcessEngine`` forks its workers out of a
-    threaded server — and a lock that happened to be held at fork time is held forever in the
+    would be held across ``fork`` — a fit's ``multistart.ProcessEngine`` forks its workers out of
+    a threaded server — and a lock that happened to be held at fork time is held forever in the
     child, deadlocking that worker on its first AMICI warning.
     """
 

@@ -101,8 +101,8 @@ def test_configure_amici_pre_empts_amicis_own_handler():
 
 
 def test_a_forked_worker_inherits_the_filter():
-    """pyPESTO's MultiProcessEngine forks, and the fits that provoke these warnings run in those
-    workers. The parent-side handler only helps because it is inherited — the reason this works
+    """A fit's process pool (multistart.ProcessEngine) forks, and the fits that provoke these
+    warnings run in those workers. The parent-side handler only helps because it is inherited — the reason this works
     where the equivalent fix for `fides` could not (see `petab_mcp.fitting`)."""
     out = _run("""
         import logging, multiprocessing as mp, sys
