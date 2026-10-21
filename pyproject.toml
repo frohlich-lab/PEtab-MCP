@@ -40,6 +40,12 @@ dependencies = [
     # streamable_http_client with a new signature; CallToolResult/Tool fields went snake_case).
     # Revisit once langchain-mcp-adapters ships mcp 2.0 support.
     "fastmcp>=3,<4",
+    # Imported directly by `server._Cancellation`, which hears a client's cancel beside a tool's
+    # thread; only transitively present via fastmcp otherwise. 3.1 added `sleep_forever`.
+    "anyio>=3.1",
+    # Ships each start to a worker process, as pyPESTO's own MultiProcessEngine does
+    # (`multistart`, `dask_engine`). No version is known to break that, so it has no floor.
+    "cloudpickle",
     # An integration commit, not a release: PEtab-dev/libpetab-python#557's head (stacked on #556)
     # merged with #546's head, on libpetab's `integrate/557-546` branch. #556 and #557 let
     # `assignments_to_experiments` convert assignments that switch more than once (Brannmark) and
@@ -120,12 +126,10 @@ dependencies = [
 [project.optional-dependencies]
 # Fits on a dask cluster: `create_server(cluster=...)` and petab_mcp.dask_engine, the only importer.
 # `distributed` below 2023.9.2 has no `Client.register_plugin`, which registers the engine's worker
-# plugin. cloudpickle, which ships each start as pyPESTO's own MultiProcessEngine does, is listed
-# because dask_engine imports it; no version is known to break that, so it has no floor.
-# dask-jobqueue builds cli.py's `--slurm-max-jobs` pool; below 0.8.5 every `sbatch`/`scancel` it
-# runs blocked the event loop of the scheduler the pool hosts in this process
+# plugin. dask-jobqueue builds cli.py's `--slurm-max-jobs` pool; below 0.8.5 every `sbatch`/
+# `scancel` it runs blocked the event loop of the scheduler the pool hosts in this process
 # (dask/dask-jobqueue#610).
-dask = ["distributed>=2023.9.2", "cloudpickle", "dask-jobqueue>=0.8.5"]
+dask = ["distributed>=2023.9.2", "dask-jobqueue>=0.8.5"]
 dev = [
     # The dask extra, so CI runs tests/test_dask_engine.py and the SLURM-pool tests in
     # tests/test_cli.py (which submit nothing) rather than skipping them.

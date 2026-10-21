@@ -48,7 +48,7 @@ from .constants import (
     PARAMETER_AT_BOUND_RELATIVE_TOL,
 )
 from .engine import build_lock
-from .errors import FitBackendError, ModelBuildBusyError, ModelUpdateError, disk_full_error
+from .errors import ModelBuildBusyError, ModelUpdateError, PetabMcpError, disk_full_error
 from .formatting import finite_float as _flt
 from .parameters import structure_fingerprint
 from .problem import (
@@ -234,19 +234,16 @@ def _fit_engine(n_starts: int, shared=None, previous: dict[str, Any] | None = No
     """The pyPESTO engine a multistart runs on: ``shared``, the server's
     :class:`~petab_mcp.dask_engine.DaskEngine`, when it has one, batched by :func:`_starts_per_task`;
     otherwise up to ``FIT_N_WORKERS`` local worker processes (never more than there are starts), or
-    ``None`` (pyPESTO's sequential ``SingleCoreEngine``) for a single effective worker or when a
-    parallel engine can't be constructed."""
+    ``None`` (pyPESTO's sequential ``SingleCoreEngine``) for a single effective worker. Both pools
+    end a fit whose starts stop finishing (:mod:`petab_mcp.multistart`)."""
     if shared is not None:
-        return shared.batched(_starts_per_task(n_starts, previous))
+        return shared.batched(_starts_per_task(n_starts, previous), FIT_PER_START_TIMEOUT_S)
     workers = max(1, min(FIT_N_WORKERS, int(n_starts)))
     if workers < 2:
         return None
-    try:
-        from pypesto.engine import MultiProcessEngine
+    from .multistart import ProcessEngine
 
-        return MultiProcessEngine(n_procs=workers)
-    except Exception:  # noqa: BLE001 - parallel engine unavailable: fall back to sequential
-        return None
+    return ProcessEngine(workers, FIT_PER_START_TIMEOUT_S)
 
 
 def _fmt(x: Any) -> str:
@@ -1211,9 +1208,10 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
         # runs fine on the sequential engine — so fall back to it rather than failing the whole
         # commit. Sequential is slower, so this can exceed the parallel-sized fit budget on a big
         # n_starts; that is an acceptable rare-path cost vs. a hard failure (resuming the session
-        # backstops a timeout). A sequential fit that itself fails re-raises normally. A cluster
-        # failure is not retried: that would run every start on the server node.
-        if pp_engine is None or isinstance(exc, FitBackendError):
+        # backstops a timeout). A sequential fit that itself fails re-raises normally. A failure the
+        # server raised is not retried: a cluster's would run every start on the server node, and a
+        # wedged or cancelled fit must end (see :mod:`petab_mcp.multistart`).
+        if pp_engine is None or isinstance(exc, PetabMcpError):
             raise
         log.warning(
             "fit: parallel multistart failed (%s: %s); retrying sequentially",

@@ -8,8 +8,11 @@ table are mutable, and every committed change is snapshotted as a version and lo
 
 from __future__ import annotations
 
+import contextlib
 import math
 import threading
+import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -28,6 +31,7 @@ from .constants import (
 )
 from .data_access import residual_flag, residual_structure_rollup
 from .errors import (
+    FitCancelledError,
     InfrastructureError,
     ModelBuildBusyError,
     ModelUpdateError,
@@ -213,6 +217,10 @@ class PetabSession:
             self._set_model_from_antimony(f"model {R.ZERO_SHOT_MODEL_ID}\nend")
 
         self.lock = threading.RLock()
+        # When the change holding `lock` (a `make_changes` and its fit) began, by time.monotonic(),
+        # else None; read without the lock, so a second change is refused instead of queued (see
+        # `change`).
+        self.change_began: float | None = None
         self.provenance = ProvenanceStore(store_root(self.yaml_path, provenance_dir))
         self.resolver = resolver or EutilsReferenceResolver(mode=reference_mode)
         self.logger = logging_setup.configure(self.provenance.root)
@@ -1341,6 +1349,18 @@ class PetabSession:
                 "stop_reason": stop_reason,
             }
 
+    @contextlib.contextmanager
+    def change(self) -> Iterator[None]:
+        """Hold :attr:`lock` for one change and its fit, with :attr:`change_began` set, which
+        ``make_changes`` reads to refuse a second change at once
+        (:data:`~petab_mcp.errors.FIT_IN_PROGRESS`) rather than queue it behind this one."""
+        with self.lock:
+            self.change_began = time.monotonic()
+            try:
+                yield
+            finally:
+                self.change_began = None
+
     # -- fit ---------------------------------------------------------------
     def _fit_dedup(self, starts: int) -> tuple[dict[str, Any], str]:
         """Decide what an explicit `fit` should do with the current working model (see :mod:`dedup`).
@@ -1450,7 +1470,7 @@ class PetabSession:
                     error = disk_full_error(exc, build_root) or ModelUpdateError(
                         _compile_fit_failure_message(exc)
                     )
-                if isinstance(error, (ModelBuildBusyError, InfrastructureError)):
+                if isinstance(error, (ModelBuildBusyError, InfrastructureError, FitCancelledError)):
                     self._fit_attempts[fit_key] -= 1  # nothing was scored, so a retry is not a loop
                 if error is exc:
                     raise

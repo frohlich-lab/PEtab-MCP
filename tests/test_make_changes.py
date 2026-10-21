@@ -2145,9 +2145,12 @@ def test_an_empty_map_names_the_held_inputs_and_binds_nothing_else(tmp_path):
 
 def _concurrently(monkeypatch, mcp, *calls):
     """The ``make_changes`` calls, each on its own thread, each pausing after it builds its
-    statements until every other has built too (or 3 s pass)."""
+    statements until every other has built too (or 3 s pass). Each takes the session lock in turn,
+    as a call does that arrives just as another takes it: the refusal of a call arriving during
+    another's fit (``fit_in_progress``, tests/test_multistart.py) is turned off here."""
     import threading
 
+    monkeypatch.setattr(PetabSession, "change", lambda session: session.lock)
     barrier = threading.Barrier(len(calls), timeout=3)
     build = O.statements_to_antimony
 
