@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import libsbml
 import pytest
-from indra.statements import Agent, BoundCondition, Phosphorylation, Translocation
+from indra.statements import Agent, BoundCondition, ModCondition, Phosphorylation, Translocation
 from petab.v1.models.sbml_model import SbmlModel
 
 from petab_mcp import mechanisms as M
@@ -359,6 +359,19 @@ def test_a_declared_expression_names_parameters_the_table_fills():
     assert {"pool", "fold"} <= ids and "naive_init" not in ids
 
 
+def test_two_starts_of_one_species_are_refused_naming_both():
+    """An unmodified site written out is its default state, so `ERK{-pT185}` starts what `ERK`
+    starts; PySB's "Duplicate species" named neither the other start nor the species."""
+    u_erk = Agent("ERK", mods=[ModCondition("phosphorylation", "T", "185", False)])
+    with pytest.raises(
+        ModelUpdateError, match=r"starts 'S0' and 'S1' both start ERK\(T185='u'\)"
+    ):
+        PS.to_antimony(
+            [(_PHOSPHO, INDRA_DEFAULT, "r1")], {},
+            starts=[("S0", Agent("ERK"), 1), ("S1", u_erk, 2)],
+        )
+
+
 def test_an_input_declares_no_start():
     """An input is held to its protocol; a start for it would be overwritten at t=0."""
     egf = Agent("EGF")
@@ -483,6 +496,23 @@ def test_a_readout_formula_reads_other_entries_and_parameters():
     rule = sbml.getAssignmentRuleByVariable("readout_ratio")
     assert libsbml.formulaToL3String(rule.getMath()) == "scale * pERK / tERK"
     assert sbml.getParameter("scale") is not None
+
+
+def test_a_readout_formula_takes_pythons_power():
+    """`(a*b*c)**3` was refused as no formula, libSBML's parser having only `^`; read as `^`, it
+    binds and associates as Python's `**`."""
+    p_erk = Agent._from_json(
+        {"name": "ERK", "mods": [{"mod_type": "phosphorylation", "residue": "T", "position": "185"}]}
+    )
+    antimony, _ = PS.to_antimony(
+        [(_PHOSPHO, INDRA_DEFAULT, "r1")],
+        {},
+        formulas={"readout_x": "-(pERK/tERK)**3 + tERK**2**-1"},
+        amounts={"pERK": p_erk, "tERK": Agent("ERK")},
+    )
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    rule = sbml.getAssignmentRuleByVariable("readout_x")
+    assert libsbml.formulaToL3String(rule.getMath()) == "-(pERK / tERK)^3 + tERK^(2^-1)"
 
 
 def test_a_readout_formula_reads_an_agent_only_through_amounts():

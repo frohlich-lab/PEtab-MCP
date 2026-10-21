@@ -339,9 +339,20 @@ def _declare(
         value = float(amount) if not isinstance(amount, str) else SEED_INITIAL_VALUE
         parameter = pysb.Parameter(f"{name}_init", value, _export=False)
         model.add_component(parameter)
+        twin = next(
+            (i.value.name.removesuffix("_init") for i in model.initials
+             if i.pattern.is_equivalent_to(pattern)),
+            None,
+        )
+        if twin is not None:
+            raise ModelUpdateError(
+                f"starts {twin!r} and {name!r} both start {pattern} (a site neither writes starts "
+                "in its default state), and one species takes one start: give it one, or write "
+                "each agent in the state that tells them apart"
+            )
         try:
             model.add_initial(pysb.Initial(pattern, parameter, _export=False))
-        except ValueError as exc:  # pysb: not concrete, or a duplicate species
+        except ValueError as exc:  # pysb: not concrete
             raise ModelUpdateError(
                 f"start {name!r} is not a start PySB accepts: {exc}"
             ) from exc
@@ -349,11 +360,18 @@ def _declare(
     return named
 
 
+def _parse(formula: str):
+    """``formula`` as libSBML's L3 parser reads it, Python's ``**`` read as its ``^``. The parser
+    has no ``**``, and its ``^`` binds and associates as ``**`` does (``-a^2`` is ``-(a^2)``,
+    ``a^b^c`` is ``a^(b^c)``), so the formula means what it says in Python."""
+    return libsbml.parseL3Formula(formula.replace("**", "^"))
+
+
 def _initial_expression(sbml_model, placeholder: str, species: str, formula: str) -> None:
     """Replace the declared species' ``<key>_init`` with the expression its entry gives. A name
     the model does not hold becomes a parameter: a shipped row or a condition-table column fills
     it, and anything else is estimated from reconcile's seed."""
-    math = libsbml.parseL3Formula(formula)
+    math = _parse(formula)
     if math is None:
         raise ModelUpdateError(f"start {species!r} is no formula: {formula!r}")
     _parameters_for_unknown_names(sbml_model, math)
@@ -401,7 +419,7 @@ def _readout_formula(
         raise ModelUpdateError(
             f"readout {readout!r} is a formula and also names something else in the model"
         )
-    math = libsbml.parseL3Formula(formula)
+    math = _parse(formula)
     if math is None:
         raise ModelUpdateError(f"readout {readout!r} is no formula: {formula!r}")
     if any(node.isName() and node.getName() == readout for node in _ast_nodes(math)):
