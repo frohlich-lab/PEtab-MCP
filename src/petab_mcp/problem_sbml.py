@@ -396,7 +396,10 @@ def _readout_formula(
 
     A formula that reads none of the model's ``states`` (the ``amounts``, and the entity map's ids)
     is refused too: it measures parameters, a constant the fit tunes to the data's mean, with a
-    flat trajectory that can look like a good fit."""
+    flat trajectory that can look like a good fit. A number is not refused: nothing fits it, and
+    :mod:`literals` prices it unless it is structural. It is the claim that an assay reads the same
+    whatever the state, which Lucarelli's reference makes of the SMAD3 in a SMAD2 pull-down (all of
+    it doubly phosphorylated, ``readout_S2IP_ppS3 := 1``; PEtabAgentBench#23)."""
     if sbml_model.getElementBySId(readout) is not None:
         raise ModelUpdateError(
             f"readout {readout!r} is a formula and also names something else in the model"
@@ -428,9 +431,8 @@ def _readout_formula(
             f'`"{unread[0]}{{p}}"` for one state) and read that name. Unread, it would be a '
             "parameter, a constant, fitted in place of the species."
         )
-    if states is not None and not {
-        node.getName() for node in _ast_nodes(math) if node.getType() == libsbml.AST_NAME
-    } & set(states):
+    named = {node.getName() for node in _ast_nodes(math) if node.isName()}
+    if states is not None and named and not named & set(states):
         raise ModelUpdateError(
             f"readout {readout!r} = {formula!r} reads no amount, so it is a constant the fit tunes "
             "to the data. A readout is what the assay measures of the model's state: read an "
