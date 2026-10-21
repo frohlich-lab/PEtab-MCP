@@ -585,9 +585,16 @@ def _refuse_chains(model: pysb.Model, emissions: list[M.Emission]) -> None:
     make A-A-B-B-A-... The rules say this at once, where the capped expansion
     (:data:`MAX_COMPLEX`) only finds it out after building every complex up to the cap, which can
     take minutes. The cap stays as the backstop for growth the bonds alone do not show.
+
+    A cycle grows only through a molecule some rule BINDS while it is already bound elsewhere (a
+    gain): one whose bonds all formed in one firing is as large as that rule's product. Three
+    trimers each assembled from free SMADs (Lucarelli's) close a cycle of bonds that coexist in
+    their products, and were refused although none can take a further partner
+    (PEtabAgentBench#23); so a cycle is refused only when it passes a gain.
     """
     formed: dict[tuple, set[str]] = {}  # bond, as its two (monomer, site) ends -> rules forming it
     holds: set[tuple[str, str, str]] = set()  # (monomer, s, t): bound on s and t at once
+    gains: set[tuple[str, str, str]] = set()  # ... because a rule binds t while s may be bound
     for rule in model.rules:
         sides = [(rule.reactant_pattern, rule.product_pattern)]
         if rule.is_reversible:
@@ -607,19 +614,21 @@ def _refuse_chains(model: pysb.Model, emissions: list[M.Emission]) -> None:
                     for molecule in _molecules(before):
                         conditions = molecule.site_conditions
                         if molecule.monomer.name == name and _is_free(conditions.get(site, ANY)):
-                            holds |= {
+                            gains |= {
                                 pair
                                 for other in molecule.monomer.sites
                                 if other != site and not _is_free(conditions.get(other, ANY))
                                 for pair in ((name, site, other), (name, other, site))
                             }
+    holds |= gains
     # From "bound on s", a molecule that may also bind on t reaches its partner on t's bond.
-    steps: dict[tuple[str, str], list[tuple[tuple[str, str], tuple]]] = {}
+    steps: dict[tuple[str, str], list[tuple[tuple[str, str], tuple, bool]]] = {}
     for bond in formed:
         for (name, site), partner in ((bond[0], bond[1]), (bond[1], bond[0])):
             for held_name, s, t in holds:
                 if held_name == name and t == site:
-                    steps.setdefault((name, s), []).append((partner, bond))
+                    gain = (name, s, t) in gains
+                    steps.setdefault((name, s), []).append((partner, bond, gain))
     cycle = _cycle(steps)
     if cycle is None:
         return
@@ -668,30 +677,29 @@ def _bonds(reaction_pattern) -> list[tuple]:
 
 
 def _cycle(steps: dict) -> list | None:
-    """A cycle in ``steps`` as its ``(node, bond)`` steps, or ``None``."""
-    state: dict = {}
-    path: list = []
-
-    def visit(node) -> list | None:
-        state[node] = "open"
-        for partner, bond in steps.get(node, []):
-            path.append((node, bond))
-            if state.get(partner) == "open":
-                start = next(i for i, (n, _) in enumerate(path) if n == partner)
-                return path[start:]
-            if partner not in state:
-                found = visit(partner)
-                if found:
-                    return found
-            path.pop()
-        state[node] = "done"
-        return None
-
-    for node in list(steps):
-        if node not in state:
-            found = visit(node)
-            if found:
-                return found
+    """A cycle in ``steps`` (node -> ``(partner, bond, gain)``) through at least one gain step, as
+    its ``(node, bond)`` steps, or ``None``: each gain step, then the shortest way back from its
+    partner to where it started."""
+    for start, outgoing in steps.items():
+        for first, first_bond, gain in outgoing:
+            if not gain:
+                continue
+            came: dict = {first: None}
+            frontier = [first]
+            while frontier and start not in came:
+                ahead = []
+                for node in frontier:
+                    for partner, bond, _ in steps.get(node, []):
+                        if partner not in came:
+                            came[partner] = (node, bond)
+                            ahead.append(partner)
+                frontier = ahead
+            if start in came:
+                back, node = [], start
+                while came[node] is not None:
+                    back.append(came[node])
+                    node = came[node][0]
+                return [(start, first_bond), *reversed(back)]
     return None
 
 def _rename(sbml_model, element, new: str) -> None:

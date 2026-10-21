@@ -449,6 +449,35 @@ def test_complexes_that_grow_without_bound_are_refused():
         PS.to_antimony(rows, {"STAT5A": Agent("STAT5A"), "STAT5B": Agent("STAT5B")})
 
 
+def test_trimers_assembled_from_free_partners_are_not_refused():
+    """Lucarelli's three SMAD trimers, each assembled in one step from partners free of all
+    others: their products close a cycle of bonds, but no rule binds a molecule already bound, so
+    each complex is one trimer. Refused as chains that grow without bound (PEtabAgentBench#23).
+    Linked by a dimer that binds whatever else its partners hold, they do chain, and still are."""
+    from indra.statements import Complex
+
+    def free(name, *of):
+        return Agent(name, bound_conditions=[BoundCondition(Agent(o), False) for o in of])
+
+    s2, s3, s4 = (
+        lambda: free("SMAD2", "SMAD3", "SMAD4"),
+        lambda: free("SMAD3", "SMAD2", "SMAD3", "SMAD4"),
+        lambda: free("SMAD4", "SMAD2", "SMAD3", "SMAD4"),
+    )
+    rows = [
+        (Complex([s2(), s3(), s3()]), "assembly", "k233"),
+        (Complex([s2(), s3(), s4()]), "assembly", "k234"),
+        (Complex([s2(), s4(), s4()]), "assembly", "k244"),
+    ]
+    antimony, _ = PS.to_antimony(rows, {"SMAD2": Agent("SMAD2")})
+    assert SbmlModel.from_antimony(antimony).sbml_model.getNumReactions() == 3
+
+    trimer = Complex([free("A", "B", "C"), free("B", "A", "C"), free("C", "A", "B")])
+    linked = [(trimer, "assembly", "abc"), (Complex([Agent("B"), Agent("C")]), INDRA_DEFAULT, "bc")]
+    with pytest.raises(ModelUpdateError, match=r"rows \['abc', 'bc'\] bind .* into chains"):
+        PS.to_antimony(linked, {"A": Agent("A")})
+
+
 def test_the_dimers_the_refusal_advises_are_not_refused():
     """The same three dimers, each partner free of its others where it binds: dimers only."""
     from indra.statements import Complex
