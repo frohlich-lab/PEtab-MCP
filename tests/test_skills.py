@@ -132,6 +132,16 @@ def test_instructions_mention_skills_only_when_present(tmp_path):
     assert "list_skills" not in without_skills.instructions
 
 
+def test_every_skill_the_instructions_name_is_bundled(tmp_path):
+    """The instructions point at the skill holding the tools' long reference (#40); a renamed or
+    dropped skill must not leave the pointer reading nothing."""
+    import re
+
+    bundled = {s.name for s in skills_mod.load_skills(SKILLS_DIR)}
+    named = set(re.findall(r"get_skill\('([^']+)'\)", _server(tmp_path).instructions))
+    assert "reading-fits" in named and named <= bundled, sorted(named - bundled)
+
+
 # -- MCP exposure ----------------------------------------------------------
 def test_skill_tools_registered(tmp_path):
     mcp = _server(tmp_path)
