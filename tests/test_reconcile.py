@@ -890,3 +890,72 @@ def test_an_ic_row_keeps_its_convention_when_its_value_is_dropped():
     row = prob.parameter_df.loc["P_init"]
     assert (row[NOMINAL_VALUE], bool(row[ESTIMATE])) == (1.0, False)
     assert prob.model.sbml_model.getParameter("P_init").getValue() == 1.0
+
+
+# -- a rate law's local parameters are promoted to global ones (#102) -----------------------------
+# Antimony cannot write a local parameter, so each test adds one through libSBML, as the barebones
+# null arm's hand-written SBML would carry it.
+_RATES = (
+    "model rates\n  compartment c = 1;\n  species A in c; species B in c;\n  A = 2.5; B = 0.5;\n"
+    "  k = 5; {kf} = 0.3;\n  r1: A -> B; {law};\n  r2: B -> ; k*B;\nend\n"
+)
+
+
+def _add_local(prob, reaction, pid, value):
+    lp = prob.model.sbml_model.getReaction(reaction).getKineticLaw().createLocalParameter()
+    lp.setId(pid)
+    lp.setValue(value)
+
+
+def _rates(sm):
+    """Each reaction's rate at the model's declared values, a local parameter read over a global of
+    the same id as SBML scopes it."""
+    import libsbml
+
+    values = {p.getId(): p.getValue() for p in sm.getListOfParameters()}
+    values |= {s.getId(): s.getInitialConcentration() for s in sm.getListOfSpecies()}
+    rates = {}
+    for reaction in sm.getListOfReactions():
+        law = reaction.getKineticLaw()
+        scope = values | {p.getId(): p.getValue() for p in law.getListOfLocalParameters()}
+        rates[reaction.getId()] = R._evaluate(libsbml.formulaToL3String(law.getMath()), scope)
+    return rates
+
+
+def test_a_local_parameter_is_charged_as_a_declared_one():
+    """A local parameter got no row and was priced as no literal, so a fitted rate constant written
+    as one was free (#102). It now costs exactly what the same constant declared globally under the
+    promoted id costs: the same estimated row, at the same value."""
+    from petab_mcp import literals as L
+
+    declared = _bare_problem(_RATES.format(kf="r1_kf", law="r1_kf*A"))
+    local = _bare_problem(_RATES.format(kf="kf", law="kf*A"))
+    local.model.sbml_model.removeParameter("kf")
+    _add_local(local, "r1", "kf", 0.3)
+    for prob in (declared, local):
+        R.reconcile(prob)
+    assert local.parameter_df.sort_index().equals(declared.parameter_df.sort_index())
+    assert "r1_kf" in local.x_free_ids
+    assert L.hardcoded_constants(local.model.sbml_model) == []
+    assert _rates(local.model.sbml_model) == _rates(declared.model.sbml_model)
+
+
+def test_a_local_parameter_shadowing_a_global_keeps_its_own_value():
+    """r1's local ``k`` shadows the global ``k`` r2 reads, and a global ``r1_k`` already holds the
+    id the promotion would take. Each keeps its own value and row, and every rate is unchanged."""
+    import pytest
+    from petab.v2.C import NOMINAL_VALUE
+
+    prob = _bare_problem(_RATES.format(kf="r1_k", law="k*r1_k*A"))
+    _add_local(prob, "r1", "k", 0.7)
+    sm = prob.model.sbml_model
+    before = _rates(sm)
+    assert before == pytest.approx({"r1": 0.7 * 0.3 * 2.5, "r2": 5 * 0.5})
+    R.reconcile(prob)
+    assert _rates(sm) == pytest.approx(before)
+    nominal = prob.parameter_df[NOMINAL_VALUE]
+    assert {pid: nominal[pid] for pid in ("k", "r1_k", "r1_k_1")} == {
+        "k": 5,
+        "r1_k": 0.3,
+        "r1_k_1": 0.7,
+    }

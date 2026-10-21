@@ -2,6 +2,8 @@
 
 Enforces the invariants:
 
+* **No local parameters** — a rate law's local parameter becomes a global
+  ``<reaction>_<local>`` (:func:`promote_local_parameters`), which the sync below gives a row.
 * **Parametric initial conditions** — every species ``S`` gets a parametric initial assignment.
   A literal IC is parametrised as a fresh ``S_init`` parameter, but an author's own parametric IC
   is PRESERVED — whether a single parameter (``S = S_0``) or a COMPOUND expression of parameters
@@ -2132,6 +2134,25 @@ def initial_conditions_report(problem, added: set[str] | None = None) -> list[di
     return out
 
 
+# -- local parameters ------------------------------------------------------
+def promote_local_parameters(sm) -> None:
+    """Make every rate law's local parameter a global one, so it gets a row and counts in ``k``.
+
+    A local parameter (SBML ``listOfLocalParameters``) is invisible to everything here that reads
+    global parameters: :func:`sync_parameter_table` minted it no row and
+    :func:`literals.hardcoded_constants` scans no parameter value, so a fitted rate constant written
+    as one cost a model nothing (issue #102). Antimony emits none; hand-written SBML, the harness's
+    barebones null arm, can.
+
+    libSBML's own converter, the one AMICI's SBML import runs anyway: each becomes
+    ``<reaction>_<local>``, suffixed ``_1`` when that id is taken, the id AMICI already simulated
+    it under. A model without local parameters is left byte-identical. Promoted rather than
+    refused, which would turn a hand-written model into a lost run, and rather than priced as a
+    literal, so it is charged as the estimated parameter it would be if declared globally.
+    """
+    sm.getSBMLDocument().convert(libsbml.SBMLLocalParameterConverter().getDefaultProperties())
+
+
 # -- pruning ---------------------------------------------------------------
 def prune_orphans(problem) -> dict[str, list[str]]:
     """Remove species/parameters no reaction, rule, IC, or fixed table references."""
@@ -2459,7 +2480,8 @@ def ensure_one_species(sm) -> bool:
 
 
 def reconcile(problem, shipped=None) -> dict[str, Any]:
-    """Full reconciliation after a structural edit: prune, parametric ICs, table sync.
+    """Full reconciliation after a structural edit: promote local parameters, prune, parametric
+    ICs, table sync.
 
     Initial conditions are estimated by default; an IC of exactly 1 is held FIXED and an IC of
     exactly 0 gets no parameter at all (see :func:`ensure_parametric_initial_conditions`). ``shipped`` is the problem's original parameter table, so a
@@ -2470,6 +2492,8 @@ def reconcile(problem, shipped=None) -> dict[str, Any]:
     prunes is restored the moment the caller's model declares that parameter.
     """
     sm = problem.model.sbml_model
+    # FIRST, so the prune and the sync see the promoted parameters as the globals they now are.
+    promote_local_parameters(sm)
     pruned = prune_orphans(problem)
     # AFTER the prune, or it would be pruned as the orphan it deliberately is.
     ensure_one_species(sm)
