@@ -17,7 +17,8 @@ PROBLEM's to ship as a FIXED row.
 Scanned: kinetic laws, assignment and rate rules, initial assignments, function definitions,
 event triggers and assignments. NOT scanned: species initial values (the reconcile already turns
 a nonzero, non-unit one into an ESTIMATED ``<sid>_init`` row) and parameter values (the table
-overrides them).
+overrides them), a rate law's local parameters among them: the reconcile promotes each to a global
+parameter with a row.
 """
 
 from __future__ import annotations
