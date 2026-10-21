@@ -1678,8 +1678,8 @@ def _entry_inflated(entry: "dict[str, Any]") -> bool:
     arm (sigma above 1.5x the pure-error replicate floor); it is gone. Dividing two point
     estimates discards the denominator's uncertainty, so no single threshold survives the problems
     it was measured on — one needs <=1.004 for any power, another >7.83 not to condemn its own
-    reference. The sharp test keeps each point's df instead (per-design-point lack-of-fit, in the
-    residual-structure verdict).
+    reference. The sharp test keeps the floor's df instead (per-design-point lack-of-fit against
+    that same pooled floor, in the residual-structure verdict).
     """
     # Judge the EFFECTIVE sd (noiseFormula evaluated at the fitted value) against the cap, which is
     # a fraction of the same-scale data std; `fitted` alone is dimensionally wrong for

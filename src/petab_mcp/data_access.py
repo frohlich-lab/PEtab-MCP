@@ -760,7 +760,7 @@ def residual_structure_rollup(session, sims=None) -> dict[str, Any]:
     except Exception:  # noqa: BLE001 - advisory; a diagnostic failure must not affect the fit/gate
         return _unavailable_structure()
     # The replicate arm runs FIRST and OUTSIDE the residual_weighted gate below. z_i is built from
-    # each design point's own replicate scatter and the raw prediction, so it needs no sigma at all —
+    # the pooled replicate scatter and the raw prediction, so it needs no fitted sigma at all —
     # and gating it behind the sigma-DERIVED residual_weighted column switched it off in exactly the
     # cases it exists for: engine._weighted_residual leaves the whole column NaN both when the noise
     # formula will not evaluate and when the evaluated sd is 0.0, a COLLAPSED sigma.
@@ -811,7 +811,7 @@ def _rollup_structure(verdicts, replicate_lof: dict[str, Any] | None = None) -> 
     # underpowered observables.
     #
     # ...and it is cleared for an observable the replicate arm COVERED: there the deviation was
-    # tested against the point's own scatter on df_i >= 2 over >= 3 points, with lack-of-fit
+    # tested against its noise sigma's pooled replicate scatter over >= 3 points, with lack-of-fit
     # directions to spare (`_merge_lof_verdicts` credits coverage only from a POWERED band), so an
     # unflagged verdict is a genuine pass rather than "we could not tell". Only for the covered
     # ones — clearing it globally as soon as ANY arm ran asserted sign-randomness for observables
@@ -947,11 +947,11 @@ def _lof_reported(lof: dict[str, Any]) -> dict[str, Any]:
 def _replicate_lof(session, sims=None) -> dict[str, Any]:
     """The replicate lack-of-fit verdict for the current fit, across every noise parameter.
 
-    Per noise parameter (never across — each has its own coordinate, and pooling two families would
-    also inflate the multiple-testing correction), the replicated design points come from
-    :func:`reconcile.replicate_pure_error_points` with the simulation records supplying the
-    prediction, and :func:`residual_tests.replicate_lack_of_fit` supplies the verdict. The arms are
-    then merged into one.
+    Per noise parameter (never across — each has its own coordinate and its own replicate scatter,
+    and pooling two families would also inflate the multiple-testing correction), the replicated
+    design points come from :func:`reconcile.replicate_pure_error_points` with the simulation
+    records supplying the prediction, and :func:`residual_tests.replicate_lack_of_fit` supplies the
+    verdict. The arms are then merged into one.
 
     Best-effort throughout, in this module's style: anything unresolvable fails OPEN to a
     NO-EVIDENCE verdict (never a pass, and never an exception) — this feeds the plateau-adequacy
@@ -1214,16 +1214,16 @@ def _untested_status(untested: list[dict[str, Any]], worst_status) -> str | None
 
 
 def _replicate_lof_advice(verdict: dict[str, Any]) -> str:
-    """The agent-facing line. Names the worst points and their deviation in units of the point's OWN
-    replicate scatter, and says what to do about it. Deliberately says nothing about the reference
-    model — no delta_bic, no parameter-count target — since the agent must not be able to read the
-    answer off a diagnostic."""
+    """The agent-facing line. Names the worst points and their deviation in standard errors of the
+    replicate scatter pooled over their noise sigma, and says what to do about it. Deliberately says
+    nothing about the reference model — no delta_bic, no parameter-count target — since the agent
+    must not be able to read the answer off a diagnostic."""
     named = "; ".join(f"{p['label']} {p['z']:+.1f}" for p in verdict["points"][:3])
     return (
         f"Replicate lack-of-fit: {len(verdict['flagged'])} of {verdict['n_points']} replicated "
-        f"design points sit further from the model than their OWN replicate scatter allows, in "
-        f"multiples of that point's standard error ({named}; Holm p {verdict['min_p_holm']:.3g} at "
-        f"alpha {verdict['alpha']}). "
+        f"design points sit further from the model than replicate scatter allows, in standard "
+        f"errors of the scatter pooled over each point's noise sigma ({named}; Holm p "
+        f"{verdict['min_p_holm']:.3g} at alpha {verdict['alpha']}). "
         "That is missing STRUCTURE at those specific points, not noise: no parameter value within "
         "this model's form can reach them, and a larger sigma cannot help because the yardstick is "
         "the replicates themselves. "
@@ -1454,7 +1454,7 @@ def _replicate_lof_line(lof: dict[str, Any]) -> str:
             lof.get("advice")
             or (
                 f"replicate lack-of-fit: {lof.get('n_flagged', 0)} of {lof['n_points']} replicated "
-                f"design points sit further from the model than their OWN replicate scatter allows "
+                f"design points sit further from the model than replicate scatter allows "
                 f"(worst {lof['max_abs_z']} SE, Holm p {lof['min_p_holm']}) — missing STRUCTURE at "
                 "those points, which no sigma can absorb."
             )
@@ -1462,7 +1462,7 @@ def _replicate_lof_line(lof: dict[str, Any]) -> str:
     if lof.get("available"):
         head = (
             f"replicate lack-of-fit: none over {lof['n_points']} replicated design points "
-            f"(worst {lof['max_abs_z']} SE of its own replicate scatter)"
+            f"(worst {lof['max_abs_z']} SE of replicate scatter)"
         )
         # How much that pass is worth depends on how many directions were left to fail in. A fit
         # with almost as many structural parameters as replicated points can place its predictions

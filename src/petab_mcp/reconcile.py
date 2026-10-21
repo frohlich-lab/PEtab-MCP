@@ -1226,34 +1226,20 @@ def sigma_replicate_noise_estimate(problem, pid: str, fitted_values=None) -> flo
     difference-based ratio.
 
     ADVISORY: the RATIO against this floor gates nothing (the #140 arm that did is gone — see
-    ``fitting._entry_inflated``); #144's per-design-point test keeps each point's
-    ``n_i - 1`` df instead. Still worth REPORTING: the only model-free yardstick here that is not
-    biased upward.
+    ``fitting._entry_inflated``). The same pooled scatter, with its df, is the replicate
+    lack-of-fit yardstick (:func:`residual_tests.replicate_lack_of_fit`). Still worth REPORTING:
+    the only model-free yardstick here that is not biased upward.
 
     Returns ``None`` when the data cannot supply it: no time column to identify replicates, or fewer
     than ``NOISE_SIGMA_REPLICATE_MIN_DOF`` pooled replicate residuals (most published problems are
     single-measurement time series). The caller then falls back to the difference-based estimate.
     """
-    points = replicate_pure_error_points(problem, pid, fitted_values)
-    if points is None:
+    from . import residual_tests as rt
+
+    pooled = rt.pooled_replicate_scatter(replicate_pure_error_points(problem, pid, fitted_values))
+    if pooled is None or pooled[1] < NOISE_SIGMA_REPLICATE_MIN_DOF:
         return None
-    # POOLING the per-point sums of squares is what makes this one number: sum ssq_i / sum df_i. The
-    # per-point (n_i, s_i, df_i) it pools are exposed by that function for the lack-of-fit arm, which
-    # asks the other question — is the PREDICTION further from a point than that point's own scatter
-    # allows (see residual_tests.replicate_lack_of_fit).
-    #
-    # This is the SAME estimator as before the split, but not bit-for-bit the same number: fsum adds
-    # exactly where the old inline loop accumulated sequentially, which moved 4 of the 6 floors
-    # measured by 1-2 ULP (one went 0.2579081404095943 -> 0.25790814040959437). Measured across 16
-    # problems, and kept: the new arithmetic is the more accurate one, and a 1e-16 shift cannot move
-    # a ratio the inflation gate reads at 1.5 (the fit that motivated this arm sat 0.0024 away).
-    # Anything comparing recorded floors across that boundary should compare with a tolerance.
-    ssq = math.fsum(p["ssq"] for p in points)
-    dof = sum(p["df"] for p in points)
-    if dof < NOISE_SIGMA_REPLICATE_MIN_DOF:
-        return None
-    estimate = math.sqrt(ssq / dof)
-    return estimate if estimate > 0 else None
+    return pooled[0] if pooled[0] > 0 else None
 
 
 def replicate_pure_error_points(problem, pid: str, fitted_values=None, simulations=None):
@@ -1262,10 +1248,10 @@ def replicate_pure_error_points(problem, pid: str, fitted_values=None, simulatio
     the SAME coordinate.
 
     One entry per design point measured MORE THAN ONCE (rows sharing observable, experiment and
-    time), each ``{observable_id, experiment_id, time, n, df, ybar, s, ssq, prediction}`` on the
+    time), each ``{observable_id, experiment_id, time, n, ybar, s, prediction}`` on the
     noise-additive, amplitude-normalised coordinate (see :func:`sigma_noise_coordinate` /
-    :func:`_gain_normalised_gains`) — so ``(ybar - prediction) / (s / sqrt(n))`` is a deviation in
-    units of that point's OWN replicate scatter and never touches the fitted sigma at all. Points
+    :func:`_gain_normalised_gains`) — so their pooled ``s``
+    (:func:`residual_tests.pooled_replicate_scatter`) never touches the fitted sigma at all. Points
     measured once carry no scatter and are omitted; a problem without repeats yields ``[]`` (only 3
     of 16 problems measured have any).
 
@@ -1346,8 +1332,6 @@ def replicate_pure_error_points(problem, pid: str, fitted_values=None, simulatio
                 "experiment_id": _first_value(series, EXPERIMENT_ID),
                 "time": _first_value(series, "time"),
                 "n": pure["n"],
-                "df": pure["df"],
-                "ssq": pure["ssq"],
                 "ybar": pure["mean"],
                 "s": pure["sd"],
                 "prediction": _constant_prediction(series, gain, coordinate),
