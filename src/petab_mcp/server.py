@@ -32,8 +32,11 @@ from __future__ import annotations
 
 import contextlib
 import json
+import threading
+import time
 from typing import Annotated, Any, Callable, Literal
 
+import anyio
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.middleware import Middleware
@@ -55,7 +58,13 @@ from . import skills as skills_mod
 from . import validation_data as validation_data_mod
 from .constants import DEFAULT_AUTO_FIT_STARTS
 from .engine import AmiciEngine
-from .errors import PetabMcpError, UnknownEntityError, ValidationError, disk_full_error
+from .errors import (
+    FIT_STILL_RUNNING,
+    PetabMcpError,
+    UnknownEntityError,
+    ValidationError,
+    disk_full_error,
+)
 from .formatting import df_to_records, summarize_measurements
 from .session import PetabSession
 
@@ -451,6 +460,54 @@ class _InfrastructureErrors(Middleware):
                 raise
             self.logger.error("%s: %s", context.message.name, infra)
             raise ToolError(str(infra)) from exc
+
+
+class _Cancellation(Middleware):
+    """Stops the fit of a tool call its client cancels (MCP ``notifications/cancelled``).
+
+    The MCP SDK cancels the call's task, but a sync tool runs in a worker thread no cancel reaches:
+    FastMCP awaits that thread shielded, so the tool would run to its end. A task beside it hears
+    the cancel instead and sets the call's event in :data:`petab_mcp.multistart.CANCELLED`, which
+    the fit's wait polls. Imported here, not at the top: :mod:`~petab_mcp.multistart` imports
+    pyPESTO, and with it AMICI, which must not be imported before the session configures its
+    logging (``logging_setup.configure_amici``).
+    """
+
+    async def on_call_tool(self, context, call_next):
+        from .multistart import CANCELLED
+
+        cancelled = threading.Event()
+
+        async def hear() -> None:
+            try:
+                await anyio.sleep_forever()
+            except anyio.get_cancelled_exc_class():
+                if not returned:
+                    cancelled.set()
+                raise
+
+        returned = False
+        token = CANCELLED.set(cancelled)
+        try:
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(hear)
+                try:
+                    return await call_next(context)
+                finally:
+                    returned = True
+                    tasks.cancel_scope.cancel()
+        finally:
+            CANCELLED.reset(token)
+
+
+def _fit_still_running(began: float) -> str:
+    """The refusal of a ``make_changes`` that arrives while another change's fit, begun at
+    ``began`` (``time.monotonic()``), still holds the session."""
+    return (
+        "make_changes: a fit is still running on this session (its change began "
+        f"{time.monotonic() - began:.0f}s ago), so NOTHING was applied. Its result becomes the "
+        "next version when it ends: read it then (list_versions) rather than resending this change."
+    )
 
 
 class _Ctx:
@@ -1370,9 +1427,15 @@ def _register_model_tools(
                 + ". NOTHING was applied.",
                 {"n_mechanisms": len(mechanisms or []), "n_starts": len(starts or [])},
             )
+        # A change waits for no other: a client whose call timed out resends it, and queued behind
+        # the fit it is already waiting for, it times out again (PEtab-MCP#108).
+        if (began := session.change_began) is not None:
+            return ctx.reject_operation(
+                "make_changes", _fit_still_running(began), {}, cause=FIT_STILL_RUNNING
+            )
         # One critical section for the change and its fit, so nothing can fit in between
         # (`session.lock` is an RLock, so the nested acquisitions inside each call are fine).
-        with session.lock:
+        with session.change():
             # Inside the lock: the build reads HEAD's statements record and the run's written
             # mechanisms, and the commit below replaces both, so a concurrent call must not
             # build in between.
@@ -2364,7 +2427,8 @@ def create_server(
         middleware=[
             _InfrastructureErrors(
                 ctx.session.logger, ctx.engine.build_root, ctx.session.provenance.root
-            )
+            ),
+            _Cancellation(),
         ],
     )
 
