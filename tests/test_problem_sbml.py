@@ -160,6 +160,62 @@ def test_a_rate_may_read_time():
     assert [r.getNumModifiers() for r in sbml.getListOfReactions()] == [0]
 
 
+def test_a_rate_may_switch_with_piecewise():
+    """A rate that steps on an estimated day (Oliveira's transmission) or holds a term only while
+    a dose is applied (Alkan's SN-38) had no written form, and was held as an input instead, a
+    modelling claim the problem does not make (PEtabAgentBench#6). Both reach the SBML as one
+    piecewise, through BioNetGen's `if`."""
+    library = dict(M.REGISTRY)
+    library[("PopulationTransition", "stepped")] = M.written(
+        {
+            "statement_type": "PopulationTransition",
+            "policy": "stepped",
+            "based_on": "mass_action",
+            "rate": "piecewise(k_0, time < t_1, k_1)",
+            "parameters": ["k_0", "k_1", "t_1"],
+        },
+        library,
+    )
+    library[("PopulationTransition", "while_dosed")] = M.written(
+        {
+            "statement_type": "PopulationTransition",
+            "policy": "while_dosed",
+            "based_on": "mass_action",
+            "rate": "k*piecewise(1, drug > 0, 0)",
+            "parameters": ["k"],
+            "modifiers": ["drug"],
+        },
+        library,
+    )
+    rows = [
+        (_TRANSITION, "stepped", "r1"),
+        (PopulationTransition(Agent("A"), Agent("B")), "while_dosed", "r2", None, {"drug": Agent("D")}),
+    ]
+    antimony, _ = PS.to_antimony(rows, {}, library)
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    for rate in ("r1_rate", "r2_rate"):
+        math = sbml.getAssignmentRuleByVariable(rate).getMath()
+        assert "piecewise" in libsbml.formulaToL3String(math), rate
+
+
+def test_a_piecewise_condition_must_compare():
+    """A condition that is no comparison, or a comparison outside `piecewise`, is refused with how
+    to write one, rather than read as sympy's truth value of a symbol."""
+    for rate in ("k*piecewise(1, drug, 0)", "k*(time < t_1)"):
+        with pytest.raises(M.MechanismError, match="compare only in a piecewise condition"):
+            M.written(
+                {
+                    "statement_type": "PopulationTransition",
+                    "policy": "bad",
+                    "based_on": "mass_action",
+                    "rate": rate,
+                    "parameters": ["k", "t_1"] if "t_1" in rate else ["k"],
+                    "modifiers": ["drug"] if "drug" in rate else [],
+                },
+                dict(M.REGISTRY),
+            )
+
+
 def test_reaction_ids_never_collide_with_the_models_own():
     """PySB numbers reactions `r0`, `r1`... whatever else bears the name: an agent's shared rate
     `r8` made the model unreadable SBML. Here the readout `r0` takes it."""
