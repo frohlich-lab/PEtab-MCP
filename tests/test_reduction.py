@@ -38,7 +38,9 @@ def _p(name: str, *sites: str, **kwargs) -> Agent:
     return Agent(
         name,
         mods=[
-            ModCondition("phosphorylation", s.lstrip("-")[0], s.lstrip("-")[1:], not s.startswith("-"))
+            ModCondition(
+                "phosphorylation", s.lstrip("-")[0], s.lstrip("-")[1:], not s.startswith("-")
+            )
             for s in sites
         ],
         **kwargs,
@@ -64,7 +66,9 @@ def _simulate(antimony: str, values: dict[str, float], times) -> dict[str, np.nd
     """Every species (by its PySB name) and assignment rule of ``antimony`` over ``times``, the
     constants at ``values``: the SBML's own ODEs, integrated with scipy, so no AMICI build."""
     model = SbmlModel.from_antimony(antimony).sbml_model
-    symbols = {e.getId(): sympy.Symbol(e.getId()) for e in model.getListOfAllElements() if e.isSetId()}
+    symbols = {
+        e.getId(): sympy.Symbol(e.getId()) for e in model.getListOfAllElements() if e.isSetId()
+    }
     symbols["time"] = t = sympy.Symbol("time")
 
     def read(math) -> sympy.Expr:
@@ -167,8 +171,11 @@ def test_a_kinase_context_becomes_a_rate_factor(monkeypatch):
     [
         pytest.param(
             [
-                (Activation(Agent("E", activity=ActivityCondition("kinase", True)), Agent("S")),
-                 INDRA_DEFAULT, "act"),
+                (
+                    Activation(Agent("E", activity=ActivityCondition("kinase", True)), Agent("S")),
+                    INDRA_DEFAULT,
+                    "act",
+                ),
                 (Phosphorylation(Agent("K"), Agent("E"), "Y", "1"), INDRA_DEFAULT, "y1"),
                 (Activation(_p("E", "Y1"), Agent("E"), "kinase"), INDRA_DEFAULT, "self"),
             ],
@@ -206,7 +213,11 @@ def test_a_kinase_context_becomes_a_rate_factor(monkeypatch):
         ),
         pytest.param(
             [
-                (Phosphorylation(_p("E", "Y1"), Agent("S"), "S", "2"), "indra_michaelis_menten", "mm"),
+                (
+                    Phosphorylation(_p("E", "Y1"), Agent("S"), "S", "2"),
+                    "indra_michaelis_menten",
+                    "mm",
+                ),
                 (Phosphorylation(Agent("K"), Agent("E"), "Y", "1"), INDRA_DEFAULT, "y1"),
                 (Phosphorylation(Agent("K"), Agent("E"), "S", "3"), INDRA_DEFAULT, "s3"),
                 (Dephosphorylation(Agent("P"), Agent("S"), "S", "2"), INDRA_DEFAULT, "ds2"),
@@ -218,8 +229,16 @@ def test_a_kinase_context_becomes_a_rate_factor(monkeypatch):
             [
                 (Complex([Agent("E"), Agent("F")]), INDRA_DEFAULT, "ef"),
                 (Complex([Agent("S"), Agent("T")]), INDRA_DEFAULT, "st"),
-                (Phosphorylation(Agent("E", bound_conditions=[BoundCondition(Agent("F"))]),
-                                 Agent("S"), "S", "2"), INDRA_DEFAULT, "s2"),
+                (
+                    Phosphorylation(
+                        Agent("E", bound_conditions=[BoundCondition(Agent("F"))]),
+                        Agent("S"),
+                        "S",
+                        "2",
+                    ),
+                    INDRA_DEFAULT,
+                    "s2",
+                ),
                 (Dephosphorylation(Agent("P"), Agent("S"), "S", "2"), INDRA_DEFAULT, "ds2"),
             ],
             {"pS": _p("S", "S2")},
@@ -230,8 +249,16 @@ def test_a_kinase_context_becomes_a_rate_factor(monkeypatch):
             # once, which an amount counted in molecules would double.
             [
                 (Complex([Agent("E"), Agent("E")]), INDRA_DEFAULT, "ee"),
-                (Phosphorylation(Agent("E", bound_conditions=[BoundCondition(Agent("E"))]),
-                                 Agent("E"), "Y", "1"), INDRA_DEFAULT, "y1"),
+                (
+                    Phosphorylation(
+                        Agent("E", bound_conditions=[BoundCondition(Agent("E"))]),
+                        Agent("E"),
+                        "Y",
+                        "1",
+                    ),
+                    INDRA_DEFAULT,
+                    "y1",
+                ),
                 (Phosphorylation(Agent("E"), Agent("S"), "S", "2"), INDRA_DEFAULT, "s2"),
                 (Dephosphorylation(Agent("P"), Agent("E"), "Y", "1"), INDRA_DEFAULT, "dy1"),
             ],
@@ -274,8 +301,13 @@ def test_a_written_rate_keeps_its_modifiers_and_its_catalyst(monkeypatch):
         library,
     )
     rows = [
-        (Phosphorylation(_p("E", "Y1"), Agent("S"), "S", "2"), "inhibited", "s2", None,
-         {"inh": Agent("I")}),
+        (
+            Phosphorylation(_p("E", "Y1"), Agent("S"), "S", "2"),
+            "inhibited",
+            "s2",
+            None,
+            {"inh": Agent("I")},
+        ),
         (Phosphorylation(Agent("K"), Agent("E"), "Y", "1"), INDRA_DEFAULT, "y1"),
         (Phosphorylation(Agent("K"), Agent("E"), "S", "3"), INDRA_DEFAULT, "s3"),
         (Phosphorylation(Agent("K"), Agent("I"), "S", "4"), INDRA_DEFAULT, "i4"),
