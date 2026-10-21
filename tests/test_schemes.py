@@ -15,12 +15,15 @@ from __future__ import annotations
 import pytest
 from indra.statements import (
     Activation,
+    ActivityCondition,
     Agent,
     BoundCondition,
     Complex,
     Conversion,
     Dephosphorylation,
     IncreaseAmount,
+    Inhibition,
+    ModCondition,
     Phosphorylation,
 )
 
@@ -187,6 +190,14 @@ def test_a_rate_may_read_amounts_and_time():
         ("enz() + sub() + enz() @ kf", "reactants >> products"),
         ("enz() + sub() >> enz() + sub() @ kf | kf", "is not allowed"),
         ("enz() + sub() >> enz() + sub() @ kf*exp()", "takes one argument"),
+        # A bond across `+` reached the agent as PySB's own "Dangling bond(s) [1] in TGFbR(b=1)".
+        ("enz(b=None) + sub(e=None) >> enz(b=1) + sub(e=1) @ kf",
+         r"bond 1 joins `enz\(b=1\)` and `sub\(e=1\)`, which `\+` writes as two complexes: join "
+         r"them with `%`, `enz\(b=1\) % sub\(e=1\)`"),
+        ("enz(b=None) + sub(e=None) >> enz(b=None) % sub(e=1) @ kf",
+         r"bond 1 is on 1 site\(s\) of its complex \(sub\(e=1\)\), not two"),
+        ("enz() + sub() >> enz() + sub() @ kf*amount(sub(e=1))",
+         r"rate 'kf\*amount\(sub\(e=1\)\)': bond 1 is on 1 site"),
     ],
 )
 def test_a_scheme_that_does_not_read_is_refused(scheme, match):
@@ -249,6 +260,43 @@ def test_a_state_on_a_binding_site_is_refused_naming_it_one():
     entities = {"AKT1": Agent("AKT1", bound_conditions=[BoundCondition(Agent("PDK1"))])}
     with pytest.raises(MechanismError, match=r"site 'pdk1' does not take; .*pdk1 \(binding\)"):
         _assemble_written("enz() + sub(pdk1='x') >> enz() + sub(pdk1='x') @ kf", entities)
+
+
+@pytest.mark.parametrize(
+    "agent, scheme, match",
+    [
+        # `act` on a phosphorylation's enzyme is its kinase activity; the agents had written it
+        # for the one activity EGFR has, and the message named both sites but not what to write.
+        (Agent("EGFR", activity=ActivityCondition("activity", True)),
+         "enz(act='active') + sub(mod='off') >> enz(act='active') + sub(mod='on') @ kf",
+         r"site 'kinase', which EGFR does not have; EGFR's sites are activity \['inactive', "
+         r"'active'\]. Write `enz\(activity='active'\)` instead"),
+        (Agent("EGFR", mods=[ModCondition("phosphorylation", "Y", "1068")]),
+         "enz(mod='on') + sub(mod='off') >> enz(mod='on') + sub(mod='on') @ kf",
+         r"site 'S473', which EGFR does not have; .* Write `enz\(Y1068='p'\)` instead"),
+    ],
+)
+def test_a_site_the_molecule_lacks_names_the_one_to_write(agent, scheme, match):
+    with pytest.raises(MechanismError, match=match):
+        _assemble_written(scheme, {"EGFR": agent})
+
+
+def test_mod_outside_a_modification_names_the_agents_own_site():
+    """`subj(mod='on')` on an Inhibition, meaning the phosphorylated subject, was refused as "`mod`
+    is a modification statement's own site", with nothing on how to say it."""
+    irs1 = Agent("IRS1", mods=[ModCondition("phosphorylation", "Y", "612")])
+    library = dict(M.REGISTRY)
+    library[("Inhibition", "w")] = M.written(
+        {"statement_type": "Inhibition", "policy": "w", "parameters": ["kf"],
+         "scheme": "subj(mod='on') + obj(act='active') >> subj(mod='on') + obj(act='inactive') @ kf"},
+        library,
+    )
+    with pytest.raises(
+        MechanismError,
+        match=r"Inhibition is none. Write the site itself, as `subj\(Y612='p'\)`, or the "
+        r"modification on the row's agent, .*; IRS1's sites are Y612 \['u', 'p'\]",
+    ):
+        M.assemble([(Inhibition(irs1, Agent("PI3K")), "w", "r1")], {}, library)
 
 
 def _scheme(rate, parameters=("kf",), problem_ids=None):

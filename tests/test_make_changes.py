@@ -1890,6 +1890,25 @@ def test_a_readout_that_reads_no_amount_is_refused(tmp_path):
     assert out["applied"] is False and "reads no amount" in out["error"]
 
 
+def test_a_readout_that_is_a_number_is_not_refused(tmp_path):
+    """A number is no parameter the fit tunes: Lucarelli's reference reads the SMAD3 in a SMAD2
+    pull-down as all doubly phosphorylated, `readout_S2IP_ppS3 := 1`, and its statements were
+    refused for it (PEtabAgentBench#23). `time` alone still reads no amount."""
+    mcp = _readout_server(tmp_path)
+    out = _call(
+        mcp,
+        "make_changes",
+        {"justification": "a constant readout", "statements": [_CONV], "readouts": {"readout_B": "1"}},
+    )
+    assert out["applied"] is True, out.get("error")
+    out = _call(
+        mcp,
+        "make_changes",
+        {"justification": "a clock", "statements": [_CONV], "readouts": {"readout_B": "time"}},
+    )
+    assert out["applied"] is False and "reads no amount" in out["error"]
+
+
 def test_a_readout_no_observable_reads_is_refused(tmp_path):
     mcp = _readout_server(tmp_path)
     out = _call(

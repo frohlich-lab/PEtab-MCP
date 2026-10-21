@@ -18,7 +18,9 @@ type::
   name, the binding site for that partner; or any other name, taken as written. Written with a
   state, a site is one its molecule has, in a state it takes (``mod`` and ``act`` always are), or
   one the scheme adds with every state it takes, the one it starts in first, under a name that is
-  no slip of one the molecule has.
+  no slip of one the molecule has. A molecule without the site ``act`` names is refused, naming
+  the activity it has, rather than ``act`` read as that one: a row giving the molecule a second
+  activity would then re-point the scheme with no edit to it.
 - A site's value is a state, a bond number, ``None`` (free), ``ANY`` (bound to something) or
   ``WILD``; a ``(state, bond)`` pair is both. ``>>`` is one-way, ``|`` both ways, ``%`` joins a
   complex, ``None`` is nothing.
@@ -118,7 +120,9 @@ def _line(raw: str) -> Line:
             f"a `{'|' if reversible else '>>'}` rule takes {2 if reversible else 1} rate(s) after "
             f"`@`, got {rate_list}"
         )
-    return Line(_side(tree.left), _side(tree.right), reversible, tuple(rate_list), delete)
+    lhs, rhs = _side(tree.left), _side(tree.right)
+    _refuse_open_bonds(lhs), _refuse_open_bonds(rhs)
+    return Line(lhs, rhs, reversible, tuple(rate_list), delete)
 
 
 def _split_top(text: str, sep: str) -> list[str]:
@@ -168,6 +172,36 @@ def _value(node):
     if isinstance(node, ast.Tuple) and len(node.elts) == 2:
         return (_value(node.elts[0]), _value(node.elts[1]))
     raise MechanismError(f"site value {ast.unparse(node)!r}: a state, a bond number, None, ANY, WILD")
+
+
+def _bond(value) -> int | None:
+    value = value[1] if isinstance(value, tuple) else value
+    return value if isinstance(value, int) else None
+
+
+def _refuse_open_bonds(side: tuple[tuple[Molecule, ...], ...]) -> None:
+    """Refuse a bond number that is not on exactly two sites of its complex, which PySB refuses
+    only once a row builds the rule, in an exception of its own."""
+    ends = [
+        [(f"{m.name}({s}={v!r})", _bond(v)) for m in complex_ for s, v in m.sites
+         if _bond(v) is not None]
+        for complex_ in side
+    ]
+    for i, here in enumerate(ends):
+        for bond in {b for _, b in here}:
+            on = [text for text, b in here if b == bond]
+            if len(on) == 2:
+                continue
+            apart = [text for j, other in enumerate(ends) if j != i for text, b in other if b == bond]
+            if len(on) == 1 and len(apart) == 1:
+                raise MechanismError(
+                    f"bond {bond} joins `{on[0]}` and `{apart[0]}`, which `+` writes as two "
+                    f"complexes: join them with `%`, `{on[0]} % {apart[0]}`"
+                )
+            raise MechanismError(
+                f"bond {bond} is on {len(on)} site(s) of its complex ({', '.join(on)}), not two: "
+                "a bond number is on the two sites it joins, in one complex, as `A(b=1) % B(a=1)`"
+            )
 
 
 # ------------------------------------------------------------------------------- roles
@@ -291,6 +325,10 @@ def _rate(text: str) -> _Rate:
             if fn == "amount":
                 if len(node.args) != 1 or node.keywords:
                     raise MechanismError(f"rate {text!r}: amount() takes one pattern")
+                try:
+                    _refuse_open_bonds((_complex(node.args[0]),))
+                except MechanismError as exc:
+                    raise MechanismError(f"rate {text!r}: {exc}") from None
                 amounts.append(ast.unparse(node.args[0]))
                 return  # its names are molecules and sites
             if fn not in _FUNCTIONS:
@@ -389,11 +427,20 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
             agent = agents.get(mol.name) or Agent(mol.name)
             sites, site_states = given.get(_n(agent.name), ((), {}))
             for site, value in mol.sites:
-                name = _site_name(stmt, mol.name, site, agents)
                 value = value[0] if isinstance(value, tuple) else value
+                written = f"mechanism {policy!r}: `{mol.name}({site}={value!r})`"
+                if site == MOD and not isinstance(stmt, Modification):
+                    own = _own_sites(mol.name, site, value, sites, site_states)
+                    itself = f"the site itself, as {' or '.join(own)}, or " if own else ""
+                    raise MechanismError(
+                        f"{written}: `{MOD}` is a modification statement's own site, and "
+                        f"{type(stmt).__name__} is none. Write {itself}the modification on the "
+                        f"row's agent, which every `{mol.name}` in the scheme carries; "
+                        f"{_sites_text(agent.name, sites, site_states)}"
+                    )
+                name = _site_name(stmt, mol.name, site, agents)
                 if isinstance(value, str):
                     state = _site_value(stmt, site, value)
-                    written = f"mechanism {policy!r}: `{mol.name}({site}={value!r})`"
                     if name in sites:
                         if state not in site_states.get(name, ()):
                             raise MechanismError(
@@ -401,9 +448,11 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
                                 f"take; {_sites_text(agent.name, sites, site_states)}"
                             )
                     elif site in (MOD, ACT):
+                        own = _own_sites(mol.name, site, value, sites, site_states)
                         raise MechanismError(
                             f"{written} is site {name!r}, which {agent.name} does not have; "
                             f"{_sites_text(agent.name, sites, site_states)}"
+                            + (f". Write {' or '.join(own)} instead" if own else "")
                         )
                     elif state not in added.setdefault((agent.name, name), []):
                         added[(agent.name, name)].append(state)
@@ -449,6 +498,19 @@ def _sites_text(molecule: str, sites, site_states) -> str:
         f"{s} {site_states[s]}" if site_states.get(s) else f"{s} (binding)" for s in sites
     )
     return f"{molecule}'s sites are {listed}" if listed else f"{molecule} has no sites"
+
+
+def _own_sites(role: str, site: str, value, sites, site_states) -> list[str]:
+    """``role``'s own sites of the kind ``site`` names (an activity for ``act``, a modification for
+    ``mod``), each written in the state ``value`` asks for: what to write where the molecule lacks
+    the site ``site`` names."""
+    if site == ACT:
+        return [f"`{role}({s}={value!r})`" for s in sites if site_states.get(s) == list(_ACTIVITY)]
+    on = _OFF_ON.index(value) if value in _OFF_ON else 1
+    return [
+        f"`{role}({s}={site_states[s][on]!r})`" for s in sites
+        if site_states.get(s) in states.values()
+    ]
 
 
 def _near(a: str, b: str) -> bool:

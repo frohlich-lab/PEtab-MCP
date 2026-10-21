@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import libsbml
 import pytest
-from indra.statements import Agent, BoundCondition, Phosphorylation, Translocation
+from indra.statements import Agent, BoundCondition, ModCondition, Phosphorylation, Translocation
 from petab.v1.models.sbml_model import SbmlModel
 
 from petab_mcp import mechanisms as M
@@ -359,6 +359,19 @@ def test_a_declared_expression_names_parameters_the_table_fills():
     assert {"pool", "fold"} <= ids and "naive_init" not in ids
 
 
+def test_two_starts_of_one_species_are_refused_naming_both():
+    """An unmodified site written out is its default state, so `ERK{-pT185}` starts what `ERK`
+    starts; PySB's "Duplicate species" named neither the other start nor the species."""
+    u_erk = Agent("ERK", mods=[ModCondition("phosphorylation", "T", "185", False)])
+    with pytest.raises(
+        ModelUpdateError, match=r"starts 'S0' and 'S1' both start ERK\(T185='u'\)"
+    ):
+        PS.to_antimony(
+            [(_PHOSPHO, INDRA_DEFAULT, "r1")], {},
+            starts=[("S0", Agent("ERK"), 1), ("S1", u_erk, 2)],
+        )
+
+
 def test_an_input_declares_no_start():
     """An input is held to its protocol; a start for it would be overwritten at t=0."""
     egf = Agent("EGF")
@@ -449,6 +462,35 @@ def test_complexes_that_grow_without_bound_are_refused():
         PS.to_antimony(rows, {"STAT5A": Agent("STAT5A"), "STAT5B": Agent("STAT5B")})
 
 
+def test_trimers_assembled_from_free_partners_are_not_refused():
+    """Lucarelli's three SMAD trimers, each assembled in one step from partners free of all
+    others: their products close a cycle of bonds, but no rule binds a molecule already bound, so
+    each complex is one trimer. Refused as chains that grow without bound (PEtabAgentBench#23).
+    Linked by a dimer that binds whatever else its partners hold, they do chain, and still are."""
+    from indra.statements import Complex
+
+    def free(name, *of):
+        return Agent(name, bound_conditions=[BoundCondition(Agent(o), False) for o in of])
+
+    s2, s3, s4 = (
+        lambda: free("SMAD2", "SMAD3", "SMAD4"),
+        lambda: free("SMAD3", "SMAD2", "SMAD3", "SMAD4"),
+        lambda: free("SMAD4", "SMAD2", "SMAD3", "SMAD4"),
+    )
+    rows = [
+        (Complex([s2(), s3(), s3()]), "assembly", "k233"),
+        (Complex([s2(), s3(), s4()]), "assembly", "k234"),
+        (Complex([s2(), s4(), s4()]), "assembly", "k244"),
+    ]
+    antimony, _ = PS.to_antimony(rows, {"SMAD2": Agent("SMAD2")})
+    assert SbmlModel.from_antimony(antimony).sbml_model.getNumReactions() == 3
+
+    trimer = Complex([free("A", "B", "C"), free("B", "A", "C"), free("C", "A", "B")])
+    linked = [(trimer, "assembly", "abc"), (Complex([Agent("B"), Agent("C")]), INDRA_DEFAULT, "bc")]
+    with pytest.raises(ModelUpdateError, match=r"rows \['abc', 'bc'\] bind .* into chains"):
+        PS.to_antimony(linked, {"A": Agent("A")})
+
+
 def test_the_dimers_the_refusal_advises_are_not_refused():
     """The same three dimers, each partner free of its others where it binds: dimers only."""
     from indra.statements import Complex
@@ -483,6 +525,23 @@ def test_a_readout_formula_reads_other_entries_and_parameters():
     rule = sbml.getAssignmentRuleByVariable("readout_ratio")
     assert libsbml.formulaToL3String(rule.getMath()) == "scale * pERK / tERK"
     assert sbml.getParameter("scale") is not None
+
+
+def test_a_readout_formula_takes_pythons_power():
+    """`(a*b*c)**3` was refused as no formula, libSBML's parser having only `^`; read as `^`, it
+    binds and associates as Python's `**`."""
+    p_erk = Agent._from_json(
+        {"name": "ERK", "mods": [{"mod_type": "phosphorylation", "residue": "T", "position": "185"}]}
+    )
+    antimony, _ = PS.to_antimony(
+        [(_PHOSPHO, INDRA_DEFAULT, "r1")],
+        {},
+        formulas={"readout_x": "-(pERK/tERK)**3 + tERK**2**-1"},
+        amounts={"pERK": p_erk, "tERK": Agent("ERK")},
+    )
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    rule = sbml.getAssignmentRuleByVariable("readout_x")
+    assert libsbml.formulaToL3String(rule.getMath()) == "-(pERK / tERK)^3 + tERK^(2^-1)"
 
 
 def test_a_readout_formula_reads_an_agent_only_through_amounts():
