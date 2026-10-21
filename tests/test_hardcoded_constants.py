@@ -233,3 +233,28 @@ def test_a_fit_carries_the_constants_through_every_score(fit_session):
     assert sess.provenance.get_meta(res["version"])["bic"] == pytest.approx(expected)
     summary = fitting.fit_summary(sess, sess.engine)
     assert summary["k"] == k and summary["bic"] == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("model, constants", [(None, []), (_FROZEN_TOY, ["0.0987"])])
+def test_tic_charges_the_constants_through_k_eff(fit_session, model, constants):
+    """Issue #10: TIC charges `k_eff`, and the fit counted it against `n_estimated` alone, so under
+    `--criterion tic` the frozen `0.0987` cost nothing. A literal has no coordinate in the FIM, so it
+    reaches `k_eff` through the `k − m` addend: one unit each on top of the same trace, two
+    deviance units of TIC, and nothing at all on the shipped toy, which has no literal."""
+    from petab_mcp import operations as O
+    from petab_mcp.identifiability import effective_parameter_count
+
+    sess = fit_session
+    if model is not None:
+        O.set_model(sess, model, justification="freeze k2 at its fitted value")
+    res = sess.fit(n_starts=2)
+    assert res["committed"] is True
+    sim = sess.simulation
+    assert sim["hardcoded_constants"] == constants
+    rec = sess.fit_record
+    uncharged = effective_parameter_count(rec.pypesto_problem, rec.x_free, k=sim["n_estimated"])
+    assert uncharged is not None
+    assert sim["k_eff"] == pytest.approx(uncharged + len(constants))
+    expected = 2 * sim["neg_log_likelihood"] + 2 * sim["k_eff"]
+    assert res["tic"] == pytest.approx(expected)
+    assert sess.provenance.get_meta(res["version"])["tic"] == pytest.approx(expected)
