@@ -1024,7 +1024,10 @@ def _make_changes_statements_doc(
         "(agents whose amounts it reads, or `amount(<pattern>)` in place; every readout reads "
         "at least one)"
         + (", entity-map ids" if bound else "")
-        + " and parameter ids.\n\n"
+        + " and parameter ids. A one-step rule's enzyme, which the step leaves as it was, is "
+        "simulated as a factor of its rate (`<rule>_catalysed` = k·amount of the enzyme): the "
+        "same solution over fewer reactions, which the result's `network` counts before and "
+        "after.\n\n"
         "`statement_edits` CHANGES the current rows instead of giving them all again: "
         "`add_row`/`replace_row` a row (one line; `replace_row` takes the row with that prefix, "
         "so a new policy or binding is the row rewritten), `remove_row` by prefix, and "
@@ -1546,6 +1549,8 @@ def _register_model_tools(
                 session.model_statements = statement_record
                 if written is not None:
                     session.mechanisms = written
+            if statement_record is not None:
+                out["network"] = statement_record["network"]
             if edit_summary:
                 out["statement_edits_applied"] = edit_summary
             if op_summary:

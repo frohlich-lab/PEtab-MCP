@@ -606,6 +606,25 @@ def test_species_influence_graph_is_directional():
     assert edges.get("D", set()) == set()  # a pure sink drives nothing downstream
 
 
+def test_a_rate_factor_rule_carries_its_species_influence():
+    """A statements model's catalyst enters its reaction only through the rate factor the reaction
+    reads (``reduction``); read off the rate law alone, a kinase that is never itself modified
+    influenced nothing, and the edit warned it was a disconnected hidden species."""
+    edges = R.species_influence_graph(
+        _sm(
+            """model rate_factor
+  compartment c = 1;
+  species K in c; species S in c; species pS in c;
+  K = 1; S = 1; pS = 0; k = 1;
+  k_catalysed := k * K;
+  r: S => pS; k_catalysed * S;
+end
+"""
+        )
+    )
+    assert edges["K"] == {"S", "pS"}
+
+
 def test_input_species_flags_const_boundary_and_rule_driven():
     inputs = R.input_species(_sm(INPUT_ANTIMONY))
     assert "I" in inputs  # const species -> a held input
