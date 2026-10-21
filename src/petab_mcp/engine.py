@@ -3,9 +3,9 @@
 Every likelihood is evaluated through the pyPESTO objective :func:`fitting.estimation_problem`
 builds on AMICI's PEtab v2 import (``amici.importers.petab.PetabImporter`` +
 ``amici.sim.sundials.petab.PetabSimulator``). Compiled models are cached by
-:meth:`session.PetabSession.module_hash`: a model edit changes it and triggers a recompile, while
-parameter edits are cheap — the current ``nominalValue``s are passed on each parameter's
-estimation scale.
+:meth:`session.PetabSession.module_hash`, in a folder per AMICI (:func:`amici_identity`): a model
+edit changes it and triggers a recompile, while parameter edits are cheap — the current
+``nominalValue``s are passed on each parameter's estimation scale.
 
 AMICI is a hard dependency (the server fits + simulates on every commit), so the imports
 here are unconditional; ``swig`` is still located on ``PATH`` for the C++ build.
@@ -13,12 +13,15 @@ here are unconditional; ``swig`` is still located on ``PATH`` for the C++ build.
 
 from __future__ import annotations
 
+import importlib.metadata
+import json
 import logging
 import os
 import shutil
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +47,26 @@ def _ensure_swig_on_path() -> None:
         pass
 
 
+@cache
+def amici_identity() -> str:
+    """The installed AMICI: its version (what ``amici.__version__`` reports), followed by the first
+    12 characters of the git commit it was installed from when the install records one.
+
+    A module another AMICI generated still imports, and may run without complaint, so
+    :class:`AmiciEngine` keeps the modules of each identity in a folder of their own. The commit is
+    needed because the pins here move between AMICI commits that share a version string
+    (PEtab-MCP#81, #82). It is read from the install's PEP 610 record (``direct_url.json``), which
+    pip and uv write for a ``git+`` requirement such as this package's pin. Deliberately not
+    ``amici.__commit__``: that reads ``FETCH_HEAD`` from a ``.git`` next to a source tree, and is
+    ``"unknown"`` for an installed copy. An install that records no commit (a release wheel, an
+    editable checkout) is identified by its version alone, so rebuilding AMICI from a checkout that
+    moved needs a fresh build root.
+    """
+    dist = importlib.metadata.distribution("amici")
+    vcs = json.loads(dist.read_text("direct_url.json") or "{}").get("vcs_info", {})
+    return f"{dist.version}-{vcs['commit_id'][:12]}" if "commit_id" in vcs else dist.version
+
+
 def _build_finished(output_folder: str | Path, model_name: str) -> bool:
     """Did a build of the module ``model_name`` under ``output_folder`` finish: is its compiled
     extension there, with the mark its holder writes once the module imported (``.built``)? An
@@ -65,13 +88,13 @@ def build_lock(output_folder: str | Path, model_name: str) -> Iterator[None]:
     """Hold ``<output_folder>.lock`` while pyPESTO may build the module ``model_name`` there, or
     raise :class:`~petab_mcp.errors.ModelBuildBusyError` naming whoever holds it.
 
-    The build root is shared by every session and process and keyed by module hash, so two of them
-    reaching one structure name one folder — and AMICI deletes the files it finds there before it
-    generates code, so a second build corrupts the first. The second fails fast instead, without
-    waiting (:mod:`petab_mcp.filelock`). A module whose build FINISHED takes no lock: importing it
-    is safe beside anything, and that is what every re-fit of a structure does. Finished means its
-    holder marked it (``.built``) once its own import succeeded — the extension alone is no signal,
-    since the install step writes it before the build is done.
+    The build root is shared by every session and process and keyed by AMICI and module hash, so
+    two of them reaching one structure name one folder — and AMICI deletes the files it finds there
+    before it generates code, so a second build corrupts the first. The second fails fast instead,
+    without waiting (:mod:`petab_mcp.filelock`). A module whose build FINISHED takes no lock:
+    importing it is safe beside anything, and that is what every re-fit of a structure does.
+    Finished means its holder marked it (``.built``) once its own import succeeded — the extension
+    alone is no signal, since the install step writes it before the build is done.
 
     AMICI compiles only into a missing folder and imports whatever folder is there, so a build that
     stopped would fail every later build of its structure. Under the lock, an unfinished folder is
@@ -114,7 +137,9 @@ class AmiciEngine:
         self.build_root = (
             Path(build_root) if build_root else Path(tempfile.gettempdir()) / "petab_mcp_amici"
         )
-        self.build_root.mkdir(parents=True, exist_ok=True)
+        # Where this AMICI's modules are built and imported; see amici_identity.
+        self.module_root = self.build_root / f"amici-{amici_identity()}"
+        self.module_root.mkdir(parents=True, exist_ok=True)
         # The server's DaskEngine, which every fit and held-out refit of the session runs its starts
         # on; None runs them in local processes (see fitting._fit_engine).
         self.fit_engine = fit_engine
@@ -148,7 +173,7 @@ class AmiciEngine:
         """Where pyPESTO's module for ``module_hash`` lives — the naming convention itself, so
         :meth:`pypesto_importer_kwargs` (which asks for a build there) and :meth:`module_built`
         (which asks whether one happened) cannot disagree about the location."""
-        return self.build_root / f"pypesto_{module_hash}", f"petab_mcp_pp_{module_hash}"
+        return self.module_root / f"pypesto_{module_hash}", f"petab_mcp_pp_{module_hash}"
 
     def module_built(self, module_hash: str) -> bool:
         """Is the compiled AMICI module for this structure ALREADY there — i.e. can a problem be

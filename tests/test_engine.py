@@ -356,7 +356,7 @@ def test_module_built_asks_for_a_finished_build_not_the_folder(session, tmp_path
     h = session.sbml_hash()
     assert engine.module_built(h) is False  # cold build root
 
-    folder = engine.build_root / f"pypesto_{h}"
+    folder = engine.module_root / f"pypesto_{h}"
     package = folder / f"petab_mcp_pp_{h}"
     package.mkdir(parents=True)
     (folder / "wrapfunctions.cpp").write_text("// codegen ran")
@@ -374,6 +374,45 @@ def test_module_built_asks_for_a_finished_build_not_the_folder(session, tmp_path
     assert engine.module_built(other) is False
     engine._pypesto_hashes.add(other)
     assert engine.module_built(other) is True
+
+
+class _AmiciDist:
+    """An installed AMICI as ``importlib.metadata`` reports it, with its PEP 610 record."""
+
+    version = "1.1.0"
+
+    def __init__(self, direct_url):
+        self.direct_url = direct_url
+
+    def read_text(self, name):
+        return self.direct_url if name == "direct_url.json" else None
+
+
+@pytest.mark.parametrize(
+    ("direct_url", "identity"),
+    [
+        (
+            '{"url": "https://github.com/AMICI-dev/AMICI.git", "subdirectory": "python/sdist", '
+            '"vcs_info": {"vcs": "git", "commit_id": "a4dbb08da4d3c782ba3a2bab47c92586467ea5bc"}}',
+            "1.1.0-a4dbb08da4d3",
+        ),
+        ('{"url": "file:///src/AMICI/python/sdist", "dir_info": {"editable": true}}', "1.1.0"),
+        (None, "1.1.0"),
+    ],
+)
+def test_amici_identity_names_the_commit_a_git_pin_installed(monkeypatch, direct_url, identity):
+    """PEtab-MCP#103: the pins move between AMICI commits that share a version string, so a git
+    install is told apart by the commit its install recorded; anything else by its version."""
+    import importlib.metadata
+
+    from petab_mcp import engine as E
+
+    monkeypatch.setattr(importlib.metadata, "distribution", lambda name: _AmiciDist(direct_url))
+    E.amici_identity.cache_clear()
+    try:
+        assert E.amici_identity() == identity
+    finally:
+        E.amici_identity.cache_clear()
 
 
 # -- a failed integration is a MISSING score, never an "ill-posed model" verdict -------------

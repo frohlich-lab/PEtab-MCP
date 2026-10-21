@@ -1,8 +1,8 @@
 """A module build fails fast instead of racing another: :func:`petab_mcp.engine.build_lock`.
 
-Every session and process shares one build root keyed by module hash, so these tests hold a module's
-lock file the way another build would and drive the real build paths — the fit's, the hierarchical
-one's and the held-out scorer's — with pyPESTO's builder replaced, so nothing compiles.
+Every session and process shares one build root keyed by AMICI and module hash, so these tests hold a
+module's lock file the way another build would and drive the real build paths — the fit's, the
+hierarchical one's and the held-out scorer's — with pyPESTO's builder replaced, so nothing compiles.
 """
 
 from __future__ import annotations
@@ -62,7 +62,7 @@ def _install(folder, name):
 def _build_lands(engine, h):
     """What a finished build of module ``h`` leaves behind: its compiled extension, and the mark its
     builder writes once that imported."""
-    folder = engine.build_root / f"pypesto_{h}"
+    folder = engine.module_root / f"pypesto_{h}"
     _install(folder, f"petab_mcp_pp_{h}")
     (folder / ".built").touch()
 
@@ -72,7 +72,7 @@ def test_a_build_another_holds_fails_fast_and_touches_nothing(tmp_path, builds):
     ModelBuildBusyError carrying the holder's line — before pyPESTO's builder, which would clear the
     folder the holder is writing, or any rmtree runs. Once the holder lets go, the build goes ahead."""
     session, engine = _open(tmp_path)
-    folder = engine.build_root / f"pypesto_{session.module_hash()}"
+    folder = engine.module_root / f"pypesto_{session.module_hash()}"
     held = filelock.try_lock(f"{folder}.lock")
     with pytest.raises(ModelBuildBusyError) as busy:
         fitting.estimation_problem(session, engine)
@@ -90,11 +90,11 @@ def test_a_built_module_takes_no_lock(tmp_path, builds):
     session, engine = _open(tmp_path)
     h = session.module_hash()
     _build_lands(engine, h)
-    held = filelock.try_lock(engine.build_root / f"pypesto_{h}.lock")
+    held = filelock.try_lock(engine.module_root / f"pypesto_{h}.lock")
     with pytest.raises(_Built):
         fitting.estimation_problem(session, engine)
     os.close(held)
-    assert builds == [("build", str(engine.build_root / f"pypesto_{h}"))]
+    assert builds == [("build", str(engine.module_root / f"pypesto_{h}"))]
 
 
 def test_an_extension_without_the_finished_mark_still_meets_the_lock(tmp_path):
@@ -123,7 +123,7 @@ def test_a_failed_build_is_removed_so_the_next_one_compiles(tmp_path, monkeypatc
     starts without it and nothing reads the structure as built."""
     session, engine = _open(tmp_path)
     h = session.module_hash()
-    folder = engine.build_root / f"pypesto_{h}"
+    folder = engine.module_root / f"pypesto_{h}"
     found = []
 
     def _quota_hit(self, *a, **k):
@@ -198,7 +198,7 @@ def test_a_busy_build_is_not_counted_as_a_fit_of_its_structure(tmp_path, builds)
 
     session, engine = _open(tmp_path)
     session.engine = engine
-    held = filelock.try_lock(engine.build_root / f"pypesto_{session.module_hash()}.lock")
+    held = filelock.try_lock(engine.module_root / f"pypesto_{session.module_hash()}.lock")
     for _ in range(MAX_IDENTICAL_REAUTHORS + 1):
         with pytest.raises(ModelBuildBusyError):
             session.fit()
@@ -244,3 +244,40 @@ def test_a_held_out_build_locks_its_own_sibling_folder(tmp_path, builds):
         V.refit_problem(session.problem, n_starts=1, **build)
     os.close(held)
     assert len(builds) == 1
+
+
+def _engine_as(session, tmp_path, monkeypatch, identity):
+    """An engine over ``_open``'s build root, under a faked AMICI identity."""
+    monkeypatch.setattr("petab_mcp.engine.amici_identity", lambda: identity)
+    return AmiciEngine(session, build_root=str(tmp_path / "build"))
+
+
+def test_a_module_another_amici_built_is_never_imported(tmp_path, builds, monkeypatch):
+    """PEtab-MCP#103: a build root outlives an AMICI pin bump, and pins move between commits that
+    share a version string. The module the old AMICI finished, on disk or in its process, reads as
+    unbuilt to the new one, whose fit builds its own beside it and leaves the old one alone."""
+    session, _ = _open(tmp_path)
+    h = session.module_hash()
+    old = _engine_as(session, tmp_path, monkeypatch, "1.1.0-dc6ce2ae320d")
+    new = _engine_as(session, tmp_path, monkeypatch, "1.1.0-a4dbb08da4d3")
+    assert old._module_target(h)[0] != new._module_target(h)[0]
+    _build_lands(old, h)
+    old._pypesto_hashes.add(h)
+    assert old.module_built(h) and not new.module_built(h)
+    with pytest.raises(_Built):
+        fitting.estimation_problem(session, new)
+    assert builds == [("build", str(new._module_target(h)[0]))]
+
+
+def test_the_folder_a_build_marks_is_the_one_module_built_reads(tmp_path, monkeypatch):
+    """The fit builds where :meth:`pypesto_importer_kwargs` points and :func:`build_lock` marks it,
+    and :meth:`module_built` (a read's guard against paying a build) must look there, under the same
+    AMICI, and nowhere another AMICI looks."""
+    session, _ = _open(tmp_path)
+    h = session.module_hash()
+    engine = _engine_as(session, tmp_path, monkeypatch, "1.1.0-a4dbb08da4d3")
+    kwargs = engine.pypesto_importer_kwargs(h)
+    with build_lock(kwargs["output_folder"], kwargs["model_name"]):
+        _install(Path(kwargs["output_folder"]), kwargs["model_name"])
+    assert engine.module_built(h)
+    assert not _engine_as(session, tmp_path, monkeypatch, "1.1.0-dc6ce2ae320d").module_built(h)
