@@ -419,10 +419,11 @@ def effective_parameter_count(problem, x_free, *, k: int | None = None) -> float
     that gives the diagnosis its FIM, so the matrix inverted here and the one the agent reads
     standard errors and merge prices off cannot disagree.
 
-    ``k`` is the estimated-parameter count the score charges for; a hierarchical fit's inner-solved
-    parameters (sigmas, scalings, offsets) have no coordinate in ``x_free`` and no row in ``H``,
-    and are charged one unit each (the ``k − m`` of them) rather than dropped, because a profiled
-    parameter the data pin is exactly where the count and the trace agree. Best-effort in the
+    ``k`` is the count the score charges for, :func:`fitting.complexity_k`; a hierarchical fit's
+    inner-solved parameters (sigmas, scalings, offsets) and the model's hardcoded constants have no
+    coordinate in ``x_free`` and no row in ``H``, and are charged one unit each (the ``k − m`` of
+    them) rather than dropped, because a profiled parameter the data pin is exactly where the count
+    and the trace agree, and a literal left out would be free under TIC alone. Best-effort in the
     strong sense: ANY failure is ``None``, and ``None`` is "no count", never a fallback to ``k`` —
     a ``k`` standing in for a missing measurement would read as "the data determine every
     parameter", the one conclusion this statistic exists to be able to contradict. Evaluates the

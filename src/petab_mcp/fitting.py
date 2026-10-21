@@ -1486,7 +1486,10 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
         # version (build_sim_payload_for_version) and no agent-facing result — docs/RATIONALE.md.
         # Computed here rather than beside the diagnosis in the session because compute_improvement
         # ranks THIS payload, and under TIC it needs the count to rank at all. None on a
-        # simulate-only pass: no optimum of its own.
+        # simulate-only pass: no optimum of its own. `k` is complexity_k, so the literals reach
+        # the count as the inner-solved parameters do, one unit each: TIC prices them too.
+        n_estimated = int(session.problem.n_estimated)
+        constants = _literals.hardcoded_constants(session.model.sbml_model)
         k_eff = None
         if fit is not None:
             from .identifiability import effective_parameter_count
@@ -1494,7 +1497,7 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
             k_eff = effective_parameter_count(
                 fit["record"].pypesto_problem,
                 fit["record"].x_free,
-                k=int(session.problem.n_estimated),
+                k=complexity_k({"n_estimated": n_estimated, "hardcoded_constants": constants}),
             )
         # A pass with no fit scores the table's sigmas and scalings as they stand.
         sim = engine.residuals(solve_inner=do_fit)
@@ -1521,8 +1524,8 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
             # The estimated-parameter count, so the goodness-of-fit metrics (bic/reduced_chi2)
             # are available even on a simulate-only pass where `fitted_parameters` is None —
             # plus the literals `complexity_k` prices on top of it (see :mod:`literals`).
-            "n_estimated": int(session.problem.n_estimated),
-            "hardcoded_constants": _literals.hardcoded_constants(session.model.sbml_model),
+            "n_estimated": n_estimated,
+            "hardcoded_constants": constants,
             # ...and the count the data actually see, which is what TIC charges for. Otherwise
             # not agent-facing: fit_result_block and goodness_of_fit deliberately do not copy it.
             "k_eff": k_eff,

@@ -32,7 +32,7 @@ The penalties differ only in what a parameter costs:
   below it where the data do not determine a parameter — TIC does not charge for a redundant
   parameter, it does not see one, which makes it the wrong criterion for the parsimony failure
   mode and the right one for asking whether the residual structure supports the parameter count.
-  ``None`` whenever the fit produced no ``k_eff`` (a resumed session, a version stored before it was
+  A hardcoded constant still costs one unit, the same as under the others. ``None`` whenever the fit produced no ``k_eff`` (a resumed session, a version stored before it was
   recorded).
 
 These names and nothing between them: there is no scalar weight on the penalty term, and
