@@ -85,7 +85,9 @@ SERVER_INSTRUCTIONS = (
 # are never told to call `list_skills`/`get_skill` when those tools are absent.
 _SKILLS_INSTRUCTION = (
     " New to this server? Call `list_skills` and read "
-    "`get_skill('petab-model-building')` for the full tool-usage workflow."
+    "`get_skill('petab-model-building')` for the full tool-usage workflow; "
+    "`get_skill('reading-fits')` says what a fit result's scores, flags and diagnosis mean, and "
+    "how to summarise the fit's tables in SQL."
 )
 
 
@@ -332,6 +334,17 @@ def _unwrap_listish(v: Any) -> Any:
             if isinstance(parsed, list):
                 return parsed
     return v
+
+
+#: ``make_changes``' list arguments, typed once for its three registrations (see
+#: ``_register_model_tools``), each tolerating the wrapped encodings ``_unwrap_listish`` undoes.
+_ModelOps = Annotated[list[ModelOp] | None, BeforeValidator(_unwrap_listish)]
+_ParameterChanges = Annotated[list[ParameterChange] | None, BeforeValidator(_unwrap_listish)]
+_References = Annotated[list[str] | None, BeforeValidator(_unwrap_listish)]
+_StatementRows = Annotated[list[StatementRow | str] | None, BeforeValidator(_unwrap_listish)]
+_MechanismDefs = Annotated[list[MechanismDef] | None, BeforeValidator(_unwrap_listish)]
+_StartRows = Annotated[list[StartRow] | None, BeforeValidator(_unwrap_listish)]
+_StatementEdits = Annotated[list[StatementEdit] | None, BeforeValidator(_unwrap_listish)]
 
 
 def _parameter_entries(parameters: Any) -> list[dict[str, Any]] | None:
@@ -737,14 +750,10 @@ _RESTORE_ANNOTATIONS = {**_MAKE_CHANGES_ANNOTATIONS, "openWorldHint": False}
 def _register_read_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
     @mcp.tool(annotations=_READ_ONLY)
     def describe_problem() -> dict[str, Any]:
-        """Summarize the problem: model size, tables, and free parameters.
-
-        `readouts_to_define` lists the `readout_*` measurement mappings your model does not
-        define yet.
-
-        Also reports `fit_n_starts_default` — the pyPESTO multistart count a fit uses when
-        `n_starts` is omitted. Read it before passing `n_starts` anywhere: that argument REPLACES
-        this default rather than adding to it, so a value below it fits less hard.
+        """Orientation, and cheap: whether a model has been authored (`model_authored`), table and
+        entity counts, the current version, `readouts_to_define` (the `readout_*` measurement
+        mappings your model does not define yet), and `fit_n_starts_default`, the multistart count
+        a fit uses when `n_starts` is omitted.
 
         `inputs` are what the experiments impose within a period, each read in your model by its
         id: define it by its `rule` exactly as given, and never estimate the condition targets the
@@ -756,16 +765,11 @@ def _register_read_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
 
     @mcp.tool(annotations=_READ_ONLY)
     def list_observables() -> list[dict[str, Any]]:
-        """List the (fixed) observables and their formulas/noise models.
-
-        A formula symbol named `readout_<name>` is a MEASUREMENT MAPPING you must define in your
-        model with an assignment rule (`readout_x := <expression of your species>`, or the
-        `set_assignment` edit op): the problem tells you WHAT was measured — `observableName`
-        carries the biological description — and your model says what that quantity IS in terms
-        of its own states. Several observables may reference the SAME readout (one per
-        dataset/gel, differing only in shipped scalings); one assignment rule covers them all.
-        Scaling/offset parameters and the noise model are fixed parts of the assay; only the
-        readout mapping is yours to define.
+        """The (fixed) observables: id, formula, noise model, and `observableName`, WHAT each one
+        measures. A formula naming a `readout_*` symbol is a measurement mapping YOUR model must
+        define (`readout_x := <expression of your states>`); several observables may share one
+        readout (one per dataset/gel, differing only in shipped scalings), and one rule covers them
+        all. Scalings, offsets and the noise model are fixed parts of the assay.
         """
         ctx = route()
         session = ctx.session
@@ -773,19 +777,20 @@ def _register_read_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
 
     @mcp.tool(annotations=_READ_ONLY)
     def list_conditions() -> list[dict[str, Any]]:
-        """List the (fixed) conditions: one row per change a condition makes — it sets
-        `targetId` (a model parameter, species or compartment) to `targetValue`. When a condition
-        applies is the experiments' business (`list_experiments`)."""
+        """The (fixed) conditions, one row per change a condition makes: it sets `targetId` (a model
+        parameter, species or compartment) to `targetValue` — a dose, an input level, a switch.
+        Your model must define every target BY NAME, and a condition-set initial is an experimental
+        input to reproduce, not a value to fit. WHEN a condition applies is `list_experiments`."""
         ctx = route()
         session = ctx.session
         return df_to_records(session.problem.condition_df)
 
     @mcp.tool(annotations=_READ_ONLY)
     def list_experiments() -> list[dict[str, Any]]:
-        """List the (fixed) experiments: one row per period — from `time` on, experiment
-        `experimentId` applies condition `conditionId` (none: the model as is). `time` -inf is a
+        """The (fixed) experiments, one row per period: from `time` on, experiment `experimentId`
+        applies condition `conditionId` (none: the model as is). `time` -inf is a
         pre-equilibration to steady state before the experiment starts. Every measurement names
-        the experiment it was taken in; one with no experiment simulates the model as is."""
+        the experiment it was taken in; an empty `experimentId` simulates the model as is."""
         ctx = route()
         session = ctx.session
         return df_to_records(session.problem.experiment_df)
@@ -798,20 +803,14 @@ def _register_read_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         max_rows: int = 200,
         offset: int = 0,
     ) -> "list[dict[str, Any]] | dict[str, Any]":
-        """Return the (fixed) measurement data, optionally filtered by experiment/observable.
+        """The (fixed) measurements. By default a COMPACT SUMMARY per observable × experiment
+        (point count, time span, value min/max/mean, a few preview points): prefer it, and prefer
+        the `experiment_id`/`observable_id` filters or `query_data` for a targeted slice.
 
-        By default (``summarize=True``) returns a COMPACT SUMMARY — per observable×experiment:
-        point count, time span, value min/max/mean, and a few preview points — so the data's
-        shape is visible without every raw point. Prefer it, and prefer ``query_data`` for a
-        targeted slice; the raw dump is rarely the right tool.
-
-        ``summarize=False`` returns raw per-point records, PAGED:
-        ``{rows, row_count, total_rows, offset, truncated, next_offset?}``. Paging is not
-        cosmetic — an unpaged dump of a large problem measured 73-81k tokens in ONE tool result
-        that then re-enters the context on every later turn, and one such call can overflow the
-        context window outright. Page with ``offset`` (feed back ``next_offset``) or, better,
-        narrow with ``experiment_id``/``observable_id`` first.
-        Row order is the measurement table's own and is stable across pages.
+        `summarize=False` returns raw points, PAGED: `{rows, row_count, total_rows, offset,
+        truncated, next_offset?}`; feed `next_offset` back as `offset` (row order is stable across
+        pages). An unpaged dump of a large problem is 70-80k tokens that re-enter your context on
+        every later turn.
         """
         ctx = route()
         session = ctx.session
@@ -861,109 +860,87 @@ def _register_read_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         )
 
 
-# ``make_changes``'s tool description, composed from the summary, the model ROUTES and the
-# CONTRACT the call keeps whichever route is taken.
+# ``make_changes``'s tool description, composed by ``_make_changes_doc`` from the summary, the
+# model ROUTES the registration offers, and the CONTRACT the call keeps whichever route is taken.
 _MAKE_CHANGES_SUMMARY = (
-    "Change the model and/or its parameter search space, then FIT and snapshot a version."
+    "THE editor of the model and its parameter search space, and it always FITS: one call is one "
+    "coherent change, scored once and snapshotted as ONE version. There is no fit-free edit and no "
+    "separate fit."
 )
 
-_MAKE_CHANGES_ROUTES_BODY = """\
-The single editor, with TWO routes to a model change — give exactly ONE.
+_MAKE_CHANGES_TEXT_ROUTES = """\
+`antimony` authors the WHOLE model: the first one (`describe_problem` → `model_authored: \
+false`), or a later start-over. Name EVERY reaction: an unnamed one cannot be changed afterwards.
 
-`model_edits` is the route to use for every change after the first: a BATCH of
-structured operations addressed by ID, not by text. Each entry is one of
-`{op: 'add_reaction', antimony: 'transfer: X1 => X2; k*u*X1'}` (the id comes
-from the statement; repeating it as `id` is fine, a DIFFERENT `id` is refused),
-`{op: 'remove_reaction', id}`, `{op: 'set_rate_law', id, antimony: '<rate law>'}`,
-`{op: 'set_initial', id, antimony: '5'}`, `{op: 'set_assignment', id, antimony:
-'X2 + X3'}` (an `id := expr` rule holding at ALL times — how a `readout_*` symbol
-referenced by an observable formula is defined in terms of YOUR model),
-`{op: 'remove_assignment', id}`, `{op: 'rename', old, new}`. Send the WHOLE coherent
-change in ONE call — a new mechanism is usually a new reaction plus a rate-law change on
-the reaction it feeds — because one call is one fit and one version; splitting it across
-calls pays a multistart per operation. Operations apply IN ORDER and the batch is
-ALL-OR-NOTHING: a failure names the failing `model_edits[i]`, lists the valid reaction
-ids when the id is wrong, and applies nothing. They edit the model SOURCE (what you last
-authored or edited), so there is no text to quote and nothing to keep in sync with the
-reconcile's re-render.
+`model_edits` is the route for every change after the first: a BATCH of operations, each written \
+as Antimony and addressed by ID — `{op: 'add_reaction', antimony: 'transfer: X1 => X2; \
+k*u*X1'}`, `{op: 'remove_reaction', id}`, `{op: 'set_rate_law', id, antimony: 'k*u*X1'}`, \
+`{op: 'set_initial', id, antimony: '5'}`, `{op: 'set_assignment', id, antimony: 'X2 + X3'}` (an \
+`id := expr` rule holding at ALL times — how a `readout_*` symbol an observable formula \
+references is defined in terms of YOUR states), `{op: 'remove_assignment', id}`, `{op: 'rename', \
+old, new}`. Nothing to quote; they apply in order, all or nothing, and a bad id is rejected with \
+the valid ids listed. Put the WHOLE change in ONE call: one call is one fit. What they cannot \
+express (an event, a compartment) is a re-author with `antimony`.
 
-`antimony` authors the WHOLE model: it builds the first model when the problem ships
-model-less (`describe_problem` → `model_authored: false`) and replaces an existing one
-wholesale — the right route for the first model and for genuinely starting over.
-Anything the operations cannot express — an assignment rule, an event, a compartment —
-is a wholesale re-author too.
+With `base_version=N` the operations apply to version N's STORED model, and its search space and \
+best fit are restored as the fit's start: fork and change in one call, never retyping an earlier \
+model. It modifies an edit; sent alone it is rejected."""
 
-`base_version` (with `model_edits`) applies the operations to a PRIOR version's
-STORED source instead of the current one — the rollback-and-edit path: never retype an earlier
-model from memory (retyped restores measured 6-37,000 BIC worse than the stored
-original). Nothing to quote: the operations name reaction ids.
-Default: the current committed model. It ALSO restores that version's SEARCH SPACE — its
-bounds and scales — AND the point the fit starts from, that version's own best fit, so the
-fork resumes from where version N got to rather than from the branch you are abandoning.
-You never retype any of it. A parameter your operations newly introduce keeps the default
-the reconcile mints, and any parameter you name in this call's `parameters` keeps YOUR
-bound and scale rather than the restored one.
-
-Give `parameters` to set estimation BOUNDS and/or SCALE: a list of
-`{parameter_id, lower_bound?, upper_bound?, scale?}` entries, applied atomically AFTER the
-reconcile — so an entry may target a parameter this very call introduces. Combine it with
-either model route for a structural change and the bounds it needs. At least one of
-"""
-
-_MAKE_CHANGES_ROUTES = (
-    _MAKE_CHANGES_ROUTES_BODY + "`antimony` / `model_edits` / `parameters` is required."
-)
-
-#: The same text where the `statements` route is offered too.
-_MAKE_CHANGES_STATEMENTS_ROUTES = (
-    _MAKE_CHANGES_ROUTES_BODY
-    + "`antimony` / `model_edits` / `statements` / `statement_edits` / `parameters` is required."
+_MAKE_CHANGES_PARAMETERS_ROUTE = (
+    "`parameters` sets estimation BOUNDS and/or SCALE, never a value. Its entries apply after the "
+    "reconcile, so one may target a parameter the same call introduces: give it beside a model "
+    "route when a structural change needs bounds."
 )
 
 _MAKE_CHANGES_CONTRACT = """\
-There is no fit-free edit and no separate fit: one call is one coherent change, scored
-once, snapshotted as ONE version. `n_starts` REPLACES the server's configured multistart
-count (`describe_problem` → `fit_n_starts_default`) rather than adding to it, so omit it
-unless you want MORE than that; below it fits LESS hard, and the minimum is 1.
+`n_starts` REPLACES the configured multistart count (`describe_problem` → \
+`fit_n_starts_default`) rather than adding to it: omit it unless you want MORE; below it fits \
+LESS hard.
 
-ALL-OR-NOTHING. The change applies to a copy, reconciles SBML↔PEtab, and lints; a rejected
-`parameters` entry reverts the re-author too, and if the change applies but the FIT then
-produces no version the change is REVERTED as well. So the working model is always a
-scored one, and there is never an edit waiting to be fit.
-The result IS the fit, flat — the same field names `get_fit_summary` uses — plus two
-flags. Read `applied`: `false` → the change is NOT in the model, either rejected before it
-applied or reverted because the fit failed or an earlier fitted version already IS this model;
-`error`/`issues` says which. Then `committed`:
-`true` → a version exists, read `bic`; `false` with `no_change` → this model already IS a
-version, which stays the working model as stored, so change something else.
-`bic` charges `k` = `n_estimated` + `hardcoded_constants`: a numeric literal in your
-model's math is a parameter too, bar a few structural ones, so freezing a fitted value
-costs what estimating it costs — estimate it. What you pay for is listed.
-Nothing else rides on the result: the reconcile/validation reports and the parameter diff
-are not a score, so read the reconciled model on demand through `get_model_structure`
-(which also carries the per-species initial-condition account) or `get_parameters`.
+ALL-OR-NOTHING: a change that is rejected, or whose fit produces no version, is REVERTED, so the \
+working model is always a scored one. The result IS the fit, flat, in `get_fit_summary`'s \
+fields. Read `applied` first: `false` → nothing moved — \
+rejected, reverted because the fit failed, or already an earlier fitted version; `error`/`issues` \
+says which, act on THAT. Then `committed`: `true` → a version exists, read its score; `false` \
+with `no_change` → this model already IS the current version, so change something else. \
+`messages` is everything the call had to say, in pipeline order, each tagged `level` and \
+`source`.
 
-`messages` is the call's whole diagnostic stack, in pipeline order: every warning and the
-error that stopped it, each tagged `level` ("error"/"warning") and `source` —
-"make_changes" (an argument refused before anything ran), "edit", "validation" (the
-PEtab/SBML lint), or "fit". Read it to see EVERYTHING the call had to say; `error` alone is
-the one rejection that stopped it, and `issues` that rejection's structured detail.
+The score's `k` is `n_estimated` + `hardcoded_constants`: a numeric literal in the model's math \
+is charged as a parameter too, bar a few structural ones, so freezing a fitted value costs what \
+estimating it costs.
 
-REJECTS an EMPTY model (no species and no reactions — nothing to simulate or fit; this
-includes an Antimony whose species all prune away as orphans), a re-author that drops a
-shipped-FIXED constant, or brings one back estimated, or leaves a condition-table target
-unused, or wires an observation-model symbol (a scaling factor / noise sigma) into a rate
-law. Warns if a previously-estimated parameter is dropped. Widening an ESTIMATED noise
-sigma past its data-driven cap is advisory (a warning, not a rejection); a THIRD widening
-of a still-pinned parameter is rejected — such a parameter is unidentifiable, not
-under-explored (see `get_fit_diagnosis`).
+REJECTS an empty model, dropping (or re-estimating) a shipped-FIXED constant, leaving a \
+condition-table target unused, an observation-model symbol (a scaling factor or noise sigma) in a \
+rate law, and a THIRD widening of a still-pinned parameter: that is unidentifiability, see \
+`get_fit_diagnosis(sections='parameters')`, not a bounds problem. Widening an estimated noise \
+sigma past its data-driven cap only WARNS; it hides a missing mechanism behind inflated noise."""
 
-Every fitted version is kept and the best one stands regardless, so re-authoring an
-earlier structure to go back only recompiles and refits to the same result."""
 
-_MAKE_CHANGES_DOC = "\n\n".join(
-    (_MAKE_CHANGES_SUMMARY, _MAKE_CHANGES_ROUTES, _MAKE_CHANGES_CONTRACT)
-)
+def _make_changes_doc(text_routes: bool = True, statements_doc: str | None = None) -> str:
+    """``make_changes``'s description for the model routes one registration offers: the text
+    routes (``antimony``, ``model_edits``), the ``statements`` route's paragraphs, or both."""
+    routes = (["`antimony`", "`model_edits`"] if text_routes else []) + (
+        ["`statements`", "`statement_edits`"] if statements_doc else []
+    )
+    required = (
+        f"Give ONE model route per call; at least one of {' / '.join(routes)} / `parameters` "
+        "is required."
+    )
+    return "\n\n".join(
+        p
+        for p in (
+            _MAKE_CHANGES_SUMMARY,
+            _MAKE_CHANGES_TEXT_ROUTES if text_routes else None,
+            statements_doc,
+            _MAKE_CHANGES_PARAMETERS_ROUTE + " " + required,
+            _MAKE_CHANGES_CONTRACT,
+        )
+        if p
+    )
+
+
+_MAKE_CHANGES_DOC = _make_changes_doc()
 
 
 # What the statements route holds, said once for every version of its paragraph.
@@ -974,14 +951,17 @@ _HELD_INPUTS = (
 )
 
 
-def _make_changes_statements_doc(bound: bool = True, held: dict[str, Any] | None = None) -> str:
+def _make_changes_statements_doc(
+    bound: bool = True, held: dict[str, Any] | None = None, alone: bool = False
+) -> str:
     """The `statements` route's paragraph, naming the entries the library holds right now.
 
     ``bound`` says whether the problem's entity map binds species or readouts. One that does not
     binds nothing of the model: the readouts, and how the condition targets enter, are the
     caller's own, and saying the map binds them would send it looking for names that do not exist.
     ``held`` (agent name to :class:`protocols.Input`) are the inputs held all the same, named with
-    their protocol (e.g. a stimulus ramped within a period)."""
+    their protocol (e.g. a stimulus ramped within a period). ``alone`` is a registration that
+    offers no text route beside it."""
     from . import mechanisms
 
     from indra.statements import AddModification, RemoveModification, Statement, get_all_descendants
@@ -1008,8 +988,8 @@ def _make_changes_statements_doc(bound: bool = True, held: dict[str, Any] | None
 
     entries = "; ".join(f"`{policy}` for {named(c)}" for policy, c in sorted(by_policy.items()))
     return (
-        "`statements` is a third model route, and still exactly ONE route per call: it authors "
-        "the WHOLE model from mechanism assertions rather than text, each an INDRA statement "
+        ("`statements` authors" if alone else "`statements` is a third model route: it authors")
+        + " the WHOLE model from mechanism assertions rather than text, each an INDRA statement "
         "with the `policy` (mechanism) that turns it into reactions and a `prefix` naming its "
         "parameters. A row may be one line instead of JSON: `r1: A{pS10} phosphorylates "
         "B at T20 | two_step kf=k_on`, agents as NAME{pS10, -pT20, @LOCATION, !BOUND, "
@@ -1052,8 +1032,13 @@ def _make_changes_statements_doc(bound: bool = True, held: dict[str, Any] | None
         "order, all or nothing, and the model is rebuilt from the edited set. `base_version=N` "
         "applies them to version N's rows instead (with `statements`, it is the whole set given "
         "afresh), and starts the fit from version N's search space and best fit. "
-        "`get_model(format='statements')` shows the rows. The result is an ordinary model; "
-        "`model_edits` would edit it as text, after which it has no rows to edit."
+        "`get_model(format='statements')` shows the rows."
+        + (
+            ""
+            if alone
+            else " The result is an ordinary model; `model_edits` would edit it as text, after "
+            "which it has no rows to edit."
+        )
     )
 
 
@@ -1137,9 +1122,30 @@ def _statements_text(session, version: int | None) -> str:
     return "\n".join(lines)
 
 
+def _get_model_doc(statements: bool) -> str:
+    """``get_model``'s description, offering the ``statements`` format only where the route is."""
+    formats = (
+        "'antimony' (the default), 'sbml', or 'statements': a model built from statements as its "
+        "rows, in the notation `make_changes` takes"
+        if statements
+        else "'antimony' (the default) or 'sbml'"
+    )
+    return (
+        "A model as text: the CURRENT one, or with `version=N` a prior version's stored model — "
+        "read that before a `base_version=N` fork, not `get_version`, which also returns the "
+        f"version's per-point simulation and optimizer trace. `format` is {formats}. For the "
+        "structure alone `get_model_structure` is the cheaper read.\n\n"
+        "The trailing `const ...;` line is DERIVED (a parameter is constant unless declared "
+        "`var`): read past it; no operation addresses it."
+    )
+
+
 # ------------------------------------------------------------------ model tools
 def _register_model_tools(
-    mcp: FastMCP, route: Callable[[], _Ctx], statements: bool = False
+    mcp: FastMCP,
+    route: Callable[[], _Ctx],
+    statements: bool = False,
+    statements_only: bool = False,
 ) -> None:
     # `make_changes` takes an argument named `statements`; the route flag goes by this name in it.
     statements_route = statements
@@ -1147,36 +1153,21 @@ def _register_model_tools(
 
         @mcp.tool(annotations=_READ_ONLY)
         def list_mechanisms(statement_type: str | None = None) -> str:
-            """Every mechanism a `statements` row can use, as the PySB rules it builds: the
-            library's own and those written this run, for one `statement_type` or all.
-
-            Each is written over the statement type's ROLES, the way a `scheme` in
-            `make_changes(mechanisms=...)` is written, so a mechanism you need is one of these
-            edited: `mod` is the statement's own modification ('off'/'on'), `act` an activity
-            ('inactive'/'active'), a site named after a role the binding site for it; `@` gives
-            the rate (mass action over the reactants; a name is one of the `parameters` its header
-            lists, which a scheme you write declares too, and a row binds as `kf=...`).
+            """Every mechanism a `statements` row can use, as the PySB rules it builds, for one
+            `statement_type` or all: the library's own and those written this run. Read it before
+            choosing a row's policy, and to write a new one as a `scheme`: copy the nearest entry
+            and edit it. Each is written over the statement type's ROLES; `@` gives the rate, and
+            a name in it is one of the `parameters` its header lists, which a row binds as
+            `kf=...`.
             """
             return _mechanisms_text(route().session, statement_type)
 
-    @mcp.tool(annotations=_READ_ONLY)
+    @mcp.tool(annotations=_READ_ONLY, description=_get_model_doc(statements))
     def get_model(format: str = "antimony", version: int | None = None) -> str:
-        """Return a model as text — the CURRENT one, or a prior `version`'s stored source.
-
-        `format` is 'antimony' (canonical), 'sbml', or 'statements' — a model built from
-        statements, one line per row in the notation `make_changes` also accepts. `version` reads that version's stored
-        model TEXT and nothing else — a plain read of a prior version, and much cheaper than
-        `get_version`, which also returns that version's per-point simulation and full
-        optimization trace. On a problem with a few hundred measurements that payload is
-        large, and it stays in the caller's history afterwards.
-
-        NOTE the trailing `const ...;` line: it is a DERIVED declaration the server regenerates.
-        Antimony treats a parameter as constant unless declared `var`, so its contents carry no
-        meaning — read past it. No operation addresses it.
-        """
         ctx = route()
         session = ctx.session
-        if (format or "").lower() == "statements":
+        # Without the route there is no statements format: it is refused as any unknown one is.
+        if statements_route and (format or "").lower() == "statements":
             return _statements_text(session, version)
         if version is None:
             # The RECONCILED model — what is actually fitted, and what `test_make_changes` pins
@@ -1225,18 +1216,15 @@ def _register_model_tools(
 
     @mcp.tool(annotations=_READ_ONLY)
     def get_model_structure() -> dict[str, Any]:
-        """Structured view of the model: species, parameters, reactions — plus the per-species
-        `initial_conditions` account, and `readouts`: each `readout_*` measurement mapping to the
-        expression your model defines it by, or null while it has none.
+        """The model, structured: species, parameters, reactions (id, reversibility, rate law), and
+        `readouts`, each `readout_*` measurement mapping with the expression your model defines it
+        by (null while it has none). Empty until a model is built.
 
-        Each initial-condition entry reports what the simulation starts that species at, `t0` (one
-        value, or one per experiment where they differ), and whether the declared t=0 governs it:
-        `t0_source` is `fixed` (the parameter table's value is used), `estimated` (the fit sets it
-        — the DEFAULT, so a declared t=0 is only a starting guess), `condition_table` (a condition
-        target overrides it per condition) or `rule` (an assignment rule holds it, as it does an
-        input), with `ic_parameter` naming the parameter that carries it. Read it to check whether
-        a t=0 you meant to pin actually took, and to see which species are driven per-condition —
-        those have no parameter-table row at all, so `get_parameters` cannot show them.
+        `initial_conditions` gives, per species, what the simulation starts it at (`t0`, one value
+        or one per experiment) and what governs it: `t0_source` is `estimated` (the DEFAULT, so a
+        declared t=0 is only a starting guess), `fixed`, `condition_table` (set per condition, with
+        no parameter row) or `rule`, and `ic_parameter` names the parameter carrying it. Read it to
+        check that a t=0 you meant to pin took.
         """
         ctx = route()
         session = ctx.session
@@ -1245,23 +1233,17 @@ def _register_model_tools(
     def _make_changes(
         justification: str,
         antimony: str | None = None,
-        model_edits: Annotated[list[ModelOp] | None, BeforeValidator(_unwrap_listish)] = None,
+        model_edits: _ModelOps = None,
         base_version: int | None = None,
-        parameters: Annotated[
-            list[ParameterChange] | None, BeforeValidator(_unwrap_listish)
-        ] = None,
-        references: Annotated[list[str] | None, BeforeValidator(_unwrap_listish)] = None,
+        parameters: _ParameterChanges = None,
+        references: _References = None,
         n_starts: int | None = None,
-        statements: Annotated[
-            list[StatementRow | str] | None, BeforeValidator(_unwrap_listish)
-        ] = None,
-        mechanisms: Annotated[list[MechanismDef] | None, BeforeValidator(_unwrap_listish)] = None,
-        starts: Annotated[list[StartRow] | None, BeforeValidator(_unwrap_listish)] = None,
+        statements: _StatementRows = None,
+        mechanisms: _MechanismDefs = None,
+        starts: _StartRows = None,
         readouts: dict[str, str] | None = None,
         amounts: dict[str, dict[str, Any] | str] | None = None,
-        statement_edits: Annotated[
-            list[StatementEdit] | None, BeforeValidator(_unwrap_listish)
-        ] = None,
+        statement_edits: _StatementEdits = None,
     ) -> dict[str, Any]:
         ctx = route()
         session = ctx.session
@@ -1574,29 +1556,56 @@ def _register_model_tools(
 
     # One tool, `make_changes`, either way, and one implementation, `_make_changes`. FastMCP builds
     # the input schema from the registered function's signature, so the statements route is offered
-    # by registering `_make_changes` itself and withheld by registering `make_changes_antimony`,
-    # which takes only the text routes and passes them on.
+    # by registering `_make_changes` itself, alone by registering `make_changes_statements`, and
+    # withheld by registering `make_changes_antimony`; each wrapper takes only its routes and
+    # passes them on.
     if statements:
+        session = route().session
+        statements_doc = _make_changes_statements_doc(
+            bound=bool(set(session.entities) - {i.id for i in session.inputs}),
+            held={getattr(session.entities.get(i.id), "name", i.id): i for i in session.inputs},
+            alone=statements_only,
+        )
+        if not statements_only:
+            mcp.tool(
+                description=_make_changes_doc(statements_doc=statements_doc),
+                name="make_changes",
+                annotations=_MAKE_CHANGES_ANNOTATIONS,
+            )(_make_changes)
+            return
+
+        def make_changes_statements(
+            justification: str,
+            base_version: int | None = None,
+            parameters: _ParameterChanges = None,
+            references: _References = None,
+            n_starts: int | None = None,
+            statements: _StatementRows = None,
+            mechanisms: _MechanismDefs = None,
+            starts: _StartRows = None,
+            readouts: dict[str, str] | None = None,
+            amounts: dict[str, dict[str, Any] | str] | None = None,
+            statement_edits: _StatementEdits = None,
+        ) -> dict[str, Any]:
+            return _make_changes(
+                justification=justification,
+                base_version=base_version,
+                parameters=parameters,
+                references=references,
+                n_starts=n_starts,
+                statements=statements,
+                mechanisms=mechanisms,
+                starts=starts,
+                readouts=readouts,
+                amounts=amounts,
+                statement_edits=statement_edits,
+            )
+
         mcp.tool(
-            description="\n\n".join(
-                (
-                    _MAKE_CHANGES_SUMMARY,
-                    _MAKE_CHANGES_STATEMENTS_ROUTES,
-                    _make_changes_statements_doc(
-                        bound=bool(
-                            set(route().session.entities) - {i.id for i in route().session.inputs}
-                        ),
-                        held={
-                            getattr(route().session.entities.get(i.id), "name", i.id): i
-                            for i in route().session.inputs
-                        },
-                    ),
-                    _MAKE_CHANGES_CONTRACT,
-                )
-            ),
+            description=_make_changes_doc(text_routes=False, statements_doc=statements_doc),
             name="make_changes",
             annotations=_MAKE_CHANGES_ANNOTATIONS,
-        )(_make_changes)
+        )(make_changes_statements)
         return
 
     # No entity map: nothing binds a statement-built model to the observables, so the route would
@@ -1605,12 +1614,10 @@ def _register_model_tools(
     def make_changes_antimony(
         justification: str,
         antimony: str | None = None,
-        model_edits: Annotated[list[ModelOp] | None, BeforeValidator(_unwrap_listish)] = None,
+        model_edits: _ModelOps = None,
         base_version: int | None = None,
-        parameters: Annotated[
-            list[ParameterChange] | None, BeforeValidator(_unwrap_listish)
-        ] = None,
-        references: Annotated[list[str] | None, BeforeValidator(_unwrap_listish)] = None,
+        parameters: _ParameterChanges = None,
+        references: _References = None,
         n_starts: int | None = None,
     ) -> dict[str, Any]:
         return _make_changes(
@@ -1645,38 +1652,23 @@ def _register_parameter_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         ]
         | None = None,
     ) -> list[dict[str, Any]]:
-        """Return the parameter table (id, bounds, scale, nominal_value, estimate), each row
-        annotated with its `role` and `status`. `parameter_ids` and/or `role` FILTER the rows —
-        on large problems (100+ rows, re-sent in your history every later turn) ask for the rows
-        you need (e.g. the parameters a fit just changed, or role='noise_sigma') rather than the
-        whole table by reflex.
+        """The parameter table, one row per parameter: id, bounds, scale, `nominalValue` (the fitted
+        value, LINEAR whatever the scale), estimate flag, `role` and `status`. Pass
+        `parameter_ids` and/or `role` to FILTER: on a large problem the full table is 100+ rows
+        re-sent in your history every later turn.
 
-        `role` names what the parameter IS — `kinetic` (a mechanistic rate constant used in a
-        rate law), `noise_sigma` or `observable_scaling` (fixed observation-model factors, never
-        to be wired into a reaction), `initial_condition`, `exponent` (a power in a rate law), or
-        `constant` (an otherwise-unreferenced constant). `status` is `"estimated"` or `"fixed"`.
-        Use these to keep roles straight: don't repurpose a scaling/offset factor as a rate
-        constant, and don't spend an estimated parameter on a value you already know — a parameter
-        you introduce is added estimated and counts toward k (inflating BIC) however tight its
-        bounds. A parameter's estimated/fixed status is not something you set here: a symbol you
-        introduce is added estimated, and a shipped-fixed constant stays fixed only while your
-        model keeps declaring it — so build on the constants the problem ships fixed rather than
-        introducing your own.
+        `role` is what the parameter IS: `kinetic`, `noise_sigma` or `observable_scaling` (the
+        OBSERVATION model: never in a rate law, estimated or not), `initial_condition`, `exponent`,
+        or `constant`. `status` is `estimated` or `fixed`, and the `fixed` rows are the COMPLETE
+        set of constants you may treat as known: every estimated parameter counts toward k however
+        tight its bounds, a symbol you introduce is added estimated, and initial conditions are
+        estimated by DEFAULT (an IC of exactly 1 stays fixed; one of exactly 0 gets no row). Do not
+        assume a `sigma_*` or `*_init` is fixed: read its `status`.
 
-        `in_model` says whether the parameter is currently DECLARED by your model. A row with
-        `in_model: false` is one the PROBLEM ships that your model does not use yet — on a
-        problem that ships without a model that is every shipped kinetic / initial-condition
-        parameter, since there is no mechanism to reference them. They are shown because they were
-        handed to you: they are the constants you may build on, and a shipped-FIXED one must stay
-        declared or the change is rejected. Declare the name in your Antimony and the row comes
-        back exactly as shown here — its bounds, scale and estimated/fixed status — so
-        re-introducing a shipped parameter never costs you its definition. (`query_data`'s
-        `parameters` table is the LIVE table only, so a count there is the real estimation
-        problem.)
-
-        Values (`nominalValue`) are set by the automatic fit on commit; adjust bounds and
-        scale through `make_changes` (one batched call: a `parameters` list whose entries
-        each carry `lower_bound`/`upper_bound` and/or `scale` for a parameter).
+        `in_model: false` marks a parameter the PROBLEM ships that your model does not declare yet.
+        Those are yours to build on: declare the name and the row comes back exactly as shown, and
+        a shipped-FIXED one must stay declared. Values come only from the fit; bounds and scale
+        change through `make_changes`' `parameters`.
         """
         ctx = route()
         session = ctx.session
@@ -1747,56 +1739,19 @@ def _diagnosis_sections(sections: Any) -> frozenset[str]:
 def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
     @mcp.tool(annotations=_READ_ONLY)
     def get_fit_summary() -> dict[str, Any]:
-        """Return just the current fit metrics — no per-point records (a cheap read).
+        """The current fit's metrics without per-point records, a cheap score check: the same fields
+        every `make_changes` result carries. Models rank by `criterion_value`, the
+        complexity-penalised score `criterion` names (`bic` unless configured otherwise; lower is
+        better); the other scores are reported beside it, and the `k` they charge is
+        `n_estimated` + `hardcoded_constants`.
 
-        `{status, neg_log_likelihood, chi2, n_data_points, fitted_parameters_changed,
-        parameter_scales, version}` plus the complexity-penalised scores `{bic, aic, aicc, caic,
-        hqc, tic, criterion, criterion_value, chi2_dof, reduced_chi2, chi2_gof_pvalue}` (lower is
-        better). `criterion` names the penalty this session ranks by (`bic` unless configured
-        otherwise) and `criterion_value` is that score — the one to rank models by; the named
-        scores are always reported at their textbook weight whichever is active. The `k` they
-        charge rides with its two addends: `n_estimated` (the estimated parameter rows) and
-        `hardcoded_constants` (the literals being charged, one parameter each — see
-        `make_changes`).
-        `reduced_chi2`/`chi2_gof_pvalue` are only meaningful with a KNOWN noise level: when the
-        observable noise sigmas are ESTIMATED, chi2 pins near `n_data_points` by construction, so
-        reduced_chi2 ≈ 1 and its p-value are uninformative — do not use them as a fit-adequacy
-        gate (judge adequacy from residual STRUCTURE instead — the `residual_structure` verdict
-        rides on this result, as it does on every fit result; see
-        :func:`data_access.residual_structure_rollup` for where it is and is not reported).
-        Fitted values are LINEAR
-        (unscaled) values; `parameter_scales` gives each one's estimation scale (lin/log10) —
-        a fitted value is the linear number, never its log10 coordinate. `parameters_at_bound`
-        lists any fitted parameter sitting within ~1% of its lower/upper bound (on its own
-        estimation scale) — `[]` when none do. Widen at most once; the SAME parameter
-        re-pinning after a widening means it is UNIDENTIFIABLE (a flat/collinear FIM direction —
-        confirm with `get_fit_diagnosis`), not under-explored, so the optimum is unbounded
-        (often an exponent trying to fake a mechanism the model doesn't have). Don't widen or
-        flip its scale again — remove its reaction or use its limiting (irreversible/
-        instantaneous) form; if neither is possible, leave it pinned (don't hard-code a value —
-        values come only from the fit). `noise_sigma_report`
-        lists every ESTIMATED noise-sigma parameter's fitted value against a data-driven
-        reference (a fraction of its
-        observable's measurement std, on the scale its noise is additive on) regardless of whether
-        it's at bound — a sigma approaching that reference is quietly doing the same thing as an
-        at-bound parameter (masking a mechanism problem behind inflated noise); `make_changes`
-        WARNS (does not reject) when widening a sigma past it. The decisive, ground-truth-free
-        evidence that a sigma is absorbing misfit is structured residuals — read the
-        `residual_structure` verdict on THIS result (`get_fit_diagnosis` carries the per-observable
-        table and worst points behind it). Each entry also reports `data_noise_estimate`, a
-        MODEL-FREE noise level from successive measurement differences, and
-        `fitted_over_data_noise` — purely ADVISORY (nothing gates on them). That estimate is biased
-        HIGH (it counts whatever the mean does between samples as noise), so a fitted sigma far
-        ABOVE it is strong evidence of inflation, while one below it is only weak evidence of
-        collapse. Each entry carries a `status` (`ok`/`inflated`/`collapsed`, or
-        `unknown` when the observable's measurement std can't be computed so it can't be assessed), and
-        the top level flags `noise_sigma_inflated`/`noise_sigma_collapsed` with `noise_sigma_advice`
-        when either is set: an inflated sigma is absorbing model misfit, a collapsed one is
-        overfitting the noise — either way the bic is NOT genuine adequacy and a finish on it is
-        REFUSED, so fix the model FORM (not the noise) when you see this. Use this to check the
-        score without pulling the dataframe;
-        use `query_data` to query the measured-vs-simulated points and residuals with SQL.
-        Refreshed on every commit; generated on demand if none exists.
+        The flags to act on: `parameters_at_bound` (a parameter that re-pins after one widening is
+        UNIDENTIFIABLE, not under-explored), `noise_sigma_report` with `noise_sigma_inflated` /
+        `noise_sigma_collapsed` (an estimated sigma absorbing misfit or overfitting the noise: fix
+        the model's form, not the noise), the `residual_structure` verdict, and `merge_hints`
+        (parameter pairs the data cannot separate whose merge the criterion would pay for). With
+        estimated sigmas, `reduced_chi2` and `chi2_gof_pvalue` sit near their null whatever the
+        fit and say nothing about adequacy.
         """
         ctx = route()
         session = ctx.session
@@ -1874,32 +1829,16 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
 
     @mcp.tool(annotations=_READ_ONLY)
     def list_data_tables() -> dict[str, Any]:
-        """List the SQL tables `query_data` exposes: name, description, columns, row count.
-
-        The tables are the PEtab design tables (`measurements`, `conditions`, `experiments`,
-        `observables`), the `parameters` table, the `simulations` dataframe (one row per
-        measurement point, carrying `simulation` and the residuals), `simulations_history`
-        (those same rows for EVERY stored version, with a `version` column), and the last
-        fit's pyPESTO multistart (`optimization_starts`, `optimization_trace`). Use it to
-        learn the exact column names before writing a `query_data` query.
-        """
+        """The SQL tables `query_data` exposes, with their columns and row counts."""
         ctx = route()
         session = ctx.session
         return ctx.run("list_data_tables", lambda: data_mod.table_schema(session))
 
     @mcp.tool(annotations=_READ_ONLY)
     def get_fitting_log(tail_lines: int = 200) -> dict[str, Any]:
-        """Return the tail of the pyPESTO/Fides optimizer log for the fits run so far.
-
-        Every commit fits the free parameters with a pyPESTO multistart (the Fides
-        trust-region optimizer); its per-start objective values, the multistart summary,
-        convergence messages, and any ill-conditioning / gradient warnings are written to
-        `<store>/pypesto.log`. This tool surfaces that log so the *numerical* behaviour of
-        the fit can be inspected directly — multistart spread (did starts agree on one
-        optimum?), convergence, parameters pinned at their bounds, and non-identifiability
-        signatures. Returns `{path, exists, n_lines_total, tail_lines, log}` (the last
-        `tail_lines` lines of the file; pass a larger value for more history, `0` for all).
-        """
+        """The tail of the pyPESTO/Fides multistart optimizer log (`tail_lines`, 0 for all):
+        per-start objective values, convergence, parameters pinned at their bounds,
+        ill-conditioning."""
         ctx = route()
         session = ctx.session
 
@@ -1912,28 +1851,8 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
 
     @mcp.tool(annotations=_READ_ONLY)
     def query_data(sql: str, max_rows: int = 50, offset: int = 0) -> dict[str, Any]:
-        """Run a SQL query (DuckDB) over the PEtab tables and the simulation dataframe.
-
-        The query runs against a private, disposable copy of the data, so any SQL is allowed
-        and nothing can affect the session (host file/network access is disabled). Tables:
-        `measurements`, `conditions`, `experiments`, `observables`, `parameters`; `simulations` —
-        the per-point dataframe from the last commit, with `measurement`, `simulation`, `residual`
-        (natural units), `residual_weighted` (the noise-normalized chi2 term), and `noise`
-        (sigma); `simulations_history` — those same per-point rows for EVERY stored version
-        with a `version` column (see the CROSS-VERSION paragraph below); and the last fit's
-        pyPESTO multistart in `optimization_starts` (one row per
-        start, `start`=0 is best) and `optimization_trace` (fval per start/iteration). Call
-        `list_data_tables()` for the exact columns. Returns
-        `{columns, rows, row_count, offset, truncated}` (capped at `max_rows`, default 50 to
-        keep results compact — prefer aggregations over a full dump); the
-        `simulations` dataframe is generated on demand if no commit has produced one yet.
-
-        PAGING: when `truncated` is true the result also carries `next_offset` — pass it back
-        as `offset` for the next page rather than raising `max_rows` (a large page is a large
-        tool result, and it re-enters your context on EVERY later turn). Add an explicit
-        `ORDER BY` when you page: without one, SQL row order is not guaranteed stable between
-        calls, so pages can overlap or skip rows. No total row count is reported — obtaining
-        one would mean running your query a second time.
+        """Run a DuckDB SQL query over the data, on a private copy (nothing it does reaches the
+        session).
 
         TWO NAMING CONVENTIONS, and they do not mix. The PEtab tables keep PEtab's camelCase:
         `measurements(observableId, experimentId, time, measurement, observableParameters,
@@ -1946,41 +1865,21 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         empty `experimentId` ('') is a measurement of the model simulated as is. Do not carry a
         column list from a `simulations` query onto `measurements`, or the reverse.
 
-        ONE ROW PER GROUP: use DuckDB's aggregates, do not hand-roll them. In a GROUP BY query
-        every selected expression must be an aggregate or a grouping key — a window function
-        (`... OVER (...)`) is per-row and cannot appear there, and aggregates cannot nest.
-        `ORDER BY` goes INSIDE the aggregate's parentheses (`first(measurement ORDER BY time)`);
-        `FILTER` goes OUTSIDE, after the closing paren (`count(*) FILTER (WHERE time > 0)`).
-        Neither may be hung on a scalar function like `log10`.
-          value at earliest / latest time  `arg_min(measurement, time)` / `arg_max(measurement, time)`
-          peak and the time it occurs      `max(measurement)` / `arg_max(time, measurement)`
-          trend                            `regr_slope(measurement, time)`, `corr(time, measurement)`
-          spread                           `stddev_samp` / `var_samp` (there is no `var`)
-          `SELECT observableId, experimentId, count(*) AS n,
-                  arg_min(measurement, time) AS y_at_t0, arg_max(measurement, time) AS y_at_tend,
-                  max(measurement) AS y_peak, arg_max(time, measurement) AS t_peak,
-                  regr_slope(measurement, time) AS slope
-             FROM measurements GROUP BY observableId, experimentId`
+        `simulations` has one row per point of the last fit: `measurement`, `simulation`,
+        `residual`, `residual_weighted`, `noise` — residuals live there, not on `measurements`.
+        `simulations_history` is the only way to compare versions point by point, e.g.
+        `SELECT observable_id, experiment_id, time,
+        max(CASE WHEN version=3 THEN residual_weighted END) AS v3,
+        max(CASE WHEN version=4 THEN residual_weighted END) AS v4
+        FROM simulations_history WHERE version IN (3, 4) GROUP BY 1, 2, 3
+        ORDER BY abs(v4) - abs(v3) DESC`. A measurement reaches its inputs through its experiment:
+        `measurements.experimentId = experiments.experimentId`, then `experiments.conditionId =
+        conditions.conditionId`. `list_data_tables` has every table's columns.
 
-        Compute whatever residual breakdown you
-        need in SQL. Filter to `residual_weighted IS NOT NULL` for residual stats (rows with
-        an unsimulated point or an un-evaluable noise model have a NULL residual). Per-
-        observable chi2 and worst-fit points, for example:
-          `SELECT observable_id, count(*) AS n,
-                  sum(residual_weighted*residual_weighted) AS chi2
-             FROM simulations WHERE residual_weighted IS NOT NULL
-             GROUP BY observable_id ORDER BY chi2 DESC`
-          `SELECT * FROM simulations WHERE residual_weighted IS NOT NULL
-             ORDER BY abs(residual_weighted) DESC LIMIT 10`
-
-        CROSS-VERSION comparison: `simulations_history` holds the same per-point rows for
-        every stored version, with a `version` column (snake_case like `simulations`; a
-        version whose fit failed contributes no rows). Where did v4 get worse than v3:
-          `SELECT observable_id, experiment_id, time,
-                  max(CASE WHEN version=3 THEN residual_weighted END) AS v3,
-                  max(CASE WHEN version=4 THEN residual_weighted END) AS v4
-             FROM simulations_history WHERE version IN (3, 4)
-             GROUP BY 1, 2, 3 ORDER BY abs(v4) - abs(v3) DESC LIMIT 10`
+        Aggregate only NUMERIC columns, filter `residual_weighted IS NOT NULL` for residual
+        statistics, and prefer aggregations: rows are capped at `max_rows`. When `truncated` is
+        true the result carries `next_offset`: page with it rather than raising `max_rows`, with an
+        explicit `ORDER BY`, or pages can overlap or skip.
         """
         ctx = route()
         session = ctx.session
@@ -2024,66 +1923,33 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         top_n: int = 8,
         max_observables: int = 12,
     ) -> dict[str, Any]:
-        """The COMPACT, size-bounded DETAIL behind the verdicts every fit result already carries —
-        where the fit is off, and which parameters it cannot pin.
+        """The size-bounded DETAIL behind the verdicts every fit result already carries: where the
+        fit is off, and which parameters it cannot pin. `sections` picks the half: 'residuals'
+        (the default), 'parameters', or 'all'. Neither compiles a model, so the cost is the
+        payload (2-8 kB each), re-sent in your history on every later turn: ask for 'parameters'
+        when the score has stalled and you need to know what to cut, not by reflex.
 
-        `per_observable` keeps `max_observables` rows by chi2 (default 12) on problems with more,
-        PLUS up to 3 more by |bias| and up to 6 more carrying a `structure_flag` — so the real
-        bound is `max_observables + 9`, not `max_observables`. The extras are deliberate: an
-        observable that is biased or structurally flagged is the one worth seeing even when its
-        chi2 does not make the cut, and silently dropping it would defeat the diagnosis. Stated
-        exactly because the old wording promised a bound the union never honoured
-        observables than that — the worst by chi2, plus the worst few by bias and a few
-        structure-flagged rows, with an `omitted` block saying what was dropped. It is NOT a
-        complete table on a large problem: aggregate over it and you are aggregating over a
-        worst-first subsample. Pass `max_observables=0` for every row (large payload, re-sent in
-        your history on every later turn). `sections` picks which half:
-        `"residuals"` (the default), `"parameters"`, or `"all"` — one call, both.
+        RESIDUALS: per observable the weighted `chi2`, `mean_weighted_residual` (bias), the worst
+        |residual| and two sign-based structure tests (`sign_test`, `runs_test`, each with `p` and
+        `low_power`), plus the `worst_n` worst points (measurement vs simulation) and the
+        noise-sigma report. Read it for WHERE and HOW the fit is off, not WHETHER: the rolled-up
+        `residual_structure` verdict rides on the fit result. On a large problem `per_observable`
+        is a worst-first subsample (`max_observables` by chi2, plus a few by bias and structure
+        flag, with an `omitted` block); `max_observables=0` returns every row.
 
-        COSTS, since the choice is yours, and NEITHER half compiles anything. `residuals` is
-        ~2.0-7.4 kB and 0.01-0.12 s of aggregation over the stored simulation (no new simulation);
-        `parameters` is ~2.4-8.0 kB and at most ONE sensitivity evaluation at the frozen optimum
-        (0.004 s on the toy, 0.04 s on a k=15 steady-state model with 252 points, 0.16 s on a k=15
-        hierarchical one — and ~0.001 s where the fit's own verdict is re-served). It is the SIZE you
-        pay repeatedly: every payload you request is re-sent in your history on every later turn, so
-        ask for `parameters` (or `all`) when BIC has stalled and you need to know WHICH parameters to
-        cut, not by reflex.
-
-        RESIDUALS — fixed aggregations (NOT open SQL): one row per observable with its weighted
-        `chi2`, `mean_weighted_residual` (bias — far from 0 = a systematic over/under-shoot),
-        worst |residual|, and two SIGN-based structure tests, `sign_test` (bias) and `runs_test`
-        (time trend / serial correlation), each with a `p` and a `low_power` flag; plus the
-        `worst_n` largest-residual points (measurement vs simulation) and the noise-sigma report.
-        Sign-based tests exist BECAUSE `chi2`/`reduced_chi2`/`chi2_gof_pvalue` are uninformative
-        when the noise sigmas are ESTIMATED (a free sigma inflates to absorb misfit, so magnitude
-        scores pin near their null however wrong the FORM is); they read only residual SIGNS, and
-        have low power on few points, so treat a `low_power` non-significant result as weak
-        evidence, NOT a pass. The rolled-up `residual_structure` verdict over them — the one that
-        blocks the early plateau stop, replicate lack-of-fit arm included — is NOT repeated
-        here: it rides on the fit result. Call this for which points, how big, which observable
-        carries the chi2 — not to ask WHETHER the residuals are structured.
-
-        PARAMETERS (`identifiability`) — which estimated parameters are unconstrained or trade
-        off, i.e. the basis for SIMPLIFYING an over-parameterised model (raw nll/bic say it is too
-        complex, not which parameters to cut). From the Fisher Information Matrix at the optimum:
-        per-parameter standard error + fold_uncertainty, `at_bound`, marginal and partial
-        correlations, and the near-flat eigen-directions (the parameter COMBINATIONS the data
-        cannot pin). Plus the multistart spread — how much each parameter wanders across
-        near-optimal starts, a model-free check — rolled with those flags into a ranked
-        `candidates` list. `merge_candidates` prices the ONE-SHARED-VALUE tie per pair
-        (:func:`petab_mcp.identifiability.merge_candidates`); the fit result already flags the
-        cheapest few such ties worth taking as `merge_hints`, and this section is where every priced
-        pair, and every pair a filter refused (`n_ties_skipped`, `filters_off`), is visible.
-        Remedies are MODEL edits (there is no value/`estimate` tool): drop the term, take its
-        limiting (irreversible/instantaneous) form, or give a pair one shared value. Read
-        se/correlations with multistart_std — the FIM is local.
-
-        For a full custom breakdown use `query_data`, for the optimizer log `get_fitting_log`.
-        NEITHER section ever compiles a model: the residual half simulates on demand only for a model
-        that is already built (else it reports `status` and no rows), and the parameter half describes
-        the LAST FIT — a local expansion around an optimum — so it needs no simulation at all
-        (`available: false` before there is a fit, `stale: true` once a DIFFERENT structure is in the
-        working state).
+        PARAMETERS (`identifiability`), from the Fisher information at the optimum and the
+        multistart spread: per-parameter standard error and fold uncertainty, marginal and partial
+        correlations, the near-flat eigen-directions (the parameter COMBINATIONS the data cannot
+        pin), and a ranked `candidates` list. `merge_candidates` prices giving a pair ONE SHARED
+        value: `dnll`, cheapest first; `dscore`, NEGATIVE when the merge lowers the score;
+        `move_scaled`, how far the tie moves a parameter. Only same-role, same-scale pairs with
+        neither member at a bound are priced (`n_ties_skipped` counts the rest), and the fit
+        result's `merge_hints` are the cheapest few. Remedies are MODEL edits, in this order: drop
+        the term; take its limiting (irreversible or instantaneous) form; merge a pair, into the
+        combination the data constrain (`ka*kb` → one `kab`) or one shared value; last, for a pure
+        scale degeneracy where every value fits equally well, write one member as 1 in the rate
+        law (a 1 is never charged). The expansion is local, so refit and let the score decide
+        each.
         """
         ctx = route()
         session = ctx.session
@@ -2196,19 +2062,20 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
 
     @mcp.tool(annotations=_READ_ONLY)
     def list_versions() -> list[dict[str, Any]]:
-        """List all model versions (fit snapshots) with kind/label/timestamp and fit metrics
-        (neg_log_likelihood, chi2, bic/aic/aicc/caic/hqc/tic, criterion_value, is_new_best) — use it to
-        rank versions by `criterion_value` and find the best-scoring one. Every version is a fit
-        snapshot; `is_new_best` tracks that same score: true for the first, then when its
+        """Every model version (each a fit snapshot) with its kind, label and fit metrics
+        (`neg_log_likelihood`, every score, `criterion_value`): which structures have been tried
+        and how they scored. `is_new_best` is true for the first, then where
         `improvement_vs_best_prior` (over `best_prior_criterion_value`) reached
-        `new_best_min_improvement`."""
+        `new_best_min_improvement`. Every version is kept, and the best one stands whatever comes
+        after it."""
         ctx = route()
         session = ctx.session
         return session.provenance.list_versions()
 
     @mcp.tool(annotations=_READ_ONLY)
     def get_version(version: int) -> dict[str, Any]:
-        """Return a version's Antimony model and parameter table."""
+        """A prior version's Antimony model and parameter table, to INSPECT it, with its per-point
+        simulation and optimizer trace: large. For its model alone, `get_model(version=N)`."""
         ctx = route()
         session = ctx.session
         return ctx.run(
@@ -2415,6 +2282,7 @@ def create_server(
     validation_measurements: str | None = None,
     score_shipped_model: bool = False,
     entity_map: str | None = None,
+    statements_only: bool = False,
     cluster: Any | None = None,
 ) -> FastMCP:
     """Build a FastMCP server bound to the PEtab problem at ``yaml_path``.
@@ -2451,7 +2319,8 @@ def create_server(
 
     ``entity_map`` is a JSON file binding the problem's species to INDRA agents
     (:func:`seeding.load_entity_map`). Giving it offers ``make_changes`` the ``statements`` route;
-    omit it and the route does not exist.
+    omit it and the route does not exist. ``statements_only`` (which needs it) withholds the
+    ``antimony`` and ``model_edits`` routes, so the model is built from statements alone.
 
     ``cluster`` (a ``distributed`` cluster, the ``dask`` extra) runs every fit's starts on that
     cluster's workers through one client (:mod:`petab_mcp.dask_engine`); without one, each fit runs
@@ -2459,6 +2328,10 @@ def create_server(
     more than one machine it must be on a filesystem they share. An AMICI built without HDF5 cannot
     send a start to a worker, so it refuses the cluster here.
     """
+    if statements_only and entity_map is None:
+        raise ValidationError(
+            "statements_only needs an entity_map: it offers the statements route alone."
+        )
     fit_engine = None
     if cluster is not None:
         from .dask_engine import DaskEngine
@@ -2501,7 +2374,9 @@ def create_server(
     _register_read_tools(mcp, route)
     # Offered whenever a map was given, even an empty one: a problem whose observables all read
     # formulas, and whose starts are the statements' own, binds nothing in it.
-    _register_model_tools(mcp, route, statements=entity_map is not None)
+    _register_model_tools(
+        mcp, route, statements=entity_map is not None, statements_only=statements_only
+    )
     _register_parameter_tools(mcp, route)
     _register_fit_tools(mcp, route)
     if ctx.held_out is not None:

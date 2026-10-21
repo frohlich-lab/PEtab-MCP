@@ -53,6 +53,7 @@ petab-mcp --petab-yaml path/to/problem.yaml
 # --provenance-dir DIR   --reference-validation {required,best_effort,off}
 # --build-root DIR       --skills-dir DIR
 # --entity-map PATH      (offers make_changes the `statements` route; see src/petab_mcp/seeding.py)
+# --statements-only      (with --entity-map: the `statements` route alone, no Antimony routes)
 # --transport {stdio,sse,streamable-http}
 # --criterion {bic,caic,aic,aicc,hqc,tic}   (env PETAB_MCP_CRITERION; default bic)
 # --slurm-max-jobs N     --slurm-min-jobs M   (see "Fitting on SLURM")
@@ -98,8 +99,9 @@ exit on their own after jobqueue's `death-timeout` (60 s).
 ## Tools
 
 `make_changes` is the single tool that changes the model or its parameter search space, and
-it always fits — see its docstring in [`src/petab_mcp/server.py`](src/petab_mcp/server.py)
-for the full argument and result reference. Everything else is read-only: problem/model/
+it always fits — see its docstring in [`src/petab_mcp/server.py`](src/petab_mcp/server.py),
+and the [`reading-fits`](src/petab_mcp/_skills/reading-fits/SKILL.md) skill for what its
+result's fields mean. Everything else is read-only: problem/model/
 parameter inspection (`describe_problem`, `list_conditions`, `list_experiments`, `get_model`,
 `get_parameters`, ...), fit
 inspection (`get_fit_summary`, `get_fit_diagnosis`, `query_data` — arbitrary SQL over the

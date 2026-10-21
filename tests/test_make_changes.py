@@ -26,7 +26,7 @@ from pathlib import Path
 from petab_mcp import operations as O
 from petab_mcp import parameters as P
 from petab_mcp.constants import DEFAULT_AUTO_FIT_STARTS
-from petab_mcp.errors import ModelUpdateError, ParameterError
+from petab_mcp.errors import ModelUpdateError, ParameterError, ValidationError
 from petab_mcp.operations import OperationError
 from petab_mcp.references import StubReferenceResolver
 from petab_mcp.server import create_server
@@ -819,7 +819,7 @@ def _statement_row(type_="PopulationTransition", policy="mass_action"):
     }
 
 
-def _statements_server(tmp_path, extra="", yaml_path=YAML_PATH):
+def _statements_server(tmp_path, extra="", yaml_path=YAML_PATH, statements_only=False):
     entity_map = tmp_path / "entities.json"
     entity_map.write_text(_BASE_ENTITY_MAP.format(extra=extra))
     return create_server(
@@ -828,6 +828,7 @@ def _statements_server(tmp_path, extra="", yaml_path=YAML_PATH):
         resolver=StubReferenceResolver(),
         auto_fit=False,
         entity_map=str(entity_map),
+        statements_only=statements_only,
     )
 
 
@@ -854,8 +855,58 @@ def test_the_routes_text_names_statements_only_where_it_is_offered(tmp_path):
     from petab_mcp.server import _MAKE_CHANGES_DOC
 
     assert _description(_server(tmp_path / "plain")) == _MAKE_CHANGES_DOC
-    required = _description(_statements_server(tmp_path)).split("At least one of\n")[1]
+    required = _description(_statements_server(tmp_path)).split("at least one of ")[1]
     assert "`statements`" in required.split(" is required.")[0]
+
+
+def test_statements_only_documents_and_accepts_no_text_route(tmp_path):
+    """A client that builds models from statements alone stripped `antimony`/`model_edits` from
+    the schema itself and wrote its own description, so the agent read none of the server's
+    (frohlich-lab/PEtab-MCP#40)."""
+    mcp = _statements_server(tmp_path, statements_only=True)
+    args = set(_make_changes_schema(mcp))
+    assert "statements" in args and "statement_edits" in args
+    assert not {"antimony", "model_edits"} & args
+    description = _description(mcp)
+    assert "`antimony`" not in description and "`model_edits`" not in description
+    assert "`statements` authors the WHOLE model" in description
+    with pytest.raises(Exception, match="antimony"):
+        asyncio.run(
+            mcp.call_tool("make_changes", {"justification": "x", "antimony": _antimony()})
+        )
+    with pytest.raises(ValidationError, match="entity_map"):
+        create_server(str(YAML_PATH), provenance_dir=str(tmp_path / "p2"), statements_only=True)
+
+
+def _agent_facing_text(mcp):
+    """Everything a client is shown before it calls anything: the instructions, every tool's
+    description and argument schema, and every listed skill in full."""
+    import json
+
+    from petab_mcp import skills as skills_mod
+
+    tools = asyncio.run(mcp.list_tools())
+    names = {t.name for t in tools}
+    skills = skills_mod.load_skills(skills_mod.default_skills_dir()) if "get_skill" in names else []
+    return "\n".join(
+        [mcp.instructions or ""]
+        + [f"{t.description}\n{json.dumps(t.parameters)}" for t in tools]
+        + [f"{s.description}\n{s.text}" for s in skills]
+    )
+
+
+def test_no_text_offers_the_statements_route_where_it_does_not_exist(tmp_path):
+    """`get_model` offered its 'statements' format on a server without the route, where the
+    format exists for no model the server can build."""
+    import re
+
+    route = re.compile(r"(?i)\bstatements\b|statement_edits|list_mechanisms|\bindra\b")
+    plain = _agent_facing_text(_server(tmp_path / "plain"))
+    assert not route.findall(plain), sorted(set(route.findall(plain)))
+    tools = asyncio.run(_statements_server(tmp_path).list_tools())
+    assert "'statements'" in next(t for t in tools if t.name == "get_model").description
+    with pytest.raises(Exception, match="Unknown model format 'statements'"):
+        asyncio.run(_server(tmp_path / "p2").call_tool("get_model", {"format": "statements"}))
 
 
 def test_the_refusals_name_statements_only_where_it_is_offered(tmp_path):
