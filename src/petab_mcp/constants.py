@@ -173,6 +173,12 @@ NOISE_SIGMA_REPLICATE_MIN_DOF = 6
 # is a STOP condition and these p-values are not exact (below). Per point rather than one
 # lack-of-fit F over the family because the advice has to NAME the points where the form is wrong.
 #
+# NOT an axis independent of the noise report. With one ML-fitted sigma over rows that are ALL
+# replicated, sum z_i^2 = N * r^2 - sum(n_i - 1) exactly, r = fitted sigma / that sigma's
+# data_noise_estimate (that problem's failing fit: 252 * 1.4759^2 - 237 = 311.9). The family's total
+# evidence IS that ratio; this arm adds WHICH points, and power against a few large misses. A gate
+# on the ratio beside it would count the same evidence twice.
+#
 # READ THE MARGINS ABOVE AS A FLOOR, NOT AS CALIBRATION. Every one of them assumes the n_i replicates
 # of a point are independent draws, and on that problem they are NOT: rows 1-12 and 13-18 of each
 # design point are two experimental blocks (the three n_i = 12 observables stop exactly at row 12;
