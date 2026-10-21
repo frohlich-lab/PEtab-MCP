@@ -248,7 +248,8 @@ class MechanismDef(BaseModel):
         default=None,
         description="(instead of `scheme`) the rate COEFFICIENT, over the statement type's role "
         "names (each the amount of that agent: `enz`, `sub`, `subj`, `source`, ...), your "
-        "`parameters`, `time`, and exp/log/sqrt. It is multiplied by every reactant's amount, "
+        "`parameters`, `time`, exp/log/sqrt and `piecewise(value, condition, ..., otherwise)` "
+        "(`piecewise(k_0, time < t_1, k_1)`). It is multiplied by every reactant's amount, "
         "catalysts included, so a rate that stays non-negative cannot drive an amount negative; "
         "a constant `k` alone is mass action."
     )

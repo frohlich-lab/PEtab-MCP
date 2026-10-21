@@ -343,8 +343,8 @@ def _bound_expression(
     if "".join(tokens) != text or not isinstance(trial, sympy.Expr):
         raise MechanismError(
             f"row {prefix!r} binds {name!r} to {text!r}, which is no expression: a binding is a "
-            "shared id (`k_on`), a number, or arithmetic over ids and numbers with exp/log/sqrt "
-            "(`KD*kf_on`)"
+            "shared id (`k_on`), a number, or arithmetic over ids and numbers with "
+            "exp/log/sqrt/piecewise (`KD*kf_on`)"
         )
     for n in names:
         _not_a_parameter(model, n, prefix, name, species)
@@ -370,11 +370,30 @@ def _redirect(model: pysb.Model, old, new) -> None:
             expression.expr = expression.expr.xreplace({old: new})
 
 
-#: What a written rate may contain besides names: numbers, arithmetic, parentheses, commas. A
-#: rate is parsed by sympy, which evaluates text, so it is checked against this first and every
-#: name in it against the ones the mechanism allows.
-_RATE_TOKENS = re.compile(r"\s+|(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?|[A-Za-z_]\w*|[-+*/^(),]")
-_RATE_FUNCTIONS = {"exp": sympy.exp, "log": sympy.log, "sqrt": sympy.sqrt}
+#: What a written rate may contain besides names: numbers, arithmetic, parentheses, commas, and
+#: the comparisons a ``piecewise`` condition makes. A rate is parsed by sympy, which evaluates
+#: text, so it is checked against this first and every name in it against the ones the mechanism
+#: allows.
+_RATE_TOKENS = re.compile(
+    r"\s+|(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?|[A-Za-z_]\w*|[<>]=?|[-+*/^(),]"
+)
+
+
+def _piecewise(*args) -> sympy.Expr:
+    """Antimony's and SBML's ``piecewise(value, condition, ..., otherwise)``: the first value whose
+    condition holds, else the last argument (0 without one). A switch the rate itself makes — a
+    transmission rate that steps on an estimated day, a term on only while a dose is applied — is
+    the modeller's claim like any other rate, which is why it is written here and never held as an
+    input (PEtab-MCP#30). Raises ``TypeError`` (refused by :func:`parse_rate` as a rate that does
+    not read) for a condition that is no comparison."""
+    pairs = [(args[i], args[i + 1]) for i in range(0, len(args) - 1, 2)]
+    otherwise = args[-1] if len(args) % 2 else sympy.Integer(0)
+    if not pairs or not all(isinstance(c, sympy.core.relational.Relational) for _, c in pairs):
+        raise TypeError("piecewise(value, condition, ..., otherwise): conditions compare")
+    return sympy.Piecewise(*pairs, (otherwise, True))
+
+
+_RATE_FUNCTIONS = {"exp": sympy.exp, "log": sympy.log, "sqrt": sympy.sqrt, "piecewise": _piecewise}
 
 
 #: What an id of the problem is (``problem_ids`` of :func:`written`). A rate reads none of them.
@@ -444,7 +463,7 @@ _PARAMETER_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 #: Names a written mechanism's parameter may not take: what a rate reads otherwise, and the
 #: components the mechanism builds beside its parameters (``<prefix>_rate``, the base entry's
 #: ``<prefix>_base_<kind>``; a scheme's rules ``<prefix>_r<i>`` and rates ``<prefix>_rate<i>_<j>``).
-_TAKEN = re.compile(r"time|amount|exp|log|sqrt|rate(?:\d+_\d+\w*)?|r\d+|base_\w*")
+_TAKEN = re.compile(r"time|amount|exp|log|sqrt|piecewise|rate(?:\d+_\d+\w*)?|r\d+|base_\w*")
 
 
 def refuse_declared(policy: str, declared, roles) -> None:
@@ -479,15 +498,16 @@ def refuse_unread(policy: str, declared, named) -> None:
 
 
 def parse_rate(text: str) -> sympy.Expr:
-    """``text`` as ONE sympy expression, each name in it a placeholder symbol and exp/log/sqrt the
-    functions: what a rate, or a binding's expression, must read as before its names become
+    """``text`` as ONE sympy expression, each name in it a placeholder symbol and
+    exp/log/sqrt/piecewise the functions: what a rate, or a binding's expression, must read as before its names become
     components. Checked against :data:`_RATE_TOKENS` first, since sympy evaluates the text.
     Raises :class:`MechanismError` saying how to write it."""
     tokens = _RATE_TOKENS.findall(text)
     if "".join(tokens) != text:
         raise MechanismError(
             f"rate {text!r} holds characters no rate takes: names, numbers, `+ - * / ^`, "
-            "parentheses, and commas only between a function's arguments"
+            "parentheses, commas only between a function's arguments, and `< <= > >=` only in a "
+            "piecewise condition"
         )
     names = {t for t in tokens if _IDENTIFIER.fullmatch(t)} - set(_RATE_FUNCTIONS)
     try:
@@ -501,7 +521,8 @@ def parse_rate(text: str) -> sympy.Expr:
         raise MechanismError(
             f"rate {text!r} does not read as one expression: write `*` between factors "
             "(`kcat*Km`, not `kcat Km` or `2kcat`), apply a function to its argument "
-            "(`exp(-k*time)`), and join terms instead of listing them with commas"
+            "(`exp(-k*time)`), join terms instead of listing them with commas, and compare only "
+            "in a piecewise condition (`piecewise(k_0, time < t_1, k_1)`)"
         )
     return value
 
@@ -523,7 +544,8 @@ def written(
     definition's ``parameters``, each minted as ``<prefix>_<name>`` (and shared by a row's
     binding, :func:`bind`); its ``modifiers``, each the amount of an agent the ROW names, which
     takes no part in the reaction (an inhibitor slowing a step, a regulator of a synthesis);
-    ``time``; exp, log, sqrt. A scheme (:func:`schemes.compile_scheme`) declares the constants its
+    ``time``; exp, log, sqrt, and ``piecewise(value, condition, ..., otherwise)``, its conditions
+    comparisons over the same names (:func:`_piecewise`). A scheme (:func:`schemes.compile_scheme`) declares the constants its
     rates name the same way.
 
     ``problem_ids`` (id to :data:`SHIPPED`, :data:`CONDITION` or :data:`SPECIES`) are names no
@@ -589,7 +611,7 @@ def written(
         - {t for t in tokens if positional.match(t)}
     )
     allowed = sorted(names) + slots + roles + ["time"]
-    also = " (a list role by position, e.g. obj_from_0) and exp/log/sqrt"
+    also = " (a list role by position, e.g. obj_from_0) and exp/log/sqrt/piecewise"
     if unknown:
         refuse_rate_names(rate, policy, unknown, allowed, also, amounts, problem_ids)
     parse_rate(rate)
