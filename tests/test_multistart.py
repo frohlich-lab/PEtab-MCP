@@ -22,7 +22,7 @@ import pytest
 from petab_mcp import fitting
 from petab_mcp import multistart as M
 from petab_mcp.errors import (
-    FIT_STILL_RUNNING,
+    FIT_IN_PROGRESS,
     FIT_WEDGED,
     FitCancelledError,
     InfrastructureError,
@@ -225,9 +225,9 @@ def test_a_change_arriving_during_a_fit_is_refused_at_once(tmp_path, monkeypatch
     first.join(30)
 
     assert took < 5, took
-    assert out["applied"] is False and out["error_cause"] == FIT_STILL_RUNNING
-    assert out["error"].startswith("make_changes: a fit is still running on this session")
-    assert _call(mcp, "make_changes", _CHANGE).get("error_cause") != FIT_STILL_RUNNING
+    assert out["applied"] is False and out["error_cause"] == FIT_IN_PROGRESS
+    assert out["error"].startswith("make_changes: fit_in_progress: a fit is still running")
+    assert _call(mcp, "make_changes", _CHANGE).get("error_cause") != FIT_IN_PROGRESS
 
 
 def test_a_cancelled_call_stops_its_fit_and_undoes_its_edit(tmp_path, monkeypatch):
@@ -256,7 +256,7 @@ def test_a_cancelled_call_stops_its_fit_and_undoes_its_edit(tmp_path, monkeypatc
     params = _call(mcp, "get_parameters", {})
     assert "k3" not in {r["parameterId"] for r in params.get("result", params)}
     monkeypatch.setattr(PetabSession, "_auto_fit_and_improvement", _fit_ends)
-    assert _call(mcp, "make_changes", _CHANGE).get("error_cause") != FIT_STILL_RUNNING
+    assert _call(mcp, "make_changes", _CHANGE).get("error_cause") != FIT_IN_PROGRESS
 
 
 def _fit_ends(self, n_starts=None):

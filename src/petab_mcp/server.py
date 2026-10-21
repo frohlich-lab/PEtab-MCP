@@ -59,7 +59,7 @@ from . import validation_data as validation_data_mod
 from .constants import DEFAULT_AUTO_FIT_STARTS
 from .engine import AmiciEngine
 from .errors import (
-    FIT_STILL_RUNNING,
+    FIT_IN_PROGRESS,
     PetabMcpError,
     UnknownEntityError,
     ValidationError,
@@ -486,27 +486,33 @@ class _Cancellation(Middleware):
                     cancelled.set()
                 raise
 
-        returned = False
+        returned, result, error = False, None, None
         token = CANCELLED.set(cancelled)
         try:
             async with anyio.create_task_group() as tasks:
                 tasks.start_soon(hear)
                 try:
-                    return await call_next(context)
+                    result = await call_next(context)
+                except Exception as exc:  # raised below: the group would wrap it in an ExceptionGroup
+                    error = exc
                 finally:
                     returned = True
                     tasks.cancel_scope.cancel()
         finally:
             CANCELLED.reset(token)
+        if error is not None:
+            raise error
+        return result
 
 
-def _fit_still_running(began: float) -> str:
+def _fit_in_progress(began: float) -> str:
     """The refusal of a ``make_changes`` that arrives while another change's fit, begun at
     ``began`` (``time.monotonic()``), still holds the session."""
     return (
-        "make_changes: a fit is still running on this session (its change began "
-        f"{time.monotonic() - began:.0f}s ago), so NOTHING was applied. Its result becomes the "
-        "next version when it ends: read it then (list_versions) rather than resending this change."
+        f"make_changes: {FIT_IN_PROGRESS}: a fit is still running on this session (its change "
+        f"began {time.monotonic() - began:.0f}s ago), so NOTHING was applied. Its result becomes "
+        "the next version when it ends: read it then (list_versions) rather than resending this "
+        "change."
     )
 
 
@@ -1431,7 +1437,7 @@ def _register_model_tools(
         # the fit it is already waiting for, it times out again (PEtab-MCP#108).
         if (began := session.change_began) is not None:
             return ctx.reject_operation(
-                "make_changes", _fit_still_running(began), {}, cause=FIT_STILL_RUNNING
+                "make_changes", _fit_in_progress(began), {}, cause=FIT_IN_PROGRESS
             )
         # One critical section for the change and its fit, so nothing can fit in between
         # (`session.lock` is an RLock, so the nested acquisitions inside each call are fine).

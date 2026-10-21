@@ -1353,7 +1353,7 @@ class PetabSession:
     def change(self) -> Iterator[None]:
         """Hold :attr:`lock` for one change and its fit, with :attr:`change_began` set, which
         ``make_changes`` reads to refuse a second change at once
-        (:data:`~petab_mcp.errors.FIT_STILL_RUNNING`) rather than queue it behind this one."""
+        (:data:`~petab_mcp.errors.FIT_IN_PROGRESS`) rather than queue it behind this one."""
         with self.lock:
             self.change_began = time.monotonic()
             try:

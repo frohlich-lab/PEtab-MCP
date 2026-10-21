@@ -123,7 +123,7 @@ its workers stopped and nothing scored: locally once ⌈starts / workers⌉ ×
 of its batches has run its starts' caps + 600 s ([`multistart`](src/petab_mcp/multistart.py)).
 Every 5 minutes a running fit logs how many of its starts are done. While a change is being
 fitted, a second `make_changes` on the session waits for nothing: it is refused at once with
-`error_cause: fit_still_running` (text starting `make_changes: a fit is still running`), and the
+`error_cause: fit_in_progress` (text starting `make_changes: fit_in_progress: `), and the
 running fit's result becomes the next version. A client that cancels a call (MCP
 `notifications/cancelled`) stops its fit, and the edit is undone.
 

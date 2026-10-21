@@ -102,8 +102,10 @@ class FitCancelledError(PetabMcpError):
 
 
 #: The ``error_cause`` of a ``make_changes`` refused at once because another change on the session
-#: is still being fitted. Nothing was applied, and that fit's result becomes the next version.
-FIT_STILL_RUNNING = "fit_still_running"
+#: is still being fitted, and the word its ``error`` starts with after ``make_changes: ``, which a
+#: client matches (gemot's ``circuit_breaker``). Nothing was applied, and that fit's result becomes
+#: the next version.
+FIT_IN_PROGRESS = "fit_in_progress"
 
 
 class NoSessionBoundError(PetabMcpError):
