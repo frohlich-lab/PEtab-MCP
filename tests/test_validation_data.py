@@ -545,6 +545,49 @@ def test_score_session_scores_the_toy_at_its_fitted_point_on_an_experiment_of_th
     assert math.isfinite(out["nll"])
     assert session.problem.experiment_df is None
     assert session.problem.measurement_df is training
+    # Nothing committed: no version to store the records beside, and none in the reply.
+    assert "records" not in out and "records_file" not in out
+
+
+def test_score_session_stores_the_records_beside_the_head_version(session, engine):
+    """The held-out records go to the HEAD version's directory, beside its `simulations.json`,
+    not into the reply: a sweep's held-out chi2 of 239 could not be explained from any stored
+    output (#119). Stored with the score they came from, and checked against the toy's closed
+    form at its nominal point (A_init 1, k1 0.5, k2 0.1, sigma_B 0.1)."""
+    import json
+
+    import numpy as np
+
+    from petab_mcp.provenance import VALIDATION_SIMULATIONS
+
+    training = session.problem.measurement_df
+    held = V.HeldOut(
+        measurement_df=training.assign(experimentId="e1"),
+        experiment_df=pd.DataFrame({"experimentId": ["e1"], "time": [0.0], "conditionId": [None]}),
+    )
+    store = session.provenance
+    for _ in range(2):
+        store.snapshot_version(session.model.to_antimony(), session.problem.parameter_df)
+    store.set_head(0)  # as a restore leaves it: HEAD is not the newest version
+
+    out = V.score_session(session, engine, held)
+
+    assert out["status"] == V.STATUS_OK and "records" not in out, out
+    assert out["records_file"] == str(store.versions_dir / "v0" / VALIDATION_SIMULATIONS)
+    assert not (store.versions_dir / "v1" / VALIDATION_SIMULATIONS).exists()
+    stored = json.loads(Path(out["records_file"]).read_text())
+    reply = {k: v for k, v in out.items() if k != "records_file"}
+    assert {k: v for k, v in stored.items() if k != "records"} == reply
+    t = training["time"].to_numpy(float)
+    sim = 0.5 / 0.6 * (1 - np.exp(-0.6 * t))
+    recs = stored["records"]
+    assert [r["experiment_id"] for r in recs] == ["e1"] * len(t)
+    assert [r["time"] for r in recs] == list(t)
+    assert [r["simulation"] for r in recs] == pytest.approx(sim, rel=1e-4, abs=1e-8)
+    assert [r["noise"] for r in recs] == pytest.approx([0.1] * len(t))
+    rw = (training["measurement"].to_numpy(float) - sim) / 0.1
+    assert [r["residual_weighted"] for r in recs] == pytest.approx(rw, abs=1e-3)
+    assert sum(r["residual_weighted"] ** 2 for r in recs) == pytest.approx(out["chi2"])
 
 
 def _scaled_problem(formula="observableParameter1_obs_A * x"):
@@ -693,7 +736,8 @@ def test_a_held_out_set_using_part_of_the_observation_model_scores(tmp_path, mon
     view kept every training day's rows and the training-only conditions, and libpetab refused the
     rows nothing referenced: ``ValueError: Invalid PEtab v2 problem``. Here the training rows split
     over two days, one experiment each, and the held-out ones use day 2's; the view must lint
-    clean and score at day 2's values, at the table's point and at a caller's ``x_full``. Checked
+    clean and score at day 2's values, at the table's point and at a caller's ``x_full``, and so
+    must its per-point records, which a sweep's held-out chi2 is read back from (#119). Checked
     against the toy's closed form."""
     import math
     import shutil
@@ -780,12 +824,22 @@ def test_a_held_out_set_using_part_of_the_observation_model_scores(tmp_path, mon
         r = (held["measurement"].to_numpy(float) - s * b) / sd
         return float(np.sum(0.5 * np.log(2 * math.pi * sd**2) + 0.5 * r**2))
 
+    def assert_records(out, k1, k2, s, sd):
+        sim = s * k1 / (k1 + k2) * (1 - np.exp(-(k1 + k2) * held["time"].to_numpy(float)))
+        recs = out["records"]
+        assert [r["experiment_id"] for r in recs] == ["e_ho"] * len(held)
+        assert [r["simulation"] for r in recs] == pytest.approx(sim, rel=1e-4)
+        assert [r["noise"] for r in recs] == pytest.approx([sd] * len(held))
+        rw = (held["measurement"].to_numpy(float) - sim) / sd
+        assert [r["residual_weighted"] for r in recs] == pytest.approx(rw, abs=1e-3)
+
     out = score()
     assert out["status"] == "ok", out
     assert [i.message for i in built[-1].to_petab().validate()] == []
     # AMICI integrates at its default rtol, ~1e-6 off the closed form here (platform-dependent);
     # day 1's values would miss by ~11.
     assert out["nll"] == pytest.approx(nll(0.5, 0.1, 2.0, 0.3), rel=1e-4)
+    assert_records(out, 0.5, 0.1, 2.0, 0.3)
 
     # The caller's vector names day 1 too; the view needs none of it.
     names = ["k1", "k2", "A_init", "B_init", "s_d1", "s_d2", "sd_d1", "sd_d2"]
@@ -793,3 +847,4 @@ def test_a_held_out_set_using_part_of_the_observation_model_scores(tmp_path, mon
     out = score(x_full=x, x_names=names)
     assert out["status"] == "ok", out
     assert out["nll"] == pytest.approx(nll(0.4, 0.2, 1.5, 0.25), rel=1e-4)
+    assert_records(out, 0.4, 0.2, 1.5, 0.25)

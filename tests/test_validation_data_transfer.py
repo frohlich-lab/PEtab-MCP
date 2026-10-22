@@ -381,6 +381,53 @@ def test_score_session_refits_each_unit_on_its_own_and_sums_the_units(session, e
     assert session.problem.experiment_df is None
 
 
+def test_a_transfer_score_stores_each_units_records_at_its_own_optimum(session, engine):
+    """AMICI-backed, on a committed version: the per-point records of a transfer score (#119) are
+    each unit's, at THAT unit's refitted optimum, in the head version's directory. With sigma_B
+    estimated, the noise is the refitted sigma, not the 0.1 the refit started from: the records
+    read it off the parameter table, which holds the start until the optimum is written in.
+    Checked against the toy's closed form at each unit's `fitted` values, A_init moved to 2."""
+    import json
+
+    import numpy as np
+
+    session.problem.parameter_df.loc["sigma_B", "estimate"] = True
+    session.provenance.snapshot_version(session.model.to_antimony(), session.problem.parameter_df)
+    meas = session.problem.measurement_df
+    held = V.HeldOut(
+        measurement_df=pd.concat(
+            [
+                meas.assign(experimentId="e1", measurement=meas.measurement * 2),
+                meas.assign(experimentId="e2", measurement=meas.measurement * 3),
+            ],
+            ignore_index=True,
+        ),
+        experiment_df=_experiments(["e1", "e2"]),
+        parameter_df=_params([("A_init", "lin", 0.0, 100.0, 2.0, 0)]),
+        units={"e1": "u1", "e2": "u2"},
+    )
+
+    out = V.score_session(session, engine, held, n_starts=2)
+
+    assert out["status"] == V.STATUS_OK, out
+    assert "records" not in out and all("records" not in u for u in out["units"].values())
+    stored = json.loads(Path(out["records_file"]).read_text())
+    assert Path(out["records_file"]).parent == session.provenance.versions_dir / "v0"
+    recs = stored["records"]
+    assert len(recs) == out["n"] and [r["experiment_id"] for r in recs] == ["e1"] * 6 + ["e2"] * 6
+    sigmas = set()
+    for r in recs:
+        fitted = out["units"][held.units[r["experiment_id"]]]["fitted"]
+        k1, k2, sigma = fitted["k1"], fitted["k2"], fitted["sigma_B"]
+        sim = 2.0 * k1 / (k1 + k2) * (1 - np.exp(-(k1 + k2) * r["time"]))
+        assert r["simulation"] == pytest.approx(sim, rel=1e-4, abs=1e-8)
+        assert r["noise"] == pytest.approx(sigma)
+        assert r["residual_weighted"] == pytest.approx((r["measurement"] - sim) / sigma, abs=1e-3)
+        sigmas.add(round(sigma, 6))
+    assert len(sigmas) == 2 and 0.1 not in sigmas, sigmas
+    assert sum(r["residual_weighted"] ** 2 for r in recs) == pytest.approx(out["chi2"])
+
+
 def test_a_single_named_unit_is_still_carried_under_units(monkeypatch):
     """`units` names the systems; naming one is a declaration, not the absence of one, so its
     block is carried the same way — a consumer reading `units` must not find it missing."""
@@ -400,6 +447,7 @@ def test_a_single_named_unit_is_still_carried_under_units(monkeypatch):
             "n_starts": n_starts,
             "n_converged": 1,
             "fitted": {},
+            "records": [],
         }
 
     monkeypatch.setattr(V, "_refit_one", _fake_one)
@@ -430,6 +478,7 @@ def _fake_refit(monkeypatch):
             "n_starts": n_starts,
             "n_converged": 1,
             "fitted": {},
+            "records": [],
         }
 
     monkeypatch.setattr(V, "_refit_one", _fake_one)
