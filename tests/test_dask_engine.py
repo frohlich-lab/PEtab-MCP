@@ -327,6 +327,8 @@ def test_a_batch_running_past_its_starts_caps_is_stopped_and_the_others_kept(mon
     monkeypatch.setattr(dask_engine, "FIT_DEADLINE_MARGIN_S", 0.5)
     monkeypatch.setattr(multistart, "POLL_S", 0.1)
     with _engine() as engine:
+        # Every worker imports this module now, not while a batch's clock runs.
+        engine.client.run(_Sleep, "warm", 0, 0)
         began = time.monotonic()
         results, stopped = engine.batched(2, 0.25)._run(
             [_Sleep("a", 0, 0), _Sleep("a", 1, 30), _Sleep("a", 2, 0)]
