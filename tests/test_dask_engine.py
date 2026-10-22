@@ -50,6 +50,7 @@ class _Sleep(Task):
     def __init__(self, label: str, i: int, seconds: float) -> None:
         super().__init__()
         self.label, self.i, self.seconds = label, i, seconds
+        self.id = f"{label}{i}"
 
     def execute(self):
         time.sleep(self.seconds)
@@ -259,7 +260,7 @@ def test_the_batch_size_fills_FIT_TASK_SECONDS_unless_FIT_STARTS_PER_TASK_is_set
     monkeypatch.setattr(fitting, "FIT_TASK_SECONDS", 270.0)
     monkeypatch.setattr(fitting, "FIT_PER_START_TIMEOUT_S", 60.0)
     monkeypatch.setattr(fitting, "FIT_STARTS_PER_TASK", 0)
-    shared = SimpleNamespace(batched=lambda k, _: k)  # hands back the batch size it is given
+    shared = SimpleNamespace(batched=lambda k, *_: k)  # hands back the batch size it is given
 
     def k(n_starts, median):
         previous = None
@@ -319,21 +320,35 @@ def test_a_start_failing_mid_batch_fails_the_fit_and_cancels_its_batches_still_q
     assert len(list(ran.iterdir())) <= 3
 
 
-def test_a_batch_running_past_its_starts_caps_fails_the_fit_as_wedged(monkeypatch):
-    """A batch whose start never returns ends the fit once it has run past its starts' caps and the
-    margin, as its worker's heartbeats tell the scheduler, rather than holding the session."""
+def test_a_batch_running_past_its_starts_caps_is_stopped_and_the_others_kept(monkeypatch):
+    """A batch whose start never returns is given up on once it has run past its starts' caps and
+    the margin, as its worker's heartbeats tell the scheduler: its starts, the one of them that
+    finished included, are the stopped ones, and the fit's other batch comes back (#118)."""
+    monkeypatch.setattr(dask_engine, "FIT_DEADLINE_MARGIN_S", 0.5)
+    monkeypatch.setattr(multistart, "POLL_S", 0.1)
+    with _engine() as engine:
+        began = time.monotonic()
+        results, stopped = engine.batched(2, 0.25)._run(
+            [_Sleep("a", 0, 0), _Sleep("a", 1, 30), _Sleep("a", 2, 0)]
+        )
+        took = time.monotonic() - began
+
+    assert stopped == {0, 1}
+    assert results[:2] == [None, None] and results[2][:2] == ("a", 2)
+    assert took < 15, took
+
+
+def test_a_fit_whose_every_batch_is_stopped_fails_as_wedged(monkeypatch):
+    """A fit whose only batch runs past its starts' caps has nothing to score: it fails as wedged
+    rather than holding the session."""
     monkeypatch.setattr(dask_engine, "FIT_DEADLINE_MARGIN_S", 0.5)
     monkeypatch.setattr(multistart, "POLL_S", 0.1)
     with _engine(n_workers=1) as engine:
-        began = time.monotonic()
         with pytest.raises(InfrastructureError) as wedged:
             engine.batched(2, 0.25).execute([_Sleep("a", 0, 30), _Sleep("a", 1, 0)])
-        took = time.monotonic() - began
 
     assert wedged.value.cause == FIT_WEDGED
-    assert "a batch of 2 starts had run" in str(wedged.value)
-    assert "0 of 2 starts had finished" in str(wedged.value)
-    assert took < 15, took
+    assert "all 2 starts ran past the 0s per-start cap" in str(wedged.value)
 
 
 def test_a_batch_waiting_behind_another_fits_is_not_wedged(monkeypatch):

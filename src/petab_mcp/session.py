@@ -1475,6 +1475,14 @@ class PetabSession:
                 if error is exc:
                     raise
                 raise error from exc
+            # Starts stopped past their cap (see multistart) are scored as failed ones.
+            if killed := fitsim.get("n_starts_killed"):
+                warnings = [
+                    *warnings,
+                    f"Starts stopped past the {fitting.FIT_PER_START_TIMEOUT_S:.0f}s per-start "
+                    f"cap: {killed} of {starts}. They count as failed starts, and the fit is "
+                    f"scored from the other {starts - killed}.",
+                ]
 
             staged = list(staged_edits or [])
             nllh = fitsim.get("neg_log_likelihood")
@@ -1559,6 +1567,7 @@ class PetabSession:
                 meta={  # Recorded so a later fit can tell whether it would search HARDER than this
                     # one did (see `_fit_dedup`) — the structure/setup hashes both ignore it.
                     "n_starts": fitsim.get("n_starts"),
+                    "n_starts_killed": fitsim.get("n_starts_killed"),
                     "fit_status": fitsim.get("status"),
                     "neg_log_likelihood": nllh,
                     "chi2": fitsim.get("chi2"),
@@ -1681,6 +1690,7 @@ class PetabSession:
         # is still this structure's fit (see identifiability.stored_merge_hints).
         sim.pop("merge_hints", None)
         sim["n_starts"] = meta.get("n_starts")
+        sim["n_starts_killed"] = meta.get("n_starts_killed")
         return {
             "committed": False,
             "no_change": True,

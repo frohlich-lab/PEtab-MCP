@@ -1,7 +1,9 @@
 """A fit ends (``petab_mcp.multistart``): one whose starts stop finishing fails by its deadline, a
 change arriving meanwhile is refused at once instead of queued behind it, and a client's cancel
 stops it. One fit's starts went quiet after 40 minutes and held its session for 9 h, while its
-client resent the same change three times behind it (PEtab-MCP#108)."""
+client resent the same change three times behind it (PEtab-MCP#108). A start stuck past its cap is
+stopped and the fit scored from the rest: one hung start of 300 used to fail its whole fit after
+11,400 s, discarding the 299 that had finished (PEtab-MCP#118)."""
 
 from __future__ import annotations
 
@@ -11,12 +13,16 @@ import contextvars
 import functools
 import logging
 import multiprocessing
+import os
 import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import anyio
+import numpy as np
+import pypesto
+import pypesto.optimize
 import pytest
 
 from petab_mcp import fitting
@@ -60,12 +66,13 @@ def _start(value):
 
 def _hang():
     """A start that never returns, as a worker deadlocked on a lock it inherited."""
-    return SimpleNamespace(execute=functools.partial(time.sleep, 3600))
+    return SimpleNamespace(id="hung", execute=functools.partial(time.sleep, 3600))
 
 
 class _Pool:
-    """A ``ProcessPoolExecutor`` that runs each start in a thread of this process and records the
-    workers it is told to kill: a hung worker without a process."""
+    """A ``ProcessPoolExecutor`` that runs each start in a thread of this process, at most
+    ``n_procs`` at once, and records the workers it is told to kill: a hung worker without a
+    process."""
 
     def __init__(self, n_procs, mp_context=None):
         self.killed = []
@@ -73,13 +80,15 @@ class _Pool:
             i: SimpleNamespace(kill=functools.partial(self.killed.append, i))
             for i in range(n_procs)
         }
+        self._free = threading.Semaphore(n_procs)
         _Pool.last = self
 
     def submit(self, fn, payload):
         future = concurrent.futures.Future()
 
         def run():
-            future.set_result(fn(payload))
+            with self._free:
+                future.set_result(fn(payload))
 
         threading.Thread(target=run, daemon=True).start()
         return future
@@ -88,23 +97,136 @@ class _Pool:
         pass
 
 
-def test_a_fit_whose_start_never_returns_fails_at_its_deadline_and_kills_its_workers(monkeypatch):
-    """Three starts on two workers are two waves of the per-start cap: past those and the margin,
-    the fit fails as wedged, says how far it got, and kills its workers, instead of waiting."""
+def test_a_fit_whose_every_worker_is_stuck_fails_as_wedged_and_kills_them(monkeypatch):
+    """Two stuck workers leave a third start queued: once no start has finished for a start's cap
+    plus the margin, the fit fails as wedged, says how far it got, and kills its workers."""
     monkeypatch.setattr(M.concurrent.futures, "ProcessPoolExecutor", _Pool)
     monkeypatch.setattr(M, "FIT_DEADLINE_MARGIN_S", 0.2)
     monkeypatch.setattr(M, "POLL_S", 0.02)
     began = time.monotonic()
     with pytest.raises(InfrastructureError) as wedged:
-        M.ProcessEngine(2, start_seconds=0.1).execute([_start(1), _hang(), _start(3)])
+        M.ProcessEngine(2, start_seconds=0.1).execute([_hang(), _hang(), _start(3)])
     took = time.monotonic() - began
 
     assert wedged.value.cause == FIT_WEDGED
-    assert str(wedged.value).startswith("infrastructure_error: fit_wedged: ")
-    assert "after they began (2 waves of the" in str(wedged.value)
-    assert "2 of 3 starts had finished" in str(wedged.value)
-    assert 2 * 0.1 + 0.2 <= took < 2, took
+    assert str(wedged.value).startswith("infrastructure_error: fit_wedged: no start had finished")
+    assert "0 of 3 starts had finished" in str(wedged.value)
+    assert 0.1 + 0.2 <= took < 2, took
     assert _Pool.last.killed == [0, 1]
+
+
+def test_a_fit_whose_every_start_is_stopped_fails_as_wedged(monkeypatch):
+    """A fit with no start left to score fails as wedged rather than as an ill-posed model, and
+    kills its workers."""
+    monkeypatch.setattr(M.concurrent.futures, "ProcessPoolExecutor", _Pool)
+    monkeypatch.setattr(M, "FIT_DEADLINE_MARGIN_S", 0.2)
+    monkeypatch.setattr(M, "POLL_S", 0.02)
+    with pytest.raises(InfrastructureError) as wedged:
+        M.ProcessEngine(2, start_seconds=0.1).execute([_hang(), _hang()])
+
+    assert wedged.value.cause == FIT_WEDGED
+    assert "all 2 starts ran past the 0s per-start cap" in str(wedged.value)
+    assert _Pool.last.killed == [0, 1]
+
+
+def _quadratic(x, hang_at, marker):
+    """A quadratic's value, which at ``hang_at`` blocks as a start stuck inside one simulation,
+    where Fides never checks its cap: always, or, given ``marker``, until that file exists (the
+    first call leaves it)."""
+    if x[0] == hang_at and not (marker and os.path.exists(marker)):
+        if marker:
+            Path(marker).touch()
+        time.sleep(3600)
+    return float(x @ x)
+
+
+def _gradient(x):
+    return 2 * x
+
+
+def _hessian(x):
+    return 2 * np.eye(len(x))
+
+
+def _fit(engine, marker=None):
+    """A six-start Fides multistart of a quadratic on ``engine``, whose start "0", warm at (1, 1),
+    blocks in its first evaluation (:func:`_quadratic`)."""
+    objective = pypesto.Objective(
+        fun=functools.partial(_quadratic, hang_at=1.0, marker=marker),
+        grad=_gradient,
+        hess=_hessian,
+    )
+    problem = pypesto.Problem(objective, lb=[-5, -5], ub=[5, 5], x_guesses=[[1.0, 1.0]])
+    return pypesto.optimize.minimize(
+        problem,
+        optimizer=pypesto.optimize.FidesOptimizer(verbose=logging.ERROR),
+        n_starts=6,
+        engine=engine,
+        progress_bar=False,
+    )
+
+
+@pytest.fixture
+def stuck(monkeypatch):
+    """Caps short enough to watch a start stopped, in workers forked on any platform: a spawned
+    one imports pyPESTO before its start begins, which on a loaded machine outlasts them."""
+    monkeypatch.setattr(M, "FIT_DEADLINE_MARGIN_S", 1.0)
+    monkeypatch.setattr(M, "POLL_S", 0.05)
+    monkeypatch.setattr(
+        M.multiprocessing, "get_context", functools.partial(multiprocessing.get_context, "fork")
+    )
+
+
+def _no_worker_left():
+    for _ in range(200):
+        if not multiprocessing.active_children():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def test_a_start_stuck_inside_a_simulation_is_stopped_and_the_fit_scored_from_the_rest(stuck):
+    """REGRESSION (#118): one start of 300 hung inside a simulation, and its fit failed as wedged
+    after 11,400 s with its 299 other starts discarded. Now it is killed its cap plus the margin
+    after the last start was handed out, and scored as a failed start beside the rest."""
+    engine = M.ProcessEngine(2, start_seconds=0.5)
+    began = time.monotonic()
+    result = _fit(engine)
+    took = time.monotonic() - began
+
+    starts = {r.id: r for r in result.optimize_result.list}
+    assert engine.killed == ["0"]
+    assert starts["0"].fval == np.inf and starts["0"].exitflag == -1 and starts["0"].x is None
+    assert starts["0"].message == "stopped by the server: still running past its 0s cap"
+    assert list(starts["0"].x0) == [1.0, 1.0]
+    assert all(starts[i].fval < 1e-8 for i in "12345")
+    assert 0.5 + 1.0 <= took < 30, took
+    assert _no_worker_left()
+
+
+def test_a_stopped_warm_start_from_the_parents_optimum_is_rerun_once(stuck, tmp_path, caplog):
+    """The warm start from the parent's optimum keeps a nested edit's fit within reach of its
+    parent's, so one stopped past its cap runs once more, in a fresh pool, and counts as run."""
+    engine = M.ProcessEngine(2, start_seconds=0.5, rerun=frozenset({"0"}))
+    with caplog.at_level(logging.WARNING, logger=M.__name__):
+        result = _fit(engine, marker=str(tmp_path / "hung"))
+
+    assert (tmp_path / "hung").exists()
+    assert engine.killed == []
+    assert all(r.fval < 1e-8 for r in result.optimize_result.list)
+    assert "fit: rerunning start(s) ['0'] from the parent's optimum once" in caplog.messages
+    assert _no_worker_left()
+
+
+def test_a_warm_start_stopped_twice_fails_the_fit_as_wedged(stuck):
+    """A warm start from the parent's optimum stuck again on its rerun fails the fit: scored
+    without it, a nested edit could come out worse than its parent for want of the search."""
+    with pytest.raises(InfrastructureError) as wedged:
+        _fit(M.ProcessEngine(2, start_seconds=0.5, rerun=frozenset({"0"})))
+
+    assert wedged.value.cause == FIT_WEDGED
+    assert "start(s) ['0'], warm from the parent's optimum, ran past" in str(wedged.value)
+    assert _no_worker_left()
 
 
 def test_a_fit_within_its_deadline_returns_its_starts_in_task_order(monkeypatch):
@@ -157,7 +279,7 @@ def test_a_running_fit_logs_how_many_of_its_starts_are_done(monkeypatch, caplog)
     threading.Timer(0.1, futures[1].set_result, (None,)).start()
     threading.Timer(0.2, futures[2].set_result, (None,)).start()
     with caplog.at_level(logging.INFO, logger=M.__name__):
-        M.watch(futures, [2, 1, 1], concurrent.futures.wait, lambda _: None)
+        M.watch(futures, [2, 1, 1], concurrent.futures.wait, lambda *_: ())
 
     assert "fit: 2/4 starts done after 0s" in caplog.messages
 
@@ -185,6 +307,42 @@ def test_a_wedged_fit_is_not_rerun_sequentially(fit_session, monkeypatch):
     with pytest.raises(InfrastructureError, match="fit_wedged"):
         fitting.fit_and_simulate(fit_session, fit_session.engine, do_fit=True, n_starts=2)
     assert len(engines) == 1
+
+
+class _StopsTheLast(M.CappedEngine):
+    """Runs a fit's starts here, all but its last, which comes back stopped past its cap."""
+
+    start_seconds = 60.0
+
+    def _run(self, tasks):
+        return [task.execute() for task in tasks[:-1]] + [None], {len(tasks) - 1}
+
+
+def test_a_stopped_start_reaches_the_result_the_version_and_the_de_dup(fit_session, monkeypatch):
+    """A fit scored without a stopped start says so: in its result, with a warning, and in its
+    version, whose fit the de-dup then lets stand only for one of as many starts as it completed,
+    so the same model asked for with all three is refit, its warm start from that fit's optimum
+    named for a rerun (#118)."""
+    reruns = []
+
+    def engine(n_starts, shared, previous, rerun):
+        reruns.append(rerun)
+        return _StopsTheLast()
+
+    monkeypatch.setattr(fitting, "_fit_engine", engine)
+    out = fit_session.fit(n_starts=3)
+
+    assert out["committed"] is True and out["neg_log_likelihood"] is not None
+    assert out["n_starts"] == 3 and out["n_starts_killed"] == 1
+    assert "Starts stopped past the" in out["warnings"][-1] and "1 of 3" in out["warnings"][-1]
+    assert fit_session.provenance.get_meta(out["version"])["n_starts_killed"] == 1
+    stored = fit_session.provenance.get_version(out["version"])["optimization"]
+    assert stored["n_starts"] == 3 and stored["n_starts_killed"] == 1
+    assert fit_session.fit(n_starts=2)["no_change"] is True
+    again = fit_session.fit(n_starts=3)
+    assert again["committed"] is True
+    assert any("against its 2" in w for w in again["warnings"])
+    assert reruns == [frozenset(), frozenset({"0"})]
 
 
 # -- the tool boundary --------------------------------------------------------------------------
