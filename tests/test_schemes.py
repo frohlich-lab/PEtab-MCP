@@ -341,6 +341,80 @@ def test_a_one_step_scheme_needs_no_placeholder():
     assert gated("kf/(1 + amount(activated_by))").derived == {"activated_by": "inhibited_by"}
 
 
+#: A binding written as two one-way lines (isensee's `camp_release*`), and its two sides.
+_BOUND = "members_0(members_1=1) % members_1(members_0=1)"
+_FREE = "members_0(members_1=None) + members_1(members_0=None)"
+
+
+def _binding(on, off, parameters):
+    return M.written(
+        {"statement_type": "Complex", "policy": "two_lines", "parameters": parameters,
+         "scheme": f"{_FREE} >> {_BOUND} @ {on}\n{_BOUND} >> {_FREE} @ {off}"},
+        dict(M.REGISTRY),
+    )
+
+
+def test_a_binding_written_as_two_lines_has_a_net_rate():
+    """sweep-55max: the members, made by the way back and used by the way on, read as
+    intermediates, so a binding as two lines had no J where the same as one `|` line had one."""
+    _binding("kf/(1 + amount(inhibited_by)/K)", "kr", ["kf", "kr", "K"])  # a4
+    two_lines = _binding("kf", "kr", ["kf", "kr"])  # a5
+    j = S.net_rate("Complex", "two_lines", {("Complex", "two_lines"): two_lines})
+    assert {s.name for s in j.free_symbols} == {
+        "kf", "[members_0(members_1=None)]", "[members_1(members_0=None)]"
+    }
+
+
+def test_a_regulator_of_the_way_back_alone_does_not_move_the_initial_rate():
+    """With its complex absent a binding does not come apart, so what speeds only its way back
+    (a2) leaves J as it is. Whether such a regulator, a repressor of mRNA stability among them,
+    should be signed on the steady state instead is the user's call (PEtab-MCP#127)."""
+    with pytest.raises(MechanismError, match=r"does not change with it"):
+        _binding("kf", "kr*(1 + amount(inhibited_by)/K)", ["kf", "kr", "K"])
+
+
+@pytest.mark.parametrize(
+    "degradation",
+    [
+        "kd*(1 + amount(activated_by)/K)",  # b2
+        "kd*amount(obj)*(1 + amount(activated_by)/K)",  # b3: second order in obj, itself
+    ],
+)
+def test_turnover_with_basal_synthesis_is_signed_on_its_degradation(degradation):
+    """sweep-55max: basal synthesis makes obj, so obj did not count as the reactant a
+    DecreaseAmount removes, and the scheme made nothing (b2), or read as two intermediates meeting
+    (b3, where obj meets itself). The statement says obj is what it removes."""
+    M.written(
+        {"statement_type": "DecreaseAmount", "policy": "turnover", "parameters": ["kd", "ks", "K"],
+         "scheme": f"obj() >> None @ {degradation}\nNone >> obj() @ ks"},
+        dict(M.REGISTRY),
+    )
+
+
+def test_a_large_rate_is_signed_in_bounded_time():
+    """sweep-55max's lucarelli gexpr13 did not return from `written` in 20 minutes: an unused
+    placeholder role read as an intermediate, and the linearity test expanded the whole rate in
+    it. Now it is signed factor by factor, in about a second."""
+    import time
+
+    rate = (
+        "kd*(1 + a34*amount(modulated_by_0)/(H34 + amount(modulated_by_0)) + "
+        "a24*amount(modulated_by_1)/(H24 + amount(modulated_by_1)))*"
+        "(1 - rho2*amount(inhibited_by)/(H2 + amount(inhibited_by)))/"
+        "(1 + rho3*amount(modulated_by_2)/(H3 + amount(modulated_by_2)) + "
+        "rhoD*(amount(modulated_by_1) + amount(modulated_by_0))/"
+        "(HD + amount(modulated_by_1) + amount(modulated_by_0)) + rL)"
+    )
+    start = time.monotonic()
+    M.written(
+        {"statement_type": "IncreaseAmount", "policy": "gexpr13",
+         "parameters": "kd a34 a24 rho2 rho3 rhoD rL H2 H3 H24 H34 HD".split(),
+         "scheme": f"None >> obj() @ {rate}\nobj() >> None @ kd"},
+        dict(M.REGISTRY),
+    )
+    assert time.monotonic() - start < 60
+
+
 def test_a_reversible_step_is_checked_on_its_forward_rate():
     """With its product absent a step does not run back, so what slows only its way back claims
     nothing a regulator of the reaction does."""
