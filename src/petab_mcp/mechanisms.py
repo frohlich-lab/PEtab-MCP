@@ -208,9 +208,17 @@ def _read_regulators(
     return {name: agents[name] for name in names}
 
 
+#: The size, in sympy operations, past which an expression is not expanded or factored to sign
+#: it: both grow without bound on a large rate (perica_egf's gexpr13 ran past 20 minutes), and every
+#: build reads every mechanism again. Past it a sign is read off the expression as it stands, and
+#: one that cannot be counts as not shown.
+SIGN_OPS = 300
+
+
 def _sign(e: sympy.Expr) -> int | None:
     """``1`` when ``e`` is provably never negative, ``-1`` never positive, from the assumptions on
-    its names and how products, powers and sums of signed terms combine; ``None`` otherwise."""
+    its names and how products, powers and sums of signed terms combine; ``None`` otherwise. A
+    sum is expanded only within :data:`SIGN_OPS`."""
     if e.is_nonnegative:
         return 1
     if e.is_nonpositive:
@@ -225,8 +233,10 @@ def _sign(e: sympy.Expr) -> int | None:
         sign = _sign(base)
         return sign if sign == 1 or exponent.is_odd else None
     if isinstance(e, sympy.Add):
-        signs = {_sign(t) for t in sympy.Add.make_args(sympy.expand(e))}
-        return signs.pop() if len(signs) == 1 and None not in signs else None
+        for terms in (e, sympy.expand(e) if sympy.count_ops(e) <= SIGN_OPS else None):
+            signs = {_sign(t) for t in sympy.Add.make_args(terms)} if terms is not None else {None}
+            if len(signs) == 1 and None not in signs:
+                return signs.pop()
     return None
 
 
@@ -237,8 +247,44 @@ def _direction(expr: sympy.Expr, symbol: sympy.Symbol) -> int | None:
     switches = (c for pw in expr.atoms(sympy.Piecewise) for _, c in pw.args)
     if any(symbol in getattr(c, "free_symbols", ()) for c in switches):
         return None
-    d = sympy.diff(expr, symbol)
-    if sympy.simplify(d) == 0:
+    return _monotone(expr, symbol)
+
+
+def _monotone(e: sympy.Expr, x: sympy.Symbol) -> int | None:
+    """:func:`_direction` without the piecewise test. Within :data:`SIGN_OPS` by the sign of the
+    derivative; past it, or where that fails, taken apart: a sum moves as all its terms agree, a
+    product as each factor's move times the sign of the rest, a power as its base, signed by the
+    exponent. A large rate never has to be expanded, only its small parts differentiated."""
+    if x not in e.free_symbols:
+        return 0
+    if sympy.count_ops(e) <= SIGN_OPS and (found := _by_derivative(e, x)) is not None:
+        return found
+    if isinstance(e, sympy.Add):
+        moves = {_monotone(t, x) for t in e.args} - {0}
+        return moves.pop() if len(moves) == 1 and None not in moves else (None if moves else 0)
+    if isinstance(e, sympy.Mul):
+        moves = set()
+        for i, factor in enumerate(e.args):
+            if (move := _monotone(factor, x)) == 0:
+                continue
+            rest = _sign(sympy.Mul(*(f for j, f in enumerate(e.args) if j != i)))
+            if move is None or rest is None:
+                return None
+            moves.add(move * rest)
+        return moves.pop() if len(moves) == 1 else (None if moves else 0)
+    if isinstance(e, sympy.Pow) and x not in e.exp.free_symbols:
+        move, power, rest = _monotone(e.base, x), _sign(e.exp), _sign(e.base ** (e.exp - 1))
+        return None if None in (move, power, rest) else move * power * rest
+    if isinstance(e, (sympy.exp, sympy.log)):
+        return _monotone(e.args[0], x)
+    return None
+
+
+def _by_derivative(e: sympy.Expr, x: sympy.Symbol) -> int | None:
+    """The sign of ``e``'s derivative in ``x``, its numerator and denominator signed as they stand
+    and factored; ``0`` where it cancels; ``None`` where neither shows it."""
+    d = sympy.diff(e, x)
+    if d == 0 or sympy.cancel(d) == 0:
         return 0
     numerator, denominator = sympy.fraction(sympy.together(d))
     for n, den in ((numerator, denominator), (sympy.factor(numerator), sympy.factor(denominator))):

@@ -886,7 +886,8 @@ def net_rate(stmt_type: str, policy: str, library) -> sympy.Expr:
     # A reactant a step back makes again (`obj_to >> obj_from`) is still the statement's.
     stated = {i for agent in _reactants(stmt) for i in matching(agent)}
     reactants = ((written_left - written_right) | stated) - products - set(regulators)
-    intermediates = sorted(set(range(len(model.species))) - products - reactants - set(regulators))
+    # A species no reaction makes or uses (a placeholder role the scheme leaves out) is held.
+    intermediates = sorted((made | used) - products - reactants - set(regulators))
     amounts: dict[int, sympy.Expr] = {}
     for i, species in enumerate(model.species):
         if i in regulators:
@@ -917,10 +918,17 @@ def net_rate(stmt_type: str, policy: str, library) -> sympy.Expr:
     change = [sum(stoichiometry[i, j] * rates[j] for j in range(len(rates)))
               for i in range(len(model.species))]
     unknown = [amounts[i] for i in intermediates]
-    if any(sympy.Poly(rate, *unknown).total_degree() > 1 for rate in rates if unknown):
-        raise MechanismError(
-            "two of its intermediates meet in one step, so their steady state has no closed form"
-        )
+    # Linear in the intermediates: at most one among a step's reactants, and none in its rate
+    # constant. Read off the network rather than expanded: expanding a large rate never ended.
+    for rx, rate in zip(model.reactions, rates):
+        inside = [amounts[i] for i in rx["reactants"] if i in intermediates]
+        if rate != 0 and (len(inside) > 1 or (rate / sympy.Mul(*inside)).free_symbols & set(unknown)):
+            raise MechanismError(
+                "two of its intermediates meet in one step, or one rate reads an intermediate's "
+                "amount, so their steady state has no closed form"
+            )
+    if sum(sympy.count_ops(change[i]) for i in intermediates) > NET_OPS:
+        raise MechanismError("its intermediates' steady state is too large to solve symbolically")
     within = stoichiometry.extract(intermediates, list(range(len(rates))))
     totals = [
         sum(c * x for c, x in zip(conserved, unknown)) - sympy.Symbol(f"total{k}", positive=True)
@@ -930,23 +938,37 @@ def net_rate(stmt_type: str, policy: str, library) -> sympy.Expr:
     if unknown and (len(solution) != 1 or any(set(unknown) & v.free_symbols for v in solution[0])):
         raise MechanismError("its intermediates have no unique steady state")
     steady = dict(zip(unknown, solution[0])) if unknown else {}
+    # Kept as built, its factors apart, for the sign prover; cancelled only to tell zero.
     net = {
-        i: sympy.simplify(change[i].xreplace(steady))
+        i: change[i].xreplace(steady)
         for i in range(len(model.species)) if i not in intermediates and i not in regulators
     }
-    made_now = [i for i in sorted(products) if net[i] != 0]
-    removed = [i for i, e in sorted(effects.items()) if e < 0 and net.get(i, 0) != 0]
+    moving = {i for i, rate in net.items() if _settled(rate) != 0}
+    made_now = [i for i in sorted(products) if i in moving]
+    removed = [i for i, e in sorted(effects.items()) if e < 0 and i in moving]
     if not made_now and not removed:
         raise MechanismError("it makes nothing from its reactants alone")
     reference = made_now[0] if made_now else removed[0]
     j = net[reference] if made_now else -net[reference]
     for i, rate in net.items():
-        if rate != 0 and sympy.simplify(rate / j).free_symbols:
+        if i in moving and _settled(rate / j).free_symbols:
             raise MechanismError(
                 f"it changes {model.species[reference]} and {model.species[i]} at rates no "
                 "constant ratio relates: two reactions, with no one net rate"
             )
     return j
+
+
+#: The size, in sympy operations, of the intermediates' rates past which their steady state is not
+#: solved for: a scheme past it has no net rate to read (:func:`net_rate`).
+NET_OPS = 2000
+
+
+def _settled(expr: sympy.Expr) -> sympy.Expr:
+    """``expr`` cancelled to lowest terms within :data:`mechanisms.SIGN_OPS`, as it stands past it."""
+    from .mechanisms import SIGN_OPS
+
+    return sympy.cancel(expr) if sympy.count_ops(expr) <= SIGN_OPS else expr
 
 
 def _in_full(cp: pysb.ComplexPattern) -> pysb.ComplexPattern:
