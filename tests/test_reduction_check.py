@@ -54,6 +54,24 @@ def test_a_reduced_model_agrees_with_its_unreduced_expansion(tmp_path):
     assert stored["status"] == RC.STATUS_OK and out["file"].endswith("reduction_check.json")
 
 
+def test_a_split_monomer_agrees_with_its_unreduced_expansion(tmp_path):
+    """The enzyme's two sites are put on apart, so it is tracked as two blocks and its rate
+    factor is their product: checked the same way, against the expansion over its four forms.
+    The kinase's rates are pinned so that the doubly modified enzyme, and so B, is not near 0."""
+    mcp = _built(
+        tmp_path,
+        statements=[
+            "conv: A -> B by E{pY1, pS2} | mass_action",
+            "y1: K phosphorylates E at Y1 | indra_default kf=2",
+            "s2: K phosphorylates E at S2 | indra_default kf=3",
+        ],
+    )
+    out = _call(mcp, "verify_reduction", {})
+    assert out["status"] == RC.STATUS_OK, out
+    assert out["network"]["split"] == {"E": {"E_Y1": ["Y1"], "E_S2": ["S2"]}}
+    assert abs(out["worst"]["unreduced"]) > 1e-3
+
+
 def test_a_model_disagreeing_with_its_expansion_is_a_mismatch(tmp_path, monkeypatch):
     """Should the reduced model ever simulate something else than its rows assert, the check says
     so, with both likelihoods, rather than passing it."""
