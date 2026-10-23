@@ -609,6 +609,19 @@ def test_a_conversion_makes_its_products_in_the_states_they_write():
     assert reaction == (["A()", "A()"], ["D(Y1='p')"])
 
 
+def test_a_carried_molecule_stays_free_where_its_reactant_is_written_free():
+    """PEtab-MCP#122: perelson's off-drug infection with the drug stated, `HIV1{~Ritonavir} + CD4_T
+    -> HIV1`, was refused by BioNetGen: the product HIV1 named no `ritonavir` site, so it read as a
+    new HIV1 missing one."""
+    from indra.statements import Conversion
+
+    hiv = Agent("HIV1", bound_conditions=[BoundCondition(Agent("Ritonavir"), False)])
+    (reaction,) = _reactions(
+        [(Conversion(None, [hiv, Agent("CD4_T")], [Agent("HIV1")]), "mass_action", "r1")], {}
+    )
+    assert reaction == (["CD4_T()", "HIV1(ritonavir=None)"], ["HIV1(ritonavir=None)"])
+
+
 def test_a_release_frees_the_partner_it_was_bound_to():
     """An internalised ligand is degraded and its receptor recycles; INDRA's degradation
     deletes the whole complex, receptor included."""

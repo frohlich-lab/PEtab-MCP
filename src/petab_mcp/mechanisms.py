@@ -958,15 +958,27 @@ def agent_pattern(
 def _sides(model: pysb.Model, before: list[Agent], after: list[Agent], partners: bool = True):
     """The two sides of one rule turning ``before`` into ``after``, each agent a complex (or, with
     ``partners`` off, the reactant molecule alone, :func:`agent_pattern`). A product molecule
-    beyond the reactant molecules of its type is new."""
+    beyond the reactant molecules of its type is new. One carried over stays free on each binding
+    site its reactant is written free on (``A{~C} -> A``): BioNetGen maps a molecule only onto one
+    naming the same sites, and read it as new, a molecule missing a site."""
     lhs = [pysb.ComplexPattern(agent_pattern(model, a, partners=partners), None) for a in before]
-    carried = Counter(mp.monomer.name for cp in lhs for mp in cp.monomer_patterns)
+    reactants: dict[str, list[dict]] = {}
+    for mp in (mp for cp in lhs for mp in cp.monomer_patterns):
+        reactants.setdefault(mp.monomer.name, []).append(mp.site_conditions)
+    carried = Counter({name: len(each) for name, each in reactants.items()})
 
     def fresh(name: str) -> bool:
         carried[name] -= 1
         return carried[name] < 0
 
     rhs = [pysb.ComplexPattern(agent_pattern(model, a, fresh), None) for a in after]
+    seen: Counter = Counter()
+    for mp in (mp for cp in rhs for mp in cp.monomer_patterns):
+        name = mp.monomer.name
+        if seen[name] < len(reactants.get(name, ())):
+            free = {s for s, v in reactants[name][seen[name]].items() if v is None}
+            mp.site_conditions.update({s: None for s in free - set(mp.site_conditions)})
+        seen[name] += 1
     return ReactionPattern(lhs), ReactionPattern(rhs)
 
 
