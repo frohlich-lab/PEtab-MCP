@@ -100,6 +100,10 @@ class Emission:
     #: The sites the row's scheme (:mod:`schemes`) gave molecules that had none such, and no
     #: earlier row's scheme had: molecule -> site -> its states (none for a binding site).
     sites_added: dict[str, dict[str, list[str]]] = field(default_factory=dict)
+    #: The regulators the row's statement states ``modulated_by`` whose direction its rate
+    #: proves (:func:`derive`), by position: ``modulated_by_<i>`` -> ``inhibited_by`` or
+    #: ``activated_by``. The statement keeps what it stated; this is what its maths adds.
+    derived: dict[str, str] = field(default_factory=dict)
 
 
 Policy = Callable[[Statement, pysb.Model, str], Emission]
@@ -166,7 +170,12 @@ def instantiate(
         )
     entry = library[key]
     read = _read_regulators(prefix, key, getattr(entry, "regulators", frozenset()), regulators or {})
-    return entry(stmt, model, prefix, regulators=read) if read else entry(stmt, model, prefix)
+    emission = entry(stmt, model, prefix, regulators=read) if read else entry(stmt, model, prefix)
+    derived = {
+        name if name[-1].isdigit() else f"{name}_0": kind
+        for name, kind in getattr(entry, "derived", {}).items() if name in read
+    }
+    return replace(emission, derived=derived) if derived else emission
 
 
 def _read_regulators(
@@ -247,6 +256,19 @@ def _direction(expr: sympy.Expr, symbol: sympy.Symbol) -> int | None:
     return None
 
 
+def derive(expr: sympy.Expr, names) -> dict[str, str]:
+    """The kind each ``modulated_by`` name of ``names`` takes from ``expr`` (its names signed by
+    :func:`assumed`) where the direction is provable: ``inhibited_by`` where it never rises with
+    it, ``activated_by`` where it never falls; one whose direction depends on the values, or that
+    ``expr`` does not change with, stays ``modulated_by`` and is left out."""
+    kinds = {-1: "inhibited_by", 1: "activated_by"}
+    return {
+        name: kinds[direction]
+        for name in sorted(names) if name.startswith("modulated")
+        if (direction := _direction(expr, sympy.Symbol(name, nonnegative=True))) in kinds
+    }
+
+
 def check_regulators(policy: str, rate: str, expr: sympy.Expr, names=None) -> None:
     """Refuse ``rate`` of ``policy`` (``expr``, its names signed by :func:`assumed`) when it does
     not fall with each inhibitor it reads and rise with each activator, for every value of every
@@ -274,7 +296,8 @@ def check_regulators(policy: str, rate: str, expr: sympy.Expr, names=None) -> No
         else:
             found = (
                 "that cannot be shown for every value of the rate's names (nor across a piecewise "
-                f"switching on it): state it `{unsigned}`, which claims no direction"
+                f"switching on it): state it `{unsigned}`, which claims no direction and is "
+                "always accepted"
             )
         raise MechanismError(
             f"rate {rate!r} of {policy!r} reads `{symbol}`, which a statement states {claim} its "
@@ -724,6 +747,7 @@ def written(
         refuse_rate_names(rate, policy, unknown, allowed, also, amounts, problem_ids)
     value = assumed(parse_rate(rate))
     check_regulators(policy, rate, value)
+    signs = derive(value, (s.name for s in value.free_symbols))
     refuse_unread(policy, declared, tokens)
     base = library[base_key]
 
@@ -793,6 +817,7 @@ def written(
     policy_fn.regulators = frozenset(
         s.name for s in value.free_symbols if REGULATOR_NAME.fullmatch(s.name)
     )
+    policy_fn.derived = signs
     return policy_fn
 
 

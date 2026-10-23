@@ -253,6 +253,17 @@ def test_a_regulator_that_moves_the_net_rate_the_other_way_is_refused():
         _two_steps(kr="kr" + _SLOWED)
 
 
+def test_a_modulator_of_a_scheme_takes_the_direction_of_its_net_rate():
+    """The net rate decides, as for a stated regulator: slowing unbinding activates."""
+    assert _two_steps(kc="kc" + _SLOWED.replace("inhibited", "modulated")).derived == {
+        "modulated_by": "inhibited_by"
+    }
+    assert _two_steps(kr="kr" + _SLOWED.replace("inhibited", "modulated")).derived == {
+        "modulated_by": "activated_by"
+    }
+
+
+
 def test_a_step_into_a_dead_end_inhibits():
     """No rule on a step's own rate gets this one: a step pointing forward, parking the enzyme in a
     form that makes nothing, slows the reaction as it speeds."""

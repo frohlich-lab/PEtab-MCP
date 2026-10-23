@@ -189,7 +189,8 @@ class StatementRow(BaseModel):
         description="the assertion as an INDRA statement's JSON: its `type` and agents, e.g. "
         "{type: 'Phosphorylation', enz: {name: 'A'}, sub: {name: 'B'}, residue: 'S', "
         "position: '10'}; and the agents that regulate its rate without taking part, each a list: "
-        "`inhibited_by`, `activated_by`, `modulated_by` ('..., inhibited by C' in the notation)."
+        "`inhibited_by`, `activated_by`, `modulated_by` ('..., inhibited by C' in the notation). "
+        "`modulated_by` is always accepted, and takes the direction its rate proves, if any."
     )
     policy: str = Field(description="the mechanism expressing it, e.g. 'indra_default'.")
     prefix: str = Field(
@@ -262,7 +263,8 @@ class MechanismDef(BaseModel):
         "t_1, k_1)`). It is multiplied by every reactant's amount, catalysts included, so a rate "
         "that stays non-negative cannot drive an amount negative; a constant `k` alone is mass "
         "action. It must fall with each inhibitor and rise with each activator for every value of "
-        "its names, as sympy shows; a regulator it cannot show that for is `modulated_by`."
+        "its names, as sympy shows; a regulator it cannot show that for is `modulated_by`, which "
+        "the rate signs where it can."
     )
     parameters: list[str] = Field(
         default_factory=list,
@@ -1065,7 +1067,8 @@ def _make_changes_statements_doc(
         "its row's statement names, so an agent that changes a reaction's rate without taking "
         "part is stated as its regulator: `r1: E phosphorylates S at T20, inhibited by C | "
         "inhibited Ki=K_C` claims C slows that reaction, and its mechanism's rate reads C as "
-        "`inhibited_by` (`activated_by` speeds it, `modulated_by` claims no direction). The rate "
+        "`inhibited_by` (`activated_by` speeds it; `modulated_by` claims no direction and takes "
+        "the one the rate proves, marked `(inhibits, from its rate)` in `get_model`). The rate "
         "must fall with each inhibitor and rise with each activator, and read every regulator its "
         "statement states. A row's `parameters` shares a rate constant with other "
         "rows, or with a parameter the problem ships, or fixes it to a number. "
@@ -1174,7 +1177,8 @@ def _statements_text(session, version: int | None) -> str:
         )
     for row in record["rows"]:
         bare = {k: row[k] for k in ("statement", "policy", "prefix", "parameters") if row.get(k)}
-        lines.append(notation.render(bare, library) or json.dumps(bare))
+        derived = (row.get("emission") or {}).get("derived")
+        lines.append(notation.render(bare, library, derived) or json.dumps(bare))
     for start in record.get("starts") or []:
         lines.append(f"start {start['name']}: {notation.agent_text(start['agent'])} = "
                      f"{start['amount']}")

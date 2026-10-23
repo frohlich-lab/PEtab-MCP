@@ -393,7 +393,7 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
     built for each row from its own agents (see the module docstring). A rate naming anything but
     the declared ``parameters`` is refused as :func:`mechanisms.written` refuses one, with
     ``problem_ids``."""
-    from .mechanisms import assumed, check_regulators, refuse_rate_names, refuse_unread
+    from .mechanisms import assumed, check_regulators, derive, refuse_rate_names, refuse_unread
 
     stmt_type, policy = definition["statement_type"], definition["policy"]
     lines = parse(definition["scheme"])
@@ -541,12 +541,15 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
     policy_fn.regulators = frozenset(read)
     policy_fn.scheme_sites = scheme_sites
     policy_fn.scheme = definition["scheme"]
-    if all(n.startswith("modulated") for n in read):
+    policy_fn.derived = {}
+    if not read:
         return policy_fn
     if len(lines) == 1:
         # One step: J is its forward rate times its reactants, its way back silent with its
         # product absent. Built for no placeholder, whose agents lack the states other rows give.
-        check_regulators(policy, lines[0].rates[0], assumed(_sympy(rates[0][0])), read)
+        forward = assumed(_sympy(rates[0][0]))
+        check_regulators(policy, lines[0].rates[0], forward, read)
+        policy_fn.derived = derive(forward, read)
         return policy_fn
     key = (stmt_type, definition["scheme"], tuple(sorted(declared)))
     if key not in _NET_RATES:
@@ -555,12 +558,15 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
         except MechanismError as exc:
             _NET_RATES[key] = exc
     if isinstance(_NET_RATES[key], MechanismError):
+        if all(n.startswith("modulated") for n in read):  # no direction claimed, none to derive
+            return policy_fn
         unsigned = sorted(n.replace(n.split("_by")[0], "modulated", 1) for n in read)
         raise MechanismError(
             f"{policy!r} reads {sorted(read)}, claiming which way each moves its reaction, but "
             f"{_NET_RATES[key]}: state each `{unsigned[0]}`, which claims no direction"
         )
     check_regulators(policy, f"net rate J = {_short(_NET_RATES[key])}", _NET_RATES[key], read)
+    policy_fn.derived = derive(_NET_RATES[key], read)
     return policy_fn
 
 

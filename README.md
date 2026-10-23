@@ -176,7 +176,8 @@ Principles to hold onto when extending this package.
   its names, as sympy shows: a written rate as it is, a scheme of several steps by its net rate,
   its intermediates steady and its products absent, since where a step sits decides which way its
   own rate moves the reaction. A regulator that cannot be shown so is `modulated_by`, which claims
-  no direction ([`statements`](src/petab_mcp/statements.py),
+  no direction and is always accepted; where the rate proves one, it is recorded beside the
+  statement as derived ("inhibited by sorafenib (from its rate)") ([`statements`](src/petab_mcp/statements.py),
   [`mechanisms.check_regulators`](src/petab_mcp/mechanisms.py),
   [`schemes.net_rate`](src/petab_mcp/schemes.py)). INDRA has no statement about a
   reaction, so a causal graph gets the nearest one it has, wider than the claim

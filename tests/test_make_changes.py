@@ -1995,6 +1995,30 @@ def test_a_regulator_enters_through_the_statement(tmp_path):
     assert "conv: A becomes B, inhibited by C | inhibited" in str(rows)
 
 
+def test_a_modulator_takes_the_direction_its_rate_proves(tmp_path):
+    """`modulated_by` dodged the direction check, so a statement could say less than its maths.
+    It is accepted, and the direction its rate proves is kept beside what it states: in the
+    version's record and in `get_model`, which reads back as the statement it was."""
+    mcp = _statements_server(tmp_path)
+    out = _call(
+        mcp,
+        "make_changes",
+        {"justification": "C changes A becoming B", "statements": [
+            "conv: A becomes B, modulated by C | slowed"],
+         "mechanisms": [{"statement_type": "PopulationTransition", "policy": "slowed",
+                         "based_on": "mass_action", "rate": "k*Ki/(Ki + modulated_by)",
+                         "parameters": ["k", "Ki"]}]},
+    )
+    assert out["applied"] is True, out.get("error")
+    rows = str(_call(mcp, "get_model", {"format": "statements"}))
+    assert "conv: A becomes B, modulated by C (inhibits, from its rate) | slowed" in rows
+    (row,) = json.loads(
+        (tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text()
+    )["rows"]
+    assert row["statement"]["modulated_by"] == [{"name": "C"}]
+    assert row["emission"]["derived"] == {"modulated_by_0": "inhibited_by"}
+
+
 def test_an_unknown_activity_names_the_modification_tags():
     """`A{mod:on}` (a scheme's site, written in a row) built an activity named "mod"."""
     from petab_mcp import notation

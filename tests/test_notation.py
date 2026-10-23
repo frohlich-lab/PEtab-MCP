@@ -145,3 +145,12 @@ def test_a_statements_evidence_rides_as_a_comment():
     back = N.parse(text, _GROUND, M.REGISTRY)
     assert back["statement"]["evidence"] == row["statement"]["evidence"]
     assert _canonical(back) == _canonical(row)
+
+
+def test_a_derived_kind_is_marked_and_reads_back_as_stated():
+    """get_model marks a modulated regulator with the direction its rate proves; the marked row,
+    sent back, states what it stated."""
+    row = N.parse("r: A becomes B, modulated by C and D | p")
+    text = N.render(row, M.REGISTRY, {"modulated_by_1": "activated_by"})
+    assert text == "r: A becomes B, modulated by C and D (activates, from its rate) | p"
+    assert N.parse(text) == row

@@ -690,6 +690,28 @@ def test_a_rate_moving_as_its_regulators_claim_is_written(rate):
         M._RATE_TOKENS.findall(rate)))}, M.REGISTRY)
 
 
+@pytest.mark.parametrize(
+    "rate, derived",
+    [
+        ("k * Ki / (Ki + modulated_by)", {"modulated_by_0": "inhibited_by"}),
+        ("k * modulated_by", {"modulated_by_0": "activated_by"}),
+        # Sneyd's Ca: which way it moves the rate depends on the constants.
+        ("(k + Ki*modulated_by)/(1 + modulated_by)", {}),
+        # A switch's jump is no derivative.
+        ("k*piecewise(1, modulated_by > 0, 0)", {}),
+    ],
+)
+def test_a_modulator_takes_the_direction_its_rate_proves(rate, derived):
+    """`modulated_by` dodged the direction check; the direction its rate proves is now recorded
+    beside it, and one it cannot prove is not."""
+    parameters = ["k", "Ki"] if "Ki" in rate else ["k"]
+    library = _library_with(_DIVISIVE | {"policy": "mod", "rate": rate, "parameters": parameters})
+    _, (emission,) = M.assemble(
+        [(_TRANSITION, "mod", "r1", None, {"modulated_by": [Agent("drug")]})], library=library
+    )
+    assert emission.derived == derived
+
+
 def test_a_written_rate_reads_a_list_role():
     """Conversion's substrate is the list `obj_from`; a rate could not read it, so substrate
     inhibition had no route but a private entry."""
