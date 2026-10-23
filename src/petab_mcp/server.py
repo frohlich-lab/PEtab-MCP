@@ -247,9 +247,10 @@ class MechanismDef(BaseModel):
         "enz(sub=1) % sub(enz=1, mod='off') @ kf`. `list_mechanisms` shows every library entry "
         "this way, with the `parameters` it declares: start from one. A rate is an expression "
         "over your `parameters`, `amount(<pattern>)`, `amount(inhibited_by)` (a regulator the "
-        "statement states, checked on the scheme's net rate: its intermediates at steady state, "
-        "its products absent; one acting only on a step that rate cannot see, a product's "
-        "degradation, goes on that step's own row), `time` and exp/log/sqrt. A molecule is a role or, by its name, a "
+        "statement states, checked on the row's net rate as the model builds it: its "
+        "intermediates at steady state, its products absent; one acting only on a step that rate "
+        "cannot see, a product's degradation, goes on that step's own row), `time` and "
+        "exp/log/sqrt. A molecule is a role or, by its name, a "
         "partner the statement writes a role bound or not bound to (`C` of `E{~C}`): a mechanism "
         "reads no agent its statement does not name. Give `scheme` or `rate`, not both.",
     )
@@ -262,8 +263,9 @@ class MechanismDef(BaseModel):
         "exp/log/sqrt and `piecewise(value, condition, ..., otherwise)` (`piecewise(k_0, time < "
         "t_1, k_1)`). It is multiplied by every reactant's amount, catalysts included, so a rate "
         "that stays non-negative cannot drive an amount negative; a constant `k` alone is mass "
-        "action. It must fall with each inhibitor and rise with each activator for every value of "
-        "its names, as sympy shows; a regulator it cannot show that for is `modulated_by`."
+        "action. The row's net rate must fall with each inhibitor and rise with each activator "
+        "for every value of its names, as sympy shows; a regulator it cannot show that for is "
+        "`modulated_by`."
     )
     parameters: list[str] = Field(
         default_factory=list,

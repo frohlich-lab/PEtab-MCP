@@ -36,9 +36,9 @@ part of that. A bound condition (``RAF{~sorafenib}``) claims a complex the rule 
 an ``Inhibition(sorafenib, RAF)`` claims every reaction RAF catalyses, since an INDRA statement
 names agents and never another statement. The mechanism's rate reads each regulator
 (:mod:`mechanisms`), and its sign is checked against the claim: a rate an inhibitor does not
-slow, or an activator does not speed, is refused, and ``modulated_by`` claims no sign. A scheme of
-several steps is checked on its net rate (:func:`schemes.net_rate`), the reaction's initial rate,
-since where a step sits decides which way its own rate moves the reaction. A regulator that rate
+slow, or an activator does not speed, is refused, and ``modulated_by`` claims no sign. The rate
+checked is the row's net rate as the model builds it (:mod:`regulation`), the reaction's initial
+rate, since where a step sits decides which way its own rate moves the reaction. A regulator that rate
 does not change with acts on a step it cannot see, a product's degradation, and is that step's,
 stated on its own row: each claim keeps one meaning, and :func:`as_indra` never puts a regulator
 on another reaction. INDRA's
@@ -51,12 +51,13 @@ from __future__ import annotations
 
 import inspect
 import re
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from copy import deepcopy
 from typing import Any
 
 from indra.statements import (
     Activation,
+    ActivityCondition,
     Agent,
     BoundCondition,
     Complex,
@@ -67,12 +68,15 @@ from indra.statements import (
     Gef,
     IncreaseAmount,
     Inhibition,
+    ModCondition,
     Modification,
     RegulateActivity,
     RegulateAmount,
     RemoveModification,
+    SelfModification,
     Statement,
     Translocation,
+    Transphosphorylation,
     activity_types,
     get_all_descendants,
     get_statement_by_name,
@@ -340,55 +344,101 @@ def _catalyst(stmt: Statement) -> tuple[Agent | None, str]:
 
 def _products(stmt: Statement) -> list[tuple[Agent, int]]:
     """What ``stmt`` makes, each with ``1``, or ``-1`` for what a removal takes away: the agent in
-    the state the statement leaves it in. Empty for a statement that makes nothing."""
-    if isinstance(stmt, (IncreaseAmount, DecreaseAmount)):
-        return [(stmt.obj, 1 if isinstance(stmt, IncreaseAmount) else -1)]
-    if isinstance(stmt, Conversion):
-        return [(agent, 1) for agent in stmt.obj_to or []]
-    if isinstance(stmt, PopulationTransition):
-        return [(stmt.target, 1)]
-    if isinstance(stmt, Modification) and getattr(stmt, "sub", None) is not None:
-        return [(_modified(stmt, not isinstance(stmt, RemoveModification)), 1)]
-    if isinstance(stmt, Translocation) and stmt.to_location:
-        moved = deepcopy(stmt.agent)
-        moved.location = stmt.to_location
-        return [(moved, 1)]
-    if isinstance(stmt, Complex):
-        first, *rest = (deepcopy(m) for m in stmt.members)
-        first.bound_conditions = [*first.bound_conditions, *(BoundCondition(m) for m in rest)]
-        return [(first, 1)]
-    return []
+    the state the statement leaves it in (:data:`_REACTIONS`). Empty for a statement that makes
+    nothing."""
+    return _reaction(stmt)[1]
 
 
 def _reactants(stmt: Statement) -> list[Agent]:
-    """What ``stmt`` turns into its :func:`_products`, in the state it finds it: the substrate
-    before its modification, a conversion's inputs, a population's source, a removal's object.
+    """What ``stmt`` turns into its :func:`_products`, in the state it finds it (:data:`_REACTIONS`).
     Empty for a statement that consumes nothing (a synthesis)."""
-    if isinstance(stmt, DecreaseAmount):
-        return [stmt.obj]
-    if isinstance(stmt, Conversion):
-        return list(stmt.obj_from or [])
-    if isinstance(stmt, PopulationTransition):
-        return [stmt.source]
-    if isinstance(stmt, Modification) and getattr(stmt, "sub", None) is not None:
-        return [_modified(stmt, isinstance(stmt, RemoveModification))]
-    if isinstance(stmt, Translocation):
-        found = deepcopy(stmt.agent)
-        found.location = stmt.from_location
-        return [found]
-    if isinstance(stmt, Complex):
-        return list(stmt.members)
-    return []
+    return _reaction(stmt)[0]
 
 
-def _modified(stmt: Modification, modified: bool) -> Agent:
-    """The statement's substrate with its modification written ``modified`` or not."""
-    agent = deepcopy(stmt.sub)
+def _reaction(stmt: Statement) -> tuple[list[Agent], list[tuple[Agent, int]]]:
+    for cls in type(stmt).__mro__:
+        if cls in _REACTIONS:
+            return _REACTIONS[cls](stmt)
+    return [], []
+
+
+def _modification(stmt: Modification) -> tuple[list[Agent], list[tuple[Agent, int]]]:
+    if stmt.sub is None:
+        return [], []
+    added = not isinstance(stmt, RemoveModification)
     mod = stmt._get_mod_condition()
+    return [_with_mod(stmt.sub, mod, not added)], [(_with_mod(stmt.sub, mod, added), 1)]
+
+
+def _self_modification(stmt: SelfModification) -> tuple[list[Agent], list[tuple[Agent, int]]]:
+    """An autophosphorylation modifies its enzyme; a transphosphorylation the partner its enzyme is
+    written bound to, in that complex."""
+    mod = stmt._get_mod_condition()
+    if not isinstance(stmt, Transphosphorylation):
+        return [_with_mod(stmt.enz, mod, False)], [(_with_mod(stmt.enz, mod, True), 1)]
+
+    def complex_(modified: bool) -> Agent:
+        enz = deepcopy(stmt.enz)
+        partner = enz.bound_conditions[0]
+        enz.bound_conditions = [BoundCondition(_with_mod(partner.agent, mod, modified)),
+                                *enz.bound_conditions[1:]]
+        return enz
+
+    return [complex_(False)], [(complex_(True), 1)]
+
+
+def _active(agent: Agent, activity: str, active: bool) -> Agent:
+    out = deepcopy(agent)
+    out.activity = ActivityCondition(activity, active)
+    return out
+
+
+def _moved(agent: Agent, location: str | None) -> Agent:
+    out = deepcopy(agent)
+    out.location = location
+    return out
+
+
+def _bound(stmt: Complex) -> tuple[list[Agent], list[tuple[Agent, int]]]:
+    first, *rest = (deepcopy(m) for m in stmt.members)
+    first.bound_conditions = [*first.bound_conditions, *(BoundCondition(m) for m in rest)]
+    return list(stmt.members), [(first, 1)]
+
+
+#: What each statement type consumes and what it makes, ``(reactants, products)``, each product
+#: with ``1``, or ``-1`` for what a removal takes away, in the states the statement finds and leaves
+#: them in: what a row's net rate is the rate of (:mod:`regulation`). Looked up along the type's
+#: bases. Every type a row may use that makes anything has an entry
+#: (``tests/test_regulation.py``); one that makes nothing (``ActiveForm``) has none.
+_REACTIONS: dict[type, Callable[[Statement], tuple[list[Agent], list[tuple[Agent, int]]]]] = {
+    IncreaseAmount: lambda s: ([], [(s.obj, 1)]),
+    DecreaseAmount: lambda s: ([s.obj], [(s.obj, -1)]),
+    Conversion: lambda s: (list(s.obj_from or []), [(a, 1) for a in s.obj_to or []]),
+    PopulationTransition: lambda s: ([s.source], [(s.target, 1)]),
+    Modification: _modification,
+    SelfModification: _self_modification,
+    RegulateActivity: lambda s: (
+        [_active(s.obj, s.obj_activity, not s.is_activation)],
+        [(_active(s.obj, s.obj_activity, s.is_activation), 1)],
+    ),
+    Gef: lambda s: ([_active(s.ras, "gtpbound", False)], [(_active(s.ras, "gtpbound", True), 1)]),
+    Gap: lambda s: ([_active(s.ras, "gtpbound", True)], [(_active(s.ras, "gtpbound", False), 1)]),
+    Translocation: lambda s: (
+        [_moved(s.agent, s.from_location)],
+        [(_moved(s.agent, s.to_location), 1)] if s.to_location else [],
+    ),
+    Complex: _bound,
+}
+
+
+def _with_mod(agent: Agent, mod: ModCondition, modified: bool) -> Agent:
+    """``agent`` with ``mod`` written ``modified`` or not."""
+    out = deepcopy(agent)
+    mod = deepcopy(mod)
     mod.is_modified = modified
-    agent.mods = [m for m in agent.mods if (m.mod_type, m.residue, m.position) !=
-                  (mod.mod_type, mod.residue, mod.position)] + [mod]
-    return agent
+    out.mods = [m for m in out.mods if (m.mod_type, m.residue, m.position) !=
+                (mod.mod_type, mod.residue, mod.position)] + [mod]
+    return out
 
 
 def _unknown(value: dict, allowed: Collection[str], where: str, what: str) -> list[str]:

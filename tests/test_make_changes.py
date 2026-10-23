@@ -1944,9 +1944,9 @@ def test_a_binding_may_scale_the_parameter_it_replaces(tmp_path):
     assert {"conv_k", "slow"} <= rows
 
 
-def test_a_scheme_against_its_regulator_is_refused_where_it_is_written(tmp_path):
-    """A scheme whose rate rises with what its statement says inhibits it is refused at the call
-    that writes it, not at each row that uses it."""
+def test_a_scheme_against_its_regulator_is_refused_at_its_row(tmp_path):
+    """A scheme whose net rate rises with what its statement says inhibits it is refused, naming
+    the row and what to state instead."""
     out = _call(
         _statements_server(tmp_path),
         "make_changes",
@@ -1959,7 +1959,9 @@ def test_a_scheme_against_its_regulator_is_refused_where_it_is_written(tmp_path)
         },
     )
     assert out["applied"] is False and out["error_cause"] == "malformed_mechanism"
-    assert "must fall as `inhibited_by` rises; it rises instead: state it `activated_by`" in out["error"]
+    assert ("row 'conv': its statement states `inhibited by C`, which claims it inhibits the "
+            "reaction, so its net rate must fall as C rises; it rises instead: state it "
+            "`activated by C`") in out["error"]
 
 
 def test_a_regulator_enters_through_the_statement(tmp_path):

@@ -315,47 +315,6 @@ def _by_derivative(e: sympy.Expr, x: sympy.Symbol) -> int | None:
     return None
 
 
-def check_regulators(policy: str, rate: str, expr: sympy.Expr, names=None) -> None:
-    """Refuse ``rate`` of ``policy`` (``expr``, its names signed by :func:`assumed`) when it does
-    not fall with each inhibitor it reads and rise with each activator, for every value of every
-    name: the direction a statement stating the regulator claims. ``modulated_by`` claims none.
-    A written rate is checked as it is, the one step of its mechanism; a scheme on its net rate
-    (:func:`schemes.net_rate`), since in several steps a step's own rate can move the reaction
-    either way. ``names`` are the regulators to check, by default those ``expr`` reads; one it
-    does not read is refused, as a claim the rate does not carry."""
-    names = sorted(names or (s.name for s in expr.free_symbols), key=str)
-    for symbol in (sympy.Symbol(n, nonnegative=True) for n in names):
-        if not REGULATOR_NAME.fullmatch(str(symbol)) or str(symbol).startswith("modulated"):
-            continue
-        kind = str(symbol).split("_by")[0]
-        inhibitor = kind == "inhibited"
-        direction = _direction(expr, symbol)
-        if direction == (-1 if inhibitor else 1):
-            continue
-        claim, way = ("inhibits", "fall") if inhibitor else ("activates", "rise")
-        other = str(symbol).replace(kind, "activated" if inhibitor else "inhibited", 1)
-        unsigned = str(symbol).replace(kind, "modulated", 1)
-        if direction == 0:
-            found = "it does not change with it, a claim the rate does not carry"
-        elif direction is not None:
-            found = f"it {'rises' if inhibitor else 'falls'} instead: state it `{other}`"
-        else:
-            found = (
-                "that cannot be shown for every value of the rate's names (nor across a piecewise "
-                f"switching on it): state it `{unsigned}`, which claims no direction"
-            )
-        raise MechanismError(
-            f"rate {rate!r} of {policy!r} reads `{symbol}`, which a statement states {claim} its "
-            f"reaction, so the rate must {way} as `{symbol}` rises; {found}. "
-            f"d/d{symbol} = {_shown(sympy.diff(expr, symbol))}"
-        )
-
-
-def _shown(d: sympy.Expr) -> str:
-    """``d`` as a refusal shows it: simplified while small, cut short while large."""
-    return str(sympy.simplify(d) if sympy.count_ops(d) <= 40 else d)[:240]
-
-
 def bind(
     model: pysb.Model,
     emission: Emission,
@@ -731,9 +690,9 @@ def written(
     :data:`statements.REGULATOR_NAME`), each the amount of an agent that takes no part in the
     reaction;
     ``time``; exp, log, sqrt, and ``piecewise(value, condition, ..., otherwise)``, its conditions
-    comparisons over the same names (:func:`_piecewise`). A rate must fall with each inhibitor it
-    reads and rise with each activator (:func:`check_regulators`), and read every regulator a row
-    states (:func:`_read_regulators`). A scheme (:func:`schemes.compile_scheme`) declares the
+    comparisons over the same names (:func:`_piecewise`). The rate must read every regulator a
+    row states (:func:`_read_regulators`), and the row's net rate move with each as the statement
+    claims (:mod:`regulation`). A scheme (:func:`schemes.compile_scheme`) declares the
     constants its rates name the same way.
 
     ``problem_ids`` (id to :data:`SHIPPED`, :data:`CONDITION` or :data:`SPECIES`) are names no
@@ -796,7 +755,6 @@ def written(
     if unknown:
         refuse_rate_names(rate, policy, unknown, allowed, also, amounts, problem_ids)
     value = assumed(parse_rate(rate))
-    check_regulators(policy, rate, value)
     refuse_unread(policy, declared, tokens)
     base = library[base_key]
 
@@ -879,11 +837,16 @@ def assumed(expr: sympy.Expr) -> sympy.Expr:
     })
 
 
-def refuse_unnamed(prefix: str, stmt: Statement, reads: str, agent: Agent) -> None:
+def refuse_unnamed(
+    prefix: str, stmt: Statement, reads: str, agent: Agent, stated: dict | None = None
+) -> None:
     """Refuse row ``prefix``'s mechanism reading ``agent`` (``reads`` says where) because ``stmt``
     does not name it: the statement is the claim behind the rate, so an agent the rate reads is
-    stated there, as a regulator (``statements.REGULATORS``) when it takes no part."""
+    stated there, as a regulator (``statements.REGULATORS``) when it takes no part. Where it is a
+    regulator ``stated`` (kind to agents) already, or a regulator's name the mechanism writes as an
+    agent, the refusal says how a rate reads one."""
     from .notation import agent_text, statement_text
+    from .statements import REGULATORS
 
     def noted(write, value, otherwise: str) -> str:
         try:
@@ -894,6 +857,25 @@ def refuse_unnamed(prefix: str, stmt: Statement, reads: str, agent: Agent) -> No
     listed = ", ".join(dict.fromkeys(noted(agent_text, a, a.name) for a in named_agents(stmt)))
     said = noted(statement_text, stmt, "<statement>")
     name = noted(agent_text, agent, agent.name)
+    kinds = [
+        (kind, i) for kind, given in (stated or {}).items()
+        for i, a in enumerate(given) if _n(a.name) == _n(agent.name)
+    ]
+    if kinds or REGULATOR_NAME.fullmatch(agent.name):
+        kind, i = kinds[0] if kinds else (agent.name.rpartition("_")[0] if agent.name[-1].isdigit()
+                                          else agent.name, 0)
+        read = kind if len((stated or {}).get(kind, ())) <= 1 else f"{kind}_{i}"
+        given = (stated or {}).get(kind, [])
+        bare = given[i].name if i < len(given) else "X"
+        whom = noted(agent_text, given[i], bare) if i < len(given) else bare
+        raise MechanismError(
+            f"row {prefix!r}: {reads} reads {name} as an agent of its own. A regulator is read "
+            f"as the statement states it, `{REGULATORS[kind]} {whom}`, by its kind: "
+            f"`amount({read})` in a scheme, `{read}` in a written rate, the states it needs "
+            f"written on the statement's agent (`{REGULATORS[kind]} {bare}{{pS10}}`). A molecule "
+            f"a scheme's rules bind is a partner, written on its agent (`E{{~{bare}}}`) and named "
+            "in the scheme by its own name."
+        )
     raise MechanismError(
         f"row {prefix!r}: {reads} reads {name}, which its statement does not name. A rate reads "
         f"only the agents its statement names ({listed}) and the regulators it states. State "
@@ -947,13 +929,13 @@ def assemble(
         for name, base in agents.agents.items()
     }
     added: list[dict[str, list[str]]] = []
-    for stmt, policy, prefix, *_ in rows:
+    for stmt, policy, prefix, _, regulators in rows:
         entry = library.get((type(stmt).__name__, policy))
         added.append({})
         if not hasattr(entry, "scheme_sites"):
             continue
         before = {name: set(base.sites) for name, base in agents.agents.items()}
-        for agent, site, site_states in entry.scheme_sites(stmt, given, prefix):
+        for agent, site, site_states in entry.scheme_sites(stmt, given, prefix, regulators):
             base = agents.get_create_base_agent(agent)
             if site is not None:
                 base.create_site(site, site_states)

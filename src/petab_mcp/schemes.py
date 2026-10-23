@@ -32,7 +32,7 @@ type::
   like any, ``kf=k_on`` on the row), ``amount(<pattern>)`` (the amount of what the pattern of
   those molecules matches), ``amount(inhibited_by)`` (a regulator the statement states, as it
   states it, by position where it states several, ``amount(inhibited_by_1)``; checked against
-  the claim on the scheme's net rate, :func:`net_rate`), ``time`` and exp/log/sqrt; mass action
+  the claim on the row's net rate, :mod:`regulation`), ``time`` and exp/log/sqrt; mass action
   multiplies it by every reactant's amount, as PySB does. A name it does not declare is
   refused: a parameter the problem ships or a condition input enters through a row's binding, as
   for a written ``rate``. ``delete_molecules`` after the rates removes only the molecules that
@@ -393,7 +393,7 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
     built for each row from its own agents (see the module docstring). A rate naming anything but
     the declared ``parameters`` is refused as :func:`mechanisms.written` refuses one, with
     ``problem_ids``."""
-    from .mechanisms import assumed, check_regulators, refuse_rate_names, refuse_unread
+    from .mechanisms import refuse_rate_names, refuse_unread
 
     stmt_type, policy = definition["statement_type"], definition["policy"]
     lines = parse(definition["scheme"])
@@ -452,12 +452,13 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
         )
 
     def scheme_sites(
-        stmt: Statement, given: dict, prefix: str
+        stmt: Statement, given: dict, prefix: str, regulators=None
     ) -> list[tuple[Agent, str, list | None]]:
         """The sites the scheme's molecules need on each monomer, for the monomer pass. A state
         it writes is checked against ``given``, each monomer's sites and their states before any
         scheme adds its own (``{name: (sites, site_states)}``; see the module docstring). A
-        molecule row ``prefix``'s statement does not name is refused, before it has a monomer."""
+        molecule row ``prefix``'s statement does not name is refused, before it has a monomer,
+        saying how a rate reads one of the ``regulators`` (kind to agents) the row states."""
         from .mechanisms import refuse_unnamed
 
         agents = role_agents(stmt)
@@ -471,11 +472,11 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
         read = [_notation_agent(a) for rs in rates for r in rs for a in r.agents]
         for agent in read:
             if _n(agent.name) not in named:
-                refuse_unnamed(prefix, stmt, f"mechanism {policy!r}", agent)
+                refuse_unnamed(prefix, stmt, f"mechanism {policy!r}", agent, regulators)
         need += [(agent, None, None) for agent in read]
         for mol in patterns:
             if mol.name not in agents and mol.name not in named and mol.name not in known_roles:
-                refuse_unnamed(prefix, stmt, f"mechanism {policy!r}", Agent(mol.name))
+                refuse_unnamed(prefix, stmt, f"mechanism {policy!r}", Agent(mol.name), regulators)
             agent = _molecule_agent(stmt, mol.name, agents)
             sites, site_states = given.get(_n(agent.name), ((), {}))
             for site, value in mol.sites:
@@ -541,81 +542,7 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
     policy_fn.regulators = frozenset(read)
     policy_fn.scheme_sites = scheme_sites
     policy_fn.scheme = definition["scheme"]
-    if all(n.startswith("modulated") for n in read):
-        return policy_fn
-    signed = sorted(n for n in read if not n.startswith("modulated"))
-    if len(lines) == 1:
-        # One step: J is its forward rate times its reactants, its way back silent with its
-        # product absent. Built for no placeholder, whose agents lack the states other rows give.
-        forward = assumed(_sympy(rates[0][0]))
-        _refuse_unseen(policy, lines, rates, forward, signed)
-        check_regulators(policy, lines[0].rates[0], forward, read)
-        return policy_fn
-    key = (stmt_type, definition["scheme"], tuple(sorted(declared)))
-    if key not in _NET_RATES:
-        try:
-            _NET_RATES[key] = net_rate(stmt_type, policy, {(stmt_type, policy): policy_fn})
-        except MechanismError as exc:
-            _NET_RATES[key] = exc
-    if isinstance(_NET_RATES[key], MechanismError):
-        unsigned = sorted(n.replace(n.split("_by")[0], "modulated", 1) for n in read)
-        raise MechanismError(
-            f"{policy!r} reads {sorted(read)}, claiming which way each moves its reaction, but "
-            f"{_NET_RATES[key]}: state each `{unsigned[0]}`, which claims no direction"
-        )
-    _refuse_unseen(policy, lines, rates, _NET_RATES[key], signed)
-    check_regulators(policy, f"net rate J = {_short(_NET_RATES[key])}", _NET_RATES[key], read)
     return policy_fn
-
-
-def _refuse_unseen(policy: str, lines: list[Line], rates, value: sympy.Expr, names) -> None:
-    """Refuse a regulator of ``names`` that ``value``, the statement's own reaction rate (a
-    one-step scheme's forward rate, or its net rate), does not change with, naming the steps that
-    do read it and the row a step of one is: a statement's regulator is about its own reaction."""
-    from .mechanisms import _direction, assumed
-
-    for name in names:
-        symbol = sympy.Symbol(name, nonnegative=True)
-        if _direction(value, symbol) != 0:
-            continue
-        steps = [
-            (line.rhs, line.lhs, rate) if j else (line.lhs, line.rhs, rate)
-            for line, line_rates in zip(lines, rates) for j, rate in enumerate(line_rates)
-            if symbol in assumed(_sympy(rate)).free_symbols
-        ]
-        shown = " and ".join(f"`{_side_text(a)} >> {_side_text(b)}`" for a, b, _ in steps)
-        row = "a row for each"
-        if len(steps) == 1:
-            row = "one stating that step, `..., {kind} <agent>`"
-            before, after, rate = steps[0]
-            kind = {1: "activated by", -1: "inhibited by"}.get(
-                _direction(assumed(_sympy(rate)), symbol), "modulated by"
-            )
-            first, *bound = [m.name for m in before[0]] if len(before) == 1 else [None]
-            apart = sorted(m.name for c in after for m in c)
-            if first and not after:
-                shown += f", `{first}`'s degradation"
-                row = f"`{first}{_bound_text(bound)} is degraded, {kind} <agent>`, a DecreaseAmount"
-            elif bound and all(len(c) == 1 for c in after) and apart == sorted([first, *bound]):
-                shown += ", the dissociation"
-                row = (f"`{first}{_bound_text(bound)} -> {' + '.join([first, *bound])}, {kind} "
-                       "<agent>`, a Conversion")
-            else:
-                row = row.format(kind=kind)
-        raise MechanismError(
-            f"{policy!r} reads `{name}` only in {shown}, and its statement's own reaction rate, its "
-            "products absent, does not change with it: a statement's regulator is about its own "
-            f"reaction. State the agent on that step's row instead, {row} (its roles standing for "
-            "this statement's agents), and leave it out of this statement"
-        )
-
-
-def _side_text(side) -> str:
-    return " + ".join(" % ".join(m.name for m in complex_) for complex_ in side) or "None"
-
-
-def _bound_text(partners: list[str]) -> str:
-    return "{" + ", ".join(f"!{p}" for p in partners) + "}" if partners else ""
 
 
 def _sites_text(molecule: str, sites, site_states) -> str:
@@ -721,7 +648,7 @@ def _notation_agent(text: str) -> Agent:
 
 def _sympy(rate: _Rate) -> sympy.Expr:
     """``rate`` as one expression over its parameters, its regulators by name and every other
-    amount a name of its own: what :func:`mechanisms.check_regulators` reads."""
+    amount a name of its own: the names a rate reads."""
     text = _REGULATOR_AMOUNT.sub(r"\1", rate.text)
     for k, pattern in enumerate(rate.amounts):
         text = text.replace(f"amount({pattern})", f"__amount{k}", 1)
@@ -855,195 +782,6 @@ def _on_placeholder(stmt_type: str, policy: str, library):
         except MechanismError:
             raise exc from None
     return stmt, model, emission
-
-
-# ------------------------------------------------------------------------------- net rate
-#: Each scheme's net rate, by ``(statement type, scheme, parameters)``, or why it has none: the
-#: library is compiled again at every build, and each net rate is a network expansion.
-_NET_RATES: dict[tuple, sympy.Expr | MechanismError] = {}
-
-
-def net_rate(stmt_type: str, policy: str, library) -> sympy.Expr:
-    """The net rate J at which the entry ``(stmt_type, policy)`` of ``library`` makes its
-    products, built for :func:`placeholder`'s statement: what "inhibited by X" claims X lowers.
-
-    J is the reaction's initial rate, the way an enzymologist measures inhibition: its
-    intermediates at steady state, its products absent. Which species are which is the
-    statement's to say, not the rules': an enzyme parked in a form that makes nothing and a
-    product released by a reversible step sit alike, each on the right of a ``|``, and a
-    substrate a step back makes again looks like an intermediate. So a product is what the
-    statement makes (:func:`statements._products`, the molecules of one such agent exactly) or
-    what nothing uses, held at 0; a reactant is what the statement consumes
-    (:func:`statements._reactants`) or what the rules, read as written, only use; a regulator is
-    held at its amount; every other species is an intermediate (the enzyme and its forms). With the intermediates linear in each rate (one intermediate per step, as in
-    every enzyme mechanism) their steady state is one linear solve, each conserved total a name of
-    its own (King and Altman's), and J is a product's net rate, or a removed reactant's loss. A
-    step into a dead end, a step back, a branch: each moves J as it really does, which no rule on
-    a step's own rate can say. Raises :class:`MechanismError` saying why there is no J to check:
-    the placeholder does not build, an intermediate meets another in one step, or the scheme
-    makes products at rates no constant ratio relates, two reactions rather than one.
-
-    Names are signed as :func:`mechanisms.assumed` signs them: a regulator ``inhibited_by``
-    never negative, every parameter, reactant and total positive."""
-    from pysb.bng import generate_equations
-    from pysb.pattern import match_complex_pattern
-
-    from .mechanisms import _vanishes, agent_pattern
-    from .problem_sbml import MAX_COMPLEX
-    from .statements import _products, _reactants
-
-    try:
-        stmt, model, _ = _on_placeholder(stmt_type, policy, library)
-    except MechanismError as exc:
-        raise MechanismError(
-            f"it does not build for a statement of placeholder agents ({exc})"
-        ) from None
-    seeds = {}
-    for cp in [cp for rule in model.rules for cp in rule.reactant_pattern.complex_patterns
-               if cp is not None] + [pysb.ComplexPattern([m()], None) for m in model.monomers]:
-        seeds.setdefault(str(full := _in_full(cp)), full)
-    for i, cp in enumerate(seeds.values()):
-        amount = pysb.Parameter(f"__seed{i}", 1.0, _export=False)
-        model.add_component(amount)
-        model.add_initial(pysb.Initial(cp, amount, _export=False))
-    try:
-        generate_equations(model, max_agg=MAX_COMPLEX)
-    except Exception as exc:  # noqa: BLE001 - BioNetGen's own refusal, reported as the reason
-        raise MechanismError(f"its reactions do not expand ({str(exc).splitlines()[0]})") from None
-    made = {i for rx in model.reactions for i in rx["products"]}
-    used = {i for rx in model.reactions for i in rx["reactants"]}
-    written_left, written_right = set(), set()
-    for rx in model.reactions:
-        left, right = (rx["products"], rx["reactants"]) if any(rx["reverse"]) else (
-            rx["reactants"], rx["products"])
-        written_left |= set(left)
-        written_right |= set(right)
-    regulators = {
-        i: sp.monomer_patterns[0].monomer.name for i, sp in enumerate(model.species)
-        if len(sp.monomer_patterns) == 1
-        and REGULATOR_NAME.fullmatch(sp.monomer_patterns[0].monomer.name)
-    }
-    def matching(agent: Agent) -> set[int]:
-        """The species that are ``agent`` exactly, its molecules and no more."""
-        try:
-            pattern = pysb.ComplexPattern(agent_pattern(model, agent), None)
-        except (MechanismError, KeyError):  # an agent the scheme never forms
-            return set()
-        return {
-            i for i, species in enumerate(model.species)
-            if len(species.monomer_patterns) == len(pattern.monomer_patterns)
-            and match_complex_pattern(pattern, species)
-        }
-
-    effects = {i: effect for agent, effect in _products(stmt) for i in matching(agent)}
-    products = ({i for i, e in effects.items() if e > 0} | (made - used)) - set(regulators)
-    # A reactant a step back makes again (`obj_to >> obj_from`) is still the statement's.
-    stated = {i for agent in _reactants(stmt) for i in matching(agent)}
-    reactants = ((written_left - written_right) | stated) - products - set(regulators)
-    # A species no reaction makes or uses (a placeholder role the scheme leaves out) is held.
-    intermediates = sorted((made | used) - products - reactants - set(regulators))
-    amounts: dict[int, sympy.Expr] = {}
-    for i, species in enumerate(model.species):
-        if i in regulators:
-            amounts[i] = sympy.Symbol(regulators[i], nonnegative=True)
-        elif i in intermediates:
-            amounts[i] = sympy.Symbol(f"__x{i}")
-        elif i in products:
-            amounts[i] = sympy.Integer(0)
-        else:
-            amounts[i] = sympy.Symbol(f"[{species}]", positive=True)
-    names = {p: sympy.Symbol(p.name.removeprefix("r_"), positive=True) for p in model.parameters}
-
-    def read(rate) -> sympy.Expr:
-        while expressions := rate.atoms(pysb.Expression):
-            rate = rate.xreplace({e: e.expand_expr(expand_observables=True) for e in expressions})
-        rate = rate.xreplace({o: o.expand_obs() for o in rate.atoms(pysb.Observable)})
-        return rate.xreplace(names).xreplace(
-            {sympy.Symbol(f"__s{i}"): amount for i, amount in amounts.items()}
-        )
-
-    rates = [read(rx["rate"]) for rx in model.reactions]
-    stoichiometry = sympy.zeros(len(model.species), len(rates))
-    for j, rx in enumerate(model.reactions):
-        for i in rx["reactants"]:
-            stoichiometry[i, j] -= 1
-        for i in rx["products"]:
-            stoichiometry[i, j] += 1
-    change = [sum(stoichiometry[i, j] * rates[j] for j in range(len(rates)))
-              for i in range(len(model.species))]
-    unknown = [amounts[i] for i in intermediates]
-    # Linear in the intermediates: at most one among a step's reactants, and none in its rate
-    # constant. Read off the network rather than expanded: expanding a large rate never ended.
-    for rx, rate in zip(model.reactions, rates):
-        inside = [amounts[i] for i in rx["reactants"] if i in intermediates]
-        if rate != 0 and (len(inside) > 1 or (rate / sympy.Mul(*inside)).free_symbols & set(unknown)):
-            raise MechanismError(
-                "two of its intermediates meet in one step, or one rate reads an intermediate's "
-                "amount, so their steady state has no closed form"
-            )
-    if sum(sympy.count_ops(change[i]) for i in intermediates) > NET_OPS:
-        raise MechanismError("its intermediates' steady state is too large to solve symbolically")
-    within = stoichiometry.extract(intermediates, list(range(len(rates))))
-    totals = [
-        sum(c * x for c, x in zip(conserved, unknown)) - sympy.Symbol(f"total{k}", positive=True)
-        for k, conserved in enumerate(within.T.nullspace())
-    ]
-    solution = list(sympy.linsolve([change[i] for i in intermediates] + totals, unknown))
-    if unknown and (len(solution) != 1 or any(set(unknown) & v.free_symbols for v in solution[0])):
-        raise MechanismError("its intermediates have no unique steady state")
-    steady = dict(zip(unknown, solution[0])) if unknown else {}
-    # Kept as built, its factors apart, for the sign prover; cancelled only to tell zero.
-    net = {
-        i: change[i].xreplace(steady)
-        for i in range(len(model.species)) if i not in intermediates and i not in regulators
-    }
-    moving = {i for i, rate in net.items() if not _vanishes(rate)}
-    made_now = [i for i in sorted(products) if i in moving]
-    removed = [i for i, e in sorted(effects.items()) if e < 0 and i in moving]
-    if not made_now and not removed:
-        raise MechanismError("it makes nothing from its reactants alone")
-    reference = made_now[0] if made_now else removed[0]
-    j = net[reference] if made_now else -net[reference]
-    for i, rate in net.items():
-        if i in moving and not _constant(rate / j):
-            raise MechanismError(
-                f"it changes {model.species[reference]} and {model.species[i]} at rates no "
-                "constant ratio relates: two reactions, with no one net rate"
-            )
-    return j
-
-
-#: The size, in sympy operations, of the intermediates' rates past which their steady state is not
-#: solved for: a scheme past it has no net rate to read (:func:`net_rate`).
-NET_OPS = 2000
-
-
-def _constant(ratio: sympy.Expr) -> bool:
-    """Whether ``ratio`` takes one value for every value of its names, by its value at three
-    points of positive ones: cancelling it to lowest terms took seconds on a large rate. Only
-    whether a scheme is one reaction rests on it, never a sign."""
-    if not ratio.free_symbols:
-        return True
-    names = sorted(ratio.free_symbols, key=str)
-    at = [complex(ratio.evalf(subs={s: base + 0.29 * i for i, s in enumerate(names)}))
-          for base in (0.7, 1.9, 4.3)]
-    return all(v == v for v in at) and max(abs(v - at[0]) for v in at) <= 1e-9 * (1 + abs(at[0]))
-
-
-def _in_full(cp: pysb.ComplexPattern) -> pysb.ComplexPattern:
-    """``cp`` with every site it leaves unstated in its default: a state's first, a bond free."""
-    return pysb.ComplexPattern([
-        mp.monomer(**{
-            site: mp.monomer.site_states[site][0] if site in mp.monomer.site_states else None
-            for site in mp.monomer.sites
-        } | mp.site_conditions)
-        for mp in cp.monomer_patterns
-    ], None)
-
-
-def _short(expr: sympy.Expr, width: int = 240) -> str:
-    text = str(expr)
-    return text if len(text) <= width else text[: width - 3] + "..."
 
 
 def _describe_rule(stmt, rule, agents) -> str:

@@ -68,6 +68,7 @@ from pysb.bng import NoInitialConditionsError, generate_equations
 from pysb.export import export
 
 from . import mechanisms as M
+from . import regulation
 from .errors import ModelUpdateError
 from .protocols import Input, hold
 from .reconcile import SEED_INITIAL_VALUE
@@ -231,6 +232,7 @@ def to_antimony(
             "it to. Add the statement that forms it, or, if it is present at t=0, declare it in "
             "`starts`."
         )
+    regulation.check(model, rows, emissions)
     sbml = export(model, "sbml")  # from the expansion above; BioNetGen does not run again
     base_names = {
         str(initial.pattern): initial.pattern.monomer_patterns[0].monomer.name
