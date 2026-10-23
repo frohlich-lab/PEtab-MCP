@@ -345,12 +345,7 @@ def _products(stmt: Statement) -> list[tuple[Agent, int]]:
     if isinstance(stmt, PopulationTransition):
         return [(stmt.target, 1)]
     if isinstance(stmt, Modification) and getattr(stmt, "sub", None) is not None:
-        made = deepcopy(stmt.sub)
-        mod = stmt._get_mod_condition()
-        mod.is_modified = not isinstance(stmt, RemoveModification)
-        made.mods = [m for m in made.mods if (m.mod_type, m.residue, m.position) !=
-                     (mod.mod_type, mod.residue, mod.position)] + [mod]
-        return [(made, 1)]
+        return [(_modified(stmt, not isinstance(stmt, RemoveModification)), 1)]
     if isinstance(stmt, Translocation) and stmt.to_location:
         moved = deepcopy(stmt.agent)
         moved.location = stmt.to_location
@@ -360,6 +355,37 @@ def _products(stmt: Statement) -> list[tuple[Agent, int]]:
         first.bound_conditions = [*first.bound_conditions, *(BoundCondition(m) for m in rest)]
         return [(first, 1)]
     return []
+
+
+def _reactants(stmt: Statement) -> list[Agent]:
+    """What ``stmt`` turns into its :func:`_products`, in the state it finds it: the substrate
+    before its modification, a conversion's inputs, a population's source, a removal's object.
+    Empty for a statement that consumes nothing (a synthesis)."""
+    if isinstance(stmt, DecreaseAmount):
+        return [stmt.obj]
+    if isinstance(stmt, Conversion):
+        return list(stmt.obj_from or [])
+    if isinstance(stmt, PopulationTransition):
+        return [stmt.source]
+    if isinstance(stmt, Modification) and getattr(stmt, "sub", None) is not None:
+        return [_modified(stmt, isinstance(stmt, RemoveModification))]
+    if isinstance(stmt, Translocation):
+        found = deepcopy(stmt.agent)
+        found.location = stmt.from_location
+        return [found]
+    if isinstance(stmt, Complex):
+        return list(stmt.members)
+    return []
+
+
+def _modified(stmt: Modification, modified: bool) -> Agent:
+    """The statement's substrate with its modification written ``modified`` or not."""
+    agent = deepcopy(stmt.sub)
+    mod = stmt._get_mod_condition()
+    mod.is_modified = modified
+    agent.mods = [m for m in agent.mods if (m.mod_type, m.residue, m.position) !=
+                  (mod.mod_type, mod.residue, mod.position)] + [mod]
+    return agent
 
 
 def _unknown(value: dict, allowed: Collection[str], where: str, what: str) -> list[str]:

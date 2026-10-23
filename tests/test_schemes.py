@@ -284,6 +284,56 @@ def test_a_scheme_without_one_net_rate_states_its_regulators_without_a_direction
     M.written(definition | {"scheme": branched.format(kind="modulated")}, dict(M.REGISTRY))
 
 
+#: A GTPase cycle: a GEF turns obj_from into obj_to, a GAP turns it back.
+_CYCLE = (
+    "obj_from_0() >> obj_to_0() @ kf*amount(activated_by_0){allo}\n"
+    "obj_to_0() >> obj_from_0() @ kgap{basal}"
+)
+
+
+def _cycle(allo="", basal="", **kind):
+    scheme = _CYCLE.format(allo=allo, basal=basal)
+    for old, new in kind.items():
+        scheme = scheme.replace(old, new)
+    parameters = ["kf", "kgap"] + (["allo"] if allo else []) + (["kb"] if basal else [])
+    return M.written(
+        {"statement_type": "Conversion", "policy": "gef_cycle", "parameters": parameters,
+         "scheme": scheme},
+        dict(M.REGISTRY),
+    )
+
+
+def test_a_cycle_back_to_its_substrate_is_checked_on_its_forward_step():
+    """perica_egf's RAS cycle (`ras_gef`, run 61230791_0) was refused as making nothing: its step
+    back makes obj_from again, so obj_from read as an intermediate and nothing as a reactant. It is
+    the conversion's input, which the statement says; with obj_to absent the step back is silent."""
+    _cycle()
+    # ras_gef3: three steps, the GEF sped by RAS-GTP and a basal exchange beside it.
+    _cycle(allo="*(1 + allo*amount(activated_by_1))",
+           basal="\nobj_from_0() >> obj_to_0() @ kb")
+    with pytest.raises(MechanismError, match=r"must fall as `inhibited_by_0` rises; it rises "
+                       r"instead: state it `activated_by_0`"):
+        _cycle(activated_by_0="inhibited_by_0")
+
+
+def test_a_one_step_scheme_needs_no_placeholder():
+    """Eight one-rule perica_egf schemes (`mek_act_braf`, `egfr_act2`, ...) that #123 accepted were
+    refused: each writes a site in one state (`enz(gtpbound='active')`) whose other states other
+    rows give, which a placeholder statement does not have. One step's net rate is its forward
+    rate, checked as written."""
+    def gated(rate):
+        return M.written(
+            {"statement_type": "Phosphorylation", "policy": "ras_gated", "parameters": ["kf"],
+             "scheme": "enz(gtpbound='active') + sub(mod='off') >> "
+                       f"enz(gtpbound='active') + sub(mod='on') @ {rate}"},
+            dict(M.REGISTRY),
+        )
+
+    gated("kf*amount(activated_by)")
+    with pytest.raises(MechanismError, match=r"must rise as `activated_by` rises; it falls"):
+        gated("kf/(1 + amount(activated_by))")
+
+
 def test_a_reversible_step_is_checked_on_its_forward_rate():
     """With its product absent a step does not run back, so what slows only its way back claims
     nothing a regulator of the reaction does."""
