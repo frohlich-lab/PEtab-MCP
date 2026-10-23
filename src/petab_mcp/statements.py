@@ -36,7 +36,8 @@ part of that. A bound condition (``RAF{~sorafenib}``) claims a complex the rule 
 an ``Inhibition(sorafenib, RAF)`` claims every reaction RAF catalyses, since an INDRA statement
 names agents and never another statement. The mechanism's rate reads each regulator
 (:mod:`mechanisms`), and its sign is checked against the claim: a rate an inhibitor does not
-slow, or an activator does not speed, is refused, and ``modulated_by`` claims no sign. INDRA's
+slow, or an activator does not speed, is refused, and ``modulated_by`` claims no sign. The sign is
+checked on one step's rate, so a mechanism of several steps reads only ``modulated_by``. INDRA's
 reader and assemblers skip the fields, so :func:`english` writes them, :func:`indra_part` is
 what INDRA reads, and :func:`as_indra` projects each signed regulator onto a statement INDRA can
 read, for a causal graph built from INDRA statements.

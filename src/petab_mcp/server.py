@@ -247,7 +247,8 @@ class MechanismDef(BaseModel):
         "enz(sub=1) % sub(enz=1, mod='off') @ kf`. `list_mechanisms` shows every library entry "
         "this way, with the `parameters` it declares: start from one. A rate is an expression "
         "over your `parameters`, `amount(<pattern>)`, `amount(inhibited_by)` (a regulator the "
-        "statement states), `time` and exp/log/sqrt. A molecule is a role or, by its name, a "
+        "statement states, checked as a `rate` is; a scheme of several steps reads only "
+        "`modulated_by`), `time` and exp/log/sqrt. A molecule is a role or, by its name, a "
         "partner the statement writes a role bound or not bound to (`C` of `E{~C}`): a mechanism "
         "reads no agent its statement does not name. Give `scheme` or `rate`, not both.",
     )
