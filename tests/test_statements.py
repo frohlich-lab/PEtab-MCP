@@ -129,3 +129,51 @@ def test_a_statement_states_its_regulators_and_says_them_in_english():
     assert S.problems({**transition, "modulated_by": {"name": "Ca"}}) == [
         '`modulated_by` is a list of agents: [{"name": "A"}, ...]'
     ]
+
+
+def _projected(row: str) -> list[str]:
+    from petab_mcp import notation
+
+    return [str(stmt) for stmt in S.as_indra(notation.parse(row)["statement"])[1:]]
+
+
+def test_a_regulator_is_projected_onto_what_indra_can_read():
+    """A causal graph assembled from INDRA statements drops the regulator fields, which INDRA has
+    no reading for: each signed one becomes the INDRA statement nearest its claim."""
+    # A catalysed reaction: its catalyst's activity there.
+    assert _projected("r: RAF{pS338} phosphorylates MEK at S217, inhibited by sorafenib | p") == [
+        "Inhibition(sorafenib(), RAF(mods: (phosphorylation, S, 338)), kinase)"
+    ]
+    assert _projected("r: A -> B by E{kinase:on}, activated by X | p") == [
+        "Activation(X(), E(kinase), kinase)"
+    ]
+    # Without a catalyst: what it makes, signed by the claim and what the reaction does to it.
+    assert _projected("r: SKI is produced, inhibited by X | p") == ["DecreaseAmount(X(), SKI())"]
+    assert _projected("r: SKI is degraded, inhibited by X | p") == ["IncreaseAmount(X(), SKI())"]
+    assert _projected("r: A becomes B, activated by X | p") == ["IncreaseAmount(X(), B())"]
+    assert _projected("r: MEK is dephosphorylated at S217, activated by X | p") == [
+        "IncreaseAmount(X(), MEK(mods: (phosphorylation, S, 217, False)))"
+    ]
+    # No direction, no INDRA statement.
+    assert _projected("r: A becomes B, modulated by Ca | p") == []
+
+
+def test_a_projection_keeps_the_claim_it_comes_from_in_a_signed_graph():
+    """INDRA's signed graph keeps the projected edge, and its evidence names the reaction it
+    regulates. The scorer gives the row's evidence source the priors INDRA's belief engine has
+    only for its own readers and databases."""
+    from indra.assemblers.indranet import IndraNetAssembler
+    from indra.belief import SimpleScorer
+
+    from petab_mcp import notation
+
+    row = "r: RAF phosphorylates MEK at S217, inhibited by sorafenib | p # [paper] text"
+    stmts = S.as_indra(notation.parse(row)["statement"])
+    scorer = SimpleScorer({"rand": {"paper": 0.1}, "syst": {"paper": 0.05}})
+    graph = IndraNetAssembler(stmts).make_model(graph_type="signed", belief_scorer=scorer)
+    assert ("sorafenib", "RAF", 1) in graph.edges(keys=True)  # key 1: a negative edge
+    (evidence,) = stmts[1].evidence
+    assert (evidence.source_api, evidence.text) == ("paper", "text")
+    assert evidence.annotations["regulates"] == (
+        "RAF phosphorylates MEK on S217, inhibited by sorafenib."
+    )
