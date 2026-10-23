@@ -415,6 +415,41 @@ def test_a_large_rate_is_signed_in_bounded_time():
     assert time.monotonic() - start < 60
 
 
+@pytest.mark.parametrize(
+    "inhibition, derived",
+    [
+        # As written: 1 - rho2*X/(H2 + X) turns negative for rho2 > 1, so the sign of the rate,
+        # and with it which way modulated_by_2 moves it, is not shown.
+        ("*(1 - rho2*amount(inhibited_by)/(H2 + amount(inhibited_by)))", {}),
+        # Kept positive, the rate falls with modulated_by_2 (it is only in the denominator), and
+        # modulated_by_0 and _1, in the numerator and the denominator both, stay unsigned.
+        ("/(1 + rho2*amount(inhibited_by)/(H2 + amount(inhibited_by)))",
+         {"modulated_by_2": "inhibited_by"}),
+    ],
+)
+def test_a_large_rate_signs_its_modulators_in_bounded_time(inhibition, derived):
+    """gexpr13's three modulators each get their sign computed, factor by factor, in bounded
+    time; one the rate does not provably move one way stays unsigned."""
+    import time
+
+    rate = (
+        "kd*(1 + a34*amount(modulated_by_0)/(H34 + amount(modulated_by_0)) + "
+        f"a24*amount(modulated_by_1)/(H24 + amount(modulated_by_1))){inhibition}/"
+        "(1 + rho3*amount(modulated_by_2)/(H3 + amount(modulated_by_2)) + "
+        "rhoD*(amount(modulated_by_1) + amount(modulated_by_0))/"
+        "(HD + amount(modulated_by_1) + amount(modulated_by_0)) + rL)"
+    )
+    start = time.monotonic()
+    entry = M.written(
+        {"statement_type": "IncreaseAmount", "policy": "gexpr13",
+         "parameters": "kd a34 a24 rho2 rho3 rhoD rL H2 H3 H24 H34 HD".split(),
+         "scheme": f"None >> obj() @ {rate}\nobj() >> None @ kd"},
+        dict(M.REGISTRY),
+    )
+    assert time.monotonic() - start < 60
+    assert entry.derived == derived
+
+
 def test_a_reversible_step_is_checked_on_its_forward_rate():
     """With its product absent a step does not run back, so what slows only its way back claims
     nothing a regulator of the reaction does."""
