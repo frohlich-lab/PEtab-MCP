@@ -40,6 +40,10 @@ FLOOR = 1e-3
 INTEGRATION_RTOL = 1e-10
 INTEGRATION_ATOL = 1e-12
 MAX_STEPS = 10**6
+#: The absolute difference two simulated values may have whatever their size: ten times what
+#: either integration resolves. Without it a model whose observable stays near 1e-15 at the
+#: point it is checked at, as a seeded toy's does, mismatched on rounding.
+ATOL = 10 * INTEGRATION_ATOL
 
 #: ``status`` values: the two models agree; they do not; nothing was reduced, so there is nothing
 #: to compare; the model was not built from statements; a side could not be integrated.
@@ -179,8 +183,8 @@ def _compare(reduced: list[dict[str, Any]], unreduced: list[dict[str, Any]]) -> 
         if a["simulation"] is None:
             continue
         x, y = a["simulation"], b["simulation"]
-        denominator = max(abs(x), abs(y), FLOOR * scale[a["observable_id"]])
-        difference = abs(x - y) / denominator if denominator else 0.0
+        denominator = max(abs(x), abs(y), FLOOR * scale[a["observable_id"]], ATOL / RTOL)
+        difference = abs(x - y) / denominator
         if difference >= worst:
             worst, at = difference, {**dict((k, a[k]) for k in keys), "reduced": x, "unreduced": y}
     return {"max_relative_difference": worst, "worst": at, "n_points": len(reduced)}
