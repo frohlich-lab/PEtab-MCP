@@ -32,8 +32,9 @@ type::
   like any, ``kf=k_on`` on the row), ``amount(<pattern>)`` (the amount of what the pattern of
   those molecules matches), ``amount(inhibited_by)`` (a regulator the statement states, as it
   states it, by position where it states several, ``amount(inhibited_by_1)``; checked against
-  the claim as a written rate is, :func:`mechanisms.check_regulators`), ``time`` and
-  exp/log/sqrt; mass action multiplies it by every reactant's amount, as PySB does. A name it
+  the claim as a written rate is, :func:`mechanisms.check_regulators`, the second rate of a
+  reversible step the other way; a scheme of several steps reads only ``modulated_by``),
+  ``time`` and exp/log/sqrt; mass action multiplies it by every reactant's amount, as PySB does. A name it
   does not declare is refused: a parameter the problem ships or a condition input enters through
   a row's binding, as for a written ``rate``. ``delete_molecules`` after the rates removes only
   the molecules that vanish, not their complex.
@@ -409,10 +410,20 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
     refuse_unread(policy, declared, {n for rs in rates for r in rs for n in r.names})
     read = set()
     for line, line_rates in zip(lines, rates):
-        for text, rate in zip(line.rates, line_rates):
+        for j, (text, rate) in enumerate(zip(line.rates, line_rates)):
             value = assumed(_sympy(rate))
-            check_regulators(policy, text, value)
             read |= {s.name for s in value.free_symbols if REGULATOR_NAME.fullmatch(s.name)}
+            if len(lines) == 1:
+                check_regulators(policy, text, value, backward=j == 1)
+    if len(lines) > 1 and (signed := sorted(n for n in read if not n.startswith("modulated"))):
+        raise MechanismError(
+            f"{policy!r} is a scheme of {len(lines)} steps whose rates read {signed}: a regulator's "
+            "direction is checked on the rate of one step, since in several a step's rate can move "
+            "the reaction either way (speeding a step into a dead end slows it). State it "
+            f"`{signed[0].replace(signed[0].split('_by')[0], 'modulated', 1)}`, which claims no "
+            "direction; read it in a mechanism of one step; or write the regulator's binding as "
+            "steps of the scheme, as a partner the statement names (`enz{~X}`)"
+        )
 
     def policy_fn(stmt: Statement, model: pysb.Model, prefix: str, regulators=None):
         from .mechanisms import Emission, _add
