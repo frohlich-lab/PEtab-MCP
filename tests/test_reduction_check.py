@@ -109,3 +109,15 @@ def test_the_comparison_reads_each_point_against_its_observable():
     full[1]["simulation"] = 2.0 * (1 + 1e-4)
     worst = RC._compare(reduced, full)
     assert worst["max_relative_difference"] > RC.RTOL and worst["worst"]["time"] == 1.0
+
+
+def test_values_neither_integration_resolves_are_no_mismatch():
+    """An observable that stays near 1e-15 differs between two integrations by its own size; under
+    the integrations' absolute tolerance that is rounding, not a mismatch."""
+    point = {"observable_id": "o", "experiment_id": "e", "time": 1.0}
+    assert (
+        RC._compare([{**point, "simulation": 8e-16}], [{**point, "simulation": 1.3e-15}])[
+            "max_relative_difference"
+        ]
+        <= RC.RTOL
+    )
