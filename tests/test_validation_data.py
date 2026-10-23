@@ -392,6 +392,11 @@ class _Objective:
     def __call__(self, x, **kwargs):
         return {"fval": 1.0, "rdatas": []}
 
+    def rdatas_to_simulation_df(self, rdatas):
+        """No rdatas, no simulated rows: every record comes back with ``simulation`` unset."""
+        cols = {"observableId": str, "experimentId": str, "time": float, "simulation": float}
+        return pd.DataFrame({c: pd.Series(dtype=t) for c, t in cols.items()})
+
 
 class _PP:
     x_names = ["k"]
@@ -472,7 +477,10 @@ def test_score_session_hands_a_fixed_sets_design_to_the_scorer(monkeypatch):
 
     monkeypatch.setattr(V, "score_problem", _score)
     session = types.SimpleNamespace(
-        lock=contextlib.nullcontext(), problem=object(), module_hash=lambda: "h"
+        lock=contextlib.nullcontext(),
+        problem=object(),
+        module_hash=lambda: "h",
+        provenance=types.SimpleNamespace(current_version=-1),
     )
     engine = types.SimpleNamespace(
         pypesto_importer_kwargs=lambda h: {"output_folder": "/tmp/x", "model_name": "m"}
