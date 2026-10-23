@@ -117,10 +117,13 @@ undone, and a fit it ends does not count against the identical-fit guard. A clie
 run on it and resubmit once the disk has room
 ([`errors.InfrastructureError`](src/petab_mcp/errors.py)).
 
-A fit whose starts stop finishing ends the same way, as `infrastructure_error: fit_wedged: `, with
-its workers stopped and nothing scored: locally once ⌈starts / workers⌉ ×
-`PETAB_MCP_FIT_PER_START_TIMEOUT` + 600 s have passed since its starts began, on a cluster once one
-of its batches has run its starts' caps + 600 s ([`multistart`](src/petab_mcp/multistart.py)).
+A start still running `PETAB_MCP_FIT_PER_START_TIMEOUT` + 600 s after it could have begun (stuck
+inside one simulation, where Fides never checks its cap) is stopped and scored as a failed start;
+the fit is scored from the rest and reports `n_starts_killed`. A stopped warm start from the
+parent's optimum is rerun once. A fit whose starts stop finishing ends the same way as a full disk,
+as `infrastructure_error: fit_wedged: `, with its workers stopped and nothing scored: when no
+start finishes for a start's cap + 600 s while others wait for a worker, when every start was
+stopped, or when a rerun warm start is stopped again ([`multistart`](src/petab_mcp/multistart.py)).
 Every 5 minutes a running fit logs how many of its starts are done. While a change is being
 fitted, a second `make_changes` on the session waits for nothing: it is refused at once with
 `error_cause: fit_in_progress` (text starting `make_changes: fit_in_progress: `), and the

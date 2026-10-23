@@ -248,6 +248,24 @@ def test_a_new_parameter_gets_all_THREE_neutral_candidates_on_the_parent_optimum
     assert g[3, :2] == pytest.approx([np.log10(9.0), np.log10(0.02)])
 
 
+def test_the_starts_rerun_when_stopped_are_those_on_the_parent_optimum():
+    """A fit reruns once a stopped start that sits on the parent's optimum, since one of those keeps
+    a nested edit within reach of its parent (multistart, #118): the neutral candidates, or the
+    nominal point when the edit adds no parameter, never the parent's other basins or the jitter.
+    Without a parent there is nothing to keep."""
+    prev = _prev(
+        [np.log10(0.5), np.log10(0.1)],
+        [np.log10(9.0), np.log10(0.02)],
+        [np.log10(0.3), np.log10(7.0)],
+    )
+    nested = fitting.warm_start_guesses(_nested_problem(), _nested_pdf(), 12, optimization=prev)
+    same = fitting.warm_start_guesses(_problem(), _pdf(), 10, optimization=prev)
+
+    assert fitting.parent_starts(_nested_problem(), nested, prev) == {"0", "1", "2"}
+    assert fitting.parent_starts(_problem(), same, prev) == {"0"}
+    assert fitting.parent_starts(_problem(), same, None) == frozenset()
+
+
 def test_the_neutral_candidates_collapse_when_the_edit_adds_no_parameter():
     """No new parameter means the three candidates ARE x0, so dedup leaves the previous
     behaviour untouched: start 0 is the nominal point and the rest are the other basins."""
