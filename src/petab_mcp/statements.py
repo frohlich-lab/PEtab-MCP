@@ -37,8 +37,9 @@ an ``Inhibition(sorafenib, RAF)`` claims every reaction RAF catalyses, since an 
 names agents and never another statement. The mechanism's rate reads each regulator
 (:mod:`mechanisms`), and its sign is checked against the claim: a rate an inhibitor does not
 slow, or an activator does not speed, is refused, and ``modulated_by`` claims no sign. INDRA's
-reader and assemblers skip the fields, so :func:`english` writes them, and :func:`indra_part` is
-what INDRA reads.
+reader and assemblers skip the fields, so :func:`english` writes them, :func:`indra_part` is
+what INDRA reads, and :func:`as_indra` projects each signed regulator onto a statement INDRA can
+read, for a causal graph built from INDRA statements.
 """
 
 from __future__ import annotations
@@ -46,19 +47,32 @@ from __future__ import annotations
 import inspect
 import re
 from collections.abc import Collection
+from copy import deepcopy
 from typing import Any
 
 from indra.statements import (
+    Activation,
     Agent,
+    BoundCondition,
+    Complex,
     Conversion,
+    DecreaseAmount,
+    Evidence,
+    Gap,
+    Gef,
+    IncreaseAmount,
+    Inhibition,
     Modification,
     RegulateActivity,
     RegulateAmount,
+    RemoveModification,
     Statement,
+    Translocation,
     activity_types,
     get_all_descendants,
     get_statement_by_name,
     modtype_conditions,
+    stmts_from_json,
 )
 from indra.statements import statements as _indra_statements
 from indra.statements.resources import InvalidResidueError, get_valid_residue
@@ -251,7 +265,6 @@ def english(statement: dict) -> str:
     which INDRA's assembler does not read. "RAF phosphorylates MEK, inhibited by sorafenib." """
     from indra.assemblers.english import EnglishAssembler
     from indra.assemblers.english.assembler import _assemble_agent_str
-    from indra.statements import stmts_from_json
 
     def text(agent: Agent) -> str:
         return _assemble_agent_str(agent).agent_str
@@ -264,6 +277,87 @@ def english(statement: dict) -> str:
     for kind, agents in regulators(statement).items():
         sentence += f", {REGULATORS[kind]} " + " and ".join(map(text, agents))
     return sentence + "."
+
+
+def as_indra(statement: dict) -> list[Statement]:
+    """``statement`` (a row's, INDRA's JSON) as INDRA statements: its own, then one for each signed
+    regulator it states, which a causal graph assembled from INDRA statements would otherwise drop.
+
+    INDRA's statements name agents, never another statement, so each projection claims less than
+    the regulator it comes from, and more widely. A regulator of a reaction with a catalyst
+    regulates the catalyst's activity there: "RAF phosphorylates MEK, inhibited by sorafenib" gives
+    ``Inhibition(sorafenib, RAF, 'kinase')``, which a reader takes to slow RAF's other kinase
+    reactions too. One of a reaction without a catalyst changes the amount of what the reaction
+    makes, signed by the claim and by what the reaction does to it: "SKI is produced, inhibited by
+    X" gives ``DecreaseAmount(X, SKI)``, "SKI is degraded, inhibited by X" ``IncreaseAmount(X,
+    SKI)``. ``modulated_by`` claims no direction, and INDRA has no unsigned statement over agents,
+    so it is not projected. Each projection carries the statement's evidence, annotated with the
+    claim it comes from (:func:`english`) under ``regulates``."""
+    (stmt,) = stmts_from_json([with_defaults(indra_part(statement))])
+    claim = english(statement)
+
+    def evidence() -> list[Evidence]:
+        return [
+            Evidence(source_api=ev.source_api or "petab_mcp", text=ev.text,
+                     annotations={**ev.annotations, "regulates": claim})
+            for ev in stmt.evidence or [Evidence()]
+        ]
+
+    catalyst, activity = _catalyst(stmt)
+    out = [stmt]
+    for kind, sign in (("inhibited_by", -1), ("activated_by", 1)):
+        for regulator in regulators(statement).get(kind, []):
+            if catalyst is not None:
+                cls = Inhibition if sign < 0 else Activation
+                out.append(cls(regulator, catalyst, activity, evidence=evidence()))
+                continue
+            for product, effect in _products(stmt):
+                cls = IncreaseAmount if sign * effect > 0 else DecreaseAmount
+                out.append(cls(regulator, product, evidence=evidence()))
+    return out
+
+
+def _catalyst(stmt: Statement) -> tuple[Agent | None, str]:
+    """The agent that drives ``stmt`` without being changed by it, and the activity it does so with:
+    an enzyme's implied by its modification (``kinase`` for a phosphorylation), a subject's as
+    written; ``None`` for a statement with none."""
+    from indra.assemblers.pysb.assembler import mod_acttype_map
+
+    if isinstance(stmt, Modification):
+        return getattr(stmt, "enz", None), mod_acttype_map.get(type(stmt), "activity")
+    if isinstance(stmt, (Gef, Gap)):
+        return (stmt.gef, "gef") if isinstance(stmt, Gef) else (stmt.gap, "gap")
+    if isinstance(stmt, (RegulateActivity, RegulateAmount, Conversion)) and stmt.subj is not None:
+        activity = stmt.subj.activity
+        return stmt.subj, activity.activity_type if activity else "activity"
+    return None, "activity"
+
+
+def _products(stmt: Statement) -> list[tuple[Agent, int]]:
+    """What ``stmt`` makes, each with ``1``, or ``-1`` for what a removal takes away: the agent in
+    the state the statement leaves it in. Empty for a statement that makes nothing."""
+    if isinstance(stmt, (IncreaseAmount, DecreaseAmount)):
+        return [(stmt.obj, 1 if isinstance(stmt, IncreaseAmount) else -1)]
+    if isinstance(stmt, Conversion):
+        return [(agent, 1) for agent in stmt.obj_to or []]
+    if isinstance(stmt, PopulationTransition):
+        return [(stmt.target, 1)]
+    if isinstance(stmt, Modification) and getattr(stmt, "sub", None) is not None:
+        made = deepcopy(stmt.sub)
+        mod = stmt._get_mod_condition()
+        mod.is_modified = not isinstance(stmt, RemoveModification)
+        made.mods = [m for m in made.mods if (m.mod_type, m.residue, m.position) !=
+                     (mod.mod_type, mod.residue, mod.position)] + [mod]
+        return [(made, 1)]
+    if isinstance(stmt, Translocation) and stmt.to_location:
+        moved = deepcopy(stmt.agent)
+        moved.location = stmt.to_location
+        return [(moved, 1)]
+    if isinstance(stmt, Complex):
+        first, *rest = (deepcopy(m) for m in stmt.members)
+        first.bound_conditions = [*first.bound_conditions, *(BoundCondition(m) for m in rest)]
+        return [(first, 1)]
+    return []
 
 
 def _unknown(value: dict, allowed: Collection[str], where: str, what: str) -> list[str]:

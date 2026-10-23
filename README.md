@@ -172,7 +172,10 @@ Principles to hold onto when extending this package.
   must fall with each inhibitor and rise with each activator for every value of its names, as
   sympy shows; a regulator it cannot show that for is `modulated_by`, which claims no direction
   ([`statements`](src/petab_mcp/statements.py),
-  [`mechanisms.check_regulators`](src/petab_mcp/mechanisms.py)). A condition input the entity map
+  [`mechanisms.check_regulators`](src/petab_mcp/mechanisms.py)). INDRA has no statement about a
+  reaction, so a causal graph gets the nearest one it has, wider than the claim
+  (`statements.as_indra`: "inhibited by sorafenib" on RAF's step is `Inhibition(sorafenib, RAF)`).
+  A condition input the entity map
   does not map to an agent is no agent, so a row's binding may read it (`kf="k*dose"`) and the
   condition table says what it is. Which inputs are agents is the problem author's call, made in
   the entity map, and one it maps is read only as the agent it is.
