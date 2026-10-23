@@ -1893,6 +1893,25 @@ def test_a_readout_that_reads_no_amount_is_refused(tmp_path):
     assert out["applied"] is False and "reads no amount" in out["error"]
 
 
+def test_a_readout_that_is_a_number_is_not_refused(tmp_path):
+    """A number is no parameter the fit tunes: Lucarelli's reference reads the SMAD3 in a SMAD2
+    pull-down as all doubly phosphorylated, `readout_S2IP_ppS3 := 1`, and its statements were
+    refused for it (PEtabAgentBench#23). `time` alone still reads no amount."""
+    mcp = _readout_server(tmp_path)
+    out = _call(
+        mcp,
+        "make_changes",
+        {"justification": "a constant readout", "statements": [_CONV], "readouts": {"readout_B": "1"}},
+    )
+    assert out["applied"] is True, out.get("error")
+    out = _call(
+        mcp,
+        "make_changes",
+        {"justification": "a clock", "statements": [_CONV], "readouts": {"readout_B": "time"}},
+    )
+    assert out["applied"] is False and "reads no amount" in out["error"]
+
+
 def test_a_readout_no_observable_reads_is_refused(tmp_path):
     mcp = _readout_server(tmp_path)
     out = _call(
@@ -1928,20 +1947,55 @@ def test_a_binding_may_scale_the_parameter_it_replaces(tmp_path):
     assert {"conv_k", "slow"} <= rows
 
 
-def test_a_scheme_with_modifiers_is_refused_where_it_is_written():
-    """Accepted and then dropped, before: each row naming them was refused with "reads none"."""
-    from petab_mcp import mechanisms as M
+def test_a_scheme_against_its_regulator_is_refused_where_it_is_written(tmp_path):
+    """A scheme whose rate rises with what its statement says inhibits it is refused at the call
+    that writes it, not at each row that uses it."""
+    out = _call(
+        _statements_server(tmp_path),
+        "make_changes",
+        {
+            "justification": "C slows A becoming B",
+            "statements": ["conv: A becomes B, inhibited by C | inhibited"],
+            "mechanisms": [{"statement_type": "PopulationTransition", "policy": "inhibited",
+                            "scheme": "source() >> target() @ k*amount(inhibited_by)",
+                            "parameters": ["k"]}],
+        },
+    )
+    assert out["applied"] is False and out["error_cause"] == "malformed_mechanism"
+    assert "must fall as `inhibited_by` rises; it rises instead: state it `activated_by`" in out["error"]
 
-    with pytest.raises(M.MechanismError, match="amount\\(<pattern>\\)"):
-        M.written(
-            {
-                "statement_type": "PopulationTransition",
-                "policy": "inhibited",
-                "scheme": "source() >> target() @ k",
-                "modifiers": ["inh"],
-            },
-            dict(M.REGISTRY),
+
+def test_a_regulator_enters_through_the_statement(tmp_path):
+    """PEtab-MCP#122: `A becomes B | inhibited inh:=C` read C in its rate while its statement, and
+    its English, named only A and B. The statement now states C, and the rate reads it."""
+    inhibited = {
+        "statement_type": "PopulationTransition",
+        "policy": "inhibited",
+        "based_on": "mass_action",
+        "rate": "k*Ki/(Ki + inhibited_by)",
+        "parameters": ["k", "Ki"],
+    }
+
+    def change(row, name):
+        (tmp_path / name).mkdir()
+        mcp = _statements_server(tmp_path / name)
+        out = _call(
+            mcp,
+            "make_changes",
+            {"justification": "C slows A becoming B", "statements": [row],
+             "mechanisms": [inhibited]},
         )
+        return mcp, out
+
+    _, unstated = change("conv: A becomes B | inhibited", "unstated")
+    assert unstated["applied"] is False
+    assert "reads ['inhibited_by'], which its statement does not state" in unstated["error"]
+    _, modifier = change("conv: A becomes B | inhibited inh:=C", "modifier")
+    assert "`inh:=` names no regulator" in modifier["error"]
+    mcp, stated = change("conv: A becomes B, inhibited by C | inhibited", "stated")
+    assert stated["applied"] is True, stated.get("error")
+    rows = _call(mcp, "get_model", {"format": "statements"})
+    assert "conv: A becomes B, inhibited by C | inhibited" in str(rows)
 
 
 def test_an_unknown_activity_names_the_modification_tags():
@@ -2129,9 +2183,12 @@ def test_an_empty_map_names_the_held_inputs_and_binds_nothing_else(tmp_path):
 
 def _concurrently(monkeypatch, mcp, *calls):
     """The ``make_changes`` calls, each on its own thread, each pausing after it builds its
-    statements until every other has built too (or 3 s pass)."""
+    statements until every other has built too (or 3 s pass). Each takes the session lock in turn,
+    as a call does that arrives just as another takes it: the refusal of a call arriving during
+    another's fit (``fit_in_progress``, tests/test_multistart.py) is turned off here."""
     import threading
 
+    monkeypatch.setattr(PetabSession, "change", lambda session: session.lock)
     barrier = threading.Barrier(len(calls), timeout=3)
     build = O.statements_to_antimony
 

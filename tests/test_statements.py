@@ -103,3 +103,29 @@ def test_ungrounded_ignores_reader_text():
         _agent("x", ', "db_refs": {"TEXT": "something"}'),
     )
     assert S.ungrounded(stmt) == ["x"]
+
+
+def test_a_statement_states_its_regulators_and_says_them_in_english():
+    """PEtab-MCP#122: "RAF phosphorylates MEK" read as a reaction nothing slows while its rate
+    read sorafenib. The regulator is the statement's, so its English says it; INDRA reads the
+    rest."""
+    stmt = {
+        "type": "Phosphorylation", "enz": {"name": "RAF"}, "sub": {"name": "MEK"},
+        "residue": "S", "position": "217",
+        "inhibited_by": [{"name": "sorafenib"}],
+        "activated_by": [{"name": "ERK", "mods": [{"mod_type": "phosphorylation",
+                                                    "residue": "T", "position": "202"}]}],
+    }
+    assert S.problems(stmt) == []
+    assert S.english(stmt) == (
+        "RAF phosphorylates MEK on S217, inhibited by sorafenib, activated by ERK phosphorylated "
+        "on T202."
+    )
+    assert set(S.regulators(stmt)) == {"inhibited_by", "activated_by"}
+    assert "inhibited_by" not in S.indra_part(stmt)
+    transition = {"type": "PopulationTransition", "source": {"name": "A"},
+                  "target": {"name": "B"}, "modulated_by": [{"name": "Ca"}]}
+    assert S.english(transition) == "A becomes B, modulated by Ca."
+    assert S.problems({**transition, "modulated_by": {"name": "Ca"}}) == [
+        '`modulated_by` is a list of agents: [{"name": "A"}, ...]'
+    ]

@@ -88,6 +88,7 @@ def to_antimony(
     *,
     targets: frozenset[str] = frozenset(),
     network: dict | None = None,
+    reduce: bool = True,
 ) -> tuple[str, list[M.Emission]]:
     """The model ``rows`` build, as Antimony the ``antimony`` route accepts unchanged.
 
@@ -113,8 +114,9 @@ def to_antimony(
     not expect: kinds the rules make from nothing, which start empty, and a start location chosen
     among several.
 
-    The rules are reduced before they are expanded (:mod:`reduction`), and ``network``, when
-    given, receives the species and reactions with and without the reduction.
+    The rules are reduced before they are expanded (:mod:`reduction`), unless ``reduce`` is off
+    (the expansion :mod:`reduction_check` compares with), and ``network``, when given, receives the
+    species and reactions with and without the reduction.
     """
     starts = starts or []
     entities = {**{item.id: Agent(item.id) for item in inputs}, **entities}
@@ -175,7 +177,7 @@ def to_antimony(
             else float(amount) == 0
         )
     }
-    reduced = reduction.reduce(model, whole)
+    reduced = reduction.reduce(model, whole) if reduce else reduction.Reduction()
     # A readout over blocks of a split monomer is their product, so it is made after the split.
     amounts = {
         name: reduction.amount(model, reduced, pattern, name) for name, pattern in patterns.items()
@@ -377,9 +379,20 @@ def _declare(
         value = float(amount) if not isinstance(amount, str) else SEED_INITIAL_VALUE
         parameter = pysb.Parameter(f"{name}_init", value, _export=False)
         model.add_component(parameter)
+        twin = next(
+            (i.value.name.removesuffix("_init") for i in model.initials
+             if i.pattern.is_equivalent_to(pattern)),
+            None,
+        )
+        if twin is not None:
+            raise ModelUpdateError(
+                f"starts {twin!r} and {name!r} both start {pattern} (a site neither writes starts "
+                "in its default state), and one species takes one start: give it one, or write "
+                "each agent in the state that tells them apart"
+            )
         try:
             model.add_initial(pysb.Initial(pattern, parameter, _export=False))
-        except ValueError as exc:  # pysb: not concrete, or a duplicate species
+        except ValueError as exc:  # pysb: not concrete
             raise ModelUpdateError(
                 f"start {name!r} is not a start PySB accepts: {exc}"
             ) from exc
@@ -387,11 +400,18 @@ def _declare(
     return named
 
 
+def _parse(formula: str):
+    """``formula`` as libSBML's L3 parser reads it, Python's ``**`` read as its ``^``. The parser
+    has no ``**``, and its ``^`` binds and associates as ``**`` does (``-a^2`` is ``-(a^2)``,
+    ``a^b^c`` is ``a^(b^c)``), so the formula means what it says in Python."""
+    return libsbml.parseL3Formula(formula.replace("**", "^"))
+
+
 def _initial_expression(sbml_model, placeholder: str, species: str, formula: str) -> None:
     """Replace the declared species' ``<key>_init`` with the expression its entry gives. A name
     the model does not hold becomes a parameter: a shipped row or a condition-table column fills
     it, and anything else is estimated from reconcile's seed."""
-    math = libsbml.parseL3Formula(formula)
+    math = _parse(formula)
     if math is None:
         raise ModelUpdateError(f"start {species!r} is no formula: {formula!r}")
     _parameters_for_unknown_names(sbml_model, math)
@@ -413,12 +433,15 @@ def _readout_formula(
 
     A formula that reads none of the model's ``states`` (the ``amounts``, and the entity map's ids)
     is refused too: it measures parameters, a constant the fit tunes to the data's mean, with a
-    flat trajectory that can look like a good fit."""
+    flat trajectory that can look like a good fit. A number is not refused: nothing fits it, and
+    :mod:`literals` prices it unless it is structural. It is the claim that an assay reads the same
+    whatever the state, which Lucarelli's reference makes of the SMAD3 in a SMAD2 pull-down (all of
+    it doubly phosphorylated, ``readout_S2IP_ppS3 := 1``; PEtabAgentBench#23)."""
     if sbml_model.getElementBySId(readout) is not None:
         raise ModelUpdateError(
             f"readout {readout!r} is a formula and also names something else in the model"
         )
-    math = libsbml.parseL3Formula(formula)
+    math = _parse(formula)
     if math is None:
         raise ModelUpdateError(f"readout {readout!r} is no formula: {formula!r}")
     if any(node.isName() and node.getName() == readout for node in _ast_nodes(math)):
@@ -445,9 +468,8 @@ def _readout_formula(
             f'`"{unread[0]}{{p}}"` for one state) and read that name. Unread, it would be a '
             "parameter, a constant, fitted in place of the species."
         )
-    if states is not None and not {
-        node.getName() for node in _ast_nodes(math) if node.getType() == libsbml.AST_NAME
-    } & set(states):
+    named = {node.getName() for node in _ast_nodes(math) if node.isName()}
+    if states is not None and named and not named & set(states):
         raise ModelUpdateError(
             f"readout {readout!r} = {formula!r} reads no amount, so it is a constant the fit tunes "
             "to the data. A readout is what the assay measures of the model's state: read an "
@@ -602,9 +624,16 @@ def _refuse_chains(model: pysb.Model, emissions: list[M.Emission]) -> None:
     make A-A-B-B-A-... The rules say this at once, where the capped expansion
     (:data:`MAX_COMPLEX`) only finds it out after building every complex up to the cap, which can
     take minutes. The cap stays as the backstop for growth the bonds alone do not show.
+
+    A cycle grows only through a molecule some rule BINDS while it is already bound elsewhere (a
+    gain): one whose bonds all formed in one firing is as large as that rule's product. Three
+    trimers each assembled from free SMADs (Lucarelli's) close a cycle of bonds that coexist in
+    their products, and were refused although none can take a further partner
+    (PEtabAgentBench#23); so a cycle is refused only when it passes a gain.
     """
     formed: dict[tuple, set[str]] = {}  # bond, as its two (monomer, site) ends -> rules forming it
     holds: set[tuple[str, str, str]] = set()  # (monomer, s, t): bound on s and t at once
+    gains: set[tuple[str, str, str]] = set()  # ... because a rule binds t while s may be bound
     for rule in model.rules:
         sides = [(rule.reactant_pattern, rule.product_pattern)]
         if rule.is_reversible:
@@ -624,19 +653,21 @@ def _refuse_chains(model: pysb.Model, emissions: list[M.Emission]) -> None:
                     for molecule in _molecules(before):
                         conditions = molecule.site_conditions
                         if molecule.monomer.name == name and _is_free(conditions.get(site, ANY)):
-                            holds |= {
+                            gains |= {
                                 pair
                                 for other in molecule.monomer.sites
                                 if other != site and not _is_free(conditions.get(other, ANY))
                                 for pair in ((name, site, other), (name, other, site))
                             }
+    holds |= gains
     # From "bound on s", a molecule that may also bind on t reaches its partner on t's bond.
-    steps: dict[tuple[str, str], list[tuple[tuple[str, str], tuple]]] = {}
+    steps: dict[tuple[str, str], list[tuple[tuple[str, str], tuple, bool]]] = {}
     for bond in formed:
         for (name, site), partner in ((bond[0], bond[1]), (bond[1], bond[0])):
             for held_name, s, t in holds:
                 if held_name == name and t == site:
-                    steps.setdefault((name, s), []).append((partner, bond))
+                    gain = (name, s, t) in gains
+                    steps.setdefault((name, s), []).append((partner, bond, gain))
     cycle = _cycle(steps)
     if cycle is None:
         return
@@ -685,30 +716,29 @@ def _bonds(reaction_pattern) -> list[tuple]:
 
 
 def _cycle(steps: dict) -> list | None:
-    """A cycle in ``steps`` as its ``(node, bond)`` steps, or ``None``."""
-    state: dict = {}
-    path: list = []
-
-    def visit(node) -> list | None:
-        state[node] = "open"
-        for partner, bond in steps.get(node, []):
-            path.append((node, bond))
-            if state.get(partner) == "open":
-                start = next(i for i, (n, _) in enumerate(path) if n == partner)
-                return path[start:]
-            if partner not in state:
-                found = visit(partner)
-                if found:
-                    return found
-            path.pop()
-        state[node] = "done"
-        return None
-
-    for node in list(steps):
-        if node not in state:
-            found = visit(node)
-            if found:
-                return found
+    """A cycle in ``steps`` (node -> ``(partner, bond, gain)``) through at least one gain step, as
+    its ``(node, bond)`` steps, or ``None``: each gain step, then the shortest way back from its
+    partner to where it started."""
+    for start, outgoing in steps.items():
+        for first, first_bond, gain in outgoing:
+            if not gain:
+                continue
+            came: dict = {first: None}
+            frontier = [first]
+            while frontier and start not in came:
+                ahead = []
+                for node in frontier:
+                    for partner, bond, _ in steps.get(node, []):
+                        if partner not in came:
+                            came[partner] = (node, bond)
+                            ahead.append(partner)
+                frontier = ahead
+            if start in came:
+                back, node = [], start
+                while came[node] is not None:
+                    back.append(came[node])
+                    node = came[node][0]
+                return [(start, first_bond), *reversed(back)]
     return None
 
 def _rename(sbml_model, element, new: str) -> None:

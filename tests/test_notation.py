@@ -76,10 +76,11 @@ ROWS = [
                    "obj_activity": "kinase"},
      "policy": "indra_default", "prefix": "act"},
     {"statement": {"type": "IncreaseAmount", "subj": {"name": "Prey"},
-                   "obj": {"name": "Predator"}},
-     "policy": "self_renewal", "prefix": "birth", "parameters": {"k": 1.0},
-     "modifiers": {"inh": {"name": "drug", "mutations": [
-         {"position": "600", "residue_from": "V", "residue_to": "E"}]}}},
+                   "obj": {"name": "Predator"},
+                   "inhibited_by": [{"name": "drug", "mutations": [
+                       {"position": "600", "residue_from": "V", "residue_to": "E"}]}],
+                   "modulated_by": [{"name": "season"}, {"name": "rain"}]},
+     "policy": "self_renewal", "prefix": "birth", "parameters": {"k": 1.0}},
 ]
 
 

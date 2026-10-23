@@ -96,6 +96,18 @@ class FitBackendError(PetabMcpError):
     pickle a start (see :mod:`petab_mcp.dask_engine`)."""
 
 
+class FitCancelledError(PetabMcpError):
+    """The client cancelled the call whose fit this was (MCP ``notifications/cancelled``), and its
+    starts were stopped (see :mod:`petab_mcp.multistart`)."""
+
+
+#: The ``error_cause`` of a ``make_changes`` refused at once because another change on the session
+#: is still being fitted, and the word its ``error`` starts with after ``make_changes: ``, which a
+#: client matches (gemot's ``circuit_breaker``). Nothing was applied, and that fit's result becomes
+#: the next version.
+FIT_IN_PROGRESS = "fit_in_progress"
+
+
 class NoSessionBoundError(PetabMcpError):
     """A call arrived on a connection that has no session bound to it."""
 
@@ -141,6 +153,10 @@ INFRASTRUCTURE_ERROR = "infrastructure_error"
 #: The cause a full disk or an exceeded quota (ENOSPC, EDQUOT) is reported under.
 DISK_FULL = "disk_full"
 
+#: The cause a fit whose starts stopped finishing is reported under (see
+#: :mod:`petab_mcp.multistart`): its workers were stopped and nothing was scored.
+FIT_WEDGED = "fit_wedged"
+
 _DISK_FULL_ERRNOS = frozenset({errno.ENOSPC, errno.EDQUOT})
 
 #: How a full disk reads where no ``OSError`` carries its errno: a linker's or ``cmake --install``'s
@@ -157,12 +173,12 @@ _PROBE_BYTES = 1 << 20
 
 class InfrastructureError(PetabMcpError):
     """The host failed the call, so nothing the agent can change fixes it: ``cause`` names how
-    (:data:`DISK_FULL`).
+    (:data:`DISK_FULL`, :data:`FIT_WEDGED`).
 
     Not a rejection. The tool call ends as an MCP error reading ``infrastructure_error: <cause>:
     <detail>``, which a client takes as the end of the run; the edit it carried is not counted
     toward the identical-fit guard when it ends the fit. Raised for a full disk anywhere in edit,
-    build, fit or store (:func:`disk_full_error`).
+    build, fit or store (:func:`disk_full_error`), and for a fit whose starts stopped finishing.
     """
 
     def __init__(self, cause: str, detail: str) -> None:

@@ -48,7 +48,7 @@ from .constants import (
     PARAMETER_AT_BOUND_RELATIVE_TOL,
 )
 from .engine import build_lock
-from .errors import FitBackendError, ModelBuildBusyError, ModelUpdateError, disk_full_error
+from .errors import ModelBuildBusyError, ModelUpdateError, PetabMcpError, disk_full_error
 from .formatting import finite_float as _flt
 from .parameters import structure_fingerprint
 from .problem import (
@@ -230,23 +230,26 @@ def _starts_per_task(n_starts: int, previous: dict[str, Any] | None) -> int:
     return max(1, int(min(n_starts, FIT_STARTS_PER_TASK or FIT_TASK_SECONDS // expected)))
 
 
-def _fit_engine(n_starts: int, shared=None, previous: dict[str, Any] | None = None):
+def _fit_engine(
+    n_starts: int,
+    shared=None,
+    previous: dict[str, Any] | None = None,
+    rerun: frozenset[str] = frozenset(),
+):
     """The pyPESTO engine a multistart runs on: ``shared``, the server's
     :class:`~petab_mcp.dask_engine.DaskEngine`, when it has one, batched by :func:`_starts_per_task`;
     otherwise up to ``FIT_N_WORKERS`` local worker processes (never more than there are starts), or
-    ``None`` (pyPESTO's sequential ``SingleCoreEngine``) for a single effective worker or when a
-    parallel engine can't be constructed."""
+    ``None`` (pyPESTO's sequential ``SingleCoreEngine``) for a single effective worker. Both pools
+    stop a start past its cap, rerunning the starts in ``rerun`` once, and end a fit whose starts
+    stop finishing (:mod:`petab_mcp.multistart`)."""
     if shared is not None:
-        return shared.batched(_starts_per_task(n_starts, previous))
+        return shared.batched(_starts_per_task(n_starts, previous), FIT_PER_START_TIMEOUT_S, rerun)
     workers = max(1, min(FIT_N_WORKERS, int(n_starts)))
     if workers < 2:
         return None
-    try:
-        from pypesto.engine import MultiProcessEngine
+    from .multistart import ProcessEngine
 
-        return MultiProcessEngine(n_procs=workers)
-    except Exception:  # noqa: BLE001 - parallel engine unavailable: fall back to sequential
-        return None
+    return ProcessEngine(workers, FIT_PER_START_TIMEOUT_S, rerun)
 
 
 def _fmt(x: Any) -> str:
@@ -622,13 +625,7 @@ def amici_facing_problem(session):
     cached = getattr(session, "_amici_problem_cache", None)
     if cached is not None and cached[0] == key:
         return cached[1], True
-    from amici.importers.petab import flatten_timepoint_specific_output_overrides
-
-    flat_petab = copy.deepcopy(session.problem.to_petab())
-    flatten_timepoint_specific_output_overrides(flat_petab)
-    flat = session.problem.replace(
-        observable_df=flat_petab.observable_df, measurement_df=flat_petab.measurement_df
-    )
+    flat = flattened(session.problem)
     session._amici_problem_cache = (key, flat)
     session.logger.info(
         "flattening timepoint-specific output overrides for the AMICI build only "
@@ -637,6 +634,18 @@ def amici_facing_problem(session):
         len(flat.observable_df),
     )
     return flat, True
+
+
+def flattened(problem):
+    """``problem`` with its observable and measurement tables flattened for AMICI
+    (:func:`amici_facing_problem`), on a deep copy: AMICI's flattening mutates what it is given."""
+    from amici.importers.petab import flatten_timepoint_specific_output_overrides
+
+    flat_petab = copy.deepcopy(problem.to_petab())
+    flatten_timepoint_specific_output_overrides(flat_petab)
+    return problem.replace(
+        observable_df=flat_petab.observable_df, measurement_df=flat_petab.measurement_df
+    )
 
 
 def estimation_problem(session, engine, *, solve_inner: bool = True):
@@ -1067,6 +1076,22 @@ def warm_start_guesses(problem, parameter_df, n_starts: int, optimization=None):
     return np.asarray(guesses)
 
 
+def parent_starts(problem, guesses, optimization) -> frozenset[str]:
+    """The ids pyPESTO gives the warm starts seeded at the parent's optimum: the rows of
+    :func:`warm_start_guesses` that hold every parameter of ``optimization``, the previous fit, at
+    its fitted value (the neutral candidates and the nominal point). One of them keeps a nested
+    edit's fit within reach of its parent's, so a fit reruns one stopped past its cap
+    (:class:`~petab_mcp.multistart.CappedEngine`). Empty without a previous fit."""
+    import numpy as np
+
+    previous = set((optimization or {}).get("x_names") or [])
+    shared = [i for i, name in enumerate(problem.x_names) if name in previous]
+    if not shared or not len(guesses):
+        return frozenset()
+    at = guesses[0][shared]
+    return frozenset(str(j) for j, row in enumerate(guesses) if np.array_equal(row[shared], at))
+
+
 def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     """Estimate the free parameters with pyPESTO and write the best fit back.
 
@@ -1102,14 +1127,6 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
 
     free = getattr(problem, "x_free_indices", None)
     n_free = len(free) if free is not None else len(problem.x_names)
-    # Parallelise the multistart across worker processes when more than one is warranted; None runs
-    # pyPESTO's sequential engine. Sized so a client's fit budget (ceil(n_starts/workers) waves)
-    # matches the real wall-clock — see FIT_N_WORKERS. A server with a cluster runs every start
-    # there instead.
-    pp_engine = _fit_engine(n_starts, engine.fit_engine, session.optimization)
-    workers = getattr(pp_engine, "n_procs", 1) or 1
-    if engine.fit_engine is not None:
-        workers = f"dask({pp_engine.starts_per_task} starts per task)"
     # WARM STARTS: seed half the multistart from the PREVIOUS fit — its best optimum (which the
     # write-back left in the nominal values) plus its other converged optima, remapped onto this
     # problem — so a nested edit's fit begins at points that already reproduce its parent's
@@ -1142,6 +1159,19 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
         else np.zeros((0, len(problem.x_names)))
     )
     problem.x_guesses_full = guesses
+    # Parallelise the multistart across worker processes when more than one is warranted; None runs
+    # pyPESTO's sequential engine. Sized so a client's fit budget (ceil(n_starts/workers) waves)
+    # matches the real wall-clock — see FIT_N_WORKERS. A server with a cluster runs every start
+    # there instead.
+    pp_engine = _fit_engine(
+        n_starts,
+        engine.fit_engine,
+        session.optimization,
+        parent_starts(problem, guesses, session.optimization),
+    )
+    workers = getattr(pp_engine, "n_procs", 1) or 1
+    if engine.fit_engine is not None:
+        workers = f"dask({pp_engine.starts_per_task} starts per task)"
     log.info(
         "fit: start optimizer=fides n_starts=%d warm_starts=%d workers=%s n_free=%d "
         "sbml=%s objective_before=%s",
@@ -1205,15 +1235,18 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
             progress_bar=False,
             **minimize_kwargs,
         )
+        # The starts the engine stopped past their cap and scored as failed (multistart).
+        killed = getattr(pp_engine, "killed", [])
     except Exception as exc:  # noqa: BLE001 - retry sequentially before giving up
         # A parallel multistart can construct its engine fine yet still fail at runtime
         # (pickling/spawn issues, a worker dying). That is a parallel-only failure — the same fit
         # runs fine on the sequential engine — so fall back to it rather than failing the whole
         # commit. Sequential is slower, so this can exceed the parallel-sized fit budget on a big
         # n_starts; that is an acceptable rare-path cost vs. a hard failure (resuming the session
-        # backstops a timeout). A sequential fit that itself fails re-raises normally. A cluster
-        # failure is not retried: that would run every start on the server node.
-        if pp_engine is None or isinstance(exc, FitBackendError):
+        # backstops a timeout). A sequential fit that itself fails re-raises normally. A failure the
+        # server raised is not retried: a cluster's would run every start on the server node, and a
+        # wedged or cancelled fit must end (see :mod:`petab_mcp.multistart`).
+        if pp_engine is None or isinstance(exc, PetabMcpError):
             raise
         log.warning(
             "fit: parallel multistart failed (%s: %s); retrying sequentially",
@@ -1228,6 +1261,7 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
             progress_bar=False,
             **minimize_kwargs,
         )
+        killed = []
     duration = time.perf_counter() - t0
     # The multistart optimization is the recurring "fit" cost (a fit-cache hit returns above
     # without reaching here, so it correctly adds nothing). Under `session.lock`.
@@ -1333,6 +1367,7 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     # optima onto its own (differently-parameterised, possibly differently-scaled) vector and
     # re-enter them as warm starts. See `previous_optima`.
     optimization["x_scales"] = [str(s) for s in problem.x_scales]
+    optimization["n_starts_killed"] = len(killed)
     optimization["result_file"] = _write_pypesto_result(session, result, session.problem_hash())
     return {
         "fitted": fitted,
@@ -1548,6 +1583,9 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
             # the strength of it. Putting it on the payload at the point it is known removes the
             # seam instead of adding a second one.
             "exitflag_counts": (fit["optimization"] or {}).get("exitflag_counts") if fit else None,
+            # ...and, the same way, how many starts were stopped past their cap (see
+            # :mod:`multistart`): scored as failed, so the fit searched less than `n_starts` names.
+            "n_starts_killed": (fit["optimization"] or {}).get("n_starts_killed") if fit else None,
             "records": records,
             "objective_before": fit["objective_before"] if fit else None,
             "version": None,
@@ -2345,12 +2383,16 @@ def fit_result_block(
     if k is None and fitted is not None:
         k = len(fitted)
     constants = fitsim.get("hardcoded_constants") or []
+    killed = fitsim.get("n_starts_killed")
     block = {
         "fit_status": fitsim.get("status"),
         # The multistart count the fit actually ran with (``None`` for a restored version, which
         # did not fit). Reported because `n_starts` OVERRIDES the server default rather than adding
         # to it, so this is how a caller confirms it fitted harder and not weaker.
         "n_starts": fitsim.get("n_starts"),
+        # How many of them were stopped past their cap and scored as failed, ABSENT when none was:
+        # this block is re-sent in the caller's history every turn.
+        **({"n_starts_killed": killed} if killed else {}),
         # Per-start outcome histogram (e.g. {"ExitFlag.FTOL": 81, "ExitFlag.EXCEEDED_BOUNDARY":
         # 19}): how many starts CONVERGED on their own criterion vs hit the per-start time cap.
         # A fit dominated by boundary exits is optimiser-budget-limited, not structure-limited --
@@ -2516,6 +2558,7 @@ def build_optimization_payload_for_version(
         # the optimizer log runs at ERROR, so without it a restored version can no longer answer
         # "was this fit optimiser-limited or structure-limited?".
         "exitflag_counts": payload.get("exitflag_counts"),
+        "n_starts_killed": payload.get("n_starts_killed"),
         "result_file": payload.get("result_file"),
         # Without these a rollback restores the per-start optima with no way to read them: the
         # `x` vectors are positional. Rollback-then-re-author is exactly the path where reusing
