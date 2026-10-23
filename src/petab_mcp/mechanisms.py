@@ -247,31 +247,30 @@ def _direction(expr: sympy.Expr, symbol: sympy.Symbol) -> int | None:
     return None
 
 
-def check_regulators(policy: str, rate: str, expr: sympy.Expr, backward: bool = False) -> None:
+def check_regulators(policy: str, rate: str, expr: sympy.Expr, names=None) -> None:
     """Refuse ``rate`` of ``policy`` (``expr``, its names signed by :func:`assumed`) when it does
     not fall with each inhibitor it reads and rise with each activator, for every value of every
-    name: the direction a statement stating the regulator claims. A ``backward`` rate, the second
-    of a reversible step, runs the reaction back, so it must move the other way. ``modulated_by``
-    claims none. One step's rate only: in a mechanism of several, a step's rate can move the
-    reaction either way, as where it sits decides (:func:`schemes.compile_scheme`)."""
-    for symbol in sorted(expr.free_symbols, key=str):
+    name: the direction a statement stating the regulator claims. ``modulated_by`` claims none.
+    A written rate is checked as it is, the one step of its mechanism; a scheme on its net rate
+    (:func:`schemes.net_rate`), since in several steps a step's own rate can move the reaction
+    either way. ``names`` are the regulators to check, by default those ``expr`` reads; one it
+    does not read is refused, as a claim the rate does not carry."""
+    names = sorted(names or (s.name for s in expr.free_symbols), key=str)
+    for symbol in (sympy.Symbol(n, nonnegative=True) for n in names):
         if not REGULATOR_NAME.fullmatch(str(symbol)) or str(symbol).startswith("modulated"):
             continue
         kind = str(symbol).split("_by")[0]
         inhibitor = kind == "inhibited"
         direction = _direction(expr, symbol)
-        falls = inhibitor != backward
-        if direction == (-1 if falls else 1):
+        if direction == (-1 if inhibitor else 1):
             continue
-        claim = "inhibits" if inhibitor else "activates"
-        way = "fall" if falls else "rise"
-        subject = "this rate, which runs it back," if backward else "the rate"
+        claim, way = ("inhibits", "fall") if inhibitor else ("activates", "rise")
         other = str(symbol).replace(kind, "activated" if inhibitor else "inhibited", 1)
         unsigned = str(symbol).replace(kind, "modulated", 1)
         if direction == 0:
             found = "it does not change with it, a claim the rate does not carry"
         elif direction is not None:
-            found = f"it {'rises' if falls else 'falls'} instead: state it `{other}`"
+            found = f"it {'rises' if inhibitor else 'falls'} instead: state it `{other}`"
         else:
             found = (
                 "that cannot be shown for every value of the rate's names (nor across a piecewise "
@@ -279,7 +278,7 @@ def check_regulators(policy: str, rate: str, expr: sympy.Expr, backward: bool = 
             )
         raise MechanismError(
             f"rate {rate!r} of {policy!r} reads `{symbol}`, which a statement states {claim} its "
-            f"reaction, so {subject} must {way} as `{symbol}` rises; {found}. "
+            f"reaction, so the rate must {way} as `{symbol}` rises; {found}. "
             f"d/d{symbol} = {sympy.simplify(sympy.diff(expr, symbol))}"
         )
 

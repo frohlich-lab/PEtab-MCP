@@ -212,44 +212,92 @@ def test_a_scheme_reads_no_agent_its_statement_does_not_name(scheme):
     )
 
 
+#: Michaelis and Menten's two steps, each rate open to a regulator.
+_TWO_STEPS = (
+    "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ {kf}, {kr}\n"
+    "enz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ {kc}"
+)
+_SLOWED = "/(1 + amount(inhibited_by)/Ki)"
+_SPED = "*(1 + amount(inhibited_by)/Ki)"
+
+
+def _two_steps(**rates):
+    rates = {"kf": "kf", "kr": "kr", "kc": "kc"} | rates
+    return M.written(
+        {"statement_type": "Phosphorylation", "policy": "two_steps",
+         "scheme": _TWO_STEPS.format(**rates), "parameters": ["kf", "kr", "kc", "Ki"]},
+        dict(M.REGISTRY),
+    )
+
+
 @pytest.mark.parametrize(
-    "rates, match",
+    "rates",
     [
-        # Speeding unbinding is how this inhibitor inhibits: the step back rises with it.
-        ("kf, kr*(1 + amount(inhibited_by)/Ki)", None),
-        ("kf/(1 + amount(inhibited_by)/Ki), kr", None),
-        # Slowing unbinding speeds the reaction, whatever the statement says.
-        ("kf, kr/(1 + amount(inhibited_by)/Ki)",
-         r"so this rate, which runs it back, must rise as `inhibited_by` rises; it falls instead"),
+        {"kc": "kc" + _SLOWED},  # the catalytic step slowed
+        {"kr": "kr" + _SPED},  # unbinding sped: less complex to turn over
+        {"kf": "kf" + _SLOWED, "kr": "kr" + _SLOWED, "kc": "kc" + _SLOWED},  # every step slowed
     ],
 )
-def test_the_step_back_of_a_reversible_scheme_moves_against_its_reaction(rates, match):
-    """PEtab-MCP#122: the second rate of `|` runs the reaction back, so an inhibitor that speeds it
-    inhibits, and one that slows it does not."""
-    definition = {"statement_type": "Phosphorylation", "policy": "binding",
-                  "scheme": f"enz(sub=None) + sub(enz=None) | enz(sub=1) % sub(enz=1) @ {rates}",
-                  "parameters": ["kf", "kr", "Ki"]}
-    if match is None:
-        M.written(definition, dict(M.REGISTRY))
-    else:
-        with pytest.raises(MechanismError, match=match):
-            M.written(definition, dict(M.REGISTRY))
+def test_an_inhibitor_of_a_scheme_of_several_steps_lowers_its_net_rate(rates):
+    """PEtab-MCP#125: whether a step's rate speeds the reaction depends on where the step sits,
+    so a scheme is checked on its net rate, its intermediates steady and its products absent."""
+    _two_steps(**rates)
 
 
-def test_a_scheme_of_several_steps_states_a_regulator_without_a_direction():
-    """Speeding a step into a dead end slows the reaction, so no rule about one rate's sign holds
-    across steps: such a scheme reads only `modulated_by`."""
-    steps = (
-        "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\n"
-        "enz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ "
-        "kc/(1 + amount({kind}_by)/Ki)"
+def test_a_regulator_that_moves_the_net_rate_the_other_way_is_refused():
+    """Slowing unbinding leaves more complex to turn over: it speeds the reaction, whatever its
+    own rate does."""
+    with pytest.raises(MechanismError, match=r"reads `inhibited_by`, which a statement states "
+                       r"inhibits its reaction, so the rate must fall .*; it rises instead: state it "
+                       r"`activated_by`"):
+        _two_steps(kr="kr" + _SLOWED)
+
+
+def test_a_step_into_a_dead_end_inhibits():
+    """No rule on a step's own rate gets this one: a step pointing forward, parking the enzyme in a
+    form that makes nothing, slows the reaction as it speeds."""
+    dead_end = (
+        "enz(sub=None, conf='open') + sub(enz=None, mod='off') | "
+        "enz(sub=1, conf='open') % sub(enz=1, mod='off') @ kf, kr\n"
+        "enz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc\n"
+        "enz(sub=None, conf='open') | enz(sub=None, conf='shut') @ kd*(1 + amount(inhibited_by)/Ki), kb"
     )
-    definition = {"statement_type": "Phosphorylation", "policy": "two_steps",
-                  "parameters": ["kf", "kr", "kc", "Ki"]}
-    with pytest.raises(MechanismError, match=r"scheme of 2 steps whose rates read "
-                       r"\['inhibited_by'\].*State it `modulated_by`"):
-        M.written(definition | {"scheme": steps.format(kind="inhibited")}, dict(M.REGISTRY))
-    M.written(definition | {"scheme": steps.format(kind="modulated")}, dict(M.REGISTRY))
+    M.written(
+        {"statement_type": "Phosphorylation", "policy": "dead_end", "scheme": dead_end,
+         "parameters": ["kf", "kr", "kc", "kd", "kb", "Ki"]},
+        dict(M.REGISTRY),
+    )
+
+
+def test_a_scheme_without_one_net_rate_states_its_regulators_without_a_direction():
+    """A scheme that also destroys its substrate is two reactions at unrelated rates: no one net
+    rate, so its regulators claim no direction."""
+    branched = (
+        "enz() + sub(mod='off') >> enz() + sub(mod='on') @ kc/(1 + amount({kind}_by)/Ki)\n"
+        "enz() + sub(mod='off') >> enz() @ kd"
+    )
+    definition = {"statement_type": "Phosphorylation", "policy": "branched",
+                  "parameters": ["kc", "kd", "Ki"]}
+    with pytest.raises(MechanismError, match=r"at rates no constant ratio relates: two reactions"
+                       r".*state each `modulated_by`"):
+        M.written(definition | {"scheme": branched.format(kind="inhibited")}, dict(M.REGISTRY))
+    M.written(definition | {"scheme": branched.format(kind="modulated")}, dict(M.REGISTRY))
+
+
+def test_a_reversible_step_is_checked_on_its_forward_rate():
+    """With its product absent a step does not run back, so what slows only its way back claims
+    nothing a regulator of the reaction does."""
+    def binding(kf, kr):
+        return M.written(
+            {"statement_type": "Complex", "policy": "binding", "parameters": ["kf", "kr", "Ki"],
+             "scheme": "members_0(members_1=None) + members_1(members_0=None) | "
+                       f"members_0(members_1=1) % members_1(members_0=1) @ {kf}, {kr}"},
+            dict(M.REGISTRY),
+        )
+
+    binding("kf" + _SLOWED, "kr" + _SLOWED)
+    with pytest.raises(MechanismError, match=r"does not change with it"):
+        binding("kf", "kr" + _SPED)
 
 
 def test_a_scheme_reads_a_regulator_its_statement_states():

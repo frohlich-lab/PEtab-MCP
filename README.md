@@ -171,13 +171,14 @@ Principles to hold onto when extending this package.
   the claim and its mechanism the maths behind it, so a rate (a written `rate`, a `scheme`) reads
   only the agents the statement names: its roles, the partners they are written bound or not
   bound to, and the agents it states regulate its rate without taking part, `inhibited_by`,
-  `activated_by` or `modulated_by` ("RAF phosphorylates MEK, inhibited by sorafenib"). The rate
-  must fall with each inhibitor and rise with each activator for every value of its names, as
-  sympy shows, on the rate of one step: in a mechanism of several, where a step sits decides
-  which way its rate moves the reaction. A regulator that cannot be shown so is `modulated_by`,
-  which claims no direction
-  ([`statements`](src/petab_mcp/statements.py),
-  [`mechanisms.check_regulators`](src/petab_mcp/mechanisms.py)). INDRA has no statement about a
+  `activated_by` or `modulated_by` ("RAF phosphorylates MEK, inhibited by sorafenib"). The
+  reaction's rate must fall with each inhibitor and rise with each activator for every value of
+  its names, as sympy shows: a written rate as it is, a scheme of several steps by its net rate,
+  its intermediates steady and its products absent, since where a step sits decides which way its
+  own rate moves the reaction. A regulator that cannot be shown so is `modulated_by`, which claims
+  no direction ([`statements`](src/petab_mcp/statements.py),
+  [`mechanisms.check_regulators`](src/petab_mcp/mechanisms.py),
+  [`schemes.net_rate`](src/petab_mcp/schemes.py)). INDRA has no statement about a
   reaction, so a causal graph gets the nearest one it has, wider than the claim
   (`statements.as_indra`: "inhibited by sorafenib" on RAF's step is `Inhibition(sorafenib, RAF)`).
   A condition input the entity map
