@@ -261,14 +261,23 @@ def _direction(expr: sympy.Expr, symbol: sympy.Symbol) -> int | None:
 
 
 def _monotone(e: sympy.Expr, x: sympy.Symbol) -> int | None:
-    """:func:`_direction` without the piecewise test. Within :data:`SIGN_OPS` by the sign of the
-    derivative; past it, or where that fails, taken apart: a sum moves as all its terms agree, a
-    product as each factor's move times the sign of the rest, a power as its base, signed by the
-    exponent. A large rate never has to be expanded, only its small parts differentiated."""
+    """:func:`_direction` without the piecewise test: taken apart first (:func:`_by_parts`), and
+    where that does not settle it, by the sign of the derivative within :data:`SIGN_OPS`. A large
+    rate is never expanded or factored, only its small parts differentiated."""
     if x not in e.free_symbols:
         return 0
-    if sympy.count_ops(e) <= SIGN_OPS and (found := _by_derivative(e, x)) is not None:
-        return found
+    found = _by_parts(e, x)
+    if found is None and sympy.count_ops(e) <= SIGN_OPS:
+        found = _by_derivative(e, x)
+    return found
+
+
+def _by_parts(e: sympy.Expr, x: sympy.Symbol) -> int | None:
+    """How ``e`` moves with ``x`` from how its parts do: a sum as all its terms agree, a product
+    as each factor's move times the sign of the rest, a power as its base, signed by the exponent
+    and the sign of the rest of its derivative."""
+    if e == x:
+        return 1
     if isinstance(e, sympy.Add):
         moves = {_monotone(t, x) for t in e.args} - {0}
         return moves.pop() if len(moves) == 1 and None not in moves else (None if moves else 0)
