@@ -167,6 +167,20 @@ Principles to hold onto when extending this package.
   `parameter_scales`, which puts AMICI's simulator on it too — every pyPESTO problem is built
   through `fitting.pypesto_problem`, never handed to pyPESTO linear. A problem that states a
   prior is refused at load: the objective is the likelihood the criterion scores.
+- **A statement says everything its rate reads.** On the `statements` route a row's statement is
+  the claim and its mechanism the maths behind it, so a rate (a written `rate`, a `scheme`) reads
+  only the agents the statement names: its roles, the partners they are written bound or not
+  bound to, and the agents it states regulate its rate without taking part, `inhibited_by`,
+  `activated_by` or `modulated_by` ("RAF phosphorylates MEK, inhibited by sorafenib"). The rate
+  must fall with each inhibitor and rise with each activator for every value of its names, as
+  sympy shows, on the rate of one step: in a mechanism of several, where a step sits decides
+  which way its rate moves the reaction. A regulator that cannot be shown so is `modulated_by`,
+  which claims no direction
+  ([`statements`](src/petab_mcp/statements.py),
+  [`mechanisms.check_regulators`](src/petab_mcp/mechanisms.py)). A condition input the entity map
+  does not map to an agent is no agent, so a row's binding may read it (`kf="k*dose"`) and the
+  condition table says what it is. Which inputs are agents is the problem author's call, made in
+  the entity map, and one it maps is read only as the agent it is.
 - **A hardcoded constant is not free.** `k` is the estimated parameters plus every numeric
   literal in the model's math bar a few structural ones (each distinct value once — see
   [`src/petab_mcp/literals.py`](src/petab_mcp/literals.py)), so freezing a fitted value costs

@@ -1944,20 +1944,55 @@ def test_a_binding_may_scale_the_parameter_it_replaces(tmp_path):
     assert {"conv_k", "slow"} <= rows
 
 
-def test_a_scheme_with_modifiers_is_refused_where_it_is_written():
-    """Accepted and then dropped, before: each row naming them was refused with "reads none"."""
-    from petab_mcp import mechanisms as M
+def test_a_scheme_against_its_regulator_is_refused_where_it_is_written(tmp_path):
+    """A scheme whose rate rises with what its statement says inhibits it is refused at the call
+    that writes it, not at each row that uses it."""
+    out = _call(
+        _statements_server(tmp_path),
+        "make_changes",
+        {
+            "justification": "C slows A becoming B",
+            "statements": ["conv: A becomes B, inhibited by C | inhibited"],
+            "mechanisms": [{"statement_type": "PopulationTransition", "policy": "inhibited",
+                            "scheme": "source() >> target() @ k*amount(inhibited_by)",
+                            "parameters": ["k"]}],
+        },
+    )
+    assert out["applied"] is False and out["error_cause"] == "malformed_mechanism"
+    assert "must fall as `inhibited_by` rises; it rises instead: state it `activated_by`" in out["error"]
 
-    with pytest.raises(M.MechanismError, match="amount\\(<pattern>\\)"):
-        M.written(
-            {
-                "statement_type": "PopulationTransition",
-                "policy": "inhibited",
-                "scheme": "source() >> target() @ k",
-                "modifiers": ["inh"],
-            },
-            dict(M.REGISTRY),
+
+def test_a_regulator_enters_through_the_statement(tmp_path):
+    """PEtab-MCP#122: `A becomes B | inhibited inh:=C` read C in its rate while its statement, and
+    its English, named only A and B. The statement now states C, and the rate reads it."""
+    inhibited = {
+        "statement_type": "PopulationTransition",
+        "policy": "inhibited",
+        "based_on": "mass_action",
+        "rate": "k*Ki/(Ki + inhibited_by)",
+        "parameters": ["k", "Ki"],
+    }
+
+    def change(row, name):
+        (tmp_path / name).mkdir()
+        mcp = _statements_server(tmp_path / name)
+        out = _call(
+            mcp,
+            "make_changes",
+            {"justification": "C slows A becoming B", "statements": [row],
+             "mechanisms": [inhibited]},
         )
+        return mcp, out
+
+    _, unstated = change("conv: A becomes B | inhibited", "unstated")
+    assert unstated["applied"] is False
+    assert "reads ['inhibited_by'], which its statement does not state" in unstated["error"]
+    _, modifier = change("conv: A becomes B | inhibited inh:=C", "modifier")
+    assert "`inh:=` names no regulator" in modifier["error"]
+    mcp, stated = change("conv: A becomes B, inhibited by C | inhibited", "stated")
+    assert stated["applied"] is True, stated.get("error")
+    rows = _call(mcp, "get_model", {"format": "statements"})
+    assert "conv: A becomes B, inhibited by C | inhibited" in str(rows)
 
 
 def test_an_unknown_activity_names_the_modification_tags():

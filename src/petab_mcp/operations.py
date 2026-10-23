@@ -724,7 +724,7 @@ def statements_to_antimony(
     from indra.statements import Agent, stmts_from_json
 
     from . import mechanisms, problem_sbml
-    from .statements import agent_problems, problems, ungrounded, with_defaults
+    from .statements import agent_problems, indra_part, problems, regulators, ungrounded, with_defaults
 
     definitions = dict(session.mechanisms)
     for definition in written or []:
@@ -755,9 +755,6 @@ def statements_to_antimony(
             notation.parse(row, groundings, library) if isinstance(row, str) else dict(row)
             for row in rows
         ]
-        for row in rows:
-            if row.get("modifiers"):
-                row["modifiers"] = {k: agent_json(v) for k, v in row["modifiers"].items()}
         starts = [{**start, "agent": agent_json(start["agent"])} for start in starts or []]
         given = {k: agent_json(v) for k, v in (amounts or {}).items()}
         read, amounts = _readout_amounts(readouts, given)
@@ -784,11 +781,6 @@ def statements_to_antimony(
         f"`{row['prefix']}`: {problem}"
         for row in rows
         for problem in problems(row["statement"])
-        + [
-            p
-            for slot, agent in (row.get("modifiers") or {}).items()
-            for p in agent_problems(agent, f"modifiers.{slot}")
-        ]
     ]
     unread += [p for i, s in enumerate(starts) for p in agent_problems(s["agent"], f"starts[{i}].agent")]
     unread += [p for name, a in amounts.items() for p in agent_problems(a, f"amounts.{name}")]
@@ -800,14 +792,14 @@ def statements_to_antimony(
         )
     for row in rows:
         row["statement"] = with_defaults(row["statement"])
-    stmts = stmts_from_json([row["statement"] for row in rows])
+    stmts = stmts_from_json([indra_part(row["statement"]) for row in rows])
     # INDRA drops a statement it cannot read with only a logged warning; refuse instead, naming
     # each one: a bare count of unread entries leaves the caller probing the schema call by call.
     if len(stmts) != len(rows):
         unread = [
             f"`{row['prefix']}` ({json.dumps(row['statement'])[:160]})"
             for row in rows
-            if not stmts_from_json([row["statement"]])
+            if not stmts_from_json([indra_part(row["statement"])])
         ]
         raise OperationError(
             f"make_changes: {len(rows) - len(stmts)} of {len(rows)} `statements` entries are "
@@ -829,7 +821,7 @@ def statements_to_antimony(
                 row["policy"],
                 row["prefix"],
                 row.get("parameters"),
-                {k: Agent._from_json(v) for k, v in (row.get("modifiers") or {}).items()},
+                regulators(row["statement"]),
             )
             for stmt, row in zip(stmts, rows)
         ],
@@ -981,7 +973,7 @@ def _check_readouts_are_read(session, readouts) -> None:
         )
 
 
-_ROW_FIELDS = ("statement", "policy", "prefix", "parameters", "modifiers")
+_ROW_FIELDS = ("statement", "policy", "prefix", "parameters")
 
 
 def apply_statement_edits(

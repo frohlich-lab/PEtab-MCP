@@ -27,11 +27,25 @@ An absent grounding warns rather than rejects (:func:`ungrounded`).
 A row's statement arrives as INDRA's JSON, whose reader skips what it does not know and leaves
 what is missing ``None``; :func:`problems` reads it first, so a misspelt or missing field is
 refused by name, with what it takes, instead of building a different model or crashing.
+
+A statement may also name the agents that regulate its rate without taking part in it, a field
+INDRA does not have: ``inhibited_by``, ``activated_by`` and ``modulated_by`` (:data:`REGULATORS`),
+each a list of agents. "RAF phosphorylates MEK, inhibited by sorafenib" is a claim about that one
+reaction at the population level: sorafenib slows it, whatever binds what. INDRA can say neither
+part of that. A bound condition (``RAF{~sorafenib}``) claims a complex the rule never forms, and
+an ``Inhibition(sorafenib, RAF)`` claims every reaction RAF catalyses, since an INDRA statement
+names agents and never another statement. The mechanism's rate reads each regulator
+(:mod:`mechanisms`), and its sign is checked against the claim: a rate an inhibitor does not
+slow, or an activator does not speed, is refused, and ``modulated_by`` claims no sign. The sign is
+checked on one step's rate, so a mechanism of several steps reads only ``modulated_by``. INDRA's
+reader and assemblers skip the fields, so :func:`english` writes them, and :func:`indra_part` is
+what INDRA reads.
 """
 
 from __future__ import annotations
 
 import inspect
+import re
 from collections.abc import Collection
 from typing import Any
 
@@ -92,6 +106,13 @@ class PopulationTransition(Statement):
 setattr(_indra_statements, PopulationTransition.__name__, PopulationTransition)
 
 
+#: The statement fields naming what regulates its rate, beside INDRA's own (module docstring),
+#: each with the words the notation and :func:`english` use.
+REGULATORS = {"inhibited_by": "inhibited by", "activated_by": "activated by",
+              "modulated_by": "modulated by"}
+#: The name a mechanism's rate reads a regulator by: its kind, and its position where the statement
+#: states several of that kind (``inhibited_by_1``), as a list role is read.
+REGULATOR_NAME = re.compile(rf"(?:{'|'.join(REGULATORS)})(?:_\d+)?")
 #: Fields INDRA's JSON writes for every statement type, besides the type's own.
 _COMMON = ("type", "id", "evidence", "belief", "supports", "supported_by", "matches_hash", "sbo")
 #: The roles holding a list of agents; every other role holds one.
@@ -127,9 +148,18 @@ def problems(statement: Any) -> list[str]:
         if name not in ("self", "evidence", *roles)
     ]
     out = [
-        f"{kind} has no field {field!r}{_close(field, fields)}, its fields are {fields}"
-        for field in sorted(set(statement) - set(fields) - set(_COMMON))
+        f"{kind} has no field {field!r}{_close(field, [*fields, *REGULATORS])}, its fields are "
+        f"{fields}"
+        for field in sorted(set(statement) - set(fields) - set(_COMMON) - set(REGULATORS))
     ]
+    for field in REGULATORS:
+        value = statement.get(field)
+        if value is not None and not isinstance(value, list):
+            out.append(f"`{field}` is a list of agents: [{{\"name\": \"A\"}}, ...]")
+        else:
+            out += [
+                p for i, a in enumerate(value or []) for p in agent_problems(a, f"{field}[{i}]")
+            ]
     for role in roles:
         value = statement.get(role)
         if role in _LIST_ROLES:
@@ -203,6 +233,40 @@ def with_defaults(statement: dict) -> dict:
     return statement
 
 
+def indra_part(statement: dict) -> dict:
+    """``statement`` without its :data:`REGULATORS`: what INDRA's reader reads."""
+    return {k: v for k, v in statement.items() if k not in REGULATORS}
+
+
+def regulators(statement: dict) -> dict[str, list[Agent]]:
+    """The agents ``statement`` (INDRA's JSON) states regulate its rate, by kind; the kinds it
+    states none of left out."""
+    return {
+        kind: [Agent._from_json(a) for a in statement[kind]]
+        for kind in REGULATORS if statement.get(kind)
+    }
+
+
+def english(statement: dict) -> str:
+    """``statement`` (INDRA's JSON) in English: INDRA's own sentence and the regulators it states,
+    which INDRA's assembler does not read. "RAF phosphorylates MEK, inhibited by sorafenib." """
+    from indra.assemblers.english import EnglishAssembler
+    from indra.assemblers.english.assembler import _assemble_agent_str
+    from indra.statements import stmts_from_json
+
+    def text(agent: Agent) -> str:
+        return _assemble_agent_str(agent).agent_str
+
+    (stmt,) = stmts_from_json([with_defaults(indra_part(statement))])
+    if isinstance(stmt, PopulationTransition):  # a type INDRA's assembler does not know
+        sentence = f"{text(stmt.source)} becomes {text(stmt.target)}"
+    else:
+        sentence = EnglishAssembler([stmt]).make_model().rstrip(".")
+    for kind, agents in regulators(statement).items():
+        sentence += f", {REGULATORS[kind]} " + " and ".join(map(text, agents))
+    return sentence + "."
+
+
 def _unknown(value: dict, allowed: Collection[str], where: str, what: str) -> list[str]:
     return [
         f"{where} has no field {field!r}{_close(field, allowed)}, {what} has {list(allowed)}"
@@ -232,6 +296,23 @@ def _close(word: Any, known: Collection[str]) -> str:
 
     close = closest_symbols(str(word), sorted(known)) if isinstance(word, str) else []
     return f" (did you mean {' or '.join(repr(c) for c in close)}?)" if close else ""
+
+
+def named_agents(stmt: Statement) -> list[Agent]:
+    """Every agent ``stmt`` names, as it names it: each role's agent and, within it, each partner
+    it is written bound or not bound to (``E{~C}``), theirs in turn. INDRA's English renders them
+    all ("E not bound to C phosphorylates S"); they and the :func:`regulators` it states are all
+    a mechanism's rate may read."""
+    out: list[Agent] = []
+
+    def visit(agent: Agent) -> None:
+        out.append(agent)
+        for condition in agent.bound_conditions:
+            visit(condition.agent)
+
+    for agent in stmt.real_agent_list():
+        visit(agent)
+    return out
 
 
 def ungrounded(stmt: Statement) -> list[str]:
