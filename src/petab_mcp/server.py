@@ -2094,13 +2094,15 @@ def _register_validation_data_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> 
         For whoever runs the session, not for the agent building the model (see the registrar's
         docstring): a predictive check, not a modelling tool.
 
-        Changes nothing. A fixed-θ set is one objective evaluation of the model as it stands, at
-        its current fitted values, against data it was not fitted to. A TRANSFER set (one that
-        brings its own parameter table) REFITS the model's estimated parameters on the held-out
-        system with an ``n_starts`` multistart (the session's default when omitted) and reports the
-        optimum; the fitted point is not written back. Returns
-        ``{status, mode, nll, k, n, chi2, n_experiments, observables, ...}``; see
-        :mod:`petab_mcp.validation_data` for the statuses and the two modes.
+        Changes neither the model nor its fit. A fixed-θ set is one objective evaluation of the
+        model as it stands, at its current fitted values, against data it was not fitted to. A
+        TRANSFER set (one that brings its own parameter table) REFITS the model's estimated
+        parameters on the held-out system with an ``n_starts`` multistart (the session's default
+        when omitted) and reports the optimum; the fitted point is not written back. Returns
+        ``{status, mode, nll, k, n, chi2, n_experiments, observables, records_file, ...}``, where
+        ``records_file`` is the head version's ``validation_simulations.json``: the score with one
+        record per held-out point. See :mod:`petab_mcp.validation_data` for the statuses and the two
+        modes.
         """
         ctx = route()
         session = ctx.session
