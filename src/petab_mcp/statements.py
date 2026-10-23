@@ -38,7 +38,10 @@ names agents and never another statement. The mechanism's rate reads each regula
 (:mod:`mechanisms`), and its sign is checked against the claim: a rate an inhibitor does not
 slow, or an activator does not speed, is refused, and ``modulated_by`` claims no sign. A scheme of
 several steps is checked on its net rate (:func:`schemes.net_rate`), the reaction's initial rate,
-since where a step sits decides which way its own rate moves the reaction. INDRA's
+since where a step sits decides which way its own rate moves the reaction. A regulator that rate
+does not change with acts on a step it cannot see, a product's degradation, and is that step's,
+stated on its own row: each claim keeps one meaning, and :func:`as_indra` never puts a regulator
+on another reaction. INDRA's
 reader and assemblers skip the fields, so :func:`english` writes them, :func:`indra_part` is
 what INDRA reads, and :func:`as_indra` projects each signed regulator onto a statement INDRA can
 read, for a causal graph built from INDRA statements.
