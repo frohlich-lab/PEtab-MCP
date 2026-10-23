@@ -18,9 +18,10 @@ one :class:`DaskEngine`, and every fit and held-out refit of that server runs it
   starts never rerun on the server node (see ``fitting._run_fit``).
 * **A batch has a deadline**: its starts' caps plus
   :data:`~petab_mcp.multistart.FIT_DEADLINE_MARGIN_S` from when it began running, as the scheduler
-  hears from its worker's heartbeats. One past it fails the fit as wedged
-  (:func:`petab_mcp.multistart.watch`). Not from when it was submitted: it may wait behind other
-  sessions' batches, or for the pool's jobs to start, for any time.
+  hears from its worker's heartbeats. One past it is cancelled and its starts are scored as failed
+  (:class:`petab_mcp.multistart.CappedEngine`); its worker runs on until it retires. Not from when
+  it was submitted: it may wait behind other sessions' batches, or for the pool's jobs to start,
+  for any time.
 * **Workers never build.** Unpickling a start imports its compiled module from the server's build
   root at the same absolute path. pyPESTO's creator and AMICI's importer would instead compile it
   there, inside the build root every session shares, so :class:`_NoBuild` makes them raise.
@@ -43,10 +44,10 @@ from typing import Any
 
 import cloudpickle
 from distributed import Client, WorkerPlugin, wait
-from pypesto.engine import Engine, Task
+from pypesto.engine import Task
 
 from .errors import FitBackendError, PetabMcpError
-from .multistart import FIT_DEADLINE_MARGIN_S, watch
+from .multistart import FIT_DEADLINE_MARGIN_S, CappedEngine, watch
 
 #: The loggers whose records a start carries back, the ones ``configure_pypesto`` routes.
 _LOGGERS = ("pypesto", "fides")
@@ -121,7 +122,7 @@ class _NoBuild(WorkerPlugin):
         PetabImporter._do_import_sbml = _refuse_build
 
 
-class DaskEngine(Engine):
+class DaskEngine(CappedEngine):
     """A pyPESTO engine that runs tasks on ``cluster``, ``starts_per_task`` to a dask task, through
     a client of its own.
 
@@ -129,10 +130,8 @@ class DaskEngine(Engine):
     through HDF5, so no start could reach a worker and every fit on the cluster would fail.
     """
 
-    #: Starts per dask task, and each one's cap in seconds; a fit sets its own through
-    #: :meth:`batched`.
+    #: Starts per dask task; a fit sets its own, and their cap, through :meth:`batched`.
     starts_per_task = 1
-    start_seconds = math.inf
 
     def __init__(self, cluster) -> None:
         from amici.sim.sundials import hdf5_enabled
@@ -146,13 +145,16 @@ class DaskEngine(Engine):
         self.client = Client(cluster)
         self.client.register_plugin(_NoBuild(), name="petab-mcp-no-build")
 
-    def batched(self, k: int, start_seconds: float = math.inf) -> DaskEngine:
+    def batched(
+        self, k: int, start_seconds: float = math.inf, rerun: frozenset[str] = frozenset()
+    ) -> DaskEngine:
         """This engine with ``k`` starts per dask task, each capped at ``start_seconds`` (by default
-        uncapped, so no batch is wedged): a copy, as one engine serves every session's fits at
-        once."""
+        uncapped, so no batch is stopped), rerunning ``rerun`` once when stopped: a copy, as one
+        engine serves every session's fits at once."""
         engine = copy.copy(self)
         engine.starts_per_task = k
         engine.start_seconds = start_seconds
+        engine.rerun = rerun
         return engine
 
     def _wait(self, pending: list, timeout: float) -> None:
@@ -164,39 +166,36 @@ class DaskEngine(Engine):
             if future.status == "error":
                 future.result()
 
-    def _overdue(self, futures: list) -> Callable[[float], str | None]:
-        """Says why the fit is wedged once one of ``futures`` still pending has run longer than its
-        batch's caps allow."""
-        budget = self.starts_per_task * self.start_seconds + FIT_DEADLINE_MARGIN_S
+    def _overrun(self, futures: list, sizes: list[int]) -> Callable[[list[int], float], set[int]]:
+        """Names the batches of ``futures`` still pending that have run longer than their starts'
+        caps allow."""
 
-        def overdue(_) -> str | None:
-            if math.isinf(budget):
-                return None
+        def overrun(pending: list[int], _) -> set[int]:
+            if math.isinf(self.start_seconds):
+                return set()
             ran = self.client.run_on_scheduler(_executing)
-            keys = {future.key for future in futures if not future.done()}
-            longest = max((s for key, s in ran.items() if key in keys), default=0.0)
-            if longest <= budget:
-                return None
-            return (
-                f"a batch of {self.starts_per_task} starts had run {longest:.0f}s, past the "
-                f"{budget:.0f}s their {self.start_seconds:.0f}s per-start caps allow (plus "
-                f"{FIT_DEADLINE_MARGIN_S:.0f}s)"
-            )
+            return {
+                i
+                for i in pending
+                if ran.get(futures[i].key, 0.0)
+                > sizes[i] * self.start_seconds + FIT_DEADLINE_MARGIN_S
+            }
 
-        return overdue
+        return overrun
 
-    def execute(self, tasks: list[Task], progress_bar: bool | None = None) -> list[Any]:
-        """The tasks' results, in task order. A failure cancels the starts still queued, so a failed
-        fit leaves nothing queued on the pool (a wedged batch keeps its worker until that worker
-        retires)."""
-        futures, sizes = [], []
+    def _run(self, tasks: list[Task]) -> tuple[list[Any], set[int]]:
+        """A failure cancels the starts still queued, so a failed fit leaves nothing queued on the
+        pool (a batch stopped past its caps keeps its worker until that worker retires)."""
+        futures, batches = [], list(itertools.batched(range(len(tasks)), self.starts_per_task))
+        sizes = [len(batch) for batch in batches]
         try:
-            for j, batch in enumerate(itertools.batched(tasks, self.starts_per_task)):
-                payloads = [cloudpickle.dumps(task) for task in batch]
+            for j, batch in enumerate(batches):
+                payloads = [cloudpickle.dumps(tasks[i]) for i in batch]
                 futures.append(self.client.submit(_work, payloads, priority=-j, pure=False))
-                sizes.append(len(batch))
-            watch(futures, sizes, self._wait, self._overdue(futures))
-            done = self.client.gather(futures)
+            stopped = watch(futures, sizes, self._wait, self._overrun(futures, sizes))
+            if stopped:
+                self.client.cancel([futures[j] for j in stopped])
+            done = self.client.gather([f for j, f in enumerate(futures) if j not in stopped])
         except Exception as exc:  # noqa: BLE001 - every cluster failure fails the fit
             with contextlib.suppress(Exception):  # the client itself may be what failed
                 self.client.cancel(futures)
@@ -216,4 +215,9 @@ class DaskEngine(Engine):
                     }
                 )
                 logging.getLogger(name).handle(record)
-        return [result for results, _ in done for result in results]
+        results = [None] * len(tasks)
+        kept = [batch for j, batch in enumerate(batches) if j not in stopped]
+        for batch, (out, _) in zip(kept, done, strict=True):
+            for i, result in zip(batch, out, strict=True):
+                results[i] = result
+        return results, {i for j in stopped for i in batches[j]}

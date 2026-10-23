@@ -234,7 +234,15 @@ class ProvenanceStore:
             # the optimizer log runs at ERROR -- so a restored version cannot answer
             # "optimiser-limited or structure-limited?" without it. This whitelist
             # silently dropped it: a key absent here is not persisted and nothing warns.
-            for k in ("n_starts", "starts", "trace", "x_names", "x_scales", "exitflag_counts")
+            for k in (
+                "n_starts",
+                "starts",
+                "trace",
+                "x_names",
+                "x_scales",
+                "exitflag_counts",
+                "n_starts_killed",
+            )
         }
         (vdir / "optimization.json").write_text(json.dumps(persist, indent=2), encoding="utf-8")
         result_file = optimization.get("result_file")

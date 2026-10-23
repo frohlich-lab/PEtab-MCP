@@ -94,7 +94,7 @@ def reauthor_key(structure_hash: str, parameter_df) -> str:
 def build_registry(session) -> list[dict[str, Any]]:
     """Prior versions as ``{version, structure_hash, setup, fitted, n_starts,
     neg_log_likelihood, score, criterion}`` dicts, read from each version's stored meta and
-    parameter table.
+    parameter table; ``n_starts`` counts the starts its fit completed (:func:`_completed`).
 
     ``score`` is the version's value under the session's criterion (see
     :meth:`criteria.Criterion.score_of`) — ``None`` for a version stored without one, which just
@@ -132,13 +132,21 @@ def build_registry(session) -> list[dict[str, Any]]:
                 "structure_hash": sh,
                 "setup": setup,
                 "fitted": meta.get("fit_status") == "fit",
-                "n_starts": meta.get("n_starts"),
+                "n_starts": _completed(meta),
                 "neg_log_likelihood": meta.get("neg_log_likelihood"),
                 "score": criterion.score_of(meta),
                 "criterion": criterion.name,
             }
         )
     return registry
+
+
+def _completed(meta: dict[str, Any]) -> int | None:
+    """The starts a version's fit completed: its ``n_starts`` less those stopped past their cap
+    (``n_starts_killed``, see :mod:`multistart`), so it stands only for a fit of no more starts
+    than it ran to the end."""
+    n = meta.get("n_starts")
+    return n - (meta.get("n_starts_killed") or 0) if isinstance(n, int) else n
 
 
 def _min_score_entry(entries: list[dict[str, Any]]) -> dict[str, Any] | None:
