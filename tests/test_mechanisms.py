@@ -593,7 +593,7 @@ def test_a_written_mechanism_binds_like_any_entry():
     assert "K_half" in str(model.expressions["r1_rate"].expr)
 
 
-# -- written mechanisms: modifiers and list roles ----------------------------------
+# -- written mechanisms: regulators and list roles ---------------------------------
 def _library_with(definition):
     library = dict(M.REGISTRY)
     key = (definition["statement_type"], definition["policy"])
@@ -605,67 +605,89 @@ _DIVISIVE = {
     "statement_type": "PopulationTransition",
     "policy": "inhibited",
     "based_on": "mass_action",
-    "rate": "k * Ki / (Ki + inh)",
+    "rate": "k * Ki / (Ki + inhibited_by)",
     "parameters": ["k", "Ki"],
-    "modifiers": ["inh"],
 }
+#: "naive becomes effector, inhibited by drug": the regulator its statement states.
+_BY_DRUG = {"inhibited_by": [Agent("drug")]}
 
 
-#: naive not bound to drug becomes effector: the statement that names the drug the rate reads.
-_INHIBITED = PopulationTransition(
-    Agent("naive", bound_conditions=[BoundCondition(Agent("drug"), False)]), Agent("effector")
-)
-
-
-def test_a_written_rate_reads_a_modifier_its_statement_names():
+def test_a_written_rate_reads_a_regulator_its_statement_states():
     """A drug that slows a reaction without taking part in it: the rate reads the amount of an
-    agent no role holds, which the statement names as the partner its source is not bound to."""
+    agent no role holds, which the statement states inhibits it."""
     library = _library_with(_DIVISIVE)
-    model, _ = M.assemble(
-        [(_INHIBITED, "inhibited", "r1", None, {"inh": Agent("drug")})], library=library
-    )
+    model, _ = M.assemble([(_TRANSITION, "inhibited", "r1", None, _BY_DRUG)], library=library)
     assert "drug" in model.monomers.keys()
-    assert "r1_inh" in str(model.expressions["r1_rate"].expr)
-    assert model.observables["r1_inh"].reaction_pattern.complex_patterns[0].monomer_patterns[
+    assert "r1_inhibited_by" in str(model.expressions["r1_rate"].expr)
+    assert model.observables["r1_inhibited_by"].reaction_pattern.complex_patterns[
         0
-    ].monomer.name == "drug"
+    ].monomer_patterns[0].monomer.name == "drug"
 
 
-def test_a_modifier_its_statement_does_not_name_is_refused():
+def test_a_rate_reading_a_regulator_its_statement_does_not_state_is_refused():
     """PEtab-MCP#122: `naive becomes effector` with a rate reading a drug read, in English, as a
-    transition nothing slows. The refusal names the drug and the condition that states it."""
-    with pytest.raises(MechanismError) as refused:
-        M.assemble(
-            [(_TRANSITION, "inhibited", "r1", None, {"inh": Agent("drug")})],
-            library=_library_with(_DIVISIVE),
-        )
-    assert "modifier `inh` reads drug, which its statement does not name" in str(refused.value)
-    assert "`naive{~drug}`, naive not bound to drug" in str(refused.value)
+    transition nothing slows."""
+    with pytest.raises(MechanismError, match=r"reads \['inhibited_by'\], which its statement does "
+                       r"not state.*`<statement>, inhibited by X`"):
+        M.assemble([(_TRANSITION, "inhibited", "r1")], library=_library_with(_DIVISIVE))
 
 
-def test_a_modifier_reads_an_agent_as_its_statement_writes_it():
-    """The statement names phosphorylated ERK; a modifier reading every ERK reads more than it
-    says."""
-    p_erk = Agent("ERK", mods=[ModCondition("phosphorylation", "T", "185")])
-    stmt = PopulationTransition(
-        Agent("naive", bound_conditions=[BoundCondition(p_erk, False)]), Agent("effector")
-    )
-    library = _library_with(_DIVISIVE)
-    with pytest.raises(MechanismError, match=r"names ERK only as ERK\{pT185\}"):
-        M.assemble([(stmt, "inhibited", "r1", None, {"inh": Agent("ERK")})], library=library)
-    M.assemble([(stmt, "inhibited", "r1", None, {"inh": p_erk})], library=library)
+def test_a_regulator_its_rate_does_not_read_is_refused():
+    """A statement claiming the drug slows the transition, built at a rate the drug does not
+    touch, says what the maths does not do."""
+    with pytest.raises(MechanismError, match=r"states drug \(inhibited_by\), which the rate of "
+                       r"\('PopulationTransition', 'mass_action'\) does not read"):
+        M.assemble([(_TRANSITION, "mass_action", "r1", None, _BY_DRUG)])
 
 
-def test_a_row_must_fill_every_modifier_slot():
-    """An unfilled slot would leave a name in the rate that means nothing."""
-    with pytest.raises(MechanismError, match=r"reads modifiers \['inh'\]"):
-        M.assemble([(_INHIBITED, "inhibited", "r1")], library=_library_with(_DIVISIVE))
+def test_several_regulators_of_a_kind_are_read_by_position():
+    library = _library_with(_DIVISIVE | {"policy": "two", "rate": "k/(1 + inhibited_by_0/Ki + "
+                                         "inhibited_by_1/Ki)"})
+    both = {"inhibited_by": [Agent("drug"), Agent("other")]}
+    model, _ = M.assemble([(_TRANSITION, "two", "r1", None, both)], library=library)
+    assert {"r1_inhibited_by_0", "r1_inhibited_by_1"} <= set(model.observables.keys())
+    with pytest.raises(MechanismError, match=r"states several \['inhibited_by'\]: read each by "
+                       r"position"):
+        M.assemble([(_TRANSITION, "inhibited", "r1", None, both)], library=_library_with(_DIVISIVE))
 
 
-def test_modifiers_need_an_entry_that_reads_them():
-    """A modifier given to an entry whose rate cannot read it would be dropped without a word."""
-    with pytest.raises(MechanismError, match="names modifiers"):
-        M.assemble([(_INHIBITED, "mass_action", "r1", None, {"inh": Agent("drug")})])
+@pytest.mark.parametrize(
+    "rate, match",
+    [
+        # An inhibitor the rate rises with: the claim and the maths disagree outright.
+        ("k*inhibited_by/(Ki + inhibited_by)", r"must fall as `inhibited_by` rises; it rises "
+         r"instead: state it `activated_by`. d/dinhibited_by = Ki\*k/\(Ki \+ inhibited_by\)\*\*2"),
+        ("k*Ki/(Ki + activated_by)", r"must rise as `activated_by` rises; it falls instead: state "
+         r"it `inhibited_by`"),
+        # Sneyd's Ca: the rate rises or falls with it depending on the constants.
+        ("(k + Ki*inhibited_by)/(1 + inhibited_by)", r"cannot be shown for every value of the "
+         r"rate's names .*: state it `modulated_by`, which claims no direction"),
+        # A switch's jump is no derivative: the rate is not shown to rise with the drug.
+        ("k*piecewise(1, activated_by > 0, 0)", r"nor across a piecewise switching on it\): state "
+         r"it `modulated_by`"),
+    ],
+)
+def test_a_rate_must_move_as_its_regulators_claim(rate, match):
+    """PEtab-MCP#122: the statement says which way a regulator moves the reaction; a rate that
+    moves it otherwise, or that sympy cannot show moves it so, is refused where it is written."""
+    with pytest.raises(MechanismError, match=match):
+        M.written(_DIVISIVE | {"rate": rate}, M.REGISTRY)
+
+
+@pytest.mark.parametrize(
+    "rate",
+    [
+        "k * Ki / (Ki + inhibited_by)",
+        "k/(i*inhibited_by^6/(inhibited_by^6 + Ki^6) + 1)",  # alkan's doxorubicin repression
+        "k*activated_by^6/(activated_by^6 + Ki^6)",  # alkan's doxorubicin-driven death
+        "k*(1 - inhibited_by)",  # perelson's ritonavir gate
+        "k*piecewise(1, modulated_by > 0, 0)",  # a switch claims no direction
+        "(k + Ki*modulated_by)/(1 + modulated_by)",
+    ],
+)
+def test_a_rate_moving_as_its_regulators_claim_is_written(rate):
+    M.written(_DIVISIVE | {"rate": rate, "parameters": sorted({"k", "Ki", "i"} & set(
+        M._RATE_TOKENS.findall(rate)))}, M.REGISTRY)
 
 
 def test_a_written_rate_reads_a_list_role():

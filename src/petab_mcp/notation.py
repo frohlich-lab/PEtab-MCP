@@ -7,13 +7,13 @@ written as::
     r1: A{pY10} phosphorylates B at S10 | two_step kf=k_on kr=k_off kc=k_cat
     r2: A{-pY10, ~C} is degraded | default kf=A_turnover
     v1: A{-mod"P1"} + B -> A{mod"P1"} by E | mass_action k=k_p1
-    m1: E{~C} phosphorylates S at T20 | inhibited k=k1 Ki=K_i inh:=C
+    m1: E phosphorylates S at T20, inhibited by C | inhibited k=k1 Ki=K_i
 
-``<prefix>: <statement> | <policy> <kind>=<binding> ... <slot>:=<agent> ... # [source] text`` —
-the row's prefix, its statement, the mechanism, its parameter bindings (:func:`mechanisms.bind`),
-the agents filling a written mechanism's modifier slots (each one the statement names, as ``C``
-is named by ``E{~C}``), and the statement's evidence: one
-``source_api`` and text, both optional (``# Author et al. 2000``).
+``<prefix>: <statement> | <policy> <kind>=<binding> ... # [source] text`` — the row's prefix, its
+statement, the mechanism, its parameter bindings (:func:`mechanisms.bind`), and the statement's
+evidence: one ``source_api`` and text, both optional (``# Author et al. 2000``). The statement
+ends with the agents that regulate its rate, each kind once: ``, inhibited by C and D``,
+``, activated by A``, ``, modulated by B`` (:data:`statements.REGULATORS`).
 
 An agent is ``NAME{tag, ...}``, ``NAME`` quoted when it is not an identifier. Tags:
 
@@ -152,7 +152,18 @@ def evidence_text(st: dict[str, Any]) -> str:
 
 
 def statement_text(st: dict[str, Any]) -> str:
-    """The statement part of a row. Raises ``ValueError`` for what the notation lacks."""
+    """The statement part of a row, its regulators last. Raises ``ValueError`` for what the
+    notation lacks."""
+    from .statements import REGULATORS
+
+    text = _action_text(st)
+    for kind, words in REGULATORS.items():
+        if st.get(kind):
+            text += f", {words} " + " and ".join(agent_text(a) for a in st[kind])
+    return text
+
+
+def _action_text(st: dict[str, Any]) -> str:
     t = st["type"]
     at = ""
     if st.get("residue") is not None or st.get("position") is not None:
@@ -215,8 +226,8 @@ def _number(text: str) -> bool:
 
 
 def render(row: dict[str, Any], library: dict | None = None) -> str | None:
-    """``row`` (``{statement, policy, prefix, parameters?, modifiers?}``) as one line, or
-    ``None`` when the notation cannot write it losslessly (keep it as JSON)."""
+    """``row`` (``{statement, policy, prefix, parameters?}``) as one line, or ``None`` when the
+    notation cannot write it losslessly (keep it as JSON)."""
     try:
         policy = row["policy"]
         short = policy.removeprefix("indra_")
@@ -225,8 +236,7 @@ def render(row: dict[str, Any], library: dict | None = None) -> str | None:
             policy = short
         tail = [policy]
         tail += [f"{k}={_value(v)}" for k, v in (row.get("parameters") or {}).items()]
-        tail += [f"{k}:={agent_text(v)}" for k, v in (row.get("modifiers") or {}).items()]
-        if set(row) - {"statement", "policy", "prefix", "parameters", "modifiers"}:
+        if set(row) - {"statement", "policy", "prefix", "parameters"}:
             return None
         if not _IDENT.fullmatch(row["prefix"]):
             return None
@@ -497,9 +507,11 @@ def parse(
     groundings: dict[str, dict] | None = None,
     library: dict | None = None,
 ) -> dict[str, Any]:
-    """One row from ``text``: ``{statement (INDRA JSON), policy, prefix, parameters?,
-    modifiers?}``. ``groundings`` (agent name to ``db_refs``) ground the agents; ``library``
-    resolves a policy written without its ``indra_`` prefix."""
+    """One row from ``text``: ``{statement (INDRA JSON), policy, prefix, parameters?}``.
+    ``groundings`` (agent name to ``db_refs``) ground the agents; ``library`` resolves a policy
+    written without its ``indra_`` prefix."""
+    from .statements import REGULATORS
+
     groundings = groundings or {}
     m = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*", text)
     if not m:
@@ -508,6 +520,11 @@ def parse(
     tail, comment = _split_comment(tail)
     r = _Reader(head, groundings)
     st = statement(r)
+    while r.take(","):
+        kind = next((k for k, words in REGULATORS.items() if r.take(words)), None)
+        if kind is None or kind in st:
+            r.fail(f"expected one of {', '.join(map(repr, REGULATORS.values()))}, each once")
+        st[kind] = r.agents("and")
     if not r.done():
         r.fail("unexpected text")
     if comment is not None:
@@ -526,9 +543,12 @@ def parse(
     row: dict[str, Any] = {"statement": st, "policy": policy, "prefix": m.group(1)}
     while not t.done():
         key = t.name()
-        if t.take(":="):
-            row.setdefault("modifiers", {})[key] = t.agent()
-            continue
+        if t.peek(":="):
+            t.fail(
+                f"`{key}:=` names no regulator: the agents that regulate a row's rate are in its "
+                "statement, `<statement>, inhibited by C` (activated by, modulated by), read in "
+                "its mechanism's rate as `inhibited_by`"
+            )
         t.expect("=")
         t.space()
         if t.text[t.pos : t.pos + 1] == '"':

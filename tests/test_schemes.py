@@ -202,14 +202,39 @@ def _inhibited(scheme: str, stmt):
 )
 def test_a_scheme_reads_no_agent_its_statement_does_not_name(scheme):
     """PEtab-MCP#122: `EGFR phosphorylates AKT1` read PTEN in its rate, so the statement said
-    nothing of what slowed it. Each form is refused naming PTEN and the condition that states it."""
+    nothing of what slowed it. Each form is refused naming PTEN and the statement that states it."""
     with pytest.raises(MechanismError) as refused:
         _inhibited(scheme, _PHOSPHO())
     assert re.search(
-        r"row 'r1': mechanism 'inhibited' reads PTEN.*`EGFR\{~PTEN(\{pS380\})?\}`, EGFR not "
-        "bound to PTEN, for an inhibitor",
+        r"row 'r1': mechanism 'inhibited' reads PTEN.*`EGFR phosphorylates AKT1 at S473, "
+        r"inhibited by PTEN(\{pS380\})?`.*read as `amount\(inhibited_by\)`",
         str(refused.value),
     )
+
+
+def test_a_scheme_reads_a_regulator_its_statement_states():
+    """`amount(inhibited_by)` reads the agent the statement says slows the reaction, as it states
+    it, and the rate is checked against that claim where the scheme is written."""
+    p_pten = Agent("PTEN", mods=[ModCondition("phosphorylation", "S", "380")])
+    library = dict(M.REGISTRY)
+    library[("Phosphorylation", "inhibited")] = M.written(
+        {"statement_type": "Phosphorylation", "policy": "inhibited", "parameters": ["kf", "Ki"],
+         "scheme": "enz() + sub(mod='off') >> enz() + sub(mod='on') @ "
+                   "kf/(1 + amount(inhibited_by)/Ki)"},
+        library,
+    )
+    model, _ = M.assemble(
+        [(_PHOSPHO(), "inhibited", "r1", None, {"inhibited_by": [p_pten]})], {}, library
+    )
+    (amount,) = (o for o in model.observables if o.name.endswith("inhibited_by"))
+    assert str(amount.reaction_pattern) == "PTEN(S380=('p', WILD))"
+    with pytest.raises(MechanismError, match=r"must fall as `inhibited_by` rises; it rises"):
+        M.written(
+            {"statement_type": "Phosphorylation", "policy": "bad", "parameters": ["kf"],
+             "scheme": "enz() + sub(mod='off') >> enz() + sub(mod='on') @ "
+                       "kf*amount(inhibited_by)"},
+            dict(M.REGISTRY),
+        )
 
 
 def test_a_scheme_reads_a_partner_its_statement_names():

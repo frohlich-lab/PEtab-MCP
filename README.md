@@ -165,12 +165,14 @@ Principles to hold onto when extending this package.
   through `fitting.pypesto_problem`, never handed to pyPESTO linear. A problem that states a
   prior is refused at load: the objective is the likelihood the criterion scores.
 - **A statement says everything its rate reads.** On the `statements` route a row's statement is
-  the claim and its mechanism the maths behind it, so a rate (a written `rate` and its
-  `modifiers`, a `scheme`) reads only the agents the statement names, as it names them: a role's
-  agent, or a partner one is written bound or not bound to (`RAF{~sorafenib}`), which INDRA's
-  English renders ("RAF not bound to sorafenib phosphorylates MEK"). Regulation enters as such a
-  condition, never as an agent the row adds beside its statement
-  ([`mechanisms.refuse_unnamed`](src/petab_mcp/mechanisms.py)). A condition input the entity map
+  the claim and its mechanism the maths behind it, so a rate (a written `rate`, a `scheme`) reads
+  only the agents the statement names: its roles, the partners they are written bound or not
+  bound to, and the agents it states regulate its rate without taking part, `inhibited_by`,
+  `activated_by` or `modulated_by` ("RAF phosphorylates MEK, inhibited by sorafenib"). The rate
+  must fall with each inhibitor and rise with each activator for every value of its names, as
+  sympy shows; a regulator it cannot show that for is `modulated_by`, which claims no direction
+  ([`statements`](src/petab_mcp/statements.py),
+  [`mechanisms.check_regulators`](src/petab_mcp/mechanisms.py)). A condition input the entity map
   does not map to an agent is no agent, so a row's binding may read it (`kf="k*dose"`) and the
   condition table says what it is. Which inputs are agents is the problem author's call, made in
   the entity map, and one it maps is read only as the agent it is.

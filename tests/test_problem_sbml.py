@@ -182,16 +182,15 @@ def test_a_rate_may_switch_with_piecewise():
             "statement_type": "PopulationTransition",
             "policy": "while_dosed",
             "based_on": "mass_action",
-            "rate": "k*piecewise(1, drug > 0, 0)",
+            "rate": "k*piecewise(1, modulated_by > 0, 0)",
             "parameters": ["k"],
-            "modifiers": ["drug"],
         },
         library,
     )
-    dosed = Agent("A", bound_conditions=[BoundCondition(Agent("D"), False)])
     rows = [
         (_TRANSITION, "stepped", "r1"),
-        (PopulationTransition(dosed, Agent("B")), "while_dosed", "r2", None, {"drug": Agent("D")}),
+        (PopulationTransition(Agent("A"), Agent("B")), "while_dosed", "r2", None,
+         {"modulated_by": [Agent("D")]}),
     ]
     antimony, _ = PS.to_antimony(rows, {}, library)
     sbml = SbmlModel.from_antimony(antimony).sbml_model
@@ -203,7 +202,7 @@ def test_a_rate_may_switch_with_piecewise():
 def test_a_piecewise_condition_must_compare():
     """A condition that is no comparison, or a comparison outside `piecewise`, is refused with how
     to write one, rather than read as sympy's truth value of a symbol."""
-    for rate in ("k*piecewise(1, drug, 0)", "k*(time < t_1)"):
+    for rate in ("k*piecewise(1, modulated_by, 0)", "k*(time < t_1)"):
         with pytest.raises(M.MechanismError, match="compare only in a piecewise condition"):
             M.written(
                 {
@@ -212,7 +211,6 @@ def test_a_piecewise_condition_must_compare():
                     "based_on": "mass_action",
                     "rate": rate,
                     "parameters": ["k", "t_1"] if "t_1" in rate else ["k"],
-                    "modifiers": ["drug"] if "drug" in rate else [],
                 },
                 dict(M.REGISTRY),
             )
@@ -609,19 +607,6 @@ def test_a_conversion_makes_its_products_in_the_states_they_write():
     assert reaction == (["A()", "A()"], ["D(Y1='p')"])
 
 
-def test_a_carried_molecule_stays_free_where_its_reactant_is_written_free():
-    """PEtab-MCP#122: perelson's off-drug infection with the drug stated, `HIV1{~Ritonavir} + CD4_T
-    -> HIV1`, was refused by BioNetGen: the product HIV1 named no `ritonavir` site, so it read as a
-    new HIV1 missing one."""
-    from indra.statements import Conversion
-
-    hiv = Agent("HIV1", bound_conditions=[BoundCondition(Agent("Ritonavir"), False)])
-    (reaction,) = _reactions(
-        [(Conversion(None, [hiv, Agent("CD4_T")], [Agent("HIV1")]), "mass_action", "r1")], {}
-    )
-    assert reaction == (["CD4_T()", "HIV1(ritonavir=None)"], ["HIV1(ritonavir=None)"])
-
-
 def test_a_release_frees_the_partner_it_was_bound_to():
     """An internalised ligand is degraded and its receptor recycles; INDRA's degradation
     deletes the whole complex, receptor included."""
@@ -787,8 +772,7 @@ def test_a_protein_is_made_in_the_state_it_is_written():
 
 
 def _odes(antimony: str) -> dict[str, sympy.Expr]:
-    """Each species' ODE over the species' names, without the free binding sites a partner named
-    only as unbound gives a molecule (`RAF(sorafenib=None, S338='p')` is `RAF(S338='p')`)."""
+    """Each species' ODE over the species' names, without their free binding sites."""
     sbml = SbmlModel.from_antimony(antimony).sbml_model
 
     def name(species) -> str:
@@ -820,27 +804,22 @@ def _odes(antimony: str) -> dict[str, sympy.Expr]:
     return {k: sympy.simplify(v) for k, v in odes.items() if sympy.simplify(v) != 0}
 
 
-def test_an_inhibitor_stated_as_unbound_builds_the_modifier_odes():
-    """PEtab-MCP#122: fiedler's sorafenib factor, its row now naming sorafenib as the partner
-    RAF is not bound to, builds the ODEs main's modifier route built for the row without it
-    (cdc68cc): `k3*K_2/(K_2 + sorafenib)` times RAF{pS338} and MEK, sorafenib held to its
-    condition."""
+def test_a_stated_inhibitor_builds_the_modifier_odes():
+    """PEtab-MCP#122: fiedler's sorafenib factor, its statement now "RAF phosphorylates MEK,
+    inhibited by sorafenib", builds the ODEs main's modifier route built for the row that named
+    sorafenib only in its modifier (cdc68cc): `k3*K_2/(K_2 + sorafenib)` times RAF{pS338} and MEK,
+    sorafenib held to its condition."""
     library = dict(M.REGISTRY)
     library[("Phosphorylation", "divisive_inhibition")] = M.written(
         {
             "statement_type": "Phosphorylation",
             "policy": "divisive_inhibition",
-            "rate": "k*Ki/(Ki + inh)",
+            "rate": "k*Ki/(Ki + inhibited_by)",
             "parameters": ["k", "Ki"],
-            "modifiers": ["inh"],
         },
         library,
     )
-    raf = Agent(
-        "RAF",
-        mods=[ModCondition("phosphorylation", "S", "338")],
-        bound_conditions=[BoundCondition(Agent("sorafenib"), False)],
-    )
+    raf = Agent("RAF", mods=[ModCondition("phosphorylation", "S", "338")])
     rows = [
         (Phosphorylation(None, Agent("RAF"), "S", "338"), "basal", "r1", {"k": "k1"}),
         (
@@ -848,7 +827,7 @@ def test_an_inhibitor_stated_as_unbound_builds_the_modifier_odes():
             "divisive_inhibition",
             "r3",
             {"k": "k3", "Ki": "K_2"},
-            {"inh": Agent("sorafenib")},
+            {"inhibited_by": [Agent("sorafenib")]},
         ),
     ]
     antimony, _ = PS.to_antimony(

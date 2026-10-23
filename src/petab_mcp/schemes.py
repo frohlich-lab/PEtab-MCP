@@ -13,8 +13,8 @@ type::
   row writes there, in the states it writes; or, by its name, another agent the statement names:
   a partner a role is written bound or not bound to (``C`` of ``enz{~C}``), in the states written
   there. No other molecule: a mechanism reads only its statement's agents
-  (:func:`statements.named_agents`), so an inhibitor is stated as the partner its target is not
-  bound to, and a row naming none is refused (:func:`mechanisms.refuse_unnamed`).
+  (:func:`statements.named_agents`) and the regulators it states, and a row naming another is
+  refused (:func:`mechanisms.refuse_unnamed`).
 - A site is ``mod``, the statement's own modification (``'off'``, ``'on'``); ``act``, the role's
   activity (``'inactive'``, ``'active'``): the statement's ``obj_activity`` on its object, the
   activity the modification implies on an enzyme (``kinase`` for a phosphorylation); a role's
@@ -30,10 +30,13 @@ type::
 - ``@`` gives the rate: one for ``>>``, two for ``|``. A rate is an expression over the
   definition's ``parameters`` (each minted per row as ``<prefix>_<name>`` and shared or fixed
   like any, ``kf=k_on`` on the row), ``amount(<pattern>)`` (the amount of what the pattern of
-  those molecules matches), ``time`` and exp/log/sqrt; mass action multiplies it by every
-  reactant's amount, as PySB does. A name it does not declare is refused: a parameter the problem
-  ships or a condition input enters through a row's binding, as for a written ``rate``.
-  ``delete_molecules`` after the rates removes only the molecules that vanish, not their complex.
+  those molecules matches), ``amount(inhibited_by)`` (a regulator the statement states, as it
+  states it, by position where it states several, ``amount(inhibited_by_1)``; checked against
+  the claim as a written rate is, :func:`mechanisms.check_regulators`), ``time`` and
+  exp/log/sqrt; mass action multiplies it by every reactant's amount, as PySB does. A name it
+  does not declare is refused: a parameter the problem ships or a condition input enters through
+  a row's binding, as for a written ``rate``. ``delete_molecules`` after the rates removes only
+  the molecules that vanish, not their complex.
 
 :func:`describe` writes any library entry this way, from a statement of placeholder agents named
 by role, and :func:`rate_parameters` reads the parameters it names; :func:`compile_scheme` turns a
@@ -63,9 +66,11 @@ from pysb import ANY, WILD
 from pysb.core import ReactionPattern, RuleExpression, time
 
 from .errors import MechanismError
-from .statements import named_agents
+from .statements import REGULATOR_NAME, named_agents
 
 MOD, ACT = "mod", "act"
+#: ``amount(inhibited_by)`` (or ``amount(inhibited_by())``) in a rate: a regulator, by its name.
+_REGULATOR_AMOUNT = re.compile(rf"amount\(\s*({REGULATOR_NAME.pattern})\s*(?:\(\s*\))?\s*\)")
 _OFF_ON = ("off", "on")
 _ACTIVITY = ("inactive", "active")
 _FUNCTIONS = {"exp": sympy.exp, "log": sympy.log, "sqrt": sympy.sqrt}
@@ -299,6 +304,8 @@ class _Rate:
     #: amount(...) patterns written in the row notation (`A{pS10}`), each read in ``text`` as
     #: the name `__agent<k>`
     agents: tuple[str, ...] = ()
+    #: the regulators read as `amount(inhibited_by)`, by the name the rate reads each by
+    regulators: tuple[str, ...] = ()
 
 
 def _notation_amounts(text: str) -> tuple[str, tuple[str, ...]]:
@@ -339,6 +346,7 @@ def _rate(text: str) -> _Rate:
         ) from None
     names: list[str] = []
     amounts: list[str] = []
+    regulators: list[str] = []
 
     def visit(node) -> None:
         if isinstance(node, ast.Call):
@@ -346,6 +354,13 @@ def _rate(text: str) -> _Rate:
             if fn == "amount":
                 if len(node.args) != 1 or node.keywords:
                     raise MechanismError(f"rate {text!r}: amount() takes one pattern")
+                arg = node.args[0]
+                called = isinstance(arg, ast.Call) and not arg.args and not arg.keywords
+                read = getattr(arg.func if called else arg, "id", None)
+                bare = called or isinstance(arg, ast.Name)
+                if bare and read and REGULATOR_NAME.fullmatch(read):
+                    regulators.append(read)
+                    return
                 try:
                     _refuse_open_bonds((_complex(node.args[0]),))
                 except MechanismError as exc:
@@ -370,7 +385,7 @@ def _rate(text: str) -> _Rate:
             raise MechanismError(f"rate {text!r}: {ast.unparse(node)!r} is not allowed")
 
     visit(tree)
-    return _Rate(tuple(sorted(set(names))), tuple(amounts), text, agents)
+    return _Rate(tuple(sorted(set(names))), tuple(amounts), text, agents, tuple(regulators))
 
 
 def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
@@ -378,7 +393,7 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
     built for each row from its own agents (see the module docstring). A rate naming anything but
     the declared ``parameters`` is refused as :func:`mechanisms.written` refuses one, with
     ``problem_ids``."""
-    from .mechanisms import refuse_rate_names, refuse_unread
+    from .mechanisms import assumed, check_regulators, refuse_rate_names, refuse_unread
 
     stmt_type, policy = definition["statement_type"], definition["policy"]
     lines = parse(definition["scheme"])
@@ -392,8 +407,14 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
                 refuse_rate_names(text, policy, unknown, [*declared, "time"], also,
                                   "`amount(<pattern>)`", problem_ids, known_roles)
     refuse_unread(policy, declared, {n for rs in rates for r in rs for n in r.names})
+    read = set()
+    for line, line_rates in zip(lines, rates):
+        for text, rate in zip(line.rates, line_rates):
+            value = assumed(_sympy(rate))
+            check_regulators(policy, text, value)
+            read |= {s.name for s in value.free_symbols if REGULATOR_NAME.fullmatch(s.name)}
 
-    def policy_fn(stmt: Statement, model: pysb.Model, prefix: str):
+    def policy_fn(stmt: Statement, model: pysb.Model, prefix: str, regulators=None):
         from .mechanisms import Emission, _add
 
         agents = role_agents(stmt)
@@ -413,7 +434,7 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
                         params[name] = pysb.Parameter(f"{prefix}_{name}", 1.0, _export=False)
                         _add(model, params[name])
                 values.append(_rate_value(stmt, model, rate, params, agents,
-                                          f"{prefix}_rate{i}_{j}"))
+                                          f"{prefix}_rate{i}_{j}", regulators or {}))
             rule = pysb.Rule(
                 f"{prefix}_r{i}",
                 RuleExpression(ReactionPattern(lhs), ReactionPattern(rhs), line.reversible),
@@ -519,7 +540,7 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
         return need
 
     policy_fn.indra_policy = "default"
-    policy_fn.modifiers = ()
+    policy_fn.regulators = frozenset(read)
     policy_fn.scheme_sites = scheme_sites
     policy_fn.scheme = definition["scheme"]
     return policy_fn
@@ -626,14 +647,34 @@ def _notation_agent(text: str) -> Agent:
         raise MechanismError(f"amount({text}): {exc}") from None
 
 
-def _rate_value(stmt, model, rate: _Rate, params, agents, name):
+def _sympy(rate: _Rate) -> sympy.Expr:
+    """``rate`` as one expression over its parameters, its regulators by name and every other
+    amount a name of its own: what :func:`mechanisms.check_regulators` reads."""
+    text = _REGULATOR_AMOUNT.sub(r"\1", rate.text)
+    for k, pattern in enumerate(rate.amounts):
+        text = text.replace(f"amount({pattern})", f"__amount{k}", 1)
+    names = set(re.findall(r"[A-Za-z_]\w*", text)) - set(_FUNCTIONS)
+    return sympy.sympify(
+        text.replace("^", "**"), locals={**{n: sympy.Symbol(n) for n in names}, **_FUNCTIONS}
+    )
+
+
+def _rate_value(stmt, model, rate: _Rate, params, agents, name, regulators):
     from indra.assemblers.pysb.assembler import get_monomer_pattern
 
     from .mechanisms import _add
 
-    if not rate.amounts and not rate.agents and re.fullmatch(r"[A-Za-z_]\w*", rate.text):
+    if (not rate.amounts and not rate.agents and not rate.regulators
+            and re.fullmatch(r"[A-Za-z_]\w*", rate.text)):
         return params[rate.text]
     observables = {}
+    text = _REGULATOR_AMOUNT.sub(r"\1", rate.text)
+    for regulator in sorted(set(rate.regulators)):
+        obs = pysb.Observable(
+            f"{name}_{regulator}", get_monomer_pattern(model, regulators[regulator]), _export=False
+        )
+        _add(model, obs)
+        observables[regulator] = obs
     for k, written in enumerate(rate.agents):
         obs = pysb.Observable(
             f"{name}_agent{k}",
@@ -642,7 +683,6 @@ def _rate_value(stmt, model, rate: _Rate, params, agents, name):
         )
         _add(model, obs)
         observables[f"__agent{k}"] = obs
-    text = rate.text
     for k, pattern in enumerate(rate.amounts):
         (cp,) = _pattern_side(stmt, model, (tuple(_molecule(n) for n in _complex_nodes(pattern)),),
                               agents, fresh=None)
@@ -709,9 +749,16 @@ def describe(stmt_type: str, policy: str, library) -> str:
     :func:`placeholder`'s statement and read back."""
     from .mechanisms import assemble
 
+    # Placeholder regulators, named for how the rate reads them, for an entry that reads any.
+    stated: dict[str, list[Agent]] = {}
+    for name in sorted(getattr(library.get((stmt_type, policy)), "regulators", ())):
+        kind, _, position = name.rpartition("_") if name[-1].isdigit() else (name, "", "")
+        stated[kind] = [Agent(f"{kind}_{i}") for i in range(max(len(stated.get(kind, ())),
+                                                              int(position or 0) + 1))]
+    stated = {k: [Agent(k)] if len(v) == 1 else v for k, v in stated.items()}
     stmt = placeholder(stmt_type)
     try:
-        model, (emission,) = assemble([(stmt, policy, "r")], {}, library)
+        model, (emission,) = assemble([(stmt, policy, "r", None, stated)], {}, library)
     except MechanismError as exc:
         if getattr(stmt, "enz", None) is None:
             raise
@@ -719,7 +766,7 @@ def describe(stmt_type: str, policy: str, library) -> str:
         # Any other refusal is the one to report.
         stmt = placeholder(stmt_type, enzyme=False)
         try:
-            model, (emission,) = assemble([(stmt, policy, "r")], {}, library)
+            model, (emission,) = assemble([(stmt, policy, "r", None, stated)], {}, library)
         except MechanismError:
             raise exc from None
     agents = role_agents(stmt)
