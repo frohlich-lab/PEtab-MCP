@@ -485,9 +485,11 @@ def score_problem(
     already has it. A v1 ``measurement_df`` (simulation condition ids) is refused
     (:data:`STATUS_V2_REQUIRED`).
 
-    Returns ``{status, nll, n, chi2, n_experiments, observables}`` or ``{status, reason}``. ``chi2``
-    is the sum of squares of AMICI's weighted residual vector (via
+    Returns ``{status, nll, n, chi2, n_experiments, observables, records}`` or
+    ``{status, reason}``. ``chi2`` is the sum of squares of AMICI's weighted residual vector (via
     :meth:`engine.AmiciEngine._res_from_rdatas`), ``None`` where AMICI did not populate it.
+    ``records`` holds one row per held-out measurement, built as the training ``simulations.json``
+    rows are (:meth:`engine.AmiciEngine._records_from_rdatas`).
     """
     import numpy as np
     from pypesto.C import FVAL
@@ -580,6 +582,7 @@ def score_problem(
         "nll": nll,
         "chi2": chi2,
         **_data_shape(measurement_df),
+        "records": AmiciEngine._records_from_rdatas(view, pp.objective, ret[PP_RDATAS]),
     }
     if solved is not None:
         # The solved per-blot factors, recorded so a held-out score can be read back against the
@@ -777,7 +780,8 @@ def refit_problem(
     other unit is built beside it (:func:`_build_target`).
 
     Returns ``{status, mode, nll, k, n, chi2, n_experiments, observables, n_starts, n_converged,
-    fitted}`` (``units`` and per-unit ``fitted`` when split) or ``{status, reason}`` for
+    fitted, records}`` (``units`` and per-unit ``fitted`` when split; ``records`` as
+    :func:`score_problem`'s, each unit's at its own optimum) or ``{status, reason}`` for
     :data:`STATUS_NO_DATA`, :data:`STATUS_TABLE_MISMATCH`, :data:`STATUS_FLATTENING_REQUIRED` or
     :data:`STATUS_NON_FINITE`.
     """
@@ -803,12 +807,14 @@ def refit_problem(
         target = _build_target(uview, reference, build_dir, model_name)
         return _refit_one(uview, target=target, n_starts=n_starts, fit_engine=fit_engine)
     per_unit: dict[str, dict[str, Any]] = {}
+    records: list[dict[str, Any]] = []
     for unit, rows in split.items():
         uview = _unit_view(view, rows)
         target = _build_target(uview, reference, build_dir, model_name)
         out = _refit_one(uview, target=target, n_starts=n_starts, fit_engine=fit_engine)
         if out["status"] != STATUS_OK:
             return {**out, "unit": unit, "mode": MODE_TRANSFER}
+        records.extend(out.pop("records"))
         per_unit[unit] = {k: v for k, v in out.items() if k not in ("status", "mode", "n_starts")}
     chi2s = [u["chi2"] for u in per_unit.values()]
     return {
@@ -821,6 +827,7 @@ def refit_problem(
         "n_starts": int(n_starts),
         "n_converged": min(u["n_converged"] for u in per_unit.values()),
         "units": per_unit,
+        "records": records,
     }
 
 
@@ -922,6 +929,12 @@ def _refit_one(view, *, target: dict[str, str], n_starts: int, fit_engine) -> di
     ret = pp.objective(pp.get_reduced_vector(x_best), sensi_orders=(0,), return_dict=True)
     res = AmiciEngine._res_from_rdatas(ret[PP_RDATAS])
     k = int(view.n_estimated)
+    fitted = _fitted_values(
+        pp.x_names, x_best, getattr(pp, "x_free_indices", None), view.parameter_df
+    )
+    # The records' noise is evaluated off the table, so it must hold the optimum, not the start.
+    at_best = view.parameter_df.copy()
+    at_best.loc[list(fitted), NOMINAL_VALUE] = list(fitted.values())
     return {
         "status": STATUS_OK,
         "mode": MODE_TRANSFER,
@@ -931,8 +944,9 @@ def _refit_one(view, *, target: dict[str, str], n_starts: int, fit_engine) -> di
         **_data_shape(measurement_df),
         "n_starts": int(n_starts),
         "n_converged": int(sum(1 for v in fvals if v <= nll + 1e-3)),
-        "fitted": _fitted_values(
-            pp.x_names, x_best, getattr(pp, "x_free_indices", None), view.parameter_df
+        "fitted": fitted,
+        "records": AmiciEngine._records_from_rdatas(
+            view.replace(parameter_df=at_best), pp.objective, ret[PP_RDATAS]
         ),
     }
 
@@ -952,30 +966,47 @@ def score_session(
     to the training module reuses it; one whose design differs — every held-out set that brings
     experiments the training problem has no events for — is built beside it (:func:`_build_target`),
     bounded, once per session, after the agent has finished.
+
+    The per-point ``records`` are not returned: the payload, records included, is written to the
+    HEAD version's :data:`provenance.VALIDATION_SIMULATIONS`, whose path the reply carries as
+    ``records_file``. A held-out set can run to thousands of points, and the file is where a
+    harness archiving the version finds them. A session with nothing committed has no version to
+    store them in, and its reply has no ``records_file``.
     """
     with session.lock:
-        kwargs = engine.pypesto_importer_kwargs(session.module_hash())
-        build = {"build_dir": kwargs["output_folder"], "model_name": kwargs["model_name"]}
-        if held_out.mode == MODE_FIXED:
-            return score_problem(
-                session.problem,
-                held_out.measurement_df,
-                condition_df=held_out.condition_df,
-                experiment_df=held_out.experiment_df,
-                **build,
-            )
-        view, failed = transfer_view(session.problem, held_out, session.shipped_parameter_df)
-        if failed:
-            return {**failed, "mode": MODE_TRANSFER}
-        starts = session.auto_fit_starts if n_starts is None else int(n_starts)
-        return refit_problem(
-            view,
-            n_starts=starts,
-            units=held_out.units,
-            reference=session.problem,
-            fit_engine=engine.fit_engine,
+        out = _score_current(session, engine, held_out, n_starts)
+        records = out.pop("records", [])
+        head = session.provenance.current_version
+        if head >= 0:
+            path = session.provenance.write_validation_simulation(head, {**out, "records": records})
+            out["records_file"] = str(path)
+        return out
+
+
+def _score_current(session, engine, held_out: HeldOut, n_starts: int | None) -> dict[str, Any]:
+    """:func:`score_session`'s score, records included, under the caller's ``session.lock``."""
+    kwargs = engine.pypesto_importer_kwargs(session.module_hash())
+    build = {"build_dir": kwargs["output_folder"], "model_name": kwargs["model_name"]}
+    if held_out.mode == MODE_FIXED:
+        return score_problem(
+            session.problem,
+            held_out.measurement_df,
+            condition_df=held_out.condition_df,
+            experiment_df=held_out.experiment_df,
             **build,
         )
+    view, failed = transfer_view(session.problem, held_out, session.shipped_parameter_df)
+    if failed:
+        return {**failed, "mode": MODE_TRANSFER}
+    starts = session.auto_fit_starts if n_starts is None else int(n_starts)
+    return refit_problem(
+        view,
+        n_starts=starts,
+        units=held_out.units,
+        reference=session.problem,
+        fit_engine=engine.fit_engine,
+        **build,
+    )
 
 
 def read_held_out(measurements_path: str | Path, training_parameter_df=None) -> HeldOut:

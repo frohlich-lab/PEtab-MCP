@@ -32,8 +32,11 @@ from __future__ import annotations
 
 import contextlib
 import json
+import threading
+import time
 from typing import Annotated, Any, Callable, Literal
 
+import anyio
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.middleware import Middleware
@@ -55,7 +58,13 @@ from . import skills as skills_mod
 from . import validation_data as validation_data_mod
 from .constants import DEFAULT_AUTO_FIT_STARTS
 from .engine import AmiciEngine
-from .errors import PetabMcpError, UnknownEntityError, ValidationError, disk_full_error
+from .errors import (
+    FIT_IN_PROGRESS,
+    PetabMcpError,
+    UnknownEntityError,
+    ValidationError,
+    disk_full_error,
+)
 from .formatting import df_to_records, summarize_measurements
 from .session import PetabSession
 
@@ -179,7 +188,8 @@ class StatementRow(BaseModel):
     statement: dict[str, Any] = Field(
         description="the assertion as an INDRA statement's JSON: its `type` and agents, e.g. "
         "{type: 'Phosphorylation', enz: {name: 'A'}, sub: {name: 'B'}, residue: 'S', "
-        "position: '10'}."
+        "position: '10'}; and the agents that regulate its rate without taking part, each a list: "
+        "`inhibited_by`, `activated_by`, `modulated_by` ('..., inhibited by C' in the notation)."
     )
     policy: str = Field(description="the mechanism expressing it, e.g. 'indra_default'.")
     prefix: str = Field(
@@ -190,11 +200,6 @@ class StatementRow(BaseModel):
         description="binds a parameter this row makes, by its kind ('kf' for '<prefix>_kf'), to "
         "a SHARED id (another row's, a problem parameter's, or a new name several rows use) or "
         "to a NUMBER, which fixes it — one rate constant across many reactions is one parameter.",
-    )
-    modifiers: dict[str, dict[str, Any] | str] | None = Field(
-        default=None,
-        description="the agents (INDRA Agent JSON) filling the modifier slots of a written "
-        "mechanism's rate: an inhibitor, a regulating complex, an input it reads.",
     )
 
 
@@ -241,17 +246,23 @@ class MechanismDef(BaseModel):
         "name (the binding site for it): `enz(sub=None) + sub(enz=None, mod='off') >> "
         "enz(sub=1) % sub(enz=1, mod='off') @ kf`. `list_mechanisms` shows every library entry "
         "this way, with the `parameters` it declares: start from one. A rate is an expression "
-        "over your `parameters`, `amount(<pattern>)`, `time` and exp/log/sqrt. Give `scheme` or "
-        "`rate`, not both.",
+        "over your `parameters`, `amount(<pattern>)`, `amount(inhibited_by)` (a regulator the "
+        "statement states, checked as a `rate` is; a scheme of several steps reads only "
+        "`modulated_by`), `time` and exp/log/sqrt. A molecule is a role or, by its name, a "
+        "partner the statement writes a role bound or not bound to (`C` of `E{~C}`): a mechanism "
+        "reads no agent its statement does not name. Give `scheme` or `rate`, not both.",
     )
     rate: str | None = Field(
         default=None,
         description="(instead of `scheme`) the rate COEFFICIENT, over the statement type's role "
-        "names (each the amount of that agent: `enz`, `sub`, `subj`, `source`, ...), your "
-        "`parameters`, `time`, exp/log/sqrt and `piecewise(value, condition, ..., otherwise)` "
-        "(`piecewise(k_0, time < t_1, k_1)`). It is multiplied by every reactant's amount, "
-        "catalysts included, so a rate that stays non-negative cannot drive an amount negative; "
-        "a constant `k` alone is mass action."
+        "names (each the amount of that agent: `enz`, `sub`, `subj`, `source`, ...), the "
+        "regulators the statement states (`inhibited_by`, `activated_by`, `modulated_by`; "
+        "`inhibited_by_1` by position where it states several), your `parameters`, `time`, "
+        "exp/log/sqrt and `piecewise(value, condition, ..., otherwise)` (`piecewise(k_0, time < "
+        "t_1, k_1)`). It is multiplied by every reactant's amount, catalysts included, so a rate "
+        "that stays non-negative cannot drive an amount negative; a constant `k` alone is mass "
+        "action. It must fall with each inhibitor and rise with each activator for every value of "
+        "its names, as sympy shows; a regulator it cannot show that for is `modulated_by`."
     )
     parameters: list[str] = Field(
         default_factory=list,
@@ -259,11 +270,6 @@ class MechanismDef(BaseModel):
         "`<prefix>_<name>`, estimated unless a row's `parameters` shares or fixes it. A parameter "
         "the problem ships or a condition input is none of them: it enters through a row's "
         "binding.",
-    )
-    modifiers: list[str] = Field(
-        default_factory=list,
-        description="names in `rate` for the amount of an agent that takes no part in the "
-        "reaction (an inhibitor, a regulator); each row using this mechanism names the agent.",
     )
 
 
@@ -451,6 +457,60 @@ class _InfrastructureErrors(Middleware):
                 raise
             self.logger.error("%s: %s", context.message.name, infra)
             raise ToolError(str(infra)) from exc
+
+
+class _Cancellation(Middleware):
+    """Stops the fit of a tool call its client cancels (MCP ``notifications/cancelled``).
+
+    The MCP SDK cancels the call's task, but a sync tool runs in a worker thread no cancel reaches:
+    FastMCP awaits that thread shielded, so the tool would run to its end. A task beside it hears
+    the cancel instead and sets the call's event in :data:`petab_mcp.multistart.CANCELLED`, which
+    the fit's wait polls. Imported here, not at the top: :mod:`~petab_mcp.multistart` imports
+    pyPESTO, and with it AMICI, which must not be imported before the session configures its
+    logging (``logging_setup.configure_amici``).
+    """
+
+    async def on_call_tool(self, context, call_next):
+        from .multistart import CANCELLED
+
+        cancelled = threading.Event()
+
+        async def hear() -> None:
+            try:
+                await anyio.sleep_forever()
+            except anyio.get_cancelled_exc_class():
+                if not returned:
+                    cancelled.set()
+                raise
+
+        returned, result, error = False, None, None
+        token = CANCELLED.set(cancelled)
+        try:
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(hear)
+                try:
+                    result = await call_next(context)
+                except Exception as exc:  # raised below: the group would wrap it in an ExceptionGroup
+                    error = exc
+                finally:
+                    returned = True
+                    tasks.cancel_scope.cancel()
+        finally:
+            CANCELLED.reset(token)
+        if error is not None:
+            raise error
+        return result
+
+
+def _fit_in_progress(began: float) -> str:
+    """The refusal of a ``make_changes`` that arrives while another change's fit, begun at
+    ``began`` (``time.monotonic()``), still holds the session."""
+    return (
+        f"make_changes: {FIT_IN_PROGRESS}: a fit is still running on this session (its change "
+        f"began {time.monotonic() - began:.0f}s ago), so NOTHING was applied. Its result becomes "
+        "the next version when it ends: read it then (list_versions) rather than resending this "
+        "change."
+    )
 
 
 class _Ctx:
@@ -1001,9 +1061,13 @@ def _make_changes_statements_doc(
         f"also holds {entries}. `list_mechanisms` shows each as the PySB rules it builds. When "
         "none fits, WRITE one in `mechanisms`, either as a `scheme` (its own rules, written like "
         "those, declaring their constants in `parameters`) or as a `rate` on an existing entry's "
-        "reaction, whose rate may read `modifiers`, "
-        "agents each row names that take no part in the reaction (an inhibitor, a regulator); "
-        "it stays in the library for the rest of the run. A row's `parameters` shares a rate constant with other "
+        "reaction; it stays in the library for the rest of the run. A rate reads only the agents "
+        "its row's statement names, so an agent that changes a reaction's rate without taking "
+        "part is stated as its regulator: `r1: E phosphorylates S at T20, inhibited by C | "
+        "inhibited Ki=K_C` claims C slows that reaction, and its mechanism's rate reads C as "
+        "`inhibited_by` (`activated_by` speeds it, `modulated_by` claims no direction). The rate "
+        "must fall with each inhibitor and rise with each activator, and read every regulator its "
+        "statement states. A row's `parameters` shares a rate constant with other "
         "rows, or with a parameter the problem ships, or fixes it to a number. "
         + (
             "The species the observables read are bound by the problem's entity map: name agents "
@@ -1107,14 +1171,12 @@ def _statements_text(session, version: int | None) -> str:
             lines.append(f"mechanism {d['policy']}: {d['statement_type']}, scheme{declared}")
             lines += [f"  {line.strip()}" for line in d["scheme"].strip().splitlines() if line.strip()]
             continue
-        reads = f"  reads {', '.join(d['modifiers'])}" if d.get("modifiers") else ""
         lines.append(
             f"mechanism {d['policy']}: {d['statement_type']} like "
-            f"{d.get('based_on', mechanisms.INDRA_DEFAULT)}, rate {d['rate']}{declared}{reads}"
+            f"{d.get('based_on', mechanisms.INDRA_DEFAULT)}, rate {d['rate']}{declared}"
         )
     for row in record["rows"]:
-        bare = {k: row[k] for k in ("statement", "policy", "prefix", "parameters", "modifiers")
-                if row.get(k)}
+        bare = {k: row[k] for k in ("statement", "policy", "prefix", "parameters") if row.get(k)}
         lines.append(notation.render(bare, library) or json.dumps(bare))
     for start in record.get("starts") or []:
         lines.append(f"start {start['name']}: {notation.agent_text(start['agent'])} = "
@@ -1162,7 +1224,9 @@ def _register_model_tools(
             choosing a row's policy, and to write a new one as a `scheme`: copy the nearest entry
             and edit it. Each is written over the statement type's ROLES; `@` gives the rate, and
             a name in it is one of the `parameters` its header lists, which a row binds as
-            `kf=...`.
+            `kf=...`. A scheme reads no agent its row's statement does not name: a molecule other
+            than a role is a partner the statement writes a role bound or not bound to (`C` of
+            `enz{~C}`), and `amount(inhibited_by)` reads a regulator the statement states.
             """
             return _mechanisms_text(route().session, statement_type)
 
@@ -1373,9 +1437,15 @@ def _register_model_tools(
                 + ". NOTHING was applied.",
                 {"n_mechanisms": len(mechanisms or []), "n_starts": len(starts or [])},
             )
+        # A change waits for no other: a client whose call timed out resends it, and queued behind
+        # the fit it is already waiting for, it times out again (PEtab-MCP#108).
+        if (began := session.change_began) is not None:
+            return ctx.reject_operation(
+                "make_changes", _fit_in_progress(began), {}, cause=FIT_IN_PROGRESS
+            )
         # One critical section for the change and its fit, so nothing can fit in between
         # (`session.lock` is an RLock, so the nested acquisitions inside each call are fine).
-        with session.lock:
+        with session.change():
             # Inside the lock: the build reads HEAD's statements record and the run's written
             # mechanisms, and the commit below replaces both, so a concurrent call must not
             # build in between.
@@ -2030,13 +2100,15 @@ def _register_validation_data_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> 
         For whoever runs the session, not for the agent building the model (see the registrar's
         docstring): a predictive check, not a modelling tool.
 
-        Changes nothing. A fixed-θ set is one objective evaluation of the model as it stands, at
-        its current fitted values, against data it was not fitted to. A TRANSFER set (one that
-        brings its own parameter table) REFITS the model's estimated parameters on the held-out
-        system with an ``n_starts`` multistart (the session's default when omitted) and reports the
-        optimum; the fitted point is not written back. Returns
-        ``{status, mode, nll, k, n, chi2, n_experiments, observables, ...}``; see
-        :mod:`petab_mcp.validation_data` for the statuses and the two modes.
+        Changes neither the model nor its fit. A fixed-θ set is one objective evaluation of the
+        model as it stands, at its current fitted values, against data it was not fitted to. A
+        TRANSFER set (one that brings its own parameter table) REFITS the model's estimated
+        parameters on the held-out system with an ``n_starts`` multistart (the session's default
+        when omitted) and reports the optimum; the fitted point is not written back. Returns
+        ``{status, mode, nll, k, n, chi2, n_experiments, observables, records_file, ...}``, where
+        ``records_file`` is the head version's ``validation_simulations.json``: the score with one
+        record per held-out point. See :mod:`petab_mcp.validation_data` for the statuses and the two
+        modes.
         """
         ctx = route()
         session = ctx.session
@@ -2369,7 +2441,8 @@ def create_server(
         middleware=[
             _InfrastructureErrors(
                 ctx.session.logger, ctx.engine.build_root, ctx.session.provenance.root
-            )
+            ),
+            _Cancellation(),
         ],
     )
 

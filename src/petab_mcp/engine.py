@@ -403,8 +403,9 @@ class AmiciEngine:
                 return float(np.sum(arr**2))
         return None
 
-    def _noise_context(self):
-        """Symbolic noise formulas + tables needed to evaluate weighted residuals.
+    @staticmethod
+    def _noise_context(problem):
+        """Symbolic noise formulas + tables needed to evaluate ``problem``'s weighted residuals.
 
         Returns ``(noise_formulas, observable_df, parameter_df)`` or ``None`` if the
         noise model cannot be prepared (in which case weighted residuals are skipped).
@@ -412,7 +413,6 @@ class AmiciEngine:
         try:
             from petab.v2.calculate import get_symbolic_noise_formulas
 
-            problem = self.session.problem
             return (
                 get_symbolic_noise_formulas(problem.observable_df),
                 problem.observable_df,
@@ -421,7 +421,8 @@ class AmiciEngine:
         except Exception:  # pragma: no cover - defensive; noise model unusable
             return None
 
-    def _weighted_residual(self, ctx, row, m, s):
+    @staticmethod
+    def _weighted_residual(ctx, row, m, s):
         """petab-consistent (noise, weighted residual) for one point, or (None, None).
 
         The weighted residual is ``(scale(m) - scale(s)) / sigma`` in the coordinate the
@@ -466,7 +467,8 @@ class AmiciEngine:
                 bad += 1
         return bad
 
-    def _records_without_simulation(self, meas) -> list[dict[str, Any]]:
+    @staticmethod
+    def _records_without_simulation(meas) -> list[dict[str, Any]]:
         """One record per measurement with ``simulation`` unset — the honest shape for an
         evaluation that produced no trajectory. ``simulation_gap`` counts every one of these as
         missing, ``_chi2`` declines to score them and ``goodness_of_fit`` reports the gap, so the
@@ -486,9 +488,23 @@ class AmiciEngine:
         ]
 
     def _simulation_records(self, objective, rdatas) -> list[dict[str, Any]]:
-        from amici.importers.petab import unflatten_simulation_df
-
+        """The session's records: :meth:`_records_from_rdatas` on the session's problem."""
         from .fitting import amici_facing_problem
+
+        amici_problem, flattened = amici_facing_problem(self.session)
+        return self._records_from_rdatas(
+            self.session.problem, objective, rdatas, amici_problem if flattened else None
+        )
+
+    @classmethod
+    def _records_from_rdatas(
+        cls, problem, objective, rdatas, flattened=None
+    ) -> list[dict[str, Any]]:
+        """One record per measurement of ``problem``, off the ``rdatas`` its ``objective``
+        returned: the rows of ``simulations.json``, and of a held-out score's
+        (:mod:`petab_mcp.validation_data`). ``flattened`` is the flattened copy AMICI was built
+        from when it was (:func:`fitting.amici_facing_problem`); a held-out view never is."""
+        from amici.importers.petab import unflatten_simulation_df
 
         # The AMICI model was built from the AMICI-FACING problem, which may be a flattened
         # copy (timepoint-specific overrides; see fitting.needs_flattening). The rdatas name
@@ -496,21 +512,20 @@ class AmiciEngine:
         # measurement table and mapped back to the session's (unflattened) observable ids with
         # AMICI's own inverse before anything downstream reads it — every consumer (residual
         # structure, query_data's `simulations`, the sigma checks) keys on the unflattened ids.
-        n_bad = self._unusable_rdatas(rdatas)
+        n_bad = cls._unusable_rdatas(rdatas)
         if n_bad:
             # Partial success is treated the same as total failure on purpose: when any experiment
             # fails to integrate, AMICI's likelihood for the evaluation is already NaN (see
             # `simulation_gap`), so keeping the surviving experiments' simulations would describe a
             # smaller dataset than `n_data_points` while looking like a complete one.
-            self.session.logger.info(
+            logging.getLogger("petab_mcp").info(
                 "simulation: %d/%d experiments returned no usable trajectory; reporting a missing "
                 "score instead of a partial one",
                 n_bad,
                 len(rdatas),
             )
-            return self._records_without_simulation(self.session.problem.measurement_df)
-        amici_problem, flattened = amici_facing_problem(self.session)
-        meas = amici_problem.measurement_df
+            return cls._records_without_simulation(problem.measurement_df)
+        meas = (problem if flattened is None else flattened).measurement_df
         # One row per measurement of the problem AMICI imported, grouped by experiment; an
         # experiment-less measurement comes back with a NaN id, which is "" here (see
         # petab_mcp.problem).
@@ -548,7 +563,7 @@ class AmiciEngine:
         merged = meas.merge(
             simdf[keys + [rep, SIMULATION]], on=keys + [rep], how="left", validate="1:1"
         )
-        if flattened:
+        if flattened is not None:
             # Back to the session's vocabulary for everything downstream (records, residual
             # structure, query_data). AMICI's inverse does exactly this and nothing else -- it
             # replaces the observableId column -- so `merged` (a measurement frame carrying a
@@ -557,15 +572,15 @@ class AmiciEngine:
             # The noise substitution below reads the NATURAL observable_df's formula together
             # with this row's own noiseParameters, which flattening leaves untouched, so the
             # pair stays consistent.
-            merged = unflatten_simulation_df(merged, self.session.problem.to_petab())
-        ctx = self._noise_context()
+            merged = unflatten_simulation_df(merged, problem.to_petab())
+        ctx = cls._noise_context(problem)
 
         records: list[dict[str, Any]] = []
         for _, row in merged.iterrows():
             m = finite_float(row.get(MEASUREMENT))
             s = finite_float(row.get(SIMULATION))
             residual = (m - s) if (m is not None and s is not None) else None
-            noise, weighted = self._weighted_residual(ctx, row, m, s)
+            noise, weighted = cls._weighted_residual(ctx, row, m, s)
             records.append(
                 {
                     "observable_id": row.get(OBSERVABLE_ID),

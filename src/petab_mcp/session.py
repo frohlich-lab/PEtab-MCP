@@ -8,8 +8,11 @@ table are mutable, and every committed change is snapshotted as a version and lo
 
 from __future__ import annotations
 
+import contextlib
 import math
 import threading
+import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -28,6 +31,7 @@ from .constants import (
 )
 from .data_access import residual_flag, residual_structure_rollup
 from .errors import (
+    FitCancelledError,
     InfrastructureError,
     ModelBuildBusyError,
     ModelUpdateError,
@@ -213,6 +217,10 @@ class PetabSession:
             self._set_model_from_antimony(f"model {R.ZERO_SHOT_MODEL_ID}\nend")
 
         self.lock = threading.RLock()
+        # When the change holding `lock` (a `make_changes` and its fit) began, by time.monotonic(),
+        # else None; read without the lock, so a second change is refused instead of queued (see
+        # `change`).
+        self.change_began: float | None = None
         self.provenance = ProvenanceStore(store_root(self.yaml_path, provenance_dir))
         self.resolver = resolver or EutilsReferenceResolver(mode=reference_mode)
         self.logger = logging_setup.configure(self.provenance.root)
@@ -1341,6 +1349,18 @@ class PetabSession:
                 "stop_reason": stop_reason,
             }
 
+    @contextlib.contextmanager
+    def change(self) -> Iterator[None]:
+        """Hold :attr:`lock` for one change and its fit, with :attr:`change_began` set, which
+        ``make_changes`` reads to refuse a second change at once
+        (:data:`~petab_mcp.errors.FIT_IN_PROGRESS`) rather than queue it behind this one."""
+        with self.lock:
+            self.change_began = time.monotonic()
+            try:
+                yield
+            finally:
+                self.change_began = None
+
     # -- fit ---------------------------------------------------------------
     def _fit_dedup(self, starts: int) -> tuple[dict[str, Any], str]:
         """Decide what an explicit `fit` should do with the current working model (see :mod:`dedup`).
@@ -1450,11 +1470,19 @@ class PetabSession:
                     error = disk_full_error(exc, build_root) or ModelUpdateError(
                         _compile_fit_failure_message(exc)
                     )
-                if isinstance(error, (ModelBuildBusyError, InfrastructureError)):
+                if isinstance(error, (ModelBuildBusyError, InfrastructureError, FitCancelledError)):
                     self._fit_attempts[fit_key] -= 1  # nothing was scored, so a retry is not a loop
                 if error is exc:
                     raise
                 raise error from exc
+            # Starts stopped past their cap (see multistart) are scored as failed ones.
+            if killed := fitsim.get("n_starts_killed"):
+                warnings = [
+                    *warnings,
+                    f"Starts stopped past the {fitting.FIT_PER_START_TIMEOUT_S:.0f}s per-start "
+                    f"cap: {killed} of {starts}. They count as failed starts, and the fit is "
+                    f"scored from the other {starts - killed}.",
+                ]
 
             staged = list(staged_edits or [])
             nllh = fitsim.get("neg_log_likelihood")
@@ -1539,6 +1567,7 @@ class PetabSession:
                 meta={  # Recorded so a later fit can tell whether it would search HARDER than this
                     # one did (see `_fit_dedup`) — the structure/setup hashes both ignore it.
                     "n_starts": fitsim.get("n_starts"),
+                    "n_starts_killed": fitsim.get("n_starts_killed"),
                     "fit_status": fitsim.get("status"),
                     "neg_log_likelihood": nllh,
                     "chi2": fitsim.get("chi2"),
@@ -1661,6 +1690,7 @@ class PetabSession:
         # is still this structure's fit (see identifiability.stored_merge_hints).
         sim.pop("merge_hints", None)
         sim["n_starts"] = meta.get("n_starts")
+        sim["n_starts_killed"] = meta.get("n_starts_killed")
         return {
             "committed": False,
             "no_change": True,

@@ -20,10 +20,12 @@ import pytest
 from distributed import LocalCluster, get_task_stream
 from pypesto.engine import Task
 
+from petab_mcp import dask_engine
 from petab_mcp import fitting
 from petab_mcp import logging_setup
+from petab_mcp import multistart
 from petab_mcp.dask_engine import DaskEngine
-from petab_mcp.errors import FitBackendError
+from petab_mcp.errors import FIT_WEDGED, FitBackendError, InfrastructureError
 from petab_mcp.references import StubReferenceResolver
 from petab_mcp.server import create_server
 
@@ -48,6 +50,7 @@ class _Sleep(Task):
     def __init__(self, label: str, i: int, seconds: float) -> None:
         super().__init__()
         self.label, self.i, self.seconds = label, i, seconds
+        self.id = f"{label}{i}"
 
     def execute(self):
         time.sleep(self.seconds)
@@ -257,7 +260,7 @@ def test_the_batch_size_fills_FIT_TASK_SECONDS_unless_FIT_STARTS_PER_TASK_is_set
     monkeypatch.setattr(fitting, "FIT_TASK_SECONDS", 270.0)
     monkeypatch.setattr(fitting, "FIT_PER_START_TIMEOUT_S", 60.0)
     monkeypatch.setattr(fitting, "FIT_STARTS_PER_TASK", 0)
-    shared = SimpleNamespace(batched=lambda k: k)  # hands back the batch size it is given
+    shared = SimpleNamespace(batched=lambda k, *_: k)  # hands back the batch size it is given
 
     def k(n_starts, median):
         previous = None
@@ -315,6 +318,57 @@ def test_a_start_failing_mid_batch_fails_the_fit_and_cancels_its_batches_still_q
             engine.batched(2).execute([touch[0], _Fail(), *touch[1:]])
         time.sleep(3)  # long enough for every batch left queued to run
     assert len(list(ran.iterdir())) <= 3
+
+
+def test_a_batch_running_past_its_starts_caps_is_stopped_and_the_others_kept(monkeypatch):
+    """A batch whose start never returns is given up on once it has run past its starts' caps and
+    the margin, as its worker's heartbeats tell the scheduler: its starts, the one of them that
+    finished included, are the stopped ones, and the fit's other batch comes back (#118)."""
+    monkeypatch.setattr(dask_engine, "FIT_DEADLINE_MARGIN_S", 0.5)
+    monkeypatch.setattr(multistart, "POLL_S", 0.1)
+    with _engine() as engine:
+        # Every worker imports this module now, not while a batch's clock runs.
+        engine.client.run(_Sleep, "warm", 0, 0)
+        began = time.monotonic()
+        results, stopped = engine.batched(2, 0.25)._run(
+            [_Sleep("a", 0, 0), _Sleep("a", 1, 30), _Sleep("a", 2, 0)]
+        )
+        took = time.monotonic() - began
+
+    assert stopped == {0, 1}
+    assert results[:2] == [None, None] and results[2][:2] == ("a", 2)
+    assert took < 15, took
+
+
+def test_a_fit_whose_every_batch_is_stopped_fails_as_wedged(monkeypatch):
+    """A fit whose only batch runs past its starts' caps has nothing to score: it fails as wedged
+    rather than holding the session."""
+    monkeypatch.setattr(dask_engine, "FIT_DEADLINE_MARGIN_S", 0.5)
+    monkeypatch.setattr(multistart, "POLL_S", 0.1)
+    with _engine(n_workers=1) as engine:
+        with pytest.raises(InfrastructureError) as wedged:
+            engine.batched(2, 0.25).execute([_Sleep("a", 0, 30), _Sleep("a", 1, 0)])
+
+    assert wedged.value.cause == FIT_WEDGED
+    assert "all 2 starts ran past the 0s per-start cap" in str(wedged.value)
+
+
+def test_a_batch_waiting_behind_another_fits_is_not_wedged(monkeypatch):
+    """A batch's deadline counts from when it began running: one that waited its whole deadline
+    behind another session's batch, or for the pool's jobs to start, is not wedged."""
+    monkeypatch.setattr(dask_engine, "FIT_DEADLINE_MARGIN_S", 0.2)
+    monkeypatch.setattr(multistart, "POLL_S", 0.1)
+    done = {}
+    with _engine(n_workers=1) as engine:
+        other = threading.Thread(
+            target=lambda: done.update(a=engine.batched(1, 10).execute([_Sleep("a", 0, 3)]))
+        )
+        other.start()
+        time.sleep(0.5)  # the other fit's batch is running
+        done["b"] = engine.batched(1, 0.1).execute([_Sleep("b", 0, 0.05)])
+        other.join()
+
+    assert [label for label, _, _ in done["a"] + done["b"]] == ["a", "b"]
 
 
 def test_a_lost_cluster_fails_the_fit_and_nothing_reruns_it_here(fit_session, monkeypatch):

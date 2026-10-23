@@ -10,7 +10,8 @@ Under ``<store_root>/`` (default ``<problem_dir>/.petab_mcp``):
   ``simulations.json`` (the measured-vs-simulated dataframe + residuals), ``optimization.json``
   (the pyPESTO per-start + per-iteration trace records), and ``pypesto_result.hdf5`` (the
   pyPESTO result file, copied in from the per-model cache) — so rolling back restores a
-  version's fit artifacts, not just its model.
+  version's fit artifacts, not just its model. A version scored on held-out data also carries
+  :data:`VALIDATION_SIMULATIONS`, which no agent-facing read opens.
 * ``cache/`` — pyPESTO result files keyed by problem hash (written on each fit, copied into
   version dirs when snapshotted).
 * ``HEAD`` — the current version number.
@@ -35,6 +36,11 @@ from typing import Any
 
 #: The layout a store's ``FORMAT`` file names (see the module docstring).
 STORE_FORMAT = "petab-v2"
+
+#: A version's held-out score with its per-point records
+#: (:func:`petab_mcp.validation_data.score_session`); a harness that archives a version's files
+#: names it too.
+VALIDATION_SIMULATIONS = "validation_simulations.json"
 
 
 def _now() -> str:
@@ -228,7 +234,15 @@ class ProvenanceStore:
             # the optimizer log runs at ERROR -- so a restored version cannot answer
             # "optimiser-limited or structure-limited?" without it. This whitelist
             # silently dropped it: a key absent here is not persisted and nothing warns.
-            for k in ("n_starts", "starts", "trace", "x_names", "x_scales", "exitflag_counts")
+            for k in (
+                "n_starts",
+                "starts",
+                "trace",
+                "x_names",
+                "x_scales",
+                "exitflag_counts",
+                "n_starts_killed",
+            )
         }
         (vdir / "optimization.json").write_text(json.dumps(persist, indent=2), encoding="utf-8")
         result_file = optimization.get("result_file")
@@ -239,6 +253,13 @@ class ProvenanceStore:
                     shutil.copyfile(src, vdir / "pypesto_result.hdf5")
             except OSError:  # copying the interop hdf5 must never fail a snapshot
                 pass
+
+    def write_validation_simulation(self, n: int, payload: dict[str, Any]) -> Path:
+        """Write version ``n``'s held-out ``payload`` (:data:`VALIDATION_SIMULATIONS`), replacing
+        an earlier score of it; returns the file."""
+        path = self._version_dir(n) / VALIDATION_SIMULATIONS
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        return path
 
     def _version_dir(self, n: int) -> Path:
         vdir = self.versions_dir / f"v{n}"

@@ -2339,10 +2339,10 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
     for pid in sorted(valid - table_ids):
         if pid in shipped_ids:
             # The problem defined this parameter; reintroducing it restores that definition
-            # rather than guessing a new one. Column-by-column so the target table gains any
-            # column the shipped row carries that it does not have yet.
-            for col, cell in shipped.loc[pid].items():
-                problem.parameter_df.loc[pid, col] = cell
+            # rather than guessing a new one, gaining any column the shipped row carries that the
+            # target table does not have yet.
+            row = shipped.loc[pid]
+            problem.parameter_df.loc[pid, list(row.index)] = list(row)
             added.append(pid)
             continue
         value = problem.model.get_parameter_value(pid)
@@ -2383,11 +2383,11 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
             except (TypeError, ValueError):
                 positive = False
             scale, estimate = (LOG10 if positive else LIN), True
-        problem.parameter_df.loc[pid, PARAMETER_SCALE] = scale
-        problem.parameter_df.loc[pid, LOWER_BOUND] = lb
-        problem.parameter_df.loc[pid, UPPER_BOUND] = ub
-        problem.parameter_df.loc[pid, NOMINAL_VALUE] = value
-        problem.parameter_df.loc[pid, ESTIMATE] = estimate
+        # One assignment, not one per column: a row added a column at a time is NaN in the rest,
+        # which makes `estimate` float64, and pandas 3.1 refuses a bool there.
+        problem.parameter_df.loc[
+            pid, [PARAMETER_SCALE, LOWER_BOUND, UPPER_BOUND, NOMINAL_VALUE, ESTIMATE]
+        ] = [scale, lb, ub, value, estimate]
         added.append(pid)
 
     # Re-derive the convention on IC rows that ALREADY EXIST, from the value the model declares

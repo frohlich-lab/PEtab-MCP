@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import libsbml
 import pytest
-from indra.statements import Agent, BoundCondition, Phosphorylation, Translocation
+import sympy
+from indra.statements import Agent, BoundCondition, ModCondition, Phosphorylation, Translocation
 from petab.v1.models.sbml_model import SbmlModel
 
 from petab_mcp import mechanisms as M
@@ -182,15 +183,15 @@ def test_a_rate_may_switch_with_piecewise():
             "statement_type": "PopulationTransition",
             "policy": "while_dosed",
             "based_on": "mass_action",
-            "rate": "k*piecewise(1, drug > 0, 0)",
+            "rate": "k*piecewise(1, modulated_by > 0, 0)",
             "parameters": ["k"],
-            "modifiers": ["drug"],
         },
         library,
     )
     rows = [
         (_TRANSITION, "stepped", "r1"),
-        (PopulationTransition(Agent("A"), Agent("B")), "while_dosed", "r2", None, {"drug": Agent("D")}),
+        (PopulationTransition(Agent("A"), Agent("B")), "while_dosed", "r2", None,
+         {"modulated_by": [Agent("D")]}),
     ]
     antimony, _ = PS.to_antimony(rows, {}, library)
     sbml = SbmlModel.from_antimony(antimony).sbml_model
@@ -202,7 +203,7 @@ def test_a_rate_may_switch_with_piecewise():
 def test_a_piecewise_condition_must_compare():
     """A condition that is no comparison, or a comparison outside `piecewise`, is refused with how
     to write one, rather than read as sympy's truth value of a symbol."""
-    for rate in ("k*piecewise(1, drug, 0)", "k*(time < t_1)"):
+    for rate in ("k*piecewise(1, modulated_by, 0)", "k*(time < t_1)"):
         with pytest.raises(M.MechanismError, match="compare only in a piecewise condition"):
             M.written(
                 {
@@ -211,7 +212,6 @@ def test_a_piecewise_condition_must_compare():
                     "based_on": "mass_action",
                     "rate": rate,
                     "parameters": ["k", "t_1"] if "t_1" in rate else ["k"],
-                    "modifiers": ["drug"] if "drug" in rate else [],
                 },
                 dict(M.REGISTRY),
             )
@@ -360,6 +360,19 @@ def test_a_declared_expression_names_parameters_the_table_fills():
     assert {"pool", "fold"} <= ids and "naive_init" not in ids
 
 
+def test_two_starts_of_one_species_are_refused_naming_both():
+    """An unmodified site written out is its default state, so `ERK{-pT185}` starts what `ERK`
+    starts; PySB's "Duplicate species" named neither the other start nor the species."""
+    u_erk = Agent("ERK", mods=[ModCondition("phosphorylation", "T", "185", False)])
+    with pytest.raises(
+        ModelUpdateError, match=r"starts 'S0' and 'S1' both start ERK\(T185='u'\)"
+    ):
+        PS.to_antimony(
+            [(_PHOSPHO, INDRA_DEFAULT, "r1")], {},
+            starts=[("S0", Agent("ERK"), 1), ("S1", u_erk, 2)],
+        )
+
+
 def test_an_input_declares_no_start():
     """An input is held to its protocol; a start for it would be overwritten at t=0."""
     egf = Agent("EGF")
@@ -450,6 +463,35 @@ def test_complexes_that_grow_without_bound_are_refused():
         PS.to_antimony(rows, {"STAT5A": Agent("STAT5A"), "STAT5B": Agent("STAT5B")})
 
 
+def test_trimers_assembled_from_free_partners_are_not_refused():
+    """Lucarelli's three SMAD trimers, each assembled in one step from partners free of all
+    others: their products close a cycle of bonds, but no rule binds a molecule already bound, so
+    each complex is one trimer. Refused as chains that grow without bound (PEtabAgentBench#23).
+    Linked by a dimer that binds whatever else its partners hold, they do chain, and still are."""
+    from indra.statements import Complex
+
+    def free(name, *of):
+        return Agent(name, bound_conditions=[BoundCondition(Agent(o), False) for o in of])
+
+    s2, s3, s4 = (
+        lambda: free("SMAD2", "SMAD3", "SMAD4"),
+        lambda: free("SMAD3", "SMAD2", "SMAD3", "SMAD4"),
+        lambda: free("SMAD4", "SMAD2", "SMAD3", "SMAD4"),
+    )
+    rows = [
+        (Complex([s2(), s3(), s3()]), "assembly", "k233"),
+        (Complex([s2(), s3(), s4()]), "assembly", "k234"),
+        (Complex([s2(), s4(), s4()]), "assembly", "k244"),
+    ]
+    antimony, _ = PS.to_antimony(rows, {"SMAD2": Agent("SMAD2")})
+    assert SbmlModel.from_antimony(antimony).sbml_model.getNumReactions() == 3
+
+    trimer = Complex([free("A", "B", "C"), free("B", "A", "C"), free("C", "A", "B")])
+    linked = [(trimer, "assembly", "abc"), (Complex([Agent("B"), Agent("C")]), INDRA_DEFAULT, "bc")]
+    with pytest.raises(ModelUpdateError, match=r"rows \['abc', 'bc'\] bind .* into chains"):
+        PS.to_antimony(linked, {"A": Agent("A")})
+
+
 def test_the_dimers_the_refusal_advises_are_not_refused():
     """The same three dimers, each partner free of its others where it binds: dimers only."""
     from indra.statements import Complex
@@ -484,6 +526,23 @@ def test_a_readout_formula_reads_other_entries_and_parameters():
     rule = sbml.getAssignmentRuleByVariable("readout_ratio")
     assert libsbml.formulaToL3String(rule.getMath()) == "scale * pERK / tERK"
     assert sbml.getParameter("scale") is not None
+
+
+def test_a_readout_formula_takes_pythons_power():
+    """`(a*b*c)**3` was refused as no formula, libSBML's parser having only `^`; read as `^`, it
+    binds and associates as Python's `**`."""
+    p_erk = Agent._from_json(
+        {"name": "ERK", "mods": [{"mod_type": "phosphorylation", "residue": "T", "position": "185"}]}
+    )
+    antimony, _ = PS.to_antimony(
+        [(_PHOSPHO, INDRA_DEFAULT, "r1")],
+        {},
+        formulas={"readout_x": "-(pERK/tERK)**3 + tERK**2**-1"},
+        amounts={"pERK": p_erk, "tERK": Agent("ERK")},
+    )
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    rule = sbml.getAssignmentRuleByVariable("readout_x")
+    assert libsbml.formulaToL3String(rule.getMath()) == "-(pERK / tERK)^3 + tERK^(2^-1)"
 
 
 def test_a_readout_formula_reads_an_agent_only_through_amounts():
@@ -716,6 +775,84 @@ def test_a_protein_is_made_in_the_state_it_is_written():
         {"P": Agent("P")},
     )
     assert ([], ["P(loc='nucleus')"]) in reactions
+
+
+def _odes(antimony: str) -> dict[str, sympy.Expr]:
+    """Each species' ODE over the species' names, without their free binding sites."""
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+
+    def name(species) -> str:
+        monomer, _, sites = species.getName().partition("(")
+        kept = [s for s in sites.rstrip(")").split(", ") if s and not s.endswith("=None")]
+        return f"{monomer}({', '.join(kept)})"
+
+    symbols = {sp.getId(): sympy.Symbol(name(sp)) for sp in sbml.getListOfSpecies()}
+    ids = {sp.getId(): sympy.Symbol(sp.getId()) for sp in sbml.getListOfSpecies()}
+
+    def parse(math) -> sympy.Expr:
+        return sympy.sympify(libsbml.formulaToL3String(math), locals=ids)
+
+    rules = {sympy.Symbol(r.getVariable()): parse(r.getMath()) for r in sbml.getListOfRules()}
+
+    def read(math) -> sympy.Expr:
+        expr = parse(math)
+        while expr.free_symbols & set(rules):
+            expr = expr.subs(rules)
+        return expr.subs({ids[k]: v for k, v in symbols.items()})
+
+    odes: dict[str, sympy.Expr] = {}
+    for rx in sbml.getListOfReactions():
+        rate = read(rx.getKineticLaw().getMath())
+        for refs, sign in ((rx.getListOfReactants(), -1), (rx.getListOfProducts(), 1)):
+            for ref in refs:
+                key = str(symbols[ref.getSpecies()])
+                odes[key] = odes.get(key, 0) + sign * ref.getStoichiometry() * rate
+    return {k: sympy.simplify(v) for k, v in odes.items() if sympy.simplify(v) != 0}
+
+
+def test_a_stated_inhibitor_builds_the_modifier_odes():
+    """PEtab-MCP#122: fiedler's sorafenib factor, its statement now "RAF phosphorylates MEK,
+    inhibited by sorafenib", builds the ODEs main's modifier route built for the row that named
+    sorafenib only in its modifier (cdc68cc): `k3*K_2/(K_2 + sorafenib)` times RAF{pS338} and MEK,
+    sorafenib held to its condition."""
+    library = dict(M.REGISTRY)
+    library[("Phosphorylation", "divisive_inhibition")] = M.written(
+        {
+            "statement_type": "Phosphorylation",
+            "policy": "divisive_inhibition",
+            "rate": "k*Ki/(Ki + inhibited_by)",
+            "parameters": ["k", "Ki"],
+        },
+        library,
+    )
+    raf = Agent("RAF", mods=[ModCondition("phosphorylation", "S", "338")])
+    rows = [
+        (Phosphorylation(None, Agent("RAF"), "S", "338"), "basal", "r1", {"k": "k1"}),
+        (
+            Phosphorylation(raf, Agent("MEK"), "S", "217"),
+            "divisive_inhibition",
+            "r3",
+            {"k": "k3", "Ki": "K_2"},
+            {"inhibited_by": [Agent("sorafenib")]},
+        ),
+    ]
+    antimony, _ = PS.to_antimony(
+        rows, {"sorafenib": Agent("sorafenib")}, library, targets=frozenset({"sorafenib"})
+    )
+    k1, k3, K_2, sorafenib, raf_u, raf_p, mek_u = map(
+        sympy.Symbol,
+        ["k1", "k3", "K_2", "sorafenib()", "RAF(S338='u')", "RAF(S338='p')", "MEK(S217='u')"],
+    )
+    step = k3 * K_2 / (K_2 + sorafenib) * raf_p * mek_u
+    expected = {
+        "RAF(S338='u')": -k1 * raf_u,
+        "RAF(S338='p')": k1 * raf_u,
+        "MEK(S217='u')": -step,
+        "MEK(S217='p')": step,
+    }
+    odes = _odes(antimony)
+    assert set(odes) == set(expected)
+    assert all(sympy.simplify(odes[k] - v) == 0 for k, v in expected.items()), odes
 
 
 def test_a_written_rate_leaves_no_unread_rules():

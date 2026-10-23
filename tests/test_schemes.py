@@ -12,15 +12,20 @@ enzyme-substrate release ignores them).
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from indra.statements import (
     Activation,
+    ActivityCondition,
     Agent,
     BoundCondition,
     Complex,
     Conversion,
     Dephosphorylation,
     IncreaseAmount,
+    Inhibition,
+    ModCondition,
     Phosphorylation,
 )
 
@@ -102,8 +107,8 @@ _PHOSPHO = lambda: Phosphorylation(Agent("EGFR"), Agent("AKT1"), "S", "473")  # 
 _DEPHOSPHO = lambda: Dephosphorylation(Agent("PTEN"), Agent("AKT1"), "S", "473")  # noqa: E731
 _REAL = [
     (_PHOSPHO, p)
-    for p in ("indra_two_step", "indra_default", "indra_michaelis_menten", "indra_atp_dependent",
-              "processive", "indra_interactions_only")
+    for p in ("indra_two_step", "indra_default", "indra_michaelis_menten", "processive",
+              "indra_interactions_only")
 ] + [
     (_DEPHOSPHO, p) for p in ("indra_two_step", "dissociative", "indra_default")
 ] + [
@@ -176,6 +181,116 @@ def test_a_rate_may_read_amounts_and_time():
     assert "time" in str(expr) and "amount" in str(expr)
 
 
+def _inhibited(scheme: str, stmt):
+    library = dict(M.REGISTRY)
+    library[("Phosphorylation", "inhibited")] = M.written(
+        {"statement_type": "Phosphorylation", "policy": "inhibited", "scheme": scheme,
+         "parameters": ["kf", "Ki"]},
+        library,
+    )
+    return M.assemble([(stmt, "inhibited", "r1")], {}, library)
+
+
+@pytest.mark.parametrize(
+    "scheme",
+    [
+        "enz() + sub(mod='off') >> enz() + sub(mod='on') @ kf/(1 + amount(PTEN)/Ki)",
+        "enz() + sub(mod='off') >> enz() + sub(mod='on') @ kf/(1 + amount(PTEN{pS380})/Ki)",
+        # Mass action reads a reactant, and this one goes back unchanged.
+        "enz() + sub(mod='off') + PTEN() >> enz() + sub(mod='on') + PTEN() @ kf/Ki",
+    ],
+)
+def test_a_scheme_reads_no_agent_its_statement_does_not_name(scheme):
+    """PEtab-MCP#122: `EGFR phosphorylates AKT1` read PTEN in its rate, so the statement said
+    nothing of what slowed it. Each form is refused naming PTEN and the statement that states it."""
+    with pytest.raises(MechanismError) as refused:
+        _inhibited(scheme, _PHOSPHO())
+    assert re.search(
+        r"row 'r1': mechanism 'inhibited' reads PTEN.*`EGFR phosphorylates AKT1 at S473, "
+        r"inhibited by PTEN(\{pS380\})?`.*read as `amount\(inhibited_by\)`",
+        str(refused.value),
+    )
+
+
+@pytest.mark.parametrize(
+    "rates, match",
+    [
+        # Speeding unbinding is how this inhibitor inhibits: the step back rises with it.
+        ("kf, kr*(1 + amount(inhibited_by)/Ki)", None),
+        ("kf/(1 + amount(inhibited_by)/Ki), kr", None),
+        # Slowing unbinding speeds the reaction, whatever the statement says.
+        ("kf, kr/(1 + amount(inhibited_by)/Ki)",
+         r"so this rate, which runs it back, must rise as `inhibited_by` rises; it falls instead"),
+    ],
+)
+def test_the_step_back_of_a_reversible_scheme_moves_against_its_reaction(rates, match):
+    """PEtab-MCP#122: the second rate of `|` runs the reaction back, so an inhibitor that speeds it
+    inhibits, and one that slows it does not."""
+    definition = {"statement_type": "Phosphorylation", "policy": "binding",
+                  "scheme": f"enz(sub=None) + sub(enz=None) | enz(sub=1) % sub(enz=1) @ {rates}",
+                  "parameters": ["kf", "kr", "Ki"]}
+    if match is None:
+        M.written(definition, dict(M.REGISTRY))
+    else:
+        with pytest.raises(MechanismError, match=match):
+            M.written(definition, dict(M.REGISTRY))
+
+
+def test_a_scheme_of_several_steps_states_a_regulator_without_a_direction():
+    """Speeding a step into a dead end slows the reaction, so no rule about one rate's sign holds
+    across steps: such a scheme reads only `modulated_by`."""
+    steps = (
+        "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\n"
+        "enz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ "
+        "kc/(1 + amount({kind}_by)/Ki)"
+    )
+    definition = {"statement_type": "Phosphorylation", "policy": "two_steps",
+                  "parameters": ["kf", "kr", "kc", "Ki"]}
+    with pytest.raises(MechanismError, match=r"scheme of 2 steps whose rates read "
+                       r"\['inhibited_by'\].*State it `modulated_by`"):
+        M.written(definition | {"scheme": steps.format(kind="inhibited")}, dict(M.REGISTRY))
+    M.written(definition | {"scheme": steps.format(kind="modulated")}, dict(M.REGISTRY))
+
+
+def test_a_scheme_reads_a_regulator_its_statement_states():
+    """`amount(inhibited_by)` reads the agent the statement says slows the reaction, as it states
+    it, and the rate is checked against that claim where the scheme is written."""
+    p_pten = Agent("PTEN", mods=[ModCondition("phosphorylation", "S", "380")])
+    library = dict(M.REGISTRY)
+    library[("Phosphorylation", "inhibited")] = M.written(
+        {"statement_type": "Phosphorylation", "policy": "inhibited", "parameters": ["kf", "Ki"],
+         "scheme": "enz() + sub(mod='off') >> enz() + sub(mod='on') @ "
+                   "kf/(1 + amount(inhibited_by)/Ki)"},
+        library,
+    )
+    model, _ = M.assemble(
+        [(_PHOSPHO(), "inhibited", "r1", None, {"inhibited_by": [p_pten]})], {}, library
+    )
+    (amount,) = (o for o in model.observables if o.name.endswith("inhibited_by"))
+    assert str(amount.reaction_pattern) == "PTEN(S380=('p', WILD))"
+    with pytest.raises(MechanismError, match=r"must fall as `inhibited_by` rises; it rises"):
+        M.written(
+            {"statement_type": "Phosphorylation", "policy": "bad", "parameters": ["kf"],
+             "scheme": "enz() + sub(mod='off') >> enz() + sub(mod='on') @ "
+                       "kf*amount(inhibited_by)"},
+            dict(M.REGISTRY),
+        )
+
+
+def test_a_scheme_reads_a_partner_its_statement_names():
+    """The same rate, with EGFR stated as not bound to PTEN: `amount(PTEN)` reads PTEN as the
+    statement writes it, phosphorylated."""
+    p_pten = Agent("PTEN", mods=[ModCondition("phosphorylation", "S", "380")])
+    stmt = Phosphorylation(
+        Agent("EGFR", bound_conditions=[BoundCondition(p_pten, False)]), Agent("AKT1"), "S", "473"
+    )
+    model, (emission,) = _inhibited(
+        "enz() + sub(mod='off') >> enz() + sub(mod='on') @ kf/(1 + amount(PTEN)/Ki)", stmt
+    )
+    (amount,) = (o for o in model.observables if "amount" in o.name)
+    assert str(amount.reaction_pattern) == "PTEN(S380='p')"
+
+
 @pytest.mark.parametrize(
     "scheme, match",
     [
@@ -187,6 +302,14 @@ def test_a_rate_may_read_amounts_and_time():
         ("enz() + sub() + enz() @ kf", "reactants >> products"),
         ("enz() + sub() >> enz() + sub() @ kf | kf", "is not allowed"),
         ("enz() + sub() >> enz() + sub() @ kf*exp()", "takes one argument"),
+        # A bond across `+` reached the agent as PySB's own "Dangling bond(s) [1] in TGFbR(b=1)".
+        ("enz(b=None) + sub(e=None) >> enz(b=1) + sub(e=1) @ kf",
+         r"bond 1 joins `enz\(b=1\)` and `sub\(e=1\)`, which `\+` writes as two complexes: join "
+         r"them with `%`, `enz\(b=1\) % sub\(e=1\)`"),
+        ("enz(b=None) + sub(e=None) >> enz(b=None) % sub(e=1) @ kf",
+         r"bond 1 is on 1 site\(s\) of its complex \(sub\(e=1\)\), not two"),
+        ("enz() + sub() >> enz() + sub() @ kf*amount(sub(e=1))",
+         r"rate 'kf\*amount\(sub\(e=1\)\)': bond 1 is on 1 site"),
     ],
 )
 def test_a_scheme_that_does_not_read_is_refused(scheme, match):
@@ -249,6 +372,43 @@ def test_a_state_on_a_binding_site_is_refused_naming_it_one():
     entities = {"AKT1": Agent("AKT1", bound_conditions=[BoundCondition(Agent("PDK1"))])}
     with pytest.raises(MechanismError, match=r"site 'pdk1' does not take; .*pdk1 \(binding\)"):
         _assemble_written("enz() + sub(pdk1='x') >> enz() + sub(pdk1='x') @ kf", entities)
+
+
+@pytest.mark.parametrize(
+    "agent, scheme, match",
+    [
+        # `act` on a phosphorylation's enzyme is its kinase activity; the agents had written it
+        # for the one activity EGFR has, and the message named both sites but not what to write.
+        (Agent("EGFR", activity=ActivityCondition("activity", True)),
+         "enz(act='active') + sub(mod='off') >> enz(act='active') + sub(mod='on') @ kf",
+         r"site 'kinase', which EGFR does not have; EGFR's sites are activity \['inactive', "
+         r"'active'\]. Write `enz\(activity='active'\)` instead"),
+        (Agent("EGFR", mods=[ModCondition("phosphorylation", "Y", "1068")]),
+         "enz(mod='on') + sub(mod='off') >> enz(mod='on') + sub(mod='on') @ kf",
+         r"site 'S473', which EGFR does not have; .* Write `enz\(Y1068='p'\)` instead"),
+    ],
+)
+def test_a_site_the_molecule_lacks_names_the_one_to_write(agent, scheme, match):
+    with pytest.raises(MechanismError, match=match):
+        _assemble_written(scheme, {"EGFR": agent})
+
+
+def test_mod_outside_a_modification_names_the_agents_own_site():
+    """`subj(mod='on')` on an Inhibition, meaning the phosphorylated subject, was refused as "`mod`
+    is a modification statement's own site", with nothing on how to say it."""
+    irs1 = Agent("IRS1", mods=[ModCondition("phosphorylation", "Y", "612")])
+    library = dict(M.REGISTRY)
+    library[("Inhibition", "w")] = M.written(
+        {"statement_type": "Inhibition", "policy": "w", "parameters": ["kf"],
+         "scheme": "subj(mod='on') + obj(act='active') >> subj(mod='on') + obj(act='inactive') @ kf"},
+        library,
+    )
+    with pytest.raises(
+        MechanismError,
+        match=r"Inhibition is none. Write the site itself, as `subj\(Y612='p'\)`, or the "
+        r"modification on the row's agent, .*; IRS1's sites are Y612 \['u', 'p'\]",
+    ):
+        M.assemble([(Inhibition(irs1, Agent("PI3K")), "w", "r1")], {}, library)
 
 
 def _scheme(rate, parameters=("kf",), problem_ids=None):
