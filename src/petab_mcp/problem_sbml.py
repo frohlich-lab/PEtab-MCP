@@ -86,6 +86,7 @@ def to_antimony(
     *,
     targets: frozenset[str] = frozenset(),
     network: dict | None = None,
+    reduce: bool = True,
 ) -> tuple[str, list[M.Emission]]:
     """The model ``rows`` build, as Antimony the ``antimony`` route accepts unchanged.
 
@@ -111,8 +112,9 @@ def to_antimony(
     not expect: kinds the rules make from nothing, which start empty, and a start location chosen
     among several.
 
-    The rules are reduced before they are expanded (:mod:`reduction`), and ``network``, when
-    given, receives the species and reactions with and without the reduction.
+    The rules are reduced before they are expanded (:mod:`reduction`), unless ``reduce`` is off
+    (the expansion :mod:`reduction_check` compares with), and ``network``, when given, receives the
+    species and reactions with and without the reduction.
     """
     starts = starts or []
     entities = {**{item.id: Agent(item.id) for item in inputs}, **entities}
@@ -157,7 +159,7 @@ def to_antimony(
         model,
         [m for m in model.monomers if (m.name not in made or m.name in held) and m.name not in declared],
     )
-    reduced = reduction.reduce(model)
+    reduced = reduction.reduce(model) if reduce else reduction.Reduction()
     _expand(model)
     present = reduction.reached(model, reduced)
     reached = {mp.monomer.name for i in present for mp in model.species[i].monomer_patterns}

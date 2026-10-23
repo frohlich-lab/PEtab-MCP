@@ -704,6 +704,7 @@ def statements_to_antimony(
     starts: list[dict[str, Any]] | None = None,
     readouts: dict[str, str] | None = None,
     amounts: dict[str, dict[str, Any]] | None = None,
+    reduce: bool = True,
 ) -> tuple[str, dict[str, Any], list[dict[str, str]], dict[tuple[str, str], dict]]:
     """The ``statements`` route: build the model the rows assert, as Antimony for :func:`set_model`.
 
@@ -715,7 +716,8 @@ def statements_to_antimony(
     ``rows``, each with the :class:`mechanisms.Emission` it produced and with its definition when
     the agent wrote its mechanism, ``mechanisms``, the ``written`` ones whether a row uses them or
     not, ``starts``, and the ``network`` the rows expand to before and after the reduction
-    (:mod:`reduction`); one warning naming the ungrounded agents, since grounding is
+    (:mod:`reduction`; ``reduce`` off builds them unreduced); one warning naming the ungrounded
+    agents, since grounding is
     optional and its absence is reported, never refused; and the run's written mechanisms, for
     the caller to keep once the change applies.
     """
@@ -836,6 +838,7 @@ def statements_to_antimony(
         notes=notes,
         targets=frozenset(R.condition_target_symbols(session.problem)),
         network=network,
+        reduce=reduce,
     )
     record = {
         "rows": [

@@ -53,6 +53,7 @@ from . import model_edits as model_edits_mod
 from . import operations as ops_mod
 from . import parameters as param_mod
 from . import reconcile as reconcile_mod
+from . import reduction_check as reduction_check_mod
 from . import regimes as regimes_mod
 from . import skills as skills_mod
 from . import validation_data as validation_data_mod
@@ -2122,6 +2123,32 @@ def _register_validation_data_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> 
         )
 
 
+def _register_reduction_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
+    """Register ``verify_reduction``, offered with the statements route: like
+    ``evaluate_validation_data``, a read for whoever runs the session once the agent has finished,
+    never the agent's. A client leaves it out of the agent's tool set, and its failures stay out of
+    ``errors.jsonl``, which ``get_errors`` hands the agent."""
+
+    @mcp.tool(annotations=_READ_ONLY)
+    def verify_reduction() -> dict[str, Any]:
+        """Check the CURRENT model, built from statements, against the model its rows build with
+        no reduction: both at its fitted values, every measured point and the nll compared.
+
+        For whoever runs the session, on the model it delivers, not for the agent. It builds the
+        unreduced model, which can mean a long compile, so call it once. Returns `{status, nll:
+        {reduced, unreduced}, nll_difference, max_relative_difference, worst, network, ...}`, and
+        writes the same beside the HEAD version (`file`). `status` is `ok`, `reduction_mismatch`
+        (the unreduced nll is the model's own), `not_reduced`, `not_statements` or `non_finite`;
+        see :mod:`petab_mcp.reduction_check`.
+        """
+        ctx = route()
+        return ctx.run(
+            "verify_reduction",
+            lambda: reduction_check_mod.verify(ctx.session, ctx.engine),
+            record=False,
+        )
+
+
 # ------------------------------------------------------ provenance/version tools
 def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
     @mcp.tool(annotations=_READ_ONLY)
@@ -2460,6 +2487,8 @@ def create_server(
     _register_fit_tools(mcp, route)
     if ctx.held_out is not None:
         _register_validation_data_tools(mcp, route)
+    if entity_map is not None:
+        _register_reduction_tools(mcp, route)
     _register_provenance_tools(mcp, route)
     _register_resources(mcp, route)
     # Register the skills loaded above as `list_skills`/`get_skill` tools plus

@@ -287,16 +287,16 @@ def test_every_one_step_shape_reduces_exactly(monkeypatch, rows, entities):
     assert network["after_reduction"]["reactions"] <= network["before_reduction"]["reactions"]
 
 
-def test_a_written_rate_keeps_its_modifiers_and_its_catalyst(monkeypatch):
-    """A rate the agent wrote, reading a modifier, is multiplied by the catalyst's amount."""
+def test_a_written_rate_keeps_its_regulator_and_its_catalyst(monkeypatch):
+    """A rate the agent wrote, reading a regulator the statement states, is multiplied by the
+    catalyst's amount."""
     library = dict(M.REGISTRY)
     library[("Phosphorylation", "inhibited")] = M.written(
         {
             "statement_type": "Phosphorylation",
             "policy": "inhibited",
-            "rate": "kc / (1 + inh / Ki)",
+            "rate": "kc / (1 + inhibited_by / Ki)",
             "parameters": ["kc", "Ki"],
-            "modifiers": ["inh"],
         },
         library,
     )
@@ -306,7 +306,7 @@ def test_a_written_rate_keeps_its_modifiers_and_its_catalyst(monkeypatch):
             "inhibited",
             "s2",
             None,
-            {"inh": Agent("I")},
+            {"inhibited_by": [Agent("I")]},
         ),
         (Phosphorylation(Agent("K"), Agent("E"), "Y", "1"), INDRA_DEFAULT, "y1"),
         (Phosphorylation(Agent("K"), Agent("E"), "S", "3"), INDRA_DEFAULT, "s3"),

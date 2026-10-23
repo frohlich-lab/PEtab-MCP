@@ -11,7 +11,8 @@ Under ``<store_root>/`` (default ``<problem_dir>/.petab_mcp``):
   (the pyPESTO per-start + per-iteration trace records), and ``pypesto_result.hdf5`` (the
   pyPESTO result file, copied in from the per-model cache) — so rolling back restores a
   version's fit artifacts, not just its model. A version scored on held-out data also carries
-  :data:`VALIDATION_SIMULATIONS`, which no agent-facing read opens.
+  :data:`VALIDATION_SIMULATIONS`, and one whose reduction was checked :data:`REDUCTION_CHECK`;
+  no agent-facing read opens either.
 * ``cache/`` — pyPESTO result files keyed by problem hash (written on each fit, copied into
   version dirs when snapshotted).
 * ``HEAD`` — the current version number.
@@ -41,6 +42,8 @@ STORE_FORMAT = "petab-v2"
 #: (:func:`petab_mcp.validation_data.score_session`); a harness that archives a version's files
 #: names it too.
 VALIDATION_SIMULATIONS = "validation_simulations.json"
+#: A statements version's check against its unreduced expansion (:mod:`reduction_check`).
+REDUCTION_CHECK = "reduction_check.json"
 
 
 def _now() -> str:
@@ -258,6 +261,13 @@ class ProvenanceStore:
         """Write version ``n``'s held-out ``payload`` (:data:`VALIDATION_SIMULATIONS`), replacing
         an earlier score of it; returns the file."""
         path = self._version_dir(n) / VALIDATION_SIMULATIONS
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        return path
+
+    def write_reduction_check(self, n: int, payload: dict[str, Any]) -> Path:
+        """Write version ``n``'s :data:`REDUCTION_CHECK`, replacing an earlier one; returns the
+        file."""
+        path = self._version_dir(n) / REDUCTION_CHECK
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         return path
 
