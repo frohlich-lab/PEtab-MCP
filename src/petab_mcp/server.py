@@ -249,7 +249,8 @@ class MechanismDef(BaseModel):
         "this way, with the `parameters` it declares: start from one. A rate is an expression "
         "over your `parameters`, `amount(<pattern>)`, `amount(inhibited_by)` (a regulator the "
         "statement states, checked on the scheme's net rate: its intermediates at steady state, "
-        "its products absent), `time` and exp/log/sqrt. A molecule is a role or, by its name, a "
+        "its products absent; one acting only on a step that rate cannot see, a product's "
+        "degradation, goes on that step's own row), `time` and exp/log/sqrt. A molecule is a role or, by its name, a "
         "partner the statement writes a role bound or not bound to (`C` of `E{~C}`): a mechanism "
         "reads no agent its statement does not name. Give `scheme` or `rate`, not both.",
     )

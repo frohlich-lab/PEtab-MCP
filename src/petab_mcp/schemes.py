@@ -548,6 +548,7 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
         # One step: J is its forward rate times its reactants, its way back silent with its
         # product absent. Built for no placeholder, whose agents lack the states other rows give.
         forward = assumed(_sympy(rates[0][0]))
+        _refuse_unseen(policy, lines, rates, forward, read)
         policy_fn.derived = record_regulators(policy, lines[0].rates[0], forward, read)
         return policy_fn
     key = (stmt_type, definition["scheme"], tuple(sorted(declared)))
@@ -561,8 +562,59 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
         policy_fn.derived = {n: "modulated_by" for n in read if not n.startswith("modulated")}
         return policy_fn
     j = _NET_RATES[key]
+    _refuse_unseen(policy, lines, rates, j, read)
     policy_fn.derived = record_regulators(policy, f"net rate J = {_short(j)}", j, read)
     return policy_fn
+
+
+def _refuse_unseen(policy: str, lines: list[Line], rates, value: sympy.Expr, names) -> None:
+    """Refuse a regulator of ``names`` that ``value``, the statement's own reaction rate (a
+    one-step scheme's forward rate, or its net rate), does not change with, naming the steps that
+    do read it and the row a step of one is: a statement's regulator is about its own reaction."""
+    from .mechanisms import _direction, assumed
+
+    for name in names:
+        symbol = sympy.Symbol(name, nonnegative=True)
+        if _direction(value, symbol) != 0:
+            continue
+        steps = [
+            (line.rhs, line.lhs, rate) if j else (line.lhs, line.rhs, rate)
+            for line, line_rates in zip(lines, rates) for j, rate in enumerate(line_rates)
+            if symbol in assumed(_sympy(rate)).free_symbols
+        ]
+        shown = " and ".join(f"`{_side_text(a)} >> {_side_text(b)}`" for a, b, _ in steps)
+        row = "a row for each"
+        if len(steps) == 1:
+            row = "one stating that step, `..., {kind} <agent>`"
+            before, after, rate = steps[0]
+            kind = {1: "activated by", -1: "inhibited by"}.get(
+                _direction(assumed(_sympy(rate)), symbol), "modulated by"
+            )
+            first, *bound = [m.name for m in before[0]] if len(before) == 1 else [None]
+            apart = sorted(m.name for c in after for m in c)
+            if first and not after:
+                shown += f", `{first}`'s degradation"
+                row = f"`{first}{_bound_text(bound)} is degraded, {kind} <agent>`, a DecreaseAmount"
+            elif bound and all(len(c) == 1 for c in after) and apart == sorted([first, *bound]):
+                shown += ", the dissociation"
+                row = (f"`{first}{_bound_text(bound)} -> {' + '.join([first, *bound])}, {kind} "
+                       "<agent>`, a Conversion")
+            else:
+                row = row.format(kind=kind)
+        raise MechanismError(
+            f"{policy!r} reads `{name}` only in {shown}, and its statement's own reaction rate, its "
+            "products absent, does not change with it: a statement's regulator is about its own "
+            f"reaction. State the agent on that step's row instead, {row} (its roles standing for "
+            "this statement's agents), and leave it out of this statement"
+        )
+
+
+def _side_text(side) -> str:
+    return " + ".join(" % ".join(m.name for m in complex_) for complex_ in side) or "None"
+
+
+def _bound_text(partners: list[str]) -> str:
+    return "{" + ", ".join(f"!{p}" for p in partners) + "}" if partners else ""
 
 
 def _sites_text(molecule: str, sites, site_states) -> str:

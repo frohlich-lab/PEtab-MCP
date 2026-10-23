@@ -176,7 +176,10 @@ Principles to hold onto when extending this package.
   reaction's rate never rises with it, activated where it never falls, modulated where neither
   can be shown. A written rate is read as it is, a scheme of several steps by its net rate, its
   intermediates steady and its products absent, since where a step sits decides which way its own
-  rate moves the reaction. A claim the maths does not bear out is recorded as what it does show,
+  rate moves the reaction. A regulator that rate does not change with, acting only on a step it
+  cannot see (a product's degradation, a complex coming apart), is refused, pointing to that step's
+  own row: a regulator is a claim about its statement's own reaction, so each claim keeps one
+  meaning and a causal graph never puts it on another reaction. A claim the maths does not bear out is recorded as what it does show,
   beside what was stated, never refused: the edit reports it and asks the agent to reconsider,
   and `get_model` and the English mark it ("activated by sorafenib (from its rate)")
   ([`statements`](src/petab_mcp/statements.py),

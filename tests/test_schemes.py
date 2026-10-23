@@ -365,12 +365,39 @@ def test_a_binding_written_as_two_lines_has_a_net_rate():
     }
 
 
+#: What a binding's regulator of its way back alone (sweep-55max a1, a2) is refused with.
+_DISSOCIATION = (
+    r"reads `inhibited_by` only in `members_0 % members_1 >> members_0 \+ members_1`, the "
+    r"dissociation, and its statement's own reaction rate, its products absent, does not change "
+    r"with it: a statement's regulator is about its own reaction\. State the agent on that step's "
+    r"row instead, `members_0\{!members_1\} -> members_0 \+ members_1, activated by <agent>`, a "
+    r"Conversion"
+)
+
+
 def test_a_regulator_of_the_way_back_alone_does_not_move_the_initial_rate():
     """With its complex absent a binding does not come apart, so what speeds only its way back
-    (a2) leaves J as it is. Whether such a regulator, a repressor of mRNA stability among them,
-    should be signed on the steady state instead is the user's call (PEtab-MCP#127)."""
-    with pytest.raises(MechanismError, match=r"does not change with it"):
+    (a2) leaves J as it is: the agent regulates the dissociation, a statement of its own."""
+    with pytest.raises(MechanismError, match=_DISSOCIATION):
         _binding("kf", "kr*(1 + amount(inhibited_by)/K)", ["kf", "kr", "K"])
+
+
+@pytest.mark.parametrize("name", ["inhibited_by", "modulated_by"])
+def test_a_regulator_of_what_the_reaction_makes_is_refused_naming_its_degradation(name):
+    """sweep-55max c1: a repressor that speeds mRNA decay does not change the rate of synthesis.
+    Signed on obj's steady state it would read as an inhibitor of `subj increases obj`, and
+    `as_indra` would put it on synthesis; it is the degradation's, a DecreaseAmount row."""
+    with pytest.raises(MechanismError, match=(
+        rf"reads `{name}` only in `obj >> None`, `obj`'s degradation, and its statement's own "
+        r"reaction rate, its products absent, does not change with it: .* State the agent on that "
+        r"step's row instead, `obj is degraded, activated by <agent>`, a DecreaseAmount"
+    )):
+        M.written(
+            {"statement_type": "IncreaseAmount", "policy": "expressed", "parameters": ["ks", "kd", "K"],
+             "scheme": "subj() >> subj() + obj() @ ks\n"
+                       f"obj() >> None @ kd*(1 + amount({name})/K) delete_molecules"},
+            dict(M.REGISTRY),
+        )
 
 
 @pytest.mark.parametrize(
@@ -462,7 +489,7 @@ def test_a_reversible_step_is_checked_on_its_forward_rate():
         )
 
     binding("kf" + _SLOWED, "kr" + _SLOWED)
-    with pytest.raises(MechanismError, match=r"does not change with it"):
+    with pytest.raises(MechanismError, match=_DISSOCIATION):  # sweep-55max a1
         binding("kf", "kr" + _SPED)
 
 

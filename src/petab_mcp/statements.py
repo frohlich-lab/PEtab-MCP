@@ -40,7 +40,9 @@ rises, activated where it never falls, modulated where neither can be shown. Whe
 from the statement, it is kept beside it (:attr:`mechanisms.Emission.derived`), reported to the
 agent, and shown as the rate's. A scheme of several steps is read by its net rate
 (:func:`schemes.net_rate`), the reaction's initial rate, since where a step sits decides which way
-its own rate moves the reaction. INDRA's
+its own rate moves the reaction. A regulator that rate does not change with acts on a step it
+cannot see, a product's degradation, and is that step's, stated on its own row: each claim keeps
+one meaning, and :func:`as_indra` never puts a regulator on another reaction. INDRA's
 reader and assemblers skip the fields, so :func:`english` writes them, :func:`indra_part` is
 what INDRA reads, and :func:`as_indra` projects each signed regulator onto a statement INDRA can
 read, for a causal graph built from INDRA statements.
