@@ -289,11 +289,24 @@ def _by_parts(e: sympy.Expr, x: sympy.Symbol) -> int | None:
     return None
 
 
+def _vanishes(d: sympy.Expr) -> bool:
+    """Whether ``d`` is 0 for every value of its names. Not where it is not 0 at one point of
+    positive values, a cheap test that settles nearly every case; cancelled to lowest terms (a
+    multivariate gcd, seconds on a rate's derivative) only where it is."""
+    if d == 0:
+        return True
+    point = {s: 0.7 + 0.31 * i for i, s in enumerate(sorted(d.free_symbols, key=str))}
+    value = complex(d.evalf(subs=point))
+    if value == value and abs(value) > 1e-9:  # a number, not nan, and not 0
+        return False
+    return sympy.cancel(d) == 0
+
+
 def _by_derivative(e: sympy.Expr, x: sympy.Symbol) -> int | None:
     """The sign of ``e``'s derivative in ``x``, its numerator and denominator signed as they stand
     and factored; ``0`` where it cancels; ``None`` where neither shows it."""
     d = sympy.diff(e, x)
-    if d == 0 or sympy.cancel(d) == 0:
+    if _vanishes(d):
         return 0
     numerator, denominator = sympy.fraction(sympy.together(d))
     for n, den in ((numerator, denominator), (sympy.factor(numerator), sympy.factor(denominator))):
@@ -334,8 +347,13 @@ def check_regulators(policy: str, rate: str, expr: sympy.Expr, names=None) -> No
         raise MechanismError(
             f"rate {rate!r} of {policy!r} reads `{symbol}`, which a statement states {claim} its "
             f"reaction, so the rate must {way} as `{symbol}` rises; {found}. "
-            f"d/d{symbol} = {sympy.simplify(sympy.diff(expr, symbol))}"
+            f"d/d{symbol} = {_shown(sympy.diff(expr, symbol))}"
         )
+
+
+def _shown(d: sympy.Expr) -> str:
+    """``d`` as a refusal shows it: simplified while small, cut short while large."""
+    return str(sympy.simplify(d) if sympy.count_ops(d) <= 40 else d)[:240]
 
 
 def bind(

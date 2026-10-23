@@ -834,7 +834,7 @@ def net_rate(stmt_type: str, policy: str, library) -> sympy.Expr:
     from pysb.bng import generate_equations
     from pysb.pattern import match_complex_pattern
 
-    from .mechanisms import agent_pattern
+    from .mechanisms import _vanishes, agent_pattern
     from .problem_sbml import MAX_COMPLEX
     from .statements import _products, _reactants
 
@@ -943,7 +943,7 @@ def net_rate(stmt_type: str, policy: str, library) -> sympy.Expr:
         i: change[i].xreplace(steady)
         for i in range(len(model.species)) if i not in intermediates and i not in regulators
     }
-    moving = {i for i, rate in net.items() if _settled(rate) != 0}
+    moving = {i for i, rate in net.items() if not _vanishes(rate)}
     made_now = [i for i in sorted(products) if i in moving]
     removed = [i for i, e in sorted(effects.items()) if e < 0 and i in moving]
     if not made_now and not removed:
@@ -951,7 +951,7 @@ def net_rate(stmt_type: str, policy: str, library) -> sympy.Expr:
     reference = made_now[0] if made_now else removed[0]
     j = net[reference] if made_now else -net[reference]
     for i, rate in net.items():
-        if i in moving and _settled(rate / j).free_symbols:
+        if i in moving and not _constant(rate / j):
             raise MechanismError(
                 f"it changes {model.species[reference]} and {model.species[i]} at rates no "
                 "constant ratio relates: two reactions, with no one net rate"
@@ -964,11 +964,16 @@ def net_rate(stmt_type: str, policy: str, library) -> sympy.Expr:
 NET_OPS = 2000
 
 
-def _settled(expr: sympy.Expr) -> sympy.Expr:
-    """``expr`` cancelled to lowest terms within :data:`mechanisms.SIGN_OPS`, as it stands past it."""
-    from .mechanisms import SIGN_OPS
-
-    return sympy.cancel(expr) if sympy.count_ops(expr) <= SIGN_OPS else expr
+def _constant(ratio: sympy.Expr) -> bool:
+    """Whether ``ratio`` takes one value for every value of its names, by its value at three
+    points of positive ones: cancelling it to lowest terms took seconds on a large rate. Only
+    whether a scheme is one reaction rests on it, never a sign."""
+    if not ratio.free_symbols:
+        return True
+    names = sorted(ratio.free_symbols, key=str)
+    at = [complex(ratio.evalf(subs={s: base + 0.29 * i for i, s in enumerate(names)}))
+          for base in (0.7, 1.9, 4.3)]
+    return all(v == v for v in at) and max(abs(v - at[0]) for v in at) <= 1e-9 * (1 + abs(at[0]))
 
 
 def _in_full(cp: pysb.ComplexPattern) -> pysb.ComplexPattern:
