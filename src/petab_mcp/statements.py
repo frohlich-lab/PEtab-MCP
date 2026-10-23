@@ -35,12 +35,12 @@ reaction at the population level: sorafenib slows it, whatever binds what. INDRA
 part of that. A bound condition (``RAF{~sorafenib}``) claims a complex the rule never forms, and
 an ``Inhibition(sorafenib, RAF)`` claims every reaction RAF catalyses, since an INDRA statement
 names agents and never another statement. The mechanism's rate reads each regulator
-(:mod:`mechanisms`), and its sign is checked against the claim: a rate an inhibitor does not
-slow, or an activator does not speed, is refused, and ``modulated_by`` claims no sign: it is always
-accepted, and takes the sign its rate proves, kept beside what the statement states
-(:attr:`mechanisms.Emission.derived`) and shown as derived. A scheme of
-several steps is checked on its net rate (:func:`schemes.net_rate`), the reaction's initial rate,
-since where a step sits decides which way its own rate moves the reaction. INDRA's
+(:mod:`mechanisms`), and each is recorded as the kind its rate shows: inhibited where it never
+rises, activated where it never falls, modulated where neither can be shown. Where that differs
+from the statement, it is kept beside it (:attr:`mechanisms.Emission.derived`), reported to the
+agent, and shown as the rate's. A scheme of several steps is read by its net rate
+(:func:`schemes.net_rate`), the reaction's initial rate, since where a step sits decides which way
+its own rate moves the reaction. INDRA's
 reader and assemblers skip the fields, so :func:`english` writes them, :func:`indra_part` is
 what INDRA reads, and :func:`as_indra` projects each signed regulator onto a statement INDRA can
 read, for a causal graph built from INDRA statements.
@@ -265,21 +265,21 @@ def regulators(statement: dict) -> dict[str, list[Agent]]:
 
 
 def signed(statement: dict, derived: dict[str, str] | None = None) -> list[tuple[str, Agent, bool]]:
-    """Each regulator ``statement`` states, with the kind it carries and whether its rate gave it:
-    as stated, or for one stated ``modulated_by`` the kind its rate proves, from ``derived``
-    (``modulated_by_<i>`` -> kind, a row's :attr:`mechanisms.Emission.derived`)."""
+    """Each regulator ``statement`` states, with the kind it is recorded as and whether its rate
+    gave that kind: as stated, or the kind its rate shows instead, from ``derived`` (kind stated and
+    position -> kind recorded, a row's :attr:`mechanisms.Emission.derived`)."""
     out = []
     for kind, agents in regulators(statement).items():
         for i, agent in enumerate(agents):
-            proved = (derived or {}).get(f"{kind}_{i}") if kind == "modulated_by" else None
-            out.append((proved or kind, agent, proved is not None))
+            shown = (derived or {}).get(f"{kind}_{i}")
+            out.append((shown or kind, agent, shown is not None))
     return out
 
 
 def english(statement: dict, derived: dict[str, str] | None = None) -> str:
     """``statement`` (INDRA's JSON) in English: INDRA's own sentence and the regulators it states,
     which INDRA's assembler does not read. "RAF phosphorylates MEK, inhibited by sorafenib." A
-    regulator stated ``modulated_by`` takes the kind its rate proves (``derived``, :func:`signed`),
+    regulator its rate records as another kind (``derived``, :func:`signed`) reads as that kind,
     marked so: "inhibited by sorafenib (from its rate)"."""
     from indra.assemblers.english import EnglishAssembler
     from indra.assemblers.english.assembler import _assemble_agent_str
@@ -313,7 +313,9 @@ def as_indra(statement: dict, derived: dict[str, str] | None = None) -> list[Sta
     makes, signed by the claim and by what the reaction does to it: "SKI is produced, inhibited by
     X" gives ``DecreaseAmount(X, SKI)``, "SKI is degraded, inhibited by X" ``IncreaseAmount(X,
     SKI)``. ``modulated_by`` claims no direction, and INDRA has no unsigned statement over agents,
-    so it is not projected, unless its rate proves its direction (``derived``, :func:`signed`).
+    so it is not projected. Each regulator projects as the kind its rate records (``derived``,
+    :func:`signed`), so a claim the rate reverses projects reversed and one it cannot sign not at
+    all.
     Each projection carries the statement's evidence, annotated with the claim it comes from
     (:func:`english`) under ``regulates``, and one whose kind its rate gave with ``from_rate``."""
     (stmt,) = stmts_from_json([with_defaults(indra_part(statement))])

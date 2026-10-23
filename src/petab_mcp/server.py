@@ -190,7 +190,7 @@ class StatementRow(BaseModel):
         "{type: 'Phosphorylation', enz: {name: 'A'}, sub: {name: 'B'}, residue: 'S', "
         "position: '10'}; and the agents that regulate its rate without taking part, each a list: "
         "`inhibited_by`, `activated_by`, `modulated_by` ('..., inhibited by C' in the notation). "
-        "`modulated_by` is always accepted, and takes the direction its rate proves, if any."
+        "Each is recorded as the kind its rate shows, which the result reports where it differs."
     )
     policy: str = Field(description="the mechanism expressing it, e.g. 'indra_default'.")
     prefix: str = Field(
@@ -262,9 +262,9 @@ class MechanismDef(BaseModel):
         "exp/log/sqrt and `piecewise(value, condition, ..., otherwise)` (`piecewise(k_0, time < "
         "t_1, k_1)`). It is multiplied by every reactant's amount, catalysts included, so a rate "
         "that stays non-negative cannot drive an amount negative; a constant `k` alone is mass "
-        "action. It must fall with each inhibitor and rise with each activator for every value of "
-        "its names, as sympy shows; a regulator it cannot show that for is `modulated_by`, which "
-        "the rate signs where it can."
+        "action. Each regulator is recorded as the kind the rate shows for every value of its names "
+        "(sympy): inhibited where it never rises, activated where it never falls, else modulated; "
+        "one the rate does not change with is refused."
     )
     parameters: list[str] = Field(
         default_factory=list,
@@ -1067,10 +1067,10 @@ def _make_changes_statements_doc(
         "its row's statement names, so an agent that changes a reaction's rate without taking "
         "part is stated as its regulator: `r1: E phosphorylates S at T20, inhibited by C | "
         "inhibited Ki=K_C` claims C slows that reaction, and its mechanism's rate reads C as "
-        "`inhibited_by` (`activated_by` speeds it; `modulated_by` claims no direction and takes "
-        "the one the rate proves, marked `(inhibits, from its rate)` in `get_model`). The rate "
-        "must fall with each inhibitor and rise with each activator, and read every regulator its "
-        "statement states. A row's `parameters` shares a rate constant with other "
+        "`inhibited_by` (`activated_by` speeds it, `modulated_by` claims no direction). Each is "
+        "recorded as the kind its rate shows: where that differs from the statement, the result "
+        "says so and `get_model` marks it `(inhibits, from its rate)`. The rate must read every "
+        "regulator its statement states. A row's `parameters` shares a rate constant with other "
         "rows, or with a parameter the problem ships, or fixes it to a number. "
         + (
             "The species the observables read are bound by the problem's entity map: name agents "

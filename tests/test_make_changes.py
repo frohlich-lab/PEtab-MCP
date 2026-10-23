@@ -1944,9 +1944,9 @@ def test_a_binding_may_scale_the_parameter_it_replaces(tmp_path):
     assert {"conv_k", "slow"} <= rows
 
 
-def test_a_scheme_against_its_regulator_is_refused_where_it_is_written(tmp_path):
-    """A scheme whose rate rises with what its statement says inhibits it is refused at the call
-    that writes it, not at each row that uses it."""
+def test_a_claim_its_scheme_reverses_is_recorded_and_reported(tmp_path):
+    """A scheme whose rate rises with what its statement says inhibits it is recorded as an
+    activator, not refused, and the result says so and asks the agent to reconsider."""
     out = _call(
         _statements_server(tmp_path),
         "make_changes",
@@ -1958,8 +1958,13 @@ def test_a_scheme_against_its_regulator_is_refused_where_it_is_written(tmp_path)
                             "parameters": ["k"]}],
         },
     )
-    assert out["applied"] is False and out["error_cause"] == "malformed_mechanism"
-    assert "must fall as `inhibited_by` rises; it rises instead: state it `activated_by`" in out["error"]
+    assert out["applied"] is True, out.get("error")
+    assert any(
+        "`statements[0]`: you stated `inhibited by C`, but its rate never falls as C rises, so it "
+        "reads as `activated by C`. Check that each mechanism does what you meant; if not, "
+        "rewrite its rate." in m["message"]
+        for m in out["messages"]
+    )
 
 
 def test_a_regulator_enters_through_the_statement(tmp_path):
@@ -2020,8 +2025,8 @@ def test_a_modulator_takes_the_direction_its_rate_proves(tmp_path):
 
 
 def test_the_result_names_the_rows_whose_rate_signs_a_modulator(tmp_path):
-    """The agent sees the upgrade where it sees what the edit did: one warning per edit, naming
-    every row whose rate signs a regulator it stated `modulated by`."""
+    """The agent sees each change where it sees what the edit did: one warning per edit, naming
+    every row whose rate records a regulator otherwise than stated, and asking it to reconsider."""
     out = _call(
         _statements_server(tmp_path),
         "make_changes",
@@ -2035,10 +2040,11 @@ def test_the_result_names_the_rows_whose_rate_signs_a_modulator(tmp_path):
     assert out["applied"] is True, out.get("error")
     signed = [m["message"] for m in out["messages"] if "from its rate" in m["message"]]
     assert len(signed) == 1, signed
-    assert (
-        "`statements[0, 1]`: `modulated by C` reads as `inhibited by C` from its rate (it never "
-        "rises as C rises, for every value of its names)"
-    ) in signed[0]
+    assert signed[0].startswith(
+        "`statements[0, 1]`: you stated `modulated by C`, and its rate never rises as C rises, so "
+        "it reads as `inhibited by C`. Check that each mechanism does what you meant; if not, "
+        "rewrite its rate."
+    )
 
 
 def test_an_unknown_activity_names_the_modification_tags():

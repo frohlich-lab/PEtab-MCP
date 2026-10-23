@@ -154,3 +154,14 @@ def test_a_derived_kind_is_marked_and_reads_back_as_stated():
     text = N.render(row, M.REGISTRY, {"modulated_by_1": "activated_by"})
     assert text == "r: A becomes B, modulated by C and D (activates, from its rate) | p"
     assert N.parse(text) == row
+
+
+def test_a_reversed_or_downgraded_kind_is_marked_and_reads_back_as_stated():
+    row = N.parse("r: A becomes B, inhibited by C and D | p")
+    text = N.render(row, M.REGISTRY, {"inhibited_by_0": "activated_by",
+                                      "inhibited_by_1": "modulated_by"})
+    assert text == (
+        "r: A becomes B, inhibited by C (activates, from its rate) and D (modulates, from its "
+        "rate) | p"
+    )
+    assert N.parse(text) == row

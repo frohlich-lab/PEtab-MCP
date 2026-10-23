@@ -171,14 +171,16 @@ Principles to hold onto when extending this package.
   the claim and its mechanism the maths behind it, so a rate (a written `rate`, a `scheme`) reads
   only the agents the statement names: its roles, the partners they are written bound or not
   bound to, and the agents it states regulate its rate without taking part, `inhibited_by`,
-  `activated_by` or `modulated_by` ("RAF phosphorylates MEK, inhibited by sorafenib"). The
-  reaction's rate must fall with each inhibitor and rise with each activator for every value of
-  its names, as sympy shows: a written rate as it is, a scheme of several steps by its net rate,
-  its intermediates steady and its products absent, since where a step sits decides which way its
-  own rate moves the reaction. A regulator that cannot be shown so is `modulated_by`, which claims
-  no direction and is always accepted; where the rate proves one, it is recorded beside the
-  statement as derived ("inhibited by sorafenib (from its rate)") ([`statements`](src/petab_mcp/statements.py),
-  [`mechanisms.check_regulators`](src/petab_mcp/mechanisms.py),
+  `activated_by` or `modulated_by` ("RAF phosphorylates MEK, inhibited by sorafenib"). Each is
+  recorded as the kind its maths shows for every value of its names (sympy): inhibited where the
+  reaction's rate never rises with it, activated where it never falls, modulated where neither
+  can be shown. A written rate is read as it is, a scheme of several steps by its net rate, its
+  intermediates steady and its products absent, since where a step sits decides which way its own
+  rate moves the reaction. A claim the maths does not bear out is recorded as what it does show,
+  beside what was stated, never refused: the edit reports it and asks the agent to reconsider,
+  and `get_model` and the English mark it ("activated by sorafenib (from its rate)")
+  ([`statements`](src/petab_mcp/statements.py),
+  [`mechanisms.record_regulators`](src/petab_mcp/mechanisms.py),
   [`schemes.net_rate`](src/petab_mcp/schemes.py)). INDRA has no statement about a
   reaction, so a causal graph gets the nearest one it has, wider than the claim
   (`statements.as_indra`: "inhibited by sorafenib" on RAF's step is `Inhibition(sorafenib, RAF)`).

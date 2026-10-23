@@ -100,9 +100,10 @@ class Emission:
     #: The sites the row's scheme (:mod:`schemes`) gave molecules that had none such, and no
     #: earlier row's scheme had: molecule -> site -> its states (none for a binding site).
     sites_added: dict[str, dict[str, list[str]]] = field(default_factory=dict)
-    #: The regulators the row's statement states ``modulated_by`` whose direction its rate
-    #: proves (:func:`derive`), by position: ``modulated_by_<i>`` -> ``inhibited_by`` or
-    #: ``activated_by``. The statement keeps what it stated; this is what its maths adds.
+    #: The regulators the row's statement states whose kind its rate records otherwise
+    #: (:func:`record_regulators`), by the kind stated and position: ``modulated_by_0`` ->
+    #: ``inhibited_by``, ``inhibited_by_1`` -> ``modulated_by``. The statement keeps what it
+    #: stated; this is what its maths shows instead.
     derived: dict[str, str] = field(default_factory=dict)
 
 
@@ -256,54 +257,34 @@ def _direction(expr: sympy.Expr, symbol: sympy.Symbol) -> int | None:
     return None
 
 
-def derive(expr: sympy.Expr, names) -> dict[str, str]:
-    """The kind each ``modulated_by`` name of ``names`` takes from ``expr`` (its names signed by
-    :func:`assumed`) where the direction is provable: ``inhibited_by`` where it never rises with
-    it, ``activated_by`` where it never falls; one whose direction depends on the values, or that
-    ``expr`` does not change with, stays ``modulated_by`` and is left out."""
-    kinds = {-1: "inhibited_by", 1: "activated_by"}
-    return {
-        name: kinds[direction]
-        for name in sorted(names) if name.startswith("modulated")
-        if (direction := _direction(expr, sympy.Symbol(name, nonnegative=True))) in kinds
-    }
+#: The kind a regulator is recorded as, by the way its rate moves with it (:func:`_direction`).
+_RECORDED = {-1: "inhibited_by", 1: "activated_by", None: "modulated_by"}
 
 
-def check_regulators(policy: str, rate: str, expr: sympy.Expr, names=None) -> None:
-    """Refuse ``rate`` of ``policy`` (``expr``, its names signed by :func:`assumed`) when it does
-    not fall with each inhibitor it reads and rise with each activator, for every value of every
-    name: the direction a statement stating the regulator claims. ``modulated_by`` claims none.
-    A written rate is checked as it is, the one step of its mechanism; a scheme on its net rate
-    (:func:`schemes.net_rate`), since in several steps a step's own rate can move the reaction
-    either way. ``names`` are the regulators to check, by default those ``expr`` reads; one it
-    does not read is refused, as a claim the rate does not carry."""
-    names = sorted(names or (s.name for s in expr.free_symbols), key=str)
-    for symbol in (sympy.Symbol(n, nonnegative=True) for n in names):
-        if not REGULATOR_NAME.fullmatch(str(symbol)) or str(symbol).startswith("modulated"):
-            continue
-        kind = str(symbol).split("_by")[0]
-        inhibitor = kind == "inhibited"
-        direction = _direction(expr, symbol)
-        if direction == (-1 if inhibitor else 1):
-            continue
-        claim, way = ("inhibits", "fall") if inhibitor else ("activates", "rise")
-        other = str(symbol).replace(kind, "activated" if inhibitor else "inhibited", 1)
-        unsigned = str(symbol).replace(kind, "modulated", 1)
+def record_regulators(policy: str, rate: str, expr: sympy.Expr, names) -> dict[str, str]:
+    """The kind each regulator of ``names`` that ``rate`` of ``policy`` reads is recorded as, where
+    it differs from the kind its name states: the way ``expr`` (its names signed by
+    :func:`assumed`) moves with it for every value of every name. ``inhibited_by`` where it never
+    rises, ``activated_by`` where it never falls, ``modulated_by`` where neither can be shown (it
+    depends on the values, or a piecewise switches on it). A claim the rate does not bear out is
+    recorded as what it does show, downgraded or reversed, and an unsigned one is signed; the edit
+    reports each to the agent (:func:`operations.statements_to_antimony`). A written rate is read
+    as it is, the one step of its mechanism; a scheme by its net rate (:func:`schemes.net_rate`).
+
+    Refused: a regulator the rate reads but does not change with, which a statement would claim
+    the rate does what it does not."""
+    recorded = {}
+    for name in sorted(n for n in names if REGULATOR_NAME.fullmatch(n)):
+        direction = _direction(expr, sympy.Symbol(name, nonnegative=True))
         if direction == 0:
-            found = "it does not change with it, a claim the rate does not carry"
-        elif direction is not None:
-            found = f"it {'rises' if inhibitor else 'falls'} instead: state it `{other}`"
-        else:
-            found = (
-                "that cannot be shown for every value of the rate's names (nor across a piecewise "
-                f"switching on it): state it `{unsigned}`, which claims no direction and is "
-                "always accepted"
+            raise MechanismError(
+                f"rate {rate!r} of {policy!r} reads `{name}` but does not change with it, so a "
+                "statement stating that regulator would claim what the rate does not do: read it "
+                f"where it moves the rate, or leave it out of the statement. d/d{name} = 0"
             )
-        raise MechanismError(
-            f"rate {rate!r} of {policy!r} reads `{symbol}`, which a statement states {claim} its "
-            f"reaction, so the rate must {way} as `{symbol}` rises; {found}. "
-            f"d/d{symbol} = {sympy.simplify(sympy.diff(expr, symbol))}"
-        )
+        if not name.startswith(kind := _RECORDED[direction]):
+            recorded[name] = kind
+    return recorded
 
 
 def bind(
@@ -681,8 +662,8 @@ def written(
     :data:`statements.REGULATOR_NAME`), each the amount of an agent that takes no part in the
     reaction;
     ``time``; exp, log, sqrt, and ``piecewise(value, condition, ..., otherwise)``, its conditions
-    comparisons over the same names (:func:`_piecewise`). A rate must fall with each inhibitor it
-    reads and rise with each activator (:func:`check_regulators`), and read every regulator a row
+    comparisons over the same names (:func:`_piecewise`). Each regulator is recorded as the kind
+    the rate shows (:func:`record_regulators`), and the rate must read every regulator a row
     states (:func:`_read_regulators`). A scheme (:func:`schemes.compile_scheme`) declares the
     constants its rates name the same way.
 
@@ -746,8 +727,7 @@ def written(
     if unknown:
         refuse_rate_names(rate, policy, unknown, allowed, also, amounts, problem_ids)
     value = assumed(parse_rate(rate))
-    check_regulators(policy, rate, value)
-    signs = derive(value, (s.name for s in value.free_symbols))
+    recorded = record_regulators(policy, rate, value, (s.name for s in value.free_symbols))
     refuse_unread(policy, declared, tokens)
     base = library[base_key]
 
@@ -817,7 +797,7 @@ def written(
     policy_fn.regulators = frozenset(
         s.name for s in value.free_symbols if REGULATOR_NAME.fullmatch(s.name)
     )
-    policy_fn.derived = signs
+    policy_fn.derived = recorded
     return policy_fn
 
 

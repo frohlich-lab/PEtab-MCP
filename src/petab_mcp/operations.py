@@ -878,30 +878,41 @@ def statements_to_antimony(
             "first state (on `loc`, in cytoplasm when it is one, else in its first location "
             "by name), and free on a binding site.",
         ))
-    # What a rate signs that its row's statement leaves `modulated by`, so the agent sees it.
-    signed: dict[tuple[str, str], list[int]] = {}
+    # What a rate records otherwise than its row's statement states, so the agent sees it.
+    changed: dict[tuple[str, str, str], list[int]] = {}
     for i, (row, e) in enumerate(zip(rows, emissions)):
-        for name, kind in e.derived.items():
-            agent = row["statement"]["modulated_by"][int(name.rsplit("_", 1)[1])]
+        for name, shown in e.derived.items():
+            stated, _, position = name.rpartition("_")
+            agent = row["statement"][stated][int(position)]
             try:
                 text = notation.agent_text(agent)
             except ValueError:  # what the notation cannot write
                 text = agent["name"]
-            signed.setdefault((text, kind), []).append(i)
-    if signed:
+            changed.setdefault((stated, text, shown), []).append(i)
+    if changed:
         listed = "; ".join(
-            f"`statements[{', '.join(map(str, at))}]`: `modulated by {agent}` reads as "
-            f"`{REGULATORS[kind]} {agent}` from its rate (it never "
-            f"{'rises' if kind == 'inhibited_by' else 'falls'} as {agent} rises, for every value "
-            "of its names)"
-            for (agent, kind), at in signed.items()
+            f"`statements[{', '.join(map(str, at))}]`: you stated `{REGULATORS[stated]} {agent}`, "
+            f"{'and' if stated == 'modulated_by' else 'but'} "
+            f"{_WHAT_THE_RATE_DOES[shown].format(agent)}, so it reads as "
+            f"`{REGULATORS[shown]} {agent}`"
+            for (stated, agent, shown), at in changed.items()
         )
         warnings.append(M.warning(
             M.SOURCE_EDIT,
-            f"{listed}. The statements stay as written; `get_model` marks each regulator "
-            "`(inhibits, from its rate)` or `(activates, from its rate)`.",
+            f"{listed}. Check that each mechanism does what you meant; if not, rewrite its rate. "
+            "The statements stay as you wrote them; `get_model` marks each regulator with the kind "
+            "its rate shows (`(inhibits, from its rate)`).",
         ))
     return antimony, record, warnings, definitions
+
+
+#: What a regulator's rate does with it, by the kind the rate records it as (``{}`` the agent).
+_WHAT_THE_RATE_DOES = {
+    "inhibited_by": "its rate never rises as {} rises",
+    "activated_by": "its rate never falls as {} rises",
+    "modulated_by": "its rate cannot be shown to move one way as {} rises, for every value of its "
+    "names",
+}
 
 
 _NOTATION_HINT = (

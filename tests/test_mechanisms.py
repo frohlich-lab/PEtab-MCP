@@ -652,29 +652,6 @@ def test_several_regulators_of_a_kind_are_read_by_position():
 
 
 @pytest.mark.parametrize(
-    "rate, match",
-    [
-        # An inhibitor the rate rises with: the claim and the maths disagree outright.
-        ("k*inhibited_by/(Ki + inhibited_by)", r"must fall as `inhibited_by` rises; it rises "
-         r"instead: state it `activated_by`. d/dinhibited_by = Ki\*k/\(Ki \+ inhibited_by\)\*\*2"),
-        ("k*Ki/(Ki + activated_by)", r"must rise as `activated_by` rises; it falls instead: state "
-         r"it `inhibited_by`"),
-        # Sneyd's Ca: the rate rises or falls with it depending on the constants.
-        ("(k + Ki*inhibited_by)/(1 + inhibited_by)", r"cannot be shown for every value of the "
-         r"rate's names .*: state it `modulated_by`, which claims no direction"),
-        # A switch's jump is no derivative: the rate is not shown to rise with the drug.
-        ("k*piecewise(1, activated_by > 0, 0)", r"nor across a piecewise switching on it\): state "
-         r"it `modulated_by`"),
-    ],
-)
-def test_a_rate_must_move_as_its_regulators_claim(rate, match):
-    """PEtab-MCP#122: the statement says which way a regulator moves the reaction; a rate that
-    moves it otherwise, or that sympy cannot show moves it so, is refused where it is written."""
-    with pytest.raises(MechanismError, match=match):
-        M.written(_DIVISIVE | {"rate": rate}, M.REGISTRY)
-
-
-@pytest.mark.parametrize(
     "rate",
     [
         "k * Ki / (Ki + inhibited_by)",
@@ -693,21 +670,30 @@ def test_a_rate_moving_as_its_regulators_claim_is_written(rate):
 @pytest.mark.parametrize(
     "rate, derived",
     [
+        # Upgraded: a modulator the rate proves a direction for.
         ("k * Ki / (Ki + modulated_by)", {"modulated_by_0": "inhibited_by"}),
         ("k * modulated_by", {"modulated_by_0": "activated_by"}),
-        # Sneyd's Ca: which way it moves the rate depends on the constants.
+        # Reversed: an inhibitor the rate rises with, an activator it falls with.
+        ("k*inhibited_by/(Ki + inhibited_by)", {"inhibited_by_0": "activated_by"}),
+        ("k*Ki/(Ki + activated_by)", {"activated_by_0": "inhibited_by"}),
+        # Downgraded: sneyd's Ca, which way it moves the rate depending on the constants, and a
+        # switch, whose jump is no derivative.
+        ("(k + Ki*inhibited_by)/(1 + inhibited_by)", {"inhibited_by_0": "modulated_by"}),
+        ("k*piecewise(1, activated_by > 0, 0)", {"activated_by_0": "modulated_by"}),
+        # Left as stated.
+        ("k * Ki / (Ki + inhibited_by)", {}),
         ("(k + Ki*modulated_by)/(1 + modulated_by)", {}),
-        # A switch's jump is no derivative.
         ("k*piecewise(1, modulated_by > 0, 0)", {}),
     ],
 )
-def test_a_modulator_takes_the_direction_its_rate_proves(rate, derived):
-    """`modulated_by` dodged the direction check; the direction its rate proves is now recorded
-    beside it, and one it cannot prove is not."""
+def test_a_regulator_is_recorded_as_the_kind_its_rate_shows(rate, derived):
+    """The statement keeps what it states, and the row records beside it the kind its rate shows
+    where that differs: a modulator signed, a claim downgraded or reversed, never refused."""
+    (kind,) = {t for t in M._RATE_TOKENS.findall(rate) if t.endswith("_by")}
     parameters = ["k", "Ki"] if "Ki" in rate else ["k"]
     library = _library_with(_DIVISIVE | {"policy": "mod", "rate": rate, "parameters": parameters})
     _, (emission,) = M.assemble(
-        [(_TRANSITION, "mod", "r1", None, {"modulated_by": [Agent("drug")]})], library=library
+        [(_TRANSITION, "mod", "r1", None, {kind: [Agent("drug")]})], library=library
     )
     assert emission.derived == derived
 

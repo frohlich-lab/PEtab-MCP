@@ -244,13 +244,10 @@ def test_an_inhibitor_of_a_scheme_of_several_steps_lowers_its_net_rate(rates):
     _two_steps(**rates)
 
 
-def test_a_regulator_that_moves_the_net_rate_the_other_way_is_refused():
+def test_a_regulator_that_moves_the_net_rate_the_other_way_is_recorded_so():
     """Slowing unbinding leaves more complex to turn over: it speeds the reaction, whatever its
-    own rate does."""
-    with pytest.raises(MechanismError, match=r"reads `inhibited_by`, which a statement states "
-                       r"inhibits its reaction, so the rate must fall .*; it rises instead: state it "
-                       r"`activated_by`"):
-        _two_steps(kr="kr" + _SLOWED)
+    own rate does, so the inhibitor the statement claims is recorded as an activator."""
+    assert _two_steps(kr="kr" + _SLOWED).derived == {"inhibited_by": "activated_by"}
 
 
 def test_a_modulator_of_a_scheme_takes_the_direction_of_its_net_rate():
@@ -289,10 +286,12 @@ def test_a_scheme_without_one_net_rate_states_its_regulators_without_a_direction
     )
     definition = {"statement_type": "Phosphorylation", "policy": "branched",
                   "parameters": ["kc", "kd", "Ki"]}
-    with pytest.raises(MechanismError, match=r"at rates no constant ratio relates: two reactions"
-                       r".*state each `modulated_by`"):
-        M.written(definition | {"scheme": branched.format(kind="inhibited")}, dict(M.REGISTRY))
-    M.written(definition | {"scheme": branched.format(kind="modulated")}, dict(M.REGISTRY))
+    inhibited = M.written(definition | {"scheme": branched.format(kind="inhibited")},
+                          dict(M.REGISTRY))
+    assert inhibited.derived == {"inhibited_by": "modulated_by"}
+    modulated = M.written(definition | {"scheme": branched.format(kind="modulated")},
+                          dict(M.REGISTRY))
+    assert modulated.derived == {}
 
 
 #: A GTPase cycle: a GEF turns obj_from into obj_to, a GAP turns it back.
@@ -322,9 +321,7 @@ def test_a_cycle_back_to_its_substrate_is_checked_on_its_forward_step():
     # ras_gef3: three steps, the GEF sped by RAS-GTP and a basal exchange beside it.
     _cycle(allo="*(1 + allo*amount(activated_by_1))",
            basal="\nobj_from_0() >> obj_to_0() @ kb")
-    with pytest.raises(MechanismError, match=r"must fall as `inhibited_by_0` rises; it rises "
-                       r"instead: state it `activated_by_0`"):
-        _cycle(activated_by_0="inhibited_by_0")
+    assert _cycle(activated_by_0="inhibited_by_0").derived == {"inhibited_by_0": "activated_by"}
 
 
 def test_a_one_step_scheme_needs_no_placeholder():
@@ -340,9 +337,8 @@ def test_a_one_step_scheme_needs_no_placeholder():
             dict(M.REGISTRY),
         )
 
-    gated("kf*amount(activated_by)")
-    with pytest.raises(MechanismError, match=r"must rise as `activated_by` rises; it falls"):
-        gated("kf/(1 + amount(activated_by))")
+    assert gated("kf*amount(activated_by)").derived == {}
+    assert gated("kf/(1 + amount(activated_by))").derived == {"activated_by": "inhibited_by"}
 
 
 def test_a_reversible_step_is_checked_on_its_forward_rate():
@@ -363,7 +359,7 @@ def test_a_reversible_step_is_checked_on_its_forward_rate():
 
 def test_a_scheme_reads_a_regulator_its_statement_states():
     """`amount(inhibited_by)` reads the agent the statement says slows the reaction, as it states
-    it, and the rate is checked against that claim where the scheme is written."""
+    it, and the kind is recorded as the rate shows it: an inhibitor it rises with, as activator."""
     p_pten = Agent("PTEN", mods=[ModCondition("phosphorylation", "S", "380")])
     library = dict(M.REGISTRY)
     library[("Phosphorylation", "inhibited")] = M.written(
@@ -377,13 +373,12 @@ def test_a_scheme_reads_a_regulator_its_statement_states():
     )
     (amount,) = (o for o in model.observables if o.name.endswith("inhibited_by"))
     assert str(amount.reaction_pattern) == "PTEN(S380=('p', WILD))"
-    with pytest.raises(MechanismError, match=r"must fall as `inhibited_by` rises; it rises"):
-        M.written(
-            {"statement_type": "Phosphorylation", "policy": "bad", "parameters": ["kf"],
-             "scheme": "enz() + sub(mod='off') >> enz() + sub(mod='on') @ "
-                       "kf*amount(inhibited_by)"},
-            dict(M.REGISTRY),
-        )
+    rising = M.written(
+        {"statement_type": "Phosphorylation", "policy": "bad", "parameters": ["kf"],
+         "scheme": "enz() + sub(mod='off') >> enz() + sub(mod='on') @ kf*amount(inhibited_by)"},
+        dict(M.REGISTRY),
+    )
+    assert rising.derived == {"inhibited_by": "activated_by"}
 
 
 def test_a_scheme_reads_a_partner_its_statement_names():
