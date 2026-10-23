@@ -2019,6 +2019,28 @@ def test_a_modulator_takes_the_direction_its_rate_proves(tmp_path):
     assert row["emission"]["derived"] == {"modulated_by_0": "inhibited_by"}
 
 
+def test_the_result_names_the_rows_whose_rate_signs_a_modulator(tmp_path):
+    """The agent sees the upgrade where it sees what the edit did: one warning per edit, naming
+    every row whose rate signs a regulator it stated `modulated by`."""
+    out = _call(
+        _statements_server(tmp_path),
+        "make_changes",
+        {"justification": "C slows both ways", "statements": [
+            "conv: A becomes B, modulated by C | slowed",
+            "back: B becomes A, modulated by C | slowed"],
+         "mechanisms": [{"statement_type": "PopulationTransition", "policy": "slowed",
+                         "based_on": "mass_action", "rate": "k*Ki/(Ki + modulated_by)",
+                         "parameters": ["k", "Ki"]}]},
+    )
+    assert out["applied"] is True, out.get("error")
+    signed = [m["message"] for m in out["messages"] if "from its rate" in m["message"]]
+    assert len(signed) == 1, signed
+    assert (
+        "`statements[0, 1]`: `modulated by C` reads as `inhibited by C` from its rate (it never "
+        "rises as C rises, for every value of its names)"
+    ) in signed[0]
+
+
 def test_an_unknown_activity_names_the_modification_tags():
     """`A{mod:on}` (a scheme's site, written in a row) built an activity named "mod"."""
     from petab_mcp import notation

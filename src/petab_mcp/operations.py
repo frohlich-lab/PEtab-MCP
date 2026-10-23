@@ -724,7 +724,15 @@ def statements_to_antimony(
     from indra.statements import Agent, stmts_from_json
 
     from . import mechanisms, problem_sbml
-    from .statements import agent_problems, indra_part, problems, regulators, ungrounded, with_defaults
+    from .statements import (
+        REGULATORS,
+        agent_problems,
+        indra_part,
+        problems,
+        regulators,
+        ungrounded,
+        with_defaults,
+    )
 
     definitions = dict(session.mechanisms)
     for definition in written or []:
@@ -869,6 +877,29 @@ def statements_to_antimony(
             f"schemes added sites no row or entity gives: {listed}. A molecule starts in a site's "
             "first state (on `loc`, in cytoplasm when it is one, else in its first location "
             "by name), and free on a binding site.",
+        ))
+    # What a rate signs that its row's statement leaves `modulated by`, so the agent sees it.
+    signed: dict[tuple[str, str], list[int]] = {}
+    for i, (row, e) in enumerate(zip(rows, emissions)):
+        for name, kind in e.derived.items():
+            agent = row["statement"]["modulated_by"][int(name.rsplit("_", 1)[1])]
+            try:
+                text = notation.agent_text(agent)
+            except ValueError:  # what the notation cannot write
+                text = agent["name"]
+            signed.setdefault((text, kind), []).append(i)
+    if signed:
+        listed = "; ".join(
+            f"`statements[{', '.join(map(str, at))}]`: `modulated by {agent}` reads as "
+            f"`{REGULATORS[kind]} {agent}` from its rate (it never "
+            f"{'rises' if kind == 'inhibited_by' else 'falls'} as {agent} rises, for every value "
+            "of its names)"
+            for (agent, kind), at in signed.items()
+        )
+        warnings.append(M.warning(
+            M.SOURCE_EDIT,
+            f"{listed}. The statements stay as written; `get_model` marks each regulator "
+            "`(inhibits, from its rate)` or `(activates, from its rate)`.",
         ))
     return antimony, record, warnings, definitions
 
