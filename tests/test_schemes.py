@@ -12,6 +12,8 @@ enzyme-substrate release ignores them).
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from indra.statements import (
     Activation,
@@ -105,8 +107,8 @@ _PHOSPHO = lambda: Phosphorylation(Agent("EGFR"), Agent("AKT1"), "S", "473")  # 
 _DEPHOSPHO = lambda: Dephosphorylation(Agent("PTEN"), Agent("AKT1"), "S", "473")  # noqa: E731
 _REAL = [
     (_PHOSPHO, p)
-    for p in ("indra_two_step", "indra_default", "indra_michaelis_menten", "indra_atp_dependent",
-              "processive", "indra_interactions_only")
+    for p in ("indra_two_step", "indra_default", "indra_michaelis_menten", "processive",
+              "indra_interactions_only")
 ] + [
     (_DEPHOSPHO, p) for p in ("indra_two_step", "dissociative", "indra_default")
 ] + [
@@ -177,6 +179,51 @@ def test_a_rate_may_read_amounts_and_time():
     assert set(emission.parameters) == {"r1_kc", "r1_Km", "r1_tau"}
     expr = model.rules[emission.rules[0]].rate_forward.expr
     assert "time" in str(expr) and "amount" in str(expr)
+
+
+def _inhibited(scheme: str, stmt):
+    library = dict(M.REGISTRY)
+    library[("Phosphorylation", "inhibited")] = M.written(
+        {"statement_type": "Phosphorylation", "policy": "inhibited", "scheme": scheme,
+         "parameters": ["kf", "Ki"]},
+        library,
+    )
+    return M.assemble([(stmt, "inhibited", "r1")], {}, library)
+
+
+@pytest.mark.parametrize(
+    "scheme",
+    [
+        "enz() + sub(mod='off') >> enz() + sub(mod='on') @ kf/(1 + amount(PTEN)/Ki)",
+        "enz() + sub(mod='off') >> enz() + sub(mod='on') @ kf/(1 + amount(PTEN{pS380})/Ki)",
+        # Mass action reads a reactant, and this one goes back unchanged.
+        "enz() + sub(mod='off') + PTEN() >> enz() + sub(mod='on') + PTEN() @ kf/Ki",
+    ],
+)
+def test_a_scheme_reads_no_agent_its_statement_does_not_name(scheme):
+    """PEtab-MCP#122: `EGFR phosphorylates AKT1` read PTEN in its rate, so the statement said
+    nothing of what slowed it. Each form is refused naming PTEN and the condition that states it."""
+    with pytest.raises(MechanismError) as refused:
+        _inhibited(scheme, _PHOSPHO())
+    assert re.search(
+        r"row 'r1': mechanism 'inhibited' reads PTEN.*`EGFR\{~PTEN(\{pS380\})?\}`, EGFR not "
+        "bound to PTEN, for an inhibitor",
+        str(refused.value),
+    )
+
+
+def test_a_scheme_reads_a_partner_its_statement_names():
+    """The same rate, with EGFR stated as not bound to PTEN: `amount(PTEN)` reads PTEN as the
+    statement writes it, phosphorylated."""
+    p_pten = Agent("PTEN", mods=[ModCondition("phosphorylation", "S", "380")])
+    stmt = Phosphorylation(
+        Agent("EGFR", bound_conditions=[BoundCondition(p_pten, False)]), Agent("AKT1"), "S", "473"
+    )
+    model, (emission,) = _inhibited(
+        "enz() + sub(mod='off') >> enz() + sub(mod='on') @ kf/(1 + amount(PTEN)/Ki)", stmt
+    )
+    (amount,) = (o for o in model.observables if "amount" in o.name)
+    assert str(amount.reaction_pattern) == "PTEN(S380='p')"
 
 
 @pytest.mark.parametrize(

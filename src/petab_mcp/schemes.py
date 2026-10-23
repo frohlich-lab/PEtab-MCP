@@ -10,8 +10,11 @@ type::
 
 - A molecule is a role (``enz``, ``sub``, ``subj``, ``obj``; a list role by position,
   ``members_0``, or by its own name when the statement gives it one agent), each the agent the
-  row writes there, in the states it writes; or any other name, a molecule of that name the
-  statement does not mention (INDRA's ``atp_dependent`` binds an ``ATP``).
+  row writes there, in the states it writes; or, by its name, another agent the statement names:
+  a partner a role is written bound or not bound to (``C`` of ``enz{~C}``), in the states written
+  there. No other molecule: a mechanism reads only its statement's agents
+  (:func:`statements.named_agents`), so an inhibitor is stated as the partner its target is not
+  bound to, and a row naming none is refused (:func:`mechanisms.refuse_unnamed`).
 - A site is ``mod``, the statement's own modification (``'off'``, ``'on'``); ``act``, the role's
   activity (``'inactive'``, ``'active'``): the statement's ``obj_activity`` on its object, the
   activity the modification implies on an enzyme (``kinase`` for a phosphorylation); a role's
@@ -26,11 +29,11 @@ type::
   complex, ``None`` is nothing.
 - ``@`` gives the rate: one for ``>>``, two for ``|``. A rate is an expression over the
   definition's ``parameters`` (each minted per row as ``<prefix>_<name>`` and shared or fixed
-  like any, ``kf=k_on`` on the row), ``amount(<pattern>)`` (the amount of what the pattern
-  matches), ``time`` and exp/log/sqrt; mass action multiplies it by every reactant's amount, as
-  PySB does. A name it does not declare is refused: a parameter the problem ships or a condition
-  input enters through a row's binding, as for a written ``rate``. ``delete_molecules`` after
-  the rates removes only the molecules that vanish, not their complex.
+  like any, ``kf=k_on`` on the row), ``amount(<pattern>)`` (the amount of what the pattern of
+  those molecules matches), ``time`` and exp/log/sqrt; mass action multiplies it by every
+  reactant's amount, as PySB does. A name it does not declare is refused: a parameter the problem
+  ships or a condition input enters through a row's binding, as for a written ``rate``.
+  ``delete_molecules`` after the rates removes only the molecules that vanish, not their complex.
 
 :func:`describe` writes any library entry this way, from a statement of placeholder agents named
 by role, and :func:`rate_parameters` reads the parameters it names; :func:`compile_scheme` turns a
@@ -60,6 +63,7 @@ from pysb import ANY, WILD
 from pysb.core import ReactionPattern, RuleExpression, time
 
 from .errors import MechanismError
+from .statements import named_agents
 
 MOD, ACT = "mod", "act"
 _OFF_ON = ("off", "on")
@@ -224,6 +228,23 @@ def role_agents(stmt: Statement) -> dict[str, Agent]:
     return agents
 
 
+def _by_name(stmt: Statement) -> dict[str, Agent]:
+    """Every agent the statement names (:func:`statements.named_agents`), by its molecule name; the
+    first where two share one."""
+    agents: dict[str, Agent] = {}
+    for agent in named_agents(stmt):
+        agents.setdefault(_n(agent.name), agent)
+    return agents
+
+
+def _molecule_agent(stmt: Statement, name: str, agents: dict[str, Agent]) -> Agent:
+    """The agent a scheme's molecule ``name`` is: a role's, or another the statement names."""
+    agent = agents.get(name) or _by_name(stmt).get(name)
+    if agent is None:
+        raise MechanismError(f"the statement gives no {name}")
+    return agent
+
+
 def _mod_states(stmt: Statement) -> tuple[str, str] | None:
     return tuple(states[stmt._get_mod_condition().mod_type]) if isinstance(stmt, Modification) else None
 
@@ -235,7 +256,7 @@ def _activity_site(stmt: Statement, role: str) -> str | None:
         return stmt.obj_activity
     if isinstance(stmt, Modification) and role == "enz":
         return mod_acttype_map.get(type(stmt), "activity")
-    agent = role_agents(stmt).get(role)
+    agent = role_agents(stmt).get(role) or _by_name(stmt).get(role)
     if agent is not None:
         return agent.activity.activity_type if agent.activity else "activity"
     return None
@@ -379,19 +400,19 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
         params: dict[str, pysb.Parameter] = {}
         rules = []
         for i, (line, line_rates) in enumerate(zip(lines, rates)):
-            lhs = _pattern_side(stmt, model, line.lhs, agents, known_roles, fresh=None)
+            lhs = _pattern_side(stmt, model, line.lhs, agents, fresh=None)
             carried = {}
             for cp in lhs:
                 for mp in cp.monomer_patterns:
                     carried[mp.monomer.name] = carried.get(mp.monomer.name, 0) + 1
-            rhs = _pattern_side(stmt, model, line.rhs, agents, known_roles, fresh=carried)
+            rhs = _pattern_side(stmt, model, line.rhs, agents, fresh=carried)
             values = []
             for j, rate in enumerate(line_rates):
                 for name in rate.names:
                     if name not in params:
                         params[name] = pysb.Parameter(f"{prefix}_{name}", 1.0, _export=False)
                         _add(model, params[name])
-                values.append(_rate_value(stmt, model, rate, params, agents, known_roles,
+                values.append(_rate_value(stmt, model, rate, params, agents,
                                           f"{prefix}_rate{i}_{j}"))
             rule = pysb.Rule(
                 f"{prefix}_r{i}",
@@ -411,20 +432,32 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
             parameters=tuple(p.name for p in params.values()),
         )
 
-    def scheme_sites(stmt: Statement, given: dict) -> list[tuple[Agent, str, list | None]]:
+    def scheme_sites(
+        stmt: Statement, given: dict, prefix: str
+    ) -> list[tuple[Agent, str, list | None]]:
         """The sites the scheme's molecules need on each monomer, for the monomer pass. A state
         it writes is checked against ``given``, each monomer's sites and their states before any
-        scheme adds its own (``{name: (sites, site_states)}``; see the module docstring)."""
+        scheme adds its own (``{name: (sites, site_states)}``; see the module docstring). A
+        molecule row ``prefix``'s statement does not name is refused, before it has a monomer."""
+        from .mechanisms import refuse_unnamed
+
         agents = role_agents(stmt)
+        named = _by_name(stmt)
         need = []
         added: dict[tuple[str, str], list] = {}
         patterns = [m for line in lines for side in (line.lhs, line.rhs) for c in side for m in c]
         patterns += [_molecule(n) for rs in rates for r in rs for a in r.amounts
                      for n in _complex_nodes(a)]
         # A molecule a rate reads in the row notation brings the sites its pattern names.
-        need += [(_notation_agent(a), None, None) for rs in rates for r in rs for a in r.agents]
+        read = [_notation_agent(a) for rs in rates for r in rs for a in r.agents]
+        for agent in read:
+            if _n(agent.name) not in named:
+                refuse_unnamed(prefix, stmt, f"mechanism {policy!r}", agent)
+        need += [(agent, None, None) for agent in read]
         for mol in patterns:
-            agent = agents.get(mol.name) or Agent(mol.name)
+            if mol.name not in agents and mol.name not in named and mol.name not in known_roles:
+                refuse_unnamed(prefix, stmt, f"mechanism {policy!r}", Agent(mol.name))
+            agent = _molecule_agent(stmt, mol.name, agents)
             sites, site_states = given.get(_n(agent.name), ((), {}))
             for site, value in mol.sites:
                 value = value[0] if isinstance(value, tuple) else value
@@ -549,7 +582,7 @@ def _complex_nodes(text: str):
     return out
 
 
-def _pattern_side(stmt, model, side, agents, known_roles, fresh):
+def _pattern_side(stmt, model, side, agents, fresh):
     """One side's ComplexPatterns. ``fresh`` (right-hand side only) counts the molecules of each
     monomer the left carries; one beyond them is new, and written in full."""
     left = dict(fresh or {})
@@ -557,16 +590,13 @@ def _pattern_side(stmt, model, side, agents, known_roles, fresh):
     for complex_ in side:
         mps = []
         for mol in complex_:
-            agent = agents.get(mol.name)
-            if agent is None and mol.name in known_roles:
-                raise MechanismError(f"the statement gives no {mol.name}")
-            agent = agent or Agent(mol.name)
+            agent = _molecule_agent(stmt, mol.name, agents)
             monomer = model.monomers[_n(agent.name)]
             stated = {
                 s: v[0] if isinstance(v, tuple) else v
                 for s, v in get_site_pattern(agent).items()
                 if v is not ANY
-            } if mol.name in agents else {}
+            }
             given = {
                 _site_name(stmt, mol.name, s, agents): _site_value(stmt, s, v) for s, v in mol.sites
             }
@@ -596,7 +626,7 @@ def _notation_agent(text: str) -> Agent:
         raise MechanismError(f"amount({text}): {exc}") from None
 
 
-def _rate_value(stmt, model, rate: _Rate, params, agents, known_roles, name):
+def _rate_value(stmt, model, rate: _Rate, params, agents, name):
     from indra.assemblers.pysb.assembler import get_monomer_pattern
 
     from .mechanisms import _add
@@ -615,7 +645,7 @@ def _rate_value(stmt, model, rate: _Rate, params, agents, known_roles, name):
     text = rate.text
     for k, pattern in enumerate(rate.amounts):
         (cp,) = _pattern_side(stmt, model, (tuple(_molecule(n) for n in _complex_nodes(pattern)),),
-                              agents, known_roles, fresh=None)
+                              agents, fresh=None)
         obs = pysb.Observable(f"{name}_amount{k}", cp, _export=False)
         _add(model, obs)
         observables[f"__amount{k}"] = obs

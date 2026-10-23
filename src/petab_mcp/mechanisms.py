@@ -57,6 +57,7 @@ from indra.statements import (
     AddModification,
     Agent,
     Autophosphorylation,
+    BoundCondition,
     Complex,
     Conversion,
     DecreaseAmount,
@@ -81,7 +82,7 @@ from pysb import ANY
 from pysb.core import ReactionPattern, RuleExpression, time
 
 from .errors import MechanismError
-from .statements import PopulationTransition
+from .statements import PopulationTransition, named_agents
 
 
 @dataclass(frozen=True)
@@ -542,11 +543,13 @@ def written(
     (``enz``, ``sub``, ``source``...), each the amount of that agent as the statement writes it —
     a list role by position (``obj_from_0``), or by its own name when it holds one agent; the
     definition's ``parameters``, each minted as ``<prefix>_<name>`` (and shared by a row's
-    binding, :func:`bind`); its ``modifiers``, each the amount of an agent the ROW names, which
-    takes no part in the reaction (an inhibitor slowing a step, a regulator of a synthesis);
-    ``time``; exp, log, sqrt, and ``piecewise(value, condition, ..., otherwise)``, its conditions
-    comparisons over the same names (:func:`_piecewise`). A scheme (:func:`schemes.compile_scheme`) declares the constants its
-    rates name the same way.
+    binding, :func:`bind`); its ``modifiers``, each the amount of an agent that takes no part in
+    the reaction, which the row fills with one its STATEMENT names, as it names it
+    (:func:`statements.named_agents`): an inhibitor ``C`` slowing ``E``'s step is stated
+    ``E{~C}``, E not bound to C, and fills ``inh:=C``; ``time``; exp, log, sqrt, and
+    ``piecewise(value, condition, ..., otherwise)``, its conditions comparisons over the same
+    names (:func:`_piecewise`). A scheme (:func:`schemes.compile_scheme`) declares the constants
+    its rates name the same way.
 
     ``problem_ids`` (id to :data:`SHIPPED`, :data:`CONDITION` or :data:`SPECIES`) are names no
     rate reads and no declared parameter takes: a refusal naming one says how it enters instead,
@@ -584,8 +587,9 @@ def written(
             # Accepted and then dropped, before: every row naming them was refused with "reads
             # none".
             raise MechanismError(
-                f"{policy!r} is a scheme with `modifiers`; a scheme reads any agent in its rates "
-                "as `amount(<pattern>)` instead, `@ kf*amount(Regulator)` with `kf` in its "
+                f"{policy!r} is a scheme with `modifiers`; a scheme reads an agent its statement "
+                "names as `amount(<pattern>)` instead: a role, or a partner a role is written bound "
+                "or not bound to (`enz{~C}`), `@ kf/(1 + amount(C)/Ki)` with `kf` and `Ki` in its "
                 "`parameters`"
             )
         return compile_scheme(definition, problem_ids)
@@ -630,6 +634,10 @@ def written(
                 f"row {prefix!r} uses {policy!r}, whose rate reads modifiers {sorted(slots)}; "
                 f"the row names {sorted(given)}"
             )
+        named = {_read_as(model, agent) for agent in named_agents(stmt)}
+        for slot, agent in given.items():
+            if _read_as(model, agent) not in named:
+                refuse_unnamed(prefix, stmt, f"modifier `{slot}`", agent)
         # The base's own parameters go unused once re-rated; kept apart from the written ones.
         emitted = base(stmt, model, f"{prefix}_base")
         if len(emitted.rules) != 1 or model.rules[emitted.rules[0]].is_reversible:
@@ -690,6 +698,44 @@ def written(
     return policy_fn
 
 
+def _read_as(model: pysb.Model, agent: Agent) -> tuple:
+    """What a rate reading ``agent`` reads, comparable: its monomer and the sites it states."""
+    pattern = get_monomer_pattern(model, agent)
+    return pattern.monomer.name, frozenset(pattern.site_conditions.items())
+
+
+def refuse_unnamed(prefix: str, stmt: Statement, reads: str, agent: Agent) -> None:
+    """Refuse row ``prefix``'s mechanism reading ``agent`` (``reads`` says where) because ``stmt``
+    does not name it so: the statement is the claim behind the rate, so an agent the rate reads
+    is stated there, on the agent it acts on."""
+    named = named_agents(stmt)
+    listed = ", ".join(dict.fromkeys(map(_agent_text, named)))
+    same = [_agent_text(a) for a in named if _n(a.name) == _n(agent.name)]
+    if same:
+        how = f"It names {agent.name} only as {' and '.join(same)}: read it as that."
+    else:
+        host = copy(named[0])
+        host.bound_conditions = [*host.bound_conditions, BoundCondition(agent, False)]
+        how = (
+            f"State {agent.name} on the agent it acts on: `{_agent_text(host)}`, {host.name} not "
+            f"bound to {agent.name}, for an inhibitor; `!{agent.name}`, bound, for a partner in a "
+            "complex your rows form."
+        )
+    raise MechanismError(
+        f"row {prefix!r}: {reads} reads {_agent_text(agent)}, which its statement does not name. "
+        f"A rate reads only the agents its statement names, as it names them ({listed}). {how}"
+    )
+
+
+def _agent_text(agent: Agent) -> str:
+    from .notation import agent_text
+
+    try:
+        return agent_text(agent.to_json())
+    except ValueError:
+        return str(agent)
+
+
 def assemble(
     rows: list[tuple],
     entities: dict[str, Agent] | None = None,
@@ -734,13 +780,13 @@ def assemble(
         for name, base in agents.agents.items()
     }
     added: list[dict[str, list[str]]] = []
-    for stmt, policy, *_ in rows:
+    for stmt, policy, prefix, *_ in rows:
         entry = library.get((type(stmt).__name__, policy))
         added.append({})
         if not hasattr(entry, "scheme_sites"):
             continue
         before = {name: set(base.sites) for name, base in agents.agents.items()}
-        for agent, site, site_states in entry.scheme_sites(stmt, given):
+        for agent, site, site_states in entry.scheme_sites(stmt, given, prefix):
             base = agents.get_create_base_agent(agent)
             if site is not None:
                 base.create_site(site, site_states)
@@ -1458,10 +1504,10 @@ for _cls in {c for base in statement_whitelist for c in (base, *get_all_descenda
     mechanism(_cls, INDRA_DEFAULT)(_indra_default)
     # Every OTHER policy INDRA itself implements for this type, as ``indra_<policy>``: two_step
     # (enzyme-substrate complex, then release), michaelis_menten, hill, multi_way,
-    # interactions_only, atp_dependent. Only the pairs INDRA defines: its dispatch falls back to
-    # the default without a word when a policy is missing, which would build one model under
-    # another's name.
+    # interactions_only. Only the pairs INDRA defines: its dispatch falls back to the default
+    # without a word when a policy is missing, which would build one model under another's name.
+    # Not atp_dependent, whose rate reads an ATP no statement names (:func:`refuse_unnamed`).
     for _name in sorted(_INDRA_ASSEMBLY):
         _kind, _policy = _name.split("_assemble_")
-        if _kind == _dispatch_name(_cls) and _policy not in ("default", "one_step"):
+        if _kind == _dispatch_name(_cls) and _policy not in ("default", "one_step", "atp_dependent"):
             mechanism(_cls, f"indra_{_policy}")(_indra(_policy))

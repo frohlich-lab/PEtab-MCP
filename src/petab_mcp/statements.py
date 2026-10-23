@@ -234,6 +234,22 @@ def _close(word: Any, known: Collection[str]) -> str:
     return f" (did you mean {' or '.join(repr(c) for c in close)}?)" if close else ""
 
 
+def named_agents(stmt: Statement) -> list[Agent]:
+    """Every agent ``stmt`` names, as it names it: each role's agent and, within it, each partner
+    it is written bound or not bound to (``E{~C}``), theirs in turn. INDRA's English renders them
+    all ("E not bound to C phosphorylates S"), and they are all a mechanism's rate may read."""
+    out: list[Agent] = []
+
+    def visit(agent: Agent) -> None:
+        out.append(agent)
+        for condition in agent.bound_conditions:
+            visit(condition.agent)
+
+    for agent in stmt.real_agent_list():
+        visit(agent)
+    return out
+
+
 def ungrounded(stmt: Statement) -> list[str]:
     """Agent names in ``stmt`` carrying no ``db_refs``, for the warning path.
 

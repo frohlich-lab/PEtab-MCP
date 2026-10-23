@@ -611,12 +611,18 @@ _DIVISIVE = {
 }
 
 
-def test_a_written_rate_reads_a_modifier_the_row_names():
+#: naive not bound to drug becomes effector: the statement that names the drug the rate reads.
+_INHIBITED = PopulationTransition(
+    Agent("naive", bound_conditions=[BoundCondition(Agent("drug"), False)]), Agent("effector")
+)
+
+
+def test_a_written_rate_reads_a_modifier_its_statement_names():
     """A drug that slows a reaction without taking part in it: the rate reads the amount of an
-    agent no role holds, which the row names."""
+    agent no role holds, which the statement names as the partner its source is not bound to."""
     library = _library_with(_DIVISIVE)
     model, _ = M.assemble(
-        [(_TRANSITION, "inhibited", "r1", None, {"inh": Agent("drug")})], library=library
+        [(_INHIBITED, "inhibited", "r1", None, {"inh": Agent("drug")})], library=library
     )
     assert "drug" in model.monomers.keys()
     assert "r1_inh" in str(model.expressions["r1_rate"].expr)
@@ -625,16 +631,41 @@ def test_a_written_rate_reads_a_modifier_the_row_names():
     ].monomer.name == "drug"
 
 
+def test_a_modifier_its_statement_does_not_name_is_refused():
+    """PEtab-MCP#122: `naive becomes effector` with a rate reading a drug read, in English, as a
+    transition nothing slows. The refusal names the drug and the condition that states it."""
+    with pytest.raises(MechanismError) as refused:
+        M.assemble(
+            [(_TRANSITION, "inhibited", "r1", None, {"inh": Agent("drug")})],
+            library=_library_with(_DIVISIVE),
+        )
+    assert "modifier `inh` reads drug, which its statement does not name" in str(refused.value)
+    assert "`naive{~drug}`, naive not bound to drug" in str(refused.value)
+
+
+def test_a_modifier_reads_an_agent_as_its_statement_writes_it():
+    """The statement names phosphorylated ERK; a modifier reading every ERK reads more than it
+    says."""
+    p_erk = Agent("ERK", mods=[ModCondition("phosphorylation", "T", "185")])
+    stmt = PopulationTransition(
+        Agent("naive", bound_conditions=[BoundCondition(p_erk, False)]), Agent("effector")
+    )
+    library = _library_with(_DIVISIVE)
+    with pytest.raises(MechanismError, match=r"names ERK only as ERK\{pT185\}"):
+        M.assemble([(stmt, "inhibited", "r1", None, {"inh": Agent("ERK")})], library=library)
+    M.assemble([(stmt, "inhibited", "r1", None, {"inh": p_erk})], library=library)
+
+
 def test_a_row_must_fill_every_modifier_slot():
     """An unfilled slot would leave a name in the rate that means nothing."""
     with pytest.raises(MechanismError, match=r"reads modifiers \['inh'\]"):
-        M.assemble([(_TRANSITION, "inhibited", "r1")], library=_library_with(_DIVISIVE))
+        M.assemble([(_INHIBITED, "inhibited", "r1")], library=_library_with(_DIVISIVE))
 
 
 def test_modifiers_need_an_entry_that_reads_them():
     """A modifier given to an entry whose rate cannot read it would be dropped without a word."""
     with pytest.raises(MechanismError, match="names modifiers"):
-        M.assemble([(_TRANSITION, "mass_action", "r1", None, {"inh": Agent("drug")})])
+        M.assemble([(_INHIBITED, "mass_action", "r1", None, {"inh": Agent("drug")})])
 
 
 def test_a_written_rate_reads_a_list_role():

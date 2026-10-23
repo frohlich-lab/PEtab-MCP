@@ -11,7 +11,8 @@ written as::
 
 ``<prefix>: <statement> | <policy> <kind>=<binding> ... <slot>:=<agent> ... # [source] text`` —
 the row's prefix, its statement, the mechanism, its parameter bindings (:func:`mechanisms.bind`),
-the agents filling a written mechanism's modifier slots, and the statement's evidence: one
+the agents filling a written mechanism's modifier slots (each one the statement names, as ``C``
+is named by ``E{~C}``), and the statement's evidence: one
 ``source_api`` and text, both optional (``# Author et al. 2000``).
 
 An agent is ``NAME{tag, ...}``, ``NAME`` quoted when it is not an identifier. Tags:

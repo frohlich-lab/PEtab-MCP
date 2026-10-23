@@ -202,8 +202,9 @@ class StatementRow(BaseModel):
     )
     modifiers: dict[str, dict[str, Any] | str] | None = Field(
         default=None,
-        description="the agents (INDRA Agent JSON) filling the modifier slots of a written "
-        "mechanism's rate: an inhibitor, a regulating complex, an input it reads.",
+        description="the agents (INDRA Agent JSON or the notation) filling the modifier slots of "
+        "a written mechanism's rate, each one the statement names, as it names it: an inhibitor "
+        "`C` of `E`'s step is stated `E{~C}` (E not bound to C) and fills `inh:=C`.",
     )
 
 
@@ -250,8 +251,10 @@ class MechanismDef(BaseModel):
         "name (the binding site for it): `enz(sub=None) + sub(enz=None, mod='off') >> "
         "enz(sub=1) % sub(enz=1, mod='off') @ kf`. `list_mechanisms` shows every library entry "
         "this way, with the `parameters` it declares: start from one. A rate is an expression "
-        "over your `parameters`, `amount(<pattern>)`, `time` and exp/log/sqrt. Give `scheme` or "
-        "`rate`, not both.",
+        "over your `parameters`, `amount(<pattern>)`, `time` and exp/log/sqrt. A molecule is a "
+        "role or, by its name, a partner the row's statement writes a role bound or not bound to "
+        "(`C` of `E{~C}`): a mechanism reads no agent its statement does not name. Give `scheme` "
+        "or `rate`, not both.",
     )
     rate: str | None = Field(
         default=None,
@@ -272,7 +275,9 @@ class MechanismDef(BaseModel):
     modifiers: list[str] = Field(
         default_factory=list,
         description="names in `rate` for the amount of an agent that takes no part in the "
-        "reaction (an inhibitor, a regulator); each row using this mechanism names the agent.",
+        "reaction (an inhibitor, a regulator); each row using this mechanism fills it with an "
+        "agent its statement names, as it names it: a partner a role is written bound or not "
+        "bound to (`E{~C}`, E not bound to C).",
     )
 
 
@@ -1064,9 +1069,12 @@ def _make_changes_statements_doc(
         f"also holds {entries}. `list_mechanisms` shows each as the PySB rules it builds. When "
         "none fits, WRITE one in `mechanisms`, either as a `scheme` (its own rules, written like "
         "those, declaring their constants in `parameters`) or as a `rate` on an existing entry's "
-        "reaction, whose rate may read `modifiers`, "
-        "agents each row names that take no part in the reaction (an inhibitor, a regulator); "
-        "it stays in the library for the rest of the run. A row's `parameters` shares a rate constant with other "
+        "reaction, whose rate may read `modifiers`, agents that take no part in the reaction; "
+        "it stays in the library for the rest of the run. A rate reads only the agents its row's "
+        "statement names, as it names them, so a regulator is stated as a partner a role is "
+        "written bound (`!C`) or not bound (`~C`) to: `r1: E{~C} phosphorylates S at T20 | "
+        "inhibited inh:=C` is E not bound to C phosphorylating S, its rate reading C. A row's "
+        "`parameters` shares a rate constant with other "
         "rows, or with a parameter the problem ships, or fixes it to a number. "
         + (
             "The species the observables read are bound by the problem's entity map: name agents "
@@ -1222,7 +1230,9 @@ def _register_model_tools(
             choosing a row's policy, and to write a new one as a `scheme`: copy the nearest entry
             and edit it. Each is written over the statement type's ROLES; `@` gives the rate, and
             a name in it is one of the `parameters` its header lists, which a row binds as
-            `kf=...`.
+            `kf=...`. A scheme reads no agent its row's statement does not name: a molecule other
+            than a role is a partner the statement writes a role bound or not bound to (`C` of
+            `enz{~C}`).
             """
             return _mechanisms_text(route().session, statement_type)
 

@@ -1960,6 +1960,36 @@ def test_a_scheme_with_modifiers_is_refused_where_it_is_written():
         )
 
 
+def test_a_modifier_enters_through_the_statement(tmp_path):
+    """PEtab-MCP#122: `A becomes B | inhibited inh:=C` read C in its rate while its statement, and
+    its English, named only A and B. Refused naming C and how to state it; stated as the partner
+    A is not bound to, it builds."""
+    inhibited = {
+        "statement_type": "PopulationTransition",
+        "policy": "inhibited",
+        "based_on": "mass_action",
+        "rate": "k*Ki/(Ki + inh)",
+        "parameters": ["k", "Ki"],
+        "modifiers": ["inh"],
+    }
+
+    def change(row, name):
+        (tmp_path / name).mkdir()
+        return _call(
+            _statements_server(tmp_path / name),
+            "make_changes",
+            {"justification": "C slows A becoming B", "statements": [row],
+             "mechanisms": [inhibited]},
+        )
+
+    refused = change("conv: A becomes B | inhibited inh:=C", "unstated")
+    assert refused["applied"] is False
+    assert "row 'conv': modifier `inh` reads C, which its statement does not name" in refused["error"]
+    assert "`A{~C}`, A not bound to C, for an inhibitor" in refused["error"]
+    stated = change("conv: A{~C} becomes B | inhibited inh:=C", "stated")
+    assert stated["applied"] is True, stated.get("error")
+
+
 def test_an_unknown_activity_names_the_modification_tags():
     """`A{mod:on}` (a scheme's site, written in a row) built an activity named "mod"."""
     from petab_mcp import notation
