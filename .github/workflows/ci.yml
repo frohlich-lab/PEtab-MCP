@@ -5,11 +5,16 @@ on:
     branches: [main]
   pull_request:
   merge_group:        # run required checks on the merge-queue ref (else the queue stalls)
-  workflow_dispatch:
+  workflow_dispatch:  # by hand: everything, as the weekly run
+  # Weekly, Mondays 03:00 UTC: everything, the regulator corpus on every Python too, whatever
+  # changed. A failure fails the run, red on the Actions page.
+  schedule:
+    - cron: "0 3 * * 1"
 
-# Cancel superseded runs on the same ref (e.g. rapid pushes to a PR).
+# Cancel superseded runs on the same ref (e.g. rapid pushes to a PR). By event too, so a push to
+# main does not cancel the weekly run on it.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -107,7 +112,7 @@ jobs:
   # Whether a change can move a verdict of the regulator corpus (tests/test_regulator_corpus.py):
   # the files below, diffed against the merge base. A job-level filter, not the workflow's own
   # `paths:`, so the required checks above still run on every change and the corpus job shows as
-  # skipped, not missing.
+  # skipped, not missing. The weekly and by-hand runs have nothing to diff against: they run it.
   #
   # THE LIST MUST FOLLOW THE CODE: it is what the regulator check imports and decides with
   # (`regulation.check`/`record` and what they call): regulation.py (the net rate and its sign),
@@ -153,29 +158,34 @@ jobs:
             echo "corpus=false" >> "$GITHUB_OUTPUT"
           fi
 
-  # Not a required check: skipped, it blocks nothing. One Python: a verdict is sympy's and
-  # BioNetGen's, and the test job runs the regulation tests on both.
+  # Not a required check: skipped, it blocks nothing. On a change, one Python: a verdict is
+  # sympy's and BioNetGen's, and the test job runs the regulation tests on both. The weekly and
+  # by-hand runs take the test job's matrix.
   corpus:
-    name: regulator corpus
+    name: regulator corpus (py${{ matrix.python-version }})
     needs: changes
     if: needs.changes.outputs.corpus == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["3.12", "3.13"]' || '["3.12"]') }}
     steps:
       # The test job's setup, as there (see its comments).
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.12
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
 
       - name: Cache pip
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: pip-hdf5-${{ runner.os }}-py3.12-${{ hashFiles('pyproject.toml') }}
-          restore-keys: pip-hdf5-${{ runner.os }}-py3.12-
+          key: pip-hdf5-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: pip-hdf5-${{ runner.os }}-py${{ matrix.python-version }}-
 
       - name: Install build toolchain (Ninja, HDF5)
         run: |
