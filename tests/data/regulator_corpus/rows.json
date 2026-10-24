@@ -5781,5 +5781,112 @@
     }
    ]
   }
+ },
+ {
+  "id": "issue138/t_gate/binding",
+  "source": "PEtab-MCP#138 (2026-10-24), t_gate: a term on only where a condition sets ko to 0",
+  "rows": [
+   "conv: A becomes B, activated by C | written g=\"piecewise(0, ko > 0, 1)\""
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "written",
+    "rate": "k*(1 + g*activated_by)",
+    "parameters": [
+     "k",
+     "g"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "issue138/t_gate/rate",
+  "source": "PEtab-MCP#138 (2026-10-24), t_gate: a rate's own g <= 0 branch",
+  "rows": [
+   "conv: A becomes B, activated by C | gated"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "gated",
+    "rate": "k*activated_by*piecewise(0, g <= 0, 1)",
+    "parameters": [
+     "k",
+     "g"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "issue138/t_gate/condition",
+  "source": "PEtab-MCP#138 (2026-10-24), t_gate: the binding's gate, ko set to 0 and 1 by the conditions",
+  "rows": [
+   "conv: A becomes B, activated by C | written g=\"piecewise(0, ko > 0, 1)\""
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "written",
+    "rate": "k*(1 + g*activated_by)",
+    "parameters": [
+     "k",
+     "g"
+    ],
+    "based_on": "mass_action"
+   }
+  ],
+  "problem": {
+   "parameters": [
+    {
+     "parameterId": "conv_k",
+     "lowerBound": 0.001,
+     "upperBound": 1000.0,
+     "nominalValue": 1.0,
+     "estimate": 1,
+     "parameterScale": "log10"
+    }
+   ],
+   "conditions": [
+    {
+     "conditionId": "c0",
+     "targetId": "ko",
+     "targetValue": 0.0
+    },
+    {
+     "conditionId": "c1",
+     "targetId": "ko",
+     "targetValue": 1.0
+    }
+   ],
+   "times": [
+    0.0,
+    10.0
+   ],
+   "values": {
+    "ko": 1.0
+   }
+  }
+ },
+ {
+  "id": "issue138/t_gate/direction",
+  "source": "PEtab-MCP#138 (2026-10-24), t_gate: a gate that turns the direction, signed on one branch by a derivative",
+  "rows": [
+   "conv: A becomes B, activated by C | gated"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "gated",
+    "rate": "k*piecewise(activated_by, ko > 0, 1/(1 + activated_by))",
+    "parameters": [
+     "k",
+     "ko"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
  }
 ]

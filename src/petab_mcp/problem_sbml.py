@@ -177,6 +177,13 @@ def to_antimony(
         deepcopy(model, {id(time): time})
         if reduce and any(row[4:5] and row[4] for row in rows) else None
     )
+    if as_written is not None:
+        # The copy builds each expression again, evaluated, over parameters sympy takes as
+        # positive from their seeded values: a gate's `ko > 0` became True. Each is the original
+        # over the copy's components, every comparison as written.
+        components = {c.name: c for c in as_written.components}
+        for expression in as_written.expressions:
+            expression.expr = M.over(model.expressions[expression.name].expr, components)
     reduced = reduction.reduce(model, whole) if reduce else reduction.Reduction()
     # A readout over blocks of a split monomer is their product, so it is made after the split.
     amounts = {
