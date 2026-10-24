@@ -1028,6 +1028,9 @@ def test_time_ranges_over_the_problems_experiments(times, refused):
     shown where time can be negative."""
     rate = _rate("k*activated_by*time/(tau + time)", "k", "tau", stmt_type="PopulationTransition",
                  based_on="mass_action")
+    # As deep in a long run: sympy's cache cleared, a copied model's `time` was a new symbol that
+    # BioNetGen's export refused (CI on 28d1d26).
+    sympy.core.cache.clear_cache()
     (emission,) = _build(["conv: A becomes B, activated by C | written"], rate, times=times)
     assert emission.derived == ({"activated_by_0": "modulated_by"} if refused else {})
 
