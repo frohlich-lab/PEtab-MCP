@@ -804,8 +804,9 @@ class _Ctx:
 
 # MCP tool annotations: hints a client may use to auto-approve reads and to confirm writes. A
 # "read-only" tool may still log a failed call or cache the on-demand simulation; neither changes
-# what any later call returns. The writers are NOT destructive: each appends a version and
-# erases nothing (see ``provenance``), and neither is idempotent, since a repeat appends again.
+# what any later call returns. The writers are NOT destructive: ``make_changes`` appends a version
+# and ``restore_version`` moves HEAD onto one, and neither erases anything (see ``provenance``).
+# Neither is idempotent: a repeat appends another version or another ``rollback`` event.
 _READ_ONLY = {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False}
 #: ``make_changes`` reaches PubMed when given ``references``, hence open-world.
 _MAKE_CHANGES_ANNOTATIONS = {
@@ -2203,8 +2204,9 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         fit instead of recompiling and refitting. Prefer this over re-authoring an earlier model
         with `make_changes`, which refuses an exact re-author of a fitted version; this reuses the
         existing fit and records a clean restore. Find the target with `list_versions`
-        (pick the best-scoring / is_new_best version), then `restore_version(v)`. Appends a new
-        version rather than erasing history, so a restore is itself auditable."""
+        (pick the best-scoring / is_new_best version), then `restore_version(v)`. HEAD moves back
+        to that version: no version is added or erased, and the restore is recorded as a
+        `rollback` event in the provenance log."""
         ctx = route()
         session = ctx.session
         return ctx.run(
