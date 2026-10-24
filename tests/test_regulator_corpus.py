@@ -43,7 +43,7 @@ BOUND = 60.0
 KINDS = {
     "unstated": r"which its statement does not state",
     "unread": r"does not read: the maths would not carry the claim",
-    "unnamed": r"which its statement does not name",
+    "unnamed": r"which its statement does not name|as an agent of its own",
     "unformed": r"nothing in the model forms",
     "unseen": r"does not change with it: a statement's regulator is about its own reaction",
     "reversed": r"instead: state it `",

@@ -116,8 +116,7 @@
   "verdict": "accepted"
  },
  "netrate/t5/partner": {
-  "kind": "no_rate",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "netrate/t6/basal": {
   "kind": "unseen",
@@ -884,19 +883,19 @@
   "verdict": "accepted"
  },
  "refusals/t2/inhibitor_molecule": {
-  "kind": "build",
+  "kind": "unnamed",
   "verdict": "refused"
  },
  "refusals/t4a/by_name": {
-  "kind": "build",
+  "kind": "unnamed",
   "verdict": "refused"
  },
  "refusals/t4b/0": {
-  "kind": "build",
+  "kind": "unnamed",
   "verdict": "refused"
  },
  "refusals/t4b/1": {
-  "kind": "build",
+  "kind": "unnamed",
   "verdict": "refused"
  },
  "refusals/t4c/two_spellings": {

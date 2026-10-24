@@ -15,7 +15,8 @@ say (:data:`statements._REACTIONS`), not the rules': an enzyme parked in a form 
 and a product released by a reversible step sit alike, each on the right of a ``|``, and a substrate
 a step back makes again looks like an intermediate. So a product is what the statement makes, or
 what the row's reactions make and none uses, held at 0; a reactant is what the statement consumes,
-or what the reactions use and never make; a regulator's species are held at their amounts,
+or what the reactions use and never make; a regulator's species, and a partner's that holds no
+role's agent, are held at their amounts,
 and read by its pattern as an amount of its own, a product's too; every other species of the
 reactions is an intermediate (the enzyme and its forms). With the intermediates linear in each rate
 (one intermediate per step, as in every enzyme mechanism) their steady state is one linear solve,
@@ -144,7 +145,14 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
         stated |= found - made if len(found) > 1 and found - made else found
     # Else what the reactions use and never make, however their lines are written.
     reactants = (stated | (used - made)) - products
-    intermediates = sorted((made | used) - products - reactants - regulator_species)
+    # A partner of no role's agent (the `C` of `E{~C}`, binding the enzyme) is a ligand, held at
+    # its amount as a regulator is; the intermediates are the forms of the statement's agents.
+    roles = {_n(agent.name) for agent in stmt.real_agent_list()}
+    ligands = {
+        i for i in made & used
+        if not {mp.monomer.name for mp in model.species[i].monomer_patterns} & roles
+    }
+    intermediates = sorted((made | used) - products - reactants - regulator_species - ligands)
 
     def held(i: int, regulator: bool) -> sympy.Symbol:
         sign = {"nonnegative": True} if regulator else {"positive": True}
