@@ -92,18 +92,17 @@ dependencies = [
     # never stayed on. Built from source (no wheel for a commit), which is why CI installs a
     # toolchain before it. Move to a release once one contains all five.
     "amici @ git+https://github.com/AMICI-dev/AMICI.git@a4dbb08da4d3c782ba3a2bab47c92586467ea5bc#subdirectory=python/sdist",
-    # An integration commit, not a release: ICB-DCM/pyPESTO#1786's head with main merged in, on
-    # pyPESTO's `integrate/1786-main` branch. Main has #1782: the PEtab v2 importer takes the
+    # pyPESTO main (053079a), not a release. It has #1782: the PEtab v2 importer takes the
     # estimation scales (`PetabImporter(parameter_scales=...)`), which v2 dropped from the format;
     # without it every v2 problem is optimised linearly, with start points almost all in the top
-    # decade of a log-spanning box. Main also has #1740, before which the v2 importer raised
+    # decade of a log-spanning box. It has #1740, before which the v2 importer raised
     # NotImplementedError for `hierarchical=True`, so the fit inner-solves its noise sigmas and
-    # observable scalings whenever the problem allows. #1786 keeps a constant term out of a
-    # hierarchical scaling (`scale * h + c`, Alkan's readouts), which was scaled with it,
-    # silently. Move to #1786's merge commit once it is merged, and to a release once one
-    # contains it.
-    "pypesto[petab] @ git+https://github.com/ICB-DCM/pyPESTO.git@c0ed443325c5c8aa8b6e44506213f26dfa45a8ab",
-    "fides>=0.7",
+    # observable scalings whenever the problem allows. And it has #1786 (merged), which keeps a
+    # constant term out of a hierarchical scaling (`scale * h + c`, Alkan's readouts), which was
+    # scaled with it, silently. The importer reads AMICI through `amici.sim.sundials`, which the
+    # AMICI commit above has. Move to a release once one contains #1786.
+    "pypesto[petab] @ git+https://github.com/ICB-DCM/pyPESTO.git@053079aa71710a62c1db17f3d0342e96499a3768",
+    "fides>=0.8.1",
     # INDRA supplies the Statement base class the mechanism vocabulary extends (`statements`),
     # Agent grounding, Preassembler deduplication, and the PySB assembler's monomer and site
     # construction (`mechanisms.assemble`). Pinned to one minor: `mechanisms` drives the
