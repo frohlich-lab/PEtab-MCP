@@ -3891,5 +3891,367 @@
     "based_on": "indra_default"
    }
   ]
+ },
+ {
+  "id": "netrate/2_reversed/kr2_kc",
+  "source": "review of #127/#128 (2026-10-24), netrate finding 2: a binding line written dissociation first",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by I | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=1) % sub(enz=1, mod='off') | enz(sub=None) + sub(enz=None, mod='off') @ kr*(1+amount(inhibited_by)/Ki)^2, kf\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc*(1+amount(inhibited_by)/Ki)",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "Ki"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/2_reversed/competitive",
+  "source": "review of #127/#128 (2026-10-24), netrate finding 2: a binding line written dissociation first",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by I | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=1) % sub(enz=1, mod='off') | enz(sub=None) + sub(enz=None, mod='off') @ kr, kf/(1+amount(inhibited_by)/Ki)\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "Ki"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/3/enzyme_inhibits_itself",
+  "source": "review of #127/#128 (2026-10-24), netrate finding 3: the regulator is the enzyme",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by E | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "rate": "kc/(1 + inhibited_by/K)",
+    "parameters": [
+     "kc",
+     "K"
+    ],
+    "based_on": "indra_default"
+   }
+  ]
+ },
+ {
+  "id": "netrate/1/advice",
+  "source": "review of #127/#128 (2026-10-24), netrate finding 1: the synthesis row the refusal names",
+  "rows": [
+   "d: S is degraded | indra_default",
+   "s: S is produced, activated by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "IncreaseAmount",
+    "policy": "w",
+    "rate": "ks*(1 + activated_by/K)",
+    "parameters": [
+     "ks",
+     "K"
+    ],
+    "based_on": "indra_default"
+   }
+  ]
+ },
+ {
+  "id": "netrate/t4/Inhibition",
+  "source": "review of #127/#128 (2026-10-24), netrate/t4.py: types without a statement table entry before",
+  "rows": [
+   "a: MEK inhibits ERK, activated by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Inhibition",
+    "policy": "w",
+    "scheme": "subj() + obj(act='active') >> subj() + obj(act='inactive') @ ki*amount(activated_by)\nobj(act='inactive') >> obj(act='active') @ kr",
+    "parameters": [
+     "ki",
+     "kr"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t4/Activation_binding",
+  "source": "review of #127/#128 (2026-10-24), netrate/t4.py: types without a statement table entry before",
+  "rows": [
+   "a: MEK activates ERK, activated by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Activation",
+    "policy": "w",
+    "scheme": "subj(obj=None) + obj(subj=None, act='inactive') | subj(obj=1) % obj(subj=1, act='inactive') @ kf, kr\nsubj(obj=1) % obj(subj=1, act='inactive') >> subj(obj=None) + obj(subj=None, act='active') @ kc*amount(activated_by)",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t4/Activation_binding_back",
+  "source": "review of #127/#128 (2026-10-24), netrate/t4.py: types without a statement table entry before",
+  "rows": [
+   "a: MEK activates ERK, activated by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Activation",
+    "policy": "w",
+    "scheme": "subj(obj=None) + obj(subj=None, act='inactive') | subj(obj=1) % obj(subj=1, act='inactive') @ kf, kr\nsubj(obj=1) % obj(subj=1, act='inactive') >> subj(obj=None) + obj(subj=None, act='active') @ kc*amount(activated_by)\nobj(act='active') >> obj(act='inactive') @ kd",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "kd"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t4/Gef",
+  "source": "review of #127/#128 (2026-10-24), netrate/t4.py",
+  "rows": [
+   {
+    "statement": {
+     "type": "Gef",
+     "gef": {
+      "name": "SOS"
+     },
+     "ras": {
+      "name": "KRAS"
+     },
+     "activated_by": [
+      {
+       "name": "X"
+      }
+     ]
+    },
+    "policy": "w",
+    "prefix": "g"
+   }
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Gef",
+    "policy": "w",
+    "scheme": "gef() + ras(gtpbound='inactive') >> gef() + ras(gtpbound='active') @ kx*amount(activated_by)\nras(gtpbound='active') >> ras(gtpbound='inactive') @ kh",
+    "parameters": [
+     "kx",
+     "kh"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t4/Gap",
+  "source": "review of #127/#128 (2026-10-24), netrate/t4.py",
+  "rows": [
+   {
+    "statement": {
+     "type": "Gap",
+     "gap": {
+      "name": "SOS"
+     },
+     "ras": {
+      "name": "KRAS"
+     },
+     "activated_by": [
+      {
+       "name": "X"
+      }
+     ]
+    },
+    "policy": "w",
+    "prefix": "g"
+   }
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Gap",
+    "policy": "w",
+    "scheme": "gap() + ras(gtpbound='active') >> gap() + ras(gtpbound='inactive') @ kx*amount(activated_by)\nras(gtpbound='inactive') >> ras(gtpbound='active') @ kh",
+    "parameters": [
+     "kx",
+     "kh"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/v3/four_regulators",
+  "source": "review of #127/#128 (2026-10-24), netrate/v3.py: three reversible steps, four regulators",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by I0 and I1 and I2, activated by A0 | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ k1/(1 + amount(inhibited_by_0)/K0), km1*(1 + amount(inhibited_by_1)/K1)\nenz(sub=1) % sub(enz=1, mod='off') | enz(sub=1) % sub(enz=1, mod='on') @ k2/(1 + amount(inhibited_by_2)/K2), km2\nenz(sub=1) % sub(enz=1, mod='on') | enz(sub=None) + sub(enz=None, mod='on') @ k3*(1 + amount(activated_by_0)/K3), km3",
+    "parameters": [
+     "k1",
+     "km1",
+     "k2",
+     "km2",
+     "k3",
+     "km3",
+     "K0",
+     "K1",
+     "K2",
+     "K3"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t21/1reg",
+  "source": "review of #127/#128 (2026-10-24), netrate/t21.py, v6.py: saturating regulators on kc of two steps (finding 8)",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by I | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc/(1 + rho2*amount(inhibited_by)/(H2 + amount(inhibited_by)))",
+    "parameters": [
+     "H2",
+     "kc",
+     "kf",
+     "kr",
+     "rho2"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t21/2reg",
+  "source": "review of #127/#128 (2026-10-24), netrate/t21.py, v6.py: saturating regulators on kc of two steps (finding 8)",
+  "rows": [
+   "p: E phosphorylates S at S10, activated by A, inhibited by I | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc*(1 + a34*amount(activated_by)/(H34 + amount(activated_by)))/(1 + rho2*amount(inhibited_by)/(H2 + amount(inhibited_by)))",
+    "parameters": [
+     "H2",
+     "H34",
+     "a34",
+     "kc",
+     "kf",
+     "kr",
+     "rho2"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t21/3reg",
+  "source": "review of #127/#128 (2026-10-24), netrate/t21.py, v6.py: saturating regulators on kc of two steps (finding 8)",
+  "rows": [
+   "p: E phosphorylates S at S10, activated by A, inhibited by I, modulated by M | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc*(1 + a34*amount(activated_by)/(H34 + amount(activated_by)))/(1 + rho2*amount(inhibited_by)/(H2 + amount(inhibited_by)))/(1 + rho3*amount(modulated_by)/(H3 + amount(modulated_by)))",
+    "parameters": [
+     "H2",
+     "H3",
+     "H34",
+     "a34",
+     "kc",
+     "kf",
+     "kr",
+     "rho2",
+     "rho3"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t21/2sum",
+  "source": "review of #127/#128 (2026-10-24), netrate/t21.py, v6.py: saturating regulators on kc of two steps (finding 8)",
+  "rows": [
+   "p: E phosphorylates S at S10, modulated by M0 and M1 | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc*(1 + a34*amount(modulated_by_0)/(H34 + amount(modulated_by_0)) + a24*amount(modulated_by_1)/(H24 + amount(modulated_by_1)))",
+    "parameters": [
+     "H24",
+     "H34",
+     "a24",
+     "a34",
+     "kc",
+     "kf",
+     "kr"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t9/5_all",
+  "source": "review of #127/#128 (2026-10-24), netrate/t9.py: five enzyme forms all joined (14 s before)",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by I | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(conf='s0') | enz(conf='s1') @ k01, k10\nenz(conf='s0') | enz(conf='s2') @ k02, k20\nenz(conf='s0') | enz(conf='s3') @ k03, k30\nenz(conf='s0') | enz(conf='s4') @ k04, k40\nenz(conf='s1') | enz(conf='s2') @ k12, k21\nenz(conf='s1') | enz(conf='s3') @ k13, k31\nenz(conf='s1') | enz(conf='s4') @ k14, k41\nenz(conf='s2') | enz(conf='s3') @ k23, k32\nenz(conf='s2') | enz(conf='s4') @ k24, k42\nenz(conf='s3') | enz(conf='s4') @ k34, k43\nenz(conf='s4') + sub(mod='off') >> enz(conf='s4') + sub(mod='on') @ kc/(1+amount(inhibited_by)/K)",
+    "parameters": [
+     "k01",
+     "k10",
+     "k02",
+     "k20",
+     "k03",
+     "k30",
+     "k04",
+     "k40",
+     "k12",
+     "k21",
+     "k13",
+     "k31",
+     "k14",
+     "k41",
+     "k23",
+     "k32",
+     "k24",
+     "k42",
+     "k34",
+     "k43",
+     "kc",
+     "K"
+    ]
+   }
+  ]
  }
 ]

@@ -36,6 +36,7 @@ import random
 import re
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
+from time import monotonic
 
 import numpy as np
 import pysb
@@ -47,6 +48,7 @@ from indra.statements import (
     Complex,
     Conversion,
     DecreaseAmount,
+    IncreaseAmount,
     Inhibition,
     Modification,
     RegulateActivity,
@@ -63,6 +65,12 @@ logger = logging.getLogger(__name__)
 #: has no net rate to read.
 NET_TERMS = 400
 
+#: The most intermediates and steps a row may have for its steady state to be solved for.
+NET_FORMS, NET_STEPS = 16, 64
+
+#: Seconds a row's regulators are signed in, at most: past it, one not yet signed is not shown.
+ROW_SECONDS = 30.0
+
 #: How many points :func:`sampled` reads J at.
 SAMPLES = 256
 
@@ -78,10 +86,15 @@ TIME = sympy.Symbol("time", nonnegative=True)
 class NetRate:
     """A row's net rate J and, for each regulator its statement states (by kind and position,
     ``inhibited_by_0``), the amounts in J its pattern reads: none where nothing in the model forms
-    it. ``parameters`` names, for each name in J that is a parameter, its id."""
+    it."""
 
     value: sympy.Expr
     regulators: dict[str, tuple[sympy.Symbol, ...]]
+    #: J over its steps' coefficients, each a name of its own, and what each name is: the small
+    #: form :func:`_through_steps` signs J by.
+    over_steps: sympy.Expr | None = None
+    steps: dict[sympy.Symbol, sympy.Expr] = field(default_factory=dict)
+    #: Each name in J that is a parameter, and its id: what a version's table signs it by.
     parameters: dict[str, str] = field(default_factory=dict)
 
 
@@ -184,7 +197,19 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
         species = {sympy.Symbol(f"__s{i}"): amount for i, amount in amounts.items()}
         return rate.xreplace(species).xreplace(names).xreplace({time: TIME})
 
-    rates = [value(rx["rate"]) for rx in reactions]
+    if len(intermediates) > NET_FORMS or len(reactions) > NET_STEPS:
+        raise MechanismError("its intermediates' steady state is too large to solve symbolically")
+    # A removal's way back, a step that makes what it removes and leaves its intermediates as they
+    # were (`None >> obj`, synthesis), is silent as a product's way back is with the product
+    # absent: a regulator of synthesis is a synthesis statement's, as one of degradation is.
+    removing = {i for i, e in effects.items() if e < 0} & reactants
+    back = [
+        bool(removing)
+        and any(rx["products"].count(i) > rx["reactants"].count(i) for i in removing)
+        and all(rx["products"].count(i) == rx["reactants"].count(i) for i in intermediates)
+        for rx in reactions
+    ]
+    rates = [sympy.Integer(0) if b else value(rx["rate"]) for rx, b in zip(reactions, back)]
     involved = sorted(made | used)
     unknown = [amounts[i] for i in intermediates]
     # Linear in the intermediates: at most one among a step's reactants, and none in its rate
@@ -237,17 +262,29 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
     # Kept as built, its factors apart, for the sign prover; cancelled only to tell zero. A
     # regulator held at its amount moves with no reaction of the row's but the one it is.
     held_regulators = regulator_species - products - set(effects)
-    net = {
-        i: change[i].xreplace(steady).xreplace(coefficients)
+    over_steps = {
+        i: change[i].xreplace(steady)
         for i in involved if i not in intermediates and i not in held_regulators
     }
+    net = {i: rate.xreplace(coefficients) for i, rate in over_steps.items()}
     moving = {i for i, rate in net.items() if not _vanishes(rate)}
     made_now = [i for i in sorted(products) if i in moving]
     removed = [i for i, e in sorted(effects.items()) if e < 0 and i in moving]
+    regulated = {
+        stated: tuple(regulator_amounts[i] for i in sorted({i for o in observables for i in o.species}))
+        for stated, observables in read.items()
+    }
     if not made_now and not removed:
+        stated_products = {i for i, e in effects.items() if e > 0}
+        making = [rx for rx in reactions if set(rx["products"]) & stated_products]
+        if making and all(set(rx["reactants"]) & products for rx in making):
+            # Every step that makes a product takes one (`A + B >> 2B`): with its products absent
+            # the reaction does not run, and J is 0 whatever its regulators.
+            return NetRate(sympy.Integer(0), regulated)
         raise MechanismError("it makes nothing from its reactants alone")
     reference = made_now[0] if made_now else removed[0]
     j = net[reference] if made_now else -net[reference]
+    j_over_steps = over_steps[reference] if made_now else -over_steps[reference]
     if j.has(sympy.zoo, sympy.nan, sympy.oo, -sympy.oo):
         raise MechanismError("its net rate is not finite with its products absent")
     for i in moving:
@@ -256,39 +293,11 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
                 f"it changes {model.species[reference]} and {model.species[i]} at rates no "
                 "constant ratio relates: two reactions, with no one net rate"
             )
-    return NetRate(j, {
-        stated: tuple(regulator_amounts[i] for i in sorted({i for o in observables for i in o.species}))
-        for stated, observables in read.items()
-    }, {p.name: p.name for p in model.parameters})
-
-
-def _arborescences(reactions, intermediates) -> int:
-    """How many terms the intermediates' steady state has, by King and Altman's count: the trees
-    of steps that reach each intermediate from all the others, counted by the matrix-tree theorem
-    on the steps from one intermediate to another. What the solve costs grows with it, the
-    expression past any bound (six enzyme forms all joined took over 15 minutes)."""
-    index = {i: k for k, i in enumerate(intermediates)}
-    laplacian = np.zeros((len(index), len(index)))
-    group = list(range(len(index)))
-
-    def find(k: int) -> int:
-        while group[k] != k:
-            k = group[k]
-        return k
-
-    for rx in reactions:
-        before = [index[i] for i in rx["reactants"] if i in index]
-        for b in before:
-            for a in (index[i] for i in rx["products"] if i in index):
-                if a != b:
-                    laplacian[b, b] += 1
-                    laplacian[b, a] -= 1
-                    group[find(a)] = find(b)
-    total = 0
-    for root in range(len(index)):
-        rest = [k for k in range(len(index)) if k != root and find(k) == find(root)]
-        total += round(abs(np.linalg.det(laplacian[np.ix_(rest, rest)]))) if rest else 1
-    return total
+    return NetRate(
+        j, regulated, j_over_steps,
+        {c: e for c, e in coefficients.items() if c in j_over_steps.free_symbols},
+        {p.name: p.name for p in model.parameters},
+    )
 
 
 def _arborescences(reactions, intermediates) -> int:
@@ -382,10 +391,43 @@ def direction(rate: NetRate, stated: str) -> int | None:
     every one moves it; ``None`` where one cannot be shown or two disagree."""
     from .mechanisms import _direction
 
-    moves = {_direction(rate.value, symbol) for symbol in rate.regulators.get(stated, ())} - {0}
+    moves = set()
+    for symbol in rate.regulators.get(stated, ()):
+        found = _direction(rate.value, symbol)
+        moves.add(_through_steps(rate, symbol) if found is None else found)
+    moves -= {0}
     if None in moves or len(moves) > 1:
         return None
     return moves.pop() if moves else 0
+
+
+def _through_steps(rate: NetRate, x: sympy.Symbol) -> int | None:
+    """How J moves with ``x`` by the chain rule through its steps' coefficients: dJ/dx is the sum
+    over the steps whose coefficient reads ``x`` of dJ/dc times dc/dx, each signed apart, J over
+    its coefficients small (King and Altman's form) and each coefficient one step's rate. Shown
+    where every such product has one sign; ``None`` otherwise, or where J reads ``x`` but through
+    its coefficients."""
+    from .mechanisms import _direction, _sign
+
+    if rate.over_steps is None or x in rate.over_steps.free_symbols:
+        return None
+    signed = {}
+    for c, coefficient in rate.steps.items():
+        sign = _sign(coefficient)
+        signed[c] = (sympy.Symbol(c.name, positive=True) if sign == 1
+                     else sympy.Symbol(c.name, negative=True) if sign == -1 else c)
+    over_steps = rate.over_steps.xreplace(signed)
+    ways = set()
+    for c, coefficient in rate.steps.items():
+        if x not in coefficient.free_symbols:
+            continue
+        inner = _direction(coefficient, x)
+        outer = _direction(over_steps, signed[c]) if inner else 0
+        if inner is None or outer is None:
+            return None
+        ways.add(inner * outer)
+    ways -= {0}
+    return ways.pop() if len(ways) == 1 else (None if ways else 0)
 
 
 def sampled(
@@ -533,7 +575,9 @@ def record(model: pysb.Model, rows: list[tuple], emissions) -> list:
                     "statement that forms it, declare it present in `starts`, or leave it out of "
                     "this statement and its rate"
                 )
-        found = {s: _shown_safely(rate, s, prefix) for s in positions}
+        deadline = monotonic() + ROW_SECONDS
+        found = {s: _shown_safely(rate, s, prefix) if monotonic() < deadline else None
+                 for s in positions}
         for s, way in found.items():
             if way == 0:
                 raise MechanismError(_unseen(model, emission, stmt, policy, prefix, stated, s))
@@ -563,10 +607,14 @@ def _shown_safely(rate: NetRate, s: str, prefix: str, domain=None) -> int | None
 # ------------------------------------------------------------------------------- a version's bounds
 def stored(rate: NetRate) -> dict:
     """``rate`` as a version's record keeps it: J as text over names of its own (``p0`` a
-    parameter, ``a1`` an amount, ``t2`` a conserved total, ``time``), what each name is, and the
-    names each regulator reads."""
-    symbols = sorted(rate.value.free_symbols | {x for xs in rate.regulators.values() for x in xs},
-                     key=str)
+    parameter, ``a1`` an amount, ``t2`` a conserved total, ``time``), what each name is, the names
+    each regulator reads, and J over its steps (``c0`` a step's coefficient) with each step's."""
+    over = rate.over_steps.free_symbols - set(rate.steps) if rate.over_steps is not None else set()
+    symbols = sorted(
+        rate.value.free_symbols | {x for xs in rate.regulators.values() for x in xs} | over
+        | {x for coefficient in rate.steps.values() for x in coefficient.free_symbols},
+        key=str,
+    )
     names, kinds = {}, {}
     for k, symbol in enumerate(symbols):
         if symbol == TIME:
@@ -580,10 +628,15 @@ def stored(rate: NetRate) -> dict:
             name = f"a{k}"
             kinds[name] = {"amount": symbol.name, "nonnegative": not symbol.is_positive}
         names[symbol] = sympy.Symbol(name)
+    steps = {c: sympy.Symbol(f"c{k}") for k, c in enumerate(sorted(rate.steps, key=str))}
     return {
         "J": str(rate.value.xreplace(names)),
         "names": kinds,
         "regulators": {s: [names[x].name for x in xs] for s, xs in rate.regulators.items()},
+        **({
+            "over_steps": str(rate.over_steps.xreplace(names).xreplace(steps)),
+            "steps": {steps[c].name: str(e.xreplace(names)) for c, e in rate.steps.items()},
+        } if rate.over_steps is not None else {}),
     }
 
 
@@ -594,10 +647,16 @@ def restored(data: dict) -> NetRate:
         sign = {"nonnegative": True} if kind.get("time") or kind.get("nonnegative") else {
             "positive": True}
         symbols[name] = sympy.Symbol(name, **sign)
-    value = sympy.sympify(data["J"], locals={**symbols, "Piecewise": sympy.Piecewise})
+    steps = {name: sympy.Symbol(name) for name in data.get("steps", {})}
+
+    def read(text: str) -> sympy.Expr:
+        return sympy.sympify(text, locals={**symbols, **steps, "Piecewise": sympy.Piecewise})
+
     return NetRate(
-        value,
+        read(data["J"]),
         {s: tuple(symbols[n] for n in names) for s, names in data["regulators"].items()},
+        read(data["over_steps"]) if "over_steps" in data else None,
+        {steps[name]: read(text) for name, text in data.get("steps", {}).items()},
         {name: kind["parameter"] for name, kind in data["names"].items() if "parameter" in kind},
     )
 
@@ -655,6 +714,7 @@ def bounded(rate: NetRate, problem) -> tuple[NetRate, dict[str, tuple[float, flo
     return replace(
         rate,
         value=rate.value.xreplace(swap),
+        steps={c: coefficient.xreplace(swap) for c, coefficient in rate.steps.items()},
         parameters={n: p for n, p in rate.parameters.items() if sympy.Symbol(n) not in swap},
     ), domain
 
@@ -701,7 +761,9 @@ def resign(record: dict, problem) -> tuple[dict, int]:
             continue
         try:
             rate, domain = bounded(restored(data), problem)
-            found = {s: shown(rate, s, domain) for s in positions}
+            deadline = monotonic() + ROW_SECONDS
+            found = {s: shown(rate, s, domain) if monotonic() < deadline else None
+                     for s in positions}
         except Exception:  # noqa: BLE001 - a sign that breaks is not shown; never a crash
             logger.exception("row %r: signing its regulators on the version's bounds failed",
                              row.get("prefix"))
@@ -781,6 +843,14 @@ def _step_row(stmt, before, after, kind: str, regulator) -> tuple[str, str, str]
             f"{agent_text(gone.to_json())}'s degradation", row + clause,
             f"a DecreaseAmount whose mechanism reads it, a written `rate` `kd{factor}` with "
             "`parameters` [kd, K]",
+        )
+    if not left and len(right) == 1 and len(right[0]) == 1 and agent(right[0][0]) is not None:
+        made = agent(right[0][0])
+        row = text(IncreaseAmount(None, made))
+        return row and (
+            f"{agent_text(made.to_json())}'s synthesis", row + clause,
+            f"an IncreaseAmount whose mechanism reads it, a written `rate` `ks{factor}` with "
+            "`parameters` [ks, K]",
         )
     if (len(left) == 1 and len(left[0]) == 2 and len(right) == 2 and all(len(c) == 1 for c in right)
             and sorted(m.monomer.name for m in left[0]) == sorted(c[0].monomer.name for c in right)

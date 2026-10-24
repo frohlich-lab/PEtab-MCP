@@ -320,10 +320,6 @@ def test_turnover_with_basal_synthesis_is_signed_on_its_degradation(degradation)
 @pytest.mark.parametrize(
     "stmt_type, row, scheme, derived",
     [
-        # Synthesis written first: the statement's reaction, degradation, is the `|`'s way back,
-        # and X, which speeds synthesis, slows the net loss.
-        ("DecreaseAmount", "d: mRNA is degraded, activated by X",
-         "None | obj() @ ks*amount(activated_by), kd", {"activated_by_0": "inhibited_by"}),
         # The conversion written backwards: X speeds its way back, which is A becoming B.
         ("Conversion", "c: A -> B, activated by X",
          "obj_to() | obj_from() @ kr, kf*amount(activated_by)", {}),
@@ -715,3 +711,54 @@ def test_a_pinned_constant_is_signed_as_its_value(b, derived):
                          _rate("k*exp(b*inhibited_by)", "k", "b", stmt_type="PopulationTransition",
                                based_on="mass_action") | {"policy": "loglin"})
     assert emission.derived == derived
+
+
+def test_a_regulator_of_synthesis_is_a_synthesis_rows_not_a_degradations():
+    """review of #128, netrate #1: a DecreaseAmount's J counted synthesis, so X speeding
+    `None >> obj` read as an inhibitor of degradation, though the degradation flux rises with X.
+    Its way back is silent as a product's is, and X belongs on the synthesis row, which builds as
+    the refusal writes it; the mirror of c1."""
+    for scheme in ("obj() >> None @ kd\nNone >> obj() @ ks*(1 + amount(activated_by)/K)",
+                   "None | obj() @ ks*(1 + amount(activated_by)/K), kd"):
+        with pytest.raises(MechanismError, match=(
+            r"reads `activated by X` only in `None >> mRNA`, mRNA's synthesis, .* State it on a row "
+            r"of that step instead, `mRNA is produced, activated by X`: an IncreaseAmount"
+        )):
+            _build(["d: mRNA is degraded, activated by X | written"],
+                   _scheme("DecreaseAmount", scheme, "kd", "ks", "K"))
+    _build(["d: mRNA is degraded | indra_default", "s: mRNA is produced, activated by X | written"],
+           _rate("ks*(1 + activated_by/K)", "ks", "K", stmt_type="IncreaseAmount"))
+
+
+@pytest.mark.parametrize("scheme", [
+    "obj_from_0() + obj_to_0() >> obj_to_0() + obj_to_0() @ ka*amount(activated_by)",
+    "obj_from_0() >> obj_to_0() @ kb\n"
+    "obj_from_0() + obj_to_0() >> obj_to_0() + obj_to_0() @ ka*amount(activated_by)",
+])
+def test_a_product_that_makes_itself_is_refused_alike_alone_or_beside_a_basal_step(scheme):
+    """review of #128, netrate #4: with its products absent an autocatalytic step does not run,
+    so J does not change with what speeds it, alone (J is 0) or beside a basal step; the two read
+    alike. Whether products are held at 0 is the user's call to make."""
+    with pytest.raises(MechanismError, match=r"reads `activated by X` only in `A \+ B >> B \+ B`"):
+        _build(["c: A -> B, activated by X | written"],
+               _scheme("Conversion", scheme, *sorted({"ka", "kb"} & set(M._RATE_TOKENS.findall(scheme)))))
+
+
+def test_a_rate_of_several_steps_is_signed_through_their_coefficients():
+    """review of #128, netrate #8: three saturating regulators on the catalytic step of two made J
+    too large to sign whole, though the one-step twin signs all three. Signed by the chain rule
+    through each step's coefficient, on J over the coefficients (King and Altman's form)."""
+    factor = ("*(1 + a*amount(activated_by)/(Ha + amount(activated_by)))"
+              "/(1 + r*amount(inhibited_by)/(Hi + amount(inhibited_by)))")
+    (emission,) = _build([_PHOSPHO.format(regulator="activated by A, inhibited by I")], _scheme(
+        "Phosphorylation", _TWO_STEPS.format(kf="kf", kr="kr", kc="kc" + factor),
+        "kf", "kr", "kc", "a", "r", "Ha", "Hi"))
+    assert emission.derived == {}
+
+
+def test_an_enzyme_stated_as_its_own_inhibitor_is_one_amount():
+    """review of #128, netrate #3: `E phosphorylates S, inhibited by E` with `kc/(1 + E/K)` gave
+    the regulator a molecule of its own; the flux, kc*E*S/(1 + E/K), rises with E."""
+    (emission,) = _build([_PHOSPHO.format(regulator="inhibited by MEK")],
+                         _rate("kc/(1 + inhibited_by/K)", "kc", "K"))
+    assert emission.derived == {"inhibited_by_0": "activated_by"}
