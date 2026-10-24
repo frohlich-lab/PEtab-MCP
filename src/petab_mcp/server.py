@@ -2141,8 +2141,10 @@ def _register_reduction_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         unreduced model, which can mean a long compile, so call it once. Returns `{status, nll:
         {reduced, unreduced}, nll_difference, max_relative_difference, worst, network, ...}`, and
         writes the same beside the HEAD version (`file`). `status` is `ok`, `reduction_mismatch`
-        (the unreduced nll is the model's own), `not_reduced`, `not_statements` or `non_finite`;
-        see :mod:`petab_mcp.reduction_check`.
+        (the unreduced nll is the model's own), `undecided` (no tolerance level integrates both
+        models: a solver failure, no verdict on the reduction), `error` (the check failed;
+        `reason` says how), `not_reduced` or `not_statements`; see
+        :mod:`petab_mcp.reduction_check`.
         """
         ctx = route()
         return ctx.run(

@@ -166,6 +166,9 @@ include = ["src/petab_mcp", "tests", "README.md", "LICENSE"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
+# `slow`: compiles AMICI models of its own (the reduction corpus's verify_reduction cases). CI runs
+# them; `-m "not slow"` skips them locally.
+markers = ["slow: compiles AMICI models of its own"]
 # NO `-n` here, deliberately. Parallelism is requested by the CALLER (`.github/workflows/ci.yml`
 # passes `-n 2` for the 2-core runner) rather than baked into every invocation, because in addopts
 # it cost more than it bought locally: it made pytest-xdist a HARD dependency (bare `pytest` exits

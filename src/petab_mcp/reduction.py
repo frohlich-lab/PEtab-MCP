@@ -16,11 +16,16 @@ per substrate species, the right-hand side identical term by term. ``Obs`` count
 species, not molecules, because BioNetGen counts a catalyst species once however many molecules
 in it match: two maps that differ only outside the reaction centre are one reaction. The same
 holds when the catalyst and the substrate are one monomer (EGFR on EGFR), which BioNetGen writes
-``k·[s]·[s]`` with no symmetry factor. A rule with two unchanged complexes keeps its form (the two
-could be the same pattern, which BioNetGen would count by symmetry), as does a binding, a
-two-step mechanism, whose steps bind and release, and a ligand that binds its receptor while its
-free pool stays as it was (``nondepleting``). The rule keeps its name, so a reaction still says
-which rule and row it came from.
+``k·[s]·[s]`` with no symmetry factor. Unchanged is as BioNetGen reads it, which pairs the
+molecules of one type in the order they are written across each side, not complex by complex:
+in ``C8(off) + C8(on) >> p18() + C8(on)`` the C8 that stays is the first one, turned on, and the
+second is consumed, so neither complex is unchanged; read by place, the second looked like a
+catalyst, and the rewrite carried the wrong molecule's partners over, up to 25-fold wrong (the
+#115 review). A rule with two unchanged complexes keeps its form (``E + E + A >> E + B + E``:
+BioNetGen counts the two by symmetry, at half the rate), as does a binding, a two-step mechanism,
+whose steps bind and release, and a ligand that binds its receptor while its free pool stays as
+it was (``nondepleting``). The rule keeps its name, so a reaction still says which rule and row
+it came from.
 
 **Independent sites are tracked apart.** Once no catalyst is in a rule, a monomer that rules only
 turn from one form into another (``M(a='u') >> M(a='p')``) needs its sites together only where a
@@ -143,11 +148,10 @@ def _catalysts_as_rates(model: pysb.Model) -> dict[str, tuple[int, pysb.Observab
         # INDRA pads a side with None for Kappa (`E() + None >> E() + X()`): no complex.
         lhs = [cp for cp in rule.reactant_pattern.complex_patterns if cp is not None]
         rhs = [cp for cp in rule.product_pattern.complex_patterns if cp is not None]
-        # At the same place on both sides: BioNetGen maps molecules of one type in order.
-        same = [i for i in range(min(len(lhs), len(rhs))) if str(lhs[i]) == str(rhs[i])]
-        if len(same) != 1:
+        unchanged = _unchanged(lhs, rhs)
+        if len(unchanged) != 1:
             continue
-        (i,) = same
+        ((i, j),) = unchanged
         if _bonds(rhs) > _bonds(lhs):
             continue
         amount = pysb.Observable(
@@ -163,7 +167,7 @@ def _catalysts_as_rates(model: pysb.Model) -> dict[str, tuple[int, pysb.Observab
                 rule.name,
                 RuleExpression(
                     ReactionPattern(lhs[:i] + lhs[i + 1 :]),
-                    ReactionPattern(rhs[:i] + rhs[i + 1 :]),
+                    ReactionPattern(rhs[:j] + rhs[j + 1 :]),
                     rule.is_reversible,
                 ),
                 *factors,
@@ -183,6 +187,29 @@ def _catalysts_as_rates(model: pysb.Model) -> dict[str, tuple[int, pysb.Observab
 def _rewrite(rule: pysb.Rule, lhs: ReactionPattern, rhs: ReactionPattern) -> None:
     rule.rule_expression = RuleExpression(lhs, rhs, rule.is_reversible)
     rule.reactant_pattern, rule.product_pattern = lhs, rhs
+
+
+def _unchanged(lhs: list, rhs: list) -> list[tuple[int, int]]:
+    """Each (reactant, product) pair of complexes BioNetGen carries over unchanged: it pairs the
+    molecules of one type in the order they are written across each side, so a complex is unchanged
+    when every one of its molecules is paired with the same molecule of an equal complex. Removing
+    such a pair keeps the order, and so the pairing, of every other molecule."""
+    written: dict[tuple[str, str], list[tuple[int, int]]] = {}
+    for side, complexes in (("lhs", lhs), ("rhs", rhs)):
+        for i, cp in enumerate(complexes):
+            for m, mp in enumerate(cp.monomer_patterns):
+                written.setdefault((side, mp.monomer.name), []).append((i, m))
+    paired = {}
+    for (side, monomer), places in written.items():
+        if side == "lhs":
+            paired |= dict(zip(places, written.get(("rhs", monomer), [])))
+    return [
+        (i, j)
+        for i, cp in enumerate(lhs)
+        for j, other in enumerate(rhs)
+        if str(cp) == str(other)
+        and all(paired.get((i, m)) == (j, m) for m in range(len(cp.monomer_patterns)))
+    ]
 
 
 def _bonds(complexes: list[pysb.ComplexPattern]) -> int:
@@ -371,7 +398,9 @@ def reads(amount, present: set[int]) -> bool:
 def reached(model: pysb.Model, reduction: Reduction) -> set[int]:
     """The species (indices into ``model.species``) the start reaches when a rewritten rule's
     reaction counts only once a species of its catalyst is reached, as the original rule's would."""
-    present = {model.get_species_index(initial.pattern) for initial in model.initials}
+    # A start the expansion holds no species for (none, when nothing fires from the first starts
+    # and the made ones are seeded after) reaches nothing.
+    present = {model.get_species_index(initial.pattern) for initial in model.initials} - {None}
     waiting = set(range(len(model.reactions)))
     while True:
         fire = {i for i in waiting if _enabled(model.reactions[i], reduction, present)}
