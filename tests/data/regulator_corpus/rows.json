@@ -4253,5 +4253,134 @@
     ]
    }
   ]
+ },
+ {
+  "id": "advice/products_at_0/ras_sos/product_stated",
+  "source": "review of #127/#128 (2026-10-24), the rows the products-at-0 refusal names (user's decision, 2026-10-24), followed",
+  "rows": [
+   "c1: RAS{-mod\"GTP\"} -> RAS{mod\"GTP\"}, activated by SOS and RAS{mod\"GTP\"} | fed"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "fed",
+    "scheme": "obj_from_0() >> obj_to_0() @ kb + kf*amount(activated_by_0)*amount(activated_by_1)\nobj_to_0() >> obj_from_0() @ kgap",
+    "parameters": [
+     "kb",
+     "kf",
+     "kgap"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "advice/products_at_0/ras_sos/own_row",
+  "source": "review of #127/#128 (2026-10-24), the rows the products-at-0 refusal names (user's decision, 2026-10-24), followed",
+  "rows": [
+   "c1: RAS{-mod\"GTP\"} -> RAS{mod\"GTP\"}, activated by SOS and RAS{mod\"GTP\"} | fed",
+   "c2: RAS{mod\"GTP\"} -> RAS{-mod\"GTP\"} | mass_action"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "fed",
+    "scheme": "obj_from_0() >> obj_to_0() @ kb + kf*amount(activated_by_0)*amount(activated_by_1)",
+    "parameters": [
+     "kb",
+     "kf"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "advice/products_at_0/autoregulation/product_stated",
+  "source": "review of #127/#128 (2026-10-24), the rows the products-at-0 refusal names (user's decision, 2026-10-24), followed",
+  "rows": [
+   "g: TF increases G, activated by X and G | fed"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "IncreaseAmount",
+    "policy": "fed",
+    "scheme": "subj() >> subj() + obj() @ ks + ka*amount(activated_by_0)*amount(activated_by_1)\nobj() >> None @ kd delete_molecules",
+    "parameters": [
+     "ks",
+     "ka",
+     "kd"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "advice/products_at_0/autoregulation/own_row",
+  "source": "review of #127/#128 (2026-10-24), the rows the products-at-0 refusal names (user's decision, 2026-10-24), followed",
+  "rows": [
+   "g: TF increases G, activated by X and G | fed",
+   "d: G is degraded | indra_default"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "IncreaseAmount",
+    "policy": "fed",
+    "scheme": "subj() >> subj() + obj() @ ks + ka*amount(activated_by_0)*amount(activated_by_1)",
+    "parameters": [
+     "ks",
+     "ka"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "advice/products_at_0/autocatalysis_basal/product_stated",
+  "source": "review of #127/#128 (2026-10-24), the rows the products-at-0 refusal names (user's decision, 2026-10-24), followed",
+  "rows": [
+   "c: A -> B, activated by X and B | fed"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "fed",
+    "scheme": "obj_from_0() >> obj_to_0() @ kb\nobj_from_0() >> obj_to_0() @ ka*amount(activated_by_0)*amount(activated_by_1)",
+    "parameters": [
+     "ka",
+     "kb"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "advice/products_at_0/autocatalysis_basal/own_row",
+  "source": "review of #127/#128 (2026-10-24), the rows the products-at-0 refusal names (user's decision, 2026-10-24), followed",
+  "rows": [
+   "c: A -> B, activated by X and B | fed"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "fed",
+    "scheme": "obj_from_0() >> obj_to_0() @ kb + ka*amount(activated_by_0)*amount(activated_by_1)",
+    "parameters": [
+     "ka",
+     "kb"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "advice/products_at_0/autocatalysis/product_stated",
+  "source": "review of #127/#128 (2026-10-24), the rows the products-at-0 refusal names (user's decision, 2026-10-24), followed",
+  "rows": [
+   "c: A -> B, activated by X and B | fed"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "fed",
+    "scheme": "obj_from_0() >> obj_to_0() @ ka*amount(activated_by_0)*amount(activated_by_1)",
+    "parameters": [
+     "ka"
+    ]
+   }
+  ]
  }
 ]

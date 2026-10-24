@@ -109,10 +109,9 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
     docstring). Raises :class:`MechanismError` saying why there is none: a reaction the row shares
     with another row, an intermediate meeting another in one step, a steady state too large or not
     unique, or products made at rates no constant ratio relates, two reactions rather than one."""
-    from pysb.pattern import match_complex_pattern
 
-    from .mechanisms import _vanishes, agent_pattern
-    from .statements import _products, _reactants
+    from .mechanisms import _vanishes
+    from .statements import _reactants
 
     rules = set(rules)
     reactions = [rx for rx in model.reactions if set(rx["rule"]) & rules]
@@ -129,33 +128,14 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
     made = {i for rx in reactions for i in rx["products"]}
     used = {i for rx in reactions for i in rx["reactants"]}
 
-    def matching(agent) -> set[int]:
-        """The species that are ``agent`` exactly, its molecules and no more."""
-        try:
-            pattern = pysb.ComplexPattern(agent_pattern(model, agent), None)
-        except (MechanismError, KeyError):  # an agent the model never forms
-            return set()
-        return {
-            i for i, species in enumerate(model.species)
-            if len(species.monomer_patterns) == len(pattern.monomer_patterns)
-            and match_complex_pattern(pattern, species)
-        }
-
-    effects = {i: effect for agent, effect in _products(stmt) for i in matching(agent)}
-    if isinstance(stmt, Complex):
-        # Its members joined in one complex, in a chain or around one of them alike.
-        members = sorted(_n(m.name) for m in stmt.members)
-        effects |= {
-            i: 1 for i, species in enumerate(model.species)
-            if sorted(mp.monomer.name for mp in species.monomer_patterns) == members
-        }
+    effects = _effects(model, stmt)
     products = {i for i, e in effects.items() if e > 0} | (made - used)
     # A reactant a step back makes again (`obj_to >> obj_from`) is still the statement's; of the
     # forms an agent written without states matches, those the row makes are on the way (`S` of
     # "E3 decreases S", ubiquitinated before it is degraded).
     stated = set()
     for agent in _reactants(stmt):
-        found = matching(agent)
+        found = _matching(model, agent)
         stated |= found - made if len(found) > 1 and found - made else found
     # Else what the reactions use and never make, however their lines are written.
     reactants = (stated | (used - made)) - products
@@ -298,6 +278,38 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
         {c: e for c, e in coefficients.items() if c in j_over_steps.free_symbols},
         {p.name: p.name for p in model.parameters},
     )
+
+
+def _matching(model: pysb.Model, agent) -> set[int]:
+    """The species that are ``agent`` exactly, its molecules and no more."""
+    from pysb.pattern import match_complex_pattern
+
+    from .mechanisms import agent_pattern
+
+    try:
+        pattern = pysb.ComplexPattern(agent_pattern(model, agent), None)
+    except (MechanismError, KeyError):  # an agent the model never forms
+        return set()
+    return {
+        i for i, species in enumerate(model.species)
+        if len(species.monomer_patterns) == len(pattern.monomer_patterns)
+        and match_complex_pattern(pattern, species)
+    }
+
+
+def _effects(model: pysb.Model, stmt) -> dict[int, int]:
+    """The species ``stmt`` makes, each ``1``, or takes away, ``-1`` (:func:`statements._products`)."""
+    from .statements import _products
+
+    effects = {i: effect for agent, effect in _products(stmt) for i in _matching(model, agent)}
+    if isinstance(stmt, Complex):
+        # Its members joined in one complex, in a chain or around one of them alike.
+        members = sorted(_n(m.name) for m in stmt.members)
+        effects |= {
+            i: 1 for i, species in enumerate(model.species)
+            if sorted(mp.monomer.name for mp in species.monomer_patterns) == members
+        }
+    return effects
 
 
 def _arborescences(reactions, intermediates) -> int:
@@ -795,6 +807,14 @@ def _unseen(model, emission, stmt, policy, prefix, stated, s: str) -> str:
                 steps.append((*sides, rate))
     agent = _agent(stated, s)
     shown_steps = " and ".join(f"`{_side(before)} >> {_side(after)}`" for before, after, _ in steps)
+    if (needed := _product_needed(model, emission, stmt, observables)) is not None:
+        return (
+            f"row {prefix!r}: {policy!r} reads `{_said(s, stated)}` only in {shown_steps}, where "
+            f"what it does needs the product present, and its statement's own reaction rate holds "
+            f"its products at 0 (absent), so that rate does not change with it. "
+            f"{_with_the_product(stmt, stated, s, *needed)}Or leave {agent} out of this "
+            "statement and its rate"
+        )
     advice = ""
     if len(steps) == 1:
         before, after, rate = steps[0]
@@ -813,6 +833,92 @@ def _unseen(model, emission, stmt, policy, prefix, stated, s: str) -> str:
         f"statement's regulator is about its own reaction. {advice}Or leave {agent} out of this "
         "statement and its rate"
     )
+
+
+def _product_needed(model, emission, stmt, observables) -> tuple[str, int] | None:
+    """How each step of the row whose rate reads ``observables`` needs a product of ``stmt``
+    present: ``"amount"`` where its rate reads the product's amount, ``"reactant"`` where it takes
+    the product as a reactant and gives it back with more (autocatalysis); and the way the step's
+    rate moves with the product. ``None`` where one such step does not, or takes a product away
+    (a way back, a degradation: the C cases)."""
+    from .mechanisms import _direction
+
+    products = {i for i, effect in _effects(model, stmt).items() if effect > 0}
+    how, ways = set(), set()
+    for rx in model.reactions:
+        if not set(rx["rule"]) & set(emission.rules):
+            continue
+        rule = model.rules[rx["rule"][0]]
+        rate = rule.rate_reverse if rx["reverse"][0] else rule.rate_forward
+        if not _observables(rate) & observables:
+            continue
+        if any(rx["reactants"].count(i) > rx["products"].count(i) for i in products):
+            return None
+        reading = {o for o in _observables(rate) - observables if set(o.species) & products}
+        if set(rx["reactants"]) & products:
+            how.add("reactant")
+            ways.add(1)
+        elif reading:
+            how.add("amount")
+            x = sympy.Symbol("__product", nonnegative=True)
+            ways.add(_direction(_step_rate(rate, reading, x), x))
+        else:
+            return None
+    if len(how) != 1:
+        return None
+    return how.pop(), ways.pop() if len(ways) == 1 else None
+
+
+def _with_the_product(stmt, stated: dict, s: str, how: str, way: int | None) -> str:
+    """The two rows a regulator that acts only with the product present can be stated on, each
+    written out for ``stmt``: the product stated as a regulator too, read by position where the
+    step read it; and that step alone on its own row so, its way back a statement of its own."""
+    from .notation import statement_text
+    from .statements import _products
+
+    product = next(agent for agent, effect in _products(stmt) if effect > 0)
+    kind = {1: "activated_by", -1: "inhibited_by"}.get(way, "modulated_by")
+    regulators = {k: list(agents) for k, agents in stated.items()}
+    regulators.setdefault(kind, []).append(product)
+    row = statement_text(stmt.to_json() | {k: [a.to_json() for a in v] for k, v in regulators.items()})
+    own_kind, i = s.rpartition("_")[0], int(s.rpartition("_")[2])
+
+    def read(k: str, j: int) -> str:
+        return f"amount({k}_{j})" if len(regulators[k]) > 1 else f"amount({k})"
+
+    product_at = read(kind, len(regulators[kind]) - 1)
+    where = ("where it reads the product's amount" if how == "amount" else
+             "for the product it takes as a reactant, the step written without it")
+    back = _way_back(stmt)
+    return (
+        f"State the product as a regulator too, `{row}`, its rate reading it as `{product_at}` "
+        f"{where}, and {_agent(stated, s)} as `{read(own_kind, i)}`. Or put that step on a row of "
+        "its own so, a one-rule mechanism (another step of the same reaction a term of its rate), "
+        "and its way back, where the mechanism has one, on a row of its own"
+        + (f", `{back}`. " if back else ". ")
+    )
+
+
+def _way_back(stmt) -> str | None:
+    """``stmt``'s reaction run backwards, as a statement in the notation, where the notation has
+    one: a conversion's outputs back to its inputs, what a synthesis makes degraded, a
+    modification taken off."""
+    from .notation import statement_text
+
+    if isinstance(stmt, Conversion):
+        back = Conversion(None, list(stmt.obj_to), list(stmt.obj_from))
+    elif isinstance(stmt, IncreaseAmount):
+        back = DecreaseAmount(None, stmt.obj)
+    elif isinstance(stmt, DecreaseAmount):
+        back = IncreaseAmount(None, stmt.obj)
+    elif isinstance(stmt, Modification) and stmt.sub is not None:
+        back = modclass_to_inverse[type(stmt)](None, stmt.sub, stmt.residue, stmt.position)
+    else:
+        return None
+    try:
+        return statement_text(back.to_json())
+    except ValueError:  # what the notation cannot write
+        return None
 
 
 def _step_row(stmt, before, after, kind: str, regulator) -> tuple[str, str, str] | None:

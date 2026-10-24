@@ -183,6 +183,10 @@ Principles to hold onto when extending this package.
   with, acting only on a step it cannot see (a product's degradation, a complex coming apart), is
   refused, pointing to that step's own row: a regulator is a claim about its statement's own
   reaction, so each claim keeps one meaning and a causal graph never puts it on another reaction.
+  Products stay absent in that rate, so a regulator that acts only with the product present
+  (feedback through it, autoregulation, autocatalysis) does not move it either: its refusal names
+  the rows that state it, the product stated as a regulator too, or that step on a row of its own
+  so.
   Any other claim the maths does not bear out is recorded as what it does show, beside what was
   stated, never refused: the edit reports it and asks the agent to reconsider, and `get_model` and
   the English mark it ("activated by sorafenib (from its rate)")

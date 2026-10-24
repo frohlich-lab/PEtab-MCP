@@ -762,3 +762,84 @@ def test_an_enzyme_stated_as_its_own_inhibitor_is_one_amount():
     (emission,) = _build([_PHOSPHO.format(regulator="inhibited by MEK")],
                          _rate("kc/(1 + inhibited_by/K)", "kc", "K"))
     assert emission.derived == {"inhibited_by_0": "activated_by"}
+
+
+# ------------------------------------------------------------------------------- products held at 0
+_RAS = 'c1: RAS{-mod"GTP"} -> RAS{mod"GTP"}'
+_RAS_FED = f'{_RAS}, activated by SOS and RAS{{mod"GTP"}} | fed'
+_GAP = 'c2: RAS{mod"GTP"} -> RAS{-mod"GTP"} | mass_action'
+_FEEDBACK = "obj_from_0() >> obj_to_0() @ kb + kf*amount(activated_by_0)*amount(activated_by_1)"
+_SELF = "obj_from_0() >> obj_to_0() @ ka*amount(activated_by_0)*amount(activated_by_1)"
+_GENE = "subj() >> subj() + obj() @ ks + ka*amount(activated_by_0)*amount(activated_by_1)"
+
+
+def _fed(stmt_type: str, scheme: str, *parameters: str) -> dict:
+    return _scheme(stmt_type, scheme, *parameters, policy="fed")
+
+
+@pytest.mark.parametrize(
+    "rows, mechanism, stated, back, followed",
+    [
+        # review of #127/#128, refusals/t1: Ras-SOS feedback, SOS working through RAS-GTP, the
+        # GAP step on the row.
+        ([f"{_RAS}, activated by SOS | written"],
+         _scheme("Conversion", "obj_from_0() >> obj_to_0() @ kb + kf*amount(activated_by)*"
+                 "amount(obj_to_0())\nobj_to_0() >> obj_from_0() @ kgap", "kb", "kf", "kgap"),
+         'RAS{-mod"GTP"} -> RAS{mod"GTP"}, activated by SOS and RAS{mod"GTP"}',
+         'RAS{mod"GTP"} -> RAS{-mod"GTP"}',
+         [([_RAS_FED], _fed("Conversion", f"{_FEEDBACK}\nobj_to_0() >> obj_from_0() @ kgap",
+                            "kb", "kf", "kgap")),
+          ([_RAS_FED, _GAP], _fed("Conversion", _FEEDBACK, "kb", "kf"))]),
+        # The same step written alone.
+        ([f"{_RAS}, activated by SOS | written"],
+         _scheme("Conversion", "obj_from_0() >> obj_to_0() @ kb + kf*amount(activated_by)*"
+                 "amount(obj_to_0())", "kb", "kf"),
+         'RAS{-mod"GTP"} -> RAS{mod"GTP"}, activated by SOS and RAS{mod"GTP"}',
+         'RAS{mod"GTP"} -> RAS{-mod"GTP"}',
+         [([_RAS_FED], _fed("Conversion", _FEEDBACK, "kb", "kf")),
+          ([_RAS_FED, _GAP], _fed("Conversion", _FEEDBACK, "kb", "kf"))]),
+        # refusals/t1/autoreg: a co-activator working only with the gene product present.
+        (["g: TF increases G, activated by X | written"],
+         _scheme("IncreaseAmount", "subj() >> subj() + obj() @ ks + ka*amount(activated_by)*"
+                 "amount(obj())\nobj() >> None @ kd delete_molecules", "ks", "ka", "kd"),
+         "TF increases G, activated by X and G", "G is degraded",
+         [(["g: TF increases G, activated by X and G | fed"],
+           _fed("IncreaseAmount", f"{_GENE}\nobj() >> None @ kd delete_molecules", "ks", "ka", "kd")),
+          (["g: TF increases G, activated by X and G | fed", "d: G is degraded | indra_default"],
+           _fed("IncreaseAmount", _GENE, "ks", "ka"))]),
+        # netrate/t6: the product makes itself, beside a basal step (a term of the one rule's
+        # rate, as the refusal says: two rows of one reaction would be one reaction) or alone.
+        (["c: A -> B, activated by X | written"],
+         _scheme("Conversion", "obj_from_0() >> obj_to_0() @ kb\nobj_from_0() + obj_to_0() >> "
+                 "obj_to_0() + obj_to_0() @ ka*amount(activated_by)", "ka", "kb"),
+         "A -> B, activated by X and B", "B -> A",
+         [(["c: A -> B, activated by X and B | fed"],
+           _fed("Conversion", f"obj_from_0() >> obj_to_0() @ kb\n{_SELF}", "ka", "kb")),
+          (["c: A -> B, activated by X and B | fed"],
+           _fed("Conversion", "obj_from_0() >> obj_to_0() @ kb + ka*amount(activated_by_0)*"
+                "amount(activated_by_1)", "ka", "kb"))]),
+        (["c: A -> B, activated by X | written"],
+         _scheme("Conversion", "obj_from_0() + obj_to_0() >> obj_to_0() + obj_to_0() @ "
+                 "ka*amount(activated_by)", "ka"),
+         "A -> B, activated by X and B", "B -> A",
+         [(["c: A -> B, activated by X and B | fed"], _fed("Conversion", _SELF, "ka"))] * 2),
+    ],
+    ids=["ras_sos", "ras_sos_one_rule", "autoregulation", "autocatalysis_basal", "autocatalysis"],
+)
+def test_a_regulator_that_needs_the_product_is_told_both_rows_and_each_builds(
+    rows, mechanism, stated, back, followed
+):
+    """Products stay at 0 in J (the user's decision, 2026-10-24), so a regulator that acts only
+    with the product present (feedback, autoregulation, autocatalysis) does not move it. The
+    refusal names the two rows that state it, written for the row, and each builds as written:
+    the product stated as a regulator too; and that step alone on its own row so, its way back a
+    statement of its own. The step alone without the product stated still reads it at 0."""
+    with pytest.raises(MechanismError) as refused:
+        _build(rows, mechanism)
+    said = str(refused.value)
+    assert f"State the product as a regulator too, `{stated}`" in said
+    assert "Or put that step on a row of its own so, a one-rule mechanism" in said
+    assert f"`{back}`" in said
+    for rewrite, definition in followed:
+        # Each regulator recorded as stated, the product's own an activator.
+        assert all(not emission.derived for emission in _build(rewrite, definition))

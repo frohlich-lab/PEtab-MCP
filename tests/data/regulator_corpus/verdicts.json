@@ -5,6 +5,27 @@
  "advice/c1_degradation": {
   "verdict": "accepted"
  },
+ "advice/products_at_0/autocatalysis/product_stated": {
+  "verdict": "accepted"
+ },
+ "advice/products_at_0/autocatalysis_basal/own_row": {
+  "verdict": "accepted"
+ },
+ "advice/products_at_0/autocatalysis_basal/product_stated": {
+  "verdict": "accepted"
+ },
+ "advice/products_at_0/autoregulation/own_row": {
+  "verdict": "accepted"
+ },
+ "advice/products_at_0/autoregulation/product_stated": {
+  "verdict": "accepted"
+ },
+ "advice/products_at_0/ras_sos/own_row": {
+  "verdict": "accepted"
+ },
+ "advice/products_at_0/ras_sos/product_stated": {
+  "verdict": "accepted"
+ },
  "netrate/1/advice": {
   "verdict": "accepted"
  },
@@ -223,11 +244,11 @@
   "verdict": "accepted"
  },
  "netrate/t6/basal": {
-  "kind": "unseen",
+  "kind": "needs_product",
   "verdict": "refused"
  },
  "netrate/t6/one_line": {
-  "kind": "unseen",
+  "kind": "needs_product",
   "verdict": "refused"
  },
  "netrate/t8/trimer": {
@@ -1544,15 +1565,15 @@
   "verdict": "accepted"
  },
  "refusals/t1/autoreg": {
-  "kind": "unseen",
+  "kind": "needs_product",
   "verdict": "refused"
  },
  "refusals/t1/one_rule": {
-  "kind": "unseen",
+  "kind": "needs_product",
   "verdict": "refused"
  },
  "refusals/t1/two_steps": {
-  "kind": "unseen",
+  "kind": "needs_product",
   "verdict": "refused"
  },
  "refusals/t10/Autophosphorylation": {

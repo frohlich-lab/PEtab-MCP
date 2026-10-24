@@ -39,13 +39,15 @@ CORPUS = Path(__file__).parent / "data" / "regulator_corpus"
 #: Seconds one entry may take.
 BOUND = 60.0
 #: What a refusal may be, each by what its message says: the stated <=> read contract, and a
-#: regulator no rate the row has can change with. Any other claim is recorded, never refused.
+#: regulator no rate the row has can change with (one that needs the product present apart). Any
+#: other claim is recorded, never refused.
 KINDS = {
     "unstated": r"which its statement does not state",
     "unread": r"does not read: the maths would not carry the claim",
     "unnamed": r"which its statement does not name|as an agent of its own",
     "unformed": r"nothing in the model forms",
     "unseen": r"does not change with it: a statement's regulator is about its own reaction",
+    "needs_product": r"needs the product present, and its statement's own reaction rate holds",
 }
 PROVEN = set(KINDS)
 
