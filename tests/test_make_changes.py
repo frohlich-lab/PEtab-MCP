@@ -2072,8 +2072,12 @@ def test_a_bound_edit_signs_a_rows_regulators_again(tmp_path):
         {"parameter_id": "conv_a", "lower_bound": -1.0, "upper_bound": -0.01, "scale": "lin"}]})
     assert out["applied"] is True, out.get("error")
     assert _recorded(tmp_path, 1) == {"activated_by_0": "inhibited_by"}
-    assert any(m["message"].startswith("`conv`: you stated `activated by C`, but its rate never "
-                                       "rises as C rises") for m in out["messages"])
+    said = "`conv`: you stated `activated by C`, but its rate never rises as C rises"
+    assert any(m["message"].startswith(said) for m in out["messages"])
+    # In the edit's own event too, where the audit trail reads it.
+    events = [json.loads(line) for line in (tmp_path / "prov" / "provenance.jsonl").read_text().splitlines()]
+    (edit,) = [e for e in events if e.get("type") == "edit" and e.get("args", {}).get("parameters")]
+    assert any(w.startswith(said) for w in edit["warnings"])
 
 
 def test_an_edit_reports_only_the_rows_it_touches(tmp_path):

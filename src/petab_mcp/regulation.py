@@ -699,16 +699,10 @@ def bounded(rate: NetRate, problem) -> tuple[NetRate, dict[str, tuple[float, flo
         pid = rate.parameters.get(symbol.name)
         if pid is None:
             continue
-        if table is not None and pid in table.index:
-            row = table.loc[pid]
-            if not bool(int(row.get(ESTIMATE, 1))):
-                swap[symbol] = sympy.Float(float(row[NOMINAL_VALUE]))
-                continue
-            low, high = float(row[LOWER_BOUND]), float(row[UPPER_BOUND])
-            if str(row.get(PARAMETER_SCALE, "lin")) in ("log", "log10"):
-                low = max(low, 0.0)
-            swap[symbol] = _ranged(symbol.name, low, high, domain)
-        elif pid in inputs:
+        # A condition input first: its periods set it whatever a parameter row of its id says
+        # (PEtab forbids both, and reconcile keeps it out of the table, but nothing here relies
+        # on that).
+        if pid in inputs:
             values = pd.to_numeric(pd.Series(inputs[pid]), errors="coerce")
             if values.isna().any():
                 swap[symbol] = sympy.Symbol(symbol.name, real=True)
@@ -717,6 +711,15 @@ def bounded(rate: NetRate, problem) -> tuple[NetRate, dict[str, tuple[float, flo
             if low == high:
                 swap[symbol] = sympy.Float(low)
                 continue
+            swap[symbol] = _ranged(symbol.name, low, high, domain)
+        elif table is not None and pid in table.index:
+            row = table.loc[pid]
+            if not bool(int(row.get(ESTIMATE, 1))):
+                swap[symbol] = sympy.Float(float(row[NOMINAL_VALUE]))
+                continue
+            low, high = float(row[LOWER_BOUND]), float(row[UPPER_BOUND])
+            if str(row.get(PARAMETER_SCALE, "lin")) in ("log", "log10"):
+                low = max(low, 0.0)
             swap[symbol] = _ranged(symbol.name, low, high, domain)
     measured = getattr(problem, "measurement_df", None)
     if measured is not None and MEASURED in measured.columns and len(measured):
@@ -727,7 +730,6 @@ def bounded(rate: NetRate, problem) -> tuple[NetRate, dict[str, tuple[float, flo
         rate,
         value=rate.value.xreplace(swap),
         steps={c: coefficient.xreplace(swap) for c, coefficient in rate.steps.items()},
-        parameters={n: p for n, p in rate.parameters.items() if sympy.Symbol(n) not in swap},
     ), domain
 
 
@@ -749,17 +751,20 @@ def _ranged(name: str, low: float, high: float, domain: dict) -> sympy.Expr:
     return sympy.Symbol(name, real=True)
 
 
-def resign(record: dict, problem) -> tuple[dict, int]:
+def resign(record: dict, problem) -> tuple[dict, int, list[str]]:
     """``record`` (a version's statements record) with each row's regulators signed again on
     ``problem``'s parameter table, conditions and measurements (:func:`bounded`): the kinds a
     version records are its own bounds', so a bound or a scale an edit changes can change them.
-    Never refuses: a regulator J is not shown to move with is ``modulated_by``. Returns the record
-    and how many rows failed to sign, each logged, each claiming no direction."""
+    Never refuses: a regulator J is not shown to move with is ``modulated_by``. A row built before
+    its net rate was kept with it (provenance older than this) keeps the kinds it had: unsigned,
+    not downgraded. Returns the record, how many rows failed to sign (each logged, each claiming no
+    direction, the count kept in the record as ``regulator_check_failures`` while there are any),
+    and the prefixes of the rows left unsigned."""
     from copy import deepcopy
 
     from .statements import regulators
 
-    record, failed = deepcopy(record), 0
+    record, failed, unsigned = deepcopy(record), 0, []
     for row in record.get("rows", []):
         emission = row.get("emission") or {}
         stated = regulators(row["statement"])
@@ -767,6 +772,9 @@ def resign(record: dict, problem) -> tuple[dict, int]:
         if not positions:
             continue
         data = emission.get("rate") or {}
+        if not data:
+            unsigned.append(row.get("prefix"))
+            continue
         if "J" not in data:
             emission["derived"] = _unsigned(positions)
             failed += bool(data.get("failed"))
@@ -783,7 +791,11 @@ def resign(record: dict, problem) -> tuple[dict, int]:
             failed += 1
             continue
         emission["derived"] = _derived(found)
-    return record, failed
+    if failed:
+        record["regulator_check_failures"] = failed
+    else:
+        record.pop("regulator_check_failures", None)
+    return record, failed, unsigned
 
 
 def _unseen(model, emission, stmt, policy, prefix, stated, s: str) -> str:

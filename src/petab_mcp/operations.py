@@ -487,10 +487,10 @@ def _commit_change(
         if record:
             from . import regulation
 
-            signed, failed = regulation.resign(record, problem)
-            if failed:
-                signed["regulator_check_failures"] = failed
-            said = regulator_warning(signed, _statements_base(session, model_build is not None))
+            signed, _, unsigned = regulation.resign(record, problem)
+            said = regulator_warning(
+                signed, _statements_base(session, model_build is not None), unsigned
+            )
         # Warnings raised by the edit callback itself (e.g. change_parameters' advisory sigma cap)
         # must reach the CALLER, not just the provenance log — an advisory nobody reads is the same
         # as no guard at all. `recon is None` for every parameter edit, so the parsimony list above
@@ -507,7 +507,9 @@ def _commit_change(
         # The edit's half of the message stack (see :mod:`messages`). The lint's WARNING-level
         # findings join it here: they used to live only inside the `validation` report, which the
         # result no longer carries, so they were reaching nobody at all.
-        edit_messages = M.warnings_from(M.SOURCE_EDIT, [*warnings, said]) + M.warnings_from(
+        # The regulators' too, in the edit's event as in its result.
+        warnings = [*warnings, said] if said else warnings
+        edit_messages = M.warnings_from(M.SOURCE_EDIT, warnings) + M.warnings_from(
             M.SOURCE_VALIDATION,
             [i["message"] for i in report["issues"] if i.get("level") == "warning"],
         )
@@ -907,43 +909,70 @@ def _statements_base(session, rebuilt: bool) -> dict | None:
     return getattr(session, "model_statements", None)
 
 
-def regulator_warning(record: dict, base: dict | None) -> str | None:
+def regulator_warning(record: dict, base: dict | None, unsigned=()) -> str | None:
     """What ``record``'s rows' rates record otherwise than their statements state, for the rows the
     edit touched: each new or changed since ``base`` (the record the edit started from), or whose
-    recorded kinds changed (a bound did it). ``None`` where there is nothing to say."""
+    recorded kinds changed (a bound did it), back to what was stated too. A row with no one net
+    rate says why; the rows ``unsigned`` (built before their net rate was kept) say they kept the
+    kinds they had. ``None`` where there is nothing to say."""
     from . import notation
     from .statements import REGULATORS
 
+    def text(agent: dict) -> str:
+        try:
+            return notation.agent_text(agent)
+        except ValueError:  # what the notation cannot write
+            return agent["name"]
+
     before = {row["prefix"]: row for row in (base or {}).get("rows", [])}
-    changed: dict[tuple[str, str, str], list[str]] = {}
+    changed: dict[tuple[str, str, str, str], list[str]] = {}
+    restored: dict[tuple[str, str], list[str]] = {}
     for row in record.get("rows", []):
-        derived = (row.get("emission") or {}).get("derived") or {}
+        emission = row.get("emission") or {}
+        derived, why = emission.get("derived") or {}, (emission.get("rate") or {}).get("none", "")
         old = before.get(row["prefix"])
         same = old is not None and all(old.get(k) == row.get(k) for k in ("statement", "policy",
                                                                           "parameters"))
-        if not derived or (same and (old.get("emission") or {}).get("derived") == derived):
+        was = (old.get("emission") or {}).get("derived") or {} if same else {}
+        for name in sorted(set(was) - set(derived)):
+            stated, _, position = name.rpartition("_")
+            agent = text(row["statement"][stated][int(position)])
+            restored.setdefault((stated, agent), []).append(row["prefix"])
+        if not derived or (same and was == derived):
             continue
         for name, shown in derived.items():
             stated, _, position = name.rpartition("_")
-            agent = row["statement"][stated][int(position)]
-            try:
-                text = notation.agent_text(agent)
-            except ValueError:  # what the notation cannot write
-                text = agent["name"]
-            changed.setdefault((stated, text, shown), []).append(row["prefix"])
-    if not changed:
-        return None
-    listed = "; ".join(
+            agent = text(row["statement"][stated][int(position)])
+            changed.setdefault((stated, agent, shown, why), []).append(row["prefix"])
+    parts = [
+        f"`{', '.join(prefixes)}`: you stated `{REGULATORS[stated]} {agent}`, but its mechanism has "
+        f"no one net rate to show a direction on ({why}), so it reads as `{REGULATORS[shown]} "
+        f"{agent}`" if why else
         f"`{', '.join(prefixes)}`: you stated `{REGULATORS[stated]} {agent}`, "
         f"{'and' if stated == 'modulated_by' else 'but'} "
         f"{_WHAT_THE_RATE_DOES[shown].format(agent)}, so it reads as `{REGULATORS[shown]} {agent}`"
-        for (stated, agent, shown), prefixes in changed.items()
+        for (stated, agent, shown, why), prefixes in changed.items()
+    ]
+    parts += [
+        f"`{', '.join(prefixes)}`: `{REGULATORS[stated]} {agent}` reads as you stated it again"
+        for (stated, agent), prefixes in restored.items()
+    ]
+    if unsigned:
+        parts.append(
+            f"`{', '.join(unsigned)}`: built before regulators were signed on a version's bounds, "
+            "so they keep the kinds they had; give them again in `statements` to sign them"
+        )
+    if not parts:
+        return None
+    split = any(why for *_, why in changed)
+    advice = (
+        " Check that each mechanism does what you meant; if not, rewrite its rate"
+        + ("; a mechanism with no one net rate (two reactions, say) is one statement for each "
+           "reaction" if split else "")
+        + ". The statements stay as you wrote them; `get_model` marks each regulator with the "
+        "kind its rate shows (`(inhibits, from its rate)`)." if changed else ""
     )
-    return (
-        f"{listed}. Check that each mechanism does what you meant; if not, rewrite its rate. The "
-        "statements stay as you wrote them; `get_model` marks each regulator with the kind its "
-        "rate shows (`(inhibits, from its rate)`)."
-    )
+    return "; ".join(parts) + "." + advice
 
 
 #: What a regulator's rate does with it, by the kind the rate records it as (``{}`` the agent).

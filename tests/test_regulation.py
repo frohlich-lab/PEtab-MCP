@@ -8,6 +8,7 @@ states other rows give them and its bindings, never a placeholder.
 
 from __future__ import annotations
 
+import json
 import time
 
 import pytest
@@ -662,7 +663,7 @@ def test_a_regulator_is_signed_on_its_versions_bounds(a, derived):
                      _rate("k*(1 + a*activated_by)", "k", "a", stmt_type="PopulationTransition",
                            based_on="mass_action") | {"policy": "lin"})
     problem = _Problem([_parameter("conv_k", 1e-3, 1e3, scale="log10"), a])
-    signed, failed = regulation.resign(record, problem)
+    signed, failed, _ = regulation.resign(record, problem)
     assert failed == 0
     assert signed["rows"][0]["emission"]["derived"] == derived
 
@@ -679,7 +680,7 @@ def test_a_condition_input_and_time_are_signed_on_their_ranges():
             [{"conditionId": f"c{i}", "targetId": "dose", "targetValue": d} for i, d in enumerate(doses)],
             times=[0.0, 10.0],
         )
-        signed, _ = regulation.resign(record, problem)
+        signed, _, _ = regulation.resign(record, problem)
         assert signed["rows"][0]["emission"]["derived"] == derived
 
 
@@ -697,10 +698,75 @@ def test_a_net_rate_that_does_not_read_back_claims_no_direction_and_is_counted()
     record = _record(["conv: A becomes B, inhibited by C | inh"],
                      _rate("k*K/(K + inhibited_by)", "k", "K", stmt_type="PopulationTransition",
                            based_on="mass_action") | {"policy": "inh"})
+    readable = record["rows"][0]["emission"]["rate"]["J"]
     record["rows"][0]["emission"]["rate"]["J"] = "p0*("
-    signed, failed = regulation.resign(record, _Problem([_parameter("conv_k", 1e-3, 1e3)]))
+    signed, failed, _ = regulation.resign(record, _Problem([_parameter("conv_k", 1e-3, 1e3)]))
     assert failed == 1
     assert signed["rows"][0]["emission"]["derived"] == {"inhibited_by_0": "modulated_by"}
+    assert signed["regulator_check_failures"] == 1
+    # The count is the version's own: signed again cleanly, it is gone.
+    signed["rows"][0]["emission"]["rate"]["J"] = readable
+    again, failed, _ = regulation.resign(signed, _Problem([_parameter("conv_k", 1e-3, 1e3)]))
+    assert failed == 0 and "regulator_check_failures" not in again
+    assert again["rows"][0]["emission"]["derived"] == {}
+
+
+def test_a_row_built_before_its_net_rate_was_kept_keeps_its_kinds():
+    """review of #128: a record from before this PR has no stored net rate, and its first
+    parameters-only commit after a resume downgraded every signed claim to modulated, telling the
+    agent to rewrite rates nothing had read. Such a row keeps what it had, and is named as
+    unsigned."""
+    record = _record(["conv: A becomes B, inhibited by C | inh"],
+                     _rate("k*K/(K + inhibited_by)", "k", "K", stmt_type="PopulationTransition",
+                           based_on="mass_action") | {"policy": "inh"})
+    record["rows"][0]["emission"]["rate"] = {}
+    record["rows"][0]["emission"]["derived"] = {"inhibited_by_0": "activated_by"}  # as it was
+    signed, failed, unsigned = regulation.resign(record, _Problem([_parameter("conv_k", 1e-3, 1e3)]))
+    assert (failed, unsigned) == (0, ["conv"])
+    assert signed["rows"][0]["emission"]["derived"] == {"inhibited_by_0": "activated_by"}
+    from petab_mcp.operations import regulator_warning
+
+    assert "`conv`: built before regulators were signed on a version's bounds, so they keep the " \
+           "kinds they had" in regulator_warning(signed, record, unsigned)
+
+
+def test_a_condition_input_is_signed_on_its_conditions_whatever_a_parameter_row_says():
+    """review of #128: with `dose` both fixed at 2 in the parameter table and set to 0.5 by a
+    condition, the table won, and `k*(1 + (dose - 1)*C)` read `activated by C` though condition
+    c0 inhibits. PEtab forbids the overlap; the conditions win anyway."""
+    definition = _rate("k*(1 + d*activated_by)", "k", "d", stmt_type="PopulationTransition",
+                       based_on="mass_action") | {"policy": "dosed"}
+    record = _record(['conv: A becomes B, activated by C | dosed d="dose - 1"'], definition)
+    problem = _Problem(
+        [_parameter("conv_k", 1e-3, 1e3, scale="log10"),
+         _parameter("dose", 2.0, 2.0, estimate=0, nominal=2.0)],
+        [{"conditionId": f"c{i}", "targetId": "dose", "targetValue": d} for i, d in enumerate((0.5, 2.0))],
+    )
+    signed, _, _ = regulation.resign(record, problem)
+    assert signed["rows"][0]["emission"]["derived"] == {"activated_by_0": "modulated_by"}
+
+
+def test_the_warning_says_why_a_row_has_no_net_rate_and_when_a_kind_is_back():
+    """review of #128: a row of two reactions was told, as a sneyd-like rate is, that its rate
+    cannot be shown to move one way and to rewrite it; and a bound edit that brought back the kind
+    stated said nothing."""
+    from petab_mcp.operations import regulator_warning
+
+    branched = _scheme("Phosphorylation", "enz() + sub(mod='off') >> enz() + sub(mod='on') @ "
+                       "kc/(1 + amount(inhibited_by)/Ki)\nenz() + sub(mod='off') >> enz() @ kd",
+                       "kc", "kd", "Ki")
+    record = _record([_PHOSPHO.format(regulator="inhibited by I")], branched)
+    said = regulator_warning(record, None)
+    assert said.startswith("`p`: you stated `inhibited by I`, but its mechanism has no one net "
+                           "rate to show a direction on (it changes ")
+    assert "two reactions, with no one net rate), so it reads as `modulated by I`" in said
+    assert "a mechanism with no one net rate (two reactions, say) is one statement for each" in said
+    signed = _record(["conv: A becomes B, activated by C | lin"],
+                     _rate("k*(1 + a*activated_by)", "k", "a", stmt_type="PopulationTransition",
+                           based_on="mass_action") | {"policy": "lin"})
+    earlier = json.loads(json.dumps(signed))
+    earlier["rows"][0]["emission"]["derived"] = {"activated_by_0": "modulated_by"}
+    assert regulator_warning(signed, earlier) == "`conv`: `activated by C` reads as you stated it again."
 
 
 @pytest.mark.parametrize("b, derived", [("-2", {}), ("2", {"inhibited_by_0": "activated_by"})])
