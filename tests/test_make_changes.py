@@ -949,10 +949,13 @@ def test_statements_commit_records_what_was_asserted(tmp_path):
     )
     assert out["applied"] is True and out["committed"] is True
     assert "carry no grounding" in out["messages"][0]["message"]
-    (stored,) = json.loads(
-        (tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text()
-    )["rows"]
+    record = json.loads((tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text())
+    (stored,) = record["rows"]
     assert stored["emission"]["parameters"] == ["conv_k"]
+    # What the rows expand to, before and after the reduction, reported and kept with the rows.
+    size = {"species": 2, "reactions": 1}
+    assert out["network"] == record["network"]
+    assert record["network"] == {"before_reduction": size, "after_reduction": size, "split": {}}
 
 
 def test_ungrounded_agents_are_named_once_per_call(tmp_path):

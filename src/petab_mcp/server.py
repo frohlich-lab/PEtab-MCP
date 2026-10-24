@@ -1091,7 +1091,13 @@ def _make_changes_statements_doc(
         "(agents whose amounts it reads, or `amount(<pattern>)` in place; every readout reads "
         "at least one)"
         + (", entity-map ids" if bound else "")
-        + " and parameter ids.\n\n"
+        + " and parameter ids. The model is simulated reduced, with the same solution: a one-step "
+        "rule's enzyme, which the step leaves as it was, is a factor of its rate "
+        "(`<rule>_catalysed` = k·amount of the enzyme), and a protein whose sites no rule reads "
+        "together on one molecule is tracked as blocks of them: the first in amounts, from its "
+        "start, each other in the fraction of the protein in each form (from `start_fraction` = "
+        "1), a readout across blocks their product. The result's `network` counts "
+        "species and reactions before and after and names the blocks (`split`).\n\n"
         "`statement_edits` CHANGES the current rows instead of giving them all again: "
         "`add_row`/`replace_row` a row (one line; `replace_row` takes the row with that prefix, "
         "so a new policy or binding is the row rewritten), `remove_row` by prefix, and "
@@ -1192,7 +1198,8 @@ def _get_model_doc(statements: bool) -> str:
     """``get_model``'s description, offering the ``statements`` format only where the route is."""
     formats = (
         "'antimony' (the default), 'sbml', or 'statements': a model built from statements as its "
-        "rows, in the notation `make_changes` takes"
+        "rows, in the notation `make_changes` takes, where its antimony is the reduced model it "
+        "simulates (enzymes as rate factors, independent sites as blocks)"
         if statements
         else "'antimony' (the default) or 'sbml'"
     )
@@ -1619,6 +1626,8 @@ def _register_model_tools(
                 session.model_statements = statement_record
                 if written is not None:
                     session.mechanisms = written
+            if statement_record is not None:
+                out["network"] = statement_record["network"]
             if edit_summary:
                 out["statement_edits_applied"] = edit_summary
             if op_summary:

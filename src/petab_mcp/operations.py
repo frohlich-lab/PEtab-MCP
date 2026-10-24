@@ -714,7 +714,8 @@ def statements_to_antimony(
     amount, over ``amounts`` (name to agent) (:func:`problem_sbml.to_antimony`). Returns the Antimony; the provenance record —
     ``rows``, each with the :class:`mechanisms.Emission` it produced and with its definition when
     the agent wrote its mechanism, ``mechanisms``, the ``written`` ones whether a row uses them or
-    not, and ``starts``; one warning naming the ungrounded agents, since grounding is
+    not, ``starts``, and the ``network`` the rows expand to before and after the reduction
+    (:mod:`reduction`); one warning naming the ungrounded agents, since grounding is
     optional and its absence is reported, never refused; and the run's written mechanisms, for
     the caller to keep once the change applies.
     """
@@ -814,6 +815,7 @@ def statements_to_antimony(
         for start in starts or []
     ]
     notes: list[str] = []
+    network: dict[str, dict[str, int]] = {}
     antimony, emissions = problem_sbml.to_antimony(
         [
             (
@@ -834,6 +836,7 @@ def statements_to_antimony(
         notes=notes,
         targets=frozenset(R.condition_target_symbols(session.problem)),
         times=regulation.times(session.problem),
+        network=network,
     )
     record = {
         "rows": [
@@ -849,6 +852,7 @@ def statements_to_antimony(
         # As written: the names `amount(...)` reads are made again from it, each build.
         "readouts": dict(readouts or {}),
         "amounts": given,
+        "network": network,
     }
     names = ", ".join(dict.fromkeys(name for stmt in stmts for name in ungrounded(stmt)))
     warnings = M.warnings_from(
