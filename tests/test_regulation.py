@@ -1224,7 +1224,8 @@ def test_time_is_signed_over_the_problems_experiments():
 
 @pytest.mark.parametrize("rate, binding, table", [
     ("k*(1 - e)*activated_by", "", [_parameter("conv_e", 0.0, 1.0)]),
-    ("k*(1 + a*activated_by)", ' a="x - y"', [_parameter("x", 2.0, 10.0), _parameter("y", 0.0, 1.0)]),
+    ("k*(1 + a*activated_by)", ' a="x - y"',
+     [_parameter("x", 2.0, 10.0), _parameter("y", 0.0, 1.0)]),
 ])
 def test_a_bounded_parameter_keeps_both_ends(rate, binding, table):
     """review of #128 (second pass), b1_fraction: a bounded parameter was its lower bound plus a
@@ -1238,7 +1239,8 @@ def test_a_bounded_parameter_keeps_both_ends(rate, binding, table):
         "derived"] == {}
 
 
-_TURNOVER = "subj() >> subj() + obj() @ ks*(1 + amount({kind})/K)\nobj() >> None @ kd*(1 + amount({kind})/K) delete_molecules"
+_TURNOVER = ("subj() >> subj() + obj() @ ks*(1 + amount({kind})/K)\n"
+             "obj() >> None @ kd*(1 + amount({kind})/K) delete_molecules")
 
 
 @pytest.mark.parametrize("kind", ["modulated_by", "activated_by"])
@@ -1256,7 +1258,8 @@ def test_a_regulator_also_taking_the_product_away_is_not_signed_up(kind):
     alone = _scheme("IncreaseAmount", _TURNOVER.format(kind=kind).replace(
         f"kd*(1 + amount({kind})/K)", "kd"), "ks", "kd", "K")
     (emission,) = _build([f"g: TF increases G, {word} M | written"], alone)
-    assert emission.derived == ({"modulated_by_0": "activated_by"} if kind == "modulated_by" else {})
+    upgraded = {"modulated_by_0": "activated_by"} if kind == "modulated_by" else {}
+    assert emission.derived == upgraded
     assert "consumes" not in emission.rate
 
 
@@ -1279,12 +1282,13 @@ def test_the_warning_names_a_negative_rate_law_and_a_step_taking_the_product_awa
                      _rate("k*(activated_by - 1)", "k", stmt_type="PopulationTransition",
                            based_on="mass_action") | {"policy": "neg"})
     said = regulator_warning(record, None)
-    assert said.startswith("`conv`: its rate law can go negative, or pass a pole, for values of its "
-                           "names within their ranges")
+    assert said.startswith("`conv`: its rate law can go negative, or pass a pole, for values of "
+                           "its names within their ranges")
     assert "(`activated by M` reads as `modulated by M`)" in said
     assert "`k/(1 + X/K)`, not `k*(1 - X)`" in said
     record = _record(["g: TF increases G, modulated by M | written"],
-                     _scheme("IncreaseAmount", _TURNOVER.format(kind="modulated_by"), "ks", "kd", "K"))
+                     _scheme("IncreaseAmount", _TURNOVER.format(kind="modulated_by"),
+                             "ks", "kd", "K"))
     assert regulator_warning(record, None) == (
         "`g`: `modulated by M` also acts on `G >> None`, a step that takes the product away, which "
         "the reaction's rate (the product absent) does not see, so what it does to the product's "

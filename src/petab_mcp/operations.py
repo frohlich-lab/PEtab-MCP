@@ -988,8 +988,8 @@ def regulator_warning(record: dict, base: dict | None, unsigned=(), failed=()) -
         for prefix, moved in negative
     ]
     parts += [
-        f"`{', '.join(prefixes)}`: `{REGULATORS[stated]} {agent}` also acts on {steps}, a step that "
-        "takes the product away, which the reaction's rate (the product absent) does not see, so "
+        f"`{', '.join(prefixes)}`: `{REGULATORS[stated]} {agent}` also acts on {steps}, a step "
+        "that takes the product away, which the reaction's rate (the product absent) does not see, so "
         "what it does to the product's amount is not shown"
         + (": it stays `modulated by`" if stated == "modulated_by" else "")
         for (stated, agent, steps), prefixes in taking.items()

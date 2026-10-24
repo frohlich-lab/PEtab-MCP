@@ -856,7 +856,8 @@ def _consuming(model: pysb.Model, emission, stmt, positions) -> dict[str, list[s
         step = f"`{_side(sides[0])} >> {_side(sides[1])}`"
         for o in _observables(rate):
             found = _READ.search(o.name)
-            if found and (s := position(found.group(1))) in positions and step not in out.get(s, []):
+            s = position(found.group(1)) if found else None
+            if s in positions and step not in out.get(s, []):
                 out.setdefault(s, []).append(step)
     return out
 
