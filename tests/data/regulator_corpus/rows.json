@@ -4382,5 +4382,481 @@
     ]
    }
   ]
+ },
+ {
+  "id": "review127/b1/three_steps/activated_by_ERK{pT202}",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 1: a regulator matching the complex the catalytic step makes",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, activated by ERK{pT202} | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=1) % sub(enz=1, mod='on') @ kc/(1 + amount(activated_by)/K)\nenz(sub=1) % sub(enz=1, mod='on') >> enz(sub=None) + sub(enz=None, mod='on') @ kp",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "kp",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b1/three_steps/inhibited_by_ERK{pT202}",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 1: a regulator matching the complex the catalytic step makes",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, inhibited by ERK{pT202} | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=1) % sub(enz=1, mod='on') @ kc/(1 + amount(inhibited_by)/K)\nenz(sub=1) % sub(enz=1, mod='on') >> enz(sub=None) + sub(enz=None, mod='on') @ kp",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "kp",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b1/three_steps/inhibited_by_X",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 1: a regulator matching the complex the catalytic step makes",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, inhibited by X | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=1) % sub(enz=1, mod='on') @ kc/(1 + amount(inhibited_by)/K)\nenz(sub=1) % sub(enz=1, mod='on') >> enz(sub=None) + sub(enz=None, mod='on') @ kp",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "kp",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b1/three_steps/activated_by_X",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 1: a regulator matching the complex the catalytic step makes",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, activated by X | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=1) % sub(enz=1, mod='on') @ kc/(1 + amount(activated_by)/K)\nenz(sub=1) % sub(enz=1, mod='on') >> enz(sub=None) + sub(enz=None, mod='on') @ kp",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "kp",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b1/two_steps/activated_by_MEK",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 1: a bare pattern matching the enzyme free and bound",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, activated by MEK | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc/(1 + amount(activated_by)/K)",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b1/two_steps/inhibited_by_MEK",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 1: a bare pattern matching the enzyme free and bound",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, inhibited by MEK | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc/(1 + amount(inhibited_by)/K)",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b1/two_steps/inhibited_by_MEK{~ERK}",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 1: a bare pattern matching the enzyme free and bound",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, inhibited by MEK{~ERK} | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc/(1 + amount(inhibited_by)/K)",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b1/two_steps/inhibited_by_ERK",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 1: a bare pattern matching the enzyme free and bound",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, inhibited by ERK | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc/(1 + amount(inhibited_by)/K)",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b2/two_sites/inhibited_by",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
+  "rows": [
+   "m1: MEK phosphorylates ERK at Y187 | indra_default",
+   "p: MEK phosphorylates ERK at T185, inhibited by U | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "rate": "k/(1 + inhibited_by/K)",
+    "parameters": [
+     "k",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b2/two_sites/activated_by",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
+  "rows": [
+   "m1: MEK phosphorylates ERK at Y187 | indra_default",
+   "p: MEK phosphorylates ERK at T185, activated by U | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "rate": "k/(1 + activated_by/K)",
+    "parameters": [
+     "k",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b2/two_sites_two_steps/inhibited_by",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
+  "rows": [
+   "m1: MEK phosphorylates ERK at Y187 | indra_default",
+   "p: MEK phosphorylates ERK at T185, inhibited by U | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc/(1 + amount(inhibited_by)/K)",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b2/two_sites_two_steps/activated_by",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
+  "rows": [
+   "m1: MEK phosphorylates ERK at Y187 | indra_default",
+   "p: MEK phosphorylates ERK at T185, activated by U | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc/(1 + amount(activated_by)/K)",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b2/partner/inhibited_by",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
+  "rows": [
+   "b: ERK binds DUSP | indra_default",
+   "p: MEK phosphorylates ERK at T185, inhibited by U | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "rate": "k/(1 + inhibited_by/K)",
+    "parameters": [
+     "k",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b2/partner/activated_by",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
+  "rows": [
+   "b: ERK binds DUSP | indra_default",
+   "p: MEK phosphorylates ERK at T185, activated by U | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "rate": "k/(1 + activated_by/K)",
+    "parameters": [
+     "k",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b2/conversion/inhibited_by",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
+  "rows": [
+   "k: K phosphorylates A at S10 | indra_default",
+   "c: A -> B, inhibited by U | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "w",
+    "rate": "k/(1 + inhibited_by/K)",
+    "parameters": [
+     "k",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b2/conversion/activated_by",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
+  "rows": [
+   "k: K phosphorylates A at S10 | indra_default",
+   "c: A -> B, activated by U | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "w",
+    "rate": "k/(1 + activated_by/K)",
+    "parameters": [
+     "k",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b2/degradation/inhibited_by",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
+  "rows": [
+   "k: K phosphorylates A at S10 | indra_default",
+   "d: A is degraded, inhibited by U | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "DecreaseAmount",
+    "policy": "w",
+    "rate": "k/(1 + inhibited_by/K)",
+    "parameters": [
+     "k",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b2/degradation/activated_by",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
+  "rows": [
+   "k: K phosphorylates A at S10 | indra_default",
+   "d: A is degraded, activated by U | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "DecreaseAmount",
+    "policy": "w",
+    "rate": "k/(1 + activated_by/K)",
+    "parameters": [
+     "k",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b2/dephosphorylation/inhibited_by",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
+  "rows": [
+   "k: K phosphorylates A at S10 | indra_default",
+   "k2: K phosphorylates A at Y20 | indra_default",
+   "d: P dephosphorylates A at S10, inhibited by U | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Dephosphorylation",
+    "policy": "w",
+    "rate": "k/(1 + inhibited_by/K)",
+    "parameters": [
+     "k",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b2/dephosphorylation/activated_by",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
+  "rows": [
+   "k: K phosphorylates A at S10 | indra_default",
+   "k2: K phosphorylates A at Y20 | indra_default",
+   "d: P dephosphorylates A at S10, activated by U | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Dephosphorylation",
+    "policy": "w",
+    "rate": "k/(1 + activated_by/K)",
+    "parameters": [
+     "k",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/chain/8",
+  "source": "review of #127 at b3d09b5 (2026-10-24), should fix: a chain of reversible enzyme forms, the inhibitor on kc alone",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, inhibited by I | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "scheme": "enz(c='c0', sub=None) | enz(c='c1', sub=None) @ ka0, kb0\nenz(c='c1', sub=None) | enz(c='c2', sub=None) @ ka1, kb1\nenz(c='c2', sub=None) | enz(c='c3', sub=None) @ ka2, kb2\nenz(c='c3', sub=None) | enz(c='c4', sub=None) @ ka3, kb3\nenz(c='c4', sub=None) | enz(c='c5', sub=None) @ ka4, kb4\nenz(c='c5', sub=None) | enz(c='c6', sub=None) @ ka5, kb5\nenz(c='c6', sub=None) | enz(c='c7', sub=None) @ ka6, kb6\nenz(c='c7', sub=None) + sub(enz=None, mod='off') | enz(c='c7', sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(c='c7', sub=1) % sub(enz=1, mod='off') >> enz(c='c7', sub=None) + sub(enz=None, mod='on') @ kc/(1 + amount(inhibited_by)/K)",
+    "parameters": [
+     "ka0",
+     "ka1",
+     "ka2",
+     "ka3",
+     "ka4",
+     "ka5",
+     "ka6",
+     "kb0",
+     "kb1",
+     "kb2",
+     "kb3",
+     "kb4",
+     "kb5",
+     "kb6",
+     "kf",
+     "kr",
+     "kc",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/chain/13",
+  "source": "review of #127 at b3d09b5 (2026-10-24), should fix: a chain of reversible enzyme forms, the inhibitor on kc alone",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, inhibited by I | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "scheme": "enz(c='c0', sub=None) | enz(c='c1', sub=None) @ ka0, kb0\nenz(c='c1', sub=None) | enz(c='c2', sub=None) @ ka1, kb1\nenz(c='c2', sub=None) | enz(c='c3', sub=None) @ ka2, kb2\nenz(c='c3', sub=None) | enz(c='c4', sub=None) @ ka3, kb3\nenz(c='c4', sub=None) | enz(c='c5', sub=None) @ ka4, kb4\nenz(c='c5', sub=None) | enz(c='c6', sub=None) @ ka5, kb5\nenz(c='c6', sub=None) | enz(c='c7', sub=None) @ ka6, kb6\nenz(c='c7', sub=None) | enz(c='c8', sub=None) @ ka7, kb7\nenz(c='c8', sub=None) | enz(c='c9', sub=None) @ ka8, kb8\nenz(c='c9', sub=None) | enz(c='c10', sub=None) @ ka9, kb9\nenz(c='c10', sub=None) | enz(c='c11', sub=None) @ ka10, kb10\nenz(c='c11', sub=None) | enz(c='c12', sub=None) @ ka11, kb11\nenz(c='c12', sub=None) + sub(enz=None, mod='off') | enz(c='c12', sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(c='c12', sub=1) % sub(enz=1, mod='off') >> enz(c='c12', sub=None) + sub(enz=None, mod='on') @ kc/(1 + amount(inhibited_by)/K)",
+    "parameters": [
+     "ka0",
+     "ka1",
+     "ka2",
+     "ka3",
+     "ka4",
+     "ka5",
+     "ka6",
+     "ka7",
+     "ka8",
+     "ka9",
+     "ka10",
+     "ka11",
+     "kb0",
+     "kb1",
+     "kb2",
+     "kb3",
+     "kb4",
+     "kb5",
+     "kb6",
+     "kb7",
+     "kb8",
+     "kb9",
+     "kb10",
+     "kb11",
+     "kf",
+     "kr",
+     "kc",
+     "K"
+    ]
+   }
+  ]
  }
 ]

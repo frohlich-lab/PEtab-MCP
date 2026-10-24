@@ -18,7 +18,9 @@ what the row's reactions make and none uses, held at 0; a reactant is what the s
 or what the reactions use and never make; a regulator's species, and a partner's that holds no
 role's agent, are held at their amounts,
 and read by its pattern as an amount of its own, a product's too; every other species of the
-reactions is an intermediate (the enzyme and its forms). With the intermediates linear in each rate
+reactions is an intermediate (the enzyme and its forms). A pattern matching every form of the
+enzyme reads its conserved total, held as well; one matching only some reads an amount the
+steady state solves for, not one held apart from the reaction, and is refused. With the intermediates linear in each rate
 (one intermediate per step, as in every enzyme mechanism) their steady state is one linear solve,
 each conserved total a name of its own (King and Altman's), and J is a product's net rate, or a
 removed reactant's loss. A step into a dead end, a step back, a branch: each moves J as it really
@@ -109,7 +111,7 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
     unique, or products made at rates no constant ratio relates, two reactions rather than one."""
 
     from .mechanisms import _vanishes
-    from .statements import _reactants
+    from .statements import _products, _reactants
 
     rules = set(rules)
     reactions = [rx for rx in model.reactions if set(rx["rule"]) & rules]
@@ -144,7 +146,33 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
         i for i in made & used
         if not {mp.monomer.name for mp in model.species[i].monomer_patterns} & roles
     }
-    intermediates = sorted((made | used) - products - reactants - regulator_species - ligands)
+    # A form the row makes and uses on its way (its enzyme, a complex of its own) stays an
+    # intermediate though a regulator's pattern matches it: held, it would freeze that form.
+    own = (made & used) - products - reactants - ligands
+    intermediates = sorted(
+        own | ((made | used) - products - reactants - regulator_species - ligands)
+    )
+    within = sympy.Matrix([
+        [rx["products"].count(i) - rx["reactants"].count(i) for rx in reactions]
+        for i in intermediates
+    ]) if intermediates else sympy.zeros(0, len(reactions))
+    conserved = within.T.nullspace() if intermediates else []
+    totals = [sympy.Symbol(f"total{k}", positive=True) for k in range(len(conserved))]
+    # A regulator reads those forms at their steady state: where they make up conserved totals
+    # (`MEK` of "MEK phosphorylates ERK", free and bound), those totals, held; else an amount the
+    # net rate solves for, no amount held apart from the reaction, refused.
+    own_reads: dict[pysb.Observable, sympy.Expr] = {}
+    for stated_at, observables in sorted(read.items()):
+        for o in observables:
+            weights = [
+                sum(c for c, j in zip(o.coefficients, o.species) if j == i) for i in intermediates
+            ]
+            if not any(weights):
+                continue
+            if (reads := _as_totals(weights, conserved, totals)) is None:
+                inside = sorted(set(o.species) & own)
+                raise MechanismError(_own_form(model, stated_at, observables, inside))
+            own_reads[o] = reads
 
     def held(i: int, regulator: bool) -> sympy.Symbol:
         sign = {"nonnegative": True} if regulator else {"positive": True}
@@ -158,7 +186,7 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
             amounts[i] = sympy.Symbol(f"__x{i}")
         else:
             amounts[i] = held(i, i in regulator_species)
-    regulator_amounts = {i: held(i, True) for i in regulator_species}
+    regulator_amounts = {i: held(i, True) for i in regulator_species - own}
     regulator_observables = {o for observables in read.values() for o in observables}
     names = {p: sympy.Symbol(p.name, positive=True) for p in model.parameters}
 
@@ -166,7 +194,7 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
         while expressions := rate.atoms(pysb.Expression):
             rate = rate.xreplace({e: e.expr for e in expressions})
         rate = rate.xreplace({
-            o: sympy.Add(*(
+            o: own_reads.get(o, 0) + sympy.Add(*(
                 c * (regulator_amounts if o in regulator_observables else amounts).get(i, 0)
                 for c, i in zip(o.coefficients, o.species)
             ))
@@ -216,15 +244,10 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
             change[i] -= rate
         for i in rx["products"]:
             change[i] += rate
-    within = sympy.Matrix([
-        [rx["products"].count(i) - rx["reactants"].count(i) for rx in reactions]
-        for i in intermediates
-    ]) if intermediates else sympy.zeros(0, len(reactions))
-    totals = [
-        sum(c * x for c, x in zip(conserved, unknown)) - sympy.Symbol(f"total{k}", positive=True)
-        for k, conserved in enumerate(within.T.nullspace())
-    ] if intermediates else []
-    equations = [change[i] for i in intermediates] + totals
+    equations = [change[i] for i in intermediates] + [
+        sum(c * x for c, x in zip(vector, unknown)) - total
+        for vector, total in zip(conserved, totals)
+    ]
     solution = list(sympy.linsolve(equations, unknown))
     if unknown and (len(solution) != 1 or any(set(unknown) & v.free_symbols for v in solution[0])):
         raise MechanismError("its intermediates have no unique steady state")
@@ -246,10 +269,20 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
     }
     net = {i: rate.xreplace(coefficients) for i, rate in over_steps.items()}
     moving = {i for i, rate in net.items() if not _vanishes(rate)}
-    made_now = [i for i in sorted(products) if i in moving]
-    removed = [i for i, e in sorted(effects.items()) if e < 0 and i in moving]
+    # A stated agent is every form of it the row makes or takes, alone or in a complex (ERK
+    # phosphorylated at T185, Y187 either way, bound to DUSP or not): one lump, its net rate the sum
+    # over its forms.
+    made_lump = _containing(model, [a for a, e in _products(stmt) if e > 0]) & set(net)
+    removed_lump = _containing(model, [a for a, e in _products(stmt) if e < 0]) & set(net)
+    stated = stated | (_containing(model, _reactants(stmt)) & set(net) - made_lump)
+    made_now = sorted(made_lump & moving) or [i for i in sorted(products) if i in moving]
+    removed = sorted(removed_lump & moving)
     regulated = {
-        stated: tuple(regulator_amounts[i] for i in sorted({i for o in observables for i in o.species}))
+        stated: tuple(
+            regulator_amounts[i] for i in sorted({i for o in observables for i in o.species} - own)
+        ) + tuple(sorted(
+            {t for o in observables for t in own_reads.get(o, sympy.S.Zero).free_symbols}, key=str
+        ))
         for stated, observables in read.items()
     }
     if not made_now and not removed:
@@ -260,20 +293,60 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
             # the reaction does not run, and J is 0 whatever its regulators.
             return NetRate(sympy.Integer(0), regulated)
         raise MechanismError("it makes nothing from its reactants alone")
-    reference = made_now[0] if made_now else removed[0]
-    j = net[reference] if made_now else -net[reference]
-    j_over_steps = over_steps[reference] if made_now else -over_steps[reference]
+    lump = made_lump if made_lump & moving else (
+        removed_lump if removed_lump & moving else {made_now[0]})
+    sign = 1 if lump is not removed_lump else -1
+    j = sign * sympy.Add(*(net[i] for i in sorted(lump)))
+    j_over_steps = sign * sympy.Add(*(over_steps[i] for i in sorted(lump)))
     if j.has(sympy.zoo, sympy.nan, sympy.oo, -sympy.oo):
         raise MechanismError("its net rate is not finite with its products absent")
-    for i in moving:
-        if not _constant(net[i], j):
+    groups = [sorted(lump), sorted((stated - removed_lump) & set(net))]
+    groups += [[i] for i in sorted(moving - lump - stated)]
+    for group in (g for g in groups if g and set(g) & moving):
+        if not _constant(sympy.Add(*(net[i] for i in group)), j):
             raise MechanismError(
-                f"it changes {model.species[reference]} and {model.species[i]} at rates no "
-                "constant ratio relates: two reactions, with no one net rate"
+                f"it changes {', '.join(str(model.species[i]) for i in sorted(lump))} and "
+                f"{', '.join(str(model.species[i]) for i in group)} at rates no constant ratio "
+                "relates: two reactions, with no one net rate"
             )
     return NetRate(j, regulated, j_over_steps, {
         c: e for c, e in coefficients.items() if c in j_over_steps.free_symbols
     })
+
+
+def _as_totals(weights: list, conserved: list, totals: list) -> sympy.Expr | None:
+    """The amount ``weights`` (over the intermediates) reads at steady state, where it is a sum
+    of conserved ``totals`` with no negative weight; ``None`` otherwise."""
+    if not conserved:
+        return None
+    try:
+        solution, _ = sympy.Matrix.hstack(*conserved).gauss_jordan_solve(sympy.Matrix(weights))
+    except ValueError:  # no sum of them
+        return None
+    if any(x.is_negative is not False for x in solution):
+        return None
+    return sympy.Add(*(x * t for x, t in zip(solution, totals)))
+
+
+def _own_form(model: pysb.Model, stated_at: str, observables, inside: list[int]) -> str:
+    """Why a regulator whose pattern matches forms of the row's own (``inside``) but no total of
+    them gives no net rate, and how to state one that does."""
+    mine = {mp.monomer.name for o in observables for cp in o.reaction_pattern.complex_patterns
+            for mp in cp.monomer_patterns}
+    partners = sorted({mp.monomer.name for i in inside for mp in model.species[i].monomer_patterns}
+                      - mine)
+    alone = any(len(model.species[i].monomer_patterns) == 1 for i in inside)
+    hint = (
+        "state the agent with no state or bond, every form of it" if alone or not partners
+        else f"write on it the bond it lacks there (`~{partners[0]}`, not bound to {partners[0]})"
+    )
+    return (
+        f"the regulator stated at `{stated_at}` reads "
+        f"{', '.join(str(model.species[i]) for i in inside)}, a form this row makes and uses on "
+        "its way, which the net rate solves for rather than holds: a regulator reads an amount "
+        "held apart from the reaction, or a total the row's steps conserve (its enzyme, free and "
+        f"bound), so state one that reads either ({hint})"
+    )
 
 
 def _matching(model: pysb.Model, agent) -> set[int]:
@@ -291,6 +364,23 @@ def _matching(model: pysb.Model, agent) -> set[int]:
         if len(species.monomer_patterns) == len(pattern.monomer_patterns)
         and match_complex_pattern(pattern, species)
     }
+
+
+def _containing(model: pysb.Model, agents) -> set[int]:
+    """The species holding one of ``agents``, alone or with partners."""
+    from pysb.pattern import match_complex_pattern
+
+    from .mechanisms import agent_pattern
+
+    found = set()
+    for agent in agents:
+        try:
+            pattern = pysb.ComplexPattern(agent_pattern(model, agent), None)
+        except (MechanismError, KeyError):  # an agent the model never forms
+            continue
+        found |= {i for i, species in enumerate(model.species)
+                  if match_complex_pattern(pattern, species)}
+    return found
 
 
 def _effects(model: pysb.Model, stmt) -> dict[int, int]:
@@ -374,7 +464,9 @@ def _constant(part: sympy.Expr, whole: sympy.Expr) -> bool:
     values at eight points of positive ones drawn apart for each name, so a ratio of differences of
     names (``exp(a - b)``) is not read at points where they agree; a point where ``whole`` is 0 (a
     piecewise branch) says so only of ``part`` there. Cancelling the ratio to lowest terms took
-    seconds on a large rate. Only whether a row is one reaction rests on it, never a sign."""
+    seconds on a large rate. Eight float points and a 1e-9 relative tolerance decide, so a ratio
+    nearly but not exactly constant passes; only whether a row is one reaction rests on it (the
+    two-reactions refusal), never a sign."""
     names = sorted(part.free_symbols | whole.free_symbols, key=str)
     if not names:
         return True
@@ -409,6 +501,30 @@ def direction(rate: NetRate, stated: str) -> int | None:
     return moves.pop() if moves else 0
 
 
+#: The most terms the numerator of :func:`_degree_one`'s derivative may expand to.
+CHAIN_TERMS = 4096
+
+
+def _degree_one(value: sympy.Expr, c: sympy.Symbol) -> int | None:
+    """How ``value``, J over its steps' coefficients, moves with the coefficient ``c`` where it is
+    of degree one in ``c`` above and below, as King and Altman's form of a network of single steps
+    is: with ``value = (N1*c + N0)/(D1*c + D0)``, its derivative has the sign of
+    ``N1*D0 - N0*D1``, expanded within :data:`CHAIN_TERMS` and signed term by term. ``None`` where
+    it is not of degree one, or too large."""
+    from .mechanisms import _sign, _terms, _vanishes
+
+    if _terms(value) > CHAIN_TERMS:
+        return None
+    numerator, denominator = sympy.fraction(sympy.together(value))
+    n1, d1 = sympy.diff(numerator, c), sympy.diff(denominator, c)
+    if not (_vanishes(sympy.diff(n1, c)) and _vanishes(sympy.diff(d1, c))):
+        return None
+    n0, d0 = numerator.xreplace({c: 0}), denominator.xreplace({c: 0})
+    if _terms(n1) * _terms(d0) + _terms(n0) * _terms(d1) > CHAIN_TERMS:
+        return None
+    return _sign(sympy.expand(n1 * d0 - n0 * d1))
+
+
 def _through_steps(rate: NetRate, x: sympy.Symbol) -> int | None:
     """How J moves with ``x`` by the chain rule through its steps' coefficients: dJ/dx is the sum
     over the steps whose coefficient reads ``x`` of dJ/dc times dc/dx, each signed apart, J over
@@ -431,6 +547,8 @@ def _through_steps(rate: NetRate, x: sympy.Symbol) -> int | None:
             continue
         inner = _direction(coefficient, x)
         outer = _direction(over_steps, signed[c]) if inner else 0
+        if inner and outer is None:
+            outer = _degree_one(over_steps, signed[c])
         if inner is None or outer is None:
             return None
         ways.add(inner * outer)
@@ -558,13 +676,12 @@ def check(model: pysb.Model, rows: list[tuple], emissions) -> None:
         ]
         if not signed:
             continue
+        # Anything but a MechanismError is a bug of this check, raised as one: never read to the
+        # agent as a reason to weaken its claim.
         try:
             rate = net_rate(model, emission.rules, stmt)
         except MechanismError as exc:
             why = str(exc)
-        except Exception:  # noqa: BLE001 - a check that breaks claims nothing; never a crash
-            logger.exception("row %r: reading its net rate failed", prefix)
-            why = "its net rate could not be read"
         else:
             why = None
         if why is not None:

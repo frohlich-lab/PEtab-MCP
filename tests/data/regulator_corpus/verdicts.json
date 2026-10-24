@@ -1042,6 +1042,84 @@
  "refusals/t9/any": {
   "verdict": "accepted"
  },
+ "review127/b1/three_steps/activated_by_ERK{pT202}": {
+  "kind": "no_rate",
+  "verdict": "refused"
+ },
+ "review127/b1/three_steps/activated_by_X": {
+  "kind": "reversed",
+  "verdict": "refused"
+ },
+ "review127/b1/three_steps/inhibited_by_ERK{pT202}": {
+  "kind": "no_rate",
+  "verdict": "refused"
+ },
+ "review127/b1/three_steps/inhibited_by_X": {
+  "verdict": "accepted"
+ },
+ "review127/b1/two_steps/activated_by_MEK": {
+  "verdict": "accepted"
+ },
+ "review127/b1/two_steps/inhibited_by_ERK": {
+  "kind": "no_rate",
+  "verdict": "refused"
+ },
+ "review127/b1/two_steps/inhibited_by_MEK": {
+  "kind": "reversed",
+  "verdict": "refused"
+ },
+ "review127/b1/two_steps/inhibited_by_MEK{~ERK}": {
+  "kind": "no_rate",
+  "verdict": "refused"
+ },
+ "review127/b2/conversion/activated_by": {
+  "kind": "reversed",
+  "verdict": "refused"
+ },
+ "review127/b2/conversion/inhibited_by": {
+  "verdict": "accepted"
+ },
+ "review127/b2/degradation/activated_by": {
+  "kind": "reversed",
+  "verdict": "refused"
+ },
+ "review127/b2/degradation/inhibited_by": {
+  "verdict": "accepted"
+ },
+ "review127/b2/dephosphorylation/activated_by": {
+  "kind": "reversed",
+  "verdict": "refused"
+ },
+ "review127/b2/dephosphorylation/inhibited_by": {
+  "verdict": "accepted"
+ },
+ "review127/b2/partner/activated_by": {
+  "kind": "reversed",
+  "verdict": "refused"
+ },
+ "review127/b2/partner/inhibited_by": {
+  "verdict": "accepted"
+ },
+ "review127/b2/two_sites/activated_by": {
+  "kind": "reversed",
+  "verdict": "refused"
+ },
+ "review127/b2/two_sites/inhibited_by": {
+  "verdict": "accepted"
+ },
+ "review127/b2/two_sites_two_steps/activated_by": {
+  "kind": "reversed",
+  "verdict": "refused"
+ },
+ "review127/b2/two_sites_two_steps/inhibited_by": {
+  "verdict": "accepted"
+ },
+ "review127/chain/13": {
+  "verdict": "accepted"
+ },
+ "review127/chain/8": {
+  "verdict": "accepted"
+ },
  "rewrite/t10_modreg": {
   "verdict": "accepted"
  },
