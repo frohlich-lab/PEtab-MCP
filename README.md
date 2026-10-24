@@ -54,6 +54,7 @@ petab-mcp --petab-yaml path/to/problem.yaml
 # --build-root DIR       --skills-dir DIR
 # --entity-map PATH      (offers make_changes the `statements` route; see src/petab_mcp/seeding.py)
 # --statements-only      (with --entity-map: the `statements` route alone, no Antimony routes)
+# --constraints PATH     (with --entity-map: causal claims every model must make; see src/petab_mcp/constraints.py)
 # --transport {stdio,sse,streamable-http}
 # --criterion {bic,caic,aic,aicc,hqc,tic}   (env PETAB_MCP_CRITERION; default bic)
 # --slurm-max-jobs N     --slurm-min-jobs M   (see "Fitting on SLURM")
@@ -198,6 +199,17 @@ Principles to hold onto when extending this package.
   does not map to an agent is no agent, so a row's binding may read it (`kf="k*dose"`) and the
   condition table says what it is. Which inputs are agents is the problem author's call, made in
   the entity map, and one it maps is read only as the agent it is.
+- **A constraint is a claim the model must make.** A session may start with causal constraints
+  (`--constraints`), statements rows without bindings that each end `, directly` (one row's claim
+  entails it) or `, indirectly` (a chain of the rows' claims carries it, with its sign), with
+  `not ..., directly` and `X does not affect Y` forbidding what they name; `make_changes` refuses a
+  model that breaks one, a parameter edit included, since a bound can turn a regulator. Each claim
+  is a row's own, its regulators as their rates record them, so a constraint rests on the maths,
+  never on what the agent wrote; `activates` is about the forms the constraints declare active,
+  never inferred from the agent's rows. Which way a model moves an object is not decidable from its
+  structure once it has feedback, so an indirect constraint holds on a chain of its sign and one of
+  the other sign is reported, never refused: that sign is the fit's to say
+  ([`constraints`](src/petab_mcp/constraints.py)).
 - **A hardcoded constant is not free.** `k` is the estimated parameters plus every numeric
   literal in the model's math bar a few structural ones (each distinct value once — see
   [`src/petab_mcp/literals.py`](src/petab_mcp/literals.py)), so freezing a fitted value costs

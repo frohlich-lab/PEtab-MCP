@@ -483,7 +483,7 @@ def _commit_change(
         record = getattr(
             session, "submitted_statements" if model_build is not None else "model_statements", None
         )
-        signed = said = None
+        signed = said = ambiguous = None
         if record:
             from . import regulation
 
@@ -491,6 +491,17 @@ def _commit_change(
             said = regulator_warning(
                 signed, _statements_base(session, model_build is not None), unsigned, failed
             )
+        # The claims every model must make, read off the rows as just signed: a bound or a scale
+        # can turn a regulator, so a parameter edit is checked as a model edit is. A model not
+        # built from statements claims nothing. Raises before the swap below: NOTHING applies.
+        if getattr(session, "constraints", None) is not None:
+            from . import constraints as constraints_mod
+
+            kept, ambiguous = constraints_mod.enforce(
+                session.constraints, signed, _statements_base(session, model_build is not None)
+            )
+            if signed is not None:
+                signed["constraints"] = kept
         # Warnings raised by the edit callback itself (e.g. change_parameters' advisory sigma cap)
         # must reach the CALLER, not just the provenance log — an advisory nobody reads is the same
         # as no guard at all. `recon is None` for every parameter edit, so the parsimony list above
@@ -507,8 +518,9 @@ def _commit_change(
         # The edit's half of the message stack (see :mod:`messages`). The lint's WARNING-level
         # findings join it here: they used to live only inside the `validation` report, which the
         # result no longer carries, so they were reaching nobody at all.
-        # The regulators' too, in the edit's event as in its result.
-        warnings = [*warnings, said] if said else warnings
+        # The regulators' too, and an indirect constraint's newly two-way chain, in the edit's
+        # event as in its result.
+        warnings = [*warnings, *(w for w in (said, ambiguous) if w)]
         edit_messages = M.warnings_from(M.SOURCE_EDIT, warnings) + M.warnings_from(
             M.SOURCE_VALIDATION,
             [i["message"] for i in report["issues"] if i.get("level") == "warning"],

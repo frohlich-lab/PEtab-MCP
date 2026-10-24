@@ -350,6 +350,10 @@ class PetabSession:
         # from statements to the fixed observable table. Empty unless the server was given one.
         self.entities: dict[str, Any] = {}
 
+        # The claims every model must make (:mod:`constraints`), given as the server starts, or
+        # None: checked on each change after its regulators are signed (operations._commit_change).
+        self.constraints: Any | None = None
+
         # The version the NEXT commit descends from, or None for "whatever HEAD is".
         # `make_changes(edits=..., base_version=N)` patches version N's stored text, so the commit
         # that follows is a child of N even when later versions exist. The server sets this for
@@ -703,7 +707,9 @@ class PetabSession:
 
         p = self.problem
         sm = self.model.sbml_model
-        return {
+        # The claims every model must make, where the session has any (:mod:`constraints`).
+        constrained = self.constraints.describe() if self.constraints is not None else {}
+        return constrained | {
             "model_id": self.model.model_id,
             # Has a MECHANISM been authored? False for a problem that ships without one, whose
             # initial version is a content-free seed (species only, no dynamics) rather than the

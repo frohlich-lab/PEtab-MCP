@@ -1022,6 +1022,23 @@ _HELD_INPUTS = (
 )
 
 
+#: What the `statements` route's paragraph adds on a server holding constraints (:mod:`constraints`).
+_MAKE_CHANGES_CONSTRAINTS = (
+    "This session holds CONSTRAINTS (`describe_problem`'s `constraints`): claims every model must "
+    "make. A change whose model breaks one is refused, naming each it breaks and why "
+    "(`error_cause: constraint_violated`), and NOTHING is applied; a parameter change is checked "
+    "too, since a bound can turn a regulator. One ending `, directly` needs one row to claim it: "
+    "its reaction, driven the stated way by the constraint's subject as its catalyst or as a "
+    "regulator of the kind its rate records (state a regulator on the row it acts on, `..., "
+    "inhibited by X`). One ending `, indirectly` needs a chain of your rows' claims to carry the "
+    "subject's change to its object with the stated sign; where one of the other sign exists too, "
+    "the result says so, and keeps both. `not ..., directly` forbids a row that claims it, and `X "
+    "does not affect Y` any claim (`directly`) or chain (`indirectly`) from X to Y. `activates` and "
+    "`inhibits` are about the forms `active_forms` declares. Agents are matched by name: use the "
+    "constraints' names."
+)
+
+
 def _make_changes_statements_doc(
     bound: bool = True, held: dict[str, Any] | None = None, alone: bool = False
 ) -> str:
@@ -1204,6 +1221,12 @@ def _statements_text(session, version: int | None) -> str:
         lines.append(f"amount {name} = {notation.agent_text(agent)}")
     for readout, formula in (record.get("readouts") or {}).items():
         lines.append(f"readout {readout} = {formula}")
+    # What makes each of the session's constraints hold, as the change was checked.
+    for cid, verdict in ((record.get("constraints") or {}).get("verdicts") or {}).items():
+        how = (f"by `{'`, `'.join(verdict['rows'])}`" if verdict.get("rows")
+               else f"through {verdict['chain']}" if verdict.get("chain") else "holds")
+        other = f"; the other way too: {verdict['opposite']}" if verdict.get("opposite") else ""
+        lines.append(f"constraint {cid} {how}{other}")
     return "\n".join(lines)
 
 
@@ -1662,6 +1685,8 @@ def _register_model_tools(
             held={getattr(session.entities.get(i.id), "name", i.id): i for i in session.inputs},
             alone=statements_only,
         )
+        if session.constraints is not None:
+            statements_doc += "\n\n" + _MAKE_CHANGES_CONSTRAINTS
         if not statements_only:
             mcp.tool(
                 description=_make_changes_doc(statements_doc=statements_doc),
@@ -2335,6 +2360,7 @@ def _open_ctx(
     auto_fit: bool,
     entity_map: str | None,
     fit_engine: Any | None,
+    constraints: str | None = None,
 ) -> _Ctx:
     """Open the session on the problem at ``yaml_path``: its :class:`PetabSession`, the
     :class:`AmiciEngine` wired into it, and its held-out set. The arguments are
@@ -2356,6 +2382,18 @@ def _open_ctx(
         from . import seeding as seeding_mod
 
         session.entities = seeding_mod.load_entity_map(entity_map)
+    if constraints:
+        from . import constraints as constraints_mod
+
+        # Read as the session opens, refused if any does not read, as a prior is: grounded as the
+        # rows are, by the entity map's names. Logged, since the claims the session holds models
+        # to are part of what its versions mean.
+        groundings = {agent.name: dict(agent.db_refs) for agent in session.entities.values()}
+        session.constraints = constraints_mod.read(constraints, groundings)
+        session.provenance.append_event(
+            {"type": "constraints", "source": str(constraints),
+             "constraints": session.constraints.texts()}
+        )
     if score_shipped_model and session.model_authored():
         fitting_mod.score_at_nominal(session, engine)
     held_out = None
@@ -2381,6 +2419,7 @@ def create_server(
     score_shipped_model: bool = False,
     entity_map: str | None = None,
     statements_only: bool = False,
+    constraints: str | None = None,
     cluster: Any | None = None,
 ) -> FastMCP:
     """Build a FastMCP server bound to the PEtab problem at ``yaml_path``.
@@ -2420,6 +2459,11 @@ def create_server(
     omit it and the route does not exist. ``statements_only`` (which needs it) withholds the
     ``antimony`` and ``model_edits`` routes, so the model is built from statements alone.
 
+    ``constraints`` is a file of causal claims every model must make (:mod:`constraints`), each
+    ending ``, directly`` or ``, indirectly``: ``make_changes`` refuses a model that breaks one,
+    naming it. It needs ``entity_map`` and implies ``statements_only``: a model built from Antimony
+    states no claims to check. A file that does not read is refused here.
+
     ``cluster`` (a ``distributed`` cluster, the ``dask`` extra) runs every fit's starts on that
     cluster's workers through one client (:mod:`petab_mcp.dask_engine`); without one, each fit runs
     its starts in local processes. The workers import the compiled models from ``build_root``, so on
@@ -2430,6 +2474,12 @@ def create_server(
         raise ValidationError(
             "statements_only needs an entity_map: it offers the statements route alone."
         )
+    if constraints and entity_map is None:
+        raise ValidationError(
+            "constraints need an entity_map: a constraint is a claim the statements route's rows "
+            "make, and only that route builds from statements."
+        )
+    statements_only = statements_only or bool(constraints)
     fit_engine = None
     if cluster is not None:
         from .dask_engine import DaskEngine
@@ -2448,6 +2498,7 @@ def create_server(
         auto_fit=auto_fit,
         entity_map=entity_map,
         fit_engine=fit_engine,
+        constraints=constraints,
     )
 
     # Load tool-usage skills up front so the server instructions only advertise
