@@ -67,6 +67,7 @@ from indra.statements import Agent
 from petab.v1.models.sbml_model import SbmlModel
 from pysb import ANY
 from pysb.bng import NoInitialConditionsError, generate_equations
+from pysb.core import time
 from pysb.export import export
 
 from . import mechanisms as M
@@ -170,7 +171,12 @@ def to_antimony(
     # A row's regulators are checked on its reactions as BioNetGen expands the rules as written
     # (:mod:`regulation`): reduced, a catalyst is out of its rule and a monomer is blocks, no
     # longer the statement's agents.
-    as_written = deepcopy(model) if reduce and any(row[4:5] and row[4] for row in rows) else None
+    # `time` kept itself: BioNetGen's export knows it by identity, and sympy's cache, once full,
+    # copies it.
+    as_written = (
+        deepcopy(model, {id(time): time})
+        if reduce and any(row[4:5] and row[4] for row in rows) else None
+    )
     reduced = reduction.reduce(model, whole) if reduce else reduction.Reduction()
     # A readout over blocks of a split monomer is their product, so it is made after the split.
     amounts = {
