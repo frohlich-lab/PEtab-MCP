@@ -274,9 +274,10 @@ def test_moving_between_forms_a_reader_lumps_carries_nothing():
     assert not got.ok and "no chain of claims connects them" in got.why
 
 
-def test_sequestration_is_a_chains_first_step_only():
-    """A binding partner lowers its partner's free form as a chain's first step: past it a chain
-    would run back up a binding."""
+def test_a_binding_partner_lowers_its_partners_free_form_at_any_step():
+    """An inhibitor made downstream that acts by binding is a chain like any other: restricted to a
+    chain's first step, sequestration refused isensee's Rp8 antagonist competing with cAMP for the
+    holoenzyme one step after its uptake, and changed no false claim's verdict (#136)."""
     record = _record(
         ("h", "H binds C"), ("p", "C{~H} phosphorylates S at S1"), ("m", "X increases H")
     )
@@ -284,7 +285,8 @@ def test_sequestration_is_a_chains_first_step_only():
         ["c1: H decreases S{pS1}, indirectly", "c2: X decreases S{pS1}, indirectly"], record
     )
     assert got["c1"].ok and got["c1"].chain == "H ⊣ (h) C{~H} → (p) S{pS1}"
-    assert not got["c2"].ok
+    assert got["c2"].ok and got["c2"].chain == "X → (m) H{~C} ⊣ (h) C{~H} → (p) S{pS1}"
+    assert got["c2"].opposite is None
 
 
 def test_a_binding_claims_coming_apart():

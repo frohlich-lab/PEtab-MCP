@@ -32,10 +32,14 @@ A claim's amounts are read as readouts read them: the sum over the species holdi
 stated form, the total where none is stated, and only a net change counts. A row that moves an agent
 between forms inside the set it names changes nothing (``EGF binds EGFR`` leaves total EGFR as it
 is), which is also what keeps a chain from running through the forms of a multi-site protein that
-a reader lumps. A chain never takes two steps in a row through one row, and the one step in which a
-reactant lowers another it is consumed with (a binding partner its partner's free form, a
-co-reactant another) is only a chain's first: past it, it would run back up a binding
-(retroactivity). A binding claims its complex coming apart as well as forming.
+a reader lumps. A chain never takes two steps in a row through one row (a binding, then its own
+complex coming apart; a kinase lowering its substrate, which then feeds the product). A reactant
+lowers another it is consumed with (a binding partner its partner's free form, a co-reactant
+another) at any step, so an inhibitor made downstream that acts by binding is a chain like any
+other: restricted to a chain's first step, to keep chains from running back up a binding, it
+refused isensee's antagonist competing with cAMP for the holoenzyme, and changed no false claim's
+verdict on the formulations #134 measured. A binding claims its complex coming apart as well as
+forming.
 
 Whether a model moves its object one way or the other is not decidable from its structure once it
 has feedback: on the four formulations #134 measured, a chain of the opposite sign also exists for
@@ -520,32 +524,29 @@ def steps(record: dict | None) -> list[_Step]:
         effects += [(r, -1, True) for r in reactants if not any(_same(r, p) for p, _ in products)]
         out.append(_Step(row["prefix"], drivers, effects))
         if isinstance(stmt, Complex):
-            # Coming apart: the complex raises each member's form free of the others.
+            # Coming apart: the complex raises each member's form free of the others, and lowers
+            # itself, seen from each member (without that, cAMP leaving PKA's regulatory subunit
+            # raised total cAMP).
             out.append(
                 _Step(
                     row["prefix"],
                     [(p, 1, "complex") for p, _ in products],
-                    [(r, 1, False) for r in reactants],
+                    [(r, 1, False) for r in reactants] + [(p, -1, True) for p, _ in products],
                 )
             )
     return out
 
 
-def _allowed(step: _Step, d: int | None, first: bool) -> list[tuple[Any, int]]:
-    """The changes of ``step`` driven by its driver ``d`` (``None``: by the reaction itself): not
-    that driver's own, and a reactant's lowering a reactant it is consumed with only on a chain's
-    ``first`` step."""
-    if d is None:
+def _allowed(step: _Step, d: int | None, own: bool = False) -> list[tuple[Any, int]]:
+    """The changes of ``step`` driven by its driver ``d`` (``None``: by the reaction itself), but,
+    unless ``own``, that driver's own: a driver that rises does not also fall by its own
+    consumption, neither for the rows it drives next nor for a target it is part of (read so, a
+    target's own decay, "more pS6, more of it dephosphorylated", ended every chain the other way).
+    One row's net, read for a direct claim, counts it: binding EGFR leaves its total as it is."""
+    if d is None or own:
         return [(e, change) for e, change, _ in step.effects]
-    agent, _, role = step.drivers[d]
-    out = []
-    for e, change, consumed in step.effects:
-        if e is agent or _same(e, agent):
-            continue
-        if role == "reactant" and consumed and not first:
-            continue
-        out.append((e, change))
-    return out
+    agent = step.drivers[d][0]
+    return [(e, change) for e, change, _ in step.effects if not (e is agent or _same(e, agent))]
 
 
 def _moves(changes: list[tuple[Any, int]], target, strict: bool = False) -> set[int]:
@@ -570,11 +571,13 @@ class _Target:
     def __init__(self, agent=None, forms: list | None = None, any_form: bool = False):
         self.agent, self.forms, self.any_form = agent, forms, any_form
 
-    def reached(self, step: _Step, d: int | None, first: bool, strict: bool = False) -> set[int]:
+    def reached(
+        self, step: _Step, d: int | None, strict: bool = False, own: bool = False
+    ) -> set[int]:
         """Which ways ``step``, driven by its driver ``d``, moves the target (``strict``:
         :func:`_moves`). For ``any_form`` (what ``does not affect`` forbids), each way it moves any
         form of the agent, net or not."""
-        changes = _allowed(step, d, first)
+        changes = _allowed(step, d, own)
         if self.any_form:
             return {1 if c > 0 else -1 for e, c in changes if compatible(e, self.agent)}
         if self.forms is None:
@@ -680,7 +683,7 @@ def _verdict(c: Constraint, constraints: Constraints, claimed: list[_Step], grap
                 s.prefix
                 for s in claimed
                 for d, (agent, _, _) in enumerate(s.drivers)
-                if compatible(agent, subject) and target.reached(s, d, True)
+                if compatible(agent, subject) and target.reached(s, d)
             ]
             return (
                 Verdict(True)
@@ -774,9 +777,9 @@ def _entailing(c: Constraint, constraints: Constraints, claimed: list[_Step]) ->
         for k, d in ways:
             # Strict: the row's own forms must be the constraint's, not merely overlap them.
             if musts is None:
-                ok = k * sign in target.reached(s, d, True, strict=True)
+                ok = k * sign in target.reached(s, d, strict=True, own=True)
             else:
-                changes = _allowed(s, d, True)
+                changes = _allowed(s, d, own=True)
                 ok = all(any(k * g == e for g in _moves(changes, p, strict=True)) for p, e in musts)
             if ok:
                 rows.append(s.prefix)
@@ -801,7 +804,7 @@ def _why_direct(c: Constraint, constraints: Constraints, claimed: list[_Step]) -
         goal, sign = products[0] if products else (None, 1)
         target = _Target(goal)
         what = _text(goal) if goal is not None else "what it makes"
-    changers = [s for s in claimed if target.reached(s, None, True)]
+    changers = [s for s in claimed if target.reached(s, None)]
     if not changers:
         return f"no row changes {what}"
     said = []
@@ -833,7 +836,7 @@ def _why_direct(c: Constraint, constraints: Constraints, claimed: list[_Step]) -
                 f"`{s.prefix}` has {_text(subject)} but not {', '.join(missing)} as its "
                 "rate records them"
             )
-        elif not any(k is not None and k * sign in target.reached(s, d, True) for d, k, _ in found):
+        elif not any(k is not None and k * sign in target.reached(s, d) for d, k, _ in found):
             said.append(
                 f"`{s.prefix}` has {_text(subject)} change {what} the other way"
                 + (
@@ -876,20 +879,23 @@ class _Graph:
         for i, s in enumerate(claimed):
             for d, (agent, _, _) in enumerate(s.drivers):
                 self.by_name[_name(agent.name)].append((i, d))
-        self._next: dict[tuple[int, int, bool], list[tuple[int, int, int]]] = {}
+        self._next: dict[tuple[int, int], list[tuple[int, int, int]]] = {}
 
-    def next(self, i: int, d: int, first: bool) -> list[tuple[int, int, int]]:
+    def next(self, i: int, d: int) -> list[tuple[int, int, int]]:
         """The drivers ``(step, driver, way)`` the changes of step ``i`` driven by ``d`` move, each
         way it moves them, in other rows."""
-        key = (i, d, first)
+        key = (i, d)
         if key not in self._next:
-            changes = _allowed(self.steps[i], d, first)
+            changes = _allowed(self.steps[i], d)
             out = set()
             for name in {_name(e.name) for e, _ in changes}:
                 for j, dd in self.by_name.get(name, ()):
                     if self.steps[j].prefix == self.steps[i].prefix:
                         continue
-                    for g in _moves(changes, self.steps[j].drivers[dd][0]):
+                    driver, _, role = self.steps[j].drivers[dd]
+                    # A complex comes apart as there is more of IT: a member made bare (a synthesis
+                    # makes it free) does not raise the complex, though one form may be both.
+                    for g in _moves(changes, driver, strict=role == "complex"):
                         out.add((j, dd, g))
             self._next[key] = sorted(out)
         return self._next[key]
@@ -908,23 +914,23 @@ class _Graph:
                     # A complex comes apart because there is more of it, not more of a member.
                     continue
                 if compatible(agent, subject):
-                    state = (i, d, 1, True)
+                    state = (i, d, 1)
                     if state not in parent:
                         parent[state] = None
                         todo.append(state)
         while todo:
             state = todo.popleft()
-            i, d, way, first = state
+            i, d, way = state
             k = self.steps[i].drivers[d][1]
             flux = way * k if (signed and k is not None) else 0
-            reached = target.reached(self.steps[i], d, first)
+            reached = target.reached(self.steps[i], d)
             if reached and (not signed or any(flux * g == sign for g in reached)):
                 return self._written(state, parent, subject, target, sign)
-            for j, dd, g in self.next(i, d, first):
+            for j, dd, g in self.next(i, d):
                 kk = self.steps[j].drivers[dd][1]
                 if signed and kk is None:
                     continue
-                nxt = (j, dd, flux * g if signed else 0, False)
+                nxt = (j, dd, flux * g if signed else 0)
                 if nxt not in parent:
                     parent[nxt] = state
                     todo.append(nxt)
@@ -939,7 +945,7 @@ class _Graph:
             state = parent[state]
         chain.reverse()
         parts = [_text(subject)]
-        for n, (i, d, way, _) in enumerate(chain):
+        for n, (i, d, way) in enumerate(chain):
             s = self.steps[i]
             after = chain[n + 1][2] if n + 1 < len(chain) else sign
             arrow = "⊣" if way and after and way * after < 0 else "→"
@@ -964,22 +970,17 @@ class _Graph:
         for i, s in enumerate(self.steps):
             for d, (agent, _, _) in enumerate(s.drivers):
                 if compatible(agent, subject):
-                    todo.append((i, d, True))
+                    todo.append((i, d))
         while todo:
-            i, d, first = todo.popleft()
-            if (i, d, first) in seen:
+            i, d = todo.popleft()
+            if (i, d) in seen:
                 continue
-            seen.add((i, d, first))
-            reached += [_text(e) for e, _ in _allowed(self.steps[i], d, first)]
-            todo.extend((j, dd, False) for j, dd, _ in self.next(i, d, first))
+            seen.add((i, d))
+            reached += [_text(e) for e, _ in _allowed(self.steps[i], d)]
+            todo.extend((j, dd) for j, dd, _ in self.next(i, d))
         reached = list(dict.fromkeys(reached))
         makers = sorted(
-            {
-                s.prefix
-                for s in self.steps
-                for d in range(len(s.drivers))
-                if target.reached(s, d, True)
-            }
+            {s.prefix for s in self.steps for d in range(len(s.drivers)) if target.reached(s, d)}
         )
         out = "no chain of claims connects them"
         out += (
