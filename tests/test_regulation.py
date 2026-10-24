@@ -140,6 +140,18 @@ def test_a_modulator_of_a_scheme_takes_the_direction_of_its_net_rate():
         assert emission.derived == {"modulated_by_0": kind}
 
 
+def test_a_binding_line_written_dissociation_first_is_the_same_scheme():
+    """review of #128, netrate t2: `ES | E + S` read as written held the complex as a reactant, so
+    an inhibitor of binding read as not moving J at all."""
+    scheme = (
+        "enz(sub=1) % sub(enz=1, mod='off') | enz(sub=None) + sub(enz=None, mod='off') @ kr, "
+        "kf" + _SLOWED + "\n"
+        "enz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc"
+    )
+    _build([_PHOSPHO.format(regulator="inhibited by I")],
+           _scheme("Phosphorylation", scheme, "kf", "kr", "kc", "Ki"))
+
+
 def test_a_step_into_a_dead_end_inhibits():
     """No rule on a step's own rate gets this one: a step pointing forward, parking the enzyme in a
     form that makes nothing, slows the reaction as it speeds."""
