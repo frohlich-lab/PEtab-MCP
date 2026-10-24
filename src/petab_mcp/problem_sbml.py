@@ -68,6 +68,7 @@ from pysb.bng import NoInitialConditionsError, generate_equations
 from pysb.export import export
 
 from . import mechanisms as M
+from . import reduction
 from .errors import ModelUpdateError
 from .protocols import Input, hold
 from .reconcile import SEED_INITIAL_VALUE
@@ -84,6 +85,8 @@ def to_antimony(
     notes: list[str] | None = None,
     *,
     targets: frozenset[str] = frozenset(),
+    network: dict | None = None,
+    reduce: bool = True,
 ) -> tuple[str, list[M.Emission]]:
     """The model ``rows`` build, as Antimony the ``antimony`` route accepts unchanged.
 
@@ -108,6 +111,10 @@ def to_antimony(
     ``notes``, when given, collects what the start holds that nothing declared and the caller may
     not expect: kinds the rules make from nothing, which start empty, and a start location chosen
     among several.
+
+    The rules are reduced before they are expanded (:mod:`reduction`), unless ``reduce`` is off
+    (the expansion the tests compare it with), and ``network``, when given, receives the
+    species and reactions with and without the reduction.
     """
     starts = starts or []
     entities = {**{item.id: Agent(item.id) for item in inputs}, **entities}
@@ -152,8 +159,10 @@ def to_antimony(
         model,
         [m for m in model.monomers if (m.name not in made or m.name in held) and m.name not in declared],
     )
+    reduced = reduction.reduce(model) if reduce else reduction.Reduction()
     _expand(model)
-    reached = {mp.monomer.name for sp in model.species for mp in sp.monomer_patterns}
+    present = reduction.reached(model, reduced)
+    reached = {mp.monomer.name for i in present for mp in model.species[i].monomer_patterns}
     unreached = [
         m for m in model.monomers if m.name in made - held.keys() - reached - declared
     ]
@@ -161,6 +170,7 @@ def to_antimony(
         _seed(model, unreached)
         model.reset_equations()
         _expand(model)
+        present = reduction.reached(model, reduced)
     if notes is not None:
         set_by = sorted(s for s in entities if s in targets)
         kept = [s for s in set_by if s in keys]
@@ -205,18 +215,20 @@ def to_antimony(
                 f"them in the cytoplasm: {'; '.join(chosen)}. To start one elsewhere, declare it "
                 "in `starts`."
             )
-    fired = {name for reaction in model.reactions for name in reaction["rule"]}
+    fired = reduction.fired(model, reduced, present)
     never = []
     stuck = sorted({e.prefix for e in emissions if not fired.issuperset(e.rules)})
     if stuck:
         # Named with the form each needs, which nothing forms: "never fire" alone does not say
         # what to add (a translocation row whose cargo must first be modified).
-        needs = _unformed_reactants(model, emissions, fired, stuck)
+        needs = _unformed_reactants(model, emissions, fired, stuck, reduced, present)
         never.append(
             f"rows {stuck} build rules that never fire"
             + (f" (nothing forms {'; '.join(f'{p}: {n}' for p, n in needs.items())})" if needs else "")
         )
-    unread = sorted(sp for name, sp in readouts.items() if not model.observables[name].species)
+    unread = sorted(
+        sp for name, sp in readouts.items() if present.isdisjoint(model.observables[name].species)
+    )
     if unread:
         patterns = "; ".join(
             f"{sp}: {model.observables[f'readout_{sp}'].reaction_pattern}" for sp in unread
@@ -231,6 +243,8 @@ def to_antimony(
             "it to. Add the statement that forms it, or, if it is present at t=0, declare it in "
             "`starts`."
         )
+    if network is not None:
+        network.update(reduction.sizes(model, reduced))
     sbml = export(model, "sbml")  # from the expansion above; BioNetGen does not run again
     base_names = {
         str(initial.pattern): initial.pattern.monomer_patterns[0].monomer.name
@@ -380,11 +394,13 @@ def _initial_expression(sbml_model, placeholder: str, species: str, formula: str
             assignment.setMath(math)
 
 
-def _unformed_reactants(model, emissions, fired, stuck) -> dict[str, str]:
-    """For each stuck row, a reactant pattern of one of its unfired rules that no species of the
-    expanded network matches, as PySB writes it."""
+def _unformed_reactants(model, emissions, fired, stuck, reduced, present) -> dict[str, str]:
+    """For each stuck row, a reactant pattern of one of its unfired rules, its catalyst (which
+    :mod:`reduction` took off the rule) first, that no ``present`` species matches, as PySB writes
+    it."""
     from pysb.pattern import match_complex_pattern
 
+    species = [model.species[i] for i in sorted(present)]
     needs = {}
     for e in emissions:
         if e.prefix not in stuck:
@@ -392,8 +408,11 @@ def _unformed_reactants(model, emissions, fired, stuck) -> dict[str, str]:
         for rule_name in e.rules:
             if rule_name in fired:
                 continue
-            for cp in model.rules[rule_name].reactant_pattern.complex_patterns:
-                if not any(match_complex_pattern(cp, sp) for sp in model.species):
+            patterns = list(model.rules[rule_name].reactant_pattern.complex_patterns)
+            if rule_name in reduced.catalysts:
+                patterns.insert(0, reduced.catalysts[rule_name].reaction_pattern.complex_patterns[0])
+            for cp in patterns:
+                if cp is not None and not any(match_complex_pattern(cp, sp) for sp in species):
                     needs[e.prefix] = str(cp)
                     break
             if e.prefix in needs:

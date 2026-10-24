@@ -696,7 +696,9 @@ def input_species(sm) -> set[str]:
 def species_influence_graph(sm) -> dict[str, set[str]]:
     """Directed 'influences' graph over species: ``X -> Y`` when ``X`` enters the rate at which
     ``Y`` changes — i.e. ``X`` is a reactant/modifier of, or appears in the rate law of, a
-    reaction for which ``Y`` is a reactant or product.
+    reaction for which ``Y`` is a reactant or product. A rate law reads ``X`` through an
+    assignment rule it reads too: a statements model's catalyst enters its reaction only as such
+    a rate factor (:mod:`reduction`), and Antimony lists no modifier for it.
 
     A pure *product* of a reaction does not influence its other species (it is downstream), so a
     dead-end sink ``B -> D`` yields no outgoing edge from ``D``: ``D`` can reach no observed
@@ -704,6 +706,7 @@ def species_influence_graph(sm) -> dict[str, set[str]]:
     state (worth flagging) from a species that feeds — however indirectly — an observable (an
     enzyme, a substrate, an upstream regulator)."""
     species = species_ids(sm)
+    ruled = {r.getVariable(): _ast_names(r.getMath()) for r in sm.getListOfRules() if r.isAssignment()}
     edges: dict[str, set[str]] = {}
     for i in range(sm.getNumReactions()):
         rxn = sm.getReaction(i)
@@ -711,7 +714,11 @@ def species_influence_graph(sm) -> dict[str, set[str]]:
         products = {rxn.getProduct(j).getSpecies() for j in range(rxn.getNumProducts())}
         modifiers = {rxn.getModifier(j).getSpecies() for j in range(rxn.getNumModifiers())}
         kl = rxn.getKineticLaw()
-        rate_syms = _ast_names(kl.getMath()) if kl is not None else set()
+        rate_syms, unread = set(), list(_ast_names(kl.getMath()) if kl is not None else ())
+        while unread:
+            if (name := unread.pop()) not in rate_syms:
+                rate_syms.add(name)
+                unread += ruled.get(name, ())
         drivers = (reactants | modifiers | rate_syms) & species
         changed = reactants | products
         for x in drivers:
