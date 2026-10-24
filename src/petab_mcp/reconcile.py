@@ -46,6 +46,7 @@ from .constants import (
     NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD,
     NOISE_SIGMA_REPLICATE_MIN_DOF,
 )
+from .errors import ValidationError
 from .parameters import _default_bounds
 from .problem import (
     LIN,
@@ -479,24 +480,17 @@ def _ic_expression_params(sm, sid: str) -> list[str]:
     return []
 
 
-def _free_id(sm, base: str) -> str:
-    """``base`` when no element of the model holds it, else the first ``base_<n>`` none does."""
-    sid, n = base, 0
-    while sm.getElementBySId(sid) is not None:
-        n += 1
-        sid = f"{base}_{n}"
-    return sid
-
-
-def _declared_initial(sm, sp) -> tuple[float | None, str | None]:
-    """The t=0 value species ``sp`` declares, in the quantity an initial assignment on it sets
-    (a concentration, or an amount for a substance-only species), and the expression that
-    assignment must wrap a minted parameter in when the conversion has no number to use.
-
-    SBML lets a species declare the other quantity: an ``initialAmount`` on a concentration
-    species is ``amount / size`` -- the shape libantimony writes ``A = 5/C`` as, and the shape
-    an amount-based shipped model renders back as. Handing that number straight to
+def _declared_initial(sm, sp) -> tuple[float | None, tuple[str, str] | None]:
+    """The t=0 value species ``sp`` declares, and ``(operator, compartment)`` when an initial
+    assignment on it must apply that value in the species' other quantity: an ``initialAmount``
+    on a concentration species is ``amount / size`` (the shape libantimony writes ``A = 5/c``
+    as, and the shape an amount-based shipped model renders back as), a concentration on a
+    substance-only species ``concentration * size``. Handing the number straight to
     ``<sid> = <sid>_init`` started the species at amount-times-volume.
+
+    The value is the author's, not a quotient by a numeric size: the minted parameter then holds
+    what the model text says, so the {0,1} convention reads that and not a ratio that lands on
+    1, and a parametric or zero-sized compartment needs no case of its own.
     """
     if sp.isSetInitialConcentration():
         value, declared_amount = sp.getInitialConcentration(), False
@@ -504,39 +498,27 @@ def _declared_initial(sm, sp) -> tuple[float | None, str | None]:
         value, declared_amount = sp.getInitialAmount(), True
     else:
         return None, None
-    comp = sm.getCompartment(sp.getCompartment())
-    if declared_amount == sp.getHasOnlySubstanceUnits() or comp is None:
+    if declared_amount == sp.getHasOnlySubstanceUnits() or not sp.isSetCompartment():
         return value, None
-    cid = comp.getId()
-    if (
-        comp.isSetSize()
-        and sm.getInitialAssignmentBySymbol(cid) is None
-        and sm.getRuleByVariable(cid) is None
-    ):
-        size = comp.getSize()
-        return (value / size if declared_amount else value * size), None
-    return value, (f"{{}} / {cid}" if declared_amount else f"{{}} * {cid}")
+    return value, ("/" if declared_amount else "*", sp.getCompartment())
 
 
-def _set_parametric_ic(sm, sid: str, value: float, wrap: str | None = None) -> str:
-    """Start ``sid`` at a fresh ``<sid>_init`` parameter valued ``value``, through the initial
-    assignment ``wrap`` formats it into (default: the bare parameter).
+def _set_parametric_ic(sm, sid: str, value: float, scale: tuple[str, str] | None = None) -> str:
+    """Start ``sid`` at a new ``<sid>_init`` parameter valued ``value``, applied through
+    ``scale`` (:func:`_declared_initial`) when the declaration is in the species' other quantity.
 
-    Fresh, never a parameter the model already holds under that name: reaching here means the
-    species' own assignment names no parameter, so an existing ``<sid>_init`` is something else's
-    (a readout's normaliser, say) that the prune kept. Pointing the species at it started the
-    species at that parameter's value, not the declared one, and fixed it when that value was 1.
+    The species has no initial assignment here -- one is preserved, whatever it names -- and the
+    id is free: :func:`ensure_parametric_initial_conditions` refuses a model that holds it.
     """
-    init_id = _free_id(sm, f"{sid}_init")
+    init_id = f"{sid}_init"
     p = sm.createParameter()
     p.setId(init_id)
     p.setConstant(True)
     p.setValue(float(value))
-    ia = sm.getInitialAssignmentBySymbol(sid)
-    if ia is None:
-        ia = sm.createInitialAssignment()
-        ia.setSymbol(sid)
-    ia.setMath(libsbml.parseL3Formula((wrap or "{}").format(init_id)))
+    ia = sm.createInitialAssignment()
+    ia.setSymbol(sid)
+    formula = init_id if scale is None else f"{init_id} {scale[0]} {scale[1]}"
+    ia.setMath(libsbml.parseL3Formula(formula))
     return init_id
 
 
@@ -643,7 +625,12 @@ def ensure_parametric_initial_conditions(
             # clobber it with a fresh <sid>_init, which would discard the estimated seed(s).
             ic_params.extend(expr_params)
             continue
-        value, wrap = _declared_initial(sm, sp)
+        if sm.getInitialAssignmentBySymbol(sid) is not None:
+            # An assignment naming no parameter (`A = 1/3`, `D = A`) is the author's t=0 as much
+            # as a parametric one, and SBML reads it over a literal declared beside it. It was
+            # overwritten with that literal where a hand-written model carried both.
+            continue
+        value, scale = _declared_initial(sm, sp)
         # `value is None` is the UNSET species (`species B;` with no assignment): libantimony
         # sets neither initialConcentration nor initialAmount, and SBML reads it as an empty
         # pool. It is the same state as an explicit `B = 0;` and must take the same branch —
@@ -662,7 +649,17 @@ def ensure_parametric_initial_conditions(
             # breaks log-scale estimation by construction, which is why these rows kept surfacing
             # as lint issues no requested change could legally fix.
             continue
-        ic_params.append(_set_parametric_ic(sm, sid, value if value is not None else 0.0, wrap))
+        held = sm.getElementBySId(f"{sid}_init")
+        if held is not None:
+            # Pointing the species at it started the species at that element's value, and the
+            # mint's name is read as a contract elsewhere (`protect_ids` above, the `*_init`
+            # fallbacks), so a renamed mint would be silently outside both.
+            raise ValidationError(
+                f"`{sid}_init` is the name the reconcile gives species {sid!r}'s initial value, "
+                f"and the model holds a {held.getElementName()} under it. Write "
+                f"`{sid} = {sid}_init` to make it that initial value, or rename it."
+            )
+        ic_params.append(_set_parametric_ic(sm, sid, value if value is not None else 0.0, scale))
     return ic_params
 
 
@@ -682,7 +679,8 @@ def _reaction_species(sm) -> set[str]:
 
 def _model_math_names(sm) -> set[str]:
     """Names the model's math reads: rate laws, initial assignments, rules, and events (trigger,
-    priority, delay, and each assignment's math and target)."""
+    priority, delay, and each assignment's math). What an event ASSIGNS is :func:`_event_targets`:
+    the prune keeps it, while a role or reuse check reads only what the math reads."""
     names: set[str] = set()
     for i in range(sm.getNumReactions()):
         kl = sm.getReaction(i).getKineticLaw()
@@ -698,8 +696,17 @@ def _model_math_names(sm) -> set[str]:
             if part is not None:
                 names |= _ast_names(part.getMath())
         for ea in event.getListOfEventAssignments():
-            names |= _ast_names(ea.getMath()) | {ea.getVariable()}
+            names |= _ast_names(ea.getMath())
     return names
+
+
+def _event_targets(sm) -> set[str]:
+    """Symbols an event assigns."""
+    return {
+        ea.getVariable()
+        for i in range(sm.getNumEvents())
+        for ea in sm.getEvent(i).getListOfEventAssignments()
+    }
 
 
 def _rule_target_symbols(sm) -> set[str]:
@@ -2073,14 +2080,17 @@ def initial_conditions_report(problem, added: set[str] | None = None) -> list[di
             formula = libsbml.formulaToL3String(rule.getMath())
         elif assignment is not None:
             formula = libsbml.formulaToL3String(assignment.getMath())
-        elif sp.isSetInitialConcentration():
-            formula = sp.getInitialConcentration()
-        elif sp.isSetInitialAmount():
-            formula = sp.getInitialAmount()
         else:
             # An unset species is an empty pool in SBML, and `ensure_parametric_initial_conditions`
             # deliberately mints nothing for it.
-            formula = 0.0
+            value, scale = _declared_initial(sm, sp)
+            formula = (
+                0.0
+                if value is None
+                else value
+                if scale is None
+                else f"{value} {scale[0]} {scale[1]}"
+            )
         try:
             expr = sympify_petab(formula)
         except Exception:  # noqa: BLE001 - unparseable: evaluates to None below
@@ -2192,8 +2202,9 @@ def prune_orphans(problem) -> dict[str, list[str]]:
     # leaves the rule pointing at a deleted id (invalid SBML) and the whole edit is rejected.
     # `_model_math_names` walks rule MATH only, so a forcing species driven by a rule that nothing
     # reads -- the `input_species` shape -- would otherwise be removed out from under its own rule.
-    rule_targets = {sm.getRule(i).getVariable() for i in range(sm.getNumRules())}
-    used_species = _reaction_species(sm) | (_model_math_names(sm) & species_ids(sm)) | rule_targets
+    # An event's target likewise: the prune is the one reader that must count a write.
+    assigned = {sm.getRule(i).getVariable() for i in range(sm.getNumRules())} | _event_targets(sm)
+    used_species = _reaction_species(sm) | (_model_math_names(sm) & species_ids(sm)) | assigned
 
     removed_species: list[str] = []
     for sid in list(species_ids(sm)):
@@ -2215,7 +2226,7 @@ def prune_orphans(problem) -> dict[str, list[str]]:
     # or a pass-through alias of a condition target — and those rules are also what makes their
     # condition targets count as USED.
     # `_model_math_names` only walks rule MATH (the right-hand side), so add the targets here.
-    keep_names = keep | _model_math_names(sm) | _reaction_species(sm) | rule_targets
+    keep_names = keep | _model_math_names(sm) | _reaction_species(sm) | assigned
     # keep IC params of remaining species
     for i in range(sm.getNumSpecies()):
         ic = _ic_symbol_for(sm, sm.getSpecies(i).getId())

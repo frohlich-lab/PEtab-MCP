@@ -998,49 +998,103 @@ def test_an_event_keeps_the_symbols_only_it_reads():
     assert {"t_sw", "A_boost"} <= set(prob.parameter_df.index)
 
 
-def test_a_minted_ic_parameter_never_takes_a_name_the_model_already_holds():
+def test_a_held_init_name_is_refused_not_captured():
     """`A = 5` beside the author's own `A_init = 7`, read by a readout: the mint pointed A at
-    that parameter, so A started at 7 (and was FIXED when the value was 1) with nothing saying so."""
+    that parameter, so A started at 7 (and was FIXED when the value was 1) with nothing saying so.
+    Refused, naming the clash and both ways out, rather than minted under another name that the
+    `<sid>_init` contract (`protect_ids`, the `*_init` fallbacks) would not recognise."""
+    import pytest
+    from petab_mcp.errors import ValidationError
+
     prob = _bare_problem(
         "model captured\n  compartment c = 1;\n  species A in c; species B in c;\n"
         "  A = 5; B = 0; k = 1; A_init = 7;\n  r1: A -> B; k*A;\n  readout_B := B/A_init;\nend\n"
     )
-    sm = prob.model.sbml_model
-    R.reconcile(prob)
-    pid, value = _ic_parameter(sm, "A")
-    assert (pid, value) == ("A_init_1", 5)
-    assert sm.getParameter("A_init").getValue() == 7
+    with pytest.raises(ValidationError, match="holds a parameter under it.*`A = A_init`"):
+        R.reconcile(prob)
 
 
-def test_an_amount_on_a_concentration_species_is_divided_by_its_volume():
+def _formula(sm, sid):
+    import libsbml
+
+    return libsbml.formulaToL3String(sm.getInitialAssignmentBySymbol(sid).getMath())
+
+
+def test_an_amount_on_a_concentration_species_is_applied_over_its_volume():
     """A species declared by `initialAmount` with hasOnlySubstanceUnits=false in a compartment
     of size 2 is a concentration of 2.5; the mint handed the 5 to an initial assignment, which
     SBML applies as a concentration, so the species started at twice its value. libantimony
-    writes `A = 5/c` as exactly this, so the agent's own text reaches it."""
+    writes `A = 5/c` as exactly this, so the agent's own text reaches it. The parameter holds
+    the author's 5 and the assignment divides, so a parametric or zero-sized compartment is the
+    same case, and an amount of 2 in a volume of 2 is not read as a unit normalisation."""
+    from petab.v2.C import ESTIMATE, NOMINAL_VALUE
+
+    for size in ("2", "V0", "0"):
+        prob = _bare_problem(
+            f"model amount\n  compartment c = {size}; V0 = 2;\n  species A in c; species B in c;\n"
+            "  A = 2/c; B = 0; k = 1;\n  r1: A -> B; k*A;\nend\n"
+        )
+        sm = prob.model.sbml_model
+        assert sm.getSpecies("A").isSetInitialAmount()
+        R.reconcile(prob)
+        assert _formula(sm, "A") == "A_init / c"
+        assert prob.parameter_df.loc["A_init", [NOMINAL_VALUE, ESTIMATE]].tolist() == [2.0, True]
+        # ...and a second reconcile preserves the assignment as the author's own compound IC.
+        R.reconcile(prob)
+        assert _formula(sm, "A") == "A_init / c"
+
+
+def test_a_concentration_on_a_substance_only_species_is_multiplied_by_its_volume():
+    """The mirror shape: an `initialConcentration` on a hasOnlySubstanceUnits=true species, where
+    an initial assignment sets an amount."""
+    prob = _bare_problem(
+        "model conc\n  compartment c = 2;\n  substanceOnly species A in c; species B in c;\n"
+        "  A = 5; B = 0; k = 1;\n  r1: A -> B; k*A;\nend\n"
+    )
+    sm = prob.model.sbml_model
+    sp = sm.getSpecies("A")
+    sp.unsetInitialAmount()
+    sp.setInitialConcentration(2.5)
+    R.reconcile(prob)
+    assert _formula(sm, "A") == "A_init * c"
+    assert sm.getParameter("A_init").getValue() == 2.5
+
+
+def test_an_assignment_naming_no_parameter_is_kept_over_a_literal():
+    """Hand-written SBML may carry both an initialConcentration and an initial assignment, which
+    SBML reads over it. `D = A` names no parameter, so the mint read the literal and rewrote the
+    assignment to `D = D_init`, starting D at the literal instead of at A."""
+    prob = _bare_problem(
+        "model both\n  compartment c = 1;\n  species A in c; species B in c; species D in c;\n"
+        "  A = 5; B = 0; D = A; k = 1;\n  r1: A -> B; k*A;\n  r2: D -> B; k*D;\nend\n"
+    )
+    sm = prob.model.sbml_model
+    sm.getSpecies("D").setInitialConcentration(7.0)
+    R.reconcile(prob)
+    assert _formula(sm, "D") == "A" and sm.getParameter("D_init") is None
+
+
+def test_an_event_target_is_kept_but_not_read_as_mechanism():
+    """A flag an event writes and nothing reads survives the prune (removing it breaks the
+    event) but is a CONSTANT, not KINETIC: `_model_math_names` is what the math READS, and
+    the role and observation-model-reuse checks classify on that."""
+    prob = _bare_problem(
+        "model flagged\n  compartment c = 1;\n  species A in c; species B in c;\n"
+        "  A = 5; B = 0; k = 1; flag = 0;\n  r1: A -> B; k*A;\n  at time > 2: flag = 1;\nend\n"
+    )
+    R.reconcile(prob)
+    assert "flag" in prob.parameter_df.index
+    assert R.parameter_roles(prob)["flag"] == R.ROLE_CONSTANT
+    assert "flag" not in R._model_math_names(prob.model.sbml_model)
+
+
+def test_the_report_declares_an_amount_as_the_concentration_it_is():
+    """`initial_conditions_report` read the raw initialAmount, so a species left with its
+    declaration (a condition target, or before any reconcile) was reported at twice what it
+    simulates at in a compartment of size 2."""
     prob = _bare_problem(
         "model amount\n  compartment c = 2;\n  species A in c; species B in c;\n"
         "  A = 5/c; B = 0; k = 1;\n  r1: A -> B; k*A;\nend\n"
     )
-    sm = prob.model.sbml_model
-    assert sm.getSpecies("A").isSetInitialAmount()
-    R.reconcile(prob)
-    assert _ic_parameter(sm, "A") == ("A_init", 2.5)
-
-
-def test_an_amount_in_a_parametric_volume_keeps_the_division():
-    """With the compartment's size an assignment (`c = V0`) there is no number to divide by, so
-    the minted parameter holds the amount and the assignment divides it by the compartment."""
-    import libsbml
-
-    prob = _bare_problem(
-        "model amount\n  compartment c = V0; V0 = 2;\n  species A in c; species B in c;\n"
-        "  A = 5/c; B = 0; k = 1;\n  r1: A -> B; k*A;\nend\n"
-    )
-    sm = prob.model.sbml_model
-    R.reconcile(prob)
-    ia = sm.getInitialAssignmentBySymbol("A")
-    assert libsbml.formulaToL3String(ia.getMath()) == "A_init / c"
-    assert sm.getParameter("A_init").getValue() == 5
-    # ...and a second reconcile preserves that assignment as the author's own compound IC.
-    R.reconcile(prob)
-    assert libsbml.formulaToL3String(sm.getInitialAssignmentBySymbol("A").getMath()) == "A_init / c"
+    (row,) = [r for r in R.initial_conditions_report(prob) if r["species"] == "A"]
+    assert row["declared_t0"] == 2.5
