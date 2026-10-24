@@ -30,15 +30,17 @@ it came from.
 **Independent sites are tracked apart.** Once no catalyst is in a rule, a monomer that rules only
 turn from one form into another (``M(a='u') >> M(a='p')``) needs its sites together only where a
 rule changes one while it reads another on the same molecule. Its sites fall into blocks that no
-rule couples, and each block becomes a monomer of its own (``M_a``, ``M_b``...), started at the
-whole monomer's total and changed by the rules on its sites. Each block's dynamics read the others
-only through global amounts, so ``[M(a, b)] = [M_a(a)]·[M_b(b)] / M_tot`` at all times if it
-holds at the start, which a single start form gives: a sum over ``k`` blocks' forms is the
-product of the ``k`` block amounts over ``M_tot^(k-1)`` (Borisov et al. 2005; Conzelmann et al.
-2006). Every amount of the whole monomer is written so: a readout, a rate's ``amount`` or
-modifier, a catalyst's rate factor. The power is written as each further block's fraction of its
-own total (``M_a(a)·(M_b(b)/M_b_tot)``, all totals equal), which writes no exponent, a literal
-:mod:`literals` would charge as a parameter.
+rule couples, and each block becomes a monomer of its own (``M_a``, ``M_b``...), changed by the
+rules on its sites. Each block's dynamics read the others only through global amounts, so
+``[M(a, b)] = [M_a(a)]·[M_b(b)] / M_tot`` at all times if it holds at the start, which a single
+start form gives (Borisov et al. 2005; Conzelmann et al. 2006). The first block starts at the whole
+monomer's start amount and holds amounts; every further block holds the FRACTION of the monomer in
+each of its forms, starting at 1 in the start form (``start_fraction := 1``, a rule, so the
+parameters are the unsplit model's), so that an amount over ``k`` blocks is the first block's amount times the others' fractions:
+no division, which made a total of 0 (a knockout, a start the conditions set to 0, an estimated
+amount at a bound of 0) NaN (the #116 review), and no exponent, a literal :mod:`literals` would
+charge as a parameter. Every amount of the whole monomer is written so: a readout, a rate's
+``amount`` or regulator, a catalyst's rate factor.
 
 The product holds only for a monomer whose total is constant and whose forms only rules set, so
 one stays whole when any of these fails (``whole`` names those the problem sets):
@@ -47,9 +49,8 @@ one stays whole when any of these fails (``whole`` names those the problem sets)
   degradation or conversion; no catalyst a rule could not take out, no second molecule);
 - it has no binding site (a domain-oriented split of complexes, Conzelmann et al. 2006, is not
   done here);
-- it starts in exactly one form, nonzero (several start forms generally do not factorise, and a
-  zero total leaves the product 0/0);
-- no condition, input protocol or condition-set starting amount sets any of its forms.
+- it starts in exactly one form (several start forms generally do not factorise);
+- no condition or input protocol sets any of its forms.
 
 ODEs only: the product is not exact for stochastic simulation (Borisov et al. 2008), which no
 route here does.
@@ -93,18 +94,15 @@ class Split:
 
 @dataclass
 class Amount:
-    """The amount of one pattern of a split monomer: for each block the pattern reads, the amount
-    of that block's part of it."""
+    """The amount of one pattern of a split monomer: the first block's amount of its part of the
+    pattern (the block's total when it reads none of its sites), and for each further block the
+    pattern reads, the fraction of the monomer in its part."""
 
     split: Split
     factors: dict[int, pysb.Observable]
 
     def value(self) -> sympy.Expr:
-        first, *others = sorted(self.factors)
-        value = self.factors[first]
-        for i in others:
-            value = value * self.factors[i] / self.split.totals[i]
-        return value
+        return sympy.Mul(*self.factors.values())
 
 
 @dataclass
@@ -236,11 +234,16 @@ def _free(model: pysb.Model, name: str) -> str:
 def _splits(model: pysb.Model, whole: set[str]):
     """Split each monomer that can be; returns the splits, and the amount each observable of a
     split monomer now is, which every expression reads in its place."""
-    splits = {}
+    splits, fraction = {}, None
     for monomer in list(model.monomers):
         blocks = None if monomer.name in whole else _blocks(model, monomer)
         if blocks is not None and len(blocks[0]) > 1:
-            splits[monomer.name] = _split(model, monomer, *blocks)
+            if fraction is None:
+                fraction = pysb.Expression(
+                    _free(model, "start_fraction"), sympy.Integer(1), _export=False
+                )
+                model.add_component(fraction)
+            splits[monomer.name] = _split(model, monomer, *blocks, fraction)
     amounts = {}
     for obs in list(model.observables):
         mp = _one_molecule(obs.reaction_pattern)
@@ -299,10 +302,15 @@ def _blocks(model: pysb.Model, monomer: pysb.Monomer) -> tuple[list[list[str]], 
 
 
 def _split(
-    model: pysb.Model, monomer: pysb.Monomer, blocks: list[list[str]], unchanged: set[str]
+    model: pysb.Model,
+    monomer: pysb.Monomer,
+    blocks: list[list[str]],
+    unchanged: set[str],
+    fraction: pysb.Expression,
 ) -> Split:
     """Declare a monomer per block, named after the sites rules change in it, start each in the
-    whole one's start form, and move each rule onto the block that holds the sites it reads."""
+    whole one's start form, the first at its amount and every other at ``fraction``, and move
+    each rule onto the block that holds the sites it reads."""
     parts = []
     for sites in blocks:
         part = pysb.Monomer(
@@ -327,10 +335,10 @@ def _split(
     (start,) = [i for i in model.initials if monomer in _monomers(i.pattern)]
     model.initials.remove(start)
     state = start.pattern.monomer_patterns[0].site_conditions
-    for part in parts:
+    for part, value in zip(parts, [start.value] + [fraction] * (len(parts) - 1)):
         model.add_initial(
             pysb.Initial(
-                part(**{s: state[s] for s in part.sites}), start.value, start.fixed, _export=False
+                part(**{s: state[s] for s in part.sites}), value, start.fixed, _export=False
             )
         )
     totals = []
@@ -349,8 +357,8 @@ def _on(owner: dict, parts: list[pysb.Monomer], mp: pysb.MonomerPattern) -> pysb
 
 def _amount(model: pysb.Model, split: Split, mp, name: str, match: str = "molecules") -> Amount:
     """The amount of ``mp``, a pattern of the split monomer: an observable of each block whose
-    sites it reads, named after ``name``."""
-    factors = {}
+    sites it reads, named after ``name``, and the first block's total when it reads none of its."""
+    factors = {0: split.totals[0]}
     for i, part in enumerate(split.blocks):
         own = {s: v for s, v in mp.site_conditions.items() if s in part.sites}
         if own:
@@ -359,7 +367,7 @@ def _amount(model: pysb.Model, split: Split, mp, name: str, match: str = "molecu
             )
             model.add_component(factor)
             factors[i] = factor
-    return Amount(split, factors or {0: split.totals[0]})
+    return Amount(split, factors)
 
 
 def amount(model: pysb.Model, reduction: Reduction, pattern, name: str):
@@ -371,10 +379,9 @@ def amount(model: pysb.Model, reduction: Reduction, pattern, name: str):
     if split is None:
         component = pysb.Observable(name, pattern, _export=False)
     else:
-        owners = [part for part in split.blocks if set(mp.site_conditions) & set(part.sites)]
-        if len(owners) <= 1:
-            part = (owners or split.blocks)[0]
-            component = pysb.Observable(name, part(**mp.site_conditions), _export=False)
+        # Of the first block alone, an amount; reading any other, a fraction times the first's.
+        if set(mp.site_conditions) <= set(split.blocks[0].sites):
+            component = pysb.Observable(name, split.blocks[0](**mp.site_conditions), _export=False)
         else:
             component = pysb.Expression(
                 name, _amount(model, split, mp, name).value(), _export=False

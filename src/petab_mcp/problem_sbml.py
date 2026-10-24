@@ -58,11 +58,9 @@ downstream has to know where a model came from.
 
 from __future__ import annotations
 
-import re
-
 import libsbml
 import pysb
-from indra.assemblers.pysb.assembler import get_monomer_pattern
+from indra.assemblers.pysb.assembler import _n, get_monomer_pattern
 from indra.statements import Agent
 from petab.v1.models.sbml_model import SbmlModel
 from pysb import ANY
@@ -118,7 +116,7 @@ def to_antimony(
     (the expansion :mod:`reduction_check` compares with), and ``network``, when given, receives the
     species and reactions with and without the reduction.
     """
-    starts = starts or []
+    starts = [(name, agent, _numeric(amount)) for name, agent, amount in starts or []]
     entities = {**{item.id: Agent(item.id) for item in inputs}, **entities}
     clash = sorted(set(amounts or {}) & set(entities))
     if clash:
@@ -160,23 +158,9 @@ def to_antimony(
         [m for m in model.monomers if (m.name not in made or m.name in held) and m.name not in declared],
     )
     # What the experiment sets stays whole (:mod:`reduction`): a form the conditions or a protocol
-    # set, and a starting amount the conditions set or that is 0, which no product divides by.
-    whole = set(held) | {entities[s].name for s in set_keys}
-    whole |= {
-        mp.monomer.name
-        for initial in model.initials
-        if initial.value.name in targets
-        for mp in initial.pattern.monomer_patterns
-    }
-    whole |= {
-        agent.name
-        for _, agent, amount in starts
-        if (
-            set(re.findall(r"[A-Za-z_]\w*", amount)) & targets
-            if isinstance(amount, str)
-            else float(amount) == 0
-        )
-    }
+    # set. Named as PySB names the monomer (INDRA's `_n`: `S-1` is `S_1`), or a name INDRA rewrote
+    # slipped past and was split (the #116 review).
+    whole = {_n(name) for name in held} | {_n(entities[s].name) for s in set_keys}
     reduced = reduction.reduce(model, whole) if reduce else reduction.Reduction()
     # A readout over blocks of a split monomer is their product, so it is made after the split.
     amounts = {
@@ -346,6 +330,18 @@ def to_antimony(
             hold(sbml_model, base[monomer].getId(), item)
     _number_reactions(sbml_model)
     return SbmlModel.from_string(libsbml.writeSBMLToString(document)).to_antimony(), emissions
+
+
+def _numeric(amount):
+    """A start amount written as a number in text (``"2"``) is that number, as one written as a
+    number. Taken as an expression, its Antimony round trip made it a literal that reconcile
+    estimated once per species (the #116 review), and a ``"0"`` was no empty start."""
+    if isinstance(amount, str):
+        try:
+            return float(amount)
+        except ValueError:
+            return amount
+    return amount
 
 
 def _declare(

@@ -152,16 +152,12 @@ def _assert_same(monkeypatch, rows, entities, draws: int = 3, **kwargs) -> dict:
 
 
 def _product(trajectories: dict, split: dict, key: str) -> np.ndarray:
-    """The trajectory of ``key``, a species of a split monomer, from the split model's: the
-    product of each block's species in that form, over the total to the power of the blocks but
-    one."""
+    """The trajectory of ``key``, a species of a split monomer, from the split model's: the first
+    block's amount in that form times each other block's fraction in it."""
     monomer, sites = re.fullmatch(r"species (\w+)\((.*)\)", key).groups()
     form = dict(re.findall(r"(\w+)='(\w+)'", sites))
-    blocks = split[monomer]
-    first = next(iter(blocks))
-    total = sum(v for k, v in trajectories.items() if k.startswith(f"species {first}("))
-    value = total ** (1 - len(blocks))
-    for block, own in blocks.items():
+    value = 1.0
+    for block, own in split[monomer].items():
         value = (
             value * trajectories[f"species {block}({', '.join(f'{s}={form[s]!r}' for s in own)})"]
         )
@@ -445,21 +441,79 @@ def test_a_readout_across_many_blocks_is_charged_no_constant(monkeypatch):
             {"starts": [("S_u", _p("S", "-Y1", "-S2"), 1.0), ("S_p", _p("S", "Y1", "S2"), 2.0)]},
             id="two-start-forms",
         ),
-        pytest.param([], {"starts": [("S", Agent("S"), 0)]}, id="starts-empty"),
-        pytest.param(
-            [],
-            {"starts": [("S", Agent("S"), "S_total")], "targets": frozenset({"S_total"})},
-            id="start-the-conditions-set",
-        ),
         pytest.param([], {"targets": frozenset({"S"})}, id="species-the-conditions-set"),
         pytest.param([], {"inputs": (Input("S", "S_0", ("S_0",)),)}, id="input"),
     ],
 )
 def test_a_monomer_stays_whole(monkeypatch, extra, kwargs):
     """Each condition the product needs, broken: a total rules change, a binding site, a step
-    with no catalyst to take out, a start that does not factorise or is empty, and a form or
-    total that the experiment sets. S stays whole, and the model is still exact. Without the
-    extra row or argument, S is split (`test_independent_sites_read_together_are_split`)."""
+    with no catalyst to take out, a start that does not factorise, and a form that the experiment
+    sets. S stays whole, and the model is still exact. Without the extra row or argument, S is
+    split (`test_independent_sites_read_together_are_split`)."""
     entities = {"S": Agent("S"), "ppS": _p("S", "Y1", "S2")}
     network = _assert_same(monkeypatch, _sites("Y1", "S2") + extra, entities, **kwargs)
     assert "S" not in network.get("split", {})
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        pytest.param({"starts": [("S", Agent("S"), 0)]}, id="starts-empty"),
+        pytest.param({"starts": [("S", Agent("S"), "0")]}, id="starts-empty-as-text"),
+        pytest.param({"starts": [("S", Agent("S"), "2")]}, id="starts-at-a-number-as-text"),
+        pytest.param(
+            {"starts": [("S", Agent("S"), "S_total")], "targets": frozenset({"S_total"})},
+            id="start-the-conditions-set",
+        ),
+    ],
+)
+def test_a_total_that_may_be_zero_splits_exactly(monkeypatch, kwargs):
+    """Every block but the first holds fractions, starting at 1 for all, so an amount across
+    blocks divides by nothing and a total of 0 is 0, not NaN: an empty start, one the conditions
+    set (a knockout), one written as text. A number written as text is that number, one start
+    parameter for the first block alone, so the parameters are the unsplit model's."""
+    entities = {"S": Agent("S"), "ppS": _p("S", "Y1", "S2")}
+    network = _assert_same(monkeypatch, _sites("Y1", "S2"), entities, **kwargs)
+    assert network["split"] == {"S": {"S_Y1": ["Y1"], "S_S2": ["S2"]}}
+
+
+def test_a_total_of_zero_reads_zero(monkeypatch):
+    """A start parameter at exactly 0, an estimate at a lower bound of 0: before, 0/0 in every
+    amount across blocks (the #116 review)."""
+    entities = {"S": Agent("S"), "ppS": _p("S", "Y1", "S2")}
+    rows = _sites("Y1", "S2")
+    (reduced, _), (full, _) = _both(monkeypatch, rows, entities)
+    values = {"S_init": 0.0, "K_init": 1.0, "P_init": 1.0} | {
+        f"S_{p}{s}_kf": 1.0 for p in ("", "d") for s in ("Y1", "S2")
+    }
+    times = np.linspace(0, 5, 6)
+    a, b = _simulate(reduced, values, times), _simulate(full, values, times)
+    np.testing.assert_array_equal(a["ppS"], np.zeros_like(times))
+    np.testing.assert_array_equal(b["ppS"], np.zeros_like(times))
+
+
+def test_a_knockout_of_a_monomer_named_as_indra_rewrites_it_reads_zero(monkeypatch):
+    """`S-1`, PySB's `S_1`, started at `S_wt*(1 - ko_S)` with `ko_S` a condition target: looked up
+    by the name as written, the knockout slipped past the start checks and split into 0/0 (the
+    #116 review). Every block but the first now holds fractions, so a knocked-out total reads 0,
+    and the split model is the unsplit one."""
+    rows = [
+        (Phosphorylation(Agent("K"), Agent("S-1"), "Y", "1"), INDRA_DEFAULT, "y1"),
+        (Phosphorylation(Agent("K"), Agent("S-1"), "S", "2"), INDRA_DEFAULT, "s2"),
+        (Dephosphorylation(Agent("P"), Agent("S-1"), "Y", "1"), INDRA_DEFAULT, "dy1"),
+        (Dephosphorylation(Agent("P"), Agent("S-1"), "S", "2"), INDRA_DEFAULT, "ds2"),
+        (Phosphorylation(_p("S-1", "Y1", "S2"), Agent("X"), "T", "3"), INDRA_DEFAULT, "x"),
+        (Dephosphorylation(Agent("P"), Agent("X"), "T", "3"), INDRA_DEFAULT, "dx"),
+    ]
+    entities = {"ppS": _p("S-1", "Y1", "S2"), "pX": _p("X", "T3")}
+    kwargs = {"starts": [("S", Agent("S-1"), "S_wt*(1 - ko_S)")], "targets": frozenset({"ko_S"})}
+    (reduced, network), (full, _) = _both(monkeypatch, rows, entities, **kwargs)
+    assert network["split"]["S_1"]
+    times = np.linspace(0, 5, 6)
+    for ko in (0.0, 0.5, 1.0):
+        values = {"S_wt": 2.0, "ko_S": ko, "K_init": 1.0, "P_init": 1.0, "X_init": 1.0}
+        values |= {f"{r}_kf": 1.0 for r in ("y1", "s2", "dy1", "ds2", "x", "dx")}
+        a, b = _simulate(reduced, values, times), _simulate(full, values, times)
+        for key in ("ppS", "pX"):
+            assert np.isfinite(a[key]).all()
+            np.testing.assert_allclose(a[key], b[key], rtol=1e-6, atol=1e-12, err_msg=f"{key} {ko}")
