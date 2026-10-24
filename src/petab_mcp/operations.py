@@ -487,9 +487,9 @@ def _commit_change(
         if record:
             from . import regulation
 
-            signed, _, unsigned = regulation.resign(record, problem)
+            signed, failed, unsigned = regulation.resign(record, problem)
             said = regulator_warning(
-                signed, _statements_base(session, model_build is not None), unsigned
+                signed, _statements_base(session, model_build is not None), unsigned, failed
             )
         # Warnings raised by the edit callback itself (e.g. change_parameters' advisory sigma cap)
         # must reach the CALLER, not just the provenance log — an advisory nobody reads is the same
@@ -909,12 +909,13 @@ def _statements_base(session, rebuilt: bool) -> dict | None:
     return getattr(session, "model_statements", None)
 
 
-def regulator_warning(record: dict, base: dict | None, unsigned=()) -> str | None:
+def regulator_warning(record: dict, base: dict | None, unsigned=(), failed=()) -> str | None:
     """What ``record``'s rows' rates record otherwise than their statements state, for the rows the
     edit touched: each new or changed since ``base`` (the record the edit started from), or whose
     recorded kinds changed (a bound did it), back to what was stated too. A row with no one net
     rate says why; the rows ``unsigned`` (built before their net rate was kept) say they kept the
-    kinds they had. ``None`` where there is nothing to say."""
+    kinds they had; the rows the check ``failed`` on (a bug of the server's) say so, never as a
+    reason to change their mechanism. ``None`` where there is nothing to say."""
     from . import notation
     from .statements import REGULATORS
 
@@ -927,6 +928,7 @@ def regulator_warning(record: dict, base: dict | None, unsigned=()) -> str | Non
     before = {row["prefix"]: row for row in (base or {}).get("rows", [])}
     changed: dict[tuple[str, str, str, str], list[str]] = {}
     restored: dict[tuple[str, str], list[str]] = {}
+    broken = []
     for row in record.get("rows", []):
         emission = row.get("emission") or {}
         derived, why = emission.get("derived") or {}, (emission.get("rate") or {}).get("none", "")
@@ -939,6 +941,9 @@ def regulator_warning(record: dict, base: dict | None, unsigned=()) -> str | Non
             agent = text(row["statement"][stated][int(position)])
             restored.setdefault((stated, agent), []).append(row["prefix"])
         if not derived or (same and was == derived):
+            continue
+        if row["prefix"] in failed:
+            broken.append(row["prefix"])
             continue
         for name, shown in derived.items():
             stated, _, position = name.rpartition("_")
@@ -957,6 +962,12 @@ def regulator_warning(record: dict, base: dict | None, unsigned=()) -> str | Non
         f"`{', '.join(prefixes)}`: `{REGULATORS[stated]} {agent}` reads as you stated it again"
         for (stated, agent), prefixes in restored.items()
     ]
+    if broken:
+        parts.append(
+            f"`{', '.join(broken)}`: the server failed checking its regulators (a bug of its own, "
+            "logged), so they claim no direction until a later edit checks them; its mechanism "
+            "needs no change for this"
+        )
     if unsigned:
         parts.append(
             f"`{', '.join(unsigned)}`: built before regulators were signed on a version's bounds, "

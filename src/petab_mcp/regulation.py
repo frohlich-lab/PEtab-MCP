@@ -874,14 +874,14 @@ def resign(record: dict, problem) -> tuple[dict, int, list[str]]:
     version records are its own bounds', so a bound or a scale an edit changes can change them.
     Never refuses: a regulator J is not shown to move with is ``modulated_by``. A row built before
     its net rate was kept with it (provenance older than this) keeps the kinds it had: unsigned,
-    not downgraded. Returns the record, how many rows failed to sign (each logged, each claiming no
-    direction, the count kept in the record as ``regulator_check_failures`` while there are any),
-    and the prefixes of the rows left unsigned."""
+    not downgraded. Returns the record, the prefixes of the rows the check failed on (each logged,
+    each claiming no direction, their count kept in the record as ``regulator_check_failures`` while
+    there are any), and those of the rows left unsigned."""
     from copy import deepcopy
 
     from .statements import regulators
 
-    record, failed, unsigned = deepcopy(record), 0, []
+    record, failed, unsigned = deepcopy(record), [], []
     for row in record.get("rows", []):
         emission = row.get("emission") or {}
         stated = regulators(row["statement"])
@@ -894,7 +894,8 @@ def resign(record: dict, problem) -> tuple[dict, int, list[str]]:
             continue
         if "J" not in data:
             emission["derived"] = _unsigned(positions)
-            failed += bool(data.get("failed"))
+            if data.get("failed"):
+                failed.append(row.get("prefix"))
             continue
         try:
             rate, domain = bounded(restored(data), problem)
@@ -905,11 +906,11 @@ def resign(record: dict, problem) -> tuple[dict, int, list[str]]:
             logger.exception("row %r: signing its regulators on the version's bounds failed",
                              row.get("prefix"))
             emission["derived"] = _unsigned(positions)
-            failed += 1
+            failed.append(row.get("prefix"))
             continue
         emission["derived"] = _derived(found)
     if failed:
-        record["regulator_check_failures"] = failed
+        record["regulator_check_failures"] = len(failed)
     else:
         record.pop("regulator_check_failures", None)
     return record, failed, unsigned

@@ -457,17 +457,24 @@ def test_a_pattern_no_placeholder_could_start_is_checked_without_a_crash(rows, d
 
 
 def test_a_bug_reading_the_net_rate_is_recorded_as_a_failure(monkeypatch):
-    """review of #127: a bug of the check is no row without a net rate. It claims no direction,
-    never a crash, and is marked failed, so the version counts it."""
+    """review of #127: a bug of the check read as "no one net rate ... rewrite its rate", a reason
+    to weaken the claim. It claims no direction, never a crash, is counted, and says it is the
+    server's."""
+    from petab_mcp.operations import regulator_warning
 
     def broken(*_):
         raise ZeroDivisionError("a bug")
 
     monkeypatch.setattr(regulation, "net_rate", broken)
-    (emission,) = _build([_PHOSPHO.format(regulator="inhibited by I")],
-                         _rate("k/(1 + inhibited_by)", "k"))
-    assert emission.derived == {"inhibited_by_0": "modulated_by"}
-    assert emission.rate["failed"]
+    record = _record([_PHOSPHO.format(regulator="inhibited by I")],
+                     _rate("k/(1 + inhibited_by)", "k"))
+    signed, failed, _ = regulation.resign(record, _Problem([_parameter("p_k", 1e-3, 1e3)]))
+    assert failed == ["p"] and signed["regulator_check_failures"] == 1
+    assert signed["rows"][0]["emission"]["derived"] == {"inhibited_by_0": "modulated_by"}
+    said = regulator_warning(signed, None, (), failed)
+    assert said == ("`p`: the server failed checking its regulators (a bug of its own, logged), so "
+                    "they claim no direction until a later edit checks them; its mechanism needs no "
+                    "change for this.")
 
 
 def test_the_one_reaction_test_reads_names_apart():
@@ -675,7 +682,7 @@ def test_a_regulator_is_signed_on_its_versions_bounds(a, derived):
                            based_on="mass_action") | {"policy": "lin"})
     problem = _Problem([_parameter("conv_k", 1e-3, 1e3, scale="log10"), a])
     signed, failed, _ = regulation.resign(record, problem)
-    assert failed == 0
+    assert failed == []
     assert signed["rows"][0]["emission"]["derived"] == derived
 
 
@@ -712,13 +719,13 @@ def test_a_net_rate_that_does_not_read_back_claims_no_direction_and_is_counted()
     readable = record["rows"][0]["emission"]["rate"]["J"]
     record["rows"][0]["emission"]["rate"]["J"] = "p0*("
     signed, failed, _ = regulation.resign(record, _Problem([_parameter("conv_k", 1e-3, 1e3)]))
-    assert failed == 1
+    assert failed == ["conv"]
     assert signed["rows"][0]["emission"]["derived"] == {"inhibited_by_0": "modulated_by"}
     assert signed["regulator_check_failures"] == 1
     # The count is the version's own: signed again cleanly, it is gone.
     signed["rows"][0]["emission"]["rate"]["J"] = readable
     again, failed, _ = regulation.resign(signed, _Problem([_parameter("conv_k", 1e-3, 1e3)]))
-    assert failed == 0 and "regulator_check_failures" not in again
+    assert failed == [] and "regulator_check_failures" not in again
     assert again["rows"][0]["emission"]["derived"] == {}
 
 
@@ -733,7 +740,7 @@ def test_a_row_built_before_its_net_rate_was_kept_keeps_its_kinds():
     record["rows"][0]["emission"]["rate"] = {}
     record["rows"][0]["emission"]["derived"] = {"inhibited_by_0": "activated_by"}  # as it was
     signed, failed, unsigned = regulation.resign(record, _Problem([_parameter("conv_k", 1e-3, 1e3)]))
-    assert (failed, unsigned) == (0, ["conv"])
+    assert (failed, unsigned) == ([], ["conv"])
     assert signed["rows"][0]["emission"]["derived"] == {"inhibited_by_0": "activated_by"}
     from petab_mcp.operations import regulator_warning
 
