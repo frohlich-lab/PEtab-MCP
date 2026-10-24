@@ -1120,6 +1120,91 @@
  "review127/chain/8": {
   "verdict": "accepted"
  },
+ "review128b/binding/piecewise_off": {
+  "kind": "unseen",
+  "verdict": "refused"
+ },
+ "review128b/binding/piecewise_on": {
+  "verdict": "accepted"
+ },
+ "review128b/bounds/fraction": {
+  "kind": "unshown",
+  "verdict": "refused"
+ },
+ "review128b/catalyst/a_e/activated_by": {
+  "verdict": "accepted"
+ },
+ "review128b/catalyst/a_e/inhibited_by": {
+  "kind": "reversed",
+  "verdict": "refused"
+ },
+ "review128b/catalyst/l_r/activated_by": {
+  "verdict": "accepted"
+ },
+ "review128b/catalyst/l_r/inhibited_by": {
+  "kind": "reversed",
+  "verdict": "refused"
+ },
+ "review128b/dose/unit": {
+  "kind": "unshown",
+  "verdict": "refused"
+ },
+ "review128b/gef/feedback": {
+  "kind": "needs_product",
+  "verdict": "refused"
+ },
+ "review128b/gef/followed": {
+  "verdict": "accepted"
+ },
+ "review128b/kept/a1": {
+  "verdict": "accepted"
+ },
+ "review128b/kept/c4": {
+  "kind": "reversed",
+  "verdict": "refused"
+ },
+ "review128b/kept/g2": {
+  "kind": "reversed",
+  "verdict": "refused"
+ },
+ "review128b/kept/m3": {
+  "kind": "reversed",
+  "verdict": "refused"
+ },
+ "review128b/kept/p0": {
+  "verdict": "accepted"
+ },
+ "review128b/multiproduct/feedback": {
+  "kind": "needs_product",
+  "verdict": "refused"
+ },
+ "review128b/multiproduct/followed": {
+  "verdict": "accepted"
+ },
+ "review128b/sites/4/activated_by": {
+  "kind": "reversed",
+  "verdict": "refused"
+ },
+ "review128b/sites/4/inhibited_by": {
+  "verdict": "accepted"
+ },
+ "review128b/sites/5/activated_by": {
+  "kind": "reversed",
+  "verdict": "refused"
+ },
+ "review128b/sites/5/inhibited_by": {
+  "verdict": "accepted"
+ },
+ "review128b/time/from_0": {
+  "verdict": "accepted"
+ },
+ "review128b/time/from_minus_5": {
+  "kind": "unshown",
+  "verdict": "refused"
+ },
+ "review128b/vanish/8_forms_4_inhibitors": {
+  "verdict": "accepted"
+ },
  "rewrite/t10_modreg": {
   "verdict": "accepted"
  },

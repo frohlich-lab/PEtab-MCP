@@ -527,8 +527,7 @@ def _bound_expression(
         )
     for n in names:
         _not_a_parameter(model, n, prefix, name, species)
-    symbols = {n: _shared(model, n, merged) for n in names}
-    value = sympy.sympify(text.replace("^", "**"), locals={**symbols, **_RATE_FUNCTIONS})
+    value = over(trial, {n: _shared(model, n, merged) for n in names})
     expression = pysb.Expression(f"{name}_bound", value, _export=False)
     _add(model, expression)
     return expression, names
@@ -573,6 +572,22 @@ def _piecewise(*args) -> sympy.Expr:
 
 
 _RATE_FUNCTIONS = {"exp": sympy.exp, "log": sympy.log, "sqrt": sympy.sqrt, "piecewise": _piecewise}
+
+
+def over(expr: sympy.Expr, components: dict) -> sympy.Expr:
+    """``expr``, read over plain names, with each name its component in ``components``, every
+    comparison and ``piecewise`` kept as written. A PySB parameter is positive to sympy from the
+    value it is seeded with, so read over it ``ko > 0`` was decided there: a binding
+    ``piecewise(0, ko > 0, 1)`` raised, and a rate's ``piecewise(.., g <= 0, ..)`` lost the branch
+    every condition with ``g`` at 0 takes."""
+    if isinstance(expr, sympy.Symbol):
+        return components.get(expr.name, expr)
+    if not expr.args:
+        return expr
+    args = [over(a, components) for a in expr.args]
+    if isinstance(expr, (sympy.core.relational.Relational, sympy.Piecewise)):
+        return expr.func(*args, evaluate=False)
+    return expr.func(*args)
 
 
 #: What an id of the problem is (``problem_ids`` of :func:`written`). A rate reads none of them.
@@ -843,9 +858,9 @@ def written(
             for name in sorted(used | (set(agents) & set(roles)))
         }
         _add(model, *params.values(), *amounts.values())
-        coefficient = sympy.sympify(
-            rate.replace("^", "**"), locals={**params, **amounts, **_RATE_FUNCTIONS, "time": time}
-        )
+        read = {**params, **amounts, "time": time}
+        coefficient = over(sympy.sympify(rate.replace("^", "**"), locals={
+            **{n: sympy.Symbol(n) for n in read}, **_RATE_FUNCTIONS}), read)
         expression = pysb.Expression(f"{prefix}_rate", coefficient, _export=False)
         _add(model, expression)
         # The base's own rate constant is left unreferenced; the SBML export drops it.

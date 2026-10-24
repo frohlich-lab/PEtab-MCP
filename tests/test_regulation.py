@@ -21,9 +21,9 @@ from petab_mcp.errors import MechanismError
 from petab_mcp.statements import _REACTIONS, indra_part, regulators, with_defaults
 
 
-def _build(rows: list, *definitions: dict):
-    """``rows`` (the notation, or INDRA JSON rows) built with ``definitions`` written: the
-    emissions. Raises what `make_changes` refuses with."""
+def _build(rows: list, *definitions: dict, times=None):
+    """``rows`` (the notation, or INDRA JSON rows) built with ``definitions`` written, ``time``
+    over ``times``: the emissions. Raises what `make_changes` refuses with."""
     library = dict(M.REGISTRY)
     for definition in definitions:
         library[(definition["statement_type"], definition["policy"])] = M.written(definition, library)
@@ -34,7 +34,7 @@ def _build(rows: list, *definitions: dict):
     _, emissions = problem_sbml.to_antimony(
         [(s, row["policy"], row["prefix"], row.get("parameters"), regulators(row["statement"]))
          for s, row in zip(stmts, parsed)],
-        {}, library,
+        {}, library, times=times,
     )
     return emissions
 
@@ -613,7 +613,8 @@ def test_an_agent_a_reaction_gives_back_as_it_was_is_a_catalyst(row):
     product. E is given back as it was: a catalyst, its amount held, and J = k*X*A*E."""
     scheme = _scheme("Conversion", "obj_from_0() + obj_from_1() >> obj_to_0() + obj_to_1() @ "
                      "k*amount({})", "k")
-    _build([row.format("activated by")], {**scheme, "scheme": scheme["scheme"].format("activated_by")})
+    _build([row.format("activated by")],
+           {**scheme, "scheme": scheme["scheme"].format("activated_by")})
     with pytest.raises(MechanismError, match=r"it rises instead: state it `activated by X`"):
         _build([row.format("inhibited by")],
                {**scheme, "scheme": scheme["scheme"].format("inhibited_by")})
@@ -710,6 +711,74 @@ def test_a_long_chain_of_enzyme_forms_is_signed_by_the_chain_rule():
     names = [f"k{x}{i}" for x in "ab" for i in range(n - 1)]
     _build([_PHOSPHO.format(regulator="inhibited by I")],
            _scheme("Phosphorylation", "\n".join(lines), *names, "kf", "kr", "kc", "Ki"))
+
+
+_SITES = ["Y1068", "Y1173", "Y992", "Y1045"]
+
+
+def test_forms_apart_only_in_sites_the_row_never_reads_are_one():
+    """review of #128 (second pass), t_sites: EGFR with four sites other rows set made 32 enzyme
+    forms of one two-step row, past the bound, so `inhibited by I` had no J; its flux falls with I.
+    Forms that differ only in sites the row's rules, rates and statement never read are lumped:
+    two forms, as written."""
+    rows = [f"k{i}: SRC phosphorylates EGFR at {site} | indra_default"
+            for i, site in enumerate(_SITES)]
+    scheme = _scheme("Phosphorylation", _TWO_STEPS.format(kf="kf", kr="kr", kc="kc" + _SLOWED),
+                     "kf", "kr", "kc", "Ki")
+    _build([*rows, "p: EGFR phosphorylates PLCG at Y783, inhibited by I | written"], scheme)
+    with pytest.raises(MechanismError, match=r"it falls instead: state it `inhibited by I`"):
+        _build([*rows, "p: EGFR phosphorylates PLCG at Y783, activated by I | written"],
+               {**scheme, "scheme": scheme["scheme"].replace("inhibited_by", "activated_by")})
+    # A row that reads a site keeps it apart: EGFR phosphorylated at Y1068 is a regulator's.
+    _build([*rows, "p: EGFR phosphorylates PLCG at Y783, inhibited by I | written"],
+           {**scheme, "scheme": scheme["scheme"].replace("enz(sub=", "enz(Y1068='u', sub=")})
+
+
+def test_a_tiny_net_rate_is_no_zero():
+    """review of #128 (second pass), t_vanish: eight enzyme forms, four inhibitors on every step,
+    put J near 1e-14 at the zero test's points, below its absolute 1e-9, so the row "made nothing
+    from its reactants alone". Zero is now relative to the terms J sums."""
+    slowed = "".join(f"/(1 + amount(inhibited_by_{j})/Ki{j})" for j in range(4))
+    sped = "".join(f"*(1 + amount(inhibited_by_{j})/Ki{j})" for j in range(4))
+    lines = [f"enz(c='c{i}', sub=None) | enz(c='c{i + 1}', sub=None) @ ka{i}{slowed}, kb{i}{sped}"
+             for i in range(7)]
+    lines.append(_TWO_STEPS.format(kf="kf", kr="kr", kc="kc" + slowed)
+                 .replace("enz(sub=", "enz(c='c7', sub="))
+    names = [f"k{x}{i}" for x in "ab" for i in range(7)]
+    _build([_PHOSPHO.format(regulator="inhibited by I0 and I1 and I2 and I3")],
+           _scheme("Phosphorylation", "\n".join(lines), *names, "kf", "kr", "kc",
+                   *(f"Ki{j}" for j in range(4))))
+    a, b = sympy.symbols("a b", positive=True)
+    assert not M._vanishes(1e-20 * a * b / (1 + a))
+    assert M._vanishes(sympy.exp(sympy.log(a + 1)) - a - 1 + 0 * b)
+
+
+@pytest.mark.parametrize("times, refused", [((0.0, 10.0), False), ((-5.0, 10.0), True)])
+def test_time_ranges_over_the_problems_experiments(times, refused):
+    """review of #128 (second pass), e2e_time: `time` was never negative, though an experiment may
+    start at -5. `k*C*time/(tau + time)` moves with C as `time` does: activated from 0 on, not
+    shown where time can be negative."""
+    rate = _rate("k*activated_by*time/(tau + time)", "k", "tau", stmt_type="PopulationTransition",
+                 based_on="mass_action")
+    row = ["conv: A becomes B, activated by C | written"]
+    if not refused:
+        _build(row, rate, times=times)
+        return
+    with pytest.raises(MechanismError, match=r"that cannot be shown for every value of its names"):
+        _build(row, rate, times=times)
+
+
+def test_a_binding_keeps_its_comparison():
+    """review of #128 (second pass): `g="piecewise(0, ko > 0, 1)"` raised a TypeError out of
+    `bind`, a parameter being positive to sympy from its seeded value, which also decided the
+    comparison where it did not raise. The comparison stays as written."""
+    ko = pysb.Parameter("ko", 1.0, _export=False)
+    kept = M.over(sympy.sympify("piecewise(2, ko > 0, 1)", locals={
+        "ko": sympy.Symbol("ko"), "piecewise": M._RATE_FUNCTIONS["piecewise"]}), {"ko": ko})
+    assert kept.atoms(sympy.core.relational.Relational) and ko in kept.free_symbols
+    _build(['conv: A becomes B, activated by C | written g="piecewise(2, ko > 0, 1)"'],
+           _rate("k*(1 + g*activated_by)", "k", "g", stmt_type="PopulationTransition",
+                 based_on="mass_action"))
 
 
 # ------------------------------------------------------------------------------- products held at 0

@@ -132,7 +132,9 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
         for obs in _observables(rule.rate_forward) | _observables(rule.rate_reverse):
             if found := _READ.search(obs.name):
                 read.setdefault(position(found.group(1)), set()).add(obs)
-    regulator_species = {i for observables in read.values() for o in observables for i in lumped(o.species)}
+    regulator_species = {
+        i for observables in read.values() for o in observables for i in lumped(o.species)
+    }
     made = {i for rx in reactions for i in rx["products"]}
     used = {i for rx in reactions for i in rx["reactants"]}
 
@@ -185,7 +187,8 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
         return sympy.Symbol(f"[{model.species[i]}]", **sign)
 
     amounts: dict[int, sympy.Expr] = {}
-    for i in made | used | {i for rate in _all_observables(model, rules) for i in lumped(rate.species)}:
+    observed = {i for rate in _all_observables(model, rules) for i in lumped(rate.species)}
+    for i in made | used | observed:
         if i in products:
             amounts[i] = sympy.Integer(0)
         elif i in intermediates:
@@ -285,7 +288,8 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
     removed = sorted(removed_lump & moving)
     regulated = {
         stated: tuple(
-            regulator_amounts[i] for i in sorted({i for o in observables for i in lumped(o.species)} - own)
+            regulator_amounts[i]
+            for i in sorted({i for o in observables for i in lumped(o.species)} - own)
         ) + tuple(sorted(
             {t for o in observables for t in own_reads.get(o, sympy.S.Zero).free_symbols}, key=str
         ))

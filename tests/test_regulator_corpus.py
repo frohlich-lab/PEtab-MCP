@@ -3,7 +3,8 @@ PEtab-MCP#127 and #128, and every mechanism agents wrote in two NEMO runs, throu
 a row's regulators (:mod:`petab_mcp.regulation`).
 
 - ``rows.json``: rows as a model states them, with the mechanisms they use, built as
-  `make_changes` builds them (:func:`problem_sbml.to_antimony`).
+  `make_changes` builds them (:func:`problem_sbml.to_antimony`), ``time`` over an entry's
+  ``times`` where it gives them.
 - ``mechanisms.json``: mechanisms alone (perica_egf's, sweep_indra_55max's), each a reader of
   amounts other than its roles re-expressed as a regulator it states, built on a statement of
   agents named by role with every complex its rules start from present, as other rows would make
@@ -81,13 +82,14 @@ def _rows(entry) -> tuple[pysb.Model, list[tuple], list]:
     seen = {}
     check = regulation.check
 
-    def kept(model, rows_, emissions):
+    def kept(model, rows_, emissions, times=None):
         seen.update(model=model, emissions=emissions)
-        return check(model, rows_, emissions)
+        return check(model, rows_, emissions, times)
 
     regulation.check = kept
     try:
-        problem_sbml.to_antimony(rows, {}, library)
+        times = entry.get("times") and tuple(entry["times"])
+        problem_sbml.to_antimony(rows, {}, library, times=times)
     finally:
         regulation.check = check
     return seen["model"], rows, seen["emissions"]
