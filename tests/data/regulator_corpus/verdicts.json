@@ -5,6 +5,20 @@
  "advice/c1_degradation": {
   "verdict": "accepted"
  },
+ "netrate/1/advice": {
+  "verdict": "accepted"
+ },
+ "netrate/2_reversed/competitive": {
+  "verdict": "accepted"
+ },
+ "netrate/2_reversed/kr2_kc": {
+  "kind": "unshown",
+  "verdict": "refused"
+ },
+ "netrate/3/enzyme_inhibits_itself": {
+  "kind": "reversed",
+  "verdict": "refused"
+ },
  "netrate/t10/e3_kdeg_slowed": {
   "verdict": "accepted"
  },
@@ -30,11 +44,11 @@
   "verdict": "refused"
  },
  "netrate/t11/subj_and_synthesis": {
-  "kind": "reversed",
+  "kind": "unseen",
   "verdict": "refused"
  },
  "netrate/t11/synthesis_activated": {
-  "kind": "reversed",
+  "kind": "unseen",
   "verdict": "refused"
  },
  "netrate/t11/synthesis_modulated": {
@@ -51,8 +65,7 @@
   "verdict": "accepted"
  },
  "netrate/t14/hill": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "netrate/t17/back_sped_more": {
   "verdict": "accepted"
@@ -104,6 +117,18 @@
  "netrate/t2/rev_kr_sped": {
   "verdict": "accepted"
  },
+ "netrate/t21/1reg": {
+  "verdict": "accepted"
+ },
+ "netrate/t21/2reg": {
+  "verdict": "accepted"
+ },
+ "netrate/t21/2sum": {
+  "verdict": "accepted"
+ },
+ "netrate/t21/3reg": {
+  "verdict": "accepted"
+ },
  "netrate/t22/activated_by": {
   "kind": "unshown",
   "verdict": "refused"
@@ -115,6 +140,21 @@
  "netrate/t22/modulated_by": {
   "verdict": "accepted"
  },
+ "netrate/t4/Activation_binding": {
+  "verdict": "accepted"
+ },
+ "netrate/t4/Activation_binding_back": {
+  "verdict": "accepted"
+ },
+ "netrate/t4/Gap": {
+  "verdict": "accepted"
+ },
+ "netrate/t4/Gef": {
+  "verdict": "accepted"
+ },
+ "netrate/t4/Inhibition": {
+  "verdict": "accepted"
+ },
  "netrate/t5/partner": {
   "verdict": "accepted"
  },
@@ -123,7 +163,7 @@
   "verdict": "refused"
  },
  "netrate/t6/one_line": {
-  "kind": "no_rate",
+  "kind": "unseen",
   "verdict": "refused"
  },
  "netrate/t8/trimer": {
@@ -138,9 +178,16 @@
  "netrate/t9/4_chain": {
   "verdict": "accepted"
  },
+ "netrate/t9/5_all": {
+  "kind": "no_rate",
+  "verdict": "refused"
+ },
  "netrate/t9/6_all": {
   "kind": "no_rate",
   "verdict": "refused"
+ },
+ "netrate/v3/four_regulators": {
+  "verdict": "accepted"
  },
  "netrate/v5/itself": {
   "kind": "reversed",
@@ -1002,11 +1049,11 @@
   "verdict": "refused"
  },
  "rewrite/t7_turnover/one_line": {
-  "kind": "reversed",
+  "kind": "unseen",
   "verdict": "refused"
  },
  "rewrite/t7_turnover/two_lines": {
-  "kind": "reversed",
+  "kind": "unseen",
   "verdict": "refused"
  },
  "rewrite/t7b/backwards": {
@@ -1029,25 +1076,32 @@
   "verdict": "refused"
  },
  "sweep_55max/case22/p21turn": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "sweep_55max/case23/p21turn": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "sweep_55max/case24/p21turn3": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "sweep_55max/case25/p21turn4": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "sweep_55max/case26/p21turn5": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "sweep_55max/case27/homeo1b": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "sweep_55max/case28/p21turn6": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "sweep_55max/case29/gexpr": {
   "verdict": "accepted"
@@ -1192,13 +1246,16 @@
   "verdict": "refused"
  },
  "sweep_55max/case7/homeo1": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "sweep_55max/case8/homeo2q": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "sweep_55max/case9/protturn": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "sweep_55max/multi0/h4_ac_coop_5": {
   "verdict": "accepted"
