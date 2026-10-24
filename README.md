@@ -181,7 +181,10 @@ Principles to hold onto when extending this package.
   on what is shown so. A regulator that rate does not change with, acting only on a step it
   cannot see (a product's degradation, a complex coming apart), is refused, pointing to that step's
   own row: a regulator is a claim about its statement's own reaction, so each claim keeps one
-  meaning and a causal graph never puts it on another reaction. A regulator that cannot be shown
+  meaning and a causal graph never puts it on another reaction. Products stay absent in that rate,
+  so a regulator that acts only with the product present (feedback through it, autoregulation,
+  autocatalysis) does not move it either: its refusal names the rows that state it, the product
+  stated as a regulator too, or that step on a row of its own so. A regulator that cannot be shown
   so is `modulated_by`, which claims no direction ([`statements`](src/petab_mcp/statements.py),
   [`regulation`](src/petab_mcp/regulation.py)). INDRA has no statement about a
   reaction, so a causal graph gets the nearest one it has, wider than the claim
