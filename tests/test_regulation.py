@@ -17,7 +17,7 @@ from indra.statements import stmts_from_json
 
 from petab_mcp import mechanisms as M
 from petab_mcp import notation, problem_sbml, regulation
-from petab_mcp.errors import MechanismError, PetabMcpError
+from petab_mcp.errors import MechanismError
 from petab_mcp.statements import _REACTIONS, indra_part, regulators, with_defaults
 
 
@@ -452,11 +452,22 @@ def _reactants_in_full(model):
 )
 def test_a_pattern_no_placeholder_could_start_is_checked_without_a_crash(rows, definition):
     """review of #128: `ANY` and `WILD` made a placeholder's start not concrete, and the check
-    crashed with PySB's "Pattern not concrete". The rows build, or are refused with a reason."""
-    try:
-        _build(rows, definition)
-    except PetabMcpError:
-        pass
+    crashed with PySB's "Pattern not concrete". Each regulator reads as stated."""
+    assert _build(rows, definition)[-1].derived == {}
+
+
+def test_a_bug_reading_the_net_rate_is_recorded_as_a_failure(monkeypatch):
+    """review of #127: a bug of the check is no row without a net rate. It claims no direction,
+    never a crash, and is marked failed, so the version counts it."""
+
+    def broken(*_):
+        raise ZeroDivisionError("a bug")
+
+    monkeypatch.setattr(regulation, "net_rate", broken)
+    (emission,) = _build([_PHOSPHO.format(regulator="inhibited by I")],
+                         _rate("k/(1 + inhibited_by)", "k"))
+    assert emission.derived == {"inhibited_by_0": "modulated_by"}
+    assert emission.rate["failed"]
 
 
 def test_the_one_reaction_test_reads_names_apart():
@@ -828,6 +839,102 @@ def test_an_enzyme_stated_as_its_own_inhibitor_is_one_amount():
     (emission,) = _build([_PHOSPHO.format(regulator="inhibited by MEK")],
                          _rate("kc/(1 + inhibited_by/K)", "kc", "K"))
     assert emission.derived == {"inhibited_by_0": "activated_by"}
+
+
+# ------------------------------------------------------------------------------- own forms
+#: Three steps: binding, the catalytic step slowed by the regulator, and release.
+_THREE_STEPS = (
+    "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\n"
+    "enz(sub=1) % sub(enz=1, mod='off') >> enz(sub=1) % sub(enz=1, mod='on') @ "
+    "kc/(1 + amount({kind})/Ki)\n"
+    "enz(sub=1) % sub(enz=1, mod='on') >> enz(sub=None) + sub(enz=None, mod='on') @ kp"
+)
+
+
+@pytest.mark.parametrize("kind", ["activated_by", "inhibited_by"])
+def test_a_regulator_reading_a_form_the_row_solves_for_claims_no_direction(kind):
+    """review of #127, blocking 1: `ERK{pT202}` matches the complex the catalytic step makes, which
+    was held as a regulator's amount, so J was read off a constant: the false `activated by` was
+    kept, the true `inhibited by` reversed. No J reads it, and the record says why."""
+    regulator = f"{kind.replace('_', ' ')} ERK{{pT202}}"
+    (emission,) = _build([_PHOSPHO.format(regulator=regulator)],
+                         _scheme("Phosphorylation", _THREE_STEPS.format(kind=kind),
+                                 "kf", "kr", "kc", "kp", "Ki"))
+    assert emission.derived == {f"{kind}_0": "modulated_by"}
+    assert ("reads ERK(T202='p', mek=1) % MEK(erk=1), a form this row makes and uses on its way"
+            in emission.rate["none"])
+    assert "(`~MEK`, not bound to MEK)" in emission.rate["none"]
+
+
+def test_a_regulator_reading_every_form_of_the_enzyme_reads_its_total():
+    """review of #127, blocking 1: `MEK` on MEK's own two steps matches it free and bound, which
+    the steady state conserves: it reads their total. Free MEK alone is solved for: no J reads
+    it."""
+    def two_steps(regulator):
+        kind = regulator.split(" ")[0] + "_by"
+        steps = _TWO_STEPS.format(kf="kf", kr="kr", kc=f"kc/(1 + amount({kind})/Ki)")
+        (emission,) = _build([_PHOSPHO.format(regulator=regulator)],
+                             _scheme("Phosphorylation", steps, "kf", "kr", "kc", "Ki"))
+        return emission
+
+    assert two_steps("activated by MEK").derived == {}
+    assert two_steps("inhibited by MEK").derived == {"inhibited_by_0": "activated_by"}
+    free = two_steps("inhibited by MEK{~ERK}")
+    assert free.derived == {"inhibited_by_0": "modulated_by"}
+    assert "reads MEK(erk=None), a form this row makes" in free.rate["none"]
+
+
+def _w(stmt_type: str, policy: str) -> dict:
+    return {"statement_type": stmt_type, "policy": policy, "rate": "k/(1 + inhibited_by/K)",
+            "parameters": ["k", "K"]}
+
+
+@pytest.mark.parametrize(
+    "rows, definition",
+    [
+        (["m1: MEK phosphorylates ERK at Y187 | indra_default",
+          "p: MEK phosphorylates ERK at T185, inhibited by U | w"], _w("Phosphorylation", "w")),
+        (["m1: MEK phosphorylates ERK at Y187 | indra_default",
+          "p: MEK phosphorylates ERK at T185, inhibited by U | written"],
+         _scheme("Phosphorylation", _TWO_STEPS.format(kf="kf", kr="kr", kc="kc" + _SLOWED),
+                 "kf", "kr", "kc", "Ki")),
+        (["b: ERK binds DUSP | indra_default",
+          "p: MEK phosphorylates ERK at T185, inhibited by U | w"], _w("Phosphorylation", "w")),
+        (["k: K phosphorylates A at S10 | indra_default", "c: A -> B, inhibited by U | w"],
+         _w("Conversion", "w")),
+        (["k: K phosphorylates A at S10 | indra_default", "d: A is degraded, inhibited by U | w"],
+         _w("DecreaseAmount", "w")),
+        (["k: K phosphorylates A at S10 | indra_default",
+          "k2: K phosphorylates A at Y20 | indra_default",
+          "d: P dephosphorylates A at S10, inhibited by U | w"], _w("Dephosphorylation", "w")),
+    ],
+)
+def test_an_agent_in_states_other_rows_give_is_one_lump(rows, definition):
+    """review of #127, blocking 2: each species of a product (ERK at T185 with Y187 either way,
+    bound to DUSP or not) read as a reaction of its own, so every signed regulator of an agent
+    another row gives a site or a partner had no one net rate, so claimed no direction."""
+    assert _build(rows, definition)[-1].derived == {}
+    flipped = _build([row.replace("inhibited by", "activated by") for row in rows], {
+        key: value.replace("inhibited_by", "activated_by") if key in ("rate", "scheme") else value
+        for key, value in definition.items()
+    })
+    assert flipped[-1].derived == {"activated_by_0": "inhibited_by"}
+
+
+def test_a_long_chain_of_enzyme_forms_is_signed_by_the_chain_rule():
+    """review of #127: an inhibitor of the catalytic step, past twelve reversible forms of the
+    enzyme, was not shown. J over its steps' coefficients is of degree one in each, as in every
+    network of single steps, and is signed so."""
+    n = 13
+    last = f"c{n - 1}"
+    lines = [f"enz(c='c{i}', sub=None) | enz(c='c{i + 1}', sub=None) @ ka{i}, kb{i}"
+             for i in range(n - 1)]
+    lines.append(_TWO_STEPS.format(kf="kf", kr="kr", kc="kc" + _SLOWED)
+                 .replace("enz(sub=", f"enz(c='{last}', sub="))
+    names = [f"k{x}{i}" for x in "ab" for i in range(n - 1)]
+    scheme = _scheme("Phosphorylation", "\n".join(lines), *names, "kf", "kr", "kc", "Ki")
+    (emission,) = _build([_PHOSPHO.format(regulator="inhibited by I")], scheme)
+    assert emission.derived == {}
 
 
 # ------------------------------------------------------------------------------- products held at 0
