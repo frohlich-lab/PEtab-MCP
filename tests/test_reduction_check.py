@@ -365,3 +365,32 @@ def test_a_failure_of_the_check_is_written_down_as_an_error(tmp_path, monkeypatc
         (tmp_path / "prov" / "versions" / "v0" / "reduction_check.json").read_text()
     )
     assert stored["status"] == RC.STATUS_ERROR
+
+
+@pytest.mark.slow
+def test_a_six_site_substrate_preequilibrated_agrees(tmp_path):
+    """Six sites K puts on and P takes off, each a block of its own, read together after a
+    pre-equilibration: 66 species expanded, 14 split."""
+    sites = ("Y1", "S2", "T3", "S4", "Y5", "S6")
+    mods = [{"mod_type": "phosphorylation", "residue": s[0], "position": s[1:]} for s in sites]
+    mcp = _problem(
+        tmp_path,
+        [
+            row
+            for s in sites
+            for row in (
+                f"p{s}: K phosphorylates S at {s} | indra_default",
+                f"d{s}: P dephosphorylates S at {s} | indra_default",
+            )
+        ],
+        {"pS_all": {"name": "S", "mods": mods}, "pS_1": {"name": "S", "mods": mods[:1]}},
+        rates={f"{p}{s}_kf": 0.1 for s in sites for p in ("p", "d")},
+        starts=[
+            {"agent": "S", "amount": 1000},
+            {"agent": "K", "amount": 10},
+            {"agent": "P", "amount": 10},
+        ],
+    )
+    out = _call(mcp, "verify_reduction", {})
+    assert out["status"] == RC.STATUS_OK, out
+    assert list(out["network"]["split"]["S"].values()) == [[s] for s in sites]
