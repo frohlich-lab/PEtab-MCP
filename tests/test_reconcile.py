@@ -959,3 +959,88 @@ def test_a_local_parameter_shadowing_a_global_keeps_its_own_value():
         "r1_k": 0.3,
         "r1_k_1": 0.7,
     }
+
+
+# -- what the reconcile must not change about the authored model ----------------------------
+def _ic_parameter(sm, sid):
+    """The one parameter species ``sid``'s initial assignment names, and its value."""
+    (pid,) = R._ast_names(sm.getInitialAssignmentBySymbol(sid).getMath()) & R.parameter_ids(sm)
+    return pid, sm.getParameter(pid).getValue()
+
+
+def test_an_orphan_species_leaves_the_ic_parameter_its_rate_law_reads():
+    """`E = E_tot` declared but E in no reaction, the rate reading `E_tot` directly: pruning E
+    removed `E_tot` with it, and the agent's valid model was rejected for a dangling symbol."""
+    prob = _bare_problem(
+        "model orphan_ic\n  compartment c = 1;\n  species A in c; species B in c; species E in c;\n"
+        "  A = 5; B = 0; E = E_tot; E_tot = 2;\n  kcat = 1; Km = 1;\n"
+        "  r1: A -> B; kcat*E_tot*A/(Km + A);\nend\n"
+    )
+    sm = prob.model.sbml_model
+    out = R.reconcile(prob)
+    assert out["pruned"]["species"] == ["E"]
+    assert _consistency_errors(sm) == []
+    assert sm.getParameter("E_tot").getValue() == 2 and "E_tot" in prob.parameter_df.index
+
+
+def test_an_event_keeps_the_symbols_only_it_reads():
+    """The prune walked rate laws, assignments and rules only, so a switch time and level read
+    by nothing but an event, and a species only an event assigns, were removed from under it."""
+    prob = _bare_problem(
+        "model dosed\n  compartment c = 1;\n  species A in c; species B in c; species D in c;\n"
+        "  A = 5; B = 0; D = 0;\n  k = 1; t_sw = 2; A_boost = 9;\n  r1: A -> B; k*A;\n"
+        "  at time > t_sw: A = A_boost, D = 1;\nend\n"
+    )
+    sm = prob.model.sbml_model
+    out = R.reconcile(prob)
+    assert out["pruned"] == {"species": [], "parameters": [], "initial_assignments": []}
+    assert _consistency_errors(sm) == []
+    assert {"t_sw", "A_boost"} <= set(prob.parameter_df.index)
+
+
+def test_a_minted_ic_parameter_never_takes_a_name_the_model_already_holds():
+    """`A = 5` beside the author's own `A_init = 7`, read by a readout: the mint pointed A at
+    that parameter, so A started at 7 (and was FIXED when the value was 1) with nothing saying so."""
+    prob = _bare_problem(
+        "model captured\n  compartment c = 1;\n  species A in c; species B in c;\n"
+        "  A = 5; B = 0; k = 1; A_init = 7;\n  r1: A -> B; k*A;\n  readout_B := B/A_init;\nend\n"
+    )
+    sm = prob.model.sbml_model
+    R.reconcile(prob)
+    pid, value = _ic_parameter(sm, "A")
+    assert (pid, value) == ("A_init_1", 5)
+    assert sm.getParameter("A_init").getValue() == 7
+
+
+def test_an_amount_on_a_concentration_species_is_divided_by_its_volume():
+    """A species declared by `initialAmount` with hasOnlySubstanceUnits=false in a compartment
+    of size 2 is a concentration of 2.5; the mint handed the 5 to an initial assignment, which
+    SBML applies as a concentration, so the species started at twice its value. libantimony
+    writes `A = 5/c` as exactly this, so the agent's own text reaches it."""
+    prob = _bare_problem(
+        "model amount\n  compartment c = 2;\n  species A in c; species B in c;\n"
+        "  A = 5/c; B = 0; k = 1;\n  r1: A -> B; k*A;\nend\n"
+    )
+    sm = prob.model.sbml_model
+    assert sm.getSpecies("A").isSetInitialAmount()
+    R.reconcile(prob)
+    assert _ic_parameter(sm, "A") == ("A_init", 2.5)
+
+
+def test_an_amount_in_a_parametric_volume_keeps_the_division():
+    """With the compartment's size an assignment (`c = V0`) there is no number to divide by, so
+    the minted parameter holds the amount and the assignment divides it by the compartment."""
+    import libsbml
+
+    prob = _bare_problem(
+        "model amount\n  compartment c = V0; V0 = 2;\n  species A in c; species B in c;\n"
+        "  A = 5/c; B = 0; k = 1;\n  r1: A -> B; k*A;\nend\n"
+    )
+    sm = prob.model.sbml_model
+    R.reconcile(prob)
+    ia = sm.getInitialAssignmentBySymbol("A")
+    assert libsbml.formulaToL3String(ia.getMath()) == "A_init / c"
+    assert sm.getParameter("A_init").getValue() == 5
+    # ...and a second reconcile preserves that assignment as the author's own compound IC.
+    R.reconcile(prob)
+    assert libsbml.formulaToL3String(sm.getInitialAssignmentBySymbol("A").getMath()) == "A_init / c"
