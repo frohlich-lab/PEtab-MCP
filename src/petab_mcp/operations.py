@@ -734,7 +734,8 @@ def statements_to_antimony(
     amount, over ``amounts`` (name to agent) (:func:`problem_sbml.to_antimony`). Returns the Antimony; the provenance record —
     ``rows``, each with the :class:`mechanisms.Emission` it produced and with its definition when
     the agent wrote its mechanism, ``mechanisms``, the ``written`` ones whether a row uses them or
-    not, and ``starts``; one warning naming the ungrounded agents, since grounding is
+    not, ``starts``, and the ``network`` the rows expand to before and after the reduction
+    (:mod:`reduction`); one warning naming the ungrounded agents, since grounding is
     optional and its absence is reported, never refused; and the run's written mechanisms, for
     the caller to keep once the change applies.
     """
@@ -743,7 +744,7 @@ def statements_to_antimony(
     # Imported here: INDRA takes seconds to import, and only this route needs it.
     from indra.statements import Agent, stmts_from_json
 
-    from . import mechanisms, problem_sbml
+    from . import mechanisms, problem_sbml, regulation
     from .statements import (
         agent_problems,
         indra_part,
@@ -843,6 +844,7 @@ def statements_to_antimony(
         for start in starts or []
     ]
     notes: list[str] = []
+    network: dict[str, dict[str, int]] = {}
     antimony, emissions = problem_sbml.to_antimony(
         [
             (
@@ -862,6 +864,8 @@ def statements_to_antimony(
         {k: Agent._from_json(v) for k, v in amounts.items()},
         notes=notes,
         targets=frozenset(R.condition_target_symbols(session.problem)),
+        times=regulation.times(session.problem),
+        network=network,
     )
     record = {
         "rows": [
@@ -877,6 +881,7 @@ def statements_to_antimony(
         # As written: the names `amount(...)` reads are made again from it, each build.
         "readouts": dict(readouts or {}),
         "amounts": given,
+        "network": network,
     }
     names = ", ".join(dict.fromkeys(name for stmt in stmts for name in ungrounded(stmt)))
     warnings = M.warnings_from(
@@ -915,7 +920,9 @@ def regulator_warning(record: dict, base: dict | None, unsigned=(), failed=()) -
     recorded kinds changed (a bound did it), back to what was stated too. A row with no one net
     rate says why; the rows ``unsigned`` (built before their net rate was kept) say they kept the
     kinds they had; the rows the check ``failed`` on (a bug of the server's) say so, never as a
-    reason to change their mechanism. ``None`` where there is nothing to say."""
+    reason to change their mechanism. A row whose rate law can go negative or pass a pole says
+    so, and a new or changed row whose regulator also acts on a step taking the product away names
+    that step. ``None`` where there is nothing to say."""
     from . import notation
     from .statements import REGULATORS
 
@@ -928,18 +935,34 @@ def regulator_warning(record: dict, base: dict | None, unsigned=(), failed=()) -
     before = {row["prefix"]: row for row in (base or {}).get("rows", [])}
     changed: dict[tuple[str, str, str, str], list[str]] = {}
     restored: dict[tuple[str, str], list[str]] = {}
+    negative: list[tuple[str, list[str]]] = []
+    taking: dict[tuple[str, str, str], list[str]] = {}
     broken = []
     for row in record.get("rows", []):
         emission = row.get("emission") or {}
-        derived, why = emission.get("derived") or {}, (emission.get("rate") or {}).get("none", "")
+        rate = emission.get("rate") or {}
+        derived, why = emission.get("derived") or {}, rate.get("none", "")
         old = before.get(row["prefix"])
         same = old is not None and all(old.get(k) == row.get(k) for k in ("statement", "policy",
                                                                           "parameters"))
         was = (old.get("emission") or {}).get("derived") or {} if same else {}
+        if not same:
+            for name, steps in (rate.get("consumes") or {}).items():
+                stated, _, position = name.rpartition("_")
+                agent = text(row["statement"][stated][int(position)])
+                taking.setdefault((stated, agent, " and ".join(steps)), []).append(row["prefix"])
         for name in sorted(set(was) - set(derived)):
             stated, _, position = name.rpartition("_")
             agent = text(row["statement"][stated][int(position)])
             restored.setdefault((stated, agent), []).append(row["prefix"])
+        if rate.get("ill_posed") and not (same and was == derived):
+            moved = []
+            for name in derived:
+                stated, _, position = name.rpartition("_")
+                agent = text(row["statement"][stated][int(position)])
+                moved.append(f"`{REGULATORS[stated]} {agent}` reads as `modulated by {agent}`")
+            negative.append((row["prefix"], moved))
+            continue
         if not derived or (same and was == derived):
             continue
         if row["prefix"] in failed:
@@ -957,6 +980,19 @@ def regulator_warning(record: dict, base: dict | None, unsigned=(), failed=()) -
         f"{'and' if stated == 'modulated_by' else 'but'} "
         f"{_WHAT_THE_RATE_DOES[shown].format(agent)}, so it reads as `{REGULATORS[shown]} {agent}`"
         for (stated, agent, shown, why), prefixes in changed.items()
+    ]
+    parts += [
+        f"`{prefix}`: its rate law can go negative, or pass a pole, for values of its names within "
+        "their ranges, where its sign no longer says which way the reaction runs, so it gives no "
+        "regulator a direction" + (f" ({'; '.join(moved)})" if moved else "")
+        for prefix, moved in negative
+    ]
+    parts += [
+        f"`{', '.join(prefixes)}`: `{REGULATORS[stated]} {agent}` also acts on {steps}, a step that "
+        "takes the product away, which the reaction's rate (the product absent) does not see, so "
+        "what it does to the product's amount is not shown"
+        + (": it stays `modulated by`" if stated == "modulated_by" else "")
+        for (stated, agent, steps), prefixes in taking.items()
     ]
     parts += [
         f"`{', '.join(prefixes)}`: `{REGULATORS[stated]} {agent}` reads as you stated it again"
@@ -980,8 +1016,10 @@ def regulator_warning(record: dict, base: dict | None, unsigned=(), failed=()) -
         " Check that each mechanism does what you meant; if not, rewrite its rate"
         + ("; a mechanism with no one net rate (two reactions, say) is one statement for each "
            "reaction" if split else "")
+        + ("; a rate law that can go negative is one to rewrite (`k/(1 + X/K)`, not "
+           "`k*(1 - X)`)" if negative else "")
         + ". The statements stay as you wrote them; `get_model` marks each regulator with the "
-        "kind its rate shows (`(inhibits, from its rate)`)." if changed else ""
+        "kind its rate shows (`(inhibits, from its rate)`)." if changed or negative else ""
     )
     return "; ".join(parts) + "." + advice
 

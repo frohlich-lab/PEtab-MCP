@@ -950,10 +950,13 @@ def test_statements_commit_records_what_was_asserted(tmp_path):
     )
     assert out["applied"] is True and out["committed"] is True
     assert "carry no grounding" in out["messages"][0]["message"]
-    (stored,) = json.loads(
-        (tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text()
-    )["rows"]
+    record = json.loads((tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text())
+    (stored,) = record["rows"]
     assert stored["emission"]["parameters"] == ["conv_k"]
+    # What the rows expand to, before and after the reduction, reported and kept with the rows.
+    size = {"species": 2, "reactions": 1}
+    assert out["network"] == record["network"]
+    assert record["network"] == {"before_reduction": size, "after_reduction": size, "split": {}}
 
 
 def test_ungrounded_agents_are_named_once_per_call(tmp_path):
@@ -2048,8 +2051,9 @@ def test_the_result_names_the_rows_whose_rate_signs_a_modulator(tmp_path):
     )
 
 
+#: Never negative whatever `a` (a rate law that can go negative claims no direction).
 _LIN = {"statement_type": "PopulationTransition", "policy": "lin", "based_on": "mass_action",
-        "rate": "k*(1 + a*activated_by)", "parameters": ["k", "a"]}
+        "rate": "k*exp(a*activated_by)", "parameters": ["k", "a"]}
 
 
 def _recorded(tmp_path, version):
@@ -2061,7 +2065,8 @@ def _recorded(tmp_path, version):
 
 def test_a_bound_edit_signs_a_rows_regulators_again(tmp_path):
     """review of #128: `k*(1 + a*C)` was signed once, `a` taken positive, so `activated by C`
-    stood after an edit let `a` go negative. Each version's kinds are its own bounds'."""
+    stood after an edit let `a` go negative. Each version's kinds are its own bounds' (here
+    `k*exp(a*C)`)."""
     mcp = _statements_server(tmp_path)
     out = _call(mcp, "make_changes", {"justification": "C speeds it",
                                       "statements": ["conv: A becomes B, activated by C | lin"],

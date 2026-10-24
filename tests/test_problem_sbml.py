@@ -11,6 +11,7 @@ from petab.v1.models.sbml_model import SbmlModel
 
 from petab_mcp import mechanisms as M
 from petab_mcp import problem_sbml as PS
+from petab_mcp import reconcile as R
 from petab_mcp.errors import ModelUpdateError
 from petab_mcp.mechanisms import INDRA_DEFAULT
 from petab_mcp.protocols import Input
@@ -625,13 +626,18 @@ def test_a_release_frees_the_partner_it_was_bound_to():
 
 
 def test_a_population_renews_itself():
-    """A population expands from itself; INDRA reads "X increases X" as nothing."""
+    """A population expands from itself; INDRA reads "X increases X" as nothing. The parent is
+    the step's catalyst, which :mod:`reduction` makes its rate factor: one more at ``k·E``."""
     from indra.statements import IncreaseAmount
 
-    reactions = _reactions(
+    antimony, _ = PS.to_antimony(
         [(IncreaseAmount(None, Agent("E")), "self_renewal", "r1")], {"E": Agent("E")}
     )
-    assert (["E()"], ["E()", "E()"]) in reactions
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    (reaction,) = sbml.getListOfReactions()
+    assert [r.getSpecies() for r in reaction.getListOfReactants()] == []
+    assert [p.getSpecies() for p in reaction.getListOfProducts()] == ["E"]
+    assert R.species_influence_graph(sbml)["E"] == {"E"}  # through the rate factor it reads
 
 
 def test_a_modification_goes_on_without_an_enzyme():

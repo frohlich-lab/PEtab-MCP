@@ -58,9 +58,11 @@ downstream has to know where a model came from.
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 import libsbml
 import pysb
-from indra.assemblers.pysb.assembler import get_monomer_pattern
+from indra.assemblers.pysb.assembler import _n, get_monomer_pattern
 from indra.statements import Agent
 from petab.v1.models.sbml_model import SbmlModel
 from pysb import ANY
@@ -68,7 +70,7 @@ from pysb.bng import NoInitialConditionsError, generate_equations
 from pysb.export import export
 
 from . import mechanisms as M
-from . import regulation
+from . import reduction, regulation
 from .errors import ModelUpdateError
 from .protocols import Input, hold
 from .reconcile import SEED_INITIAL_VALUE
@@ -85,6 +87,9 @@ def to_antimony(
     notes: list[str] | None = None,
     *,
     targets: frozenset[str] = frozenset(),
+    times: tuple[float, float] | None = None,
+    network: dict | None = None,
+    reduce: bool = True,
 ) -> tuple[str, list[M.Emission]]:
     """The model ``rows`` build, as Antimony the ``antimony`` route accepts unchanged.
 
@@ -98,6 +103,9 @@ def to_antimony(
     under its protocol. An input the entity map does not name is the agent of its id. A
     condition target the rows make or convert is a state its periods only start.
 
+    ``times``, the problem's (:func:`regulation.times`), are what a rate's ``time`` ranges over
+    where its regulators are checked.
+
     ``starts`` (``(name, agent, amount)``: a number or an expression over parameter ids) declare
     what is present at the start, as the module docstring sets out; each is ``<name>_init``.
 
@@ -109,8 +117,12 @@ def to_antimony(
     ``notes``, when given, collects what the start holds that nothing declared and the caller may
     not expect: kinds the rules make from nothing, which start empty, and a start location chosen
     among several.
+
+    The rules are reduced before they are expanded (:mod:`reduction`), unless ``reduce`` is off
+    (the expansion the tests compare it with), and ``network``, when given, receives the
+    species and reactions with and without the reduction.
     """
-    starts = starts or []
+    starts = [(name, agent, _numeric(amount)) for name, agent, amount in starts or []]
     entities = {**{item.id: Agent(item.id) for item in inputs}, **entities}
     clash = sorted(set(amounts or {}) & set(entities))
     if clash:
@@ -145,16 +157,28 @@ def to_antimony(
     # Readouts are named apart from the species they stand for, which may share a monomer's
     # name; the SBML export numbers observables anyway, and the rename below restores them.
     readouts = {f"readout_{species}": species for species in entities}
-    for name, species in readouts.items():
-        pattern = get_monomer_pattern(model, entities[species])
-        model.add_component(pysb.Observable(name, pattern, _export=False))
+    patterns = {name: get_monomer_pattern(model, entities[s]) for name, s in readouts.items()}
     declared = _declare(model, starts, set(held))
     _seed(
         model,
         [m for m in model.monomers if (m.name not in made or m.name in held) and m.name not in declared],
     )
+    # What the experiment sets stays whole (:mod:`reduction`): a form the conditions or a protocol
+    # set. Named as PySB names the monomer (INDRA's `_n`: `S-1` is `S_1`), or a name INDRA rewrote
+    # slipped past and was split (the #116 review).
+    whole = {_n(name) for name in held} | {_n(entities[s].name) for s in set_keys}
+    # A row's regulators are checked on its reactions as BioNetGen expands the rules as written
+    # (:mod:`regulation`): reduced, a catalyst is out of its rule and a monomer is blocks, no
+    # longer the statement's agents.
+    as_written = deepcopy(model) if reduce and any(row[4:5] and row[4] for row in rows) else None
+    reduced = reduction.reduce(model, whole) if reduce else reduction.Reduction()
+    # A readout over blocks of a split monomer is their product, so it is made after the split.
+    amounts = {
+        name: reduction.amount(model, reduced, pattern, name) for name, pattern in patterns.items()
+    }
     _expand(model)
-    reached = {mp.monomer.name for sp in model.species for mp in sp.monomer_patterns}
+    present = reduction.reached(model, reduced)
+    reached = {mp.monomer.name for i in present for mp in model.species[i].monomer_patterns}
     unreached = [
         m for m in model.monomers if m.name in made - held.keys() - reached - declared
     ]
@@ -162,6 +186,7 @@ def to_antimony(
         _seed(model, unreached)
         model.reset_equations()
         _expand(model)
+        present = reduction.reached(model, reduced)
     if notes is not None:
         set_by = sorted(s for s in entities if s in targets)
         kept = [s for s in set_by if s in keys]
@@ -190,39 +215,45 @@ def to_antimony(
                 "this list."
             )
         chosen = []
+        # A split monomer starts as its blocks, and the block holding `loc` speaks for it.
+        whole_of = {p.name: m for m, split in reduced.splits.items() for p in split.blocks}
         for initial in model.initials:
             pattern = initial.pattern.monomer_patterns[0]
+            name = whole_of.get(pattern.monomer.name, pattern.monomer.name)
             locations = pattern.monomer.site_states.get("loc", ())
-            if pattern.monomer.name in declared.union(held) or len(locations) < 2:
+            if name in declared.union(held) or len(locations) < 2:
                 continue
             if "cytoplasm" in locations:
                 continue
-            chosen.append(
-                f"{pattern.monomer.name} in {pattern.site_conditions['loc']} of {sorted(locations)}"
-            )
+            chosen.append(f"{name} in {pattern.site_conditions['loc']} of {sorted(locations)}")
         if chosen:
             notes.append(
                 f"These start in the first of their locations by name, since no statement puts "
                 f"them in the cytoplasm: {'; '.join(chosen)}. To start one elsewhere, declare it "
                 "in `starts`."
             )
-    fired = {name for reaction in model.reactions for name in reaction["rule"]}
+    fired = reduction.fired(model, reduced, present)
     never = []
     stuck = sorted({e.prefix for e in emissions if not fired.issuperset(e.rules)})
     if stuck:
         # Named with the form each needs, which nothing forms: "never fire" alone does not say
         # what to add (a translocation row whose cargo must first be modified).
-        needs = _unformed_reactants(model, emissions, fired, stuck)
+        needs = {}
+        for e in emissions:
+            for rule in e.rules if e.prefix in stuck else ():
+                if rule not in fired and (need := reduction.unformed(model, reduced, rule, present)):
+                    needs[e.prefix] = need
+                    break
         never.append(
             f"rows {stuck} build rules that never fire"
             + (f" (nothing forms {'; '.join(f'{p}: {n}' for p, n in needs.items())})" if needs else "")
         )
-    unread = sorted(sp for name, sp in readouts.items() if not model.observables[name].species)
+    unread = sorted(
+        sp for name, sp in readouts.items() if not reduction.reads(amounts[name], present)
+    )
     if unread:
-        patterns = "; ".join(
-            f"{sp}: {model.observables[f'readout_{sp}'].reaction_pattern}" for sp in unread
-        )
-        never.append(f"readouts {unread} read no species ({patterns})")
+        unformed = "; ".join(f"{sp}: {patterns[f'readout_{sp}']}" for sp in unread)
+        never.append(f"readouts {unread} read no species ({unformed})")
     if never:
         raise ModelUpdateError(
             f"In the model these statements build, {' and '.join(never)}. The start holds free, "
@@ -232,7 +263,14 @@ def to_antimony(
             "it to. Add the statement that forms it, or, if it is present at t=0, declare it in "
             "`starts`."
         )
-    emissions = regulation.record(model, rows, emissions)
+    if network is not None:
+        network.update(reduction.sizes(model, reduced, present))
+    if as_written is not None:
+        if unreached:
+            _seed(as_written, [as_written.monomers[m.name] for m in unreached
+                               if m.name in as_written.monomers.keys()])
+        _expand(as_written)
+    emissions = regulation.record(as_written or model, rows, emissions, times)
     sbml = export(model, "sbml")  # from the expansion above; BioNetGen does not run again
     base_names = {
         str(initial.pattern): initial.pattern.monomer_patterns[0].monomer.name
@@ -260,6 +298,7 @@ def to_antimony(
             sbml_model.removeParameter(amount)
             assignment.removeFromParentAndDelete()
     named = set()
+    blocks = {part.name for split in reduced.splits.values() for part in split.blocks}
     for parameter in list(sbml_model.getListOfParameters()):
         if parameter.getName() not in readouts:
             continue
@@ -275,6 +314,10 @@ def to_antimony(
             and species is not None
             and species.getId() not in named
             and not new.startswith("readout_")
+            # Nor a block of a split monomer (:mod:`reduction`), which is one species where the
+            # monomer whole is several: named, it took a shipped `<id>_init` for its start, which
+            # the unreduced model never gives it (the #116 review).
+            and species.getName().split("(", 1)[0] not in blocks
         ):
             # A readout that IS one species names that species, rather than leaving a rule over
             # it: the reachability checks in `reconcile` and `operations` follow reactions, not
@@ -308,6 +351,18 @@ def to_antimony(
             hold(sbml_model, base[monomer].getId(), item)
     _number_reactions(sbml_model)
     return SbmlModel.from_string(libsbml.writeSBMLToString(document)).to_antimony(), emissions
+
+
+def _numeric(amount):
+    """A start amount written as a number in text (``"2"``) is that number, as one written as a
+    number. Taken as an expression, its Antimony round trip made it a literal that reconcile
+    estimated once per species (the #116 review), and a ``"0"`` was no empty start."""
+    if isinstance(amount, str):
+        try:
+            return float(amount)
+        except ValueError:
+            return amount
+    return amount
 
 
 def _declare(
@@ -380,27 +435,6 @@ def _initial_expression(sbml_model, placeholder: str, species: str, formula: str
     for assignment in sbml_model.getListOfInitialAssignments():
         if assignment.getMath().isName() and assignment.getMath().getName() == placeholder:
             assignment.setMath(math)
-
-
-def _unformed_reactants(model, emissions, fired, stuck) -> dict[str, str]:
-    """For each stuck row, a reactant pattern of one of its unfired rules that no species of the
-    expanded network matches, as PySB writes it."""
-    from pysb.pattern import match_complex_pattern
-
-    needs = {}
-    for e in emissions:
-        if e.prefix not in stuck:
-            continue
-        for rule_name in e.rules:
-            if rule_name in fired:
-                continue
-            for cp in model.rules[rule_name].reactant_pattern.complex_patterns:
-                if not any(match_complex_pattern(cp, sp) for sp in model.species):
-                    needs[e.prefix] = str(cp)
-                    break
-            if e.prefix in needs:
-                break
-    return needs
 
 
 def _readout_formula(

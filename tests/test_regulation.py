@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 import time
 
+import pandas as pd
+import pysb
 import pytest
 import sympy
 from indra.statements import stmts_from_json
@@ -21,9 +23,9 @@ from petab_mcp.errors import MechanismError
 from petab_mcp.statements import _REACTIONS, indra_part, regulators, with_defaults
 
 
-def _build(rows: list, *definitions: dict):
-    """``rows`` (the notation, or INDRA JSON rows) built with ``definitions`` written: the
-    emissions. Raises what `make_changes` refuses with."""
+def _build(rows: list, *definitions: dict, times=None):
+    """``rows`` (the notation, or INDRA JSON rows) built with ``definitions`` written, ``time``
+    over ``times``: the emissions. Raises what `make_changes` refuses with."""
     library = dict(M.REGISTRY)
     for definition in definitions:
         library[(definition["statement_type"], definition["policy"])] = M.written(definition, library)
@@ -34,7 +36,7 @@ def _build(rows: list, *definitions: dict):
     _, emissions = problem_sbml.to_antimony(
         [(s, row["policy"], row["prefix"], row.get("parameters"), regulators(row["statement"]))
          for s, row in zip(stmts, parsed)],
-        {}, library,
+        {}, library, times=times,
     )
     return emissions
 
@@ -71,7 +73,8 @@ _PHOSPHO = "p: MEK phosphorylates ERK at T202, {regulator} | written"
         ("k * Ki / (Ki + inhibited_by)", "inhibited by D", {}),
         ("k/(i*inhibited_by^6/(inhibited_by^6 + Ki^6) + 1)", "inhibited by D", {}),  # alkan
         ("k*activated_by^6/(activated_by^6 + Ki^6)", "activated by D", {}),  # alkan's driven death
-        ("k*(1 - inhibited_by)", "inhibited by D", {}),  # perelson's ritonavir gate
+        # Negative past D = 1, a rate law with no direction there (the second review of #128).
+        ("k*(1 - inhibited_by)", "inhibited by D", {"inhibited_by_0": "modulated_by"}),
         ("k*piecewise(1, modulated_by > 0, 0)", "modulated by D", {}),
         ("(k + Ki*modulated_by)/(1 + modulated_by)", "modulated by D", {}),
     ],
@@ -615,9 +618,10 @@ def test_a_large_rate_signs_its_modulators_in_bounded_time():
         "(HD + amount(modulated_by_1) + amount(modulated_by_0)) + rL)"
     )
     for inhibition, derived in [
-        # 1 - rho2*X/(H2 + X) turns negative for rho2 > 1, so the sign of J, and with it which way
-        # modulated_by_2 moves it, is not shown.
-        ("*(1 - rho2*amount(inhibited_by)/(H2 + amount(inhibited_by)))", {}),
+        # 1 - rho2*X/(H2 + X) turns negative for rho2 > 1, and J with it: no regulator of it is
+        # given a direction, the stated inhibitor included.
+        ("*(1 - rho2*amount(inhibited_by)/(H2 + amount(inhibited_by)))",
+         {"inhibited_by_0": "modulated_by"}),
         # Kept positive, J falls with modulated_by_2, only in the denominator; modulated_by_0 and
         # _1, in the numerator and the denominator both, stay unsigned.
         ("/(1 + rho2*amount(inhibited_by)/(H2 + amount(inhibited_by)))",
@@ -648,14 +652,27 @@ def _record(rows, *definitions) -> dict:
 
 
 class _Problem:
-    """A problem's tables, as :func:`regulation.bounded` reads them."""
+    """A problem's tables and its model's values (``values``), as :func:`regulation.bounded`
+    reads them."""
 
-    def __init__(self, parameters: list[dict], conditions=None, times=None):
+    def __init__(self, parameters: list[dict], conditions=None, times=None, values=None):
         import pandas as pd
 
         self.parameter_df = pd.DataFrame(parameters).set_index("parameterId")
         self.condition_df = pd.DataFrame(conditions) if conditions else None
-        self.measurement_df = pd.DataFrame({"time": times}) if times else None
+        self.measurement_df = pd.DataFrame({"time": times, "experimentId": ""}) if times else None
+        self.experiment_df = None
+        self.model = _Model(values or {})
+
+
+class _Model:
+    """A problem's model, as :func:`regulation.bounded` reads a condition input's own value."""
+
+    def __init__(self, values: dict[str, float]):
+        self.values = values
+
+    def get_parameter_value(self, pid: str) -> float:
+        return self.values[pid]
 
 
 def _parameter(pid, low, high, estimate=1, nominal=1.0, scale="lin"):
@@ -668,9 +685,11 @@ def _parameter(pid, low, high, estimate=1, nominal=1.0, scale="lin"):
     [
         (_parameter("conv_a", 0.0, 10.0), {}),  # never negative: activates
         (_parameter("conv_a", 1e-3, 10.0, scale="log10"), {}),
-        (_parameter("conv_a", -10.0, -1e-3), {"activated_by_0": "inhibited_by"}),  # always negative
+        # Always negative: J falls with C, and below 0 past C = 1/|a|, so no direction.
+        (_parameter("conv_a", -10.0, -1e-3), {"activated_by_0": "modulated_by"}),
         (_parameter("conv_a", -1.0, 1.0), {"activated_by_0": "modulated_by"}),  # either sign
-        (_parameter("conv_a", -1.0, 1.0, estimate=0, nominal=-0.5), {"activated_by_0": "inhibited_by"}),
+        (_parameter("conv_a", -1.0, 1.0, estimate=0, nominal=-0.5),
+         {"activated_by_0": "modulated_by"}),
     ],
 )
 def test_a_regulator_is_signed_on_its_versions_bounds(a, derived):
@@ -687,8 +706,9 @@ def test_a_regulator_is_signed_on_its_versions_bounds(a, derived):
 
 
 def test_a_condition_input_and_time_are_signed_on_their_ranges():
-    """A condition input ranges over the values its conditions set, `time` from 0 to the last
-    measurement: `k*(1 + (dose - 1)*C)` activates for doses of at least 1, not for 0.5."""
+    """A condition input ranges over the values its conditions set and the model's own, `time`
+    over the problem's experiments: `k*(1 + (dose - 1)*C)` activates for doses of at least 1, not
+    for 0.5."""
     definition = _rate("k*(1 + d*activated_by)", "k", "d", stmt_type="PopulationTransition",
                        based_on="mass_action") | {"policy": "dosed"}
     record = _record(['conv: A becomes B, activated by C | dosed d="dose - 1"'], definition)
@@ -696,7 +716,7 @@ def test_a_condition_input_and_time_are_signed_on_their_ranges():
         problem = _Problem(
             [_parameter("conv_k", 1e-3, 1e3, scale="log10")],
             [{"conditionId": f"c{i}", "targetId": "dose", "targetValue": d} for i, d in enumerate(doses)],
-            times=[0.0, 10.0],
+            times=[0.0, 10.0], values={"dose": 1.0},
         )
         signed, _, _ = regulation.resign(record, problem)
         assert signed["rows"][0]["emission"]["derived"] == derived
@@ -848,6 +868,22 @@ def test_an_enzyme_stated_as_its_own_inhibitor_is_one_amount():
     assert emission.derived == {"inhibited_by_0": "activated_by"}
 
 
+@pytest.mark.parametrize("row", ["c: A + E -> B + E, {} X | written",
+                                 "c: L + R -> L + R{{pS10}}, {} X | written"])
+def test_an_agent_a_reaction_gives_back_as_it_was_is_a_catalyst(row):
+    """review of #128 (second pass), t_catalyst: every agent a conversion gives was a product,
+    so the `E` of `A + E -> B + E` was held at 0, J was 0 and the row refused as needing the
+    product. E is given back as it was: a catalyst, its amount held, and J = k*X*A*E."""
+    scheme = _scheme("Conversion", "obj_from_0() + obj_from_1() >> obj_to_0() + obj_to_1() @ "
+                     "k*amount({})", "k")
+    (emission,) = _build([row.format("activated by")],
+                         {**scheme, "scheme": scheme["scheme"].format("activated_by")})
+    assert emission.derived == {}
+    (emission,) = _build([row.format("inhibited by")],
+                         {**scheme, "scheme": scheme["scheme"].format("inhibited_by")})
+    assert emission.derived == {"inhibited_by_0": "activated_by"}
+
+
 # ------------------------------------------------------------------------------- own forms
 #: Three steps: binding, the catalytic step slowed by the regulator, and release.
 _THREE_STEPS = (
@@ -944,6 +980,71 @@ def test_a_long_chain_of_enzyme_forms_is_signed_by_the_chain_rule():
     assert emission.derived == {}
 
 
+_SITES = ["Y1068", "Y1173", "Y992", "Y1045"]
+
+
+def test_forms_apart_only_in_sites_the_row_never_reads_are_one():
+    """review of #128 (second pass), t_sites: EGFR with four sites other rows set made 32 enzyme
+    forms of one two-step row, past the bound, so `inhibited by I` had no J; its flux falls with I.
+    Forms that differ only in sites the row's rules, rates and statement never read are lumped:
+    two forms, as written."""
+    rows = [f"k{i}: SRC phosphorylates EGFR at {site} | indra_default"
+            for i, site in enumerate(_SITES)]
+    scheme = _scheme("Phosphorylation", _TWO_STEPS.format(kf="kf", kr="kr", kc="kc" + _SLOWED),
+                     "kf", "kr", "kc", "Ki")
+    row = "p: EGFR phosphorylates PLCG at Y783, inhibited by I | written"
+    assert _build([*rows, row], scheme)[-1].derived == {}
+    flipped = _build([*rows, row.replace("inhibited", "activated")],
+                     {**scheme, "scheme": scheme["scheme"].replace("inhibited_by", "activated_by")})
+    assert flipped[-1].derived == {"activated_by_0": "inhibited_by"}
+    # A row that reads a site keeps it apart: EGFR phosphorylated at Y1068 is a regulator's.
+    read = {**scheme, "scheme": scheme["scheme"].replace("enz(sub=", "enz(Y1068='u', sub=")}
+    assert _build([*rows, row], read)[-1].derived == {}
+
+
+def test_a_tiny_net_rate_is_no_zero():
+    """review of #128 (second pass), t_vanish: eight enzyme forms, four inhibitors on every step,
+    put J near 1e-14 at the zero test's points, below its absolute 1e-9, so the row "made nothing
+    from its reactants alone". Zero is now relative to the terms J sums."""
+    slowed = "".join(f"/(1 + amount(inhibited_by_{j})/Ki{j})" for j in range(4))
+    sped = "".join(f"*(1 + amount(inhibited_by_{j})/Ki{j})" for j in range(4))
+    lines = [f"enz(c='c{i}', sub=None) | enz(c='c{i + 1}', sub=None) @ ka{i}{slowed}, kb{i}{sped}"
+             for i in range(7)]
+    lines.append(_TWO_STEPS.format(kf="kf", kr="kr", kc="kc" + slowed)
+                 .replace("enz(sub=", "enz(c='c7', sub="))
+    names = [f"k{x}{i}" for x in "ab" for i in range(7)]
+    _build([_PHOSPHO.format(regulator="inhibited by I0 and I1 and I2 and I3")],
+           _scheme("Phosphorylation", "\n".join(lines), *names, "kf", "kr", "kc",
+                   *(f"Ki{j}" for j in range(4))))
+    a, b = sympy.symbols("a b", positive=True)
+    assert not M._vanishes(1e-20 * a * b / (1 + a))
+    assert M._vanishes(sympy.exp(sympy.log(a + 1)) - a - 1 + 0 * b)
+
+
+@pytest.mark.parametrize("times, refused", [((0.0, 10.0), False), ((-5.0, 10.0), True)])
+def test_time_ranges_over_the_problems_experiments(times, refused):
+    """review of #128 (second pass), e2e_time: `time` was never negative, though an experiment may
+    start at -5. `k*C*time/(tau + time)` moves with C as `time` does: activated from 0 on, not
+    shown where time can be negative."""
+    rate = _rate("k*activated_by*time/(tau + time)", "k", "tau", stmt_type="PopulationTransition",
+                 based_on="mass_action")
+    (emission,) = _build(["conv: A becomes B, activated by C | written"], rate, times=times)
+    assert emission.derived == ({"activated_by_0": "modulated_by"} if refused else {})
+
+
+def test_a_binding_keeps_its_comparison():
+    """review of #128 (second pass): `g="piecewise(0, ko > 0, 1)"` raised a TypeError out of
+    `bind`, a parameter being positive to sympy from its seeded value, which also decided the
+    comparison where it did not raise. The comparison stays as written."""
+    ko = pysb.Parameter("ko", 1.0, _export=False)
+    kept = M.over(sympy.sympify("piecewise(2, ko > 0, 1)", locals={
+        "ko": sympy.Symbol("ko"), "piecewise": M._RATE_FUNCTIONS["piecewise"]}), {"ko": ko})
+    assert kept.atoms(sympy.core.relational.Relational) and ko in kept.free_symbols
+    _build(['conv: A becomes B, activated by C | written g="piecewise(2, ko > 0, 1)"'],
+           _rate("k*(1 + g*activated_by)", "k", "g", stmt_type="PopulationTransition",
+                 based_on="mass_action"))
+
+
 # ------------------------------------------------------------------------------- products held at 0
 _RAS = 'c1: RAS{-mod"GTP"} -> RAS{mod"GTP"}'
 _RAS_FED = f'{_RAS}, activated by SOS and RAS{{mod"GTP"}} | fed'
@@ -957,6 +1058,42 @@ def _fed(stmt_type: str, scheme: str, *parameters: str) -> dict:
     return _scheme(stmt_type, scheme, *parameters, policy="fed")
 
 
+def _flux(rows: list, *definitions: dict, same: dict | None = None) -> dict[str, float]:
+    """Each species' rate of change in the model ``rows`` build, its regulators unchecked, at one
+    state: every species and parameter at a value of its name (``same`` naming, for a parameter,
+    the one whose value it takes)."""
+    import zlib
+
+    seen = []
+    real = regulation.record
+    regulation.record = lambda model, rows_, emissions, *_: seen.append(model) or emissions
+    try:
+        _build(rows, *definitions)
+    finally:
+        regulation.record = real
+    (model,) = seen
+
+    def value(name: str) -> float:
+        return 0.3 + zlib.crc32(name.encode()) % 97 / 40
+
+    point = {sympy.Symbol(f"__s{i}"): value(str(sp)) for i, sp in enumerate(model.species)}
+    point |= {p: value((same or {}).get(p.name, p.name)) for p in model.parameters}
+    out = {}
+    for i, ode in enumerate(model.odes):
+        while found := ode.atoms(pysb.Expression) | ode.atoms(pysb.Observable):
+            ode = ode.xreplace({x: x.expand_expr() if isinstance(x, pysb.Expression)
+                                else x.expand_obs() for x in found})
+        out[str(model.species[i])] = float(ode.xreplace(point))
+    return out
+
+
+_SOS_FED = (
+    "gef() + ras(gtpbound='inactive') >> gef() + ras(gtpbound='active') @ "
+    "kb + k*amount(activated_by_0)*amount(activated_by_1)"
+)
+_TWO_PRODUCTS = "obj_from_0() >> obj_to_0() + obj_to_1() @ "
+
+
 @pytest.mark.parametrize(
     "rows, mechanism, stated, back, followed",
     [
@@ -968,25 +1105,25 @@ def _fed(stmt_type: str, scheme: str, *parameters: str) -> dict:
          'RAS{-mod"GTP"} -> RAS{mod"GTP"}, activated by SOS and RAS{mod"GTP"}',
          'RAS{mod"GTP"} -> RAS{-mod"GTP"}',
          [([_RAS_FED], _fed("Conversion", f"{_FEEDBACK}\nobj_to_0() >> obj_from_0() @ kgap",
-                            "kb", "kf", "kgap")),
-          ([_RAS_FED, _GAP], _fed("Conversion", _FEEDBACK, "kb", "kf"))]),
-        # The same step written alone.
+                            "kb", "kf", "kgap"), {}),
+          ([_RAS_FED, _GAP], _fed("Conversion", _FEEDBACK, "kb", "kf"), {"c2_k": "c1_kgap"})]),
+        # The same step written alone: it has no way back to put on a row.
         ([f"{_RAS}, activated by SOS | written"],
          _scheme("Conversion", "obj_from_0() >> obj_to_0() @ kb + kf*amount(activated_by)*"
                  "amount(obj_to_0())", "kb", "kf"),
          'RAS{-mod"GTP"} -> RAS{mod"GTP"}, activated by SOS and RAS{mod"GTP"}',
          'RAS{mod"GTP"} -> RAS{-mod"GTP"}',
-         [([_RAS_FED], _fed("Conversion", _FEEDBACK, "kb", "kf")),
-          ([_RAS_FED, _GAP], _fed("Conversion", _FEEDBACK, "kb", "kf"))]),
+         [([_RAS_FED], _fed("Conversion", _FEEDBACK, "kb", "kf"), {})] * 2),
         # refusals/t1/autoreg: a co-activator working only with the gene product present.
         (["g: TF increases G, activated by X | written"],
          _scheme("IncreaseAmount", "subj() >> subj() + obj() @ ks + ka*amount(activated_by)*"
                  "amount(obj())\nobj() >> None @ kd delete_molecules", "ks", "ka", "kd"),
          "TF increases G, activated by X and G", "G is degraded",
          [(["g: TF increases G, activated by X and G | fed"],
-           _fed("IncreaseAmount", f"{_GENE}\nobj() >> None @ kd delete_molecules", "ks", "ka", "kd")),
+           _fed("IncreaseAmount", f"{_GENE}\nobj() >> None @ kd delete_molecules", "ks", "ka",
+                "kd"), {}),
           (["g: TF increases G, activated by X and G | fed", "d: G is degraded | indra_default"],
-           _fed("IncreaseAmount", _GENE, "ks", "ka"))]),
+           _fed("IncreaseAmount", _GENE, "ks", "ka"), {"d_kf": "g_kd"})]),
         # netrate/t6: the product makes itself, beside a basal step (a term of the one rule's
         # rate, as the refusal says: two rows of one reaction would be one reaction) or alone.
         (["c: A -> B, activated by X | written"],
@@ -994,32 +1131,163 @@ def _fed(stmt_type: str, scheme: str, *parameters: str) -> dict:
                  "obj_to_0() + obj_to_0() @ ka*amount(activated_by)", "ka", "kb"),
          "A -> B, activated by X and B", "B -> A",
          [(["c: A -> B, activated by X and B | fed"],
-           _fed("Conversion", f"obj_from_0() >> obj_to_0() @ kb\n{_SELF}", "ka", "kb")),
+           _fed("Conversion", f"obj_from_0() >> obj_to_0() @ kb\n{_SELF}", "ka", "kb"), {}),
           (["c: A -> B, activated by X and B | fed"],
            _fed("Conversion", "obj_from_0() >> obj_to_0() @ kb + ka*amount(activated_by_0)*"
-                "amount(activated_by_1)", "ka", "kb"))]),
+                "amount(activated_by_1)", "ka", "kb"), {})]),
         (["c: A -> B, activated by X | written"],
          _scheme("Conversion", "obj_from_0() + obj_to_0() >> obj_to_0() + obj_to_0() @ "
                  "ka*amount(activated_by)", "ka"),
          "A -> B, activated by X and B", "B -> A",
-         [(["c: A -> B, activated by X and B | fed"], _fed("Conversion", _SELF, "ka"))] * 2),
+         [(["c: A -> B, activated by X and B | fed"], _fed("Conversion", _SELF, "ka"), {})] * 2),
+        # review of #128 (second pass), t_gef: SOS's feedback through KRAS-GTP crashed writing
+        # the advice, a Gef row the notation could not write.
+        (["gef: SOS is a GEF for KRAS, activated by X | written"],
+         _scheme("Gef", "gef() + ras(gtpbound='inactive') >> gef() + ras(gtpbound='active') @ "
+                 "kb + k*amount(activated_by)*amount(ras(gtpbound='active'))", "kb", "k"),
+         "SOS is a GEF for KRAS, activated by X and KRAS{gtpbound:on}", None,
+         [(["gef: SOS is a GEF for KRAS, activated by X and KRAS{gtpbound:on} | fed"],
+           _fed("Gef", _SOS_FED, "kb", "k"), {})] * 2),
+        # t_multiproduct: the feedback is through C, the second product; the advice named B.
+        (["c: A -> B + C, activated by X | written"],
+         _scheme("Conversion", f"{_TWO_PRODUCTS}kb\nobj_from_0() + obj_to_1() >> obj_to_0() + "
+                 "obj_to_1() + obj_to_1() @ ka*amount(activated_by)", "ka", "kb"),
+         "A -> B + C, activated by X and C", "B + C -> A",
+         [(["c: A -> B + C, activated by X and C | fed"],
+           _fed("Conversion", f"{_TWO_PRODUCTS}kb\n{_TWO_PRODUCTS}ka*amount(activated_by_0)*"
+                "amount(activated_by_1)", "ka", "kb"), {}),
+          (["c: A -> B + C, activated by X and C | fed"],
+           _fed("Conversion", f"{_TWO_PRODUCTS}kb + ka*amount(activated_by_0)*"
+                "amount(activated_by_1)", "ka", "kb"), {})]),
     ],
-    ids=["ras_sos", "ras_sos_one_rule", "autoregulation", "autocatalysis_basal", "autocatalysis"],
+    ids=["ras_sos", "ras_sos_one_rule", "autoregulation", "autocatalysis_basal", "autocatalysis",
+         "gef", "second_product"],
 )
 def test_a_regulator_that_needs_the_product_is_told_both_rows_and_each_builds(
     rows, mechanism, stated, back, followed
 ):
     """Products stay at 0 in J (the user's decision, 2026-10-24), so a regulator that acts only
     with the product present (feedback, autoregulation, autocatalysis) does not move it. The
-    refusal names the two rows that state it, written for the row, and each builds as written:
-    the product stated as a regulator too; and that step alone on its own row so, its way back a
-    statement of its own. The step alone without the product stated still reads it at 0."""
+    refusal names the two rows that state it, written for the row, and each builds as written
+    and keeps the model: every species changes as it did. The product named is the one the step
+    reads. The step alone without the product stated still reads it at 0."""
     with pytest.raises(MechanismError) as refused:
         _build(rows, mechanism)
     said = str(refused.value)
     assert f"State the product as a regulator too, `{stated}`" in said
     assert "Or put that step on a row of its own so, a one-rule mechanism" in said
-    assert f"`{back}`" in said
-    for rewrite, definition in followed:
-        # Each regulator recorded as stated, the product's own an activator.
+    assert back is None or f"`{back}`" in said
+    before = _flux(rows, mechanism)
+    for rewrite, definition, same in followed:
+        # Each regulator recorded as stated, the product's own an activator, and the model kept.
         assert all(not emission.derived for emission in _build(rewrite, definition))
+        assert _flux(rewrite, definition, same=same) == pytest.approx(before, rel=1e-12)
+
+
+# ------------------------------------------------------------------------------- second review
+def _signed(rows, definition, problem) -> dict:
+    record = _record(rows, definition)
+    signed, failed, _ = regulation.resign(record, problem)
+    assert failed == []
+    return signed["rows"][-1]["emission"]
+
+
+def test_a_condition_input_is_signed_on_the_models_own_value_too():
+    """review of #128 (second pass), e2e_dose: `dose` set to 2 by the only condition was signed
+    over {2}, so `k*(1 + (dose - 1)*C)` read `activated by C`; the model's own 0.1 holds wherever
+    no period sets it (a pre-equilibration with no condition, a measurement in no experiment),
+    and there J falls with C."""
+    dosed = _rate("k*(1 + d*activated_by)", "k", "d", stmt_type="PopulationTransition",
+                  based_on="mass_action") | {"policy": "dosed"}
+    rows = ['conv: A becomes B, activated by C | dosed d="dose - 1"']
+    for default, derived in ((0.1, {"activated_by_0": "modulated_by"}), (3.0, {})):
+        problem = _Problem([_parameter("conv_k", 1e-3, 1e3, scale="log10")],
+                           [{"conditionId": "c1", "targetId": "dose", "targetValue": 2.0}],
+                           [0.0, 10.0], values={"dose": default})
+        assert _signed(rows, dosed, problem)["derived"] == derived
+
+
+def test_time_is_signed_over_the_problems_experiments():
+    """review of #128 (second pass), e2e_time: `time` ran from 0 to the last measurement, though
+    an experiment starting at -5 reads `k*C*time/(tau + time)` at negative times."""
+    onset = _rate("k*activated_by*time/(tau + time)", "k", "tau", stmt_type="PopulationTransition",
+                  based_on="mass_action") | {"policy": "onset"}
+    rows = ["conv: A becomes B, activated by C | onset"]
+    table = [_parameter("conv_k", 1e-3, 1e3, scale="log10"), _parameter("conv_tau", 1.0, 10.0)]
+    assert _signed(rows, onset, _Problem(table, times=[0.0, 10.0]))["derived"] == {}
+    early = _Problem(table, times=[-4.0, 10.0])
+    early.experiment_df = pd.DataFrame({"experimentId": ["e1"], "time": [-5.0],
+                                        "conditionId": [None]})
+    early.measurement_df["experimentId"] = "e1"
+    assert _signed(rows, onset, early)["derived"] == {"activated_by_0": "modulated_by"}
+
+
+@pytest.mark.parametrize("rate, binding, table", [
+    ("k*(1 - e)*activated_by", "", [_parameter("conv_e", 0.0, 1.0)]),
+    ("k*(1 + a*activated_by)", ' a="x - y"', [_parameter("x", 2.0, 10.0), _parameter("y", 0.0, 1.0)]),
+])
+def test_a_bounded_parameter_keeps_both_ends(rate, binding, table):
+    """review of #128 (second pass), b1_fraction: a bounded parameter was its lower bound plus a
+    name never negative, with no upper end, so `1 - e` over `e` in [0, 1] and `x - y` over x in
+    [2, 10], y in [0, 1] were of either sign."""
+    names = sorted({"k", "e", "a"} & set(M._RATE_TOKENS.findall(rate)))
+    definition = _rate(rate, *names, stmt_type="PopulationTransition",
+                       based_on="mass_action") | {"policy": "lin"}
+    problem = _Problem([_parameter("conv_k", 1e-3, 1e3, scale="log10"), *table])
+    assert _signed([f"conv: A becomes B, activated by C | lin{binding}"], definition, problem)[
+        "derived"] == {}
+
+
+_TURNOVER = "subj() >> subj() + obj() @ ks*(1 + amount({kind})/K)\nobj() >> None @ kd*(1 + amount({kind})/K) delete_molecules"
+
+
+@pytest.mark.parametrize("kind", ["modulated_by", "activated_by"])
+def test_a_regulator_also_taking_the_product_away_is_not_signed_up(kind):
+    """review of #128 (second pass), sweep case33/gexpr5: M speeds both the synthesis and the
+    product's degradation; J, its product absent, rises with M, but the product's steady state
+    falls. A `modulated by M` is not signed up; one stated with a direction keeps J's, and both
+    record the step."""
+    scheme = _scheme("IncreaseAmount", _TURNOVER.format(kind=kind), "ks", "kd", "K")
+    word = kind.replace("_", " ")
+    (emission,) = _build([f"g: TF increases G, {word} M | written"], scheme)
+    assert emission.derived == {}
+    assert emission.rate["consumes"] == {f"{kind}_0": ["`G >> None`"]}
+    # Synthesis alone reads it: signed up.
+    alone = _scheme("IncreaseAmount", _TURNOVER.format(kind=kind).replace(
+        f"kd*(1 + amount({kind})/K)", "kd"), "ks", "kd", "K")
+    (emission,) = _build([f"g: TF increases G, {word} M | written"], alone)
+    assert emission.derived == ({"modulated_by_0": "activated_by"} if kind == "modulated_by" else {})
+    assert "consumes" not in emission.rate
+
+
+@pytest.mark.parametrize("rate", ["k*(modulated_by - 1)", "k/(modulated_by - 1)"])
+def test_a_rate_that_can_go_negative_or_pass_a_pole_is_not_signed(rate):
+    """review of #128 (second pass), sweep multi108: J rose with M2 on each side of a pole, and was
+    signed so, though J(M2=0.5) = -2 and J(1.5) = +2. A J not shown never negative and finite
+    claims no direction."""
+    definition = _rate(rate, "k", stmt_type="PopulationTransition", based_on="mass_action")
+    (emission,) = _build(["conv: A becomes B, modulated by M | written"], definition)
+    assert emission.derived == {}
+    assert emission.rate["ill_posed"]
+
+
+def test_the_warning_names_a_negative_rate_law_and_a_step_taking_the_product_away():
+    """review of #128 (second pass): each of the two goes to the agent, the step by name."""
+    from petab_mcp.operations import regulator_warning
+
+    record = _record(["conv: A becomes B, activated by M | neg"],
+                     _rate("k*(activated_by - 1)", "k", stmt_type="PopulationTransition",
+                           based_on="mass_action") | {"policy": "neg"})
+    said = regulator_warning(record, None)
+    assert said.startswith("`conv`: its rate law can go negative, or pass a pole, for values of its "
+                           "names within their ranges")
+    assert "(`activated by M` reads as `modulated by M`)" in said
+    assert "`k/(1 + X/K)`, not `k*(1 - X)`" in said
+    record = _record(["g: TF increases G, modulated by M | written"],
+                     _scheme("IncreaseAmount", _TURNOVER.format(kind="modulated_by"), "ks", "kd", "K"))
+    assert regulator_warning(record, None) == (
+        "`g`: `modulated by M` also acts on `G >> None`, a step that takes the product away, which "
+        "the reaction's rate (the product absent) does not see, so what it does to the product's "
+        "amount is not shown: it stays `modulated by`."
+    )
+    assert regulator_warning(record, record) is None  # said once, for the row new or changed

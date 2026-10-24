@@ -3,7 +3,10 @@ PEtab-MCP#127 and #128, and every mechanism agents wrote in two NEMO runs, throu
 a row's regulators (:mod:`petab_mcp.regulation`).
 
 - ``rows.json``: rows as a model states them, with the mechanisms they use, built as
-  `make_changes` builds them (:func:`problem_sbml.to_antimony`).
+  `make_changes` builds them (:func:`problem_sbml.to_antimony`), ``time`` over an entry's
+  ``times`` where it gives them, and signed again on its ``problem`` where it gives one (a
+  parameter table, conditions, measurement times and the model's values: :func:`regulation.resign`
+  as a commit does).
 - ``mechanisms.json``: mechanisms alone (perica_egf's, sweep_indra_55max's), each a reader of
   amounts other than its roles re-expressed as a regulator it states, built on a statement of
   agents named by role with every complex its rules start from present, as other rows would make
@@ -24,6 +27,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pysb
 import pytest
 import sympy
@@ -78,13 +82,14 @@ def _rows(entry) -> tuple[pysb.Model, list[tuple], list]:
     seen = {}
     record = regulation.record
 
-    def kept(model, rows_, emissions):
-        seen.update(model=model, emissions=record(model, rows_, emissions))
+    def kept(model, rows_, emissions, times=None):
+        seen.update(model=model, emissions=record(model, rows_, emissions, times))
         return seen["emissions"]
 
     regulation.record = kept
     try:
-        problem_sbml.to_antimony(rows, {}, library)
+        times = entry.get("times") and tuple(entry["times"])
+        problem_sbml.to_antimony(rows, {}, library, times=times)
     finally:
         regulation.record = record
     return seen["model"], rows, seen["emissions"]
@@ -126,10 +131,43 @@ def _alone(entry) -> tuple[pysb.Model, list[tuple], list]:
     return model, rows, regulation.record(model, rows, emissions)
 
 
+class _Problem:
+    """An entry's ``problem``, as :func:`regulation.bounded` reads one."""
+
+    def __init__(self, spec: dict):
+        self.parameter_df = pd.DataFrame(spec.get("parameters") or [{"parameterId": ""}])
+        self.condition_df = pd.DataFrame(spec["conditions"]) if spec.get("conditions") else None
+        self.measurement_df = pd.DataFrame({"time": spec.get("times", [0.0]), "experimentId": ""})
+        self.experiment_df = None
+        self.model = self
+        self.values = spec.get("values", {})
+
+    def get_parameter_value(self, pid: str) -> float:
+        return self.values[pid]
+
+
+def _resigned(entry, rows, emissions) -> list:
+    """``emissions`` with the kinds ``entry``'s ``problem`` records."""
+    from dataclasses import asdict, replace
+
+    def statement(stmt, stated) -> dict:
+        return stmt.to_json() | {k: [a.to_json() for a in v] for k, v in (stated or {}).items()}
+
+    record = {"rows": [
+        {"prefix": e.prefix, "emission": asdict(e), "statement": statement(stmt, stated)}
+        for (stmt, *_, stated), e in zip(rows, emissions)
+    ]}
+    signed, _, _ = regulation.resign(record, _Problem(entry["problem"]))
+    return [replace(e, derived=row["emission"]["derived"])
+            for e, row in zip(emissions, signed["rows"])]
+
+
 def _verdict(entry) -> tuple[dict, tuple | None]:
     """``entry``'s verdict, and what it built where it built."""
     try:
         built = (_rows if entry["form"] == "rows" else _alone)(entry)
+        if entry.get("problem"):
+            built = (*built[:2], _resigned(entry, *built[1:]))
     except PetabMcpError as exc:
         text = str(exc)
         kinds = [k for k, pattern in KINDS.items() if re.search(pattern, text)]
@@ -197,6 +235,8 @@ def test_the_corpus_entry_keeps_its_verdict(entry):
         if not claims:
             continue
         rate = regulation.net_rate(model, emission.rules, stmt)
+        if entry.get("problem"):
+            rate = regulation.bounded(rate, _Problem(entry["problem"]))[0]
         for s, claim in claims.items():
             assert _against(rate, s, claim) == 0, f"{s}: J moves against what it records"
 

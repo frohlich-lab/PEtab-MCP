@@ -250,6 +250,14 @@ def _sign(e: sympy.Expr) -> int | None:
             signs = {_sign(t) for t in sympy.Add.make_args(terms)} if terms is not None else {None}
             if len(signs) == 1 and None not in signs:
                 return signs.pop()
+        # Over one denominator: `2 + 8*u/(1 + u) - v/(1 + v)`, a bounded `x - y`, is
+        # `(2 + 10*u + v + 9*u*v)/((1 + u)*(1 + v))`.
+        if _terms(e) <= SIGN_TERMS:
+            numerator, denominator = sympy.fraction(sympy.together(e))
+            if denominator != 1 and _terms(numerator) <= SIGN_TERMS:
+                signs = (_sign(sympy.expand(numerator)), _sign(denominator))
+                if None not in signs:
+                    return signs[0] * signs[1]
     return None
 
 
@@ -319,18 +327,31 @@ def _vanishes(d: sympy.Expr) -> bool:
     positive values, a cheap test that settles nearly every case; cancelled to lowest terms (a
     multivariate gcd, seconds on a rate's derivative) only where it is, and only within
     :data:`SIGN_OPS`: past it, by its value at two more points, which the sign prover never asks
-    (it differentiates nothing so large)."""
+    (it differentiates nothing so large). Read to 50 digits, "0" is relative to what ``d`` adds
+    up from (:func:`_magnitude`), never absolute: a net rate of eight enzyme forms is 1e-14 at
+    such a point and not 0."""
     if d == 0:
         return True
     names = sorted(d.free_symbols, key=str)
+    size = _magnitude(d)
     for shift in (0.0, 0.53, 1.37):
         point = {s: 0.7 + 0.31 * i + shift * (i % 3) for i, s in enumerate(names)}
-        value = complex(d.evalf(subs=point))
-        if value == value and abs(value) > 1e-9:  # a number, not nan, and not 0
+        value, scale = d.evalf(50, subs=point), size.evalf(50, subs=point)
+        if value.is_finite and scale.is_finite and bool(abs(value) > 1e-30 * scale):
             return False
         if sympy.count_ops(d) <= SIGN_OPS:
             return sympy.cancel(d) == 0
     return True
+
+
+def _magnitude(e: sympy.Expr) -> sympy.Expr:
+    """What ``e`` adds up from: each term of a sum by its size, through products and whole
+    powers, so that ``e`` far below it is its terms cancelling."""
+    if isinstance(e, (sympy.Add, sympy.Mul)):
+        return e.func(*(_magnitude(a) for a in e.args))
+    if isinstance(e, sympy.Pow) and e.exp.is_Integer and e.exp > 0:
+        return _magnitude(e.base) ** e.exp
+    return sympy.Abs(e)
 
 
 def _by_derivative(e: sympy.Expr, x: sympy.Symbol) -> int | None:
@@ -540,8 +561,7 @@ def _bound_expression(
         )
     for n in names:
         _not_a_parameter(model, n, prefix, name, species)
-    symbols = {n: _shared(model, n, merged) for n in names}
-    value = sympy.sympify(text.replace("^", "**"), locals={**symbols, **_RATE_FUNCTIONS})
+    value = over(trial, {n: _shared(model, n, merged) for n in names})
     expression = pysb.Expression(f"{name}_bound", value, _export=False)
     _add(model, expression)
     return expression, names
@@ -586,6 +606,22 @@ def _piecewise(*args) -> sympy.Expr:
 
 
 _RATE_FUNCTIONS = {"exp": sympy.exp, "log": sympy.log, "sqrt": sympy.sqrt, "piecewise": _piecewise}
+
+
+def over(expr: sympy.Expr, components: dict) -> sympy.Expr:
+    """``expr``, read over plain names, with each name its component in ``components``, every
+    comparison and ``piecewise`` kept as written. A PySB parameter is positive to sympy from the
+    value it is seeded with, so read over it ``ko > 0`` was decided there: a binding
+    ``piecewise(0, ko > 0, 1)`` raised, and a rate's ``piecewise(.., g <= 0, ..)`` lost the branch
+    every condition with ``g`` at 0 takes."""
+    if isinstance(expr, sympy.Symbol):
+        return components.get(expr.name, expr)
+    if not expr.args:
+        return expr
+    args = [over(a, components) for a in expr.args]
+    if isinstance(expr, (sympy.core.relational.Relational, sympy.Piecewise)):
+        return expr.func(*args, evaluate=False)
+    return expr.func(*args)
 
 
 #: What an id of the problem is (``problem_ids`` of :func:`written`). A rate reads none of them.
@@ -856,9 +892,9 @@ def written(
             for name in sorted(used | (set(agents) & set(roles)))
         }
         _add(model, *params.values(), *amounts.values())
-        coefficient = sympy.sympify(
-            rate.replace("^", "**"), locals={**params, **amounts, **_RATE_FUNCTIONS, "time": time}
-        )
+        read = {**params, **amounts, "time": time}
+        coefficient = over(sympy.sympify(rate.replace("^", "**"), locals={
+            **{n: sympy.Symbol(n) for n in read}, **_RATE_FUNCTIONS}), read)
         expression = pysb.Expression(f"{prefix}_rate", coefficient, _export=False)
         _add(model, expression)
         # The base's own rate constant is left unreferenced; the SBML export drops it.

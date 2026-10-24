@@ -31,7 +31,8 @@ Statements read as what they assert — ``X phosphorylates Y at S10``, ``Y is de
 S10``, ``X autophosphorylates at Y10``, ``A binds B binds C``, ``X increases Y`` / ``Y is
 produced``, ``X decreases Y`` / ``Y is degraded``, ``A + B -> C + D by X`` (``nothing`` for an
 empty side), ``A becomes B``, ``A moves from cytoplasm to nucleus``, ``X activates Y`` (``Y as
-kinase`` for an activity other than ``activity``), ``X inhibits Y``. A policy INDRA implements is
+kinase`` for an activity other than ``activity``), ``X inhibits Y``, ``X is a GEF for Y``, ``X is
+a GAP for Y``. A policy INDRA implements is
 written without its ``indra_`` prefix when no entry of that name exists for the type.
 
 What the notation does not cover — another statement type, evidence beyond one source and text —
@@ -209,6 +210,8 @@ def _action_text(st: dict[str, Any]) -> str:
         if st.get("to_location"):
             text += " to " + _name(st["to_location"])
         return text
+    if t in ("Gef", "Gap"):
+        return f"{agent_text(st[t.lower()])} is a {t.upper()} for {agent_text(st['ras'])}"
     if t in ("Activation", "Inhibition"):
         verb = "activates" if t == "Activation" else "inhibits"
         activity = st.get("obj_activity", "activity")
@@ -458,6 +461,12 @@ def statement(r: _Reader) -> dict[str, Any]:
         return st
     if r.take("is"):
         word = r.name()
+        if word == "a":
+            kind = r.name()
+            if kind not in ("GEF", "GAP"):
+                r.fail(f"unknown statement 'is a {kind}'")
+            r.expect("for")
+            return {"type": kind.capitalize(), kind.lower(): first, "ras": r.agent()}
         if word in ("produced", "degraded"):
             kind = "IncreaseAmount" if word == "produced" else "DecreaseAmount"
             return {"type": kind, "subj": None, "obj": first}
