@@ -15,12 +15,13 @@ import pandas as pd
 import pysb
 import pytest
 import sympy
+from conftest import rows_with_bindings
 from indra.statements import stmts_from_json
 
 from petab_mcp import mechanisms as M
-from petab_mcp import notation, problem_sbml, regulation
-from petab_mcp import operations as O
+from petab_mcp import problem_sbml, regulation
 from petab_mcp.errors import MechanismError
+from petab_mcp.provenance import binding_of
 from petab_mcp.statements import _REACTIONS, indra_part, regulators, with_defaults
 
 
@@ -31,18 +32,11 @@ def _library(definitions) -> dict:
     return library
 
 
-def _parsed(rows: list, library: dict) -> list[dict]:
-    """``rows``, each ``(row, binding)`` given apart as `make_changes` takes them (the notation, or
-    JSON), joined as it joins them."""
-    parsed = [notation.parse(r) if isinstance(r, str) else dict(r) for r, _ in rows]
-    return O._bound(parsed, {row["prefix"]: b for row, (_, b) in zip(parsed, rows)}, library)
-
-
 def _build(rows: list, *definitions: dict, times=None):
     """``rows`` (each a row and its binding) built with ``definitions`` written, ``time`` over
     ``times``: the emissions. Raises what `make_changes` refuses with."""
     library = _library(definitions)
-    parsed = _parsed(rows, library)
+    parsed = rows_with_bindings(rows, library)
     for row in parsed:
         row["statement"] = with_defaults(row["statement"])
     stmts = stmts_from_json([indra_part(row["statement"]) for row in parsed])
@@ -661,10 +655,10 @@ def _record(rows, *definitions) -> dict:
     """``rows`` built, as a version's statements record keeps them."""
     from dataclasses import asdict
 
-    parsed = _parsed(rows, _library(definitions))
+    parsed = rows_with_bindings(rows, _library(definitions))
     return {"rows": [{"prefix": row["prefix"], "statement": with_defaults(row["statement"]),
                       "emission": asdict(e)} for row, e in zip(parsed, _build(rows, *definitions))],
-            "bindings": {row["prefix"]: O._binding_of(row) for row in parsed}}
+            "bindings": {row["prefix"]: binding_of(row) for row in parsed}}
 
 
 class _Problem:

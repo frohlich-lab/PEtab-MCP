@@ -40,7 +40,8 @@ import anyio
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.middleware import Middleware
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+from pydantic.json_schema import SkipJsonSchema
 from petab.v2.C import EXPERIMENT_ID, OBSERVABLE_ID
 
 from . import data_access as data_mod
@@ -202,14 +203,11 @@ class StatementRow(BaseModel):
         "the kind stated and position ({'inhibited_by_0': 'activated_by'}), so a row it shows "
         "reads back as it was.",
     )
-
-    @model_validator(mode="before")
-    @classmethod
-    def _no_binding(cls, value: Any) -> Any:
-        # Refused with how it splits, rather than as two unknown fields.
-        if isinstance(value, dict) and (carried := ops_mod.carried_binding(value)) is not None:
-            raise ValueError(carried)
-        return value
+    # Not in the schema, and refused when given (operations.carried_binding): a row's binding is
+    # apart from it. Taken here rather than forbidden so the refusal says how the row splits and
+    # is a typed one, logged with its cause, not a schema error naming two unknown fields.
+    policy: SkipJsonSchema[str | None] = None
+    parameters: SkipJsonSchema[dict[str, Any] | None] = None
 
 
 class RowBinding(BaseModel):
@@ -380,13 +378,33 @@ def _unwrap_listish(v: Any) -> Any:
     return v
 
 
-#: ``make_changes``' list arguments, typed once for its three registrations (see
-#: ``_register_model_tools``), each tolerating the wrapped encodings ``_unwrap_listish`` undoes.
+def _unwrap_objectish(v: Any) -> Any:
+    """An object sent as a JSON string, back to the object; anything else untouched. The same
+    serialiser artefact as a list sent as a string (``_unwrap_listish``): clients send `amounts`
+    as '{"a": "A"}' (gemot's leak repair leaves such a value to the server), and `bindings`
+    travels with every `statements` call."""
+    if isinstance(v, str):
+        s = v.strip()
+        if s.startswith("{") and s.endswith("}"):
+            try:
+                parsed = json.loads(s)
+            except ValueError:
+                return v
+            if isinstance(parsed, dict):
+                return parsed
+    return v
+
+
+#: ``make_changes``' list and object arguments, typed once for its three registrations (see
+#: ``_register_model_tools``), each tolerating the encodings ``_unwrap_listish`` and
+#: ``_unwrap_objectish`` undo.
 _ModelOps = Annotated[list[ModelOp] | None, BeforeValidator(_unwrap_listish)]
 _ParameterChanges = Annotated[list[ParameterChange] | None, BeforeValidator(_unwrap_listish)]
 _References = Annotated[list[str] | None, BeforeValidator(_unwrap_listish)]
 _StatementRows = Annotated[list[StatementRow | str] | None, BeforeValidator(_unwrap_listish)]
-_Bindings = dict[str, RowBinding | str] | None
+_Bindings = Annotated[dict[str, RowBinding | str] | None, BeforeValidator(_unwrap_objectish)]
+_Readouts = Annotated[dict[str, str] | None, BeforeValidator(_unwrap_objectish)]
+_Amounts = Annotated[dict[str, dict[str, Any] | str] | None, BeforeValidator(_unwrap_objectish)]
 _MechanismDefs = Annotated[list[MechanismDef] | None, BeforeValidator(_unwrap_listish)]
 _StartRows = Annotated[list[StartRow] | None, BeforeValidator(_unwrap_listish)]
 _StatementEdits = Annotated[list[StatementEdit] | None, BeforeValidator(_unwrap_listish)]
@@ -1374,8 +1392,8 @@ def _register_model_tools(
         bindings: _Bindings = None,
         mechanisms: _MechanismDefs = None,
         starts: _StartRows = None,
-        readouts: dict[str, str] | None = None,
-        amounts: dict[str, dict[str, Any] | str] | None = None,
+        readouts: _Readouts = None,
+        amounts: _Amounts = None,
         statement_edits: _StatementEdits = None,
     ) -> dict[str, Any]:
         ctx = route()
@@ -1739,8 +1757,8 @@ def _register_model_tools(
             bindings: _Bindings = None,
             mechanisms: _MechanismDefs = None,
             starts: _StartRows = None,
-            readouts: dict[str, str] | None = None,
-            amounts: dict[str, dict[str, Any] | str] | None = None,
+            readouts: _Readouts = None,
+            amounts: _Amounts = None,
             statement_edits: _StatementEdits = None,
         ) -> dict[str, Any]:
             return _make_changes(

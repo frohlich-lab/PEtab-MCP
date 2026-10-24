@@ -10,12 +10,12 @@ A case is rows in the notation, each with its binding, the entity map, and
 from __future__ import annotations
 
 import pytest
+from conftest import rows_with_bindings
 from indra.statements import Agent, Gap, Gef, stmts_from_json
 from test_reduction import _assert_same
 
 from petab_mcp import mechanisms as M
 from petab_mcp import notation
-from petab_mcp import operations as O
 from petab_mcp.mechanisms import INDRA_DEFAULT
 from petab_mcp.protocols import Input
 from petab_mcp.statements import indra_part, regulators, with_defaults
@@ -24,9 +24,7 @@ from petab_mcp.statements import indra_part, regulators, with_defaults
 def _rows(pairs: list[tuple[str, str]]) -> list[tuple]:
     """Each ``(row, binding)`` given apart, as `make_changes` takes them, and built as it builds
     them."""
-    rows = [notation.parse(row) for row, _ in pairs]
-    bindings = {row["prefix"]: binding for row, (_, binding) in zip(rows, pairs)}
-    parsed = O._bound(rows, bindings, dict(M.REGISTRY))
+    parsed = rows_with_bindings(pairs, dict(M.REGISTRY))
     for row in parsed:
         row["statement"] = with_defaults(row["statement"])
     stmts = stmts_from_json([indra_part(row["statement"]) for row in parsed])

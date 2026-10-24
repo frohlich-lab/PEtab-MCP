@@ -135,6 +135,22 @@ def test_what_the_notation_cannot_write_stays_json():
             "prefix": "f"}
     assert N.render(form) is None
     assert N.render_binding({"policy": "basal", "parameters": {"k": True}}, "Phosphorylation") is None
+    assert N.render_binding({}, "Phosphorylation") is None  # no policy: nothing to write
+
+
+def test_a_binding_reads_back_whatever_its_names_hold():
+    """The policy was written bare and a value quoted on spaces and `|` alone, so a written
+    mechanism named with a space, or a value holding `#` or a quote, rendered as a binding that
+    read back otherwise or not at all."""
+    binding = {"policy": "my rate", "parameters": {"kf": "k#1", "kr": 'a"b', "kc": "2.5"}}
+    said = N.render_binding(binding, "Phosphorylation")
+    assert N.parse_binding(said, "Phosphorylation") == binding, said
+
+
+def test_a_prefix_the_notation_cannot_read_back_stays_json():
+    """`r.1` rendered as a row, which `parse` refused for its prefix."""
+    row = {**ROWS[2][0], "prefix": "r.1"}
+    assert N.render(row) is None
 
 
 @pytest.mark.parametrize(
@@ -160,6 +176,9 @@ def test_a_row_with_its_binding_inline_is_refused_with_the_two_apart():
     said = str(refused.value)
     row, binding = "b_p: A{!L} phosphorylates B at S10 # [src] Doe 2000", 'two_step kf=k_on kr="k*2"'
     assert f"`{row}` with `bindings={json.dumps({'b_p': binding})}`" in said
+    # Sent in an edit, `bindings` is refused: the advice is that edit with its own `binding`.
+    edit = json.dumps({"op": "replace_row", "row": row, "binding": binding})
+    assert f"`{edit}`" in refused.value.advice("replace_row")
     assert N.parse(row)["statement"]["evidence"] == [{"source_api": "src", "text": "Doe 2000"}]
     assert N.parse_binding(binding, "Phosphorylation", M.REGISTRY) == {
         "policy": "indra_two_step", "parameters": {"kf": "k_on", "kr": "k*2"}}

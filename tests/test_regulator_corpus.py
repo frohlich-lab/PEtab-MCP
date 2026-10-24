@@ -34,7 +34,7 @@ import sympy
 from indra.statements import Agent, stmts_from_json
 
 from petab_mcp import mechanisms as M
-from petab_mcp import notation, problem_sbml, regulation
+from petab_mcp import problem_sbml, regulation
 from petab_mcp import operations as O
 from petab_mcp.errors import PetabMcpError
 from petab_mcp.schemes import placeholder
@@ -73,8 +73,7 @@ def _library(definitions) -> dict:
 def _rows(entry) -> tuple[pysb.Model, list[tuple], list]:
     """``entry``'s rows built as `make_changes` builds them, and the model they built."""
     library = _library(entry.get("mechanisms", []))
-    parsed = O._bound([notation.parse(r) if isinstance(r, str) else dict(r) for r in entry["rows"]],
-                      entry["bindings"], library)
+    parsed = O.bound_rows(entry["rows"], entry["bindings"], library)
     for row in parsed:
         row["statement"] = with_defaults(row["statement"])
     stmts = stmts_from_json([indra_part(row["statement"]) for row in parsed])

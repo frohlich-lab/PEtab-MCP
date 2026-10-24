@@ -33,6 +33,7 @@ from . import reconcile as R
 from .constants import NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD, WIDENING_NEGLIGIBLE_BIC_GAIN
 from .errors import ModelUpdateError, PetabMcpError, ValidationError
 from .parameters import estimated_mask
+from .provenance import binding_of
 from .references import resolve_references
 from .validation import frozen_parametric_stoichiometry_issues, validate_problem
 
@@ -731,7 +732,7 @@ def statements_to_antimony(
 
     Each row is ``{prefix, statement}`` with the statement in INDRA's JSON, or its line in the
     notation, and ``bindings`` gives each its policy and parameter bindings by prefix
-    (:func:`_bound`): the claim and the maths, given apart. ``written`` are mechanisms the agent
+    (:func:`bound_rows`): the claim and the maths, given apart. ``written`` are mechanisms the agent
     writes in this call (:func:`mechanisms.written`), joining those it wrote earlier in the run.
     ``starts`` (``{agent, amount, name?}``) declare what is present at the start, ``readouts`` (id
     to formula) the measurement mappings that are not one pattern's amount, over ``amounts`` (name
@@ -784,12 +785,7 @@ def statements_to_antimony(
         return notation.parse_agent(value, groundings) if isinstance(value, str) else value
 
     try:
-        rows = [
-            notation.parse(row, groundings) if isinstance(row, str)
-            # What `get_model` shows a row's rate records is the server's, not the row's.
-            else {k: v for k, v in dict(row).items() if k != "derived"}
-            for row in rows
-        ]
+        rows = bound_rows(rows, bindings, library, groundings)
         starts = [{**start, "agent": agent_json(start["agent"])} for start in starts or []]
         given = {k: agent_json(v) for k, v in (amounts or {}).items()}
         read, amounts = _readout_amounts(readouts, given)
@@ -804,17 +800,6 @@ def statements_to_antimony(
             cause="unreadable_statement",
         ) from exc
     _check_readouts_are_read(session, readouts)
-    prefixes = [row["prefix"] for row in rows]
-    repeated = sorted({p for p in prefixes if prefixes.count(p) > 1})
-    if repeated:
-        # Caught here rather than met inside PySB as a component-name clash, which is not a
-        # PetabMcpError and would escape the tool as an opaque failure.
-        raise OperationError(
-            f"make_changes: `statements` prefixes {repeated} repeat; each row's prefix names its "
-            "parameters, so they must be unique. NOTHING was applied.",
-            cause="duplicate_prefix",
-        )
-    rows = _bound(rows, bindings, library)
     # Read here, each problem named, rather than by INDRA's reader, which skips a field it does not
     # know, leaves a missing one None, and drops a statement it cannot build with a logged warning.
     unread = [
@@ -883,7 +868,7 @@ def statements_to_antimony(
             | ({"mechanism": definitions[e.entry]} if e.entry in definitions else {})
             for row, e in zip(rows, emissions)
         ],
-        "bindings": {row["prefix"]: _binding_of(row) for row in rows},
+        "bindings": {row["prefix"]: binding_of(row) for row in rows},
         "mechanisms": list(written or []),
         "starts": [
             {"name": name, "agent": start["agent"], "amount": start["amount"]}
@@ -918,17 +903,12 @@ def statements_to_antimony(
     return antimony, record, warnings, definitions
 
 
-def _binding_of(row: dict[str, Any]) -> dict[str, Any]:
-    """A built row's binding as a record keeps it, ``{policy, parameters?}``."""
-    return {"policy": row["policy"]} | (
-        {"parameters": dict(row["parameters"])} if row.get("parameters") else {}
-    )
-
-
-def carried_binding(row: dict[str, Any], library: dict | None = None) -> str | None:
+def carried_binding(
+    row: dict[str, Any], library: dict | None = None, op: str | None = None
+) -> str | None:
     """Why a JSON ``row`` carrying ``policy`` or ``parameters`` is refused, saying how it splits
-    into the row and its binding (:func:`notation.split_advice`); ``None`` for one carrying
-    neither."""
+    into the row and its binding (:func:`notation.split_advice`), for ``statements`` or, with
+    ``op``, for that edit; ``None`` for one carrying neither."""
     from . import notation
 
     given = {k: row[k] for k in ("policy", "parameters") if row.get(k) is not None}
@@ -942,26 +922,49 @@ def carried_binding(row: dict[str, Any], library: dict | None = None) -> str | N
     kind = statement.get("type") if isinstance(statement, dict) else None
     binding = notation.render_binding(given, kind, library) if "policy" in given else None
     return f"row {row.get('prefix')!r} carries {sorted(given)}: " + notation.split_advice(
-        str(row.get("prefix")), said, binding or "<policy> <kind>=<binding>"
+        str(row.get("prefix")), said, binding or "<policy> <kind>=<binding>", op
     )
 
 
-def _bound(rows: list[dict[str, Any]], bindings, library: dict) -> list[dict[str, Any]]:
-    """``rows`` (``{prefix, statement}``) each with its binding from ``bindings``, prefix to its
-    text (:func:`notation.parse_binding`) or ``{policy, parameters?}``: the rows the build reads,
-    ``{statement, policy, prefix, parameters?}``. The statement is the claim and the binding the
-    maths, given apart, so a JSON row carrying ``policy`` or ``parameters`` is refused saying how it
-    splits, as one written with them inline is (:class:`notation.InlineBinding`); so are a row with
-    no binding and a binding with no row, each by prefix."""
+def bound_rows(
+    rows: list[dict[str, Any] | str],
+    bindings,
+    library: dict,
+    groundings: dict[str, dict] | None = None,
+) -> list[dict[str, Any]]:
+    """``rows``, each its line in the notation (:func:`notation.parse`, grounded by
+    ``groundings``) or ``{prefix, statement}``, each with its binding from ``bindings``, prefix to
+    its text (:func:`notation.parse_binding`) or ``{policy, parameters?}``: the rows the build
+    reads, ``{statement, policy, prefix, parameters?}``, the policy as ``library`` names it either
+    way (:func:`notation.resolve_policy`). The statement is the claim and the binding the maths,
+    given apart, so a JSON row carrying ``policy`` or ``parameters`` is refused saying how it
+    splits, as one written with them inline is (:class:`notation.InlineBinding`, raised as the
+    caller's :class:`notation.NotationError`); so are a repeated prefix, a row with no binding and
+    a binding with no row, each by prefix."""
     from . import notation
 
+    rows = [
+        notation.parse(row, groundings) if isinstance(row, str)
+        # What `get_model` shows a row's rate records is the server's, not the row's.
+        else {k: v for k, v in dict(row).items() if k != "derived"}
+        for row in rows
+    ]
+    prefixes = [row["prefix"] for row in rows]
+    repeated = sorted({p for p in prefixes if prefixes.count(p) > 1})
+    if repeated:
+        # Caught here rather than met inside PySB as a component-name clash, which is not a
+        # PetabMcpError and would escape the tool as an opaque failure.
+        raise OperationError(
+            f"make_changes: `statements` prefixes {repeated} repeat; each row's prefix names its "
+            "parameters, so they must be unique. NOTHING was applied.",
+            cause="duplicate_prefix",
+        )
     bindings = dict(bindings or {})
     for row in rows:
         if (carried := carried_binding(row, library)) is not None:
             raise OperationError(
                 f"make_changes: {carried}. NOTHING was applied.", cause="inline_binding"
             )
-    prefixes = [row["prefix"] for row in rows]
     unbound = [p for p in prefixes if p not in bindings]
     if unbound:
         raise OperationError(
@@ -982,9 +985,9 @@ def _bound(rows: list[dict[str, Any]], bindings, library: dict) -> list[dict[str
     out = []
     for row in rows:
         given = bindings[row["prefix"]]
+        kind = row["statement"].get("type") if isinstance(row["statement"], dict) else None
         try:
             if isinstance(given, str):
-                kind = row["statement"].get("type") if isinstance(row["statement"], dict) else None
                 binding = notation.parse_binding(given, kind, library)
             elif isinstance(given, dict) and not set(given) - {"policy", "parameters"}:
                 binding = {k: v for k, v in given.items() if v is not None}
@@ -1002,7 +1005,8 @@ def _bound(rows: list[dict[str, Any]], bindings, library: dict) -> list[dict[str
                 f"make_changes: `bindings.{row['prefix']}`: {exc}. NOTHING was applied.",
                 cause="unreadable_binding",
             ) from exc
-        out.append({"statement": row["statement"], "prefix": row["prefix"]} | _binding_of(binding))
+        binding["policy"] = notation.resolve_policy(binding["policy"], kind, library)
+        out.append({"statement": row["statement"], "prefix": row["prefix"]} | binding_of(binding))
     return out
 
 
@@ -1288,9 +1292,12 @@ def apply_statement_edits(
                 prefix = prefix_of(row)
                 if prefix is None:
                     raise fail(i, edit, "`row` is one row, `prefix: <statement>`, or its JSON")
+                # Refused by its edit, with the edit that gives the two apart; whether the row
+                # reads is the build's to say, with the notation's hint.
                 if isinstance(row, str):
-                    # Read now, so a row written with its binding inline is refused by its edit.
-                    notation.parse(row)
+                    notation.refuse_inline(row)
+                elif (carried := carried_binding(row, op=op)) is not None:
+                    raise fail(i, edit, carried, cause="inline_binding")
                 if op == "add_row" and prefix in rows:
                     raise fail(i, edit, f"a row `{prefix}` exists; `replace_row` rewrites its "
                                "statement, `rebind` its binding")
@@ -1346,7 +1353,7 @@ def apply_statement_edits(
             else:
                 raise fail(i, edit, "not an edit")
         except notation.InlineBinding as exc:
-            raise fail(i, edit, str(exc), cause="inline_binding") from exc
+            raise fail(i, edit, exc.advice(op), cause="inline_binding") from exc
         except notation.NotationError as exc:
             raise fail(i, edit, str(exc)) from exc
     if not rows:

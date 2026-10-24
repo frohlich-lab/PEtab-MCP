@@ -1578,11 +1578,49 @@ def test_a_row_and_its_binding_are_given_apart_and_each_needs_the_other(tmp_path
     out = make(statements=["conv: A becomes B | mass_action k=k1"])
     assert out["error_cause"] == "inline_binding"
     assert ('`conv: A becomes B` with `bindings={"conv": "mass_action k=k1"}`' in out["error"])
-    with pytest.raises(Exception, match=r"carries \['parameters', 'policy'\].*bindings=\{\"conv\""):
-        make(statements=[{**_statement_row(), "policy": "mass_action", "parameters": {"k": "k1"}}])
+    out = make(statements=[{**_statement_row(), "policy": "mass_action", "parameters": {"k": "k1"}}])
+    assert out["error_cause"] == "inline_binding"
+    assert "carries ['parameters', 'policy']" in out["error"]
+    assert '`conv: A becomes B` with `bindings={"conv": "mass_action k=k1"}`' in out["error"]
     out = make(statements=[_CONV], bindings={"conv": "conv: mass_action"})
     assert out["error_cause"] == "unreadable_binding" and "`bindings.conv`" in out["error"]
     assert not (tmp_path / "prov" / "versions" / "v0").exists()
+
+
+def test_a_binding_in_json_names_its_policy_as_its_text_does(tmp_path):
+    """`{"policy": "default"}` was taken as written, a name no entry has, while the text `default`
+    read as INDRA's `indra_default`, the name the field's own description offers."""
+    mcp = _statements_server(tmp_path)
+    out = _call(mcp, "make_changes", {"justification": "A phosphorylates B",
+                                      "statements": ["p: A phosphorylates B"],
+                                      "bindings": {"p": {"policy": "default"}}})
+    assert out["applied"] is True, out.get("error")
+    assert _stored_rows(tmp_path, 0)["bindings"] == {"p": {"policy": "indra_default"}}
+
+
+def test_an_object_sent_as_a_json_string_is_read_as_the_object(tmp_path):
+    """A client that writes an object argument as a JSON string (`amounts` as '{"a": "A"}') was
+    refused before the tool ran, and `bindings` travels with every `statements` call: the string
+    is read as the object it holds, as a list's is."""
+    from petab_mcp.server import _unwrap_objectish
+
+    mcp = _statements_server(tmp_path)
+    out = _call(mcp, "make_changes", {"justification": "A becomes B", "statements": [_CONV],
+                                      "bindings": '{"conv": "mass_action"}'})
+    assert out["applied"] is True, out.get("error")
+    assert _unwrap_objectish(' {"a": "A{pS10}"} ') == {"a": "A{pS10}"}
+    assert _unwrap_objectish("{not json}") == "{not json}"
+    assert _unwrap_objectish("mass_action") == "mass_action"
+
+
+def test_a_malformed_row_in_an_edit_keeps_the_notations_hint(tmp_path):
+    """Read early by its edit, a row that does not read lost the hint the build adds, which spells
+    the notation out."""
+    mcp = _built(tmp_path, [_CONV], {"conv": "mass_action"})
+    out = _call(mcp, "make_changes", {"justification": "x", "statement_edits": [
+        {"op": "add_row", "row": "back: B frobnicates A", "binding": "mass_action"}]})
+    assert out["error_cause"] == "unreadable_statement"
+    assert "unknown verb 'frobnicates'" in out["error"] and "A row is `prefix: <statement>`" in out["error"]
 
 
 def test_bindings_ride_with_statements(tmp_path):
@@ -1605,13 +1643,21 @@ def test_bindings_ride_with_statements(tmp_path):
     [
         ({"op": "add_row", "row": _BACK}, "a new row needs its `binding`"),
         ({"op": "add_row", "row": "back: B becomes A | mass_action"},
-         '`back: B becomes A` with `bindings={"back": "mass_action"}`'),
+         '`{"op": "add_row", "row": "back: B becomes A", "binding": "mass_action"}`'),
+        ({"op": "replace_row", "row": "conv: A becomes B | mass_action k=k1"},
+         '`{"op": "replace_row", "row": "conv: A becomes B", "binding": "mass_action k=k1"}`'),
+        ({"op": "replace_row", "row": {**_statement_row(), "policy": "mass_action"}},
+         '`{"op": "replace_row", "row": "conv: A becomes B", "binding": "mass_action"}`'),
         ({"op": "rebind", "prefix": "gone", "binding": "mass_action"}, "no row `gone`"),
         ({"op": "rebind", "prefix": "conv"}, "`binding` is the row's policy"),
         ({"op": "add_row", "row": _CONV, "binding": "mass_action"}, "`rebind` its binding"),
     ],
 )
 def test_an_edit_missing_or_inlining_a_binding_is_refused_by_its_edit(tmp_path, edit, said):
+    """A row given with its binding inside an edit was told to use `bindings`, which is refused
+    beside `statement_edits`, or `add_row`, which is refused for a row that exists: the refusal
+    names the edit itself, with its own `binding`. An edit that leaves a row without a binding, or
+    names a row that is not there, is refused by its index."""
     mcp = _built(tmp_path, [_CONV], {"conv": "mass_action"})
     out = _call(mcp, "make_changes", {"justification": "x", "statement_edits": [edit]})
     assert out["applied"] is False and "`statement_edits[0]`" in out["error"]

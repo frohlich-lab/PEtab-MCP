@@ -81,6 +81,9 @@ ACTIVITIES = frozenset(
 )
 
 _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*")
+#: A row's prefix and the ``:`` after it: an identifier without dots, as a prefix names the row's
+#: parameters (``<prefix>_kf``).
+_ROW_PREFIX = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*")
 _RESIDUE_SITE = re.compile(r"([A-Z])([0-9]+)?")
 
 
@@ -90,7 +93,18 @@ class NotationError(ValueError):
 
 class InlineBinding(NotationError):
     """A row written with its binding after a ``|``, refused with the row and binding it splits
-    into: the notation the route took before the two were given apart (module docstring)."""
+    into: the notation the route took before the two were given apart (module docstring). Its
+    :meth:`advice` says where the binding goes for the call that sent it."""
+
+    def __init__(self, prefix: str, statement: str, binding: str):
+        self.prefix, self.statement, self.binding = prefix, statement, binding
+        super().__init__(self.advice())
+
+    def advice(self, op: str | None = None) -> str:
+        """The refusal, its advice for ``statements`` or, with ``op``, for that edit."""
+        return f"row {self.prefix!r} has its binding inline, after '|': " + split_advice(
+            self.prefix, self.statement, self.binding, op
+        )
 
 
 # ------------------------------------------------------------------------------------- render
@@ -242,9 +256,11 @@ def _value(value: Any) -> str:
     if isinstance(value, (int, float)):
         return repr(value)
     text = str(value)
-    if re.fullmatch(r"[^\s\"|]+", text) and not _number(text):
+    # Quoted where it holds what ends a value (space) or opens a comment (`#`), or reads as a
+    # number, so :func:`parse_binding` reads it back as the string it is.
+    if re.fullmatch(r"[^\s\"|#]+", text) and not _number(text):
         return text
-    return '"' + text + '"'
+    return '"' + text.replace('"', '\\"') + '"'
 
 
 def _number(text: str) -> bool:
@@ -260,7 +276,7 @@ def render(row: dict[str, Any], derived: dict[str, str] | None = None) -> str | 
     losslessly (keep it as JSON). ``derived`` marks the regulators whose kind the row's rate proves
     (:func:`statement_text`)."""
     try:
-        if set(row) - {"statement", "prefix"} or not _IDENT.fullmatch(row["prefix"]):
+        if set(row) - {"statement", "prefix"} or not _ROW_PREFIX.fullmatch(row["prefix"] + ":"):
             return None
         line = f"{row['prefix']}: {statement_text(row['statement'], derived)}"
         return line + evidence_text(row["statement"])
@@ -276,13 +292,13 @@ def render_binding(
     losslessly (keep it as JSON). ``indra_`` is dropped where ``library`` holds no entry of the
     shorter name for the type, so :func:`parse_binding` reads it back as it was."""
     try:
-        if set(binding) - {"policy", "parameters"}:
+        if set(binding) - {"policy", "parameters"} or not isinstance(binding.get("policy"), str):
             return None
         policy = binding["policy"]
         short = policy.removeprefix("indra_")
         if short != policy and (library is None or (statement_type, short) not in library):
             policy = short
-        tail = [policy]
+        tail = [_name(policy)]
         tail += [f"{k}={_value(v)}" for k, v in (binding.get("parameters") or {}).items()]
         return " ".join(tail)
     except ValueError:
@@ -551,14 +567,42 @@ def _split_comment(text: str) -> tuple[str, str | None]:
     return text, None
 
 
-def split_advice(prefix: str, statement: str, binding: str) -> str:
+def split_advice(prefix: str, statement: str, binding: str, op: str | None = None) -> str:
     """How a row given with its binding is written instead: the row, its statement alone, and the
-    binding under its prefix in ``bindings``."""
+    binding under its prefix in ``bindings``; or, sent in a ``statement_edits`` edit ``op``, that
+    edit with its own ``binding``."""
+    row = f"{prefix}: {statement}"
+    if op is None:
+        return (
+            "a row is its statement, and its policy and parameter bindings go in `bindings` under "
+            f"its prefix: `{row}` with `bindings={json.dumps({prefix: binding})}`"
+        )
     return (
-        "a row is its statement, and its policy and parameter bindings go in `bindings` under its "
-        f"prefix: `{prefix}: {statement}` with `bindings={json.dumps({prefix: binding})}` (in "
-        "`statement_edits`, `add_row` takes the two as `row` and `binding`)"
+        "a row is its statement, and its policy and parameter bindings go in the edit's own "
+        f"`binding`: `{json.dumps({'op': op, 'row': row, 'binding': binding})}`"
     )
+
+
+def refuse_inline(text: str) -> None:
+    """Refuse ``text``, a row, where it carries its binding after a ``|`` (:class:`InlineBinding`);
+    whether the rest reads is :func:`parse`'s to say."""
+    m = _ROW_PREFIX.match(text)
+    if not m:
+        return
+    head, comment = _split_comment(text[m.end() :])
+    if (bar := _bar(head)) is not None:
+        said = head[:bar].strip() + ("" if comment is None else f" # {comment}")
+        raise InlineBinding(m.group(1), said, head[bar + 1 :].strip())
+
+
+def resolve_policy(policy: str, statement_type: str | None, library: dict | None) -> str:
+    """``policy`` as ``library`` names it: one written without its ``indra_`` prefix is INDRA's
+    where the library holds no entry of that name for the type, in a binding's text or its JSON
+    alike."""
+    if library is not None and (statement_type, policy) not in library:
+        if any(p == "indra_" + policy for _, p in library):
+            return "indra_" + policy
+    return policy
 
 
 def parse(text: str, groundings: dict[str, dict] | None = None) -> dict[str, Any]:
@@ -568,16 +612,11 @@ def parse(text: str, groundings: dict[str, dict] | None = None) -> dict[str, Any
     from .statements import REGULATORS
 
     groundings = groundings or {}
-    m = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*", text)
+    m = _ROW_PREFIX.match(text)
     if not m:
         raise NotationError(f"a row starts with its prefix and ':': {text!r}")
+    refuse_inline(text)
     head, comment = _split_comment(text[m.end() :])
-    if (bar := _bar(head)) is not None:
-        said = head[:bar].strip() + ("" if comment is None else f" # {comment}")
-        raise InlineBinding(
-            f"row {m.group(1)!r} has its binding inline, after '|': "
-            + split_advice(m.group(1), said, head[bar + 1 :].strip())
-        )
     r = _Reader(head, groundings)
     st = statement(r)
     while r.take(","):
@@ -626,11 +665,7 @@ def parse_binding(
             f"`<prefix>: <statement> # [source] text`: {text!r}"
         )
     t = _Reader(text, {})
-    policy = t.name()
-    if library is not None and (statement_type, policy) not in library:
-        if any(p == "indra_" + policy for _, p in library):
-            policy = "indra_" + policy
-    binding: dict[str, Any] = {"policy": policy}
+    binding: dict[str, Any] = {"policy": resolve_policy(t.name(), statement_type, library)}
     while not t.done():
         key = t.name()
         if t.peek(":="):

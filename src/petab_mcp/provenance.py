@@ -45,6 +45,14 @@ STORE_FORMAT = "petab-v2"
 VALIDATION_SIMULATIONS = "validation_simulations.json"
 
 
+def binding_of(row: dict[str, Any]) -> dict[str, Any]:
+    """A row's binding as a statements record keeps it, ``{policy, parameters?}``, from a row that
+    carries its ``policy`` and ``parameters``."""
+    return {"policy": row["policy"]} | (
+        {"parameters": dict(row["parameters"])} if row.get("parameters") else {}
+    )
+
+
 def statements_record(record: dict[str, Any] | None) -> dict[str, Any] | None:
     """A stored statements record (``statements.json``) as the server reads it now: its ``rows``
     each the statement, and its ``bindings`` each row's policy and parameter bindings by prefix
@@ -58,11 +66,7 @@ def statements_record(record: dict[str, Any] | None) -> dict[str, Any] | None:
     return {
         **record,
         "rows": [{k: v for k, v in row.items() if k not in split} for row in record.get("rows", [])],
-        "bindings": {
-            row["prefix"]: {"policy": row["policy"]}
-            | ({"parameters": row["parameters"]} if row.get("parameters") else {})
-            for row in record.get("rows", [])
-        },
+        "bindings": {row["prefix"]: binding_of(row) for row in record.get("rows", [])},
     }
 
 
