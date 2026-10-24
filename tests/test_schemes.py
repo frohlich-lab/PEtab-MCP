@@ -212,49 +212,9 @@ def test_a_scheme_reads_no_agent_its_statement_does_not_name(scheme):
     )
 
 
-@pytest.mark.parametrize(
-    "rates, match",
-    [
-        # Speeding unbinding is how this inhibitor inhibits: the step back rises with it.
-        ("kf, kr*(1 + amount(inhibited_by)/Ki)", None),
-        ("kf/(1 + amount(inhibited_by)/Ki), kr", None),
-        # Slowing unbinding speeds the reaction, whatever the statement says.
-        ("kf, kr/(1 + amount(inhibited_by)/Ki)",
-         r"so this rate, which runs it back, must rise as `inhibited_by` rises; it falls instead"),
-    ],
-)
-def test_the_step_back_of_a_reversible_scheme_moves_against_its_reaction(rates, match):
-    """PEtab-MCP#122: the second rate of `|` runs the reaction back, so an inhibitor that speeds it
-    inhibits, and one that slows it does not."""
-    definition = {"statement_type": "Phosphorylation", "policy": "binding",
-                  "scheme": f"enz(sub=None) + sub(enz=None) | enz(sub=1) % sub(enz=1) @ {rates}",
-                  "parameters": ["kf", "kr", "Ki"]}
-    if match is None:
-        M.written(definition, dict(M.REGISTRY))
-    else:
-        with pytest.raises(MechanismError, match=match):
-            M.written(definition, dict(M.REGISTRY))
-
-
-def test_a_scheme_of_several_steps_states_a_regulator_without_a_direction():
-    """Speeding a step into a dead end slows the reaction, so no rule about one rate's sign holds
-    across steps: such a scheme reads only `modulated_by`."""
-    steps = (
-        "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\n"
-        "enz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ "
-        "kc/(1 + amount({kind}_by)/Ki)"
-    )
-    definition = {"statement_type": "Phosphorylation", "policy": "two_steps",
-                  "parameters": ["kf", "kr", "kc", "Ki"]}
-    with pytest.raises(MechanismError, match=r"scheme of 2 steps whose rates read "
-                       r"\['inhibited_by'\].*State it `modulated_by`"):
-        M.written(definition | {"scheme": steps.format(kind="inhibited")}, dict(M.REGISTRY))
-    M.written(definition | {"scheme": steps.format(kind="modulated")}, dict(M.REGISTRY))
-
-
 def test_a_scheme_reads_a_regulator_its_statement_states():
     """`amount(inhibited_by)` reads the agent the statement says slows the reaction, as it states
-    it, and the rate is checked against that claim where the scheme is written."""
+    it."""
     p_pten = Agent("PTEN", mods=[ModCondition("phosphorylation", "S", "380")])
     library = dict(M.REGISTRY)
     library[("Phosphorylation", "inhibited")] = M.written(
@@ -268,13 +228,6 @@ def test_a_scheme_reads_a_regulator_its_statement_states():
     )
     (amount,) = (o for o in model.observables if o.name.endswith("inhibited_by"))
     assert str(amount.reaction_pattern) == "PTEN(S380=('p', WILD))"
-    with pytest.raises(MechanismError, match=r"must fall as `inhibited_by` rises; it rises"):
-        M.written(
-            {"statement_type": "Phosphorylation", "policy": "bad", "parameters": ["kf"],
-             "scheme": "enz() + sub(mod='off') >> enz() + sub(mod='on') @ "
-                       "kf*amount(inhibited_by)"},
-            dict(M.REGISTRY),
-        )
 
 
 def test_a_scheme_reads_a_partner_its_statement_names():

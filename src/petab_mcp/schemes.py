@@ -32,12 +32,11 @@ type::
   like any, ``kf=k_on`` on the row), ``amount(<pattern>)`` (the amount of what the pattern of
   those molecules matches), ``amount(inhibited_by)`` (a regulator the statement states, as it
   states it, by position where it states several, ``amount(inhibited_by_1)``; checked against
-  the claim as a written rate is, :func:`mechanisms.check_regulators`, the second rate of a
-  reversible step the other way; a scheme of several steps reads only ``modulated_by``),
-  ``time`` and exp/log/sqrt; mass action multiplies it by every reactant's amount, as PySB does. A name it
-  does not declare is refused: a parameter the problem ships or a condition input enters through
-  a row's binding, as for a written ``rate``. ``delete_molecules`` after the rates removes only
-  the molecules that vanish, not their complex.
+  the claim on the row's net rate, :mod:`regulation`), ``time`` and exp/log/sqrt; mass action
+  multiplies it by every reactant's amount, as PySB does. A name it does not declare is
+  refused: a parameter the problem ships or a condition input enters through a row's binding, as
+  for a written ``rate``. ``delete_molecules`` after the rates removes only the molecules that
+  vanish, not their complex.
 
 :func:`describe` writes any library entry this way, from a statement of placeholder agents named
 by role, and :func:`rate_parameters` reads the parameters it names; :func:`compile_scheme` turns a
@@ -394,7 +393,7 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
     built for each row from its own agents (see the module docstring). A rate naming anything but
     the declared ``parameters`` is refused as :func:`mechanisms.written` refuses one, with
     ``problem_ids``."""
-    from .mechanisms import assumed, check_regulators, refuse_rate_names, refuse_unread
+    from .mechanisms import refuse_rate_names, refuse_unread
 
     stmt_type, policy = definition["statement_type"], definition["policy"]
     lines = parse(definition["scheme"])
@@ -408,22 +407,10 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
                 refuse_rate_names(text, policy, unknown, [*declared, "time"], also,
                                   "`amount(<pattern>)`", problem_ids, known_roles)
     refuse_unread(policy, declared, {n for rs in rates for r in rs for n in r.names})
-    read = set()
-    for line, line_rates in zip(lines, rates):
-        for j, (text, rate) in enumerate(zip(line.rates, line_rates)):
-            value = assumed(_sympy(rate))
-            read |= {s.name for s in value.free_symbols if REGULATOR_NAME.fullmatch(s.name)}
-            if len(lines) == 1:
-                check_regulators(policy, text, value, backward=j == 1)
-    if len(lines) > 1 and (signed := sorted(n for n in read if not n.startswith("modulated"))):
-        raise MechanismError(
-            f"{policy!r} is a scheme of {len(lines)} steps whose rates read {signed}: a regulator's "
-            "direction is checked on the rate of one step, since in several a step's rate can move "
-            "the reaction either way (speeding a step into a dead end slows it). State it "
-            f"`{signed[0].replace(signed[0].split('_by')[0], 'modulated', 1)}`, which claims no "
-            "direction; read it in a mechanism of one step; or write the regulator's binding as "
-            "steps of the scheme, as a partner the statement names (`enz{~X}`)"
-        )
+    read = {
+        s.name for rs in rates for r in rs for s in _sympy(r).free_symbols
+        if REGULATOR_NAME.fullmatch(s.name)
+    }
 
     def policy_fn(stmt: Statement, model: pysb.Model, prefix: str, regulators=None):
         from .mechanisms import Emission, _add
@@ -465,12 +452,13 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
         )
 
     def scheme_sites(
-        stmt: Statement, given: dict, prefix: str
+        stmt: Statement, given: dict, prefix: str, regulators=None
     ) -> list[tuple[Agent, str, list | None]]:
         """The sites the scheme's molecules need on each monomer, for the monomer pass. A state
         it writes is checked against ``given``, each monomer's sites and their states before any
         scheme adds its own (``{name: (sites, site_states)}``; see the module docstring). A
-        molecule row ``prefix``'s statement does not name is refused, before it has a monomer."""
+        molecule row ``prefix``'s statement does not name is refused, before it has a monomer,
+        saying how a rate reads one of the ``regulators`` (kind to agents) the row states."""
         from .mechanisms import refuse_unnamed
 
         agents = role_agents(stmt)
@@ -484,11 +472,11 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
         read = [_notation_agent(a) for rs in rates for r in rs for a in r.agents]
         for agent in read:
             if _n(agent.name) not in named:
-                refuse_unnamed(prefix, stmt, f"mechanism {policy!r}", agent)
+                refuse_unnamed(prefix, stmt, f"mechanism {policy!r}", agent, regulators)
         need += [(agent, None, None) for agent in read]
         for mol in patterns:
             if mol.name not in agents and mol.name not in named and mol.name not in known_roles:
-                refuse_unnamed(prefix, stmt, f"mechanism {policy!r}", Agent(mol.name))
+                refuse_unnamed(prefix, stmt, f"mechanism {policy!r}", Agent(mol.name), regulators)
             agent = _molecule_agent(stmt, mol.name, agents)
             sites, site_states = given.get(_n(agent.name), ((), {}))
             for site, value in mol.sites:
@@ -660,7 +648,7 @@ def _notation_agent(text: str) -> Agent:
 
 def _sympy(rate: _Rate) -> sympy.Expr:
     """``rate`` as one expression over its parameters, its regulators by name and every other
-    amount a name of its own: what :func:`mechanisms.check_regulators` reads."""
+    amount a name of its own: the names a rate reads."""
     text = _REGULATOR_AMOUNT.sub(r"\1", rate.text)
     for k, pattern in enumerate(rate.amounts):
         text = text.replace(f"amount({pattern})", f"__amount{k}", 1)
@@ -758,15 +746,28 @@ def rate_parameters(scheme: str) -> list[str]:
 def describe(stmt_type: str, policy: str, library) -> str:
     """The entry ``(stmt_type, policy)`` of ``library`` as a scheme: built for
     :func:`placeholder`'s statement and read back."""
+    stmt, model, emission = _on_placeholder(stmt_type, policy, library)
+    agents = role_agents(stmt)
+    lines = [_describe_rule(stmt, model.rules[name], agents) for name in emission.rules]
+    if not lines:
+        raise MechanismError(f"{(stmt_type, policy)} builds no rule for a placeholder statement")
+    return "\n".join(lines)
+
+
+def _on_placeholder(stmt_type: str, policy: str, library):
+    """The entry ``(stmt_type, policy)`` of ``library`` built for :func:`placeholder`'s statement:
+    the statement, the model and the emission. An entry that reads regulators is given
+    placeholder ones, named as its rates read them."""
     from .mechanisms import assemble
 
-    # Placeholder regulators, named for how the rate reads them, for an entry that reads any.
+    names = sorted(getattr(library.get((stmt_type, policy)), "regulators", ()))
     stated: dict[str, list[Agent]] = {}
-    for name in sorted(getattr(library.get((stmt_type, policy)), "regulators", ())):
+    for name in names:
         kind, _, position = name.rpartition("_") if name[-1].isdigit() else (name, "", "")
         stated[kind] = [Agent(f"{kind}_{i}") for i in range(max(len(stated.get(kind, ())),
                                                               int(position or 0) + 1))]
-    stated = {k: [Agent(k)] if len(v) == 1 else v for k, v in stated.items()}
+    # One of a kind, read by its kind's own name, is named so.
+    stated = {k: [Agent(k)] if len(v) == 1 and k in names else v for k, v in stated.items()}
     stmt = placeholder(stmt_type)
     try:
         model, (emission,) = assemble([(stmt, policy, "r", None, stated)], {}, library)
@@ -780,11 +781,7 @@ def describe(stmt_type: str, policy: str, library) -> str:
             model, (emission,) = assemble([(stmt, policy, "r", None, stated)], {}, library)
         except MechanismError:
             raise exc from None
-    agents = role_agents(stmt)
-    lines = [_describe_rule(stmt, model.rules[name], agents) for name in emission.rules]
-    if not lines:
-        raise MechanismError(f"{(stmt_type, policy)} builds no rule for a placeholder statement")
-    return "\n".join(lines)
+    return stmt, model, emission
 
 
 def _describe_rule(stmt, rule, agents) -> str:

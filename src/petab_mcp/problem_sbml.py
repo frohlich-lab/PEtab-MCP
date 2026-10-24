@@ -58,6 +58,8 @@ downstream has to know where a model came from.
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 import libsbml
 import pysb
 from indra.assemblers.pysb.assembler import _n, get_monomer_pattern
@@ -65,10 +67,11 @@ from indra.statements import Agent
 from petab.v1.models.sbml_model import SbmlModel
 from pysb import ANY
 from pysb.bng import NoInitialConditionsError, generate_equations
+from pysb.core import time
 from pysb.export import export
 
 from . import mechanisms as M
-from . import reduction
+from . import reduction, regulation
 from .errors import ModelUpdateError
 from .protocols import Input, hold
 from .reconcile import SEED_INITIAL_VALUE
@@ -85,6 +88,7 @@ def to_antimony(
     notes: list[str] | None = None,
     *,
     targets: frozenset[str] = frozenset(),
+    times: tuple[float, float] | None = None,
     network: dict | None = None,
     reduce: bool = True,
 ) -> tuple[str, list[M.Emission]]:
@@ -99,6 +103,9 @@ def to_antimony(
     converts, which its periods set, and each of ``inputs`` (the problem's :mod:`protocols`),
     under its protocol. An input the entity map does not name is the agent of its id. A
     condition target the rows make or convert is a state its periods only start.
+
+    ``times``, the problem's (:func:`regulation.times`), are what a rate's ``time`` ranges over
+    where its regulators are checked.
 
     ``starts`` (``(name, agent, amount)``: a number or an expression over parameter ids) declare
     what is present at the start, as the module docstring sets out; each is ``<name>_init``.
@@ -161,6 +168,15 @@ def to_antimony(
     # set. Named as PySB names the monomer (INDRA's `_n`: `S-1` is `S_1`), or a name INDRA rewrote
     # slipped past and was split (the #116 review).
     whole = {_n(name) for name in held} | {_n(entities[s].name) for s in set_keys}
+    # A row's regulators are checked on its reactions as BioNetGen expands the rules as written
+    # (:mod:`regulation`): reduced, a catalyst is out of its rule and a monomer is blocks, no
+    # longer the statement's agents.
+    # `time` kept itself: BioNetGen's export knows it by identity, and sympy's cache, once full,
+    # copies it.
+    as_written = (
+        deepcopy(model, {id(time): time})
+        if reduce and any(row[4:5] and row[4] for row in rows) else None
+    )
     reduced = reduction.reduce(model, whole) if reduce else reduction.Reduction()
     # A readout over blocks of a split monomer is their product, so it is made after the split.
     amounts = {
@@ -255,6 +271,12 @@ def to_antimony(
         )
     if network is not None:
         network.update(reduction.sizes(model, reduced, present))
+    if as_written is not None:
+        if unreached:
+            _seed(as_written, [as_written.monomers[m.name] for m in unreached
+                               if m.name in as_written.monomers.keys()])
+        _expand(as_written)
+    regulation.check(as_written or model, rows, emissions, times)
     sbml = export(model, "sbml")  # from the expansion above; BioNetGen does not run again
     base_names = {
         str(initial.pattern): initial.pattern.monomer_patterns[0].monomer.name

@@ -651,45 +651,6 @@ def test_several_regulators_of_a_kind_are_read_by_position():
         M.assemble([(_TRANSITION, "inhibited", "r1", None, both)], library=_library_with(_DIVISIVE))
 
 
-@pytest.mark.parametrize(
-    "rate, match",
-    [
-        # An inhibitor the rate rises with: the claim and the maths disagree outright.
-        ("k*inhibited_by/(Ki + inhibited_by)", r"must fall as `inhibited_by` rises; it rises "
-         r"instead: state it `activated_by`. d/dinhibited_by = Ki\*k/\(Ki \+ inhibited_by\)\*\*2"),
-        ("k*Ki/(Ki + activated_by)", r"must rise as `activated_by` rises; it falls instead: state "
-         r"it `inhibited_by`"),
-        # Sneyd's Ca: the rate rises or falls with it depending on the constants.
-        ("(k + Ki*inhibited_by)/(1 + inhibited_by)", r"cannot be shown for every value of the "
-         r"rate's names .*: state it `modulated_by`, which claims no direction"),
-        # A switch's jump is no derivative: the rate is not shown to rise with the drug.
-        ("k*piecewise(1, activated_by > 0, 0)", r"nor across a piecewise switching on it\): state "
-         r"it `modulated_by`"),
-    ],
-)
-def test_a_rate_must_move_as_its_regulators_claim(rate, match):
-    """PEtab-MCP#122: the statement says which way a regulator moves the reaction; a rate that
-    moves it otherwise, or that sympy cannot show moves it so, is refused where it is written."""
-    with pytest.raises(MechanismError, match=match):
-        M.written(_DIVISIVE | {"rate": rate}, M.REGISTRY)
-
-
-@pytest.mark.parametrize(
-    "rate",
-    [
-        "k * Ki / (Ki + inhibited_by)",
-        "k/(i*inhibited_by^6/(inhibited_by^6 + Ki^6) + 1)",  # alkan's doxorubicin repression
-        "k*activated_by^6/(activated_by^6 + Ki^6)",  # alkan's doxorubicin-driven death
-        "k*(1 - inhibited_by)",  # perelson's ritonavir gate
-        "k*piecewise(1, modulated_by > 0, 0)",  # a switch claims no direction
-        "(k + Ki*modulated_by)/(1 + modulated_by)",
-    ],
-)
-def test_a_rate_moving_as_its_regulators_claim_is_written(rate):
-    M.written(_DIVISIVE | {"rate": rate, "parameters": sorted({"k", "Ki", "i"} & set(
-        M._RATE_TOKENS.findall(rate)))}, M.REGISTRY)
-
-
 def test_a_written_rate_reads_a_list_role():
     """Conversion's substrate is the list `obj_from`; a rate could not read it, so substrate
     inhibition had no route but a private entry."""

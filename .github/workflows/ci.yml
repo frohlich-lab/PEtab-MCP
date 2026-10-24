@@ -5,11 +5,16 @@ on:
     branches: [main]
   pull_request:
   merge_group:        # run required checks on the merge-queue ref (else the queue stalls)
-  workflow_dispatch:
+  workflow_dispatch:  # by hand: everything, as the weekly run
+  # Weekly, Mondays 03:00 UTC: everything, the regulator corpus on every Python too, whatever
+  # changed. A failure fails the run, red on the Actions page.
+  schedule:
+    - cron: "0 3 * * 1"
 
-# Cancel superseded runs on the same ref (e.g. rapid pushes to a PR).
+# Cancel superseded runs on the same ref (e.g. rapid pushes to a PR). By event too, so a push to
+# main does not cancel the weekly run on it.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -100,7 +105,101 @@ jobs:
         # dependency (bare pytest exits 4 on the unrecognised argument), broke --pdb, and made
         # even a single-file debug run spawn two workers -- each with its own session-scoped
         # amici_build_root, so the ~60-90s toy-model compile was paid twice for no parallelism.
-        run: python -m pytest -v -n 2
+        # The regulator corpus runs in its own job, below, only where it can change; a local
+        # `pytest` still runs it.
+        run: python -m pytest -v -n 2 --ignore tests/test_regulator_corpus.py
+
+  # Whether a change can move a verdict of the regulator corpus (tests/test_regulator_corpus.py):
+  # the files below, diffed against the merge base. A job-level filter, not the workflow's own
+  # `paths:`, so the required checks above still run on every change and the corpus job shows as
+  # skipped, not missing. The weekly and by-hand runs have nothing to diff against: they run it.
+  #
+  # THE LIST MUST FOLLOW THE CODE: it is what the regulator check imports and decides with
+  # (`regulation.check`/`record` and what they call): regulation.py (the net rate and its sign),
+  # mechanisms.py (assembly, bindings, the sign prover), schemes.py (scheme rules),
+  # statements.py (what each statement type consumes and makes), notation.py (the rows and the
+  # refusals' advice), problem_sbml.py (the expansion J is read off); pyproject.toml, whose pins
+  # (sympy, PySB, INDRA) decide what the prover shows; the corpus, its test and this file. A
+  # module the check comes to import joins the list.
+  changes:
+    name: regulator corpus changes
+    runs-on: ubuntu-latest
+    outputs:
+      corpus: ${{ steps.diff.outputs.corpus }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Diff against the merge base
+        id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          QUEUE_BASE: ${{ github.event.merge_group.base_sha }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          case "$EVENT" in
+            pull_request) base="$PR_BASE" ;;
+            merge_group) base="$QUEUE_BASE" ;;
+            push) base="$BEFORE" ;;
+            *) base="" ;;
+          esac
+          if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            echo "corpus=true" >> "$GITHUB_OUTPUT"  # nothing to diff against: run it
+            exit 0
+          fi
+          changed=$(git diff --name-only "$(git merge-base "$base" HEAD)" HEAD)
+          echo "$changed"
+          if echo "$changed" | grep -qE '^(src/petab_mcp/(regulation|mechanisms|schemes|statements|notation|problem_sbml)\.py|pyproject\.toml|tests/test_regulator_corpus\.py|tests/data/regulator_corpus/.*|\.github/workflows/ci\.yml)$'; then
+            echo "corpus=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "corpus=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Not a required check: skipped, it blocks nothing. On a change, one Python: a verdict is
+  # sympy's and BioNetGen's, and the test job runs the regulation tests on both. The weekly and
+  # by-hand runs take the test job's matrix.
+  corpus:
+    name: regulator corpus (py${{ matrix.python-version }})
+    needs: changes
+    if: needs.changes.outputs.corpus == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["3.12", "3.13"]' || '["3.12"]') }}
+    steps:
+      # The test job's setup, as there (see its comments).
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-hdf5-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: pip-hdf5-${{ runner.os }}-py${{ matrix.python-version }}-
+
+      - name: Install build toolchain (Ninja, HDF5)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build cmake build-essential
+          sudo apt-get install -y libhdf5-dev
+
+      - name: Install package (with dev extras)
+        run: |
+          python -m pip install --upgrade pip
+          AMICI_PARALLEL_COMPILE=$(nproc) python -m pip install -e '.[dev]'
+
+      - name: Run the regulator corpus
+        run: python -m pytest -v -n 2 tests/test_regulator_corpus.py
 
   lint:
     name: lint (ruff)

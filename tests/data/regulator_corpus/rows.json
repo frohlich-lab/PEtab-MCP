@@ -1,0 +1,5366 @@
+[
+ {
+  "id": "prover/c1/0",
+  "source": "review of #127/#128 (2026-10-24), prover/c1.py",
+  "rows": [
+   "conv: A becomes B, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(inhibited_by-K)**2",
+    "parameters": [
+     "K",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c1/1",
+  "source": "review of #127/#128 (2026-10-24), prover/c1.py",
+  "rows": [
+   "conv: A becomes B, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(inhibited_by-K)**3",
+    "parameters": [
+     "K",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c1/2",
+  "source": "review of #127/#128 (2026-10-24), prover/c1.py",
+  "rows": [
+   "conv: A becomes B, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(K-inhibited_by)**3",
+    "parameters": [
+     "K",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c1/3",
+  "source": "review of #127/#128 (2026-10-24), prover/c1.py",
+  "rows": [
+   "conv: A becomes B, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(inhibited_by-K)**(1/3)",
+    "parameters": [
+     "K",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c1/4",
+  "source": "review of #127/#128 (2026-10-24), prover/c1.py",
+  "rows": [
+   "conv: A becomes B, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*sqrt((inhibited_by-K)^2)",
+    "parameters": [
+     "K",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c1/5",
+  "source": "review of #127/#128 (2026-10-24), prover/c1.py",
+  "rows": [
+   "conv: A becomes B, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*exp(-b*inhibited_by)",
+    "parameters": [
+     "b",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c1/6",
+  "source": "review of #127/#128 (2026-10-24), prover/c1.py",
+  "rows": [
+   "conv: A becomes B, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*b**inhibited_by",
+    "parameters": [
+     "b",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c1/7",
+  "source": "review of #127/#128 (2026-10-24), prover/c1.py",
+  "rows": [
+   "conv: A becomes B, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*inhibited_by**n",
+    "parameters": [
+     "k",
+     "n"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c1/8",
+  "source": "review of #127/#128 (2026-10-24), prover/c1.py",
+  "rows": [
+   "conv: A becomes B, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k/(1+(inhibited_by/K)**n)",
+    "parameters": [
+     "K",
+     "k",
+     "n"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c1/9",
+  "source": "review of #127/#128 (2026-10-24), prover/c1.py",
+  "rows": [
+   "conv: A becomes B, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(1 - rho*inhibited_by/(H+inhibited_by))",
+    "parameters": [
+     "H",
+     "k",
+     "rho"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c1/10",
+  "source": "review of #127/#128 (2026-10-24), prover/c1.py",
+  "rows": [
+   "conv: A becomes B, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*log(K*inhibited_by)",
+    "parameters": [
+     "K",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c1/11",
+  "source": "review of #127/#128 (2026-10-24), prover/c1.py",
+  "rows": [
+   "conv: A becomes B, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*log(1+inhibited_by/K)",
+    "parameters": [
+     "K",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c1/12",
+  "source": "review of #127/#128 (2026-10-24), prover/c1.py",
+  "rows": [
+   "conv: A becomes B, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*exp(-inhibited_by/K)*inhibited_by",
+    "parameters": [
+     "K",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c1/13",
+  "source": "review of #127/#128 (2026-10-24), prover/c1.py",
+  "rows": [
+   "conv: A becomes B, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*inhibited_by*exp(-inhibited_by/K)",
+    "parameters": [
+     "K",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c1/14",
+  "source": "review of #127/#128 (2026-10-24), prover/c1.py",
+  "rows": [
+   "conv: A becomes B, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*sqrt(K-inhibited_by)",
+    "parameters": [
+     "K",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c1/15",
+  "source": "review of #127/#128 (2026-10-24), prover/c1.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(1 + activated_by)/(1 + 2*activated_by)",
+    "parameters": [
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c1/16",
+  "source": "review of #127/#128 (2026-10-24), prover/c1.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(a + activated_by)/(b + activated_by)",
+    "parameters": [
+     "a",
+     "b",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c1/17",
+  "source": "review of #127/#128 (2026-10-24), prover/c1.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*piecewise(k1*activated_by, time < t1, k2*activated_by)",
+    "parameters": [
+     "k",
+     "k1",
+     "k2",
+     "t1"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c1/18",
+  "source": "review of #127/#128 (2026-10-24), prover/c1.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*piecewise(k1*activated_by, time < t1, k2/(1+activated_by))",
+    "parameters": [
+     "k",
+     "k1",
+     "k2",
+     "t1"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c1/19",
+  "source": "review of #127/#128 (2026-10-24), prover/c1.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "piecewise(0, time < t1, k*activated_by)",
+    "parameters": [
+     "k",
+     "t1"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c1/20",
+  "source": "review of #127/#128 (2026-10-24), prover/c1.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "piecewise(k*activated_by, time < t1, 0)",
+    "parameters": [
+     "k",
+     "t1"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c1/21",
+  "source": "review of #127/#128 (2026-10-24), prover/c1.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "piecewise(k*activated_by, time > 0, k2/(1+activated_by))",
+    "parameters": [
+     "k",
+     "k2"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c1/22",
+  "source": "review of #127/#128 (2026-10-24), prover/c1.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "piecewise(k*activated_by, time <= 0, k2/(1+activated_by))",
+    "parameters": [
+     "k",
+     "k2"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c1/23",
+  "source": "review of #127/#128 (2026-10-24), prover/c1.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "piecewise(0, activated_by < T, k)",
+    "parameters": [
+     "T",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c1/24",
+  "source": "review of #127/#128 (2026-10-24), prover/c1.py",
+  "rows": [
+   "conv: A becomes B, activated by E0, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*activated_by*inhibited_by/(K+inhibited_by)",
+    "parameters": [
+     "K",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c1/25",
+  "source": "review of #127/#128 (2026-10-24), prover/c1.py",
+  "rows": [
+   "conv: A becomes B, activated by E0, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(activated_by - inhibited_by)",
+    "parameters": [
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c1/26",
+  "source": "review of #127/#128 (2026-10-24), prover/c1.py",
+  "rows": [
+   "conv: A becomes B, activated by E0, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*activated_by/(K + activated_by*inhibited_by)",
+    "parameters": [
+     "K",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c1/27",
+  "source": "review of #127/#128 (2026-10-24), prover/c1.py",
+  "rows": [
+   "conv: A becomes B, activated by E0, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*activated_by**inhibited_by",
+    "parameters": [
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c1/28",
+  "source": "review of #127/#128 (2026-10-24), prover/c1.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(1+1e-30*activated_by)",
+    "parameters": [
+     "e",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c1/29",
+  "source": "review of #127/#128 (2026-10-24), prover/c1.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(1e20+activated_by - 1e20)",
+    "parameters": [
+     "e20",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c3/0",
+  "source": "review of #127/#128 (2026-10-24), prover/c3.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*activated_by^n/(K^n + activated_by^n)",
+    "parameters": [
+     "K",
+     "k",
+     "n"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c3/1",
+  "source": "review of #127/#128 (2026-10-24), prover/c3.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(activated_by/K)^n/(1 + (activated_by/K)^n)",
+    "parameters": [
+     "K",
+     "k",
+     "n"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c3/2",
+  "source": "review of #127/#128 (2026-10-24), prover/c3.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(1 + Vmax*activated_by^n/(K^n + activated_by^n))",
+    "parameters": [
+     "K",
+     "Vmax",
+     "k",
+     "n"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c3/3",
+  "source": "review of #127/#128 (2026-10-24), prover/c3.py",
+  "rows": [
+   "conv: A becomes B, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*K^n/(K^n + inhibited_by^n)",
+    "parameters": [
+     "K",
+     "k",
+     "n"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c3/4",
+  "source": "review of #127/#128 (2026-10-24), prover/c3.py",
+  "rows": [
+   "conv: A becomes B, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(1 - inhibited_by^n/(K^n + inhibited_by^n))",
+    "parameters": [
+     "K",
+     "k",
+     "n"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c3/5",
+  "source": "review of #127/#128 (2026-10-24), prover/c3.py",
+  "rows": [
+   "conv: A becomes B, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(1 - Imax*inhibited_by^n/(IC50^n + inhibited_by^n))",
+    "parameters": [
+     "IC50",
+     "Imax",
+     "k",
+     "n"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c3/6",
+  "source": "review of #127/#128 (2026-10-24), prover/c3.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(activated_by + basal)/(K + activated_by + basal)",
+    "parameters": [
+     "K",
+     "basal",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c3/7",
+  "source": "review of #127/#128 (2026-10-24), prover/c3.py",
+  "rows": [
+   "conv: A becomes B, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*source/(Km*(1 + inhibited_by/Ki) + source)",
+    "parameters": [
+     "Ki",
+     "Km",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c3/8",
+  "source": "review of #127/#128 (2026-10-24), prover/c3.py",
+  "rows": [
+   "conv: A becomes B, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k/((1 + inhibited_by/K1)*(1 + inhibited_by/K2))",
+    "parameters": [
+     "K1",
+     "K2",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c3/9",
+  "source": "review of #127/#128 (2026-10-24), prover/c3.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(1 + activated_by/Ka)/(1 + activated_by/(Ka*f))",
+    "parameters": [
+     "Ka",
+     "f",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c3/10",
+  "source": "review of #127/#128 (2026-10-24), prover/c3.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(1 + f*activated_by/Ka)/(1 + activated_by/Ka)",
+    "parameters": [
+     "Ka",
+     "f",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c3/11",
+  "source": "review of #127/#128 (2026-10-24), prover/c3.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "piecewise(k*activated_by, activated_by < Kc, k*Kc)",
+    "parameters": [
+     "Kc",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c3/12",
+  "source": "review of #127/#128 (2026-10-24), prover/c3.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*piecewise(activated_by, time < t1, 2*activated_by)",
+    "parameters": [
+     "k",
+     "t1"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c3/13",
+  "source": "review of #127/#128 (2026-10-24), prover/c3.py",
+  "rows": [
+   "conv: A becomes B, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*exp(-inhibited_by/K)*exp(-time/tau)",
+    "parameters": [
+     "K",
+     "k",
+     "tau"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c3/14",
+  "source": "review of #127/#128 (2026-10-24), prover/c3.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*activated_by*exp(-time/tau)/(K + activated_by)",
+    "parameters": [
+     "K",
+     "k",
+     "tau"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c3/15",
+  "source": "review of #127/#128 (2026-10-24), prover/c3.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(activated_by^2/(K^2 + activated_by^2))^n",
+    "parameters": [
+     "K",
+     "k",
+     "n"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c3/16",
+  "source": "review of #127/#128 (2026-10-24), prover/c3.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*sqrt(activated_by/(K + activated_by))",
+    "parameters": [
+     "K",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c3/17",
+  "source": "review of #127/#128 (2026-10-24), prover/c3.py",
+  "rows": [
+   "conv: A becomes B, activated by E0, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*log(1 + activated_by/K)/(1 + inhibited_by/Ki)",
+    "parameters": [
+     "K",
+     "Ki",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c3/18",
+  "source": "review of #127/#128 (2026-10-24), prover/c3.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(1 - exp(-activated_by/K))",
+    "parameters": [
+     "K",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c3/19",
+  "source": "review of #127/#128 (2026-10-24), prover/c3.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(activated_by/(K + activated_by) - activated_by/(K2 + activated_by) + 1)",
+    "parameters": [
+     "K",
+     "K2",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c3/20",
+  "source": "review of #127/#128 (2026-10-24), prover/c3.py",
+  "rows": [
+   "conv: A becomes B, activated by E0, inhibited by D0, modulated by F0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*activated_by/(K + activated_by)*Ki/(Ki + inhibited_by)*(1 + modulated_by/Km)/(1 + modulated_by/Kn)",
+    "parameters": [
+     "K",
+     "Ki",
+     "Km",
+     "Kn",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c3/21",
+  "source": "review of #127/#128 (2026-10-24), prover/c3.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 and E1 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(activated_by_0 + activated_by_1)/(K + activated_by_0 + activated_by_1)",
+    "parameters": [
+     "K",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c3/22",
+  "source": "review of #127/#128 (2026-10-24), prover/c3.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 and E1 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*activated_by_0*activated_by_1/((K0 + activated_by_0)*(K1 + activated_by_1))",
+    "parameters": [
+     "K0",
+     "K1",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c3/23",
+  "source": "review of #127/#128 (2026-10-24), prover/c3.py",
+  "rows": [
+   "conv: A becomes B, activated by E0, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*activated_by_0/(K0 + activated_by_0 + activated_by_0*inhibited_by/Ki)",
+    "parameters": [
+     "K0",
+     "Ki",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c3/24",
+  "source": "review of #127/#128 (2026-10-24), prover/c3.py",
+  "rows": [
+   "conv: A becomes B, activated by E0, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(activated_by/K)^n/(1 + (activated_by/K)^n + (inhibited_by/Ki)^m)",
+    "parameters": [
+     "K",
+     "Ki",
+     "k",
+     "m",
+     "n"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c3/25",
+  "source": "review of #127/#128 (2026-10-24), prover/c3.py",
+  "rows": [
+   "conv: A becomes B, activated by E0, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "Vmax*activated_by^n/(K^n*(1 + inhibited_by/Ki)^n + activated_by^n)",
+    "parameters": [
+     "K",
+     "Ki",
+     "Vmax",
+     "n"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c3/26",
+  "source": "review of #127/#128 (2026-10-24), prover/c3.py",
+  "rows": [
+   "conv: A becomes B, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(1 - rho*inhibited_by^n/(H^n + inhibited_by^n))^2",
+    "parameters": [
+     "H",
+     "k",
+     "n",
+     "rho"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c3/27",
+  "source": "review of #127/#128 (2026-10-24), prover/c3.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(1 + rho*(activated_by/(H+activated_by))^2)",
+    "parameters": [
+     "H",
+     "k",
+     "rho"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c3/28",
+  "source": "review of #127/#128 (2026-10-24), prover/c3.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "kb + kmax*activated_by^n/(K^n + activated_by^n)",
+    "parameters": [
+     "K",
+     "kb",
+     "kmax",
+     "n"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c3/29",
+  "source": "review of #127/#128 (2026-10-24), prover/c3.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "kb + (kmax - kb)*activated_by^n/(K^n + activated_by^n)",
+    "parameters": [
+     "K",
+     "kb",
+     "kmax",
+     "n"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c3/30",
+  "source": "review of #127/#128 (2026-10-24), prover/c3.py",
+  "rows": [
+   "conv: A becomes B, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(Kd/(Kd + inhibited_by))^n",
+    "parameters": [
+     "Kd",
+     "k",
+     "n"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c4/0",
+  "source": "review of #127/#128 (2026-10-24), prover/c4.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k/(1 + K/(1 + activated_by/K2))",
+    "parameters": [
+     "K",
+     "K2",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c4/1",
+  "source": "review of #127/#128 (2026-10-24), prover/c4.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k/(1 + 1/(K + activated_by))",
+    "parameters": [
+     "K",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c4/2",
+  "source": "review of #127/#128 (2026-10-24), prover/c4.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k/(1/activated_by + 1/K)",
+    "parameters": [
+     "K",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c4/3",
+  "source": "review of #127/#128 (2026-10-24), prover/c4.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(activated_by/(K+activated_by))/(1 + activated_by/(K+activated_by))",
+    "parameters": [
+     "K",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c4/4",
+  "source": "review of #127/#128 (2026-10-24), prover/c4.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(1 + activated_by)^n",
+    "parameters": [
+     "k",
+     "n"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c4/5",
+  "source": "review of #127/#128 (2026-10-24), prover/c4.py",
+  "rows": [
+   "conv: A becomes B, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(1 + inhibited_by)^(-n)",
+    "parameters": [
+     "k",
+     "n"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c4/6",
+  "source": "review of #127/#128 (2026-10-24), prover/c4.py",
+  "rows": [
+   "conv: A becomes B, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(K/(K+inhibited_by))^(1/n)",
+    "parameters": [
+     "K",
+     "k",
+     "n"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c4/7",
+  "source": "review of #127/#128 (2026-10-24), prover/c4.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*activated_by^activated_by",
+    "parameters": [
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c4/8",
+  "source": "review of #127/#128 (2026-10-24), prover/c4.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(1 + activated_by/K)^(activated_by/K)",
+    "parameters": [
+     "K",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c4/9",
+  "source": "review of #127/#128 (2026-10-24), prover/c4.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*exp(activated_by*time)",
+    "parameters": [
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c4/10",
+  "source": "review of #127/#128 (2026-10-24), prover/c4.py",
+  "rows": [
+   "conv: A becomes B, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*exp(-inhibited_by*time/tau)",
+    "parameters": [
+     "k",
+     "tau"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c4/11",
+  "source": "review of #127/#128 (2026-10-24), prover/c4.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(1 - exp(-time/tau))*activated_by/(K + activated_by)",
+    "parameters": [
+     "K",
+     "k",
+     "tau"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c4/12",
+  "source": "review of #127/#128 (2026-10-24), prover/c4.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*piecewise(activated_by, time < t1, 0)*piecewise(1, time < t2, 2)",
+    "parameters": [
+     "k",
+     "t1",
+     "t2"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c4/13",
+  "source": "review of #127/#128 (2026-10-24), prover/c4.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*sqrt(activated_by)*sqrt(K)/sqrt(K + activated_by)",
+    "parameters": [
+     "K",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c4/14",
+  "source": "review of #127/#128 (2026-10-24), prover/c4.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(activated_by - K)^2 + k*2*K*activated_by",
+    "parameters": [
+     "K",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c4/15",
+  "source": "review of #127/#128 (2026-10-24), prover/c4.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*((activated_by - K)^2 + 2*K*activated_by)",
+    "parameters": [
+     "K",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c5/0",
+  "source": "review of #127/#128 (2026-10-24), prover/c5.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(1 - exp(-time/tau))*activated_by/(K + activated_by)",
+    "parameters": [
+     "K",
+     "k",
+     "tau"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c5/1",
+  "source": "review of #127/#128 (2026-10-24), prover/c5.py",
+  "rows": [
+   "conv: A becomes B, inhibited by D0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(1 - exp(-time/tau))/(1 + inhibited_by/Ki)",
+    "parameters": [
+     "Ki",
+     "k",
+     "tau"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c5/2",
+  "source": "review of #127/#128 (2026-10-24), prover/c5.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(exp(time/tau) - 1)*activated_by",
+    "parameters": [
+     "k",
+     "tau"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c5/3",
+  "source": "review of #127/#128 (2026-10-24), prover/c5.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(1 - 1/(1 + time/tau))*activated_by",
+    "parameters": [
+     "k",
+     "tau"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c5/4",
+  "source": "review of #127/#128 (2026-10-24), prover/c5.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(2 - exp(-time/tau))*activated_by",
+    "parameters": [
+     "k",
+     "tau"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c5/5",
+  "source": "review of #127/#128 (2026-10-24), prover/c5.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*(1 - exp(-kd*source))*activated_by",
+    "parameters": [
+     "k",
+     "kd"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/c5/6",
+  "source": "review of #127/#128 (2026-10-24), prover/c5.py",
+  "rows": [
+   "conv: A becomes B, activated by E0 | p"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "p",
+    "rate": "k*activated_by*(1 - target/Kcap)",
+    "parameters": [
+     "Kcap",
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/a_e2e_pin",
+  "source": "review of #127/#128 (2026-10-24), prover/a_e2e_pin.py: b pinned negative, signed as if positive",
+  "rows": [
+   "conv: A becomes B, inhibited by C | loglin b=-2"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "loglin",
+    "rate": "k*exp(b*inhibited_by)",
+    "parameters": [
+     "k",
+     "b"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/a_negparam/lin",
+  "source": "review of #127/#128 (2026-10-24), prover/a_negparam.py",
+  "rows": [
+   "r2: naive becomes effector, inhibited by drug | lin e=-0.5"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "lin",
+    "rate": "k*(1 + e*inhibited_by)",
+    "parameters": [
+     "k",
+     "e"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/a_negparam/difference",
+  "source": "review of #127/#128 (2026-10-24), prover/a_negparam.py: a binding of unknown sign",
+  "rows": [
+   "r3: naive becomes effector, inhibited by drug | lin e=\"e_up - e_down\""
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "lin",
+    "rate": "k*(1 + e*inhibited_by)",
+    "parameters": [
+     "k",
+     "e"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/alias",
+  "source": "review of #127/#128 (2026-10-24), prover/alias.py: inhibited_by and inhibited_by_0 name one agent",
+  "rows": [
+   "conv: A becomes B, inhibited by C | alias"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "alias",
+    "rate": "k*(1 + inhibited_by_0)/(1 + 2*inhibited_by)",
+    "parameters": [
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/alias2/zero",
+  "source": "review of #127/#128 (2026-10-24), prover/alias2.py: two names for one agent cancel",
+  "rows": [
+   "r2: naive becomes effector, inhibited by drug | zero"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "zero",
+    "rate": "k*inhibited_by_0/inhibited_by",
+    "parameters": [
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/alias2/role",
+  "source": "review of #127/#128 (2026-10-24), prover/alias2.py: the regulator is the target role (products absent: depends on that decision)",
+  "rows": [
+   "r1: naive becomes effector, activated by effector | ra"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "ra",
+    "rate": "k*(1 + activated_by)/(1 + 2*target)",
+    "parameters": [
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/alias2/scheme",
+  "source": "review of #127/#128 (2026-10-24), prover/alias2.py",
+  "rows": [
+   "r3: naive becomes effector, inhibited by drug | sch"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "sch",
+    "scheme": "source() >> target() @ k*(1 + amount(inhibited_by_0))/(1 + 2*amount(inhibited_by))",
+    "parameters": [
+     "k"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "prover/b_overlap/self",
+  "source": "review of #127/#128 (2026-10-24), prover/b_overlap.py: the regulator is the reactant",
+  "rows": [
+   "r1: naive becomes effector, inhibited by naive | sat"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "sat",
+    "rate": "k/(K + inhibited_by)",
+    "parameters": [
+     "k",
+     "K"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/b_overlap/two_kinds",
+  "source": "review of #127/#128 (2026-10-24), prover/b_overlap.py: one agent stated activator and inhibitor",
+  "rows": [
+   "r2: naive becomes effector, activated by D, inhibited by D | two"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "two",
+    "rate": "k*(1 + activated_by)/(1 + 2*inhibited_by)",
+    "parameters": [
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/b_overlap/overlap",
+  "source": "review of #127/#128 (2026-10-24), prover/b_overlap.py: total D and phospho D",
+  "rows": [
+   "k: K phosphorylates D at S10 | indra_default",
+   "r3: naive becomes effector, activated by D{pS10}, inhibited by D | two"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "two",
+    "rate": "k*(1 + activated_by)/(1 + 2*inhibited_by)",
+    "parameters": [
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/a_crossbind/same",
+  "source": "review of #127/#128 (2026-10-24), prover/a_crossbind_e2e.py: a binding reads another row's rate",
+  "rows": [
+   "inh: A becomes B, inhibited by C | inh k=act_rate",
+   "act: B becomes A, activated by C | act"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "inh",
+    "rate": "k*Ki/(Ki + inhibited_by)",
+    "parameters": [
+     "k",
+     "Ki"
+    ],
+    "based_on": "mass_action"
+   },
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "act",
+    "rate": "k*activated_by",
+    "parameters": [
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/a_crossbind/other",
+  "source": "review of #127/#128 (2026-10-24), prover/a_crossbind_e2e.py: the other row's rate reads an agent this one does not state",
+  "rows": [
+   "inh: A becomes B, inhibited by C | inh k=act_rate",
+   "act: B becomes A, activated by D | act"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "inh",
+    "rate": "k*Ki/(Ki + inhibited_by)",
+    "parameters": [
+     "k",
+     "Ki"
+    ],
+    "based_on": "mass_action"
+   },
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "act",
+    "rate": "k*activated_by",
+    "parameters": [
+     "k"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "prover/constant/exp",
+  "source": "review of #127/#128 (2026-10-24), prover/constant.py: _constant read exp(a)/exp(b) as one value",
+  "rows": [
+   "conv: A becomes B, activated by X, inhibited by Y | two"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "two",
+    "scheme": "source() >> target() @ k*exp(amount(activated_by))\nsource() >> None @ k*exp(amount(inhibited_by))",
+    "parameters": [
+     "k"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "prover/constant/linear",
+  "source": "review of #127/#128 (2026-10-24), prover/constant.py",
+  "rows": [
+   "conv: A becomes B, activated by X, inhibited by Y | two"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "two",
+    "scheme": "source() >> target() @ k*(1 + amount(activated_by))\nsource() >> None @ k*(1 + amount(inhibited_by))",
+    "parameters": [
+     "k"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "rewrite/t2_bind/free",
+  "source": "review of #127/#128 (2026-10-24), rewrite/t2_bind.py: a binding flips or removes the sign",
+  "rows": [
+   "conv: A becomes B, activated by C | lin"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "lin",
+    "rate": "k*(1 + a*activated_by)",
+    "parameters": [
+     "k",
+     "a"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "rewrite/t2_bind/negative",
+  "source": "review of #127/#128 (2026-10-24), rewrite/t2_bind.py: a binding flips or removes the sign",
+  "rows": [
+   "conv: A becomes B, activated by C | lin a=-0.9"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "lin",
+    "rate": "k*(1 + a*activated_by)",
+    "parameters": [
+     "k",
+     "a"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "rewrite/t2_bind/zero",
+  "source": "review of #127/#128 (2026-10-24), rewrite/t2_bind.py: a binding flips or removes the sign",
+  "rows": [
+   "conv: A becomes B, activated by C | lin a=0"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "lin",
+    "rate": "k*(1 + a*activated_by)",
+    "parameters": [
+     "k",
+     "a"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "rewrite/t3_conv2",
+  "source": "review of #127/#128 (2026-10-24), rewrite/t3_conv2.py: a two-input conversion's placeholder had one input",
+  "rows": [
+   "c: A + B -> C, inhibited by X | pair_inh"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "pair_inh",
+    "scheme": "obj_from_0(obj_from_1=None) + obj_from_1(obj_from_0=None) | obj_from_0(obj_from_1=1) % obj_from_1(obj_from_0=1) @ kf, kr\nobj_from_0(obj_from_1=1) % obj_from_1(obj_from_0=1) >> obj_to() @ kc*Ki/(Ki + amount(inhibited_by)) delete_molecules",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "Ki"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "rewrite/t6_twice/both_kinds",
+  "source": "review of #127/#128 (2026-10-24), rewrite/t6_twice.py: one agent stated inhibitor and activator",
+  "rows": [
+   "conv: A becomes B, inhibited by X, activated by X | both"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "both",
+    "rate": "k*Ki/(Ki + inhibited_by)*(1 + activated_by/Ka)",
+    "parameters": [
+     "k",
+     "Ki",
+     "Ka"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "rewrite/t6_twice/bell",
+  "source": "review of #127/#128 (2026-10-24), rewrite/t6_twice.py: one agent twice, a bell-shaped rate",
+  "rows": [
+   "conv: A becomes B, modulated by X and X | twice"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "twice",
+    "rate": "k*modulated_by_0/(K + modulated_by_1)^2",
+    "parameters": [
+     "k",
+     "K"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "rewrite/t7_turnover/one_line",
+  "source": "review of #127/#128 (2026-10-24), rewrite/t7_turnover.py: `|` read left to right",
+  "rows": [
+   "deg: A is degraded, activated by X | turn1"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "DecreaseAmount",
+    "policy": "turn1",
+    "scheme": "None | obj() @ ks*amount(activated_by), kd",
+    "parameters": [
+     "ks",
+     "kd"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "rewrite/t7_turnover/two_lines",
+  "source": "review of #127/#128 (2026-10-24), rewrite/t7_turnover.py",
+  "rows": [
+   "deg: A is degraded, activated by X | turn2"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "DecreaseAmount",
+    "policy": "turn2",
+    "scheme": "None >> obj() @ ks*amount(activated_by)\nobj() >> None @ kd",
+    "parameters": [
+     "ks",
+     "kd"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "rewrite/t7b/modulated",
+  "source": "review of #127/#128 (2026-10-24), rewrite/t7b_turnover_mod.py",
+  "rows": [
+   "deg: A is degraded, modulated by X | turn1"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "DecreaseAmount",
+    "policy": "turn1",
+    "scheme": "None | obj() @ ks*amount(modulated_by), kd",
+    "parameters": [
+     "ks",
+     "kd"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "rewrite/t7b/backwards",
+  "source": "review of #127/#128 (2026-10-24), rewrite/t7b_turnover_mod.py: a conversion written backwards",
+  "rows": [
+   "c: A -> B, activated by X | rev1"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "rev1",
+    "scheme": "obj_to() | obj_from() @ kr, kf*amount(activated_by)",
+    "parameters": [
+     "kf",
+     "kr"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "rewrite/t8_actsite",
+  "source": "review of #127/#128 (2026-10-24), rewrite/t8_actsite.py: an enzyme active only once another row activates it",
+  "rows": [
+   "act: B activates A as kinase | indra_default",
+   "phos: A phosphorylates B at S10, inhibited by I | mm_act_inh"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "mm_act_inh",
+    "scheme": "enz(act='active', sub=None) + sub(enz=None, mod='off') | enz(act='active', sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(act='active', sub=1) % sub(enz=1, mod='off') >> enz(act='active', sub=None) + sub(enz=None, mod='on') @ kc*Ki/(Ki + amount(inhibited_by))",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "Ki"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "rewrite/t10_modreg",
+  "source": "review of #127/#128 (2026-10-24), rewrite/t10_modreg.py: two overlapping patterns of one agent",
+  "rows": [
+   "g: E binds G | indra_default",
+   "k: K phosphorylates E at Y10 | indra_default",
+   "conv: A becomes B, modulated by E{pY10} and E{!G} | slowed"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "slowed",
+    "rate": "k*Ki/(Ki + modulated_by_0)*(1+modulated_by_1)",
+    "parameters": [
+     "k",
+     "Ki"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "rewrite/t11_fwd",
+  "source": "review of #127/#128 (2026-10-24), rewrite/t11_fwd.py",
+  "rows": [
+   "c: A -> B, activated by X | fwd1"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "fwd1",
+    "scheme": "obj_from() | obj_to() @ kf*amount(activated_by), kr",
+    "parameters": [
+     "kf",
+     "kr"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t1/two_steps",
+  "source": "review of #127/#128 (2026-10-24), refusals/t1_product_present.py: feedback needing the product (products absent: depends on that decision)",
+  "rows": [
+   "c1: RAS{-mod\"GTP\"} -> RAS{mod\"GTP\"}, activated by SOS | fb"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "fb",
+    "scheme": "obj_from_0() >> obj_to_0() @ kb + kf*amount(activated_by)*amount(obj_to_0())\nobj_to_0() >> obj_from_0() @ kgap",
+    "parameters": [
+     "kb",
+     "kf",
+     "kgap"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t1/one_rule",
+  "source": "review of #127/#128 (2026-10-24), refusals/t1_product_present.py (products absent: depends on that decision)",
+  "rows": [
+   "c1: RAS{-mod\"GTP\"} -> RAS{mod\"GTP\"}, activated by SOS | fb1"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "fb1",
+    "scheme": "obj_from_0() >> obj_to_0() @ kb + kf*amount(activated_by)*amount(obj_to_0())",
+    "parameters": [
+     "kb",
+     "kf"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t1/autoreg",
+  "source": "review of #127/#128 (2026-10-24), refusals/t1_product_present.py: co-activator needing obj (products absent: depends on that decision)",
+  "rows": [
+   "g: TF increases G, activated by X | autoreg"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "IncreaseAmount",
+    "policy": "autoreg",
+    "scheme": "subj() >> subj() + obj() @ ks + ka*amount(activated_by)*amount(obj())\nobj() >> None @ kd delete_molecules",
+    "parameters": [
+     "ks",
+     "ka",
+     "kd"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t11/product_stated",
+  "source": "review of #127/#128 (2026-10-24), refusals/t11_fb_rewrite.py: the product stated as a second activator",
+  "rows": [
+   "c1: RAS{-mod\"GTP\"} -> RAS{mod\"GTP\"}, activated by SOS and RAS{mod\"GTP\"} | fb2"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "fb2",
+    "scheme": "obj_from_0() >> obj_to_0() @ kb + kf*amount(activated_by_0)*amount(activated_by_1)\nobj_to_0() >> obj_from_0() @ kgap",
+    "parameters": [
+     "kb",
+     "kf",
+     "kgap"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t11/ternary",
+  "source": "review of #127/#128 (2026-10-24), refusals/t11_fb_rewrite.py: X on a ternary complex's second binding",
+  "rows": [
+   "t: A binds B binds C, activated by X | tern"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Complex",
+    "policy": "tern",
+    "scheme": "members_0(members_1=None) + members_1(members_0=None, members_2=None) | members_0(members_1=1) % members_1(members_0=1, members_2=None) @ k1, kr1\nmembers_0(members_1=1) % members_1(members_0=1, members_2=None) + members_2(members_1=None) | members_0(members_1=1) % members_1(members_0=1, members_2=2) % members_2(members_1=2) @ k2*amount(activated_by), kr2",
+    "parameters": [
+     "k1",
+     "kr1",
+     "k2",
+     "kr2"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t2/inhibitor_molecule",
+  "source": "review of #127/#128 (2026-10-24), refusals/t2_explicit_inhibitor.py: E + I <-> EI as mass action",
+  "rows": [
+   "r1: MEK phosphorylates ERK at S10, inhibited by Drug | comp"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "comp",
+    "scheme": "enz(sub=None, inh=None) + sub(enz=None, mod='off') | enz(sub=1, inh=None) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc\nenz(sub=None, inh=None) + inhibited_by() | enz(sub=None, inh=1) % inhibited_by(enz=1) @ kon, koff",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "kon",
+     "koff"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t4a/by_name",
+  "source": "review of #127/#128 (2026-10-24), refusals/t4_misc.py (a): the rate reads a stated regulator by its own name",
+  "rows": [
+   "r1: EGFR phosphorylates AKT1 at S473, inhibited by PTEN | byname"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "byname",
+    "scheme": "enz() + sub(mod='off') >> enz() + sub(mod='on') @ kf/(1 + amount(PTEN)/Ki)",
+    "parameters": [
+     "kf",
+     "Ki"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t4b/0",
+  "source": "review of #127/#128 (2026-10-24), refusals/t4_misc.py (b): a regulator read through a pattern adding a state",
+  "rows": [
+   "r1: EGFR phosphorylates AKT1 at S473, inhibited by PTEN | pat"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "pat",
+    "scheme": "enz() + sub(mod='off') >> enz() + sub(mod='on') @ kf/(1 + amount(inhibited_by{pS380})/Ki)",
+    "parameters": [
+     "kf",
+     "Ki"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t4b/1",
+  "source": "review of #127/#128 (2026-10-24), refusals/t4_misc.py (b): a regulator read through a pattern adding a state",
+  "rows": [
+   "r1: EGFR phosphorylates AKT1 at S473, inhibited by PTEN | pat"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "pat",
+    "scheme": "enz() + sub(mod='off') >> enz() + sub(mod='on') @ kf/(1 + amount(inhibited_by(mod='on'))/Ki)",
+    "parameters": [
+     "kf",
+     "Ki"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t4c/two_spellings",
+  "source": "review of #127/#128 (2026-10-24), refusals/t4_misc.py (c)",
+  "rows": [
+   "r1: E phosphorylates S at S10, inhibited by X | two_spell"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "two_spell",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf/(1 + amount(inhibited_by)/Ki), kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc/(1 + amount(inhibited_by_0)/Ki)",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "Ki"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t4d/isomerase",
+  "source": "review of #127/#128 (2026-10-24), refusals/t4_misc.py (d): X speeds both ways of a dead-end equilibrium",
+  "rows": [
+   "r1: E phosphorylates S at S10, activated by X | iso"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "iso",
+    "scheme": "enz(sub=None, conf='open') + sub(enz=None, mod='off') | enz(sub=1, conf='open') % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc\nenz(sub=None, conf='open') | enz(sub=None, conf='shut') @ k1*amount(activated_by), k2*amount(activated_by)",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "k1",
+     "k2"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t4e/irreversible",
+  "source": "review of #127/#128 (2026-10-24), refusals/t4_misc.py (e): X activates the enzyme irreversibly",
+  "rows": [
+   "r1: E phosphorylates S at S10, activated by X | act_irrev"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "act_irrev",
+    "scheme": "enz(conf='open') >> enz(conf='shut') @ ka*amount(activated_by)\nenz(conf='shut') + sub(mod='off') >> enz(conf='shut') + sub(mod='on') @ kc",
+    "parameters": [
+     "ka",
+     "kc"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t4e/reversible",
+  "source": "review of #127/#128 (2026-10-24), refusals/t4_misc.py (e')",
+  "rows": [
+   "r1: E phosphorylates S at S10, activated by X | act_rev"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "act_rev",
+    "scheme": "enz(conf='open') | enz(conf='shut') @ ka*amount(activated_by), ki\nenz(conf='shut') + sub(mod='off') >> enz(conf='shut') + sub(mod='on') @ kc",
+    "parameters": [
+     "ka",
+     "ki",
+     "kc"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t4f/two_steps",
+  "source": "review of #127/#128 (2026-10-24), refusals/t4_misc.py (f): an inhibitor whose effect grows with time",
+  "rows": [
+   "r1: E phosphorylates S at S10, inhibited by X | decay2"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "decay2",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc*exp(-kk*amount(inhibited_by)*time)",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "kk"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t4f/one_step",
+  "source": "review of #127/#128 (2026-10-24), refusals/t4_misc.py (f')",
+  "rows": [
+   "r1: E phosphorylates S at S10, inhibited by X | decay1"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "decay1",
+    "scheme": "enz() + sub(mod='off') >> enz() + sub(mod='on') @ kc*exp(-kk*amount(inhibited_by)*time)",
+    "parameters": [
+     "kc",
+     "kk"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t4g/square",
+  "source": "review of #127/#128 (2026-10-24), refusals/t4_misc.py (g)",
+  "rows": [
+   "r1: E phosphorylates S at S10, modulated by X | sq"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "sq",
+    "scheme": "enz() + sub(mod='off') >> enz() + sub(mod='on') @ kc*(amount(modulated_by) - R0)^2",
+    "parameters": [
+     "kc",
+     "R0"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t4g/piecewise",
+  "source": "review of #127/#128 (2026-10-24), refusals/t4_misc.py (g')",
+  "rows": [
+   "r1: E phosphorylates S at S10, inhibited by X | pw"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "pw",
+    "rate": "piecewise(kc, inhibited_by < K, 0)",
+    "parameters": [
+     "kc",
+     "K"
+    ],
+    "based_on": "indra_default"
+   }
+  ]
+ },
+ {
+  "id": "refusals/t5h/side",
+  "source": "review of #127/#128 (2026-10-24), refusals/t5_noJ.py (h): X only on the substrate's destruction",
+  "rows": [
+   "r1: E phosphorylates S at S10, inhibited by X | side"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "side",
+    "scheme": "enz() + sub(mod='off') >> enz() + sub(mod='on') @ kc\nenz() + sub(mod='off') >> enz() @ kd*(1 + amount(inhibited_by)/K)",
+    "parameters": [
+     "kc",
+     "kd",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t5i/honest",
+  "source": "review of #127/#128 (2026-10-24), refusals/t5_noJ.py (i1): gated on a state another row gives",
+  "rows": [
+   {
+    "statement": {
+     "type": "Gef",
+     "gef": {
+      "name": "SOS"
+     },
+     "ras": {
+      "name": "KRAS"
+     }
+    },
+    "policy": "indra_default",
+    "prefix": "gef"
+   },
+   "p: KRAS phosphorylates RAF at S338, inhibited by X | gated_inh"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "gated_inh",
+    "scheme": "enz(gtpbound='active', sub=None) + sub(enz=None, mod='off') | enz(gtpbound='active', sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(gtpbound='active', sub=1) % sub(enz=1, mod='off') >> enz(gtpbound='active', sub=None) + sub(enz=None, mod='on') @ kc/(1 + amount(inhibited_by)/K)\nsub(mod='on', enz=None) >> sub(mod='off', enz=None) @ kp",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "kp",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t5i/dephosphorylation",
+  "source": "review of #127/#128 (2026-10-24), refusals/t5_noJ.py (i2): X only on the product's dephosphorylation",
+  "rows": [
+   {
+    "statement": {
+     "type": "Gef",
+     "gef": {
+      "name": "SOS"
+     },
+     "ras": {
+      "name": "KRAS"
+     }
+    },
+    "policy": "indra_default",
+    "prefix": "gef"
+   },
+   "p: KRAS phosphorylates RAF at S338, inhibited by X | gated_deg"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "gated_deg",
+    "scheme": "enz(gtpbound='active', sub=None) + sub(enz=None, mod='off') | enz(gtpbound='active', sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(gtpbound='active', sub=1) % sub(enz=1, mod='off') >> enz(gtpbound='active', sub=None) + sub(enz=None, mod='on') @ kc\nsub(mod='on', enz=None) >> sub(mod='off', enz=None) @ kp*(1 + amount(inhibited_by)/K)",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "kp",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t5i/ungated",
+  "source": "review of #127/#128 (2026-10-24), refusals/t5_noJ.py (i3)",
+  "rows": [
+   "p: KRAS phosphorylates RAF at S338, inhibited by X | ungated_deg"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "ungated_deg",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc\nsub(mod='on', enz=None) >> sub(mod='off', enz=None) @ kp*(1 + amount(inhibited_by)/K)",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "kp",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t6/deactivation",
+  "source": "review of #127/#128 (2026-10-24), refusals/t6_activation.py: the phosphatase on deactivation",
+  "rows": [
+   "a: MEK activates ERK, inhibited by DUSP6 | act_deact"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Activation",
+    "policy": "act_deact",
+    "scheme": "subj() + obj(act='inactive') >> subj() + obj(act='active') @ ka\nobj(act='active') >> obj(act='inactive') @ kd*(1 + amount(inhibited_by)/K)",
+    "parameters": [
+     "ka",
+     "kd",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t6/advice",
+  "source": "review of #127/#128 (2026-10-24), refusals/t6_activation.py: the row the refusal names",
+  "rows": [
+   "a: MEK activates ERK | indra_default",
+   "d: DUSP6 inhibits ERK | indra_default"
+  ],
+  "mechanisms": []
+ },
+ {
+  "id": "refusals/t7/Activation",
+  "source": "review of #127/#128 (2026-10-24), refusals/t7_types.py: a type the statement table did not cover",
+  "rows": [
+   "a: MEK activates ERK, activated by X | two"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Activation",
+    "policy": "two",
+    "scheme": "subj() + obj(act='inactive') >> subj() + obj(act='active') @ ka*amount(activated_by)\nobj(act='active') >> obj(act='inactive') @ kd",
+    "parameters": [
+     "ka",
+     "kd"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t7/Inhibition",
+  "source": "review of #127/#128 (2026-10-24), refusals/t7_types.py: a type the statement table did not cover",
+  "rows": [
+   "a: MEK inhibits ERK, activated by X | two"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Inhibition",
+    "policy": "two",
+    "scheme": "subj() + obj(act='active') >> subj() + obj(act='inactive') @ ka*amount(activated_by)\nobj(act='inactive') >> obj(act='active') @ kd",
+    "parameters": [
+     "ka",
+     "kd"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t7/Autophosphorylation",
+  "source": "review of #127/#128 (2026-10-24), refusals/t7_types.py: a type the statement table did not cover",
+  "rows": [
+   "a: EGFR autophosphorylates at Y1068, activated by X | two"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Autophosphorylation",
+    "policy": "two",
+    "scheme": "enz(mod='off') >> enz(mod='on') @ ka*amount(activated_by)\nenz(mod='on') >> enz(mod='off') @ kd",
+    "parameters": [
+     "ka",
+     "kd"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t7/Phosphorylation",
+  "source": "review of #127/#128 (2026-10-24), refusals/t7_types.py: a type the statement table did not cover",
+  "rows": [
+   "a: MEK phosphorylates ERK at T202, activated by X | two"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "two",
+    "scheme": "enz() + sub(mod='off') >> enz() + sub(mod='on') @ ka*amount(activated_by)\nsub(mod='on') >> sub(mod='off') @ kd",
+    "parameters": [
+     "ka",
+     "kd"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t7/Gef",
+  "source": "review of #127/#128 (2026-10-24), refusals/t7_types.py",
+  "rows": [
+   {
+    "statement": {
+     "type": "Gef",
+     "gef": {
+      "name": "SOS"
+     },
+     "ras": {
+      "name": "KRAS"
+     },
+     "activated_by": [
+      {
+       "name": "X"
+      }
+     ]
+    },
+    "policy": "two",
+    "prefix": "g"
+   }
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Gef",
+    "policy": "two",
+    "scheme": "gef() + ras(gtpbound='inactive') >> gef() + ras(gtpbound='active') @ ka*amount(activated_by)\nras(gtpbound='active') >> ras(gtpbound='inactive') @ kd",
+    "parameters": [
+     "ka",
+     "kd"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t8/gated",
+  "source": "review of #127/#128 (2026-10-24), refusals/t8_autophos_crash.py: crashed in the placeholder fallback",
+  "rows": [
+   "e: EGFR binds EGF | indra_default",
+   "a: EGFR autophosphorylates, activated by X | auto"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Autophosphorylation",
+    "policy": "auto",
+    "scheme": "enz(phospho='u', egf=ANY) >> enz(phospho='p', egf=ANY) @ ka*amount(activated_by)\nenz(phospho='p') >> enz(phospho='u') @ kd",
+    "parameters": [
+     "ka",
+     "kd"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t8/act_site",
+  "source": "review of #127/#128 (2026-10-24), refusals/t8_autophos_crash.py: crashed in the placeholder fallback",
+  "rows": [
+   "e: EGFR binds EGF | indra_default",
+   "a: EGFR autophosphorylates, activated by X | auto"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Autophosphorylation",
+    "policy": "auto",
+    "scheme": "enz(phospho='u', act='active') >> enz(phospho='p', act='active') @ ka*amount(activated_by)\nenz(phospho='p') >> enz(phospho='u') @ kd",
+    "parameters": [
+     "ka",
+     "kd"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t10/Autophosphorylation",
+  "source": "review of #127/#128 (2026-10-24), refusals/t10_more.py: gated on a one-state site",
+  "rows": [
+   "a: EGFR autophosphorylates, activated by X | g2"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Autophosphorylation",
+    "policy": "g2",
+    "scheme": "enz(phospho='u', gtp='active') >> enz(phospho='p', gtp='active') @ ka*amount(activated_by)\nenz(phospho='p') >> enz(phospho='u') @ kd",
+    "parameters": [
+     "ka",
+     "kd"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t10/Transphosphorylation",
+  "source": "review of #127/#128 (2026-10-24), refusals/t10_more.py: gated on a one-state site",
+  "rows": [
+   {
+    "statement": {
+     "type": "Transphosphorylation",
+     "enz": {
+      "name": "EGFR",
+      "bound_conditions": [
+       {
+        "agent": {
+         "name": "EGFR"
+        },
+        "is_bound": true
+       }
+      ]
+     },
+     "activated_by": [
+      {
+       "name": "X"
+      }
+     ]
+    },
+    "policy": "g2",
+    "prefix": "a"
+   }
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Transphosphorylation",
+    "policy": "g2",
+    "scheme": "enz(phospho='u', gtp='active') >> enz(phospho='p', gtp='active') @ ka*amount(activated_by)\nenz(phospho='p') >> enz(phospho='u') @ kd",
+    "parameters": [
+     "ka",
+     "kd"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t9/any",
+  "source": "review of #127/#128 (2026-10-24), refusals/t9_any_crash.py: crashed with `Pattern not concrete`",
+  "rows": [
+   "l: MEK binds L | indra_default",
+   "p: MEK phosphorylates ERK at T202, inhibited by I | bound_kinase"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "bound_kinase",
+    "scheme": "enz(sub=None, l=ANY) + sub(enz=None, mod='off') | enz(sub=1, l=ANY) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1, l=ANY) % sub(enz=1, mod='off') >> enz(sub=None, l=ANY) + sub(enz=None, mod='on') @ kc/(1 + amount(inhibited_by))",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t10/wild",
+  "source": "review of #127/#128 (2026-10-24), refusals/t10_more.py: WILD",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, activated by X | wild"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "wild",
+    "scheme": "enz(lig=WILD) + sub(mod='off') >> enz(lig=WILD) + sub(mod='on') @ kc*amount(activated_by)\nsub(mod='on') >> sub(mod='off') @ kd",
+    "parameters": [
+     "kc",
+     "kd"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t10/binding_mints",
+  "source": "review of #127/#128 (2026-10-24), refusals/t10_more.py: a binding names a regulator kind",
+  "rows": [
+   "r1: A phosphorylates B at S10 | indra_default kf=k*inhibited_by"
+  ],
+  "mechanisms": []
+ },
+ {
+  "id": "refusals/t10/binding_stated",
+  "source": "review of #127/#128 (2026-10-24), refusals/t10_more.py",
+  "rows": [
+   "r1: A phosphorylates B at S10, inhibited by X | indra_default kf=k*inhibited_by"
+  ],
+  "mechanisms": []
+ },
+ {
+  "id": "refusals/t12/position_one",
+  "source": "review of #127/#128 (2026-10-24), refusals/t12_ok.py",
+  "rows": [
+   "r1: A phosphorylates B at S10, inhibited by X | w0"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w0",
+    "rate": "kf/(1 + inhibited_by_0/K)",
+    "parameters": [
+     "kf",
+     "K"
+    ],
+    "based_on": "indra_default"
+   }
+  ]
+ },
+ {
+  "id": "refusals/t12/bare_two",
+  "source": "review of #127/#128 (2026-10-24), refusals/t12_ok.py",
+  "rows": [
+   "r1: A phosphorylates B at S10, inhibited by X and Y | w1"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w1",
+    "rate": "kf/(1 + inhibited_by/K)",
+    "parameters": [
+     "kf",
+     "K"
+    ],
+    "based_on": "indra_default"
+   }
+  ]
+ },
+ {
+  "id": "refusals/t12/scheme_position",
+  "source": "review of #127/#128 (2026-10-24), refusals/t12_ok.py",
+  "rows": [
+   "r1: A phosphorylates B at S10, inhibited by X | pos0"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "pos0",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc/(1 + amount(inhibited_by_0)/K)",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "refusals/t12/both_ways",
+  "source": "review of #127/#128 (2026-10-24), refusals/t12_ok.py: X slows synthesis and speeds decay",
+  "rows": [
+   "s: TF increases G, inhibited by X | both"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "IncreaseAmount",
+    "policy": "both",
+    "scheme": "subj() >> subj() + obj() @ ks/(1 + amount(inhibited_by)/K)\nobj() >> None @ kd*(1 + amount(inhibited_by)/K) delete_molecules",
+    "parameters": [
+     "ks",
+     "kd",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "advice/c1_degradation",
+  "source": "review of #127/#128 (2026-10-24), refusals/t3_follow_advice.py: the degradation row the refusal names",
+  "rows": [
+   "s: TF increases mRNA | indra_default",
+   "d: mRNA is degraded, activated by Rep | deg"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "DecreaseAmount",
+    "policy": "deg",
+    "rate": "kd*(1 + activated_by/K)",
+    "parameters": [
+     "kd",
+     "K"
+    ],
+    "based_on": "indra_default"
+   }
+  ]
+ },
+ {
+  "id": "advice/a2_dissociation",
+  "source": "review of #127/#128 (2026-10-24), refusals/t3c_dissociation_e2e.py: the dissociation row the refusal names",
+  "rows": [
+   "b: A binds B | indra_default",
+   "u: A{!B} -> A + B, activated by X | apart"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "apart",
+    "scheme": "obj_from_0(obj_to_1=1) % obj_to_1(obj_to_0=1) >> obj_to_0(obj_to_1=None) + obj_to_1(obj_to_0=None) @ kr*(1 + amount(activated_by)/K)",
+    "parameters": [
+     "kr",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t2/fwd_kf_slowed",
+  "source": "review of #127/#128 (2026-10-24), netrate/t2.py: a binding line written dissociation first",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by I | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf/(1 + amount(inhibited_by)/Ki), kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "Ki"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t2/fwd_kr_slowed",
+  "source": "review of #127/#128 (2026-10-24), netrate/t2.py: a binding line written dissociation first",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by I | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr/(1 + amount(inhibited_by)/Ki)\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "Ki"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t2/fwd_kr_sped",
+  "source": "review of #127/#128 (2026-10-24), netrate/t2.py: a binding line written dissociation first",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by I | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr*(1 + amount(inhibited_by)/Ki)\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "Ki"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t2/rev_kf_slowed",
+  "source": "review of #127/#128 (2026-10-24), netrate/t2.py: a binding line written dissociation first",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by I | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=1) % sub(enz=1, mod='off') | enz(sub=None) + sub(enz=None, mod='off') @ kr, kf/(1 + amount(inhibited_by)/Ki)\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "Ki"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t2/rev_kr_slowed",
+  "source": "review of #127/#128 (2026-10-24), netrate/t2.py: a binding line written dissociation first",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by I | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=1) % sub(enz=1, mod='off') | enz(sub=None) + sub(enz=None, mod='off') @ kr/(1 + amount(inhibited_by)/Ki), kf\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "Ki"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t2/rev_kr_sped",
+  "source": "review of #127/#128 (2026-10-24), netrate/t2.py: a binding line written dissociation first",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by I | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=1) % sub(enz=1, mod='off') | enz(sub=None) + sub(enz=None, mod='off') @ kr*(1 + amount(inhibited_by)/Ki), kf\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "Ki"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t2/rev_kc_slowed",
+  "source": "review of #127/#128 (2026-10-24), netrate/t2.py: a binding line written dissociation first",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by I | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=1) % sub(enz=1, mod='off') | enz(sub=None) + sub(enz=None, mod='off') @ kr, kf\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc/(1 + amount(inhibited_by)/Ki)",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "Ki"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t5/partner",
+  "source": "review of #127/#128 (2026-10-24), netrate/t5.py: the enzyme sequestered by a partner it is written not bound to",
+  "rows": [
+   "p: E{~C} phosphorylates S at S10, inhibited by I | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(C=None) + C(enz=None) | enz(C=1) % C(enz=1) @ kon, koff\nenz(C=None) + sub(mod='off') >> enz(C=None) + sub(mod='on') @ kc/(1+amount(inhibited_by)/Ki)",
+    "parameters": [
+     "kon",
+     "koff",
+     "kc",
+     "Ki"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t6/one_line",
+  "source": "review of #127/#128 (2026-10-24), netrate/t6.py: the product catalyses its own making (products absent: depends on that decision)",
+  "rows": [
+   "c: A -> B, activated by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "w",
+    "scheme": "obj_from_0() + obj_to_0() >> obj_to_0() + obj_to_0() @ ka*amount(activated_by)",
+    "parameters": [
+     "ka"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t6/basal",
+  "source": "review of #127/#128 (2026-10-24), netrate/t6.py: the product catalyses its own making (products absent: depends on that decision)",
+  "rows": [
+   "c: A -> B, activated by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "w",
+    "scheme": "obj_from_0() >> obj_to_0() @ kb\nobj_from_0() + obj_to_0() >> obj_to_0() + obj_to_0() @ ka*amount(activated_by)",
+    "parameters": [
+     "ka",
+     "kb"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t8/trimer",
+  "source": "review of #127/#128 (2026-10-24), netrate/t8.py: a trimer in two steps",
+  "rows": [
+   "t: A binds B binds C, inhibited by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Complex",
+    "policy": "w",
+    "scheme": "members_0(members_1=None) + members_1(members_0=None) | members_0(members_1=1) % members_1(members_0=1) @ k1/(1+amount(inhibited_by)/K), km1\nmembers_0(members_1=1, members_2=None) % members_1(members_0=1) + members_2(members_0=None) | members_0(members_1=1, members_2=2) % members_1(members_0=1) % members_2(members_0=2) @ k2, km2",
+    "parameters": [
+     "k1",
+     "km1",
+     "k2",
+     "km2",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t8/two_inputs",
+  "source": "review of #127/#128 (2026-10-24), netrate/t8.py: a two-input conversion with its subject",
+  "rows": [
+   "c: A + B -> C by E, inhibited by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "w",
+    "scheme": "subj(obj_from_0=None) + obj_from_0(subj=None) | subj(obj_from_0=1) % obj_from_0(subj=1) @ kf, kr\nsubj(obj_from_0=1) % obj_from_0(subj=1) + obj_from_1() >> subj(obj_from_0=None) + obj_to_0() @ kc/(1+amount(inhibited_by)/K) delete_molecules",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t9/4_chain",
+  "source": "review of #127/#128 (2026-10-24), netrate/t9.py: enzyme conformations (six all joined ran past 15 minutes)",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by I | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(conf='s0') | enz(conf='s1') @ k01, k10\nenz(conf='s1') | enz(conf='s2') @ k12, k21\nenz(conf='s2') | enz(conf='s3') @ k23, k32\nenz(conf='s3') + sub(mod='off') >> enz(conf='s3') + sub(mod='on') @ kc/(1+amount(inhibited_by)/K)",
+    "parameters": [
+     "k01",
+     "k10",
+     "k12",
+     "k21",
+     "k23",
+     "k32",
+     "kc",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t9/4_all",
+  "source": "review of #127/#128 (2026-10-24), netrate/t9.py: enzyme conformations (six all joined ran past 15 minutes)",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by I | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(conf='s0') | enz(conf='s1') @ k01, k10\nenz(conf='s0') | enz(conf='s2') @ k02, k20\nenz(conf='s0') | enz(conf='s3') @ k03, k30\nenz(conf='s1') | enz(conf='s2') @ k12, k21\nenz(conf='s1') | enz(conf='s3') @ k13, k31\nenz(conf='s2') | enz(conf='s3') @ k23, k32\nenz(conf='s3') + sub(mod='off') >> enz(conf='s3') + sub(mod='on') @ kc/(1+amount(inhibited_by)/K)",
+    "parameters": [
+     "k01",
+     "k10",
+     "k02",
+     "k20",
+     "k03",
+     "k30",
+     "k12",
+     "k21",
+     "k13",
+     "k31",
+     "k23",
+     "k32",
+     "kc",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t9/6_all",
+  "source": "review of #127/#128 (2026-10-24), netrate/t9.py: enzyme conformations (six all joined ran past 15 minutes)",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by I | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(conf='s0') | enz(conf='s1') @ k01, k10\nenz(conf='s0') | enz(conf='s2') @ k02, k20\nenz(conf='s0') | enz(conf='s3') @ k03, k30\nenz(conf='s0') | enz(conf='s4') @ k04, k40\nenz(conf='s0') | enz(conf='s5') @ k05, k50\nenz(conf='s1') | enz(conf='s2') @ k12, k21\nenz(conf='s1') | enz(conf='s3') @ k13, k31\nenz(conf='s1') | enz(conf='s4') @ k14, k41\nenz(conf='s1') | enz(conf='s5') @ k15, k51\nenz(conf='s2') | enz(conf='s3') @ k23, k32\nenz(conf='s2') | enz(conf='s4') @ k24, k42\nenz(conf='s2') | enz(conf='s5') @ k25, k52\nenz(conf='s3') | enz(conf='s4') @ k34, k43\nenz(conf='s3') | enz(conf='s5') @ k35, k53\nenz(conf='s4') | enz(conf='s5') @ k45, k54\nenz(conf='s5') + sub(mod='off') >> enz(conf='s5') + sub(mod='on') @ kc/(1+amount(inhibited_by)/K)",
+    "parameters": [
+     "k01",
+     "k10",
+     "k02",
+     "k20",
+     "k03",
+     "k30",
+     "k04",
+     "k40",
+     "k05",
+     "k50",
+     "k12",
+     "k21",
+     "k13",
+     "k31",
+     "k14",
+     "k41",
+     "k15",
+     "k51",
+     "k23",
+     "k32",
+     "k24",
+     "k42",
+     "k25",
+     "k52",
+     "k34",
+     "k43",
+     "k35",
+     "k53",
+     "k45",
+     "k54",
+     "kc",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t10/e3_kdeg_slowed",
+  "source": "review of #127/#128 (2026-10-24), netrate/t10.py",
+  "rows": [
+   "d: E3 decreases S, inhibited by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "DecreaseAmount",
+    "policy": "w",
+    "scheme": "subj(obj=None) + obj(subj=None) | subj(obj=1) % obj(subj=1) @ kf, kr\nsubj(obj=1) % obj(subj=1) >> subj(obj=None) @ kdeg/(1+amount(inhibited_by)/K) delete_molecules",
+    "parameters": [
+     "kf",
+     "kr",
+     "kdeg",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t10/e3_kr_slowed",
+  "source": "review of #127/#128 (2026-10-24), netrate/t10.py",
+  "rows": [
+   "d: E3 decreases S, inhibited by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "DecreaseAmount",
+    "policy": "w",
+    "scheme": "subj(obj=None) + obj(subj=None) | subj(obj=1) % obj(subj=1) @ kf, kr/(1+amount(inhibited_by)/K)\nsubj(obj=1) % obj(subj=1) >> subj(obj=None) @ kdeg delete_molecules",
+    "parameters": [
+     "kf",
+     "kr",
+     "kdeg",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t10/substrate_inhibition",
+  "source": "review of #127/#128 (2026-10-24), netrate/t10.py",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=None, s2=None) + sub(enz=None, mod='off') | enz(sub=1, s2=None) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1, s2=None) % sub(enz=1, mod='off') >> enz(sub=None, s2=None) + sub(enz=None, mod='on') @ kc/(1+amount(inhibited_by)/K)\nenz(sub=1, s2=None) % sub(enz=1, mod='off') + sub(enz=None, mod='off') | enz(sub=1, s2=2) % sub(enz=1, mod='off') % sub(enz=2, mod='off') @ ki, kmi",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "ki",
+     "kmi",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t10/three_steps",
+  "source": "review of #127/#128 (2026-10-24), netrate/t10.py",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ k1, km1\nenz(sub=1) % sub(enz=1, mod='off') | enz(sub=1) % sub(enz=1, mod='on') @ k2/(1+amount(inhibited_by)/K), km2\nenz(sub=1) % sub(enz=1, mod='on') | enz(sub=None) + sub(enz=None, mod='on') @ k3, km3",
+    "parameters": [
+     "k1",
+     "km1",
+     "k2",
+     "km2",
+     "k3",
+     "km3",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t10/three_steps_rebinding",
+  "source": "review of #127/#128 (2026-10-24), netrate/t10.py",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ k1, km1\nenz(sub=1) % sub(enz=1, mod='off') | enz(sub=1) % sub(enz=1, mod='on') @ k2, km2\nenz(sub=1) % sub(enz=1, mod='on') | enz(sub=None) + sub(enz=None, mod='on') @ k3, km3*(1+amount(inhibited_by)/K)",
+    "parameters": [
+     "k1",
+     "km1",
+     "k2",
+     "km2",
+     "k3",
+     "km3",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t10/ping_pong",
+  "source": "review of #127/#128 (2026-10-24), netrate/t10.py",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(st='a') + sub(mod='off') >> enz(st='b') + sub(mod='on') @ kc\nenz(st='b') >> enz(st='a') @ kreg/(1+amount(inhibited_by)/K)",
+    "parameters": [
+     "kc",
+     "kreg",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t11/synthesis_activated",
+  "source": "review of #127/#128 (2026-10-24), netrate/t11.py",
+  "rows": [
+   "d: S is degraded, activated by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "DecreaseAmount",
+    "policy": "w",
+    "scheme": "obj() >> None @ kd\nNone >> obj() @ ks*(1 + amount(activated_by)/K)",
+    "parameters": [
+     "kd",
+     "ks",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t11/synthesis_modulated",
+  "source": "review of #127/#128 (2026-10-24), netrate/t11.py",
+  "rows": [
+   "d: S is degraded, modulated by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "DecreaseAmount",
+    "policy": "w",
+    "scheme": "obj() >> None @ kd\nNone >> obj() @ ks*(1 + amount(modulated_by)/K)",
+    "parameters": [
+     "kd",
+     "ks",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t11/subj_and_synthesis",
+  "source": "review of #127/#128 (2026-10-24), netrate/t11.py",
+  "rows": [
+   "d: E3 decreases S, activated by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "DecreaseAmount",
+    "policy": "w",
+    "scheme": "subj() + obj() >> subj() @ kd delete_molecules\nNone >> obj() @ ks*(1 + amount(activated_by)/K)",
+    "parameters": [
+     "kd",
+     "ks",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t11/degradation_sped",
+  "source": "review of #127/#128 (2026-10-24), netrate/t11.py",
+  "rows": [
+   "s: S is produced, activated by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "IncreaseAmount",
+    "policy": "w",
+    "scheme": "None >> obj() @ ks\nobj() >> None @ kd*(1 + amount(activated_by)/K)",
+    "parameters": [
+     "kd",
+     "ks",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t12/ub_degradation",
+  "source": "review of #127/#128 (2026-10-24), netrate/t12.py",
+  "rows": [
+   "d: E3 decreases S, activated by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "DecreaseAmount",
+    "policy": "w",
+    "scheme": "subj() + obj(ub='n') >> subj() + obj(ub='y') @ ku\nobj(ub='y') >> None @ kdeg*(1+amount(activated_by)/K)",
+    "parameters": [
+     "ku",
+     "kdeg",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t12/ub_ubiquitination",
+  "source": "review of #127/#128 (2026-10-24), netrate/t12.py",
+  "rows": [
+   "d: E3 decreases S, activated by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "DecreaseAmount",
+    "policy": "w",
+    "scheme": "subj() + obj(ub='n') >> subj() + obj(ub='y') @ ku*(1+amount(activated_by)/K)\nobj(ub='y') >> None @ kdeg",
+    "parameters": [
+     "ku",
+     "kdeg",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t12/immature",
+  "source": "review of #127/#128 (2026-10-24), netrate/t12.py",
+  "rows": [
+   "s: TF increases S, activated by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "IncreaseAmount",
+    "policy": "w",
+    "scheme": "subj() >> subj() + obj(st='imm') @ ks*(1+amount(activated_by)/K)\nobj(st='imm') >> obj(st='mat') @ km",
+    "parameters": [
+     "ks",
+     "km",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t14/hill",
+  "source": "review of #127/#128 (2026-10-24), netrate/t14.py, t15.py: Hill factors on five reversible steps (ran past 30 minutes)",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by I0 and I1 and I2 and I3, activated by A0, modulated by M0 | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=None, conf='open') + sub(enz=None, mod='off') | enz(sub=1, conf='open') % sub(enz=1, mod='off') @ k1/(1 + amount(inhibited_by_0)^n/(K0^n + amount(inhibited_by_0)^n)), km1*(1 + amount(inhibited_by_1)^n/(K1^n + amount(inhibited_by_1)^n))\nenz(sub=1, conf='open') % sub(enz=1, mod='off') | enz(sub=1, conf='open') % sub(enz=1, mod='on') @ k2/(1 + amount(inhibited_by_2)^n/(K2^n + amount(inhibited_by_2)^n)), km2\nenz(sub=1, conf='open') % sub(enz=1, mod='on') | enz(sub=None, conf='open') + sub(enz=None, mod='on') @ k3*(1 + amount(activated_by_0)^n/(K3^n + amount(activated_by_0)^n)), km3\nenz(sub=None, conf='open') | enz(sub=None, conf='shut') @ kd*(1 + amount(inhibited_by_3)^n/(K4^n + amount(inhibited_by_3)^n)), kb\nenz(sub=1, conf='open') % sub(enz=1, mod='off') | enz(sub=1, conf='shut') % sub(enz=1, mod='off') @ kd2*(1 + amount(modulated_by_0)^n/(K5^n + amount(modulated_by_0)^n)), kb2",
+    "parameters": [
+     "k1",
+     "km1",
+     "k2",
+     "km2",
+     "k3",
+     "km3",
+     "kd",
+     "kb",
+     "kd2",
+     "kb2",
+     "K0",
+     "K1",
+     "K2",
+     "K3",
+     "K4",
+     "K5",
+     "n"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t17/enzyme_turnover",
+  "source": "review of #127/#128 (2026-10-24), netrate/t17.py",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "None >> enz() @ ks\nenz() >> None @ kde*(1+amount(inhibited_by)/K)\nenz() + sub(mod='off') >> enz() + sub(mod='on') @ kc",
+    "parameters": [
+     "ks",
+     "kde",
+     "kc",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t17/enzyme_degraded",
+  "source": "review of #127/#128 (2026-10-24), netrate/t17.py",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz() >> None @ kde\nenz() + sub(mod='off') >> enz() + sub(mod='on') @ kc/(1+amount(inhibited_by)/K)",
+    "parameters": [
+     "kde",
+     "kc",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t17/back_sped_more",
+  "source": "review of #127/#128 (2026-10-24), netrate/t17.py",
+  "rows": [
+   "c: A -> B, activated by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "w",
+    "scheme": "obj_from_0() | obj_to_0() @ kf*(1+amount(activated_by)/K), kr*(1+amount(activated_by)/K)^2",
+    "parameters": [
+     "kf",
+     "kr",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t17/gap_step",
+  "source": "review of #127/#128 (2026-10-24), netrate/t17.py",
+  "rows": [
+   "c: RAS{-mod\"GTP\"} -> RAS{mod\"GTP\"}, activated by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "w",
+    "scheme": "obj_from_0() >> obj_to_0() @ kf\nobj_to_0() >> obj_from_0() @ kgap*(1+amount(activated_by)/K)",
+    "parameters": [
+     "kf",
+     "kgap",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t17/saturating_kc",
+  "source": "review of #127/#128 (2026-10-24), netrate/t17.py",
+  "rows": [
+   "p: E phosphorylates S at S10, activated by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc*amount(activated_by)/(K + amount(activated_by))",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t19/kf",
+  "source": "review of #127/#128 (2026-10-24), netrate/t19.py, t20.py: gexpr13's factor on one step of two (linsolve ran 400 s)",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by I, modulated by M0 and M1 and M2 | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf*(1 + a34*amount(modulated_by_0)/(H34 + amount(modulated_by_0)) + a24*amount(modulated_by_1)/(H24 + amount(modulated_by_1)))/(1 + rho2*amount(inhibited_by)/(H2 + amount(inhibited_by)))/(1 + rho3*amount(modulated_by_2)/(H3 + amount(modulated_by_2)) + rhoD*(amount(modulated_by_1) + amount(modulated_by_0))/(HD + amount(modulated_by_1) + amount(modulated_by_0)) + rL), kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "a34",
+     "a24",
+     "rho2",
+     "rho3",
+     "rhoD",
+     "rL",
+     "H2",
+     "H3",
+     "H24",
+     "H34",
+     "HD"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t19/kr",
+  "source": "review of #127/#128 (2026-10-24), netrate/t19.py, t20.py: gexpr13's factor on one step of two (linsolve ran 400 s)",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by I, modulated by M0 and M1 and M2 | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr*(1 + a34*amount(modulated_by_0)/(H34 + amount(modulated_by_0)) + a24*amount(modulated_by_1)/(H24 + amount(modulated_by_1)))/(1 + rho2*amount(inhibited_by)/(H2 + amount(inhibited_by)))/(1 + rho3*amount(modulated_by_2)/(H3 + amount(modulated_by_2)) + rhoD*(amount(modulated_by_1) + amount(modulated_by_0))/(HD + amount(modulated_by_1) + amount(modulated_by_0)) + rL)\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "a34",
+     "a24",
+     "rho2",
+     "rho3",
+     "rhoD",
+     "rL",
+     "H2",
+     "H3",
+     "H24",
+     "H34",
+     "HD"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t19/kc",
+  "source": "review of #127/#128 (2026-10-24), netrate/t19.py, t20.py: gexpr13's factor on one step of two (linsolve ran 400 s)",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by I, modulated by M0 and M1 and M2 | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc*(1 + a34*amount(modulated_by_0)/(H34 + amount(modulated_by_0)) + a24*amount(modulated_by_1)/(H24 + amount(modulated_by_1)))/(1 + rho2*amount(inhibited_by)/(H2 + amount(inhibited_by)))/(1 + rho3*amount(modulated_by_2)/(H3 + amount(modulated_by_2)) + rhoD*(amount(modulated_by_1) + amount(modulated_by_0))/(HD + amount(modulated_by_1) + amount(modulated_by_0)) + rL)",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "a34",
+     "a24",
+     "rho2",
+     "rho3",
+     "rhoD",
+     "rL",
+     "H2",
+     "H3",
+     "H24",
+     "H34",
+     "HD"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t22/inhibited_by",
+  "source": "review of #127/#128 (2026-10-24), netrate/t22.py, v1.py: one regulator on two steps, each its own way",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr*(1+amount(inhibited_by)/K)^2\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc*(1+amount(inhibited_by)/K)",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t22/activated_by",
+  "source": "review of #127/#128 (2026-10-24), netrate/t22.py, v1.py: one regulator on two steps, each its own way",
+  "rows": [
+   "p: E phosphorylates S at S10, activated by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr*(1+amount(activated_by)/K)^2\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc*(1+amount(activated_by)/K)",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t22/modulated_by",
+  "source": "review of #127/#128 (2026-10-24), netrate/t22.py, v1.py: one regulator on two steps, each its own way",
+  "rows": [
+   "p: E phosphorylates S at S10, modulated by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr*(1+amount(modulated_by)/K)^2\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc*(1+amount(modulated_by)/K)",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/v5/itself",
+  "source": "review of #127/#128 (2026-10-24), netrate/v5.py: a removal inhibited by what it removes",
+  "rows": [
+   "d: Y is degraded, inhibited by Y | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "DecreaseAmount",
+    "policy": "w",
+    "rate": "kd/(1 + inhibited_by/K)",
+    "parameters": [
+     "kd",
+     "K"
+    ],
+    "based_on": "indra_default"
+   }
+  ]
+ },
+ {
+  "id": "netrate/2_reversed/kr2_kc",
+  "source": "review of #127/#128 (2026-10-24), netrate finding 2: a binding line written dissociation first",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by I | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=1) % sub(enz=1, mod='off') | enz(sub=None) + sub(enz=None, mod='off') @ kr*(1+amount(inhibited_by)/Ki)^2, kf\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc*(1+amount(inhibited_by)/Ki)",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "Ki"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/2_reversed/competitive",
+  "source": "review of #127/#128 (2026-10-24), netrate finding 2: a binding line written dissociation first",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by I | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=1) % sub(enz=1, mod='off') | enz(sub=None) + sub(enz=None, mod='off') @ kr, kf/(1+amount(inhibited_by)/Ki)\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "Ki"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/3/enzyme_inhibits_itself",
+  "source": "review of #127/#128 (2026-10-24), netrate finding 3: the regulator is the enzyme",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by E | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "rate": "kc/(1 + inhibited_by/K)",
+    "parameters": [
+     "kc",
+     "K"
+    ],
+    "based_on": "indra_default"
+   }
+  ]
+ },
+ {
+  "id": "netrate/1/advice",
+  "source": "review of #127/#128 (2026-10-24), netrate finding 1: the synthesis row the refusal names",
+  "rows": [
+   "d: S is degraded | indra_default",
+   "s: S is produced, activated by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "IncreaseAmount",
+    "policy": "w",
+    "rate": "ks*(1 + activated_by/K)",
+    "parameters": [
+     "ks",
+     "K"
+    ],
+    "based_on": "indra_default"
+   }
+  ]
+ },
+ {
+  "id": "netrate/t4/Inhibition",
+  "source": "review of #127/#128 (2026-10-24), netrate/t4.py: types without a statement table entry before",
+  "rows": [
+   "a: MEK inhibits ERK, activated by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Inhibition",
+    "policy": "w",
+    "scheme": "subj() + obj(act='active') >> subj() + obj(act='inactive') @ ki*amount(activated_by)\nobj(act='inactive') >> obj(act='active') @ kr",
+    "parameters": [
+     "ki",
+     "kr"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t4/Activation_binding",
+  "source": "review of #127/#128 (2026-10-24), netrate/t4.py: types without a statement table entry before",
+  "rows": [
+   "a: MEK activates ERK, activated by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Activation",
+    "policy": "w",
+    "scheme": "subj(obj=None) + obj(subj=None, act='inactive') | subj(obj=1) % obj(subj=1, act='inactive') @ kf, kr\nsubj(obj=1) % obj(subj=1, act='inactive') >> subj(obj=None) + obj(subj=None, act='active') @ kc*amount(activated_by)",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t4/Activation_binding_back",
+  "source": "review of #127/#128 (2026-10-24), netrate/t4.py: types without a statement table entry before",
+  "rows": [
+   "a: MEK activates ERK, activated by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Activation",
+    "policy": "w",
+    "scheme": "subj(obj=None) + obj(subj=None, act='inactive') | subj(obj=1) % obj(subj=1, act='inactive') @ kf, kr\nsubj(obj=1) % obj(subj=1, act='inactive') >> subj(obj=None) + obj(subj=None, act='active') @ kc*amount(activated_by)\nobj(act='active') >> obj(act='inactive') @ kd",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "kd"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t4/Gef",
+  "source": "review of #127/#128 (2026-10-24), netrate/t4.py",
+  "rows": [
+   {
+    "statement": {
+     "type": "Gef",
+     "gef": {
+      "name": "SOS"
+     },
+     "ras": {
+      "name": "KRAS"
+     },
+     "activated_by": [
+      {
+       "name": "X"
+      }
+     ]
+    },
+    "policy": "w",
+    "prefix": "g"
+   }
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Gef",
+    "policy": "w",
+    "scheme": "gef() + ras(gtpbound='inactive') >> gef() + ras(gtpbound='active') @ kx*amount(activated_by)\nras(gtpbound='active') >> ras(gtpbound='inactive') @ kh",
+    "parameters": [
+     "kx",
+     "kh"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t4/Gap",
+  "source": "review of #127/#128 (2026-10-24), netrate/t4.py",
+  "rows": [
+   {
+    "statement": {
+     "type": "Gap",
+     "gap": {
+      "name": "SOS"
+     },
+     "ras": {
+      "name": "KRAS"
+     },
+     "activated_by": [
+      {
+       "name": "X"
+      }
+     ]
+    },
+    "policy": "w",
+    "prefix": "g"
+   }
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Gap",
+    "policy": "w",
+    "scheme": "gap() + ras(gtpbound='active') >> gap() + ras(gtpbound='inactive') @ kx*amount(activated_by)\nras(gtpbound='inactive') >> ras(gtpbound='active') @ kh",
+    "parameters": [
+     "kx",
+     "kh"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/v3/four_regulators",
+  "source": "review of #127/#128 (2026-10-24), netrate/v3.py: three reversible steps, four regulators",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by I0 and I1 and I2, activated by A0 | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ k1/(1 + amount(inhibited_by_0)/K0), km1*(1 + amount(inhibited_by_1)/K1)\nenz(sub=1) % sub(enz=1, mod='off') | enz(sub=1) % sub(enz=1, mod='on') @ k2/(1 + amount(inhibited_by_2)/K2), km2\nenz(sub=1) % sub(enz=1, mod='on') | enz(sub=None) + sub(enz=None, mod='on') @ k3*(1 + amount(activated_by_0)/K3), km3",
+    "parameters": [
+     "k1",
+     "km1",
+     "k2",
+     "km2",
+     "k3",
+     "km3",
+     "K0",
+     "K1",
+     "K2",
+     "K3"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t21/1reg",
+  "source": "review of #127/#128 (2026-10-24), netrate/t21.py, v6.py: saturating regulators on kc of two steps (finding 8)",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by I | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc/(1 + rho2*amount(inhibited_by)/(H2 + amount(inhibited_by)))",
+    "parameters": [
+     "H2",
+     "kc",
+     "kf",
+     "kr",
+     "rho2"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t21/2reg",
+  "source": "review of #127/#128 (2026-10-24), netrate/t21.py, v6.py: saturating regulators on kc of two steps (finding 8)",
+  "rows": [
+   "p: E phosphorylates S at S10, activated by A, inhibited by I | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc*(1 + a34*amount(activated_by)/(H34 + amount(activated_by)))/(1 + rho2*amount(inhibited_by)/(H2 + amount(inhibited_by)))",
+    "parameters": [
+     "H2",
+     "H34",
+     "a34",
+     "kc",
+     "kf",
+     "kr",
+     "rho2"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t21/3reg",
+  "source": "review of #127/#128 (2026-10-24), netrate/t21.py, v6.py: saturating regulators on kc of two steps (finding 8)",
+  "rows": [
+   "p: E phosphorylates S at S10, activated by A, inhibited by I, modulated by M | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc*(1 + a34*amount(activated_by)/(H34 + amount(activated_by)))/(1 + rho2*amount(inhibited_by)/(H2 + amount(inhibited_by)))/(1 + rho3*amount(modulated_by)/(H3 + amount(modulated_by)))",
+    "parameters": [
+     "H2",
+     "H3",
+     "H34",
+     "a34",
+     "kc",
+     "kf",
+     "kr",
+     "rho2",
+     "rho3"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t21/2sum",
+  "source": "review of #127/#128 (2026-10-24), netrate/t21.py, v6.py: saturating regulators on kc of two steps (finding 8)",
+  "rows": [
+   "p: E phosphorylates S at S10, modulated by M0 and M1 | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc*(1 + a34*amount(modulated_by_0)/(H34 + amount(modulated_by_0)) + a24*amount(modulated_by_1)/(H24 + amount(modulated_by_1)))",
+    "parameters": [
+     "H24",
+     "H34",
+     "a24",
+     "a34",
+     "kc",
+     "kf",
+     "kr"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "netrate/t9/5_all",
+  "source": "review of #127/#128 (2026-10-24), netrate/t9.py: five enzyme forms all joined (14 s before)",
+  "rows": [
+   "p: E phosphorylates S at S10, inhibited by I | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "scheme": "enz(conf='s0') | enz(conf='s1') @ k01, k10\nenz(conf='s0') | enz(conf='s2') @ k02, k20\nenz(conf='s0') | enz(conf='s3') @ k03, k30\nenz(conf='s0') | enz(conf='s4') @ k04, k40\nenz(conf='s1') | enz(conf='s2') @ k12, k21\nenz(conf='s1') | enz(conf='s3') @ k13, k31\nenz(conf='s1') | enz(conf='s4') @ k14, k41\nenz(conf='s2') | enz(conf='s3') @ k23, k32\nenz(conf='s2') | enz(conf='s4') @ k24, k42\nenz(conf='s3') | enz(conf='s4') @ k34, k43\nenz(conf='s4') + sub(mod='off') >> enz(conf='s4') + sub(mod='on') @ kc/(1+amount(inhibited_by)/K)",
+    "parameters": [
+     "k01",
+     "k10",
+     "k02",
+     "k20",
+     "k03",
+     "k30",
+     "k04",
+     "k40",
+     "k12",
+     "k21",
+     "k13",
+     "k31",
+     "k14",
+     "k41",
+     "k23",
+     "k32",
+     "k24",
+     "k42",
+     "k34",
+     "k43",
+     "kc",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "advice/products_at_0/ras_sos/product_stated",
+  "source": "review of #127/#128 (2026-10-24), the rows the products-at-0 refusal names (user's decision, 2026-10-24), followed",
+  "rows": [
+   "c1: RAS{-mod\"GTP\"} -> RAS{mod\"GTP\"}, activated by SOS and RAS{mod\"GTP\"} | fed"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "fed",
+    "scheme": "obj_from_0() >> obj_to_0() @ kb + kf*amount(activated_by_0)*amount(activated_by_1)\nobj_to_0() >> obj_from_0() @ kgap",
+    "parameters": [
+     "kb",
+     "kf",
+     "kgap"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "advice/products_at_0/ras_sos/own_row",
+  "source": "review of #127/#128 (2026-10-24), the rows the products-at-0 refusal names (user's decision, 2026-10-24), followed",
+  "rows": [
+   "c1: RAS{-mod\"GTP\"} -> RAS{mod\"GTP\"}, activated by SOS and RAS{mod\"GTP\"} | fed",
+   "c2: RAS{mod\"GTP\"} -> RAS{-mod\"GTP\"} | mass_action"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "fed",
+    "scheme": "obj_from_0() >> obj_to_0() @ kb + kf*amount(activated_by_0)*amount(activated_by_1)",
+    "parameters": [
+     "kb",
+     "kf"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "advice/products_at_0/autoregulation/product_stated",
+  "source": "review of #127/#128 (2026-10-24), the rows the products-at-0 refusal names (user's decision, 2026-10-24), followed",
+  "rows": [
+   "g: TF increases G, activated by X and G | fed"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "IncreaseAmount",
+    "policy": "fed",
+    "scheme": "subj() >> subj() + obj() @ ks + ka*amount(activated_by_0)*amount(activated_by_1)\nobj() >> None @ kd delete_molecules",
+    "parameters": [
+     "ks",
+     "ka",
+     "kd"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "advice/products_at_0/autoregulation/own_row",
+  "source": "review of #127/#128 (2026-10-24), the rows the products-at-0 refusal names (user's decision, 2026-10-24), followed",
+  "rows": [
+   "g: TF increases G, activated by X and G | fed",
+   "d: G is degraded | indra_default"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "IncreaseAmount",
+    "policy": "fed",
+    "scheme": "subj() >> subj() + obj() @ ks + ka*amount(activated_by_0)*amount(activated_by_1)",
+    "parameters": [
+     "ks",
+     "ka"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "advice/products_at_0/autocatalysis_basal/product_stated",
+  "source": "review of #127/#128 (2026-10-24), the rows the products-at-0 refusal names (user's decision, 2026-10-24), followed",
+  "rows": [
+   "c: A -> B, activated by X and B | fed"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "fed",
+    "scheme": "obj_from_0() >> obj_to_0() @ kb\nobj_from_0() >> obj_to_0() @ ka*amount(activated_by_0)*amount(activated_by_1)",
+    "parameters": [
+     "ka",
+     "kb"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "advice/products_at_0/autocatalysis_basal/own_row",
+  "source": "review of #127/#128 (2026-10-24), the rows the products-at-0 refusal names (user's decision, 2026-10-24), followed",
+  "rows": [
+   "c: A -> B, activated by X and B | fed"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "fed",
+    "scheme": "obj_from_0() >> obj_to_0() @ kb + ka*amount(activated_by_0)*amount(activated_by_1)",
+    "parameters": [
+     "ka",
+     "kb"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "advice/products_at_0/autocatalysis/product_stated",
+  "source": "review of #127/#128 (2026-10-24), the rows the products-at-0 refusal names (user's decision, 2026-10-24), followed",
+  "rows": [
+   "c: A -> B, activated by X and B | fed"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "fed",
+    "scheme": "obj_from_0() >> obj_to_0() @ ka*amount(activated_by_0)*amount(activated_by_1)",
+    "parameters": [
+     "ka"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b1/three_steps/activated_by_ERK{pT202}",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 1: a regulator matching the complex the catalytic step makes",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, activated by ERK{pT202} | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=1) % sub(enz=1, mod='on') @ kc/(1 + amount(activated_by)/K)\nenz(sub=1) % sub(enz=1, mod='on') >> enz(sub=None) + sub(enz=None, mod='on') @ kp",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "kp",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b1/three_steps/inhibited_by_ERK{pT202}",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 1: a regulator matching the complex the catalytic step makes",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, inhibited by ERK{pT202} | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=1) % sub(enz=1, mod='on') @ kc/(1 + amount(inhibited_by)/K)\nenz(sub=1) % sub(enz=1, mod='on') >> enz(sub=None) + sub(enz=None, mod='on') @ kp",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "kp",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b1/three_steps/inhibited_by_X",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 1: a regulator matching the complex the catalytic step makes",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, inhibited by X | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=1) % sub(enz=1, mod='on') @ kc/(1 + amount(inhibited_by)/K)\nenz(sub=1) % sub(enz=1, mod='on') >> enz(sub=None) + sub(enz=None, mod='on') @ kp",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "kp",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b1/three_steps/activated_by_X",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 1: a regulator matching the complex the catalytic step makes",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, activated by X | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=1) % sub(enz=1, mod='on') @ kc/(1 + amount(activated_by)/K)\nenz(sub=1) % sub(enz=1, mod='on') >> enz(sub=None) + sub(enz=None, mod='on') @ kp",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "kp",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b1/two_steps/activated_by_MEK",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 1: a bare pattern matching the enzyme free and bound",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, activated by MEK | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc/(1 + amount(activated_by)/K)",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b1/two_steps/inhibited_by_MEK",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 1: a bare pattern matching the enzyme free and bound",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, inhibited by MEK | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc/(1 + amount(inhibited_by)/K)",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b1/two_steps/inhibited_by_MEK{~ERK}",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 1: a bare pattern matching the enzyme free and bound",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, inhibited by MEK{~ERK} | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc/(1 + amount(inhibited_by)/K)",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b1/two_steps/inhibited_by_ERK",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 1: a bare pattern matching the enzyme free and bound",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, inhibited by ERK | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc/(1 + amount(inhibited_by)/K)",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b2/two_sites/inhibited_by",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
+  "rows": [
+   "m1: MEK phosphorylates ERK at Y187 | indra_default",
+   "p: MEK phosphorylates ERK at T185, inhibited by U | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "rate": "k/(1 + inhibited_by/K)",
+    "parameters": [
+     "k",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b2/two_sites/activated_by",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
+  "rows": [
+   "m1: MEK phosphorylates ERK at Y187 | indra_default",
+   "p: MEK phosphorylates ERK at T185, activated by U | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "rate": "k/(1 + activated_by/K)",
+    "parameters": [
+     "k",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b2/two_sites_two_steps/inhibited_by",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
+  "rows": [
+   "m1: MEK phosphorylates ERK at Y187 | indra_default",
+   "p: MEK phosphorylates ERK at T185, inhibited by U | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc/(1 + amount(inhibited_by)/K)",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b2/two_sites_two_steps/activated_by",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
+  "rows": [
+   "m1: MEK phosphorylates ERK at Y187 | indra_default",
+   "p: MEK phosphorylates ERK at T185, activated by U | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc/(1 + amount(activated_by)/K)",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b2/partner/inhibited_by",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
+  "rows": [
+   "b: ERK binds DUSP | indra_default",
+   "p: MEK phosphorylates ERK at T185, inhibited by U | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "rate": "k/(1 + inhibited_by/K)",
+    "parameters": [
+     "k",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b2/partner/activated_by",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
+  "rows": [
+   "b: ERK binds DUSP | indra_default",
+   "p: MEK phosphorylates ERK at T185, activated by U | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "rate": "k/(1 + activated_by/K)",
+    "parameters": [
+     "k",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b2/conversion/inhibited_by",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
+  "rows": [
+   "k: K phosphorylates A at S10 | indra_default",
+   "c: A -> B, inhibited by U | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "w",
+    "rate": "k/(1 + inhibited_by/K)",
+    "parameters": [
+     "k",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b2/conversion/activated_by",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
+  "rows": [
+   "k: K phosphorylates A at S10 | indra_default",
+   "c: A -> B, activated by U | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "w",
+    "rate": "k/(1 + activated_by/K)",
+    "parameters": [
+     "k",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b2/degradation/inhibited_by",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
+  "rows": [
+   "k: K phosphorylates A at S10 | indra_default",
+   "d: A is degraded, inhibited by U | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "DecreaseAmount",
+    "policy": "w",
+    "rate": "k/(1 + inhibited_by/K)",
+    "parameters": [
+     "k",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b2/degradation/activated_by",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
+  "rows": [
+   "k: K phosphorylates A at S10 | indra_default",
+   "d: A is degraded, activated by U | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "DecreaseAmount",
+    "policy": "w",
+    "rate": "k/(1 + activated_by/K)",
+    "parameters": [
+     "k",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b2/dephosphorylation/inhibited_by",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
+  "rows": [
+   "k: K phosphorylates A at S10 | indra_default",
+   "k2: K phosphorylates A at Y20 | indra_default",
+   "d: P dephosphorylates A at S10, inhibited by U | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Dephosphorylation",
+    "policy": "w",
+    "rate": "k/(1 + inhibited_by/K)",
+    "parameters": [
+     "k",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/b2/dephosphorylation/activated_by",
+  "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
+  "rows": [
+   "k: K phosphorylates A at S10 | indra_default",
+   "k2: K phosphorylates A at Y20 | indra_default",
+   "d: P dephosphorylates A at S10, activated by U | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Dephosphorylation",
+    "policy": "w",
+    "rate": "k/(1 + activated_by/K)",
+    "parameters": [
+     "k",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/chain/8",
+  "source": "review of #127 at b3d09b5 (2026-10-24), should fix: a chain of reversible enzyme forms, the inhibitor on kc alone",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, inhibited by I | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "scheme": "enz(c='c0', sub=None) | enz(c='c1', sub=None) @ ka0, kb0\nenz(c='c1', sub=None) | enz(c='c2', sub=None) @ ka1, kb1\nenz(c='c2', sub=None) | enz(c='c3', sub=None) @ ka2, kb2\nenz(c='c3', sub=None) | enz(c='c4', sub=None) @ ka3, kb3\nenz(c='c4', sub=None) | enz(c='c5', sub=None) @ ka4, kb4\nenz(c='c5', sub=None) | enz(c='c6', sub=None) @ ka5, kb5\nenz(c='c6', sub=None) | enz(c='c7', sub=None) @ ka6, kb6\nenz(c='c7', sub=None) + sub(enz=None, mod='off') | enz(c='c7', sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(c='c7', sub=1) % sub(enz=1, mod='off') >> enz(c='c7', sub=None) + sub(enz=None, mod='on') @ kc/(1 + amount(inhibited_by)/K)",
+    "parameters": [
+     "ka0",
+     "ka1",
+     "ka2",
+     "ka3",
+     "ka4",
+     "ka5",
+     "ka6",
+     "kb0",
+     "kb1",
+     "kb2",
+     "kb3",
+     "kb4",
+     "kb5",
+     "kb6",
+     "kf",
+     "kr",
+     "kc",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review127/chain/13",
+  "source": "review of #127 at b3d09b5 (2026-10-24), should fix: a chain of reversible enzyme forms, the inhibitor on kc alone",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, inhibited by I | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "scheme": "enz(c='c0', sub=None) | enz(c='c1', sub=None) @ ka0, kb0\nenz(c='c1', sub=None) | enz(c='c2', sub=None) @ ka1, kb1\nenz(c='c2', sub=None) | enz(c='c3', sub=None) @ ka2, kb2\nenz(c='c3', sub=None) | enz(c='c4', sub=None) @ ka3, kb3\nenz(c='c4', sub=None) | enz(c='c5', sub=None) @ ka4, kb4\nenz(c='c5', sub=None) | enz(c='c6', sub=None) @ ka5, kb5\nenz(c='c6', sub=None) | enz(c='c7', sub=None) @ ka6, kb6\nenz(c='c7', sub=None) | enz(c='c8', sub=None) @ ka7, kb7\nenz(c='c8', sub=None) | enz(c='c9', sub=None) @ ka8, kb8\nenz(c='c9', sub=None) | enz(c='c10', sub=None) @ ka9, kb9\nenz(c='c10', sub=None) | enz(c='c11', sub=None) @ ka10, kb10\nenz(c='c11', sub=None) | enz(c='c12', sub=None) @ ka11, kb11\nenz(c='c12', sub=None) + sub(enz=None, mod='off') | enz(c='c12', sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(c='c12', sub=1) % sub(enz=1, mod='off') >> enz(c='c12', sub=None) + sub(enz=None, mod='on') @ kc/(1 + amount(inhibited_by)/K)",
+    "parameters": [
+     "ka0",
+     "ka1",
+     "ka2",
+     "ka3",
+     "ka4",
+     "ka5",
+     "ka6",
+     "ka7",
+     "ka8",
+     "ka9",
+     "ka10",
+     "ka11",
+     "kb0",
+     "kb1",
+     "kb2",
+     "kb3",
+     "kb4",
+     "kb5",
+     "kb6",
+     "kb7",
+     "kb8",
+     "kb9",
+     "kb10",
+     "kb11",
+     "kf",
+     "kr",
+     "kc",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review128b/gef/feedback",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), t_gef: KRAS-GTP feedback on SOS, a Gef row; the advice crashed",
+  "rows": [
+   {
+    "statement": {
+     "type": "Gef",
+     "gef": {
+      "name": "SOS"
+     },
+     "ras": {
+      "name": "KRAS"
+     },
+     "activated_by": [
+      {
+       "name": "X"
+      }
+     ]
+    },
+    "policy": "written",
+    "prefix": "gef"
+   }
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Gef",
+    "policy": "written",
+    "scheme": "gef() + ras(gtpbound='inactive') >> gef() + ras(gtpbound='active') @ kb + k*amount(activated_by)*amount(ras(gtpbound='active'))",
+    "parameters": [
+     "kb",
+     "k"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review128b/gef/followed",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), t_gef: its advice followed",
+  "rows": [
+   "gef: SOS is a GEF for KRAS, activated by X and KRAS{gtpbound:on} | fed"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Gef",
+    "policy": "fed",
+    "scheme": "gef() + ras(gtpbound='inactive') >> gef() + ras(gtpbound='active') @ kb + k*amount(activated_by_0)*amount(activated_by_1)",
+    "parameters": [
+     "kb",
+     "k"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review128b/catalyst/a_e/activated_by",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), t_catalyst: E on both sides, a catalyst",
+  "rows": [
+   "c: A + E -> B + E, activated by X | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "written",
+    "scheme": "obj_from_0() + obj_from_1() >> obj_to_0() + obj_to_1() @ k*amount(activated_by)",
+    "parameters": [
+     "k"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review128b/catalyst/l_r/activated_by",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), t_catalyst: L + R -> L + R{act}",
+  "rows": [
+   "c: L + R -> L + R{pS10}, activated by X | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "written",
+    "scheme": "obj_from_0() + obj_from_1() >> obj_to_0() + obj_to_1() @ k*amount(activated_by)",
+    "parameters": [
+     "k"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review128b/catalyst/a_e/inhibited_by",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), t_catalyst: E on both sides, a catalyst",
+  "rows": [
+   "c: A + E -> B + E, inhibited by X | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "written",
+    "scheme": "obj_from_0() + obj_from_1() >> obj_to_0() + obj_to_1() @ k*amount(inhibited_by)",
+    "parameters": [
+     "k"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review128b/catalyst/l_r/inhibited_by",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), t_catalyst: L + R -> L + R{act}",
+  "rows": [
+   "c: L + R -> L + R{pS10}, inhibited by X | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "written",
+    "scheme": "obj_from_0() + obj_from_1() >> obj_to_0() + obj_to_1() @ k*amount(inhibited_by)",
+    "parameters": [
+     "k"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review128b/multiproduct/feedback",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), t_multiproduct: feedback through the second product C",
+  "rows": [
+   "c: A -> B + C, activated by X | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "written",
+    "scheme": "obj_from_0() >> obj_to_0() + obj_to_1() @ kb\nobj_from_0() + obj_to_1() >> obj_to_0() + obj_to_1() + obj_to_1() @ ka*amount(activated_by)",
+    "parameters": [
+     "ka",
+     "kb"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review128b/multiproduct/followed",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), t_multiproduct: its advice followed, C stated",
+  "rows": [
+   "c: A -> B + C, activated by X and C | fed"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "fed",
+    "scheme": "obj_from_0() >> obj_to_0() + obj_to_1() @ kb + ka*amount(activated_by_0)*amount(activated_by_1)",
+    "parameters": [
+     "ka",
+     "kb"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review128b/sites/4/inhibited_by",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), t_sites: EGFR with sites other rows set, a two-step row on it",
+  "rows": [
+   "k0: SRC phosphorylates EGFR at Y1068 | indra_default",
+   "k1: SRC phosphorylates EGFR at Y1173 | indra_default",
+   "k2: SRC phosphorylates EGFR at Y992 | indra_default",
+   "k3: SRC phosphorylates EGFR at Y1045 | indra_default",
+   "p: EGFR phosphorylates PLCG at Y783, inhibited by I | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc/(1 + amount(inhibited_by)/Ki)",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "Ki"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review128b/sites/4/activated_by",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), t_sites: EGFR with sites other rows set, a two-step row on it",
+  "rows": [
+   "k0: SRC phosphorylates EGFR at Y1068 | indra_default",
+   "k1: SRC phosphorylates EGFR at Y1173 | indra_default",
+   "k2: SRC phosphorylates EGFR at Y992 | indra_default",
+   "k3: SRC phosphorylates EGFR at Y1045 | indra_default",
+   "p: EGFR phosphorylates PLCG at Y783, activated by I | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc/(1 + amount(activated_by)/Ki)",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "Ki"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review128b/sites/5/inhibited_by",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), t_sites: EGFR with sites other rows set, a two-step row on it",
+  "rows": [
+   "k0: SRC phosphorylates EGFR at Y1068 | indra_default",
+   "k1: SRC phosphorylates EGFR at Y1173 | indra_default",
+   "k2: SRC phosphorylates EGFR at Y992 | indra_default",
+   "k3: SRC phosphorylates EGFR at Y1045 | indra_default",
+   "k4: SRC phosphorylates EGFR at Y1086 | indra_default",
+   "p: EGFR phosphorylates PLCG at Y783, inhibited by I | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc/(1 + amount(inhibited_by)/Ki)",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "Ki"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review128b/sites/5/activated_by",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), t_sites: EGFR with sites other rows set, a two-step row on it",
+  "rows": [
+   "k0: SRC phosphorylates EGFR at Y1068 | indra_default",
+   "k1: SRC phosphorylates EGFR at Y1173 | indra_default",
+   "k2: SRC phosphorylates EGFR at Y992 | indra_default",
+   "k3: SRC phosphorylates EGFR at Y1045 | indra_default",
+   "k4: SRC phosphorylates EGFR at Y1086 | indra_default",
+   "p: EGFR phosphorylates PLCG at Y783, activated by I | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "scheme": "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc/(1 + amount(activated_by)/Ki)",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "Ki"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review128b/vanish/8_forms_4_inhibitors",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), t_vanish: J near 1e-14 at the zero test's points",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, inhibited by I0 and I1 and I2 and I3 | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "scheme": "enz(c='c0', sub=None) | enz(c='c1', sub=None) @ ka0/(1 + amount(inhibited_by_0)/Ki0)/(1 + amount(inhibited_by_1)/Ki1)/(1 + amount(inhibited_by_2)/Ki2)/(1 + amount(inhibited_by_3)/Ki3), kb0*(1 + amount(inhibited_by_0)/Ki0)*(1 + amount(inhibited_by_1)/Ki1)*(1 + amount(inhibited_by_2)/Ki2)*(1 + amount(inhibited_by_3)/Ki3)\nenz(c='c1', sub=None) | enz(c='c2', sub=None) @ ka1/(1 + amount(inhibited_by_0)/Ki0)/(1 + amount(inhibited_by_1)/Ki1)/(1 + amount(inhibited_by_2)/Ki2)/(1 + amount(inhibited_by_3)/Ki3), kb1*(1 + amount(inhibited_by_0)/Ki0)*(1 + amount(inhibited_by_1)/Ki1)*(1 + amount(inhibited_by_2)/Ki2)*(1 + amount(inhibited_by_3)/Ki3)\nenz(c='c2', sub=None) | enz(c='c3', sub=None) @ ka2/(1 + amount(inhibited_by_0)/Ki0)/(1 + amount(inhibited_by_1)/Ki1)/(1 + amount(inhibited_by_2)/Ki2)/(1 + amount(inhibited_by_3)/Ki3), kb2*(1 + amount(inhibited_by_0)/Ki0)*(1 + amount(inhibited_by_1)/Ki1)*(1 + amount(inhibited_by_2)/Ki2)*(1 + amount(inhibited_by_3)/Ki3)\nenz(c='c3', sub=None) | enz(c='c4', sub=None) @ ka3/(1 + amount(inhibited_by_0)/Ki0)/(1 + amount(inhibited_by_1)/Ki1)/(1 + amount(inhibited_by_2)/Ki2)/(1 + amount(inhibited_by_3)/Ki3), kb3*(1 + amount(inhibited_by_0)/Ki0)*(1 + amount(inhibited_by_1)/Ki1)*(1 + amount(inhibited_by_2)/Ki2)*(1 + amount(inhibited_by_3)/Ki3)\nenz(c='c4', sub=None) | enz(c='c5', sub=None) @ ka4/(1 + amount(inhibited_by_0)/Ki0)/(1 + amount(inhibited_by_1)/Ki1)/(1 + amount(inhibited_by_2)/Ki2)/(1 + amount(inhibited_by_3)/Ki3), kb4*(1 + amount(inhibited_by_0)/Ki0)*(1 + amount(inhibited_by_1)/Ki1)*(1 + amount(inhibited_by_2)/Ki2)*(1 + amount(inhibited_by_3)/Ki3)\nenz(c='c5', sub=None) | enz(c='c6', sub=None) @ ka5/(1 + amount(inhibited_by_0)/Ki0)/(1 + amount(inhibited_by_1)/Ki1)/(1 + amount(inhibited_by_2)/Ki2)/(1 + amount(inhibited_by_3)/Ki3), kb5*(1 + amount(inhibited_by_0)/Ki0)*(1 + amount(inhibited_by_1)/Ki1)*(1 + amount(inhibited_by_2)/Ki2)*(1 + amount(inhibited_by_3)/Ki3)\nenz(c='c6', sub=None) | enz(c='c7', sub=None) @ ka6/(1 + amount(inhibited_by_0)/Ki0)/(1 + amount(inhibited_by_1)/Ki1)/(1 + amount(inhibited_by_2)/Ki2)/(1 + amount(inhibited_by_3)/Ki3), kb6*(1 + amount(inhibited_by_0)/Ki0)*(1 + amount(inhibited_by_1)/Ki1)*(1 + amount(inhibited_by_2)/Ki2)*(1 + amount(inhibited_by_3)/Ki3)\nenz(c='c7', sub=None) + sub(enz=None, mod='off') | enz(c='c7', sub=1) % sub(enz=1, mod='off') @ kf, kr\nenz(c='c7', sub=1) % sub(enz=1, mod='off') >> enz(c='c7', sub=None) + sub(enz=None, mod='on') @ kc/(1 + amount(inhibited_by_0)/Ki0)/(1 + amount(inhibited_by_1)/Ki1)/(1 + amount(inhibited_by_2)/Ki2)/(1 + amount(inhibited_by_3)/Ki3)",
+    "parameters": [
+     "ka0",
+     "ka1",
+     "ka2",
+     "ka3",
+     "ka4",
+     "ka5",
+     "ka6",
+     "kb0",
+     "kb1",
+     "kb2",
+     "kb3",
+     "kb4",
+     "kb5",
+     "kb6",
+     "kf",
+     "kr",
+     "kc",
+     "Ki0",
+     "Ki1",
+     "Ki2",
+     "Ki3"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "review128b/time/from_0",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), e2e_time: an onset rate, time from 0",
+  "rows": [
+   "conv: A becomes B, activated by C | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "written",
+    "rate": "k*activated_by*time/(tau + time)",
+    "parameters": [
+     "k",
+     "tau"
+    ],
+    "based_on": "mass_action"
+   }
+  ],
+  "times": [
+   0.0,
+   10.0
+  ]
+ },
+ {
+  "id": "review128b/time/from_minus_5",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), e2e_time: an onset rate, an experiment from -5",
+  "rows": [
+   "conv: A becomes B, activated by C | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "written",
+    "rate": "k*activated_by*time/(tau + time)",
+    "parameters": [
+     "k",
+     "tau"
+    ],
+    "based_on": "mass_action"
+   }
+  ],
+  "times": [
+   -5.0,
+   10.0
+  ]
+ },
+ {
+  "id": "review128b/dose/unit",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), t_dose_unit: d bound to dose - 1",
+  "rows": [
+   "conv: A becomes B, activated by C | written d=\"dose - 1\""
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "written",
+    "rate": "k*(1 + d*activated_by)",
+    "parameters": [
+     "k",
+     "d"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "review128b/binding/piecewise_off",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), a binding's piecewise raised a TypeError",
+  "rows": [
+   "conv: A becomes B, activated by C | written g=\"piecewise(0, ko > 0, 1)\""
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "written",
+    "rate": "k*(1 + g*activated_by)",
+    "parameters": [
+     "k",
+     "g"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "review128b/binding/piecewise_on",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), a binding's piecewise, on either way",
+  "rows": [
+   "conv: A becomes B, activated by C | written g=\"piecewise(2, ko > 0, 1)\""
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "written",
+    "rate": "k*(1 + g*activated_by)",
+    "parameters": [
+     "k",
+     "g"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "review128b/bounds/fraction",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), b1_fraction: e in [0, 1]",
+  "rows": [
+   "conv: A becomes B, activated by C | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "written",
+    "rate": "k*(1 - e)*activated_by",
+    "parameters": [
+     "k",
+     "e"
+    ],
+    "based_on": "mass_action"
+   }
+  ]
+ },
+ {
+  "id": "review128b/kept/p0",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), kept as handled correctly (t_types)",
+  "rows": [
+   "p: ERK phosphorylates ERK at T202, activated by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "w",
+    "rate": "k*activated_by",
+    "parameters": [
+     "k"
+    ],
+    "based_on": "indra_default"
+   }
+  ]
+ },
+ {
+  "id": "review128b/kept/a1",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), kept as handled correctly (t_types)",
+  "rows": [
+   "a: EGFR autophosphorylates at Y1068, activated by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Autophosphorylation",
+    "policy": "w",
+    "rate": "k*activated_by",
+    "parameters": [
+     "k"
+    ],
+    "based_on": "indra_default"
+   }
+  ]
+ },
+ {
+  "id": "review128b/kept/g2",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), kept as handled correctly (t_types)",
+  "rows": [
+   "g: SOS activates KRAS as gtpbound, inhibited by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Activation",
+    "policy": "w",
+    "rate": "k*inhibited_by",
+    "parameters": [
+     "k"
+    ],
+    "based_on": "indra_default"
+   }
+  ]
+ },
+ {
+  "id": "review128b/kept/m3",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), kept as handled correctly (t_types)",
+  "rows": [
+   "m: A moves from cytoplasm to nucleus, inhibited by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Translocation",
+    "policy": "w",
+    "rate": "k*inhibited_by",
+    "parameters": [
+     "k"
+    ],
+    "based_on": "indra_default"
+   }
+  ]
+ },
+ {
+  "id": "review128b/kept/c4",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), kept as handled correctly (t_types)",
+  "rows": [
+   "c: A -> B + B, inhibited by X | w"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "w",
+    "rate": "k*inhibited_by",
+    "parameters": [
+     "k"
+    ],
+    "based_on": "indra_default"
+   }
+  ]
+ }
+]

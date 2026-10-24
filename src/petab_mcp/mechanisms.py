@@ -208,9 +208,21 @@ def _read_regulators(
     return {name: agents[name] for name in names}
 
 
+#: The size, in sympy operations, past which an expression is not expanded or factored to sign
+#: it: both grow without bound on a large rate (perica_egf's gexpr13 ran past 20 minutes), and every
+#: build reads every mechanism again. Past it a sign is read off the expression as it stands, and
+#: one that cannot be counts as not shown.
+SIGN_OPS = 300
+#: The most terms an expansion may make (:func:`_terms`) for a sum to be expanded, or a fraction
+#: factored, to sign it: a product of sums of a net rate's parts expanded or factored for minutes
+#: (the review of #128's t20).
+SIGN_TERMS = 64
+
+
 def _sign(e: sympy.Expr) -> int | None:
     """``1`` when ``e`` is provably never negative, ``-1`` never positive, from the assumptions on
-    its names and how products, powers and sums of signed terms combine; ``None`` otherwise."""
+    its names and how products, powers and sums of signed terms combine; ``None`` otherwise. A
+    sum is expanded only within :data:`SIGN_TERMS`."""
     if e.is_nonnegative:
         return 1
     if e.is_nonpositive:
@@ -225,9 +237,23 @@ def _sign(e: sympy.Expr) -> int | None:
         sign = _sign(base)
         return sign if sign == 1 or exponent.is_odd else None
     if isinstance(e, sympy.Add):
-        signs = {_sign(t) for t in sympy.Add.make_args(sympy.expand(e))}
-        return signs.pop() if len(signs) == 1 and None not in signs else None
+        for terms in (e, sympy.expand(e) if _terms(e) <= SIGN_TERMS else None):
+            signs = {_sign(t) for t in sympy.Add.make_args(terms)} if terms is not None else {None}
+            if len(signs) == 1 and None not in signs:
+                return signs.pop()
     return None
+
+
+def _terms(e: sympy.Expr) -> int:
+    """How many terms expanding ``e`` makes, at most: a sum's terms add, a product's multiply, a
+    whole power multiplies its base's; read off the expression, never expanded."""
+    if isinstance(e, sympy.Add):
+        return sum(_terms(a) for a in e.args)
+    if isinstance(e, sympy.Mul):
+        return math.prod(_terms(a) for a in e.args)
+    if isinstance(e, sympy.Pow) and e.exp.is_Integer and e.exp > 0:
+        return _terms(e.base) ** int(e.exp)
+    return 1
 
 
 def _direction(expr: sympy.Expr, symbol: sympy.Symbol) -> int | None:
@@ -237,51 +263,95 @@ def _direction(expr: sympy.Expr, symbol: sympy.Symbol) -> int | None:
     switches = (c for pw in expr.atoms(sympy.Piecewise) for _, c in pw.args)
     if any(symbol in getattr(c, "free_symbols", ()) for c in switches):
         return None
-    d = sympy.diff(expr, symbol)
-    if sympy.simplify(d) == 0:
+    return _monotone(expr, symbol)
+
+
+def _monotone(e: sympy.Expr, x: sympy.Symbol) -> int | None:
+    """:func:`_direction` without the piecewise test: taken apart first (:func:`_by_parts`), and
+    where that does not settle it, by the sign of the derivative within :data:`SIGN_OPS`. A large
+    rate is never expanded or factored, only its small parts differentiated."""
+    if x not in e.free_symbols:
         return 0
-    numerator, denominator = sympy.fraction(sympy.together(d))
-    for n, den in ((numerator, denominator), (sympy.factor(numerator), sympy.factor(denominator))):
-        if (sn := _sign(n)) is not None and (sd := _sign(den)) is not None:
-            return sn * sd
+    found = _by_parts(e, x)
+    if found is None and sympy.count_ops(e) <= SIGN_OPS:
+        found = _by_derivative(e, x)
+    return found
+
+
+def _by_parts(e: sympy.Expr, x: sympy.Symbol) -> int | None:
+    """How ``e`` moves with ``x`` from how its parts do: a sum as all its terms agree, a product
+    as each factor's move times the sign of the rest, a power as its base, signed by the exponent
+    and the sign of the rest of its derivative."""
+    if e == x:
+        return 1
+    if isinstance(e, sympy.Add):
+        moves = {_monotone(t, x) for t in e.args} - {0}
+        return moves.pop() if len(moves) == 1 and None not in moves else (None if moves else 0)
+    if isinstance(e, sympy.Mul):
+        moves = set()
+        for i, factor in enumerate(e.args):
+            if (move := _monotone(factor, x)) == 0:
+                continue
+            rest = _sign(sympy.Mul(*(f for j, f in enumerate(e.args) if j != i)))
+            if move is None or rest is None:
+                return None
+            moves.add(move * rest)
+        return moves.pop() if len(moves) == 1 else (None if moves else 0)
+    if isinstance(e, sympy.Pow) and x not in e.exp.free_symbols:
+        move, power, rest = _monotone(e.base, x), _sign(e.exp), _sign(e.base ** (e.exp - 1))
+        return None if None in (move, power, rest) else move * power * rest
+    if isinstance(e, (sympy.exp, sympy.log)):
+        return _monotone(e.args[0], x)
     return None
 
 
-def check_regulators(policy: str, rate: str, expr: sympy.Expr, backward: bool = False) -> None:
-    """Refuse ``rate`` of ``policy`` (``expr``, its names signed by :func:`assumed`) when it does
-    not fall with each inhibitor it reads and rise with each activator, for every value of every
-    name: the direction a statement stating the regulator claims. A ``backward`` rate, the second
-    of a reversible step, runs the reaction back, so it must move the other way. ``modulated_by``
-    claims none. One step's rate only: in a mechanism of several, a step's rate can move the
-    reaction either way, as where it sits decides (:func:`schemes.compile_scheme`)."""
-    for symbol in sorted(expr.free_symbols, key=str):
-        if not REGULATOR_NAME.fullmatch(str(symbol)) or str(symbol).startswith("modulated"):
-            continue
-        kind = str(symbol).split("_by")[0]
-        inhibitor = kind == "inhibited"
-        direction = _direction(expr, symbol)
-        falls = inhibitor != backward
-        if direction == (-1 if falls else 1):
-            continue
-        claim = "inhibits" if inhibitor else "activates"
-        way = "fall" if falls else "rise"
-        subject = "this rate, which runs it back," if backward else "the rate"
-        other = str(symbol).replace(kind, "activated" if inhibitor else "inhibited", 1)
-        unsigned = str(symbol).replace(kind, "modulated", 1)
-        if direction == 0:
-            found = "it does not change with it, a claim the rate does not carry"
-        elif direction is not None:
-            found = f"it {'rises' if falls else 'falls'} instead: state it `{other}`"
-        else:
-            found = (
-                "that cannot be shown for every value of the rate's names (nor across a piecewise "
-                f"switching on it): state it `{unsigned}`, which claims no direction"
-            )
-        raise MechanismError(
-            f"rate {rate!r} of {policy!r} reads `{symbol}`, which a statement states {claim} its "
-            f"reaction, so {subject} must {way} as `{symbol}` rises; {found}. "
-            f"d/d{symbol} = {sympy.simplify(sympy.diff(expr, symbol))}"
-        )
+def _vanishes(d: sympy.Expr) -> bool:
+    """Whether ``d`` is 0 for every value of its names. Not where it is not 0 at one point of
+    positive values, a cheap test that settles nearly every case; cancelled to lowest terms (a
+    multivariate gcd, seconds on a rate's derivative) only where it is, and only within
+    :data:`SIGN_OPS`: past it, by its value at two more points, which the sign prover never asks
+    (it differentiates nothing so large). Read to 50 digits, "0" is relative to what ``d`` adds
+    up from (:func:`_magnitude`), never absolute: a net rate of eight enzyme forms is 1e-14 at
+    such a point and not 0."""
+    if d == 0:
+        return True
+    names = sorted(d.free_symbols, key=str)
+    size = _magnitude(d)
+    for shift in (0.0, 0.53, 1.37):
+        point = {s: 0.7 + 0.31 * i + shift * (i % 3) for i, s in enumerate(names)}
+        value, scale = d.evalf(50, subs=point), size.evalf(50, subs=point)
+        if value.is_finite and scale.is_finite and bool(abs(value) > 1e-30 * scale):
+            return False
+        if sympy.count_ops(d) <= SIGN_OPS:
+            return sympy.cancel(d) == 0
+    return True
+
+
+def _magnitude(e: sympy.Expr) -> sympy.Expr:
+    """What ``e`` adds up from: each term of a sum by its size, through products and whole
+    powers, so that ``e`` far below it is its terms cancelling."""
+    if isinstance(e, (sympy.Add, sympy.Mul)):
+        return e.func(*(_magnitude(a) for a in e.args))
+    if isinstance(e, sympy.Pow) and e.exp.is_Integer and e.exp > 0:
+        return _magnitude(e.base) ** e.exp
+    return sympy.Abs(e)
+
+
+def _by_derivative(e: sympy.Expr, x: sympy.Symbol) -> int | None:
+    """The sign of ``e``'s derivative in ``x``, its numerator and denominator signed as they stand
+    and, within :data:`SIGN_TERMS`, factored; ``0`` where it cancels; ``None`` where neither shows
+    it."""
+    d = sympy.diff(e, x)
+    if _vanishes(d):
+        return 0
+    numerator, denominator = sympy.fraction(sympy.together(d))
+    forms = [(numerator, denominator)]
+    if _terms(numerator) + _terms(denominator) <= SIGN_TERMS:
+        forms.append((sympy.factor(numerator), sympy.factor(denominator)))
+    for n, den in forms:
+        if (sn := _sign(n)) is not None and (sd := _sign(den)) is not None:
+            return sn * sd
+    return None
 
 
 def bind(
@@ -457,8 +527,7 @@ def _bound_expression(
         )
     for n in names:
         _not_a_parameter(model, n, prefix, name, species)
-    symbols = {n: _shared(model, n, merged) for n in names}
-    value = sympy.sympify(text.replace("^", "**"), locals={**symbols, **_RATE_FUNCTIONS})
+    value = over(trial, {n: _shared(model, n, merged) for n in names})
     expression = pysb.Expression(f"{name}_bound", value, _export=False)
     _add(model, expression)
     return expression, names
@@ -503,6 +572,22 @@ def _piecewise(*args) -> sympy.Expr:
 
 
 _RATE_FUNCTIONS = {"exp": sympy.exp, "log": sympy.log, "sqrt": sympy.sqrt, "piecewise": _piecewise}
+
+
+def over(expr: sympy.Expr, components: dict) -> sympy.Expr:
+    """``expr``, read over plain names, with each name its component in ``components``, every
+    comparison and ``piecewise`` kept as written. A PySB parameter is positive to sympy from the
+    value it is seeded with, so read over it ``ko > 0`` was decided there: a binding
+    ``piecewise(0, ko > 0, 1)`` raised, and a rate's ``piecewise(.., g <= 0, ..)`` lost the branch
+    every condition with ``g`` at 0 takes."""
+    if isinstance(expr, sympy.Symbol):
+        return components.get(expr.name, expr)
+    if not expr.args:
+        return expr
+    args = [over(a, components) for a in expr.args]
+    if isinstance(expr, (sympy.core.relational.Relational, sympy.Piecewise)):
+        return expr.func(*args, evaluate=False)
+    return expr.func(*args)
 
 
 #: What an id of the problem is (``problem_ids`` of :func:`written`). A rate reads none of them.
@@ -659,9 +744,9 @@ def written(
     :data:`statements.REGULATOR_NAME`), each the amount of an agent that takes no part in the
     reaction;
     ``time``; exp, log, sqrt, and ``piecewise(value, condition, ..., otherwise)``, its conditions
-    comparisons over the same names (:func:`_piecewise`). A rate must fall with each inhibitor it
-    reads and rise with each activator (:func:`check_regulators`), and read every regulator a row
-    states (:func:`_read_regulators`). A scheme (:func:`schemes.compile_scheme`) declares the
+    comparisons over the same names (:func:`_piecewise`). The rate must read every regulator a
+    row states (:func:`_read_regulators`), and the row's net rate move with each as the statement
+    claims (:mod:`regulation`). A scheme (:func:`schemes.compile_scheme`) declares the
     constants its rates name the same way.
 
     ``problem_ids`` (id to :data:`SHIPPED`, :data:`CONDITION` or :data:`SPECIES`) are names no
@@ -724,7 +809,6 @@ def written(
     if unknown:
         refuse_rate_names(rate, policy, unknown, allowed, also, amounts, problem_ids)
     value = assumed(parse_rate(rate))
-    check_regulators(policy, rate, value)
     refuse_unread(policy, declared, tokens)
     base = library[base_key]
 
@@ -774,9 +858,9 @@ def written(
             for name in sorted(used | (set(agents) & set(roles)))
         }
         _add(model, *params.values(), *amounts.values())
-        coefficient = sympy.sympify(
-            rate.replace("^", "**"), locals={**params, **amounts, **_RATE_FUNCTIONS, "time": time}
-        )
+        read = {**params, **amounts, "time": time}
+        coefficient = over(sympy.sympify(rate.replace("^", "**"), locals={
+            **{n: sympy.Symbol(n) for n in read}, **_RATE_FUNCTIONS}), read)
         expression = pysb.Expression(f"{prefix}_rate", coefficient, _export=False)
         _add(model, expression)
         # The base's own rate constant is left unreferenced; the SBML export drops it.
@@ -807,11 +891,16 @@ def assumed(expr: sympy.Expr) -> sympy.Expr:
     })
 
 
-def refuse_unnamed(prefix: str, stmt: Statement, reads: str, agent: Agent) -> None:
+def refuse_unnamed(
+    prefix: str, stmt: Statement, reads: str, agent: Agent, stated: dict | None = None
+) -> None:
     """Refuse row ``prefix``'s mechanism reading ``agent`` (``reads`` says where) because ``stmt``
     does not name it: the statement is the claim behind the rate, so an agent the rate reads is
-    stated there, as a regulator (``statements.REGULATORS``) when it takes no part."""
+    stated there, as a regulator (``statements.REGULATORS``) when it takes no part. Where it is a
+    regulator ``stated`` (kind to agents) already, or a regulator's name the mechanism writes as an
+    agent, the refusal says how a rate reads one."""
     from .notation import agent_text, statement_text
+    from .statements import REGULATORS
 
     def noted(write, value, otherwise: str) -> str:
         try:
@@ -822,6 +911,25 @@ def refuse_unnamed(prefix: str, stmt: Statement, reads: str, agent: Agent) -> No
     listed = ", ".join(dict.fromkeys(noted(agent_text, a, a.name) for a in named_agents(stmt)))
     said = noted(statement_text, stmt, "<statement>")
     name = noted(agent_text, agent, agent.name)
+    kinds = [
+        (kind, i) for kind, given in (stated or {}).items()
+        for i, a in enumerate(given) if _n(a.name) == _n(agent.name)
+    ]
+    if kinds or REGULATOR_NAME.fullmatch(agent.name):
+        kind, i = kinds[0] if kinds else (agent.name.rpartition("_")[0] if agent.name[-1].isdigit()
+                                          else agent.name, 0)
+        read = kind if len((stated or {}).get(kind, ())) <= 1 else f"{kind}_{i}"
+        given = (stated or {}).get(kind, [])
+        bare = given[i].name if i < len(given) else "X"
+        whom = noted(agent_text, given[i], bare) if i < len(given) else bare
+        raise MechanismError(
+            f"row {prefix!r}: {reads} reads {name} as an agent of its own. A regulator is read "
+            f"as the statement states it, `{REGULATORS[kind]} {whom}`, by its kind: "
+            f"`amount({read})` in a scheme, `{read}` in a written rate, the states it needs "
+            f"written on the statement's agent (`{REGULATORS[kind]} {bare}{{pS10}}`). A molecule "
+            f"a scheme's rules bind is a partner, written on its agent (`E{{~{bare}}}`) and named "
+            "in the scheme by its own name."
+        )
     raise MechanismError(
         f"row {prefix!r}: {reads} reads {name}, which its statement does not name. A rate reads "
         f"only the agents its statement names ({listed}) and the regulators it states. State "
@@ -875,13 +983,13 @@ def assemble(
         for name, base in agents.agents.items()
     }
     added: list[dict[str, list[str]]] = []
-    for stmt, policy, prefix, *_ in rows:
+    for stmt, policy, prefix, _, regulators in rows:
         entry = library.get((type(stmt).__name__, policy))
         added.append({})
         if not hasattr(entry, "scheme_sites"):
             continue
         before = {name: set(base.sites) for name, base in agents.agents.items()}
-        for agent, site, site_states in entry.scheme_sites(stmt, given, prefix):
+        for agent, site, site_states in entry.scheme_sites(stmt, given, prefix, regulators):
             base = agents.get_create_base_agent(agent)
             if site is not None:
                 base.create_site(site, site_states)

@@ -154,6 +154,10 @@ def test_a_regulator_is_projected_onto_what_indra_can_read():
     assert _projected("r: MEK is dephosphorylated at S217, activated by X | p") == [
         "IncreaseAmount(X(), MEK(mods: (phosphorylation, S, 217, False)))"
     ]
+    # A self-modification changes its own enzyme: the form it makes.
+    assert _projected("r: EGFR autophosphorylates at Y1068, activated by X | p") == [
+        "IncreaseAmount(X(), EGFR(mods: (phosphorylation, Y, 1068)))"
+    ]
     # No direction, no INDRA statement.
     assert _projected("r: A becomes B, modulated by Ca | p") == []
 
