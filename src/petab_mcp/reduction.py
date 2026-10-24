@@ -36,10 +36,12 @@ rules on its sites. Each block's dynamics read the others only through global am
 start form gives (Borisov et al. 2005; Conzelmann et al. 2006). The first block starts at the whole
 monomer's start amount and holds amounts; every further block holds the FRACTION of the monomer in
 each of its forms, starting at 1 in the start form (``start_fraction := 1``, a rule, so the
-parameters are the unsplit model's), so that an amount over ``k`` blocks is the first block's amount times the others' fractions:
-no division, which made a total of 0 (a knockout, a start the conditions set to 0, an estimated
-amount at a bound of 0) NaN (the #116 review), and no exponent, a literal :mod:`literals` would
-charge as a parameter. Every amount of the whole monomer is written so: a readout, a rate's
+parameters are the unsplit model's), so that an amount over ``k`` blocks is the first block's
+amount times the others' fractions: no division, which made a total of 0 (a knockout, a start the
+conditions set to 0, an estimated amount at a bound of 0) NaN (the #116 review), and no exponent,
+a literal :mod:`literals` would charge as a parameter. A block's species is never named after the
+readout it is: one species where the whole monomer is several, it took a shipped ``<id>_init``
+for its start. Every amount of the whole monomer is written so: a readout, a rate's
 ``amount`` or regulator, a catalyst's rate factor.
 
 The product holds only for a monomer whose total is constant and whose forms only rules set, so
@@ -263,12 +265,6 @@ def _blocks(model: pysb.Model, monomer: pysb.Monomer) -> tuple[list[list[str]], 
     starts = [i for i in model.initials if monomer in _monomers(i.pattern)]
     if len(starts) != 1 or len(starts[0].pattern.monomer_patterns) != 1:
         return None
-    for obs in model.observables:
-        if (
-            monomer in _monomers(obs.reaction_pattern)
-            and _one_molecule(obs.reaction_pattern) is None
-        ):
-            return None
     parent = {site: site for site in monomer.sites}
 
     def root(site: str) -> str:
@@ -446,7 +442,9 @@ def unformed(model: pysb.Model, reduction: Reduction, rule: str, present: set[in
         return reduction.catalysts[rule][0]
     species = [model.species[i] for i in sorted(present)]
     reactants = [cp for cp in model.rules[rule].reactant_pattern.complex_patterns if cp is not None]
-    for text, cp in zip(reduction.written[rule], reactants):
+    # A rule nothing rewrote is as written: every rule, when nothing was reduced.
+    written = reduction.written.get(rule, list(map(str, reactants)))
+    for text, cp in zip(written, reactants):
         if not any(match_complex_pattern(cp, sp) for sp in species):
             return text
     return None
@@ -492,16 +490,11 @@ def sizes(model: pysb.Model, reduction: Reduction, present: set[int]) -> dict:
             "species": len(model.species),
             "reactions": len(model.reactions_bidirectional),
         },
-    } | (
-        {
-            "split": {
-                name: {part.name: list(part.sites) for part in split.blocks}
-                for name, split in reduction.splits.items()
-            }
-        }
-        if reduction.splits
-        else {}
-    )
+        "split": {
+            name: {part.name: list(part.sites) for part in split.blocks}
+            for name, split in reduction.splits.items()
+        },
+    }
 
 
 def _species(amount, present: set[int]) -> set:

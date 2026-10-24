@@ -282,6 +282,7 @@ def to_antimony(
             sbml_model.removeParameter(amount)
             assignment.removeFromParentAndDelete()
     named = set()
+    blocks = {part.name for split in reduced.splits.values() for part in split.blocks}
     for parameter in list(sbml_model.getListOfParameters()):
         if parameter.getName() not in readouts:
             continue
@@ -297,6 +298,10 @@ def to_antimony(
             and species is not None
             and species.getId() not in named
             and not new.startswith("readout_")
+            # Nor a block of a split monomer (:mod:`reduction`), which is one species where the
+            # monomer whole is several: named, it took a shipped `<id>_init` for its start, which
+            # the unreduced model never gives it (the #116 review).
+            and species.getName().split("(", 1)[0] not in blocks
         ):
             # A readout that IS one species names that species, rather than leaving a rule over
             # it: the reachability checks in `reconcile` and `operations` follow reactions, not

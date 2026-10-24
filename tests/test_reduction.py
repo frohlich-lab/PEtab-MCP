@@ -6,6 +6,8 @@ exactly."""
 
 from __future__ import annotations
 
+import asyncio
+import json
 import re
 
 import libsbml
@@ -511,3 +513,80 @@ def test_a_knockout_of_a_monomer_named_as_indra_rewrites_it_reads_zero():
         for key in ("ppS", "pX"):
             assert np.isfinite(a[key]).all()
             np.testing.assert_allclose(a[key], b[key], rtol=1e-6, atol=1e-12, err_msg=f"{key} {ko}")
+
+
+def test_a_refusal_reads_the_same_unreduced():
+    """`reduce=False`, the tests' oracle, raised a KeyError where the rows are refused, so a refusal
+    could not be compared both ways (the #116 review)."""
+    rows = [
+        (Phosphorylation(_p("E", "Y1"), Agent("E"), "Y", "1"), INDRA_DEFAULT, "y1"),
+        (Phosphorylation(Agent("K"), Agent("S"), "S", "2"), INDRA_DEFAULT, "s2"),
+    ]
+    messages = []
+    for reduce in (True, False):
+        with pytest.raises(ModelUpdateError) as refused:
+            PS.to_antimony(rows, {"pS": _p("S", "S2")}, reduce=reduce)
+        messages.append(str(refused.value))
+    assert messages[0] == messages[1]
+
+
+# -- through the server: the problem's tables, and AMICI ---------------------------------------
+_SPLITTING = [
+    "y1: K phosphorylates S at Y1 | indra_default",
+    "s2: K phosphorylates S at S2 | indra_default",
+    "dy1: P dephosphorylates S at Y1 | indra_default",
+    "ds2: P dephosphorylates S at S2 | indra_default",
+]
+
+
+def _statements_server(tmp_path, entities: dict, **kwargs):
+    from conftest import YAML_PATH
+
+    from petab_mcp.references import StubReferenceResolver
+    from petab_mcp.server import create_server
+
+    (tmp_path / "entities.json").write_text(json.dumps(entities))
+    return create_server(
+        str(YAML_PATH),
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+        entity_map=str(tmp_path / "entities.json"),
+        **kwargs,
+    )
+
+
+def _call(mcp, name, args):
+    return asyncio.run(mcp.call_tool(name, args)).structured_content
+
+
+_PY1 = {"mod_type": "phosphorylation", "residue": "Y", "position": "1"}
+_PS2 = {"mod_type": "phosphorylation", "residue": "S", "position": "2"}
+
+
+def test_a_shipped_start_of_a_readout_id_starts_no_block(tmp_path):
+    """The toy ships `A_init` = 1. `A` = S{pY1} reads one species once S is split, and named after
+    the readout that species took `A_init` for its start, where the unsplit model, whose `A` is a
+    sum, starts it empty (the #116 review). A block's species keeps its own name."""
+    entities = {"A": {"name": "S", "mods": [_PY1]}, "B": {"name": "S", "mods": [_PS2]}}
+    mcp = _statements_server(tmp_path, entities, auto_fit=False)
+    out = _call(mcp, "make_changes", {"justification": "S is split", "statements": _SPLITTING})
+    assert out["applied"] is True and out["network"]["split"], out
+    structure = _call(mcp, "get_model_structure", {})
+    assert "A" not in structure["species"]
+    assert "A_init" not in json.dumps(structure["initial_conditions"])
+
+
+def test_a_split_model_compiles_and_fits(tmp_path):
+    """No other test compiles a split model with AMICI (the #116 review): a block starting at the
+    `start_fraction` rule, a phosphorylation and its removal merged into one reversible reaction,
+    and a readout that is a product of two blocks."""
+    entities = {"A": {"name": "S", "mods": [_PY1]}, "B": {"name": "S", "mods": [_PY1, _PS2]}}
+    mcp = _statements_server(tmp_path, entities, auto_fit=True)
+    out = _call(
+        mcp,
+        "make_changes",
+        {"justification": "S is split", "statements": _SPLITTING, "n_starts": 2},
+    )
+    assert out["applied"] is True and out["committed"] is True, out
+    assert out["network"]["split"] == {"S": {"S_Y1": ["Y1"], "S_S2": ["S2"]}}
+    assert np.isfinite(out["neg_log_likelihood"])
