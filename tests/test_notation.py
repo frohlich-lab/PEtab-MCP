@@ -81,6 +81,12 @@ ROWS = [
                        {"position": "600", "residue_from": "V", "residue_to": "E"}]}],
                    "modulated_by": [{"name": "season"}, {"name": "rain"}]},
      "policy": "self_renewal", "prefix": "birth", "parameters": {"k": 1.0}},
+    {"statement": {"type": "Gef", "gef": {"name": "SOS1"}, "ras": {"name": "HRAS"},
+                   "activated_by": [{"name": "X"}]},
+     "policy": "indra_default", "prefix": "gef"},
+    {"statement": {"type": "Gap", "gap": {"name": "RASA1"}, "ras": {"name": "HRAS", "activity": {
+        "activity_type": "gtpbound", "is_active": True}}},
+     "policy": "indra_default", "prefix": "gap"},
 ]
 
 
@@ -115,9 +121,10 @@ def test_what_the_notation_cannot_write_stays_json():
     with_evidence = {**ROWS[2], "statement": {**ROWS[2]["statement"],
                                               "evidence": [{"text": "x"}, {"text": "y"}]}}
     assert N.render(with_evidence, M.REGISTRY) is None
-    gef = {"statement": {"type": "Gef", "gef": {"name": "SOS1"}, "ras": {"name": "HRAS"}},
-           "policy": "indra_default", "prefix": "g"}
-    assert N.render(gef, M.REGISTRY) is None
+    form = {"statement": {"type": "ActiveForm", "agent": {"name": "RAF"}, "activity": "kinase",
+                          "is_active": True},
+            "policy": "indra_default", "prefix": "f"}
+    assert N.render(form, M.REGISTRY) is None
 
 
 @pytest.mark.parametrize(

@@ -310,18 +310,31 @@ def _vanishes(d: sympy.Expr) -> bool:
     positive values, a cheap test that settles nearly every case; cancelled to lowest terms (a
     multivariate gcd, seconds on a rate's derivative) only where it is, and only within
     :data:`SIGN_OPS`: past it, by its value at two more points, which the sign prover never asks
-    (it differentiates nothing so large)."""
+    (it differentiates nothing so large). Read to 50 digits, "0" is relative to what ``d`` adds
+    up from (:func:`_magnitude`), never absolute: a net rate of eight enzyme forms is 1e-14 at
+    such a point and not 0."""
     if d == 0:
         return True
     names = sorted(d.free_symbols, key=str)
+    size = _magnitude(d)
     for shift in (0.0, 0.53, 1.37):
         point = {s: 0.7 + 0.31 * i + shift * (i % 3) for i, s in enumerate(names)}
-        value = complex(d.evalf(subs=point))
-        if value == value and abs(value) > 1e-9:  # a number, not nan, and not 0
+        value, scale = d.evalf(50, subs=point), size.evalf(50, subs=point)
+        if value.is_finite and scale.is_finite and bool(abs(value) > 1e-30 * scale):
             return False
         if sympy.count_ops(d) <= SIGN_OPS:
             return sympy.cancel(d) == 0
     return True
+
+
+def _magnitude(e: sympy.Expr) -> sympy.Expr:
+    """What ``e`` adds up from: each term of a sum by its size, through products and whole
+    powers, so that ``e`` far below it is its terms cancelling."""
+    if isinstance(e, (sympy.Add, sympy.Mul)):
+        return e.func(*(_magnitude(a) for a in e.args))
+    if isinstance(e, sympy.Pow) and e.exp.is_Integer and e.exp > 0:
+        return _magnitude(e.base) ** e.exp
+    return sympy.Abs(e)
 
 
 def _by_derivative(e: sympy.Expr, x: sympy.Symbol) -> int | None:

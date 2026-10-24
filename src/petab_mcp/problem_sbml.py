@@ -85,6 +85,7 @@ def to_antimony(
     notes: list[str] | None = None,
     *,
     targets: frozenset[str] = frozenset(),
+    times: tuple[float, float] | None = None,
 ) -> tuple[str, list[M.Emission]]:
     """The model ``rows`` build, as Antimony the ``antimony`` route accepts unchanged.
 
@@ -97,6 +98,9 @@ def to_antimony(
     converts, which its periods set, and each of ``inputs`` (the problem's :mod:`protocols`),
     under its protocol. An input the entity map does not name is the agent of its id. A
     condition target the rows make or convert is a state its periods only start.
+
+    ``times``, the problem's (:func:`regulation.times`), are what a rate's ``time`` ranges over
+    where its regulators are checked.
 
     ``starts`` (``(name, agent, amount)``: a number or an expression over parameter ids) declare
     what is present at the start, as the module docstring sets out; each is ``<name>_init``.
@@ -232,7 +236,7 @@ def to_antimony(
             "it to. Add the statement that forms it, or, if it is present at t=0, declare it in "
             "`starts`."
         )
-    regulation.check(model, rows, emissions)
+    regulation.check(model, rows, emissions, times)
     sbml = export(model, "sbml")  # from the expansion above; BioNetGen does not run again
     base_names = {
         str(initial.pattern): initial.pattern.monomer_patterns[0].monomer.name

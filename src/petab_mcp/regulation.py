@@ -36,7 +36,7 @@ import logging
 import random
 import re
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from time import monotonic
 
 import numpy as np
@@ -118,23 +118,32 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
         raise MechanismError("its rules make no reaction in the model")
     if any(set(rx["rule"]) - rules for rx in reactions):
         raise MechanismError("BioNetGen merged one of its reactions with another row's")
+    rep, reactions = _lumped(model, rules, stmt, reactions)
+
+    def lumped(indices) -> set[int]:
+        return {rep.get(i, i) for i in indices}
+
+    def reads(o: pysb.Observable) -> dict[int, int]:
+        """What ``o`` reads, lumped: each form's coefficient, once for its lump."""
+        return {rep.get(i, i): c for c, i in zip(o.coefficients, o.species)}
+
     read: dict[str, set[pysb.Observable]] = {}
     for rule in (model.rules[name] for name in rules):
         for obs in _observables(rule.rate_forward) | _observables(rule.rate_reverse):
             if found := _READ.search(obs.name):
                 read.setdefault(position(found.group(1)), set()).add(obs)
-    regulator_species = {i for observables in read.values() for o in observables for i in o.species}
+    regulator_species = {i for observables in read.values() for o in observables for i in lumped(o.species)}
     made = {i for rx in reactions for i in rx["products"]}
     used = {i for rx in reactions for i in rx["reactants"]}
 
-    effects = _effects(model, stmt)
+    effects = {rep.get(i, i): e for i, e in _effects(model, stmt).items()}
     products = {i for i, e in effects.items() if e > 0} | (made - used)
     # A reactant a step back makes again (`obj_to >> obj_from`) is still the statement's; of the
     # forms an agent written without states matches, those the row makes are on the way (`S` of
     # "E3 decreases S", ubiquitinated before it is degraded).
     stated = set()
     for agent in _reactants(stmt):
-        found = _matching(model, agent)
+        found = lumped(_matching(model, agent))
         stated |= found - made if len(found) > 1 and found - made else found
     # Else what the reactions use and never make, however their lines are written.
     reactants = (stated | (used - made)) - products
@@ -163,22 +172,20 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
     own_reads: dict[pysb.Observable, sympy.Expr] = {}
     for stated_at, observables in sorted(read.items()):
         for o in observables:
-            weights = [
-                sum(c for c, j in zip(o.coefficients, o.species) if j == i) for i in intermediates
-            ]
+            weights = [reads(o).get(i, 0) for i in intermediates]
             if not any(weights):
                 continue
-            if (reads := _as_totals(weights, conserved, totals)) is None:
-                inside = sorted(set(o.species) & own)
+            if (total := _as_totals(weights, conserved, totals)) is None:
+                inside = sorted(lumped(o.species) & own)
                 raise MechanismError(_own_form(model, stated_at, observables, inside))
-            own_reads[o] = reads
+            own_reads[o] = total
 
     def held(i: int, regulator: bool) -> sympy.Symbol:
         sign = {"nonnegative": True} if regulator else {"positive": True}
         return sympy.Symbol(f"[{model.species[i]}]", **sign)
 
     amounts: dict[int, sympy.Expr] = {}
-    for i in made | used | {i for rate in _all_observables(model, rules) for i in rate.species}:
+    for i in made | used | {i for rate in _all_observables(model, rules) for i in lumped(rate.species)}:
         if i in products:
             amounts[i] = sympy.Integer(0)
         elif i in intermediates:
@@ -195,7 +202,7 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
         rate = rate.xreplace({
             o: own_reads.get(o, 0) + sympy.Add(*(
                 c * (regulator_amounts if o in regulator_observables else amounts).get(i, 0)
-                for c, i in zip(o.coefficients, o.species)
+                for i, c in reads(o).items()
             ))
             for o in rate.atoms(pysb.Observable)
         })
@@ -271,14 +278,14 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
     # A stated agent is every form of it the row makes or takes, alone or in a complex (ERK
     # phosphorylated at T185, Y187 either way, bound to DUSP or not): one lump, its net rate the sum
     # over its forms.
-    made_lump = _containing(model, [a for a, e in _products(stmt) if e > 0]) & set(net)
-    removed_lump = _containing(model, [a for a, e in _products(stmt) if e < 0]) & set(net)
-    stated = stated | (_containing(model, _reactants(stmt)) & set(net) - made_lump)
+    made_lump = lumped(_containing(model, [a for a, e in _products(stmt) if e > 0])) & set(net)
+    removed_lump = lumped(_containing(model, [a for a, e in _products(stmt) if e < 0])) & set(net)
+    stated = stated | (lumped(_containing(model, _reactants(stmt))) & set(net) - made_lump)
     made_now = sorted(made_lump & moving) or [i for i in sorted(products) if i in moving]
     removed = sorted(removed_lump & moving)
     regulated = {
         stated: tuple(
-            regulator_amounts[i] for i in sorted({i for o in observables for i in o.species} - own)
+            regulator_amounts[i] for i in sorted({i for o in observables for i in lumped(o.species)} - own)
         ) + tuple(sorted(
             {t for o in observables for t in own_reads.get(o, sympy.S.Zero).free_symbols}, key=str
         ))
@@ -286,10 +293,12 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
     }
     if not made_now and not removed:
         stated_products = {i for i, e in effects.items() if e > 0}
-        making = [rx for rx in reactions if set(rx["products"]) & stated_products]
-        if making and all(set(rx["reactants"]) & products for rx in making):
-            # Every step that makes a product takes one (`A + B >> 2B`): with its products absent
-            # the reaction does not run, and J is 0 whatever its regulators.
+        making = [k for k, rx in enumerate(reactions) if set(rx["products"]) & stated_products]
+        if making and all(set(reactions[k]["reactants"]) & products or _vanishes(rates[k])
+                          for k in making):
+            # Every step that makes a product takes one (`A + B >> 2B`) or reads its amount:
+            # with its products absent the reaction does not run, and J is 0 whatever its
+            # regulators.
             return NetRate(sympy.Integer(0), regulated)
         raise MechanismError("it makes nothing from its reactants alone")
     lump = made_lump if made_lump & moving else (
@@ -311,6 +320,101 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
     return NetRate(j, regulated, j_over_steps, {
         c: e for c, e in coefficients.items() if c in j_over_steps.free_symbols
     })
+
+
+def _lumped(model: pysb.Model, rules: set, stmt, reactions: list) -> tuple[dict[int, int], list]:
+    """The row's ``reactions`` with the forms that differ only in states of sites the row never
+    reads (sites other rows set, `EGFR` phosphorylated at sites this row ignores) lumped into one,
+    each lump named by its first form, and the reactions alike but for those states made one: the
+    same reactions on the lumps' amounts, so its intermediates are the forms its own rules tell
+    apart. Checked at a point where each form has an amount of its own; where the lumped reactions'
+    rates do not add up to the forms' (a rate reading such a site after all), none are lumped."""
+    from .mechanisms import agent_pattern
+    from .statements import _products, _reactants
+
+    seen: set[tuple[str, str]] = set()
+
+    def note(pattern) -> None:
+        if isinstance(pattern, pysb.MonomerPattern):
+            seen.update((pattern.monomer.name, site) for site in pattern.site_conditions)
+        elif isinstance(pattern, pysb.ComplexPattern):
+            for mp in pattern.monomer_patterns:
+                note(mp)
+        elif isinstance(pattern, pysb.ReactionPattern):
+            for cp in pattern.complex_patterns:
+                note(cp)
+
+    for name in rules:
+        note(model.rules[name].reactant_pattern)
+        note(model.rules[name].product_pattern)
+    observables = _all_observables(model, rules)
+    for o in observables:
+        note(o.reaction_pattern)
+    for agent in [*_reactants(stmt), *(a for a, _ in _products(stmt))]:
+        try:
+            for mp in agent_pattern(model, agent):
+                note(mp)
+        except (MechanismError, KeyError):  # an agent the model never forms
+            continue
+
+    involved = sorted({i for rx in reactions for i in (*rx["reactants"], *rx["products"])}
+                      | {i for o in observables for i in o.species})
+    groups: dict[str, list[int]] = {}
+    for i in involved:
+        kept = [
+            pysb.MonomerPattern(mp.monomer, {
+                site: c for site, c in mp.site_conditions.items()
+                if (mp.monomer.name, site) in seen or not isinstance(c, str)
+            }, mp.compartment)
+            for mp in model.species[i].monomer_patterns
+        ]
+        groups.setdefault(str(pysb.ComplexPattern(kept, None)), []).append(i)
+    if all(len(g) == 1 for g in groups.values()):
+        return {}, reactions
+    rep = {i: g[0] for g in groups.values() for i in g}
+    if any(len({c for c, i in zip(o.coefficients, o.species) if rep[i] == r}) > 1
+           or {i for i in involved if rep[i] == r} - set(o.species)
+           for o in observables for r in {rep[i] for i in o.species}):
+        return {}, reactions  # an observable reading some forms of a lump only
+    alike: dict[tuple, list] = {}
+    for rx in reactions:
+        key = (rx["rule"], rx["reverse"], tuple(sorted(rep[i] for i in rx["reactants"])),
+               tuple(sorted(rep[i] for i in rx["products"])))
+        alike.setdefault(key, []).append(rx)
+    to_lump = {sympy.Symbol(f"__s{i}"): sympy.Symbol(f"__s{rep[i]}") for i in involved}
+    generator = random.Random(0)
+    point = {sympy.Symbol(f"__s{i}"): generator.uniform(0.5, 2) for i in involved}
+    lumped_point = dict.fromkeys(set(to_lump.values()), 0.0)
+    for i in involved:
+        lumped_point[to_lump[sympy.Symbol(f"__s{i}")]] += point[sympy.Symbol(f"__s{i}")]
+    values = {p: generator.uniform(0.5, 2) for p in model.parameters} | {
+        time: generator.uniform(0.5, 2)}
+    # Each observable's and expression's value, once for the forms and once for the lumps.
+    numbers = []
+    for lumps in (False, True):
+        known = dict(values)
+        for o in model.observables:
+            pairs = ({rep.get(i, i): c for c, i in zip(o.coefficients, o.species)}.items() if lumps
+                     else zip(o.species, o.coefficients))
+            known[o] = sum(c * (lumped_point.get(sympy.Symbol(f"__s{i}"), 0.0) if lumps
+                                else point.get(sympy.Symbol(f"__s{i}"), 0.0)) for i, c in pairs)
+        for e in model.expressions:
+            known[e] = e.expand_expr().xreplace(known)
+        numbers.append(known | (lumped_point if lumps else point))
+
+    def at(rate, lumps: bool) -> complex:
+        rate = rate.xreplace(to_lump) if lumps else rate
+        return complex(rate.xreplace(numbers[lumps]).evalf())
+
+    out = []
+    for (rule, reverse, reactants, products), members in alike.items():
+        whole = sum(at(rx["rate"], False) for rx in members)
+        one = at(members[0]["rate"], True)
+        if not (abs(whole - one) <= 1e-9 * max(abs(whole), abs(one))):
+            return {}, reactions
+        out.append({"rule": rule, "reverse": reverse, "reactants": reactants, "products": products,
+                    "rate": members[0]["rate"].xreplace(to_lump)})
+    return rep, out
 
 
 def _as_totals(weights: list, conserved: list, totals: list) -> sympy.Expr | None:
@@ -660,13 +764,14 @@ def shown(rate: NetRate, stated: str, domain=None) -> int | None:
     return proven
 
 
-def check(model: pysb.Model, rows: list[tuple], emissions) -> None:
+def check(model: pysb.Model, rows: list[tuple], emissions, times=None) -> None:
     """Refuse a row whose net rate does not move with a regulator its statement states as the
     statement claims: fall with each inhibitor, rise with each activator. ``modulated_by`` claims no
     direction and is not checked. Refused, each saying what to write instead: a claim J moves the
     other way, one that cannot be shown (state it ``modulated_by``, as for a row with no one net
     rate), and a regulator J does not change with at all, which acts only on a step J cannot see
-    (:func:`_unseen`). ``rows`` are :func:`mechanisms.assemble`'s, ``model`` expanded."""
+    (:func:`_unseen`). ``rows`` are :func:`mechanisms.assemble`'s, ``model`` expanded; ``time``
+    ranges over ``times`` (:func:`times`), from 0 where it is ``None``."""
     for (stmt, policy, prefix, *rest), emission in zip(rows, emissions):
         stated = (rest[1] if len(rest) > 1 else None) or {}
         signed = [
@@ -690,13 +795,51 @@ def check(model: pysb.Model, rows: list[tuple], emissions) -> None:
                 f"{policy!r} has no one net rate to show that on: {why}. State each `modulated "
                 "by`, which claims no direction"
             )
+        rate, domain = _timed(rate, times)
         deadline = monotonic() + ROW_SECONDS
         for s in signed:
-            _check_one(model, emission, stmt, policy, prefix, stated, rate, s, deadline)
+            _check_one(model, emission, stmt, policy, prefix, stated, rate, s, deadline, domain)
+
+
+def times(problem) -> tuple[float, float] | None:
+    """The times a problem's rates are read at: from the earliest start of an experiment's first
+    simulated period (0 for a measurement in none) to its last finite measurement or period.
+    ``None`` where it has no measurement."""
+    import pandas as pd
+
+    from .problem import EXPERIMENT_ID, TIME as AT, experiment_starts
+
+    measured = getattr(problem, "measurement_df", None)
+    if measured is None or AT not in measured.columns or not len(measured):
+        return None
+    starts = [start for start, _ in experiment_starts(problem).values() if np.isfinite(start)]
+    ends = list(pd.to_numeric(measured[AT], errors="coerce"))
+    periods = getattr(problem, "experiment_df", None)
+    if periods is not None and AT in periods.columns and EXPERIMENT_ID in periods.columns:
+        ends += list(pd.to_numeric(periods[AT], errors="coerce"))
+    finite = [float(t) for t in [*starts, *ends] if np.isfinite(t)]
+    low = min(starts or [0.0])
+    return low, max([low, *finite])
+
+
+def _timed(rate: NetRate, span) -> tuple[NetRate, dict[str, tuple[float, float]] | None]:
+    """``rate`` read over ``span``, the times :func:`times` gives: ``time`` of either sign where
+    an experiment starts before 0, and the range :func:`sampled` reads it over."""
+    if span is None:
+        return rate, None
+    if span[0] < 0:
+        either = {TIME: sympy.Symbol(TIME.name, real=True)}
+        rate = replace(
+            rate, value=rate.value.xreplace(either),
+            over_steps=None if rate.over_steps is None else rate.over_steps.xreplace(either),
+            steps={c: e.xreplace(either) for c, e in rate.steps.items()},
+        )
+    return rate, {TIME.name: span}
 
 
 def _check_one(
-    model, emission, stmt, policy, prefix, stated, rate: NetRate, s: str, deadline: float
+    model, emission, stmt, policy, prefix, stated, rate: NetRate, s: str, deadline: float,
+    domain=None,
 ) -> None:
     kind = s.rsplit("_", 1)[0]
     said = _said(s, stated)
@@ -707,7 +850,7 @@ def _check_one(
             "forms it, declare it present in `starts`, or leave it out of this statement and its "
             "rate"
         )
-    found = shown(rate, s) if monotonic() < deadline else None
+    found = shown(rate, s, domain) if monotonic() < deadline else None
     if found == 0:
         raise MechanismError(_unseen(model, emission, stmt, policy, prefix, stated, s))
     inhibitor = kind == "inhibited_by"
@@ -777,16 +920,20 @@ def _unseen(model, emission, stmt, policy, prefix, stated, s: str) -> str:
     )
 
 
-def _product_needed(model, emission, stmt, observables) -> tuple[str, int] | None:
+def _product_needed(model, emission, stmt, observables) -> tuple[str, int | None, object] | None:
     """How each step of the row whose rate reads ``observables`` needs a product of ``stmt``
     present: ``"amount"`` where its rate reads the product's amount, ``"reactant"`` where it takes
-    the product as a reactant and gives it back with more (autocatalysis); and the way the step's
-    rate moves with the product. ``None`` where one such step does not, or takes a product away
-    (a way back, a degradation: the C cases)."""
+    the product as a reactant and gives it back with more (autocatalysis); the way the step's rate
+    moves with the product; and that product, the one agent of ``stmt``'s products whose amount
+    is what each such step reads or takes. ``None`` where one such step does not, takes a product
+    away (a way back, a degradation: the C cases), or reads more than one product or more than
+    the product."""
     from .mechanisms import _direction
+    from .statements import _products
 
+    made = [agent for agent, effect in _products(stmt) if effect > 0]
     products = {i for i, effect in _effects(model, stmt).items() if effect > 0}
-    how, ways = set(), set()
+    how, ways, read = set(), set(), []
     for rx in model.reactions:
         if not set(rx["rule"]) & set(emission.rules):
             continue
@@ -797,43 +944,59 @@ def _product_needed(model, emission, stmt, observables) -> tuple[str, int] | Non
         if any(rx["reactants"].count(i) > rx["products"].count(i) for i in products):
             return None
         reading = {o for o in _observables(rate) - observables if set(o.species) & products}
-        if set(rx["reactants"]) & products:
+        if taken := set(rx["reactants"]) & products:
             how.add("reactant")
             ways.add(1)
+            read.append(taken)
         elif reading:
             how.add("amount")
             x = sympy.Symbol("__product", nonnegative=True)
             ways.add(_direction(_step_rate(rate, reading, x), x))
+            read.extend(set(o.species) for o in reading)
         else:
             return None
     if len(how) != 1:
         return None
-    return how.pop(), ways.pop() if len(ways) == 1 else None
+    how = how.pop()
+    # The product stated as a regulator reads every species holding it: the agent whose species
+    # are what each step read keeps the rate's meaning; for a reactant, the species it takes.
+    for agent in made:
+        holding = _containing(model, [agent])
+        if all(species <= holding if how == "reactant" else species == holding for species in read):
+            return how, ways.pop() if len(ways) == 1 else None, agent
+    return None
 
 
-def _with_the_product(stmt, stated: dict, s: str, how: str, way: int | None) -> str:
-    """The two rows a regulator that acts only with the product present can be stated on, each
-    written out for ``stmt``: the product stated as a regulator too, read by position where the
-    step read it; and that step alone on its own row so, its way back a statement of its own."""
-    from .notation import statement_text
-    from .statements import _products
+def _with_the_product(stmt, stated: dict, s: str, how: str, way: int | None, product) -> str:
+    """The two rows a regulator that acts only with the ``product`` present can be stated on,
+    each written out for ``stmt`` where the notation can: the product stated as a regulator too,
+    read by position where the step read it; and that step alone on its own row so, its way back
+    a statement of its own."""
+    from .notation import agent_text, statement_text
 
-    product = next(agent for agent, effect in _products(stmt) if effect > 0)
     kind = {1: "activated_by", -1: "inhibited_by"}.get(way, "modulated_by")
     regulators = {k: list(agents) for k, agents in stated.items()}
     regulators.setdefault(kind, []).append(product)
-    row = statement_text(stmt.to_json() | {k: [a.to_json() for a in v] for k, v in regulators.items()})
     own_kind, i = s.rpartition("_")[0], int(s.rpartition("_")[2])
 
     def read(k: str, j: int) -> str:
         return f"amount({k}_{j})" if len(regulators[k]) > 1 else f"amount({k})"
 
+    try:
+        row = "`" + statement_text(
+            stmt.to_json() | {k: [a.to_json() for a in v] for k, v in regulators.items()}
+        ) + "`"
+    except ValueError:  # a statement type the notation lacks: the regulator alone
+        try:
+            row = f"`{REGULATORS[kind]} {agent_text(product.to_json())}` on it"
+        except ValueError:
+            row = f"`{REGULATORS[kind]} {product.name}` on it"
     product_at = read(kind, len(regulators[kind]) - 1)
     where = ("where it reads the product's amount" if how == "amount" else
              "for the product it takes as a reactant, the step written without it")
     back = _way_back(stmt)
     return (
-        f"State the product as a regulator too, `{row}`, its rate reading it as `{product_at}` "
+        f"State the product as a regulator too, {row}, its rate reading it as `{product_at}` "
         f"{where}, and {_agent(stated, s)} as `{read(own_kind, i)}`. Or put that step on a row of "
         "its own so, a one-rule mechanism (another step of the same reaction a term of its rate), "
         "and its way back, where the mechanism has one, on a row of its own"

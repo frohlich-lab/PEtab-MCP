@@ -723,7 +723,7 @@ def statements_to_antimony(
     # Imported here: INDRA takes seconds to import, and only this route needs it.
     from indra.statements import Agent, stmts_from_json
 
-    from . import mechanisms, problem_sbml
+    from . import mechanisms, problem_sbml, regulation
     from .statements import agent_problems, indra_part, problems, regulators, ungrounded, with_defaults
 
     definitions = dict(session.mechanisms)
@@ -833,6 +833,7 @@ def statements_to_antimony(
         {k: Agent._from_json(v) for k, v in amounts.items()},
         notes=notes,
         targets=frozenset(R.condition_target_symbols(session.problem)),
+        times=regulation.times(session.problem),
     )
     record = {
         "rows": [

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import time
 
+import pysb
 import pytest
 import sympy
 from indra.statements import stmts_from_json
@@ -604,6 +605,20 @@ def test_an_enzyme_stated_as_its_own_inhibitor_is_one_amount():
         _build([_PHOSPHO.format(regulator="inhibited by MEK")], _rate("kc/(1 + inhibited_by/K)", "kc", "K"))
 
 
+@pytest.mark.parametrize("row", ["c: A + E -> B + E, {} X | written",
+                                 "c: L + R -> L + R{{pS10}}, {} X | written"])
+def test_an_agent_a_reaction_gives_back_as_it_was_is_a_catalyst(row):
+    """review of #128 (second pass), t_catalyst: every agent a conversion gives was a product,
+    so the `E` of `A + E -> B + E` was held at 0, J was 0 and the row refused as needing the
+    product. E is given back as it was: a catalyst, its amount held, and J = k*X*A*E."""
+    scheme = _scheme("Conversion", "obj_from_0() + obj_from_1() >> obj_to_0() + obj_to_1() @ "
+                     "k*amount({})", "k")
+    _build([row.format("activated by")], {**scheme, "scheme": scheme["scheme"].format("activated_by")})
+    with pytest.raises(MechanismError, match=r"it rises instead: state it `activated by X`"):
+        _build([row.format("inhibited by")],
+               {**scheme, "scheme": scheme["scheme"].format("inhibited_by")})
+
+
 # ------------------------------------------------------------------------------- own forms
 #: Three steps: binding, the catalytic step slowed by the regulator, and release.
 _THREE_STEPS = (
@@ -710,6 +725,42 @@ def _fed(stmt_type: str, scheme: str, *parameters: str) -> dict:
     return _scheme(stmt_type, scheme, *parameters, policy="fed")
 
 
+def _flux(rows: list, *definitions: dict, same: dict | None = None) -> dict[str, float]:
+    """Each species' rate of change in the model ``rows`` build, its regulators unchecked, at one
+    state: every species and parameter at a value of its name (``same`` naming, for a parameter,
+    the one whose value it takes)."""
+    import zlib
+
+    seen = []
+    real = regulation.check
+    regulation.check = lambda model, *_: seen.append(model)
+    try:
+        _build(rows, *definitions)
+    finally:
+        regulation.check = real
+    (model,) = seen
+
+    def value(name: str) -> float:
+        return 0.3 + zlib.crc32(name.encode()) % 97 / 40
+
+    point = {sympy.Symbol(f"__s{i}"): value(str(sp)) for i, sp in enumerate(model.species)}
+    point |= {p: value((same or {}).get(p.name, p.name)) for p in model.parameters}
+    out = {}
+    for i, ode in enumerate(model.odes):
+        while found := ode.atoms(pysb.Expression) | ode.atoms(pysb.Observable):
+            ode = ode.xreplace({x: x.expand_expr() if isinstance(x, pysb.Expression)
+                                else x.expand_obs() for x in found})
+        out[str(model.species[i])] = float(ode.xreplace(point))
+    return out
+
+
+_SOS_FED = (
+    "gef() + ras(gtpbound='inactive') >> gef() + ras(gtpbound='active') @ "
+    "kb + k*amount(activated_by_0)*amount(activated_by_1)"
+)
+_TWO_PRODUCTS = "obj_from_0() >> obj_to_0() + obj_to_1() @ "
+
+
 @pytest.mark.parametrize(
     "rows, mechanism, stated, back, followed",
     [
@@ -721,25 +772,25 @@ def _fed(stmt_type: str, scheme: str, *parameters: str) -> dict:
          'RAS{-mod"GTP"} -> RAS{mod"GTP"}, activated by SOS and RAS{mod"GTP"}',
          'RAS{mod"GTP"} -> RAS{-mod"GTP"}',
          [([_RAS_FED], _fed("Conversion", f"{_FEEDBACK}\nobj_to_0() >> obj_from_0() @ kgap",
-                            "kb", "kf", "kgap")),
-          ([_RAS_FED, _GAP], _fed("Conversion", _FEEDBACK, "kb", "kf"))]),
-        # The same step written alone.
+                            "kb", "kf", "kgap"), {}),
+          ([_RAS_FED, _GAP], _fed("Conversion", _FEEDBACK, "kb", "kf"), {"c2_k": "c1_kgap"})]),
+        # The same step written alone: it has no way back to put on a row.
         ([f"{_RAS}, activated by SOS | written"],
          _scheme("Conversion", "obj_from_0() >> obj_to_0() @ kb + kf*amount(activated_by)*"
                  "amount(obj_to_0())", "kb", "kf"),
          'RAS{-mod"GTP"} -> RAS{mod"GTP"}, activated by SOS and RAS{mod"GTP"}',
          'RAS{mod"GTP"} -> RAS{-mod"GTP"}',
-         [([_RAS_FED], _fed("Conversion", _FEEDBACK, "kb", "kf")),
-          ([_RAS_FED, _GAP], _fed("Conversion", _FEEDBACK, "kb", "kf"))]),
+         [([_RAS_FED], _fed("Conversion", _FEEDBACK, "kb", "kf"), {})] * 2),
         # refusals/t1/autoreg: a co-activator working only with the gene product present.
         (["g: TF increases G, activated by X | written"],
          _scheme("IncreaseAmount", "subj() >> subj() + obj() @ ks + ka*amount(activated_by)*"
                  "amount(obj())\nobj() >> None @ kd delete_molecules", "ks", "ka", "kd"),
          "TF increases G, activated by X and G", "G is degraded",
          [(["g: TF increases G, activated by X and G | fed"],
-           _fed("IncreaseAmount", f"{_GENE}\nobj() >> None @ kd delete_molecules", "ks", "ka", "kd")),
+           _fed("IncreaseAmount", f"{_GENE}\nobj() >> None @ kd delete_molecules", "ks", "ka",
+                "kd"), {}),
           (["g: TF increases G, activated by X and G | fed", "d: G is degraded | indra_default"],
-           _fed("IncreaseAmount", _GENE, "ks", "ka"))]),
+           _fed("IncreaseAmount", _GENE, "ks", "ka"), {"d_kf": "g_kd"})]),
         # netrate/t6: the product makes itself, beside a basal step (a term of the one rule's
         # rate, as the refusal says: two rows of one reaction would be one reaction) or alone.
         (["c: A -> B, activated by X | written"],
@@ -747,31 +798,53 @@ def _fed(stmt_type: str, scheme: str, *parameters: str) -> dict:
                  "obj_to_0() + obj_to_0() @ ka*amount(activated_by)", "ka", "kb"),
          "A -> B, activated by X and B", "B -> A",
          [(["c: A -> B, activated by X and B | fed"],
-           _fed("Conversion", f"obj_from_0() >> obj_to_0() @ kb\n{_SELF}", "ka", "kb")),
+           _fed("Conversion", f"obj_from_0() >> obj_to_0() @ kb\n{_SELF}", "ka", "kb"), {}),
           (["c: A -> B, activated by X and B | fed"],
            _fed("Conversion", "obj_from_0() >> obj_to_0() @ kb + ka*amount(activated_by_0)*"
-                "amount(activated_by_1)", "ka", "kb"))]),
+                "amount(activated_by_1)", "ka", "kb"), {})]),
         (["c: A -> B, activated by X | written"],
          _scheme("Conversion", "obj_from_0() + obj_to_0() >> obj_to_0() + obj_to_0() @ "
                  "ka*amount(activated_by)", "ka"),
          "A -> B, activated by X and B", "B -> A",
-         [(["c: A -> B, activated by X and B | fed"], _fed("Conversion", _SELF, "ka"))] * 2),
+         [(["c: A -> B, activated by X and B | fed"], _fed("Conversion", _SELF, "ka"), {})] * 2),
+        # review of #128 (second pass), t_gef: SOS's feedback through KRAS-GTP crashed writing
+        # the advice, a Gef row the notation could not write.
+        (["gef: SOS is a GEF for KRAS, activated by X | written"],
+         _scheme("Gef", "gef() + ras(gtpbound='inactive') >> gef() + ras(gtpbound='active') @ "
+                 "kb + k*amount(activated_by)*amount(ras(gtpbound='active'))", "kb", "k"),
+         "SOS is a GEF for KRAS, activated by X and KRAS{gtpbound:on}", None,
+         [(["gef: SOS is a GEF for KRAS, activated by X and KRAS{gtpbound:on} | fed"],
+           _fed("Gef", _SOS_FED, "kb", "k"), {})] * 2),
+        # t_multiproduct: the feedback is through C, the second product; the advice named B.
+        (["c: A -> B + C, activated by X | written"],
+         _scheme("Conversion", f"{_TWO_PRODUCTS}kb\nobj_from_0() + obj_to_1() >> obj_to_0() + "
+                 "obj_to_1() + obj_to_1() @ ka*amount(activated_by)", "ka", "kb"),
+         "A -> B + C, activated by X and C", "B + C -> A",
+         [(["c: A -> B + C, activated by X and C | fed"],
+           _fed("Conversion", f"{_TWO_PRODUCTS}kb\n{_TWO_PRODUCTS}ka*amount(activated_by_0)*"
+                "amount(activated_by_1)", "ka", "kb"), {}),
+          (["c: A -> B + C, activated by X and C | fed"],
+           _fed("Conversion", f"{_TWO_PRODUCTS}kb + ka*amount(activated_by_0)*"
+                "amount(activated_by_1)", "ka", "kb"), {})]),
     ],
-    ids=["ras_sos", "ras_sos_one_rule", "autoregulation", "autocatalysis_basal", "autocatalysis"],
+    ids=["ras_sos", "ras_sos_one_rule", "autoregulation", "autocatalysis_basal", "autocatalysis",
+         "gef", "second_product"],
 )
 def test_a_regulator_that_needs_the_product_is_told_both_rows_and_each_builds(
     rows, mechanism, stated, back, followed
 ):
     """Products stay at 0 in J (the user's decision, 2026-10-24), so a regulator that acts only
     with the product present (feedback, autoregulation, autocatalysis) does not move it. The
-    refusal names the two rows that state it, written for the row, and each builds as written:
-    the product stated as a regulator too; and that step alone on its own row so, its way back a
-    statement of its own. The step alone without the product stated still reads it at 0."""
+    refusal names the two rows that state it, written for the row, and each builds as written
+    and keeps the model: every species changes as it did. The product named is the one the step
+    reads. The step alone without the product stated still reads it at 0."""
     with pytest.raises(MechanismError) as refused:
         _build(rows, mechanism)
     said = str(refused.value)
     assert f"State the product as a regulator too, `{stated}`" in said
     assert "Or put that step on a row of its own so, a one-rule mechanism" in said
-    assert f"`{back}`" in said
-    for rewrite, definition in followed:
+    assert back is None or f"`{back}`" in said
+    before = _flux(rows, mechanism)
+    for rewrite, definition, same in followed:
         _build(rewrite, definition)
+        assert _flux(rewrite, definition, same=same) == pytest.approx(before, rel=1e-12)

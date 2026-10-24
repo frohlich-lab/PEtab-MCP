@@ -356,9 +356,19 @@ def _reactants(stmt: Statement) -> list[Agent]:
 
 
 def _reaction(stmt: Statement) -> tuple[list[Agent], list[tuple[Agent, int]]]:
+    """:data:`_REACTIONS`' entry for ``stmt``, by net change: an agent it takes and gives back as
+    it was (the ``E`` of ``A + E -> B + E``) is a catalyst, neither consumed nor made."""
     for cls in type(stmt).__mro__:
         if cls in _REACTIONS:
-            return _REACTIONS[cls](stmt)
+            reactants, products = _REACTIONS[cls](stmt)
+            reactants, made = list(reactants), []
+            for agent, effect in products:
+                same = next((a for a in reactants if a.matches(agent)), None)
+                if effect > 0 and same is not None:
+                    reactants.remove(same)
+                else:
+                    made.append((agent, effect))
+            return reactants, made
     return [], []
 
 
