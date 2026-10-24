@@ -95,6 +95,8 @@ class NetRate:
     #: form :func:`_through_steps` signs J by.
     over_steps: sympy.Expr | None = None
     steps: dict[sympy.Symbol, sympy.Expr] = field(default_factory=dict)
+    #: Each name in J that is a parameter, and its id: what a version's table signs it by.
+    parameters: dict[str, str] = field(default_factory=dict)
 
 
 def position(name: str) -> str:
@@ -321,9 +323,11 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
                 f"{', '.join(str(model.species[i]) for i in group)} at rates no constant ratio "
                 "relates: two reactions, with no one net rate"
             )
-    return NetRate(j, regulated, j_over_steps, {
-        c: e for c, e in coefficients.items() if c in j_over_steps.free_symbols
-    })
+    return NetRate(
+        j, regulated, j_over_steps,
+        {c: e for c, e in coefficients.items() if c in j_over_steps.free_symbols},
+        {p.name: p.name for p in model.parameters},
+    )
 
 
 def _lumped(model: pysb.Model, rules: set, stmt, reactions: list) -> tuple[dict[int, int], list]:
@@ -768,41 +772,133 @@ def shown(rate: NetRate, stated: str, domain=None) -> int | None:
     return proven
 
 
-def check(model: pysb.Model, rows: list[tuple], emissions, times=None) -> None:
-    """Refuse a row whose net rate does not move with a regulator its statement states as the
-    statement claims: fall with each inhibitor, rise with each activator. ``modulated_by`` claims no
-    direction and is not checked. Refused, each saying what to write instead: a claim J moves the
-    other way, one that cannot be shown (state it ``modulated_by``, as for a row with no one net
-    rate), and a regulator J does not change with at all, which acts only on a step J cannot see
-    (:func:`_unseen`). ``rows`` are :func:`mechanisms.assemble`'s, ``model`` expanded; ``time``
-    ranges over ``times`` (:func:`times`), from 0 where it is ``None``."""
+#: The kind a regulator is recorded as, by the way J is shown to move with it.
+RECORDED = {-1: "inhibited_by", 1: "activated_by", None: "modulated_by"}
+
+
+def record(model: pysb.Model, rows: list[tuple], emissions, times=None) -> list:
+    """Each row's emission with the kind its net rate shows for each regulator its statement
+    states (``derived``, where it differs from the kind stated: ``inhibited_by`` where J never
+    rises with it, ``activated_by`` where it never falls, ``modulated_by`` where neither is shown)
+    and J itself (``rate``, :func:`stored`), for :func:`resign` to sign again on a version's
+    bounds. Each name ranges as its assumptions allow here: a parameter is positive.
+
+    Refused only on what is shown: a regulator nothing in the model forms, and one J does not
+    change with, which acts only on a step J cannot see (:func:`_unseen`). A row with no one net
+    rate, or whose J cannot be read, claims no direction: each regulator it states is
+    ``modulated_by``; so does one whose J can go negative or pass a pole (:func:`_well_posed`). A
+    ``modulated_by`` that also acts on a step taking the product away (:func:`_consuming`) is not
+    signed. ``rows`` are :func:`mechanisms.assemble`'s, ``model`` expanded, ``time`` over
+    ``times`` (:func:`times`)."""
+    out = []
     for (stmt, policy, prefix, *rest), emission in zip(rows, emissions):
         stated = (rest[1] if len(rest) > 1 else None) or {}
-        signed = [
-            f"{kind}_{i}" for kind, agents in stated.items() if kind != "modulated_by"
-            for i in range(len(agents))
-        ]
-        if not signed:
+        positions = [f"{kind}_{i}" for kind, agents in stated.items() for i in range(len(agents))]
+        if not positions:
+            out.append(emission)
             continue
-        # Anything but a MechanismError is a bug of this check, raised as one: never read to the
-        # agent as a reason to weaken its claim.
         try:
             rate = net_rate(model, emission.rules, stmt)
         except MechanismError as exc:
-            why = str(exc)
-        else:
-            why = None
-        if why is not None:
-            claims = ", ".join(f"`{_said(s, stated)}`" for s in signed)
-            raise MechanismError(
-                f"row {prefix!r}: its statement claims which way {claims} moves its reaction, but "
-                f"{policy!r} has no one net rate to show that on: {why}. State each `modulated "
-                "by`, which claims no direction"
-            )
-        rate, domain = _timed(rate, times)
+            out.append(replace(emission, derived=_unsigned(positions), rate={"none": str(exc)}))
+            continue
+        except Exception:  # noqa: BLE001 - a check that breaks claims nothing; never a crash
+            logger.exception("row %r: reading its net rate failed", prefix)
+            out.append(replace(emission, derived=_unsigned(positions),
+                               rate={"none": "its net rate could not be read", "failed": True}))
+            continue
+        for s in positions:
+            if not rate.regulators.get(s):
+                raise MechanismError(
+                    f"row {prefix!r}: its rate reads `{_said(s, stated)}`, but nothing in the model "
+                    f"forms {_agent(stated, s)}, so the rate does not change with it. Add the "
+                    "statement that forms it, declare it present in `starts`, or leave it out of "
+                    "this statement and its rate"
+                )
+        signed, domain = _timed(rate, times)
+        ill = not _well_posed(signed.value)
         deadline = monotonic() + ROW_SECONDS
-        for s in signed:
-            _check_one(model, emission, stmt, policy, prefix, stated, rate, s, deadline, domain)
+        found = {s: None if ill else _shown_safely(signed, s, prefix, domain)
+                 if monotonic() < deadline else None for s in positions}
+        for s, way in found.items():
+            if way == 0:
+                raise MechanismError(_unseen(model, emission, stmt, policy, prefix, stated, s))
+        consumes = _consuming(model, emission, stmt, positions)
+        kept = stored(rate) | ({"consumes": consumes} if consumes else {}) | (
+            {"ill_posed": True} if ill else {})
+        out.append(replace(emission, derived=_derived(_unupgraded(found, consumes)), rate=kept))
+    return out
+
+
+def _unupgraded(found: dict[str, int | None], consumes: dict) -> dict[str, int | None]:
+    """``found``, a ``modulated_by`` that also acts on a step taking the product away left
+    unsigned: J, its products absent, does not see that step, and at steady state the product can
+    move the other way (sweep case33/gexpr5: obj falls from 1 to 0.68 as M rises, J rises)."""
+    return {s: None if s in consumes and s.startswith("modulated_by") else way
+            for s, way in found.items()}
+
+
+def _consuming(model: pysb.Model, emission, stmt, positions) -> dict[str, list[str]]:
+    """For each regulator at ``positions``, the steps of the row that read it and take a product
+    away (a degradation of what a synthesis makes), each as ``before >> after``."""
+    products = {i for i, effect in _effects(model, stmt).items() if effect > 0}
+    out: dict[str, list[str]] = {}
+    for rx in model.reactions:
+        if not set(rx["rule"]) & set(emission.rules):
+            continue
+        if not any(rx["reactants"].count(i) > rx["products"].count(i) for i in products):
+            continue
+        rule = model.rules[rx["rule"][0]]
+        back = rx["reverse"][0]
+        rate = rule.rate_reverse if back else rule.rate_forward
+        sides = (rule.product_pattern, rule.reactant_pattern) if back else (
+            rule.reactant_pattern, rule.product_pattern)
+        step = f"`{_side(sides[0])} >> {_side(sides[1])}`"
+        for o in _observables(rate):
+            found = _READ.search(o.name)
+            s = position(found.group(1)) if found else None
+            if s in positions and step not in out.get(s, []):
+                out.setdefault(s, []).append(step)
+    return out
+
+
+def _well_posed(value: sympy.Expr) -> bool:
+    """Whether J is shown never negative and finite for every value of its names: below 0, or past
+    a pole, its sign says nothing of which way the reaction runs (sweep multi108: J(M2=0.5) = -2,
+    J(1.5) = +2)."""
+    from .mechanisms import SIGN_TERMS, _sign, _terms
+
+    def never_negative(e) -> bool:
+        if e.is_nonnegative or _sign(e) == 1:
+            return True
+        if isinstance(e, (sympy.Add, sympy.Mul)):
+            return all(never_negative(a) for a in e.args)
+        if isinstance(e, sympy.Piecewise):
+            return all(never_negative(branch) for branch, _ in e.args)
+        if isinstance(e, sympy.Pow):
+            return bool(e.exp.is_even) or never_negative(e.base)
+        return isinstance(e, sympy.exp)
+
+    def positive(e) -> bool:
+        if e.is_positive:
+            return True
+        if isinstance(e, sympy.Add):
+            return all(never_negative(a) for a in e.args) and any(positive(a) for a in e.args)
+        if isinstance(e, sympy.Mul):
+            return all(positive(a) for a in e.args)
+        if isinstance(e, sympy.Pow):
+            return positive(e.base) or bool(e.exp.is_even and e.base.is_nonzero)
+        if isinstance(e, sympy.Piecewise):
+            return all(positive(branch) for branch, _ in e.args)
+        return isinstance(e, sympy.exp)
+
+    def shown(form) -> bool:
+        finite = all(positive(p.base) for p in form.atoms(sympy.Pow) if p.exp.is_negative) and all(
+            positive(f.args[0]) for f in form.atoms(sympy.log))
+        return finite and never_negative(form)
+
+    # Over one denominator a pole that cancels goes: `k/(1/X + 1/K)` is `k*K*X/(K + X)`.
+    return shown(value) or (_terms(value) <= SIGN_TERMS and shown(sympy.together(value)))
 
 
 def times(problem) -> tuple[float, float] | None:
@@ -841,38 +937,228 @@ def _timed(rate: NetRate, span) -> tuple[NetRate, dict[str, tuple[float, float]]
     return rate, {TIME.name: span}
 
 
-def _check_one(
-    model, emission, stmt, policy, prefix, stated, rate: NetRate, s: str, deadline: float,
-    domain=None,
-) -> None:
-    kind = s.rsplit("_", 1)[0]
-    said = _said(s, stated)
-    if not rate.regulators.get(s):
-        raise MechanismError(
-            f"row {prefix!r}: its rate reads `{said}`, but nothing in the model forms "
-            f"{_agent(stated, s)}, so the rate does not change with it. Add the statement that "
-            "forms it, declare it present in `starts`, or leave it out of this statement and its "
-            "rate"
-        )
-    found = shown(rate, s, domain) if monotonic() < deadline else None
-    if found == 0:
-        raise MechanismError(_unseen(model, emission, stmt, policy, prefix, stated, s))
-    inhibitor = kind == "inhibited_by"
-    if found == (-1 if inhibitor else 1):
-        return
-    claim, way = ("inhibits", "fall") if inhibitor else ("activates", "rise")
-    if found is not None:
-        other = REGULATORS["activated_by" if inhibitor else "inhibited_by"]
-        why = f"it {'rises' if inhibitor else 'falls'} instead: state it `{other} {_agent(stated, s)}`"
-    else:
-        why = (
-            "that cannot be shown for every value of its names (nor across a piecewise switching "
-            f"on it): state it `modulated by {_agent(stated, s)}`, which claims no direction"
-        )
-    raise MechanismError(
-        f"row {prefix!r}: its statement states `{said}`, which claims it {claim} the reaction, so "
-        f"its net rate must {way} as {_agent(stated, s)} rises; {why}. J = {_short(rate.value)}"
+def _unsigned(positions) -> dict[str, str]:
+    return {s: "modulated_by" for s in positions if not s.startswith("modulated_by")}
+
+
+def _derived(found: dict[str, int | None]) -> dict[str, str]:
+    """The kinds ``found`` (stated position to the way J moves, ``0`` read as not shown) records
+    where they differ from the kinds stated."""
+    kinds = {s: RECORDED[None if way == 0 else way] for s, way in found.items()}
+    return {s: kind for s, kind in kinds.items() if s.rpartition("_")[0] != kind}
+
+
+def _shown_safely(rate: NetRate, s: str, prefix: str, domain=None) -> int | None:
+    try:
+        return shown(rate, s, domain)
+    except Exception:  # noqa: BLE001 - a sign that breaks is not shown; never a crash
+        logger.exception("row %r: signing %s failed", prefix, s)
+        return None
+
+
+# ------------------------------------------------------------------------------- a version's bounds
+def stored(rate: NetRate) -> dict:
+    """``rate`` as a version's record keeps it: J as text over names of its own (``p0`` a
+    parameter, ``a1`` an amount, ``t2`` a conserved total, ``time``), what each name is, the names
+    each regulator reads, and J over its steps (``c0`` a step's coefficient) with each step's."""
+    over = rate.over_steps.free_symbols - set(rate.steps) if rate.over_steps is not None else set()
+    symbols = sorted(
+        rate.value.free_symbols | {x for xs in rate.regulators.values() for x in xs} | over
+        | {x for coefficient in rate.steps.values() for x in coefficient.free_symbols},
+        key=str,
     )
+    names, kinds = {}, {}
+    for k, symbol in enumerate(symbols):
+        if symbol == TIME:
+            name, kinds["time"] = "time", {"time": True}
+        elif symbol.name in rate.parameters:
+            name = f"p{k}"
+            kinds[name] = {"parameter": rate.parameters[symbol.name]}
+        elif symbol.name.startswith("total"):
+            name, kinds[f"t{k}"] = f"t{k}", {"total": symbol.name}
+        else:
+            name = f"a{k}"
+            kinds[name] = {"amount": symbol.name, "nonnegative": not symbol.is_positive}
+        names[symbol] = sympy.Symbol(name)
+    steps = {c: sympy.Symbol(f"c{k}") for k, c in enumerate(sorted(rate.steps, key=str))}
+    return {
+        "J": str(rate.value.xreplace(names)),
+        "names": kinds,
+        "regulators": {s: [names[x].name for x in xs] for s, xs in rate.regulators.items()},
+        **({
+            "over_steps": str(rate.over_steps.xreplace(names).xreplace(steps)),
+            "steps": {steps[c].name: str(e.xreplace(names)) for c, e in rate.steps.items()},
+        } if rate.over_steps is not None else {}),
+    }
+
+
+def restored(data: dict) -> NetRate:
+    """The net rate :func:`stored` kept, each name signed as it was built."""
+    symbols = {}
+    for name, kind in data["names"].items():
+        sign = {"nonnegative": True} if kind.get("time") or kind.get("nonnegative") else {
+            "positive": True}
+        symbols[name] = sympy.Symbol(name, **sign)
+    steps = {name: sympy.Symbol(name) for name in data.get("steps", {})}
+
+    def read(text: str) -> sympy.Expr:
+        return sympy.sympify(text, locals={**symbols, **steps, "Piecewise": sympy.Piecewise})
+
+    return NetRate(
+        read(data["J"]),
+        {s: tuple(symbols[n] for n in names) for s, names in data["regulators"].items()},
+        read(data["over_steps"]) if "over_steps" in data else None,
+        {steps[name]: read(text) for name, text in data.get("steps", {}).items()},
+        {name: kind["parameter"] for name, kind in data["names"].items() if "parameter" in kind},
+    )
+
+
+def bounded(rate: NetRate, problem) -> tuple[NetRate, dict[str, tuple[float, float]]]:
+    """``rate`` with each parameter as ``problem`` holds it, and the range each name is sampled
+    over: a fixed parameter at its value; an estimated one within its bounds, positive where its
+    lower bound is or its scale is a log, negative where its upper bound is, of either sign where
+    neither (:func:`_ranged`); a condition input over the values its conditions set and the
+    model's own, which holds wherever no period sets it (a pre-equilibration with no condition, a
+    measurement in no experiment); ``time`` over :func:`times`. A name ``problem`` does not hold
+    keeps the sign it was built with."""
+    import pandas as pd
+
+    from .problem import (
+        ESTIMATE, LOWER_BOUND, NOMINAL_VALUE, PARAMETER_ID, PARAMETER_SCALE, TARGET_ID,
+        TARGET_VALUE, UPPER_BOUND,
+    )
+
+    table = problem.parameter_df
+    if table is not None and PARAMETER_ID in table.columns:
+        table = table.set_index(PARAMETER_ID)
+    conditions = problem.condition_df
+    inputs: dict[str, list] = {}
+    if conditions is not None and TARGET_ID in conditions.columns:
+        for target, value in zip(conditions[TARGET_ID], conditions[TARGET_VALUE]):
+            inputs.setdefault(str(target), []).append(value)
+    swap, domain = {}, {}
+    for symbol in rate.value.free_symbols:
+        pid = rate.parameters.get(symbol.name)
+        if pid is None:
+            continue
+        # A condition input first: its periods set it whatever a parameter row of its id says
+        # (PEtab forbids both, and reconcile keeps it out of the table, but nothing here relies
+        # on that).
+        if pid in inputs:
+            default = _model_value(problem, pid)
+            values = pd.to_numeric(pd.Series([*inputs[pid], default]), errors="coerce")
+            if values.isna().any():
+                swap[symbol] = sympy.Symbol(symbol.name, real=True)
+                continue
+            low, high = float(values.min()), float(values.max())
+            if low == high:
+                swap[symbol] = sympy.Float(low)
+                continue
+            swap[symbol] = _ranged(symbol.name, low, high, domain)
+        elif table is not None and pid in table.index:
+            row = table.loc[pid]
+            if not bool(int(row.get(ESTIMATE, 1))):
+                swap[symbol] = sympy.Float(float(row[NOMINAL_VALUE]))
+                continue
+            low, high = float(row[LOWER_BOUND]), float(row[UPPER_BOUND])
+            if str(row.get(PARAMETER_SCALE, "lin")) in ("log", "log10"):
+                low = max(low, 0.0)
+            swap[symbol] = _ranged(symbol.name, low, high, domain)
+    if (span := times(problem)) is not None:
+        if span[0] < 0:
+            swap[TIME] = _ranged(TIME.name, span[0], span[1], domain)
+        else:
+            domain[TIME.name] = span
+    return replace(
+        rate,
+        value=rate.value.xreplace(swap),
+        steps={c: coefficient.xreplace(swap) for c, coefficient in rate.steps.items()},
+    ), domain
+
+
+def _model_value(problem, pid: str) -> float:
+    """``pid``'s value in ``problem``'s model; NaN where it holds none, which leaves the input of
+    either sign."""
+    try:
+        return float(problem.model.get_parameter_value(pid))
+    except Exception:  # noqa: BLE001 - no model, or no such parameter: unknown
+        return float("nan")
+
+
+def _ranged(name: str, low: float, high: float, domain: dict) -> sympy.Expr:
+    """A name ranging from ``low`` to ``high``, as what sympy can sign: both ends where both are
+    finite, ``low + (high - low)*u/(1 + u)`` with ``u`` never negative (so `1 - e` over `e` in
+    [0, 1] is never negative); else its lower bound plus a name never negative where that bound
+    is not, its upper bound less one where that is not positive, and a real name of either sign
+    otherwise; ``domain`` gets the range of the name it is written in."""
+    if np.isfinite(low) and np.isfinite(high) and high > low:
+        u = sympy.Symbol(f"{name}__within", nonnegative=True)
+        domain[u.name] = (1e-6, 1e6)
+        return low + (high - low) * u / (1 + u)
+    span = min(high - low, 1e6) if np.isfinite(high - low) else 1e6
+    if low >= 0:
+        over = sympy.Symbol(f"{name}__over", nonnegative=True)
+        domain[over.name] = (0.0, span)
+        return low + over
+    if high <= 0:
+        under = sympy.Symbol(f"{name}__under", nonnegative=True)
+        domain[under.name] = (0.0, span)
+        return high - under
+    domain[name] = (low, high)
+    return sympy.Symbol(name, real=True)
+
+
+def resign(record: dict, problem) -> tuple[dict, int, list[str]]:
+    """``record`` (a version's statements record) with each row's regulators signed again on
+    ``problem``'s parameter table, conditions and measurements (:func:`bounded`): the kinds a
+    version records are its own bounds', so a bound or a scale an edit changes can change them.
+    Never refuses: a regulator J is not shown to move with is ``modulated_by``. A row built before
+    its net rate was kept with it (provenance older than this) keeps the kinds it had: unsigned,
+    not downgraded. Returns the record, the prefixes of the rows the check failed on (each logged,
+    each claiming no direction, their count kept in the record as ``regulator_check_failures`` while
+    there are any), and those of the rows left unsigned."""
+    from copy import deepcopy
+
+    from .statements import regulators
+
+    record, failed, unsigned = deepcopy(record), [], []
+    for row in record.get("rows", []):
+        emission = row.get("emission") or {}
+        stated = regulators(row["statement"])
+        positions = [f"{kind}_{i}" for kind, agents in stated.items() for i in range(len(agents))]
+        if not positions:
+            continue
+        data = emission.get("rate") or {}
+        if not data:
+            unsigned.append(row.get("prefix"))
+            continue
+        if "J" not in data:
+            emission["derived"] = _unsigned(positions)
+            if data.get("failed"):
+                failed.append(row.get("prefix"))
+            continue
+        try:
+            rate, domain = bounded(restored(data), problem)
+            ill = not _well_posed(rate.value)
+            deadline = monotonic() + ROW_SECONDS
+            found = {s: None if ill else shown(rate, s, domain) if monotonic() < deadline else None
+                     for s in positions}
+        except Exception:  # noqa: BLE001 - a sign that breaks is not shown; never a crash
+            logger.exception("row %r: signing its regulators on the version's bounds failed",
+                             row.get("prefix"))
+            emission["derived"] = _unsigned(positions)
+            failed.append(row.get("prefix"))
+            continue
+        emission["derived"] = _derived(_unupgraded(found, data.get("consumes") or {}))
+        if ill:
+            data["ill_posed"] = True
+        else:
+            data.pop("ill_posed", None)
+    if failed:
+        record["regulator_check_failures"] = len(failed)
+    else:
+        record.pop("regulator_check_failures", None)
+    return record, failed, unsigned
 
 
 def _unseen(model, emission, stmt, policy, prefix, stated, s: str) -> str:

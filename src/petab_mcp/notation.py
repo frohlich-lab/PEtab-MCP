@@ -152,16 +152,27 @@ def evidence_text(st: dict[str, Any]) -> str:
     return f" # {source}{text}".rstrip()
 
 
-def statement_text(st: dict[str, Any]) -> str:
-    """The statement part of a row, its regulators last. Raises ``ValueError`` for what the
-    notation lacks."""
+def statement_text(st: dict[str, Any], derived: dict[str, str] | None = None) -> str:
+    """The statement part of a row, its regulators last, each one its rate records as another kind
+    (``derived``, :func:`statements.signed`) marked with it, ``C (inhibits, from its rate)``,
+    which :func:`parse` reads back as stated. Raises ``ValueError`` for what the notation lacks."""
     from .statements import REGULATORS
+
+    def marked(kind: str, i: int, agent: dict[str, Any]) -> str:
+        shown = (derived or {}).get(f"{kind}_{i}")
+        return agent_text(agent) + (f" ({_SHOWN[shown]}, from its rate)" if shown else "")
 
     text = _action_text(st)
     for kind, words in REGULATORS.items():
         if st.get(kind):
-            text += f", {words} " + " and ".join(agent_text(a) for a in st[kind])
+            text += f", {words} " + " and ".join(
+                marked(kind, i, a) for i, a in enumerate(st[kind])
+            )
     return text
+
+
+#: How the kind a regulator's rate records is marked in a row (:func:`statement_text`).
+_SHOWN = {"inhibited_by": "inhibits", "activated_by": "activates", "modulated_by": "modulates"}
 
 
 def _action_text(st: dict[str, Any]) -> str:
@@ -228,9 +239,12 @@ def _number(text: str) -> bool:
     return True
 
 
-def render(row: dict[str, Any], library: dict | None = None) -> str | None:
+def render(
+    row: dict[str, Any], library: dict | None = None, derived: dict[str, str] | None = None
+) -> str | None:
     """``row`` (``{statement, policy, prefix, parameters?}``) as one line, or ``None`` when the
-    notation cannot write it losslessly (keep it as JSON)."""
+    notation cannot write it losslessly (keep it as JSON). ``derived`` marks the regulators whose
+    kind the row's rate proves (:func:`statement_text`)."""
     try:
         policy = row["policy"]
         short = policy.removeprefix("indra_")
@@ -243,7 +257,7 @@ def render(row: dict[str, Any], library: dict | None = None) -> str | None:
             return None
         if not _IDENT.fullmatch(row["prefix"]):
             return None
-        line = f"{row['prefix']}: {statement_text(row['statement'])} | {' '.join(tail)}"
+        line = f"{row['prefix']}: {statement_text(row['statement'], derived)} | {' '.join(tail)}"
         return line + evidence_text(row["statement"])
     except ValueError:
         return None
@@ -533,7 +547,16 @@ def parse(
         kind = next((k for k, words in REGULATORS.items() if r.take(words)), None)
         if kind is None or kind in st:
             r.fail(f"expected one of {', '.join(map(repr, REGULATORS.values()))}, each once")
-        st[kind] = r.agents("and")
+        st[kind] = [r.agent()]
+        while True:
+            # What get_model marks a recorded kind with (`statement_text`): the row states it as is.
+            if r.take("("):
+                if not any(r.take(f"{words}, from its rate)") for words in _SHOWN.values()):
+                    r.fail("expected `(inhibits, from its rate)`, `(activates, ...)` or "
+                           "`(modulates, ...)`")
+            if not r.take("and"):
+                break
+            st[kind].append(r.agent())
     if not r.done():
         r.fail("unexpected text")
     if comment is not None:

@@ -181,3 +181,39 @@ def test_a_projection_keeps_the_claim_it_comes_from_in_a_signed_graph():
     assert evidence.annotations["regulates"] == (
         "RAF phosphorylates MEK on S217, inhibited by sorafenib."
     )
+
+
+def test_a_modulator_says_the_direction_its_rate_proves_as_derived():
+    """A regulator stated `modulated_by` whose rate proves a direction reads as that kind, marked
+    as the rate's, in English and in the INDRA projection; one it cannot sign stays unsigned."""
+    from petab_mcp import notation
+
+    statement = notation.parse(
+        "r: RAF phosphorylates MEK at S217, modulated by sorafenib and Ca | p"
+    )["statement"]
+    derived = {"modulated_by_0": "inhibited_by"}
+    assert S.english(statement, derived) == (
+        "RAF phosphorylates MEK on S217, inhibited by sorafenib (from its rate), modulated by Ca."
+    )
+    projected = S.as_indra(statement, derived)[1:]
+    assert [str(p) for p in projected] == ["Inhibition(sorafenib(), RAF(), kinase)"]
+    assert projected[0].evidence[0].annotations["from_rate"] is True
+    assert S.as_indra(statement)[1:] == []
+
+
+def test_a_claim_its_rate_reverses_or_cannot_sign_reads_as_the_rate_shows():
+    """A reversed claim reads and projects as the kind its rate shows; a downgraded one reads as
+    unsigned and projects to nothing."""
+    from petab_mcp import notation
+
+    statement = notation.parse(
+        "r: RAF phosphorylates MEK at S217, inhibited by sorafenib and Ca | p"
+    )["statement"]
+    derived = {"inhibited_by_0": "activated_by", "inhibited_by_1": "modulated_by"}
+    assert S.english(statement, derived) == (
+        "RAF phosphorylates MEK on S217, activated by sorafenib (from its rate), modulated by Ca "
+        "(from its rate)."
+    )
+    assert [str(p) for p in S.as_indra(statement, derived)[1:]] == [
+        "Activation(sorafenib(), RAF(), kinase)"
+    ]

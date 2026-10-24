@@ -100,6 +100,15 @@ class Emission:
     #: The sites the row's scheme (:mod:`schemes`) gave molecules that had none such, and no
     #: earlier row's scheme had: molecule -> site -> its states (none for a binding site).
     sites_added: dict[str, dict[str, list[str]]] = field(default_factory=dict)
+    #: The regulators the row's statement states whose kind its net rate records otherwise
+    #: (:func:`regulation.record`), by the kind stated and position: ``modulated_by_0`` ->
+    #: ``inhibited_by``, ``inhibited_by_1`` -> ``modulated_by``. The statement keeps what it
+    #: stated; this is what its maths shows instead.
+    derived: dict[str, str] = field(default_factory=dict)
+    #: What the regulators are signed on, kept to sign them again on another version's bounds:
+    #: the row's net rate and the amounts each regulator reads (:func:`regulation.stored`), or
+    #: why it has none.
+    rate: dict = field(default_factory=dict)
 
 
 Policy = Callable[[Statement, pysb.Model, str], Emission]
@@ -241,6 +250,14 @@ def _sign(e: sympy.Expr) -> int | None:
             signs = {_sign(t) for t in sympy.Add.make_args(terms)} if terms is not None else {None}
             if len(signs) == 1 and None not in signs:
                 return signs.pop()
+        # Over one denominator: `2 + 8*u/(1 + u) - v/(1 + v)`, a bounded `x - y`, is
+        # `(2 + 10*u + v + 9*u*v)/((1 + u)*(1 + v))`.
+        if _terms(e) <= SIGN_TERMS:
+            numerator, denominator = sympy.fraction(sympy.together(e))
+            if denominator != 1 and _terms(numerator) <= SIGN_TERMS:
+                signs = (_sign(sympy.expand(numerator)), _sign(denominator))
+                if None not in signs:
+                    return signs[0] * signs[1]
     return None
 
 
@@ -444,9 +461,26 @@ def _not_a_parameter(
     molecule or one of ``species``, the ids the model names amounts by (a parameter of its name
     clashed with it in the SBML), a starting amount ``<x>_init`` (the start made it again, a
     duplicate in PySB), a rate function, or ``time`` (which BioNetGen refused as a parameter
-    name). A row's own ``<prefix>_init`` constant is shared like any other."""
+    name); an expression the model builds, a row's rate (whose regulators the reading row would
+    read unstated) or a value a binding pinned; or a regulator's name, which only a mechanism's
+    rate reads. A row's own ``<prefix>_init`` constant is shared like any other."""
     held = model.components.get(ident)
     instead = ""
+    if REGULATOR_NAME.fullmatch(ident):
+        raise MechanismError(
+            f"row {prefix!r} binds {name!r} over {ident!r}, a regulator's name. A regulator is read "
+            "in its mechanism's rate (`inhibited_by` in a written rate, `amount(inhibited_by)` in a "
+            "scheme) and stated in the statement (`..., inhibited by X`); a binding reads "
+            "parameters: a shared id, a problem parameter, a condition-table input"
+        )
+    if isinstance(held, pysb.Expression):
+        raise MechanismError(
+            f"row {prefix!r} binds {name!r} over {ident!r}, an expression the model builds (a "
+            "row's rate, or a value a binding pinned), not a parameter: a rate read through a "
+            "binding would carry its row's regulators into this one unstated. A binding reads "
+            "parameters: share another row's constant by its name (`<prefix>_kf`), a problem "
+            "parameter, a condition-table input"
+        )
     if isinstance(held, pysb.Monomer):
         what = "a molecule"
     elif ident in species:
@@ -455,7 +489,7 @@ def _not_a_parameter(
             f" `{ident}` is the amount of the agent the entity map (or `amounts`) maps it to, "
             "read by that agent's own name and sites, not by this id."
         )
-    elif isinstance(held, (pysb.Parameter, pysb.Expression)):
+    elif isinstance(held, pysb.Parameter):
         return
     elif ident.endswith("_init"):
         what = "a starting amount"
@@ -745,8 +779,8 @@ def written(
     reaction;
     ``time``; exp, log, sqrt, and ``piecewise(value, condition, ..., otherwise)``, its conditions
     comparisons over the same names (:func:`_piecewise`). The rate must read every regulator a
-    row states (:func:`_read_regulators`), and the row's net rate move with each as the statement
-    claims (:mod:`regulation`). A scheme (:func:`schemes.compile_scheme`) declares the
+    row states (:func:`_read_regulators`), and each is recorded as the kind the row's net rate
+    shows (:mod:`regulation`). A scheme (:func:`schemes.compile_scheme`) declares the
     constants its rates name the same way.
 
     ``problem_ids`` (id to :data:`SHIPPED`, :data:`CONDITION` or :data:`SPECIES`) are names no

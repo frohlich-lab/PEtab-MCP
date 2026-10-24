@@ -276,7 +276,7 @@ def to_antimony(
             _seed(as_written, [as_written.monomers[m.name] for m in unreached
                                if m.name in as_written.monomers.keys()])
         _expand(as_written)
-    regulation.check(as_written or model, rows, emissions, times)
+    emissions = regulation.record(as_written or model, rows, emissions, times)
     sbml = export(model, "sbml")  # from the expansion above; BioNetGen does not run again
     base_names = {
         str(initial.pattern): initial.pattern.monomer_patterns[0].monomer.name

@@ -478,6 +478,19 @@ def _commit_change(
             )
 
         warnings = _parsimony_warnings(problem, old_species) if recon is not None else []
+        # A row's regulators are signed on this version's bounds: an edit of a bound or a scale
+        # can change what its rate records, and the record changes with the problem below.
+        record = getattr(
+            session, "submitted_statements" if model_build is not None else "model_statements", None
+        )
+        signed = said = None
+        if record:
+            from . import regulation
+
+            signed, failed, unsigned = regulation.resign(record, problem)
+            said = regulator_warning(
+                signed, _statements_base(session, model_build is not None), unsigned, failed
+            )
         # Warnings raised by the edit callback itself (e.g. change_parameters' advisory sigma cap)
         # must reach the CALLER, not just the provenance log — an advisory nobody reads is the same
         # as no guard at all. `recon is None` for every parameter edit, so the parsimony list above
@@ -494,6 +507,8 @@ def _commit_change(
         # The edit's half of the message stack (see :mod:`messages`). The lint's WARNING-level
         # findings join it here: they used to live only inside the `validation` report, which the
         # result no longer carries, so they were reaching nobody at all.
+        # The regulators' too, in the edit's event as in its result.
+        warnings = [*warnings, said] if said else warnings
         edit_messages = M.warnings_from(M.SOURCE_EDIT, warnings) + M.warnings_from(
             M.SOURCE_VALIDATION,
             [i["message"] for i in report["issues"] if i.get("level") == "warning"],
@@ -532,6 +547,11 @@ def _commit_change(
         # can throw. A throw after the swap would leave the live problem changed while the caller
         # reports `applied: false`, and `make_changes` returns on that without reverting.
         session.problem = problem
+        if signed is not None and model_build is not None:
+            record.clear()  # the caller keeps this record as the new model's rows
+            record.update(signed)
+        elif signed is not None:
+            session.model_statements = signed
 
     return {
         "applied": True,
@@ -725,7 +745,14 @@ def statements_to_antimony(
     from indra.statements import Agent, stmts_from_json
 
     from . import mechanisms, problem_sbml, regulation
-    from .statements import agent_problems, indra_part, problems, regulators, ungrounded, with_defaults
+    from .statements import (
+        agent_problems,
+        indra_part,
+        problems,
+        regulators,
+        ungrounded,
+        with_defaults,
+    )
 
     definitions = dict(session.mechanisms)
     for definition in written or []:
@@ -753,7 +780,9 @@ def statements_to_antimony(
 
     try:
         rows = [
-            notation.parse(row, groundings, library) if isinstance(row, str) else dict(row)
+            notation.parse(row, groundings, library) if isinstance(row, str)
+            # What `get_model` shows a row's rate records is the server's, not the row's.
+            else {k: v for k, v in dict(row).items() if k != "derived"}
             for row in rows
         ]
         starts = [{**start, "agent": agent_json(start["agent"])} for start in starts or []]
@@ -876,6 +905,132 @@ def statements_to_antimony(
             "by name), and free on a binding site.",
         ))
     return antimony, record, warnings, definitions
+
+
+def _statements_base(session, rebuilt: bool) -> dict | None:
+    """The statements record an edit starts from: a fork's version's, else the current model's."""
+    if rebuilt and getattr(session, "derived_from", None) is not None:
+        return session.provenance.get_statements(int(session.derived_from))
+    return getattr(session, "model_statements", None)
+
+
+def regulator_warning(record: dict, base: dict | None, unsigned=(), failed=()) -> str | None:
+    """What ``record``'s rows' rates record otherwise than their statements state, for the rows the
+    edit touched: each new or changed since ``base`` (the record the edit started from), or whose
+    recorded kinds changed (a bound did it), back to what was stated too. A row with no one net
+    rate says why; the rows ``unsigned`` (built before their net rate was kept) say they kept the
+    kinds they had; the rows the check ``failed`` on (a bug of the server's) say so, never as a
+    reason to change their mechanism. A row whose rate law can go negative or pass a pole says
+    so, and a new or changed row whose regulator also acts on a step taking the product away names
+    that step. ``None`` where there is nothing to say."""
+    from . import notation
+    from .statements import REGULATORS
+
+    def text(agent: dict) -> str:
+        try:
+            return notation.agent_text(agent)
+        except ValueError:  # what the notation cannot write
+            return agent["name"]
+
+    before = {row["prefix"]: row for row in (base or {}).get("rows", [])}
+    changed: dict[tuple[str, str, str, str], list[str]] = {}
+    restored: dict[tuple[str, str], list[str]] = {}
+    negative: list[tuple[str, list[str]]] = []
+    taking: dict[tuple[str, str, str], list[str]] = {}
+    broken = []
+    for row in record.get("rows", []):
+        emission = row.get("emission") or {}
+        rate = emission.get("rate") or {}
+        derived, why = emission.get("derived") or {}, rate.get("none", "")
+        old = before.get(row["prefix"])
+        same = old is not None and all(old.get(k) == row.get(k) for k in ("statement", "policy",
+                                                                          "parameters"))
+        was = (old.get("emission") or {}).get("derived") or {} if same else {}
+        if not same:
+            for name, steps in (rate.get("consumes") or {}).items():
+                stated, _, position = name.rpartition("_")
+                agent = text(row["statement"][stated][int(position)])
+                taking.setdefault((stated, agent, " and ".join(steps)), []).append(row["prefix"])
+        for name in sorted(set(was) - set(derived)):
+            stated, _, position = name.rpartition("_")
+            agent = text(row["statement"][stated][int(position)])
+            restored.setdefault((stated, agent), []).append(row["prefix"])
+        if rate.get("ill_posed") and not (same and was == derived):
+            moved = []
+            for name in derived:
+                stated, _, position = name.rpartition("_")
+                agent = text(row["statement"][stated][int(position)])
+                moved.append(f"`{REGULATORS[stated]} {agent}` reads as `modulated by {agent}`")
+            negative.append((row["prefix"], moved))
+            continue
+        if not derived or (same and was == derived):
+            continue
+        if row["prefix"] in failed:
+            broken.append(row["prefix"])
+            continue
+        for name, shown in derived.items():
+            stated, _, position = name.rpartition("_")
+            agent = text(row["statement"][stated][int(position)])
+            changed.setdefault((stated, agent, shown, why), []).append(row["prefix"])
+    parts = [
+        f"`{', '.join(prefixes)}`: you stated `{REGULATORS[stated]} {agent}`, but its mechanism has "
+        f"no one net rate to show a direction on ({why}), so it reads as `{REGULATORS[shown]} "
+        f"{agent}`" if why else
+        f"`{', '.join(prefixes)}`: you stated `{REGULATORS[stated]} {agent}`, "
+        f"{'and' if stated == 'modulated_by' else 'but'} "
+        f"{_WHAT_THE_RATE_DOES[shown].format(agent)}, so it reads as `{REGULATORS[shown]} {agent}`"
+        for (stated, agent, shown, why), prefixes in changed.items()
+    ]
+    parts += [
+        f"`{prefix}`: its rate law can go negative, or pass a pole, for values of its names within "
+        "their ranges, where its sign no longer says which way the reaction runs, so it gives no "
+        "regulator a direction" + (f" ({'; '.join(moved)})" if moved else "")
+        for prefix, moved in negative
+    ]
+    parts += [
+        f"`{', '.join(prefixes)}`: `{REGULATORS[stated]} {agent}` also acts on {steps}, a step "
+        "that takes the product away, which the reaction's rate (the product absent) does not see, so "
+        "what it does to the product's amount is not shown"
+        + (": it stays `modulated by`" if stated == "modulated_by" else "")
+        for (stated, agent, steps), prefixes in taking.items()
+    ]
+    parts += [
+        f"`{', '.join(prefixes)}`: `{REGULATORS[stated]} {agent}` reads as you stated it again"
+        for (stated, agent), prefixes in restored.items()
+    ]
+    if broken:
+        parts.append(
+            f"`{', '.join(broken)}`: the server failed checking its regulators (a bug of its own, "
+            "logged), so they claim no direction until a later edit checks them; its mechanism "
+            "needs no change for this"
+        )
+    if unsigned:
+        parts.append(
+            f"`{', '.join(unsigned)}`: built before regulators were signed on a version's bounds, "
+            "so they keep the kinds they had; give them again in `statements` to sign them"
+        )
+    if not parts:
+        return None
+    split = any(why for *_, why in changed)
+    advice = (
+        " Check that each mechanism does what you meant; if not, rewrite its rate"
+        + ("; a mechanism with no one net rate (two reactions, say) is one statement for each "
+           "reaction" if split else "")
+        + ("; a rate law that can go negative is one to rewrite (`k/(1 + X/K)`, not "
+           "`k*(1 - X)`)" if negative else "")
+        + ". The statements stay as you wrote them; `get_model` marks each regulator with the "
+        "kind its rate shows (`(inhibits, from its rate)`)." if changed or negative else ""
+    )
+    return "; ".join(parts) + "." + advice
+
+
+#: What a regulator's rate does with it, by the kind the rate records it as (``{}`` the agent).
+_WHAT_THE_RATE_DOES = {
+    "inhibited_by": "its rate never rises as {} rises",
+    "activated_by": "its rate never falls as {} rises",
+    "modulated_by": "its rate cannot be shown to move one way as {} rises, for every value of its "
+    "names within their bounds",
+}
 
 
 _NOTATION_HINT = (
@@ -1657,6 +1812,8 @@ def working_state(session) -> dict[str, Any]:
             "problem": session.problem,
             "simulation": session.simulation,
             "optimization": session.optimization,
+            # A parameters-only edit signs the rows' regulators again on its bounds.
+            "model_statements": getattr(session, "model_statements", None),
         }
 
 
@@ -1676,6 +1833,8 @@ def revert_working_state(session, snapshot: dict[str, Any], reason: str) -> None
         session.problem = snapshot["problem"]
         session.simulation = snapshot["simulation"]
         session.optimization = snapshot["optimization"]
+        if "model_statements" in snapshot:
+            session.model_statements = snapshot["model_statements"]
         session.provenance.append_event(
             {
                 "type": "revert",

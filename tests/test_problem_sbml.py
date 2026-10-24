@@ -855,6 +855,33 @@ def test_a_stated_inhibitor_builds_the_modifier_odes():
     assert all(sympy.simplify(odes[k] - v) == 0 for k, v in expected.items()), odes
 
 
+@pytest.mark.parametrize(
+    "rate",
+    [
+        "k*Ki/(Ki + {kind}_by)",  # upgraded from modulated, reversed from activated
+        "(k + Ki*{kind}_by)/(1 + {kind}_by)",  # downgraded from inhibited or activated
+    ],
+)
+def test_the_kind_a_rate_records_leaves_the_odes_as_they_are(rate):
+    """Recording a regulator as the kind its rate shows reads the model, never changes it: the
+    row builds the same ODEs whichever kind it states."""
+    library = dict(M.REGISTRY)
+    kinds = ("inhibited", "activated", "modulated")
+    for kind in kinds:
+        library[("PopulationTransition", kind)] = M.written(
+            {"statement_type": "PopulationTransition", "policy": kind, "based_on": "mass_action",
+             "rate": rate.format(kind=kind), "parameters": ["k", "Ki"]},
+            library,
+        )
+    odes = [
+        _odes(PS.to_antimony(
+            [(_TRANSITION, kind, "r1", None, {f"{kind}_by": [Agent("drug")]})], {}, library
+        )[0])
+        for kind in kinds
+    ]
+    assert odes[0] == odes[1] == odes[2]
+
+
 def test_a_written_rate_leaves_no_unread_rules():
     """The amounts a written rate reads are inlined into it; the observable rules PySB also
     exports for them were read by nothing."""

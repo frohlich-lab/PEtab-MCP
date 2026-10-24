@@ -189,7 +189,8 @@ class StatementRow(BaseModel):
         description="the assertion as an INDRA statement's JSON: its `type` and agents, e.g. "
         "{type: 'Phosphorylation', enz: {name: 'A'}, sub: {name: 'B'}, residue: 'S', "
         "position: '10'}; and the agents that regulate its rate without taking part, each a list: "
-        "`inhibited_by`, `activated_by`, `modulated_by` ('..., inhibited by C' in the notation)."
+        "`inhibited_by`, `activated_by`, `modulated_by` ('..., inhibited by C' in the notation). "
+        "Each is recorded as the kind its rate shows, which the result reports where it differs."
     )
     policy: str = Field(description="the mechanism expressing it, e.g. 'indra_default'.")
     prefix: str = Field(
@@ -200,6 +201,12 @@ class StatementRow(BaseModel):
         description="binds a parameter this row makes, by its kind ('kf' for '<prefix>_kf'), to "
         "a SHARED id (another row's, a problem parameter's, or a new name several rows use) or "
         "to a NUMBER, which fixes it — one rate constant across many reactions is one parameter.",
+    )
+    derived: dict[str, str] | None = Field(
+        default=None,
+        description="ignored: what `get_model` shows a row's rate records for its regulators, by "
+        "the kind stated and position ({'inhibited_by_0': 'activated_by'}), so a row it shows "
+        "reads back as it was.",
     )
 
 
@@ -263,9 +270,9 @@ class MechanismDef(BaseModel):
         "exp/log/sqrt and `piecewise(value, condition, ..., otherwise)` (`piecewise(k_0, time < "
         "t_1, k_1)`). It is multiplied by every reactant's amount, catalysts included, so a rate "
         "that stays non-negative cannot drive an amount negative; a constant `k` alone is mass "
-        "action. The row's net rate must fall with each inhibitor and rise with each activator "
-        "for every value of its names, as sympy shows; a regulator it cannot show that for is "
-        "`modulated_by`."
+        "action. Each regulator is recorded as the kind the row's net rate shows for every value "
+        "of its names (sympy, within the parameters' bounds): inhibited where it never rises, "
+        "activated where it never falls, else modulated; one it does not change with is refused."
     )
     parameters: list[str] = Field(
         default_factory=list,
@@ -1068,9 +1075,11 @@ def _make_changes_statements_doc(
         "its row's statement names, so an agent that changes a reaction's rate without taking "
         "part is stated as its regulator: `r1: E phosphorylates S at T20, inhibited by C | "
         "inhibited Ki=K_C` claims C slows that reaction, and its mechanism's rate reads C as "
-        "`inhibited_by` (`activated_by` speeds it, `modulated_by` claims no direction). The rate "
-        "must fall with each inhibitor and rise with each activator, and read every regulator its "
-        "statement states. A row's `parameters` shares a rate constant with other "
+        "`inhibited_by` (`activated_by` speeds it, `modulated_by` claims no direction). Each is "
+        "recorded as the kind its rate shows within its parameters' bounds, again whenever a row "
+        "or a bound changes: where that differs from the statement, the result says so and "
+        "`get_model` marks it `(inhibits, from its rate)`. The rate must read every regulator its "
+        "statement states, and change with each. A row's `parameters` shares a rate constant with other "
         "rows, or with a parameter the problem ships, or fixes it to a number. "
         + (
             "The species the observables read are bound by the problem's entity map: name agents "
@@ -1183,7 +1192,11 @@ def _statements_text(session, version: int | None) -> str:
         )
     for row in record["rows"]:
         bare = {k: row[k] for k in ("statement", "policy", "prefix", "parameters") if row.get(k)}
-        lines.append(notation.render(bare, library) or json.dumps(bare))
+        derived = (row.get("emission") or {}).get("derived")
+        lines.append(
+            notation.render(bare, library, derived)
+            or json.dumps(bare | ({"derived": derived} if derived else {}))
+        )
     for start in record.get("starts") or []:
         lines.append(f"start {start['name']}: {notation.agent_text(start['agent'])} = "
                      f"{start['amount']}")

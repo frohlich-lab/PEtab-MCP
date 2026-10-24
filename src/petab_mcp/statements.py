@@ -35,13 +35,14 @@ reaction at the population level: sorafenib slows it, whatever binds what. INDRA
 part of that. A bound condition (``RAF{~sorafenib}``) claims a complex the rule never forms, and
 an ``Inhibition(sorafenib, RAF)`` claims every reaction RAF catalyses, since an INDRA statement
 names agents and never another statement. The mechanism's rate reads each regulator
-(:mod:`mechanisms`), and its sign is checked against the claim: a rate an inhibitor does not
-slow, or an activator does not speed, is refused, and ``modulated_by`` claims no sign. The rate
-checked is the row's net rate as the model builds it (:mod:`regulation`), the reaction's initial
-rate, since where a step sits decides which way its own rate moves the reaction. A regulator that rate
-does not change with acts on a step it cannot see, a product's degradation, and is that step's,
-stated on its own row: each claim keeps one meaning, and :func:`as_indra` never puts a regulator
-on another reaction. INDRA's
+(:mod:`mechanisms`), and each is recorded as the kind the row's net rate shows, read off the
+model the rows build (:mod:`regulation`): inhibited where it never rises, activated where it never
+falls, modulated where neither can be shown. Where that differs from the statement, it is kept
+beside it (:attr:`mechanisms.Emission.derived`), reported to the agent, and shown as the rate's.
+The net rate is the reaction's initial rate, since where a step sits decides which way its own
+rate moves the reaction. A regulator that rate does not change with acts on a step it cannot see,
+a product's degradation, and is that step's, stated on its own row: each claim keeps one meaning,
+and :func:`as_indra` never puts a regulator on another reaction. INDRA's
 reader and assemblers skip the fields, so :func:`english` writes them, :func:`indra_part` is
 what INDRA reads, and :func:`as_indra` projects each signed regulator onto a statement INDRA can
 read, for a causal graph built from INDRA statements.
@@ -269,9 +270,23 @@ def regulators(statement: dict) -> dict[str, list[Agent]]:
     }
 
 
-def english(statement: dict) -> str:
+def signed(statement: dict, derived: dict[str, str] | None = None) -> list[tuple[str, Agent, bool]]:
+    """Each regulator ``statement`` states, with the kind it is recorded as and whether its rate
+    gave that kind: as stated, or the kind its rate shows instead, from ``derived`` (kind stated and
+    position -> kind recorded, a row's :attr:`mechanisms.Emission.derived`)."""
+    out = []
+    for kind, agents in regulators(statement).items():
+        for i, agent in enumerate(agents):
+            shown = (derived or {}).get(f"{kind}_{i}")
+            out.append((shown or kind, agent, shown is not None))
+    return out
+
+
+def english(statement: dict, derived: dict[str, str] | None = None) -> str:
     """``statement`` (INDRA's JSON) in English: INDRA's own sentence and the regulators it states,
-    which INDRA's assembler does not read. "RAF phosphorylates MEK, inhibited by sorafenib." """
+    which INDRA's assembler does not read. "RAF phosphorylates MEK, inhibited by sorafenib." A
+    regulator its rate records as another kind (``derived``, :func:`signed`) reads as that kind,
+    marked so: "inhibited by sorafenib (from its rate)"."""
     from indra.assemblers.english import EnglishAssembler
     from indra.assemblers.english.assembler import _assemble_agent_str
 
@@ -283,12 +298,16 @@ def english(statement: dict) -> str:
         sentence = f"{text(stmt.source)} becomes {text(stmt.target)}"
     else:
         sentence = EnglishAssembler([stmt]).make_model().rstrip(".")
-    for kind, agents in regulators(statement).items():
+    clauses: dict[tuple[str, bool], list[Agent]] = {}
+    for kind, agent, from_rate in signed(statement, derived):
+        clauses.setdefault((kind, from_rate), []).append(agent)
+    for (kind, from_rate), agents in clauses.items():
         sentence += f", {REGULATORS[kind]} " + " and ".join(map(text, agents))
+        sentence += " (from its rate)" if from_rate else ""
     return sentence + "."
 
 
-def as_indra(statement: dict) -> list[Statement]:
+def as_indra(statement: dict, derived: dict[str, str] | None = None) -> list[Statement]:
     """``statement`` (a row's, INDRA's JSON) as INDRA statements: its own, then one for each signed
     regulator it states, which a causal graph assembled from INDRA statements would otherwise drop.
 
@@ -300,29 +319,35 @@ def as_indra(statement: dict) -> list[Statement]:
     makes, signed by the claim and by what the reaction does to it: "SKI is produced, inhibited by
     X" gives ``DecreaseAmount(X, SKI)``, "SKI is degraded, inhibited by X" ``IncreaseAmount(X,
     SKI)``. ``modulated_by`` claims no direction, and INDRA has no unsigned statement over agents,
-    so it is not projected. Each projection carries the statement's evidence, annotated with the
-    claim it comes from (:func:`english`) under ``regulates``."""
+    so it is not projected. Each regulator projects as the kind its rate records (``derived``,
+    :func:`signed`), so a claim the rate reverses projects reversed and one it cannot sign not at
+    all.
+    Each projection carries the statement's evidence, annotated with the claim it comes from
+    (:func:`english`) under ``regulates``, and one whose kind its rate gave with ``from_rate``."""
     (stmt,) = stmts_from_json([with_defaults(indra_part(statement))])
-    claim = english(statement)
+    claim = english(statement, derived)
 
-    def evidence() -> list[Evidence]:
+    def evidence(from_rate: bool) -> list[Evidence]:
+        marked = {"from_rate": True} if from_rate else {}
         return [
             Evidence(source_api=ev.source_api or "petab_mcp", text=ev.text,
-                     annotations={**ev.annotations, "regulates": claim})
+                     annotations={**ev.annotations, "regulates": claim, **marked})
             for ev in stmt.evidence or [Evidence()]
         ]
 
     catalyst, activity = _catalyst(stmt)
     out = [stmt]
-    for kind, sign in (("inhibited_by", -1), ("activated_by", 1)):
-        for regulator in regulators(statement).get(kind, []):
-            if catalyst is not None:
-                cls = Inhibition if sign < 0 else Activation
-                out.append(cls(regulator, catalyst, activity, evidence=evidence()))
-                continue
-            for product, effect in _products(stmt):
-                cls = IncreaseAmount if sign * effect > 0 else DecreaseAmount
-                out.append(cls(regulator, product, evidence=evidence()))
+    for kind, regulator, from_rate in signed(statement, derived):
+        if kind == "modulated_by":
+            continue
+        sign = -1 if kind == "inhibited_by" else 1
+        if catalyst is not None:
+            cls = Inhibition if sign < 0 else Activation
+            out.append(cls(regulator, catalyst, activity, evidence=evidence(from_rate)))
+            continue
+        for product, effect in _products(stmt):
+            cls = IncreaseAmount if sign * effect > 0 else DecreaseAmount
+            out.append(cls(regulator, product, evidence=evidence(from_rate)))
     return out
 
 

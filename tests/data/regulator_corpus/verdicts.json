@@ -33,19 +33,31 @@
   "verdict": "accepted"
  },
  "netrate/2_reversed/kr2_kc": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "p": {
+    "inhibited_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "netrate/3/enzyme_inhibits_itself": {
-  "kind": "reversed",
-  "verdict": "refused"
+  "derived": {
+   "p": {
+    "inhibited_by_0": "activated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "netrate/t10/e3_kdeg_slowed": {
   "verdict": "accepted"
  },
  "netrate/t10/e3_kr_slowed": {
-  "kind": "reversed",
-  "verdict": "refused"
+  "derived": {
+   "d": {
+    "inhibited_by_0": "activated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "netrate/t10/ping_pong": {
   "verdict": "accepted"
@@ -73,7 +85,8 @@
   "verdict": "refused"
  },
  "netrate/t11/synthesis_modulated": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "netrate/t12/immature": {
   "verdict": "accepted"
@@ -86,14 +99,23 @@
   "verdict": "accepted"
  },
  "netrate/t14/hill": {
+  "derived": {
+   "p": {
+    "modulated_by_0": "inhibited_by"
+   }
+  },
   "verdict": "accepted"
  },
  "netrate/t17/back_sped_more": {
   "verdict": "accepted"
  },
  "netrate/t17/enzyme_degraded": {
-  "kind": "no_rate",
-  "verdict": "refused"
+  "derived": {
+   "p": {
+    "inhibited_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "netrate/t17/enzyme_turnover": {
   "verdict": "accepted"
@@ -106,21 +128,40 @@
   "verdict": "accepted"
  },
  "netrate/t19/kc": {
+  "derived": {
+   "p": {
+    "modulated_by_2": "inhibited_by"
+   }
+  },
   "verdict": "accepted"
  },
  "netrate/t19/kf": {
+  "derived": {
+   "p": {
+    "modulated_by_2": "inhibited_by"
+   }
+  },
   "verdict": "accepted"
  },
  "netrate/t19/kr": {
-  "kind": "reversed",
-  "verdict": "refused"
+  "derived": {
+   "p": {
+    "inhibited_by_0": "activated_by",
+    "modulated_by_2": "activated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "netrate/t2/fwd_kf_slowed": {
   "verdict": "accepted"
  },
  "netrate/t2/fwd_kr_slowed": {
-  "kind": "reversed",
-  "verdict": "refused"
+  "derived": {
+   "p": {
+    "inhibited_by_0": "activated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "netrate/t2/fwd_kr_sped": {
   "verdict": "accepted"
@@ -132,8 +173,12 @@
   "verdict": "accepted"
  },
  "netrate/t2/rev_kr_slowed": {
-  "kind": "reversed",
-  "verdict": "refused"
+  "derived": {
+   "p": {
+    "inhibited_by_0": "activated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "netrate/t2/rev_kr_sped": {
   "verdict": "accepted"
@@ -145,18 +190,37 @@
   "verdict": "accepted"
  },
  "netrate/t21/2sum": {
+  "derived": {
+   "p": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "netrate/t21/3reg": {
+  "derived": {
+   "p": {
+    "modulated_by_0": "inhibited_by"
+   }
+  },
   "verdict": "accepted"
  },
  "netrate/t22/activated_by": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "p": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "netrate/t22/inhibited_by": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "p": {
+    "inhibited_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "netrate/t22/modulated_by": {
   "verdict": "accepted"
@@ -200,36 +264,68 @@
   "verdict": "accepted"
  },
  "netrate/t9/5_all": {
-  "kind": "no_rate",
-  "verdict": "refused"
+  "derived": {
+   "p": {
+    "inhibited_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "netrate/t9/6_all": {
-  "kind": "no_rate",
-  "verdict": "refused"
+  "derived": {
+   "p": {
+    "inhibited_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "netrate/v3/four_regulators": {
   "verdict": "accepted"
  },
  "netrate/v5/itself": {
-  "kind": "reversed",
-  "verdict": "refused"
+  "derived": {
+   "d": {
+    "inhibited_by_0": "activated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "perica_egf/61180684_1/egfr_autop": {
   "verdict": "accepted"
  },
  "perica_egf/61180684_1/egfr_t693dep": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61180684_1/egfr_ydep": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61180684_1/egfr_ydep_a": {
   "verdict": "accepted"
  },
  "perica_egf/61180684_1/gab1_gap": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61180684_1/gab1_gef": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61180684_1/mek_act_braf": {
@@ -256,6 +352,13 @@
   "verdict": "accepted"
  },
  "perica_egf/61180684_1/sos1_gef6": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by",
+    "modulated_by_2": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61180684_2/gef_stim": {
@@ -286,9 +389,19 @@
   "verdict": "refused"
  },
  "perica_egf/61180684_2/shp_brake_dephos": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61180684_2/stim_dephos": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61180684_3/act_act": {
@@ -315,12 +428,28 @@
   "verdict": "refused"
  },
  "perica_egf/61180684_3/gef_gab1": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61180684_3/gef_sos1": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61181345_4/braf_act": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61181345_4/braf_inhib": {
@@ -340,60 +469,165 @@
   "verdict": "refused"
  },
  "perica_egf/61181345_4/raf_act": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61181345_4/sos1_inact": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61181345_4/sos1_recruit": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_0/dep_egf": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_0/dep_egf2": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_0/egfr_act": {
   "verdict": "accepted"
  },
  "perica_egf/61230791_0/egfr_dp": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_0/egfr_dp/1": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_0/erk_phos": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_0/mek1_phos": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_0/mek_act": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by",
+    "modulated_by_2": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_0/mek_erk": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_0/ras_act_braf": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_0/ras_act_braf_mut": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_0/ras_gef": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by",
+    "modulated_by_2": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_0/ras_gef2": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by",
+    "modulated_by_2": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_0/ras_gef3": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by",
+    "modulated_by_2": "activated_by",
+    "modulated_by_3": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_0/rsk1_phos": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_0/rsk_phos": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_1/basal_deact": {
@@ -404,6 +638,11 @@
   "verdict": "refused"
  },
  "perica_egf/61230791_1/mek_gated": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_1/ras_hydrolysis": {
@@ -429,9 +668,20 @@
   "verdict": "accepted"
  },
  "perica_egf/61230791_2/dephos_egfr": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_2/dephos_erk": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_2/egfr_act": {
@@ -451,12 +701,29 @@
   "verdict": "refused"
  },
  "perica_egf/61230791_2/egfr_phos": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_2/egfr_switch": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_2/egfr_t693_phos": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_2/erk1_auto": {
@@ -472,45 +739,133 @@
   "verdict": "refused"
  },
  "perica_egf/61230791_2/erk_phos": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_2/erk_switch": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_2/mek_act": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by",
+    "modulated_by_2": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_2/mek_phos": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_2/mek_phos2": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_2/raf1_act": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by",
+    "modulated_by_2": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_2/raf1_phos": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_2/raf_act": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_2/ras_gap": {
   "verdict": "accepted"
  },
  "perica_egf/61230791_2/ras_gef": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by",
+    "modulated_by_2": "activated_by",
+    "modulated_by_3": "activated_by",
+    "modulated_by_4": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_2/ras_gef/1": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by",
+    "modulated_by_2": "activated_by",
+    "modulated_by_3": "activated_by",
+    "modulated_by_4": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_2/ras_gef2": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by",
+    "modulated_by_2": "activated_by",
+    "modulated_by_3": "activated_by",
+    "modulated_by_4": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_2/ras_gef3": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by",
+    "modulated_by_2": "activated_by",
+    "modulated_by_3": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_2/shoc2_dp": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_2/t693_off": {
@@ -518,68 +873,173 @@
   "verdict": "refused"
  },
  "perica_egf/61230791_3/ras_gef2": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by",
+    "modulated_by_2": "activated_by",
+    "modulated_by_3": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_3/ras_gef2/1": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_3/ras_gtp_phos": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_4/drive_phos": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by",
+    "modulated_by_2": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_4/dusp_dephos": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_4/egfr_deact": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_4/erk_dephos": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_4/erk_dephos2": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_4/erk_phos": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_4/flat_phos": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_4/p1178_dephos": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_4/raf_drive": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by",
+    "modulated_by_2": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_4/raf_drive2": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by",
+    "modulated_by_2": "activated_by",
+    "modulated_by_3": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_4/raf_drive3": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by",
+    "modulated_by_2": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_4/raf_drive4": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by",
+    "modulated_by_2": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "perica_egf/61230791_4/ras_raf": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "prover/a_crossbind/other": {
-  "verdict": "accepted"
+  "kind": "build",
+  "verdict": "refused"
  },
  "prover/a_crossbind/same": {
-  "kind": "reversed",
+  "kind": "build",
   "verdict": "refused"
  },
  "prover/a_e2e_pin": {
   "verdict": "accepted"
  },
  "prover/a_negparam/difference": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "r3": {
+    "inhibited_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/a_negparam/lin": {
+  "derived": {
+   "r2": {
+    "inhibited_by_0": "modulated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "prover/alias": {
@@ -596,94 +1056,178 @@
   "verdict": "refused"
  },
  "prover/b_overlap/overlap": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "r3": {
+    "activated_by_0": "modulated_by",
+    "inhibited_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/b_overlap/self": {
-  "kind": "reversed",
-  "verdict": "refused"
+  "derived": {
+   "r1": {
+    "inhibited_by_0": "activated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/b_overlap/two_kinds": {
-  "kind": "reversed",
-  "verdict": "refused"
+  "derived": {
+   "r2": {
+    "activated_by_0": "inhibited_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c1/0": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "inhibited_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c1/1": {
-  "kind": "reversed",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "inhibited_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c1/10": {
-  "kind": "reversed",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "inhibited_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c1/11": {
-  "kind": "reversed",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "inhibited_by_0": "activated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c1/12": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "inhibited_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c1/13": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "inhibited_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c1/14": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "inhibited_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c1/15": {
-  "kind": "reversed",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "activated_by_0": "inhibited_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c1/16": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c1/17": {
   "verdict": "accepted"
  },
  "prover/c1/18": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c1/19": {
   "verdict": "accepted"
  },
  "prover/c1/2": {
+  "derived": {
+   "conv": {
+    "inhibited_by_0": "modulated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "prover/c1/20": {
   "verdict": "accepted"
  },
  "prover/c1/21": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c1/22": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c1/23": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c1/24": {
-  "kind": "reversed",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "inhibited_by_0": "activated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c1/25": {
+  "derived": {
+   "conv": {
+    "activated_by_0": "modulated_by",
+    "inhibited_by_0": "modulated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "prover/c1/26": {
   "verdict": "accepted"
  },
  "prover/c1/27": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "inhibited_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c1/28": {
   "kind": "build",
@@ -694,28 +1238,49 @@
   "verdict": "refused"
  },
  "prover/c1/3": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "inhibited_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c1/4": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "inhibited_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c1/5": {
   "verdict": "accepted"
  },
  "prover/c1/6": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "inhibited_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c1/7": {
-  "kind": "reversed",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "inhibited_by_0": "activated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c1/8": {
   "verdict": "accepted"
  },
  "prover/c1/9": {
+  "derived": {
+   "conv": {
+    "inhibited_by_0": "modulated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "prover/c3/0": {
@@ -725,12 +1290,20 @@
   "verdict": "accepted"
  },
  "prover/c3/10": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c3/11": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c3/12": {
   "verdict": "accepted"
@@ -751,11 +1324,20 @@
   "verdict": "accepted"
  },
  "prover/c3/18": {
+  "derived": {
+   "conv": {
+    "activated_by_0": "modulated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "prover/c3/19": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c3/2": {
   "verdict": "accepted"
@@ -779,8 +1361,12 @@
   "verdict": "accepted"
  },
  "prover/c3/26": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "inhibited_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c3/27": {
   "verdict": "accepted"
@@ -789,8 +1375,12 @@
   "verdict": "accepted"
  },
  "prover/c3/29": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c3/3": {
   "verdict": "accepted"
@@ -802,6 +1392,11 @@
   "verdict": "accepted"
  },
  "prover/c3/5": {
+  "derived": {
+   "conv": {
+    "inhibited_by_0": "modulated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "prover/c3/6": {
@@ -814,8 +1409,12 @@
   "verdict": "accepted"
  },
  "prover/c3/9": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c4/0": {
   "verdict": "accepted"
@@ -827,8 +1426,12 @@
   "verdict": "accepted"
  },
  "prover/c4/11": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c4/12": {
   "verdict": "accepted"
@@ -858,8 +1461,12 @@
   "verdict": "accepted"
  },
  "prover/c4/7": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c4/8": {
   "verdict": "accepted"
@@ -868,38 +1475,68 @@
   "verdict": "accepted"
  },
  "prover/c5/0": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c5/1": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "inhibited_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c5/2": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c5/3": {
   "verdict": "accepted"
  },
  "prover/c5/4": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c5/5": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/c5/6": {
   "verdict": "accepted"
  },
  "prover/constant/exp": {
-  "kind": "no_rate",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "activated_by_0": "modulated_by",
+    "inhibited_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "prover/constant/linear": {
-  "kind": "no_rate",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "activated_by_0": "modulated_by",
+    "inhibited_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "refusals/t1/autoreg": {
   "kind": "needs_product",
@@ -922,7 +1559,8 @@
   "verdict": "refused"
  },
  "refusals/t10/binding_mints": {
-  "verdict": "accepted"
+  "kind": "build",
+  "verdict": "refused"
  },
  "refusals/t10/binding_stated": {
   "kind": "unread",
@@ -970,12 +1608,20 @@
   "verdict": "accepted"
  },
  "refusals/t4d/isomerase": {
-  "kind": "no_rate",
-  "verdict": "refused"
+  "derived": {
+   "r1": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "refusals/t4e/irreversible": {
-  "kind": "no_rate",
-  "verdict": "refused"
+  "derived": {
+   "r1": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "refusals/t4e/reversible": {
   "verdict": "accepted"
@@ -987,15 +1633,23 @@
   "verdict": "accepted"
  },
  "refusals/t4g/piecewise": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "r1": {
+    "inhibited_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "refusals/t4g/square": {
   "verdict": "accepted"
  },
  "refusals/t5h/side": {
-  "kind": "no_rate",
-  "verdict": "refused"
+  "derived": {
+   "r1": {
+    "inhibited_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "refusals/t5i/dephosphorylation": {
   "kind": "unseen",
@@ -1036,23 +1690,39 @@
   "verdict": "refused"
  },
  "refusals/t8/gated": {
-  "kind": "no_rate",
-  "verdict": "refused"
+  "derived": {
+   "a": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "refusals/t9/any": {
   "verdict": "accepted"
  },
  "review127/b1/three_steps/activated_by_ERK{pT202}": {
-  "kind": "no_rate",
-  "verdict": "refused"
+  "derived": {
+   "p": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "review127/b1/three_steps/activated_by_X": {
-  "kind": "reversed",
-  "verdict": "refused"
+  "derived": {
+   "p": {
+    "activated_by_0": "inhibited_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "review127/b1/three_steps/inhibited_by_ERK{pT202}": {
-  "kind": "no_rate",
-  "verdict": "refused"
+  "derived": {
+   "p": {
+    "inhibited_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "review127/b1/three_steps/inhibited_by_X": {
   "verdict": "accepted"
@@ -1061,55 +1731,91 @@
   "verdict": "accepted"
  },
  "review127/b1/two_steps/inhibited_by_ERK": {
-  "kind": "no_rate",
-  "verdict": "refused"
+  "derived": {
+   "p": {
+    "inhibited_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "review127/b1/two_steps/inhibited_by_MEK": {
-  "kind": "reversed",
-  "verdict": "refused"
+  "derived": {
+   "p": {
+    "inhibited_by_0": "activated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "review127/b1/two_steps/inhibited_by_MEK{~ERK}": {
-  "kind": "no_rate",
-  "verdict": "refused"
+  "derived": {
+   "p": {
+    "inhibited_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "review127/b2/conversion/activated_by": {
-  "kind": "reversed",
-  "verdict": "refused"
+  "derived": {
+   "c": {
+    "activated_by_0": "inhibited_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "review127/b2/conversion/inhibited_by": {
   "verdict": "accepted"
  },
  "review127/b2/degradation/activated_by": {
-  "kind": "reversed",
-  "verdict": "refused"
+  "derived": {
+   "d": {
+    "activated_by_0": "inhibited_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "review127/b2/degradation/inhibited_by": {
   "verdict": "accepted"
  },
  "review127/b2/dephosphorylation/activated_by": {
-  "kind": "reversed",
-  "verdict": "refused"
+  "derived": {
+   "d": {
+    "activated_by_0": "inhibited_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "review127/b2/dephosphorylation/inhibited_by": {
   "verdict": "accepted"
  },
  "review127/b2/partner/activated_by": {
-  "kind": "reversed",
-  "verdict": "refused"
+  "derived": {
+   "p": {
+    "activated_by_0": "inhibited_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "review127/b2/partner/inhibited_by": {
   "verdict": "accepted"
  },
  "review127/b2/two_sites/activated_by": {
-  "kind": "reversed",
-  "verdict": "refused"
+  "derived": {
+   "p": {
+    "activated_by_0": "inhibited_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "review127/b2/two_sites/inhibited_by": {
   "verdict": "accepted"
  },
  "review127/b2/two_sites_two_steps/activated_by": {
-  "kind": "reversed",
-  "verdict": "refused"
+  "derived": {
+   "p": {
+    "activated_by_0": "inhibited_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "review127/b2/two_sites_two_steps/inhibited_by": {
   "verdict": "accepted"
@@ -1128,26 +1834,42 @@
   "verdict": "accepted"
  },
  "review128b/bounds/fraction": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "review128b/catalyst/a_e/activated_by": {
   "verdict": "accepted"
  },
  "review128b/catalyst/a_e/inhibited_by": {
-  "kind": "reversed",
-  "verdict": "refused"
+  "derived": {
+   "c": {
+    "inhibited_by_0": "activated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "review128b/catalyst/l_r/activated_by": {
   "verdict": "accepted"
  },
  "review128b/catalyst/l_r/inhibited_by": {
-  "kind": "reversed",
-  "verdict": "refused"
+  "derived": {
+   "c": {
+    "inhibited_by_0": "activated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "review128b/dose/unit": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "review128b/gef/feedback": {
   "kind": "needs_product",
@@ -1160,16 +1882,28 @@
   "verdict": "accepted"
  },
  "review128b/kept/c4": {
-  "kind": "reversed",
-  "verdict": "refused"
+  "derived": {
+   "c": {
+    "inhibited_by_0": "activated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "review128b/kept/g2": {
-  "kind": "reversed",
-  "verdict": "refused"
+  "derived": {
+   "g": {
+    "inhibited_by_0": "activated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "review128b/kept/m3": {
-  "kind": "reversed",
-  "verdict": "refused"
+  "derived": {
+   "m": {
+    "inhibited_by_0": "activated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "review128b/kept/p0": {
   "verdict": "accepted"
@@ -1181,16 +1915,82 @@
  "review128b/multiproduct/followed": {
   "verdict": "accepted"
  },
+ "review128b/problem/difference": {
+  "verdict": "accepted"
+ },
+ "review128b/problem/dose_default_0.1": {
+  "derived": {
+   "conv": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
+ },
+ "review128b/problem/dose_default_3": {
+  "verdict": "accepted"
+ },
+ "review128b/problem/fixed_negative": {
+  "derived": {
+   "conv": {
+    "activated_by_0": "inhibited_by"
+   }
+  },
+  "verdict": "accepted"
+ },
+ "review128b/problem/fraction": {
+  "verdict": "accepted"
+ },
+ "review128b/problem/lb0_lin": {
+  "verdict": "accepted"
+ },
+ "review128b/problem/lb0_log10": {
+  "verdict": "accepted"
+ },
+ "review128b/problem/negative_bounds": {
+  "derived": {
+   "conv": {
+    "activated_by_0": "inhibited_by"
+   }
+  },
+  "verdict": "accepted"
+ },
+ "review128b/problem/negative_rate_law": {
+  "derived": {
+   "conv": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
+ },
+ "review128b/problem/shared": {
+  "derived": {
+   "conv": {
+    "activated_by_0": "inhibited_by"
+   },
+   "conv2": {
+    "activated_by_0": "inhibited_by"
+   }
+  },
+  "verdict": "accepted"
+ },
  "review128b/sites/4/activated_by": {
-  "kind": "reversed",
-  "verdict": "refused"
+  "derived": {
+   "p": {
+    "activated_by_0": "inhibited_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "review128b/sites/4/inhibited_by": {
   "verdict": "accepted"
  },
  "review128b/sites/5/activated_by": {
-  "kind": "reversed",
-  "verdict": "refused"
+  "derived": {
+   "p": {
+    "activated_by_0": "inhibited_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "review128b/sites/5/inhibited_by": {
   "verdict": "accepted"
@@ -1199,8 +1999,12 @@
   "verdict": "accepted"
  },
  "review128b/time/from_minus_5": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "review128b/vanish/8_forms_4_inhibitors": {
   "verdict": "accepted"
@@ -1215,8 +2019,12 @@
   "verdict": "accepted"
  },
  "rewrite/t2_bind/negative": {
-  "kind": "reversed",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "rewrite/t2_bind/zero": {
   "kind": "unseen",
@@ -1229,8 +2037,13 @@
   "verdict": "accepted"
  },
  "rewrite/t6_twice/both_kinds": {
-  "kind": "unshown",
-  "verdict": "refused"
+  "derived": {
+   "conv": {
+    "activated_by_0": "modulated_by",
+    "inhibited_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "rewrite/t7_turnover/one_line": {
   "kind": "unseen",
@@ -1244,7 +2057,8 @@
   "verdict": "accepted"
  },
  "rewrite/t7b/modulated": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "rewrite/t8_actsite": {
   "verdict": "accepted"
@@ -1323,6 +2137,11 @@
   "verdict": "refused"
  },
  "sweep_55max/case38/gexpr12": {
+  "derived": {
+   "r": {
+    "inhibited_by_0": "modulated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "sweep_55max/case4/gene_repress2": {
@@ -1330,6 +2149,11 @@
   "verdict": "refused"
  },
  "sweep_55max/case40/gexpr13": {
+  "derived": {
+   "r": {
+    "inhibited_by_0": "modulated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "sweep_55max/case41/pka_release_camp": {
@@ -1347,6 +2171,12 @@
   "verdict": "accepted"
  },
  "sweep_55max/case45/gene_mix": {
+  "derived": {
+   "r": {
+    "inhibited_by_0": "modulated_by",
+    "inhibited_by_1": "modulated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "sweep_55max/case46/gene_ind2": {
@@ -1356,6 +2186,12 @@
   "verdict": "accepted"
  },
  "sweep_55max/case48/gene_mix2": {
+  "derived": {
+   "r": {
+    "inhibited_by_0": "modulated_by",
+    "inhibited_by_1": "modulated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "sweep_55max/case49/gene_ind3": {
@@ -1368,6 +2204,11 @@
   "verdict": "accepted"
  },
  "sweep_55max/case51/gene_mix3": {
+  "derived": {
+   "r": {
+    "inhibited_by_0": "modulated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "sweep_55max/case52/gene_int": {
@@ -1377,18 +2218,35 @@
   "verdict": "accepted"
  },
  "sweep_55max/case54/gene_int_R": {
+  "derived": {
+   "r": {
+    "activated_by_0": "modulated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "sweep_55max/case55/gene_ind4": {
   "verdict": "accepted"
  },
  "sweep_55max/case56/gene_mix4": {
+  "derived": {
+   "r": {
+    "inhibited_by_0": "modulated_by",
+    "inhibited_by_1": "modulated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "sweep_55max/case57/gene_ind4": {
   "verdict": "accepted"
  },
  "sweep_55max/case58/gene_mix4": {
+  "derived": {
+   "r": {
+    "inhibited_by_0": "modulated_by",
+    "inhibited_by_1": "modulated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "sweep_55max/case59/gene_rep3": {
@@ -1398,6 +2256,11 @@
   "verdict": "accepted"
  },
  "sweep_55max/case60/gene_int_R": {
+  "derived": {
+   "r": {
+    "activated_by_0": "modulated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "sweep_55max/case61/gene_ind_ppS3": {
@@ -1475,9 +2338,21 @@
   "verdict": "refused"
  },
  "sweep_55max/multi106/gene_ind": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "sweep_55max/multi107/gene_rep": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "inhibited_by",
+    "modulated_by_1": "inhibited_by"
+   }
+  },
   "verdict": "accepted"
  },
  "sweep_55max/multi108/gene_mix": {
@@ -1585,54 +2460,110 @@
   "verdict": "accepted"
  },
  "sweep_55max/multi133/gene_ind2": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "sweep_55max/multi134/gene_rep2": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "inhibited_by",
+    "modulated_by_1": "inhibited_by"
+   }
+  },
   "verdict": "accepted"
  },
  "sweep_55max/multi135/gene_mix2": {
   "verdict": "accepted"
  },
  "sweep_55max/multi136/gene_ind3": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "sweep_55max/multi137/gene_rep3": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "inhibited_by"
+   }
+  },
   "verdict": "accepted"
  },
  "sweep_55max/multi138/gene_mix3": {
   "verdict": "accepted"
  },
  "sweep_55max/multi139/gene_int": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "sweep_55max/multi14/h4_ac_coop_16c": {
   "verdict": "accepted"
  },
  "sweep_55max/multi140/gene_ind_ppS3": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "sweep_55max/multi141/gene_int_R": {
   "verdict": "accepted"
  },
  "sweep_55max/multi142/gene_ind4": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "sweep_55max/multi143/gene_mix4": {
   "verdict": "accepted"
  },
  "sweep_55max/multi144/gene_ind4": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "sweep_55max/multi145/gene_mix4": {
   "verdict": "accepted"
  },
  "sweep_55max/multi146/gene_rep3": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "inhibited_by"
+   }
+  },
   "verdict": "accepted"
  },
  "sweep_55max/multi147/gene_int_R": {
   "verdict": "accepted"
  },
  "sweep_55max/multi148/gene_ind_ppS3": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "sweep_55max/multi149/gene_mix6": {
@@ -1751,6 +2682,13 @@
   "verdict": "accepted"
  },
  "sweep_55max/multi18/gene_module": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by",
+    "modulated_by_2": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "sweep_55max/multi180/rec_v5": {
@@ -1801,16 +2739,20 @@
   "verdict": "accepted"
  },
  "sweep_55max/multi193/camp_release": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "sweep_55max/multi194/camp_release_comp": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "sweep_55max/multi195/camp_release_hill": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "sweep_55max/multi196/camp_release_h": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "sweep_55max/multi197/camp_release_phos": {
   "kind": "build",
@@ -1827,28 +2769,58 @@
   "verdict": "accepted"
  },
  "sweep_55max/multi20/gene_module": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by",
+    "modulated_by_2": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "sweep_55max/multi200/int_two_step": {
   "verdict": "accepted"
  },
  "sweep_55max/multi21/gene_repress": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "sweep_55max/multi22/c24u_m": {
   "kind": "build",
   "verdict": "refused"
  },
  "sweep_55max/multi23/gene_module3": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by",
+    "modulated_by_2": "activated_by",
+    "modulated_by_3": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "sweep_55max/multi24/gene_repress2": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "sweep_55max/multi25/gene_module4": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "sweep_55max/multi26/gene_module5": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by",
+    "modulated_by_2": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "sweep_55max/multi27/lig_bind": {
@@ -1920,38 +2892,48 @@
   "verdict": "refused"
  },
  "sweep_55max/multi43/homeo1": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "sweep_55max/multi44/homeo2q": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "sweep_55max/multi45/protturn": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "sweep_55max/multi49/p21turn": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "sweep_55max/multi5/h4_ac_coop_16": {
   "kind": "build",
   "verdict": "refused"
  },
  "sweep_55max/multi50/p21turn": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "sweep_55max/multi51/p21turn3": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "sweep_55max/multi52/p21turn4": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "sweep_55max/multi53/p21turn5": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "sweep_55max/multi54/homeo1b": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "sweep_55max/multi55/p21turn6": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "sweep_55max/multi56/hat1_pair": {
   "verdict": "accepted"
@@ -2007,9 +2989,25 @@
   "verdict": "accepted"
  },
  "sweep_55max/multi71/gexpr": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by",
+    "modulated_by_2": "activated_by",
+    "modulated_by_3": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "sweep_55max/multi72/gexpr2": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by",
+    "modulated_by_2": "activated_by",
+    "modulated_by_3": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "sweep_55max/multi73/gexpr3": {
@@ -2017,22 +3015,37 @@
   "verdict": "refused"
  },
  "sweep_55max/multi74/gexpr3": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "sweep_55max/multi75/gexpr5": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "sweep_55max/multi76/gexpr8": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "sweep_55max/multi77/gexpr9": {
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
   "verdict": "accepted"
  },
  "sweep_55max/multi78/gexpr10": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "sweep_55max/multi79/gexpr11": {
-  "verdict": "accepted"
+  "kind": "unseen",
+  "verdict": "refused"
  },
  "sweep_55max/multi8/h4_ac_coop_8": {
   "verdict": "accepted"

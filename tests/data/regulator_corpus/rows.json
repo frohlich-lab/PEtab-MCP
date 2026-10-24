@@ -5362,5 +5362,424 @@
     "based_on": "indra_default"
    }
   ]
+ },
+ {
+  "id": "review128b/problem/dose_default_0.1",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), e2e_dose: dose 2 in the only condition, 0.1 the model's own",
+  "rows": [
+   "conv: A becomes B, activated by C | written d=\"dose - 1\""
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "written",
+    "rate": "k*(1 + d*activated_by)",
+    "parameters": [
+     "k",
+     "d"
+    ],
+    "based_on": "mass_action"
+   }
+  ],
+  "problem": {
+   "parameters": [
+    {
+     "parameterId": "conv_k",
+     "lowerBound": 0.001,
+     "upperBound": 1000.0,
+     "nominalValue": 1.0,
+     "estimate": 1,
+     "parameterScale": "log10"
+    }
+   ],
+   "conditions": [
+    {
+     "conditionId": "c1",
+     "targetId": "dose",
+     "targetValue": 2.0
+    }
+   ],
+   "times": [
+    0.0,
+    10.0
+   ],
+   "values": {
+    "dose": 0.1
+   }
+  }
+ },
+ {
+  "id": "review128b/problem/dose_default_3",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), e2e_dose: dose 2 in the only condition, 3 the model's own",
+  "rows": [
+   "conv: A becomes B, activated by C | written d=\"dose - 1\""
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "written",
+    "rate": "k*(1 + d*activated_by)",
+    "parameters": [
+     "k",
+     "d"
+    ],
+    "based_on": "mass_action"
+   }
+  ],
+  "problem": {
+   "parameters": [
+    {
+     "parameterId": "conv_k",
+     "lowerBound": 0.001,
+     "upperBound": 1000.0,
+     "nominalValue": 1.0,
+     "estimate": 1,
+     "parameterScale": "log10"
+    }
+   ],
+   "conditions": [
+    {
+     "conditionId": "c1",
+     "targetId": "dose",
+     "targetValue": 2.0
+    }
+   ],
+   "times": [
+    0.0,
+    10.0
+   ],
+   "values": {
+    "dose": 3.0
+   }
+  }
+ },
+ {
+  "id": "review128b/problem/fraction",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), b1_fraction: e in [0, 1]",
+  "rows": [
+   "conv: A becomes B, activated by C | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "written",
+    "rate": "k*(1 - e)*activated_by",
+    "parameters": [
+     "k",
+     "e"
+    ],
+    "based_on": "mass_action"
+   }
+  ],
+  "problem": {
+   "parameters": [
+    {
+     "parameterId": "conv_k",
+     "lowerBound": 0.001,
+     "upperBound": 1000.0,
+     "nominalValue": 1.0,
+     "estimate": 1,
+     "parameterScale": "log10"
+    },
+    {
+     "parameterId": "conv_e",
+     "lowerBound": 0.0,
+     "upperBound": 1.0,
+     "nominalValue": 1.0,
+     "estimate": 1,
+     "parameterScale": "lin"
+    }
+   ]
+  }
+ },
+ {
+  "id": "review128b/problem/difference",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), b1_fraction: a = x - y, x in [2, 10], y in [0, 1]",
+  "rows": [
+   "conv: A becomes B, activated by C | written a=\"x - y\""
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "written",
+    "rate": "k*(1 + a*activated_by)",
+    "parameters": [
+     "k",
+     "a"
+    ],
+    "based_on": "mass_action"
+   }
+  ],
+  "problem": {
+   "parameters": [
+    {
+     "parameterId": "conv_k",
+     "lowerBound": 0.001,
+     "upperBound": 1000.0,
+     "nominalValue": 1.0,
+     "estimate": 1,
+     "parameterScale": "log10"
+    },
+    {
+     "parameterId": "x",
+     "lowerBound": 2.0,
+     "upperBound": 10.0,
+     "nominalValue": 1.0,
+     "estimate": 1,
+     "parameterScale": "lin"
+    },
+    {
+     "parameterId": "y",
+     "lowerBound": 0.0,
+     "upperBound": 1.0,
+     "nominalValue": 1.0,
+     "estimate": 1,
+     "parameterScale": "lin"
+    }
+   ]
+  }
+ },
+ {
+  "id": "review128b/problem/lb0_lin",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), kept: a lower bound of 0 on a linear scale",
+  "rows": [
+   "conv: A becomes B, activated by C | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "written",
+    "rate": "k*exp(a*activated_by)",
+    "parameters": [
+     "k",
+     "a"
+    ],
+    "based_on": "mass_action"
+   }
+  ],
+  "problem": {
+   "parameters": [
+    {
+     "parameterId": "conv_k",
+     "lowerBound": 0.001,
+     "upperBound": 1000.0,
+     "nominalValue": 1.0,
+     "estimate": 1,
+     "parameterScale": "log10"
+    },
+    {
+     "parameterId": "conv_a",
+     "lowerBound": 0.0,
+     "upperBound": 10.0,
+     "nominalValue": 1.0,
+     "estimate": 1,
+     "parameterScale": "lin"
+    }
+   ]
+  }
+ },
+ {
+  "id": "review128b/problem/lb0_log10",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), kept: a lower bound of 0 on a log10 scale",
+  "rows": [
+   "conv: A becomes B, activated by C | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "written",
+    "rate": "k*exp(a*activated_by)",
+    "parameters": [
+     "k",
+     "a"
+    ],
+    "based_on": "mass_action"
+   }
+  ],
+  "problem": {
+   "parameters": [
+    {
+     "parameterId": "conv_k",
+     "lowerBound": 0.001,
+     "upperBound": 1000.0,
+     "nominalValue": 1.0,
+     "estimate": 1,
+     "parameterScale": "log10"
+    },
+    {
+     "parameterId": "conv_a",
+     "lowerBound": 0.0,
+     "upperBound": 10.0,
+     "nominalValue": 1.0,
+     "estimate": 1,
+     "parameterScale": "log10"
+    }
+   ]
+  }
+ },
+ {
+  "id": "review128b/problem/negative_bounds",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), kept: a scale change re-signing, bounds below 0",
+  "rows": [
+   "conv: A becomes B, activated by C | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "written",
+    "rate": "k*exp(a*activated_by)",
+    "parameters": [
+     "k",
+     "a"
+    ],
+    "based_on": "mass_action"
+   }
+  ],
+  "problem": {
+   "parameters": [
+    {
+     "parameterId": "conv_k",
+     "lowerBound": 0.001,
+     "upperBound": 1000.0,
+     "nominalValue": 1.0,
+     "estimate": 1,
+     "parameterScale": "log10"
+    },
+    {
+     "parameterId": "conv_a",
+     "lowerBound": -1.0,
+     "upperBound": -0.01,
+     "nominalValue": 1.0,
+     "estimate": 1,
+     "parameterScale": "lin"
+    }
+   ]
+  }
+ },
+ {
+  "id": "review128b/problem/fixed_negative",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), kept: a fixed negative nominal",
+  "rows": [
+   "conv: A becomes B, activated by C | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "written",
+    "rate": "k*exp(a*activated_by)",
+    "parameters": [
+     "k",
+     "a"
+    ],
+    "based_on": "mass_action"
+   }
+  ],
+  "problem": {
+   "parameters": [
+    {
+     "parameterId": "conv_k",
+     "lowerBound": 0.001,
+     "upperBound": 1000.0,
+     "nominalValue": 1.0,
+     "estimate": 1,
+     "parameterScale": "log10"
+    },
+    {
+     "parameterId": "conv_a",
+     "lowerBound": -1.0,
+     "upperBound": 1.0,
+     "nominalValue": -0.5,
+     "estimate": 0,
+     "parameterScale": "lin"
+    }
+   ]
+  }
+ },
+ {
+  "id": "review128b/problem/shared",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), kept: a parameter two rows share",
+  "rows": [
+   "conv: A becomes B, activated by C | written a=\"a_shared\"",
+   "conv2: B becomes A, activated by C | written a=\"a_shared\""
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "written",
+    "rate": "k*exp(a*activated_by)",
+    "parameters": [
+     "k",
+     "a"
+    ],
+    "based_on": "mass_action"
+   }
+  ],
+  "problem": {
+   "parameters": [
+    {
+     "parameterId": "conv_k",
+     "lowerBound": 0.001,
+     "upperBound": 1000.0,
+     "nominalValue": 1.0,
+     "estimate": 1,
+     "parameterScale": "log10"
+    },
+    {
+     "parameterId": "conv2_k",
+     "lowerBound": 0.001,
+     "upperBound": 1000.0,
+     "nominalValue": 1.0,
+     "estimate": 1,
+     "parameterScale": "log10"
+    },
+    {
+     "parameterId": "a_shared",
+     "lowerBound": -2.0,
+     "upperBound": -0.5,
+     "nominalValue": 1.0,
+     "estimate": 1,
+     "parameterScale": "lin"
+    }
+   ]
+  }
+ },
+ {
+  "id": "review128b/problem/negative_rate_law",
+  "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), kinds check: k*(1 + a*C) with a below 0 goes negative",
+  "rows": [
+   "conv: A becomes B, activated by C | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "written",
+    "rate": "k*(1 + a*activated_by)",
+    "parameters": [
+     "k",
+     "a"
+    ],
+    "based_on": "mass_action"
+   }
+  ],
+  "problem": {
+   "parameters": [
+    {
+     "parameterId": "conv_k",
+     "lowerBound": 0.001,
+     "upperBound": 1000.0,
+     "nominalValue": 1.0,
+     "estimate": 1,
+     "parameterScale": "log10"
+    },
+    {
+     "parameterId": "conv_a",
+     "lowerBound": -1.0,
+     "upperBound": -0.01,
+     "nominalValue": 1.0,
+     "estimate": 1,
+     "parameterScale": "lin"
+    }
+   ]
+  }
  }
 ]
