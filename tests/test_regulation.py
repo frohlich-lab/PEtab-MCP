@@ -604,7 +604,7 @@ def test_an_enzyme_stated_as_its_own_inhibitor_is_one_amount():
         _build([_PHOSPHO.format(regulator="inhibited by MEK")], _rate("kc/(1 + inhibited_by/K)", "kc", "K"))
 
 
-# ------------------------------------------------------------------------------- the row's own forms
+# ------------------------------------------------------------------------------- own forms
 #: Three steps: binding, the catalytic step slowed by the regulator, and release.
 _THREE_STEPS = (
     "enz(sub=None) + sub(enz=None, mod='off') | enz(sub=1) % sub(enz=1, mod='off') @ kf, kr\n"
@@ -634,9 +634,9 @@ def test_a_regulator_reading_every_form_of_the_enzyme_reads_its_total():
     the steady state conserves: it reads their total. Free MEK alone is solved for, refused."""
     def two_steps(regulator):
         kind = regulator.split(" ")[0] + "_by"
-        return _build([_PHOSPHO.format(regulator=regulator)], _scheme(
-            "Phosphorylation", _TWO_STEPS.format(kf="kf", kr="kr", kc=f"kc/(1 + amount({kind})/Ki)"),
-            "kf", "kr", "kc", "Ki"))
+        steps = _TWO_STEPS.format(kf="kf", kr="kr", kc=f"kc/(1 + amount({kind})/Ki)")
+        return _build([_PHOSPHO.format(regulator=regulator)],
+                      _scheme("Phosphorylation", steps, "kf", "kr", "kc", "Ki"))
 
     two_steps("activated by MEK")
     with pytest.raises(MechanismError, match=r"it rises instead: state it `activated by MEK`"):

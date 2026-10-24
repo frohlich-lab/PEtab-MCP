@@ -16,15 +16,14 @@ and a product released by a reversible step sit alike, each on the right of a ``
 a step back makes again looks like an intermediate. So a product is what the statement makes, or
 what the row's reactions make and none uses, held at 0; a reactant is what the statement consumes,
 or what the reactions use and never make; a regulator's species, and a partner's that holds no
-role's agent, are held at their amounts,
-and read by its pattern as an amount of its own, a product's too; every other species of the
-reactions is an intermediate (the enzyme and its forms). A pattern matching every form of the
-enzyme reads its conserved total, held as well; one matching only some reads an amount the
-steady state solves for, not one held apart from the reaction, and is refused. With the intermediates linear in each rate
-(one intermediate per step, as in every enzyme mechanism) their steady state is one linear solve,
-each conserved total a name of its own (King and Altman's), and J is a product's net rate, or a
-removed reactant's loss. A step into a dead end, a step back, a branch: each moves J as it really
-does, which no rule on a step's own rate can say.
+role's agent, are held at their amounts, and read by its pattern as an amount of its own, a
+product's too; every other species of the reactions is an intermediate (the enzyme and its forms). A
+pattern matching every form of the enzyme reads its conserved total, held as well; one matching only
+some reads an amount the steady state solves for, not one held apart from the reaction, so there is
+no J. With the intermediates linear in each rate (one intermediate per step, as in every enzyme
+mechanism) their steady state is one linear solve, each conserved total a name of its own (King and
+Altman's), and J is a product's net rate, or a removed reactant's loss. A step into a dead end, a
+step back, a branch: each moves J as it really does, which no rule on a step's own rate can say.
 
 A direction counts as shown where sympy proves it (:func:`mechanisms._direction`) and J, read at
 :data:`SAMPLES` points across its names' ranges, moves no other way (:func:`sampled`); a refusal
