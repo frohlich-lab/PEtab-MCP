@@ -175,11 +175,6 @@
   "verdict": "accepted"
  },
  "netrate/t5/partner": {
-  "derived": {
-   "p": {
-    "inhibited_by_0": "modulated_by"
-   }
-  },
   "verdict": "accepted"
  },
  "netrate/t6/basal": {
