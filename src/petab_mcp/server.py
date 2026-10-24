@@ -202,6 +202,12 @@ class StatementRow(BaseModel):
         "a SHARED id (another row's, a problem parameter's, or a new name several rows use) or "
         "to a NUMBER, which fixes it — one rate constant across many reactions is one parameter.",
     )
+    derived: dict[str, str] | None = Field(
+        default=None,
+        description="ignored: what `get_model` shows a row's rate records for its regulators, by "
+        "the kind stated and position ({'inhibited_by_0': 'activated_by'}), so a row it shows "
+        "reads back as it was.",
+    )
 
 
 class StartRow(BaseModel):
@@ -248,9 +254,10 @@ class MechanismDef(BaseModel):
         "enz(sub=1) % sub(enz=1, mod='off') @ kf`. `list_mechanisms` shows every library entry "
         "this way, with the `parameters` it declares: start from one. A rate is an expression "
         "over your `parameters`, `amount(<pattern>)`, `amount(inhibited_by)` (a regulator the "
-        "statement states, checked on the scheme's net rate: its intermediates at steady state, "
-        "its products absent; one acting only on a step that rate cannot see, a product's "
-        "degradation, goes on that step's own row), `time` and exp/log/sqrt. A molecule is a role or, by its name, a "
+        "statement states, checked on the row's net rate as the model builds it: its "
+        "intermediates at steady state, its products absent; one acting only on a step that rate "
+        "cannot see, a product's degradation, goes on that step's own row), `time` and "
+        "exp/log/sqrt. A molecule is a role or, by its name, a "
         "partner the statement writes a role bound or not bound to (`C` of `E{~C}`): a mechanism "
         "reads no agent its statement does not name. Give `scheme` or `rate`, not both.",
     )
@@ -263,9 +270,9 @@ class MechanismDef(BaseModel):
         "exp/log/sqrt and `piecewise(value, condition, ..., otherwise)` (`piecewise(k_0, time < "
         "t_1, k_1)`). It is multiplied by every reactant's amount, catalysts included, so a rate "
         "that stays non-negative cannot drive an amount negative; a constant `k` alone is mass "
-        "action. Each regulator is recorded as the kind the rate shows for every value of its names "
-        "(sympy): inhibited where it never rises, activated where it never falls, else modulated; "
-        "one the rate does not change with is refused."
+        "action. Each regulator is recorded as the kind the row's net rate shows for every value "
+        "of its names (sympy, within the parameters' bounds): inhibited where it never rises, "
+        "activated where it never falls, else modulated; one it does not change with is refused."
     )
     parameters: list[str] = Field(
         default_factory=list,
@@ -1069,9 +1076,10 @@ def _make_changes_statements_doc(
         "part is stated as its regulator: `r1: E phosphorylates S at T20, inhibited by C | "
         "inhibited Ki=K_C` claims C slows that reaction, and its mechanism's rate reads C as "
         "`inhibited_by` (`activated_by` speeds it, `modulated_by` claims no direction). Each is "
-        "recorded as the kind its rate shows: where that differs from the statement, the result "
-        "says so and `get_model` marks it `(inhibits, from its rate)`. The rate must read every "
-        "regulator its statement states. A row's `parameters` shares a rate constant with other "
+        "recorded as the kind its rate shows within its parameters' bounds, again whenever a row "
+        "or a bound changes: where that differs from the statement, the result says so and "
+        "`get_model` marks it `(inhibits, from its rate)`. The rate must read every regulator its "
+        "statement states, and change with each. A row's `parameters` shares a rate constant with other "
         "rows, or with a parameter the problem ships, or fixes it to a number. "
         + (
             "The species the observables read are bound by the problem's entity map: name agents "
@@ -1179,7 +1187,10 @@ def _statements_text(session, version: int | None) -> str:
     for row in record["rows"]:
         bare = {k: row[k] for k in ("statement", "policy", "prefix", "parameters") if row.get(k)}
         derived = (row.get("emission") or {}).get("derived")
-        lines.append(notation.render(bare, library, derived) or json.dumps(bare))
+        lines.append(
+            notation.render(bare, library, derived)
+            or json.dumps(bare | ({"derived": derived} if derived else {}))
+        )
     for start in record.get("starts") or []:
         lines.append(f"start {start['name']}: {notation.agent_text(start['agent'])} = "
                      f"{start['amount']}")

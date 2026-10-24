@@ -651,53 +651,6 @@ def test_several_regulators_of_a_kind_are_read_by_position():
         M.assemble([(_TRANSITION, "inhibited", "r1", None, both)], library=_library_with(_DIVISIVE))
 
 
-@pytest.mark.parametrize(
-    "rate",
-    [
-        "k * Ki / (Ki + inhibited_by)",
-        "k/(i*inhibited_by^6/(inhibited_by^6 + Ki^6) + 1)",  # alkan's doxorubicin repression
-        "k*activated_by^6/(activated_by^6 + Ki^6)",  # alkan's doxorubicin-driven death
-        "k*(1 - inhibited_by)",  # perelson's ritonavir gate
-        "k*piecewise(1, modulated_by > 0, 0)",  # a switch claims no direction
-        "(k + Ki*modulated_by)/(1 + modulated_by)",
-    ],
-)
-def test_a_rate_moving_as_its_regulators_claim_is_written(rate):
-    M.written(_DIVISIVE | {"rate": rate, "parameters": sorted({"k", "Ki", "i"} & set(
-        M._RATE_TOKENS.findall(rate)))}, M.REGISTRY)
-
-
-@pytest.mark.parametrize(
-    "rate, derived",
-    [
-        # Upgraded: a modulator the rate proves a direction for.
-        ("k * Ki / (Ki + modulated_by)", {"modulated_by_0": "inhibited_by"}),
-        ("k * modulated_by", {"modulated_by_0": "activated_by"}),
-        # Reversed: an inhibitor the rate rises with, an activator it falls with.
-        ("k*inhibited_by/(Ki + inhibited_by)", {"inhibited_by_0": "activated_by"}),
-        ("k*Ki/(Ki + activated_by)", {"activated_by_0": "inhibited_by"}),
-        # Downgraded: sneyd's Ca, which way it moves the rate depending on the constants, and a
-        # switch, whose jump is no derivative.
-        ("(k + Ki*inhibited_by)/(1 + inhibited_by)", {"inhibited_by_0": "modulated_by"}),
-        ("k*piecewise(1, activated_by > 0, 0)", {"activated_by_0": "modulated_by"}),
-        # Left as stated.
-        ("k * Ki / (Ki + inhibited_by)", {}),
-        ("(k + Ki*modulated_by)/(1 + modulated_by)", {}),
-        ("k*piecewise(1, modulated_by > 0, 0)", {}),
-    ],
-)
-def test_a_regulator_is_recorded_as_the_kind_its_rate_shows(rate, derived):
-    """The statement keeps what it states, and the row records beside it the kind its rate shows
-    where that differs: a modulator signed, a claim downgraded or reversed, never refused."""
-    (kind,) = {t for t in M._RATE_TOKENS.findall(rate) if t.endswith("_by")}
-    parameters = ["k", "Ki"] if "Ki" in rate else ["k"]
-    library = _library_with(_DIVISIVE | {"policy": "mod", "rate": rate, "parameters": parameters})
-    _, (emission,) = M.assemble(
-        [(_TRANSITION, "mod", "r1", None, {kind: [Agent("drug")]})], library=library
-    )
-    assert emission.derived == derived
-
-
 def test_a_written_rate_reads_a_list_role():
     """Conversion's substrate is the list `obj_from`; a rate could not read it, so substrate
     inhibition had no route but a private entry."""

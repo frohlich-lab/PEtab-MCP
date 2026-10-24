@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import shutil
 
 import pytest
@@ -1960,7 +1961,7 @@ def test_a_claim_its_scheme_reverses_is_recorded_and_reported(tmp_path):
     )
     assert out["applied"] is True, out.get("error")
     assert any(
-        "`statements[0]`: you stated `inhibited by C`, but its rate never falls as C rises, so it "
+        "`conv`: you stated `inhibited by C`, but its rate never falls as C rises, so it "
         "reads as `activated by C`. Check that each mechanism does what you meant; if not, "
         "rewrite its rate." in m["message"]
         for m in out["messages"]
@@ -2041,10 +2042,112 @@ def test_the_result_names_the_rows_whose_rate_signs_a_modulator(tmp_path):
     signed = [m["message"] for m in out["messages"] if "from its rate" in m["message"]]
     assert len(signed) == 1, signed
     assert signed[0].startswith(
-        "`statements[0, 1]`: you stated `modulated by C`, and its rate never rises as C rises, so "
+        "`conv, back`: you stated `modulated by C`, and its rate never rises as C rises, so "
         "it reads as `inhibited by C`. Check that each mechanism does what you meant; if not, "
         "rewrite its rate."
     )
+
+
+_LIN = {"statement_type": "PopulationTransition", "policy": "lin", "based_on": "mass_action",
+        "rate": "k*(1 + a*activated_by)", "parameters": ["k", "a"]}
+
+
+def _recorded(tmp_path, version):
+    (row,) = [r for r in json.loads(
+        (tmp_path / "prov" / "versions" / f"v{version}" / "statements.json").read_text()
+    )["rows"] if r["prefix"] == "conv"]
+    return row["emission"]["derived"]
+
+
+def test_a_bound_edit_signs_a_rows_regulators_again(tmp_path):
+    """review of #128: `k*(1 + a*C)` was signed once, `a` taken positive, so `activated by C`
+    stood after an edit let `a` go negative. Each version's kinds are its own bounds'."""
+    mcp = _statements_server(tmp_path)
+    out = _call(mcp, "make_changes", {"justification": "C speeds it",
+                                      "statements": ["conv: A becomes B, activated by C | lin"],
+                                      "mechanisms": [_LIN]})
+    assert out["applied"] is True, out.get("error")
+    assert _recorded(tmp_path, 0) == {}
+    out = _call(mcp, "make_changes", {"justification": "C slows it after all", "parameters": [
+        {"parameter_id": "conv_a", "lower_bound": -1.0, "upper_bound": -0.01, "scale": "lin"}]})
+    assert out["applied"] is True, out.get("error")
+    assert _recorded(tmp_path, 1) == {"activated_by_0": "inhibited_by"}
+    assert any(m["message"].startswith("`conv`: you stated `activated by C`, but its rate never "
+                                       "rises as C rises") for m in out["messages"])
+
+
+def test_an_edit_reports_only_the_rows_it_touches(tmp_path):
+    """review of #128, t1: under `statement_edits` every row whose rate records a kind was
+    reported again, by its index in the new set, at each edit."""
+    slowed = {"statement_type": "PopulationTransition", "policy": "slowed",
+              "based_on": "mass_action", "rate": "k*Ki/(Ki + modulated_by)",
+              "parameters": ["k", "Ki"]}
+    mcp = _statements_server(tmp_path)
+    out = _call(mcp, "make_changes", {"justification": "x", "mechanisms": [slowed], "statements": [
+        "aa: A becomes B | mass_action", "conv: A becomes B, modulated by C | slowed"]})
+    assert out["applied"] is True, out.get("error")
+
+    def said(out):
+        return [m["message"] for m in out["messages"] if "from its rate" in m["message"]]
+
+    assert said(out)[0].startswith("`conv`: you stated `modulated by C`")
+    out = _call(mcp, "make_changes", {"justification": "y", "statement_edits": [
+        {"op": "add_row", "row": "back: B becomes A | mass_action"}]})
+    assert out["applied"] is True, out.get("error")
+    assert said(out) == []
+    out = _call(mcp, "make_changes", {"justification": "z", "statement_edits": [
+        {"op": "remove_row", "prefix": "aa"},
+        {"op": "add_row", "row": "back2: B becomes A, modulated by C | slowed"}]})
+    assert out["applied"] is True, out.get("error")
+    (message,) = said(out)
+    assert message.startswith("`back2`: you stated `modulated by C`")
+
+
+def test_a_json_row_shows_what_its_rate_records_and_reads_back(tmp_path):
+    """review of #128, t4: a row the notation cannot write (evidence beyond one source) was shown
+    as JSON without the kinds its rate records."""
+    mcp = _statements_server(tmp_path)
+    row = {"statement": {"type": "PopulationTransition", "source": {"name": "A"},
+                         "target": {"name": "B"}, "modulated_by": [{"name": "C"}],
+                         "evidence": [{"source_api": "lit", "pmid": "12345", "text": "C slows it"}]},
+           "policy": "slowed", "prefix": "conv"}
+    slowed = {"statement_type": "PopulationTransition", "policy": "slowed",
+              "based_on": "mass_action", "rate": "k*Ki/(Ki + modulated_by)",
+              "parameters": ["k", "Ki"]}
+    out = _call(mcp, "make_changes", {"justification": "x", "statements": [row],
+                                      "mechanisms": [slowed]})
+    assert out["applied"] is True, out.get("error")
+    shown = [line for line in _call(mcp, "get_model", {"format": "statements"})["result"].split("\n")
+             if line.startswith("{")]
+    (line,) = shown
+    assert json.loads(line)["derived"] == {"modulated_by_0": "inhibited_by"}
+    out = _call(mcp, "make_changes", {"justification": "again", "statements": [json.loads(line)]})
+    assert out["applied"] is True, out.get("error")
+
+
+@pytest.mark.parametrize(
+    "rows, match",
+    [
+        # review of #128, a_crossbind: a binding read another row's rate, and with it a regulator
+        # this row does not state.
+        (["inh: A becomes B, inhibited by C | inh k=act_rate", "act: B becomes A, activated by D | act"],
+         r"binds 'inh_k' over 'act_rate', an expression the model builds"),
+        # t10: a binding naming a regulator minted a parameter of that name.
+        (["r1: A becomes B | mass_action k=k0*inhibited_by"],
+         r"binds 'r1_k' over 'inhibited_by', a regulator's name"),
+    ],
+)
+def test_a_binding_reads_parameters_only(tmp_path, rows, match):
+    mechanisms = [
+        {"statement_type": "PopulationTransition", "policy": "inh", "based_on": "mass_action",
+         "rate": "k*Ki/(Ki + inhibited_by)", "parameters": ["k", "Ki"]},
+        {"statement_type": "PopulationTransition", "policy": "act", "based_on": "mass_action",
+         "rate": "k*activated_by", "parameters": ["k"]},
+    ]
+    out = _call(_statements_server(tmp_path), "make_changes",
+                {"justification": "x", "statements": rows, "mechanisms": mechanisms})
+    assert out["applied"] is False
+    assert re.search(match, out["error"]), out["error"]
 
 
 def test_an_unknown_activity_names_the_modification_tags():

@@ -100,11 +100,15 @@ class Emission:
     #: The sites the row's scheme (:mod:`schemes`) gave molecules that had none such, and no
     #: earlier row's scheme had: molecule -> site -> its states (none for a binding site).
     sites_added: dict[str, dict[str, list[str]]] = field(default_factory=dict)
-    #: The regulators the row's statement states whose kind its rate records otherwise
-    #: (:func:`record_regulators`), by the kind stated and position: ``modulated_by_0`` ->
+    #: The regulators the row's statement states whose kind its net rate records otherwise
+    #: (:func:`regulation.record`), by the kind stated and position: ``modulated_by_0`` ->
     #: ``inhibited_by``, ``inhibited_by_1`` -> ``modulated_by``. The statement keeps what it
     #: stated; this is what its maths shows instead.
     derived: dict[str, str] = field(default_factory=dict)
+    #: What the regulators are signed on, kept to sign them again on another version's bounds:
+    #: the row's net rate and the amounts each regulator reads (:func:`regulation.stored`), or
+    #: why it has none.
+    rate: dict = field(default_factory=dict)
 
 
 Policy = Callable[[Statement, pysb.Model, str], Emission]
@@ -171,12 +175,7 @@ def instantiate(
         )
     entry = library[key]
     read = _read_regulators(prefix, key, getattr(entry, "regulators", frozenset()), regulators or {})
-    emission = entry(stmt, model, prefix, regulators=read) if read else entry(stmt, model, prefix)
-    derived = {
-        name if name[-1].isdigit() else f"{name}_0": kind
-        for name, kind in getattr(entry, "derived", {}).items() if name in read
-    }
-    return replace(emission, derived=derived) if derived else emission
+    return entry(stmt, model, prefix, regulators=read) if read else entry(stmt, model, prefix)
 
 
 def _read_regulators(
@@ -223,12 +222,16 @@ def _read_regulators(
 #: build reads every mechanism again. Past it a sign is read off the expression as it stands, and
 #: one that cannot be counts as not shown.
 SIGN_OPS = 300
+#: The most terms an expansion may make (:func:`_terms`) for a sum to be expanded, or a fraction
+#: factored, to sign it: a product of sums of a net rate's parts expanded or factored for minutes
+#: (the review of #128's t20).
+SIGN_TERMS = 64
 
 
 def _sign(e: sympy.Expr) -> int | None:
     """``1`` when ``e`` is provably never negative, ``-1`` never positive, from the assumptions on
     its names and how products, powers and sums of signed terms combine; ``None`` otherwise. A
-    sum is expanded only within :data:`SIGN_OPS`."""
+    sum is expanded only within :data:`SIGN_TERMS`."""
     if e.is_nonnegative:
         return 1
     if e.is_nonpositive:
@@ -243,11 +246,23 @@ def _sign(e: sympy.Expr) -> int | None:
         sign = _sign(base)
         return sign if sign == 1 or exponent.is_odd else None
     if isinstance(e, sympy.Add):
-        for terms in (e, sympy.expand(e) if sympy.count_ops(e) <= SIGN_OPS else None):
+        for terms in (e, sympy.expand(e) if _terms(e) <= SIGN_TERMS else None):
             signs = {_sign(t) for t in sympy.Add.make_args(terms)} if terms is not None else {None}
             if len(signs) == 1 and None not in signs:
                 return signs.pop()
     return None
+
+
+def _terms(e: sympy.Expr) -> int:
+    """How many terms expanding ``e`` makes, at most: a sum's terms add, a product's multiply, a
+    whole power multiplies its base's; read off the expression, never expanded."""
+    if isinstance(e, sympy.Add):
+        return sum(_terms(a) for a in e.args)
+    if isinstance(e, sympy.Mul):
+        return math.prod(_terms(a) for a in e.args)
+    if isinstance(e, sympy.Pow) and e.exp.is_Integer and e.exp > 0:
+        return _terms(e.base) ** int(e.exp)
+    return 1
 
 
 def _direction(expr: sympy.Expr, symbol: sympy.Symbol) -> int | None:
@@ -302,57 +317,37 @@ def _by_parts(e: sympy.Expr, x: sympy.Symbol) -> int | None:
 def _vanishes(d: sympy.Expr) -> bool:
     """Whether ``d`` is 0 for every value of its names. Not where it is not 0 at one point of
     positive values, a cheap test that settles nearly every case; cancelled to lowest terms (a
-    multivariate gcd, seconds on a rate's derivative) only where it is."""
+    multivariate gcd, seconds on a rate's derivative) only where it is, and only within
+    :data:`SIGN_OPS`: past it, by its value at two more points, which the sign prover never asks
+    (it differentiates nothing so large)."""
     if d == 0:
         return True
-    point = {s: 0.7 + 0.31 * i for i, s in enumerate(sorted(d.free_symbols, key=str))}
-    value = complex(d.evalf(subs=point))
-    if value == value and abs(value) > 1e-9:  # a number, not nan, and not 0
-        return False
-    return sympy.cancel(d) == 0
+    names = sorted(d.free_symbols, key=str)
+    for shift in (0.0, 0.53, 1.37):
+        point = {s: 0.7 + 0.31 * i + shift * (i % 3) for i, s in enumerate(names)}
+        value = complex(d.evalf(subs=point))
+        if value == value and abs(value) > 1e-9:  # a number, not nan, and not 0
+            return False
+        if sympy.count_ops(d) <= SIGN_OPS:
+            return sympy.cancel(d) == 0
+    return True
 
 
 def _by_derivative(e: sympy.Expr, x: sympy.Symbol) -> int | None:
     """The sign of ``e``'s derivative in ``x``, its numerator and denominator signed as they stand
-    and factored; ``0`` where it cancels; ``None`` where neither shows it."""
+    and, within :data:`SIGN_TERMS`, factored; ``0`` where it cancels; ``None`` where neither shows
+    it."""
     d = sympy.diff(e, x)
     if _vanishes(d):
         return 0
     numerator, denominator = sympy.fraction(sympy.together(d))
-    for n, den in ((numerator, denominator), (sympy.factor(numerator), sympy.factor(denominator))):
+    forms = [(numerator, denominator)]
+    if _terms(numerator) + _terms(denominator) <= SIGN_TERMS:
+        forms.append((sympy.factor(numerator), sympy.factor(denominator)))
+    for n, den in forms:
         if (sn := _sign(n)) is not None and (sd := _sign(den)) is not None:
             return sn * sd
     return None
-
-
-#: The kind a regulator is recorded as, by the way its rate moves with it (:func:`_direction`).
-_RECORDED = {-1: "inhibited_by", 1: "activated_by", None: "modulated_by"}
-
-
-def record_regulators(policy: str, rate: str, expr: sympy.Expr, names) -> dict[str, str]:
-    """The kind each regulator of ``names`` that ``rate`` of ``policy`` reads is recorded as, where
-    it differs from the kind its name states: the way ``expr`` (its names signed by
-    :func:`assumed`) moves with it for every value of every name. ``inhibited_by`` where it never
-    rises, ``activated_by`` where it never falls, ``modulated_by`` where neither can be shown (it
-    depends on the values, or a piecewise switches on it). A claim the rate does not bear out is
-    recorded as what it does show, downgraded or reversed, and an unsigned one is signed; the edit
-    reports each to the agent (:func:`operations.statements_to_antimony`). A written rate is read
-    as it is, the one step of its mechanism; a scheme by its net rate (:func:`schemes.net_rate`).
-
-    Refused: a regulator the rate reads but does not change with, which a statement would claim
-    the rate does what it does not."""
-    recorded = {}
-    for name in sorted(n for n in names if REGULATOR_NAME.fullmatch(n)):
-        direction = _direction(expr, sympy.Symbol(name, nonnegative=True))
-        if direction == 0:
-            raise MechanismError(
-                f"rate {rate!r} of {policy!r} reads `{name}` but does not change with it, so a "
-                "statement stating that regulator would claim what the rate does not do: read it "
-                f"where it moves the rate, or leave it out of the statement. d/d{name} = 0"
-            )
-        if not name.startswith(kind := _RECORDED[direction]):
-            recorded[name] = kind
-    return recorded
 
 
 def bind(
@@ -445,9 +440,26 @@ def _not_a_parameter(
     molecule or one of ``species``, the ids the model names amounts by (a parameter of its name
     clashed with it in the SBML), a starting amount ``<x>_init`` (the start made it again, a
     duplicate in PySB), a rate function, or ``time`` (which BioNetGen refused as a parameter
-    name). A row's own ``<prefix>_init`` constant is shared like any other."""
+    name); an expression the model builds, a row's rate (whose regulators the reading row would
+    read unstated) or a value a binding pinned; or a regulator's name, which only a mechanism's
+    rate reads. A row's own ``<prefix>_init`` constant is shared like any other."""
     held = model.components.get(ident)
     instead = ""
+    if REGULATOR_NAME.fullmatch(ident):
+        raise MechanismError(
+            f"row {prefix!r} binds {name!r} over {ident!r}, a regulator's name. A regulator is read "
+            "in its mechanism's rate (`inhibited_by` in a written rate, `amount(inhibited_by)` in a "
+            "scheme) and stated in the statement (`..., inhibited by X`); a binding reads "
+            "parameters: a shared id, a problem parameter, a condition-table input"
+        )
+    if isinstance(held, pysb.Expression):
+        raise MechanismError(
+            f"row {prefix!r} binds {name!r} over {ident!r}, an expression the model builds (a "
+            "row's rate, or a value a binding pinned), not a parameter: a rate read through a "
+            "binding would carry its row's regulators into this one unstated. A binding reads "
+            "parameters: share another row's constant by its name (`<prefix>_kf`), a problem "
+            "parameter, a condition-table input"
+        )
     if isinstance(held, pysb.Monomer):
         what = "a molecule"
     elif ident in species:
@@ -456,7 +468,7 @@ def _not_a_parameter(
             f" `{ident}` is the amount of the agent the entity map (or `amounts`) maps it to, "
             "read by that agent's own name and sites, not by this id."
         )
-    elif isinstance(held, (pysb.Parameter, pysb.Expression)):
+    elif isinstance(held, pysb.Parameter):
         return
     elif ident.endswith("_init"):
         what = "a starting amount"
@@ -730,9 +742,9 @@ def written(
     :data:`statements.REGULATOR_NAME`), each the amount of an agent that takes no part in the
     reaction;
     ``time``; exp, log, sqrt, and ``piecewise(value, condition, ..., otherwise)``, its conditions
-    comparisons over the same names (:func:`_piecewise`). Each regulator is recorded as the kind
-    the rate shows (:func:`record_regulators`), and the rate must read every regulator a row
-    states (:func:`_read_regulators`). A scheme (:func:`schemes.compile_scheme`) declares the
+    comparisons over the same names (:func:`_piecewise`). The rate must read every regulator a
+    row states (:func:`_read_regulators`), and each is recorded as the kind the row's net rate
+    shows (:mod:`regulation`). A scheme (:func:`schemes.compile_scheme`) declares the
     constants its rates name the same way.
 
     ``problem_ids`` (id to :data:`SHIPPED`, :data:`CONDITION` or :data:`SPECIES`) are names no
@@ -795,7 +807,6 @@ def written(
     if unknown:
         refuse_rate_names(rate, policy, unknown, allowed, also, amounts, problem_ids)
     value = assumed(parse_rate(rate))
-    recorded = record_regulators(policy, rate, value, (s.name for s in value.free_symbols))
     refuse_unread(policy, declared, tokens)
     base = library[base_key]
 
@@ -865,7 +876,6 @@ def written(
     policy_fn.regulators = frozenset(
         s.name for s in value.free_symbols if REGULATOR_NAME.fullmatch(s.name)
     )
-    policy_fn.derived = recorded
     return policy_fn
 
 
@@ -879,11 +889,16 @@ def assumed(expr: sympy.Expr) -> sympy.Expr:
     })
 
 
-def refuse_unnamed(prefix: str, stmt: Statement, reads: str, agent: Agent) -> None:
+def refuse_unnamed(
+    prefix: str, stmt: Statement, reads: str, agent: Agent, stated: dict | None = None
+) -> None:
     """Refuse row ``prefix``'s mechanism reading ``agent`` (``reads`` says where) because ``stmt``
     does not name it: the statement is the claim behind the rate, so an agent the rate reads is
-    stated there, as a regulator (``statements.REGULATORS``) when it takes no part."""
+    stated there, as a regulator (``statements.REGULATORS``) when it takes no part. Where it is a
+    regulator ``stated`` (kind to agents) already, or a regulator's name the mechanism writes as an
+    agent, the refusal says how a rate reads one."""
     from .notation import agent_text, statement_text
+    from .statements import REGULATORS
 
     def noted(write, value, otherwise: str) -> str:
         try:
@@ -894,6 +909,25 @@ def refuse_unnamed(prefix: str, stmt: Statement, reads: str, agent: Agent) -> No
     listed = ", ".join(dict.fromkeys(noted(agent_text, a, a.name) for a in named_agents(stmt)))
     said = noted(statement_text, stmt, "<statement>")
     name = noted(agent_text, agent, agent.name)
+    kinds = [
+        (kind, i) for kind, given in (stated or {}).items()
+        for i, a in enumerate(given) if _n(a.name) == _n(agent.name)
+    ]
+    if kinds or REGULATOR_NAME.fullmatch(agent.name):
+        kind, i = kinds[0] if kinds else (agent.name.rpartition("_")[0] if agent.name[-1].isdigit()
+                                          else agent.name, 0)
+        read = kind if len((stated or {}).get(kind, ())) <= 1 else f"{kind}_{i}"
+        given = (stated or {}).get(kind, [])
+        bare = given[i].name if i < len(given) else "X"
+        whom = noted(agent_text, given[i], bare) if i < len(given) else bare
+        raise MechanismError(
+            f"row {prefix!r}: {reads} reads {name} as an agent of its own. A regulator is read "
+            f"as the statement states it, `{REGULATORS[kind]} {whom}`, by its kind: "
+            f"`amount({read})` in a scheme, `{read}` in a written rate, the states it needs "
+            f"written on the statement's agent (`{REGULATORS[kind]} {bare}{{pS10}}`). A molecule "
+            f"a scheme's rules bind is a partner, written on its agent (`E{{~{bare}}}`) and named "
+            "in the scheme by its own name."
+        )
     raise MechanismError(
         f"row {prefix!r}: {reads} reads {name}, which its statement does not name. A rate reads "
         f"only the agents its statement names ({listed}) and the regulators it states. State "
@@ -947,13 +981,13 @@ def assemble(
         for name, base in agents.agents.items()
     }
     added: list[dict[str, list[str]]] = []
-    for stmt, policy, prefix, *_ in rows:
+    for stmt, policy, prefix, _, regulators in rows:
         entry = library.get((type(stmt).__name__, policy))
         added.append({})
         if not hasattr(entry, "scheme_sites"):
             continue
         before = {name: set(base.sites) for name, base in agents.agents.items()}
-        for agent, site, site_states in entry.scheme_sites(stmt, given, prefix):
+        for agent, site, site_states in entry.scheme_sites(stmt, given, prefix, regulators):
             base = agents.get_create_base_agent(agent)
             if site is not None:
                 base.create_site(site, site_states)

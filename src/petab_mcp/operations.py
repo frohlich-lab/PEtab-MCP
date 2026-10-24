@@ -478,6 +478,19 @@ def _commit_change(
             )
 
         warnings = _parsimony_warnings(problem, old_species) if recon is not None else []
+        # A row's regulators are signed on this version's bounds: an edit of a bound or a scale
+        # can change what its rate records, and the record changes with the problem below.
+        record = getattr(
+            session, "submitted_statements" if model_build is not None else "model_statements", None
+        )
+        signed = said = None
+        if record:
+            from . import regulation
+
+            signed, failed = regulation.resign(record, problem)
+            if failed:
+                signed["regulator_check_failures"] = failed
+            said = regulator_warning(signed, _statements_base(session, model_build is not None))
         # Warnings raised by the edit callback itself (e.g. change_parameters' advisory sigma cap)
         # must reach the CALLER, not just the provenance log — an advisory nobody reads is the same
         # as no guard at all. `recon is None` for every parameter edit, so the parsimony list above
@@ -494,7 +507,7 @@ def _commit_change(
         # The edit's half of the message stack (see :mod:`messages`). The lint's WARNING-level
         # findings join it here: they used to live only inside the `validation` report, which the
         # result no longer carries, so they were reaching nobody at all.
-        edit_messages = M.warnings_from(M.SOURCE_EDIT, warnings) + M.warnings_from(
+        edit_messages = M.warnings_from(M.SOURCE_EDIT, [*warnings, said]) + M.warnings_from(
             M.SOURCE_VALIDATION,
             [i["message"] for i in report["issues"] if i.get("level") == "warning"],
         )
@@ -532,6 +545,11 @@ def _commit_change(
         # can throw. A throw after the swap would leave the live problem changed while the caller
         # reports `applied: false`, and `make_changes` returns on that without reverting.
         session.problem = problem
+        if signed is not None and model_build is not None:
+            record.clear()  # the caller keeps this record as the new model's rows
+            record.update(signed)
+        elif signed is not None:
+            session.model_statements = signed
 
     return {
         "applied": True,
@@ -725,7 +743,6 @@ def statements_to_antimony(
 
     from . import mechanisms, problem_sbml
     from .statements import (
-        REGULATORS,
         agent_problems,
         indra_part,
         problems,
@@ -760,7 +777,9 @@ def statements_to_antimony(
 
     try:
         rows = [
-            notation.parse(row, groundings, library) if isinstance(row, str) else dict(row)
+            notation.parse(row, groundings, library) if isinstance(row, str)
+            # What `get_model` shows a row's rate records is the server's, not the row's.
+            else {k: v for k, v in dict(row).items() if k != "derived"}
             for row in rows
         ]
         starts = [{**start, "agent": agent_json(start["agent"])} for start in starts or []]
@@ -878,32 +897,53 @@ def statements_to_antimony(
             "first state (on `loc`, in cytoplasm when it is one, else in its first location "
             "by name), and free on a binding site.",
         ))
-    # What a rate records otherwise than its row's statement states, so the agent sees it.
-    changed: dict[tuple[str, str, str], list[int]] = {}
-    for i, (row, e) in enumerate(zip(rows, emissions)):
-        for name, shown in e.derived.items():
+    return antimony, record, warnings, definitions
+
+
+def _statements_base(session, rebuilt: bool) -> dict | None:
+    """The statements record an edit starts from: a fork's version's, else the current model's."""
+    if rebuilt and getattr(session, "derived_from", None) is not None:
+        return session.provenance.get_statements(int(session.derived_from))
+    return getattr(session, "model_statements", None)
+
+
+def regulator_warning(record: dict, base: dict | None) -> str | None:
+    """What ``record``'s rows' rates record otherwise than their statements state, for the rows the
+    edit touched: each new or changed since ``base`` (the record the edit started from), or whose
+    recorded kinds changed (a bound did it). ``None`` where there is nothing to say."""
+    from . import notation
+    from .statements import REGULATORS
+
+    before = {row["prefix"]: row for row in (base or {}).get("rows", [])}
+    changed: dict[tuple[str, str, str], list[str]] = {}
+    for row in record.get("rows", []):
+        derived = (row.get("emission") or {}).get("derived") or {}
+        old = before.get(row["prefix"])
+        same = old is not None and all(old.get(k) == row.get(k) for k in ("statement", "policy",
+                                                                          "parameters"))
+        if not derived or (same and (old.get("emission") or {}).get("derived") == derived):
+            continue
+        for name, shown in derived.items():
             stated, _, position = name.rpartition("_")
             agent = row["statement"][stated][int(position)]
             try:
                 text = notation.agent_text(agent)
             except ValueError:  # what the notation cannot write
                 text = agent["name"]
-            changed.setdefault((stated, text, shown), []).append(i)
-    if changed:
-        listed = "; ".join(
-            f"`statements[{', '.join(map(str, at))}]`: you stated `{REGULATORS[stated]} {agent}`, "
-            f"{'and' if stated == 'modulated_by' else 'but'} "
-            f"{_WHAT_THE_RATE_DOES[shown].format(agent)}, so it reads as "
-            f"`{REGULATORS[shown]} {agent}`"
-            for (stated, agent, shown), at in changed.items()
-        )
-        warnings.append(M.warning(
-            M.SOURCE_EDIT,
-            f"{listed}. Check that each mechanism does what you meant; if not, rewrite its rate. "
-            "The statements stay as you wrote them; `get_model` marks each regulator with the kind "
-            "its rate shows (`(inhibits, from its rate)`).",
-        ))
-    return antimony, record, warnings, definitions
+            changed.setdefault((stated, text, shown), []).append(row["prefix"])
+    if not changed:
+        return None
+    listed = "; ".join(
+        f"`{', '.join(prefixes)}`: you stated `{REGULATORS[stated]} {agent}`, "
+        f"{'and' if stated == 'modulated_by' else 'but'} "
+        f"{_WHAT_THE_RATE_DOES[shown].format(agent)}, so it reads as `{REGULATORS[shown]} {agent}`"
+        for (stated, agent, shown), prefixes in changed.items()
+    )
+    return (
+        f"{listed}. Check that each mechanism does what you meant; if not, rewrite its rate. The "
+        "statements stay as you wrote them; `get_model` marks each regulator with the kind its "
+        "rate shows (`(inhibits, from its rate)`)."
+    )
 
 
 #: What a regulator's rate does with it, by the kind the rate records it as (``{}`` the agent).
@@ -911,7 +951,7 @@ _WHAT_THE_RATE_DOES = {
     "inhibited_by": "its rate never rises as {} rises",
     "activated_by": "its rate never falls as {} rises",
     "modulated_by": "its rate cannot be shown to move one way as {} rises, for every value of its "
-    "names",
+    "names within their bounds",
 }
 
 
@@ -1694,6 +1734,8 @@ def working_state(session) -> dict[str, Any]:
             "problem": session.problem,
             "simulation": session.simulation,
             "optimization": session.optimization,
+            # A parameters-only edit signs the rows' regulators again on its bounds.
+            "model_statements": getattr(session, "model_statements", None),
         }
 
 
@@ -1713,6 +1755,8 @@ def revert_working_state(session, snapshot: dict[str, Any], reason: str) -> None
         session.problem = snapshot["problem"]
         session.simulation = snapshot["simulation"]
         session.optimization = snapshot["optimization"]
+        if "model_statements" in snapshot:
+            session.model_statements = snapshot["model_statements"]
         session.provenance.append_event(
             {
                 "type": "revert",
