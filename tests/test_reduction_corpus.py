@@ -1,8 +1,8 @@
 """The reduction's regression corpus: every model the #115/#116 reviews built against it, each built
 with and without the reductions through :func:`problem_sbml.to_antimony` and integrated at random
 parameter values (:func:`test_reduction._assert_same`). The counterexamples the reviews found must
-agree now; the shapes they found agreeing must stay so. ``verify_reduction``'s own cases, which
-need AMICI, are in ``test_reduction_check.py``.
+agree now; the shapes they found agreeing must stay so. This, not a check at run time, is where
+the reductions are held exact.
 
 A case is rows in the notation, the entity map, and :func:`problem_sbml.to_antimony`'s keywords."""
 
@@ -159,19 +159,19 @@ AGREEING = {
 
 
 @pytest.mark.parametrize("name", [*WRONG_BEFORE, *AGREEING])
-def test_the_reduced_model_is_the_unreduced_one(monkeypatch, name):
+def test_the_reduced_model_is_the_unreduced_one(name):
     lines, agents = {**WRONG_BEFORE, **AGREEING}[name]
-    _assert_same(monkeypatch, _rows(lines), _entities(agents))
+    _assert_same(_rows(lines), _entities(agents))
 
 
-def test_gef_and_gap_catalysts(monkeypatch):
+def test_gef_and_gap_catalysts():
     """The notation writes no GEF or GAP row: built from INDRA's statements."""
     rows = [
         (Gef(Agent("G"), Agent("R")), INDRA_DEFAULT, "gef"),
         (Gap(Agent("A"), Agent("R")), INDRA_DEFAULT, "gap"),
         *_rows(["y1: K phosphorylates G at Y1 | indra_default"]),
     ]
-    _assert_same(monkeypatch, rows, _entities({"aR": "R{gtpbound:on}", "R": "R"}))
+    _assert_same(rows, _entities({"aR": "R{gtpbound:on}", "R": "R"}))
 
 
 @pytest.mark.parametrize(
@@ -181,7 +181,7 @@ def test_gef_and_gap_catalysts(monkeypatch):
         pytest.param({"targets": frozenset({"D"})}, id="set-by-the-conditions"),
     ],
 )
-def test_a_catalyst_the_experiment_sets(monkeypatch, kwargs):
+def test_a_catalyst_the_experiment_sets(kwargs):
     """A dose that catalyses: held, as a boundary species or under its protocol."""
     rows = _rows(
         [
@@ -189,4 +189,4 @@ def test_a_catalyst_the_experiment_sets(monkeypatch, kwargs):
             "dp: P dephosphorylates S at S2 | indra_default",
         ]
     )
-    _assert_same(monkeypatch, rows, _entities({"pS": "S{pS2}", "D": "D"}), **kwargs)
+    _assert_same(rows, _entities({"pS": "S{pS2}", "D": "D"}), **kwargs)

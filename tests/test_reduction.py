@@ -53,13 +53,9 @@ def _build(rows, entities, **kwargs) -> tuple[str, dict]:
     return antimony, network
 
 
-def _both(monkeypatch, rows, entities, **kwargs):
+def _both(rows, entities, **kwargs):
     """The model ``rows`` build, reduced and not, each with its network sizes."""
-    reduced = _build(rows, entities, **kwargs)
-    with monkeypatch.context() as patch:
-        patch.setattr(reduction, "reduce", lambda model: reduction.Reduction())
-        full = _build(rows, entities, **kwargs)
-    return reduced, full
+    return _build(rows, entities, **kwargs), _build(rows, entities, reduce=False, **kwargs)
 
 
 def _simulate(antimony: str, values: dict[str, float], times) -> dict[str, np.ndarray]:
@@ -120,11 +116,11 @@ def _simulate(antimony: str, values: dict[str, float], times) -> dict[str, np.nd
     return out
 
 
-def _assert_same(monkeypatch, rows, entities, draws: int = 3, **kwargs) -> dict:
+def _assert_same(rows, entities, draws: int = 3, **kwargs) -> dict:
     """Build ``rows`` reduced and not, and integrate both at ``draws`` random parameter vectors:
     every species and every rule the unreduced model holds must agree. Returns the reduced
     build's network sizes, checked against the unreduced expansion."""
-    (reduced, network), (full, full_network) = _both(monkeypatch, rows, entities, **kwargs)
+    (reduced, network), (full, full_network) = _both(rows, entities, **kwargs)
 
     def constants(antimony):
         model = SbmlModel.from_antimony(antimony).sbml_model
@@ -146,7 +142,7 @@ def _assert_same(monkeypatch, rows, entities, draws: int = 3, **kwargs) -> dict:
     return network
 
 
-def test_a_kinase_context_becomes_a_rate_factor(monkeypatch):
+def test_a_kinase_context_becomes_a_rate_factor():
     """A multisite kinase acting on itself, as an agent writes it (perica_egf's EGFR): every
     unmentioned form of the kinase was a reaction of its own, and the reduction writes one
     reaction per substrate form at ``k·Obs(kinase)`` instead."""
@@ -161,7 +157,7 @@ def test_a_kinase_context_becomes_a_rate_factor(monkeypatch):
         (Dephosphorylation(Agent("P"), Agent("K"), "T", "4"), INDRA_DEFAULT, "dt4"),
     ]
     entities = {"pE": _p("E", "Y1", "S3"), "pK": _p("K", "T4")}
-    network = _assert_same(monkeypatch, rows, entities)
+    network = _assert_same(rows, entities)
     assert network["after_reduction"]["species"] == network["before_reduction"]["species"]
     assert network["after_reduction"]["reactions"] < network["before_reduction"]["reactions"] / 4
 
@@ -276,18 +272,18 @@ def test_a_kinase_context_becomes_a_rate_factor(monkeypatch):
         ),
     ],
 )
-def test_every_one_step_shape_reduces_exactly(monkeypatch, rows, entities):
+def test_every_one_step_shape_reduces_exactly(rows, entities):
     """Each shape of rule that leaves a complex unchanged: an activation, a GEF, a catalysed
     synthesis and degradation (the last deleting only its molecule), a catalysed conversion, a
     Michaelis-Menten rate that reads its substrate, a kinase bound to a partner acting on a
     substrate that may be bound too."""
-    network = _assert_same(monkeypatch, rows, entities)
+    network = _assert_same(rows, entities)
     antimony, _ = _build(rows, entities)
     assert "_catalysed" in antimony
     assert network["after_reduction"]["reactions"] <= network["before_reduction"]["reactions"]
 
 
-def test_a_written_rate_keeps_its_regulator_and_its_catalyst(monkeypatch):
+def test_a_written_rate_keeps_its_regulator_and_its_catalyst():
     """A rate the agent wrote, reading a regulator the statement states, is multiplied by the
     catalyst's amount."""
     library = dict(M.REGISTRY)
@@ -312,16 +308,16 @@ def test_a_written_rate_keeps_its_regulator_and_its_catalyst(monkeypatch):
         (Phosphorylation(Agent("K"), Agent("E"), "S", "3"), INDRA_DEFAULT, "s3"),
         (Phosphorylation(Agent("K"), Agent("I"), "S", "4"), INDRA_DEFAULT, "i4"),
     ]
-    _assert_same(monkeypatch, rows, {"pS": _p("S", "S2")}, library=library)
+    _assert_same(rows, {"pS": _p("S", "S2")}, library=library)
 
 
-def test_a_two_step_mechanism_is_left_as_written(monkeypatch):
+def test_a_two_step_mechanism_is_left_as_written():
     """A two-step mechanism binds its substrate: no complex of it is left unchanged."""
     rows = [
         (Phosphorylation(Agent("E"), Agent("S"), "S", "2"), "indra_two_step", "s2"),
         (Dephosphorylation(Agent("P"), Agent("S"), "S", "2"), INDRA_DEFAULT, "ds2"),
     ]
-    network = _assert_same(monkeypatch, rows, {"pS": _p("S", "S2")})
+    network = _assert_same(rows, {"pS": _p("S", "S2")})
     model, (two_step, one_step) = M.assemble(rows)
     assert set(reduction.reduce(model).catalysts) == set(one_step.rules)
     assert network["before_reduction"] == network["after_reduction"]
