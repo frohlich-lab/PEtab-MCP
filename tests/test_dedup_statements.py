@@ -53,7 +53,8 @@ def _call(mcp, name, args):
 
 
 def _change(mcp, policy, mechanisms=()):
-    args = {"justification": policy, "statements": [{**_ROW, "policy": policy}], "n_starts": 2}
+    args = {"justification": policy, "statements": [_ROW], "bindings": {"conv": policy},
+            "n_starts": 2}
     return _call(mcp, "make_changes", {**args, "mechanisms": list(mechanisms)})
 
 

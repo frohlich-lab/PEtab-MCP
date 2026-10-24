@@ -1201,7 +1201,7 @@ def _unseen(model, emission, stmt, policy, prefix, stated, s: str) -> str:
         if found is not None:
             what, row, mechanism = found
             shown_steps += f", {what}"
-            advice = f"State it on a row of that step instead, `{row}`: {mechanism}. "
+            advice = f"State it on a row of that step instead, `{row}`, bound to {mechanism}. "
     return (
         f"row {prefix!r}: {policy!r} reads `{_said(s, stated)}` only in {shown_steps}, and its "
         "statement's own reaction rate, its products absent, does not change with it: a "
@@ -1286,11 +1286,11 @@ def _with_the_product(stmt, stated: dict, s: str, how: str, way: int | None, pro
              "for the product it takes as a reactant, the step written without it")
     back = _way_back(stmt)
     return (
-        f"State the product as a regulator too, {row}, its rate reading it as `{product_at}` "
-        f"{where}, and {_agent(stated, s)} as `{read(own_kind, i)}`. Or put that step on a row of "
-        "its own so, a one-rule mechanism (another step of the same reaction a term of its rate), "
-        "and its way back, where the mechanism has one, on a row of its own"
-        + (f", `{back}`. " if back else ". ")
+        f"State the product as a regulator too, {row}, its binding's rate reading it as "
+        f"`{product_at}` {where}, and {_agent(stated, s)} as `{read(own_kind, i)}`. Or put that "
+        "step on a row of its own so, bound to a one-rule mechanism (another step of the same "
+        "reaction a term of its rate), and its way back, where the mechanism has one, on a row of "
+        "its own" + (f", `{back}`. " if back else ". ")
     )
 
 
@@ -1318,8 +1318,8 @@ def _way_back(stmt) -> str | None:
 
 def _step_row(stmt, before, after, kind: str, regulator) -> tuple[str, str, str] | None:
     """A step of row ``stmt``'s rules as a row of its own, ``regulator`` stated on it as ``kind``
-    (what the step's own rate does with it): what the step is, the row in the notation, and the
-    mechanism the row needs. ``None`` for a step no statement makes alone."""
+    (what the step's own rate does with it): what the step is, the row's statement in the notation,
+    and the mechanism its binding needs. ``None`` for a step no statement makes alone."""
     from indra.assemblers.pysb.sites import get_mod_site_name
 
     from .notation import agent_text, statement_text
@@ -1342,7 +1342,7 @@ def _step_row(stmt, before, after, kind: str, regulator) -> tuple[str, str, str]
         row = text(DecreaseAmount(None, gone))
         return row and (
             f"{agent_text(gone.to_json())}'s degradation", row + clause,
-            f"a DecreaseAmount whose mechanism reads it, a written `rate` `kd{factor}` with "
+            f"a DecreaseAmount mechanism that reads it, a written `rate` `kd{factor}` with "
             "`parameters` [kd, K]",
         )
     if not left and len(right) == 1 and len(right[0]) == 1 and agent(right[0][0]) is not None:
@@ -1350,7 +1350,7 @@ def _step_row(stmt, before, after, kind: str, regulator) -> tuple[str, str, str]
         row = text(IncreaseAmount(None, made))
         return row and (
             f"{agent_text(made.to_json())}'s synthesis", row + clause,
-            f"an IncreaseAmount whose mechanism reads it, a written `rate` `ks{factor}` with "
+            f"an IncreaseAmount mechanism that reads it, a written `rate` `ks{factor}` with "
             "`parameters` [ks, K]",
         )
     if (len(left) == 1 and len(left[0]) == 2 and len(right) == 2 and all(len(c) == 1 for c in right)
@@ -1363,7 +1363,7 @@ def _step_row(stmt, before, after, kind: str, regulator) -> tuple[str, str, str]
         amount = factor.replace(kind, f"amount({kind})")
         return row and (
             "the dissociation", row + clause,
-            "a Conversion whose scheme breaks the bond and reads it, `obj_from_0(obj_to_1=1) % "
+            "a Conversion scheme that breaks the bond and reads it, `obj_from_0(obj_to_1=1) % "
             "obj_to_1(obj_to_0=1) >> obj_to_0(obj_to_1=None) + obj_to_1(obj_to_0=None) @ "
             f"kr{amount}` with `parameters` [kr, K]",
         )
@@ -1379,7 +1379,7 @@ def _step_row(stmt, before, after, kind: str, regulator) -> tuple[str, str, str]
             row = text(inverse(None, stmt.sub, stmt.residue, stmt.position))
             return row and (
                 "the way back of its modification", row + clause,
-                f"a {inverse.__name__} whose mechanism, based on `basal`, reads it, a written "
+                f"a {inverse.__name__} mechanism, based on `basal`, that reads it, a written "
                 f"`rate` `k{factor}` with `parameters` [k, K]",
             )
     if (isinstance(stmt, RegulateActivity) and molecule is stmt.obj
@@ -1388,7 +1388,7 @@ def _step_row(stmt, before, after, kind: str, regulator) -> tuple[str, str, str]
         row = text(back(regulator, stmt.obj, stmt.obj_activity))
         return row and (
             "the way back of its activity", row,
-            f"an {back.__name__} with {regulator.name} its subject, `indra_default`",
+            "`default`, INDRA's own",
         )
     return None
 

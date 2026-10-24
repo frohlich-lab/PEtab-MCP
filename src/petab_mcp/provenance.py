@@ -10,8 +10,10 @@ Under ``<store_root>/`` (default ``<problem_dir>/.petab_mcp``):
   ``simulations.json`` (the measured-vs-simulated dataframe + residuals), ``optimization.json``
   (the pyPESTO per-start + per-iteration trace records), and ``pypesto_result.hdf5`` (the
   pyPESTO result file, copied in from the per-model cache) — so rolling back restores a
-  version's fit artifacts, not just its model. A version scored on held-out data also carries
-  :data:`VALIDATION_SIMULATIONS`, which no agent-facing read opens.
+  version's fit artifacts, not just its model. A model built from statements also carries
+  ``statements.json``, its rows and their bindings (read through :func:`statements_record`). A
+  version scored on held-out data also carries :data:`VALIDATION_SIMULATIONS`, which no
+  agent-facing read opens.
 * ``cache/`` — pyPESTO result files keyed by problem hash (written on each fit, copied into
   version dirs when snapshotted).
 * ``HEAD`` — the current version number.
@@ -41,6 +43,27 @@ STORE_FORMAT = "petab-v2"
 #: (:func:`petab_mcp.validation_data.score_session`); a harness that archives a version's files
 #: names it too.
 VALIDATION_SIMULATIONS = "validation_simulations.json"
+
+
+def statements_record(record: dict[str, Any] | None) -> dict[str, Any] | None:
+    """A stored statements record (``statements.json``) as the server reads it now: its ``rows``
+    each the statement, and its ``bindings`` each row's policy and parameter bindings by prefix
+    (:func:`operations.statements_to_antimony`). A record stored before the two were given apart
+    kept each row's ``policy`` and ``parameters`` on the row, and is read as the same rows and
+    bindings, so a resume, a ``base_version`` fork or ``get_model`` of an older version reads it
+    as it was."""
+    if not record or "bindings" in record:
+        return record
+    split = {"policy", "parameters"}
+    return {
+        **record,
+        "rows": [{k: v for k, v in row.items() if k not in split} for row in record.get("rows", [])],
+        "bindings": {
+            row["prefix"]: {"policy": row["policy"]}
+            | ({"parameters": row["parameters"]} if row.get("parameters") else {})
+            for row in record.get("rows", [])
+        },
+    }
 
 
 def _now() -> str:
@@ -299,7 +322,7 @@ class ProvenanceStore:
         """A version's statements record (``statements.json``), or None for a model not built
         from statements. Raises ``UnknownEntityError`` for a version that does not exist."""
         f = self._version_dir(n) / "statements.json"
-        return json.loads(f.read_text(encoding="utf-8")) if f.is_file() else None
+        return statements_record(json.loads(f.read_text(encoding="utf-8"))) if f.is_file() else None
 
     def get_model_antimony(self, n: int) -> str:
         """Read a version's ``model.ant`` ONLY — cheap, unlike :meth:`get_version`, which also

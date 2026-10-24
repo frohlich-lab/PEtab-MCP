@@ -1,19 +1,28 @@
-"""A one-line notation for `statements` rows, readable and lossless for the model it builds.
+"""A one-line notation for `statements` rows and their bindings, readable and lossless for the
+model they build.
 
 INDRA's statement JSON spells every agent out — each modification a dict, each bound partner a
 nested agent, every grounding repeated — so a row takes several times the characters it takes
 written as::
 
-    r1: A{pY10} phosphorylates B at S10 | two_step kf=k_on kr=k_off kc=k_cat
-    r2: A{-pY10, ~C} is degraded | default kf=A_turnover
-    v1: A{-mod"P1"} + B -> A{mod"P1"} by E | mass_action k=k_p1
-    m1: E phosphorylates S at T20, inhibited by C | inhibited k=k1 Ki=K_i
+    r1: A{pY10} phosphorylates B at S10
+    r2: A{-pY10, ~C} is degraded
+    v1: A{-mod"P1"} + B -> A{mod"P1"} by E
+    m1: E phosphorylates S at T20, inhibited by C # [curated] Doe et al. 2000
 
-``<prefix>: <statement> | <policy> <kind>=<binding> ... # [source] text`` — the row's prefix, its
-statement, the mechanism, its parameter bindings (:func:`mechanisms.bind`), and the statement's
+``<prefix>: <statement> # [source] text`` — the row's prefix, its statement, and the statement's
 evidence: one ``source_api`` and text, both optional (``# Author et al. 2000``). The statement
 ends with the agents that regulate its rate, each kind once: ``, inhibited by C and D``,
-``, activated by A``, ``, modulated by B`` (:data:`statements.REGULATORS`).
+``, activated by A``, ``, modulated by B`` (:data:`statements.REGULATORS`). That is the claim, in
+words. The maths behind it, the mechanism and its parameter bindings (:func:`mechanisms.bind`), is
+the row's binding, ``<policy> <kind>=<binding> ...``, given apart under its prefix::
+
+    r1: two_step kf=k_on kr=k_off kc=k_cat
+    m1: inhibited k=k1 Ki=K_i
+
+so a statement is never read for its maths, nor a binding for its claim. A row written with its
+binding inline, after a ``|`` (how a row was written before the two were apart), is refused saying
+how it splits (:class:`InlineBinding`): one notation, not two.
 
 An agent is ``NAME{tag, ...}``, ``NAME`` quoted when it is not an identifier. Tags:
 
@@ -36,12 +45,14 @@ a GAP for Y``. A policy INDRA implements is
 written without its ``indra_`` prefix when no entry of that name exists for the type.
 
 What the notation does not cover — another statement type, evidence beyond one source and text —
-is written as INDRA's JSON;
-the route takes both. :func:`render` returns ``None`` for a row it cannot write losslessly.
+is written as INDRA's JSON, and a binding it cannot write as ``{policy, parameters}``; the route
+takes both. :func:`render` and :func:`render_binding` return ``None`` for what they cannot write
+losslessly.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -75,6 +86,11 @@ _RESIDUE_SITE = re.compile(r"([A-Z])([0-9]+)?")
 
 class NotationError(ValueError):
     """A row the notation cannot read, with where and why."""
+
+
+class InlineBinding(NotationError):
+    """A row written with its binding after a ``|``, refused with the row and binding it splits
+    into: the notation the route took before the two were given apart (module docstring)."""
 
 
 # ------------------------------------------------------------------------------------- render
@@ -239,26 +255,36 @@ def _number(text: str) -> bool:
     return True
 
 
-def render(
-    row: dict[str, Any], library: dict | None = None, derived: dict[str, str] | None = None
-) -> str | None:
-    """``row`` (``{statement, policy, prefix, parameters?}``) as one line, or ``None`` when the
-    notation cannot write it losslessly (keep it as JSON). ``derived`` marks the regulators whose
-    kind the row's rate proves (:func:`statement_text`)."""
+def render(row: dict[str, Any], derived: dict[str, str] | None = None) -> str | None:
+    """``row`` (``{prefix, statement}``) as one line, or ``None`` when the notation cannot write it
+    losslessly (keep it as JSON). ``derived`` marks the regulators whose kind the row's rate proves
+    (:func:`statement_text`)."""
     try:
-        policy = row["policy"]
+        if set(row) - {"statement", "prefix"} or not _IDENT.fullmatch(row["prefix"]):
+            return None
+        line = f"{row['prefix']}: {statement_text(row['statement'], derived)}"
+        return line + evidence_text(row["statement"])
+    except ValueError:
+        return None
+
+
+def render_binding(
+    binding: dict[str, Any], statement_type: str, library: dict | None = None
+) -> str | None:
+    """``binding`` (``{policy, parameters?}``, of a row whose statement is a ``statement_type``) as
+    its text, ``<policy> <kind>=<binding> ...``, or ``None`` when the notation cannot write it
+    losslessly (keep it as JSON). ``indra_`` is dropped where ``library`` holds no entry of the
+    shorter name for the type, so :func:`parse_binding` reads it back as it was."""
+    try:
+        if set(binding) - {"policy", "parameters"}:
+            return None
+        policy = binding["policy"]
         short = policy.removeprefix("indra_")
-        key = (row["statement"]["type"], short)
-        if short != policy and (library is None or key not in library):
+        if short != policy and (library is None or (statement_type, short) not in library):
             policy = short
         tail = [policy]
-        tail += [f"{k}={_value(v)}" for k, v in (row.get("parameters") or {}).items()]
-        if set(row) - {"statement", "policy", "prefix", "parameters"}:
-            return None
-        if not _IDENT.fullmatch(row["prefix"]):
-            return None
-        line = f"{row['prefix']}: {statement_text(row['statement'], derived)} | {' '.join(tail)}"
-        return line + evidence_text(row["statement"])
+        tail += [f"{k}={_value(v)}" for k, v in (binding.get("parameters") or {}).items()]
+        return " ".join(tail)
     except ValueError:
         return None
 
@@ -499,8 +525,8 @@ def statement(r: _Reader) -> dict[str, Any]:
     return st
 
 
-def _split_tail(text: str) -> tuple[str, str]:
-    """Split ``text`` at the ``|`` outside quotes and braces."""
+def _bar(text: str) -> int | None:
+    """Where ``text`` has a ``|`` outside quotes and braces, ``None`` where it has none."""
     depth, quoted = 0, False
     for i, c in enumerate(text):
         if c == '"' and (i == 0 or text[i - 1] != "\\"):
@@ -510,37 +536,48 @@ def _split_tail(text: str) -> tuple[str, str]:
         elif not quoted and c == "}":
             depth -= 1
         elif not quoted and depth == 0 and c == "|":
-            return text[:i], text[i + 1 :]
-    raise NotationError(f"no '|' before the mechanism: {text!r}")
+            return i
+    return None
 
 
-def _split_comment(tail: str) -> tuple[str, str | None]:
-    """Split ``tail`` at the ``#`` outside quotes: the evidence comment, ``None`` without one."""
+def _split_comment(text: str) -> tuple[str, str | None]:
+    """Split ``text`` at the ``#`` outside quotes: the evidence comment, ``None`` without one."""
     quoted = False
-    for i, c in enumerate(tail):
-        if c == '"' and (i == 0 or tail[i - 1] != "\\"):
+    for i, c in enumerate(text):
+        if c == '"' and (i == 0 or text[i - 1] != "\\"):
             quoted = not quoted
         elif c == "#" and not quoted:
-            return tail[:i], tail[i + 1 :].strip()
-    return tail, None
+            return text[:i], text[i + 1 :].strip()
+    return text, None
 
 
-def parse(
-    text: str,
-    groundings: dict[str, dict] | None = None,
-    library: dict | None = None,
-) -> dict[str, Any]:
-    """One row from ``text``: ``{statement (INDRA JSON), policy, prefix, parameters?}``.
-    ``groundings`` (agent name to ``db_refs``) ground the agents; ``library`` resolves a policy
-    written without its ``indra_`` prefix."""
+def split_advice(prefix: str, statement: str, binding: str) -> str:
+    """How a row given with its binding is written instead: the row, its statement alone, and the
+    binding under its prefix in ``bindings``."""
+    return (
+        "a row is its statement, and its policy and parameter bindings go in `bindings` under its "
+        f"prefix: `{prefix}: {statement}` with `bindings={json.dumps({prefix: binding})}` (in "
+        "`statement_edits`, `add_row` takes the two as `row` and `binding`)"
+    )
+
+
+def parse(text: str, groundings: dict[str, dict] | None = None) -> dict[str, Any]:
+    """One row from ``text``: ``{prefix, statement (INDRA JSON)}``. ``groundings`` (agent name to
+    ``db_refs``) ground the agents. A row with its binding after a ``|`` is refused saying how it
+    splits (:class:`InlineBinding`)."""
     from .statements import REGULATORS
 
     groundings = groundings or {}
     m = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*", text)
     if not m:
         raise NotationError(f"a row starts with its prefix and ':': {text!r}")
-    head, tail = _split_tail(text[m.end() :])
-    tail, comment = _split_comment(tail)
+    head, comment = _split_comment(text[m.end() :])
+    if (bar := _bar(head)) is not None:
+        said = head[:bar].strip() + ("" if comment is None else f" # {comment}")
+        raise InlineBinding(
+            f"row {m.group(1)!r} has its binding inline, after '|': "
+            + split_advice(m.group(1), said, head[bar + 1 :].strip())
+        )
     r = _Reader(head, groundings)
     st = statement(r)
     while r.take(","):
@@ -567,12 +604,33 @@ def parse(
         if comment:
             ev["text"] = comment
         st["evidence"] = [ev]
-    t = _Reader(tail, groundings)
+    return {"prefix": m.group(1), "statement": st}
+
+
+def parse_binding(
+    text: str, statement_type: str | None = None, library: dict | None = None
+) -> dict[str, Any]:
+    """A row's binding from its text, ``<policy> <kind>=<binding> ...``: ``{policy, parameters?}``.
+    ``library`` resolves a policy written without its ``indra_`` prefix, for a row whose statement
+    is a ``statement_type``."""
+    if not text.strip():
+        raise NotationError("a binding names its policy first: `mass_action`, `two_step kf=k_on`")
+    if re.match(r"\s*[A-Za-z_][A-Za-z0-9_]*\s*:(?!=)", text):
+        raise NotationError(
+            "a binding is `<policy> <kind>=<binding> ...`; its row's prefix is its key in "
+            f"`bindings`, not written in it: {text!r}"
+        )
+    if _split_comment(text)[1] is not None:
+        raise NotationError(
+            "a binding carries no evidence: a statement's evidence is a comment on its row, "
+            f"`<prefix>: <statement> # [source] text`: {text!r}"
+        )
+    t = _Reader(text, {})
     policy = t.name()
-    if library is not None and (st["type"], policy) not in library:
+    if library is not None and (statement_type, policy) not in library:
         if any(p == "indra_" + policy for _, p in library):
             policy = "indra_" + policy
-    row: dict[str, Any] = {"statement": st, "policy": policy, "prefix": m.group(1)}
+    binding: dict[str, Any] = {"policy": policy}
     while not t.done():
         key = t.name()
         if t.peek(":="):
@@ -591,8 +649,8 @@ def parse(
                 end += 1
             raw, t.pos = t.text[t.pos : end], end
             value = float(raw) if _number(raw) else raw
-        row.setdefault("parameters", {})[key] = value
-    return row
+        binding.setdefault("parameters", {})[key] = value
+    return binding
 
 
 def parse_agent(text: str, groundings: dict[str, dict] | None = None) -> dict[str, Any]:
