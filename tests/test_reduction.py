@@ -57,13 +57,9 @@ def _build(rows, entities, **kwargs) -> tuple[str, dict]:
     return antimony, network
 
 
-def _both(monkeypatch, rows, entities, **kwargs):
+def _both(rows, entities, **kwargs):
     """The model ``rows`` build, reduced and not, each with its network sizes."""
-    reduced = _build(rows, entities, **kwargs)
-    with monkeypatch.context() as patch:
-        patch.setattr(reduction, "reduce", lambda model, whole=(): reduction.Reduction())
-        full = _build(rows, entities, **kwargs)
-    return reduced, full
+    return _build(rows, entities, **kwargs), _build(rows, entities, reduce=False, **kwargs)
 
 
 def _simulate(antimony: str, values: dict[str, float], times) -> dict[str, np.ndarray]:
@@ -125,11 +121,11 @@ def _simulate(antimony: str, values: dict[str, float], times) -> dict[str, np.nd
     return out
 
 
-def _assert_same(monkeypatch, rows, entities, draws: int = 3, **kwargs) -> dict:
+def _assert_same(rows, entities, draws: int = 3, **kwargs) -> dict:
     """Build ``rows`` reduced and not, and integrate both at ``draws`` random parameter vectors:
     every species and every rule the unreduced model holds must agree. Returns the reduced
     build's network sizes, checked against the unreduced expansion."""
-    (reduced, network), (full, full_network) = _both(monkeypatch, rows, entities, **kwargs)
+    (reduced, network), (full, full_network) = _both(rows, entities, **kwargs)
 
     def constants(antimony):
         model = SbmlModel.from_antimony(antimony).sbml_model
@@ -164,7 +160,7 @@ def _product(trajectories: dict, split: dict, key: str) -> np.ndarray:
     return value
 
 
-def test_a_kinase_context_becomes_a_rate_factor(monkeypatch):
+def test_a_kinase_context_becomes_a_rate_factor():
     """A multisite kinase acting on itself, as an agent writes it (perica_egf's EGFR): every
     unmentioned form of the kinase was a reaction of its own, and the reduction writes one
     reaction per substrate form at ``k·Obs(kinase)`` instead. No rule reads two of its sites on
@@ -180,7 +176,7 @@ def test_a_kinase_context_becomes_a_rate_factor(monkeypatch):
         (Dephosphorylation(Agent("P"), Agent("K"), "T", "4"), INDRA_DEFAULT, "dt4"),
     ]
     entities = {"pE": _p("E", "Y1", "S3"), "pK": _p("K", "T4")}
-    network = _assert_same(monkeypatch, rows, entities)
+    network = _assert_same(rows, entities)
     assert network["split"] == {"E": {"E_Y1": ["Y1"], "E_S2": ["S2"], "E_S3": ["S3"]}}
     assert network["after_reduction"]["species"] < network["before_reduction"]["species"]
     assert network["after_reduction"]["reactions"] < network["before_reduction"]["reactions"] / 4
@@ -296,18 +292,18 @@ def test_a_kinase_context_becomes_a_rate_factor(monkeypatch):
         ),
     ],
 )
-def test_every_one_step_shape_reduces_exactly(monkeypatch, rows, entities):
+def test_every_one_step_shape_reduces_exactly(rows, entities):
     """Each shape of rule that leaves a complex unchanged: an activation, a GEF, a catalysed
     synthesis and degradation (the last deleting only its molecule), a catalysed conversion, a
     Michaelis-Menten rate that reads its substrate, a kinase bound to a partner acting on a
     substrate that may be bound too."""
-    network = _assert_same(monkeypatch, rows, entities)
+    network = _assert_same(rows, entities)
     antimony, _ = _build(rows, entities)
     assert "_catalysed" in antimony
     assert network["after_reduction"]["reactions"] <= network["before_reduction"]["reactions"]
 
 
-def test_a_written_rate_keeps_its_regulator_and_its_catalyst(monkeypatch):
+def test_a_written_rate_keeps_its_regulator_and_its_catalyst():
     """A rate the agent wrote, reading a regulator the statement states, is multiplied by the
     catalyst's amount."""
     library = dict(M.REGISTRY)
@@ -332,16 +328,16 @@ def test_a_written_rate_keeps_its_regulator_and_its_catalyst(monkeypatch):
         (Phosphorylation(Agent("K"), Agent("E"), "S", "3"), INDRA_DEFAULT, "s3"),
         (Phosphorylation(Agent("K"), Agent("I"), "S", "4"), INDRA_DEFAULT, "i4"),
     ]
-    _assert_same(monkeypatch, rows, {"pS": _p("S", "S2")}, library=library)
+    _assert_same(rows, {"pS": _p("S", "S2")}, library=library)
 
 
-def test_a_two_step_mechanism_is_left_as_written(monkeypatch):
+def test_a_two_step_mechanism_is_left_as_written():
     """A two-step mechanism binds its substrate: no complex of it is left unchanged."""
     rows = [
         (Phosphorylation(Agent("E"), Agent("S"), "S", "2"), "indra_two_step", "s2"),
         (Dephosphorylation(Agent("P"), Agent("S"), "S", "2"), INDRA_DEFAULT, "ds2"),
     ]
-    network = _assert_same(monkeypatch, rows, {"pS": _p("S", "S2")})
+    network = _assert_same(rows, {"pS": _p("S", "S2")})
     model, (two_step, one_step) = M.assemble(rows)
     assert set(reduction.reduce(model).catalysts) == set(one_step.rules)
     assert network["before_reduction"] == network["after_reduction"]
@@ -380,27 +376,25 @@ def _sites(*sites: str, substrate: str = "S") -> list[tuple]:
     ]
 
 
-def test_independent_sites_read_together_are_split(monkeypatch):
+def test_independent_sites_read_together_are_split():
     """No rule reads Y1 and S2 together on one molecule, so each is a monomer of its own, started
     in the declared start's form at its amount; readouts of both forms are products of the two."""
     entities = {"ppS": _p("S", "Y1", "S2"), "pS": _p("S", "-Y1", "S2")}
-    network = _assert_same(
-        monkeypatch, _sites("Y1", "S2"), entities, starts=[("S", _p("S", "Y1"), 1.5)]
-    )
+    network = _assert_same(_sites("Y1", "S2"), entities, starts=[("S", _p("S", "Y1"), 1.5)])
     assert network["split"] == {"S": {"S_Y1": ["Y1"], "S_S2": ["S2"]}}
 
 
-def test_a_rule_reading_a_second_site_keeps_both_in_one_block(monkeypatch):
+def test_a_rule_reading_a_second_site_keeps_both_in_one_block():
     """Y1 comes off faster once S2 is on: the rule changes Y1 while it reads S2 on the same
     molecule, which couples the two. S3 stays apart."""
     rows = _sites("Y1", "S2", "S3") + [
         (Dephosphorylation(Agent("Q"), _p("S", "S2"), "Y", "1"), INDRA_DEFAULT, "coupled")
     ]
-    network = _assert_same(monkeypatch, rows, {"pS": _p("S", "Y1", "S3")})
+    network = _assert_same(rows, {"pS": _p("S", "Y1", "S3")})
     assert network["split"] == {"S": {"S_Y1_S2": ["Y1", "S2"], "S_S3": ["S3"]}}
 
 
-def test_a_kinase_read_on_two_sites_couples_neither(monkeypatch):
+def test_a_kinase_read_on_two_sites_couples_neither():
     """MAPK1{pT185, pY187} as a kinase reads both sites on another molecule than the one it
     changes, which couples nothing: MAPK1 is split, and the kinase's rate factor is the product of
     its two blocks."""
@@ -408,18 +402,18 @@ def test_a_kinase_read_on_two_sites_couples_neither(monkeypatch):
         (Phosphorylation(_p("MAPK1", "T185", "Y187"), Agent("R"), "T", "359"), INDRA_DEFAULT, "r"),
         (Dephosphorylation(Agent("P"), Agent("R"), "T", "359"), INDRA_DEFAULT, "dr"),
     ]
-    network = _assert_same(monkeypatch, rows, {"pR": _p("R", "T359")})
+    network = _assert_same(rows, {"pR": _p("R", "T359")})
     assert network["split"] == {"MAPK1": {"MAPK1_T185": ["T185"], "MAPK1_Y187": ["Y187"]}}
 
 
-def test_a_readout_across_many_blocks_is_charged_no_constant(monkeypatch):
+def test_a_readout_across_many_blocks_is_charged_no_constant():
     """A peptide read on six sites at once is a product over six blocks. Written as a power of
     the total, its exponent 5 would be a literal `k` charges; each block's fraction writes none."""
     from petab_mcp.literals import hardcoded_constants
 
     sites = ("Y1", "S2", "T3", "S4", "Y5", "T6")
     entities = {"peptide": _p("S", "Y1", "-S2", "T3", "-S4", "Y5", "-T6")}
-    network = _assert_same(monkeypatch, _sites(*sites), entities, draws=1)
+    network = _assert_same(_sites(*sites), entities, draws=1)
     assert list(network["split"]["S"].values()) == [[s] for s in sites]
     antimony, _ = _build(_sites(*sites), entities)
     assert hardcoded_constants(SbmlModel.from_antimony(antimony).sbml_model) == []
@@ -445,13 +439,13 @@ def test_a_readout_across_many_blocks_is_charged_no_constant(monkeypatch):
         pytest.param([], {"inputs": (Input("S", "S_0", ("S_0",)),)}, id="input"),
     ],
 )
-def test_a_monomer_stays_whole(monkeypatch, extra, kwargs):
+def test_a_monomer_stays_whole(extra, kwargs):
     """Each condition the product needs, broken: a total rules change, a binding site, a step
     with no catalyst to take out, a start that does not factorise, and a form that the experiment
     sets. S stays whole, and the model is still exact. Without the extra row or argument, S is
     split (`test_independent_sites_read_together_are_split`)."""
     entities = {"S": Agent("S"), "ppS": _p("S", "Y1", "S2")}
-    network = _assert_same(monkeypatch, _sites("Y1", "S2") + extra, entities, **kwargs)
+    network = _assert_same(_sites("Y1", "S2") + extra, entities, **kwargs)
     assert "S" not in network.get("split", {})
 
 
@@ -467,22 +461,22 @@ def test_a_monomer_stays_whole(monkeypatch, extra, kwargs):
         ),
     ],
 )
-def test_a_total_that_may_be_zero_splits_exactly(monkeypatch, kwargs):
+def test_a_total_that_may_be_zero_splits_exactly(kwargs):
     """Every block but the first holds fractions, starting at 1 for all, so an amount across
     blocks divides by nothing and a total of 0 is 0, not NaN: an empty start, one the conditions
     set (a knockout), one written as text. A number written as text is that number, one start
     parameter for the first block alone, so the parameters are the unsplit model's."""
     entities = {"S": Agent("S"), "ppS": _p("S", "Y1", "S2")}
-    network = _assert_same(monkeypatch, _sites("Y1", "S2"), entities, **kwargs)
+    network = _assert_same(_sites("Y1", "S2"), entities, **kwargs)
     assert network["split"] == {"S": {"S_Y1": ["Y1"], "S_S2": ["S2"]}}
 
 
-def test_a_total_of_zero_reads_zero(monkeypatch):
+def test_a_total_of_zero_reads_zero():
     """A start parameter at exactly 0, an estimate at a lower bound of 0: before, 0/0 in every
     amount across blocks (the #116 review)."""
     entities = {"S": Agent("S"), "ppS": _p("S", "Y1", "S2")}
     rows = _sites("Y1", "S2")
-    (reduced, _), (full, _) = _both(monkeypatch, rows, entities)
+    (reduced, _), (full, _) = _both(rows, entities)
     values = {"S_init": 0.0, "K_init": 1.0, "P_init": 1.0} | {
         f"S_{p}{s}_kf": 1.0 for p in ("", "d") for s in ("Y1", "S2")
     }
@@ -492,7 +486,7 @@ def test_a_total_of_zero_reads_zero(monkeypatch):
     np.testing.assert_array_equal(b["ppS"], np.zeros_like(times))
 
 
-def test_a_knockout_of_a_monomer_named_as_indra_rewrites_it_reads_zero(monkeypatch):
+def test_a_knockout_of_a_monomer_named_as_indra_rewrites_it_reads_zero():
     """`S-1`, PySB's `S_1`, started at `S_wt*(1 - ko_S)` with `ko_S` a condition target: looked up
     by the name as written, the knockout slipped past the start checks and split into 0/0 (the
     #116 review). Every block but the first now holds fractions, so a knocked-out total reads 0,
@@ -507,7 +501,7 @@ def test_a_knockout_of_a_monomer_named_as_indra_rewrites_it_reads_zero(monkeypat
     ]
     entities = {"ppS": _p("S-1", "Y1", "S2"), "pX": _p("X", "T3")}
     kwargs = {"starts": [("S", Agent("S-1"), "S_wt*(1 - ko_S)")], "targets": frozenset({"ko_S"})}
-    (reduced, network), (full, _) = _both(monkeypatch, rows, entities, **kwargs)
+    (reduced, network), (full, _) = _both(rows, entities, **kwargs)
     assert network["split"]["S_1"]
     times = np.linspace(0, 5, 6)
     for ko in (0.0, 0.5, 1.0):

@@ -113,7 +113,7 @@ def to_antimony(
     among several.
 
     The rules are reduced before they are expanded (:mod:`reduction`), unless ``reduce`` is off
-    (the expansion :mod:`reduction_check` compares with), and ``network``, when given, receives the
+    (the expansion the tests compare it with), and ``network``, when given, receives the
     species and reactions with and without the reduction.
     """
     starts = [(name, agent, _numeric(amount)) for name, agent, amount in starts or []]

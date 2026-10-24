@@ -625,7 +625,13 @@ def amici_facing_problem(session):
     cached = getattr(session, "_amici_problem_cache", None)
     if cached is not None and cached[0] == key:
         return cached[1], True
-    flat = flattened(session.problem)
+    from amici.importers.petab import flatten_timepoint_specific_output_overrides
+
+    flat_petab = copy.deepcopy(session.problem.to_petab())
+    flatten_timepoint_specific_output_overrides(flat_petab)
+    flat = session.problem.replace(
+        observable_df=flat_petab.observable_df, measurement_df=flat_petab.measurement_df
+    )
     session._amici_problem_cache = (key, flat)
     session.logger.info(
         "flattening timepoint-specific output overrides for the AMICI build only "
@@ -634,18 +640,6 @@ def amici_facing_problem(session):
         len(flat.observable_df),
     )
     return flat, True
-
-
-def flattened(problem):
-    """``problem`` with its observable and measurement tables flattened for AMICI
-    (:func:`amici_facing_problem`), on a deep copy: AMICI's flattening mutates what it is given."""
-    from amici.importers.petab import flatten_timepoint_specific_output_overrides
-
-    flat_petab = copy.deepcopy(problem.to_petab())
-    flatten_timepoint_specific_output_overrides(flat_petab)
-    return problem.replace(
-        observable_df=flat_petab.observable_df, measurement_df=flat_petab.measurement_df
-    )
 
 
 def estimation_problem(session, engine, *, solve_inner: bool = True):
