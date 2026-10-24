@@ -34,6 +34,14 @@ def _entities(agents: dict[str, str]) -> dict[str, Agent]:
     return {k: Agent._from_json(notation.parse_agent(v)) for k, v in agents.items()}
 
 
+def _pair(site: str, substrate: str = "S") -> list[str]:
+    """K puts on, and P takes off, ``site`` of ``substrate``, one step each."""
+    return [
+        f"{substrate}_{site}: K phosphorylates {substrate} at {site} | indra_default",
+        f"{substrate}_d{site}: P dephosphorylates {substrate} at {site} | indra_default",
+    ]
+
+
 _SITES5 = ("Y1", "S2", "T3", "S4", "Y5")
 
 #: The counterexamples: each changed the ODEs, or crashed, before its fix.
@@ -154,6 +162,206 @@ AGREEING = {
             "dp: P dephosphorylates S at S2 | indra_default",
         ],
         {"pS": "S{pS2}", "nS": "S{@nucleus}"},
+    ),
+    # -- the #116 review's second round: every model below agreed ---------------------------
+    # A catalyst embedded twice, not by automorphism, into a heterodimer (E(p).E(u)): BioNetGen
+    # counts the species once, as the rate factor does.
+    "heterodimer-catalyst-free-context": (
+        [
+            "dim: E binds E | indra_default",
+            "y1: K phosphorylates E at Y1 | indra_default",
+            "p: E phosphorylates S at S2 | indra_default",
+            "dp: P dephosphorylates S at S2 | indra_default",
+        ],
+        {"pS": "S{pS2}", "pE": "E{pY1}"},
+    ),
+    "heterodimer-catalyst-bound-context": (
+        [
+            "dim: E binds E | indra_default",
+            "y1: K phosphorylates E at Y1 | indra_default",
+            "p: E{!E} phosphorylates S at S2 | indra_default",
+            "dp: P dephosphorylates S at S2 | indra_default",
+        ],
+        {"pS": "S{pS2}", "pE": "E{pY1}"},
+    ),
+    "heterodimer-catalyst-modified-context": (
+        [
+            "dim: E binds E | indra_default",
+            "y1: K phosphorylates E at Y1 | indra_default",
+            "p: E{pY1} phosphorylates S at S2 | indra_default",
+            "dp: P dephosphorylates S at S2 | indra_default",
+        ],
+        {"pS": "S{pS2}", "pE": "E{pY1}"},
+    ),
+    # One reaction from two rules whose catalysts are two blocks of one split monomer: a
+    # catalyst species both rules match is counted once.
+    "two-rules-one-reaction-split-catalyst": (
+        [
+            "a: E{pY1} phosphorylates S at S2 | indra_default",
+            "b: E{pS3} phosphorylates S at S2 | indra_default",
+            *_pair("Y1", "E"),
+            *_pair("S3", "E"),
+            "dp: P dephosphorylates S at S2 | indra_default",
+        ],
+        {"pS": "S{pS2}", "ppE": "E{pY1, pS3}"},
+    ),
+    "basal-and-catalysed-same-reaction": (
+        [
+            "b: S is phosphorylated at S2 | basal",
+            "p: K phosphorylates S at S2 | indra_default",
+            "dp: P dephosphorylates S at S2 | indra_default",
+            *_pair("Y1"),
+        ],
+        {"ppS": "S{pY1, pS2}"},
+    ),
+    # A split monomer catalysing itself across its blocks, under mass action and Michaelis-Menten.
+    "self-catalysis-across-blocks-mm": (
+        [
+            "s2: S{pY1} phosphorylates S at S2 | indra_michaelis_menten",
+            "y1: K phosphorylates S at Y1 | indra_default",
+            "dy1: P dephosphorylates S at Y1 | indra_default",
+            "ds2: P dephosphorylates S at S2 | indra_michaelis_menten",
+        ],
+        {"ppS": "S{pY1, pS2}", "pS2": "S{pS2}"},
+    ),
+    "mm-kinase-in-substrate-state": (
+        [
+            "y1: S{-pY1} phosphorylates S at Y1 | indra_michaelis_menten",
+            "s2: K phosphorylates S at S2 | indra_default",
+            "dy1: P dephosphorylates S at Y1 | indra_default",
+        ],
+        {"ppS": "S{pY1, pS2}"},
+    ),
+    "blocks-catalysing-each-other": (
+        [
+            "a: S{pY1} phosphorylates S at S2 | indra_default",
+            "b: S{pS2} phosphorylates S at Y1 | indra_default",
+            "y1: K phosphorylates S at Y1 | indra_default",
+            "dy1: P dephosphorylates S at Y1 | indra_default",
+            "ds2: P dephosphorylates S at S2 | indra_default",
+        ],
+        {"ppS": "S{pY1, pS2}", "pY": "S{pY1}", "pS": "S{pS2}"},
+    ),
+    "cross-block-on-other-molecule": (
+        [
+            *_pair("Y1"),
+            "s2: K phosphorylates S at S2 | indra_default",
+            "ds2: S{pS2} dephosphorylates S at Y1 | indra_default",
+        ],
+        {"ppS": "S{pY1, pS2}", "pY": "S{pY1}"},
+    ),
+    "three-block-self-catalyst": (
+        [
+            "t3: S{pY1, pS2} phosphorylates S at T3 | indra_default",
+            *_pair("Y1"),
+            *_pair("S2"),
+            "dt3: P dephosphorylates S at T3 | indra_default",
+        ],
+        {"pT": "S{pT3}", "all": "S{pY1, pS2, pT3}"},
+    ),
+    # Blocks of more than one site: a rule reading a second site, a three-state location.
+    "two-sites-at-once": (
+        [
+            "ab: K phosphorylates S at Y1 | indra_default",
+            "ds: P dephosphorylates S{pY1} at S2 | indra_default",
+            "s2: K phosphorylates S at S2 | indra_default",
+            "dy: P dephosphorylates S at Y1 | indra_default",
+            *_pair("T3"),
+        ],
+        {"all": "S{pY1, pS2, pT3}", "pT": "S{pT3}"},
+    ),
+    "four-sites-two-coupled-pairs": (
+        [
+            "y1: K phosphorylates S at Y1 | indra_default",
+            "s2: K phosphorylates S{pY1} at S2 | indra_default",
+            "t3: K phosphorylates S at T3 | indra_default",
+            "s4: K phosphorylates S{pT3} at S4 | indra_default",
+            *(f"d{s}: P dephosphorylates S at {s} | indra_default" for s in ("Y1", "S2", "T3", "S4")),
+        ],
+        {"all": "S{pY1, pS2, pT3, pS4}", "p24": "S{pS2, pS4}"},
+    ),
+    "location-block-plus-free-site": (
+        [
+            "in: S moves from cytoplasm to nucleus | indra_default",
+            "out: S moves from nucleus to cytoplasm | indra_default",
+            "p: K phosphorylates S{@nucleus} at S2 | indra_default",
+            "dp: P dephosphorylates S at S2 | indra_default",
+            *_pair("Y1"),
+        ],
+        {"nppS": "S{@nucleus, pS2, pY1}", "nS": "S{@nucleus}", "pY": "S{pY1}"},
+    ),
+    "three-state-block-catalyst": (
+        [
+            "in: S moves from cytoplasm to nucleus | indra_default",
+            "out: S moves from nucleus to membrane | indra_default",
+            "back: S moves from membrane to cytoplasm | indra_default",
+            *_pair("Y1"),
+            *_pair("S2"),
+            "t: S{@nucleus, pY1, pS2} phosphorylates T at T3 | indra_default",
+            "dt: P dephosphorylates T at T3 | indra_default",
+        ],
+        {"pT": "T{pT3}", "nS": "S{@nucleus}"},
+    ),
+    # Catalysts and substrates in complexes, split or whole.
+    "catalyst-over-split-substrate": (
+        [
+            "p: D phosphorylates S at S2 | indra_default",
+            "dp: P dephosphorylates S at S2 | indra_default",
+            *_pair("Y1"),
+        ],
+        {"ppS": "S{pY1, pS2}", "D": "D"},
+    ),
+    "substrate-must-be-bound-to-catalyst-type": (
+        [
+            "es: E binds S | indra_default",
+            "p: E phosphorylates S{!E} at S2 | indra_default",
+            "dp: P dephosphorylates S at S2 | indra_default",
+        ],
+        {"pS": "S{pS2}"},
+    ),
+    "catalyst-bound-to-substrate-type": (
+        [
+            "es: E binds S | indra_default",
+            "p: E{!S} phosphorylates S at S2 | indra_default",
+            "dp: P dephosphorylates S at S2 | indra_default",
+            *_pair("Y1", "E"),
+        ],
+        {"pS": "S{pS2}", "pE": "E{pY1}"},
+    ),
+    "degradation-by-split-catalyst": (
+        [
+            "deg: E{pY1, pS2} decreases X | indra_default",
+            "syn: X is produced | mass_action",
+            *_pair("Y1", "E"),
+            *_pair("S2", "E"),
+        ],
+        {"X": "X", "ppE": "E{pY1, pS2}"},
+    ),
+    "synthesis-by-split-catalyst": (
+        [
+            "syn: E{pY1, pS2} increases X | indra_default",
+            "deg: X is degraded | indra_default",
+            *_pair("Y1", "E"),
+            *_pair("S2", "E"),
+        ],
+        {"X": "X", "ppE": "E{pY1, pS2}"},
+    ),
+    "degraded-split-candidate-stays-whole": (
+        [
+            "deg: S{pY1, pS2} is degraded | indra_default",
+            "syn: S is produced | mass_action",
+            "y1: K phosphorylates S at Y1 | indra_default",
+            "s2: K phosphorylates S at S2 | indra_default",
+        ],
+        {"ppS": "S{pY1, pS2}", "S": "S"},
+    ),
+    "two-reactants-one-product-by-E": (
+        ["conv: A + B -> C by E | mass_action", "y1: K phosphorylates E at Y1 | indra_default"],
+        {"C": "C", "pE": "E{pY1}"},
+    ),
+    "one-reactant-two-products-by-E": (
+        ["conv: A -> B + C by E | mass_action", "y1: K phosphorylates E at Y1 | indra_default"],
+        {"C": "C", "pE": "E{pY1}"},
     ),
 }
 

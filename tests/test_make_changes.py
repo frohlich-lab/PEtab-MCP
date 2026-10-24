@@ -955,7 +955,7 @@ def test_statements_commit_records_what_was_asserted(tmp_path):
     # What the rows expand to, before and after the reduction, reported and kept with the rows.
     size = {"species": 2, "reactions": 1}
     assert out["network"] == record["network"]
-    assert record["network"] == {"before_reduction": size, "after_reduction": size}
+    assert record["network"] == {"before_reduction": size, "after_reduction": size, "split": {}}
 
 
 def test_ungrounded_agents_are_named_once_per_call(tmp_path):
