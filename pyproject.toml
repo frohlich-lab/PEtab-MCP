@@ -102,7 +102,7 @@ dependencies = [
     # scaled with it, silently. The importer reads AMICI through `amici.sim.sundials`, which the
     # AMICI commit above has. Move to a release once one contains #1786.
     "pypesto[petab] @ git+https://github.com/ICB-DCM/pyPESTO.git@053079aa71710a62c1db17f3d0342e96499a3768",
-    "fides>=0.7",
+    "fides>=0.8.1",
     # INDRA supplies the Statement base class the mechanism vocabulary extends (`statements`),
     # Agent grounding, Preassembler deduplication, and the PySB assembler's monomer and site
     # construction (`mechanisms.assemble`). Pinned to one minor: `mechanisms` drives the
