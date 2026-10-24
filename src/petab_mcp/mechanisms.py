@@ -100,6 +100,10 @@ class Emission:
     #: The sites the row's scheme (:mod:`schemes`) gave molecules that had none such, and no
     #: earlier row's scheme had: molecule -> site -> its states (none for a binding site).
     sites_added: dict[str, dict[str, list[str]]] = field(default_factory=dict)
+    #: The amounts the row's scheme rates read besides its regulators: each one's observable ->
+    #: the amount as the rate writes it (``ERK{pY187}``, ``sub(T202='p')``), which the model must
+    #: form (:func:`problem_sbml.to_antimony`).
+    amounts: dict[str, str] = field(default_factory=dict)
     #: The regulators the row's statement states whose kind its net rate records otherwise
     #: (:func:`regulation.record`), by the kind stated and position: ``modulated_by_0`` ->
     #: ``inhibited_by``, ``inhibited_by_1`` -> ``modulated_by``. The statement keeps what it

@@ -117,6 +117,8 @@ class Reduction:
     catalysts: dict[str, tuple[str, pysb.Observable | Amount]] = field(default_factory=dict)
     #: Each monomer tracked as blocks -> how.
     splits: dict[str, Split] = field(default_factory=dict)
+    #: Each observable of a split monomer -> the amount every expression reads in its place.
+    amounts: dict[pysb.Observable, Amount] = field(default_factory=dict)
 
 
 def reduce(model: pysb.Model, whole=frozenset()) -> Reduction:
@@ -128,7 +130,7 @@ def reduce(model: pysb.Model, whole=frozenset()) -> Reduction:
     }
     catalysts = _catalysts_as_rates(model)
     splits, amounts = _splits(model, set(whole))
-    reduction = Reduction(splits=splits)
+    reduction = Reduction(splits=splits, amounts=amounts)
     for name, reactants in written.items():
         at, amount = catalysts.get(name, (None, None))
         reduction.written[name] = [str(cp) for i, cp in enumerate(reactants) if i != at]

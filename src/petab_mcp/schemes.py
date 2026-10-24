@@ -417,6 +417,7 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
 
         agents = role_agents(stmt)
         params: dict[str, pysb.Parameter] = {}
+        amounts: dict[str, str] = {}
         rules = []
         for i, (line, line_rates) in enumerate(zip(lines, rates)):
             lhs = _pattern_side(stmt, model, line.lhs, agents, fresh=None)
@@ -432,7 +433,7 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
                         params[name] = pysb.Parameter(f"{prefix}_{name}", 1.0, _export=False)
                         _add(model, params[name])
                 values.append(_rate_value(stmt, model, rate, params, agents,
-                                          f"{prefix}_rate{i}_{j}", regulators or {}))
+                                          f"{prefix}_rate{i}_{j}", regulators or {}, amounts))
             rule = pysb.Rule(
                 f"{prefix}_r{i}",
                 RuleExpression(ReactionPattern(lhs), ReactionPattern(rhs), line.reversible),
@@ -449,6 +450,7 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
              for r in known_roles for v in [getattr(stmt, r, None)]},
             rules=tuple(rules),
             parameters=tuple(p.name for p in params.values()),
+            amounts=amounts,
         )
 
     def scheme_sites(
@@ -658,7 +660,9 @@ def _sympy(rate: _Rate) -> sympy.Expr:
     )
 
 
-def _rate_value(stmt, model, rate: _Rate, params, agents, name, regulators):
+def _rate_value(stmt, model, rate: _Rate, params, agents, name, regulators, amounts):
+    """``rate`` as the value of a rule, ``name`` if an expression, each amount it reads besides
+    its regulators an observable, recorded in ``amounts`` (its name -> the amount as written)."""
     from indra.assemblers.pysb.assembler import get_monomer_pattern
 
     from .mechanisms import _add
@@ -682,12 +686,14 @@ def _rate_value(stmt, model, rate: _Rate, params, agents, name, regulators):
         )
         _add(model, obs)
         observables[f"__agent{k}"] = obs
+        amounts[obs.name] = written
     for k, pattern in enumerate(rate.amounts):
         (cp,) = _pattern_side(stmt, model, (tuple(_molecule(n) for n in _complex_nodes(pattern)),),
                               agents, fresh=None)
         obs = pysb.Observable(f"{name}_amount{k}", cp, _export=False)
         _add(model, obs)
         observables[f"__amount{k}"] = obs
+        amounts[obs.name] = pattern
         text = text.replace(f"amount({pattern})", f"__amount{k}", 1)
     expr = sympy.sympify(
         text.replace("^", "**"),
