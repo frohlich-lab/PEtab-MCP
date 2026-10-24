@@ -73,6 +73,20 @@ def test_a_species_the_conditions_set_is_held_without_a_rule():
     assert sbml.getInitialAssignmentBySymbol("Fsk") is None
 
 
+@pytest.mark.parametrize("name", ["S-1", "S 1"])
+def test_a_condition_target_indra_renames_is_held(name):
+    """INDRA names the monomer of `S-1` `S_1`. Held under the agent's own name, it was looked up
+    among the monomers and not found: a KeyError, not a model."""
+    antimony, _ = PS.to_antimony(
+        [(Phosphorylation(Agent(name), Agent("AKT")), INDRA_DEFAULT, "r1")],
+        {"Fsk": Agent(name)},
+        targets=frozenset({"Fsk"}),
+    )
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    assert sbml.getSpecies("Fsk").getBoundaryCondition()
+    assert sbml.getInitialAssignmentBySymbol("Fsk") is None
+
+
 def test_chained_dimers_are_refused_before_the_expansion():
     """Two kinds each dimerising with itself and with the other chain without end;
     refused only once BioNetGen had built every complex up to the cap, the refusal took 19 s on
@@ -373,9 +387,10 @@ def test_two_starts_of_one_species_are_refused_naming_both():
         )
 
 
-def test_an_input_declares_no_start():
+@pytest.mark.parametrize("name", ["EGF", "EGF-1"])
+def test_an_input_declares_no_start(name):
     """An input is held to its protocol; a start for it would be overwritten at t=0."""
-    egf = Agent("EGF")
+    egf = Agent(name)
     with pytest.raises(ModelUpdateError, match="is an input"):
         PS.to_antimony(
             [(Phosphorylation(egf, Agent("AKT")), INDRA_DEFAULT, "r1")],
