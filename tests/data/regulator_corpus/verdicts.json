@@ -5,6 +5,148 @@
  "advice/c1_degradation": {
   "verdict": "accepted"
  },
+ "netrate/t10/e3_kdeg_slowed": {
+  "verdict": "accepted"
+ },
+ "netrate/t10/e3_kr_slowed": {
+  "kind": "reversed",
+  "verdict": "refused"
+ },
+ "netrate/t10/ping_pong": {
+  "verdict": "accepted"
+ },
+ "netrate/t10/substrate_inhibition": {
+  "verdict": "accepted"
+ },
+ "netrate/t10/three_steps": {
+  "verdict": "accepted"
+ },
+ "netrate/t10/three_steps_rebinding": {
+  "kind": "unseen",
+  "verdict": "refused"
+ },
+ "netrate/t11/degradation_sped": {
+  "kind": "unseen",
+  "verdict": "refused"
+ },
+ "netrate/t11/subj_and_synthesis": {
+  "kind": "reversed",
+  "verdict": "refused"
+ },
+ "netrate/t11/synthesis_activated": {
+  "kind": "reversed",
+  "verdict": "refused"
+ },
+ "netrate/t11/synthesis_modulated": {
+  "verdict": "accepted"
+ },
+ "netrate/t12/immature": {
+  "verdict": "accepted"
+ },
+ "netrate/t12/ub_degradation": {
+  "kind": "unseen",
+  "verdict": "refused"
+ },
+ "netrate/t12/ub_ubiquitination": {
+  "verdict": "accepted"
+ },
+ "netrate/t14/hill": {
+  "kind": "unshown",
+  "verdict": "refused"
+ },
+ "netrate/t17/back_sped_more": {
+  "verdict": "accepted"
+ },
+ "netrate/t17/enzyme_degraded": {
+  "kind": "no_rate",
+  "verdict": "refused"
+ },
+ "netrate/t17/enzyme_turnover": {
+  "verdict": "accepted"
+ },
+ "netrate/t17/gap_step": {
+  "kind": "unseen",
+  "verdict": "refused"
+ },
+ "netrate/t17/saturating_kc": {
+  "verdict": "accepted"
+ },
+ "netrate/t19/kc": {
+  "verdict": "accepted"
+ },
+ "netrate/t19/kf": {
+  "verdict": "accepted"
+ },
+ "netrate/t19/kr": {
+  "kind": "reversed",
+  "verdict": "refused"
+ },
+ "netrate/t2/fwd_kf_slowed": {
+  "verdict": "accepted"
+ },
+ "netrate/t2/fwd_kr_slowed": {
+  "kind": "reversed",
+  "verdict": "refused"
+ },
+ "netrate/t2/fwd_kr_sped": {
+  "verdict": "accepted"
+ },
+ "netrate/t2/rev_kc_slowed": {
+  "verdict": "accepted"
+ },
+ "netrate/t2/rev_kf_slowed": {
+  "verdict": "accepted"
+ },
+ "netrate/t2/rev_kr_slowed": {
+  "kind": "reversed",
+  "verdict": "refused"
+ },
+ "netrate/t2/rev_kr_sped": {
+  "verdict": "accepted"
+ },
+ "netrate/t22/activated_by": {
+  "kind": "unshown",
+  "verdict": "refused"
+ },
+ "netrate/t22/inhibited_by": {
+  "kind": "unshown",
+  "verdict": "refused"
+ },
+ "netrate/t22/modulated_by": {
+  "verdict": "accepted"
+ },
+ "netrate/t5/partner": {
+  "kind": "no_rate",
+  "verdict": "refused"
+ },
+ "netrate/t6/basal": {
+  "kind": "unseen",
+  "verdict": "refused"
+ },
+ "netrate/t6/one_line": {
+  "kind": "no_rate",
+  "verdict": "refused"
+ },
+ "netrate/t8/trimer": {
+  "verdict": "accepted"
+ },
+ "netrate/t8/two_inputs": {
+  "verdict": "accepted"
+ },
+ "netrate/t9/4_all": {
+  "verdict": "accepted"
+ },
+ "netrate/t9/4_chain": {
+  "verdict": "accepted"
+ },
+ "netrate/t9/6_all": {
+  "kind": "no_rate",
+  "verdict": "refused"
+ },
+ "netrate/v5/itself": {
+  "kind": "reversed",
+  "verdict": "refused"
+ },
  "perica_egf/61180684_1/egfr_autop": {
   "verdict": "accepted"
  },

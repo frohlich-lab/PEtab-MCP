@@ -213,12 +213,16 @@ def _read_regulators(
 #: build reads every mechanism again. Past it a sign is read off the expression as it stands, and
 #: one that cannot be counts as not shown.
 SIGN_OPS = 300
+#: The most terms an expansion may make (:func:`_terms`) for a sum to be expanded, or a fraction
+#: factored, to sign it: a product of sums of a net rate's parts expanded or factored for minutes
+#: (the review of #128's t20).
+SIGN_TERMS = 64
 
 
 def _sign(e: sympy.Expr) -> int | None:
     """``1`` when ``e`` is provably never negative, ``-1`` never positive, from the assumptions on
     its names and how products, powers and sums of signed terms combine; ``None`` otherwise. A
-    sum is expanded only within :data:`SIGN_OPS`."""
+    sum is expanded only within :data:`SIGN_TERMS`."""
     if e.is_nonnegative:
         return 1
     if e.is_nonpositive:
@@ -233,11 +237,23 @@ def _sign(e: sympy.Expr) -> int | None:
         sign = _sign(base)
         return sign if sign == 1 or exponent.is_odd else None
     if isinstance(e, sympy.Add):
-        for terms in (e, sympy.expand(e) if sympy.count_ops(e) <= SIGN_OPS else None):
+        for terms in (e, sympy.expand(e) if _terms(e) <= SIGN_TERMS else None):
             signs = {_sign(t) for t in sympy.Add.make_args(terms)} if terms is not None else {None}
             if len(signs) == 1 and None not in signs:
                 return signs.pop()
     return None
+
+
+def _terms(e: sympy.Expr) -> int:
+    """How many terms expanding ``e`` makes, at most: a sum's terms add, a product's multiply, a
+    whole power multiplies its base's; read off the expression, never expanded."""
+    if isinstance(e, sympy.Add):
+        return sum(_terms(a) for a in e.args)
+    if isinstance(e, sympy.Mul):
+        return math.prod(_terms(a) for a in e.args)
+    if isinstance(e, sympy.Pow) and e.exp.is_Integer and e.exp > 0:
+        return _terms(e.base) ** int(e.exp)
+    return 1
 
 
 def _direction(expr: sympy.Expr, symbol: sympy.Symbol) -> int | None:
@@ -292,24 +308,34 @@ def _by_parts(e: sympy.Expr, x: sympy.Symbol) -> int | None:
 def _vanishes(d: sympy.Expr) -> bool:
     """Whether ``d`` is 0 for every value of its names. Not where it is not 0 at one point of
     positive values, a cheap test that settles nearly every case; cancelled to lowest terms (a
-    multivariate gcd, seconds on a rate's derivative) only where it is."""
+    multivariate gcd, seconds on a rate's derivative) only where it is, and only within
+    :data:`SIGN_OPS`: past it, by its value at two more points, which the sign prover never asks
+    (it differentiates nothing so large)."""
     if d == 0:
         return True
-    point = {s: 0.7 + 0.31 * i for i, s in enumerate(sorted(d.free_symbols, key=str))}
-    value = complex(d.evalf(subs=point))
-    if value == value and abs(value) > 1e-9:  # a number, not nan, and not 0
-        return False
-    return sympy.cancel(d) == 0
+    names = sorted(d.free_symbols, key=str)
+    for shift in (0.0, 0.53, 1.37):
+        point = {s: 0.7 + 0.31 * i + shift * (i % 3) for i, s in enumerate(names)}
+        value = complex(d.evalf(subs=point))
+        if value == value and abs(value) > 1e-9:  # a number, not nan, and not 0
+            return False
+        if sympy.count_ops(d) <= SIGN_OPS:
+            return sympy.cancel(d) == 0
+    return True
 
 
 def _by_derivative(e: sympy.Expr, x: sympy.Symbol) -> int | None:
     """The sign of ``e``'s derivative in ``x``, its numerator and denominator signed as they stand
-    and factored; ``0`` where it cancels; ``None`` where neither shows it."""
+    and, within :data:`SIGN_TERMS`, factored; ``0`` where it cancels; ``None`` where neither shows
+    it."""
     d = sympy.diff(e, x)
     if _vanishes(d):
         return 0
     numerator, denominator = sympy.fraction(sympy.together(d))
-    for n, den in ((numerator, denominator), (sympy.factor(numerator), sympy.factor(denominator))):
+    forms = [(numerator, denominator)]
+    if _terms(numerator) + _terms(denominator) <= SIGN_TERMS:
+        forms.append((sympy.factor(numerator), sympy.factor(denominator)))
+    for n, den in forms:
         if (sn := _sign(n)) is not None and (sd := _sign(den)) is not None:
             return sn * sd
     return None

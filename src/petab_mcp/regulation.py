@@ -15,7 +15,7 @@ say (:data:`statements._REACTIONS`), not the rules': an enzyme parked in a form 
 and a product released by a reversible step sit alike, each on the right of a ``|``, and a substrate
 a step back makes again looks like an intermediate. So a product is what the statement makes, or
 what the row's reactions make and none uses, held at 0; a reactant is what the statement consumes,
-or what the reactions, read as written, only use; a regulator's species are held at their amounts,
+or what the reactions use and never make; a regulator's species are held at their amounts,
 and read by its pattern as an amount of its own, a product's too; every other species of the
 reactions is an intermediate (the enzyme and its forms). With the intermediates linear in each rate
 (one intermediate per step, as in every enzyme mechanism) their steady state is one linear solve,
@@ -58,9 +58,9 @@ from .statements import REGULATOR_NAME, REGULATORS, named_agents
 
 logger = logging.getLogger(__name__)
 
-#: The size, in sympy operations, of the intermediates' rates past which their steady state is not
-#: solved for: a row past it has no net rate to read.
-NET_OPS = 2000
+#: The most terms the intermediates' steady state may have (:func:`_arborescences`): a row past it
+#: has no net rate to read.
+NET_TERMS = 400
 
 #: How many points :func:`sampled` reads J at.
 SAMPLES = 256
@@ -113,12 +113,6 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
     regulator_species = {i for observables in read.values() for o in observables for i in o.species}
     made = {i for rx in reactions for i in rx["products"]}
     used = {i for rx in reactions for i in rx["reactants"]}
-    written_left, written_right = set(), set()
-    for rx in reactions:
-        left, right = (rx["products"], rx["reactants"]) if any(rx["reverse"]) else (
-            rx["reactants"], rx["products"])
-        written_left |= set(left)
-        written_right |= set(right)
 
     def matching(agent) -> set[int]:
         """The species that are ``agent`` exactly, its molecules and no more."""
@@ -141,9 +135,15 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
             if sorted(mp.monomer.name for mp in species.monomer_patterns) == members
         }
     products = {i for i, e in effects.items() if e > 0} | (made - used)
-    # A reactant a step back makes again (`obj_to >> obj_from`) is still the statement's.
-    stated = {i for agent in _reactants(stmt) for i in matching(agent)}
-    reactants = ((written_left - written_right) | stated) - products
+    # A reactant a step back makes again (`obj_to >> obj_from`) is still the statement's; of the
+    # forms an agent written without states matches, those the row makes are on the way (`S` of
+    # "E3 decreases S", ubiquitinated before it is degraded).
+    stated = set()
+    for agent in _reactants(stmt):
+        found = matching(agent)
+        stated |= found - made if len(found) > 1 and found - made else found
+    # Else what the reactions use and never make, however their lines are written.
+    reactants = (stated | (used - made)) - products
     intermediates = sorted((made | used) - products - reactants - regulator_species)
 
     def held(i: int, regulator: bool) -> sympy.Symbol:
@@ -177,24 +177,33 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
 
     rates = [value(rx["rate"]) for rx in reactions]
     involved = sorted(made | used)
-    change = {i: sympy.Integer(0) for i in involved}
-    for rx, rate in zip(reactions, rates):
-        for i in rx["reactants"]:
-            change[i] -= rate
-        for i in rx["products"]:
-            change[i] += rate
     unknown = [amounts[i] for i in intermediates]
     # Linear in the intermediates: at most one among a step's reactants, and none in its rate
     # constant. Read off the network rather than expanded: expanding a large rate never ended.
-    for rx, rate in zip(reactions, rates):
+    # Each step's coefficient, its intermediate apart, is solved for as a name of its own: sympy
+    # cancelled the rates themselves for minutes (the review of #128 timed 400 s on two steps).
+    coefficients, opaque = {}, []
+    for k, (rx, rate) in enumerate(zip(reactions, rates)):
         inside = [amounts[i] for i in rx["reactants"] if i in intermediates]
-        if rate != 0 and (len(inside) > 1 or (rate / sympy.Mul(*inside)).free_symbols & set(unknown)):
+        if rate == 0:
+            opaque.append(sympy.Integer(0))
+            continue
+        coefficient = rate / sympy.Mul(*inside)
+        if len(inside) > 1 or coefficient.free_symbols & set(unknown):
             raise MechanismError(
                 "two of its intermediates meet in one step, or one rate reads an intermediate's "
                 "amount, so their steady state has no closed form"
             )
-    if sum(sympy.count_ops(change[i]) for i in intermediates) > NET_OPS:
+        coefficients[name := sympy.Symbol(f"__c{k}")] = coefficient
+        opaque.append(name * sympy.Mul(*inside))
+    if _arborescences(reactions, intermediates) > NET_TERMS:
         raise MechanismError("its intermediates' steady state is too large to solve symbolically")
+    change = {i: sympy.Integer(0) for i in involved}
+    for rx, rate in zip(reactions, opaque):
+        for i in rx["reactants"]:
+            change[i] -= rate
+        for i in rx["products"]:
+            change[i] += rate
     within = sympy.Matrix([
         [rx["products"].count(i) - rx["reactants"].count(i) for rx in reactions]
         for i in intermediates
@@ -209,7 +218,9 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
         raise MechanismError("its intermediates have no unique steady state")
     # Solved for regulators of any amount but 0, where a step only a regulator drives stops: an
     # enzyme it activates for good keeps whatever form it starts in, and J is the start's.
-    if unknown and not _unique_without(equations, unknown, set(regulator_amounts.values())):
+    if unknown and not _unique_without(
+        [e.xreplace(coefficients) for e in equations], unknown, set(regulator_amounts.values())
+    ):
         raise MechanismError(
             "its intermediates have no unique steady state where a regulator is absent"
         )
@@ -218,7 +229,7 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
     # regulator held at its amount moves with no reaction of the row's but the one it is.
     held_regulators = regulator_species - products - set(effects)
     net = {
-        i: change[i].xreplace(steady)
+        i: change[i].xreplace(steady).xreplace(coefficients)
         for i in involved if i not in intermediates and i not in held_regulators
     }
     moving = {i for i, rate in net.items() if not _vanishes(rate)}
@@ -240,6 +251,35 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
         stated: tuple(regulator_amounts[i] for i in sorted({i for o in observables for i in o.species}))
         for stated, observables in read.items()
     })
+
+
+def _arborescences(reactions, intermediates) -> int:
+    """How many terms the intermediates' steady state has, by King and Altman's count: the trees
+    of steps that reach each intermediate from all the others, counted by the matrix-tree theorem
+    on the steps from one intermediate to another. What the solve costs grows with it, the
+    expression past any bound (six enzyme forms all joined took over 15 minutes)."""
+    index = {i: k for k, i in enumerate(intermediates)}
+    laplacian = np.zeros((len(index), len(index)))
+    group = list(range(len(index)))
+
+    def find(k: int) -> int:
+        while group[k] != k:
+            k = group[k]
+        return k
+
+    for rx in reactions:
+        before = [index[i] for i in rx["reactants"] if i in index]
+        for b in before:
+            for a in (index[i] for i in rx["products"] if i in index):
+                if a != b:
+                    laplacian[b, b] += 1
+                    laplacian[b, a] -= 1
+                    group[find(a)] = find(b)
+    total = 0
+    for root in range(len(index)):
+        rest = [k for k in range(len(index)) if k != root and find(k) == find(root)]
+        total += round(abs(np.linalg.det(laplacian[np.ix_(rest, rest)]))) if rest else 1
+    return total
 
 
 def _unique_without(equations, unknown, regulators) -> bool:
@@ -310,13 +350,20 @@ def direction(rate: NetRate, stated: str) -> int | None:
     return moves.pop() if moves else 0
 
 
-def sampled(rate: NetRate, stated: str, domain: dict[str, tuple[float, float]] | None = None) -> set[int]:
+def sampled(
+    rate: NetRate,
+    stated: str,
+    domain: dict[str, tuple[float, float]] | None = None,
+    confirm: frozenset[int] = frozenset(),
+) -> set[int]:
     """The ways J moves as the regulator at ``stated`` rises a little, read at :data:`SAMPLES`
     points: ``1``, ``-1`` and ``0`` (no change, relative to J), each where some point shows it. Each
     name ranges over ``domain`` (name to ``(low, high)``, log-spaced where both are positive) or,
     lacking it, as its assumptions allow: a positive name over 1e-3 to 1e3, one never negative
     from 0 to 1e4, any other over -1e3 to 1e3. A point where J is not a finite real number reads
-    nothing, nor one where J is too small for a float to tell apart from 0."""
+    nothing, nor one where J is too small for a float to tell apart from 0. A way in ``confirm``
+    counts only where J, read again at those points to 50 digits, moves it too: J written as a
+    difference of near-equal terms rounds to the wrong sign in floats."""
     symbols = sorted(rate.value.free_symbols, key=str)
     reads = [s for s in rate.regulators.get(stated, ()) if s in rate.value.free_symbols]
     if not reads:
@@ -348,10 +395,26 @@ def sampled(rate: NetRate, stated: str, domain: dict[str, tuple[float, float]] |
             & (np.maximum(np.abs(j0.real), np.abs(j1.real)) > 1e-250)
         )
         step, scale = (j1 - j0).real[real], 1e-10 * np.abs(j0.real[real])
-        found |= {1} if np.any(step > scale) else set()
-        found |= {-1} if np.any(step < -scale) else set()
-        found |= {0} if np.any(np.abs(step) <= scale) else set()
+        at_points = np.flatnonzero(real)
+        for way, where in ((1, step > scale), (-1, step < -scale), (0, np.abs(step) <= scale)):
+            hits = at_points[where]
+            if way in confirm:
+                hits = [h for h in hits[:8] if _precise_way(rate.value, symbols, base, moved, h) == way]
+            if len(hits):
+                found.add(way)
     return found
+
+
+def _precise_way(value: sympy.Expr, symbols, base, moved, h: int) -> int:
+    """How ``value`` moves from point ``h`` of ``base`` to that of ``moved``, read to 50 digits."""
+    before = value.evalf(50, subs={s: base[k][h] for k, s in enumerate(symbols)})
+    after = value.evalf(50, subs={s: moved[k][h] for k, s in enumerate(symbols)})
+    change = complex(after - before)
+    if change != change or abs(change.imag) > 1e-30 * (1 + abs(complex(before))):
+        return 0
+    if abs(change.real) <= 1e-30 * (1 + abs(complex(before))):
+        return 0
+    return 1 if change.real > 0 else -1
 
 
 def _column(symbol: sympy.Symbol, bounds, generator) -> np.ndarray:
@@ -381,7 +444,7 @@ def shown(rate: NetRate, stated: str, domain=None) -> int | None:
     proven = direction(rate, stated)
     if proven is None:
         return None
-    seen = sampled(rate, stated, domain)
+    seen = sampled(rate, stated, domain, frozenset({1, -1} - {proven}))
     against = seen - {proven, 0} if proven else seen - {0}
     if against:
         logger.warning(

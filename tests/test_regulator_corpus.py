@@ -165,7 +165,12 @@ def _against(rate: regulation.NetRate, stated: str, claim: int) -> int:
         real = (np.isfinite(j0) & np.isfinite(j1) & (np.abs(j0.imag) < 1e-9)
                 & (np.abs(j1.imag) < 1e-9) & (np.maximum(np.abs(j0), np.abs(j1)) > 1e-250))
         step = (j1 - j0).real[real] * claim
-        against += int(np.sum(step < -1e-9 * np.abs(j0.real[real])))
+        hits = np.flatnonzero(real)[step < -1e-9 * np.abs(j0.real[real])]
+        # Read again to 50 digits: a J written as a difference rounds to the wrong sign in floats.
+        against += sum(
+            regulation._precise_way(rate.value, symbols, columns, moved, h) == -claim
+            for h in hits[:8]
+        )
     return against
 
 

@@ -140,6 +140,18 @@ def test_a_regulator_that_moves_the_net_rate_the_other_way_is_refused():
         _two_steps(kr="kr" + _SLOWED)
 
 
+def test_a_binding_line_written_dissociation_first_is_the_same_scheme():
+    """review of #128, netrate t2: `ES | E + S` read as written held the complex as a reactant, so
+    an inhibitor of binding read as not moving J at all."""
+    scheme = (
+        "enz(sub=1) % sub(enz=1, mod='off') | enz(sub=None) + sub(enz=None, mod='off') @ kr, "
+        "kf" + _SLOWED + "\n"
+        "enz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc"
+    )
+    _build([_PHOSPHO.format(regulator="inhibited by I")],
+           _scheme("Phosphorylation", scheme, "kf", "kr", "kc", "Ki"))
+
+
 def test_a_step_into_a_dead_end_inhibits():
     """No rule on a step's own rate gets this one: a step pointing forward, parking the enzyme in a
     form that makes nothing, slows the reaction as it speeds."""
