@@ -1687,6 +1687,11 @@ def _register_model_tools(
         )
         if session.constraints is not None:
             statements_doc += "\n\n" + _MAKE_CHANGES_CONSTRAINTS
+            if session.constraint_updates == "any":
+                statements_doc += (
+                    " They may change during the session (`set_constraints`): `describe_problem` "
+                    "shows the set in force."
+                )
         if not statements_only:
             mcp.tool(
                 description=_make_changes_doc(statements_doc=statements_doc),
@@ -2190,10 +2195,17 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         and how they scored. `is_new_best` is true for the first, then where
         `improvement_vs_best_prior` (over `best_prior_criterion_value`) reached
         `new_best_min_improvement`. Every version is kept, and the best one stands whatever comes
-        after it."""
+        after it. Where the session holds constraints, a version they break (committed before they
+        changed) carries `violates`, their ids: it cannot be restored and does not count as the
+        best."""
         ctx = route()
         session = ctx.session
-        return session.provenance.list_versions()
+        versions = session.provenance.list_versions()
+        broken = session.constraint_violations()
+        return [
+            {**meta, "violates": broken[meta["version"]]} if meta.get("version") in broken else meta
+            for meta in versions
+        ]
 
     @mcp.tool(annotations=_READ_ONLY)
     def get_version(version: int) -> dict[str, Any]:
@@ -2346,6 +2358,47 @@ def _register_resources(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         return path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
 
 
+# ------------------------------------------------------------------ constraint tools
+def _register_constraint_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
+    """``set_constraints``, registered only on a server started with ``constraint_updates='any'``:
+    absent otherwise, not refused (:mod:`constraints`)."""
+    from . import constraints as constraints_mod
+
+    @mcp.tool(annotations=_RESTORE_ANNOTATIONS)
+    def set_constraints(constraints: list[str | dict[str, Any]], rationale: str) -> dict[str, Any]:
+        """Replace the session's CONSTRAINTS, the claims every model must make, with a whole new
+        set: each a line as `describe_problem` lists them (`c1: EPO increases SOCS3, indirectly`,
+        `c2: not EPO phosphorylates STAT5, directly`, `a1: STAT5{pY694} is active`), or an object
+        (`{id, statement, kind, not?}`, `{id, does_not_affect: [X, Y], kind}`, `{id, active_form}`).
+        Every change from here on is checked against them. A stored version they break is flagged
+        in `list_versions`, can no longer be restored, and no longer counts as the best. The result
+        says whether the update loosened or tightened the claims, and which versions break it,
+        HEAD included; the next change must build a model that makes them. `rationale` says why,
+        and is logged with the update."""
+        ctx = route()
+        session = ctx.session
+        args = {"n_constraints": len(constraints)}
+        if not (rationale or "").strip():
+            return ctx.reject_operation(
+                "set_constraints", "set_constraints: give the `rationale` for the update; it is "
+                "logged with it. NOTHING was changed.", args)
+        if (began := session.change_began) is not None:
+            return ctx.reject_operation(
+                "set_constraints",
+                f"set_constraints: {FIT_IN_PROGRESS}: a change is still being fitted on this session "
+                f"(it began {time.monotonic() - began:.0f}s ago), checked against the constraints in "
+                "force, so NOTHING was changed: send the update once it ends.",
+                args, cause=FIT_IN_PROGRESS)
+        groundings = {agent.name: dict(agent.db_refs) for agent in session.entities.values()}
+        try:
+            new = constraints_mod.parse(constraints, groundings)
+        except constraints_mod.ConstraintError as exc:
+            return ctx.reject_operation(
+                "set_constraints", f"set_constraints: {exc}. NOTHING was changed.", args,
+                cause="unreadable_constraints")
+        return ctx.run("set_constraints", lambda: session.set_constraints(new, rationale), args)
+
+
 def _open_ctx(
     yaml_path: str,
     *,
@@ -2361,6 +2414,7 @@ def _open_ctx(
     entity_map: str | None,
     fit_engine: Any | None,
     constraints: str | None = None,
+    constraint_updates: str = "off",
 ) -> _Ctx:
     """Open the session on the problem at ``yaml_path``: its :class:`PetabSession`, the
     :class:`AmiciEngine` wired into it, and its held-out set. The arguments are
@@ -2390,10 +2444,14 @@ def _open_ctx(
         # to are part of what its versions mean.
         groundings = {agent.name: dict(agent.db_refs) for agent in session.entities.values()}
         session.constraints = constraints_mod.read(constraints, groundings)
+        session.constraint_updates = constraint_updates
         session.provenance.append_event(
             {"type": "constraints", "source": str(constraints),
              "constraints": session.constraints.texts()}
         )
+        # A resumed store may hold versions these break: they rank no more than a later set's do.
+        if broken := session.constraint_violations():
+            session.reseed_best(set(broken))
     if score_shipped_model and session.model_authored():
         fitting_mod.score_at_nominal(session, engine)
     held_out = None
@@ -2420,6 +2478,7 @@ def create_server(
     entity_map: str | None = None,
     statements_only: bool = False,
     constraints: str | None = None,
+    constraint_updates: str = "off",
     cluster: Any | None = None,
 ) -> FastMCP:
     """Build a FastMCP server bound to the PEtab problem at ``yaml_path``.
@@ -2462,7 +2521,9 @@ def create_server(
     ``constraints`` is a file of causal claims every model must make (:mod:`constraints`), each
     ending ``, directly`` or ``, indirectly``: ``make_changes`` refuses a model that breaks one,
     naming it. It needs ``entity_map`` and implies ``statements_only``: a model built from Antimony
-    states no claims to check. A file that does not read is refused here.
+    states no claims to check. A file that does not read is refused here. ``constraint_updates``
+    (``off`` by default) set to ``any`` registers ``set_constraints``, for whoever drives the
+    session to replace them; it needs ``constraints`` (a file holding none starts with none).
 
     ``cluster`` (a ``distributed`` cluster, the ``dask`` extra) runs every fit's starts on that
     cluster's workers through one client (:mod:`petab_mcp.dask_engine`); without one, each fit runs
@@ -2478,6 +2539,13 @@ def create_server(
         raise ValidationError(
             "constraints need an entity_map: a constraint is a claim the statements route's rows "
             "make, and only that route builds from statements."
+        )
+    if constraint_updates not in ("off", "any"):
+        raise ValidationError(f"constraint_updates is 'off' or 'any', not {constraint_updates!r}.")
+    if constraint_updates == "any" and not constraints:
+        raise ValidationError(
+            "constraint_updates='any' needs constraints: give a file, one holding none to start "
+            "with none."
         )
     statements_only = statements_only or bool(constraints)
     fit_engine = None
@@ -2499,6 +2567,7 @@ def create_server(
         entity_map=entity_map,
         fit_engine=fit_engine,
         constraints=constraints,
+        constraint_updates=constraint_updates,
     )
 
     # Load tool-usage skills up front so the server instructions only advertise
@@ -2531,6 +2600,8 @@ def create_server(
     _register_fit_tools(mcp, route)
     if ctx.held_out is not None:
         _register_validation_data_tools(mcp, route)
+    if constraint_updates == "any":
+        _register_constraint_tools(mcp, route)
     _register_provenance_tools(mcp, route)
     _register_resources(mcp, route)
     # Register the skills loaded above as `list_skills`/`get_skill` tools plus

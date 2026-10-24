@@ -437,3 +437,113 @@ def test_constraints_are_refused_without_the_statements_route_or_when_unreadable
             entity_map=str(tmp_path / "entities.json"),
             constraints=str(tmp_path / "constraints.txt"),
         )
+
+
+# -------------------------------------------------------------------------------------- updates
+def test_an_update_is_told_looser_or_tighter():
+    """Recorded with each update for analysis (#134, decision 6): a direct claim is the stronger
+    form of the same indirect one, and no chain either way the stronger form of no row's claim."""
+    old = K.parse(["c1: A increases B, directly", "c2: X does not affect Y, indirectly"])
+    assert K.change(old, old) == "same"
+    assert K.change(old, K.parse(["c1: A increases B, indirectly"])) == "looser"
+    assert (
+        K.change(
+            old,
+            K.parse(
+                [
+                    "c1: A increases B, directly",
+                    "c2: X does not affect Y, indirectly",
+                    "c3: B increases C, directly",
+                ]
+            ),
+        )
+        == "tighter"
+    )
+    assert K.change(old, K.parse(["c1: B increases A, directly"])) == "both"
+    with_form = K.parse(
+        [
+            "a1: B{pS1} is active",
+            "c1: A increases B, directly",
+            "c2: X does not affect Y, indirectly",
+        ]
+    )
+    assert K.change(old, with_form) == "both"
+
+
+def test_a_version_the_constraints_break_ranks_no_more(session):
+    """The best version is rebuilt from the log without the versions the constraints in force break,
+    so the new-best bar and the plateau stop rank only models that make the session's claims."""
+    for version, score in ((0, 100.0), (1, 80.0), (2, 90.0)):
+        session.provenance.append_event(
+            {
+                "type": "fit",
+                "version": version,
+                "neg_log_likelihood": score / 2,
+                "criterion": session.criterion.name,
+                "criterion_value": score,
+            }
+        )
+    session.reseed_best(set())
+    assert session.best.version == 1
+    session.reseed_best({1})
+    assert session.best.version == 2
+
+
+def _updatable_server(tmp_path, lines: str):
+    (tmp_path / "entities.json").write_text(_ENTITY_MAP)
+    (tmp_path / "constraints.txt").write_text(lines)
+    return create_server(
+        str(YAML_PATH),
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+        auto_fit=False,
+        entity_map=str(tmp_path / "entities.json"),
+        constraints=str(tmp_path / "constraints.txt"),
+        constraint_updates="any",
+    )
+
+
+def test_set_constraints_exists_only_where_updates_are_on(tmp_path):
+    """Updating can be turned off (#134, requirement 4): off, the default, the tool is absent."""
+    for sub in ("a", "b"):
+        (tmp_path / sub).mkdir()
+    names = {t.name for t in asyncio.run(_constrained_server(tmp_path / "a", "").list_tools())}
+    assert "set_constraints" not in names
+    names = {t.name for t in asyncio.run(_updatable_server(tmp_path / "b", "").list_tools())}
+    assert "set_constraints" in names
+    with pytest.raises(ValidationError, match="needs constraints"):
+        create_server(str(YAML_PATH), provenance_dir=str(tmp_path / "c"), constraint_updates="any")
+
+
+def test_an_update_flags_the_versions_it_breaks_and_holds_the_next_change_to_it(tmp_path):
+    """A version committed before the update keeps its own verdicts, but under the new set it is
+    flagged, cannot be restored, and the next change must make the new claims (#134, decision 7)."""
+    mcp = _updatable_server(tmp_path, "c1: A becomes B, directly\n")
+    out = _call(
+        mcp,
+        "make_changes",
+        {"justification": "A becomes B", "statements": [_row("A", "B", "conv")]},
+    )
+    assert out["committed"] is True, out
+    refused = _call(mcp, "set_constraints", {"constraints": ["c1: B becomes A"], "rationale": "x"})
+    assert refused["applied"] is False and refused["error_cause"] == "unreadable_constraints"
+    out = _call(
+        mcp,
+        "set_constraints",
+        {"constraints": ["c1: B becomes A, directly"], "rationale": "the curator's correction"},
+    )
+    assert out["change"] == "both" and out["head_violates"] == ["c1"]
+    assert out["violating_versions"] == {"0": ["c1"]}
+    (v0,) = _call(mcp, "list_versions", {})["result"]
+    assert v0["violates"] == ["c1"]
+    restored = _call(mcp, "restore_version", {"version": 0})
+    assert restored["ok"] is False and "breaks the session's constraints `c1`" in restored["error"]
+    assert _call(mcp, "describe_problem", {})["constraints"][0]["text"] == "B becomes A, directly"
+    out = _call(
+        mcp,
+        "make_changes",
+        {"justification": "A becomes B again", "statements": [_row("A", "B", "conv2")]},
+    )
+    assert out["applied"] is False and out["error_cause"] == "constraint_violated"
+    record = json.loads((tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text())
+    assert record["constraints"]["checked"] == ["c1: A becomes B, directly"]

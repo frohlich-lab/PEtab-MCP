@@ -1045,3 +1045,42 @@ def enforce(
         "verdicts": {cid: v.stored() for cid, v in verdicts.items()},
     }
     return kept, warning
+
+
+# -------------------------------------------------------------------------------------- update
+def _implies(a: Constraint, b: Constraint) -> bool:
+    """Whether ``a`` holding makes ``b`` hold: the same claim, or ``a`` the stronger form of it (a
+    row's claim is a chain of one; no chain either way leaves no row's claim either)."""
+    if (a.negated, a.statement, a.unaffected) != (b.negated, b.statement, b.unaffected):
+        return False
+    if a.kind == b.kind:
+        return True
+    if a.unaffected is not None:
+        return a.kind == "indirect"
+    return a.kind == "direct" and not a.negated
+
+
+def change(old: Constraints | None, new: Constraints) -> str:
+    """How ``new`` differs from ``old``: ``same``, ``looser`` (each new constraint follows from an
+    old one), ``tighter`` (each old one from a new one) or ``both``. A change of the declared active
+    forms changes what every activity constraint means, so it is ``both``."""
+    old = old or Constraints(())
+    if [f.text for f in old.active_forms] != [f.text for f in new.active_forms]:
+        return "both"
+    looser = all(any(_implies(a, b) for a in old.items) for b in new.items)
+    tighter = all(any(_implies(b, a) for b in new.items) for a in old.items)
+    return (
+        "same" if looser and tighter else "looser" if looser else "tighter" if tighter else "both"
+    )
+
+
+def violations(constraints: Constraints, records: dict[int, dict | None]) -> dict[int, list[str]]:
+    """The ids of the constraints each stored version breaks, by version, ``records`` being each
+    version's statements record (``None`` for one not built from statements); a version breaking
+    none is left out."""
+    out = {}
+    for version, record in records.items():
+        broken = [cid for cid, v in check(constraints, record).items() if not v.ok]
+        if broken:
+            out[version] = broken
+    return out
