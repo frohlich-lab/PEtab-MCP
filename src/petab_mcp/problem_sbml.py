@@ -153,9 +153,11 @@ def to_antimony(
     # hormone that activates). One they make or convert is a state the conditions only start:
     # held, such a species would never change.
     protocol = {item.id: item for item in inputs}
-    set_keys = {s for s in entities if s in protocol or s in targets}
-    keys = {s for s in set_keys if s in protocol or entities[s].name not in made | converted}
-    held = {entities[s].name: protocol.get(s) for s in keys}
+    # Each by the name PySB gives its monomer (INDRA's `_n`: `S-1` is `S_1`), as `made` and the
+    # model know it.
+    set_keys = {s: _n(entities[s].name) for s in entities if s in protocol or s in targets}
+    keys = {s for s in set_keys if s in protocol or set_keys[s] not in made | converted}
+    held = {set_keys[s]: protocol.get(s) for s in keys}
     # Readouts are named apart from the species they stand for, which may share a monomer's
     # name; the SBML export numbers observables anyway, and the rename below restores them.
     readouts = {f"readout_{species}": species for species in entities}
@@ -166,9 +168,8 @@ def to_antimony(
         [m for m in model.monomers if (m.name not in made or m.name in held) and m.name not in declared],
     )
     # What the experiment sets stays whole (:mod:`reduction`): a form the conditions or a protocol
-    # set. Named as PySB names the monomer (INDRA's `_n`: `S-1` is `S_1`), or a name INDRA rewrote
-    # slipped past and was split (the #116 review).
-    whole = {_n(name) for name in held} | {_n(entities[s].name) for s in set_keys}
+    # set.
+    whole = set(set_keys.values())
     # A row's regulators are checked on its reactions as BioNetGen expands the rules as written
     # (:mod:`regulation`): reduced, a catalyst is out of its rule and a monomer is blocks, no
     # longer the statement's agents.
@@ -319,7 +320,7 @@ def to_antimony(
         # A species the conditions or a protocol set is its free form, held or only started: named
         # for the sum over the complexes it binds into, a condition target that binds into
         # complexes would set nothing.
-        free = _free_form(model, sbml_model, base, entities[new].name) if new in set_keys else None
+        free = _free_form(model, sbml_model, base, set_keys[new]) if new in set_keys else None
         species = free or sbml_model.getSpecies(rule.getMath().getName() or "")
         if (
             (free is not None or rule.getMath().isName())
@@ -391,7 +392,7 @@ def _declare(
             "start of the same agent a name of its own"
         )
     for name, agent, amount in starts:
-        if agent.name in held:
+        if _n(agent.name) in held:
             raise ModelUpdateError(
                 f"start {name!r}: {agent.name} is an input, held to its protocol, so it has no "
                 "start of its own"

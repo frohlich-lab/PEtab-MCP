@@ -804,8 +804,9 @@ class _Ctx:
 
 # MCP tool annotations: hints a client may use to auto-approve reads and to confirm writes. A
 # "read-only" tool may still log a failed call or cache the on-demand simulation; neither changes
-# what any later call returns. The writers are NOT destructive: each appends a version and
-# erases nothing (see ``provenance``), and neither is idempotent, since a repeat appends again.
+# what any later call returns. The writers are NOT destructive: ``make_changes`` appends a version
+# and ``restore_version`` moves HEAD onto one, and neither erases anything (see ``provenance``).
+# Neither is idempotent: a repeat appends another version or another ``rollback`` event.
 _READ_ONLY = {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False}
 #: ``make_changes`` reaches PubMed when given ``references``, hence open-world.
 _MAKE_CHANGES_ANNOTATIONS = {
@@ -2203,8 +2204,9 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         fit instead of recompiling and refitting. Prefer this over re-authoring an earlier model
         with `make_changes`, which refuses an exact re-author of a fitted version; this reuses the
         existing fit and records a clean restore. Find the target with `list_versions`
-        (pick the best-scoring / is_new_best version), then `restore_version(v)`. Appends a new
-        version rather than erasing history, so a restore is itself auditable."""
+        (pick the best-scoring / is_new_best version), then `restore_version(v)`. HEAD moves back
+        to that version: no version is added or erased, and the restore is recorded as a
+        `rollback` event in the provenance log."""
         ctx = route()
         session = ctx.session
         return ctx.run(
@@ -2340,6 +2342,12 @@ def _open_ctx(
     :class:`AmiciEngine` wired into it, and its held-out set. The arguments are
     :func:`create_server`'s, but for ``fit_engine``: the server's
     :class:`~petab_mcp.dask_engine.DaskEngine`, which the session's fits share, or ``None``."""
+    # Read before anything is built: a refused map leaves no provenance store or build directory.
+    entities = None
+    if entity_map:
+        from . import seeding as seeding_mod
+
+        entities = seeding_mod.load_entity_map(entity_map)
     session = PetabSession(
         yaml_path,
         provenance_dir=provenance_dir,
@@ -2352,10 +2360,8 @@ def _open_ctx(
     session.engine = engine
     session.auto_fit = auto_fit
     session.auto_fit_starts = auto_fit_starts
-    if entity_map:
-        from . import seeding as seeding_mod
-
-        session.entities = seeding_mod.load_entity_map(entity_map)
+    if entities is not None:
+        session.entities = entities
     if score_shipped_model and session.model_authored():
         fitting_mod.score_at_nominal(session, engine)
     held_out = None
