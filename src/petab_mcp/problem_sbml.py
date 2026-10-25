@@ -19,7 +19,8 @@ The start rests on two assumptions, and a third check refuses the models they do
 
 1. **The start holds free monomers in INDRA's default state** (``set_base_initial_condition``):
    unbound, unmodified, inactive, wild type, in the cytoplasm when that is a location (else in
-   the first of its locations by name). No complex and no modified form exists at the start.
+   the first of its locations by name), as a rule makes a new molecule
+   (:func:`mechanisms.default_state`). No complex and no modified form exists at the start.
 2. **What the start makes is absent from it.** Every monomer no rule makes from other kinds is
    present (one that only proliferates included), and BioNetGen expands the rules from those. A
    made monomer that expansion reaches starts empty: a population that exists only once another
@@ -569,14 +570,10 @@ def _free_form(model: pysb.Model, sbml_model, base: dict, monomer: str):
 def _seed(model: pysb.Model, monomers: list[pysb.Monomer]) -> None:
     """Start each of ``monomers`` present, as assumption 1 of the module docstring sets out."""
     for monomer in monomers:
-        # Not INDRA's `set_base_initial_condition` itself, whose state this is: its
-        # `<monomer>_0` silently skips a monomer whose name is taken, and a condition column may
-        # already be named `<monomer>_0`.
-        state = {site: monomer.site_states.get(site, [None])[0] for site in monomer.sites}
-        locations = monomer.site_states.get("loc", ())
-        if locations:
-            # Else the first by name, not the first INDRA met: that was whichever row came first.
-            state["loc"] = "cytoplasm" if "cytoplasm" in locations else min(locations)
+        # Not INDRA's `set_base_initial_condition` itself, whose state this is but for the location
+        # (:func:`mechanisms.default_state`): its `<monomer>_0` silently skips a monomer whose name
+        # is taken, and a condition column may already be named `<monomer>_0`.
+        state = M.default_state(monomer)
         # Reconcile's own seed value, not 1, which it holds FIXED as a unit normalisation: a seed
         # of 1 would have fixed every population at a unit start.
         amount = pysb.Parameter(f"{monomer.name}_init", SEED_INITIAL_VALUE, _export=False)

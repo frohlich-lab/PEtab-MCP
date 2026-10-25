@@ -72,6 +72,7 @@ from indra.statements import (
     Inhibition,
     ModCondition,
     Modification,
+    MutCondition,
     RegulateActivity,
     RegulateAmount,
     RemoveModification,
@@ -141,14 +142,30 @@ REGULATOR_NAME = re.compile(rf"(?:{'|'.join(REGULATORS)})(?:_\d+)?")
 _COMMON = ("type", "id", "evidence", "belief", "supports", "supported_by", "matches_hash", "sbo")
 #: The roles holding a list of agents; every other role holds one.
 _LIST_ROLES = ("members", "obj_from", "obj_to")
-#: The fields of an agent and of each of its conditions, as INDRA's JSON writes them.
-_AGENT = ("name", "db_refs", "mods", "mutations", "bound_conditions", "location", "activity", "sbo")
+
+
+def fields(cls: type) -> tuple[str, ...]:
+    """What ``cls`` (an INDRA statement, agent or condition) is built from: its constructor's
+    arguments, which its JSON writes under the same names."""
+    return tuple(name for name in inspect.signature(cls.__init__).parameters if name != "self")
+
+
+def roles(stmt_type: str) -> list[str]:
+    """The roles of the statement type named ``stmt_type``, the agents it takes, in INDRA's order.
+    Raises INDRA's ``NotAStatementName`` for no type."""
+    return list(get_statement_by_name(stmt_type)._agent_order)
+
+
+#: The fields of an agent and of each of its conditions, as INDRA's JSON writes them, and an
+#: agent's ``sbo``, its role in the statement, which INDRA writes on the agents of a statement
+#: written with SBO terms.
+AGENT_FIELDS = (*fields(Agent), "sbo")
 _CONDITIONS = {
-    "mods": ("mod_type", "residue", "position", "is_modified"),
-    "mutations": ("position", "residue_from", "residue_to"),
-    "bound_conditions": ("agent", "is_bound"),
+    "mods": fields(ModCondition),
+    "mutations": fields(MutCondition),
+    "bound_conditions": fields(BoundCondition),
 }
-_ACTIVITY = ("activity_type", "is_active")
+_ACTIVITY = fields(ActivityCondition)
 
 
 def problems(statement: Any) -> list[str]:
@@ -166,15 +183,12 @@ def problems(statement: Any) -> list[str]:
     if not isinstance(kind, str) or kind not in types:
         return [f"`type` {kind!r} is no statement type{_close(kind, types)}"]
     cls = get_statement_by_name(kind)
-    roles = list(cls._agent_order)
-    fields = roles + [
-        name for name in inspect.signature(cls.__init__).parameters
-        if name not in ("self", "evidence", *roles)
-    ]
+    takes = roles(kind)
+    given = takes + [name for name in fields(cls) if name not in ("evidence", *takes)]
     out = [
-        f"{kind} has no field {field!r}{_close(field, [*fields, *REGULATORS])}, its fields are "
-        f"{fields}"
-        for field in sorted(set(statement) - set(fields) - set(_COMMON) - set(REGULATORS))
+        f"{kind} has no field {field!r}{_close(field, [*given, *REGULATORS])}, its fields are "
+        f"{given}"
+        for field in sorted(set(statement) - set(given) - set(_COMMON) - set(REGULATORS))
     ]
     for field in REGULATORS:
         value = statement.get(field)
@@ -184,7 +198,7 @@ def problems(statement: Any) -> list[str]:
             out += [
                 p for i, a in enumerate(value or []) for p in agent_problems(a, f"{field}[{i}]")
             ]
-    for role in roles:
+    for role in takes:
         value = statement.get(role)
         if role in _LIST_ROLES:
             if role == "members" and not value:
@@ -200,10 +214,10 @@ def problems(statement: Any) -> list[str]:
             or (role == "subj" and issubclass(cls, (RegulateAmount, Conversion)))
         ):
             out.append(f"{kind} needs `{role}`, an agent: {{\"name\": \"A\"}}")
-    if "residue" in fields:
+    if "residue" in given:
         out += _residue(statement.get("residue"), "`residue`")
     for field in ("obj_activity", "activity"):
-        if field in fields and statement.get(field) is not None:
+        if field in given and statement.get(field) is not None:
             out += _activity(statement[field], f"`{field}`")
     return out
 
@@ -212,7 +226,7 @@ def agent_problems(agent: Any, where: str) -> list[str]:
     """What keeps ``agent`` (INDRA's Agent JSON, at ``where``) from building as written."""
     if not isinstance(agent, dict):
         return [f"`{where}` is an agent, an object like {{\"name\": \"A\"}}, not {agent!r}"]
-    out = _unknown(agent, _AGENT, f"`{where}`", "an agent")
+    out = _unknown(agent, AGENT_FIELDS, f"`{where}`", "an agent")
     if not isinstance(agent.get("name"), str) or not agent["name"]:
         out.append(f"`{where}` has no `name`")
     for field, allowed in _CONDITIONS.items():
@@ -468,10 +482,14 @@ def _self_modification(stmt: SelfModification) -> tuple[list[Agent], list[tuple[
     return [complex_(False)], [(complex_(True), 1)]
 
 
-def _active(agent: Agent, activity: str, active: bool) -> Agent:
-    out = deepcopy(agent)
-    out.activity = ActivityCondition(activity, active)
-    return out
+def _turned(
+    agent: Agent, activity: ActivityCondition
+) -> tuple[list[Agent], list[tuple[Agent, int]]]:
+    """``agent`` turned to ``activity`` from the opposite."""
+    before, after = deepcopy(agent), deepcopy(agent)
+    before.activity = ActivityCondition(activity.activity_type, not activity.is_active)
+    after.activity = activity
+    return [before], [(after, 1)]
 
 
 def _moved(agent: Agent, location: str | None) -> Agent:
@@ -498,12 +516,9 @@ _REACTIONS: dict[type, Callable[[Statement], tuple[list[Agent], list[tuple[Agent
     PopulationTransition: lambda s: ([s.source], [(s.target, 1)]),
     Modification: _modification,
     SelfModification: _self_modification,
-    RegulateActivity: lambda s: (
-        [_active(s.obj, s.obj_activity, not s.is_activation)],
-        [(_active(s.obj, s.obj_activity, s.is_activation), 1)],
-    ),
-    Gef: lambda s: ([_active(s.ras, "gtpbound", False)], [(_active(s.ras, "gtpbound", True), 1)]),
-    Gap: lambda s: ([_active(s.ras, "gtpbound", True)], [(_active(s.ras, "gtpbound", False), 1)]),
+    RegulateActivity: lambda s: _turned(s.obj, s._get_activity_condition()),
+    Gef: lambda s: _turned(s.ras, ActivityCondition("gtpbound", True)),
+    Gap: lambda s: _turned(s.ras, ActivityCondition("gtpbound", False)),
     Translocation: lambda s: (
         [_moved(s.agent, s.from_location)],
         [(_moved(s.agent, s.to_location), 1)] if s.to_location else [],

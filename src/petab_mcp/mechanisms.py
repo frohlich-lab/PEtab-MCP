@@ -73,7 +73,6 @@ from indra.statements import (
     Translocation,
     Transphosphorylation,
     get_all_descendants,
-    get_statement_by_name,
     modclass_to_modtype,
 )
 from indra.assemblers.pysb.assembler import _n, get_site_pattern
@@ -83,6 +82,7 @@ from pysb.core import ReactionPattern, RuleExpression, time
 
 from .errors import MechanismError
 from .statements import REGULATOR_NAME, PopulationTransition, name_key, named_agents
+from .statements import roles as statement_roles
 
 
 @dataclass(frozen=True)
@@ -811,7 +811,7 @@ def written(
     if (stmt_type, policy) in REGISTRY:
         raise MechanismError(f"{(stmt_type, policy)} is a built-in mechanism; name yours apart")
     try:
-        roles = list(get_statement_by_name(stmt_type)._agent_order)
+        roles = statement_roles(stmt_type)
     except NotAStatementName:
         raise MechanismError(
             f"{stmt_type!r} is no statement type; `list_mechanisms` names them"
@@ -886,17 +886,10 @@ def written(
                 f"{base_key} builds {len(emitted.rules)} reaction(s) for this statement; a written "
                 "mechanism re-rates exactly one irreversible reaction"
             )
+        from .schemes import role_agents
+
         params = {n: pysb.Parameter(f"{prefix}_{n}", 1.0, _export=False) for n in sorted(names)}
-        agents = {}
-        for role in roles:
-            value = getattr(stmt, role, None)
-            if isinstance(value, Agent):
-                agents[role] = value
-            elif isinstance(value, list):
-                agents |= {f"{role}_{i}": agent for i, agent in enumerate(value)}
-                if len(value) == 1:
-                    agents[role] = value[0]
-        agents |= regulators or {}
+        agents = role_agents(stmt) | (regulators or {})
         used = {t for t in tokens if t in agents}
         if missing := sorted({t for t in tokens if t in roles or positional.match(t)} - set(agents)):
             raise MechanismError(
@@ -1166,6 +1159,17 @@ def _add(model: pysb.Model, *components) -> None:
         model.add_component(component)
 
 
+def default_state(monomer: pysb.Monomer) -> dict:
+    """The state a molecule of ``monomer`` starts in, and a rule makes a new one in: every site
+    free or in its first state, and on ``loc`` in the cytoplasm when that is one of its locations,
+    else in the first of them by name. Not the first INDRA met, as its own
+    ``set_base_initial_condition`` takes: that was whichever row came first."""
+    state = {site: monomer.site_states.get(site, [None])[0] for site in monomer.sites}
+    if locations := monomer.site_states.get("loc"):
+        state["loc"] = "cytoplasm" if "cytoplasm" in locations else min(locations)
+    return state
+
+
 def agent_pattern(
     model: pysb.Model, agent: Agent, fresh=lambda name: False, partners: bool = True
 ) -> list:
@@ -1175,7 +1179,7 @@ def agent_pattern(
 
     ``fresh(monomer name)`` says whether a molecule is NEW — made by the rule rather than carried
     over from a reactant, which BioNetGen maps by type in order — and a new molecule is written in
-    full: every unstated site in its default state, every unbound site free. A pattern on the left,
+    full: every unstated site in its default state (:func:`default_state`). A pattern on the left,
     or a molecule carried over, leaves unstated sites unstated, so they keep what they had.
 
     With ``partners`` off a bound condition stays "bound to something" and builds no partner:
@@ -1190,20 +1194,10 @@ def agent_pattern(
         unknown = sorted(set(stated) - set(monomer.sites))
         if unknown:
             raise MechanismError(f"{a.name} states sites {unknown} that no statement gives it")
-        state = {
-            site: value[0] if isinstance(value, tuple) else value
-            for site, value in stated.items()
-            if value is not ANY
-        }
+        state = _plain(stated, bound=False)
         if fresh(monomer.name):
-            for site in monomer.sites:
-                if site in state:
-                    continue
-                if site in monomer.site_states:
-                    states_ = monomer.site_states[site]
-                    state[site] = "cytoplasm" if site == "loc" and "cytoplasm" in states_ else states_[0]
-                else:
-                    state[site] = None
+            for site, value in default_state(monomer).items():
+                state.setdefault(site, value)
         bound = []
         for condition in a.bound_conditions:
             if condition.is_bound and not partners:
@@ -1464,9 +1458,14 @@ for _cls in get_all_descendants(AddModification):
     mechanism(_cls, BASAL)(_basal_addition)
 
 
-def _plain(pattern: dict) -> dict:
-    """A site pattern with INDRA's ``(state, WILD)`` reduced to the state."""
-    return {site: value[0] if isinstance(value, tuple) else value for site, value in pattern.items()}
+def _plain(pattern: dict, bound: bool = True) -> dict:
+    """A site pattern with INDRA's ``(state, WILD)`` reduced to the state; without ``bound``, its
+    sites "bound to something" (``ANY``) left out too, for a caller that writes each bond itself."""
+    return {
+        site: value[0] if isinstance(value, tuple) else value
+        for site, value in pattern.items()
+        if bound or value is not ANY
+    }
 
 
 def _binding_sites(monomer: pysb.Monomer) -> list[str]:

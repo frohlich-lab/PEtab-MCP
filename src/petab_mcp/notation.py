@@ -56,6 +56,16 @@ import json
 import re
 from typing import Any
 
+from indra.assemblers.english.assembler import statement_passive_verb, statement_present_verb
+from indra.statements import (
+    Autophosphorylation,
+    Transphosphorylation,
+    activity_types,
+    get_statement_by_name,
+    modclass_to_modtype,
+    modtype_to_modclass,
+)
+
 #: Modification type -> the abbreviation its tags use. Lower case, so the residue that follows
 #: (upper case) or a quoted position marks where it ends.
 ABBREV = {
@@ -74,11 +84,6 @@ ABBREV = {
     "modification": "mod",
 }
 MODTYPE = {abbrev: mod_type for mod_type, abbrev in ABBREV.items()}
-#: INDRA's activity types (``indra.statements.activity_types``), written out so the notation
-#: imports nothing from INDRA.
-ACTIVITIES = frozenset(
-    {"activity", "kinase", "phosphatase", "catalytic", "gtpbound", "transcription", "gef", "gap"}
-)
 
 _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*")
 #: A row's prefix and the ``:`` after it: an identifier without dots, as a prefix names the row's
@@ -127,8 +132,9 @@ def _site(residue: str | None, position: str | None) -> str:
 
 def agent_text(agent: dict[str, Any]) -> str:
     """``agent`` (INDRA Agent JSON) in the notation. Raises ``ValueError`` for what it lacks."""
-    if set(agent) - {"name", "db_refs", "mods", "bound_conditions", "location", "activity",
-                     "mutations", "sbo"}:
+    from .statements import AGENT_FIELDS
+
+    if set(agent) - set(AGENT_FIELDS):
         raise ValueError(f"agent fields {sorted(agent)}")
     tags = []
     for mod in agent.get("mods") or []:
@@ -149,20 +155,22 @@ def agent_text(agent: dict[str, Any]) -> str:
     return _name(agent["name"]) + ("{" + ", ".join(tags) + "}" if tags else "")
 
 
-def _verb(mod_type: str) -> tuple[str, str]:
-    if mod_type == "modification":
-        return "modifies", "is modified"
-    stem = mod_type[: -len("ion")]  # phosphorylation -> phosphorylat
-    return stem + "es", "is " + stem + "ed"
-
-
 def _modtype(cls_name: str) -> str | None:
-    from indra.statements import get_statement_by_name, modclass_to_modtype
-
     try:
         return modclass_to_modtype.get(get_statement_by_name(cls_name))
     except Exception:  # noqa: BLE001 - not a statement type
         return None
+
+
+#: The statement type each modification verb names, active (``phosphorylates``) and passive
+#: (``is phosphorylated``): INDRA's English for each, read back.
+_ACTIVE = {statement_present_verb(t): cls.__name__ for t, cls in modtype_to_modclass.items()}
+_PASSIVE = {statement_passive_verb(t): cls.__name__ for t, cls in modtype_to_modclass.items()}
+#: The same for a modification of the enzyme itself, which names no substrate.
+_SELF = {
+    statement_present_verb(cls.__name__.lower()): cls.__name__
+    for cls in (Autophosphorylation, Transphosphorylation)
+}
 
 
 def evidence_text(st: dict[str, Any]) -> str:
@@ -210,14 +218,13 @@ def _action_text(st: dict[str, Any]) -> str:
     at = ""
     if st.get("residue") is not None or st.get("position") is not None:
         at = " at " + _site(st.get("residue"), st.get("position"))
-    mod_type = _modtype(t)
-    if mod_type and t not in ("Autophosphorylation", "Transphosphorylation"):
-        active, passive = _verb(mod_type)
+    if t in _SELF.values():
+        return f"{agent_text(st['enz'])} {statement_present_verb(t.lower())}{at}"
+    if _modtype(t):
         if st.get("enz"):
-            return f"{agent_text(st['enz'])} {active} {agent_text(st['sub'])}{at}"
-        return f"{agent_text(st['sub'])} {passive}{at}"
-    if t in ("Autophosphorylation", "Transphosphorylation"):
-        return f"{agent_text(st['enz'])} {t.lower()[:-3]}es{at}"
+            verb = statement_present_verb(t.lower())
+            return f"{agent_text(st['enz'])} {verb} {agent_text(st['sub'])}{at}"
+        return f"{agent_text(st['sub'])} is {statement_passive_verb(t.lower())}{at}"
     if t == "Complex":
         return " binds ".join(agent_text(a) for a in st["members"])
     if t in ("IncreaseAmount", "DecreaseAmount"):
@@ -416,12 +423,13 @@ class _Reader:
                 state = self.name()
                 if state not in ("on", "off"):
                     self.fail("an activity is :on or :off")
-                if word not in ACTIVITIES:
+                if word not in activity_types:
                     # `A{mod:on}` is how a scheme writes a molecule's modification site, and
                     # read here as an activity named "mod" it built a species no rule makes.
                     self.fail(
-                        f"unknown activity {word!r}: an activity is one of {sorted(ACTIVITIES)}; a "
-                        "modification is a tag like pS10 (modified) or -pS10 (unmodified)"
+                        f"unknown activity {word!r}: an activity is one of "
+                        f"{sorted(activity_types)}; a modification is a tag like pS10 (modified) "
+                        "or -pS10 (unmodified)"
                     )
                 agent["activity"] = {"activity_type": word, "is_active": state == "on"}
                 return
@@ -440,29 +448,6 @@ class _Reader:
         while self.take(separator):
             out.append(self.agent())
         return out
-
-
-def _active_verb(word: str) -> str | None:
-    """The statement class an active modification verb names (``phosphorylates``)."""
-    from indra.statements import modtype_to_modclass
-
-    if word == "modifies":
-        return "Modification"
-    if word.endswith("es"):
-        cls = modtype_to_modclass.get(word[:-2] + "ion")
-        return cls.__name__ if cls else None
-    return None
-
-
-def _passive_verb(word: str) -> str | None:
-    from indra.statements import modtype_to_modclass
-
-    if word == "modified":
-        return "Modification"
-    if word.endswith("ed"):
-        cls = modtype_to_modclass.get(word[:-2] + "ion")
-        return cls.__name__ if cls else None
-    return None
 
 
 def _at(r: _Reader, st: dict[str, Any]) -> None:
@@ -512,7 +497,7 @@ def statement(r: _Reader) -> dict[str, Any]:
         if word in ("produced", "degraded"):
             kind = "IncreaseAmount" if word == "produced" else "DecreaseAmount"
             return {"type": kind, "subj": None, "obj": first}
-        cls = _passive_verb(word)
+        cls = _PASSIVE.get(word)
         if cls is None:
             r.fail(f"unknown verb 'is {word}'")
         st = {"type": cls, "enz": None, "sub": first, "residue": None, "position": None}
@@ -528,12 +513,11 @@ def statement(r: _Reader) -> dict[str, Any]:
         if r.take("as"):
             st["obj_activity"] = r.name()
         return st
-    if word in ("autophosphorylates", "transphosphorylates"):
-        st = {"type": word[:-2].capitalize() + "ion", "enz": first, "residue": None,
-              "position": None}
+    if word in _SELF:
+        st = {"type": _SELF[word], "enz": first, "residue": None, "position": None}
         _at(r, st)
         return st
-    cls = _active_verb(word)
+    cls = _ACTIVE.get(word)
     if cls is None:
         r.fail(f"unknown verb {word!r}")
     st = {"type": cls, "enz": first, "sub": r.agent(), "residue": None, "position": None}
