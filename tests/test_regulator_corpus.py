@@ -242,7 +242,7 @@ def test_the_corpus_entry_keeps_its_verdict(entry):
                   if k != "modulated_by"}
         if not claims:
             continue
-        rate = regulation.net_rate(model, emission.rules, stmt)
+        rate = regulation.net_rate(model, emission.rules, stmt, regulation.bound(emission, stated))
         if entry.get("problem"):
             rate = regulation.bounded(rate, _Problem(entry["problem"]))[0]
         for s, claim in claims.items():

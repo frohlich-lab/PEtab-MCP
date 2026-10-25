@@ -173,7 +173,10 @@ Principles to hold onto when extending this package.
   (`statements=["r1: RAF phosphorylates MEK"], bindings={"r1": "two_step kf=k_on"}`), so a rate (a
   written `rate`, a `scheme`) reads only the agents the statement names: its roles, the partners they are written bound or not
   bound to, and the agents it states regulate its rate without taking part, `inhibited_by`,
-  `activated_by` or `modulated_by` ("RAF phosphorylates MEK, inhibited by sorafenib"). Each is
+  `activated_by` or `modulated_by` ("RAF phosphorylates MEK, inhibited by sorafenib"). A scheme
+  reads one by its kind, in a rate or as a molecule its rules bind (sorafenib sequestering RAF),
+  on sites named after each other, so the complex is the one the partner notation writes
+  (`RAF{!sorafenib}`) and the claim stays on the statement. Each is
   recorded as the kind the reaction's rate shows for every value of its names within their
   bounds: inhibited where it never rises with it, activated where it never falls, modulated where
   neither can be shown. That rate is the row's net rate as the model builds it, read off the
