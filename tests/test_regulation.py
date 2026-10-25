@@ -9,6 +9,7 @@ states other rows give them and its bindings, never a placeholder.
 from __future__ import annotations
 
 import json
+import re
 import time
 
 import pandas as pd
@@ -284,6 +285,76 @@ def test_a_reversible_step_is_read_both_ways_on_its_own_row():
     binding("kf" + _SLOWED, "kr" + _SLOWED)
     with pytest.raises(MechanismError, match=_DISSOCIATION):
         binding("kf", "kr" + _SPED)
+
+
+#: A drug that sequesters the enzyme, which acts only free of it (PEtab-MCP#140).
+_DRUG_BINDS = (
+    "enz(inhibited_by=None) + inhibited_by(enz=None) | enz(inhibited_by=1) % inhibited_by(enz=1) "
+    "@ kon, koff\n"
+)
+_FREE_ACTS = "enz(inhibited_by=None) + sub(mod='off') >> enz(inhibited_by=None) + sub(mod='on') @ kc"
+
+
+def _sequestered(scheme=_DRUG_BINDS + _FREE_ACTS, rows=()):
+    return _build([_PHOSPHO.format(regulator="inhibited by Drug"), *rows],
+                  _scheme("Phosphorylation", scheme, "kon", "koff", "kc"))
+
+
+def test_a_regulator_a_scheme_binds_is_held_at_its_free_amount():
+    """PEtab-MCP#140: a drug sequestering its enzyme (E + I <-> EI) is checked as any regulator,
+    held as a ligand at its free amount with the enzyme free and bound the intermediates, so J has
+    the textbook shape kc*S*E_total/(1 + I/K_I), K_I = koff/kon, and the claim stands as stated."""
+    (emission,) = _sequestered()
+    assert emission.derived == {}
+    rate = regulation.restored(emission.rate)
+    by_name = {s.name: s for s in rate.value.free_symbols}
+    of = {next(iter(kind.values())): by_name[name]
+          for name, kind in emission.rate["names"].items() if name in by_name}
+    drug, erk, total = of["[Drug(mek=None)]"], of["[ERK(T202='u')]"], of["total0"]
+    kc, kon, koff = of["p_kc"], of["p_kon"], of["p_koff"]
+    assert sympy.simplify(rate.value - kc * erk * total / (1 + drug / (koff / kon))) == 0
+    assert rate.regulators == {"inhibited_by_0": (drug,)}
+
+
+def test_a_binding_that_speeds_the_reaction_records_an_activator():
+    """Where only the enzyme bound to the drug acts, J rises with it: the inhibitor stated is
+    recorded as the activator its rate shows, as one read in a rate is."""
+    (emission,) = _sequestered(
+        _DRUG_BINDS + "enz(inhibited_by=1) % inhibited_by(enz=1) + sub(mod='off') >> "
+        "enz(inhibited_by=1) % inhibited_by(enz=1) + sub(mod='on') @ kc"
+    )
+    assert emission.derived == {"inhibited_by_0": "activated_by"}
+
+
+@pytest.mark.parametrize(
+    "scheme, binding",
+    [
+        # The enzyme acts bound or free alike.
+        (_DRUG_BINDS + "enz() + sub(mod='off') >> enz() + sub(mod='on') @ kc",
+         "MEK + Drug | MEK % Drug"),
+        # It sequesters the substrate, whose free amount J holds.
+        ("sub(inhibited_by=None) + inhibited_by(sub=None) | sub(inhibited_by=1) % "
+         "inhibited_by(sub=1) @ kon, koff\nenz() + sub(mod='off', inhibited_by=None) >> enz() + "
+         "sub(mod='on', inhibited_by=None) @ kc", "ERK + Drug | ERK % Drug"),
+    ],
+)
+def test_a_bound_regulator_its_net_rate_does_not_change_with_is_refused_naming_the_binding(
+    scheme, binding
+):
+    with pytest.raises(MechanismError, match=(
+        rf"'written' binds `inhibited by Drug` in `{re.escape(binding)}`, and its statement's own "
+        r"reaction rate, its products absent, does not change with it: a statement's regulator is "
+        r"about its own reaction\. Bound, a regulator changes that rate where a form it binds "
+        r"reacts otherwise than the free one, as where a step takes only the free form "
+        r"\(`enz\(inhibited_by=None\)`\)"
+    )):
+        _sequestered(scheme)
+
+
+def test_the_complex_a_bound_regulator_forms_is_the_one_the_partner_notation_reads():
+    """Its sites are named as `MEK{!Drug}` names them, so a row degrading `MEK{!Drug}` reads the
+    complex: one whose rules read no species is refused at build."""
+    _sequestered(rows=["d: MEK{!Drug} is degraded | indra_default"])
 
 
 def test_a_regulator_of_what_the_reaction_makes_names_its_degradation_and_its_row_builds():

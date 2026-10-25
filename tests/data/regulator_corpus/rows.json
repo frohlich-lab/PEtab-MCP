@@ -5781,5 +5781,262 @@
     }
    ]
   }
+ },
+ {
+  "id": "issue140/sequestering",
+  "source": "PEtab-MCP#140 (2026-10-25): the issue's binding inhibitor, its sites named after each other",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, inhibited by Drug | binder"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "binder",
+    "scheme": "enz(inhibited_by=None) + inhibited_by(enz=None) | enz(inhibited_by=1) % inhibited_by(enz=1) @ kon, koff\nenz(inhibited_by=None) + sub(mod='off') >> enz(inhibited_by=None) + sub(mod='on') @ kc",
+    "parameters": [
+     "kon",
+     "koff",
+     "kc"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "issue140/as_written",
+  "source": "PEtab-MCP#140 (2026-10-25): the issue's scheme as written, its enzyme's site `inh`: refused, naming the sites after each other",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, inhibited by Drug | binder"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "binder",
+    "scheme": "enz(inh=None) + inhibited_by(enz=None) | enz(inh=1) % inhibited_by(enz=1) @ kon, koff\nenz(inh=None) + sub(mod='off') >> enz(inh=None) + sub(mod='on') @ kc",
+    "parameters": [
+     "kon",
+     "koff",
+     "kc"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "issue140/bound_acts",
+  "source": "PEtab-MCP#140 (2026-10-25): only the enzyme bound to it acts: stated an inhibitor, recorded activated",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, inhibited by Drug | binder"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "binder",
+    "scheme": "enz(inhibited_by=None) + inhibited_by(enz=None) | enz(inhibited_by=1) % inhibited_by(enz=1) @ kon, koff\nenz(inhibited_by=1) % inhibited_by(enz=1) + sub(mod='off') >> enz(inhibited_by=1) % inhibited_by(enz=1) + sub(mod='on') @ kc",
+    "parameters": [
+     "kon",
+     "koff",
+     "kc"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "issue140/activator",
+  "source": "PEtab-MCP#140 (2026-10-25): an activator bound as a molecule, only the bound enzyme acting",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, activated by Act | binder"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "binder",
+    "scheme": "enz(activated_by=None) + activated_by(enz=None) | enz(activated_by=1) % activated_by(enz=1) @ kon, koff\nenz(activated_by=1) % activated_by(enz=1) + sub(mod='off') >> enz(activated_by=1) % activated_by(enz=1) + sub(mod='on') @ kc",
+    "parameters": [
+     "kon",
+     "koff",
+     "kc"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "issue140/both_act",
+  "source": "PEtab-MCP#140 (2026-10-25): the catalytic step reads the enzyme bound or not alike: unseen",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, inhibited by Drug | binder"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "binder",
+    "scheme": "enz(inhibited_by=None) + inhibited_by(enz=None) | enz(inhibited_by=1) % inhibited_by(enz=1) @ kon, koff\nenz() + sub(mod='off') >> enz() + sub(mod='on') @ kc",
+    "parameters": [
+     "kon",
+     "koff",
+     "kc"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "issue140/binds_substrate",
+  "source": "PEtab-MCP#140 (2026-10-25): it sequesters the substrate, whose free amount J holds: unseen",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, inhibited by Drug | binder"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "binder",
+    "scheme": "sub(inhibited_by=None) + inhibited_by(sub=None) | sub(inhibited_by=1) % inhibited_by(sub=1) @ kon, koff\nenz() + sub(mod='off', inhibited_by=None) >> enz() + sub(mod='on', inhibited_by=None) @ kc",
+    "parameters": [
+     "kon",
+     "koff",
+     "kc"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "issue140/competitive",
+  "source": "PEtab-MCP#140 (2026-10-25): Michaelis-Menten with the inhibitor on the free enzyme only",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, inhibited by Drug | binder"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "binder",
+    "scheme": "enz(sub=None, inhibited_by=None) + sub(enz=None, mod='off') | enz(sub=1, inhibited_by=None) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc\nenz(sub=None, inhibited_by=None) + inhibited_by(enz=None) | enz(sub=None, inhibited_by=1) % inhibited_by(enz=1) @ kon, koff",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "kon",
+     "koff"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "issue140/uncompetitive",
+  "source": "PEtab-MCP#140 (2026-10-25): Michaelis-Menten with the inhibitor on the enzyme-substrate complex only",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, inhibited by Drug | binder"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "binder",
+    "scheme": "enz(sub=None, inhibited_by=None) + sub(enz=None, mod='off') | enz(sub=1, inhibited_by=None) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc\nenz(sub=1, inhibited_by=None) % sub(enz=1, mod='off') + inhibited_by(enz=None) | enz(sub=1, inhibited_by=2) % sub(enz=1, mod='off') % inhibited_by(enz=2) @ kon, koff",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "kon",
+     "koff"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "issue140/review_t2_named",
+  "source": "PEtab-MCP#140 (2026-10-25): refusals/t2/inhibitor_molecule with its site named after the inhibitor",
+  "rows": [
+   "r1: MEK phosphorylates ERK at S10, inhibited by Drug | comp"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "comp",
+    "scheme": "enz(sub=None, inhibited_by=None) + sub(enz=None, mod='off') | enz(sub=1, inhibited_by=None) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc\nenz(sub=None, inhibited_by=None) + inhibited_by() | enz(sub=None, inhibited_by=1) % inhibited_by(enz=1) @ kon, koff",
+    "parameters": [
+     "kf",
+     "kr",
+     "kc",
+     "kon",
+     "koff"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "issue140/one_bound_one_read",
+  "source": "PEtab-MCP#140 (2026-10-25): two inhibitors, one bound, one read in the rate",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, inhibited by Drug and Other | binder"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "binder",
+    "scheme": "enz(inhibited_by_0=None) + inhibited_by_0(enz=None) | enz(inhibited_by_0=1) % inhibited_by_0(enz=1) @ kon, koff\nenz(inhibited_by_0=None) + sub(mod='off') >> enz(inhibited_by_0=None) + sub(mod='on') @ kc/(1 + amount(inhibited_by_1)/Ki)",
+    "parameters": [
+     "kon",
+     "koff",
+     "kc",
+     "Ki"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "issue140/stated_state",
+  "source": "PEtab-MCP#140 (2026-10-25): the regulator's state written on the statement, another row giving it",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, inhibited by Drug{pS10} | binder",
+   "q: K phosphorylates Drug at S10 | indra_default"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "binder",
+    "scheme": "enz(inhibited_by=None) + inhibited_by(enz=None) | enz(inhibited_by=1) % inhibited_by(enz=1) @ kon, koff\nenz(inhibited_by=None) + sub(mod='off') >> enz(inhibited_by=None) + sub(mod='on') @ kc",
+    "parameters": [
+     "kon",
+     "koff",
+     "kc"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "issue140/complex_read",
+  "source": "PEtab-MCP#140 (2026-10-25): another row degrades the complex it forms, written MEK{!Drug}",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, inhibited by Drug | binder",
+   "d: MEK{!Drug} is degraded | indra_default"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "binder",
+    "scheme": "enz(inhibited_by=None) + inhibited_by(enz=None) | enz(inhibited_by=1) % inhibited_by(enz=1) @ kon, koff\nenz(inhibited_by=None) + sub(mod='off') >> enz(inhibited_by=None) + sub(mod='on') @ kc",
+    "parameters": [
+     "kon",
+     "koff",
+     "kc"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "issue140/free_read",
+  "source": "PEtab-MCP#140 (2026-10-25): the free drug read in a rate as the molecule, besides binding it",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, modulated by Drug | binder"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "binder",
+    "scheme": "enz(modulated_by=None) + modulated_by(enz=None) | enz(modulated_by=1) % modulated_by(enz=1) @ kon, koff\nenz(modulated_by=None) + sub(mod='off') >> enz(modulated_by=None) + sub(mod='on') @ kc*Ki/(Ki + amount(modulated_by(enz=None)))",
+    "parameters": [
+     "kon",
+     "koff",
+     "kc",
+     "Ki"
+    ]
+   }
+  ]
  }
 ]

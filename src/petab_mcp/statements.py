@@ -34,8 +34,9 @@ each a list of agents. "RAF phosphorylates MEK, inhibited by sorafenib" is a cla
 reaction at the population level: sorafenib slows it, whatever binds what. INDRA can say neither
 part of that. A bound condition (``RAF{~sorafenib}``) claims a complex the rule never forms, and
 an ``Inhibition(sorafenib, RAF)`` claims every reaction RAF catalyses, since an INDRA statement
-names agents and never another statement. The mechanism's rate reads each regulator
-(:mod:`mechanisms`), and each is recorded as the kind the row's net rate shows, read off the
+names agents and never another statement. The mechanism reads each regulator, in its rate or as a
+molecule its scheme binds (:mod:`mechanisms`, :mod:`schemes`), so sorafenib sequestering RAF
+keeps the claim. Each is recorded as the kind the row's net rate shows, read off the
 model the rows build (:mod:`regulation`): inhibited where it never rises, activated where it never
 falls, modulated where neither can be shown. Where that differs from the statement, it is kept
 beside it (:attr:`mechanisms.Emission.derived`), reported to the agent, and shown as the rate's.
@@ -268,6 +269,18 @@ def regulators(statement: dict) -> dict[str, list[Agent]]:
         kind: [Agent._from_json(a) for a in statement[kind]]
         for kind in REGULATORS if statement.get(kind)
     }
+
+
+def by_name(stated: dict[str, list[Agent]]) -> dict[str, Agent]:
+    """Each regulator ``stated`` (kind to agents, :func:`regulators`) by every name a mechanism may
+    read it by (:data:`REGULATOR_NAME`): its kind and position, and its kind alone where it is the
+    one of its kind."""
+    out: dict[str, Agent] = {}
+    for kind, given in stated.items():
+        out |= {f"{kind}_{i}": agent for i, agent in enumerate(given)}
+        if len(given) == 1:
+            out[kind] = given[0]
+    return out
 
 
 def signed(statement: dict, derived: dict[str, str] | None = None) -> list[tuple[str, Agent, bool]]:

@@ -244,6 +244,70 @@ def test_a_scheme_reads_a_partner_its_statement_names():
     assert str(amount.reaction_pattern) == "PTEN(S380='p')"
 
 
+#: A drug that sequesters the enzyme, which acts only free of it.
+_SEQUESTERED = (
+    "enz(inhibited_by=None) + inhibited_by(enz=None) | enz(inhibited_by=1) % inhibited_by(enz=1) "
+    "@ kon, koff\n"
+    "enz(inhibited_by=None) + sub(mod='off') >> enz(inhibited_by=None) + sub(mod='on') @ kf"
+)
+
+
+def _bound(scheme: str, stated: dict):
+    library = dict(M.REGISTRY)
+    library[("Phosphorylation", "bound")] = M.written(
+        {"statement_type": "Phosphorylation", "policy": "bound", "scheme": scheme,
+         "parameters": S.rate_parameters(scheme)},
+        library,
+    )
+    return M.assemble([(_PHOSPHO(), "bound", "r1", None, stated)], {}, library), library
+
+
+def test_a_scheme_binds_a_regulator_its_statement_states():
+    """PEtab-MCP#140: `E + I <-> EI` was writable only with the drug a partner (`EGFR{~drug}`),
+    which dropped the claim that it inhibits. Bound as `inhibited_by`, it is the agent the
+    statement states, in the states it writes, and its sites are named as the partner notation
+    names them, so the complex is the one `EGFR{!drug}` reads."""
+    drug = Agent("drug", mods=[ModCondition("phosphorylation", "S", "10")])
+    (model, (emission,)), library = _bound(_SEQUESTERED, {"inhibited_by": [drug]})
+    assert [str(model.rules[r].rule_expression) for r in emission.rules] == [
+        "EGFR(drug=None) + drug(S10='p', egfr=None) | EGFR(drug=1) % drug(S10='p', egfr=1)",
+        "EGFR(drug=None) + AKT1(S473='u') >> EGFR(drug=None) + AKT1(S473='p')",
+    ]
+    assert emission.regulator_molecules == ("inhibited_by",)
+    assert S.describe("Phosphorylation", "bound", library) == _SEQUESTERED
+
+
+@pytest.mark.parametrize(
+    "scheme, match",
+    [
+        # The issue's own sketch: EGFR's site `inh` is none `EGFR{!drug}` reads.
+        (_SEQUESTERED.replace("enz(inhibited_by=", "enz(inh="),
+         r"bond 1 joins `enz\(inh=1\)` and `inhibited_by\(enz=1\)`: a regulator binds on sites "
+         r"named after each other, `enz\(inhibited_by=1\) % inhibited_by\(enz=1\)`"),
+        (_SEQUESTERED.replace("inhibited_by(enz=None)", "inhibited_by(enz=None, S10='p')"),
+         r"`inhibited_by\(S10='p'\)` writes a state on a regulator: .* a state it needs is "
+         r"written on the statement's agent \(`inhibited by X\{pS10\}`\)"),
+        (_SEQUESTERED.replace("@ kf", "@ kf*amount(inhibited_by(mod='on'))"),
+         r"`inhibited_by\(mod='on'\)` writes a state on a regulator"),
+    ],
+)
+def test_a_regulators_molecule_has_binding_sites_named_after_its_partners_only(scheme, match):
+    """A state on the molecule would read a form of the regulator the statement does not state,
+    and a bond on sites named otherwise forms a complex other rows cannot read as `E{!X}`."""
+    with pytest.raises(MechanismError, match=match):
+        _bound(scheme, {"inhibited_by": [Agent("drug")]})
+
+
+def test_a_regulator_bound_by_its_own_name_or_unstated_is_refused_naming_its_kind():
+    with pytest.raises(MechanismError, match=r"reads drug as an agent of its own.* the molecule "
+                       r"`inhibited_by` in a scheme's rules, which bind it on sites named after "
+                       r"each other \(`enz\(inhibited_by=1\) % inhibited_by\(enz=1\)`\)"):
+        _bound(_SEQUESTERED.replace("inhibited_by", "drug"), {"inhibited_by": [Agent("drug")]})
+    with pytest.raises(MechanismError, match=r"reads \['inhibited_by'\], which its statement does "
+                       r"not state"):
+        _bound(_SEQUESTERED, {})
+
+
 @pytest.mark.parametrize(
     "scheme, match",
     [
