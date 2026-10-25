@@ -1058,6 +1058,58 @@ def test_a_binding_keeps_its_comparison():
                  based_on="mass_action"))
 
 
+def _fixed(pid: str, value: float) -> _Problem:
+    return _Problem([_parameter("conv_k", 1e-3, 1e3, scale="log10"),
+                     _parameter(pid, value, value, estimate=0, nominal=value)])
+
+
+def test_a_gate_a_condition_turns_on_is_no_refusal():
+    """#138, t_gate: J's parameters were positive, and the copy of the model J is read on was
+    built again evaluated, so `ko > 0` was decided. A C that `g="piecewise(0, ko > 0, 1)"` lets
+    act only where a condition sets ko to 0 was refused as acting on no rate. J keeps the gate,
+    and a version's conditions decide it."""
+    rows = ['conv: A becomes B, activated by C | written g="piecewise(0, ko > 0, 1)"']
+    definition = _rate("k*(1 + g*activated_by)", "k", "g", stmt_type="PopulationTransition",
+                       based_on="mass_action")
+    (emission,) = _build(rows, definition)
+    assert emission.derived == {}
+    assert {"parameter": "ko", "nonnegative": True} in emission.rate["names"].values()
+    knocked_out = _Problem([_parameter("conv_k", 1e-3, 1e3, scale="log10")],
+                           [{"conditionId": f"c{v}", "targetId": "ko", "targetValue": v}
+                            for v in (0.0, 1.0)], values={"ko": 1.0})
+    assert _signed(rows, definition, knocked_out)["derived"] == {}
+    # Never knocked out, J does not change with C.
+    assert _signed(rows, definition, _fixed("ko", 1.0))["derived"] == {
+        "activated_by_0": "modulated_by"}
+
+
+def test_a_rates_own_gate_keeps_both_branches():
+    """#138, t_gate: `piecewise(0, g <= 0, 1)` in a written rate read as 1, its g <= 0 branch
+    gone from J."""
+    rows = ["conv: A becomes B, activated by C | gated"]
+    definition = _rate("k*activated_by*piecewise(0, g <= 0, 1)", "k", "g",
+                       stmt_type="PopulationTransition", based_on="mass_action") | {"policy": "gated"}
+    (emission,) = _build(rows, definition)
+    assert emission.derived == {}
+    assert _signed(rows, definition, _fixed("conv_g", 1.0))["derived"] == {}
+    assert _signed(rows, definition, _fixed("conv_g", 0.0))["derived"] == {
+        "activated_by_0": "modulated_by"}
+
+
+def test_a_gate_that_turns_the_direction_is_not_decided_on_a_sign_assumed():
+    """#138: a derivative builds a `piecewise` again, which decided `ko > 0` on `ko` positive,
+    signing `activated by C` on one branch. Each branch is signed, on the version's value where it
+    has one."""
+    rows = ["conv: A becomes B, activated by C | gated"]
+    definition = _rate("k*piecewise(activated_by, ko > 0, 1/(1 + activated_by))", "k", "ko",
+                       stmt_type="PopulationTransition", based_on="mass_action") | {"policy": "gated"}
+    (emission,) = _build(rows, definition)
+    assert emission.derived == {"activated_by_0": "modulated_by"}
+    assert _signed(rows, definition, _fixed("conv_ko", 1.0))["derived"] == {}
+    assert _signed(rows, definition, _fixed("conv_ko", 0.0))["derived"] == {
+        "activated_by_0": "inhibited_by"}
+
+
 # ------------------------------------------------------------------------------- products held at 0
 _RAS = 'c1: RAS{-mod"GTP"} -> RAS{mod"GTP"}'
 _RAS_FED = (f'{_RAS}, activated by SOS and RAS{{mod"GTP"}}', "fed")
