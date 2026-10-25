@@ -26,6 +26,53 @@
  "advice/products_at_0/ras_sos/product_stated": {
   "verdict": "accepted"
  },
+ "issue138/t_gate/condition": {
+  "verdict": "accepted"
+ },
+ "issue138/t_gate/direction": {
+  "derived": {
+   "conv": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
+ },
+ "issue138/t_gate/rate": {
+  "verdict": "accepted"
+ },
+ "issue145/near_miss/rising": {
+  "derived": {
+   "p": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
+ },
+ "issue145/near_miss/twice": {
+  "derived": {
+   "p": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
+ },
+ "issue145/problem/a_across_0": {
+  "derived": {
+   "conv": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
+ },
+ "issue145/problem/a_below_0": {
+  "verdict": "accepted"
+ },
+ "issue145/saturating": {
+  "verdict": "accepted"
+ },
+ "issue145/saturating_offset": {
+  "verdict": "accepted"
+ },
  "netrate/1/advice": {
   "verdict": "accepted"
  },
@@ -1324,11 +1371,6 @@
   "verdict": "accepted"
  },
  "prover/c3/18": {
-  "derived": {
-   "conv": {
-    "activated_by_0": "modulated_by"
-   }
-  },
   "verdict": "accepted"
  },
  "prover/c3/19": {
@@ -1827,8 +1869,7 @@
   "verdict": "accepted"
  },
  "review128b/binding/piecewise_off": {
-  "kind": "unseen",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "review128b/binding/piecewise_on": {
   "verdict": "accepted"

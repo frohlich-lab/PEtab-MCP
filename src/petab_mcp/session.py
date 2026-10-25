@@ -1126,12 +1126,16 @@ class PetabSession:
         an all-gamed session still records its best-scoring gamed model (the adequacy and sigma
         gates then handle it), keeping the sigma-adequacy gate live rather than dead.
         """
-        if not is_new_best or (
-            candidate.sigma_gamed and self.best is not None and self.best.sigma_plausible
-        ):
+        if not is_new_best or self._declines(candidate.sigma_gamed):
             return False
         self.best = candidate
         return True
+
+    def _declines(self, sigma_gamed: bool) -> bool:
+        """Whether the checkpoint keeps its best over a new best whose estimated noise sigma is
+        implausible: it does while that best's own noise model is plausible. :meth:`fit` asks it
+        before the snapshot, so the ``is_new_best`` a version is stamped with is this decision."""
+        return sigma_gamed and self.best is not None and self.best.sigma_plausible
 
     def record_fit_progress(
         self,
@@ -1225,7 +1229,8 @@ class PetabSession:
                 if usable
                 else None
             )
-            if candidate is not None and self._adopt_checkpoint(candidate, is_new_best):
+            adopted = candidate is not None and self._adopt_checkpoint(candidate, is_new_best)
+            if adopted:
                 # A sigma-gamed "improvement" is not genuine progress even when adopted (it can
                 # only be adopted here over an absent/already-gamed best): it does NOT reset the
                 # non-improving streak, so an all-gamed session trips the streak cap instead of
@@ -1279,7 +1284,7 @@ class PetabSession:
                     # running best AFTER this op
                     "best_score": self.best.score if self.best else None,
                     "gof_pvalue": gof_p,
-                    "is_new_best": is_new_best,
+                    "is_new_best": adopted,
                 }
             )
 
@@ -1603,14 +1608,6 @@ class PetabSession:
                 if block:
                     fitsim[identifiability.STORED_DIAGNOSIS_KEY] = block
                 fitsim["merge_hints"] = identifiability.merge_hints((block or {}).get("diagnosis"))
-            # Is this variant actually NESTED in the version it will be compared against? Must run
-            # BEFORE _snapshot_version, while provenance.current_version is still the parent. The
-            # Antimony is serialized once and handed to both the check (which diffs parameter
-            # references against the parent's model.ant) and the snapshot.
-            child_model_ant = self.model.to_antimony()
-            nesting_advisory = self._check_nesting_vs_parent(
-                fitsim, child_model_ant, is_new_best=bool(improvement.get("is_new_best"))
-            )
             # Noise-sigma report + flags computed ONCE here and stashed on fitsim, so this event,
             # the checkpoint update in record_fit_progress (below) and the returned fit block all
             # read the SAME verdict instead of recomputing (or disagreeing).
@@ -1639,6 +1636,26 @@ class PetabSession:
             # for every session since it landed: it could never find a gate-clean earlier version
             # because it could never see a report.
             fitsim["noise_sigma_report"] = _nsr
+            # The checkpoint's decision, taken here so the version meta, the event and the result
+            # say what `best_version` will: a score that clears the new-best bar with an
+            # implausible estimated sigma does not displace a plausible best (see _declines).
+            inflated, collapsed = noise_sigma_inflated(_nsr), noise_sigma_collapsed(_nsr)
+            if improvement.get("is_new_best") and self._declines(
+                bool(_nsr) and (inflated or collapsed)
+            ):
+                improvement["is_new_best"] = False
+                improvement["new_best_declined"] = (
+                    f"estimated noise sigma {'collapsed' if collapsed else 'inflated'}: "
+                    f"v{self.best.version}, whose noise model is plausible, stays the best"
+                )
+            # Is this variant actually NESTED in the version it will be compared against? Must run
+            # BEFORE _snapshot_version, while provenance.current_version is still the parent. The
+            # Antimony is serialized once and handed to both the check (which diffs parameter
+            # references against the parent's model.ant) and the snapshot.
+            child_model_ant = self.model.to_antimony()
+            nesting_advisory = self._check_nesting_vs_parent(
+                fitsim, child_model_ant, is_new_best=bool(improvement.get("is_new_best"))
+            )
             version = self._snapshot_version(
                 model_ant=child_model_ant,
                 meta={  # Recorded so a later fit can tell whether it would search HARDER than this

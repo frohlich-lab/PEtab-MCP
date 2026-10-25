@@ -33,6 +33,7 @@ from . import reconcile as R
 from .constants import NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD, WIDENING_NEGLIGIBLE_BIC_GAIN
 from .errors import ModelUpdateError, PetabMcpError, ValidationError
 from .parameters import estimated_mask
+from .provenance import binding_of
 from .references import resolve_references
 from .validation import frozen_parametric_stoichiometry_issues, validate_problem
 
@@ -340,7 +341,8 @@ _ISSUE_HINTS = (
         "Condition table contains invalid targets",
         " — each named target is an input the condition table SETS per experiment, so the model "
         "must have it: read it as a parameter of that id in a rate law or an initial amount "
-        "(on the statements route, a row's binding `kf=\"k*dose\"` or a start's amount).",
+        "(on the statements route, a row's binding `kf=\"k*dose\"` in `bindings`, or a start's "
+        "amount).",
     ),
 )
 
@@ -731,7 +733,8 @@ def _problem_ids(session) -> dict[str, str]:
 
 def statements_to_antimony(
     session,
-    rows: list[dict[str, Any]],
+    rows: list[dict[str, Any] | str],
+    bindings: dict[str, dict[str, Any] | str],
     written: list[dict[str, Any]] | None = None,
     starts: list[dict[str, Any]] | None = None,
     readouts: dict[str, str] | None = None,
@@ -739,15 +742,17 @@ def statements_to_antimony(
 ) -> tuple[str, dict[str, Any], list[dict[str, str]], dict[tuple[str, str], dict]]:
     """The ``statements`` route: build the model the rows assert, as Antimony for :func:`set_model`.
 
-    Each row is ``{statement, policy, prefix}`` with the statement in INDRA's JSON. ``written``
-    are mechanisms the agent writes in this call (:func:`mechanisms.written`), joining those it
-    wrote earlier in the run. ``starts`` (``{agent, amount, name?}``) declare what is present at
-    the start, ``readouts`` (id to formula) the measurement mappings that are not one pattern's
-    amount, over ``amounts`` (name to agent) (:func:`problem_sbml.to_antimony`). Returns the Antimony; the provenance record —
+    Each row is ``{prefix, statement}`` with the statement in INDRA's JSON, or its line in the
+    notation, and ``bindings`` gives each its policy and parameter bindings by prefix
+    (:func:`bound_rows`): the claim and the maths, given apart. ``written`` are mechanisms the agent
+    writes in this call (:func:`mechanisms.written`), joining those it wrote earlier in the run.
+    ``starts`` (``{agent, amount, name?}``) declare what is present at the start, ``readouts`` (id
+    to formula) the measurement mappings that are not one pattern's amount, over ``amounts`` (name
+    to agent) (:func:`problem_sbml.to_antimony`). Returns the Antimony; the provenance record —
     ``rows``, each with the :class:`mechanisms.Emission` it produced and with its definition when
-    the agent wrote its mechanism, ``mechanisms``, the ``written`` ones whether a row uses them or
-    not, ``starts``, and the ``network`` the rows expand to before and after the reduction
-    (:mod:`reduction`); one warning naming the ungrounded agents, since grounding is
+    the agent wrote its mechanism, their ``bindings``, ``mechanisms``, the ``written`` ones whether
+    a row uses them or not, ``starts``, and the ``network`` the rows expand to before and after
+    the reduction (:mod:`reduction`); one warning naming the ungrounded agents, since grounding is
     optional and its absence is reported, never refused; and the run's written mechanisms, for
     the caller to keep once the change applies.
     """
@@ -781,8 +786,9 @@ def statements_to_antimony(
     problem_ids = _problem_ids(session)
     for key, definition in definitions.items():
         library[key] = mechanisms.written(definition, library, problem_ids)
-    # A row, or an agent, may be written in the notation (:mod:`notation`): read here, against the
-    # library (a policy written without its `indra_` prefix) and the entity map's groundings.
+    # A row, a binding or an agent may be written in the notation (:mod:`notation`): read here,
+    # against the entity map's groundings, and a binding against the library (a policy written
+    # without its `indra_` prefix).
     from . import notation
 
     groundings = {agent.name: dict(agent.db_refs) for agent in session.entities.values()}
@@ -791,32 +797,21 @@ def statements_to_antimony(
         return notation.parse_agent(value, groundings) if isinstance(value, str) else value
 
     try:
-        rows = [
-            notation.parse(row, groundings, library) if isinstance(row, str)
-            # What `get_model` shows a row's rate records is the server's, not the row's.
-            else {k: v for k, v in dict(row).items() if k != "derived"}
-            for row in rows
-        ]
+        rows = bound_rows(rows, bindings, library, groundings)
         starts = [{**start, "agent": agent_json(start["agent"])} for start in starts or []]
         given = {k: agent_json(v) for k, v in (amounts or {}).items()}
         read, amounts = _readout_amounts(readouts, given)
         amounts = {k: agent_json(v) for k, v in amounts.items()}
+    except notation.InlineBinding as exc:
+        raise OperationError(
+            f"make_changes: {exc}. NOTHING was applied.", cause="inline_binding"
+        ) from exc
     except notation.NotationError as exc:
         raise OperationError(
             f"make_changes: {exc}. NOTHING was applied. {_NOTATION_HINT}",
             cause="unreadable_statement",
         ) from exc
     _check_readouts_are_read(session, readouts)
-    prefixes = [row["prefix"] for row in rows]
-    repeated = sorted({p for p in prefixes if prefixes.count(p) > 1})
-    if repeated:
-        # Caught here rather than met inside PySB as a component-name clash, which is not a
-        # PetabMcpError and would escape the tool as an opaque failure.
-        raise OperationError(
-            f"make_changes: `statements` prefixes {repeated} repeat; each row's prefix names its "
-            "parameters, so they must be unique. NOTHING was applied.",
-            cause="duplicate_prefix",
-        )
     # Read here, each problem named, rather than by INDRA's reader, which skips a field it does not
     # know, leaves a missing one None, and drops a statement it cannot build with a logged warning.
     unread = [
@@ -847,7 +842,7 @@ def statements_to_antimony(
             f"make_changes: {len(rows) - len(stmts)} of {len(rows)} `statements` entries are "
             f"not statements INDRA can read: {'; '.join(unread)}. A list role is a list "
             '(`"obj_from": [{"name": "A"}]`); the notation is easier: '
-            "`conv: A + B -> C | mass_action`. NOTHING was applied.",
+            "`conv: A + B -> C`. NOTHING was applied.",
             cause="unreadable_statement",
         )
     declared = [
@@ -881,10 +876,11 @@ def statements_to_antimony(
     )
     record = {
         "rows": [
-            {**row, "emission": asdict(e)}
+            {"prefix": row["prefix"], "statement": row["statement"], "emission": asdict(e)}
             | ({"mechanism": definitions[e.entry]} if e.entry in definitions else {})
             for row, e in zip(rows, emissions)
         ],
+        "bindings": {row["prefix"]: binding_of(row) for row in rows},
         "mechanisms": list(written or []),
         "starts": [
             {"name": name, "agent": start["agent"], "amount": start["amount"]}
@@ -919,6 +915,113 @@ def statements_to_antimony(
     return antimony, record, warnings, definitions
 
 
+def carried_binding(
+    row: dict[str, Any], library: dict | None = None, op: str | None = None
+) -> str | None:
+    """Why a JSON ``row`` carrying ``policy`` or ``parameters`` is refused, saying how it splits
+    into the row and its binding (:func:`notation.split_advice`), for ``statements`` or, with
+    ``op``, for that edit; ``None`` for one carrying neither."""
+    from . import notation
+
+    given = {k: row[k] for k in ("policy", "parameters") if row.get(k) is not None}
+    if not given:
+        return None
+    statement = row.get("statement")
+    try:
+        said = notation.statement_text(statement)
+    except Exception:  # noqa: BLE001 - what the notation cannot write, or no statement at all
+        said = "<its statement>"
+    kind = statement.get("type") if isinstance(statement, dict) else None
+    binding = notation.render_binding(given, kind, library) if "policy" in given else None
+    return f"row {row.get('prefix')!r} carries {sorted(given)}: " + notation.split_advice(
+        str(row.get("prefix")), said, binding or "<policy> <kind>=<binding>", op
+    )
+
+
+def bound_rows(
+    rows: list[dict[str, Any] | str],
+    bindings,
+    library: dict,
+    groundings: dict[str, dict] | None = None,
+) -> list[dict[str, Any]]:
+    """``rows``, each its line in the notation (:func:`notation.parse`, grounded by
+    ``groundings``) or ``{prefix, statement}``, each with its binding from ``bindings``, prefix to
+    its text (:func:`notation.parse_binding`) or ``{policy, parameters?}``: the rows the build
+    reads, ``{statement, policy, prefix, parameters?}``, the policy as ``library`` names it either
+    way (:func:`notation.resolve_policy`). The statement is the claim and the binding the maths,
+    given apart, so a JSON row carrying ``policy`` or ``parameters`` is refused saying how it
+    splits, as one written with them inline is (:class:`notation.InlineBinding`, raised as the
+    caller's :class:`notation.NotationError`); so are a repeated prefix, a row with no binding and
+    a binding with no row, each by prefix."""
+    from . import notation
+
+    rows = [
+        notation.parse(row, groundings) if isinstance(row, str)
+        # What `get_model` shows a row's rate records is the server's, not the row's.
+        else {k: v for k, v in dict(row).items() if k != "derived"}
+        for row in rows
+    ]
+    prefixes = [row["prefix"] for row in rows]
+    repeated = sorted({p for p in prefixes if prefixes.count(p) > 1})
+    if repeated:
+        # Caught here rather than met inside PySB as a component-name clash, which is not a
+        # PetabMcpError and would escape the tool as an opaque failure.
+        raise OperationError(
+            f"make_changes: `statements` prefixes {repeated} repeat; each row's prefix names its "
+            "parameters, so they must be unique. NOTHING was applied.",
+            cause="duplicate_prefix",
+        )
+    bindings = dict(bindings or {})
+    for row in rows:
+        if (carried := carried_binding(row, library)) is not None:
+            raise OperationError(
+                f"make_changes: {carried}. NOTHING was applied.", cause="inline_binding"
+            )
+    unbound = [p for p in prefixes if p not in bindings]
+    if unbound:
+        raise OperationError(
+            f"make_changes: `statements` rows {unbound} have no binding. Each row's policy and "
+            "parameter bindings go in `bindings` under its prefix, "
+            f"`bindings={json.dumps({p: '<policy> <kind>=<binding>' for p in unbound[:2]})}` "
+            "(`default` is INDRA's own mechanism for every statement type; `list_mechanisms` "
+            "shows the others). NOTHING was applied.",
+            cause="unbound_row",
+        )
+    stray = sorted(set(bindings) - set(prefixes))
+    if stray:
+        raise OperationError(
+            f"make_changes: `bindings` {stray} name no row; the rows are {sorted(prefixes)}. A "
+            "binding is keyed by its row's prefix. NOTHING was applied.",
+            cause="unbound_binding",
+        )
+    out = []
+    for row in rows:
+        given = bindings[row["prefix"]]
+        kind = row["statement"].get("type") if isinstance(row["statement"], dict) else None
+        try:
+            if isinstance(given, str):
+                binding = notation.parse_binding(given, kind, library)
+            elif isinstance(given, dict) and not set(given) - {"policy", "parameters"}:
+                binding = {k: v for k, v in given.items() if v is not None}
+                if not isinstance(binding.get("policy"), str) or not binding["policy"]:
+                    raise notation.NotationError("it names no `policy`")
+                if not isinstance(binding.get("parameters") or {}, dict):
+                    raise notation.NotationError("its `parameters` are kind to binding, an object")
+            else:
+                raise notation.NotationError(
+                    f"{given!r} is no binding: one is its text, `<policy> <kind>=<binding> ...`, "
+                    "or `{policy, parameters}`"
+                )
+        except notation.NotationError as exc:
+            raise OperationError(
+                f"make_changes: `bindings.{row['prefix']}`: {exc}. NOTHING was applied.",
+                cause="unreadable_binding",
+            ) from exc
+        binding["policy"] = notation.resolve_policy(binding["policy"], kind, library)
+        out.append({"statement": row["statement"], "prefix": row["prefix"]} | binding_of(binding))
+    return out
+
+
 def _statements_base(session, rebuilt: bool) -> dict | None:
     """The statements record an edit starts from: a fork's version's, else the current model's."""
     if rebuilt and getattr(session, "derived_from", None) is not None:
@@ -945,6 +1048,7 @@ def regulator_warning(record: dict, base: dict | None, unsigned=(), failed=()) -
             return agent["name"]
 
     before = {row["prefix"]: row for row in (base or {}).get("rows", [])}
+    bound_before, bound = (base or {}).get("bindings") or {}, record.get("bindings") or {}
     changed: dict[tuple[str, str, str, str], list[str]] = {}
     restored: dict[tuple[str, str], list[str]] = {}
     negative: list[tuple[str, list[str]]] = []
@@ -955,8 +1059,8 @@ def regulator_warning(record: dict, base: dict | None, unsigned=(), failed=()) -
         rate = emission.get("rate") or {}
         derived, why = emission.get("derived") or {}, rate.get("none", "")
         old = before.get(row["prefix"])
-        same = old is not None and all(old.get(k) == row.get(k) for k in ("statement", "policy",
-                                                                          "parameters"))
+        same = (old is not None and old.get("statement") == row.get("statement")
+                and bound_before.get(row["prefix"]) == bound.get(row["prefix"]))
         was = (old.get("emission") or {}).get("derived") or {} if same else {}
         if not same:
             for name, steps in (rate.get("consumes") or {}).items():
@@ -1046,7 +1150,8 @@ _WHAT_THE_RATE_DOES = {
 
 
 _NOTATION_HINT = (
-    "A row is `prefix: <statement> | <policy> kind=binding ...`; an agent NAME{tag, ...}, its tags "
+    "A row is `prefix: <statement>`, its binding `<policy> kind=binding ...` under its prefix in "
+    "`bindings`; an agent NAME{tag, ...}, its tags "
     "pS10 (modified; ac, me, ub ... for other modifications) or -pS10 (unmodified), "
     "kinase:on (an activity), @nucleus, !PARTNER (bound), ~PARTNER (not bound); a statement "
     "`X phosphorylates Y at S10`, `Y is dephosphorylated at S10`, `A binds B`, `A becomes B`, "
@@ -1145,27 +1250,26 @@ def _check_readouts_are_read(session, readouts) -> None:
         )
 
 
-_ROW_FIELDS = ("statement", "policy", "prefix", "parameters")
-
-
 def apply_statement_edits(
     record: dict[str, Any], edits: list[dict[str, Any]]
-) -> tuple[list, list[dict[str, Any]], dict[str, str], dict[str, Any], list[str]]:
-    """The whole set the ``statements`` route builds from — ``(rows, starts, readouts, amounts)``
-    — after ``edits`` change the stored statement ``record`` (:func:`statements_to_antimony`'s),
-    and one line per edit saying what it did.
+) -> tuple[list, dict[str, Any], list[dict[str, Any]], dict[str, str], dict[str, Any], list[str]]:
+    """The whole set the ``statements`` route builds from — ``(rows, bindings, starts, readouts,
+    amounts)`` — after ``edits`` change the stored statement ``record``
+    (:func:`statements_to_antimony`'s), and one line per edit saying what it did.
 
-    A row is keyed by its prefix, which names its parameters: `replace_row` keeps the row's place
-    and, with the prefix, its parameters' ids and fitted values. A start is keyed by its name (the
+    A row is keyed by its prefix, which names its parameters and keys its binding. `add_row` takes
+    a row and its binding; `replace_row` rewrites a row's statement in its place, keeping with the
+    prefix its parameters' ids and fitted values, and its binding unless it gives one; `rebind`
+    changes a row's binding alone, its statement as it was. A start is keyed by its name (the
     agent's, by default), as :func:`statements_to_antimony` names it. Edits apply in order and an
     edit that names nothing raises, so the batch applies whole or not at all.
     """
     from . import notation
 
-    def fail(i: int, edit: dict, why: str) -> OperationError:
+    def fail(i: int, edit: dict, why: str, cause: str = "statement_edit") -> OperationError:
         return OperationError(
             f"make_changes: `statement_edits[{i}]` ({edit.get('op')}): {why}. NOTHING was applied.",
-            cause="statement_edit",
+            cause=cause,
         )
 
     def prefix_of(row) -> str | None:
@@ -1180,9 +1284,14 @@ def apply_statement_edits(
             notation.parse_agent(agent)["name"] if isinstance(agent, str) else agent["name"]
         )
 
+    def no_row(prefix) -> str:
+        return f"no row `{prefix}`; the rows are {sorted(rows)}"
+
     rows = {
-        row["prefix"]: {k: row[k] for k in _ROW_FIELDS if row.get(k)} for row in record["rows"]
+        row["prefix"]: {"prefix": row["prefix"], "statement": row["statement"]}
+        for row in record["rows"]
     }
+    bindings = dict(record.get("bindings") or {})
     starts = {s["name"]: dict(s) for s in record.get("starts") or []}
     amounts = dict(record.get("amounts") or {})
     readouts = dict(record.get("readouts") or {})
@@ -1191,19 +1300,42 @@ def apply_statement_edits(
         op = edit.get("op")
         try:
             if op in ("add_row", "replace_row"):
-                prefix = prefix_of(edit.get("row"))
+                row = edit.get("row")
+                prefix = prefix_of(row)
                 if prefix is None:
-                    raise fail(i, edit, "`row` is one row, `prefix: <statement> | <policy> ...`")
+                    raise fail(i, edit, "`row` is one row, `prefix: <statement>`, or its JSON")
+                # Refused by its edit, with the edit that gives the two apart; whether the row
+                # reads is the build's to say, with the notation's hint.
+                if isinstance(row, str):
+                    notation.refuse_inline(row)
+                elif (carried := carried_binding(row, op=op)) is not None:
+                    raise fail(i, edit, carried, cause="inline_binding")
                 if op == "add_row" and prefix in rows:
-                    raise fail(i, edit, f"a row `{prefix}` exists; `replace_row` changes it")
+                    raise fail(i, edit, f"a row `{prefix}` exists; `replace_row` rewrites its "
+                               "statement, `rebind` its binding")
                 if op == "replace_row" and prefix not in rows:
-                    raise fail(i, edit, f"no row `{prefix}`; the rows are {sorted(rows)}")
-                rows[prefix] = edit["row"]
+                    raise fail(i, edit, no_row(prefix))
+                if op == "add_row" and not edit.get("binding"):
+                    raise fail(i, edit, "a new row needs its `binding`, its policy and parameter "
+                               "bindings: `<policy> <kind>=<binding> ...`")
+                rows[prefix] = row
+                if edit.get("binding"):
+                    bindings[prefix] = edit["binding"]
                 summary.append(f"{op} {prefix}")
+            elif op == "rebind":
+                prefix = edit.get("prefix")
+                if prefix not in rows:
+                    raise fail(i, edit, no_row(prefix))
+                if not edit.get("binding"):
+                    raise fail(i, edit, "`binding` is the row's policy and parameter bindings, "
+                               "`<policy> <kind>=<binding> ...`")
+                bindings[prefix] = edit["binding"]
+                summary.append(f"rebind {prefix}")
             elif op == "remove_row":
                 if edit.get("prefix") not in rows:
-                    raise fail(i, edit, f"no row `{edit.get('prefix')}`; the rows are {sorted(rows)}")
+                    raise fail(i, edit, no_row(edit.get("prefix")))
                 del rows[edit["prefix"]]
+                bindings.pop(edit["prefix"], None)
                 summary.append(f"remove_row {edit['prefix']}")
             elif op == "set_start":
                 if not edit.get("start"):
@@ -1232,6 +1364,8 @@ def apply_statement_edits(
                 summary.append(f"set_readout {edit['readout']}")
             else:
                 raise fail(i, edit, "not an edit")
+        except notation.InlineBinding as exc:
+            raise fail(i, edit, exc.advice(op), cause="inline_binding") from exc
         except notation.NotationError as exc:
             raise fail(i, edit, str(exc)) from exc
     if not rows:
@@ -1240,7 +1374,7 @@ def apply_statement_edits(
             "was applied.",
             cause="statement_edit",
         )
-    return list(rows.values()), list(starts.values()), readouts, amounts, summary
+    return list(rows.values()), bindings, list(starts.values()), readouts, amounts, summary
 
 
 # -- public operations: parameters (justification required, references optional) --
