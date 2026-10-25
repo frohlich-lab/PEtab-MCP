@@ -886,19 +886,27 @@ def _consuming(model: pysb.Model, emission, stmt, positions) -> dict[str, list[s
 def _well_posed(value: sympy.Expr) -> bool:
     """Whether J is shown never negative and finite for every value of its names: below 0, or past
     a pole, its sign says nothing of which way the reaction runs (sweep multi108: J(M2=0.5) = -2,
-    J(1.5) = +2)."""
+    J(1.5) = +2). A sum not shown term by term is shown with each ``exp(v)`` in it, ``v`` never
+    positive, read as ``1 - w`` for a ``w`` never negative: ``k*(1 - exp(-X/K))`` is ``k*w``."""
     from .mechanisms import SIGN_TERMS, _sign, _terms
 
     def never_negative(e) -> bool:
         if e.is_nonnegative or _sign(e) == 1:
             return True
-        if isinstance(e, (sympy.Add, sympy.Mul)):
+        if isinstance(e, sympy.Add):
+            return all(never_negative(a) for a in e.args) or below_one(e)
+        if isinstance(e, sympy.Mul):
             return all(never_negative(a) for a in e.args)
         if isinstance(e, sympy.Piecewise):
             return all(never_negative(branch) for branch, _ in e.args)
         if isinstance(e, sympy.Pow):
             return bool(e.exp.is_even) or never_negative(e.base)
         return isinstance(e, sympy.exp)
+
+    def below_one(e) -> bool:
+        bound = {f: 1 - sympy.Dummy(nonnegative=True) for f in e.atoms(sympy.exp)
+                 if _sign(f.args[0]) == -1}
+        return bool(bound) and never_negative(e.xreplace(bound))
 
     def positive(e) -> bool:
         if e.is_positive:

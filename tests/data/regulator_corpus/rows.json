@@ -5783,6 +5783,160 @@
   }
  },
  {
+  "id": "issue145/saturating",
+  "source": "PEtab-MCP#145 (2026-10-25): k*(1 - exp(-X/K)) is never negative and rises with X",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, activated by D | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "based_on": "indra_default",
+    "rate": "k*(1 - exp(-activated_by/K))",
+    "parameters": [
+     "k",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "issue145/saturating_offset",
+  "source": "PEtab-MCP#145 (2026-10-25): k*(2 - exp(-X/K)) is never negative and rises with X",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, activated by D | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "based_on": "indra_default",
+    "rate": "k*(2 - exp(-activated_by/K))",
+    "parameters": [
+     "k",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "issue145/near_miss/twice",
+  "source": "PEtab-MCP#145 (2026-10-25), near miss: k*(1 - 2*exp(-X/K)) is negative below X = K*log(2)",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, activated by D | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "based_on": "indra_default",
+    "rate": "k*(1 - 2*exp(-activated_by/K))",
+    "parameters": [
+     "k",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "issue145/near_miss/rising",
+  "source": "PEtab-MCP#145 (2026-10-25), near miss: k*(1 - exp(X/K)) is never positive",
+  "rows": [
+   "p: MEK phosphorylates ERK at T202, activated by D | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "Phosphorylation",
+    "policy": "written",
+    "based_on": "indra_default",
+    "rate": "k*(1 - exp(activated_by/K))",
+    "parameters": [
+     "k",
+     "K"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "issue145/problem/a_below_0",
+  "source": "PEtab-MCP#145 (2026-10-25): k*(1 - exp(a*C)) with a below 0 rises with C",
+  "rows": [
+   "conv: A becomes B, activated by C | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "written",
+    "rate": "k*(1 - exp(a*activated_by))",
+    "parameters": [
+     "k",
+     "a"
+    ],
+    "based_on": "mass_action"
+   }
+  ],
+  "problem": {
+   "parameters": [
+    {
+     "parameterId": "conv_k",
+     "lowerBound": 0.001,
+     "upperBound": 1000.0,
+     "nominalValue": 1.0,
+     "estimate": 1,
+     "parameterScale": "log10"
+    },
+    {
+     "parameterId": "conv_a",
+     "lowerBound": -1.0,
+     "upperBound": -0.01,
+     "nominalValue": 1.0,
+     "estimate": 1,
+     "parameterScale": "lin"
+    }
+   ]
+  }
+ },
+ {
+  "id": "issue145/problem/a_across_0",
+  "source": "PEtab-MCP#145 (2026-10-25), near miss: k*(1 - exp(a*C)) is negative where a is above 0",
+  "rows": [
+   "conv: A becomes B, activated by C | written"
+  ],
+  "mechanisms": [
+   {
+    "statement_type": "PopulationTransition",
+    "policy": "written",
+    "rate": "k*(1 - exp(a*activated_by))",
+    "parameters": [
+     "k",
+     "a"
+    ],
+    "based_on": "mass_action"
+   }
+  ],
+  "problem": {
+   "parameters": [
+    {
+     "parameterId": "conv_k",
+     "lowerBound": 0.001,
+     "upperBound": 1000.0,
+     "nominalValue": 1.0,
+     "estimate": 1,
+     "parameterScale": "log10"
+    },
+    {
+     "parameterId": "conv_a",
+     "lowerBound": -1.0,
+     "upperBound": 1.0,
+     "nominalValue": 1.0,
+     "estimate": 1,
+     "parameterScale": "lin"
+    }
+   ]
+  }
+ },
+ {
   "id": "issue138/t_gate/rate",
   "source": "PEtab-MCP#138 (2026-10-24), t_gate: a rate's own g <= 0 branch",
   "rows": [

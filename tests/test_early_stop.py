@@ -358,6 +358,37 @@ def test_gamed_fit_does_not_overwrite_a_plausible_best_checkpoint(session):
     assert session.best.sigma_inflated is False  # ...best is still the plausible model
 
 
+def test_a_declined_new_best_is_not_stamped_as_one(session, monkeypatch):
+    """Regression (#141): `fit` stamped the score's verdict as `is_new_best` before the checkpoint
+    declined a gamed fit, so the result and `list_versions` named a new best that `best_version`
+    did not. Drives `fit` itself on synthetic fit numbers: the stamp is assembled there, which a
+    direct `record_fit_progress` call never reaches."""
+    plausible = {"sigma": {"fitted": 0.05, "data_std": 0.2, "fraction_of_data_std": 0.25}}
+    reports = iter([plausible, _fitsim_inflated_sigma(0.0, 0.0)["noise_sigma_report"]])
+    fits = iter([_fitsim(-50.0, 18.0), _fitsim(-80.0, 18.0)])  # the second scores far better
+
+    def fit_numbers(n_starts=None):
+        fs = {**next(fits), "n_starts": n_starts, "fitted_parameters": {}}
+        return fs, fitting.compute_improvement(session, fs["neg_log_likelihood"], fitsim=fs)
+
+    monkeypatch.setattr(session, "_auto_fit_and_improvement", fit_numbers)
+    monkeypatch.setattr(fitting, "noise_sigma_report", lambda *_: next(reports))
+    first = session.fit(n_starts=1)
+    assert first["improvement"]["is_new_best"] is True
+    res = session.fit(n_starts=2)  # more starts, so the de-dup lets the same structure refit
+
+    imp = res["improvement"]
+    assert imp["improvement_vs_best_prior"] >= NEW_BEST_MIN_DELTA_SCORE  # the score cleared it...
+    assert imp["is_new_best"] is False  # ...but the checkpoint kept the first, and the flag says so
+    assert "inflated" in imp["new_best_declined"]
+    assert f"v{first['version']}" in imp["new_best_declined"]
+    assert res["progress"]["best_version"] == first["version"]
+    meta = session.provenance.get_meta(res["version"])
+    event = [e for e in session.provenance.recent_events() if e["type"] == "fit"][-1]
+    assert meta["is_new_best"] is False and event["is_new_best"] is False
+    assert session.op_history[-1]["is_new_best"] is False
+
+
 def test_a_plausible_new_best_after_gaming_resets_the_streak(session):
     """The gate is specific to gamed improvements: a genuine (plausible-sigma) new best still resets
     the streak, so fixing the noise model immediately clears the accumulated penalty. Seeded with a
@@ -527,7 +558,10 @@ def test_nan_nll_yields_no_bic_at_all():
 
 def test_nan_first_fit_does_not_become_the_checkpoint(session):
     """A NaN first fit must leave the checkpoint unset, so the NEXT good fit can claim it."""
-    session.record_fit_progress(1, _fitsim(float("nan"), 145.98, n=21, k=10), {"is_new_best": True})
+    nan_fs = _fitsim(float("nan"), 145.98, n=21, k=10)
+    # ...and is not stamped a new best either, which `best_version` would contradict (#141).
+    assert fitting.compute_improvement(session, float("nan"), fitsim=nan_fs)["is_new_best"] is False
+    session.record_fit_progress(1, nan_fs, {"is_new_best": True})
     p = session.progress_report()
     assert p["best_version"] is None
     assert p["best_score"] is None
