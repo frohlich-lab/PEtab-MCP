@@ -619,7 +619,7 @@ class PetabSession:
         return {
             "applied": True,
             "change": how,
-            **constraints.describe(),
+            "constraints": constraints.texts(),
             "head_violates": broken.get(head, []) if head is not None else [],
             "violating_versions": {str(v): ids for v, ids in broken.items()},
             "best_version": self.best.version if self.best else None,
@@ -775,11 +775,10 @@ class PetabSession:
 
         p = self.problem
         sm = self.model.sbml_model
-        # The claims every model must make, where the session has any (:mod:`constraints`).
+        # How many claims every model must make, where the session has any; `list_constraints`
+        # lists them, with what makes each hold (:mod:`constraints`).
         constrained = (
-            self.constraints.describe() | {"constraint_updates": self.constraint_updates}
-            if self.constraints is not None
-            else {}
+            {"n_constraints": len(self.constraints.items)} if self.constraints is not None else {}
         )
         return constrained | {
             "model_id": self.model.model_id,

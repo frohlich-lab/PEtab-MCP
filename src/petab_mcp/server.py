@@ -804,8 +804,9 @@ class _Ctx:
 
 # MCP tool annotations: hints a client may use to auto-approve reads and to confirm writes. A
 # "read-only" tool may still log a failed call or cache the on-demand simulation; neither changes
-# what any later call returns. The writers are NOT destructive: each appends a version and
-# erases nothing (see ``provenance``), and neither is idempotent, since a repeat appends again.
+# what any later call returns. The writers are NOT destructive: ``make_changes`` appends a version
+# and ``restore_version`` moves HEAD onto one, and neither erases anything (see ``provenance``).
+# Neither is idempotent: a repeat appends another version or another ``rollback`` event.
 _READ_ONLY = {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False}
 #: ``make_changes`` reaches PubMed when given ``references``, hence open-world.
 _MAKE_CHANGES_ANNOTATIONS = {
@@ -1024,8 +1025,7 @@ _HELD_INPUTS = (
 
 #: What the `statements` route's paragraph adds on a server holding constraints (:mod:`constraints`).
 _MAKE_CHANGES_CONSTRAINTS = (
-    "This session holds CONSTRAINTS (`describe_problem`'s `constraints`): claims every model must "
-    "make. A change whose model breaks one is refused, naming each it breaks and why "
+    "This session holds CONSTRAINTS (`list_constraints`): claims every model must make. A change whose model breaks one is refused, naming each it breaks and why "
     "(`error_cause: constraint_violated`), and NOTHING is applied; a parameter change is checked "
     "too, since a bound can turn a regulator. One ending `, directly` needs one row to claim it: "
     "its reaction, driven the stated way by the constraint's subject as its catalyst or as a "
@@ -1034,8 +1034,8 @@ _MAKE_CHANGES_CONSTRAINTS = (
     "subject's change to its object with the stated sign; where one of the other sign exists too, "
     "the result says so, and keeps both. `not ..., directly` forbids a row that claims it, and `X "
     "does not affect Y` any claim (`directly`) or chain (`indirectly`) from X to Y. `activates` and "
-    "`inhibits` are about the forms `active_forms` declares. Agents are matched by name: use the "
-    "constraints' names."
+    "`inhibits` are about the forms the constraints declare active. Agents are matched by name: use "
+    "the constraints' names."
 )
 
 
@@ -1221,12 +1221,6 @@ def _statements_text(session, version: int | None) -> str:
         lines.append(f"amount {name} = {notation.agent_text(agent)}")
     for readout, formula in (record.get("readouts") or {}).items():
         lines.append(f"readout {readout} = {formula}")
-    # What makes each of the session's constraints hold, as the change was checked.
-    for cid, verdict in ((record.get("constraints") or {}).get("verdicts") or {}).items():
-        how = (f"by `{'`, `'.join(verdict['rows'])}`" if verdict.get("rows")
-               else f"through {verdict['chain']}" if verdict.get("chain") else "holds")
-        other = f"; the other way too: {verdict['opposite']}" if verdict.get("opposite") else ""
-        lines.append(f"constraint {cid} {how}{other}")
     return "\n".join(lines)
 
 
@@ -1689,7 +1683,7 @@ def _register_model_tools(
             statements_doc += "\n\n" + _MAKE_CHANGES_CONSTRAINTS
             if session.constraint_updates == "any":
                 statements_doc += (
-                    " They may change during the session (`set_constraints`): `describe_problem` "
+                    " They may change during the session (`set_constraints`): `list_constraints` "
                     "shows the set in force."
                 )
         if not statements_only:
@@ -2240,8 +2234,9 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         fit instead of recompiling and refitting. Prefer this over re-authoring an earlier model
         with `make_changes`, which refuses an exact re-author of a fitted version; this reuses the
         existing fit and records a clean restore. Find the target with `list_versions`
-        (pick the best-scoring / is_new_best version), then `restore_version(v)`. Appends a new
-        version rather than erasing history, so a restore is itself auditable."""
+        (pick the best-scoring / is_new_best version), then `restore_version(v)`. HEAD moves back
+        to that version: no version is added or erased, and the restore is recorded as a
+        `rollback` event in the provenance log."""
         ctx = route()
         session = ctx.session
         return ctx.run(
@@ -2360,18 +2355,42 @@ def _register_resources(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
 
 # ------------------------------------------------------------------ constraint tools
 def _register_constraint_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
-    """``set_constraints``, registered only on a server started with ``constraint_updates='any'``:
-    absent otherwise, not refused (:mod:`constraints`)."""
+    """``list_constraints``, on a server started with constraints, and ``set_constraints`` where it
+    was started with ``constraint_updates='any'``: absent otherwise, not refused (:mod:`constraints`)."""
     from . import constraints as constraints_mod
 
+    @mcp.tool(annotations=_READ_ONLY)
+    def list_constraints() -> dict[str, Any]:
+        """The session's CONSTRAINTS, the claims every model must make, as written (`, directly`: one
+        row claims it; `, indirectly`: a chain of your rows' claims carries it), each with what makes
+        it hold on the current model: the `rows` that claim it, the `chain` that carries it, and
+        `opposite`, a chain of the other sign that also exists; or `why` it does not. `active_forms`
+        are the forms `activates` and `inhibits` are about; `updates` says whether `set_constraints`
+        may change them (`any`) or not (`off`)."""
+        session = route().session
+        constraints = session.constraints
+        verdicts = constraints_mod.check(constraints, session.model_statements)
+        return {
+            "constraints": [
+                {"id": c.id, "text": c.text}
+                | ({"source": c.source} if c.source else {})
+                | verdicts[c.id].stored()
+                for c in constraints.items
+            ],
+            "active_forms": [f"{f.id}: {f.text}" for f in constraints.active_forms],
+            "updates": session.constraint_updates,
+        }
+
+    if route().session.constraint_updates != "any":
+        return
+
     @mcp.tool(annotations=_RESTORE_ANNOTATIONS)
-    def set_constraints(constraints: list[str | dict[str, Any]], rationale: str) -> dict[str, Any]:
+    def set_constraints(constraints: list[str], rationale: str) -> dict[str, Any]:
         """Replace the session's CONSTRAINTS, the claims every model must make, with a whole new
-        set: each a line as `describe_problem` lists them (`c1: EPO increases SOCS3, indirectly`,
-        `c2: not EPO phosphorylates STAT5, directly`, `a1: STAT5{pY694} is active`), or an object
-        (`{id, statement, kind, not?}`, `{id, does_not_affect: [X, Y], kind}`, `{id, active_form}`).
-        Every change from here on is checked against them. A stored version they break is flagged
-        in `list_versions`, can no longer be restored, and no longer counts as the best. The result
+        set, each a line as `list_constraints` lists them (`c1: EPO increases SOCS3, indirectly`,
+        `c2: not EPO phosphorylates STAT5, directly`, `a1: STAT5{pY694} is active`). Every change
+        from here on is checked against them. A stored version they break is flagged in
+        `list_versions`, can no longer be restored, and no longer counts as the best. The result
         says whether the update loosened or tightened the claims, and which versions break it,
         HEAD included; the next change must build a model that makes them. `rationale` says why,
         and is logged with the update."""
@@ -2380,22 +2399,30 @@ def _register_constraint_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         args = {"n_constraints": len(constraints)}
         if not (rationale or "").strip():
             return ctx.reject_operation(
-                "set_constraints", "set_constraints: give the `rationale` for the update; it is "
-                "logged with it. NOTHING was changed.", args)
+                "set_constraints",
+                "set_constraints: give the `rationale` for the update; it is logged with it. "
+                "NOTHING was changed.",
+                args,
+            )
         if (began := session.change_began) is not None:
             return ctx.reject_operation(
                 "set_constraints",
                 f"set_constraints: {FIT_IN_PROGRESS}: a change is still being fitted on this session "
                 f"(it began {time.monotonic() - began:.0f}s ago), checked against the constraints in "
                 "force, so NOTHING was changed: send the update once it ends.",
-                args, cause=FIT_IN_PROGRESS)
+                args,
+                cause=FIT_IN_PROGRESS,
+            )
         groundings = {agent.name: dict(agent.db_refs) for agent in session.entities.values()}
         try:
             new = constraints_mod.parse(constraints, groundings)
         except constraints_mod.ConstraintError as exc:
             return ctx.reject_operation(
-                "set_constraints", f"set_constraints: {exc}. NOTHING was changed.", args,
-                cause="unreadable_constraints")
+                "set_constraints",
+                f"set_constraints: {exc}. NOTHING was changed.",
+                args,
+                cause="unreadable_constraints",
+            )
         return ctx.run("set_constraints", lambda: session.set_constraints(new, rationale), args)
 
 
@@ -2420,6 +2447,20 @@ def _open_ctx(
     :class:`AmiciEngine` wired into it, and its held-out set. The arguments are
     :func:`create_server`'s, but for ``fit_engine``: the server's
     :class:`~petab_mcp.dask_engine.DaskEngine`, which the session's fits share, or ``None``."""
+    # Read before anything is built: a refused map leaves no provenance store or build directory.
+    entities = None
+    if entity_map:
+        from . import seeding as seeding_mod
+
+        entities = seeding_mod.load_entity_map(entity_map)
+    loaded = None
+    if constraints:
+        from . import constraints as constraints_mod
+
+        # With the map, before the session: refused if any does not read, as a prior is, and
+        # grounded as the rows are, by the map's names.
+        groundings = {agent.name: dict(agent.db_refs) for agent in (entities or {}).values()}
+        loaded = constraints_mod.read(constraints, groundings)
     session = PetabSession(
         yaml_path,
         provenance_dir=provenance_dir,
@@ -2432,22 +2473,14 @@ def _open_ctx(
     session.engine = engine
     session.auto_fit = auto_fit
     session.auto_fit_starts = auto_fit_starts
-    if entity_map:
-        from . import seeding as seeding_mod
-
-        session.entities = seeding_mod.load_entity_map(entity_map)
-    if constraints:
-        from . import constraints as constraints_mod
-
-        # Read as the session opens, refused if any does not read, as a prior is: grounded as the
-        # rows are, by the entity map's names. Logged, since the claims the session holds models
-        # to are part of what its versions mean.
-        groundings = {agent.name: dict(agent.db_refs) for agent in session.entities.values()}
-        session.constraints = constraints_mod.read(constraints, groundings)
+    if entities is not None:
+        session.entities = entities
+    if loaded is not None:
+        session.constraints = loaded
         session.constraint_updates = constraint_updates
+        # Logged: the claims the session holds models to are part of what its versions mean.
         session.provenance.append_event(
-            {"type": "constraints", "source": str(constraints),
-             "constraints": session.constraints.texts()}
+            {"type": "constraints", "source": str(constraints), "constraints": loaded.texts()}
         )
         # A resumed store may hold versions these break: they rank no more than a later set's do.
         if broken := session.constraint_violations():
@@ -2600,7 +2633,7 @@ def create_server(
     _register_fit_tools(mcp, route)
     if ctx.held_out is not None:
         _register_validation_data_tools(mcp, route)
-    if constraint_updates == "any":
+    if ctx.session.constraints is not None:
         _register_constraint_tools(mcp, route)
     _register_provenance_tools(mcp, route)
     _register_resources(mcp, route)

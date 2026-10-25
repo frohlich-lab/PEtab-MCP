@@ -189,7 +189,8 @@ def test_only_the_two_writers_are_annotated_as_writes(tmp_path):
     assert writers == {"make_changes", "restore_version"}
     for t in tools:
         if t.name in writers:
-            # Versioned: a write appends and erases nothing, and a repeat appends again.
+            # Versioned: a write erases nothing (`make_changes` appends a version, a restore a
+            # `rollback` event), and a repeat appends again.
             assert t.annotations.destructiveHint is False
             assert t.annotations.idempotentHint is False
 
