@@ -414,22 +414,33 @@ def _reaction(stmt: Statement) -> tuple[list[Agent], list[tuple[Agent, int]]]:
 
 
 def name_key(x: Statement | Agent) -> str:
-    """``x.matches_key()`` with every agent in it keyed by NAME, the model's identity: ungrounded,
-    under the name of the monomer it builds. INDRA keys an agent on its grounding, but the model
-    builds a monomer per name, so two agents sharing a grounding are two (bachmann's SOCS3 and
-    SOCS3_oe, a gene's nRNA, mRNA and protein), and a name grounded in one row and not in another
-    is one."""
+    """``x.matches_key()`` with every agent in it keyed by NAME, the model's identity (:func:`named`).
+    INDRA keys an agent on its grounding, but the model builds a monomer per name, so two agents
+    sharing a grounding are two (bachmann's SOCS3 and SOCS3_oe, a gene's nRNA, mRNA and protein),
+    and a name grounded in one row and not in another is one."""
+    if isinstance(x, Statement):
+        x = deepcopy(x)
+        for agent in x.real_agent_list():
+            _by_name(agent)
+        return x.matches_key()
+    return named(x).matches_key()
+
+
+def named(agent: Agent) -> Agent:
+    """A copy of ``agent`` keyed by name, its partners too: ungrounded, under the name of the monomer
+    it builds, so INDRA's own comparisons (``matches``, ``refinement_of``) compare what the model
+    does."""
+    agent = deepcopy(agent)
+    _by_name(agent)
+    return agent
+
+
+def _by_name(agent: Agent) -> None:
     from indra.assemblers.pysb.assembler import _n
 
-    def by_name(agent: Agent) -> None:
-        agent.name, agent.db_refs = _n(agent.name), {}
-        for condition in agent.bound_conditions:
-            by_name(condition.agent)
-
-    x = deepcopy(x)
-    for agent in x.real_agent_list() if isinstance(x, Statement) else [x]:
-        by_name(agent)
-    return x.matches_key()
+    agent.name, agent.db_refs = _n(agent.name), {}
+    for condition in agent.bound_conditions:
+        _by_name(condition.agent)
 
 
 def _modification(stmt: Modification) -> tuple[list[Agent], list[tuple[Agent, int]]]:

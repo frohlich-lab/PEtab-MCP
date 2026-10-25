@@ -76,6 +76,14 @@ def build_parser() -> argparse.ArgumentParser:
         "`antimony` and `model_edits`.",
     )
     parser.add_argument(
+        "--constraints",
+        default=None,
+        metavar="PATH",
+        help="With --entity-map: causal claims every model must make (petab_mcp.constraints), "
+        "one per line, each ending `, directly` or `, indirectly`; make_changes refuses a model "
+        "that breaks one. Implies --statements-only.",
+    )
+    parser.add_argument(
         "--transport",
         default="stdio",
         choices=["stdio", "sse", "streamable-http"],
@@ -167,6 +175,13 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    if args.constraints and not args.entity_map:
+        print(
+            "error: --constraints needs --entity-map: a constraint is a claim the statements route's "
+            "rows make, and only that route builds from statements.",
+            file=sys.stderr,
+        )
+        return 2
     if args.slurm_max_jobs > 0 and not args.build_root:
         print(
             "error: --slurm-max-jobs needs --build-root (or PETAB_MCP_BUILD_ROOT) on storage the "
@@ -192,6 +207,7 @@ def main(argv: list[str] | None = None) -> int:
             criterion=args.criterion,
             entity_map=args.entity_map,
             statements_only=args.statements_only,
+            constraints=args.constraints,
             cluster=cluster,
         )
         server.run(transport=args.transport)

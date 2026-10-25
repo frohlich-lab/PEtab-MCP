@@ -1073,6 +1073,25 @@ _HELD_INPUTS = (
 )
 
 
+#: What the `statements` route's paragraph adds on a server holding constraints (:mod:`constraints`).
+_MAKE_CHANGES_CONSTRAINTS = (
+    "This session holds CONSTRAINTS (`list_constraints`): claims every model must make. A change whose model breaks one is refused, naming each it breaks and why "
+    "(`error_cause: constraint_violated`), and NOTHING is applied; a parameter change is checked "
+    "too, since a bound can turn a regulator. One ending `, directly` needs one row to claim it: "
+    "its reaction, driven the stated way by the constraint's subject as its catalyst or as a "
+    "regulator of the kind its rate records (state a regulator on the row it acts on, `..., "
+    "inhibited by X`). One ending `, indirectly` needs the network your rows expand to to carry "
+    "the subject's change to its object with the stated sign, traced through each reaction: a "
+    "catalyst, a regulator as its rate records it, a substrate or a partner hands the change on "
+    "to what the reaction makes or changes, and a competitor or an antagonist that takes a "
+    "molecule away lowers what that molecule goes on to make. `not ..., directly` forbids a row "
+    "that claims it, and `X does not affect Y` any claim (`directly`) or traced change "
+    "(`indirectly`) from X to Y. `activates` and "
+    "`inhibits` are about the forms the constraints declare active. Agents are matched by name: use "
+    "the constraints' names."
+)
+
+
 def _make_changes_statements_doc(
     bound: bool = True, held: dict[str, Any] | None = None, alone: bool = False
 ) -> str:
@@ -1745,6 +1764,8 @@ def _register_model_tools(
             held={getattr(session.entities.get(i.id), "name", i.id): i for i in session.inputs},
             alone=statements_only,
         )
+        if session.constraints is not None:
+            statements_doc += "\n\n" + _MAKE_CHANGES_CONSTRAINTS
         if not statements_only:
             mcp.tool(
                 description=_make_changes_doc(statements_doc=statements_doc),
@@ -2409,6 +2430,45 @@ def _register_resources(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         return path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
 
 
+# ------------------------------------------------------------------ constraint tools
+def _verdicts(session, constraints) -> dict[str, Any]:
+    """Each constraint's verdict on the current model: as its commit checked it where its record
+    keeps that under these constraints, else checked now (tracing runs BioNetGen)."""
+    from . import constraints as constraints_mod
+
+    record = session.model_statements
+    kept = (record or {}).get("constraints") or {}
+    if kept.get("checked") == constraints.texts():
+        return {cid: constraints_mod.Verdict(**v) for cid, v in kept["verdicts"].items()}
+    return constraints_mod.check(
+        constraints, record, lambda: ops_mod.statements_model(session, record)
+    )
+
+
+def _register_constraint_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
+    """``list_constraints``, on a server started with constraints (:mod:`constraints`)."""
+
+    @mcp.tool(annotations=_READ_ONLY)
+    def list_constraints() -> dict[str, Any]:
+        """The session's CONSTRAINTS, the claims every model must make, as written (`, directly`: one
+        row claims it; `, indirectly`: the network your rows expand to carries it, traced from its
+        subject), each with what makes it hold on the current model: the `rows` that claim it, or
+        whose reactions carry the traced change onto its object; or `why` it does not.
+        `active_forms` are the forms `activates` and `inhibits` are about."""
+        session = route().session
+        constraints = session.constraints
+        verdicts = _verdicts(session, constraints)
+        return {
+            "constraints": [
+                {"id": c.id, "text": c.text}
+                | ({"source": c.source} if c.source else {})
+                | verdicts[c.id].stored()
+                for c in constraints.items
+            ],
+            "active_forms": [f"{f.id}: {f.text}" for f in constraints.active_forms],
+        }
+
+
 def _open_ctx(
     yaml_path: str,
     *,
@@ -2423,6 +2483,7 @@ def _open_ctx(
     auto_fit: bool,
     entity_map: str | None,
     fit_engine: Any | None,
+    constraints: str | None = None,
 ) -> _Ctx:
     """Open the session on the problem at ``yaml_path``: its :class:`PetabSession`, the
     :class:`AmiciEngine` wired into it, and its held-out set. The arguments are
@@ -2434,6 +2495,14 @@ def _open_ctx(
         from . import seeding as seeding_mod
 
         entities = seeding_mod.load_entity_map(entity_map)
+    loaded = None
+    if constraints:
+        from . import constraints as constraints_mod
+
+        # With the map, before the session: refused if any does not read, as a prior is, and
+        # grounded as the rows are, by the map's names.
+        groundings = {agent.name: dict(agent.db_refs) for agent in (entities or {}).values()}
+        loaded = constraints_mod.read(constraints, groundings)
     session = PetabSession(
         yaml_path,
         provenance_dir=provenance_dir,
@@ -2448,6 +2517,12 @@ def _open_ctx(
     session.auto_fit_starts = auto_fit_starts
     if entities is not None:
         session.entities = entities
+    if loaded is not None:
+        session.constraints = loaded
+        # Logged: the claims the session holds models to are part of what its versions mean.
+        session.provenance.append_event(
+            {"type": "constraints", "source": str(constraints), "constraints": loaded.texts()}
+        )
     if score_shipped_model and session.model_authored():
         fitting_mod.score_at_nominal(session, engine)
     held_out = None
@@ -2473,6 +2548,7 @@ def create_server(
     score_shipped_model: bool = False,
     entity_map: str | None = None,
     statements_only: bool = False,
+    constraints: str | None = None,
     cluster: Any | None = None,
 ) -> FastMCP:
     """Build a FastMCP server bound to the PEtab problem at ``yaml_path``.
@@ -2512,6 +2588,11 @@ def create_server(
     omit it and the route does not exist. ``statements_only`` (which needs it) withholds the
     ``antimony`` and ``model_edits`` routes, so the model is built from statements alone.
 
+    ``constraints`` is a file of causal claims every model must make (:mod:`constraints`), each
+    ending ``, directly`` or ``, indirectly``: ``make_changes`` refuses a model that breaks one,
+    naming it. It needs ``entity_map`` and implies ``statements_only``: a model built from Antimony
+    states no claims to check. A file that does not read is refused here.
+
     ``cluster`` (a ``distributed`` cluster, the ``dask`` extra) runs every fit's starts on that
     cluster's workers through one client (:mod:`petab_mcp.dask_engine`); without one, each fit runs
     its starts in local processes. The workers import the compiled models from ``build_root``, so on
@@ -2522,6 +2603,12 @@ def create_server(
         raise ValidationError(
             "statements_only needs an entity_map: it offers the statements route alone."
         )
+    if constraints and entity_map is None:
+        raise ValidationError(
+            "constraints need an entity_map: a constraint is a claim the statements route's rows "
+            "make, and only that route builds from statements."
+        )
+    statements_only = statements_only or bool(constraints)
     fit_engine = None
     if cluster is not None:
         from .dask_engine import DaskEngine
@@ -2540,6 +2627,7 @@ def create_server(
         auto_fit=auto_fit,
         entity_map=entity_map,
         fit_engine=fit_engine,
+        constraints=constraints,
     )
 
     # Load tool-usage skills up front so the server instructions only advertise
@@ -2572,6 +2660,8 @@ def create_server(
     _register_fit_tools(mcp, route)
     if ctx.held_out is not None:
         _register_validation_data_tools(mcp, route)
+    if ctx.session.constraints is not None:
+        _register_constraint_tools(mcp, route)
     _register_provenance_tools(mcp, route)
     _register_resources(mcp, route)
     # Register the skills loaded above as `list_skills`/`get_skill` tools plus
