@@ -39,8 +39,10 @@ statement (#134's prototype and #136's first version). Each special case it need
 complex coming apart, a link into a complex needing more of the complex itself, a step through the
 same row twice, sequestration at any step) was a hand-written reading of mechanics that BioNetGen's
 matching already decides, so tracing replaced it: on the formulations #134 measured it holds every
-true claim, the one the chains refused included (PRKACA raising cAMP), at the cost of one more
-false acceptance, and a false refusal costs the agent more than a false acceptance. Whether a model moves its object one way or the other is not
+true claim, the one the chains refused included (PRKACA raising cAMP), and one false claim fewer.
+The three false claims it holds each have a route of its sign beside the one that wins in
+simulation (bachmann's SHP1 and SOCS3 feedbacks, boehm's STAT5A coming back from the
+heterodimer). Whether a model moves its object one way or the other is not
 decidable from its structure once it has feedback (on those formulations a route of the opposite
 sign exists for most true indirect claims), so an indirect constraint holds wherever the trace
 moves it as claimed, whatever else the trace also finds; which way the fitted model moves it is the
@@ -582,7 +584,7 @@ def _traced(
     for (subject_text, unsigned), cs in groups.items():
         subject = cs[0].subject
         targets = {
-            (c.id, i): (f.agent, f.active)
+            (c.id, i): (f.agent, f.active, f.way is None)
             for c in cs
             for i, f in enumerate(c.forms)
             if _formed(built, f.agent)
