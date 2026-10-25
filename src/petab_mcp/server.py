@@ -2163,10 +2163,11 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
     def list_versions() -> list[dict[str, Any]]:
         """Every model version (each a fit snapshot) with its kind, label and fit metrics
         (`neg_log_likelihood`, every score, `criterion_value`): which structures have been tried
-        and how they scored. `is_new_best` is true for the first, then where
+        and how they scored. `is_new_best` marks each version that became the best model (the last
+        one is `get_progress`'s `best_version`): the first, then each whose
         `improvement_vs_best_prior` (over `best_prior_criterion_value`) reached
-        `new_best_min_improvement`. Every version is kept, and the best one stands whatever comes
-        after it."""
+        `new_best_min_improvement`, unless `new_best_declined` says why the earlier best stood.
+        Every version is kept, and the best one stands whatever comes after it."""
         ctx = route()
         session = ctx.session
         return session.provenance.list_versions()
@@ -2204,7 +2205,7 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         fit instead of recompiling and refitting. Prefer this over re-authoring an earlier model
         with `make_changes`, which refuses an exact re-author of a fitted version; this reuses the
         existing fit and records a clean restore. Find the target with `list_versions`
-        (pick the best-scoring / is_new_best version), then `restore_version(v)`. HEAD moves back
+        (the best model is the last `is_new_best` one), then `restore_version(v)`. HEAD moves back
         to that version: no version is added or erased, and the restore is recorded as a
         `rollback` event in the provenance log."""
         ctx = route()
@@ -2222,7 +2223,8 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         `{n_fitted_ops, non_improving_streak, streak_cap, best_version, criterion, best_score,
         best_gof_pvalue, score_improvement_over_last_n, plateau_window, should_stop, stop_reason}`.
         `best_score` is under `criterion` — the complexity penalty this session ranks by.
-        `best_version` is the best-scoring fitted model committed so far (the session's result);
+        `best_version` is the best model so far (the session's result), the last version whose fit
+        says `is_new_best`;
         `non_improving_streak` counts consecutive fitted ops since the last real new best.
         `should_stop` is set (with a `stop_reason`) once the session has stopped making progress —
         the hard non-improving-streak cap, or a plateau once the best model is statistically
