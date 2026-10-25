@@ -362,12 +362,10 @@
   "verdict": "accepted"
  },
  "perica_egf/61180684_1/mek_act_braf": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "perica_egf/61180684_1/mek_act_raf1": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "perica_egf/61180684_1/sos1_gef": {
   "verdict": "accepted"
@@ -410,16 +408,32 @@
   "verdict": "accepted"
  },
  "perica_egf/61180684_2/mek_activation_mm": {
-  "kind": "build",
-  "verdict": "refused"
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "perica_egf/61180684_2/mek_activation_ras": {
-  "kind": "build",
-  "verdict": "refused"
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by",
+    "modulated_by_2": "activated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "perica_egf/61180684_2/mek_activation_ras2": {
-  "kind": "build",
-  "verdict": "refused"
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by",
+    "modulated_by_1": "activated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "perica_egf/61180684_2/shp_brake_dephos": {
   "derived": {
@@ -438,27 +452,22 @@
   "verdict": "accepted"
  },
  "perica_egf/61180684_3/act_act": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "perica_egf/61180684_3/act_act/1": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "perica_egf/61180684_3/act_phos": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "perica_egf/61180684_3/act_phos/1": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "perica_egf/61180684_3/fb_phos_deact": {
   "verdict": "accepted"
  },
  "perica_egf/61180684_3/fb_phos_deact/1": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "perica_egf/61180684_3/gef_gab1": {
   "derived": {
@@ -486,20 +495,16 @@
   "verdict": "accepted"
  },
  "perica_egf/61181345_4/braf_inhib": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "perica_egf/61181345_4/egfr_inhib": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "perica_egf/61181345_4/egfr_s695_shp": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "perica_egf/61181345_4/raf1_inhib": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "perica_egf/61181345_4/raf_act": {
   "derived": {
@@ -667,8 +672,7 @@
   "verdict": "accepted"
  },
  "perica_egf/61230791_1/gef_active": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "perica_egf/61230791_1/mek_gated": {
   "derived": {
@@ -682,20 +686,16 @@
   "verdict": "accepted"
  },
  "perica_egf/61230791_1/recruited_enz_phos": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "perica_egf/61230791_1/recruited_enz_phos/1": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "perica_egf/61230791_1/recruited_sub_phos": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "perica_egf/61230791_1/recruited_sub_phos/1": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "perica_egf/61230791_2/act_off": {
   "verdict": "accepted"
@@ -718,20 +718,31 @@
   "verdict": "accepted"
  },
  "perica_egf/61230791_2/egfr_act": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "perica_egf/61230791_2/egfr_act2": {
-  "kind": "build",
-  "verdict": "refused"
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "perica_egf/61230791_2/egfr_act3": {
-  "kind": "build",
-  "verdict": "refused"
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "perica_egf/61230791_2/egfr_act4": {
-  "kind": "build",
-  "verdict": "refused"
+  "derived": {
+   "r": {
+    "modulated_by_0": "activated_by"
+   }
+  },
+  "verdict": "accepted"
  },
  "perica_egf/61230791_2/egfr_phos": {
   "derived": {
@@ -760,8 +771,7 @@
   "verdict": "accepted"
  },
  "perica_egf/61230791_2/erk1_auto": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "perica_egf/61230791_2/erk1_auto/1": {
   "kind": "build",
@@ -902,8 +912,7 @@
   "verdict": "accepted"
  },
  "perica_egf/61230791_2/t693_off": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "perica_egf/61230791_3/ras_gef2": {
   "derived": {
@@ -2434,55 +2443,43 @@
   "verdict": "accepted"
  },
  "sweep_55max/multi120/rr_S2S2_pp": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "sweep_55max/multi121/rr_S2S3_pp": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "sweep_55max/multi122/rr_S3S3_pp": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "sweep_55max/multi123/r4w_S2u": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "sweep_55max/multi124/r4w_S3u": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "sweep_55max/multi125/r4p_S2": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "sweep_55max/multi126/r4p_S3": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "sweep_55max/multi127/rr_S2uS3pp": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "sweep_55max/multi128/rr_S2mS3pp": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "sweep_55max/multi129/rr_S2ppS3u": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "sweep_55max/multi13/h4_ac_coop_5c": {
   "verdict": "accepted"
  },
  "sweep_55max/multi130/rr_S2ppS3m": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "sweep_55max/multi131/rr_S2uS3u": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "sweep_55max/multi132/lig_irrev": {
   "verdict": "accepted"
@@ -2626,27 +2623,23 @@
   "verdict": "refused"
  },
  "sweep_55max/multi157/lig_bind": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "sweep_55max/multi158/cet_bind": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "sweep_55max/multi159/lig_bind": {
   "kind": "unnamed",
   "verdict": "refused"
  },
  "sweep_55max/multi16/raf_act_gate2": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "sweep_55max/multi160/lig_dephos": {
   "verdict": "accepted"
  },
  "sweep_55max/multi161/rec_driveE": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "sweep_55max/multi162/bind_mono": {
   "verdict": "accepted"
@@ -2660,12 +2653,10 @@
   "verdict": "refused"
  },
  "sweep_55max/multi165/active_sub_activates": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "sweep_55max/multi166/active_sub_activates": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "sweep_55max/multi167/insulin_act": {
   "verdict": "accepted"
@@ -2742,23 +2733,20 @@
   "verdict": "accepted"
  },
  "sweep_55max/multi187/cis_bind": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "sweep_55max/multi188/socs_bind": {
   "kind": "build",
   "verdict": "refused"
  },
  "sweep_55max/multi189/cis_bind": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "sweep_55max/multi19/protein_synth": {
   "verdict": "accepted"
  },
  "sweep_55max/multi190/socs_bind": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "sweep_55max/multi191/cis_bind2": {
   "verdict": "accepted"
@@ -2790,8 +2778,7 @@
   "verdict": "accepted"
  },
  "sweep_55max/multi199/bind_act_deg": {
-  "kind": "build",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "sweep_55max/multi2/h4_ac_coop_12": {
   "verdict": "accepted"
