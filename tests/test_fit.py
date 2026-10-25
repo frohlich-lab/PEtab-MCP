@@ -587,6 +587,72 @@ def test_a_log_normal_observable_keeps_the_fit_joint(session):
     assert fitting._build_hierarchical_problem(session, {}) == (None, {})
 
 
+def _scale_offset_problem(session, formula):
+    """The toy with fontaine_sag's observation model: ``obs_B`` reads ``formula`` over two
+    placeholders, which each measurement fills with the estimated ``scale_B`` and ``offset_B``."""
+    p = session.problem
+    p = session.problem = p.replace(
+        observable_df=p.observable_df.assign(
+            observableFormula=formula,
+            observablePlaceholders="observableScale_obs_B;observableOffset_obs_B",
+        ),
+        measurement_df=p.measurement_df.assign(observableParameters="scale_B;offset_B"),
+    )
+    for pid, value in (("scale_B", 1.0), ("offset_B", 0.0)):
+        p.parameter_df.loc[pid] = p.parameter_df.loc["k1"]
+        p.parameter_df.loc[pid, ["parameterScale", "lowerBound", "upperBound"]] = ["lin", -10, 10]
+        p.parameter_df.loc[pid, ["nominalValue", "estimate"]] = [value, True]
+    return p
+
+
+def test_a_scale_and_an_offset_are_solved_as_what_they_are(session):
+    """`scale * readout + offset`, both filled per measurement by overrides, as fontaine_sag's
+    flow-cytometry means are: the scale is a scaling and the offset an offset. Both used to be
+    called scalings, pyPESTO refused two of one type, and every fit fell back to a joint one."""
+    from petab_mcp import fitting
+
+    p = _scale_offset_problem(session, "observableScale_obs_B * B + observableOffset_obs_B")
+    assert fitting._reconcile.classify_inner_parameters(p) == {
+        "scale_B": "scaling",
+        "offset_B": "offset",
+    }
+
+
+@pytest.mark.parametrize(
+    ("formula", "inner"),
+    [
+        # pyPESTO would fold the constant into the scaled term (ICB-DCM/pyPESTO#1785).
+        ("observableScale_obs_B * B + 1", {}),
+        ("observableScale_obs_B * B + observableOffset_obs_B + 1", {"offset_B": "offset"}),
+        ("exp(observableScale_obs_B) * B + observableOffset_obs_B", {"offset_B": "offset"}),
+        ("observableScale_obs_B * observableOffset_obs_B * B", {}),  # two scalings
+        ("B + observableScale_obs_B + observableOffset_obs_B", {}),  # two offsets
+        ("observableScale_obs_B * B + 2 * observableOffset_obs_B", {}),
+        ("observableScale_obs_B * (B + 1)", {"scale_B": "scaling"}),
+    ],
+)
+def test_an_observable_parameter_in_no_clean_role_stays_outer(session, formula, inner):
+    """Only `scaling * expr + offset`, one of each, is what pyPESTO solves; anything else is
+    fitted with the outer parameters."""
+    from petab_mcp import fitting
+
+    p = _scale_offset_problem(session, formula)
+    assert fitting._reconcile.classify_inner_parameters(p) == inner
+
+
+def test_pypesto_takes_a_scale_and_an_offset_hierarchically(fit_session):
+    """The regression itself: pyPESTO builds the hierarchical problem, rather than refusing it
+    and leaving the fit joint."""
+    from petab_mcp import fitting
+
+    _scale_offset_problem(fit_session, "observableScale_obs_B * B + observableOffset_obs_B")
+    kwargs = fit_session.engine.pypesto_importer_kwargs(fit_session.module_hash())
+    problem, inner = fitting._build_hierarchical_problem(fit_session, kwargs)
+    assert problem is not None
+    assert inner == {"scale_B": "scaling", "offset_B": "offset"}
+    assert set(problem.objective.calculator.get_interpretable_inner_par_ids()) == set(inner)
+
+
 def test_every_inner_value_must_come_back_from_the_fit():
     """Every inner parameter the server classified must come back from pyPESTO's result. A missing
     one was skipped silently, leaving its pre-fit value in the table beside a score taken at the
