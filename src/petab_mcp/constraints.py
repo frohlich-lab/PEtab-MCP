@@ -13,14 +13,14 @@ Each is read, once, into what it asks: that its subject, raised, move each of so
 (:class:`Constraint`). ``, directly`` asks it of one row's reaction, the subject its catalyst, one
 of its regulators or a reactant, and every form the constraint's own reaction changes moving as it
 does (a phosphorylation makes the phosphorylated form and takes the unphosphorylated one).
-``, indirectly`` asks it of a chain of the rows' reactions, for the form the constraint is about.
-There is no default. ``not <statement>, directly`` holds where no row entails the statement, and
-``X does not affect Y`` where no row (``directly``) or no chain (``indirectly``) moves any form of Y
-from X, either way. ``<agent> is active`` (``inactive``, ``as kinase``) declares the forms
-``activates`` and ``inhibits`` are about: activity is what the user says, never inferred from the
-agent's rows, and an activity constraint on an undeclared agent is refused as the file loads. A
-regulator of a reaction a declared active form catalyses moves that activity, as ``as_indra``
-projects it ("IBMX inhibits PDE").
+``, indirectly`` asks it of the network the rows expand to, for the form the constraint is about,
+traced from the subject (:mod:`tracing`). There is no default. ``not <statement>, directly``
+holds where no row entails the statement, and ``X does not affect Y`` where no row (``directly``)
+or no trace (``indirectly``) moves any form of Y from X, either way. ``<agent> is active``
+(``inactive``, ``as kinase``) declares the forms ``activates`` and ``inhibits`` are about:
+activity is what the user says, never inferred from the agent's rows, and an activity constraint
+on an undeclared agent is refused as the file loads. A regulator of a reaction a declared active
+form catalyses moves that activity, as ``as_indra`` projects it ("IBMX inhibits PDE").
 
 Every claim is a row's own: its reaction (:data:`statements._REACTIONS`), its catalyst, and each
 regulator as the kind its rate records (:attr:`mechanisms.Emission.derived`, signed on the
@@ -32,35 +32,34 @@ constraint, but it is an effect, so it breaks ``does not affect``.
 An amount is read as a readout reads it: the sum over the species holding an agent in the stated
 form, the total where none is stated, and only a net change counts (:func:`_moves`). A row that
 moves an agent between forms inside the set it names changes nothing (``EGF binds EGFR`` leaves
-total EGFR as it is), which also keeps a chain from running through the forms of a multi-site
-protein that a reader lumps. A chain never takes two steps in a row through one row (a binding,
-then its own complex coming apart; a kinase lowering its substrate, which then feeds the product).
-A reactant lowers another it is consumed with (a binding partner its partner's free form, a
-co-reactant another) at any step: restricted to a chain's first step, to keep chains from running
-back up a binding, it refused isensee's antagonist competing with cAMP for the holoenzyme and
-changed no false claim's verdict on the formulations #134 measured. A binding claims its complex
-coming apart as well as forming, and that step needs more of the complex itself.
+total EGFR as it is).
 
-Whether a model moves its object one way or the other is not decidable from its structure once it
-has feedback: on those formulations a chain of the opposite sign also exists for 15 of 26 true
-indirect claims. So an indirect constraint holds on a chain of its sign, and one of the other sign
-is reported, never refused; which way the fitted model moves it is the fit's to say. There is no
-signed indirect negative (``not X increases Y, indirectly``) for the same reason: feedback breaks
-it on true models, and the way out would be deleting true feedback.
+Indirect constraints were first checked on chains of the rows' claims, read by hand from each
+statement (#134's prototype and #136's first version). Each special case it needed (a binding's
+complex coming apart, a link into a complex needing more of the complex itself, a step through the
+same row twice, sequestration at any step) was a hand-written reading of mechanics that BioNetGen's
+matching already decides, so tracing replaced it: on the formulations #134 measured it holds every
+true claim, the one the chains refused included (PRKACA raising cAMP), at the cost of one more
+false acceptance, and a false refusal costs the agent more than a false acceptance. Whether a model moves its object one way or the other is not
+decidable from its structure once it has feedback (on those formulations a route of the opposite
+sign exists for most true indirect claims), so an indirect constraint holds wherever the trace
+moves it as claimed, whatever else the trace also finds; which way the fitted model moves it is the
+fit's to say. There is no signed indirect negative (``not X increases Y, indirectly``) for the same
+reason: feedback breaks it on true models, and the way out would be deleting true feedback.
 
 Agents are matched by NAME, the model's identity: two agents may share a grounding (bachmann's
 SOCS3 and SOCS3_oe, a gene's nRNA, mRNA and protein), which is why :func:`_reaction` is
-:func:`statements._reaction` with its catalyst test by name (PEtab-MCP#137). The check reads the
-statements record alone, never the expansion, so it costs milliseconds and the reduction
-(:mod:`reduction`) does not change it. A constraint's statement is read by
-:func:`notation.statement`, the row reader's own; the qualifier, ``not``, ``does not affect`` and
-``is active`` are this module's.
+:func:`statements._reaction` with its catalyst test by name (PEtab-MCP#137). Direct constraints
+read the statements record alone and cost milliseconds; an indirect one runs BioNetGen on the
+model the rows build, once per subject (seconds to a minute on the formulations measured). A
+constraint's statement is read by :func:`notation.statement`, the row reader's own; the
+qualifier, ``not``, ``does not affect`` and ``is active`` are this module's.
 """
 
 from __future__ import annotations
 
 import re
-from collections import defaultdict, deque
+from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -96,7 +95,8 @@ class Constraint:
     """A constraint as written (``text`` without its id, ``claim`` without its qualifier) and what
     it asks: that ``subject`` (``None``: a row's reaction itself), raised, move ``forms``, every one
     of them (``every``) or any, through one row (``direct``) with ``regulators`` (kind, agent)
-    recorded on it, or through a chain; ``negated``, that no row does."""
+    recorded on it, or traced through the network (:mod:`tracing`); ``negated``, that no row
+    does."""
 
     id: str
     text: str
@@ -198,7 +198,7 @@ def _constraint(cid, body, source, active_forms, groundings) -> Constraint:
     if not q:
         raise ConstraintError(
             f"says neither `, directly` nor `, indirectly`: write `{body}, directly` (a row states "
-            f"it) or `{body}, indirectly` (a chain of the rows' claims does)"
+            f"it) or `{body}, indirectly` (the network the rows expand to carries it)"
         )
     claim, direct = q.group(1).strip(), q.group(2) == "directly"
     negated = claim.startswith("not ")
@@ -245,9 +245,9 @@ def _constraint(cid, body, source, active_forms, groundings) -> Constraint:
     if not direct:
         if negated:
             raise ConstraintError(
-                "there is no `not ..., indirectly`. In a model with feedback a chain of each sign "
-                "usually exists, so it would refuse true models; write `X does not affect Y, "
-                "indirectly` (no chain either way), or `not ..., directly`"
+                "there is no `not ..., indirectly`. In a model with feedback the network usually "
+                "moves it each way, so it would refuse true models; write `X does not affect Y, "
+                "indirectly` (no traced change either way), or `not ..., directly`"
             )
         if regs:
             raise ConstraintError(
@@ -255,8 +255,7 @@ def _constraint(cid, body, source, active_forms, groundings) -> Constraint:
             )
         if subject is None:
             raise ConstraintError(
-                f"a {type(stmt).__name__} names no cause and effect for a chain to connect; write it "
-                "`, directly`"
+                f"a {type(stmt).__name__} names no cause and effect to trace; write it `, directly`"
             )
         forms, every = (forms[:1], False) if every else (forms, every)
     return Constraint(cid, body, claim, direct, subject, forms, every, regs, negated, source)
@@ -442,7 +441,7 @@ class _Step:
 
 def steps(record: dict | None) -> list[_Step]:
     """The reactions ``record``'s rows (a statements record) claim, regulators as recorded."""
-    from indra.statements import Complex, SelfModification
+    from indra.statements import SelfModification
 
     from .statements import regulators
 
@@ -462,29 +461,7 @@ def steps(record: dict | None) -> list[_Step]:
                 drivers.append((agent, _SIGN[derived.get(f"{kind}_{i}", kind)], "regulator"))
         drivers += [(r, 1, "reactant") for r in reactants]
         out.append(_Step(row["prefix"], drivers, [*products, *((r, -1) for r in reactants)]))
-        if isinstance(stmt, Complex):
-            # Coming apart: driven by the complex, it raises each member free of the others and
-            # lowers the complex, seen from each (else cAMP leaving PKA's R subunit raised total cAMP).
-            out.append(
-                _Step(
-                    row["prefix"],
-                    [(p, 1, "complex") for p, _ in products],
-                    [*((r, 1) for r in reactants), *((p, -1) for p, _ in products)],
-                )
-            )
     return out
-
-
-def _changes(step: _Step, d: int | None, own: bool) -> list[tuple[Any, int]]:
-    """The changes of ``step`` driven by its driver ``d`` (``None``: by the reaction itself), but,
-    unless ``own``, that driver's own: a driver that rises does not also fall by its own
-    consumption, for the rows it drives next nor for a target it is part of (read so, a target's
-    own decay, "more pS6, more of it dephosphorylated", ended every chain the other way). One row's
-    net, read for a direct claim, counts it: binding EGFR leaves its total as it is."""
-    if d is None or own:
-        return step.effects
-    driver = step.drivers[d][0]
-    return [(e, c) for e, c in step.effects if not (e is driver or _same(e, driver))]
 
 
 def _moves(changes: list[tuple[Any, int]], target, strict: bool = False) -> set[int]:
@@ -501,16 +478,13 @@ def _moves(changes: list[tuple[Any, int]], target, strict: bool = False) -> set[
     return {1 if n > 0 else -1 for n in (within, partly) if n}
 
 
-def _moved(
-    step: _Step, d: int | None, form: _Form, strict: bool = False, own: bool = False
-) -> set[int]:
+def _moved(step: _Step, d: int | None, form: _Form, strict: bool = False) -> set[int]:
     """Which ways ``step``, driven by ``d``, moves ``form``, per unit of its flux. A form any change
     of which counts (``does not affect``) moves with any change of the agent; a declared active
     form's activity moves with its flux where ``d`` regulates a reaction the form catalyses."""
-    changes = _changes(step, d, own)
     if form.way is None:
-        return {1 if c > 0 else -1 for e, c in changes if compatible(e, form.agent)}
-    out = _moves(changes, form.agent, strict)
+        return {1 if c > 0 else -1 for e, c in step.effects if compatible(e, form.agent)}
+    out = _moves(step.effects, form.agent, strict)
     if (
         form.active
         and d is not None
@@ -523,7 +497,7 @@ def _moved(
 
 def _holds(step: _Step, d: int | None, flux: int, c: Constraint, want: int | None, **kw) -> bool:
     """Whether ``step``, driven by ``d`` at ``flux``, moves ``c``'s forms the way ``want``s: as
-    claimed (``1``), the other way (``-1``) or any way (``None``); ``every`` form, or one."""
+    claimed (``1``) or any way (``None``); ``every`` form, or one."""
 
     def one(form: _Form) -> bool:
         ways = _moved(step, d, form, **kw)
@@ -539,14 +513,14 @@ def _holds(step: _Step, d: int | None, flux: int, c: Constraint, want: int | Non
 # --------------------------------------------------------------------------------------- check
 @dataclass
 class Verdict:
-    """Whether a constraint holds, and on what: the rows that claim it (``directly``), the chain
-    that carries it and one of the other sign (``indirectly``), or why it does not."""
+    """Whether a constraint holds, and on what: the rows that claim it (``directly``) or whose
+    reactions move its form, traced from its subject (``indirectly``); or why it does not; or,
+    held, why it could not be checked."""
 
     ok: bool
     rows: tuple[str, ...] = ()
-    chain: str | None = None
-    opposite: str | None = None
     why: str | None = None
+    unchecked: str | None = None
 
     def stored(self) -> dict[str, Any]:
         return {
@@ -554,42 +528,120 @@ class Verdict:
         }
 
 
-def check(constraints: Constraints, record: dict | None) -> dict[str, Verdict]:
+def check(
+    constraints: Constraints, record: dict | None, model: Callable[[], tuple] | None = None
+) -> dict[str, Verdict]:
     """Each constraint's :class:`Verdict` on the model ``record`` (a statements record, ``None``
-    for a model not built from statements, which claims nothing)."""
+    for a model not built from statements, which claims nothing). ``model`` builds the PySB model
+    the record's rows build, seeded, and its emissions (:func:`operations.statements_model`): what
+    an indirect constraint is traced on, built only where there is one."""
     claimed = steps(record)
-    graph = _Graph(claimed)
-    return {c.id: _verdict(c, claimed, graph) for c in constraints.items}
+    indirect = [c for c in constraints.items if not c.direct]
+    traced = _traced(indirect, record, model) if indirect else {}
+    return {c.id: traced[c.id] if c.id in traced else _direct(c, claimed) for c in constraints.items}
 
 
-def _verdict(c: Constraint, claimed: list[_Step], graph: _Graph) -> Verdict:
-    unaffected = c.forms[0].way is None
-    if c.direct:
-        rows = _claiming(c, claimed)
-        if c.negated or unaffected:
-            who = f"row{'s' if len(rows) > 1 else ''} `{'`, `'.join(rows)}`"
-            said = f"{who} claim{'' if len(rows) > 1 else 's'} " + (
-                f"{_text(c.subject)} changes {_text(c.forms[0].agent)}" if unaffected else "it"
-            )
-            return Verdict(not rows, tuple(rows), why=said if rows else None)
-        return Verdict(True, tuple(rows)) if rows else Verdict(False, why=_why_direct(c, claimed))
-    if unaffected:
-        chain = graph.search(c, None)
-        return Verdict(
-            chain is None, chain=chain, why=chain and f"a chain of claims connects them: {chain}"
+def _direct(c: Constraint, claimed: list[_Step]) -> Verdict:
+    rows = _claiming(c, claimed)
+    if c.negated or c.forms[0].way is None:
+        unaffected = c.forms[0].way is None
+        who = f"row{'s' if len(rows) > 1 else ''} `{'`, `'.join(rows)}`"
+        said = f"{who} claim{'' if len(rows) > 1 else 's'} " + (
+            f"{_text(c.subject)} changes {_text(c.forms[0].agent)}" if unaffected else "it"
         )
-    same, opposite = graph.search(c, 1), graph.search(c, -1)
-    if same is not None:
-        return Verdict(True, chain=same, opposite=opposite)
-    return Verdict(
-        False,
-        opposite=opposite,
-        why=(
-            f"its claims connect them only the other way: {opposite}"
-            if opposite
-            else graph.frontier(c)
-        ),
-    )
+        return Verdict(not rows, tuple(rows), why=said if rows else None)
+    return Verdict(True, tuple(rows)) if rows else Verdict(False, why=_why_direct(c, claimed))
+
+
+def _traced(
+    items: list[Constraint], record: dict | None, model: Callable[[], tuple] | None
+) -> dict[str, Verdict]:
+    """The indirect constraints' verdicts, one trace per subject (:mod:`tracing`): a model whose
+    rows move none of a constraint's forms from its subject, or not as claimed, breaks it. A
+    trace that fails is no reason to refuse a model: it holds, unchecked, and says why."""
+    import logging
+
+    from . import tracing
+
+    if not (record or {}).get("rows"):
+        return {c.id: Verdict(c.forms[0].way is None, why=None if c.forms[0].way is None else
+                              "no row claims anything") for c in items}
+    try:
+        built, emissions = model()
+    except Exception as exc:  # noqa: BLE001 - a check that breaks refuses nothing; never a crash
+        logging.getLogger(__name__).exception("building the model to trace constraints on failed")
+        return {c.id: Verdict(True, unchecked=f"its model could not be built to trace: {exc}")
+                for c in items}
+    derived = {row["prefix"]: (row.get("emission") or {}).get("derived") or {}
+               for row in record["rows"]}
+    claimed = steps(record)
+    groups: dict[tuple[str, bool], list[Constraint]] = {}
+    for c in items:
+        groups.setdefault((_text(c.subject), c.forms[0].way is None), []).append(c)
+    out = {}
+    for (subject_text, unsigned), cs in groups.items():
+        subject = cs[0].subject
+        targets = {
+            (c.id, i): (f.agent, f.active)
+            for c in cs
+            for i, f in enumerate(c.forms)
+            if _formed(built, f.agent)
+        }
+        if not _formed(built, subject):
+            moved, reached = {}, []
+        else:
+            try:
+                found = tracing.trace(built, emissions, derived, subject, targets, unsigned=unsigned)
+            except Exception as exc:  # noqa: BLE001 - BioNetGen refusing refuses nothing
+                logging.getLogger(__name__).exception("tracing %s failed", subject_text)
+                out |= {c.id: Verdict(True, unchecked=f"tracing {subject_text} failed: {exc}")
+                        for c in cs}
+                continue
+            moved, reached = found.moved, found.reached
+        for c in cs:
+            out[c.id] = _read_trace(c, moved, reached, claimed)
+    return out
+
+
+def _formed(model, agent) -> bool:
+    """Whether ``model`` has the form ``agent`` writes: its monomer, with the sites it names."""
+    from .mechanisms import agent_pattern
+
+    try:
+        agent_pattern(model, agent)
+    except Exception:  # noqa: BLE001 - a form the rows never write is formed nowhere
+        return False
+    return True
+
+
+def _read_trace(c: Constraint, moved: dict, reached: list[str], claimed: list[_Step]) -> Verdict:
+    """``c``'s verdict on what tracing its subject moved: any of its forms the way it claims (any
+    way, for ``does not affect``, which holds where none moves)."""
+    from .tracing import Moved
+
+    found = [(f, moved.get((c.id, i)) or Moved()) for i, f in enumerate(c.forms)]
+    subject = _text(c.subject)
+    if c.forms[0].way is None:
+        hit = [(f, m) for f, m in found if m.raised or m.lowered]
+        if not hit:
+            return Verdict(True)
+        rows = tuple(dict.fromkeys(r for _, m in hit for r in (*m.rows[1], *m.rows[-1])))
+        return Verdict(False, rows, why=f"tracing {subject} moves {_text(hit[0][0].agent)}"
+                       + (f" through rows `{'`, `'.join(rows)}`" if rows else ""))
+    for f, m in found:
+        if (m.raised if f.way > 0 else m.lowered):
+            return Verdict(True, tuple(m.rows[f.way]))
+    form = c.forms[0]
+    what = _text(form.agent) if not form.active else f"the activity of {form.agent.name}"
+    way = "raises" if form.way > 0 else "lowers"
+    changers = sorted({s.prefix for s in claimed if _moved(s, None, form)})
+    traced = [name for name in reached if name != _name(c.subject.name)]
+    return Verdict(False, why=(
+        f"tracing {subject} through the network its rows expand to never {way} {what}; "
+        + (f"it reaches {', '.join(traced[:8])}" + (" ..." if len(traced) > 8 else "")
+           if traced else "it reaches no other agent")
+        + (f"; the rows that change {what} are `{'`, `'.join(changers[:8])}`" if changers else "")
+    ))
 
 
 def _claiming(c: Constraint, claimed: list[_Step]) -> list[str]:
@@ -612,13 +664,11 @@ def _claiming(c: Constraint, claimed: list[_Step]) -> list[str]:
             if c.subject is None
             else [
                 (k, d)
-                for d, (a, k, role) in enumerate(s.drivers)
-                if role != "complex"
-                and (k is not None or want is None)
-                and compatible(a, c.subject)
+                for d, (a, k, _) in enumerate(s.drivers)
+                if (k is not None or want is None) and compatible(a, c.subject)
             ]
         )
-        if any(_holds(s, d, k or 1, c, want, strict=True, own=True) for k, d in ways):
+        if any(_holds(s, d, k or 1, c, want, strict=True) for k, d in ways):
             rows.append(s.prefix)
     return list(dict.fromkeys(rows))
 
@@ -637,7 +687,7 @@ def _why_direct(c: Constraint, claimed: list[_Step]) -> str:
         found = [
             (d, k, role)
             for d, (a, k, role) in enumerate(s.drivers)
-            if c.subject is not None and role != "complex" and compatible(a, c.subject)
+            if c.subject is not None and compatible(a, c.subject)
         ]
         missing = [
             f"`{REGULATORS[kind]} {_text(a)}`"
@@ -662,7 +712,7 @@ def _why_direct(c: Constraint, claimed: list[_Step]) -> str:
         elif not any(  # which way it moves what the constraint is about
             k is not None and k * g == form.way
             for d, k, _ in found
-            for g in _moved(s, d, form, own=True)
+            for g in _moved(s, d, form)
         ):
             regulated = any(r == "regulator" for _, _, r in found)
             said.append(
@@ -686,126 +736,16 @@ def _why_direct(c: Constraint, claimed: list[_Step]) -> str:
     )
 
 
-class _Graph:
-    """The chains the rows' claims make: from a driver of one reaction, through each change it
-    makes, to a driver of another row's reaction that change moves."""
-
-    def __init__(self, claimed: list[_Step]):
-        self.steps = claimed
-        self.by_name: dict[str, list[tuple[int, int]]] = defaultdict(list)
-        for i, s in enumerate(claimed):
-            for d, (agent, _, _) in enumerate(s.drivers):
-                self.by_name[_name(agent.name)].append((i, d))
-        self._next: dict[tuple[int, int], list[tuple[int, int, int]]] = {}
-
-    def next(self, i: int, d: int) -> list[tuple[int, int, int]]:
-        """The drivers ``(step, driver, way)`` of other rows that the changes of step ``i`` driven
-        by ``d`` move, each way they move them."""
-        if (i, d) not in self._next:
-            changes = _changes(self.steps[i], d, own=False)
-            out = set()
-            for name in {_name(e.name) for e, _ in changes}:
-                for j, dd in self.by_name.get(name, ()):
-                    driver, _, role = self.steps[j].drivers[dd]
-                    if self.steps[j].prefix != self.steps[i].prefix:
-                        # A complex comes apart as there is more of IT: a member made bare does not
-                        # raise it, though one form may be both.
-                        out |= {
-                            (j, dd, g) for g in _moves(changes, driver, strict=role == "complex")
-                        }
-            self._next[(i, d)] = sorted(out)
-        return self._next[(i, d)]
-
-    def _starts(self, subject, signed: bool):
-        for i, s in enumerate(self.steps):
-            for d, (agent, k, role) in enumerate(s.drivers):
-                # A complex comes apart because there is more of it, not more of a member.
-                bound_as = role != "complex" or {
-                    _name(bc.agent.name) for bc in subject.bound_conditions if bc.is_bound
-                } & {_name(bc.agent.name) for bc in agent.bound_conditions if bc.is_bound}
-                if (k is not None or not signed) and bound_as and compatible(agent, subject):
-                    yield i, d
-
-    def search(self, c: Constraint, want: int | None) -> str | None:
-        """The shortest chain from ``c``'s subject that moves its forms as claimed (``want`` 1), the
-        other way (-1), or any way through any claim, unsigned ones included (``None``), written
-        out; ``None`` if there is none."""
-        signed = want is not None
-        parent: dict[tuple, tuple | None] = {
-            (i, d, 1): None for i, d in self._starts(c.subject, signed)
-        }
-        todo = deque(parent)
-        while todo:
-            state = i, d, way = todo.popleft()
-            k = self.steps[i].drivers[d][1]
-            flux = way * k if signed else 1
-            if _holds(self.steps[i], d, flux, c, want):
-                return self._written(state, parent, c, want)
-            for j, dd, g in self.next(i, d):
-                nxt = (j, dd, flux * g if signed else 1)
-                if (not signed or self.steps[j].drivers[dd][1] is not None) and nxt not in parent:
-                    parent[nxt] = state
-                    todo.append(nxt)
-        return None
-
-    def _written(self, state, parent, c: Constraint, want: int | None) -> str:
-        """The chain ending at ``state``: the subject, then each row and the form it moves, ``→``
-        raising it and ``⊣`` lowering it."""
-        chain = []
-        while state is not None:
-            chain.append(state)
-            state = parent[state]
-        chain.reverse()
-        last = next((f for f in c.forms if f.active), c.forms[0])
-        parts = [_text(c.subject)]
-        for n, (i, d, way) in enumerate(chain):
-            if n + 1 < len(chain):
-                head, after = (
-                    self.steps[chain[n + 1][0]].drivers[chain[n + 1][1]][0],
-                    chain[n + 1][2],
-                )
-            else:
-                head, after = last.agent, (want or 1) * (last.way or 1)
-            parts.append(
-                f"{'⊣' if want is not None and way * after < 0 else '→'} "
-                f"({self.steps[i].prefix}) {_text(head)}"
-            )
-        return " ".join(parts)
-
-    def frontier(self, c: Constraint) -> str:
-        """Why no chain connects them: what the claims reach from ``c``'s subject, and the rows that
-        change what ``c`` is about."""
-        seen, todo = set(), deque(self._starts(c.subject, signed=False))
-        reached = []
-        while todo:
-            if (state := todo.popleft()) in seen:
-                continue
-            seen.add(state)
-            reached += [_text(e) for e, _ in _changes(self.steps[state[0]], state[1], own=False)]
-            todo.extend((j, dd) for j, dd, _ in self.next(*state))
-        reached = list(dict.fromkeys(reached))
-        changers = sorted({s.prefix for s in self.steps if _moved(s, None, c.forms[0])})
-        out = "no chain of claims connects them; " + (
-            f"from {_text(c.subject)} the claims reach {', '.join(reached[:8])}"
-            + (" ..." if len(reached) > 8 else "")
-            if reached
-            else f"no row's claim is driven by {_text(c.subject)}"
-        )
-        return out + (
-            f"; the rows that change it are `{'`, `'.join(changers[:8])}`" if changers else ""
-        )
-
-
 # ------------------------------------------------------------------------------------ commit
 def enforce(
-    constraints: Constraints, record: dict | None, base: dict | None
+    constraints: Constraints, record: dict | None, model: Callable[[], tuple] | None = None
 ) -> tuple[dict, str | None]:
-    """Check ``record`` (the statements record a change would commit) against ``constraints``.
-    Raises :class:`operations.OperationError` (cause ``constraint_violated``) naming each it breaks.
-    Returns what the record keeps (the constraints as checked and each verdict), and a warning
-    naming each indirect constraint whose chain of the other sign is new since ``base``, the record
-    the change starts from, or ``None``."""
-    verdicts = check(constraints, record)
+    """Check ``record`` (the statements record a change would commit, ``model`` building its
+    model, :func:`check`) against ``constraints``. Raises :class:`operations.OperationError`
+    (cause ``constraint_violated``) naming each it breaks. Returns what the record keeps (the
+    constraints as checked and each verdict), and a warning naming each that could not be
+    checked, or ``None``."""
+    verdicts = check(constraints, record, model)
     broken = [c for c in constraints.items if not verdicts[c.id].ok]
     if broken:
         from .operations import OperationError
@@ -824,19 +764,13 @@ def enforce(
             f"{unbuilt}NOTHING was applied.",
             cause="constraint_violated",
         )
-    was = ((base or {}).get("constraints") or {}).get("verdicts") or {}
     said = "; ".join(
-        f"`{c.id}` ({c.text}) holds through {verdicts[c.id].chain}, and a chain of the other sign "
-        f"exists too: {verdicts[c.id].opposite}"
+        f"`{c.id}` ({c.text}) was not checked: {verdicts[c.id].unchecked}"
         for c in constraints.items
-        if verdicts[c.id].opposite and not (was.get(c.id) or {}).get("opposite")
-    )
-    warning = said and (
-        said + ". Which way the model moves each is the fit's to say, not its "
-        "structure's: keep both if both are true."
+        if verdicts[c.id].unchecked
     )
     kept = {
         "checked": constraints.texts(),
         "verdicts": {cid: v.stored() for cid, v in verdicts.items()},
     }
-    return kept, warning or None
+    return kept, said or None

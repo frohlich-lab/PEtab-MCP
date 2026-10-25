@@ -92,7 +92,8 @@ def to_antimony(
     times: tuple[float, float] | None = None,
     network: dict | None = None,
     reduce: bool = True,
-) -> tuple[str, list[M.Emission]]:
+    seeded: bool = False,
+) -> tuple[str | pysb.Model, list[M.Emission]]:
     """The model ``rows`` build, as Antimony the ``antimony`` route accepts unchanged.
 
     Every species in ``entities`` becomes a symbol of that name, the sum over its PySB pattern,
@@ -122,7 +123,9 @@ def to_antimony(
 
     The rules are reduced before they are expanded (:mod:`reduction`), unless ``reduce`` is off
     (the expansion the tests compare it with), and ``network``, when given, receives the
-    species and reactions with and without the reduction.
+    species and reactions with and without the reduction. ``seeded`` returns the PySB model
+    itself, as the rows build it and seeded, before any reduction or expansion (what
+    :mod:`tracing` traces), with the emissions.
     """
     starts = [(name, agent, _numeric(amount)) for name, agent, amount in starts or []]
     entities = {**{item.id: Agent(item.id) for item in inputs}, **entities}
@@ -167,6 +170,8 @@ def to_antimony(
         model,
         [m for m in model.monomers if (m.name not in made or m.name in held) and m.name not in declared],
     )
+    if seeded:
+        return model, emissions
     # What the experiment sets stays whole (:mod:`reduction`): a form the conditions or a protocol
     # set.
     whole = set(set_keys.values())

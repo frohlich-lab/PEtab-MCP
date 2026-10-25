@@ -202,14 +202,17 @@ Principles to hold onto when extending this package.
   the entity map, and one it maps is read only as the agent it is.
 - **A constraint is a claim the model must make.** A session may start with causal constraints
   (`--constraints`), statements rows without bindings that each end `, directly` (one row's claim
-  entails it) or `, indirectly` (a chain of the rows' claims carries it, with its sign), with
+  entails it) or `, indirectly` (the network the rows expand to carries it, with its sign), with
   `not ..., directly` and `X does not affect Y` forbidding what they name; `make_changes` refuses a
   model that breaks one, a parameter edit included, since a bound can turn a regulator. Each claim
   is a row's own, its regulators as their rates record them, so a constraint rests on the maths,
   never on what the agent wrote; `activates` is about the forms the constraints declare active,
-  never inferred from the agent's rows. Which way a model moves an object is not decidable from its
-  structure once it has feedback, so an indirect constraint holds on a chain of its sign and one of
-  the other sign is reported, never refused: that sign is the fit's to say
+  never inferred from the agent's rows. An indirect constraint is traced, as the MSB 2023 paper
+  traces a signal: every molecule gets a tag site, and BioNetGen expands the rows' model with the
+  subject's molecules tagged and each rule handing a driver's tag to what it changes or makes
+  ([`tracing`](src/petab_mcp/tracing.py)). Which way a model moves an object is not decidable from
+  its structure once it has feedback, so an indirect constraint holds wherever the trace moves it as
+  claimed, whatever else the trace finds: that sign is the fit's to say
   ([`constraints`](src/petab_mcp/constraints.py)).
 - **A hardcoded constant is not free.** `k` is the estimated parameters plus every numeric
   literal in the model's math bar a few structural ones (each distinct value once — see
