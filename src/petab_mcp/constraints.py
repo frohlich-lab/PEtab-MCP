@@ -50,8 +50,8 @@ fit's to say. There is no signed indirect negative (``not X increases Y, indirec
 reason: feedback breaks it on true models, and the way out would be deleting true feedback.
 
 Agents are matched by NAME, the model's identity: two agents may share a grounding (bachmann's
-SOCS3 and SOCS3_oe, a gene's nRNA, mRNA and protein), which is why :func:`_reaction` is
-:func:`statements._reaction` with its catalyst test by name (PEtab-MCP#137). Direct constraints
+SOCS3 and SOCS3_oe, a gene's nRNA, mRNA and protein), so INDRA's comparisons run on copies keyed
+by name (:func:`statements.named`, PEtab-MCP#137). Direct constraints
 read the statements record alone and cost milliseconds; an indirect one runs BioNetGen on the
 model the rows build, once per subject (seconds to a minute on the formulations measured). A
 constraint's statement is read by :func:`notation.statement`, the row reader's own; the
@@ -114,14 +114,26 @@ class Constraint:
 
 @dataclass
 class ActiveForm:
-    """A form of an agent the user declares active (or inactive) as ``activity``."""
+    """A form of an agent the user declares active (or inactive) as an activity: INDRA's own
+    ``ActiveForm`` statement (``statement``), so what reads the constraints (INDRA's assemblers,
+    a signed graph, gemot's analysis) gets the declaration as INDRA states it."""
 
     id: str
     text: str
-    agent: Any
-    activity: str
-    active: bool
+    statement: Any
     source: str | None = None
+
+    @property
+    def agent(self):
+        return self.statement.agent
+
+    @property
+    def activity(self) -> str:
+        return self.statement.activity
+
+    @property
+    def active(self) -> bool:
+        return self.statement.is_active
 
 
 @dataclass
@@ -186,8 +198,10 @@ def _active_form(cid, body, m, source, groundings) -> ActiveForm:
         raise ConstraintError(
             f"no activity {activity!r}; one of {', '.join(sorted(notation.ACTIVITIES))}"
         )
+    from indra.statements import ActiveForm as Declared
+
     agent = _agent(notation.parse_agent(m.group(1), groundings))
-    return ActiveForm(cid, body, agent, activity, m.group(2) == "active", source)
+    return ActiveForm(cid, body, Declared(agent, activity, m.group(2) == "active"), source)
 
 
 def _constraint(cid, body, source, active_forms, groundings) -> Constraint:
@@ -344,51 +358,45 @@ def compatible(a, b) -> bool:
 
 def refines(a, b) -> bool:
     """Whether ``a`` is ``b`` or a form of it: every condition ``b`` writes, ``a`` writes too (a
-    residue or position ``b`` leaves out, any)."""
-    if _name(a.name) != _name(b.name):
-        return False
-    if not all(
-        any(
-            m.mod_type == n.mod_type
-            and m.is_modified == n.is_modified
-            and n.residue in (None, m.residue)
-            and n.position in (None, m.position)
-            for m in a.mods
-        )
-        for n in b.mods
-    ):
-        return False
-    if not all(
-        any(
-            _name(x.agent.name) == _name(y.agent.name) and x.is_bound == y.is_bound
-            for x in a.bound_conditions
-        )
-        for y in b.bound_conditions
-    ):
-        return False
+    residue or position ``b`` leaves out, any). INDRA's ``Agent.refinement_of`` on copies keyed by
+    name (:func:`statements.named`), since INDRA keys an agent on its grounding, with types the same
+    or not (:class:`_Types`). A location is the model's compartment, the same or not: INDRA's GO
+    ``part of`` would make a form in the cytosol one in the cytoplasm."""
+    from .statements import named
+
     if b.location and a.location != b.location:
         return False
-    return not b.activity or bool(
-        a.activity
-        and a.activity.activity_type == b.activity.activity_type
-        and a.activity.is_active == b.activity.is_active
-    )
+    a, b = _placeless(named(a)), _placeless(named(b))
+    return a.refinement_of(b, _Types())
 
 
-def _same(a, b) -> bool:
-    """One agent in one state, by name (``Agent.matches`` keys on grounding)."""
-    return _name(a.name) == _name(b.name) and a.matches(b)
+class _Types:
+    """The ontology :func:`refines` hands INDRA: a modification or activity type is itself and no
+    other, and no agent is another (INDRA's would load its whole bio-ontology to say so)."""
+
+    def isa(self, *_) -> bool:
+        return False
+
+    isa_or_partof = isa
+
+
+def _placeless(agent):
+    agent.location = None
+    for condition in agent.bound_conditions:
+        _placeless(condition.agent)
+    return agent
 
 
 def _reaction(stmt) -> tuple[list, list]:
-    """What ``stmt`` takes and what it makes, each with ``1`` or ``-1`` (:data:`statements._REACTIONS`):
-    :func:`statements._reaction` with its catalyst test by name, and a binding as its complex, each
+    """What ``stmt`` takes and what it makes, each with ``1`` or ``-1``: :func:`statements._reaction`,
+    a removal taking what it removes once (its product's -1), and a binding as its complex, each
     member bound to the others, made from each member free of them (as written, a member names no
     partner, so it read as possibly bound already; its own written condition on a partner gives
     way to the binding's)."""
     from indra.statements import BoundCondition, Complex
 
-    from .statements import _REACTIONS
+    from .statements import _reaction as reaction
+    from .statements import name_key
 
     if isinstance(stmt, Complex):
         whole, free = [], []
@@ -405,20 +413,9 @@ def _reaction(stmt) -> tuple[list, list]:
             whole.append((w, 1))
             free.append(f)
         return free, whole
-    for cls in type(stmt).__mro__:
-        if cls in _REACTIONS:
-            reactants, products = _REACTIONS[cls](stmt)
-            reactants, made = list(reactants), []
-            for agent, effect in products:
-                same = next((a for a in reactants if _same(a, agent)), None)
-                if effect > 0 and same is not None:
-                    reactants.remove(same)
-                else:
-                    made.append((agent, effect))
-            # A removal takes what it removes; that is its product's -1, not a second change.
-            reactants = [r for r in reactants if not any(_same(r, p) for p, _ in made)]
-            return reactants, made
-    return [], []
+    reactants, made = reaction(stmt)
+    removed = {name_key(p) for p, _ in made}
+    return [r for r in reactants if name_key(r) not in removed], made
 
 
 def _subject(stmt):

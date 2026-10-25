@@ -61,7 +61,7 @@ from typing import Any
 import pysb
 from pysb import ANY, WILD
 from pysb.bng import generate_equations
-from pysb.pattern import match_complex_pattern
+from pysb.pattern import get_bonds_in_pattern, match_complex_pattern
 
 SITE = "__tag"
 _STATES = ["o", "p", "n"]
@@ -307,7 +307,7 @@ class _Tagger:
                             hl, hr = _hidden(lv), _hidden(mq.site_conditions.get(site))
                             if hl is None or hr is None or hl[0] is not hr[0]:
                                 continue
-                            b = 1 + max([0, *_bond_numbers(L[ci]), *_bond_numbers(R[cj])])
+                            b = 1 + max([0, *get_bonds_in_pattern(L[ci]), *get_bonds_in_pattern(R[cj])])
                             moved = set(made) | _freed(L, R, pairs)
                             for pmon, psite in sorted(self.partners.get((mp.monomer.name, site), ())):
                                 for s in ("p", "n"):
@@ -420,10 +420,6 @@ def _bonds(v) -> list[int]:
     if isinstance(v, list):
         return [b for b in v if isinstance(b, int)]
     return []
-
-
-def _bond_numbers(cp) -> list[int]:
-    return [b for mp in cp.monomer_patterns for v in mp.site_conditions.values() for b in _bonds(v)]
 
 
 def _hidden(v):

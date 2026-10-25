@@ -126,8 +126,13 @@ def test_activity_is_what_the_file_declares():
         K.ConstraintError, match="activity of AKT1, and no line declares which form of it is active"
     ):
         K.parse(["c1: EGF activates AKT1, indirectly"])
-    got = K.parse(["a1: AKT1{pS473} is active", "c1: EGF activates AKT1, indirectly"])
-    assert [f.text for f in got.active_forms] == ["AKT1{pS473} is active"]
+    got = K.parse(["a1: AKT1{pS473} is active as kinase", "c1: EGF activates AKT1, indirectly"])
+    (a1,) = got.active_forms
+    assert a1.text == "AKT1{pS473} is active as kinase"
+    # INDRA's own statement, for what reads the constraints downstream.
+    assert type(a1.statement).__name__ == "ActiveForm"
+    assert (a1.statement.activity, a1.statement.is_active) == ("kinase", True)
+    assert a1.statement.agent.mods[0].position == "473"
 
 
 def test_ids_are_unique():
@@ -231,6 +236,27 @@ def test_agents_that_share_a_grounding_stay_two_agents():
             for agent in row["statement"][side]:
                 agent["db_refs"] = {"HGNC": "1"}
     assert _check(["c1: Y increases X, directly"], record)["c1"].rows == ("t",)
+
+
+def test_a_form_refines_another_as_indra_reads_it_by_name():
+    """`refines` is INDRA's `refinement_of` on copies keyed by name: each modification the other
+    asks for is matched once, a partner's own conditions count, and two agents sharing a grounding
+    stay two (as INDRA keys them, bachmann's SOCS3_oe was SOCS3)."""
+    from indra.statements import Agent, BoundCondition, ModCondition
+
+    p10 = Agent("A", mods=[ModCondition("phosphorylation", "S", "10")])
+    twice = Agent("A", mods=[ModCondition("phosphorylation"), ModCondition("phosphorylation")])
+    assert K.refines(p10, Agent("A", mods=[ModCondition("phosphorylation")]))
+    assert not K.refines(p10, twice)
+    pl = Agent("L", mods=[ModCondition("phosphorylation")])
+    bound = Agent("E", bound_conditions=[BoundCondition(pl)])
+    assert K.refines(bound, Agent("E", bound_conditions=[BoundCondition(Agent("L"))]))
+    assert not K.refines(Agent("E", bound_conditions=[BoundCondition(Agent("L"))]), bound)
+    grounded = {"HGNC": "19391"}
+    socs3, oe = Agent("SOCS3", db_refs=grounded), Agent("SOCS3_oe", db_refs=dict(grounded))
+    assert oe.refinement_of(socs3, K._Types()) and not K.refines(oe, socs3)
+    nucleus = Agent("A", location="nucleus")
+    assert K.refines(nucleus, Agent("A")) and not K.refines(Agent("A"), nucleus)
 
 
 def test_not_directly_and_does_not_affect():
