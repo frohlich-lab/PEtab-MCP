@@ -113,6 +113,10 @@ class Emission:
     #: the row's net rate and the amounts each regulator reads (:func:`regulation.stored`), or
     #: why it has none.
     rate: dict = field(default_factory=dict)
+    #: The regulators the row's scheme binds as molecules of its own (:mod:`schemes`), by the name
+    #: it reads each by (``inhibited_by``): held at their free amounts in the net rate
+    #: (:func:`regulation.net_rate`).
+    regulator_molecules: tuple[str, ...] = ()
 
 
 Policy = Callable[[Statement, pysb.Model, str], Emission]
@@ -185,25 +189,14 @@ def instantiate(
 def _read_regulators(
     prefix: str, key: tuple[str, str], names: frozenset[str], stated: dict[str, list[Agent]]
 ) -> dict[str, Agent]:
-    """The agent each regulator name the rates of ``key`` read stands for, from those row
-    ``prefix``'s statement states. Refused both ways: a name the statement states no agent for, and
-    an agent the statement states that no rate reads, a claim the maths would not carry."""
-    agents: dict[str, Agent] = {}
-    for kind, given in stated.items():
-        agents |= {f"{kind}_{i}": agent for i, agent in enumerate(given)}
-        if len(given) == 1:
-            agents[kind] = given[0]
-    if missing := sorted(names - set(agents)):
-        several = [n for n in missing if n in stated]
-        raise MechanismError(
-            f"row {prefix!r}: the rate of {key} reads {missing}, which its statement does not state. "
-            + (
-                f"It states several {several}: read each by position (`{several[0]}_0`)."
-                if several else
-                "State each regulator in the statement: `<statement>, inhibited by X` (activated "
-                "by, modulated by), several of one kind read by position (`inhibited_by_1`)."
-            )
-        )
+    """Each regulator row ``prefix``'s statement states, by every name a mechanism may read it by
+    (:func:`statements.by_name`). Refused both ways: a name the rates of ``key`` read that the
+    statement states no agent for, and an agent the statement states that no rate reads, a claim
+    the maths would not carry."""
+    from .statements import by_name
+
+    agents = by_name(stated)
+    refuse_unstated(prefix, key, names, stated)
     unread = [
         f"{agent.name} ({kind})"
         for kind, given in stated.items()
@@ -215,10 +208,31 @@ def _read_regulators(
             f"row {prefix!r}: its statement states {', '.join(unread)}, which the rate of {key} "
             "does not read: the maths would not carry the claim. A regulator is read in its "
             "mechanism's rate, as `inhibited_by` (`inhibited_by_0`... by position; "
-            "`amount(inhibited_by)` in a scheme): write a mechanism that reads it, or leave it out "
-            "of the statement"
+            "`amount(inhibited_by)` in a scheme), or bound by a scheme's rules as the molecule "
+            "`inhibited_by`: write a mechanism that reads it, or leave it out of the statement"
         )
-    return {name: agents[name] for name in names}
+    return agents
+
+
+def refuse_unstated(
+    prefix: str, key: tuple[str, str], names, stated: dict[str, list[Agent]]
+) -> None:
+    """Refuse the regulator ``names`` the mechanism ``key`` reads that row ``prefix``'s statement
+    does not state (``stated``, kind to agents)."""
+    from .statements import by_name
+
+    if not (missing := sorted(set(names) - set(by_name(stated)))):
+        return
+    several = [n for n in missing if n in stated]
+    raise MechanismError(
+        f"row {prefix!r}: mechanism {key} reads {missing}, which its statement does not state. "
+        + (
+            f"It states several {several}: read each by position (`{several[0]}_0`)."
+            if several else
+            "State each regulator in the statement: `<statement>, inhibited by X` (activated "
+            "by, modulated by), several of one kind read by position (`inhibited_by_1`)."
+        )
+    )
 
 
 #: The size, in sympy operations, past which an expression is not expanded or factored to sign
@@ -937,9 +951,15 @@ def refuse_unnamed(
     does not name it: the statement is the claim behind the rate, so an agent the rate reads is
     stated there, as a regulator (``statements.REGULATORS``) when it takes no part. Where it is a
     regulator ``stated`` (kind to agents) already, or a regulator's name the mechanism writes as an
-    agent, the refusal says how a rate reads one."""
+    agent, the refusal says how a mechanism reads one: by its kind, in a rate or as a molecule a
+    scheme binds (:mod:`schemes`)."""
     from .notation import agent_text, statement_text
+    from .schemes import role_agents
     from .statements import REGULATORS
+
+    def bound(read: str) -> str:
+        role = next(iter(role_agents(stmt)), "enz")
+        return f"`{role}({read}=1) % {read}({role}=1)`"
 
     def noted(write, value, otherwise: str) -> str:
         try:
@@ -964,17 +984,17 @@ def refuse_unnamed(
         raise MechanismError(
             f"row {prefix!r}: {reads} reads {name} as an agent of its own. A regulator is read "
             f"as the statement states it, `{REGULATORS[kind]} {whom}`, by its kind: "
-            f"`amount({read})` in a scheme, `{read}` in a written rate, the states it needs "
-            f"written on the statement's agent (`{REGULATORS[kind]} {bare}{{pS10}}`). A molecule "
-            f"a scheme's rules bind is a partner, written on its agent (`E{{~{bare}}}`) and named "
-            "in the scheme by its own name."
+            f"`amount({read})` in a scheme's rate, `{read}` in a written rate, and the molecule "
+            f"`{read}` in a scheme's rules, which bind it on sites named after each other "
+            f"({bound(read)}); the states it needs are written on the statement's agent "
+            f"(`{REGULATORS[kind]} {bare}{{pS10}}`)."
         )
     raise MechanismError(
         f"row {prefix!r}: {reads} reads {name}, which its statement does not name. A rate reads "
         f"only the agents its statement names ({listed}) and the regulators it states. State "
         f"{agent.name} as one: `{said}, inhibited by {name}` (activated by, modulated by), read as "
-        "`amount(inhibited_by)`; a partner the rules bind is written on its agent (`E{~"
-        f"{agent.name}}}`)."
+        f"`amount(inhibited_by)`, or bound by a scheme's rules as the molecule `inhibited_by` "
+        f"({bound('inhibited_by')})."
     )
 
 
