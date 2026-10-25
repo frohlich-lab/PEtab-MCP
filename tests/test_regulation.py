@@ -1277,6 +1277,29 @@ def test_a_rate_that_can_go_negative_or_pass_a_pole_is_not_signed(rate):
     assert emission.rate["ill_posed"]
 
 
+@pytest.mark.parametrize("rate, well_posed", [
+    ("k*(1 - exp(-x/K))", True),
+    ("k*(2 - exp(-x/K))", True),
+    ("k - k*exp(-x/K)", True),
+    ("k0 + k*(1 - exp(-x/K))", True),
+    ("k*(1 - exp(-1/(K + x)))", True),
+    ("k*(1 - exp(-x/K))*exp(-K)", True),
+    ("k*(1 - 2*exp(-x/K))", False),
+    ("k*(1 - exp(x/K))", False),
+    ("k*(1 - exp(K - x))", False),
+    ("k*(exp(-x/K) - 1)", False),
+    ("k*(1 - exp(-x/K) - exp(-1/K))", False),
+    ("k/(1 - exp(-x/K))", False),
+])
+def test_an_exp_of_a_never_positive_argument_is_read_as_at_most_1(rate, well_posed):
+    """PEtab-MCP#145: `k*(1 - exp(-X/K))`, a negative term in a sum never negative, read as a
+    rate that can go negative, so its regulator was `modulated_by`. Each near miss can go negative
+    or pass a pole."""
+    names = {n: sympy.Symbol(n, positive=True) for n in ("k", "k0", "K")}
+    value = sympy.sympify(rate, locals=names | {"x": sympy.Symbol("x", nonnegative=True)})
+    assert regulation._well_posed(value) is well_posed
+
+
 def test_the_warning_names_a_negative_rate_law_and_a_step_taking_the_product_away():
     """review of #128 (second pass): each of the two goes to the agent, the step by name."""
     from petab_mcp.operations import regulator_warning

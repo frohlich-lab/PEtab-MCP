@@ -29,7 +29,8 @@ The start rests on two assumptions, and a third check refuses the models they do
 3. **Every rule fires, and every readout reads a species,** in the expansion from that start. A
    rule that needs a complex or modified form nothing forms (a kinase active only while bound to a
    partner no statement binds it to) is refused by its row, rather than built into a model whose
-   fit can never move it.
+   fit can never move it. So is an amount a rate reads that nothing forms (``amount(ERK{pY187})``
+   where no row phosphorylates Y187), which is 0 throughout.
 
 This is MARM2's causal tracing (Fröhlich et al. 2023, MSB 19:e10988) asked statically. There, a
 synthetic site set by the rule that makes a molecule, and carried by BioNetGen through every
@@ -72,7 +73,7 @@ from pysb.export import export
 
 from . import mechanisms as M
 from . import reduction, regulation
-from .errors import ModelUpdateError
+from .errors import MechanismError, ModelUpdateError
 from .protocols import Input, hold
 from .reconcile import SEED_INITIAL_VALUE
 
@@ -152,9 +153,11 @@ def to_antimony(
     # hormone that activates). One they make or convert is a state the conditions only start:
     # held, such a species would never change.
     protocol = {item.id: item for item in inputs}
-    set_keys = {s for s in entities if s in protocol or s in targets}
-    keys = {s for s in set_keys if s in protocol or entities[s].name not in made | converted}
-    held = {entities[s].name: protocol.get(s) for s in keys}
+    # Each by the name PySB gives its monomer (INDRA's `_n`: `S-1` is `S_1`), as `made` and the
+    # model know it.
+    set_keys = {s: _n(entities[s].name) for s in entities if s in protocol or s in targets}
+    keys = {s for s in set_keys if s in protocol or set_keys[s] not in made | converted}
+    held = {set_keys[s]: protocol.get(s) for s in keys}
     # Readouts are named apart from the species they stand for, which may share a monomer's
     # name; the SBML export numbers observables anyway, and the rename below restores them.
     readouts = {f"readout_{species}": species for species in entities}
@@ -165,9 +168,8 @@ def to_antimony(
         [m for m in model.monomers if (m.name not in made or m.name in held) and m.name not in declared],
     )
     # What the experiment sets stays whole (:mod:`reduction`): a form the conditions or a protocol
-    # set. Named as PySB names the monomer (INDRA's `_n`: `S-1` is `S_1`), or a name INDRA rewrote
-    # slipped past and was split (the #116 review).
-    whole = {_n(name) for name in held} | {_n(entities[s].name) for s in set_keys}
+    # set.
+    whole = set(set_keys.values())
     # A row's regulators are checked on its reactions as BioNetGen expands the rules as written
     # (:mod:`regulation`): reduced, a catalyst is out of its rule and a monomer is blocks, no
     # longer the statement's agents.
@@ -269,6 +271,11 @@ def to_antimony(
             "it to. Add the statement that forms it, or, if it is present at t=0, declare it in "
             "`starts`."
         )
+    for e in emissions:
+        for name, written in e.amounts.items():
+            observable = model.observables[name]
+            if not reduction.reads(reduced.amounts.get(observable, observable), present):
+                raise MechanismError(_unformed(e, observable, written))
     if network is not None:
         network.update(reduction.sizes(model, reduced, present))
     if as_written is not None:
@@ -313,7 +320,7 @@ def to_antimony(
         # A species the conditions or a protocol set is its free form, held or only started: named
         # for the sum over the complexes it binds into, a condition target that binds into
         # complexes would set nothing.
-        free = _free_form(model, sbml_model, base, entities[new].name) if new in set_keys else None
+        free = _free_form(model, sbml_model, base, set_keys[new]) if new in set_keys else None
         species = free or sbml_model.getSpecies(rule.getMath().getName() or "")
         if (
             (free is not None or rule.getMath().isName())
@@ -385,7 +392,7 @@ def _declare(
             "start of the same agent a name of its own"
         )
     for name, agent, amount in starts:
-        if agent.name in held:
+        if _n(agent.name) in held:
             raise ModelUpdateError(
                 f"start {name!r}: {agent.name} is an input, held to its protocol, so it has no "
                 "start of its own"
@@ -702,6 +709,30 @@ def _refuse_chains(model: pysb.Model, emissions: list[M.Emission]) -> None:
         f"{sorted({node[0] for node, _ in cycle})} into chains ({chain}), each molecule bound on "
         "one site still free to bind on another. Require each partner to be free of its other "
         "partners where it binds: `A{~B} binds A{~B}`, `A{~A} binds B{~B}`, `B{~A} binds B{~A}`."
+    )
+
+
+def _unformed(emission: M.Emission, observable: pysb.Observable, written: str) -> str:
+    """Why ``emission``'s row is refused for reading ``observable``, the amount ``written``, which
+    no species of the model matches: it is 0 throughout, as a regulator nothing forms is
+    (:func:`regulation.record`). INDRA's monomer pass gives a molecule every site an amount in the
+    row notation names (``ERK{pY187}``) in both states, so a site no other row gives, or a slip
+    (``T20`` beside ``T202``), is built unformed; each molecule's sites are listed as the rows give
+    them."""
+    from .schemes import _sites_text
+
+    alone, held = [], []
+    for mp in _molecules(observable.reaction_pattern):
+        added = emission.sites_added.get(mp.monomer.name, {})
+        alone += [f"{mp.monomer.name} the site {s}" for s in mp.site_conditions if s in added]
+        sites = [s for s in mp.monomer.sites if s not in added]
+        held.append(_sites_text(mp.monomer.name, sites, mp.monomer.site_states))
+    return (
+        f"row {emission.prefix!r}: its rate reads `amount({written})`, but nothing in the model "
+        "forms it, so that amount is 0 throughout"
+        + (f": no row but this one gives {', '.join(alone)}" if alone else "")
+        + f". Read a form the rows make, on the sites they give ({'; '.join(dict.fromkeys(held))}), "
+        "add the statement that forms this one, or declare it present in `starts`."
     )
 
 

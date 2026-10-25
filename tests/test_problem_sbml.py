@@ -12,7 +12,7 @@ from petab.v1.models.sbml_model import SbmlModel
 from petab_mcp import mechanisms as M
 from petab_mcp import problem_sbml as PS
 from petab_mcp import reconcile as R
-from petab_mcp.errors import ModelUpdateError
+from petab_mcp.errors import MechanismError, ModelUpdateError
 from petab_mcp.mechanisms import INDRA_DEFAULT
 from petab_mcp.protocols import Input
 from petab_mcp.statements import PopulationTransition
@@ -70,6 +70,20 @@ def test_a_species_the_conditions_set_is_held_without_a_rule():
     sbml = SbmlModel.from_antimony(antimony).sbml_model
     assert sbml.getSpecies("Fsk").getBoundaryCondition()
     assert sbml.getAssignmentRuleByVariable("Fsk") is None
+    assert sbml.getInitialAssignmentBySymbol("Fsk") is None
+
+
+@pytest.mark.parametrize("name", ["S-1", "S 1"])
+def test_a_condition_target_indra_renames_is_held(name):
+    """INDRA names the monomer of `S-1` `S_1`. Held under the agent's own name, it was looked up
+    among the monomers and not found: a KeyError, not a model."""
+    antimony, _ = PS.to_antimony(
+        [(Phosphorylation(Agent(name), Agent("AKT")), INDRA_DEFAULT, "r1")],
+        {"Fsk": Agent(name)},
+        targets=frozenset({"Fsk"}),
+    )
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    assert sbml.getSpecies("Fsk").getBoundaryCondition()
     assert sbml.getInitialAssignmentBySymbol("Fsk") is None
 
 
@@ -281,6 +295,54 @@ def test_a_rule_that_never_fires_points_to_starts():
         PS.to_antimony([(Phosphorylation(raf, Agent("MEK")), INDRA_DEFAULT, "r1")], {})
 
 
+def _read_at(rate: str, *rows, starts=None, reduce=True):
+    """MEK phosphorylating ERK at T202 at ``rate``, beside ``rows``."""
+    library = dict(M.REGISTRY)
+    library[("Phosphorylation", "s")] = M.written(
+        {"statement_type": "Phosphorylation", "policy": "s", "parameters": ["kc"],
+         "scheme": f"enz() + sub(mod='off') >> enz() + sub(mod='on') @ {rate}"},
+        library,
+    )
+    erk = Phosphorylation(Agent("MEK"), Agent("ERK"), "T", "202")
+    return PS.to_antimony([(erk, "s", "p"), *rows], {}, library, starts=starts, reduce=reduce)
+
+
+@pytest.mark.parametrize(
+    "rate, match",
+    [
+        # INDRA's monomer pass gives ERK every site the row notation names, in both states, so a
+        # site no row gives it, or a slip of its T202, was built unmodified and never formed.
+        ("kc*amount(ERK{pY187})",
+         r"reads `amount\(ERK\{pY187\}\)`, but nothing in the model forms it, so that amount is 0 "
+         r"throughout: no row but this one gives ERK the site Y187. Read a form the rows make, on "
+         r"the sites they give \(ERK's sites are T202 \['u', 'p'\]\), add the statement that forms "
+         r"this one, or declare it present in `starts`"),
+        ("kc*amount(ERK{pT20})", r"no row but this one gives ERK the site T20\. .*T202 \['u', 'p'\]"),
+        # Written as a pattern, the same reads were already refused, before any expansion.
+        ("kc*amount(sub(Y187='p'))", "adds site 'Y187' to ERK with the one state 'p'"),
+        ("kc*amount(sub(T20='p'))", "adds site 'T20' to ERK with the one state 'p'"),
+        # A complex no row forms.
+        ("kc*amount(ERK{!RAF})", r"`amount\(ERK\{!RAF\}\)`, but nothing in the model forms it"),
+    ],
+)
+def test_an_amount_nothing_forms_is_refused_naming_what_to_read(rate, match):
+    """A rate reading an amount the model never forms reads 0 throughout, and the rule it scales
+    never ran: refused, as a regulator nothing forms is."""
+    with pytest.raises(MechanismError, match=match):
+        _read_at(rate)
+
+
+@pytest.mark.parametrize("reduce", [True, False])
+def test_an_amount_another_row_or_a_start_forms_is_read(reduce):
+    """The form the row itself makes, a site another row phosphorylates (which splits ERK into
+    blocks when reduced), and a form `starts` declares present all build."""
+    other = (Phosphorylation(Agent("MEK"), Agent("ERK"), "Y", "187"), INDRA_DEFAULT, "q")
+    p_erk = Agent("ERK", mods=[ModCondition("phosphorylation", "Y", "187")])
+    _read_at("kc*amount(ERK{pT202})", reduce=reduce)
+    _read_at("kc*amount(ERK{pY187})", other, reduce=reduce)
+    _read_at("kc*amount(ERK{pY187})", starts=[("pERK", p_erk, 1)], reduce=reduce)
+
+
 # -- declared starts (make_changes' `starts`) ----------------------------------------
 def _ia(sbml, sid):
     ia = sbml.getInitialAssignmentBySymbol(sid)
@@ -373,9 +435,10 @@ def test_two_starts_of_one_species_are_refused_naming_both():
         )
 
 
-def test_an_input_declares_no_start():
+@pytest.mark.parametrize("name", ["EGF", "EGF-1"])
+def test_an_input_declares_no_start(name):
     """An input is held to its protocol; a start for it would be overwritten at t=0."""
-    egf = Agent("EGF")
+    egf = Agent(name)
     with pytest.raises(ModelUpdateError, match="is an input"):
         PS.to_antimony(
             [(Phosphorylation(egf, Agent("AKT")), INDRA_DEFAULT, "r1")],
