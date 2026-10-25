@@ -26,9 +26,6 @@
  "advice/products_at_0/ras_sos/product_stated": {
   "verdict": "accepted"
  },
- "issue138/t_gate/binding": {
-  "verdict": "accepted"
- },
  "issue138/t_gate/condition": {
   "verdict": "accepted"
  },
@@ -1844,8 +1841,7 @@
   "verdict": "accepted"
  },
  "review128b/binding/piecewise_off": {
-  "kind": "unseen",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "review128b/binding/piecewise_on": {
   "verdict": "accepted"
