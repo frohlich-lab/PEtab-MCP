@@ -73,7 +73,7 @@ from pysb import ANY, WILD
 from pysb.core import ReactionPattern, RuleExpression, time
 
 from .errors import MechanismError
-from .statements import REGULATOR_NAME, REGULATORS, by_name, named_agents
+from .statements import REGULATOR_NAME, REGULATORS, by_name, named_agents, roles
 
 MOD, ACT = "mod", "act"
 #: ``amount(inhibited_by)`` (or ``amount(inhibited_by())``) in a rate: a regulator, by its name.
@@ -254,10 +254,6 @@ def _refuse_regulator_sites(side: tuple[tuple[Molecule, ...], ...]) -> None:
 
 
 # ------------------------------------------------------------------------------- roles
-def roles(stmt_type: str) -> list[str]:
-    return list(get_statement_by_name(stmt_type)._agent_order)
-
-
 def role_agents(stmt: Statement) -> dict[str, Agent]:
     """Each role the statement fills, by name: a list role by position and, holding one agent,
     by its own name too."""
@@ -651,7 +647,10 @@ def _complex_nodes(text: str):
 
 def _pattern_side(stmt, model, side, agents, fresh):
     """One side's ComplexPatterns. ``fresh`` (right-hand side only) counts the molecules of each
-    monomer the left carries; one beyond them is new, and written in full."""
+    monomer the left carries; one beyond them is new, and written in full
+    (:func:`mechanisms.default_state`)."""
+    from .mechanisms import _plain, default_state
+
     left = dict(fresh or {})
     out = []
     for complex_ in side:
@@ -659,11 +658,7 @@ def _pattern_side(stmt, model, side, agents, fresh):
         for mol in complex_:
             agent = _molecule_agent(stmt, mol.name, agents)
             monomer = model.monomers[_n(agent.name)]
-            stated = {
-                s: v[0] if isinstance(v, tuple) else v
-                for s, v in get_site_pattern(agent).items()
-                if v is not ANY
-            }
+            stated = _plain(get_site_pattern(agent), bound=False)
             given = {
                 _site_name(stmt, mol.name, s, agents): _site_value(stmt, s, v) for s, v in mol.sites
             }
@@ -671,11 +666,8 @@ def _pattern_side(stmt, model, side, agents, fresh):
             if fresh is not None:
                 left[monomer.name] = left.get(monomer.name, 0) - 1
                 if left[monomer.name] < 0:
-                    for site in monomer.sites:
-                        if site not in state:
-                            state[site] = (
-                                monomer.site_states[site][0] if site in monomer.site_states else None
-                            )
+                    for site, value in default_state(monomer).items():
+                        state.setdefault(site, value)
             unknown = sorted(set(state) - set(monomer.sites))
             if unknown:
                 raise MechanismError(f"{agent.name} has no site(s) {unknown}")

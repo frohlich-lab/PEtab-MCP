@@ -16,6 +16,7 @@ from indra.statements import (
     Dephosphorylation,
     Gap,
     Gef,
+    IncreaseAmount,
     Inhibition,
     ModCondition,
     Modification,
@@ -198,6 +199,36 @@ def test_transphosphorylation_sets_the_partners_site():
     model, _ = M.assemble([(stmt, M.INDRA_DEFAULT, "r1")])
     assert [str(r.rule_expression) for r in model.rules] == [
         "EGFR(egfr=ANY) % EGFR(Y1068='u') >> EGFR(egfr=ANY) % EGFR(Y1068='p')"
+    ]
+
+
+@pytest.mark.parametrize(
+    "locations, there",
+    [(("nucleus", "membrane"), "membrane"), (("nucleus", "cytoplasm"), "cytoplasm")],
+)
+def test_a_rule_makes_a_new_molecule_where_one_starts(locations, there):
+    """A molecule a library entry made went to the first location a row gave it, and one a scheme
+    made to that location even when the cytoplasm was one, while the start puts one in the
+    cytoplasm, else in its first location by name: X made in the nucleus and started in the
+    membrane. All three are :func:`mechanisms.default_state`."""
+    library = dict(M.REGISTRY)
+    library[("IncreaseAmount", "made")] = M.written(
+        {"statement_type": "IncreaseAmount", "policy": "made",
+         "scheme": "subj() >> subj() + obj() @ k", "parameters": ["k"]},
+        library,
+    )
+    model, emissions = M.assemble(
+        [
+            (Translocation(Agent("X"), *locations), M.INDRA_DEFAULT, "t"),
+            (IncreaseAmount(None, Agent("X")), M.MASS_ACTION, "s"),
+            (IncreaseAmount(Agent("TF"), Agent("X")), "made", "w"),
+        ],
+        {},
+        library,
+    )
+    assert M.default_state(model.monomers["X"]) == {"loc": there}
+    assert [str(model.rules[r].rule_expression) for e in emissions[1:] for r in e.rules] == [
+        f"None >> X(loc='{there}')", f"TF() >> TF() + X(loc='{there}')"
     ]
 
 
