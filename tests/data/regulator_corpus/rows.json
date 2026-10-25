@@ -6659,8 +6659,11 @@
   "id": "issue145/saturating",
   "source": "PEtab-MCP#145 (2026-10-25): k*(1 - exp(-X/K)) is never negative and rises with X",
   "rows": [
-   "p: MEK phosphorylates ERK at T202, activated by D | written"
+   "p: MEK phosphorylates ERK at T202, activated by D"
   ],
+  "bindings": {
+   "p": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -6678,8 +6681,11 @@
   "id": "issue145/saturating_offset",
   "source": "PEtab-MCP#145 (2026-10-25): k*(2 - exp(-X/K)) is never negative and rises with X",
   "rows": [
-   "p: MEK phosphorylates ERK at T202, activated by D | written"
+   "p: MEK phosphorylates ERK at T202, activated by D"
   ],
+  "bindings": {
+   "p": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -6697,8 +6703,11 @@
   "id": "issue145/near_miss/twice",
   "source": "PEtab-MCP#145 (2026-10-25), near miss: k*(1 - 2*exp(-X/K)) is negative below X = K*log(2)",
   "rows": [
-   "p: MEK phosphorylates ERK at T202, activated by D | written"
+   "p: MEK phosphorylates ERK at T202, activated by D"
   ],
+  "bindings": {
+   "p": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -6716,8 +6725,11 @@
   "id": "issue145/near_miss/rising",
   "source": "PEtab-MCP#145 (2026-10-25), near miss: k*(1 - exp(X/K)) is never positive",
   "rows": [
-   "p: MEK phosphorylates ERK at T202, activated by D | written"
+   "p: MEK phosphorylates ERK at T202, activated by D"
   ],
+  "bindings": {
+   "p": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -6735,8 +6747,11 @@
   "id": "issue145/problem/a_below_0",
   "source": "PEtab-MCP#145 (2026-10-25): k*(1 - exp(a*C)) with a below 0 rises with C",
   "rows": [
-   "conv: A becomes B, activated by C | written"
+   "conv: A becomes B, activated by C"
   ],
+  "bindings": {
+   "conv": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -6774,8 +6789,11 @@
   "id": "issue145/problem/a_across_0",
   "source": "PEtab-MCP#145 (2026-10-25), near miss: k*(1 - exp(a*C)) is negative where a is above 0",
   "rows": [
-   "conv: A becomes B, activated by C | written"
+   "conv: A becomes B, activated by C"
   ],
+  "bindings": {
+   "conv": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -6813,8 +6831,11 @@
   "id": "issue138/t_gate/rate",
   "source": "PEtab-MCP#138 (2026-10-24), t_gate: a rate's own g <= 0 branch",
   "rows": [
-   "conv: A becomes B, activated by C | gated"
+   "conv: A becomes B, activated by C"
   ],
+  "bindings": {
+   "conv": "gated"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -6832,8 +6853,11 @@
   "id": "issue138/t_gate/condition",
   "source": "PEtab-MCP#138 (2026-10-24), t_gate: the binding's gate, ko set to 0 and 1 by the conditions",
   "rows": [
-   "conv: A becomes B, activated by C | written g=\"piecewise(0, ko > 0, 1)\""
+   "conv: A becomes B, activated by C"
   ],
+  "bindings": {
+   "conv": "written g=\"piecewise(0, ko > 0, 1)\""
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -6882,8 +6906,11 @@
   "id": "issue138/t_gate/direction",
   "source": "PEtab-MCP#138 (2026-10-24), t_gate: a gate that turns the direction, signed on one branch by a derivative",
   "rows": [
-   "conv: A becomes B, activated by C | gated"
+   "conv: A becomes B, activated by C"
   ],
+  "bindings": {
+   "conv": "gated"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",

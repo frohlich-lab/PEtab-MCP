@@ -77,7 +77,15 @@
    "scheme": "sub(S338='p', S43='p') >> sub(S338='u', S43='p') @ kinh",
    "statement_type": "Dephosphorylation"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: sub is phosphorylated at S43"
+   ],
+   "bindings": {
+    "c0": "basal"
+   }
+  }
  },
  {
   "id": "perica_egf/61181345_4/braf_inhib",
@@ -90,7 +98,15 @@
    "scheme": "sub(S445='p', S151='p') >> sub(S445='u', S151='p') @ kinh",
    "statement_type": "Dephosphorylation"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: sub is phosphorylated at S151"
+   ],
+   "bindings": {
+    "c0": "basal"
+   }
+  }
  },
  {
   "id": "perica_egf/61181345_4/egfr_inhib",
@@ -103,7 +119,15 @@
    "scheme": "sub(T693='p', Y1068='p') >> sub(T693='p', Y1068='u') @ kinh",
    "statement_type": "Dephosphorylation"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: sub is phosphorylated at T693"
+   ],
+   "bindings": {
+    "c0": "basal"
+   }
+  }
  },
  {
   "id": "perica_egf/61181345_4/egfr_s695_shp",
@@ -116,7 +140,15 @@
    "scheme": "sub(Y1068='p', S695='p') >> sub(Y1068='p', S695='u') @ kinh",
    "statement_type": "Dephosphorylation"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: sub is phosphorylated at Y1068"
+   ],
+   "bindings": {
+    "c0": "basal"
+   }
+  }
  },
  {
   "id": "perica_egf/61180684_1/egfr_autop",
@@ -201,6 +233,14 @@
    "modulated_by_0": "modulated_by",
    "modulated_by_1": "modulated_by",
    "modulated_by_2": "modulated_by"
+  },
+  "companions": {
+   "rows": [
+    "c0: GEF0 is a GEF for enz"
+   ],
+   "bindings": {
+    "c0": "default"
+   }
   }
  },
  {
@@ -217,6 +257,14 @@
   "stated": {
    "modulated_by_0": "modulated_by",
    "modulated_by_1": "modulated_by"
+  },
+  "companions": {
+   "rows": [
+    "c0: GEF0 is a GEF for enz"
+   ],
+   "bindings": {
+    "c0": "default"
+   }
   }
  },
  {
@@ -441,6 +489,14 @@
   "stated": {
    "modulated_by_0": "modulated_by",
    "modulated_by_1": "modulated_by"
+  },
+  "companions": {
+   "rows": [
+    "c0: GEF0 is a GEF for enz"
+   ],
+   "bindings": {
+    "c0": "default"
+   }
   }
  },
  {
@@ -476,6 +532,14 @@
   "stated": {
    "modulated_by_0": "modulated_by",
    "modulated_by_1": "modulated_by"
+  },
+  "companions": {
+   "rows": [
+    "c0: GEF0 is a GEF for enz"
+   ],
+   "bindings": {
+    "c0": "default"
+   }
   }
  },
  {
@@ -494,6 +558,14 @@
    "modulated_by_0": "modulated_by",
    "modulated_by_1": "modulated_by",
    "modulated_by_2": "modulated_by"
+  },
+  "companions": {
+   "rows": [
+    "c0: GEF0 is a GEF for enz"
+   ],
+   "bindings": {
+    "c0": "default"
+   }
   }
  },
  {
@@ -591,7 +663,15 @@
    "scheme": "subj(activity='active') + obj(activity='inactive') >> subj(activity='active') + obj(activity='active') @ kf",
    "statement_type": "Activation"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: ACT0 activates subj"
+   ],
+   "bindings": {
+    "c0": "default"
+   }
+  }
  },
  {
   "id": "perica_egf/61180684_3/act_phos",
@@ -604,7 +684,15 @@
    "scheme": "enz(activity='active') + sub(mod='off') >> enz(activity='active') + sub(mod='on') @ kf",
    "statement_type": "Phosphorylation"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: ACT0 activates enz"
+   ],
+   "bindings": {
+    "c0": "default"
+   }
+  }
  },
  {
   "id": "perica_egf/61180684_3/fb_phos_deact",
@@ -630,7 +718,15 @@
    "scheme": "subj(act='active') + obj(act='inactive') >> subj(act='active') + obj(act='active') @ kf",
    "statement_type": "Activation"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: ACT0 activates subj"
+   ],
+   "bindings": {
+    "c0": "default"
+   }
+  }
  },
  {
   "id": "perica_egf/61180684_3/act_phos/1",
@@ -643,7 +739,15 @@
    "scheme": "enz(act='active') + sub(mod='off') >> enz(act='active') + sub(mod='on') @ kf",
    "statement_type": "Phosphorylation"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: ACT0 activates enz as kinase"
+   ],
+   "bindings": {
+    "c0": "default"
+   }
+  }
  },
  {
   "id": "perica_egf/61180684_3/fb_phos_deact/1",
@@ -656,7 +760,15 @@
    "scheme": "enz() + sub(act='active', mod='off') >> enz() + sub(act='inactive', mod='on') @ kf",
    "statement_type": "Phosphorylation"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: ACT0 activates sub"
+   ],
+   "bindings": {
+    "c0": "default"
+   }
+  }
  },
  {
   "id": "perica_egf/61230791_0/egfr_act",
@@ -946,7 +1058,15 @@
    "scheme": "subj(act='active') + obj_from_0() >> subj(act='active') + obj_to_0() @ kf",
    "statement_type": "Conversion"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: ACT0 activates subj"
+   ],
+   "bindings": {
+    "c0": "default"
+   }
+  }
  },
  {
   "id": "perica_egf/61230791_1/ras_hydrolysis",
@@ -987,7 +1107,15 @@
    "scheme": "enz(activity='active') + sub(mod='off') >> enz(activity='active') + sub(mod='on') @ kf",
    "statement_type": "Phosphorylation"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: ACT0 activates enz"
+   ],
+   "bindings": {
+    "c0": "default"
+   }
+  }
  },
  {
   "id": "perica_egf/61230791_1/recruited_sub_phos",
@@ -1000,7 +1128,15 @@
    "scheme": "enz() + sub(mod='off', activity='active') >> enz() + sub(mod='on', activity='active') @ kf",
    "statement_type": "Phosphorylation"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: ACT0 activates sub"
+   ],
+   "bindings": {
+    "c0": "default"
+   }
+  }
  },
  {
   "id": "perica_egf/61230791_1/recruited_enz_phos/1",
@@ -1013,7 +1149,15 @@
    "scheme": "enz(act='active') + sub(mod='off') >> enz(act='active') + sub(mod='on') @ kf",
    "statement_type": "Phosphorylation"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: ACT0 activates enz as kinase"
+   ],
+   "bindings": {
+    "c0": "default"
+   }
+  }
  },
  {
   "id": "perica_egf/61230791_1/recruited_sub_phos/1",
@@ -1026,7 +1170,15 @@
    "scheme": "enz() + sub(mod='off', act='active') >> enz() + sub(mod='on', act='active') @ kf",
    "statement_type": "Phosphorylation"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: ACT0 activates sub"
+   ],
+   "bindings": {
+    "c0": "default"
+   }
+  }
  },
  {
   "id": "perica_egf/61230791_2/erk_phos",
@@ -1151,7 +1303,17 @@
    "scheme": "obj(A1='u', T693='u', S695='u') >> obj(A1='p', T693='u', S695='u') @ k_stim + k_bas",
    "statement_type": "Activation"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: obj is phosphorylated at T693",
+    "c1: obj is phosphorylated at S695"
+   ],
+   "bindings": {
+    "c0": "basal",
+    "c1": "basal"
+   }
+  }
  },
  {
   "id": "perica_egf/61230791_2/act_off",
@@ -1177,7 +1339,15 @@
    "scheme": "obj(A1='p', T693='p') >> obj(A1='u', T693='p') @ k",
    "statement_type": "Inhibition"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: obj is phosphorylated at T693"
+   ],
+   "bindings": {
+    "c0": "basal"
+   }
+  }
  },
  {
   "id": "perica_egf/61230791_2/erk_switch",
@@ -1384,7 +1554,17 @@
    "scheme": "enz(T202='p', Y204='p', T207='u') >> enz(T202='p', Y204='p', T207='p') @ kf",
    "statement_type": "Autophosphorylation"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: enz is phosphorylated at T202",
+    "c1: enz is phosphorylated at Y204"
+   ],
+   "bindings": {
+    "c0": "basal",
+    "c1": "basal"
+   }
+  }
  },
  {
   "id": "perica_egf/61230791_2/erk1_auto/1",
@@ -1426,6 +1606,16 @@
   },
   "stated": {
    "modulated_by_0": "modulated_by"
+  },
+  "companions": {
+   "rows": [
+    "c0: obj is phosphorylated at T693",
+    "c1: obj is phosphorylated at S695"
+   ],
+   "bindings": {
+    "c0": "basal",
+    "c1": "basal"
+   }
   }
  },
  {
@@ -1442,6 +1632,16 @@
   },
   "stated": {
    "modulated_by_0": "modulated_by"
+  },
+  "companions": {
+   "rows": [
+    "c0: obj is phosphorylated at T693",
+    "c1: obj is phosphorylated at S695"
+   ],
+   "bindings": {
+    "c0": "basal",
+    "c1": "basal"
+   }
   }
  },
  {
@@ -1474,6 +1674,16 @@
   },
   "stated": {
    "modulated_by_0": "modulated_by"
+  },
+  "companions": {
+   "rows": [
+    "c0: obj is phosphorylated at T693",
+    "c1: obj is phosphorylated at S695"
+   ],
+   "bindings": {
+    "c0": "basal",
+    "c1": "basal"
+   }
   }
  },
  {
@@ -3208,7 +3418,15 @@
    "scheme": "sub(S338='u', S259='u') >> sub(S338='p', S259='u') @ k_basal\nsub(S338='u', S259='u') >> sub(S338='p', S259='u') @ kf",
    "statement_type": "Phosphorylation"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: sub is phosphorylated at S259"
+   ],
+   "bindings": {
+    "c0": "basal"
+   }
+  }
  },
  {
   "id": "sweep_55max/multi17/dimer_bind",
@@ -4926,7 +5144,21 @@
    "scheme": "members_0(S465='p', S467='p', smad2=None, smad3=None, smad4=None) + members_1(S465='p', S467='p', smad2=None, smad3=None, smad4=None) >> members_0(smad2=1, S465='p', S467='p', smad3=None, smad4=None) % members_1(smad2=1, S465='p', S467='p', smad3=None, smad4=None) @ kf\nmembers_0(smad2=1, S465='p', S467='p', smad3=None, smad4=None) % members_1(smad2=1, S465='p', S467='p', smad3=None, smad4=None) >> members_0(S465='p', S467='p', smad2=None, smad3=None, smad4=None) + members_1(S465='p', S467='p', smad2=None, smad3=None, smad4=None) @ kr",
    "statement_type": "Complex"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: members_0 is phosphorylated at S465",
+    "c1: members_0 is phosphorylated at S467",
+    "c2: members_1 is phosphorylated at S465",
+    "c3: members_1 is phosphorylated at S467"
+   ],
+   "bindings": {
+    "c0": "basal",
+    "c1": "basal",
+    "c2": "basal",
+    "c3": "basal"
+   }
+  }
  },
  {
   "id": "sweep_55max/multi121/rr_S2S3_pp",
@@ -4940,7 +5172,21 @@
    "scheme": "members_0(S465='p', S467='p', smad2=None, smad3=None, smad4=None) + members_1(S423='p', S425='p', smad2=None, smad3=None, smad4=None) >> members_0(smad3=1, S465='p', S467='p', smad2=None, smad4=None) % members_1(smad2=1, S423='p', S425='p', smad3=None, smad4=None) @ kf\nmembers_0(smad3=1, S465='p', S467='p', smad2=None, smad4=None) % members_1(smad2=1, S423='p', S425='p', smad3=None, smad4=None) >> members_0(S465='p', S467='p', smad2=None, smad3=None, smad4=None) + members_1(S423='p', S425='p', smad2=None, smad3=None, smad4=None) @ kr",
    "statement_type": "Complex"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: members_0 is phosphorylated at S465",
+    "c1: members_0 is phosphorylated at S467",
+    "c2: members_1 is phosphorylated at S423",
+    "c3: members_1 is phosphorylated at S425"
+   ],
+   "bindings": {
+    "c0": "basal",
+    "c1": "basal",
+    "c2": "basal",
+    "c3": "basal"
+   }
+  }
  },
  {
   "id": "sweep_55max/multi122/rr_S3S3_pp",
@@ -4954,7 +5200,21 @@
    "scheme": "members_0(S423='p', S425='p', smad2=None, smad3=None, smad4=None) + members_1(S423='p', S425='p', smad2=None, smad3=None, smad4=None) >> members_0(smad3=1, S423='p', S425='p', smad2=None, smad4=None) % members_1(smad3=1, S423='p', S425='p', smad2=None, smad4=None) @ kf\nmembers_0(smad3=1, S423='p', S425='p', smad2=None, smad4=None) % members_1(smad3=1, S423='p', S425='p', smad2=None, smad4=None) >> members_0(S423='p', S425='p', smad2=None, smad3=None, smad4=None) + members_1(S423='p', S425='p', smad2=None, smad3=None, smad4=None) @ kr",
    "statement_type": "Complex"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: members_0 is phosphorylated at S423",
+    "c1: members_0 is phosphorylated at S425",
+    "c2: members_1 is phosphorylated at S423",
+    "c3: members_1 is phosphorylated at S425"
+   ],
+   "bindings": {
+    "c0": "basal",
+    "c1": "basal",
+    "c2": "basal",
+    "c3": "basal"
+   }
+  }
  },
  {
   "id": "sweep_55max/multi123/r4w_S2u",
@@ -4968,7 +5228,17 @@
    "scheme": "members_0(S465='u', S467='u', smad2=None, smad3=None, smad4=None) + members_1(smad2=None, smad3=None) >> members_0(smad4=1, S465='u', S467='u', smad2=None, smad3=None) % members_1(smad2=1, smad3=None) @ kf\nmembers_0(smad4=1, S465='u', S467='u', smad2=None, smad3=None) % members_1(smad2=1, smad3=None) >> members_0(S465='u', S467='u', smad2=None, smad3=None, smad4=None) + members_1(smad2=None, smad3=None) @ kr",
    "statement_type": "Complex"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: members_0 is phosphorylated at S465",
+    "c1: members_0 is phosphorylated at S467"
+   ],
+   "bindings": {
+    "c0": "basal",
+    "c1": "basal"
+   }
+  }
  },
  {
   "id": "sweep_55max/multi124/r4w_S3u",
@@ -4982,7 +5252,17 @@
    "scheme": "members_0(S423='u', S425='u', smad2=None, smad3=None, smad4=None) + members_1(smad2=None, smad3=None) >> members_0(smad4=1, S423='u', S425='u', smad2=None, smad3=None) % members_1(smad3=1, smad2=None) @ kf\nmembers_0(smad4=1, S423='u', S425='u', smad2=None, smad3=None) % members_1(smad3=1, smad2=None) >> members_0(S423='u', S425='u', smad2=None, smad3=None, smad4=None) + members_1(smad2=None, smad3=None) @ kr",
    "statement_type": "Complex"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: members_0 is phosphorylated at S423",
+    "c1: members_0 is phosphorylated at S425"
+   ],
+   "bindings": {
+    "c0": "basal",
+    "c1": "basal"
+   }
+  }
  },
  {
   "id": "sweep_55max/multi125/r4p_S2",
@@ -4996,7 +5276,17 @@
    "scheme": "members_0(S465='p', S467='p', smad2=None, smad3=None, smad4=None) + members_1(smad2=None, smad3=None) >> members_0(smad4=1, S465='p', S467='p', smad2=None, smad3=None) % members_1(smad2=1, smad3=None) @ kf\nmembers_0(smad4=1, S465='p', S467='p', smad2=None, smad3=None) % members_1(smad2=1, smad3=None) >> members_0(S465='p', S467='p', smad2=None, smad3=None, smad4=None) + members_1(smad2=None, smad3=None) @ kr",
    "statement_type": "Complex"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: members_0 is phosphorylated at S465",
+    "c1: members_0 is phosphorylated at S467"
+   ],
+   "bindings": {
+    "c0": "basal",
+    "c1": "basal"
+   }
+  }
  },
  {
   "id": "sweep_55max/multi126/r4p_S3",
@@ -5010,7 +5300,17 @@
    "scheme": "members_0(S423='p', S425='p', smad2=None, smad3=None, smad4=None) + members_1(smad2=None, smad3=None) >> members_0(smad4=1, S423='p', S425='p', smad2=None, smad3=None) % members_1(smad3=1, smad2=None) @ kf\nmembers_0(smad4=1, S423='p', S425='p', smad2=None, smad3=None) % members_1(smad3=1, smad2=None) >> members_0(S423='p', S425='p', smad2=None, smad3=None, smad4=None) + members_1(smad2=None, smad3=None) @ kr",
    "statement_type": "Complex"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: members_0 is phosphorylated at S423",
+    "c1: members_0 is phosphorylated at S425"
+   ],
+   "bindings": {
+    "c0": "basal",
+    "c1": "basal"
+   }
+  }
  },
  {
   "id": "sweep_55max/multi127/rr_S2uS3pp",
@@ -5024,7 +5324,21 @@
    "scheme": "members_0(S465='u', S467='u', smad2=None, smad3=None, smad4=None) + members_1(S423='p', S425='p', smad2=None, smad3=None, smad4=None) >> members_0(smad3=1, S465='u', S467='u', smad2=None, smad4=None) % members_1(smad2=1, S423='p', S425='p', smad3=None, smad4=None) @ kf\nmembers_0(smad3=1, S465='u', S467='u', smad2=None, smad4=None) % members_1(smad2=1, S423='p', S425='p', smad3=None, smad4=None) >> members_0(S465='u', S467='u', smad2=None, smad3=None, smad4=None) + members_1(S423='p', S425='p', smad2=None, smad3=None, smad4=None) @ kr",
    "statement_type": "Complex"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: members_0 is phosphorylated at S465",
+    "c1: members_0 is phosphorylated at S467",
+    "c2: members_1 is phosphorylated at S423",
+    "c3: members_1 is phosphorylated at S425"
+   ],
+   "bindings": {
+    "c0": "basal",
+    "c1": "basal",
+    "c2": "basal",
+    "c3": "basal"
+   }
+  }
  },
  {
   "id": "sweep_55max/multi128/rr_S2mS3pp",
@@ -5038,7 +5352,21 @@
    "scheme": "members_0(S467='p', S465='u', smad2=None, smad3=None, smad4=None) + members_1(S423='p', S425='p', smad2=None, smad3=None, smad4=None) >> members_0(smad3=1, S467='p', S465='u', smad2=None, smad4=None) % members_1(smad2=1, S423='p', S425='p', smad3=None, smad4=None) @ kf\nmembers_0(smad3=1, S467='p', S465='u', smad2=None, smad4=None) % members_1(smad2=1, S423='p', S425='p', smad3=None, smad4=None) >> members_0(S467='p', S465='u', smad2=None, smad3=None, smad4=None) + members_1(S423='p', S425='p', smad2=None, smad3=None, smad4=None) @ kr",
    "statement_type": "Complex"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: members_0 is phosphorylated at S467",
+    "c1: members_0 is phosphorylated at S465",
+    "c2: members_1 is phosphorylated at S423",
+    "c3: members_1 is phosphorylated at S425"
+   ],
+   "bindings": {
+    "c0": "basal",
+    "c1": "basal",
+    "c2": "basal",
+    "c3": "basal"
+   }
+  }
  },
  {
   "id": "sweep_55max/multi129/rr_S2ppS3u",
@@ -5052,7 +5380,21 @@
    "scheme": "members_0(S465='p', S467='p', smad2=None, smad3=None, smad4=None) + members_1(S423='u', S425='u', smad2=None, smad3=None, smad4=None) >> members_0(smad3=1, S465='p', S467='p', smad2=None, smad4=None) % members_1(smad2=1, S423='u', S425='u', smad3=None, smad4=None) @ kf\nmembers_0(smad3=1, S465='p', S467='p', smad2=None, smad4=None) % members_1(smad2=1, S423='u', S425='u', smad3=None, smad4=None) >> members_0(S465='p', S467='p', smad2=None, smad3=None, smad4=None) + members_1(S423='u', S425='u', smad2=None, smad3=None, smad4=None) @ kr",
    "statement_type": "Complex"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: members_0 is phosphorylated at S465",
+    "c1: members_0 is phosphorylated at S467",
+    "c2: members_1 is phosphorylated at S423",
+    "c3: members_1 is phosphorylated at S425"
+   ],
+   "bindings": {
+    "c0": "basal",
+    "c1": "basal",
+    "c2": "basal",
+    "c3": "basal"
+   }
+  }
  },
  {
   "id": "sweep_55max/multi130/rr_S2ppS3m",
@@ -5066,7 +5408,21 @@
    "scheme": "members_0(S465='p', S467='p', smad2=None, smad3=None, smad4=None) + members_1(S425='p', S423='u', smad2=None, smad3=None, smad4=None) >> members_0(smad3=1, S465='p', S467='p', smad2=None, smad4=None) % members_1(smad2=1, S425='p', S423='u', smad3=None, smad4=None) @ kf\nmembers_0(smad3=1, S465='p', S467='p', smad2=None, smad4=None) % members_1(smad2=1, S425='p', S423='u', smad3=None, smad4=None) >> members_0(S465='p', S467='p', smad2=None, smad3=None, smad4=None) + members_1(S425='p', S423='u', smad2=None, smad3=None, smad4=None) @ kr",
    "statement_type": "Complex"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: members_0 is phosphorylated at S465",
+    "c1: members_0 is phosphorylated at S467",
+    "c2: members_1 is phosphorylated at S425",
+    "c3: members_1 is phosphorylated at S423"
+   ],
+   "bindings": {
+    "c0": "basal",
+    "c1": "basal",
+    "c2": "basal",
+    "c3": "basal"
+   }
+  }
  },
  {
   "id": "sweep_55max/multi131/rr_S2uS3u",
@@ -5080,7 +5436,21 @@
    "scheme": "members_0(S465='u', S467='u', smad2=None, smad3=None, smad4=None) + members_1(S423='u', S425='u', smad2=None, smad3=None, smad4=None) >> members_0(smad3=1, S465='u', S467='u', smad2=None, smad4=None) % members_1(smad2=1, S423='u', S425='u', smad3=None, smad4=None) @ kf\nmembers_0(smad3=1, S465='u', S467='u', smad2=None, smad4=None) % members_1(smad2=1, S423='u', S425='u', smad3=None, smad4=None) >> members_0(S465='u', S467='u', smad2=None, smad3=None, smad4=None) + members_1(S423='u', S425='u', smad2=None, smad3=None, smad4=None) @ kr",
    "statement_type": "Complex"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: members_0 is phosphorylated at S465",
+    "c1: members_0 is phosphorylated at S467",
+    "c2: members_1 is phosphorylated at S423",
+    "c3: members_1 is phosphorylated at S425"
+   ],
+   "bindings": {
+    "c0": "basal",
+    "c1": "basal",
+    "c2": "basal",
+    "c3": "basal"
+   }
+  }
  },
  {
   "id": "sweep_55max/multi132/lig_irrev",
@@ -5501,7 +5871,15 @@
    "scheme": "members_0(egf=None, cet=None, Y1068='u') + members_1(egfr=None) >> members_0(egf=1, cet=None, Y1068='u') % members_1(egfr=1) + members_1(egfr=None) @ kf\nmembers_0(egf=1, cet=None, Y1068='u') % members_1(egfr=1) >> members_0(egf=None, cet=None, Y1068='u') @ kr delete_molecules",
    "statement_type": "Complex"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: members_0 is phosphorylated at Y1068"
+   ],
+   "bindings": {
+    "c0": "basal"
+   }
+  }
  },
  {
   "id": "sweep_55max/multi158/cet_bind",
@@ -5515,7 +5893,15 @@
    "scheme": "members_0(egf=None, cet=None, Y1068='u') + members_1(egfr=None) >> members_0(egf=None, cet=1, Y1068='u') % members_1(egfr=1) + members_1(egfr=None) @ kf\nmembers_0(egf=None, cet=1, Y1068='u') % members_1(egfr=1) >> members_0(egf=None, cet=None, Y1068='u') @ kr delete_molecules",
    "statement_type": "Complex"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: members_0 is phosphorylated at Y1068"
+   ],
+   "bindings": {
+    "c0": "basal"
+   }
+  }
  },
  {
   "id": "sweep_55max/multi159/lig_bind",
@@ -5556,7 +5942,15 @@
    "scheme": "enz(lig=None, Y1068='p') + sub(mod='off') >> enz(lig=None, Y1068='p') + sub(mod='on') @ kf\nenz(lig='egf', Y1068='p') + sub(mod='off') >> enz(lig='egf', Y1068='p') + sub(mod='on') @ kf\nenz(lig='cet', Y1068='p') + sub(mod='off') >> enz(lig='cet', Y1068='p') + sub(mod='on') @ kf",
    "statement_type": "Phosphorylation"
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: enz is phosphorylated at Y1068"
+   ],
+   "bindings": {
+    "c0": "basal"
+   }
+  }
  },
  {
   "id": "sweep_55max/multi162/bind_mono",
@@ -5612,7 +6006,15 @@
     "kr"
    ]
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: ACT0 activates subj"
+   ],
+   "bindings": {
+    "c0": "default"
+   }
+  }
  },
  {
   "id": "sweep_55max/multi166/active_sub_activates",
@@ -5626,7 +6028,15 @@
     "kr"
    ]
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: ACT0 activates subj"
+   ],
+   "bindings": {
+    "c0": "default"
+   }
+  }
  },
  {
   "id": "sweep_55max/multi167/insulin_act",
@@ -5968,7 +6378,15 @@
     "kr"
    ]
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: ACT0 activates members_0"
+   ],
+   "bindings": {
+    "c0": "default"
+   }
+  }
  },
  {
   "id": "sweep_55max/multi188/socs_bind",
@@ -5996,7 +6414,15 @@
     "kr"
    ]
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: ACT0 activates members_0"
+   ],
+   "bindings": {
+    "c0": "default"
+   }
+  }
  },
  {
   "id": "sweep_55max/multi190/socs_bind",
@@ -6010,7 +6436,15 @@
     "kr"
    ]
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: members_0 is phosphorylated at Y426"
+   ],
+   "bindings": {
+    "c0": "basal"
+   }
+  }
  },
  {
   "id": "sweep_55max/multi191/cis_bind2",
@@ -6169,7 +6603,15 @@
     "kc"
    ]
   },
-  "stated": {}
+  "stated": {},
+  "companions": {
+   "rows": [
+    "c0: ACT0 activates enz as kinase"
+   ],
+   "bindings": {
+    "c0": "default"
+   }
+  }
  },
  {
   "id": "sweep_55max/multi200/int_two_step",
