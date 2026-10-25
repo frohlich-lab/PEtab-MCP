@@ -1,9 +1,12 @@
 """Causal constraints (:mod:`petab_mcp.constraints`, PEtab-MCP#134): claims every model must make,
-checked on a statements record's rows, their regulators as their rates record them.
+checked on a statements record's rows, their regulators as their rates record them, and indirect
+ones traced through the network the rows expand to (:mod:`petab_mcp.tracing`).
 
 Records are written by hand here, each row a statement in the notation and the kinds its rate
-records (``derived``), so each test says exactly which claim it turns on; the server tests at the
-end build one through ``make_changes``.
+records (``derived``), so each test says exactly which claim it turns on; the model an indirect
+constraint is traced on is built from the record's rows as the statements route builds it, each
+row under the library's own mechanism for its type (a rate reading its regulators where it states
+any). The server tests at the end build one through ``make_changes``.
 """
 
 from __future__ import annotations
@@ -15,31 +18,64 @@ from pathlib import Path
 import pytest
 
 from petab_mcp import constraints as K
+from petab_mcp import mechanisms as M
+from petab_mcp import problem_sbml
 from petab_mcp.errors import ValidationError
 from petab_mcp.operations import OperationError
 from petab_mcp.references import StubReferenceResolver
 from petab_mcp.server import create_server
-from petab_mcp.statements import with_defaults
+from petab_mcp.statements import indra_part, regulators, with_defaults
 
 YAML_PATH = Path(__file__).parent / "data" / "toy_v2" / "problem.yaml"
 
 
 def _record(*rows) -> dict:
-    """A statements record of ``rows``, each ``(prefix, statement, derived?)``."""
+    """A statements record of ``rows``, each ``(prefix, statement, derived?, policy?)``."""
     return {
         "rows": [
             {
                 "prefix": prefix,
                 "statement": with_defaults(K.statement_json(text)),
-                "emission": {"derived": derived[0] if derived else {}},
+                "emission": {"derived": rest[0] if rest else {}},
             }
-            for prefix, text, *derived in rows
+            | ({"policy": rest[1]} if len(rest) > 1 else {})
+            for prefix, text, *rest in rows
         ]
     }
 
 
+def _model(record: dict) -> tuple:
+    """The model ``record``'s rows build, seeded and never reduced, and its emissions: each row
+    under its ``policy`` or the library's own mechanism for its type, a row stating regulators
+    under one whose rate reads them."""
+    from indra.statements import Modification, RemoveModification, SelfModification, stmts_from_json
+
+    library, rows = dict(M.REGISTRY), []
+    for row in record["rows"]:
+        (stmt,) = stmts_from_json([indra_part(row["statement"])])
+        stated = regulators(row["statement"])
+        kind = type(stmt).__name__
+        if row.get("policy"):
+            policy = row["policy"]
+        elif kind in ("PopulationTransition", "Conversion"):
+            policy = "mass_action"
+        elif (isinstance(stmt, Modification | RemoveModification)
+              and not isinstance(stmt, SelfModification) and stmt.enz is None):
+            policy = "basal"
+        else:
+            policy = M.INDRA_DEFAULT
+        if stated:
+            names = [k if len(a) == 1 else f"{k}_{i}" for k, a in stated.items() for i in range(len(a))]
+            read = {"statement_type": kind, "policy": f"{policy}_read", "based_on": policy,
+                    "rate": "k" + "".join(f" * (1 + {n})" for n in names), "parameters": ["k"]}
+            library[(kind, read["policy"])] = M.written(read, library)
+            policy = read["policy"]
+        rows.append((stmt, policy, row["prefix"], None, stated))
+    return problem_sbml.to_antimony(rows, {}, library, seeded=True)
+
+
 def _check(lines: list[str], record: dict) -> dict[str, K.Verdict]:
-    return K.check(K.parse(lines), record)
+    return K.check(K.parse(lines), record, lambda: _model(record))
 
 
 #: A cascade, as fujita's formulation writes it.
@@ -210,67 +246,90 @@ def test_not_directly_and_does_not_affect():
     )
     assert not got["c1"].ok and got["c1"].rows == ("r23",)
     assert got["c2"].ok and got["c3"].ok
-    assert not got["c4"].ok and "(r56) RPS6" in got["c4"].chain
+    assert not got["c4"].ok and "r56" in got["c4"].rows
+    assert got["c4"].why.startswith("tracing EGF moves RPS6 through rows")
 
 
 # ------------------------------------------------------------------------------------- indirect
-def test_a_chain_carries_a_cascade_with_its_sign():
-    """fujita's cascade: EGF raises RPS6{pS235} through four rows, and no chain lowers it, so the
-    false "EGF decreases RPS6{pS235}" is refused saying the claims run the other way."""
+def test_tracing_carries_a_cascade_with_its_sign():
+    """fujita's cascade: EGF's tag reaches RPS6{pS235} through four rows, and nothing lowers it, so
+    the false "EGF decreases RPS6{pS235}" is refused saying what the trace reached."""
     got = _check(
         ["c1: EGF increases RPS6{pS235}, indirectly", "c2: EGF decreases RPS6{pS235}, indirectly"],
         _record(*_CASCADE),
     )
-    assert got["c1"].ok and got["c1"].opposite is None
-    assert got["c1"].chain == (
-        "EGF → (r1) EGFR{-pY1068, !EGF} → (r9) EGFR{pY1068} → (r23) AKT1{pS473} → (r56) RPS6{pS235}"
+    assert got["c1"].ok and got["c1"].rows == ("r56",)
+    assert not got["c2"].ok
+    assert got["c2"].why.startswith(
+        "tracing EGF through the network its rows expand to never lowers RPS6{pS235}; it reaches "
+        "AKT1, EGFR, RPS6"
     )
-    assert not got["c2"].ok and "only the other way" in got["c2"].why
 
 
-def test_feedback_reports_the_chain_of_the_other_sign():
-    """Under negative feedback a chain of each sign exists, and which way the model moves its
-    object is the fit's to say: held, and the other chain reported (#134, decision 2)."""
+def test_under_feedback_both_signs_hold():
+    """Under negative feedback the network moves P each way, and which way the fitted model moves
+    it is the fit's to say: both hold, and neither is reported against the other (#136)."""
     record = _record(
         ("a", "E increases P"), ("b", "P increases N"), ("c", "P is degraded, activated by N")
     )
-    got = _check(["c1: E increases P, indirectly"], record)["c1"]
-    assert got.ok and got.chain == "E → (a) P"
-    assert got.opposite == "E → (a) P → (b) N ⊣ (c) P"
+    got = _check(["c1: E increases P, indirectly", "c2: E decreases P, indirectly"], record)
+    assert got["c1"].ok and got["c2"].ok and got["c2"].rows == ("c",)
 
 
-def test_moving_between_forms_a_reader_lumps_carries_nothing():
-    """A row that only moves A between forms that each hold pS1 leaves the amount the next row
-    reads as it is, so no chain runs through it (bachmann's spurious SOCS3 ⊣ Y401 → SHP1 chain ran
-    through such a move in a species graph)."""
+def test_a_tag_follows_the_molecule_not_the_form_a_rule_reads():
+    """E phosphorylating A{pS1} at S2 tags A, and the rule A{pS1} catalyses takes the tag on,
+    though E leaves the amount of A{pS1} as it is: held, where the claims chain (#134) refused it.
+    Deliberately so: a false acceptance costs less than a false refusal, and the lowered side,
+    A{pS1} unphosphorylated at S2, is traced on only where the phosphorylated form does not do what
+    it did (#136)."""
     record = _record(
-        ("r1", "E phosphorylates A{pS1} at S2"), ("r2", "A{pS1} phosphorylates B at S3")
+        ("r0", "K phosphorylates A at S1"),
+        ("r1", "E phosphorylates A{pS1} at S2"),
+        ("r2", "A{pS1} phosphorylates B at S3"),
     )
-    got = _check(["c1: E increases B{pS3}, indirectly"], record)["c1"]
-    assert not got.ok and "no chain of claims connects them" in got.why
+    got = _check(["c1: E increases B{pS3}, indirectly", "c2: E decreases B{pS3}, indirectly"], record)
+    assert got["c1"].ok and not got["c2"].ok
 
 
-def test_a_binding_partner_lowers_its_partners_free_form_at_any_step():
-    """An inhibitor made downstream that acts by binding is a chain like any other: restricted to a
-    chain's first step, sequestration refused isensee's Rp8 antagonist competing with cAMP for the
-    holoenzyme one step after its uptake, and changed no false claim's verdict (#136)."""
+def test_a_competitor_lowers_what_it_takes_goes_on_to_make():
+    """Less of something is no tag, so a decrease by mass action is traced on from what the
+    traced driver took away: H sequestering C lowers what free C phosphorylates, one step after X
+    makes H too (isensee's Rp8 antagonist competing with cAMP for the holoenzyme)."""
     record = _record(
         ("h", "H binds C"), ("p", "C{~H} phosphorylates S at S1"), ("m", "X increases H")
     )
     got = _check(
-        ["c1: H decreases S{pS1}, indirectly", "c2: X decreases S{pS1}, indirectly"], record
+        [
+            "c1: H decreases S{pS1}, indirectly",
+            "c2: X decreases S{pS1}, indirectly",
+            "c3: X increases S{pS1}, indirectly",
+        ],
+        record,
     )
-    assert got["c1"].ok and got["c1"].chain == "H ⊣ (h) C{~H} → (p) S{pS1}"
-    assert got["c2"].ok and got["c2"].chain == "X → (m) H{~C} ⊣ (h) C{~H} → (p) S{pS1}"
-    assert got["c2"].opposite is None
+    assert got["c1"].ok and got["c1"].rows == ("p",)
+    assert got["c2"].ok and got["c2"].rows == ("p",)
+    assert not got["c3"].ok
 
 
-def test_a_binding_claims_coming_apart():
-    """isensee releases PKA's catalytic subunit by a binding written with no forward rate: the
-    complex coming apart raises each member's free form (#134, decision 11)."""
-    record = _record(("occ", "R{!C} binds cAMP"), ("rel", "R{!cAMP} binds C"))
+def test_a_partner_taken_into_a_complex_that_keeps_its_part_lowers_nothing():
+    """EGF binding free EGFR{pY1068} takes it away, but bound EGFR{pY1068} phosphorylates AKT1 as
+    the free one did, so the loss is not traced on: traced through that phosphorylation, it read as
+    EGF lowering AKT1{pS473} (#136)."""
+    got = _check(["c1: EGF decreases AKT1{pS473}, indirectly"], _record(*_CASCADE))
+    assert not got["c1"].ok
+
+
+def test_a_partner_a_bond_wildcard_hides_drives_a_release():
+    """isensee releases PKA's catalytic subunit by a binding whose bound condition holds both ways
+    (`stated`), so the release names cAMP only as "R bound to something": written out as the
+    partner that site binds, cAMP hands its tag to the subunit it frees."""
+    record = _record(
+        ("holo", "R binds C"),
+        ("occ", "R{!C} binds cAMP"),
+        ("rel", "R{!cAMP} binds C", {}, "stated"),
+    )
     got = _check(["c1: cAMP increases C{~R}, indirectly"], record)["c1"]
-    assert got.ok and got.chain == "cAMP → (occ) R{!cAMP, !C} → (rel) C{~R}"
+    assert got.ok and "rel" in got.rows
 
 
 def test_activity_rises_with_a_declared_active_form():
@@ -293,6 +352,9 @@ def test_activity_rises_with_a_declared_active_form():
     )
     assert got["c1"].ok and got["c2"].rows == ("d",) and got["c3"].rows == ("pde",)
     assert not got["c4"].ok
+    # Traced, a regulator of a reaction the active form catalyses moves its activity too.
+    traced = _check([*forms, "c5: IBMX inhibits PDE, indirectly"], record)["c5"]
+    assert traced.ok and traced.rows == ("pde",)
     # Refused, it names what it is about: the declared forms, not an activity the rows never write.
     late = _check([*forms, "c5: EGF activates AKT1, directly"], record)["c5"]
     assert not late.ok and late.why.startswith("rows `r23` change the activity of AKT1")
@@ -306,8 +368,9 @@ def test_enforce_refuses_naming_each_constraint_it_breaks():
             "c2: EGF phosphorylates RPS6 at S235, directly",
         ]
     )
+    record = _record(*_CASCADE)
     with pytest.raises(OperationError) as raised:
-        K.enforce(constraints, _record(*_CASCADE), None)
+        K.enforce(constraints, record, lambda: _model(record))
     assert raised.value.cause == "constraint_violated"
     message = str(raised.value)
     assert "breaks 1 of the session's constraints" in message and "`c2`" in message
@@ -316,17 +379,21 @@ def test_enforce_refuses_naming_each_constraint_it_breaks():
         K.enforce(constraints, None, None)
 
 
-def test_enforce_keeps_verdicts_and_warns_of_a_new_two_way_chain_once():
-    """The verdicts go with the record, so the next change warns only of a chain of the other
-    sign that is new since the model it starts from."""
-    constraints = K.parse(["c1: E increases P, indirectly"])
-    record = _record(
-        ("a", "E increases P"), ("b", "P increases N"), ("c", "P is degraded, activated by N")
-    )
-    kept, warning = K.enforce(constraints, record, None)
-    assert kept["checked"] == ["c1: E increases P, indirectly"]
-    assert kept["verdicts"]["c1"]["opposite"] and "the fit's to say" in warning
-    assert K.enforce(constraints, record, {"constraints": kept})[1] is None
+def test_enforce_keeps_verdicts_and_holds_what_it_could_not_trace():
+    """The verdicts go with the record. A trace that cannot run refuses nothing: the constraint
+    holds, unchecked, and the result says so."""
+    constraints = K.parse(["c1: EGF increases RPS6{pS235}, indirectly"])
+    record = _record(*_CASCADE)
+    kept, warning = K.enforce(constraints, record, lambda: _model(record))
+    assert kept["checked"] == ["c1: EGF increases RPS6{pS235}, indirectly"]
+    assert kept["verdicts"] == {"c1": {"ok": True, "rows": ["r56"]}} and warning is None
+
+    def broken():
+        raise RuntimeError("no BioNetGen")
+
+    kept, warning = K.enforce(constraints, record, broken)
+    assert kept["verdicts"]["c1"]["ok"] and "no BioNetGen" in kept["verdicts"]["c1"]["unchecked"]
+    assert warning.startswith("`c1` (EGF increases RPS6{pS235}, indirectly) was not checked")
 
 
 # --------------------------------------------------------------------------------------- server
@@ -375,6 +442,19 @@ def test_make_changes_refuses_a_model_that_breaks_a_constraint(tmp_path):
     assert out["applied"] is True and out["committed"] is True, out
     record = json.loads((tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text())
     assert record["constraints"]["verdicts"] == {"c1": {"ok": True, "rows": ["conv"]}}
+
+
+def test_make_changes_traces_an_indirect_constraint(tmp_path):
+    """An indirect constraint is traced on the model the change's rows build, built again from the
+    record it would commit: B made from A carries A's tag, and the verdict is kept and listed."""
+    mcp = _constrained_server(tmp_path, "c1: A increases B, indirectly\n")
+    out = _call(mcp, "make_changes", _change("B", "A", "back"))
+    assert out["applied"] is False and out["error_cause"] == "constraint_violated"
+    assert "never raises B" in out["error"]
+    out = _call(mcp, "make_changes", _change("A", "B", "conv"))
+    assert out["applied"] is True and out["committed"] is True, out
+    (c1,) = _call(mcp, "list_constraints", {})["constraints"]
+    assert (c1["ok"], c1["rows"]) == (True, ["conv"])
 
 
 def test_the_agent_reads_the_constraints(tmp_path):
@@ -522,3 +602,26 @@ def test_an_update_flags_the_versions_it_breaks_and_holds_the_next_change_to_it(
     assert out["applied"] is False and out["error_cause"] == "constraint_violated"
     record = json.loads((tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text())
     assert record["constraints"]["checked"] == ["c1: A becomes B, directly"]
+
+
+def test_a_version_is_checked_against_a_constraint_once(tmp_path, monkeypatch):
+    """A version keeps the verdicts its commit found, and one found later is remembered: tracing
+    runs BioNetGen, and a version's model never changes."""
+    from petab_mcp import operations
+
+    mcp = _updatable_server(tmp_path, "c1: A increases B, indirectly\n")
+    out = _call(mcp, "make_changes", _change("A", "B", "conv"))
+    assert out["committed"] is True, out
+    built = []
+    model = operations.statements_model
+    monkeypatch.setattr(
+        operations, "statements_model", lambda *a: built.append(a) or model(*a)
+    )
+    assert _call(mcp, "list_versions", {})["result"][0].get("violates") is None
+    assert built == []  # read off v0's record
+    update = {"constraints": ["c1: A increases B, indirectly", "c2: B does not affect A, indirectly"]}
+    out = _call(mcp, "set_constraints", {**update, "rationale": "x"})
+    assert out["violating_versions"] == {} and len(built) == 1  # c2 traced on v0, once
+    _call(mcp, "list_versions", {})
+    _call(mcp, "list_constraints", {})
+    assert len(built) == 1

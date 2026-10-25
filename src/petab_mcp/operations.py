@@ -485,7 +485,7 @@ def _commit_change(
         record = getattr(
             session, "submitted_statements" if model_build is not None else "model_statements", None
         )
-        signed = said = ambiguous = None
+        signed = said = unchecked = None
         if record:
             from . import regulation
 
@@ -494,13 +494,14 @@ def _commit_change(
                 signed, _statements_base(session, model_build is not None), unsigned, failed
             )
         # The claims every model must make, read off the rows as just signed: a bound or a scale
-        # can turn a regulator, so a parameter edit is checked as a model edit is. A model not
-        # built from statements claims nothing. Raises before the swap below: NOTHING applies.
+        # can turn a regulator, so a parameter edit is checked as a model edit is, on the model
+        # the rows build traced again. A model not built from statements claims nothing. Raises
+        # before the swap below: NOTHING applies.
         if getattr(session, "constraints", None) is not None:
             from . import constraints as constraints_mod
 
-            kept, ambiguous = constraints_mod.enforce(
-                session.constraints, signed, _statements_base(session, model_build is not None)
+            kept, unchecked = constraints_mod.enforce(
+                session.constraints, signed, lambda: statements_model(session, signed)
             )
             if signed is not None:
                 signed["constraints"] = kept
@@ -520,9 +521,9 @@ def _commit_change(
         # The edit's half of the message stack (see :mod:`messages`). The lint's WARNING-level
         # findings join it here: they used to live only inside the `validation` report, which the
         # result no longer carries, so they were reaching nobody at all.
-        # The regulators' too, and an indirect constraint's newly two-way chain, in the edit's
-        # event as in its result.
-        warnings = [*warnings, *(w for w in (said, ambiguous) if w)]
+        # The regulators' too, and a constraint that could not be checked, in the edit's event as
+        # in its result.
+        warnings = [*warnings, *(w for w in (said, unchecked) if w)]
         edit_messages = M.warnings_from(M.SOURCE_EDIT, warnings) + M.warnings_from(
             M.SOURCE_VALIDATION,
             [i["message"] for i in report["issues"] if i.get("level") == "warning"],
@@ -739,6 +740,8 @@ def statements_to_antimony(
     starts: list[dict[str, Any]] | None = None,
     readouts: dict[str, str] | None = None,
     amounts: dict[str, dict[str, Any]] | None = None,
+    *,
+    seeded: bool = False,
 ) -> tuple[str, dict[str, Any], list[dict[str, str]], dict[tuple[str, str], dict]]:
     """The ``statements`` route: build the model the rows assert, as Antimony for :func:`set_model`.
 
@@ -754,7 +757,8 @@ def statements_to_antimony(
     a row uses them or not, ``starts``, and the ``network`` the rows expand to before and after
     the reduction (:mod:`reduction`); one warning naming the ungrounded agents, since grounding is
     optional and its absence is reported, never refused; and the run's written mechanisms, for
-    the caller to keep once the change applies.
+    the caller to keep once the change applies. ``seeded`` returns instead the PySB model the rows
+    build, seeded and never reduced, and its emissions (:func:`statements_model`).
     """
     from dataclasses import asdict
 
@@ -873,7 +877,10 @@ def statements_to_antimony(
         targets=frozenset(R.condition_target_symbols(session.problem)),
         times=regulation.times(session.problem),
         network=network,
+        seeded=seeded,
     )
+    if seeded:
+        return antimony, emissions
     record = {
         "rows": [
             {"prefix": row["prefix"], "statement": row["statement"], "emission": asdict(e)}
@@ -1020,6 +1027,17 @@ def bound_rows(
         binding["policy"] = notation.resolve_policy(binding["policy"], kind, library)
         out.append({"statement": row["statement"], "prefix": row["prefix"]} | binding_of(binding))
     return out
+
+
+def statements_model(session, record: dict) -> tuple[Any, list]:
+    """The PySB model a statements ``record`` builds, seeded and never reduced, and its emissions:
+    what its constraints are traced on (:mod:`tracing`). Built again from the record, as a
+    ``base_version`` fork builds from one, with the written mechanisms it carries; BioNetGen does
+    not run."""
+    rows, bindings, starts, readouts, amounts, _ = apply_statement_edits(record, [])
+    return statements_to_antimony(
+        session, rows, bindings, record.get("mechanisms"), starts, readouts, amounts, seeded=True
+    )
 
 
 def _statements_base(session, rebuilt: bool) -> dict | None:

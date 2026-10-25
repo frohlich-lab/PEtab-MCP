@@ -355,6 +355,9 @@ class PetabSession:
         self.constraints: Any | None = None
         # Whether `set_constraints` may change them: "off" (the tool is not offered) or "any".
         self.constraint_updates: str = "off"
+        # Each stored version's verdict on a constraint, by (version, its text, the declared active
+        # forms): tracing runs BioNetGen, and a version's model never changes.
+        self._verdicts: dict[tuple, Any] = {}
 
         # The version the NEXT commit descends from, or None for "whatever HEAD is".
         # `make_changes(edits=..., base_version=N)` patches version N's stored text, so the commit
@@ -561,21 +564,55 @@ class PetabSession:
             )
 
     # -- constraints -------------------------------------------------------
+    def constraint_verdicts(self, version: int | None, constraints: Any) -> dict[str, Any]:
+        """Each of ``constraints``' verdicts on stored ``version`` (``None`` or none committed yet:
+        the current model): as the version's record keeps it from its commit, as found before, or
+        checked now, tracing the version's model (:func:`constraints.check`)."""
+        from . import constraints as constraints_mod
+        from .operations import statements_model
+
+        stored = version is not None and version >= 0
+        record = self.provenance.get_statements(version) if stored else self.model_statements
+
+        def model():
+            return statements_model(self, record)
+
+        if not stored:
+            return constraints_mod.check(constraints, record, model)
+        forms = tuple(f.text for f in constraints.active_forms)
+        kept = constraints_mod.kept(constraints, record)
+        out, todo = {}, []
+        for c in constraints.items:
+            key = (version, c.text, forms)
+            if key not in self._verdicts and c.id in kept:
+                self._verdicts[key] = kept[c.id]
+            if key in self._verdicts:
+                out[c.id] = self._verdicts[key]
+            else:
+                todo.append(c)
+        if todo:
+            found = constraints_mod.check(
+                constraints_mod.Constraints(tuple(todo), constraints.active_forms), record, model
+            )
+            for c in todo:
+                out[c.id] = self._verdicts[(version, c.text, forms)] = found[c.id]
+        return out
+
     def constraint_violations(self, constraints: Any | None = None) -> dict[int, list[str]]:
         """The ids of the constraints (the session's, or ``constraints``) each stored version
-        breaks, by version, read off each version's statements record (:func:`constraints.violations`);
-        empty without constraints."""
-        from . import constraints as constraints_mod
-
+        breaks, by version (:meth:`constraint_verdicts`); a version breaking none is left out, and
+        all are without constraints."""
         constraints = constraints if constraints is not None else self.constraints
         if constraints is None:
             return {}
-        records = {
-            int(m["version"]): self.provenance.get_statements(int(m["version"]))
-            for m in self.provenance.list_versions()
-            if m.get("version") is not None
-        }
-        return constraints_mod.violations(constraints, records)
+        out = {}
+        for meta in self.provenance.list_versions():
+            if meta.get("version") is None:
+                continue
+            verdicts = self.constraint_verdicts(int(meta["version"]), constraints)
+            if broken := [c.id for c in constraints.items if not verdicts[c.id].ok]:
+                out[int(meta["version"])] = broken
+        return out
 
     def reseed_best(self, excluded: set[int]) -> None:
         """Rebuild the best-score checkpoint from the log without the versions ``excluded``, the ones
@@ -599,8 +636,8 @@ class PetabSession:
             self.constraints = constraints
             self.reseed_best(set(broken))
             if self.model_statements:
-                # What the next change's chain warnings compare with: HEAD under the new set.
-                verdicts = constraints_mod.check(constraints, self.model_statements)
+                # What `list_constraints` reads: HEAD under the new set.
+                verdicts = self.constraint_verdicts(head, constraints)
                 self.model_statements["constraints"] = {
                     "checked": constraints.texts(),
                     "verdicts": {cid: v.stored() for cid, v in verdicts.items()},
@@ -1867,11 +1904,9 @@ class PetabSession:
         that makes the session's claims.
         """
         if self.constraints is not None:
-            from . import constraints as constraints_mod
             from .operations import OperationError
 
-            record = self.provenance.get_statements(int(version))
-            verdicts = constraints_mod.check(self.constraints, record)
+            verdicts = self.constraint_verdicts(int(version), self.constraints)
             broken = [c for c in self.constraints.items if not verdicts[c.id].ok]
             if broken:
                 raise OperationError(

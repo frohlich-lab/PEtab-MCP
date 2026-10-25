@@ -1076,10 +1076,13 @@ _MAKE_CHANGES_CONSTRAINTS = (
     "too, since a bound can turn a regulator. One ending `, directly` needs one row to claim it: "
     "its reaction, driven the stated way by the constraint's subject as its catalyst or as a "
     "regulator of the kind its rate records (state a regulator on the row it acts on, `..., "
-    "inhibited by X`). One ending `, indirectly` needs a chain of your rows' claims to carry the "
-    "subject's change to its object with the stated sign; where one of the other sign exists too, "
-    "the result says so, and keeps both. `not ..., directly` forbids a row that claims it, and `X "
-    "does not affect Y` any claim (`directly`) or chain (`indirectly`) from X to Y. `activates` and "
+    "inhibited by X`). One ending `, indirectly` needs the network your rows expand to to carry "
+    "the subject's change to its object with the stated sign, traced through each reaction: a "
+    "catalyst, a regulator as its rate records it, a substrate or a partner hands the change on "
+    "to what the reaction makes or changes, and a competitor or an antagonist that takes a "
+    "molecule away lowers what that molecule goes on to make. `not ..., directly` forbids a row "
+    "that claims it, and `X does not affect Y` any claim (`directly`) or traced change "
+    "(`indirectly`) from X to Y. `activates` and "
     "`inhibits` are about the forms the constraints declare active. Agents are matched by name: use "
     "the constraints' names."
 )
@@ -2435,6 +2438,12 @@ def _register_resources(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
 
 
 # ------------------------------------------------------------------ constraint tools
+def _verdicts(session, constraints) -> dict[str, Any]:
+    """Each constraint's verdict on the current model (:meth:`PetabSession.constraint_verdicts`): as
+    its commit checked it where its record keeps that under these constraints, else traced now."""
+    return session.constraint_verdicts(session.provenance.current_version, constraints)
+
+
 def _register_constraint_tools(
     mcp: FastMCP, route: Callable[[], _Ctx], updates: bool = False
 ) -> None:
@@ -2447,14 +2456,14 @@ def _register_constraint_tools(
     @mcp.tool(annotations=_READ_ONLY)
     def list_constraints() -> dict[str, Any]:
         """The session's CONSTRAINTS, the claims every model must make, as written (`, directly`: one
-        row claims it; `, indirectly`: a chain of your rows' claims carries it), each with what makes
-        it hold on the current model: the `rows` that claim it, the `chain` that carries it, and
-        `opposite`, a chain of the other sign that also exists; or `why` it does not. `active_forms`
-        are the forms `activates` and `inhibits` are about; `updates` says whether `set_constraints`
-        may change them (`any`) or not (`off`)."""
+        row claims it; `, indirectly`: the network your rows expand to carries it, traced from its
+        subject), each with what makes it hold on the current model: the `rows` that claim it, or
+        whose reactions carry the traced change onto its object; or `why` it does not.
+        `active_forms` are the forms `activates` and `inhibits` are about; `updates` says whether
+        `set_constraints` may change them (`any`) or not (`off`)."""
         session = route().session
         constraints = session.constraints or constraints_mod.Constraints(())
-        verdicts = constraints_mod.check(constraints, session.model_statements)
+        verdicts = _verdicts(session, constraints)
         return {
             "constraints": [
                 {"id": c.id, "text": c.text}
@@ -2477,8 +2486,10 @@ def _register_constraint_tools(
         from here on is checked against them. A stored version they break is flagged in
         `list_versions`, can no longer be restored, and no longer counts as the best. The result
         says whether the update loosened or tightened the claims, and which versions break it,
-        HEAD included; the next change must build a model that makes them. `rationale` says why,
-        and is logged with the update."""
+        HEAD included; the next change must build a model that makes them. A version is checked
+        against a constraint it was not committed under by tracing its model, which takes seconds
+        to a minute for each version and indirect constraint. `rationale` says why, and is logged
+        with the update."""
         ctx = route()
         session = ctx.session
         args = {"n_constraints": len(constraints)}
