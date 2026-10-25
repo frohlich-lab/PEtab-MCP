@@ -2,8 +2,8 @@
 PEtab-MCP#127 and #128, and every mechanism agents wrote in two NEMO runs, through the check of
 a row's regulators (:mod:`petab_mcp.regulation`).
 
-- ``rows.json``: rows as a model states them, with the mechanisms they use, built as
-  `make_changes` builds them (:func:`problem_sbml.to_antimony`), ``time`` over an entry's
+- ``rows.json``: rows as a model states them, with their bindings and the mechanisms they use,
+  built as `make_changes` builds them (:func:`problem_sbml.to_antimony`), ``time`` over an entry's
   ``times`` where it gives them, and signed again on its ``problem`` where it gives one (a
   parameter table, conditions, measurement times and the model's values: :func:`regulation.resign`
   as a commit does).
@@ -34,7 +34,8 @@ import sympy
 from indra.statements import Agent, stmts_from_json
 
 from petab_mcp import mechanisms as M
-from petab_mcp import notation, problem_sbml, regulation
+from petab_mcp import problem_sbml, regulation
+from petab_mcp import operations as O
 from petab_mcp.errors import PetabMcpError
 from petab_mcp.schemes import placeholder
 from petab_mcp.statements import indra_part, regulators, with_defaults
@@ -72,8 +73,7 @@ def _library(definitions) -> dict:
 def _rows(entry) -> tuple[pysb.Model, list[tuple], list]:
     """``entry``'s rows built as `make_changes` builds them, and the model they built."""
     library = _library(entry.get("mechanisms", []))
-    parsed = [notation.parse(r, library=library) if isinstance(r, str) else dict(r)
-              for r in entry["rows"]]
+    parsed = O.bound_rows(entry["rows"], entry["bindings"], library)
     for row in parsed:
         row["statement"] = with_defaults(row["statement"])
     stmts = stmts_from_json([indra_part(row["statement"]) for row in parsed])

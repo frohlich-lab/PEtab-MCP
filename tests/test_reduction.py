@@ -531,12 +531,15 @@ def test_a_refusal_reads_the_same_unreduced():
 
 
 # -- through the server: the problem's tables, and AMICI ---------------------------------------
-_SPLITTING = [
-    "y1: K phosphorylates S at Y1 | indra_default",
-    "s2: K phosphorylates S at S2 | indra_default",
-    "dy1: P dephosphorylates S at Y1 | indra_default",
-    "ds2: P dephosphorylates S at S2 | indra_default",
-]
+_SPLITTING = {
+    "statements": [
+        "y1: K phosphorylates S at Y1",
+        "s2: K phosphorylates S at S2",
+        "dy1: P dephosphorylates S at Y1",
+        "ds2: P dephosphorylates S at S2",
+    ],
+    "bindings": {p: "indra_default" for p in ("y1", "s2", "dy1", "ds2")},
+}
 
 
 def _statements_server(tmp_path, entities: dict, **kwargs):
@@ -569,7 +572,7 @@ def test_a_shipped_start_of_a_readout_id_starts_no_block(tmp_path):
     sum, starts it empty (the #116 review). A block's species keeps its own name."""
     entities = {"A": {"name": "S", "mods": [_PY1]}, "B": {"name": "S", "mods": [_PS2]}}
     mcp = _statements_server(tmp_path, entities, auto_fit=False)
-    out = _call(mcp, "make_changes", {"justification": "S is split", "statements": _SPLITTING})
+    out = _call(mcp, "make_changes", {"justification": "S is split", **_SPLITTING})
     assert out["applied"] is True and out["network"]["split"], out
     structure = _call(mcp, "get_model_structure", {})
     assert "A" not in structure["species"]
@@ -585,7 +588,7 @@ def test_a_split_model_compiles_and_fits(tmp_path):
     out = _call(
         mcp,
         "make_changes",
-        {"justification": "S is split", "statements": _SPLITTING, "n_starts": 2},
+        {"justification": "S is split", **_SPLITTING, "n_starts": 2},
     )
     assert out["applied"] is True and out["committed"] is True, out
     assert out["network"]["split"] == {"S": {"S_Y1": ["Y1"], "S_S2": ["S2"]}}

@@ -29,6 +29,20 @@
  "grounding/shared/cycle": {
   "verdict": "accepted"
  },
+ "issue138/t_gate/condition": {
+  "verdict": "accepted"
+ },
+ "issue138/t_gate/direction": {
+  "derived": {
+   "conv": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
+ },
+ "issue138/t_gate/rate": {
+  "verdict": "accepted"
+ },
  "issue145/near_miss/rising": {
   "derived": {
    "p": {
@@ -1858,8 +1872,7 @@
   "verdict": "accepted"
  },
  "review128b/binding/piecewise_off": {
-  "kind": "unseen",
-  "verdict": "refused"
+  "verdict": "accepted"
  },
  "review128b/binding/piecewise_on": {
   "verdict": "accepted"

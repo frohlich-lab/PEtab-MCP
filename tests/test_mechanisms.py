@@ -93,7 +93,7 @@ def test_a_malformed_request_is_not_a_library_gap():
 
 
 def test_basal_refuses_a_statement_that_names_an_enzyme():
-    """`PTEN dephosphorylates AKT1 | basal` built a rule without PTEN."""
+    """`PTEN dephosphorylates AKT1` bound to `basal` built a rule without PTEN."""
     stmt = Dephosphorylation(Agent("PTEN"), Agent("AKT1"), "S", "473")
     with pytest.raises(MechanismError, match="names PTEN, which it would leave out") as exc:
         M.assemble([(stmt, M.BASAL, "r1")])

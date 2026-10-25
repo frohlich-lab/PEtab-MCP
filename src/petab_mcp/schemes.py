@@ -29,7 +29,7 @@ type::
   complex, ``None`` is nothing.
 - ``@`` gives the rate: one for ``>>``, two for ``|``. A rate is an expression over the
   definition's ``parameters`` (each minted per row as ``<prefix>_<name>`` and shared or fixed
-  like any, ``kf=k_on`` on the row), ``amount(<pattern>)`` (the amount of what the pattern of
+  like any, ``kf=k_on`` in the row's binding), ``amount(<pattern>)`` (the amount of what the pattern of
   those molecules matches), ``amount(inhibited_by)`` (a regulator the statement states, as it
   states it, by position where it states several, ``amount(inhibited_by_1)``; checked against
   the claim on the row's net rate, :mod:`regulation`), ``time`` and exp/log/sqrt; mass action
