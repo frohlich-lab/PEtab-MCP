@@ -10,7 +10,8 @@ a row's regulators (:mod:`petab_mcp.regulation`).
 - ``mechanisms.json``: mechanisms alone (perica_egf's, sweep_indra_55max's), each a reader of
   amounts other than its roles re-expressed as a regulator it states, built on a statement of
   agents named by role with every complex its rules start from present, as other rows would make
-  them.
+  them. An entry's ``companions`` (rows and their bindings, as ``rows.json`` gives them) are built
+  with it: rows giving the sites its rules name that the original model's other rows gave.
 
 For each entry: no crash, done within :data:`BOUND` seconds, a refusal only of a kind
 :data:`PROVEN` lists, and each direction a built row records borne out by J at points of its own,
@@ -70,15 +71,20 @@ def _library(definitions) -> dict:
     return library
 
 
-def _rows(entry) -> tuple[pysb.Model, list[tuple], list]:
-    """``entry``'s rows built as `make_changes` builds them, and the model they built."""
-    library = _library(entry.get("mechanisms", []))
-    parsed = O.bound_rows(entry["rows"], entry["bindings"], library)
+def _parsed(rows, bindings, library) -> list[tuple]:
+    """``rows`` with their ``bindings``, as `make_changes` reads them."""
+    parsed = O.bound_rows(rows, bindings, library)
     for row in parsed:
         row["statement"] = with_defaults(row["statement"])
     stmts = stmts_from_json([indra_part(row["statement"]) for row in parsed])
-    rows = [(s, row["policy"], row["prefix"], row.get("parameters"), regulators(row["statement"]))
+    return [(s, row["policy"], row["prefix"], row.get("parameters"), regulators(row["statement"]))
             for s, row in zip(stmts, parsed)]
+
+
+def _rows(entry) -> tuple[pysb.Model, list[tuple], list]:
+    """``entry``'s rows built as `make_changes` builds them, and the model they built."""
+    library = _library(entry.get("mechanisms", []))
+    rows = _parsed(entry["rows"], entry["bindings"], library)
     seen = {}
     record = regulation.record
 
@@ -97,7 +103,7 @@ def _rows(entry) -> tuple[pysb.Model, list[tuple], list]:
 
 def _alone(entry) -> tuple[pysb.Model, list[tuple], list]:
     """``entry``'s mechanism on a statement of agents named by role, stating each regulator it
-    reads, with every complex its rules start from present."""
+    reads, built with its ``companions``, with every complex its rules start from present."""
     definition = entry["mechanism"]
     library = _library([definition])
     stated: dict[str, list[Agent]] = {}
@@ -108,6 +114,8 @@ def _alone(entry) -> tuple[pysb.Model, list[tuple], list]:
         given += [Agent(f"{kind[:3].upper()}{len(given) + k}") for k in range(i + 1 - len(given))]
     stmt = placeholder(definition["statement_type"])
     rows = [(stmt, definition["policy"], "r", None, stated)]
+    if companions := entry.get("companions"):
+        rows += _parsed(companions["rows"], companions["bindings"], library)
     model, emissions = M.assemble(rows, {}, library)
     problem_sbml._seed(model, list(model.monomers))
     present = {str(i.pattern) for i in model.initials}
