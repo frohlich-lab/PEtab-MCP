@@ -43,14 +43,34 @@ def _map_file(tmp_path, text):
             _BASE_ENTITY_MAP.format(extra=', "S6": {"name": "RPS6", "db_ref": {}}'),
             "entry 'S6': 'db_ref' is no key read here; did you mean 'db_refs'?",
         ),
+        (
+            _BASE_ENTITY_MAP.format(extra=', "S6": {"nmae": "RPS6"}'),
+            "entry 'S6': 'nmae' is no key read here; did you mean 'name'?",
+        ),
     ],
 )
 def test_a_map_that_would_be_misread_is_refused(tmp_path, text, refusal):
     """Each of these loaded without a word: a list raised AttributeError, a nameless entry became
     ``None``, and a misspelled key was dropped. A map's ``input``, which inputs.tsv replaced,
-    would be dropped too, and EGF built as a molecule instead of held to its dose."""
+    would be dropped too, and EGF built as a molecule instead of held to its dose. A misspelt
+    ``name`` is named as the slip, not refused as a missing ``name``."""
     with pytest.raises(EntityMapError, match=re.escape(refusal)):
         Sd.load_entity_map(_map_file(tmp_path, text))
+
+
+def test_a_refused_map_leaves_nothing_on_disk(tmp_path):
+    """The map is read before the session is built, which wrote the provenance store and the
+    engine its build directory, so a start-up refused for its map leaves neither behind."""
+    with pytest.raises(EntityMapError):
+        create_server(
+            str(Path(__file__).parent / "data" / "toy_v2" / "problem.yaml"),
+            provenance_dir=str(tmp_path / "prov"),
+            build_root=str(tmp_path / "build"),
+            resolver=StubReferenceResolver(),
+            auto_fit=False,
+            entity_map=_map_file(tmp_path, '[{"name": "MAPK1"}]'),
+        )
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["entities.json"]
 
 
 def test_a_key_read_elsewhere_is_kept(tmp_path):
