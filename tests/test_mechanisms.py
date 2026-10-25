@@ -356,6 +356,17 @@ def test_a_row_that_builds_no_rule_is_refused():
     with pytest.raises(MechanismError, match="row 'r1': ActiveForm under 'indra_default' builds no rule"):
         M.assemble([(ActiveForm(Agent("AKT"), "kinase", True), M.INDRA_DEFAULT, "r1")])
 
+
+def test_a_repeat_is_the_same_statement_by_name_whatever_its_grounding():
+    """INDRA names its rules by agent name, so a repeat grounded in one row and not in the other
+    built nothing too. Matched by grounding, it was not a repeat, and the row was told to take a
+    policy that builds a rule (#137)."""
+    grounded = Activation(Agent("EGFR"), Agent("AKT", db_refs={"HGNC": "391"}))
+    twin = Activation(Agent("EGFR"), Agent("AKT"))
+    with pytest.raises(MechanismError, match="row 'r2' asserts the statement of row 'r1' again"):
+        M.assemble([(grounded, M.INDRA_DEFAULT, "r1"), (twin, M.INDRA_DEFAULT, "r2")])
+
+
 # A mechanism the agent writes; ``{extra}`` splices more fields into the definition.
 _BASE_WRITTEN = (
     '{{"statement_type": "Phosphorylation", "policy": "saturating", "rate": "kcat / (Km + enz)", '

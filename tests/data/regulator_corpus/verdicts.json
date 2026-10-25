@@ -26,6 +26,9 @@
  "advice/products_at_0/ras_sos/product_stated": {
   "verdict": "accepted"
  },
+ "grounding/shared/cycle": {
+  "verdict": "accepted"
+ },
  "netrate/1/advice": {
   "verdict": "accepted"
  },

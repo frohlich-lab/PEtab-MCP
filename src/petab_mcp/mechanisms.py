@@ -82,7 +82,7 @@ from pysb import ANY
 from pysb.core import ReactionPattern, RuleExpression, time
 
 from .errors import MechanismError
-from .statements import REGULATOR_NAME, PopulationTransition, named_agents
+from .statements import REGULATOR_NAME, PopulationTransition, name_key, named_agents
 
 
 @dataclass(frozen=True)
@@ -1072,13 +1072,15 @@ def _monomer_policy(policy: str, library: dict[tuple[str, str], Policy]) -> str:
 def _refuse_ruleless(rows: list[tuple], emissions: list[Emission]) -> None:
     """Refuse a row whose entry built no rule: the model would not contain what it asserts, and a
     constant it minted would be fitted to nothing. INDRA builds a rule once, so the same statement
-    in a second row built nothing beside an orphan ``kf``, and it builds none for an ActiveForm."""
+    in a second row built nothing beside an orphan ``kf``, and it builds none for an ActiveForm.
+    The same statement is the same by name (:func:`statements.name_key`), as INDRA names its rules:
+    one agent grounded in one row and not in the other was told to take a policy that builds one."""
     for i, (row, emission) in enumerate(zip(rows, emissions)):
         if emission.rules:
             continue
         stmt, policy, prefix = row[:3]
-        key = _state_unwritten(stmt).matches_key()
-        twin = next((r[2] for r in rows[:i] if _state_unwritten(r[0]).matches_key() == key), None)
+        key = name_key(_state_unwritten(stmt))
+        twin = next((r[2] for r in rows[:i] if name_key(_state_unwritten(r[0])) == key), None)
         if twin is not None:
             raise MechanismError(
                 f"row {prefix!r} asserts the statement of row {twin!r} again, and INDRA builds its "
