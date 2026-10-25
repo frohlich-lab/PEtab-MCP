@@ -82,19 +82,19 @@ def test_a_key_read_elsewhere_is_kept(tmp_path):
 
 _CATALYSIS = {
     "statement": {"type": "Phosphorylation", "enz": {"name": "A"}, "sub": {"name": "B"}},
-    "policy": "indra_default",
     "prefix": "r1",
 }
 _CONVERSION = {
     "statement": {"type": "PopulationTransition", "source": {"name": "A"}, "target": {"name": "B"}},
-    "policy": "mass_action",
     "prefix": "r1",
 }
 
 
-@pytest.mark.parametrize(("row", "held"), [(_CATALYSIS, True), (_CONVERSION, False)])
+@pytest.mark.parametrize(
+    ("row", "policy", "held"), [(_CATALYSIS, "indra_default", True), (_CONVERSION, "mass_action", False)]
+)
 def test_a_species_the_conditions_set_is_held_while_the_rows_only_read_it(
-    tmp_path, add_condition, row, held
+    tmp_path, add_condition, row, policy, held
 ):
     """Drugs and hormones the conditions set and the rows only read: built as molecules, the
     doses were used up by what they drive and started at an amount every condition overwrites.
@@ -114,7 +114,8 @@ def test_a_species_the_conditions_set_is_held_while_the_rows_only_read_it(
     def call(name, args):
         return asyncio.run(mcp.call_tool(name, args)).structured_content
 
-    assert call("make_changes", {"justification": "A acts on B", "statements": [row]})["applied"]
+    assert call("make_changes", {"justification": "A acts on B", "statements": [row],
+                                 "bindings": {"r1": policy}})["applied"]
     assert ("$A" in call("get_model", {})["result"]) is held
     ics = {r["species"]: r for r in call("get_model_structure", {})["initial_conditions"]}
     assert ics["A"]["t0_source"] == "condition_table"

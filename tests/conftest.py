@@ -25,6 +25,18 @@ def yaml_path() -> str:
     return str(YAML_PATH)
 
 
+def rows_with_bindings(pairs, library) -> list[dict]:
+    """``pairs`` of a `statements` row (its line in the notation, or its JSON) and its binding,
+    given apart as `make_changes` takes them and joined as it joins them
+    (:func:`petab_mcp.operations.bound_rows`): the rows a build reads."""
+    from petab_mcp.operations import bound_rows
+
+    def prefix(row) -> str:
+        return row.split(":", 1)[0].strip() if isinstance(row, str) else row["prefix"]
+
+    return bound_rows([row for row, _ in pairs], {prefix(r): b for r, b in pairs}, library)
+
+
 # The shipped toy model (tests/data/toy_v2/model.ant). Structural edits in tests are made by
 # re-authoring this base (via ``set_model``) with extra reaction lines spliced in.
 _TOY_BASE_MODEL = """model conversion_reaction

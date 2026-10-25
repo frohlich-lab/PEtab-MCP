@@ -141,25 +141,25 @@ def test_a_regulator_is_projected_onto_what_indra_can_read():
     """A causal graph assembled from INDRA statements drops the regulator fields, which INDRA has
     no reading for: each signed one becomes the INDRA statement nearest its claim."""
     # A catalysed reaction: its catalyst's activity there.
-    assert _projected("r: RAF{pS338} phosphorylates MEK at S217, inhibited by sorafenib | p") == [
+    assert _projected("r: RAF{pS338} phosphorylates MEK at S217, inhibited by sorafenib") == [
         "Inhibition(sorafenib(), RAF(mods: (phosphorylation, S, 338)), kinase)"
     ]
-    assert _projected("r: A -> B by E{kinase:on}, activated by X | p") == [
+    assert _projected("r: A -> B by E{kinase:on}, activated by X") == [
         "Activation(X(), E(kinase), kinase)"
     ]
     # Without a catalyst: what it makes, signed by the claim and what the reaction does to it.
-    assert _projected("r: SKI is produced, inhibited by X | p") == ["DecreaseAmount(X(), SKI())"]
-    assert _projected("r: SKI is degraded, inhibited by X | p") == ["IncreaseAmount(X(), SKI())"]
-    assert _projected("r: A becomes B, activated by X | p") == ["IncreaseAmount(X(), B())"]
-    assert _projected("r: MEK is dephosphorylated at S217, activated by X | p") == [
+    assert _projected("r: SKI is produced, inhibited by X") == ["DecreaseAmount(X(), SKI())"]
+    assert _projected("r: SKI is degraded, inhibited by X") == ["IncreaseAmount(X(), SKI())"]
+    assert _projected("r: A becomes B, activated by X") == ["IncreaseAmount(X(), B())"]
+    assert _projected("r: MEK is dephosphorylated at S217, activated by X") == [
         "IncreaseAmount(X(), MEK(mods: (phosphorylation, S, 217, False)))"
     ]
     # A self-modification changes its own enzyme: the form it makes.
-    assert _projected("r: EGFR autophosphorylates at Y1068, activated by X | p") == [
+    assert _projected("r: EGFR autophosphorylates at Y1068, activated by X") == [
         "IncreaseAmount(X(), EGFR(mods: (phosphorylation, Y, 1068)))"
     ]
     # No direction, no INDRA statement.
-    assert _projected("r: A becomes B, modulated by Ca | p") == []
+    assert _projected("r: A becomes B, modulated by Ca") == []
 
 
 def test_a_projection_keeps_the_claim_it_comes_from_in_a_signed_graph():
@@ -171,7 +171,7 @@ def test_a_projection_keeps_the_claim_it_comes_from_in_a_signed_graph():
 
     from petab_mcp import notation
 
-    row = "r: RAF phosphorylates MEK at S217, inhibited by sorafenib | p # [paper] text"
+    row = "r: RAF phosphorylates MEK at S217, inhibited by sorafenib # [paper] text"
     stmts = S.as_indra(notation.parse(row)["statement"])
     scorer = SimpleScorer({"rand": {"paper": 0.1}, "syst": {"paper": 0.05}})
     graph = IndraNetAssembler(stmts).make_model(graph_type="signed", belief_scorer=scorer)
@@ -189,7 +189,7 @@ def test_a_modulator_says_the_direction_its_rate_proves_as_derived():
     from petab_mcp import notation
 
     statement = notation.parse(
-        "r: RAF phosphorylates MEK at S217, modulated by sorafenib and Ca | p"
+        "r: RAF phosphorylates MEK at S217, modulated by sorafenib and Ca"
     )["statement"]
     derived = {"modulated_by_0": "inhibited_by"}
     assert S.english(statement, derived) == (
@@ -207,7 +207,7 @@ def test_a_claim_its_rate_reverses_or_cannot_sign_reads_as_the_rate_shows():
     from petab_mcp import notation
 
     statement = notation.parse(
-        "r: RAF phosphorylates MEK at S217, inhibited by sorafenib and Ca | p"
+        "r: RAF phosphorylates MEK at S217, inhibited by sorafenib and Ca"
     )["statement"]
     derived = {"inhibited_by_0": "activated_by", "inhibited_by_1": "modulated_by"}
     assert S.english(statement, derived) == (

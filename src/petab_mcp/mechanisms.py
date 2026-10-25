@@ -660,7 +660,8 @@ def _how_ids_enter(names, problem_ids: dict[str, str], amounts: str) -> list[str
     return [
         f"{', '.join(f'`{n}` is {problem_ids[n]}' for n in bound)}. A problem parameter or "
         "condition input enters through a row's binding: declare a parameter of your own and "
-        f'bind it on the row, `parameters={{"K": "{bound[0]}"}}`, or `kf="k*{bound[0]}"`.'
+        f'bind it in the binding of each row that uses it, `K={bound[0]}` '
+        f'(`bindings={{"r1": "<policy> K={bound[0]}"}}`), or `kf="k*{bound[0]}"`.'
         if bound else "",
         f"{', '.join(f'`{n}`' for n in species)}: {SPECIES}, read as the amount of the agent it "
         f"maps to, written by that agent's own name and sites, not by this id: {amounts}."

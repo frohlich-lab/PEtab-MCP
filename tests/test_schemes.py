@@ -468,7 +468,8 @@ _IDS = {"d": M.SHIPPED, "EGF_0": M.CONDITION, "pERK": M.SPECIES}
     [
         ("d", r"`d` is a parameter the problem ships\. A problem parameter or condition input "
               r"enters through a row's binding"),
-        ("EGF_0", r"`EGF_0` is a condition input\. .*`parameters=\{\"K\": \"EGF_0\"\}`"),
+        ("EGF_0", r"`EGF_0` is a condition input\. .*`K=EGF_0` "
+                  r"\(`bindings=\{\"r1\": \"<policy> K=EGF_0\"\}`\)"),
         ("pERK", r"`pERK`: a species of the entity map, read as the amount of the agent it maps "
                  r"to, written by that agent's own name and sites, not by this id"),
     ],
