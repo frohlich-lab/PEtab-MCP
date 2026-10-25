@@ -2354,9 +2354,13 @@ def _register_resources(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
 
 
 # ------------------------------------------------------------------ constraint tools
-def _register_constraint_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
+def _register_constraint_tools(
+    mcp: FastMCP, route: Callable[[], _Ctx], updates: bool = False
+) -> None:
     """``list_constraints``, on a server started with constraints, and ``set_constraints`` where it
-    was started with ``constraint_updates='any'``: absent otherwise, not refused (:mod:`constraints`)."""
+    was started with ``constraint_updates='any'`` (``updates``): absent otherwise, not refused
+    (:mod:`constraints`). Told rather than read off the session: a group resolves no session while
+    it registers."""
     from . import constraints as constraints_mod
 
     @mcp.tool(annotations=_READ_ONLY)
@@ -2368,7 +2372,7 @@ def _register_constraint_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         are the forms `activates` and `inhibits` are about; `updates` says whether `set_constraints`
         may change them (`any`) or not (`off`)."""
         session = route().session
-        constraints = session.constraints
+        constraints = session.constraints or constraints_mod.Constraints(())
         verdicts = constraints_mod.check(constraints, session.model_statements)
         return {
             "constraints": [
@@ -2381,7 +2385,7 @@ def _register_constraint_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
             "updates": session.constraint_updates,
         }
 
-    if route().session.constraint_updates != "any":
+    if not updates:
         return
 
     @mcp.tool(annotations=_RESTORE_ANNOTATIONS)
@@ -2634,7 +2638,7 @@ def create_server(
     if ctx.held_out is not None:
         _register_validation_data_tools(mcp, route)
     if ctx.session.constraints is not None:
-        _register_constraint_tools(mcp, route)
+        _register_constraint_tools(mcp, route, updates=constraint_updates == "any")
     _register_provenance_tools(mcp, route)
     _register_resources(mcp, route)
     # Register the skills loaded above as `list_skills`/`get_skill` tools plus
