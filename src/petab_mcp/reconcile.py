@@ -904,6 +904,7 @@ def observable_scaling_ids(problem) -> set[str]:
 # pyPESTO's ``InnerParameterType`` when it builds the hierarchical objective.
 INNER_TYPE_SIGMA = "sigma"
 INNER_TYPE_SCALING = "scaling"
+INNER_TYPE_OFFSET = "offset"
 
 # Parameter-role tags surfaced by ``get_parameters`` (see :func:`parameter_roles`). They name
 # what a parameter *is* in the problem, so the agent can tell a mechanistic rate constant apart
@@ -963,25 +964,95 @@ def parameter_roles(problem, extra_ids=()) -> dict[str, str]:
     return roles
 
 
+def _formula_roles(formula, candidates: set[str]) -> dict[str, str | None]:
+    """The role each of ``candidates`` (the parameters and placeholders it names) plays in an
+    observable formula, as pyPESTO's hierarchical solver can take it: the observable must read
+    ``scaling * expr + offset``, with one of each at most. A candidate added with coefficient 1 is
+    an ``"offset"``. One that multiplies everything but the offsets, and an ``expr`` that reads the
+    model, is a ``"scaling"``. Anything else (read nonlinearly, a second scaling or offset, a
+    constant beside the scaled term, which pyPESTO would fold into the scaling) is ``None``. Every
+    candidate is ``None`` if the formula does not parse."""
+    import sympy as sp
+
+    expr = _sympify_real(str(formula))
+    if expr is None:
+        return dict.fromkeys(candidates)
+    symbols = {s.name: s for s in expr.free_symbols if s.name in candidates}
+    roles: dict[str, str | None] = dict.fromkeys(candidates)
+    offsets = []
+    for name, s in symbols.items():
+        d = sp.diff(expr, s)
+        if s not in d.free_symbols and sp.simplify(d - 1) == 0:
+            roles[name] = INNER_TYPE_OFFSET
+            offsets.append(s)
+    for name, s in symbols.items():
+        if roles[name] is not None:
+            continue
+        d = sp.diff(expr, s)
+        model = {x.name for x in d.free_symbols} - set(symbols)
+        if (
+            s not in d.free_symbols
+            and model
+            and not d.free_symbols & set(offsets)
+            and sp.simplify(expr - s * d - sum(offsets)) == 0
+        ):
+            roles[name] = INNER_TYPE_SCALING
+    for kind in (INNER_TYPE_SCALING, INNER_TYPE_OFFSET):
+        of_kind = [n for n, r in roles.items() if r == kind]
+        if len(of_kind) > 1:  # pyPESTO solves one of each per observable
+            roles.update(dict.fromkeys(of_kind))
+    return roles
+
+
+def observable_parameter_roles(problem) -> dict[str, str | None]:
+    """``{parameter_id: "scaling" | "offset" | None}`` for every parameter the observable formulas
+    read, directly or through a measurement's ``observableParameters`` override of a placeholder.
+    The role is the one :func:`_formula_roles` gives it in each formula it is read in, and ``None``
+    if any two disagree. (Every observable parameter used to count as a scaling, offsets
+    included, so pyPESTO refused the hierarchical setup and the fit ran jointly.)"""
+    odf, mdf = problem.observable_df, problem.measurement_df
+    if odf is None or OBSERVABLE_FORMULA not in odf.columns:
+        return {}
+    params = set(problem.parameter_df.index) if problem.parameter_df is not None else set()
+    seen: dict[str, set[str | None]] = {}
+    for obs_id, formula in odf[OBSERVABLE_FORMULA].items():
+        held = placeholders(odf, obs_id, "observable")
+        named = formula_symbols(formula)
+        roles = _formula_roles(formula, (named & params) | (named & set(held)))
+        for name, role in roles.items():
+            if name not in held:
+                seen.setdefault(name, set()).add(role)
+        if not held or mdf is None or OBSERVABLE_PARAMETERS not in mdf.columns:
+            continue
+        rows = mdf[mdf[OBSERVABLE_ID] == obs_id] if OBSERVABLE_ID in mdf.columns else mdf.iloc[:0]
+        for cell in rows[OBSERVABLE_PARAMETERS]:
+            values = [] if not isinstance(cell, str) else split_overrides(cell)
+            for name, value in zip(held, values):
+                if isinstance(value, str) and value in params:
+                    seen.setdefault(value, set()).add(roles.get(name))
+    return {pid: next(iter(r)) if len(r) == 1 else None for pid, r in seen.items()}
+
+
 def classify_inner_parameters(problem) -> dict[str, str]:
     """Which ESTIMATED parameters can be solved analytically in a hierarchical (inner) problem,
-    and as what type — ``{parameter_id: "sigma" | "scaling"}``.
+    and as what type — ``{parameter_id: "sigma" | "scaling" | "offset"}``.
 
     A parameter is inner-eligible only if it belongs purely to the fixed OBSERVATION model:
     a noise sigma (via ``noiseFormula`` / measurement ``noiseParameters``) → ``"sigma"``, or an
-    observable-scaling factor (via ``observableFormula`` / ``observableParameters``) →
-    ``"scaling"``. A parameter that is BOTH (or that also appears in the model's own math — a
-    reused observation-model parameter, which ``validation`` already rejects) is left OUT: it is
-    not cleanly separable, so it stays an ordinary outer parameter. Only currently-ESTIMATED
-    parameters are returned (a fixed sigma/scaling has nothing to solve).
+    observable parameter (via ``observableFormula`` / ``observableParameters``) in the role
+    :func:`observable_parameter_roles` gives it → ``"scaling"`` or ``"offset"``. A parameter that
+    is BOTH (or that also appears in the model's own math — a reused observation-model parameter,
+    which ``validation`` already rejects), or an observable parameter in no clean role, is left
+    OUT: it is not cleanly separable, so it stays an ordinary outer parameter. Only
+    currently-ESTIMATED parameters are returned (a fixed sigma/scaling has nothing to solve).
 
-    Offsets are deliberately NOT classified here (detecting an additive offset needs formula
-    parsing pyPESTO does itself); such a parameter simply stays outer. Hierarchical optimization
-    is best-effort — see ``fitting`` — so anything this misclassifies fails pyPESTO's own
-    validation there and falls back to a joint fit rather than corrupting anything.
+    Hierarchical optimization is best-effort — see ``fitting`` — so anything this misclassifies
+    fails pyPESTO's own validation there and falls back to a joint fit rather than corrupting
+    anything.
     """
     sigmas = noise_sigma_ids(problem)
     scalings = observable_scaling_ids(problem)
+    roles = observable_parameter_roles(problem)
     model_names = _model_math_names(problem.model.sbml_model)
     out: dict[str, str] = {}
     for pid in sorted((sigmas | scalings)):
@@ -992,9 +1063,9 @@ def classify_inner_parameters(problem) -> dict[str, str]:
         in_sigma, in_scaling = pid in sigmas, pid in scalings
         if in_sigma and not in_scaling:
             out[pid] = INNER_TYPE_SIGMA
-        elif in_scaling and not in_sigma:
-            out[pid] = INNER_TYPE_SCALING
-        # both → ambiguous; leave outer
+        elif in_scaling and not in_sigma and roles.get(pid) is not None:
+            out[pid] = roles[pid]
+        # both, or no clean observable role → leave outer
     return out
 
 
