@@ -99,36 +99,12 @@ def test_ids_are_unique():
         K.parse(["c1: A becomes B, directly", "c1: B becomes A, directly"])
 
 
-def test_a_file_reads_as_lines_or_json(tmp_path):
-    """A line's trailing comment is its source; a line that starts with `#` is no constraint.
-    JSON takes lines and objects alike."""
+def test_a_file_reads_one_constraint_per_line(tmp_path):
+    """A line's trailing comment is its source; a line that starts with `#` is no constraint."""
     lines = tmp_path / "constraints.txt"
     lines.write_text("# the bench's claims\nc1: A becomes B, directly  # [curated] Doe 2000\n")
     (c1,) = K.read(lines).items
-    assert (c1.id, c1.kind, c1.source) == ("c1", "direct", "[curated] Doe 2000")
-    objects = tmp_path / "constraints.json"
-    objects.write_text(
-        json.dumps(
-            [
-                "a1: B{pS1} is active",
-                {
-                    "id": "c2",
-                    "statement": {
-                        "type": "IncreaseAmount",
-                        "subj": {"name": "A"},
-                        "obj": {"name": "B"},
-                    },
-                    "kind": "indirect",
-                },
-                {"id": "c3", "does_not_affect": ["B", "A"], "kind": "direct"},
-            ]
-        )
-    )
-    got = K.read(objects)
-    assert [c.text for c in got.items] == [
-        "A increases B, indirectly",
-        "B does not affect A, directly",
-    ]
+    assert (c1.id, c1.direct, c1.source) == ("c1", True, "[curated] Doe 2000")
 
 
 # --------------------------------------------------------------------------------------- direct
@@ -408,18 +384,27 @@ def test_make_changes_refuses_a_model_that_breaks_a_constraint(tmp_path):
 
 
 def test_the_agent_reads_the_constraints(tmp_path):
-    """`describe_problem` lists them, `make_changes` says what they do, and the server offers the
-    statements route alone: a model built from Antimony states no claims to check."""
+    """`list_constraints` lists them with what makes each hold on the current model, `make_changes`
+    says what they do, and the server offers the statements route alone: a model built from
+    Antimony states no claims to check."""
     mcp = _constrained_server(
         tmp_path, "a1: B{pS1} is active\nc1: A becomes B, directly  # [x] y\n"
     )
-    described = _call(mcp, "describe_problem", {})
-    assert described["constraints"] == [
-        {"id": "c1", "text": "A becomes B, directly", "kind": "direct", "source": "[x] y"}
-    ]
-    assert described["active_forms"] == [{"id": "a1", "text": "B{pS1} is active"}]
+    listed = _call(mcp, "list_constraints", {})
+    (c1,) = listed["constraints"]
+    assert {k: c1[k] for k in ("id", "text", "source", "ok")} == {
+        "id": "c1",
+        "text": "A becomes B, directly",
+        "source": "[x] y",
+        "ok": False,
+    }
+    assert c1["why"] == "no row changes B"
+    assert listed["active_forms"] == ["a1: B{pS1} is active"]
+    assert _call(mcp, "describe_problem", {})["n_constraints"] == 1
     tools = {t.name: t for t in asyncio.run(mcp.list_tools())}
-    assert "This session holds CONSTRAINTS" in tools["make_changes"].description
+    assert (
+        "This session holds CONSTRAINTS (`list_constraints`)" in tools["make_changes"].description
+    )
     assert "antimony" not in tools["make_changes"].parameters["properties"]
 
 

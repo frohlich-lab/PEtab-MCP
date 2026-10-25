@@ -1024,8 +1024,7 @@ _HELD_INPUTS = (
 
 #: What the `statements` route's paragraph adds on a server holding constraints (:mod:`constraints`).
 _MAKE_CHANGES_CONSTRAINTS = (
-    "This session holds CONSTRAINTS (`describe_problem`'s `constraints`): claims every model must "
-    "make. A change whose model breaks one is refused, naming each it breaks and why "
+    "This session holds CONSTRAINTS (`list_constraints`): claims every model must make. A change whose model breaks one is refused, naming each it breaks and why "
     "(`error_cause: constraint_violated`), and NOTHING is applied; a parameter change is checked "
     "too, since a bound can turn a regulator. One ending `, directly` needs one row to claim it: "
     "its reaction, driven the stated way by the constraint's subject as its catalyst or as a "
@@ -1034,8 +1033,8 @@ _MAKE_CHANGES_CONSTRAINTS = (
     "subject's change to its object with the stated sign; where one of the other sign exists too, "
     "the result says so, and keeps both. `not ..., directly` forbids a row that claims it, and `X "
     "does not affect Y` any claim (`directly`) or chain (`indirectly`) from X to Y. `activates` and "
-    "`inhibits` are about the forms `active_forms` declares. Agents are matched by name: use the "
-    "constraints' names."
+    "`inhibits` are about the forms the constraints declare active. Agents are matched by name: use "
+    "the constraints' names."
 )
 
 
@@ -1221,12 +1220,6 @@ def _statements_text(session, version: int | None) -> str:
         lines.append(f"amount {name} = {notation.agent_text(agent)}")
     for readout, formula in (record.get("readouts") or {}).items():
         lines.append(f"readout {readout} = {formula}")
-    # What makes each of the session's constraints hold, as the change was checked.
-    for cid, verdict in ((record.get("constraints") or {}).get("verdicts") or {}).items():
-        how = (f"by `{'`, `'.join(verdict['rows'])}`" if verdict.get("rows")
-               else f"through {verdict['chain']}" if verdict.get("chain") else "holds")
-        other = f"; the other way too: {verdict['opposite']}" if verdict.get("opposite") else ""
-        lines.append(f"constraint {cid} {how}{other}")
     return "\n".join(lines)
 
 
@@ -2346,6 +2339,32 @@ def _register_resources(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         return path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
 
 
+# ------------------------------------------------------------------ constraint tools
+def _register_constraint_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
+    """``list_constraints``, on a server started with constraints (:mod:`constraints`)."""
+    from . import constraints as constraints_mod
+
+    @mcp.tool(annotations=_READ_ONLY)
+    def list_constraints() -> dict[str, Any]:
+        """The session's CONSTRAINTS, the claims every model must make, as written (`, directly`: one
+        row claims it; `, indirectly`: a chain of your rows' claims carries it), each with what makes
+        it hold on the current model: the `rows` that claim it, the `chain` that carries it, and
+        `opposite`, a chain of the other sign that also exists; or `why` it does not. `active_forms`
+        are the forms `activates` and `inhibits` are about."""
+        session = route().session
+        constraints = session.constraints
+        verdicts = constraints_mod.check(constraints, session.model_statements)
+        return {
+            "constraints": [
+                {"id": c.id, "text": c.text}
+                | ({"source": c.source} if c.source else {})
+                | verdicts[c.id].stored()
+                for c in constraints.items
+            ],
+            "active_forms": [f"{f.id}: {f.text}" for f in constraints.active_forms],
+        }
+
+
 def _open_ctx(
     yaml_path: str,
     *,
@@ -2531,6 +2550,8 @@ def create_server(
     _register_fit_tools(mcp, route)
     if ctx.held_out is not None:
         _register_validation_data_tools(mcp, route)
+    if ctx.session.constraints is not None:
+        _register_constraint_tools(mcp, route)
     _register_provenance_tools(mcp, route)
     _register_resources(mcp, route)
     # Register the skills loaded above as `list_skills`/`get_skill` tools plus

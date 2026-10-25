@@ -707,8 +707,11 @@ class PetabSession:
 
         p = self.problem
         sm = self.model.sbml_model
-        # The claims every model must make, where the session has any (:mod:`constraints`).
-        constrained = self.constraints.describe() if self.constraints is not None else {}
+        # How many claims every model must make, where the session has any; `list_constraints`
+        # lists them, with what makes each hold (:mod:`constraints`).
+        constrained = (
+            {"n_constraints": len(self.constraints.items)} if self.constraints is not None else {}
+        )
         return constrained | {
             "model_id": self.model.model_id,
             # Has a MECHANISM been authored? False for a problem that ships without one, whose
