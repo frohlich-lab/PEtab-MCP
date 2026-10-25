@@ -131,10 +131,10 @@ def test_a_statement_states_its_regulators_and_says_them_in_english():
     ]
 
 
-def _projected(row: str) -> list[str]:
+def _projected(row: str, groundings: dict | None = None) -> list[str]:
     from petab_mcp import notation
 
-    return [str(stmt) for stmt in S.as_indra(notation.parse(row)["statement"])[1:]]
+    return [str(stmt) for stmt in S.as_indra(notation.parse(row, groundings)["statement"])[1:]]
 
 
 def test_a_regulator_is_projected_onto_what_indra_can_read():
@@ -160,6 +160,28 @@ def test_a_regulator_is_projected_onto_what_indra_can_read():
     ]
     # No direction, no INDRA statement.
     assert _projected("r: A becomes B, modulated by Ca") == []
+
+
+def test_agents_sharing_a_grounding_are_two():
+    """The model builds a monomer per name, and two may share a grounding: bachmann's SOCS3_nRNA1
+    and SOCS3_nRNA2 are both HGNC 19391. INDRA's `Agent.matches` keys on grounding, so the
+    conversion between them gave back what it took and made nothing, and its regulator projected
+    onto nothing (#137)."""
+    from indra.statements import Conversion
+
+    socs3 = ', "db_refs": {"HGNC": "19391"}'
+    stmt = Conversion(None, [_agent("SOCS3_nRNA1", socs3)], [_agent("SOCS3_nRNA2", socs3)])
+    reactants, made = S._reaction(stmt)
+    assert ([a.name for a in reactants], [(a.name, e) for a, e in made]) == (
+        ["SOCS3_nRNA1"],
+        [("SOCS3_nRNA2", 1)],
+    )
+    groundings = {"SOCS3_nRNA1": {"HGNC": "19391"}, "SOCS3_nRNA2": {"HGNC": "19391"}}
+    assert _projected("r: SOCS3_nRNA1 -> SOCS3_nRNA2, activated by X", groundings) == [
+        "IncreaseAmount(X(), SOCS3_nRNA2())"
+    ]
+    # And one name is one agent, grounded or not.
+    assert S.name_key(_agent("AKT", ', "db_refs": {"HGNC": "391"}')) == S.name_key(_agent("AKT"))
 
 
 def test_a_projection_keeps_the_claim_it_comes_from_in_a_signed_graph():

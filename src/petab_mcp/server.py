@@ -274,8 +274,12 @@ class MechanismDef(BaseModel):
         "statement states, checked on the row's net rate as the model builds it: its "
         "intermediates at steady state, its products absent; one acting only on a step that rate "
         "cannot see, a product's degradation, goes on that step's own row), `time` and "
-        "exp/log/sqrt. A molecule is a role or, by its name, a "
-        "partner the statement writes a role bound or not bound to (`C` of `E{~C}`): a mechanism "
+        "exp/log/sqrt. A molecule is a role; by its name, a "
+        "partner the statement writes a role bound or not bound to (`C` of `E{~C}`); or, by its "
+        "kind, a regulator the statement states, with binding sites only, each named after the "
+        "partner it binds: a drug that sequesters the enzyme is `enz(inhibited_by=None) + "
+        "inhibited_by(enz=None) | enz(inhibited_by=1) % inhibited_by(enz=1)`, the catalytic step "
+        "on `enz(inhibited_by=None)`, and other rows read the complex as `E{!X}`. A mechanism "
         "reads no agent its statement does not name. Give `scheme` or `rate`, not both.",
     )
     rate: str | None = Field(
@@ -1145,7 +1149,8 @@ def _make_changes_statements_doc(
         "its row's statement names, so an agent that changes a reaction's rate without taking "
         "part is stated as its regulator: `r1: E phosphorylates S at T20, inhibited by C` claims "
         "C slows that reaction, and its binding's mechanism (`'r1': 'inhibited Ki=K_C'`) reads C "
-        "as `inhibited_by` (`activated_by` speeds it, `modulated_by` claims no direction). Each is "
+        "as `inhibited_by` (`activated_by` speeds it, `modulated_by` claims no direction), or a "
+        "scheme's rules bind it as the molecule `inhibited_by`. Each is "
         "recorded as the kind its rate shows within its parameters' bounds, again whenever a row "
         "or a bound changes: where that differs from the statement, the result says so and "
         "`get_model` marks it `(inhibits, from its rate)`. The rate must read every regulator its "
@@ -1327,8 +1332,8 @@ def _register_model_tools(
             a name in it is one of the `parameters` its header lists, which a row's binding binds
             as `kf=...` (`bindings={'r1': 'two_step kf=k_on'}`). A scheme reads no agent its row's
             statement does not name: a molecule other than a role is a partner the statement writes
-            a role bound or not bound to (`C` of `enz{~C}`), and `amount(inhibited_by)` reads a
-            regulator the statement states.
+            a role bound or not bound to (`C` of `enz{~C}`) or a regulator the statement states,
+            which `amount(inhibited_by)` reads and the rules bind as the molecule `inhibited_by`.
             """
             return _mechanisms_text(route().session, statement_type)
 

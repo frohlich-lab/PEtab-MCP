@@ -17,7 +17,9 @@ a step back makes again looks like an intermediate. So a product is what the sta
 what the row's reactions make and none uses, held at 0; a reactant is what the statement consumes,
 or what the reactions use and never make; a regulator's species, and a partner's that holds no
 role's agent, are held at their amounts, and read by its pattern as an amount of its own, a
-product's too; every other species of the reactions is an intermediate (the enzyme and its forms). A
+product's too, or, where a scheme binds it as a molecule (``E + I <-> EI``), wherever it holds no
+role's agent, free; every other species of the reactions is an intermediate (the enzyme and its
+forms, ``EI`` among them). A
 pattern matching every form of the enzyme reads its conserved total, held as well; one matching only
 some reads an amount the steady state solves for, not one held apart from the reaction, so there is
 no J. With the intermediates linear in each rate (one intermediate per step, as in every enzyme
@@ -106,11 +108,14 @@ def position(name: str) -> str:
     return name if name[-1].isdigit() else f"{name}_0"
 
 
-def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
+def net_rate(model: pysb.Model, rules, stmt, molecules: dict | None = None) -> NetRate:
     """The net rate J of the row whose ``rules`` built ``stmt``, on ``model`` expanded (see the module
-    docstring). Raises :class:`MechanismError` saying why there is none: a reaction the row shares
-    with another row, an intermediate meeting another in one step, a steady state too large or not
-    unique, or products made at rates no constant ratio relates, two reactions rather than one."""
+    docstring). ``molecules`` are the regulators its rules bind as molecules of their own
+    (:attr:`mechanisms.Emission.regulator_molecules`), by stated position, each the agent stated
+    (:func:`bound`). Raises :class:`MechanismError` saying why there is none: a reaction the row
+    shares with another row, an intermediate meeting another in one step, a steady state too large
+    or not unique, or products made at rates no constant ratio relates, two reactions rather than
+    one."""
 
     from .mechanisms import _vanishes, over
     from .statements import _products, _reactants
@@ -135,11 +140,24 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
         for obs in _observables(rule.rate_forward) | _observables(rule.rate_reverse):
             if found := _READ.search(obs.name):
                 read.setdefault(position(found.group(1)), set()).add(obs)
-    regulator_species = {
-        i for observables in read.values() for o in observables for i in lumped(o.species)
-    }
     made = {i for rx in reactions for i in rx["products"]}
     used = {i for rx in reactions for i in rx["reactants"]}
+    observed = {i for rate in _all_observables(model, rules) for i in lumped(rate.species)}
+    roles = {_n(agent.name) for agent in stmt.real_agent_list()}
+
+    def apart(i: int) -> bool:
+        """Whether species ``i`` holds none of the statement's agents."""
+        return not {mp.monomer.name for mp in model.species[i].monomer_patterns} & roles
+
+    # A regulator the rules bind is read where it holds none of the statement's agents, free, at
+    # its amount as a ligand is; bound to the enzyme it is one of the enzyme's forms.
+    binding = {
+        s: {i for i in lumped(_containing(model, [agent])) & (made | used | observed) if apart(i)}
+        for s, agent in (molecules or {}).items()
+    }
+    regulator_species = {
+        i for observables in read.values() for o in observables for i in lumped(o.species)
+    } | {i for found in binding.values() for i in found}
 
     effects = {rep.get(i, i): e for i, e in _effects(model, stmt).items()}
     products = {i for i, e in effects.items() if e > 0} | (made - used)
@@ -154,11 +172,7 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
     reactants = (stated | (used - made)) - products
     # A partner of no role's agent (the `C` of `E{~C}`, binding the enzyme) is a ligand, held at
     # its amount as a regulator is; the intermediates are the forms of the statement's agents.
-    roles = {_n(agent.name) for agent in stmt.real_agent_list()}
-    ligands = {
-        i for i in made & used
-        if not {mp.monomer.name for mp in model.species[i].monomer_patterns} & roles
-    }
+    ligands = {i for i in made & used if apart(i)}
     # A form the row makes and uses on its way (its enzyme, a complex of its own) stays an
     # intermediate though a regulator's pattern matches it: held, it would freeze that form.
     own = (made & used) - products - reactants - ligands
@@ -190,7 +204,6 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
         return sympy.Symbol(f"[{model.species[i]}]", **sign)
 
     amounts: dict[int, sympy.Expr] = {}
-    observed = {i for rate in _all_observables(model, rules) for i in lumped(rate.species)}
     for i in made | used | observed:
         if i in products:
             amounts[i] = sympy.Integer(0)
@@ -295,6 +308,10 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
         ))
         for stated, observables in read.items()
     }
+    for s, found in binding.items():
+        regulated[s] = tuple(dict.fromkeys(
+            regulated.get(s, ()) + tuple(regulator_amounts[i] for i in sorted(found))
+        ))
     if not made_now and not removed:
         stated_products = {i for i, e in effects.items() if e > 0}
         making = [k for k, rx in enumerate(reactions) if set(rx["products"]) & stated_products]
@@ -819,7 +836,7 @@ def record(model: pysb.Model, rows: list[tuple], emissions, times=None) -> list:
             out.append(emission)
             continue
         try:
-            rate = net_rate(model, emission.rules, stmt)
+            rate = net_rate(model, emission.rules, stmt, bound(emission, stated))
         except MechanismError as exc:
             out.append(replace(emission, derived=_unsigned(positions), rate={"none": str(exc)}))
             continue
@@ -844,10 +861,20 @@ def record(model: pysb.Model, rows: list[tuple], emissions, times=None) -> list:
         for s, way in found.items():
             if way == 0:
                 raise MechanismError(_unseen(model, emission, stmt, policy, prefix, stated, s))
-        consumes = _consuming(model, emission, stmt, positions)
+        consumes = _consuming(model, emission, stmt, positions, bound(emission, stated))
         kept = stored(rate) | ({"consumes": consumes} if consumes else {}) | (
             {"ill_posed": True} if ill else {})
         out.append(replace(emission, derived=_derived(_unupgraded(found, consumes)), rate=kept))
+    return out
+
+
+def bound(emission, stated: dict) -> dict:
+    """The regulators ``emission``'s rules bind as molecules of their own, by stated position, each
+    the agent ``stated`` (kind to agents): what :func:`net_rate` holds at its free amount."""
+    out = {}
+    for name in emission.regulator_molecules:
+        kind, _, i = position(name).rpartition("_")
+        out[position(name)] = stated[kind][int(i)]
     return out
 
 
@@ -859,9 +886,10 @@ def _unupgraded(found: dict[str, int | None], consumes: dict) -> dict[str, int |
             for s, way in found.items()}
 
 
-def _consuming(model: pysb.Model, emission, stmt, positions) -> dict[str, list[str]]:
-    """For each regulator at ``positions``, the steps of the row that read it and take a product
-    away (a degradation of what a synthesis makes), each as ``before >> after``."""
+def _consuming(model: pysb.Model, emission, stmt, positions, molecules) -> dict[str, list[str]]:
+    """For each regulator at ``positions``, the steps of the row that read it, or bind it as one
+    of its ``molecules`` (:func:`bound`), and take a product away (a degradation of what a
+    synthesis makes), each as ``before >> after``."""
     products = {i for i, effect in _effects(model, stmt).items() if effect > 0}
     out: dict[str, list[str]] = {}
     for rx in model.reactions:
@@ -875,12 +903,21 @@ def _consuming(model: pysb.Model, emission, stmt, positions) -> dict[str, list[s
         sides = (rule.product_pattern, rule.reactant_pattern) if back else (
             rule.reactant_pattern, rule.product_pattern)
         step = f"`{_side(sides[0])} >> {_side(sides[1])}`"
-        for o in _observables(rate):
-            found = _READ.search(o.name)
-            s = position(found.group(1)) if found else None
+        reading = [position(found.group(1)) for o in _observables(rate)
+                   if (found := _READ.search(o.name))]
+        reading += [s for s, agent in molecules.items() if _binds(rule, agent)]
+        for s in reading:
             if s in positions and step not in out.get(s, []):
                 out.setdefault(s, []).append(step)
     return out
+
+
+def _binds(rule: pysb.Rule, agent) -> bool:
+    """Whether ``rule`` names ``agent``'s molecule on either side."""
+    return _n(agent.name) in {
+        mp.monomer.name for pattern in (rule.reactant_pattern, rule.product_pattern)
+        for cp in pattern.complex_patterns if cp is not None for mp in cp.monomer_patterns
+    }
 
 
 def _well_posed(value: sympy.Expr) -> bool:
@@ -1216,6 +1253,25 @@ def _unseen(model, emission, stmt, policy, prefix, stated, s: str) -> str:
                     rule.reactant_pattern, rule.product_pattern)
                 steps.append((*sides, rate))
     agent = _agent(stated, s)
+    molecule = bound(emission, stated).get(s)
+    if molecule is not None and not observables:
+        from .schemes import role_agents
+
+        binding = " and ".join(
+            f"`{_side(rule.reactant_pattern)} {'|' if rule.is_reversible else '>>'} "
+            f"{_side(rule.product_pattern)}`"
+            for rule in (model.rules[name] for name in emission.rules) if _binds(rule, molecule)
+        )
+        read_as = next(n for n in emission.regulator_molecules if position(n) == s)
+        return (
+            f"row {prefix!r}: {policy!r} binds `{_said(s, stated)}` in {binding}, and its "
+            "statement's own reaction rate, its products absent, does not change with it: a "
+            "statement's regulator is about its own reaction. Bound, a regulator changes that rate "
+            "where a form it binds reacts otherwise than the free one, as where a step takes only "
+            f"the free form (`{next(iter(role_agents(stmt)), 'enz')}({read_as}=None)`); bound to a "
+            "reactant it does not, since that rate holds the free reactant at its amount. Or leave "
+            f"{agent} out of this statement and its scheme"
+        )
     shown_steps = " and ".join(f"`{_side(before)} >> {_side(after)}`" for before, after, _ in steps)
     if (needed := _product_needed(model, emission, stmt, observables)) is not None:
         return (

@@ -34,8 +34,9 @@ each a list of agents. "RAF phosphorylates MEK, inhibited by sorafenib" is a cla
 reaction at the population level: sorafenib slows it, whatever binds what. INDRA can say neither
 part of that. A bound condition (``RAF{~sorafenib}``) claims a complex the rule never forms, and
 an ``Inhibition(sorafenib, RAF)`` claims every reaction RAF catalyses, since an INDRA statement
-names agents and never another statement. The mechanism's rate reads each regulator
-(:mod:`mechanisms`), and each is recorded as the kind the row's net rate shows, read off the
+names agents and never another statement. The mechanism reads each regulator, in its rate or as a
+molecule its scheme binds (:mod:`mechanisms`, :mod:`schemes`), so sorafenib sequestering RAF
+keeps the claim. Each is recorded as the kind the row's net rate shows, read off the
 model the rows build (:mod:`regulation`): inhibited where it never rises, activated where it never
 falls, modulated where neither can be shown. Where that differs from the statement, it is kept
 beside it (:attr:`mechanisms.Emission.derived`), reported to the agent, and shown as the rate's.
@@ -270,6 +271,18 @@ def regulators(statement: dict) -> dict[str, list[Agent]]:
     }
 
 
+def by_name(stated: dict[str, list[Agent]]) -> dict[str, Agent]:
+    """Each regulator ``stated`` (kind to agents, :func:`regulators`) by every name a mechanism may
+    read it by (:data:`REGULATOR_NAME`): its kind and position, and its kind alone where it is the
+    one of its kind."""
+    out: dict[str, Agent] = {}
+    for kind, given in stated.items():
+        out |= {f"{kind}_{i}": agent for i, agent in enumerate(given)}
+        if len(given) == 1:
+            out[kind] = given[0]
+    return out
+
+
 def signed(statement: dict, derived: dict[str, str] | None = None) -> list[tuple[str, Agent, bool]]:
     """Each regulator ``statement`` states, with the kind it is recorded as and whether its rate
     gave that kind: as stated, or the kind its rate shows instead, from ``derived`` (kind stated and
@@ -382,19 +395,52 @@ def _reactants(stmt: Statement) -> list[Agent]:
 
 def _reaction(stmt: Statement) -> tuple[list[Agent], list[tuple[Agent, int]]]:
     """:data:`_REACTIONS`' entry for ``stmt``, by net change: an agent it takes and gives back as
-    it was (the ``E`` of ``A + E -> B + E``) is a catalyst, neither consumed nor made."""
+    it was (the ``E`` of ``A + E -> B + E``) is a catalyst, neither consumed nor made. "As it was"
+    is by name (:func:`name_key`): ``SOCS3_nRNA1 -> SOCS3_nRNA2``, both grounded to SOCS3, made
+    nothing by INDRA's ``Agent.matches``."""
     for cls in type(stmt).__mro__:
         if cls in _REACTIONS:
             reactants, products = _REACTIONS[cls](stmt)
             reactants, made = list(reactants), []
             for agent, effect in products:
-                same = next((a for a in reactants if a.matches(agent)), None)
+                key = name_key(agent)
+                same = next((a for a in reactants if name_key(a) == key), None)
                 if effect > 0 and same is not None:
                     reactants.remove(same)
                 else:
                     made.append((agent, effect))
             return reactants, made
     return [], []
+
+
+def name_key(x: Statement | Agent) -> str:
+    """``x.matches_key()`` with every agent in it keyed by NAME, the model's identity (:func:`named`).
+    INDRA keys an agent on its grounding, but the model builds a monomer per name, so two agents
+    sharing a grounding are two (bachmann's SOCS3 and SOCS3_oe, a gene's nRNA, mRNA and protein),
+    and a name grounded in one row and not in another is one."""
+    if isinstance(x, Statement):
+        x = deepcopy(x)
+        for agent in x.real_agent_list():
+            _by_name(agent)
+        return x.matches_key()
+    return named(x).matches_key()
+
+
+def named(agent: Agent) -> Agent:
+    """A copy of ``agent`` keyed by name, its partners too: ungrounded, under the name of the monomer
+    it builds, so INDRA's own comparisons (``matches``, ``refinement_of``) compare what the model
+    does."""
+    agent = deepcopy(agent)
+    _by_name(agent)
+    return agent
+
+
+def _by_name(agent: Agent) -> None:
+    from indra.assemblers.pysb.assembler import _n
+
+    agent.name, agent.db_refs = _n(agent.name), {}
+    for condition in agent.bound_conditions:
+        _by_name(condition.agent)
 
 
 def _modification(stmt: Modification) -> tuple[list[Agent], list[tuple[Agent, int]]]:

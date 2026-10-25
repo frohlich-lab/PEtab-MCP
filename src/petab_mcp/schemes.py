@@ -12,18 +12,24 @@ type::
   ``members_0``, or by its own name when the statement gives it one agent), each the agent the
   row writes there, in the states it writes; or, by its name, another agent the statement names:
   a partner a role is written bound or not bound to (``C`` of ``enz{~C}``), in the states written
-  there. No other molecule: a mechanism reads only its statement's agents
+  there; or, by its kind, a regulator the statement states (``inhibited_by``, by position where
+  it states several, ``inhibited_by_1``), in the states the statement writes on it and with only
+  binding sites of the scheme's: ``enz(inhibited_by=None) + inhibited_by(enz=None) |
+  enz(inhibited_by=1) % inhibited_by(enz=1)`` binds a drug the enzyme cannot act while bound to.
+  A regulator binds on sites named after each other, so the complex is the one the partner
+  notation writes (``MEK{!Drug}``: MEK's site named after Drug, Drug's after MEK), which other
+  rows read and bind. No other molecule: a mechanism reads only its statement's agents
   (:func:`statements.named_agents`) and the regulators it states, and a row naming another is
   refused (:func:`mechanisms.refuse_unnamed`).
 - A site is ``mod``, the statement's own modification (``'off'``, ``'on'``); ``act``, the role's
   activity (``'inactive'``, ``'active'``): the statement's ``obj_activity`` on its object, the
   activity the modification implies on an enzyme (``kinase`` for a phosphorylation); a role's
-  name, the binding site for that partner; or any other name, taken as written. Written with a
-  state, a site is one its molecule has, in a state it takes (``mod`` and ``act`` always are), or
-  one the scheme adds with every state it takes, the one it starts in first, under a name that is
-  no slip of one the molecule has. A molecule without the site ``act`` names is refused, naming
-  the activity it has, rather than ``act`` read as that one: a row giving the molecule a second
-  activity would then re-point the scheme with no edit to it.
+  name or a regulator's, the binding site for that partner; or any other name, taken as written.
+  Written with a state, a site is one its molecule has, in a state it takes (``mod`` and ``act``
+  always are), or one the scheme adds with every state it takes, the one it starts in first,
+  under a name that is no slip of one the molecule has. A molecule without the site ``act``
+  names is refused, naming the activity it has, rather than ``act`` read as that one: a row
+  giving the molecule a second activity would then re-point the scheme with no edit to it.
 - A site's value is a state, a bond number, ``None`` (free), ``ANY`` (bound to something) or
   ``WILD``; a ``(state, bond)`` pair is both. ``>>`` is one-way, ``|`` both ways, ``%`` joins a
   complex, ``None`` is nothing.
@@ -31,12 +37,13 @@ type::
   definition's ``parameters`` (each minted per row as ``<prefix>_<name>`` and shared or fixed
   like any, ``kf=k_on`` in the row's binding), ``amount(<pattern>)`` (the amount of what the pattern of
   those molecules matches), ``amount(inhibited_by)`` (a regulator the statement states, as it
-  states it, by position where it states several, ``amount(inhibited_by_1)``; checked against
-  the claim on the row's net rate, :mod:`regulation`), ``time`` and exp/log/sqrt; mass action
-  multiplies it by every reactant's amount, as PySB does. A name it does not declare is
-  refused: a parameter the problem ships or a condition input enters through a row's binding, as
-  for a written ``rate``. ``delete_molecules`` after the rates removes only the molecules that
-  vanish, not their complex.
+  states it, by position where it states several, ``amount(inhibited_by_1)``), ``time`` and
+  exp/log/sqrt; mass action multiplies it by every reactant's amount, as PySB does. A regulator,
+  read in a rate or bound as a molecule, is checked against the claim on the row's net rate
+  (:mod:`regulation`), which holds one the rules bind at its free amount, the enzyme's forms bound
+  to it among the intermediates. A name a rate does not declare is refused: a parameter the
+  problem ships or a condition input enters through a row's binding, as for a written ``rate``.
+  ``delete_molecules`` after the rates removes only the molecules that vanish, not their complex.
 
 :func:`describe` writes any library entry this way, from a statement of placeholder agents named
 by role, and :func:`rate_parameters` reads the parameters it names; :func:`compile_scheme` turns a
@@ -66,7 +73,7 @@ from pysb import ANY, WILD
 from pysb.core import ReactionPattern, RuleExpression, time
 
 from .errors import MechanismError
-from .statements import REGULATOR_NAME, named_agents
+from .statements import REGULATOR_NAME, REGULATORS, by_name, named_agents
 
 MOD, ACT = "mod", "act"
 #: ``amount(inhibited_by)`` (or ``amount(inhibited_by())``) in a rate: a regulator, by its name.
@@ -131,6 +138,7 @@ def _line(raw: str) -> Line:
         )
     lhs, rhs = _side(tree.left), _side(tree.right)
     _refuse_open_bonds(lhs), _refuse_open_bonds(rhs)
+    _refuse_regulator_sites(lhs), _refuse_regulator_sites(rhs)
     return Line(lhs, rhs, reversible, tuple(rate_list), delete)
 
 
@@ -211,6 +219,38 @@ def _refuse_open_bonds(side: tuple[tuple[Molecule, ...], ...]) -> None:
                 f"bond {bond} is on {len(on)} site(s) of its complex ({', '.join(on)}), not two: "
                 "a bond number is on the two sites it joins, in one complex, as `A(b=1) % B(a=1)`"
             )
+
+
+def _refuse_regulator_sites(side: tuple[tuple[Molecule, ...], ...]) -> None:
+    """Refuse a regulator's molecule (``inhibited_by``) written with a state, or bound on sites not
+    named after each other: a scheme binds a regulator as its statement states it, and the
+    complex it forms is the one the partner notation writes, which other rows read and bind."""
+    for complex_ in side:
+        ends: dict[int, list[tuple[str, str]]] = {}
+        for m in complex_:
+            for site, value in m.sites:
+                state = value[0] if isinstance(value, tuple) else value
+                if REGULATOR_NAME.fullmatch(m.name) and (isinstance(state, str) or site in (MOD, ACT)):
+                    kind = re.sub(r"_\d+$", "", m.name)
+                    raise MechanismError(
+                        f"`{m.name}({site}={state!r})` writes a state on a regulator: a scheme "
+                        f"binds a regulator as its statement states it, so its molecule "
+                        f"takes binding sites only (`{m.name}(enz=None)`), and a state it needs is "
+                        f"written on the statement's agent (`{REGULATORS[kind]} X{{pS10}}`)"
+                    )
+                if _bond(value) is not None:
+                    ends.setdefault(_bond(value), []).append((m.name, site))
+        for bond, pair in ends.items():
+            if len(pair) != 2 or not any(REGULATOR_NAME.fullmatch(name) for name, _ in pair):
+                continue
+            (a, at_a), (b, at_b) = pair
+            if (at_a, at_b) != (b, a):
+                raise MechanismError(
+                    f"bond {bond} joins `{a}({at_a}={bond})` and `{b}({at_b}={bond})`: a regulator "
+                    f"binds on sites named after each other, `{a}({b}={bond}) % {b}({a}={bond})`, "
+                    "so the complex is the one the notation writes `E{!X}`, which other rows read; "
+                    "name each site so wherever the scheme writes it"
+                )
 
 
 # ------------------------------------------------------------------------------- roles
@@ -363,6 +403,7 @@ def _rate(text: str) -> _Rate:
                     return
                 try:
                     _refuse_open_bonds((_complex(node.args[0]),))
+                    _refuse_regulator_sites((_complex(node.args[0]),))
                 except MechanismError as exc:
                     raise MechanismError(f"rate {text!r}: {exc}") from None
                 amounts.append(ast.unparse(node.args[0]))
@@ -407,15 +448,19 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
                 refuse_rate_names(text, policy, unknown, [*declared, "time"], also,
                                   "`amount(<pattern>)`", problem_ids, known_roles)
     refuse_unread(policy, declared, {n for rs in rates for r in rs for n in r.names})
+    patterns = [m for line in lines for side in (line.lhs, line.rhs) for c in side for m in c]
+    patterns += [_molecule(n) for rs in rates for r in rs for a in r.amounts
+                 for n in _complex_nodes(a)]
+    molecules = sorted({m.name for m in patterns if REGULATOR_NAME.fullmatch(m.name)})
     read = {
         s.name for rs in rates for r in rs for s in _sympy(r).free_symbols
         if REGULATOR_NAME.fullmatch(s.name)
-    }
+    } | set(molecules)
 
     def policy_fn(stmt: Statement, model: pysb.Model, prefix: str, regulators=None):
         from .mechanisms import Emission, _add
 
-        agents = role_agents(stmt)
+        agents = role_agents(stmt) | (regulators or {})
         params: dict[str, pysb.Parameter] = {}
         amounts: dict[str, str] = {}
         rules = []
@@ -450,6 +495,7 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
              for r in known_roles for v in [getattr(stmt, r, None)]},
             rules=tuple(rules),
             parameters=tuple(p.name for p in params.values()),
+            regulator_molecules=tuple(molecules),
             amounts=amounts,
         )
 
@@ -460,16 +506,15 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
         it writes is checked against ``given``, each monomer's sites and their states before any
         scheme adds its own (``{name: (sites, site_states)}``; see the module docstring). A
         molecule row ``prefix``'s statement does not name is refused, before it has a monomer,
-        saying how a rate reads one of the ``regulators`` (kind to agents) the row states."""
-        from .mechanisms import refuse_unnamed
+        saying how a mechanism reads one of the ``regulators`` (kind to agents) the row states,
+        and so is a regulator's molecule it does not state."""
+        from .mechanisms import refuse_unnamed, refuse_unstated
 
-        agents = role_agents(stmt)
+        refuse_unstated(prefix, (stmt_type, policy), molecules, regulators or {})
+        agents = role_agents(stmt) | by_name(regulators or {})
         named = _by_name(stmt)
         need = []
         added: dict[tuple[str, str], list] = {}
-        patterns = [m for line in lines for side in (line.lhs, line.rhs) for c in side for m in c]
-        patterns += [_molecule(n) for rs in rates for r in rs for a in r.amounts
-                     for n in _complex_nodes(a)]
         # A molecule a rate reads in the row notation brings the sites its pattern names.
         read = [_notation_agent(a) for rs in rates for r in rs for a in r.agents]
         for agent in read:
