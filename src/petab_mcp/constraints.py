@@ -194,9 +194,9 @@ def _active_form(cid, body, m, source, groundings) -> ActiveForm:
     from . import notation
 
     activity = m.group(3) or "activity"
-    if activity not in notation.ACTIVITIES:
+    if activity not in notation.activity_types:
         raise ConstraintError(
-            f"no activity {activity!r}; one of {', '.join(sorted(notation.ACTIVITIES))}"
+            f"no activity {activity!r}; one of {', '.join(sorted(notation.activity_types))}"
         )
     from indra.statements import ActiveForm as Declared
 
