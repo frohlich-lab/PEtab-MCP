@@ -333,15 +333,17 @@ def test_enforce_keeps_verdicts_and_warns_of_a_new_two_way_chain_once():
 _ENTITY_MAP = '{"A": {"name": "A"}, "B": {"name": "B"}}'
 
 
-def _row(source: str, target: str, prefix: str) -> dict:
+def _change(source: str, target: str, prefix: str) -> dict:
+    """`make_changes`' arguments for one row, `source becomes target`, its binding given apart."""
+    statement = {
+        "type": "PopulationTransition",
+        "source": {"name": source},
+        "target": {"name": target},
+    }
     return {
-        "statement": {
-            "type": "PopulationTransition",
-            "source": {"name": source},
-            "target": {"name": target},
-        },
-        "policy": "mass_action",
-        "prefix": prefix,
+        "justification": f"{source} becomes {target}",
+        "statements": [{"statement": statement, "prefix": prefix}],
+        "bindings": {prefix: "mass_action"},
     }
 
 
@@ -366,18 +368,10 @@ def test_make_changes_refuses_a_model_that_breaks_a_constraint(tmp_path):
     """The refusal names the constraint and applies nothing; a model that makes the claim commits,
     and its stored record keeps the verdicts it was checked under."""
     mcp = _constrained_server(tmp_path, "c1: A becomes B, directly\n")
-    out = _call(
-        mcp,
-        "make_changes",
-        {"justification": "B becomes A", "statements": [_row("B", "A", "back")]},
-    )
+    out = _call(mcp, "make_changes", _change("B", "A", "back"))
     assert out["applied"] is False and out["error_cause"] == "constraint_violated"
     assert "`c1` (A becomes B, directly)" in out["error"]
-    out = _call(
-        mcp,
-        "make_changes",
-        {"justification": "A becomes B", "statements": [_row("A", "B", "conv")]},
-    )
+    out = _call(mcp, "make_changes", _change("A", "B", "conv"))
     assert out["applied"] is True and out["committed"] is True, out
     record = json.loads((tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text())
     assert record["constraints"]["verdicts"] == {"c1": {"ok": True, "rows": ["conv"]}}

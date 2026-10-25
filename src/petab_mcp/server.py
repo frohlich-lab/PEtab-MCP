@@ -41,6 +41,7 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.middleware import Middleware
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+from pydantic.json_schema import SkipJsonSchema
 from petab.v2.C import EXPERIMENT_ID, OBSERVABLE_ID
 
 from . import data_access as data_mod
@@ -181,7 +182,7 @@ class ModelOp(BaseModel):
 # left an open object: INDRA's statement JSON is a family of shapes keyed on `type`, and INDRA's
 # own reader validates it server-side (operations.statements_to_antimony).
 class StatementRow(BaseModel):
-    """One mechanism assertion and the mechanism that expresses it."""
+    """One mechanism assertion: the claim, in words. Its mechanism is its binding, apart."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -192,21 +193,37 @@ class StatementRow(BaseModel):
         "`inhibited_by`, `activated_by`, `modulated_by` ('..., inhibited by C' in the notation). "
         "Each is recorded as the kind its rate shows, which the result reports where it differs."
     )
-    policy: str = Field(description="the mechanism expressing it, e.g. 'indra_default'.")
     prefix: str = Field(
-        description="names this row's parameters and rules ('<prefix>_kcat'); unique per row."
-    )
-    parameters: dict[str, str | float] | None = Field(
-        default=None,
-        description="binds a parameter this row makes, by its kind ('kf' for '<prefix>_kf'), to "
-        "a SHARED id (another row's, a problem parameter's, or a new name several rows use) or "
-        "to a NUMBER, which fixes it — one rate constant across many reactions is one parameter.",
+        description="names this row's parameters and rules ('<prefix>_kcat'), and keys its "
+        "binding; unique per row."
     )
     derived: dict[str, str] | None = Field(
         default=None,
         description="ignored: what `get_model` shows a row's rate records for its regulators, by "
         "the kind stated and position ({'inhibited_by_0': 'activated_by'}), so a row it shows "
         "reads back as it was.",
+    )
+    # Not in the schema, and refused when given (operations.carried_binding): a row's binding is
+    # apart from it. Taken here rather than forbidden so the refusal says how the row splits and
+    # is a typed one, logged with its cause, not a schema error naming two unknown fields.
+    policy: SkipJsonSchema[str | None] = None
+    parameters: SkipJsonSchema[dict[str, Any] | None] = None
+
+
+class RowBinding(BaseModel):
+    """A row's binding: the mechanism that expresses its statement, and its parameter bindings."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    policy: str = Field(
+        description="the mechanism expressing the row's statement, e.g. 'default' (INDRA's own "
+        "for every statement type), 'two_step', or one you write in `mechanisms`."
+    )
+    parameters: dict[str, str | float] | None = Field(
+        default=None,
+        description="binds a parameter the row makes, by its kind ('kf' for '<prefix>_kf'), to "
+        "a SHARED id (another row's, a problem parameter's, or a new name several rows use) or "
+        "to a NUMBER, which fixes it — one rate constant across many reactions is one parameter.",
     )
 
 
@@ -238,7 +255,7 @@ class MechanismDef(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     statement_type: str = Field(description="the statement type it expresses, e.g. 'Conversion'.")
-    policy: str = Field(description="its name, new; `statements` rows then use it as `policy`.")
+    policy: str = Field(description="its name, new; a row's binding then names it as its policy.")
     based_on: str = Field(
         default="indra_default",
         description="the existing mechanism whose reaction (what is consumed, what is made) "
@@ -277,20 +294,22 @@ class MechanismDef(BaseModel):
     parameters: list[str] = Field(
         default_factory=list,
         description="every constant the `scheme` or `rate` names; each becomes "
-        "`<prefix>_<name>`, estimated unless a row's `parameters` shares or fixes it. A parameter "
-        "the problem ships or a condition input is none of them: it enters through a row's "
-        "binding.",
+        "`<prefix>_<name>`, estimated unless the row's binding shares or fixes it (`kf=k_on`). A "
+        "parameter the problem ships or a condition input is none of them: it enters through a "
+        "row's binding.",
     )
 
 
 class StatementEdit(BaseModel):
-    """One change to a model built from statements: a row, a start, an amount or a readout."""
+    """One change to a model built from statements: a row, its binding, a start, an amount or a
+    readout."""
 
     model_config = ConfigDict(extra="forbid")
 
     op: Literal[
         "add_row",
         "replace_row",
+        "rebind",
         "remove_row",
         "set_start",
         "remove_start",
@@ -298,16 +317,22 @@ class StatementEdit(BaseModel):
         "remove_amount",
         "set_readout",
     ] = Field(
-        description="`add_row` a new row; `replace_row` the row with that row's prefix (its "
-        "statement, policy or bindings); `remove_row` by `prefix`; `set_start` adds or replaces "
-        "the start of that name; `set_amount`/`set_readout` add or replace one; "
-        "`remove_start`/`remove_amount` by `name`. A readout is never removed: each is one an "
-        "observable reads."
+        description="`add_row` a new row with its `binding`; `replace_row` rewrites the statement "
+        "of the row with that row's prefix, keeping its binding unless it gives one; `rebind` "
+        "gives the row of `prefix` a new `binding`, its statement unchanged; `remove_row` by "
+        "`prefix`, with its binding; `set_start` adds or replaces the start of that name; "
+        "`set_amount`/`set_readout` add or replace one; `remove_start`/`remove_amount` by `name`. "
+        "A readout is never removed: each is one an observable reads."
     )
     row: StatementRow | str | None = Field(
         default=None, description="add_row/replace_row: the row, one line or JSON."
     )
-    prefix: str | None = Field(default=None, description="remove_row: the row's prefix.")
+    binding: RowBinding | str | None = Field(
+        default=None,
+        description="add_row, rebind (and replace_row, where the mechanism changes too): the "
+        "row's binding, one line ('two_step kf=k_on') or JSON.",
+    )
+    prefix: str | None = Field(default=None, description="rebind, remove_row: the row's prefix.")
     start: StartRow | None = Field(default=None, description="set_start: the start.")
     name: str | None = Field(
         default=None, description="remove_start, set_amount, remove_amount: its name."
@@ -353,12 +378,33 @@ def _unwrap_listish(v: Any) -> Any:
     return v
 
 
-#: ``make_changes``' list arguments, typed once for its three registrations (see
-#: ``_register_model_tools``), each tolerating the wrapped encodings ``_unwrap_listish`` undoes.
+def _unwrap_objectish(v: Any) -> Any:
+    """An object sent as a JSON string, back to the object; anything else untouched. The same
+    serialiser artefact as a list sent as a string (``_unwrap_listish``): clients send `amounts`
+    as '{"a": "A"}' (gemot's leak repair leaves such a value to the server), and `bindings`
+    travels with every `statements` call."""
+    if isinstance(v, str):
+        s = v.strip()
+        if s.startswith("{") and s.endswith("}"):
+            try:
+                parsed = json.loads(s)
+            except ValueError:
+                return v
+            if isinstance(parsed, dict):
+                return parsed
+    return v
+
+
+#: ``make_changes``' list and object arguments, typed once for its three registrations (see
+#: ``_register_model_tools``), each tolerating the encodings ``_unwrap_listish`` and
+#: ``_unwrap_objectish`` undo.
 _ModelOps = Annotated[list[ModelOp] | None, BeforeValidator(_unwrap_listish)]
 _ParameterChanges = Annotated[list[ParameterChange] | None, BeforeValidator(_unwrap_listish)]
 _References = Annotated[list[str] | None, BeforeValidator(_unwrap_listish)]
 _StatementRows = Annotated[list[StatementRow | str] | None, BeforeValidator(_unwrap_listish)]
+_Bindings = Annotated[dict[str, RowBinding | str] | None, BeforeValidator(_unwrap_objectish)]
+_Readouts = Annotated[dict[str, str] | None, BeforeValidator(_unwrap_objectish)]
+_Amounts = Annotated[dict[str, dict[str, Any] | str] | None, BeforeValidator(_unwrap_objectish)]
 _MechanismDefs = Annotated[list[MechanismDef] | None, BeforeValidator(_unwrap_listish)]
 _StartRows = Annotated[list[StartRow] | None, BeforeValidator(_unwrap_listish)]
 _StatementEdits = Annotated[list[StatementEdit] | None, BeforeValidator(_unwrap_listish)]
@@ -1077,12 +1123,16 @@ def _make_changes_statements_doc(
     entries = "; ".join(f"`{policy}` for {named(c)}" for policy, c in sorted(by_policy.items()))
     return (
         ("`statements` authors" if alone else "`statements` is a third model route: it authors")
-        + " the WHOLE model from mechanism assertions rather than text, each an INDRA statement "
-        "with the `policy` (mechanism) that turns it into reactions and a `prefix` naming its "
-        "parameters. A row may be one line instead of JSON: `r1: A{pS10} phosphorylates "
-        "B at T20 | two_step kf=k_on`, agents as NAME{pS10, -pT20, @LOCATION, !BOUND, "
-        "~UNBOUND} (see `get_model(format='statements')` for a model written that way)."
-        "  Every INDRA statement type"
+        + " the WHOLE model from mechanism assertions rather than text: each row an INDRA "
+        "statement, the claim in words, under a `prefix` naming its parameters; and, apart, in "
+        "`bindings` under the same prefix, the maths behind it: the `policy` (mechanism) that "
+        "turns it into reactions, and its parameter bindings. A row may be one line instead of "
+        "JSON, and a binding too: `statements=['r1: A{pS10} phosphorylates B at T20'], "
+        "bindings={'r1': 'two_step kf=k_on'}`, agents as NAME{pS10, -pT20, @LOCATION, !BOUND, "
+        "~UNBOUND}, a statement's evidence a comment on its row (`r1: ... # [source] text`). Each "
+        "row has its binding and each binding its row; a row is never written with its binding "
+        "(`| two_step` is refused). See `get_model(format='statements')` for a model written "
+        "that way.  Every INDRA statement type"
         + (f" but {', '.join(without)}" if without else "")
         + f" has `{mechanisms.INDRA_DEFAULT}`; the library "
         f"also holds {entries}. `list_mechanisms` shows each as the PySB rules it builds. When "
@@ -1090,14 +1140,15 @@ def _make_changes_statements_doc(
         "those, declaring their constants in `parameters`) or as a `rate` on an existing entry's "
         "reaction; it stays in the library for the rest of the run. A rate reads only the agents "
         "its row's statement names, so an agent that changes a reaction's rate without taking "
-        "part is stated as its regulator: `r1: E phosphorylates S at T20, inhibited by C | "
-        "inhibited Ki=K_C` claims C slows that reaction, and its mechanism's rate reads C as "
-        "`inhibited_by` (`activated_by` speeds it, `modulated_by` claims no direction). Each is "
+        "part is stated as its regulator: `r1: E phosphorylates S at T20, inhibited by C` claims "
+        "C slows that reaction, and its binding's mechanism (`'r1': 'inhibited Ki=K_C'`) reads C "
+        "as `inhibited_by` (`activated_by` speeds it, `modulated_by` claims no direction). Each is "
         "recorded as the kind its rate shows within its parameters' bounds, again whenever a row "
         "or a bound changes: where that differs from the statement, the result says so and "
         "`get_model` marks it `(inhibits, from its rate)`. The rate must read every regulator its "
-        "statement states, and change with each. A row's `parameters` shares a rate constant with other "
-        "rows, or with a parameter the problem ships, or fixes it to a number. "
+        "statement states, and change with each. A binding's parameters share a rate constant "
+        "with other rows (`kf=k_on` on each), or with a parameter the problem ships, or fix it to "
+        "a number (`kf=0.5`). "
         + (
             "The species the observables read are bound by the problem's entity map: name agents "
             "as it does. " + _HELD_INPUTS + " "
@@ -1124,11 +1175,13 @@ def _make_changes_statements_doc(
         "start, each other in the fraction of the protein in each form (from `start_fraction` = "
         "1), a readout across blocks their product. The result's `network` counts "
         "species and reactions before and after and names the blocks (`split`).\n\n"
-        "`statement_edits` CHANGES the current rows instead of giving them all again: "
-        "`add_row`/`replace_row` a row (one line; `replace_row` takes the row with that prefix, "
-        "so a new policy or binding is the row rewritten), `remove_row` by prefix, and "
-        "`set_start`/`set_amount`/`set_readout` or `remove_start`/`remove_amount`; with them "
-        "`mechanisms` you write for the new rows. They apply in "
+        "`statement_edits` CHANGES the current rows instead of giving them all again: `add_row` a "
+        "row with its `binding`, `replace_row` the statement of the row with that prefix (its "
+        "binding kept, or given anew beside it), `rebind` a row's binding alone (`{op: 'rebind', "
+        "prefix: 'r1', binding: 'two_step kf=k_shared'}`: a new policy, or a constant shared), "
+        "`remove_row` by prefix, and `set_start`/`set_amount`/`set_readout` or "
+        "`remove_start`/`remove_amount`; with them `mechanisms` you write for the new bindings. "
+        "They apply in "
         "order, all or nothing, and the model is rebuilt from the edited set. `base_version=N` "
         "applies them to version N's rows instead (with `statements`, it is the whole set given "
         "afresh), and starts the fit from version N's search space and best fit. "
@@ -1173,16 +1226,18 @@ def _statement_record(session, version: int | None) -> dict | None:
     not built from statements."""
     import json
 
+    from .provenance import statements_record
+
     if version is None:
         return session.model_statements or None
     path = session.provenance.versions_dir / f"v{int(version)}" / "statements.json"
-    return (json.loads(path.read_text()) or None) if path.is_file() else None
+    return statements_record(json.loads(path.read_text()) or None) if path.is_file() else None
 
 
 def _statements_text(session, version: int | None) -> str:
     """A model built from statements, as the notation (:mod:`notation`): its written mechanisms,
-    its rows one per line (INDRA JSON where the notation has no lossless form), its starts,
-    amounts and readouts. The current model, or a stored ``version``."""
+    its rows one per line (INDRA JSON where the notation has no lossless form), then each row's
+    binding, its starts, amounts and readouts. The current model, or a stored ``version``."""
     import json
 
     from . import mechanisms, notation
@@ -1208,12 +1263,16 @@ def _statements_text(session, version: int | None) -> str:
             f"{d.get('based_on', mechanisms.INDRA_DEFAULT)}, rate {d['rate']}{declared}"
         )
     for row in record["rows"]:
-        bare = {k: row[k] for k in ("statement", "policy", "prefix", "parameters") if row.get(k)}
+        bare = {"prefix": row["prefix"], "statement": row["statement"]}
         derived = (row.get("emission") or {}).get("derived")
         lines.append(
-            notation.render(bare, library, derived)
+            notation.render(bare, derived)
             or json.dumps(bare | ({"derived": derived} if derived else {}))
         )
+    for row in record["rows"]:
+        binding = (record.get("bindings") or {}).get(row["prefix"], {})
+        text = notation.render_binding(binding, row["statement"].get("type"), library)
+        lines.append(f"binding {row['prefix']}: {text or json.dumps(binding)}")
     for start in record.get("starts") or []:
         lines.append(f"start {start['name']}: {notation.agent_text(start['agent'])} = "
                      f"{start['amount']}")
@@ -1228,8 +1287,10 @@ def _get_model_doc(statements: bool) -> str:
     """``get_model``'s description, offering the ``statements`` format only where the route is."""
     formats = (
         "'antimony' (the default), 'sbml', or 'statements': a model built from statements as its "
-        "rows, in the notation `make_changes` takes, where its antimony is the reduced model it "
-        "simulates (enzymes as rate factors, independent sites as blocks)"
+        "rows, then each row's binding (`binding r1: two_step kf=k_on`, which `make_changes` takes "
+        "as `bindings={'r1': 'two_step kf=k_on'}`), in the notation `make_changes` takes, where "
+        "its antimony is the reduced model it simulates (enzymes as rate factors, independent "
+        "sites as blocks)"
         if statements
         else "'antimony' (the default) or 'sbml'"
     )
@@ -1260,10 +1321,11 @@ def _register_model_tools(
             `statement_type` or all: the library's own and those written this run. Read it before
             choosing a row's policy, and to write a new one as a `scheme`: copy the nearest entry
             and edit it. Each is written over the statement type's ROLES; `@` gives the rate, and
-            a name in it is one of the `parameters` its header lists, which a row binds as
-            `kf=...`. A scheme reads no agent its row's statement does not name: a molecule other
-            than a role is a partner the statement writes a role bound or not bound to (`C` of
-            `enz{~C}`), and `amount(inhibited_by)` reads a regulator the statement states.
+            a name in it is one of the `parameters` its header lists, which a row's binding binds
+            as `kf=...` (`bindings={'r1': 'two_step kf=k_on'}`). A scheme reads no agent its row's
+            statement does not name: a molecule other than a role is a partner the statement writes
+            a role bound or not bound to (`C` of `enz{~C}`), and `amount(inhibited_by)` reads a
+            regulator the statement states.
             """
             return _mechanisms_text(route().session, statement_type)
 
@@ -1344,10 +1406,11 @@ def _register_model_tools(
         references: _References = None,
         n_starts: int | None = None,
         statements: _StatementRows = None,
+        bindings: _Bindings = None,
         mechanisms: _MechanismDefs = None,
         starts: _StartRows = None,
-        readouts: dict[str, str] | None = None,
-        amounts: dict[str, dict[str, Any] | str] | None = None,
+        readouts: _Readouts = None,
+        amounts: _Amounts = None,
         statement_edits: _StatementEdits = None,
     ) -> dict[str, Any]:
         ctx = route()
@@ -1364,6 +1427,10 @@ def _register_model_tools(
         rows = [
             r.model_dump() if isinstance(r, StatementRow) else r for r in (statements or [])
         ] or None
+        bindings = {
+            prefix: b.model_dump(exclude_none=True) if isinstance(b, RowBinding) else b
+            for prefix, b in (bindings or {}).items()
+        } or None
         edits = [
             e.model_dump(exclude_none=True) if isinstance(e, StatementEdit) else e
             for e in (statement_edits or [])
@@ -1465,11 +1532,20 @@ def _register_model_tools(
                 {"n_starts": len(starts or [])},
                 cause="statement_edit",
             )
-        if (mechanisms or starts or readouts or amounts) and not (rows or edits):
+        if bindings and edits:
             return ctx.reject_operation(
                 "make_changes",
-                "make_changes: `mechanisms`, `starts`, `readouts` and `amounts` belong to "
-                "`statements` rows; send them together"
+                "make_changes: with `statement_edits`, a row's binding changes by its own edit "
+                "(`add_row` with its `binding`, `rebind`), not `bindings`, which give every row's "
+                "binding with `statements`. NOTHING was applied.",
+                {"bindings": sorted(bindings)},
+                cause="statement_edit",
+            )
+        if (bindings or mechanisms or starts or readouts or amounts) and not (rows or edits):
+            return ctx.reject_operation(
+                "make_changes",
+                "make_changes: `bindings`, `mechanisms`, `starts`, `readouts` and `amounts` belong "
+                "to `statements` rows; send them together"
                 + (" (or `mechanisms` with `statement_edits`)" if statements_route else "")
                 + ". NOTHING was applied.",
                 {"n_mechanisms": len(mechanisms or []), "n_starts": len(starts or [])},
@@ -1506,8 +1582,8 @@ def _register_model_tools(
                         cause="statement_edit",
                     )
                 try:
-                    rows, starts, readouts, amounts, edit_summary = ops_mod.apply_statement_edits(
-                        base, edits
+                    rows, bindings, starts, readouts, amounts, edit_summary = (
+                        ops_mod.apply_statement_edits(base, edits)
                     )
                 except PetabMcpError as exc:
                     return ctx.reject_operation(
@@ -1525,6 +1601,7 @@ def _register_model_tools(
                         ops_mod.statements_to_antimony(
                             session,
                             rows,
+                            bindings,
                             definitions,
                             [s.model_dump() if isinstance(s, StartRow) else s for s in starts or []],
                             readouts,
@@ -1696,10 +1773,11 @@ def _register_model_tools(
             references: _References = None,
             n_starts: int | None = None,
             statements: _StatementRows = None,
+            bindings: _Bindings = None,
             mechanisms: _MechanismDefs = None,
             starts: _StartRows = None,
-            readouts: dict[str, str] | None = None,
-            amounts: dict[str, dict[str, Any] | str] | None = None,
+            readouts: _Readouts = None,
+            amounts: _Amounts = None,
             statement_edits: _StatementEdits = None,
         ) -> dict[str, Any]:
             return _make_changes(
@@ -1709,6 +1787,7 @@ def _register_model_tools(
                 references=references,
                 n_starts=n_starts,
                 statements=statements,
+                bindings=bindings,
                 mechanisms=mechanisms,
                 starts=starts,
                 readouts=readouts,
@@ -2181,10 +2260,11 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
     def list_versions() -> list[dict[str, Any]]:
         """Every model version (each a fit snapshot) with its kind, label and fit metrics
         (`neg_log_likelihood`, every score, `criterion_value`): which structures have been tried
-        and how they scored. `is_new_best` is true for the first, then where
+        and how they scored. `is_new_best` marks each version that became the best model (the last
+        one is `get_progress`'s `best_version`): the first, then each whose
         `improvement_vs_best_prior` (over `best_prior_criterion_value`) reached
-        `new_best_min_improvement`. Every version is kept, and the best one stands whatever comes
-        after it."""
+        `new_best_min_improvement`, unless `new_best_declined` says why the earlier best stood.
+        Every version is kept, and the best one stands whatever comes after it."""
         ctx = route()
         session = ctx.session
         return session.provenance.list_versions()
@@ -2222,7 +2302,7 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         fit instead of recompiling and refitting. Prefer this over re-authoring an earlier model
         with `make_changes`, which refuses an exact re-author of a fitted version; this reuses the
         existing fit and records a clean restore. Find the target with `list_versions`
-        (pick the best-scoring / is_new_best version), then `restore_version(v)`. HEAD moves back
+        (the best model is the last `is_new_best` one), then `restore_version(v)`. HEAD moves back
         to that version: no version is added or erased, and the restore is recorded as a
         `rollback` event in the provenance log."""
         ctx = route()
@@ -2240,7 +2320,8 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         `{n_fitted_ops, non_improving_streak, streak_cap, best_version, criterion, best_score,
         best_gof_pvalue, score_improvement_over_last_n, plateau_window, should_stop, stop_reason}`.
         `best_score` is under `criterion` — the complexity penalty this session ranks by.
-        `best_version` is the best-scoring fitted model committed so far (the session's result);
+        `best_version` is the best model so far (the session's result), the last version whose fit
+        says `is_new_best`;
         `non_improving_streak` counts consecutive fitted ops since the last real new best.
         `should_stop` is set (with a `stop_reason`) once the session has stopped making progress —
         the hard non-improving-streak cap, or a plateau once the best model is statistically

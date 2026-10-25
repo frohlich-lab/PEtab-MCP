@@ -2151,8 +2151,10 @@ def compute_improvement(
     the checkpoint is what lets a slow, steady creep of < ``NEW_BEST_MIN_DELTA_SCORE`` per op
     still register a new best once it CUMULATIVELY clears the bar, instead of starving the streak
     while the fit genuinely improves. Must be called BEFORE :meth:`session.record_fit_progress`
-    updates the checkpoint, so a fit never compares against itself. The first fitted version (no
-    checkpoint yet) is always a new best.
+    updates the checkpoint, so a fit never compares against itself. The first scored fit (no
+    checkpoint yet) is always a new best. :meth:`session.PetabSession.fit` withdraws the flag
+    before stamping it where the checkpoint declines the fit, naming why in
+    ``new_best_declined``, so ``is_new_best`` marks exactly the versions that became the best.
 
     The returned block carries the ranked pair ``criterion``/``criterion_value`` beside the
     canonical ``bic``, and is stamped into the fit event and the version meta — which is what
@@ -2209,15 +2211,15 @@ def compute_improvement(
 
 
 def clears_new_best_bar(score: float | None, best_score: float | None) -> bool:
-    """The ``is_new_best`` gate: there is no checkpoint yet, or ``score`` beats it by at least
-    ``NEW_BEST_MIN_DELTA_SCORE``. One function because a durable resume replays it over the fit
-    events (:meth:`session.PetabSession._seed_progress_from_provenance`), and a resume that gated
-    differently would rebuild a checkpoint the live run never had.
+    """The ``is_new_best`` gate: there is a ``score``, and no checkpoint yet or it beats the
+    checkpoint by at least ``NEW_BEST_MIN_DELTA_SCORE``. One function because a durable resume
+    replays it over the fit events (:meth:`session.PetabSession._seed_progress_from_provenance`),
+    and a resume that gated differently would rebuild a checkpoint the live run never had.
     """
     # ``<=`` so an improvement EXACTLY at the threshold counts as a new best — i.e. Δscore >= the
     # gate (a strict ``<`` would exclude the boundary and leave the streak un-reset there).
-    return best_score is None or (
-        score is not None and score <= best_score - NEW_BEST_MIN_DELTA_SCORE
+    return score is not None and (
+        best_score is None or score <= best_score - NEW_BEST_MIN_DELTA_SCORE
     )
 
 

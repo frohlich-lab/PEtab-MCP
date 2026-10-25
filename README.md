@@ -169,8 +169,9 @@ Principles to hold onto when extending this package.
   through `fitting.pypesto_problem`, never handed to pyPESTO linear. A problem that states a
   prior is refused at load: the objective is the likelihood the criterion scores.
 - **A statement says everything its rate reads.** On the `statements` route a row's statement is
-  the claim and its mechanism the maths behind it, so a rate (a written `rate`, a `scheme`) reads
-  only the agents the statement names: its roles, the partners they are written bound or not
+  the claim and its binding the maths behind it, the two given apart under the row's prefix
+  (`statements=["r1: RAF phosphorylates MEK"], bindings={"r1": "two_step kf=k_on"}`), so a rate (a
+  written `rate`, a `scheme`) reads only the agents the statement names: its roles, the partners they are written bound or not
   bound to, and the agents it states regulate its rate without taking part, `inhibited_by`,
   `activated_by` or `modulated_by` ("RAF phosphorylates MEK, inhibited by sorafenib"). Each is
   recorded as the kind the reaction's rate shows for every value of its names within their

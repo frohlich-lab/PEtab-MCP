@@ -812,10 +812,10 @@ def test_the_single_editor_carries_the_whole_change(tmp_path):
 _BASE_ENTITY_MAP = '{{"A": {{"name": "A"}}, "B": {{"name": "B"}}{extra}}}'
 
 
-def _statement_row(type_="PopulationTransition", policy="mass_action"):
+def _statement_row(type_="PopulationTransition"):
+    """A becoming B as a JSON row, its prefix `conv`: the statement, its binding given apart."""
     return {
         "statement": {"type": type_, "source": {"name": "A"}, "target": {"name": "B"}},
-        "policy": policy,
         "prefix": "conv",
     }
 
@@ -920,7 +920,8 @@ def test_the_refusals_name_statements_only_where_it_is_offered(tmp_path):
 
     edits = [{"op": "remove_reaction", "id": "r1"}]
     assert "`statements`" not in error(plain, {"antimony": _antimony(), "model_edits": edits})
-    both = {"antimony": _antimony(), "statements": [_statement_row()]}
+    both = {"antimony": _antimony(), "statements": [_statement_row()],
+            "bindings": {"conv": "mass_action"}}
     assert "`statements`" in error(offered, both).split(")", 1)[1]  # past the routes given
     assert "`statements`" not in error(plain, {})
     assert "`statements`" in error(offered, {})
@@ -946,13 +947,19 @@ def test_statements_commit_records_what_was_asserted(tmp_path):
     addresses the row, and neither is recoverable from the expanded model."""
     mcp = _statements_server(tmp_path)
     out = _call(
-        mcp, "make_changes", {"justification": "A becomes B", "statements": [_statement_row()]}
+        mcp,
+        "make_changes",
+        {"justification": "A becomes B", "statements": [_statement_row()],
+         "bindings": {"conv": "mass_action"}},
     )
     assert out["applied"] is True and out["committed"] is True
     assert "carry no grounding" in out["messages"][0]["message"]
     record = json.loads((tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text())
     (stored,) = record["rows"]
     assert stored["emission"]["parameters"] == ["conv_k"]
+    # The row is the statement and its binding the maths, kept apart as they were given.
+    assert set(stored) == {"prefix", "statement", "emission"}
+    assert record["bindings"] == {"conv": {"policy": "mass_action"}}
     # What the rows expand to, before and after the reduction, reported and kept with the rows.
     size = {"species": 2, "reactions": 1}
     assert out["network"] == record["network"]
@@ -970,7 +977,8 @@ def test_ungrounded_agents_are_named_once_per_call(tmp_path):
     out = _call(
         mcp,
         "make_changes",
-        {"justification": "A and B interconvert", "statements": [back, _statement_row()]},
+        {"justification": "A and B interconvert", "statements": [back, _statement_row()],
+         "bindings": {"back": "mass_action", "conv": "mass_action"}},
     )
     assert out["applied"] is True, out
     assert [m["message"] for m in out["messages"] if "grounding" in m["message"]] == [
@@ -992,7 +1000,8 @@ def test_a_scheme_mechanism_builds_and_is_listed_as_written(tmp_path):
         "make_changes",
         {
             "justification": "A becomes B by a rule of my own",
-            "statements": [_statement_row(policy="hop")],
+            "statements": [_statement_row()],
+            "bindings": {"conv": "hop"},
             "mechanisms": [
                 {"statement_type": "PopulationTransition", "policy": "hop",
                  "scheme": "source() >> target() @ k_hop", "parameters": ["k_hop"]}
@@ -1025,7 +1034,8 @@ def test_a_scheme_naming_a_state_its_molecule_lacks_is_refused(tmp_path):
         "make_changes",
         {
             "justification": "A becomes B once primed",
-            "statements": [_statement_row(policy="primed")],
+            "statements": [_statement_row()],
+            "bindings": {"conv": "primed"},
             "mechanisms": [
                 {"statement_type": "PopulationTransition", "policy": "primed",
                  "scheme": "source(primed='yes') >> target() @ k", "parameters": ["k"]}
@@ -1043,7 +1053,8 @@ def test_the_result_names_the_sites_a_scheme_added(tmp_path):
         "make_changes",
         {
             "justification": "A primes, then becomes B",
-            "statements": [_statement_row(policy="primed")],
+            "statements": [_statement_row()],
+            "bindings": {"conv": "primed"},
             "mechanisms": [
                 {"statement_type": "PopulationTransition", "policy": "primed",
                  "scheme": "source(phase='naive') >> source(phase='primed') @ kp\n"
@@ -1077,9 +1088,11 @@ def test_list_mechanisms_shows_two_step_as_its_rules(tmp_path):
 def test_a_library_gap_is_its_own_rejection(tmp_path):
     """A pair the library does not hold must stay countable apart from a malformed call — it is
     the to-do list for the library. INDRA's default asked of a type INDRA does not have is one."""
-    row = _statement_row(policy="indra_default")
     out = _call(
-        _statements_server(tmp_path), "make_changes", {"justification": "x", "statements": [row]}
+        _statements_server(tmp_path),
+        "make_changes",
+        {"justification": "x", "statements": [_statement_row()],
+         "bindings": {"conv": "indra_default"}},
     )
     assert out["applied"] is False and out["error_cause"] == "library_gap"
 
@@ -1090,8 +1103,8 @@ def test_a_malformed_mechanism_is_not_counted_as_a_library_gap(tmp_path):
     out = _call(
         _statements_server(tmp_path),
         "make_changes",
-        {"justification": "x", "statements": [_statement_row(policy="saturating")],
-         "mechanisms": [bad]},
+        {"justification": "x", "statements": [_statement_row()],
+         "bindings": {"conv": "saturating"}, "mechanisms": [bad]},
     )
     assert out["applied"] is False and out["error_cause"] == "malformed_mechanism"
 
@@ -1101,7 +1114,9 @@ def test_an_unreadable_statement_is_refused_not_dropped(tmp_path):
     model would then be fitted and committed."""
     row = _statement_row(type_="NotAStatement")
     out = _call(
-        _statements_server(tmp_path), "make_changes", {"justification": "x", "statements": [row]}
+        _statements_server(tmp_path),
+        "make_changes",
+        {"justification": "x", "statements": [row], "bindings": {"conv": "mass_action"}},
     )
     assert out["applied"] is False and out["error_cause"] == "unreadable_statement"
 
@@ -1111,11 +1126,12 @@ def test_a_statement_missing_a_field_is_refused_by_name(tmp_path):
     row and the field named, before INDRA reads anything."""
     row = {
         "statement": {"type": "Phosphorylation", "enz": {"name": "A"}, "sub": {"name": "B", "mods": [{}]}},
-        "policy": "indra_default",
         "prefix": "p",
     }
     out = _call(
-        _statements_server(tmp_path), "make_changes", {"justification": "x", "statements": [row]}
+        _statements_server(tmp_path),
+        "make_changes",
+        {"justification": "x", "statements": [row], "bindings": {"p": "default"}},
     )
     assert out["applied"] is False and out["error_cause"] == "unreadable_statement"
     assert "`p`: `sub.mods[0]` has no `mod_type`, one of [" in out["error"]
@@ -1127,11 +1143,12 @@ def test_a_type_the_library_lacks_is_a_library_gap(tmp_path):
     `mechanisms`."""
     row = {
         "statement": {"type": "RegulateAmount", "subj": {"name": "A"}, "obj": {"name": "B"}},
-        "policy": "indra_default",
         "prefix": "h",
     }
     out = _call(
-        _statements_server(tmp_path), "make_changes", {"justification": "x", "statements": [row]}
+        _statements_server(tmp_path),
+        "make_changes",
+        {"justification": "x", "statements": [row], "bindings": {"h": {"policy": "indra_default"}}},
     )
     assert out["applied"] is False and out["error_cause"] == "library_gap", out
 
@@ -1148,7 +1165,8 @@ def test_a_crash_building_statements_is_logged_and_raised(tmp_path, monkeypatch)
         _call(
             _statements_server(tmp_path),
             "make_changes",
-            {"justification": "x", "statements": [_statement_row()]},
+            {"justification": "x", "statements": [_statement_row()],
+             "bindings": {"conv": "mass_action"}},
         )
     assert "UNIQUE_CRASH" in (tmp_path / "prov" / "errors.jsonl").read_text()
 
@@ -1158,11 +1176,12 @@ def test_an_activation_without_obj_activity_builds(tmp_path):
     with it, so the model builds and the row renders as it was read."""
     row = {
         "statement": {"type": "Activation", "subj": {"name": "A"}, "obj": {"name": "B"}},
-        "policy": "indra_default",
         "prefix": "act",
     }
     out = _call(
-        _statements_server(tmp_path), "make_changes", {"justification": "x", "statements": [row]}
+        _statements_server(tmp_path),
+        "make_changes",
+        {"justification": "x", "statements": [row], "bindings": {"act": "default"}},
     )
     assert out["applied"] is True, out
     (stored,) = json.loads(
@@ -1176,7 +1195,9 @@ def test_a_repeated_prefix_is_refused_before_assembly(tmp_path):
     tool boundary catches."""
     rows = [_statement_row(), _statement_row()]
     out = _call(
-        _statements_server(tmp_path), "make_changes", {"justification": "x", "statements": rows}
+        _statements_server(tmp_path),
+        "make_changes",
+        {"justification": "x", "statements": rows, "bindings": {"conv": "mass_action"}},
     )
     assert out["applied"] is False and out["error_cause"] == "duplicate_prefix"
 
@@ -1184,9 +1205,11 @@ def test_a_repeated_prefix_is_refused_before_assembly(tmp_path):
 def test_a_misspelt_policy_is_not_counted_as_a_library_gap(tmp_path):
     """Every pair the library lacked was a gap, so a typo (`mass_actoin`) joined the library's
     to-do list. It is malformed, and the refusal names the policy meant."""
-    row = _statement_row(policy="mass_actoin")
     out = _call(
-        _statements_server(tmp_path), "make_changes", {"justification": "x", "statements": [row]}
+        _statements_server(tmp_path),
+        "make_changes",
+        {"justification": "x", "statements": [_statement_row()],
+         "bindings": {"conv": "mass_actoin"}},
     )
     assert out["applied"] is False and out["error_cause"] == "malformed_mechanism"
     assert "(did you mean 'mass_action'?)" in out["error"]
@@ -1197,7 +1220,8 @@ def test_statement_species_take_the_problems_own_initial_conditions(tmp_path):
     started at one unit and the initial amounts the problem ships went unused. The toy ships
     `A_init` and `B_init` fixed; both must survive, and no other IC row may appear."""
     mcp = _statements_server(tmp_path)
-    _call(mcp, "make_changes", {"justification": "A becomes B", "statements": [_statement_row()]})
+    _call(mcp, "make_changes", {"justification": "A becomes B", "statements": [_statement_row()],
+                                "bindings": {"conv": "mass_action"}})
     ids = {r["parameterId"] for r in _call(mcp, "get_parameters", {})["result"]}
     assert {"A_init", "B_init"} <= ids
     assert not {i for i in ids if i.endswith("_0")}
@@ -1213,8 +1237,9 @@ def test_a_binding_to_a_start_or_a_species_is_refused_saying_what_reads_it(tmp_p
         ("Btot", "Btot", "a species", "`Btot` is the amount of the agent the entity map"),
         ("k1*Btot", "Btot", "a species", "by that agent's own name and sites"),
     ):
-        row = {**_statement_row(), "parameters": {"k": binding}}
-        out = _call(mcp, "make_changes", {"justification": "x", "statements": [row]})
+        out = _call(mcp, "make_changes", {
+            "justification": "x", "statements": [_statement_row()],
+            "bindings": {"conv": {"policy": "mass_action", "parameters": {"k": binding}}}})
         assert out["error_cause"] == "malformed_mechanism", out
         assert f"row 'conv' binds 'conv_k' over '{ident}', which names {what}," in out["error"]
         assert instead in out["error"]
@@ -1224,8 +1249,8 @@ def test_a_binding_to_a_shipped_parameter_reads_its_row(tmp_path):
     """How a problem id enters a rate: the row's `k` becomes the toy's own `k1`, which keeps its
     row, and nothing is minted beside it."""
     mcp = _statements_server(tmp_path)
-    row = {**_statement_row(), "parameters": {"k": "k1"}}
-    out = _call(mcp, "make_changes", {"justification": "x", "statements": [row]})
+    out = _call(mcp, "make_changes", {"justification": "x", "statements": [_statement_row()],
+                                      "bindings": {"conv": "mass_action k=k1"}})
     assert out["applied"] is True, out
     rows = {r["parameterId"]: r for r in _call(mcp, "get_parameters", {})["result"]}
     assert "conv_k" not in rows and rows["k1"]["nominalValue"] == 0.5
@@ -1244,8 +1269,9 @@ def test_a_mechanism_the_agent_writes_stays_in_the_run_library(tmp_path):
     """The library is not closed: an entry written in one call serves every later call without
     being resent, and the version that used it records its definition."""
     mcp = _statements_server(tmp_path)
-    row = _statement_row(policy="saturating")
-    args = {"justification": "saturating", "statements": [row], "mechanisms": [_SATURATING]}
+    row = _statement_row()
+    args = {"justification": "saturating", "statements": [row],
+            "bindings": {"conv": "saturating"}, "mechanisms": [_SATURATING]}
     assert _call(mcp, "make_changes", args)["committed"] is True
     (stored,) = json.loads(
         (tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text()
@@ -1254,7 +1280,8 @@ def test_a_mechanism_the_agent_writes_stays_in_the_run_library(tmp_path):
     model = _text(mcp, "get_model", {"format": "statements"})
     assert "like mass_action, rate vmax / (K + source), parameters vmax, K" in model
     row["prefix"] = "conv2"  # a different structure, so the de-dup does not refuse the refit
-    again = _call(mcp, "make_changes", {"justification": "reuse", "statements": [row]})
+    again = _call(mcp, "make_changes", {"justification": "reuse", "statements": [row],
+                                        "bindings": {"conv2": "saturating"}})
     assert again["applied"] is True
 
 
@@ -1262,18 +1289,22 @@ def test_a_written_mechanism_no_row_uses_survives_a_resume(tmp_path):
     """The run keeps a mechanism it wrote whether or not a row uses it. A resume read them back
     off the rows alone, so one no row used was in the library live and gone after a resume."""
     mcp = _statements_server(tmp_path)
-    args = {"justification": "x", "statements": [_statement_row()], "mechanisms": [_SATURATING]}
+    args = {"justification": "x", "statements": [_statement_row()],
+            "bindings": {"conv": "mass_action"}, "mechanisms": [_SATURATING]}
     assert _call(mcp, "make_changes", args)["committed"] is True
-    row = {**_statement_row(policy="saturating"), "prefix": "conv2"}
+    row = {**_statement_row(), "prefix": "conv2"}
     resumed = _statements_server(tmp_path)
-    out = _call(resumed, "make_changes", {"justification": "y", "statements": [row]})
+    out = _call(resumed, "make_changes", {"justification": "y", "statements": [row],
+                                          "bindings": {"conv2": "saturating"}})
     assert out["applied"] is True, out.get("error")
 
 
 def test_a_kind_made_from_nothing_is_said_to_start_empty(tmp_path):
     """A kind made by zero-order synthesis started at 0 and the result said nothing."""
-    rows = [_statement_row(), "syn: B is produced | default"]
-    out = _call(_statements_server(tmp_path), "make_changes", {"justification": "x", "statements": rows})
+    rows = [_statement_row(), "syn: B is produced"]
+    out = _call(_statements_server(tmp_path), "make_changes", {
+        "justification": "x", "statements": rows,
+        "bindings": {"conv": "mass_action", "syn": "default"}})
     assert out["applied"] is True, out
     assert any("from nothing" in m["message"] and ": B." in m["message"] for m in out["messages"])
 
@@ -1282,15 +1313,15 @@ def test_a_written_mechanism_is_not_redefined_in_place(tmp_path):
     """Earlier versions were built with the first definition; changing it under the same name
     would change what their records mean."""
     mcp = _statements_server(tmp_path)
-    row = _statement_row(policy="saturating")
+    rows = {"statements": [_statement_row()], "bindings": {"conv": "saturating"}}
     _call(
         mcp,
         "make_changes",
-        {"justification": "x", "statements": [row], "mechanisms": [_SATURATING]},
+        {"justification": "x", **rows, "mechanisms": [_SATURATING]},
     )
     changed = {**_SATURATING, "rate": "vmax"}
     out = _call(
-        mcp, "make_changes", {"justification": "y", "statements": [row], "mechanisms": [changed]}
+        mcp, "make_changes", {"justification": "y", **rows, "mechanisms": [changed]}
     )
     assert out["applied"] is False and out["error_cause"] == "mechanism_redefined"
 
@@ -1300,8 +1331,9 @@ def test_a_version_without_new_rows_keeps_its_parents(tmp_path):
     mechanisms they name. It stored none, so restoring it restored none: the model no longer read
     as built from statements, and a row naming the written mechanism was refused."""
     mcp = _statements_server(tmp_path)
-    row = _statement_row(policy="saturating")
-    args = {"justification": "saturating", "statements": [row], "mechanisms": [_SATURATING]}
+    row = _statement_row()
+    args = {"justification": "saturating", "statements": [row],
+            "bindings": {"conv": "saturating"}, "mechanisms": [_SATURATING]}
     assert _call(mcp, "make_changes", args)["committed"] is True
     widen = [{"parameter_id": "conv_vmax", "lower_bound": 1e-3, "upper_bound": 100.0}]
     out = _call(mcp, "make_changes", {"justification": "widen", "parameters": widen})
@@ -1314,7 +1346,8 @@ def test_a_version_without_new_rows_keeps_its_parents(tmp_path):
     model = _call(resumed, "get_model", {"format": "statements"})["result"]
     assert "mechanism saturating" in model
     row["prefix"] = "conv2"
-    assert _call(resumed, "make_changes", {"justification": "reuse", "statements": [row]})[
+    assert _call(resumed, "make_changes", {"justification": "reuse", "statements": [row],
+                                           "bindings": {"conv2": "saturating"}})[
         "applied"
     ] is True
     # Model text without rows changes the model under them: that version records none.
@@ -1325,12 +1358,13 @@ def test_a_version_without_new_rows_keeps_its_parents(tmp_path):
     # one, and it may not be redefined.
     again = _statements_server(tmp_path)
     row["prefix"] = "conv3"
-    assert _call(again, "make_changes", {"justification": "back", "statements": [row]})[
+    rows = {"statements": [row], "bindings": {"conv3": "saturating"}}
+    assert _call(again, "make_changes", {"justification": "back", **rows})[
         "applied"
     ] is True
     changed = {**_SATURATING, "rate": "vmax"}
     out = _call(
-        again, "make_changes", {"justification": "y", "statements": [row], "mechanisms": [changed]}
+        again, "make_changes", {"justification": "y", **rows, "mechanisms": [changed]}
     )
     assert out["error_cause"] == "mechanism_redefined"
 
@@ -1346,6 +1380,7 @@ def test_a_declared_unit_start_is_fixed_not_estimated(tmp_path):
         {
             "justification": "A becomes B",
             "statements": [_statement_row()],
+            "bindings": {"conv": "mass_action"},
             "starts": [{"agent": {"name": "A"}, "amount": 1, "name": "A_start"}],
         },
     )
@@ -1364,7 +1399,8 @@ def test_a_redeclared_start_moves_its_row(tmp_path):
     rows = []
     for amount in (1, 5, 1):
         start = {"agent": {"name": "A"}, "amount": amount, "name": "A_start"}
-        args = {"justification": "A starts", "statements": [_statement_row()], "starts": [start]}
+        args = {"justification": "A starts", "statements": [_statement_row()],
+                "bindings": {"conv": "mass_action"}, "starts": [start]}
         assert _call(mcp, "make_changes", args)["applied"] is True
         params = {r["parameterId"]: r for r in _call(mcp, "get_parameters", {})["result"]}
         row = params["A_start_init"]
@@ -1387,7 +1423,10 @@ def test_a_held_input_is_reported_at_its_condition_value(tmp_path, add_condition
     feed = {**_statement_row(), "prefix": "feed"}
     feed["statement"] = {**feed["statement"], "source": {"name": "E"}}
     out = _call(
-        mcp, "make_changes", {"justification": "E feeds B", "statements": [_statement_row(), feed]}
+        mcp,
+        "make_changes",
+        {"justification": "E feeds B", "statements": [_statement_row(), feed],
+         "bindings": {"conv": "mass_action", "feed": "mass_action"}},
     )
     assert out["applied"] is True, out
     ics = {r["species"]: r for r in _call(mcp, "get_model_structure", {})["initial_conditions"]}
@@ -1433,9 +1472,10 @@ def _hop(mcp, route, rate, parameters=("k",), binding=None):
         definition["scheme"] = f"source() >> target() @ {rate}"
     else:
         definition |= {"based_on": "mass_action", "rate": rate}
-    row = {**_statement_row(policy="hop"), "parameters": binding}
-    return _call(mcp, "make_changes", {"justification": "A becomes B", "statements": [row],
-                                       "mechanisms": [definition]})
+    bound = {"policy": "hop"} | ({"parameters": binding} if binding else {})
+    return _call(mcp, "make_changes", {"justification": "A becomes B",
+                                       "statements": [_statement_row()],
+                                       "bindings": {"conv": bound}, "mechanisms": [definition]})
 
 
 _ROUTES = pytest.mark.parametrize("route", ["scheme", "rate"])
@@ -1483,12 +1523,14 @@ def test_an_unknown_rate_name_is_refused_with_what_the_rate_may_name(tmp_path, r
 
 
 def test_a_row_may_be_written_in_the_notation(tmp_path):
-    """The same model, sent as one line instead of JSON, and read back the same way."""
+    """The same model, sent as one line instead of JSON, its binding apart, and read back the
+    same way."""
     mcp = _statements_server(tmp_path)
     out = _call(
         mcp,
         "make_changes",
-        {"justification": "A becomes B", "statements": ["conv: A becomes B | mass_action"]},
+        {"justification": "A becomes B", "statements": ["conv: A becomes B"],
+         "bindings": {"conv": "mass_action"}},
     )
     assert out["applied"] is True
     (stored,) = json.loads(
@@ -1496,12 +1538,14 @@ def test_a_row_may_be_written_in_the_notation(tmp_path):
     )["rows"]
     assert stored["statement"]["type"] == "PopulationTransition"
     text = _call(mcp, "get_model", {"format": "statements"})["result"]
-    assert "conv: A becomes B | mass_action" in text
+    assert "conv: A becomes B\nbinding conv: mass_action" in text
 
 
 # -- `statement_edits`: changing a statements model by its rows ----------------------
-_CONV = "conv: A becomes B | mass_action"
-_BACK = "back: B becomes A | mass_action"
+_CONV = "conv: A becomes B"
+_BACK = "back: B becomes A"
+#: Both rows' bindings: each on mass action.
+_MASS_ACTION = {"conv": "mass_action", "back": "mass_action"}
 
 
 def _stored_rows(tmp_path, version):
@@ -1509,17 +1553,161 @@ def _stored_rows(tmp_path, version):
     return json.loads(path.read_text())
 
 
-def _built(tmp_path, rows):
+def _built(tmp_path, rows, bindings):
     mcp = _statements_server(tmp_path)
-    out = _call(mcp, "make_changes", {"justification": "build", "statements": rows})
+    out = _call(mcp, "make_changes", {"justification": "build", "statements": rows,
+                                      "bindings": bindings})
     assert out["applied"] is True
     return mcp
+
+
+def test_a_row_and_its_binding_are_given_apart_and_each_needs_the_other(tmp_path):
+    """The statement is the claim and its binding the maths: a row with no binding, a binding
+    with no row, a row still written with its binding inline (`| mass_action`) and a JSON row
+    carrying `policy` are each refused by name, the last two saying how they split."""
+    mcp = _statements_server(tmp_path)
+
+    def make(**args):
+        return _call(mcp, "make_changes", {"justification": "x", **args})
+
+    out = make(statements=[_CONV, _BACK], bindings={"conv": "mass_action"})
+    assert out["error_cause"] == "unbound_row" and "rows ['back'] have no binding" in out["error"]
+    out = make(statements=[_CONV], bindings={"conv": "mass_action", "gone": "mass_action"})
+    assert out["error_cause"] == "unbound_binding"
+    assert "`bindings` ['gone'] name no row; the rows are ['conv']" in out["error"]
+    out = make(statements=["conv: A becomes B | mass_action k=k1"])
+    assert out["error_cause"] == "inline_binding"
+    assert ('`conv: A becomes B` with `bindings={"conv": "mass_action k=k1"}`' in out["error"])
+    out = make(statements=[{**_statement_row(), "policy": "mass_action", "parameters": {"k": "k1"}}])
+    assert out["error_cause"] == "inline_binding"
+    assert "carries ['parameters', 'policy']" in out["error"]
+    assert '`conv: A becomes B` with `bindings={"conv": "mass_action k=k1"}`' in out["error"]
+    out = make(statements=[_CONV], bindings={"conv": "conv: mass_action"})
+    assert out["error_cause"] == "unreadable_binding" and "`bindings.conv`" in out["error"]
+    assert not (tmp_path / "prov" / "versions" / "v0").exists()
+
+
+def test_a_binding_in_json_names_its_policy_as_its_text_does(tmp_path):
+    """`{"policy": "default"}` was taken as written, a name no entry has, while the text `default`
+    read as INDRA's `indra_default`, the name the field's own description offers."""
+    mcp = _statements_server(tmp_path)
+    out = _call(mcp, "make_changes", {"justification": "A phosphorylates B",
+                                      "statements": ["p: A phosphorylates B"],
+                                      "bindings": {"p": {"policy": "default"}}})
+    assert out["applied"] is True, out.get("error")
+    assert _stored_rows(tmp_path, 0)["bindings"] == {"p": {"policy": "indra_default"}}
+
+
+def test_an_object_sent_as_a_json_string_is_read_as_the_object(tmp_path):
+    """A client that writes an object argument as a JSON string (`amounts` as '{"a": "A"}') was
+    refused before the tool ran, and `bindings` travels with every `statements` call: the string
+    is read as the object it holds, as a list's is."""
+    from petab_mcp.server import _unwrap_objectish
+
+    mcp = _statements_server(tmp_path)
+    out = _call(mcp, "make_changes", {"justification": "A becomes B", "statements": [_CONV],
+                                      "bindings": '{"conv": "mass_action"}'})
+    assert out["applied"] is True, out.get("error")
+    assert _unwrap_objectish(' {"a": "A{pS10}"} ') == {"a": "A{pS10}"}
+    assert _unwrap_objectish("{not json}") == "{not json}"
+    assert _unwrap_objectish("mass_action") == "mass_action"
+
+
+def test_a_malformed_row_in_an_edit_keeps_the_notations_hint(tmp_path):
+    """Read early by its edit, a row that does not read lost the hint the build adds, which spells
+    the notation out."""
+    mcp = _built(tmp_path, [_CONV], {"conv": "mass_action"})
+    out = _call(mcp, "make_changes", {"justification": "x", "statement_edits": [
+        {"op": "add_row", "row": "back: B frobnicates A", "binding": "mass_action"}]})
+    assert out["error_cause"] == "unreadable_statement"
+    assert "unknown verb 'frobnicates'" in out["error"] and "A row is `prefix: <statement>`" in out["error"]
+
+
+def test_bindings_ride_with_statements(tmp_path):
+    """`bindings` give every row's binding with `statements`; under `statement_edits` a binding
+    changes by its own edit."""
+    (tmp_path / "alone").mkdir()
+    widen = [{"parameter_id": "k1", "lower_bound": 0.01, "upper_bound": 10.0}]
+    out = _call(_statements_server(tmp_path / "alone"), "make_changes",
+                {"justification": "x", "bindings": {"conv": "mass_action"}, "parameters": widen})
+    assert out["applied"] is False and "`bindings`, `mechanisms`" in out["error"]
+    mcp = _built(tmp_path, [_CONV], {"conv": "mass_action"})
+    out = _call(mcp, "make_changes", {
+        "justification": "x", "bindings": {"conv": "mass_action k=k1"},
+        "statement_edits": [{"op": "replace_row", "row": _CONV}]})
+    assert out["applied"] is False and "`rebind`" in out["error"]
+
+
+@pytest.mark.parametrize(
+    "edit, said",
+    [
+        ({"op": "add_row", "row": _BACK}, "a new row needs its `binding`"),
+        ({"op": "add_row", "row": "back: B becomes A | mass_action"},
+         '`{"op": "add_row", "row": "back: B becomes A", "binding": "mass_action"}`'),
+        ({"op": "replace_row", "row": "conv: A becomes B | mass_action k=k1"},
+         '`{"op": "replace_row", "row": "conv: A becomes B", "binding": "mass_action k=k1"}`'),
+        ({"op": "replace_row", "row": {**_statement_row(), "policy": "mass_action"}},
+         '`{"op": "replace_row", "row": "conv: A becomes B", "binding": "mass_action"}`'),
+        ({"op": "rebind", "prefix": "gone", "binding": "mass_action"}, "no row `gone`"),
+        ({"op": "rebind", "prefix": "conv"}, "`binding` is the row's policy"),
+        ({"op": "add_row", "row": _CONV, "binding": "mass_action"}, "`rebind` its binding"),
+    ],
+)
+def test_an_edit_missing_or_inlining_a_binding_is_refused_by_its_edit(tmp_path, edit, said):
+    """A row given with its binding inside an edit was told to use `bindings`, which is refused
+    beside `statement_edits`, or `add_row`, which is refused for a row that exists: the refusal
+    names the edit itself, with its own `binding`. An edit that leaves a row without a binding, or
+    names a row that is not there, is refused by its index."""
+    mcp = _built(tmp_path, [_CONV], {"conv": "mass_action"})
+    out = _call(mcp, "make_changes", {"justification": "x", "statement_edits": [edit]})
+    assert out["applied"] is False and "`statement_edits[0]`" in out["error"]
+    assert said in out["error"], out["error"]
+
+
+def test_no_agent_facing_text_writes_a_row_with_its_binding(tmp_path):
+    """One notation: the route's description, its schema, `list_mechanisms` and the skills show a
+    row as its statement alone, never `prefix: <statement> | <policy>`, which is refused."""
+    import re
+
+    inline = re.compile(r"`[A-Za-z_]\w*: [^`]*? \| [a-z_]+")
+    mcp = _statements_server(tmp_path)
+    text = _agent_facing_text(mcp) + _text(mcp, "list_mechanisms", {})
+    assert not inline.findall(text), inline.findall(text)
+
+
+def test_a_version_stored_with_its_bindings_on_its_rows_still_loads(tmp_path):
+    """A record stored before rows and bindings were given apart kept each row's `policy` and
+    `parameters` on the row. A resume, a `base_version` fork and `get_model` read it as the same
+    rows and bindings."""
+    mcp = _built(tmp_path, [_CONV, _BACK], {"conv": "mass_action", "back": "mass_action k=conv_k"})
+    path = tmp_path / "prov" / "versions" / "v0" / "statements.json"
+    record = json.loads(path.read_text())
+    bindings = record.pop("bindings")
+    record["rows"] = [row | bindings[row["prefix"]] for row in record["rows"]]
+    path.write_text(json.dumps(record))
+    shown = "conv: A becomes B\nback: B becomes A\nbinding conv: mass_action\nbinding back: mass_action k=conv_k"
+    assert shown in _text(mcp, "get_model", {"format": "statements", "version": 0})
+    resumed = _statements_server(tmp_path)
+    assert shown in _text(resumed, "get_model", {"format": "statements"})
+    out = _call(resumed, "make_changes", {
+        "justification": "the way back on a constant of its own",
+        "statement_edits": [{"op": "rebind", "prefix": "back", "binding": "mass_action"}]})
+    assert out["applied"] is True, out.get("error")
+    assert _stored_rows(tmp_path, 1)["bindings"] == {
+        "conv": {"policy": "mass_action"}, "back": {"policy": "mass_action"}}
+    out = _call(resumed, "make_changes", {
+        "justification": "from v0, with a third row", "base_version": 0,
+        "statement_edits": [{"op": "add_row", "row": "back2: B becomes A", "binding": "mass_action"}]})
+    assert out["applied"] is True, out.get("error")
+    assert _stored_rows(tmp_path, 2)["bindings"] == {
+        "conv": {"policy": "mass_action"}, "back": {"policy": "mass_action", "parameters": {"k": "conv_k"}},
+        "back2": {"policy": "mass_action"}}
 
 
 def test_statement_edits_change_the_rows_they_name_and_keep_the_rest(tmp_path):
     """An edit names a row by its prefix; the rows it does not name are rebuilt as they were,
     so a revision no longer means sending the whole model again."""
-    mcp = _built(tmp_path, [_CONV, _BACK])
+    mcp = _built(tmp_path, [_CONV, _BACK], _MASS_ACTION)
     out = _call(
         mcp,
         "make_changes",
@@ -1527,7 +1715,7 @@ def test_statement_edits_change_the_rows_they_name_and_keep_the_rest(tmp_path):
             "justification": "drop the way back, then give it its own rate again",
             "statement_edits": [
                 {"op": "remove_row", "prefix": "back"},
-                {"op": "add_row", "row": "back2: B becomes A | mass_action"},
+                {"op": "add_row", "row": "back2: B becomes A", "binding": "mass_action"},
                 {"op": "set_start", "start": {"agent": "A", "amount": 1, "name": "A_start"}},
             ],
         },
@@ -1540,37 +1728,69 @@ def test_statement_edits_change_the_rows_they_name_and_keep_the_rest(tmp_path):
     ]
     record = _stored_rows(tmp_path, 1)
     assert [r["prefix"] for r in record["rows"]] == ["conv", "back2"]
+    assert record["bindings"] == {"conv": {"policy": "mass_action"}, "back2": {"policy": "mass_action"}}
     assert [s["name"] for s in record["starts"]] == ["A_start"]
 
 
-def test_replace_row_rewrites_the_row_in_place(tmp_path):
-    mcp = _built(tmp_path, [_CONV, _BACK])
+def test_rebind_changes_a_rows_binding_and_leaves_its_statement(tmp_path):
+    """The maths of a row changes without the claim being stated again."""
+    mcp = _built(tmp_path, [_CONV, _BACK], _MASS_ACTION)
     out = _call(
         mcp,
         "make_changes",
         {
             "justification": "the way back shares the forward rate",
+            "statement_edits": [{"op": "rebind", "prefix": "back", "binding": "mass_action k=conv_k"}],
+        },
+    )
+    assert out["applied"] is True, out.get("error")
+    assert out["statement_edits_applied"] == ["rebind back"]
+    record = _stored_rows(tmp_path, 1)
+    assert [r["prefix"] for r in record["rows"]] == ["conv", "back"]
+    assert record["rows"][1]["statement"] == _stored_rows(tmp_path, 0)["rows"][1]["statement"]
+    assert record["bindings"]["back"] == {"policy": "mass_action", "parameters": {"k": "conv_k"}}
+
+
+def test_replace_row_rewrites_the_statement_in_place_keeping_its_binding(tmp_path):
+    """The claim changes and the maths stays, unless the edit gives a binding too."""
+    mcp = _built(tmp_path, [_CONV, _BACK], {"conv": "mass_action", "back": "mass_action k=conv_k"})
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "the way back, with its source",
+            "statement_edits": [{"op": "replace_row", "row": "back: B becomes A # [curated] Doe"}],
+        },
+    )
+    assert out["applied"] is True, out.get("error")
+    record = _stored_rows(tmp_path, 1)
+    assert [r["prefix"] for r in record["rows"]] == ["conv", "back"]
+    assert record["rows"][1]["statement"]["evidence"] == [{"source_api": "curated", "text": "Doe"}]
+    assert record["bindings"]["back"] == {"policy": "mass_action", "parameters": {"k": "conv_k"}}
+    out = _call(
+        mcp,
+        "make_changes",
+        {
+            "justification": "the way back on its own constant again",
             "statement_edits": [
-                {"op": "replace_row", "row": "back: B becomes A | mass_action k=conv_k"}
+                {"op": "replace_row", "row": "back: B becomes A", "binding": "mass_action"}
             ],
         },
     )
-    assert out["applied"] is True
-    rows = _stored_rows(tmp_path, 1)["rows"]
-    assert [r["prefix"] for r in rows] == ["conv", "back"]
-    assert rows[1]["parameters"] == {"k": "conv_k"}
+    assert out["applied"] is True, out.get("error")
+    assert _stored_rows(tmp_path, 2)["bindings"]["back"] == {"policy": "mass_action"}
 
 
 def test_an_edit_that_names_nothing_applies_nothing(tmp_path):
-    mcp = _built(tmp_path, [_CONV])
+    mcp = _built(tmp_path, [_CONV], {"conv": "mass_action"})
     out = _call(
         mcp,
         "make_changes",
         {
             "justification": "edit a row that is not there",
             "statement_edits": [
-                {"op": "add_row", "row": _BACK},
-                {"op": "replace_row", "row": "gone: B becomes A | mass_action"},
+                {"op": "add_row", "row": _BACK, "binding": "mass_action"},
+                {"op": "replace_row", "row": "gone: B becomes A"},
             ],
         },
     )
@@ -1585,20 +1805,20 @@ def test_statement_edits_need_a_model_built_from_statements(tmp_path):
     out = _call(
         mcp,
         "make_changes",
-        {"justification": "edit nothing", "statement_edits": [{"op": "add_row", "row": _CONV}]},
+        {"justification": "edit nothing", "statement_edits": [{"op": "add_row", "row": _CONV, "binding": "mass_action"}]},
     )
     assert out["applied"] is False
     assert "give the whole model as `statements`" in out["error"]
 
 
 def test_whole_sets_ride_with_statements_not_with_edits(tmp_path):
-    mcp = _built(tmp_path, [_CONV])
+    mcp = _built(tmp_path, [_CONV], {"conv": "mass_action"})
     out = _call(
         mcp,
         "make_changes",
         {
             "justification": "mixed",
-            "statement_edits": [{"op": "add_row", "row": _BACK}],
+            "statement_edits": [{"op": "add_row", "row": _BACK, "binding": "mass_action"}],
             "starts": [{"agent": "A", "amount": 1}],
         },
     )
@@ -1608,11 +1828,11 @@ def test_whole_sets_ride_with_statements_not_with_edits(tmp_path):
 def test_base_version_applies_edits_to_that_versions_rows(tmp_path):
     """The rollback-and-edit path the `model_edits` route has, on the statements route, where it
     was refused before."""
-    mcp = _built(tmp_path, [_CONV])
+    mcp = _built(tmp_path, [_CONV], {"conv": "mass_action"})
     _call(
         mcp,
         "make_changes",
-        {"justification": "v1", "statement_edits": [{"op": "add_row", "row": _BACK}]},
+        {"justification": "v1", "statement_edits": [{"op": "add_row", "row": _BACK, "binding": "mass_action"}]},
     )
     out = _call(
         mcp,
@@ -1620,7 +1840,9 @@ def test_base_version_applies_edits_to_that_versions_rows(tmp_path):
         {
             "justification": "from v0 instead",
             "base_version": 0,
-            "statement_edits": [{"op": "add_row", "row": "back2: B becomes A | mass_action"}],
+            "statement_edits": [
+                {"op": "add_row", "row": "back2: B becomes A", "binding": "mass_action"}
+            ],
         },
     )
     assert out["applied"] is True
@@ -1630,10 +1852,10 @@ def test_base_version_applies_edits_to_that_versions_rows(tmp_path):
 def test_a_restore_brings_back_that_versions_rows(tmp_path):
     """After `restore_version(v)`, the rows the session shows and edits are v's, not those of
     the HEAD it left; a version built from model text holds none."""
-    mcp = _built(tmp_path, [_CONV])
+    mcp = _built(tmp_path, [_CONV], {"conv": "mass_action"})
 
     def add_row(row):
-        edits = [{"op": "add_row", "row": row}]
+        edits = [{"op": "add_row", "row": row, "binding": "mass_action"}]
         return _call(mcp, "make_changes", {"justification": row, "statement_edits": edits})
 
     assert add_row(_BACK)["applied"] is True
@@ -1642,7 +1864,7 @@ def test_a_restore_brings_back_that_versions_rows(tmp_path):
     _call(mcp, "restore_version", {"version": 0})
     text = _text(mcp, "get_model", {"format": "statements"})
     assert "conv: A becomes B" in text and "back:" not in text
-    assert add_row("back2: B becomes A | mass_action")["applied"] is True
+    assert add_row("back2: B becomes A")["applied"] is True
     assert [r["prefix"] for r in _stored_rows(tmp_path, 3)["rows"]] == ["conv", "back2"]
     _call(mcp, "restore_version", {"version": 2})
     out = add_row(_BACK)
@@ -1650,11 +1872,12 @@ def test_a_restore_brings_back_that_versions_rows(tmp_path):
 
 
 def test_base_version_takes_whole_statements_too(tmp_path):
-    mcp = _built(tmp_path, [_CONV])
+    mcp = _built(tmp_path, [_CONV], {"conv": "mass_action"})
     out = _call(
         mcp,
         "make_changes",
-        {"justification": "afresh from v0", "base_version": 0, "statements": [_CONV, _BACK]},
+        {"justification": "afresh from v0", "base_version": 0, "statements": [_CONV, _BACK],
+         "bindings": _MASS_ACTION},
     )
     assert out["applied"] is True
 
@@ -1671,16 +1894,16 @@ def _two_rates(tmp_path):
         auto_fit=True,
         entity_map=str(entity_map),
     )
-    row = _statement_row(policy="saturating")
+    row = _statement_row()
     steeper = {**_SATURATING, "policy": "steeper", "rate": "vmax / (K + source * source)"}
-    v0 = {"statements": [row], "mechanisms": [_SATURATING]}
+    v0 = {"statements": [row], "bindings": {"conv": "saturating"}, "mechanisms": [_SATURATING]}
     _call(mcp, "make_changes", {"justification": "v0", "n_starts": 2, **v0})
     v1 = _call(
         mcp,
         "make_changes",
         {
             "justification": "v1",
-            "statement_edits": [{"op": "replace_row", "row": {**row, "policy": "steeper"}}],
+            "statement_edits": [{"op": "rebind", "prefix": "conv", "binding": "steeper"}],
             "mechanisms": [steeper],
             "n_starts": 2,
         },
@@ -1701,7 +1924,7 @@ def test_a_base_version_fork_from_an_earlier_version_is_fitted(tmp_path):
         {
             "justification": "from v0, another rate",
             "base_version": 0,
-            "statement_edits": [{"op": "replace_row", "row": {**row, "policy": "other"}}],
+            "statement_edits": [{"op": "rebind", "prefix": "conv", "binding": "other"}],
             "mechanisms": [other],
             "n_starts": 2,
         },
@@ -1716,7 +1939,8 @@ def test_a_base_version_fork_that_changes_nothing_is_refused_as_that_version(tmp
     out = _call(
         mcp,
         "make_changes",
-        {"justification": "v0 again", "base_version": 0, "statements": [row], "n_starts": 2},
+        {"justification": "v0 again", "base_version": 0, "statements": [row],
+         "bindings": {"conv": "saturating"}, "n_starts": 2},
     )
     assert out["applied"] is False and "identical to v0" in out["error"], out["message"]
     assert out["version"] == 1
@@ -1725,7 +1949,7 @@ def test_a_base_version_fork_that_changes_nothing_is_refused_as_that_version(tmp
 def test_on_the_statements_route_the_refusals_name_its_own_routes(tmp_path):
     """Told "nothing to do — give `model_edits` ... `antimony`", an agent whose model was built
     from statements wrote Antimony."""
-    mcp = _built(tmp_path, [_CONV])
+    mcp = _built(tmp_path, [_CONV], {"conv": "mass_action"})
     out = _call(mcp, "make_changes", {"justification": "nothing"})
     assert "`statements`" in out["error"] and "`statement_edits`" in out["error"]
     assert "`antimony`" not in out["error"]
@@ -1735,7 +1959,8 @@ def test_on_the_statements_route_the_refusals_name_its_own_routes(tmp_path):
         {
             "justification": "both",
             "statements": [_CONV],
-            "statement_edits": [{"op": "add_row", "row": _BACK}],
+            "bindings": {"conv": "mass_action"},
+            "statement_edits": [{"op": "add_row", "row": _BACK, "binding": "mass_action"}],
         },
     )
     assert "`statement_edits` for a change to the current rows" in out["error"]
@@ -1804,6 +2029,7 @@ def test_a_readout_may_read_an_amount_in_place(tmp_path):
         {
             "justification": "A becomes B, measured as B",
             "statements": [_CONV],
+            "bindings": {"conv": "mass_action"},
             "readouts": {"readout_B": "scale_B*amount(B)"},
         },
     )
@@ -1839,7 +2065,8 @@ def test_an_amount_read_in_place_keeps_its_name_across_edits(tmp_path):
     out = _call(
         mcp,
         "make_changes",
-        {"justification": "v0", "statements": [_CONV], "readouts": {"readout_B": "scale_B*amount(B)"}},
+        {"justification": "v0", "statements": [_CONV], "bindings": {"conv": "mass_action"},
+         "readouts": {"readout_B": "scale_B*amount(B)"}},
     )
     assert out["applied"] is True
     _set_readout(mcp, "readout_B", "scale_B*amount(B) + offset")
@@ -1853,7 +2080,8 @@ def test_an_amount_no_readout_reads_is_gone(tmp_path):
     out = _call(
         mcp,
         "make_changes",
-        {"justification": "v0", "statements": [_CONV], "readouts": {"readout_B": "scale_B*amount(B)"}},
+        {"justification": "v0", "statements": [_CONV], "bindings": {"conv": "mass_action"},
+         "readouts": {"readout_B": "scale_B*amount(B)"}},
     )
     assert out["applied"] is True
     _set_readout(mcp, "readout_B", "scale_B*amount(A)")
@@ -1870,6 +2098,7 @@ def test_a_readout_left_alone_still_reads_the_species(tmp_path):
         {
             "justification": "v0",
             "statements": [_CONV],
+            "bindings": {"conv": "mass_action"},
             "readouts": {"readout_B": "scale_B*amount(B)", "readout_C": "amount(B)"},
         },
     )
@@ -1888,6 +2117,7 @@ def test_a_readout_that_reads_no_amount_is_refused(tmp_path):
         {
             "justification": "a constant readout",
             "statements": [_CONV],
+            "bindings": {"conv": "mass_action"},
             "readouts": {"readout_B": "k_level/(k_level + 1)"},
         },
     )
@@ -1902,13 +2132,15 @@ def test_a_readout_that_is_a_number_is_not_refused(tmp_path):
     out = _call(
         mcp,
         "make_changes",
-        {"justification": "a constant readout", "statements": [_CONV], "readouts": {"readout_B": "1"}},
+        {"justification": "a constant readout", "statements": [_CONV], "bindings": {"conv": "mass_action"},
+         "readouts": {"readout_B": "1"}},
     )
     assert out["applied"] is True, out.get("error")
     out = _call(
         mcp,
         "make_changes",
-        {"justification": "a clock", "statements": [_CONV], "readouts": {"readout_B": "time"}},
+        {"justification": "a clock", "statements": [_CONV], "bindings": {"conv": "mass_action"},
+         "readouts": {"readout_B": "time"}},
     )
     assert out["applied"] is False and "reads no amount" in out["error"]
 
@@ -1921,6 +2153,7 @@ def test_a_readout_no_observable_reads_is_refused(tmp_path):
         {
             "justification": "an extra readout",
             "statements": [_CONV],
+            "bindings": {"conv": "mass_action"},
             "readouts": {"readout_B": "amount(B)", "readout_drugs": "amount(A)"},
         },
     )
@@ -1932,14 +2165,14 @@ def test_a_readout_no_observable_reads_is_refused(tmp_path):
 def test_a_binding_may_scale_the_parameter_it_replaces(tmp_path):
     """`k=conv_k*slow`, a binding that scales the constant it replaces, recursed without bottom:
     the binding's expression was redirected into itself."""
-    mcp = _built(tmp_path, [_CONV])
+    mcp = _built(tmp_path, [_CONV], {"conv": "mass_action"})
     out = _call(
         mcp,
         "make_changes",
         {
             "justification": "the conversion slowed by a factor",
             "statement_edits": [
-                {"op": "replace_row", "row": "conv: A becomes B | mass_action k=conv_k*slow"}
+                {"op": "rebind", "prefix": "conv", "binding": "mass_action k=conv_k*slow"}
             ],
         },
     )
@@ -1956,7 +2189,8 @@ def test_a_claim_its_scheme_reverses_is_recorded_and_reported(tmp_path):
         "make_changes",
         {
             "justification": "C slows A becoming B",
-            "statements": ["conv: A becomes B, inhibited by C | inhibited"],
+            "statements": ["conv: A becomes B, inhibited by C"],
+            "bindings": {"conv": "inhibited"},
             "mechanisms": [{"statement_type": "PopulationTransition", "policy": "inhibited",
                             "scheme": "source() >> target() @ k*amount(inhibited_by)",
                             "parameters": ["k"]}],
@@ -1972,8 +2206,8 @@ def test_a_claim_its_scheme_reverses_is_recorded_and_reported(tmp_path):
 
 
 def test_a_regulator_enters_through_the_statement(tmp_path):
-    """PEtab-MCP#122: `A becomes B | inhibited inh:=C` read C in its rate while its statement, and
-    its English, named only A and B. The statement now states C, and the rate reads it."""
+    """PEtab-MCP#122: `A becomes B` bound `inhibited inh:=C` read C in its rate while its statement,
+    and its English, named only A and B. The statement now states C, and the rate reads it."""
     inhibited = {
         "statement_type": "PopulationTransition",
         "policy": "inhibited",
@@ -1982,26 +2216,26 @@ def test_a_regulator_enters_through_the_statement(tmp_path):
         "parameters": ["k", "Ki"],
     }
 
-    def change(row, name):
+    def change(row, binding, name):
         (tmp_path / name).mkdir()
         mcp = _statements_server(tmp_path / name)
         out = _call(
             mcp,
             "make_changes",
             {"justification": "C slows A becoming B", "statements": [row],
-             "mechanisms": [inhibited]},
+             "bindings": {"conv": binding}, "mechanisms": [inhibited]},
         )
         return mcp, out
 
-    _, unstated = change("conv: A becomes B | inhibited", "unstated")
+    _, unstated = change("conv: A becomes B", "inhibited", "unstated")
     assert unstated["applied"] is False
     assert "reads ['inhibited_by'], which its statement does not state" in unstated["error"]
-    _, modifier = change("conv: A becomes B | inhibited inh:=C", "modifier")
+    _, modifier = change("conv: A becomes B", "inhibited inh:=C", "modifier")
     assert "`inh:=` names no regulator" in modifier["error"]
-    mcp, stated = change("conv: A becomes B, inhibited by C | inhibited", "stated")
+    mcp, stated = change("conv: A becomes B, inhibited by C", "inhibited", "stated")
     assert stated["applied"] is True, stated.get("error")
-    rows = _call(mcp, "get_model", {"format": "statements"})
-    assert "conv: A becomes B, inhibited by C | inhibited" in str(rows)
+    rows = _call(mcp, "get_model", {"format": "statements"})["result"]
+    assert "conv: A becomes B, inhibited by C\nbinding conv: inhibited" in rows
 
 
 def test_a_modulator_takes_the_direction_its_rate_proves(tmp_path):
@@ -2013,14 +2247,14 @@ def test_a_modulator_takes_the_direction_its_rate_proves(tmp_path):
         mcp,
         "make_changes",
         {"justification": "C changes A becoming B", "statements": [
-            "conv: A becomes B, modulated by C | slowed"],
+            "conv: A becomes B, modulated by C"], "bindings": {"conv": "slowed"},
          "mechanisms": [{"statement_type": "PopulationTransition", "policy": "slowed",
                          "based_on": "mass_action", "rate": "k*Ki/(Ki + modulated_by)",
                          "parameters": ["k", "Ki"]}]},
     )
     assert out["applied"] is True, out.get("error")
-    rows = str(_call(mcp, "get_model", {"format": "statements"}))
-    assert "conv: A becomes B, modulated by C (inhibits, from its rate) | slowed" in rows
+    rows = _call(mcp, "get_model", {"format": "statements"})["result"]
+    assert "conv: A becomes B, modulated by C (inhibits, from its rate)\nbinding conv: slowed" in rows
     (row,) = json.loads(
         (tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text()
     )["rows"]
@@ -2035,8 +2269,8 @@ def test_the_result_names_the_rows_whose_rate_signs_a_modulator(tmp_path):
         _statements_server(tmp_path),
         "make_changes",
         {"justification": "C slows both ways", "statements": [
-            "conv: A becomes B, modulated by C | slowed",
-            "back: B becomes A, modulated by C | slowed"],
+            "conv: A becomes B, modulated by C",
+            "back: B becomes A, modulated by C"], "bindings": {"conv": "slowed", "back": "slowed"},
          "mechanisms": [{"statement_type": "PopulationTransition", "policy": "slowed",
                          "based_on": "mass_action", "rate": "k*Ki/(Ki + modulated_by)",
                          "parameters": ["k", "Ki"]}]},
@@ -2069,7 +2303,8 @@ def test_a_bound_edit_signs_a_rows_regulators_again(tmp_path):
     `k*exp(a*C)`)."""
     mcp = _statements_server(tmp_path)
     out = _call(mcp, "make_changes", {"justification": "C speeds it",
-                                      "statements": ["conv: A becomes B, activated by C | lin"],
+                                      "statements": ["conv: A becomes B, activated by C"],
+                                      "bindings": {"conv": "lin"},
                                       "mechanisms": [_LIN]})
     assert out["applied"] is True, out.get("error")
     assert _recorded(tmp_path, 0) == {}
@@ -2093,7 +2328,8 @@ def test_an_edit_reports_only_the_rows_it_touches(tmp_path):
               "parameters": ["k", "Ki"]}
     mcp = _statements_server(tmp_path)
     out = _call(mcp, "make_changes", {"justification": "x", "mechanisms": [slowed], "statements": [
-        "aa: A becomes B | mass_action", "conv: A becomes B, modulated by C | slowed"]})
+        "aa: A becomes B", "conv: A becomes B, modulated by C"],
+        "bindings": {"aa": "mass_action", "conv": "slowed"}})
     assert out["applied"] is True, out.get("error")
 
     def said(out):
@@ -2101,12 +2337,12 @@ def test_an_edit_reports_only_the_rows_it_touches(tmp_path):
 
     assert said(out)[0].startswith("`conv`: you stated `modulated by C`")
     out = _call(mcp, "make_changes", {"justification": "y", "statement_edits": [
-        {"op": "add_row", "row": "back: B becomes A | mass_action"}]})
+        {"op": "add_row", "row": "back: B becomes A", "binding": "mass_action"}]})
     assert out["applied"] is True, out.get("error")
     assert said(out) == []
     out = _call(mcp, "make_changes", {"justification": "z", "statement_edits": [
         {"op": "remove_row", "prefix": "aa"},
-        {"op": "add_row", "row": "back2: B becomes A, modulated by C | slowed"}]})
+        {"op": "add_row", "row": "back2: B becomes A, modulated by C", "binding": "slowed"}]})
     assert out["applied"] is True, out.get("error")
     (message,) = said(out)
     assert message.startswith("`back2`: you stated `modulated by C`")
@@ -2119,34 +2355,38 @@ def test_a_json_row_shows_what_its_rate_records_and_reads_back(tmp_path):
     row = {"statement": {"type": "PopulationTransition", "source": {"name": "A"},
                          "target": {"name": "B"}, "modulated_by": [{"name": "C"}],
                          "evidence": [{"source_api": "lit", "pmid": "12345", "text": "C slows it"}]},
-           "policy": "slowed", "prefix": "conv"}
+           "prefix": "conv"}
     slowed = {"statement_type": "PopulationTransition", "policy": "slowed",
               "based_on": "mass_action", "rate": "k*Ki/(Ki + modulated_by)",
               "parameters": ["k", "Ki"]}
     out = _call(mcp, "make_changes", {"justification": "x", "statements": [row],
-                                      "mechanisms": [slowed]})
+                                      "bindings": {"conv": "slowed"}, "mechanisms": [slowed]})
     assert out["applied"] is True, out.get("error")
+    model = _call(mcp, "get_model", {"format": "statements"})["result"]
+    assert "binding conv: slowed" in model.split("\n")
     shown = [line for line in _call(mcp, "get_model", {"format": "statements"})["result"].split("\n")
              if line.startswith("{")]
     (line,) = shown
     assert json.loads(line)["derived"] == {"modulated_by_0": "inhibited_by"}
-    out = _call(mcp, "make_changes", {"justification": "again", "statements": [json.loads(line)]})
+    out = _call(mcp, "make_changes", {"justification": "again", "statements": [json.loads(line)],
+                                      "bindings": {"conv": "slowed"}})
     assert out["applied"] is True, out.get("error")
 
 
 @pytest.mark.parametrize(
-    "rows, match",
+    "rows, bindings, match",
     [
         # review of #128, a_crossbind: a binding read another row's rate, and with it a regulator
         # this row does not state.
-        (["inh: A becomes B, inhibited by C | inh k=act_rate", "act: B becomes A, activated by D | act"],
+        (["inh: A becomes B, inhibited by C", "act: B becomes A, activated by D"],
+         {"inh": "inh k=act_rate", "act": "act"},
          r"binds 'inh_k' over 'act_rate', an expression the model builds"),
         # t10: a binding naming a regulator minted a parameter of that name.
-        (["r1: A becomes B | mass_action k=k0*inhibited_by"],
+        (["r1: A becomes B"], {"r1": "mass_action k=k0*inhibited_by"},
          r"binds 'r1_k' over 'inhibited_by', a regulator's name"),
     ],
 )
-def test_a_binding_reads_parameters_only(tmp_path, rows, match):
+def test_a_binding_reads_parameters_only(tmp_path, rows, bindings, match):
     mechanisms = [
         {"statement_type": "PopulationTransition", "policy": "inh", "based_on": "mass_action",
          "rate": "k*Ki/(Ki + inhibited_by)", "parameters": ["k", "Ki"]},
@@ -2154,7 +2394,8 @@ def test_a_binding_reads_parameters_only(tmp_path, rows, match):
          "rate": "k*activated_by", "parameters": ["k"]},
     ]
     out = _call(_statements_server(tmp_path), "make_changes",
-                {"justification": "x", "statements": rows, "mechanisms": mechanisms})
+                {"justification": "x", "statements": rows, "bindings": bindings,
+                 "mechanisms": mechanisms})
     assert out["applied"] is False
     assert re.search(match, out["error"]), out["error"]
 
@@ -2171,7 +2412,8 @@ def test_an_undefined_readout_is_remedied_in_the_routes_own_terms(tmp_path):
     """On the statements route a readout is given in `readouts`; the assignment-rule remedy sent
     agents to an Antimony op their editor does not take."""
     mcp = _readout_server(tmp_path)
-    out = _call(mcp, "make_changes", {"justification": "no readout", "statements": [_CONV]})
+    out = _call(mcp, "make_changes", {"justification": "no readout", "statements": [_CONV],
+                                      "bindings": {"conv": "mass_action"}})
     assert out["applied"] is False
     assert "in `readouts`" in out["error"] and "set_assignment" not in out["error"]
 
@@ -2221,7 +2463,8 @@ def test_a_scheme_rate_reads_a_molecule_written_in_the_row_notation(tmp_path):
         "make_changes",
         {
             "justification": "A becomes B, slowed by its own phosphorylated form",
-            "statements": ["conv: A becomes B | fb", "ap: A is phosphorylated at S10 | basal"],
+            "statements": ["conv: A becomes B", "ap: A is phosphorylated at S10"],
+            "bindings": {"conv": "fb", "ap": "basal"},
             "mechanisms": [
                 {
                     "statement_type": "PopulationTransition",
@@ -2254,7 +2497,8 @@ def test_a_rule_that_never_fires_names_the_form_nothing_makes(tmp_path):
         "make_changes",
         {
             "justification": "A moves out of the nucleus, which it never enters",
-            "statements": ["conv: A becomes B | mass_action", "out: A{@nucleus} moves from nucleus to cytoplasm | default"],
+            "statements": ["conv: A becomes B", "out: A{@nucleus} moves from nucleus to cytoplasm"],
+            "bindings": {"conv": "mass_action", "out": "default"},
         },
     )
     assert out["applied"] is False
@@ -2268,7 +2512,8 @@ def test_an_enzyme_less_modification_under_a_written_rate_names_basal(tmp_path):
         "make_changes",
         {
             "justification": "A phosphorylated with no enzyme, re-rated",
-            "statements": ["conv: A becomes B | mass_action", "ap: A is phosphorylated | slow"],
+            "statements": ["conv: A becomes B", "ap: A is phosphorylated"],
+            "bindings": {"conv": "mass_action", "ap": "slow"},
             "mechanisms": [
                 {"statement_type": "Phosphorylation", "policy": "slow", "rate": "k", "parameters": ["k"]}
             ],
@@ -2316,7 +2561,7 @@ def test_a_server_amount_name_no_amount_holds_is_refused():
 def test_translocates_is_moves():
     from petab_mcp import notation
 
-    row = notation.parse("imp: S{pY694} translocates from cytoplasm to nucleus | default")
+    row = notation.parse("imp: S{pY694} translocates from cytoplasm to nucleus")
     assert row["statement"]["type"] == "Translocation"
     assert row["statement"]["to_location"] == "nucleus"
 
@@ -2381,13 +2626,14 @@ def test_concurrent_calls_keep_every_mechanism_they_write(tmp_path, monkeypatch)
     mcp = _statements_server(tmp_path)
     other = {**_SATURATING, "policy": "hill", "rate": "vmax * source / (K + source)"}
     calls = [
-        {"justification": m["policy"], "statements": [_statement_row(policy=m["policy"])],
-         "mechanisms": [m]}
+        {"justification": m["policy"], "statements": [_statement_row()],
+         "bindings": {"conv": m["policy"]}, "mechanisms": [m]}
         for m in (_SATURATING, other)
     ]
     assert all(out["applied"] for out in _concurrently(monkeypatch, mcp, *calls))
-    rows = [{**_statement_row(policy=p), "prefix": p} for p in ("saturating", "hill")]
-    both = _call(mcp, "make_changes", {"justification": "both", "statements": rows})
+    rows = [{**_statement_row(), "prefix": p} for p in ("saturating", "hill")]
+    both = _call(mcp, "make_changes", {"justification": "both", "statements": rows,
+                                       "bindings": {p: p for p in ("saturating", "hill")}})
     assert both["applied"] is True, both.get("error")
 
     (tmp_path / "redefined").mkdir()
@@ -2395,7 +2641,7 @@ def test_concurrent_calls_keep_every_mechanism_they_write(tmp_path, monkeypatch)
     # Valid on its own: a definition that drops `K` is malformed, refused first when it wins the lock.
     changed = {**_SATURATING, "rate": "2 * vmax / (K + source)"}
     calls = [{**call, "mechanisms": [m]} for call, m in zip(calls, (_SATURATING, changed))]
-    calls[1]["statements"] = calls[0]["statements"]
+    calls[1]["statements"], calls[1]["bindings"] = calls[0]["statements"], calls[0]["bindings"]
     outs = _concurrently(monkeypatch, mcp, *calls)
     assert sorted(bool(out["applied"]) for out in outs) == [False, True]
     assert [out.get("error_cause") for out in outs if not out["applied"]] == ["mechanism_redefined"]
@@ -2404,9 +2650,10 @@ def test_concurrent_calls_keep_every_mechanism_they_write(tmp_path, monkeypatch)
 def test_concurrent_statement_edits_keep_each_others_rows(tmp_path, monkeypatch):
     """Both edits read HEAD's rows before either committed, so the later commit dropped the
     row the earlier one added."""
-    mcp = _built(tmp_path, [_CONV])
+    mcp = _built(tmp_path, [_CONV], {"conv": "mass_action"})
     calls = [
-        {"justification": p, "statement_edits": [{"op": "add_row", "row": f"{p}: B becomes A | mass_action"}]}
+        {"justification": p, "statement_edits": [
+            {"op": "add_row", "row": f"{p}: B becomes A", "binding": "mass_action"}]}
         for p in ("back", "back2")
     ]
     assert all(out["applied"] for out in _concurrently(monkeypatch, mcp, *calls))

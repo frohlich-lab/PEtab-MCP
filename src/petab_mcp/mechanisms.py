@@ -100,6 +100,10 @@ class Emission:
     #: The sites the row's scheme (:mod:`schemes`) gave molecules that had none such, and no
     #: earlier row's scheme had: molecule -> site -> its states (none for a binding site).
     sites_added: dict[str, dict[str, list[str]]] = field(default_factory=dict)
+    #: The amounts the row's scheme rates read besides its regulators: each one's observable ->
+    #: the amount as the rate writes it (``ERK{pY187}``, ``sub(T202='p')``), which the model must
+    #: form (:func:`problem_sbml.to_antimony`).
+    amounts: dict[str, str] = field(default_factory=dict)
     #: The regulators the row's statement states whose kind its net rate records otherwise
     #: (:func:`regulation.record`), by the kind stated and position: ``modulated_by_0`` ->
     #: ``inhibited_by``, ``inhibited_by_1`` -> ``modulated_by``. The statement keeps what it
@@ -642,7 +646,8 @@ def _how_ids_enter(names, problem_ids: dict[str, str], amounts: str) -> list[str
     return [
         f"{', '.join(f'`{n}` is {problem_ids[n]}' for n in bound)}. A problem parameter or "
         "condition input enters through a row's binding: declare a parameter of your own and "
-        f'bind it on the row, `parameters={{"K": "{bound[0]}"}}`, or `kf="k*{bound[0]}"`.'
+        f'bind it in the binding of each row that uses it, `K={bound[0]}` '
+        f'(`bindings={{"r1": "<policy> K={bound[0]}"}}`), or `kf="k*{bound[0]}"`.'
         if bound else "",
         f"{', '.join(f'`{n}`' for n in species)}: {SPECIES}, read as the amount of the agent it "
         f"maps to, written by that agent's own name and sites, not by this id: {amounts}."

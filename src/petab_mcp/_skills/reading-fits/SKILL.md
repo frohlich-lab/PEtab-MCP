@@ -19,6 +19,8 @@ description: >-
   With estimated sigmas chi2 sits near `n_data_points` by construction whatever the model's form:
   judge adequacy from residual structure instead.
 - Fitted values are LINEAR whatever the estimation scale; `parameter_scales` gives each scale.
+- `is_new_best`: this version became the best model, `progress.best_version`. A score that
+  cleared `new_best_min_improvement` without that carries `new_best_declined`, saying why.
 
 ## Flags
 

@@ -56,6 +56,7 @@ from indra.statements import (
     modclass_to_inverse,
 )
 from pysb.core import time
+from sympy.core.relational import Relational
 
 from .errors import MechanismError
 from .statements import REGULATOR_NAME, REGULATORS, named_agents
@@ -111,7 +112,7 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
     with another row, an intermediate meeting another in one step, a steady state too large or not
     unique, or products made at rates no constant ratio relates, two reactions rather than one."""
 
-    from .mechanisms import _vanishes
+    from .mechanisms import _vanishes, over
     from .statements import _products, _reactants
 
     rules = set(rules)
@@ -199,20 +200,15 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
             amounts[i] = held(i, i in regulator_species)
     regulator_amounts = {i: held(i, True) for i in regulator_species - own}
     regulator_observables = {o for observables in read.values() for o in observables}
-    names = {p: sympy.Symbol(p.name, positive=True) for p in model.parameters}
 
-    def value(rate) -> sympy.Expr:
-        while expressions := rate.atoms(pysb.Expression):
-            rate = rate.xreplace({e: e.expr for e in expressions})
-        rate = rate.xreplace({
-            o: own_reads.get(o, 0) + sympy.Add(*(
+    def value(rate, names: dict[str, sympy.Symbol]) -> sympy.Expr:
+        return over(rate, {
+            o.name: own_reads.get(o, 0) + sympy.Add(*(
                 c * (regulator_amounts if o in regulator_observables else amounts).get(i, 0)
                 for i, c in reads(o).items()
             ))
             for o in rate.atoms(pysb.Observable)
-        })
-        species = {sympy.Symbol(f"__s{i}"): amount for i, amount in amounts.items()}
-        return rate.xreplace(species).xreplace(names).xreplace({time: TIME})
+        } | {f"__s{i}": amount for i, amount in amounts.items()} | names | {time.name: TIME})
 
     if len(intermediates) > NET_FORMS or len(reactions) > NET_STEPS:
         raise MechanismError("its intermediates' steady state is too large to solve symbolically")
@@ -226,7 +222,9 @@ def net_rate(model: pysb.Model, rules, stmt) -> NetRate:
         and all(rx["products"].count(i) == rx["reactants"].count(i) for i in intermediates)
         for rx in reactions
     ]
-    rates = [sympy.Integer(0) if b else value(rx["rate"]) for rx, b in zip(reactions, back)]
+    written = [None if b else _inlined(rx["rate"]) for rx, b in zip(reactions, back)]
+    names = _named(model.parameters, [rate for rate in written if rate is not None])
+    rates = [sympy.Integer(0) if rate is None else value(rate, names) for rate in written]
     involved = sorted(made | used)
     unknown = [amounts[i] for i in intermediates]
     # Linear in the intermediates: at most one among a step's reactants, and none in its rate
@@ -549,6 +547,28 @@ def _unique_without(equations, unknown, regulators) -> bool:
     return np.linalg.matrix_rank(values) == len(unknown)
 
 
+def _inlined(rate: sympy.Expr) -> sympy.Expr:
+    """``rate`` with each expression it reads written out, every comparison kept as written
+    (:func:`mechanisms.over`)."""
+    from .mechanisms import over
+
+    while expressions := rate.atoms(pysb.Expression):
+        rate = over(rate, {e.name: e.expr for e in expressions})
+    return rate
+
+
+def _named(parameters, rates) -> dict[str, sympy.Symbol]:
+    """Each of ``parameters`` by name, as the name J reads it by: positive, or never negative where
+    a comparison in ``rates`` reads it. A gate (``piecewise(0, ko > 0, 1)``) is on only where a
+    condition sets ``ko`` to 0, so its comparison is no more decided by a sympy step that rebuilds
+    it (a derivative, a ``piecewise`` put back together) than by the rate as written."""
+    compared = {s.name for rate in rates for c in rate.atoms(Relational) for s in c.free_symbols}
+    return {
+        p.name: sympy.Symbol(p.name, **{"nonnegative" if p.name in compared else "positive": True})
+        for p in parameters
+    }
+
+
 def _observables(rate) -> set[pysb.Observable]:
     """Every observable ``rate`` (a parameter, an expression, or None) reads, through the expressions
     it reads."""
@@ -781,7 +801,8 @@ def record(model: pysb.Model, rows: list[tuple], emissions, times=None) -> list:
     states (``derived``, where it differs from the kind stated: ``inhibited_by`` where J never
     rises with it, ``activated_by`` where it never falls, ``modulated_by`` where neither is shown)
     and J itself (``rate``, :func:`stored`), for :func:`resign` to sign again on a version's
-    bounds. Each name ranges as its assumptions allow here: a parameter is positive.
+    bounds. Each name ranges as its assumptions allow here: a parameter is positive, or never
+    negative where a comparison reads it (:func:`_named`).
 
     Refused only on what is shown: a regulator nothing in the model forms, and one J does not
     change with, which acts only on a step J cannot see (:func:`_unseen`). A row with no one net
@@ -865,19 +886,27 @@ def _consuming(model: pysb.Model, emission, stmt, positions) -> dict[str, list[s
 def _well_posed(value: sympy.Expr) -> bool:
     """Whether J is shown never negative and finite for every value of its names: below 0, or past
     a pole, its sign says nothing of which way the reaction runs (sweep multi108: J(M2=0.5) = -2,
-    J(1.5) = +2)."""
+    J(1.5) = +2). A sum not shown term by term is shown with each ``exp(v)`` in it, ``v`` never
+    positive, read as ``1 - w`` for a ``w`` never negative: ``k*(1 - exp(-X/K))`` is ``k*w``."""
     from .mechanisms import SIGN_TERMS, _sign, _terms
 
     def never_negative(e) -> bool:
         if e.is_nonnegative or _sign(e) == 1:
             return True
-        if isinstance(e, (sympy.Add, sympy.Mul)):
+        if isinstance(e, sympy.Add):
+            return all(never_negative(a) for a in e.args) or below_one(e)
+        if isinstance(e, sympy.Mul):
             return all(never_negative(a) for a in e.args)
         if isinstance(e, sympy.Piecewise):
             return all(never_negative(branch) for branch, _ in e.args)
         if isinstance(e, sympy.Pow):
             return bool(e.exp.is_even) or never_negative(e.base)
         return isinstance(e, sympy.exp)
+
+    def below_one(e) -> bool:
+        bound = {f: 1 - sympy.Dummy(nonnegative=True) for f in e.atoms(sympy.exp)
+                 if _sign(f.args[0]) == -1}
+        return bool(bound) and never_negative(e.xreplace(bound))
 
     def positive(e) -> bool:
         if e.is_positive:
@@ -973,7 +1002,8 @@ def stored(rate: NetRate) -> dict:
             name, kinds["time"] = "time", {"time": True}
         elif symbol.name in rate.parameters:
             name = f"p{k}"
-            kinds[name] = {"parameter": rate.parameters[symbol.name]}
+            kinds[name] = {"parameter": rate.parameters[symbol.name]} | (
+                {} if symbol.is_positive else {"nonnegative": True})
         elif symbol.name.startswith("total"):
             name, kinds[f"t{k}"] = f"t{k}", {"total": symbol.name}
         else:
@@ -993,16 +1023,21 @@ def stored(rate: NetRate) -> dict:
 
 
 def restored(data: dict) -> NetRate:
-    """The net rate :func:`stored` kept, each name signed as it was built."""
+    """The net rate :func:`stored` kept, each name signed as it was built, every comparison as it
+    was kept (read over signed names, ``p0 > 0`` was decided)."""
+    from .mechanisms import over
+
     symbols = {}
     for name, kind in data["names"].items():
         sign = {"nonnegative": True} if kind.get("time") or kind.get("nonnegative") else {
             "positive": True}
         symbols[name] = sympy.Symbol(name, **sign)
+    plain = {name: sympy.Symbol(name) for name in data["names"]}
     steps = {name: sympy.Symbol(name) for name in data.get("steps", {})}
 
     def read(text: str) -> sympy.Expr:
-        return sympy.sympify(text, locals={**symbols, **steps, "Piecewise": sympy.Piecewise})
+        return over(sympy.sympify(text, locals={**plain, **steps, "Piecewise": sympy.Piecewise}),
+                    symbols)
 
     return NetRate(
         read(data["J"]),
@@ -1201,7 +1236,7 @@ def _unseen(model, emission, stmt, policy, prefix, stated, s: str) -> str:
         if found is not None:
             what, row, mechanism = found
             shown_steps += f", {what}"
-            advice = f"State it on a row of that step instead, `{row}`: {mechanism}. "
+            advice = f"State it on a row of that step instead, `{row}`, bound to {mechanism}. "
     return (
         f"row {prefix!r}: {policy!r} reads `{_said(s, stated)}` only in {shown_steps}, and its "
         "statement's own reaction rate, its products absent, does not change with it: a "
@@ -1286,11 +1321,11 @@ def _with_the_product(stmt, stated: dict, s: str, how: str, way: int | None, pro
              "for the product it takes as a reactant, the step written without it")
     back = _way_back(stmt)
     return (
-        f"State the product as a regulator too, {row}, its rate reading it as `{product_at}` "
-        f"{where}, and {_agent(stated, s)} as `{read(own_kind, i)}`. Or put that step on a row of "
-        "its own so, a one-rule mechanism (another step of the same reaction a term of its rate), "
-        "and its way back, where the mechanism has one, on a row of its own"
-        + (f", `{back}`. " if back else ". ")
+        f"State the product as a regulator too, {row}, its binding's rate reading it as "
+        f"`{product_at}` {where}, and {_agent(stated, s)} as `{read(own_kind, i)}`. Or put that "
+        "step on a row of its own so, bound to a one-rule mechanism (another step of the same "
+        "reaction a term of its rate), and its way back, where the mechanism has one, on a row of "
+        "its own" + (f", `{back}`. " if back else ". ")
     )
 
 
@@ -1318,8 +1353,8 @@ def _way_back(stmt) -> str | None:
 
 def _step_row(stmt, before, after, kind: str, regulator) -> tuple[str, str, str] | None:
     """A step of row ``stmt``'s rules as a row of its own, ``regulator`` stated on it as ``kind``
-    (what the step's own rate does with it): what the step is, the row in the notation, and the
-    mechanism the row needs. ``None`` for a step no statement makes alone."""
+    (what the step's own rate does with it): what the step is, the row's statement in the notation,
+    and the mechanism its binding needs. ``None`` for a step no statement makes alone."""
     from indra.assemblers.pysb.sites import get_mod_site_name
 
     from .notation import agent_text, statement_text
@@ -1342,7 +1377,7 @@ def _step_row(stmt, before, after, kind: str, regulator) -> tuple[str, str, str]
         row = text(DecreaseAmount(None, gone))
         return row and (
             f"{agent_text(gone.to_json())}'s degradation", row + clause,
-            f"a DecreaseAmount whose mechanism reads it, a written `rate` `kd{factor}` with "
+            f"a DecreaseAmount mechanism that reads it, a written `rate` `kd{factor}` with "
             "`parameters` [kd, K]",
         )
     if not left and len(right) == 1 and len(right[0]) == 1 and agent(right[0][0]) is not None:
@@ -1350,7 +1385,7 @@ def _step_row(stmt, before, after, kind: str, regulator) -> tuple[str, str, str]
         row = text(IncreaseAmount(None, made))
         return row and (
             f"{agent_text(made.to_json())}'s synthesis", row + clause,
-            f"an IncreaseAmount whose mechanism reads it, a written `rate` `ks{factor}` with "
+            f"an IncreaseAmount mechanism that reads it, a written `rate` `ks{factor}` with "
             "`parameters` [ks, K]",
         )
     if (len(left) == 1 and len(left[0]) == 2 and len(right) == 2 and all(len(c) == 1 for c in right)
@@ -1363,7 +1398,7 @@ def _step_row(stmt, before, after, kind: str, regulator) -> tuple[str, str, str]
         amount = factor.replace(kind, f"amount({kind})")
         return row and (
             "the dissociation", row + clause,
-            "a Conversion whose scheme breaks the bond and reads it, `obj_from_0(obj_to_1=1) % "
+            "a Conversion scheme that breaks the bond and reads it, `obj_from_0(obj_to_1=1) % "
             "obj_to_1(obj_to_0=1) >> obj_to_0(obj_to_1=None) + obj_to_1(obj_to_0=None) @ "
             f"kr{amount}` with `parameters` [kr, K]",
         )
@@ -1379,7 +1414,7 @@ def _step_row(stmt, before, after, kind: str, regulator) -> tuple[str, str, str]
             row = text(inverse(None, stmt.sub, stmt.residue, stmt.position))
             return row and (
                 "the way back of its modification", row + clause,
-                f"a {inverse.__name__} whose mechanism, based on `basal`, reads it, a written "
+                f"a {inverse.__name__} mechanism, based on `basal`, that reads it, a written "
                 f"`rate` `k{factor}` with `parameters` [k, K]",
             )
     if (isinstance(stmt, RegulateActivity) and molecule is stmt.obj
@@ -1388,23 +1423,21 @@ def _step_row(stmt, before, after, kind: str, regulator) -> tuple[str, str, str]
         row = text(back(regulator, stmt.obj, stmt.obj_activity))
         return row and (
             "the way back of its activity", row,
-            f"an {back.__name__} with {regulator.name} its subject, `indra_default`",
+            "`default`, INDRA's own",
         )
     return None
 
 
 def _step_rate(rate, observables, x: sympy.Symbol) -> sympy.Expr:
     """A step's own rate with the regulator read by ``observables`` as ``x``, every other name
-    positive."""
-    expr = rate.expr
-    while expressions := expr.atoms(pysb.Expression):
-        expr = expr.xreplace({e: e.expr for e in expressions})
-    expr = expr.xreplace({
-        o: x if o in observables else sympy.Symbol(o.name, positive=True)
+    positive but a parameter a comparison reads (:func:`_named`)."""
+    from .mechanisms import over
+
+    expr = _inlined(rate.expr)
+    return over(expr, {
+        o.name: x if o in observables else sympy.Symbol(o.name, positive=True)
         for o in expr.atoms(pysb.Observable)
-    })
-    named = {p: sympy.Symbol(p.name, positive=True) for p in expr.atoms(pysb.Parameter)}
-    return expr.xreplace(named).xreplace({time: TIME})
+    } | _named(expr.atoms(pysb.Parameter), [expr]) | {time.name: TIME})
 
 
 def _side(pattern) -> str:
