@@ -26,6 +26,9 @@
  "advice/products_at_0/ras_sos/product_stated": {
   "verdict": "accepted"
  },
+ "grounding/shared/cycle": {
+  "verdict": "accepted"
+ },
  "issue138/t_gate/condition": {
   "verdict": "accepted"
  },

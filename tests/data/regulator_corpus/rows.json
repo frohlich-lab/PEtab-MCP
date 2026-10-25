@@ -6923,5 +6923,54 @@
     "based_on": "mass_action"
    }
   ]
+ },
+ {
+  "id": "grounding/shared/cycle",
+  "source": "PEtab-MCP#137: bachmann's SOCS3_nRNA1 -> SOCS3_nRNA2, both HGNC 19391, read as one agent by INDRA's Agent.matches, so the row made nothing and its cycle had no net rate",
+  "rows": [
+   {
+    "statement": {
+     "type": "Conversion",
+     "obj_from": [
+      {
+       "name": "SOCS3_nRNA1",
+       "db_refs": {
+        "HGNC": "19391"
+       }
+      }
+     ],
+     "obj_to": [
+      {
+       "name": "SOCS3_nRNA2",
+       "db_refs": {
+        "HGNC": "19391"
+       }
+      }
+     ],
+     "activated_by": [
+      {
+       "name": "X"
+      }
+     ]
+    },
+    "prefix": "r"
+   },
+   "x: X is produced"
+  ],
+  "bindings": {
+   "r": "cyc",
+   "x": "indra_default"
+  },
+  "mechanisms": [
+   {
+    "statement_type": "Conversion",
+    "policy": "cyc",
+    "scheme": "obj_from_0() >> obj_to_0() @ kf*amount(activated_by_0)\nobj_to_0() >> obj_from_0() @ kb",
+    "parameters": [
+     "kf",
+     "kb"
+    ]
+   }
+  ]
  }
 ]

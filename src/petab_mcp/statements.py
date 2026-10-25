@@ -382,19 +382,41 @@ def _reactants(stmt: Statement) -> list[Agent]:
 
 def _reaction(stmt: Statement) -> tuple[list[Agent], list[tuple[Agent, int]]]:
     """:data:`_REACTIONS`' entry for ``stmt``, by net change: an agent it takes and gives back as
-    it was (the ``E`` of ``A + E -> B + E``) is a catalyst, neither consumed nor made."""
+    it was (the ``E`` of ``A + E -> B + E``) is a catalyst, neither consumed nor made. "As it was"
+    is by name (:func:`name_key`): ``SOCS3_nRNA1 -> SOCS3_nRNA2``, both grounded to SOCS3, made
+    nothing by INDRA's ``Agent.matches``."""
     for cls in type(stmt).__mro__:
         if cls in _REACTIONS:
             reactants, products = _REACTIONS[cls](stmt)
             reactants, made = list(reactants), []
             for agent, effect in products:
-                same = next((a for a in reactants if a.matches(agent)), None)
+                key = name_key(agent)
+                same = next((a for a in reactants if name_key(a) == key), None)
                 if effect > 0 and same is not None:
                     reactants.remove(same)
                 else:
                     made.append((agent, effect))
             return reactants, made
     return [], []
+
+
+def name_key(x: Statement | Agent) -> str:
+    """``x.matches_key()`` with every agent in it keyed by NAME, the model's identity: ungrounded,
+    under the name of the monomer it builds. INDRA keys an agent on its grounding, but the model
+    builds a monomer per name, so two agents sharing a grounding are two (bachmann's SOCS3 and
+    SOCS3_oe, a gene's nRNA, mRNA and protein), and a name grounded in one row and not in another
+    is one."""
+    from indra.assemblers.pysb.assembler import _n
+
+    def by_name(agent: Agent) -> None:
+        agent.name, agent.db_refs = _n(agent.name), {}
+        for condition in agent.bound_conditions:
+            by_name(condition.agent)
+
+    x = deepcopy(x)
+    for agent in x.real_agent_list() if isinstance(x, Statement) else [x]:
+        by_name(agent)
+    return x.matches_key()
 
 
 def _modification(stmt: Modification) -> tuple[list[Agent], list[tuple[Agent, int]]]:
