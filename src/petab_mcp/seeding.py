@@ -57,10 +57,6 @@ def _entries(path: str) -> dict[str, dict]:
             raise EntityMapError(
                 f'{where} is {entry!r}; write the INDRA agent it is: {{"name": "PROTA", ...}}'
             )
-        if not entry.get("name") or not isinstance(entry["name"], str):
-            raise EntityMapError(
-                f'{where} needs the name of the INDRA agent it is: "name": "PROTA"'
-            )
         if "input" in entry:
             raise EntityMapError(
                 f"{where} declares an input; declare it in the inputs.tsv beside problem.yaml, "
@@ -71,6 +67,10 @@ def _entries(path: str) -> dict[str, dict]:
                 raise EntityMapError(
                     f"{where}: {key!r} is no key read here; did you mean {near[0]!r}?"
                 )
+        if not entry.get("name") or not isinstance(entry["name"], str):
+            raise EntityMapError(
+                f'{where} needs the name of the INDRA agent it is: "name": "PROTA"'
+            )
     return entries
 
 
