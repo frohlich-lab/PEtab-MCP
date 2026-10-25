@@ -123,6 +123,9 @@ def test_versioning_diff_and_rollback(session, reauthor_toy):
     assert out["rolled_back_to"] == 0
     assert session.provenance.current_version == 0
     assert len(session.provenance.list_versions()) == 2
+    # the move is recorded in the provenance log, which is what `restore_version` tells the agent
+    event = session.provenance.recent_events()[-1]
+    assert (event["type"], event["rolled_back_to"]) == ("rollback", 0)
     species = {
         session.model.sbml_model.getSpecies(i).getId()
         for i in range(session.model.sbml_model.getNumSpecies())
