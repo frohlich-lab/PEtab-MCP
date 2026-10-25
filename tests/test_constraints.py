@@ -266,6 +266,17 @@ def test_tracing_carries_a_cascade_with_its_sign():
     )
 
 
+def test_a_tag_alone_is_no_change():
+    """EGF phosphorylating EGFR tags it and leaves total EGFR as it is: only the net change of a
+    target's forms counts, as a readout reads it (read by its tag, fujita's false "EGF increases
+    EGFR" held)."""
+    got = _check(
+        ["c1: EGF increases EGFR, indirectly", "c2: EGF increases EGFR{pY1068}, indirectly"],
+        _record(*_CASCADE),
+    )
+    assert not got["c1"].ok and got["c2"].ok
+
+
 def test_under_feedback_both_signs_hold():
     """Under negative feedback the network moves P each way, and which way the fitted model moves
     it is the fit's to say: both hold, and neither is reported against the other (#136)."""
@@ -317,6 +328,21 @@ def test_a_partner_taken_into_a_complex_that_keeps_its_part_lowers_nothing():
     EGF lowering AKT1{pS473} (#136)."""
     got = _check(["c1: EGF decreases AKT1{pS473}, indirectly"], _record(*_CASCADE))
     assert not got["c1"].ok
+
+
+def test_a_junction_does_not_come_back_to_its_own_form():
+    """R binding free A{pS1} takes it away. Traced on, less free A{pS1} is dephosphorylated less and
+    then phosphorylated less: a cycle back to the form the binding only moved, which read as
+    fujita's false "RPS6 decreases AKT1{pS473}". A junction pass reads no form its seeds are."""
+    record = _record(
+        ("k", "K phosphorylates A at S1"),
+        ("d", "A{~R} is dephosphorylated at S1"),
+        ("b", "A{pS1} binds R"),
+    )
+    got = _check(
+        ["c1: R decreases A{pS1}, indirectly", "c2: R increases A{pS1, !R}, indirectly"], record
+    )
+    assert not got["c1"].ok and got["c2"].ok
 
 
 def test_a_partner_a_bond_wildcard_hides_drives_a_release():

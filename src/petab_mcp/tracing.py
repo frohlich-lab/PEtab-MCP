@@ -21,10 +21,11 @@ network forms them. Each rule keeps its untagged form and gets one variant per d
   direction, so its variant exists only where any effect counts (``unsigned``).
 
 Which tagged species and reactions exist is then what BioNetGen's matching allows, never a
-hand-written reading of the rows. A form is RAISED where a species holding it holds its agent
-tagged ``p``, or a variant driven at ``p`` makes more of it, net over its forms, or one driven at
-``n`` takes less of it away; LOWERED the other way round. A driver taken away by its own reaction
-is its own decay, not a decrease (more pS6, more of it dephosphorylated).
+hand-written reading of the rows. A form is RAISED where a variant driven at ``p`` makes more of
+it, net over its forms, or one driven at ``n`` takes less of it away; LOWERED the other way round.
+Only the net change counts, never a tag on its own: EGF phosphorylating EGFR tags it and leaves
+total EGFR as it is (read by its tag, "EGF increases EGFR" held). A driver taken away by its own
+reaction is its own decay, not a decrease (more pS6, more of it dephosphorylated).
 
 Less of something is no tag on any molecule, so a decrease by mass action (a competitor taking a
 partner, an antagonist occupying a site) stops where it happens. One more pass traces on from
@@ -32,11 +33,12 @@ what a traced driver consumed, seeded with the driver's tag and read the other w
 raises I, I takes W, W raises Y reads as X lowers Y. It runs without the rule that took W, whose
 flux is the driver's own and traced already, and without each rule that what W became takes as W
 did, which goes on regardless (EGF binding free EGFR{pY1068} takes no kinase away: the bound one
-phosphorylates AKT1 as the free one did); and it does not read its own seeds, whose step the
-first pass read. On the formulations #136 measured, that pass held isensee's Rp8 antagonist and
-boehm's STAT5B competition, and its one wrong answer is a decrease of a free form going round a
-modification cycle back to the form a binding only moved (fujita's "RPS6 decreases
-AKT1{pS473}"). A second pass held nothing more and added a wrong answer, so there is one.
+phosphorylates AKT1 as the free one did). It does not read a target its seeds are forms of: what
+comes back to that form from them is their own cycle, and the step that took them was read in the
+first pass (less free pAKT, dephosphorylated and phosphorylated again, read as fujita's false
+"RPS6 decreases AKT1{pS473}"). On the formulations #136 measured, that pass held isensee's Rp8
+antagonist and boehm's STAT5B competition and held nothing false; a second pass held nothing
+more and added a wrong answer, so there is one.
 
 A tag follows a molecule, not the form a later rule reads: E phosphorylating A{pS1} at S2 tags
 A, and a rule A{pS1} catalyses takes the tag on, though E leaves the amount of A{pS1} as it is.
@@ -98,8 +100,9 @@ class Trace:
 def trace(model: pysb.Model, emissions, derived: dict[str, dict], subject, targets: dict,
           *, unsigned: bool = False) -> Trace:
     """Trace ``subject`` (an INDRA agent) through ``model``, the rows' model as written and seeded,
-    for each of ``targets`` (key -> ``(agent, active)``; an active form's activity also moves with
-    a regulator of a reaction it catalyses). ``emissions`` say which rules each row built and
+    for each of ``targets`` (key -> ``(agent, active, any_form)``: an active form's activity also
+    moves with a regulator of a reaction it catalyses, and ``any_form`` counts any change of any
+    of its forms, a modification included, not the net). ``emissions`` say which rules each row built and
     ``derived`` (prefix -> kinds) what each row's regulators record. ``unsigned``: a
     ``modulated_by`` regulator moves its reaction both ways. Raises what BioNetGen raises."""
     tagger = _Tagger(model, emissions, derived, unsigned)
@@ -125,7 +128,8 @@ def trace(model: pysb.Model, emissions, derived: dict[str, dict], subject, targe
     for seeds, blocked in groups.values():
         mm, mt = tagger.build(seeds=list(seeds.values()), blocked=blocked)
         sizes.append(_expand(mm))
-        _read(mm, mt, targets, moved, tagger.row_of, way=-1, skip=len(mm.initials))
+        _read(mm, mt, targets, moved, tagger.row_of, way=-1,
+              seeds=range(len(model.initials), len(mm.initials)))
     return Trace(moved, reached, sizes)
 
 
@@ -470,35 +474,38 @@ def _rules(rx) -> list[str]:
     return list(rx["rule"]) if isinstance(rx["rule"], (list, tuple)) else [rx["rule"]]
 
 
-def _read(m, meta, targets, moved, row_of, way: int, skip: int = 0) -> None:
-    """Add to ``moved`` the ways ``m``'s network moves each target, ``way`` -1 for a junction
-    pass (tag ``p`` there is less of it); its first ``skip`` species, the pass's seeds, are not
-    read by their tags."""
+def _read(m, meta, targets, moved, row_of, way: int, seeds=()) -> None:
+    """Add to ``moved`` the ways ``m``'s network moves each target: by the net change of its forms
+    in each traced reaction, ``way`` -1 for a junction pass (tag ``p`` there is less of it). A tag
+    is not read on its own: EGF phosphorylating EGFR tags it and leaves total EGFR as it is. A
+    junction pass whose ``seeds`` (species indices: BioNetGen lists a model's seeds first, in their
+    order) hold a target does not read it: what
+    comes back to that form from them is their own cycle (less free pAKT, dephosphorylated, then
+    phosphorylated again), and the junction's own step was read in the pass that found it."""
     from .mechanisms import agent_pattern
 
-    for key, (agent, active) in targets.items():
+    for key, (agent, active, any_form) in targets.items():
         pattern = pysb.ComplexPattern(agent_pattern(m, agent), None)
         holders = {i for i, sp in enumerate(m.species) if match_complex_pattern(pattern, sp)}
-        name = pattern.monomer_patterns[0].monomer.name
-
-        def own(i: int, tag: str) -> bool:
-            return any(mp.monomer.name == name and mp.site_conditions.get(SITE) == tag
-                       for mp in m.species[i].monomer_patterns)
-
+        if any(i in holders for i in seeds):
+            continue
         for rx in m.reactions:
             rows = [row_of[r] for r in _rules(rx) if r in row_of]
-            made = [i for i in rx["products"] if i in holders]
-            for tag, sign in (("p", 1), ("n", -1)):
-                if any(own(i, tag) and i >= skip for i in made):
-                    moved[key].add(sign * way, rows)
+            taken, made = Counter(rx["reactants"]), Counter(rx["products"])
+            changed = any(i in holders for i in (taken - made) + (made - taken))
             for rule in _rules(rx):
                 if rule not in meta:
                     continue
                 _, s, driver, _ = meta[rule]
                 sign = 1 if s == "p" else -1
-                # Net over the target's forms: a phosphorylation leaves total S as it is. A form a
-                # driver makes by binding or release carries no tag of its own: read here.
-                net = len(made) - sum(1 for i in rx["reactants"] if i in holders)
+                if any_form:
+                    if changed:  # any form changed is an effect, a modification included
+                        moved[key].add(sign * way, rows)
+                    continue
+                # Net over the target's forms: a phosphorylation leaves total S as it is, and a form
+                # a driver makes by binding or release, which carries no tag of its own, counts.
+                net = (sum(1 for i in rx["products"] if i in holders)
+                       - sum(1 for i in rx["reactants"] if i in holders))
                 own_decay = any(
                     mp.monomer.name == driver and mp.site_conditions.get(SITE) == s
                     for i in rx["reactants"] if i in holders for mp in m.species[i].monomer_patterns
