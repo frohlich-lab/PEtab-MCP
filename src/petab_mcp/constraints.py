@@ -526,6 +526,11 @@ class Verdict:
             k: list(v) if k == "rows" else v for k, v in self.__dict__.items() if v or k == "ok"
         }
 
+    @classmethod
+    def restored(cls, data: dict[str, Any]) -> Verdict:
+        """A verdict as :meth:`stored` kept it."""
+        return cls(data["ok"], tuple(data.get("rows") or ()), data.get("why"), data.get("unchecked"))
+
 
 def check(
     constraints: Constraints, record: dict | None, model: Callable[[], tuple] | None = None
@@ -773,3 +778,43 @@ def enforce(
         "verdicts": {cid: v.stored() for cid, v in verdicts.items()},
     }
     return kept, said or None
+
+
+# -------------------------------------------------------------------------------------- update
+def _implies(a: Constraint, b: Constraint) -> bool:
+    """Whether ``a`` holding makes ``b`` hold: the same claim, or ``a`` the stronger form of it (a
+    row's claim is traced too; no traced change either way leaves no row's claim either)."""
+    if a.claim != b.claim:
+        return False
+    if a.direct == b.direct:
+        return True
+    if a.forms[0].way is None:
+        return not a.direct
+    return a.direct and not a.negated
+
+
+def change(old: Constraints | None, new: Constraints) -> str:
+    """How ``new`` differs from ``old``: ``same``, ``looser`` (each new constraint follows from an
+    old one), ``tighter`` (each old one from a new one) or ``both``. A change of the declared active
+    forms changes what every activity constraint means, so it is ``both``."""
+    old = old or Constraints(())
+    if [f.text for f in old.active_forms] != [f.text for f in new.active_forms]:
+        return "both"
+    looser = all(any(_implies(a, b) for a in old.items) for b in new.items)
+    tighter = all(any(_implies(b, a) for b in new.items) for a in old.items)
+    return (
+        "same" if looser and tighter else "looser" if looser else "tighter" if tighter else "both"
+    )
+
+
+def kept(constraints: Constraints, record: dict | None) -> dict[str, Verdict]:
+    """The verdicts ``record`` keeps from its commit for those of ``constraints`` it was checked
+    under, by id: the same text, under the same declared active forms."""
+    checked = (record or {}).get("constraints") or {}
+    stored = checked.get("verdicts") or {}
+    said = dict(line.partition(": ")[::2] for line in checked.get("checked") or [])
+    forms = sorted(text for cid, text in said.items() if cid not in stored)
+    if forms != sorted(f.text for f in constraints.active_forms):
+        return {}
+    by_text = {said[cid]: Verdict.restored(v) for cid, v in stored.items() if cid in said}
+    return {c.id: by_text[c.text] for c in constraints.items if c.text in by_text}

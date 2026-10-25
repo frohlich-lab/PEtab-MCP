@@ -55,6 +55,7 @@ petab-mcp --petab-yaml path/to/problem.yaml
 # --entity-map PATH      (offers make_changes the `statements` route; see src/petab_mcp/seeding.py)
 # --statements-only      (with --entity-map: the `statements` route alone, no Antimony routes)
 # --constraints PATH     (with --entity-map: causal claims every model must make; see src/petab_mcp/constraints.py)
+# --constraint-updates {off,any}   (any: offers set_constraints, which replaces them mid-session)
 # --transport {stdio,sse,streamable-http}
 # --criterion {bic,caic,aic,aicc,hqc,tic}   (env PETAB_MCP_CRITERION; default bic)
 # --slurm-max-jobs N     --slurm-min-jobs M   (see "Fitting on SLURM")
@@ -216,7 +217,10 @@ Principles to hold onto when extending this package.
   ([`tracing`](src/petab_mcp/tracing.py)). Which way a model moves an object is not decidable from
   its structure once it has feedback, so an indirect constraint holds wherever the trace moves it as
   claimed, whatever else the trace finds: that sign is the fit's to say
-  ([`constraints`](src/petab_mcp/constraints.py)).
+  ([`constraints`](src/petab_mcp/constraints.py)). With `--constraint-updates any`,
+  `set_constraints` replaces them for whoever drives the session, logged with whether it loosens or
+  tightens them; a version a new set breaks keeps the verdicts it was committed under, but is
+  flagged, cannot be restored and no longer ranks as the best.
 - **A hardcoded constant is not free.** `k` is the estimated parameters plus every numeric
   literal in the model's math bar a few structural ones (each distinct value once — see
   [`src/petab_mcp/literals.py`](src/petab_mcp/literals.py)), so freezing a fitted value costs

@@ -84,6 +84,13 @@ def build_parser() -> argparse.ArgumentParser:
         "that breaks one. Implies --statements-only.",
     )
     parser.add_argument(
+        "--constraint-updates",
+        default="off",
+        choices=["off", "any"],
+        help="With --constraints: 'any' offers set_constraints, which replaces them during the "
+        "session (default off: the tool does not exist).",
+    )
+    parser.add_argument(
         "--transport",
         default="stdio",
         choices=["stdio", "sse", "streamable-http"],
@@ -175,6 +182,13 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    if args.constraint_updates == "any" and not args.constraints:
+        print(
+            "error: --constraint-updates any needs --constraints (a file holding none starts with "
+            "none).",
+            file=sys.stderr,
+        )
+        return 2
     if args.constraints and not args.entity_map:
         print(
             "error: --constraints needs --entity-map: a constraint is a claim the statements route's "
@@ -208,6 +222,7 @@ def main(argv: list[str] | None = None) -> int:
             entity_map=args.entity_map,
             statements_only=args.statements_only,
             constraints=args.constraints,
+            constraint_updates=args.constraint_updates,
             cluster=cluster,
         )
         server.run(transport=args.transport)

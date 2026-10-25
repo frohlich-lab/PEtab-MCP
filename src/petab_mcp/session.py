@@ -353,6 +353,11 @@ class PetabSession:
         # The claims every model must make (:mod:`constraints`), given as the server starts, or
         # None: checked on each change after its regulators are signed (operations._commit_change).
         self.constraints: Any | None = None
+        # Whether `set_constraints` may change them: "off" (the tool is not offered) or "any".
+        self.constraint_updates: str = "off"
+        # Each stored version's verdict on a constraint, by (version, its text, the declared active
+        # forms): tracing runs BioNetGen, and a version's model never changes.
+        self._verdicts: dict[tuple, Any] = {}
 
         # The version the NEXT commit descends from, or None for "whatever HEAD is".
         # `make_changes(edits=..., base_version=N)` patches version N's stored text, so the commit
@@ -488,7 +493,7 @@ class PetabSession:
             self.model.sbml_model.getNumSpecies(),
         )
 
-    def _seed_progress_from_provenance(self) -> None:
+    def _seed_progress_from_provenance(self, excluded: frozenset[int] = frozenset()) -> None:
         """Seed the best-score :class:`Checkpoint` from prior events (durable resume).
 
         Replays the fit events in the log, scored under the session's criterion (see
@@ -501,7 +506,8 @@ class PetabSession:
         event that carries no score under THIS criterion simply doesn't seed, which is also what
         makes resuming under a criterion the earlier process did not use safe — it starts fresh
         rather than ranking one criterion's scores against another's. Called under construction,
-        so no lock is needed.
+        so no lock is needed, and by :meth:`reseed_best`. The versions ``excluded`` (those the
+        session's constraints rule out) seed nothing.
 
         Also restores ``invalid_comparison`` from the LAST fit event that recorded it — the
         session's outstanding invalid does-adding-structure-help experiment, which a finish check
@@ -531,7 +537,7 @@ class PetabSession:
                 # `score_of` already rejects non-finite values, so a resume can't seed the
                 # checkpoint with a NaN that no later fit could beat (see record_fit_progress).
                 score = self.criterion.score_of(ev)
-                if score is None:
+                if score is None or ev.get("version") in excluded:
                     continue
                 nll = ev.get("neg_log_likelihood")
                 gofp = ev.get("chi2_gof_pvalue")
@@ -556,6 +562,105 @@ class PetabSession:
             self.logger.warning(
                 "could not seed best-score checkpoint from provenance", exc_info=True
             )
+
+    # -- constraints -------------------------------------------------------
+    def constraint_verdicts(self, version: int | None, constraints: Any) -> dict[str, Any]:
+        """Each of ``constraints``' verdicts on stored ``version`` (``None`` or none committed yet:
+        the current model): as the version's record keeps it from its commit, as found before, or
+        checked now, tracing the version's model (:func:`constraints.check`)."""
+        from . import constraints as constraints_mod
+        from .operations import statements_model
+
+        stored = version is not None and version >= 0
+        record = self.provenance.get_statements(version) if stored else self.model_statements
+
+        def model():
+            return statements_model(self, record)
+
+        if not stored:
+            return constraints_mod.check(constraints, record, model)
+        forms = tuple(f.text for f in constraints.active_forms)
+        kept = constraints_mod.kept(constraints, record)
+        out, todo = {}, []
+        for c in constraints.items:
+            key = (version, c.text, forms)
+            if key not in self._verdicts and c.id in kept:
+                self._verdicts[key] = kept[c.id]
+            if key in self._verdicts:
+                out[c.id] = self._verdicts[key]
+            else:
+                todo.append(c)
+        if todo:
+            found = constraints_mod.check(
+                constraints_mod.Constraints(tuple(todo), constraints.active_forms), record, model
+            )
+            for c in todo:
+                out[c.id] = self._verdicts[(version, c.text, forms)] = found[c.id]
+        return out
+
+    def constraint_violations(self, constraints: Any | None = None) -> dict[int, list[str]]:
+        """The ids of the constraints (the session's, or ``constraints``) each stored version
+        breaks, by version (:meth:`constraint_verdicts`); a version breaking none is left out, and
+        all are without constraints."""
+        constraints = constraints if constraints is not None else self.constraints
+        if constraints is None:
+            return {}
+        out = {}
+        for meta in self.provenance.list_versions():
+            if meta.get("version") is None:
+                continue
+            verdicts = self.constraint_verdicts(int(meta["version"]), constraints)
+            if broken := [c.id for c in constraints.items if not verdicts[c.id].ok]:
+                out[int(meta["version"])] = broken
+        return out
+
+    def reseed_best(self, excluded: set[int]) -> None:
+        """Rebuild the best-score checkpoint from the log without the versions ``excluded``, the ones
+        the constraints in force break: the best version, the new-best bar and the plateau stop
+        then rank only models that make the session's claims."""
+        with self.lock:
+            self.best = None
+            self._seed_progress_from_provenance(frozenset(excluded))
+
+    def set_constraints(self, constraints: Any, rationale: str) -> dict[str, Any]:
+        """Replace the session's constraints with ``constraints`` (:mod:`constraints`): the next change
+        is checked against them, the versions they break are flagged and no longer restorable or
+        ranked, and the update is logged with ``rationale`` and whether it loosens or tightens."""
+        from . import constraints as constraints_mod
+
+        with self.lock:
+            old = self.constraints
+            broken = self.constraint_violations(constraints)
+            how = constraints_mod.change(old, constraints)
+            head = self.provenance.current_version
+            self.constraints = constraints
+            self.reseed_best(set(broken))
+            if self.model_statements:
+                # What `list_constraints` reads: HEAD under the new set.
+                verdicts = self.constraint_verdicts(head, constraints)
+                self.model_statements["constraints"] = {
+                    "checked": constraints.texts(),
+                    "verdicts": {cid: v.stored() for cid, v in verdicts.items()},
+                }
+            self.provenance.append_event(
+                {
+                    "type": "constraints",
+                    "constraints": constraints.texts(),
+                    "previous": old.texts() if old is not None else [],
+                    "change": how,
+                    "rationale": rationale,
+                    "head": head,
+                    "violating": {str(v): ids for v, ids in broken.items()},
+                }
+            )
+        return {
+            "applied": True,
+            "change": how,
+            "constraints": constraints.texts(),
+            "head_violates": broken.get(head, []) if head is not None else [],
+            "violating_versions": {str(v): ids for v, ids in broken.items()},
+            "best_version": self.best.version if self.best else None,
+        }
 
     # -- model access ------------------------------------------------------
     @property
@@ -1794,6 +1899,21 @@ class PetabSession:
         """Bring a prior version's model + parameters back as the working state (no refit).
 
         The cheap way to go back to an earlier structure: it restores that version's stored fit
-        instead of recompiling and refitting.
+        instead of recompiling and refitting. A version the session's constraints break (one
+        committed before a later `set_constraints`) is refused: the working model is always one
+        that makes the session's claims.
         """
+        if self.constraints is not None:
+            from .operations import OperationError
+
+            verdicts = self.constraint_verdicts(int(version), self.constraints)
+            broken = [c for c in self.constraints.items if not verdicts[c.id].ok]
+            if broken:
+                raise OperationError(
+                    f"restore_version: version {version} breaks the session's constraints "
+                    + ", ".join(f"`{c.id}` ({c.text})" for c in broken)
+                    + ", given after it was committed; restore a version that makes them, or "
+                    "build one with `make_changes`.",
+                    cause="constraint_violated",
+                )
         return self.rollback_to(version, justification)
