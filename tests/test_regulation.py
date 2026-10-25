@@ -1139,7 +1139,7 @@ def test_a_gate_a_condition_turns_on_is_no_refusal():
     built again evaluated, so `ko > 0` was decided. A C that `g="piecewise(0, ko > 0, 1)"` lets
     act only where a condition sets ko to 0 was refused as acting on no rate. J keeps the gate,
     and a version's conditions decide it."""
-    rows = ['conv: A becomes B, activated by C | written g="piecewise(0, ko > 0, 1)"']
+    rows = [("conv: A becomes B, activated by C", 'written g="piecewise(0, ko > 0, 1)"')]
     definition = _rate("k*(1 + g*activated_by)", "k", "g", stmt_type="PopulationTransition",
                        based_on="mass_action")
     (emission,) = _build(rows, definition)
@@ -1157,7 +1157,7 @@ def test_a_gate_a_condition_turns_on_is_no_refusal():
 def test_a_rates_own_gate_keeps_both_branches():
     """#138, t_gate: `piecewise(0, g <= 0, 1)` in a written rate read as 1, its g <= 0 branch
     gone from J."""
-    rows = ["conv: A becomes B, activated by C | gated"]
+    rows = [("conv: A becomes B, activated by C", "gated")]
     definition = _rate("k*activated_by*piecewise(0, g <= 0, 1)", "k", "g",
                        stmt_type="PopulationTransition", based_on="mass_action") | {"policy": "gated"}
     (emission,) = _build(rows, definition)
@@ -1171,7 +1171,7 @@ def test_a_gate_that_turns_the_direction_is_not_decided_on_a_sign_assumed():
     """#138: a derivative builds a `piecewise` again, which decided `ko > 0` on `ko` positive,
     signing `activated by C` on one branch. Each branch is signed, on the version's value where it
     has one."""
-    rows = ["conv: A becomes B, activated by C | gated"]
+    rows = [("conv: A becomes B, activated by C", "gated")]
     definition = _rate("k*piecewise(activated_by, ko > 0, 1/(1 + activated_by))", "k", "ko",
                        stmt_type="PopulationTransition", based_on="mass_action") | {"policy": "gated"}
     (emission,) = _build(rows, definition)
