@@ -37,6 +37,19 @@ def test_a_condition_target_the_rows_convert_is_a_state_not_an_input():
     assert not sbml.getSpecies("naive").getBoundaryCondition()
 
 
+@pytest.mark.parametrize("target", ["naive", "effector"])
+def test_a_renamed_condition_target_the_rows_convert_is_a_state_too(target):
+    """INDRA names the monomer of `effector-T` `effector_T`. Compared under the agent's own name
+    with what the rows make and convert, a target they do was held as well."""
+    antimony, _ = PS.to_antimony(
+        [(PopulationTransition(Agent("naive-T"), Agent("effector-T")), "mass_action", "r1")],
+        {"naive": Agent("naive-T"), "effector": Agent("effector-T")},
+        targets=frozenset({target}),
+    )
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    assert not sbml.getSpecies(target).getBoundaryCondition()
+
+
 def test_a_started_state_that_binds_is_its_free_form_too():
     """A ligand a row also degrades is a state the conditions only start; named for the sum over
     it and its complex, its condition target still set nothing."""
