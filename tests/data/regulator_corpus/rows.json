@@ -3,8 +3,11 @@
   "id": "prover/c1/0",
   "source": "review of #127/#128 (2026-10-24), prover/c1.py",
   "rows": [
-   "conv: A becomes B, inhibited by D0 | p"
+   "conv: A becomes B, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -22,8 +25,11 @@
   "id": "prover/c1/1",
   "source": "review of #127/#128 (2026-10-24), prover/c1.py",
   "rows": [
-   "conv: A becomes B, inhibited by D0 | p"
+   "conv: A becomes B, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -41,8 +47,11 @@
   "id": "prover/c1/2",
   "source": "review of #127/#128 (2026-10-24), prover/c1.py",
   "rows": [
-   "conv: A becomes B, inhibited by D0 | p"
+   "conv: A becomes B, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -60,8 +69,11 @@
   "id": "prover/c1/3",
   "source": "review of #127/#128 (2026-10-24), prover/c1.py",
   "rows": [
-   "conv: A becomes B, inhibited by D0 | p"
+   "conv: A becomes B, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -79,8 +91,11 @@
   "id": "prover/c1/4",
   "source": "review of #127/#128 (2026-10-24), prover/c1.py",
   "rows": [
-   "conv: A becomes B, inhibited by D0 | p"
+   "conv: A becomes B, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -98,8 +113,11 @@
   "id": "prover/c1/5",
   "source": "review of #127/#128 (2026-10-24), prover/c1.py",
   "rows": [
-   "conv: A becomes B, inhibited by D0 | p"
+   "conv: A becomes B, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -117,8 +135,11 @@
   "id": "prover/c1/6",
   "source": "review of #127/#128 (2026-10-24), prover/c1.py",
   "rows": [
-   "conv: A becomes B, inhibited by D0 | p"
+   "conv: A becomes B, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -136,8 +157,11 @@
   "id": "prover/c1/7",
   "source": "review of #127/#128 (2026-10-24), prover/c1.py",
   "rows": [
-   "conv: A becomes B, inhibited by D0 | p"
+   "conv: A becomes B, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -155,8 +179,11 @@
   "id": "prover/c1/8",
   "source": "review of #127/#128 (2026-10-24), prover/c1.py",
   "rows": [
-   "conv: A becomes B, inhibited by D0 | p"
+   "conv: A becomes B, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -175,8 +202,11 @@
   "id": "prover/c1/9",
   "source": "review of #127/#128 (2026-10-24), prover/c1.py",
   "rows": [
-   "conv: A becomes B, inhibited by D0 | p"
+   "conv: A becomes B, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -195,8 +225,11 @@
   "id": "prover/c1/10",
   "source": "review of #127/#128 (2026-10-24), prover/c1.py",
   "rows": [
-   "conv: A becomes B, inhibited by D0 | p"
+   "conv: A becomes B, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -214,8 +247,11 @@
   "id": "prover/c1/11",
   "source": "review of #127/#128 (2026-10-24), prover/c1.py",
   "rows": [
-   "conv: A becomes B, inhibited by D0 | p"
+   "conv: A becomes B, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -233,8 +269,11 @@
   "id": "prover/c1/12",
   "source": "review of #127/#128 (2026-10-24), prover/c1.py",
   "rows": [
-   "conv: A becomes B, inhibited by D0 | p"
+   "conv: A becomes B, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -252,8 +291,11 @@
   "id": "prover/c1/13",
   "source": "review of #127/#128 (2026-10-24), prover/c1.py",
   "rows": [
-   "conv: A becomes B, inhibited by D0 | p"
+   "conv: A becomes B, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -271,8 +313,11 @@
   "id": "prover/c1/14",
   "source": "review of #127/#128 (2026-10-24), prover/c1.py",
   "rows": [
-   "conv: A becomes B, inhibited by D0 | p"
+   "conv: A becomes B, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -290,8 +335,11 @@
   "id": "prover/c1/15",
   "source": "review of #127/#128 (2026-10-24), prover/c1.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -308,8 +356,11 @@
   "id": "prover/c1/16",
   "source": "review of #127/#128 (2026-10-24), prover/c1.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -328,8 +379,11 @@
   "id": "prover/c1/17",
   "source": "review of #127/#128 (2026-10-24), prover/c1.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -349,8 +403,11 @@
   "id": "prover/c1/18",
   "source": "review of #127/#128 (2026-10-24), prover/c1.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -370,8 +427,11 @@
   "id": "prover/c1/19",
   "source": "review of #127/#128 (2026-10-24), prover/c1.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -389,8 +449,11 @@
   "id": "prover/c1/20",
   "source": "review of #127/#128 (2026-10-24), prover/c1.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -408,8 +471,11 @@
   "id": "prover/c1/21",
   "source": "review of #127/#128 (2026-10-24), prover/c1.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -427,8 +493,11 @@
   "id": "prover/c1/22",
   "source": "review of #127/#128 (2026-10-24), prover/c1.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -446,8 +515,11 @@
   "id": "prover/c1/23",
   "source": "review of #127/#128 (2026-10-24), prover/c1.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -465,8 +537,11 @@
   "id": "prover/c1/24",
   "source": "review of #127/#128 (2026-10-24), prover/c1.py",
   "rows": [
-   "conv: A becomes B, activated by E0, inhibited by D0 | p"
+   "conv: A becomes B, activated by E0, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -484,8 +559,11 @@
   "id": "prover/c1/25",
   "source": "review of #127/#128 (2026-10-24), prover/c1.py",
   "rows": [
-   "conv: A becomes B, activated by E0, inhibited by D0 | p"
+   "conv: A becomes B, activated by E0, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -502,8 +580,11 @@
   "id": "prover/c1/26",
   "source": "review of #127/#128 (2026-10-24), prover/c1.py",
   "rows": [
-   "conv: A becomes B, activated by E0, inhibited by D0 | p"
+   "conv: A becomes B, activated by E0, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -521,8 +602,11 @@
   "id": "prover/c1/27",
   "source": "review of #127/#128 (2026-10-24), prover/c1.py",
   "rows": [
-   "conv: A becomes B, activated by E0, inhibited by D0 | p"
+   "conv: A becomes B, activated by E0, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -539,8 +623,11 @@
   "id": "prover/c1/28",
   "source": "review of #127/#128 (2026-10-24), prover/c1.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -558,8 +645,11 @@
   "id": "prover/c1/29",
   "source": "review of #127/#128 (2026-10-24), prover/c1.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -577,8 +667,11 @@
   "id": "prover/c3/0",
   "source": "review of #127/#128 (2026-10-24), prover/c3.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -597,8 +690,11 @@
   "id": "prover/c3/1",
   "source": "review of #127/#128 (2026-10-24), prover/c3.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -617,8 +713,11 @@
   "id": "prover/c3/2",
   "source": "review of #127/#128 (2026-10-24), prover/c3.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -638,8 +737,11 @@
   "id": "prover/c3/3",
   "source": "review of #127/#128 (2026-10-24), prover/c3.py",
   "rows": [
-   "conv: A becomes B, inhibited by D0 | p"
+   "conv: A becomes B, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -658,8 +760,11 @@
   "id": "prover/c3/4",
   "source": "review of #127/#128 (2026-10-24), prover/c3.py",
   "rows": [
-   "conv: A becomes B, inhibited by D0 | p"
+   "conv: A becomes B, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -678,8 +783,11 @@
   "id": "prover/c3/5",
   "source": "review of #127/#128 (2026-10-24), prover/c3.py",
   "rows": [
-   "conv: A becomes B, inhibited by D0 | p"
+   "conv: A becomes B, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -699,8 +807,11 @@
   "id": "prover/c3/6",
   "source": "review of #127/#128 (2026-10-24), prover/c3.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -719,8 +830,11 @@
   "id": "prover/c3/7",
   "source": "review of #127/#128 (2026-10-24), prover/c3.py",
   "rows": [
-   "conv: A becomes B, inhibited by D0 | p"
+   "conv: A becomes B, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -739,8 +853,11 @@
   "id": "prover/c3/8",
   "source": "review of #127/#128 (2026-10-24), prover/c3.py",
   "rows": [
-   "conv: A becomes B, inhibited by D0 | p"
+   "conv: A becomes B, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -759,8 +876,11 @@
   "id": "prover/c3/9",
   "source": "review of #127/#128 (2026-10-24), prover/c3.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -779,8 +899,11 @@
   "id": "prover/c3/10",
   "source": "review of #127/#128 (2026-10-24), prover/c3.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -799,8 +922,11 @@
   "id": "prover/c3/11",
   "source": "review of #127/#128 (2026-10-24), prover/c3.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -818,8 +944,11 @@
   "id": "prover/c3/12",
   "source": "review of #127/#128 (2026-10-24), prover/c3.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -837,8 +966,11 @@
   "id": "prover/c3/13",
   "source": "review of #127/#128 (2026-10-24), prover/c3.py",
   "rows": [
-   "conv: A becomes B, inhibited by D0 | p"
+   "conv: A becomes B, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -857,8 +989,11 @@
   "id": "prover/c3/14",
   "source": "review of #127/#128 (2026-10-24), prover/c3.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -877,8 +1012,11 @@
   "id": "prover/c3/15",
   "source": "review of #127/#128 (2026-10-24), prover/c3.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -897,8 +1035,11 @@
   "id": "prover/c3/16",
   "source": "review of #127/#128 (2026-10-24), prover/c3.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -916,8 +1057,11 @@
   "id": "prover/c3/17",
   "source": "review of #127/#128 (2026-10-24), prover/c3.py",
   "rows": [
-   "conv: A becomes B, activated by E0, inhibited by D0 | p"
+   "conv: A becomes B, activated by E0, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -936,8 +1080,11 @@
   "id": "prover/c3/18",
   "source": "review of #127/#128 (2026-10-24), prover/c3.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -955,8 +1102,11 @@
   "id": "prover/c3/19",
   "source": "review of #127/#128 (2026-10-24), prover/c3.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -975,8 +1125,11 @@
   "id": "prover/c3/20",
   "source": "review of #127/#128 (2026-10-24), prover/c3.py",
   "rows": [
-   "conv: A becomes B, activated by E0, inhibited by D0, modulated by F0 | p"
+   "conv: A becomes B, activated by E0, inhibited by D0, modulated by F0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -997,8 +1150,11 @@
   "id": "prover/c3/21",
   "source": "review of #127/#128 (2026-10-24), prover/c3.py",
   "rows": [
-   "conv: A becomes B, activated by E0 and E1 | p"
+   "conv: A becomes B, activated by E0 and E1"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1016,8 +1172,11 @@
   "id": "prover/c3/22",
   "source": "review of #127/#128 (2026-10-24), prover/c3.py",
   "rows": [
-   "conv: A becomes B, activated by E0 and E1 | p"
+   "conv: A becomes B, activated by E0 and E1"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1036,8 +1195,11 @@
   "id": "prover/c3/23",
   "source": "review of #127/#128 (2026-10-24), prover/c3.py",
   "rows": [
-   "conv: A becomes B, activated by E0, inhibited by D0 | p"
+   "conv: A becomes B, activated by E0, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1056,8 +1218,11 @@
   "id": "prover/c3/24",
   "source": "review of #127/#128 (2026-10-24), prover/c3.py",
   "rows": [
-   "conv: A becomes B, activated by E0, inhibited by D0 | p"
+   "conv: A becomes B, activated by E0, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1078,8 +1243,11 @@
   "id": "prover/c3/25",
   "source": "review of #127/#128 (2026-10-24), prover/c3.py",
   "rows": [
-   "conv: A becomes B, activated by E0, inhibited by D0 | p"
+   "conv: A becomes B, activated by E0, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1099,8 +1267,11 @@
   "id": "prover/c3/26",
   "source": "review of #127/#128 (2026-10-24), prover/c3.py",
   "rows": [
-   "conv: A becomes B, inhibited by D0 | p"
+   "conv: A becomes B, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1120,8 +1291,11 @@
   "id": "prover/c3/27",
   "source": "review of #127/#128 (2026-10-24), prover/c3.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1140,8 +1314,11 @@
   "id": "prover/c3/28",
   "source": "review of #127/#128 (2026-10-24), prover/c3.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1161,8 +1338,11 @@
   "id": "prover/c3/29",
   "source": "review of #127/#128 (2026-10-24), prover/c3.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1182,8 +1362,11 @@
   "id": "prover/c3/30",
   "source": "review of #127/#128 (2026-10-24), prover/c3.py",
   "rows": [
-   "conv: A becomes B, inhibited by D0 | p"
+   "conv: A becomes B, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1202,8 +1385,11 @@
   "id": "prover/c4/0",
   "source": "review of #127/#128 (2026-10-24), prover/c4.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1222,8 +1408,11 @@
   "id": "prover/c4/1",
   "source": "review of #127/#128 (2026-10-24), prover/c4.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1241,8 +1430,11 @@
   "id": "prover/c4/2",
   "source": "review of #127/#128 (2026-10-24), prover/c4.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1260,8 +1452,11 @@
   "id": "prover/c4/3",
   "source": "review of #127/#128 (2026-10-24), prover/c4.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1279,8 +1474,11 @@
   "id": "prover/c4/4",
   "source": "review of #127/#128 (2026-10-24), prover/c4.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1298,8 +1496,11 @@
   "id": "prover/c4/5",
   "source": "review of #127/#128 (2026-10-24), prover/c4.py",
   "rows": [
-   "conv: A becomes B, inhibited by D0 | p"
+   "conv: A becomes B, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1317,8 +1518,11 @@
   "id": "prover/c4/6",
   "source": "review of #127/#128 (2026-10-24), prover/c4.py",
   "rows": [
-   "conv: A becomes B, inhibited by D0 | p"
+   "conv: A becomes B, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1337,8 +1541,11 @@
   "id": "prover/c4/7",
   "source": "review of #127/#128 (2026-10-24), prover/c4.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1355,8 +1562,11 @@
   "id": "prover/c4/8",
   "source": "review of #127/#128 (2026-10-24), prover/c4.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1374,8 +1584,11 @@
   "id": "prover/c4/9",
   "source": "review of #127/#128 (2026-10-24), prover/c4.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1392,8 +1605,11 @@
   "id": "prover/c4/10",
   "source": "review of #127/#128 (2026-10-24), prover/c4.py",
   "rows": [
-   "conv: A becomes B, inhibited by D0 | p"
+   "conv: A becomes B, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1411,8 +1627,11 @@
   "id": "prover/c4/11",
   "source": "review of #127/#128 (2026-10-24), prover/c4.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1431,8 +1650,11 @@
   "id": "prover/c4/12",
   "source": "review of #127/#128 (2026-10-24), prover/c4.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1451,8 +1673,11 @@
   "id": "prover/c4/13",
   "source": "review of #127/#128 (2026-10-24), prover/c4.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1470,8 +1695,11 @@
   "id": "prover/c4/14",
   "source": "review of #127/#128 (2026-10-24), prover/c4.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1489,8 +1717,11 @@
   "id": "prover/c4/15",
   "source": "review of #127/#128 (2026-10-24), prover/c4.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1508,8 +1739,11 @@
   "id": "prover/c5/0",
   "source": "review of #127/#128 (2026-10-24), prover/c5.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1528,8 +1762,11 @@
   "id": "prover/c5/1",
   "source": "review of #127/#128 (2026-10-24), prover/c5.py",
   "rows": [
-   "conv: A becomes B, inhibited by D0 | p"
+   "conv: A becomes B, inhibited by D0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1548,8 +1785,11 @@
   "id": "prover/c5/2",
   "source": "review of #127/#128 (2026-10-24), prover/c5.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1567,8 +1807,11 @@
   "id": "prover/c5/3",
   "source": "review of #127/#128 (2026-10-24), prover/c5.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1586,8 +1829,11 @@
   "id": "prover/c5/4",
   "source": "review of #127/#128 (2026-10-24), prover/c5.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1605,8 +1851,11 @@
   "id": "prover/c5/5",
   "source": "review of #127/#128 (2026-10-24), prover/c5.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1624,8 +1873,11 @@
   "id": "prover/c5/6",
   "source": "review of #127/#128 (2026-10-24), prover/c5.py",
   "rows": [
-   "conv: A becomes B, activated by E0 | p"
+   "conv: A becomes B, activated by E0"
   ],
+  "bindings": {
+   "conv": "p"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1643,8 +1895,11 @@
   "id": "prover/a_e2e_pin",
   "source": "review of #127/#128 (2026-10-24), prover/a_e2e_pin.py: b pinned negative, signed as if positive",
   "rows": [
-   "conv: A becomes B, inhibited by C | loglin b=-2"
+   "conv: A becomes B, inhibited by C"
   ],
+  "bindings": {
+   "conv": "loglin b=-2"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1662,8 +1917,11 @@
   "id": "prover/a_negparam/lin",
   "source": "review of #127/#128 (2026-10-24), prover/a_negparam.py",
   "rows": [
-   "r2: naive becomes effector, inhibited by drug | lin e=-0.5"
+   "r2: naive becomes effector, inhibited by drug"
   ],
+  "bindings": {
+   "r2": "lin e=-0.5"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1681,8 +1939,11 @@
   "id": "prover/a_negparam/difference",
   "source": "review of #127/#128 (2026-10-24), prover/a_negparam.py: a binding of unknown sign",
   "rows": [
-   "r3: naive becomes effector, inhibited by drug | lin e=\"e_up - e_down\""
+   "r3: naive becomes effector, inhibited by drug"
   ],
+  "bindings": {
+   "r3": "lin e=\"e_up - e_down\""
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1700,8 +1961,11 @@
   "id": "prover/alias",
   "source": "review of #127/#128 (2026-10-24), prover/alias.py: inhibited_by and inhibited_by_0 name one agent",
   "rows": [
-   "conv: A becomes B, inhibited by C | alias"
+   "conv: A becomes B, inhibited by C"
   ],
+  "bindings": {
+   "conv": "alias"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1718,8 +1982,11 @@
   "id": "prover/alias2/zero",
   "source": "review of #127/#128 (2026-10-24), prover/alias2.py: two names for one agent cancel",
   "rows": [
-   "r2: naive becomes effector, inhibited by drug | zero"
+   "r2: naive becomes effector, inhibited by drug"
   ],
+  "bindings": {
+   "r2": "zero"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1736,8 +2003,11 @@
   "id": "prover/alias2/role",
   "source": "review of #127/#128 (2026-10-24), prover/alias2.py: the regulator is the target role (products absent: depends on that decision)",
   "rows": [
-   "r1: naive becomes effector, activated by effector | ra"
+   "r1: naive becomes effector, activated by effector"
   ],
+  "bindings": {
+   "r1": "ra"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1754,8 +2024,11 @@
   "id": "prover/alias2/scheme",
   "source": "review of #127/#128 (2026-10-24), prover/alias2.py",
   "rows": [
-   "r3: naive becomes effector, inhibited by drug | sch"
+   "r3: naive becomes effector, inhibited by drug"
   ],
+  "bindings": {
+   "r3": "sch"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1771,8 +2044,11 @@
   "id": "prover/b_overlap/self",
   "source": "review of #127/#128 (2026-10-24), prover/b_overlap.py: the regulator is the reactant",
   "rows": [
-   "r1: naive becomes effector, inhibited by naive | sat"
+   "r1: naive becomes effector, inhibited by naive"
   ],
+  "bindings": {
+   "r1": "sat"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1790,8 +2066,11 @@
   "id": "prover/b_overlap/two_kinds",
   "source": "review of #127/#128 (2026-10-24), prover/b_overlap.py: one agent stated activator and inhibitor",
   "rows": [
-   "r2: naive becomes effector, activated by D, inhibited by D | two"
+   "r2: naive becomes effector, activated by D, inhibited by D"
   ],
+  "bindings": {
+   "r2": "two"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1808,9 +2087,13 @@
   "id": "prover/b_overlap/overlap",
   "source": "review of #127/#128 (2026-10-24), prover/b_overlap.py: total D and phospho D",
   "rows": [
-   "k: K phosphorylates D at S10 | indra_default",
-   "r3: naive becomes effector, activated by D{pS10}, inhibited by D | two"
+   "k: K phosphorylates D at S10",
+   "r3: naive becomes effector, activated by D{pS10}, inhibited by D"
   ],
+  "bindings": {
+   "k": "indra_default",
+   "r3": "two"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1827,9 +2110,13 @@
   "id": "prover/a_crossbind/same",
   "source": "review of #127/#128 (2026-10-24), prover/a_crossbind_e2e.py: a binding reads another row's rate",
   "rows": [
-   "inh: A becomes B, inhibited by C | inh k=act_rate",
-   "act: B becomes A, activated by C | act"
+   "inh: A becomes B, inhibited by C",
+   "act: B becomes A, activated by C"
   ],
+  "bindings": {
+   "inh": "inh k=act_rate",
+   "act": "act"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1856,9 +2143,13 @@
   "id": "prover/a_crossbind/other",
   "source": "review of #127/#128 (2026-10-24), prover/a_crossbind_e2e.py: the other row's rate reads an agent this one does not state",
   "rows": [
-   "inh: A becomes B, inhibited by C | inh k=act_rate",
-   "act: B becomes A, activated by D | act"
+   "inh: A becomes B, inhibited by C",
+   "act: B becomes A, activated by D"
   ],
+  "bindings": {
+   "inh": "inh k=act_rate",
+   "act": "act"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1885,8 +2176,11 @@
   "id": "prover/constant/exp",
   "source": "review of #127/#128 (2026-10-24), prover/constant.py: _constant read exp(a)/exp(b) as one value",
   "rows": [
-   "conv: A becomes B, activated by X, inhibited by Y | two"
+   "conv: A becomes B, activated by X, inhibited by Y"
   ],
+  "bindings": {
+   "conv": "two"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1902,8 +2196,11 @@
   "id": "prover/constant/linear",
   "source": "review of #127/#128 (2026-10-24), prover/constant.py",
   "rows": [
-   "conv: A becomes B, activated by X, inhibited by Y | two"
+   "conv: A becomes B, activated by X, inhibited by Y"
   ],
+  "bindings": {
+   "conv": "two"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1919,8 +2216,11 @@
   "id": "rewrite/t2_bind/free",
   "source": "review of #127/#128 (2026-10-24), rewrite/t2_bind.py: a binding flips or removes the sign",
   "rows": [
-   "conv: A becomes B, activated by C | lin"
+   "conv: A becomes B, activated by C"
   ],
+  "bindings": {
+   "conv": "lin"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1938,8 +2238,11 @@
   "id": "rewrite/t2_bind/negative",
   "source": "review of #127/#128 (2026-10-24), rewrite/t2_bind.py: a binding flips or removes the sign",
   "rows": [
-   "conv: A becomes B, activated by C | lin a=-0.9"
+   "conv: A becomes B, activated by C"
   ],
+  "bindings": {
+   "conv": "lin a=-0.9"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1957,8 +2260,11 @@
   "id": "rewrite/t2_bind/zero",
   "source": "review of #127/#128 (2026-10-24), rewrite/t2_bind.py: a binding flips or removes the sign",
   "rows": [
-   "conv: A becomes B, activated by C | lin a=0"
+   "conv: A becomes B, activated by C"
   ],
+  "bindings": {
+   "conv": "lin a=0"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -1976,8 +2282,11 @@
   "id": "rewrite/t3_conv2",
   "source": "review of #127/#128 (2026-10-24), rewrite/t3_conv2.py: a two-input conversion's placeholder had one input",
   "rows": [
-   "c: A + B -> C, inhibited by X | pair_inh"
+   "c: A + B -> C, inhibited by X"
   ],
+  "bindings": {
+   "c": "pair_inh"
+  },
   "mechanisms": [
    {
     "statement_type": "Conversion",
@@ -1996,8 +2305,11 @@
   "id": "rewrite/t6_twice/both_kinds",
   "source": "review of #127/#128 (2026-10-24), rewrite/t6_twice.py: one agent stated inhibitor and activator",
   "rows": [
-   "conv: A becomes B, inhibited by X, activated by X | both"
+   "conv: A becomes B, inhibited by X, activated by X"
   ],
+  "bindings": {
+   "conv": "both"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -2016,8 +2328,11 @@
   "id": "rewrite/t6_twice/bell",
   "source": "review of #127/#128 (2026-10-24), rewrite/t6_twice.py: one agent twice, a bell-shaped rate",
   "rows": [
-   "conv: A becomes B, modulated by X and X | twice"
+   "conv: A becomes B, modulated by X and X"
   ],
+  "bindings": {
+   "conv": "twice"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -2035,8 +2350,11 @@
   "id": "rewrite/t7_turnover/one_line",
   "source": "review of #127/#128 (2026-10-24), rewrite/t7_turnover.py: `|` read left to right",
   "rows": [
-   "deg: A is degraded, activated by X | turn1"
+   "deg: A is degraded, activated by X"
   ],
+  "bindings": {
+   "deg": "turn1"
+  },
   "mechanisms": [
    {
     "statement_type": "DecreaseAmount",
@@ -2053,8 +2371,11 @@
   "id": "rewrite/t7_turnover/two_lines",
   "source": "review of #127/#128 (2026-10-24), rewrite/t7_turnover.py",
   "rows": [
-   "deg: A is degraded, activated by X | turn2"
+   "deg: A is degraded, activated by X"
   ],
+  "bindings": {
+   "deg": "turn2"
+  },
   "mechanisms": [
    {
     "statement_type": "DecreaseAmount",
@@ -2071,8 +2392,11 @@
   "id": "rewrite/t7b/modulated",
   "source": "review of #127/#128 (2026-10-24), rewrite/t7b_turnover_mod.py",
   "rows": [
-   "deg: A is degraded, modulated by X | turn1"
+   "deg: A is degraded, modulated by X"
   ],
+  "bindings": {
+   "deg": "turn1"
+  },
   "mechanisms": [
    {
     "statement_type": "DecreaseAmount",
@@ -2089,8 +2413,11 @@
   "id": "rewrite/t7b/backwards",
   "source": "review of #127/#128 (2026-10-24), rewrite/t7b_turnover_mod.py: a conversion written backwards",
   "rows": [
-   "c: A -> B, activated by X | rev1"
+   "c: A -> B, activated by X"
   ],
+  "bindings": {
+   "c": "rev1"
+  },
   "mechanisms": [
    {
     "statement_type": "Conversion",
@@ -2107,9 +2434,13 @@
   "id": "rewrite/t8_actsite",
   "source": "review of #127/#128 (2026-10-24), rewrite/t8_actsite.py: an enzyme active only once another row activates it",
   "rows": [
-   "act: B activates A as kinase | indra_default",
-   "phos: A phosphorylates B at S10, inhibited by I | mm_act_inh"
+   "act: B activates A as kinase",
+   "phos: A phosphorylates B at S10, inhibited by I"
   ],
+  "bindings": {
+   "act": "indra_default",
+   "phos": "mm_act_inh"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -2128,10 +2459,15 @@
   "id": "rewrite/t10_modreg",
   "source": "review of #127/#128 (2026-10-24), rewrite/t10_modreg.py: two overlapping patterns of one agent",
   "rows": [
-   "g: E binds G | indra_default",
-   "k: K phosphorylates E at Y10 | indra_default",
-   "conv: A becomes B, modulated by E{pY10} and E{!G} | slowed"
+   "g: E binds G",
+   "k: K phosphorylates E at Y10",
+   "conv: A becomes B, modulated by E{pY10} and E{!G}"
   ],
+  "bindings": {
+   "g": "indra_default",
+   "k": "indra_default",
+   "conv": "slowed"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -2149,8 +2485,11 @@
   "id": "rewrite/t11_fwd",
   "source": "review of #127/#128 (2026-10-24), rewrite/t11_fwd.py",
   "rows": [
-   "c: A -> B, activated by X | fwd1"
+   "c: A -> B, activated by X"
   ],
+  "bindings": {
+   "c": "fwd1"
+  },
   "mechanisms": [
    {
     "statement_type": "Conversion",
@@ -2167,8 +2506,11 @@
   "id": "refusals/t1/two_steps",
   "source": "review of #127/#128 (2026-10-24), refusals/t1_product_present.py: feedback needing the product (products absent: depends on that decision)",
   "rows": [
-   "c1: RAS{-mod\"GTP\"} -> RAS{mod\"GTP\"}, activated by SOS | fb"
+   "c1: RAS{-mod\"GTP\"} -> RAS{mod\"GTP\"}, activated by SOS"
   ],
+  "bindings": {
+   "c1": "fb"
+  },
   "mechanisms": [
    {
     "statement_type": "Conversion",
@@ -2186,8 +2528,11 @@
   "id": "refusals/t1/one_rule",
   "source": "review of #127/#128 (2026-10-24), refusals/t1_product_present.py (products absent: depends on that decision)",
   "rows": [
-   "c1: RAS{-mod\"GTP\"} -> RAS{mod\"GTP\"}, activated by SOS | fb1"
+   "c1: RAS{-mod\"GTP\"} -> RAS{mod\"GTP\"}, activated by SOS"
   ],
+  "bindings": {
+   "c1": "fb1"
+  },
   "mechanisms": [
    {
     "statement_type": "Conversion",
@@ -2204,8 +2549,11 @@
   "id": "refusals/t1/autoreg",
   "source": "review of #127/#128 (2026-10-24), refusals/t1_product_present.py: co-activator needing obj (products absent: depends on that decision)",
   "rows": [
-   "g: TF increases G, activated by X | autoreg"
+   "g: TF increases G, activated by X"
   ],
+  "bindings": {
+   "g": "autoreg"
+  },
   "mechanisms": [
    {
     "statement_type": "IncreaseAmount",
@@ -2223,8 +2571,11 @@
   "id": "refusals/t11/product_stated",
   "source": "review of #127/#128 (2026-10-24), refusals/t11_fb_rewrite.py: the product stated as a second activator",
   "rows": [
-   "c1: RAS{-mod\"GTP\"} -> RAS{mod\"GTP\"}, activated by SOS and RAS{mod\"GTP\"} | fb2"
+   "c1: RAS{-mod\"GTP\"} -> RAS{mod\"GTP\"}, activated by SOS and RAS{mod\"GTP\"}"
   ],
+  "bindings": {
+   "c1": "fb2"
+  },
   "mechanisms": [
    {
     "statement_type": "Conversion",
@@ -2242,8 +2593,11 @@
   "id": "refusals/t11/ternary",
   "source": "review of #127/#128 (2026-10-24), refusals/t11_fb_rewrite.py: X on a ternary complex's second binding",
   "rows": [
-   "t: A binds B binds C, activated by X | tern"
+   "t: A binds B binds C, activated by X"
   ],
+  "bindings": {
+   "t": "tern"
+  },
   "mechanisms": [
    {
     "statement_type": "Complex",
@@ -2262,8 +2616,11 @@
   "id": "refusals/t2/inhibitor_molecule",
   "source": "review of #127/#128 (2026-10-24), refusals/t2_explicit_inhibitor.py: E + I <-> EI as mass action",
   "rows": [
-   "r1: MEK phosphorylates ERK at S10, inhibited by Drug | comp"
+   "r1: MEK phosphorylates ERK at S10, inhibited by Drug"
   ],
+  "bindings": {
+   "r1": "comp"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -2283,8 +2640,11 @@
   "id": "refusals/t4a/by_name",
   "source": "review of #127/#128 (2026-10-24), refusals/t4_misc.py (a): the rate reads a stated regulator by its own name",
   "rows": [
-   "r1: EGFR phosphorylates AKT1 at S473, inhibited by PTEN | byname"
+   "r1: EGFR phosphorylates AKT1 at S473, inhibited by PTEN"
   ],
+  "bindings": {
+   "r1": "byname"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -2301,8 +2661,11 @@
   "id": "refusals/t4b/0",
   "source": "review of #127/#128 (2026-10-24), refusals/t4_misc.py (b): a regulator read through a pattern adding a state",
   "rows": [
-   "r1: EGFR phosphorylates AKT1 at S473, inhibited by PTEN | pat"
+   "r1: EGFR phosphorylates AKT1 at S473, inhibited by PTEN"
   ],
+  "bindings": {
+   "r1": "pat"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -2319,8 +2682,11 @@
   "id": "refusals/t4b/1",
   "source": "review of #127/#128 (2026-10-24), refusals/t4_misc.py (b): a regulator read through a pattern adding a state",
   "rows": [
-   "r1: EGFR phosphorylates AKT1 at S473, inhibited by PTEN | pat"
+   "r1: EGFR phosphorylates AKT1 at S473, inhibited by PTEN"
   ],
+  "bindings": {
+   "r1": "pat"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -2337,8 +2703,11 @@
   "id": "refusals/t4c/two_spellings",
   "source": "review of #127/#128 (2026-10-24), refusals/t4_misc.py (c)",
   "rows": [
-   "r1: E phosphorylates S at S10, inhibited by X | two_spell"
+   "r1: E phosphorylates S at S10, inhibited by X"
   ],
+  "bindings": {
+   "r1": "two_spell"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -2357,8 +2726,11 @@
   "id": "refusals/t4d/isomerase",
   "source": "review of #127/#128 (2026-10-24), refusals/t4_misc.py (d): X speeds both ways of a dead-end equilibrium",
   "rows": [
-   "r1: E phosphorylates S at S10, activated by X | iso"
+   "r1: E phosphorylates S at S10, activated by X"
   ],
+  "bindings": {
+   "r1": "iso"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -2378,8 +2750,11 @@
   "id": "refusals/t4e/irreversible",
   "source": "review of #127/#128 (2026-10-24), refusals/t4_misc.py (e): X activates the enzyme irreversibly",
   "rows": [
-   "r1: E phosphorylates S at S10, activated by X | act_irrev"
+   "r1: E phosphorylates S at S10, activated by X"
   ],
+  "bindings": {
+   "r1": "act_irrev"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -2396,8 +2771,11 @@
   "id": "refusals/t4e/reversible",
   "source": "review of #127/#128 (2026-10-24), refusals/t4_misc.py (e')",
   "rows": [
-   "r1: E phosphorylates S at S10, activated by X | act_rev"
+   "r1: E phosphorylates S at S10, activated by X"
   ],
+  "bindings": {
+   "r1": "act_rev"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -2415,8 +2793,11 @@
   "id": "refusals/t4f/two_steps",
   "source": "review of #127/#128 (2026-10-24), refusals/t4_misc.py (f): an inhibitor whose effect grows with time",
   "rows": [
-   "r1: E phosphorylates S at S10, inhibited by X | decay2"
+   "r1: E phosphorylates S at S10, inhibited by X"
   ],
+  "bindings": {
+   "r1": "decay2"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -2435,8 +2816,11 @@
   "id": "refusals/t4f/one_step",
   "source": "review of #127/#128 (2026-10-24), refusals/t4_misc.py (f')",
   "rows": [
-   "r1: E phosphorylates S at S10, inhibited by X | decay1"
+   "r1: E phosphorylates S at S10, inhibited by X"
   ],
+  "bindings": {
+   "r1": "decay1"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -2453,8 +2837,11 @@
   "id": "refusals/t4g/square",
   "source": "review of #127/#128 (2026-10-24), refusals/t4_misc.py (g)",
   "rows": [
-   "r1: E phosphorylates S at S10, modulated by X | sq"
+   "r1: E phosphorylates S at S10, modulated by X"
   ],
+  "bindings": {
+   "r1": "sq"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -2471,8 +2858,11 @@
   "id": "refusals/t4g/piecewise",
   "source": "review of #127/#128 (2026-10-24), refusals/t4_misc.py (g')",
   "rows": [
-   "r1: E phosphorylates S at S10, inhibited by X | pw"
+   "r1: E phosphorylates S at S10, inhibited by X"
   ],
+  "bindings": {
+   "r1": "pw"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -2490,8 +2880,11 @@
   "id": "refusals/t5h/side",
   "source": "review of #127/#128 (2026-10-24), refusals/t5_noJ.py (h): X only on the substrate's destruction",
   "rows": [
-   "r1: E phosphorylates S at S10, inhibited by X | side"
+   "r1: E phosphorylates S at S10, inhibited by X"
   ],
+  "bindings": {
+   "r1": "side"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -2519,11 +2912,16 @@
       "name": "KRAS"
      }
     },
-    "policy": "indra_default",
     "prefix": "gef"
    },
-   "p: KRAS phosphorylates RAF at S338, inhibited by X | gated_inh"
+   "p: KRAS phosphorylates RAF at S338, inhibited by X"
   ],
+  "bindings": {
+   "gef": {
+    "policy": "indra_default"
+   },
+   "p": "gated_inh"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -2553,11 +2951,16 @@
       "name": "KRAS"
      }
     },
-    "policy": "indra_default",
     "prefix": "gef"
    },
-   "p: KRAS phosphorylates RAF at S338, inhibited by X | gated_deg"
+   "p: KRAS phosphorylates RAF at S338, inhibited by X"
   ],
+  "bindings": {
+   "gef": {
+    "policy": "indra_default"
+   },
+   "p": "gated_deg"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -2577,8 +2980,11 @@
   "id": "refusals/t5i/ungated",
   "source": "review of #127/#128 (2026-10-24), refusals/t5_noJ.py (i3)",
   "rows": [
-   "p: KRAS phosphorylates RAF at S338, inhibited by X | ungated_deg"
+   "p: KRAS phosphorylates RAF at S338, inhibited by X"
   ],
+  "bindings": {
+   "p": "ungated_deg"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -2598,8 +3004,11 @@
   "id": "refusals/t6/deactivation",
   "source": "review of #127/#128 (2026-10-24), refusals/t6_activation.py: the phosphatase on deactivation",
   "rows": [
-   "a: MEK activates ERK, inhibited by DUSP6 | act_deact"
+   "a: MEK activates ERK, inhibited by DUSP6"
   ],
+  "bindings": {
+   "a": "act_deact"
+  },
   "mechanisms": [
    {
     "statement_type": "Activation",
@@ -2617,17 +3026,24 @@
   "id": "refusals/t6/advice",
   "source": "review of #127/#128 (2026-10-24), refusals/t6_activation.py: the row the refusal names",
   "rows": [
-   "a: MEK activates ERK | indra_default",
-   "d: DUSP6 inhibits ERK | indra_default"
+   "a: MEK activates ERK",
+   "d: DUSP6 inhibits ERK"
   ],
+  "bindings": {
+   "a": "indra_default",
+   "d": "indra_default"
+  },
   "mechanisms": []
  },
  {
   "id": "refusals/t7/Activation",
   "source": "review of #127/#128 (2026-10-24), refusals/t7_types.py: a type the statement table did not cover",
   "rows": [
-   "a: MEK activates ERK, activated by X | two"
+   "a: MEK activates ERK, activated by X"
   ],
+  "bindings": {
+   "a": "two"
+  },
   "mechanisms": [
    {
     "statement_type": "Activation",
@@ -2644,8 +3060,11 @@
   "id": "refusals/t7/Inhibition",
   "source": "review of #127/#128 (2026-10-24), refusals/t7_types.py: a type the statement table did not cover",
   "rows": [
-   "a: MEK inhibits ERK, activated by X | two"
+   "a: MEK inhibits ERK, activated by X"
   ],
+  "bindings": {
+   "a": "two"
+  },
   "mechanisms": [
    {
     "statement_type": "Inhibition",
@@ -2662,8 +3081,11 @@
   "id": "refusals/t7/Autophosphorylation",
   "source": "review of #127/#128 (2026-10-24), refusals/t7_types.py: a type the statement table did not cover",
   "rows": [
-   "a: EGFR autophosphorylates at Y1068, activated by X | two"
+   "a: EGFR autophosphorylates at Y1068, activated by X"
   ],
+  "bindings": {
+   "a": "two"
+  },
   "mechanisms": [
    {
     "statement_type": "Autophosphorylation",
@@ -2680,8 +3102,11 @@
   "id": "refusals/t7/Phosphorylation",
   "source": "review of #127/#128 (2026-10-24), refusals/t7_types.py: a type the statement table did not cover",
   "rows": [
-   "a: MEK phosphorylates ERK at T202, activated by X | two"
+   "a: MEK phosphorylates ERK at T202, activated by X"
   ],
+  "bindings": {
+   "a": "two"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -2713,10 +3138,14 @@
       }
      ]
     },
-    "policy": "two",
     "prefix": "g"
    }
   ],
+  "bindings": {
+   "g": {
+    "policy": "two"
+   }
+  },
   "mechanisms": [
    {
     "statement_type": "Gef",
@@ -2733,9 +3162,13 @@
   "id": "refusals/t8/gated",
   "source": "review of #127/#128 (2026-10-24), refusals/t8_autophos_crash.py: crashed in the placeholder fallback",
   "rows": [
-   "e: EGFR binds EGF | indra_default",
-   "a: EGFR autophosphorylates, activated by X | auto"
+   "e: EGFR binds EGF",
+   "a: EGFR autophosphorylates, activated by X"
   ],
+  "bindings": {
+   "e": "indra_default",
+   "a": "auto"
+  },
   "mechanisms": [
    {
     "statement_type": "Autophosphorylation",
@@ -2752,9 +3185,13 @@
   "id": "refusals/t8/act_site",
   "source": "review of #127/#128 (2026-10-24), refusals/t8_autophos_crash.py: crashed in the placeholder fallback",
   "rows": [
-   "e: EGFR binds EGF | indra_default",
-   "a: EGFR autophosphorylates, activated by X | auto"
+   "e: EGFR binds EGF",
+   "a: EGFR autophosphorylates, activated by X"
   ],
+  "bindings": {
+   "e": "indra_default",
+   "a": "auto"
+  },
   "mechanisms": [
    {
     "statement_type": "Autophosphorylation",
@@ -2771,8 +3208,11 @@
   "id": "refusals/t10/Autophosphorylation",
   "source": "review of #127/#128 (2026-10-24), refusals/t10_more.py: gated on a one-state site",
   "rows": [
-   "a: EGFR autophosphorylates, activated by X | g2"
+   "a: EGFR autophosphorylates, activated by X"
   ],
+  "bindings": {
+   "a": "g2"
+  },
   "mechanisms": [
    {
     "statement_type": "Autophosphorylation",
@@ -2809,10 +3249,14 @@
       }
      ]
     },
-    "policy": "g2",
     "prefix": "a"
    }
   ],
+  "bindings": {
+   "a": {
+    "policy": "g2"
+   }
+  },
   "mechanisms": [
    {
     "statement_type": "Transphosphorylation",
@@ -2829,9 +3273,13 @@
   "id": "refusals/t9/any",
   "source": "review of #127/#128 (2026-10-24), refusals/t9_any_crash.py: crashed with `Pattern not concrete`",
   "rows": [
-   "l: MEK binds L | indra_default",
-   "p: MEK phosphorylates ERK at T202, inhibited by I | bound_kinase"
+   "l: MEK binds L",
+   "p: MEK phosphorylates ERK at T202, inhibited by I"
   ],
+  "bindings": {
+   "l": "indra_default",
+   "p": "bound_kinase"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -2849,8 +3297,11 @@
   "id": "refusals/t10/wild",
   "source": "review of #127/#128 (2026-10-24), refusals/t10_more.py: WILD",
   "rows": [
-   "p: MEK phosphorylates ERK at T202, activated by X | wild"
+   "p: MEK phosphorylates ERK at T202, activated by X"
   ],
+  "bindings": {
+   "p": "wild"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -2867,24 +3318,33 @@
   "id": "refusals/t10/binding_mints",
   "source": "review of #127/#128 (2026-10-24), refusals/t10_more.py: a binding names a regulator kind",
   "rows": [
-   "r1: A phosphorylates B at S10 | indra_default kf=k*inhibited_by"
+   "r1: A phosphorylates B at S10"
   ],
+  "bindings": {
+   "r1": "indra_default kf=k*inhibited_by"
+  },
   "mechanisms": []
  },
  {
   "id": "refusals/t10/binding_stated",
   "source": "review of #127/#128 (2026-10-24), refusals/t10_more.py",
   "rows": [
-   "r1: A phosphorylates B at S10, inhibited by X | indra_default kf=k*inhibited_by"
+   "r1: A phosphorylates B at S10, inhibited by X"
   ],
+  "bindings": {
+   "r1": "indra_default kf=k*inhibited_by"
+  },
   "mechanisms": []
  },
  {
   "id": "refusals/t12/position_one",
   "source": "review of #127/#128 (2026-10-24), refusals/t12_ok.py",
   "rows": [
-   "r1: A phosphorylates B at S10, inhibited by X | w0"
+   "r1: A phosphorylates B at S10, inhibited by X"
   ],
+  "bindings": {
+   "r1": "w0"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -2902,8 +3362,11 @@
   "id": "refusals/t12/bare_two",
   "source": "review of #127/#128 (2026-10-24), refusals/t12_ok.py",
   "rows": [
-   "r1: A phosphorylates B at S10, inhibited by X and Y | w1"
+   "r1: A phosphorylates B at S10, inhibited by X and Y"
   ],
+  "bindings": {
+   "r1": "w1"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -2921,8 +3384,11 @@
   "id": "refusals/t12/scheme_position",
   "source": "review of #127/#128 (2026-10-24), refusals/t12_ok.py",
   "rows": [
-   "r1: A phosphorylates B at S10, inhibited by X | pos0"
+   "r1: A phosphorylates B at S10, inhibited by X"
   ],
+  "bindings": {
+   "r1": "pos0"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -2941,8 +3407,11 @@
   "id": "refusals/t12/both_ways",
   "source": "review of #127/#128 (2026-10-24), refusals/t12_ok.py: X slows synthesis and speeds decay",
   "rows": [
-   "s: TF increases G, inhibited by X | both"
+   "s: TF increases G, inhibited by X"
   ],
+  "bindings": {
+   "s": "both"
+  },
   "mechanisms": [
    {
     "statement_type": "IncreaseAmount",
@@ -2960,9 +3429,13 @@
   "id": "advice/c1_degradation",
   "source": "review of #127/#128 (2026-10-24), refusals/t3_follow_advice.py: the degradation row the refusal names",
   "rows": [
-   "s: TF increases mRNA | indra_default",
-   "d: mRNA is degraded, activated by Rep | deg"
+   "s: TF increases mRNA",
+   "d: mRNA is degraded, activated by Rep"
   ],
+  "bindings": {
+   "s": "indra_default",
+   "d": "deg"
+  },
   "mechanisms": [
    {
     "statement_type": "DecreaseAmount",
@@ -2980,9 +3453,13 @@
   "id": "advice/a2_dissociation",
   "source": "review of #127/#128 (2026-10-24), refusals/t3c_dissociation_e2e.py: the dissociation row the refusal names",
   "rows": [
-   "b: A binds B | indra_default",
-   "u: A{!B} -> A + B, activated by X | apart"
+   "b: A binds B",
+   "u: A{!B} -> A + B, activated by X"
   ],
+  "bindings": {
+   "b": "indra_default",
+   "u": "apart"
+  },
   "mechanisms": [
    {
     "statement_type": "Conversion",
@@ -2999,8 +3476,11 @@
   "id": "netrate/t2/fwd_kf_slowed",
   "source": "review of #127/#128 (2026-10-24), netrate/t2.py: a binding line written dissociation first",
   "rows": [
-   "p: E phosphorylates S at S10, inhibited by I | w"
+   "p: E phosphorylates S at S10, inhibited by I"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -3019,8 +3499,11 @@
   "id": "netrate/t2/fwd_kr_slowed",
   "source": "review of #127/#128 (2026-10-24), netrate/t2.py: a binding line written dissociation first",
   "rows": [
-   "p: E phosphorylates S at S10, inhibited by I | w"
+   "p: E phosphorylates S at S10, inhibited by I"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -3039,8 +3522,11 @@
   "id": "netrate/t2/fwd_kr_sped",
   "source": "review of #127/#128 (2026-10-24), netrate/t2.py: a binding line written dissociation first",
   "rows": [
-   "p: E phosphorylates S at S10, inhibited by I | w"
+   "p: E phosphorylates S at S10, inhibited by I"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -3059,8 +3545,11 @@
   "id": "netrate/t2/rev_kf_slowed",
   "source": "review of #127/#128 (2026-10-24), netrate/t2.py: a binding line written dissociation first",
   "rows": [
-   "p: E phosphorylates S at S10, inhibited by I | w"
+   "p: E phosphorylates S at S10, inhibited by I"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -3079,8 +3568,11 @@
   "id": "netrate/t2/rev_kr_slowed",
   "source": "review of #127/#128 (2026-10-24), netrate/t2.py: a binding line written dissociation first",
   "rows": [
-   "p: E phosphorylates S at S10, inhibited by I | w"
+   "p: E phosphorylates S at S10, inhibited by I"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -3099,8 +3591,11 @@
   "id": "netrate/t2/rev_kr_sped",
   "source": "review of #127/#128 (2026-10-24), netrate/t2.py: a binding line written dissociation first",
   "rows": [
-   "p: E phosphorylates S at S10, inhibited by I | w"
+   "p: E phosphorylates S at S10, inhibited by I"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -3119,8 +3614,11 @@
   "id": "netrate/t2/rev_kc_slowed",
   "source": "review of #127/#128 (2026-10-24), netrate/t2.py: a binding line written dissociation first",
   "rows": [
-   "p: E phosphorylates S at S10, inhibited by I | w"
+   "p: E phosphorylates S at S10, inhibited by I"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -3139,8 +3637,11 @@
   "id": "netrate/t5/partner",
   "source": "review of #127/#128 (2026-10-24), netrate/t5.py: the enzyme sequestered by a partner it is written not bound to",
   "rows": [
-   "p: E{~C} phosphorylates S at S10, inhibited by I | w"
+   "p: E{~C} phosphorylates S at S10, inhibited by I"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -3159,8 +3660,11 @@
   "id": "netrate/t6/one_line",
   "source": "review of #127/#128 (2026-10-24), netrate/t6.py: the product catalyses its own making (products absent: depends on that decision)",
   "rows": [
-   "c: A -> B, activated by X | w"
+   "c: A -> B, activated by X"
   ],
+  "bindings": {
+   "c": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Conversion",
@@ -3176,8 +3680,11 @@
   "id": "netrate/t6/basal",
   "source": "review of #127/#128 (2026-10-24), netrate/t6.py: the product catalyses its own making (products absent: depends on that decision)",
   "rows": [
-   "c: A -> B, activated by X | w"
+   "c: A -> B, activated by X"
   ],
+  "bindings": {
+   "c": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Conversion",
@@ -3194,8 +3701,11 @@
   "id": "netrate/t8/trimer",
   "source": "review of #127/#128 (2026-10-24), netrate/t8.py: a trimer in two steps",
   "rows": [
-   "t: A binds B binds C, inhibited by X | w"
+   "t: A binds B binds C, inhibited by X"
   ],
+  "bindings": {
+   "t": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Complex",
@@ -3215,8 +3725,11 @@
   "id": "netrate/t8/two_inputs",
   "source": "review of #127/#128 (2026-10-24), netrate/t8.py: a two-input conversion with its subject",
   "rows": [
-   "c: A + B -> C by E, inhibited by X | w"
+   "c: A + B -> C by E, inhibited by X"
   ],
+  "bindings": {
+   "c": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Conversion",
@@ -3235,8 +3748,11 @@
   "id": "netrate/t9/4_chain",
   "source": "review of #127/#128 (2026-10-24), netrate/t9.py: enzyme conformations (six all joined ran past 15 minutes)",
   "rows": [
-   "p: E phosphorylates S at S10, inhibited by I | w"
+   "p: E phosphorylates S at S10, inhibited by I"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -3259,8 +3775,11 @@
   "id": "netrate/t9/4_all",
   "source": "review of #127/#128 (2026-10-24), netrate/t9.py: enzyme conformations (six all joined ran past 15 minutes)",
   "rows": [
-   "p: E phosphorylates S at S10, inhibited by I | w"
+   "p: E phosphorylates S at S10, inhibited by I"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -3289,8 +3808,11 @@
   "id": "netrate/t9/6_all",
   "source": "review of #127/#128 (2026-10-24), netrate/t9.py: enzyme conformations (six all joined ran past 15 minutes)",
   "rows": [
-   "p: E phosphorylates S at S10, inhibited by I | w"
+   "p: E phosphorylates S at S10, inhibited by I"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -3337,8 +3859,11 @@
   "id": "netrate/t10/e3_kdeg_slowed",
   "source": "review of #127/#128 (2026-10-24), netrate/t10.py",
   "rows": [
-   "d: E3 decreases S, inhibited by X | w"
+   "d: E3 decreases S, inhibited by X"
   ],
+  "bindings": {
+   "d": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "DecreaseAmount",
@@ -3357,8 +3882,11 @@
   "id": "netrate/t10/e3_kr_slowed",
   "source": "review of #127/#128 (2026-10-24), netrate/t10.py",
   "rows": [
-   "d: E3 decreases S, inhibited by X | w"
+   "d: E3 decreases S, inhibited by X"
   ],
+  "bindings": {
+   "d": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "DecreaseAmount",
@@ -3377,8 +3905,11 @@
   "id": "netrate/t10/substrate_inhibition",
   "source": "review of #127/#128 (2026-10-24), netrate/t10.py",
   "rows": [
-   "p: E phosphorylates S at S10, inhibited by X | w"
+   "p: E phosphorylates S at S10, inhibited by X"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -3399,8 +3930,11 @@
   "id": "netrate/t10/three_steps",
   "source": "review of #127/#128 (2026-10-24), netrate/t10.py",
   "rows": [
-   "p: E phosphorylates S at S10, inhibited by X | w"
+   "p: E phosphorylates S at S10, inhibited by X"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -3422,8 +3956,11 @@
   "id": "netrate/t10/three_steps_rebinding",
   "source": "review of #127/#128 (2026-10-24), netrate/t10.py",
   "rows": [
-   "p: E phosphorylates S at S10, inhibited by X | w"
+   "p: E phosphorylates S at S10, inhibited by X"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -3445,8 +3982,11 @@
   "id": "netrate/t10/ping_pong",
   "source": "review of #127/#128 (2026-10-24), netrate/t10.py",
   "rows": [
-   "p: E phosphorylates S at S10, inhibited by X | w"
+   "p: E phosphorylates S at S10, inhibited by X"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -3464,8 +4004,11 @@
   "id": "netrate/t11/synthesis_activated",
   "source": "review of #127/#128 (2026-10-24), netrate/t11.py",
   "rows": [
-   "d: S is degraded, activated by X | w"
+   "d: S is degraded, activated by X"
   ],
+  "bindings": {
+   "d": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "DecreaseAmount",
@@ -3483,8 +4026,11 @@
   "id": "netrate/t11/synthesis_modulated",
   "source": "review of #127/#128 (2026-10-24), netrate/t11.py",
   "rows": [
-   "d: S is degraded, modulated by X | w"
+   "d: S is degraded, modulated by X"
   ],
+  "bindings": {
+   "d": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "DecreaseAmount",
@@ -3502,8 +4048,11 @@
   "id": "netrate/t11/subj_and_synthesis",
   "source": "review of #127/#128 (2026-10-24), netrate/t11.py",
   "rows": [
-   "d: E3 decreases S, activated by X | w"
+   "d: E3 decreases S, activated by X"
   ],
+  "bindings": {
+   "d": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "DecreaseAmount",
@@ -3521,8 +4070,11 @@
   "id": "netrate/t11/degradation_sped",
   "source": "review of #127/#128 (2026-10-24), netrate/t11.py",
   "rows": [
-   "s: S is produced, activated by X | w"
+   "s: S is produced, activated by X"
   ],
+  "bindings": {
+   "s": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "IncreaseAmount",
@@ -3540,8 +4092,11 @@
   "id": "netrate/t12/ub_degradation",
   "source": "review of #127/#128 (2026-10-24), netrate/t12.py",
   "rows": [
-   "d: E3 decreases S, activated by X | w"
+   "d: E3 decreases S, activated by X"
   ],
+  "bindings": {
+   "d": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "DecreaseAmount",
@@ -3559,8 +4114,11 @@
   "id": "netrate/t12/ub_ubiquitination",
   "source": "review of #127/#128 (2026-10-24), netrate/t12.py",
   "rows": [
-   "d: E3 decreases S, activated by X | w"
+   "d: E3 decreases S, activated by X"
   ],
+  "bindings": {
+   "d": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "DecreaseAmount",
@@ -3578,8 +4136,11 @@
   "id": "netrate/t12/immature",
   "source": "review of #127/#128 (2026-10-24), netrate/t12.py",
   "rows": [
-   "s: TF increases S, activated by X | w"
+   "s: TF increases S, activated by X"
   ],
+  "bindings": {
+   "s": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "IncreaseAmount",
@@ -3597,8 +4158,11 @@
   "id": "netrate/t14/hill",
   "source": "review of #127/#128 (2026-10-24), netrate/t14.py, t15.py: Hill factors on five reversible steps (ran past 30 minutes)",
   "rows": [
-   "p: E phosphorylates S at S10, inhibited by I0 and I1 and I2 and I3, activated by A0, modulated by M0 | w"
+   "p: E phosphorylates S at S10, inhibited by I0 and I1 and I2 and I3, activated by A0, modulated by M0"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -3630,8 +4194,11 @@
   "id": "netrate/t17/enzyme_turnover",
   "source": "review of #127/#128 (2026-10-24), netrate/t17.py",
   "rows": [
-   "p: E phosphorylates S at S10, inhibited by X | w"
+   "p: E phosphorylates S at S10, inhibited by X"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -3650,8 +4217,11 @@
   "id": "netrate/t17/enzyme_degraded",
   "source": "review of #127/#128 (2026-10-24), netrate/t17.py",
   "rows": [
-   "p: E phosphorylates S at S10, inhibited by X | w"
+   "p: E phosphorylates S at S10, inhibited by X"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -3669,8 +4239,11 @@
   "id": "netrate/t17/back_sped_more",
   "source": "review of #127/#128 (2026-10-24), netrate/t17.py",
   "rows": [
-   "c: A -> B, activated by X | w"
+   "c: A -> B, activated by X"
   ],
+  "bindings": {
+   "c": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Conversion",
@@ -3688,8 +4261,11 @@
   "id": "netrate/t17/gap_step",
   "source": "review of #127/#128 (2026-10-24), netrate/t17.py",
   "rows": [
-   "c: RAS{-mod\"GTP\"} -> RAS{mod\"GTP\"}, activated by X | w"
+   "c: RAS{-mod\"GTP\"} -> RAS{mod\"GTP\"}, activated by X"
   ],
+  "bindings": {
+   "c": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Conversion",
@@ -3707,8 +4283,11 @@
   "id": "netrate/t17/saturating_kc",
   "source": "review of #127/#128 (2026-10-24), netrate/t17.py",
   "rows": [
-   "p: E phosphorylates S at S10, activated by X | w"
+   "p: E phosphorylates S at S10, activated by X"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -3727,8 +4306,11 @@
   "id": "netrate/t19/kf",
   "source": "review of #127/#128 (2026-10-24), netrate/t19.py, t20.py: gexpr13's factor on one step of two (linsolve ran 400 s)",
   "rows": [
-   "p: E phosphorylates S at S10, inhibited by I, modulated by M0 and M1 and M2 | w"
+   "p: E phosphorylates S at S10, inhibited by I, modulated by M0 and M1 and M2"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -3757,8 +4339,11 @@
   "id": "netrate/t19/kr",
   "source": "review of #127/#128 (2026-10-24), netrate/t19.py, t20.py: gexpr13's factor on one step of two (linsolve ran 400 s)",
   "rows": [
-   "p: E phosphorylates S at S10, inhibited by I, modulated by M0 and M1 and M2 | w"
+   "p: E phosphorylates S at S10, inhibited by I, modulated by M0 and M1 and M2"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -3787,8 +4372,11 @@
   "id": "netrate/t19/kc",
   "source": "review of #127/#128 (2026-10-24), netrate/t19.py, t20.py: gexpr13's factor on one step of two (linsolve ran 400 s)",
   "rows": [
-   "p: E phosphorylates S at S10, inhibited by I, modulated by M0 and M1 and M2 | w"
+   "p: E phosphorylates S at S10, inhibited by I, modulated by M0 and M1 and M2"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -3817,8 +4405,11 @@
   "id": "netrate/t22/inhibited_by",
   "source": "review of #127/#128 (2026-10-24), netrate/t22.py, v1.py: one regulator on two steps, each its own way",
   "rows": [
-   "p: E phosphorylates S at S10, inhibited by X | w"
+   "p: E phosphorylates S at S10, inhibited by X"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -3837,8 +4428,11 @@
   "id": "netrate/t22/activated_by",
   "source": "review of #127/#128 (2026-10-24), netrate/t22.py, v1.py: one regulator on two steps, each its own way",
   "rows": [
-   "p: E phosphorylates S at S10, activated by X | w"
+   "p: E phosphorylates S at S10, activated by X"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -3857,8 +4451,11 @@
   "id": "netrate/t22/modulated_by",
   "source": "review of #127/#128 (2026-10-24), netrate/t22.py, v1.py: one regulator on two steps, each its own way",
   "rows": [
-   "p: E phosphorylates S at S10, modulated by X | w"
+   "p: E phosphorylates S at S10, modulated by X"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -3877,8 +4474,11 @@
   "id": "netrate/v5/itself",
   "source": "review of #127/#128 (2026-10-24), netrate/v5.py: a removal inhibited by what it removes",
   "rows": [
-   "d: Y is degraded, inhibited by Y | w"
+   "d: Y is degraded, inhibited by Y"
   ],
+  "bindings": {
+   "d": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "DecreaseAmount",
@@ -3896,8 +4496,11 @@
   "id": "netrate/2_reversed/kr2_kc",
   "source": "review of #127/#128 (2026-10-24), netrate finding 2: a binding line written dissociation first",
   "rows": [
-   "p: E phosphorylates S at S10, inhibited by I | w"
+   "p: E phosphorylates S at S10, inhibited by I"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -3916,8 +4519,11 @@
   "id": "netrate/2_reversed/competitive",
   "source": "review of #127/#128 (2026-10-24), netrate finding 2: a binding line written dissociation first",
   "rows": [
-   "p: E phosphorylates S at S10, inhibited by I | w"
+   "p: E phosphorylates S at S10, inhibited by I"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -3936,8 +4542,11 @@
   "id": "netrate/3/enzyme_inhibits_itself",
   "source": "review of #127/#128 (2026-10-24), netrate finding 3: the regulator is the enzyme",
   "rows": [
-   "p: E phosphorylates S at S10, inhibited by E | w"
+   "p: E phosphorylates S at S10, inhibited by E"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -3955,9 +4564,13 @@
   "id": "netrate/1/advice",
   "source": "review of #127/#128 (2026-10-24), netrate finding 1: the synthesis row the refusal names",
   "rows": [
-   "d: S is degraded | indra_default",
-   "s: S is produced, activated by X | w"
+   "d: S is degraded",
+   "s: S is produced, activated by X"
   ],
+  "bindings": {
+   "d": "indra_default",
+   "s": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "IncreaseAmount",
@@ -3975,8 +4588,11 @@
   "id": "netrate/t4/Inhibition",
   "source": "review of #127/#128 (2026-10-24), netrate/t4.py: types without a statement table entry before",
   "rows": [
-   "a: MEK inhibits ERK, activated by X | w"
+   "a: MEK inhibits ERK, activated by X"
   ],
+  "bindings": {
+   "a": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Inhibition",
@@ -3993,8 +4609,11 @@
   "id": "netrate/t4/Activation_binding",
   "source": "review of #127/#128 (2026-10-24), netrate/t4.py: types without a statement table entry before",
   "rows": [
-   "a: MEK activates ERK, activated by X | w"
+   "a: MEK activates ERK, activated by X"
   ],
+  "bindings": {
+   "a": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Activation",
@@ -4012,8 +4631,11 @@
   "id": "netrate/t4/Activation_binding_back",
   "source": "review of #127/#128 (2026-10-24), netrate/t4.py: types without a statement table entry before",
   "rows": [
-   "a: MEK activates ERK, activated by X | w"
+   "a: MEK activates ERK, activated by X"
   ],
+  "bindings": {
+   "a": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Activation",
@@ -4047,10 +4669,14 @@
       }
      ]
     },
-    "policy": "w",
     "prefix": "g"
    }
   ],
+  "bindings": {
+   "g": {
+    "policy": "w"
+   }
+  },
   "mechanisms": [
    {
     "statement_type": "Gef",
@@ -4082,10 +4708,14 @@
       }
      ]
     },
-    "policy": "w",
     "prefix": "g"
    }
   ],
+  "bindings": {
+   "g": {
+    "policy": "w"
+   }
+  },
   "mechanisms": [
    {
     "statement_type": "Gap",
@@ -4102,8 +4732,11 @@
   "id": "netrate/v3/four_regulators",
   "source": "review of #127/#128 (2026-10-24), netrate/v3.py: three reversible steps, four regulators",
   "rows": [
-   "p: E phosphorylates S at S10, inhibited by I0 and I1 and I2, activated by A0 | w"
+   "p: E phosphorylates S at S10, inhibited by I0 and I1 and I2, activated by A0"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -4128,8 +4761,11 @@
   "id": "netrate/t21/1reg",
   "source": "review of #127/#128 (2026-10-24), netrate/t21.py, v6.py: saturating regulators on kc of two steps (finding 8)",
   "rows": [
-   "p: E phosphorylates S at S10, inhibited by I | w"
+   "p: E phosphorylates S at S10, inhibited by I"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -4149,8 +4785,11 @@
   "id": "netrate/t21/2reg",
   "source": "review of #127/#128 (2026-10-24), netrate/t21.py, v6.py: saturating regulators on kc of two steps (finding 8)",
   "rows": [
-   "p: E phosphorylates S at S10, activated by A, inhibited by I | w"
+   "p: E phosphorylates S at S10, activated by A, inhibited by I"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -4172,8 +4811,11 @@
   "id": "netrate/t21/3reg",
   "source": "review of #127/#128 (2026-10-24), netrate/t21.py, v6.py: saturating regulators on kc of two steps (finding 8)",
   "rows": [
-   "p: E phosphorylates S at S10, activated by A, inhibited by I, modulated by M | w"
+   "p: E phosphorylates S at S10, activated by A, inhibited by I, modulated by M"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -4197,8 +4839,11 @@
   "id": "netrate/t21/2sum",
   "source": "review of #127/#128 (2026-10-24), netrate/t21.py, v6.py: saturating regulators on kc of two steps (finding 8)",
   "rows": [
-   "p: E phosphorylates S at S10, modulated by M0 and M1 | w"
+   "p: E phosphorylates S at S10, modulated by M0 and M1"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -4220,8 +4865,11 @@
   "id": "netrate/t9/5_all",
   "source": "review of #127/#128 (2026-10-24), netrate/t9.py: five enzyme forms all joined (14 s before)",
   "rows": [
-   "p: E phosphorylates S at S10, inhibited by I | w"
+   "p: E phosphorylates S at S10, inhibited by I"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -4258,8 +4906,11 @@
   "id": "advice/products_at_0/ras_sos/product_stated",
   "source": "review of #127/#128 (2026-10-24), the rows the products-at-0 refusal names (user's decision, 2026-10-24), followed",
   "rows": [
-   "c1: RAS{-mod\"GTP\"} -> RAS{mod\"GTP\"}, activated by SOS and RAS{mod\"GTP\"} | fed"
+   "c1: RAS{-mod\"GTP\"} -> RAS{mod\"GTP\"}, activated by SOS and RAS{mod\"GTP\"}"
   ],
+  "bindings": {
+   "c1": "fed"
+  },
   "mechanisms": [
    {
     "statement_type": "Conversion",
@@ -4277,9 +4928,13 @@
   "id": "advice/products_at_0/ras_sos/own_row",
   "source": "review of #127/#128 (2026-10-24), the rows the products-at-0 refusal names (user's decision, 2026-10-24), followed",
   "rows": [
-   "c1: RAS{-mod\"GTP\"} -> RAS{mod\"GTP\"}, activated by SOS and RAS{mod\"GTP\"} | fed",
-   "c2: RAS{mod\"GTP\"} -> RAS{-mod\"GTP\"} | mass_action"
+   "c1: RAS{-mod\"GTP\"} -> RAS{mod\"GTP\"}, activated by SOS and RAS{mod\"GTP\"}",
+   "c2: RAS{mod\"GTP\"} -> RAS{-mod\"GTP\"}"
   ],
+  "bindings": {
+   "c1": "fed",
+   "c2": "mass_action"
+  },
   "mechanisms": [
    {
     "statement_type": "Conversion",
@@ -4296,8 +4951,11 @@
   "id": "advice/products_at_0/autoregulation/product_stated",
   "source": "review of #127/#128 (2026-10-24), the rows the products-at-0 refusal names (user's decision, 2026-10-24), followed",
   "rows": [
-   "g: TF increases G, activated by X and G | fed"
+   "g: TF increases G, activated by X and G"
   ],
+  "bindings": {
+   "g": "fed"
+  },
   "mechanisms": [
    {
     "statement_type": "IncreaseAmount",
@@ -4315,9 +4973,13 @@
   "id": "advice/products_at_0/autoregulation/own_row",
   "source": "review of #127/#128 (2026-10-24), the rows the products-at-0 refusal names (user's decision, 2026-10-24), followed",
   "rows": [
-   "g: TF increases G, activated by X and G | fed",
-   "d: G is degraded | indra_default"
+   "g: TF increases G, activated by X and G",
+   "d: G is degraded"
   ],
+  "bindings": {
+   "g": "fed",
+   "d": "indra_default"
+  },
   "mechanisms": [
    {
     "statement_type": "IncreaseAmount",
@@ -4334,8 +4996,11 @@
   "id": "advice/products_at_0/autocatalysis_basal/product_stated",
   "source": "review of #127/#128 (2026-10-24), the rows the products-at-0 refusal names (user's decision, 2026-10-24), followed",
   "rows": [
-   "c: A -> B, activated by X and B | fed"
+   "c: A -> B, activated by X and B"
   ],
+  "bindings": {
+   "c": "fed"
+  },
   "mechanisms": [
    {
     "statement_type": "Conversion",
@@ -4352,8 +5017,11 @@
   "id": "advice/products_at_0/autocatalysis_basal/own_row",
   "source": "review of #127/#128 (2026-10-24), the rows the products-at-0 refusal names (user's decision, 2026-10-24), followed",
   "rows": [
-   "c: A -> B, activated by X and B | fed"
+   "c: A -> B, activated by X and B"
   ],
+  "bindings": {
+   "c": "fed"
+  },
   "mechanisms": [
    {
     "statement_type": "Conversion",
@@ -4370,8 +5038,11 @@
   "id": "advice/products_at_0/autocatalysis/product_stated",
   "source": "review of #127/#128 (2026-10-24), the rows the products-at-0 refusal names (user's decision, 2026-10-24), followed",
   "rows": [
-   "c: A -> B, activated by X and B | fed"
+   "c: A -> B, activated by X and B"
   ],
+  "bindings": {
+   "c": "fed"
+  },
   "mechanisms": [
    {
     "statement_type": "Conversion",
@@ -4387,8 +5058,11 @@
   "id": "review127/b1/three_steps/activated_by_ERK{pT202}",
   "source": "review of #127 at b3d09b5 (2026-10-24), blocking 1: a regulator matching the complex the catalytic step makes",
   "rows": [
-   "p: MEK phosphorylates ERK at T202, activated by ERK{pT202} | written"
+   "p: MEK phosphorylates ERK at T202, activated by ERK{pT202}"
   ],
+  "bindings": {
+   "p": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -4408,8 +5082,11 @@
   "id": "review127/b1/three_steps/inhibited_by_ERK{pT202}",
   "source": "review of #127 at b3d09b5 (2026-10-24), blocking 1: a regulator matching the complex the catalytic step makes",
   "rows": [
-   "p: MEK phosphorylates ERK at T202, inhibited by ERK{pT202} | written"
+   "p: MEK phosphorylates ERK at T202, inhibited by ERK{pT202}"
   ],
+  "bindings": {
+   "p": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -4429,8 +5106,11 @@
   "id": "review127/b1/three_steps/inhibited_by_X",
   "source": "review of #127 at b3d09b5 (2026-10-24), blocking 1: a regulator matching the complex the catalytic step makes",
   "rows": [
-   "p: MEK phosphorylates ERK at T202, inhibited by X | written"
+   "p: MEK phosphorylates ERK at T202, inhibited by X"
   ],
+  "bindings": {
+   "p": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -4450,8 +5130,11 @@
   "id": "review127/b1/three_steps/activated_by_X",
   "source": "review of #127 at b3d09b5 (2026-10-24), blocking 1: a regulator matching the complex the catalytic step makes",
   "rows": [
-   "p: MEK phosphorylates ERK at T202, activated by X | written"
+   "p: MEK phosphorylates ERK at T202, activated by X"
   ],
+  "bindings": {
+   "p": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -4471,8 +5154,11 @@
   "id": "review127/b1/two_steps/activated_by_MEK",
   "source": "review of #127 at b3d09b5 (2026-10-24), blocking 1: a bare pattern matching the enzyme free and bound",
   "rows": [
-   "p: MEK phosphorylates ERK at T202, activated by MEK | written"
+   "p: MEK phosphorylates ERK at T202, activated by MEK"
   ],
+  "bindings": {
+   "p": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -4491,8 +5177,11 @@
   "id": "review127/b1/two_steps/inhibited_by_MEK",
   "source": "review of #127 at b3d09b5 (2026-10-24), blocking 1: a bare pattern matching the enzyme free and bound",
   "rows": [
-   "p: MEK phosphorylates ERK at T202, inhibited by MEK | written"
+   "p: MEK phosphorylates ERK at T202, inhibited by MEK"
   ],
+  "bindings": {
+   "p": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -4511,8 +5200,11 @@
   "id": "review127/b1/two_steps/inhibited_by_MEK{~ERK}",
   "source": "review of #127 at b3d09b5 (2026-10-24), blocking 1: a bare pattern matching the enzyme free and bound",
   "rows": [
-   "p: MEK phosphorylates ERK at T202, inhibited by MEK{~ERK} | written"
+   "p: MEK phosphorylates ERK at T202, inhibited by MEK{~ERK}"
   ],
+  "bindings": {
+   "p": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -4531,8 +5223,11 @@
   "id": "review127/b1/two_steps/inhibited_by_ERK",
   "source": "review of #127 at b3d09b5 (2026-10-24), blocking 1: a bare pattern matching the enzyme free and bound",
   "rows": [
-   "p: MEK phosphorylates ERK at T202, inhibited by ERK | written"
+   "p: MEK phosphorylates ERK at T202, inhibited by ERK"
   ],
+  "bindings": {
+   "p": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -4551,9 +5246,13 @@
   "id": "review127/b2/two_sites/inhibited_by",
   "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
   "rows": [
-   "m1: MEK phosphorylates ERK at Y187 | indra_default",
-   "p: MEK phosphorylates ERK at T185, inhibited by U | w"
+   "m1: MEK phosphorylates ERK at Y187",
+   "p: MEK phosphorylates ERK at T185, inhibited by U"
   ],
+  "bindings": {
+   "m1": "indra_default",
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -4570,9 +5269,13 @@
   "id": "review127/b2/two_sites/activated_by",
   "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
   "rows": [
-   "m1: MEK phosphorylates ERK at Y187 | indra_default",
-   "p: MEK phosphorylates ERK at T185, activated by U | w"
+   "m1: MEK phosphorylates ERK at Y187",
+   "p: MEK phosphorylates ERK at T185, activated by U"
   ],
+  "bindings": {
+   "m1": "indra_default",
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -4589,9 +5292,13 @@
   "id": "review127/b2/two_sites_two_steps/inhibited_by",
   "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
   "rows": [
-   "m1: MEK phosphorylates ERK at Y187 | indra_default",
-   "p: MEK phosphorylates ERK at T185, inhibited by U | written"
+   "m1: MEK phosphorylates ERK at Y187",
+   "p: MEK phosphorylates ERK at T185, inhibited by U"
   ],
+  "bindings": {
+   "m1": "indra_default",
+   "p": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -4610,9 +5317,13 @@
   "id": "review127/b2/two_sites_two_steps/activated_by",
   "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
   "rows": [
-   "m1: MEK phosphorylates ERK at Y187 | indra_default",
-   "p: MEK phosphorylates ERK at T185, activated by U | written"
+   "m1: MEK phosphorylates ERK at Y187",
+   "p: MEK phosphorylates ERK at T185, activated by U"
   ],
+  "bindings": {
+   "m1": "indra_default",
+   "p": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -4631,9 +5342,13 @@
   "id": "review127/b2/partner/inhibited_by",
   "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
   "rows": [
-   "b: ERK binds DUSP | indra_default",
-   "p: MEK phosphorylates ERK at T185, inhibited by U | w"
+   "b: ERK binds DUSP",
+   "p: MEK phosphorylates ERK at T185, inhibited by U"
   ],
+  "bindings": {
+   "b": "indra_default",
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -4650,9 +5365,13 @@
   "id": "review127/b2/partner/activated_by",
   "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
   "rows": [
-   "b: ERK binds DUSP | indra_default",
-   "p: MEK phosphorylates ERK at T185, activated by U | w"
+   "b: ERK binds DUSP",
+   "p: MEK phosphorylates ERK at T185, activated by U"
   ],
+  "bindings": {
+   "b": "indra_default",
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -4669,9 +5388,13 @@
   "id": "review127/b2/conversion/inhibited_by",
   "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
   "rows": [
-   "k: K phosphorylates A at S10 | indra_default",
-   "c: A -> B, inhibited by U | w"
+   "k: K phosphorylates A at S10",
+   "c: A -> B, inhibited by U"
   ],
+  "bindings": {
+   "k": "indra_default",
+   "c": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Conversion",
@@ -4688,9 +5411,13 @@
   "id": "review127/b2/conversion/activated_by",
   "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
   "rows": [
-   "k: K phosphorylates A at S10 | indra_default",
-   "c: A -> B, activated by U | w"
+   "k: K phosphorylates A at S10",
+   "c: A -> B, activated by U"
   ],
+  "bindings": {
+   "k": "indra_default",
+   "c": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Conversion",
@@ -4707,9 +5434,13 @@
   "id": "review127/b2/degradation/inhibited_by",
   "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
   "rows": [
-   "k: K phosphorylates A at S10 | indra_default",
-   "d: A is degraded, inhibited by U | w"
+   "k: K phosphorylates A at S10",
+   "d: A is degraded, inhibited by U"
   ],
+  "bindings": {
+   "k": "indra_default",
+   "d": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "DecreaseAmount",
@@ -4726,9 +5457,13 @@
   "id": "review127/b2/degradation/activated_by",
   "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
   "rows": [
-   "k: K phosphorylates A at S10 | indra_default",
-   "d: A is degraded, activated by U | w"
+   "k: K phosphorylates A at S10",
+   "d: A is degraded, activated by U"
   ],
+  "bindings": {
+   "k": "indra_default",
+   "d": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "DecreaseAmount",
@@ -4745,10 +5480,15 @@
   "id": "review127/b2/dephosphorylation/inhibited_by",
   "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
   "rows": [
-   "k: K phosphorylates A at S10 | indra_default",
-   "k2: K phosphorylates A at Y20 | indra_default",
-   "d: P dephosphorylates A at S10, inhibited by U | w"
+   "k: K phosphorylates A at S10",
+   "k2: K phosphorylates A at Y20",
+   "d: P dephosphorylates A at S10, inhibited by U"
   ],
+  "bindings": {
+   "k": "indra_default",
+   "k2": "indra_default",
+   "d": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Dephosphorylation",
@@ -4765,10 +5505,15 @@
   "id": "review127/b2/dephosphorylation/activated_by",
   "source": "review of #127 at b3d09b5 (2026-10-24), blocking 2: an agent another row gives a site or a partner",
   "rows": [
-   "k: K phosphorylates A at S10 | indra_default",
-   "k2: K phosphorylates A at Y20 | indra_default",
-   "d: P dephosphorylates A at S10, activated by U | w"
+   "k: K phosphorylates A at S10",
+   "k2: K phosphorylates A at Y20",
+   "d: P dephosphorylates A at S10, activated by U"
   ],
+  "bindings": {
+   "k": "indra_default",
+   "k2": "indra_default",
+   "d": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Dephosphorylation",
@@ -4785,8 +5530,11 @@
   "id": "review127/chain/8",
   "source": "review of #127 at b3d09b5 (2026-10-24), should fix: a chain of reversible enzyme forms, the inhibitor on kc alone",
   "rows": [
-   "p: MEK phosphorylates ERK at T202, inhibited by I | written"
+   "p: MEK phosphorylates ERK at T202, inhibited by I"
   ],
+  "bindings": {
+   "p": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -4819,8 +5567,11 @@
   "id": "review127/chain/13",
   "source": "review of #127 at b3d09b5 (2026-10-24), should fix: a chain of reversible enzyme forms, the inhibitor on kc alone",
   "rows": [
-   "p: MEK phosphorylates ERK at T202, inhibited by I | written"
+   "p: MEK phosphorylates ERK at T202, inhibited by I"
   ],
+  "bindings": {
+   "p": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -4878,10 +5629,14 @@
       }
      ]
     },
-    "policy": "written",
     "prefix": "gef"
    }
   ],
+  "bindings": {
+   "gef": {
+    "policy": "written"
+   }
+  },
   "mechanisms": [
    {
     "statement_type": "Gef",
@@ -4898,8 +5653,11 @@
   "id": "review128b/gef/followed",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), t_gef: its advice followed",
   "rows": [
-   "gef: SOS is a GEF for KRAS, activated by X and KRAS{gtpbound:on} | fed"
+   "gef: SOS is a GEF for KRAS, activated by X and KRAS{gtpbound:on}"
   ],
+  "bindings": {
+   "gef": "fed"
+  },
   "mechanisms": [
    {
     "statement_type": "Gef",
@@ -4916,8 +5674,11 @@
   "id": "review128b/catalyst/a_e/activated_by",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), t_catalyst: E on both sides, a catalyst",
   "rows": [
-   "c: A + E -> B + E, activated by X | written"
+   "c: A + E -> B + E, activated by X"
   ],
+  "bindings": {
+   "c": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "Conversion",
@@ -4933,8 +5694,11 @@
   "id": "review128b/catalyst/l_r/activated_by",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), t_catalyst: L + R -> L + R{act}",
   "rows": [
-   "c: L + R -> L + R{pS10}, activated by X | written"
+   "c: L + R -> L + R{pS10}, activated by X"
   ],
+  "bindings": {
+   "c": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "Conversion",
@@ -4950,8 +5714,11 @@
   "id": "review128b/catalyst/a_e/inhibited_by",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), t_catalyst: E on both sides, a catalyst",
   "rows": [
-   "c: A + E -> B + E, inhibited by X | written"
+   "c: A + E -> B + E, inhibited by X"
   ],
+  "bindings": {
+   "c": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "Conversion",
@@ -4967,8 +5734,11 @@
   "id": "review128b/catalyst/l_r/inhibited_by",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), t_catalyst: L + R -> L + R{act}",
   "rows": [
-   "c: L + R -> L + R{pS10}, inhibited by X | written"
+   "c: L + R -> L + R{pS10}, inhibited by X"
   ],
+  "bindings": {
+   "c": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "Conversion",
@@ -4984,8 +5754,11 @@
   "id": "review128b/multiproduct/feedback",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), t_multiproduct: feedback through the second product C",
   "rows": [
-   "c: A -> B + C, activated by X | written"
+   "c: A -> B + C, activated by X"
   ],
+  "bindings": {
+   "c": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "Conversion",
@@ -5002,8 +5775,11 @@
   "id": "review128b/multiproduct/followed",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), t_multiproduct: its advice followed, C stated",
   "rows": [
-   "c: A -> B + C, activated by X and C | fed"
+   "c: A -> B + C, activated by X and C"
   ],
+  "bindings": {
+   "c": "fed"
+  },
   "mechanisms": [
    {
     "statement_type": "Conversion",
@@ -5020,12 +5796,19 @@
   "id": "review128b/sites/4/inhibited_by",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), t_sites: EGFR with sites other rows set, a two-step row on it",
   "rows": [
-   "k0: SRC phosphorylates EGFR at Y1068 | indra_default",
-   "k1: SRC phosphorylates EGFR at Y1173 | indra_default",
-   "k2: SRC phosphorylates EGFR at Y992 | indra_default",
-   "k3: SRC phosphorylates EGFR at Y1045 | indra_default",
-   "p: EGFR phosphorylates PLCG at Y783, inhibited by I | written"
+   "k0: SRC phosphorylates EGFR at Y1068",
+   "k1: SRC phosphorylates EGFR at Y1173",
+   "k2: SRC phosphorylates EGFR at Y992",
+   "k3: SRC phosphorylates EGFR at Y1045",
+   "p: EGFR phosphorylates PLCG at Y783, inhibited by I"
   ],
+  "bindings": {
+   "k0": "indra_default",
+   "k1": "indra_default",
+   "k2": "indra_default",
+   "k3": "indra_default",
+   "p": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -5044,12 +5827,19 @@
   "id": "review128b/sites/4/activated_by",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), t_sites: EGFR with sites other rows set, a two-step row on it",
   "rows": [
-   "k0: SRC phosphorylates EGFR at Y1068 | indra_default",
-   "k1: SRC phosphorylates EGFR at Y1173 | indra_default",
-   "k2: SRC phosphorylates EGFR at Y992 | indra_default",
-   "k3: SRC phosphorylates EGFR at Y1045 | indra_default",
-   "p: EGFR phosphorylates PLCG at Y783, activated by I | written"
+   "k0: SRC phosphorylates EGFR at Y1068",
+   "k1: SRC phosphorylates EGFR at Y1173",
+   "k2: SRC phosphorylates EGFR at Y992",
+   "k3: SRC phosphorylates EGFR at Y1045",
+   "p: EGFR phosphorylates PLCG at Y783, activated by I"
   ],
+  "bindings": {
+   "k0": "indra_default",
+   "k1": "indra_default",
+   "k2": "indra_default",
+   "k3": "indra_default",
+   "p": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -5068,13 +5858,21 @@
   "id": "review128b/sites/5/inhibited_by",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), t_sites: EGFR with sites other rows set, a two-step row on it",
   "rows": [
-   "k0: SRC phosphorylates EGFR at Y1068 | indra_default",
-   "k1: SRC phosphorylates EGFR at Y1173 | indra_default",
-   "k2: SRC phosphorylates EGFR at Y992 | indra_default",
-   "k3: SRC phosphorylates EGFR at Y1045 | indra_default",
-   "k4: SRC phosphorylates EGFR at Y1086 | indra_default",
-   "p: EGFR phosphorylates PLCG at Y783, inhibited by I | written"
+   "k0: SRC phosphorylates EGFR at Y1068",
+   "k1: SRC phosphorylates EGFR at Y1173",
+   "k2: SRC phosphorylates EGFR at Y992",
+   "k3: SRC phosphorylates EGFR at Y1045",
+   "k4: SRC phosphorylates EGFR at Y1086",
+   "p: EGFR phosphorylates PLCG at Y783, inhibited by I"
   ],
+  "bindings": {
+   "k0": "indra_default",
+   "k1": "indra_default",
+   "k2": "indra_default",
+   "k3": "indra_default",
+   "k4": "indra_default",
+   "p": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -5093,13 +5891,21 @@
   "id": "review128b/sites/5/activated_by",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), t_sites: EGFR with sites other rows set, a two-step row on it",
   "rows": [
-   "k0: SRC phosphorylates EGFR at Y1068 | indra_default",
-   "k1: SRC phosphorylates EGFR at Y1173 | indra_default",
-   "k2: SRC phosphorylates EGFR at Y992 | indra_default",
-   "k3: SRC phosphorylates EGFR at Y1045 | indra_default",
-   "k4: SRC phosphorylates EGFR at Y1086 | indra_default",
-   "p: EGFR phosphorylates PLCG at Y783, activated by I | written"
+   "k0: SRC phosphorylates EGFR at Y1068",
+   "k1: SRC phosphorylates EGFR at Y1173",
+   "k2: SRC phosphorylates EGFR at Y992",
+   "k3: SRC phosphorylates EGFR at Y1045",
+   "k4: SRC phosphorylates EGFR at Y1086",
+   "p: EGFR phosphorylates PLCG at Y783, activated by I"
   ],
+  "bindings": {
+   "k0": "indra_default",
+   "k1": "indra_default",
+   "k2": "indra_default",
+   "k3": "indra_default",
+   "k4": "indra_default",
+   "p": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -5118,8 +5924,11 @@
   "id": "review128b/vanish/8_forms_4_inhibitors",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), t_vanish: J near 1e-14 at the zero test's points",
   "rows": [
-   "p: MEK phosphorylates ERK at T202, inhibited by I0 and I1 and I2 and I3 | written"
+   "p: MEK phosphorylates ERK at T202, inhibited by I0 and I1 and I2 and I3"
   ],
+  "bindings": {
+   "p": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -5155,8 +5964,11 @@
   "id": "review128b/time/from_0",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), e2e_time: an onset rate, time from 0",
   "rows": [
-   "conv: A becomes B, activated by C | written"
+   "conv: A becomes B, activated by C"
   ],
+  "bindings": {
+   "conv": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -5178,8 +5990,11 @@
   "id": "review128b/time/from_minus_5",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), e2e_time: an onset rate, an experiment from -5",
   "rows": [
-   "conv: A becomes B, activated by C | written"
+   "conv: A becomes B, activated by C"
   ],
+  "bindings": {
+   "conv": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -5201,8 +6016,11 @@
   "id": "review128b/dose/unit",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), t_dose_unit: d bound to dose - 1",
   "rows": [
-   "conv: A becomes B, activated by C | written d=\"dose - 1\""
+   "conv: A becomes B, activated by C"
   ],
+  "bindings": {
+   "conv": "written d=\"dose - 1\""
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -5220,8 +6038,11 @@
   "id": "review128b/binding/piecewise_off",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), a binding's piecewise raised a TypeError",
   "rows": [
-   "conv: A becomes B, activated by C | written g=\"piecewise(0, ko > 0, 1)\""
+   "conv: A becomes B, activated by C"
   ],
+  "bindings": {
+   "conv": "written g=\"piecewise(0, ko > 0, 1)\""
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -5239,8 +6060,11 @@
   "id": "review128b/binding/piecewise_on",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), a binding's piecewise, on either way",
   "rows": [
-   "conv: A becomes B, activated by C | written g=\"piecewise(2, ko > 0, 1)\""
+   "conv: A becomes B, activated by C"
   ],
+  "bindings": {
+   "conv": "written g=\"piecewise(2, ko > 0, 1)\""
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -5258,8 +6082,11 @@
   "id": "review128b/bounds/fraction",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), b1_fraction: e in [0, 1]",
   "rows": [
-   "conv: A becomes B, activated by C | written"
+   "conv: A becomes B, activated by C"
   ],
+  "bindings": {
+   "conv": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -5277,8 +6104,11 @@
   "id": "review128b/kept/p0",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), kept as handled correctly (t_types)",
   "rows": [
-   "p: ERK phosphorylates ERK at T202, activated by X | w"
+   "p: ERK phosphorylates ERK at T202, activated by X"
   ],
+  "bindings": {
+   "p": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Phosphorylation",
@@ -5295,8 +6125,11 @@
   "id": "review128b/kept/a1",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), kept as handled correctly (t_types)",
   "rows": [
-   "a: EGFR autophosphorylates at Y1068, activated by X | w"
+   "a: EGFR autophosphorylates at Y1068, activated by X"
   ],
+  "bindings": {
+   "a": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Autophosphorylation",
@@ -5313,8 +6146,11 @@
   "id": "review128b/kept/g2",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), kept as handled correctly (t_types)",
   "rows": [
-   "g: SOS activates KRAS as gtpbound, inhibited by X | w"
+   "g: SOS activates KRAS as gtpbound, inhibited by X"
   ],
+  "bindings": {
+   "g": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Activation",
@@ -5331,8 +6167,11 @@
   "id": "review128b/kept/m3",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), kept as handled correctly (t_types)",
   "rows": [
-   "m: A moves from cytoplasm to nucleus, inhibited by X | w"
+   "m: A moves from cytoplasm to nucleus, inhibited by X"
   ],
+  "bindings": {
+   "m": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Translocation",
@@ -5349,8 +6188,11 @@
   "id": "review128b/kept/c4",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), kept as handled correctly (t_types)",
   "rows": [
-   "c: A -> B + B, inhibited by X | w"
+   "c: A -> B + B, inhibited by X"
   ],
+  "bindings": {
+   "c": "w"
+  },
   "mechanisms": [
    {
     "statement_type": "Conversion",
@@ -5367,8 +6209,11 @@
   "id": "review128b/problem/dose_default_0.1",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), e2e_dose: dose 2 in the only condition, 0.1 the model's own",
   "rows": [
-   "conv: A becomes B, activated by C | written d=\"dose - 1\""
+   "conv: A becomes B, activated by C"
   ],
+  "bindings": {
+   "conv": "written d=\"dose - 1\""
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -5412,8 +6257,11 @@
   "id": "review128b/problem/dose_default_3",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), e2e_dose: dose 2 in the only condition, 3 the model's own",
   "rows": [
-   "conv: A becomes B, activated by C | written d=\"dose - 1\""
+   "conv: A becomes B, activated by C"
   ],
+  "bindings": {
+   "conv": "written d=\"dose - 1\""
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -5457,8 +6305,11 @@
   "id": "review128b/problem/fraction",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), b1_fraction: e in [0, 1]",
   "rows": [
-   "conv: A becomes B, activated by C | written"
+   "conv: A becomes B, activated by C"
   ],
+  "bindings": {
+   "conv": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -5496,8 +6347,11 @@
   "id": "review128b/problem/difference",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), b1_fraction: a = x - y, x in [2, 10], y in [0, 1]",
   "rows": [
-   "conv: A becomes B, activated by C | written a=\"x - y\""
+   "conv: A becomes B, activated by C"
   ],
+  "bindings": {
+   "conv": "written a=\"x - y\""
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -5543,8 +6397,11 @@
   "id": "review128b/problem/lb0_lin",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), kept: a lower bound of 0 on a linear scale",
   "rows": [
-   "conv: A becomes B, activated by C | written"
+   "conv: A becomes B, activated by C"
   ],
+  "bindings": {
+   "conv": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -5582,8 +6439,11 @@
   "id": "review128b/problem/lb0_log10",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), kept: a lower bound of 0 on a log10 scale",
   "rows": [
-   "conv: A becomes B, activated by C | written"
+   "conv: A becomes B, activated by C"
   ],
+  "bindings": {
+   "conv": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -5621,8 +6481,11 @@
   "id": "review128b/problem/negative_bounds",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), kept: a scale change re-signing, bounds below 0",
   "rows": [
-   "conv: A becomes B, activated by C | written"
+   "conv: A becomes B, activated by C"
   ],
+  "bindings": {
+   "conv": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -5660,8 +6523,11 @@
   "id": "review128b/problem/fixed_negative",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), kept: a fixed negative nominal",
   "rows": [
-   "conv: A becomes B, activated by C | written"
+   "conv: A becomes B, activated by C"
   ],
+  "bindings": {
+   "conv": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -5699,9 +6565,13 @@
   "id": "review128b/problem/shared",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), kept: a parameter two rows share",
   "rows": [
-   "conv: A becomes B, activated by C | written a=\"a_shared\"",
-   "conv2: B becomes A, activated by C | written a=\"a_shared\""
+   "conv: A becomes B, activated by C",
+   "conv2: B becomes A, activated by C"
   ],
+  "bindings": {
+   "conv": "written a=\"a_shared\"",
+   "conv2": "written a=\"a_shared\""
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
@@ -5747,8 +6617,11 @@
   "id": "review128b/problem/negative_rate_law",
   "source": "second review of #127/#128 at 8b3ac1e (2026-10-24), kinds check: k*(1 + a*C) with a below 0 goes negative",
   "rows": [
-   "conv: A becomes B, activated by C | written"
+   "conv: A becomes B, activated by C"
   ],
+  "bindings": {
+   "conv": "written"
+  },
   "mechanisms": [
    {
     "statement_type": "PopulationTransition",
