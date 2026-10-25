@@ -2340,6 +2340,12 @@ def _open_ctx(
     :class:`AmiciEngine` wired into it, and its held-out set. The arguments are
     :func:`create_server`'s, but for ``fit_engine``: the server's
     :class:`~petab_mcp.dask_engine.DaskEngine`, which the session's fits share, or ``None``."""
+    # Read before anything is built: a refused map leaves no provenance store or build directory.
+    entities = None
+    if entity_map:
+        from . import seeding as seeding_mod
+
+        entities = seeding_mod.load_entity_map(entity_map)
     session = PetabSession(
         yaml_path,
         provenance_dir=provenance_dir,
@@ -2352,10 +2358,8 @@ def _open_ctx(
     session.engine = engine
     session.auto_fit = auto_fit
     session.auto_fit_starts = auto_fit_starts
-    if entity_map:
-        from . import seeding as seeding_mod
-
-        session.entities = seeding_mod.load_entity_map(entity_map)
+    if entities is not None:
+        session.entities = entities
     if score_shipped_model and session.model_authored():
         fitting_mod.score_at_nominal(session, engine)
     held_out = None
