@@ -5927,7 +5927,7 @@
    {
     "statement_type": "Phosphorylation",
     "policy": "binder",
-    "scheme": "enz(sub=None, inhibited_by=None) + sub(enz=None, mod='off') | enz(sub=1, inhibited_by=None) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc\nenz(sub=1, inhibited_by=None) % sub(enz=1, mod='off') + inhibited_by(enz=None) | enz(sub=1, inhibited_by=2) % sub(enz=1, mod='off') % inhibited_by(enz=2) @ kon, koff",
+    "scheme": "enz(sub=None, inhibited_by=None) + sub(enz=None, mod='off') | enz(sub=1, inhibited_by=None) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1, inhibited_by=None) % sub(enz=1, mod='off') >> enz(sub=None, inhibited_by=None) + sub(enz=None, mod='on') @ kc\nenz(sub=1, inhibited_by=None) % sub(enz=1, mod='off') + inhibited_by(enz=None) | enz(sub=1, inhibited_by=2) % sub(enz=1, mod='off') % inhibited_by(enz=2) @ kon, koff",
     "parameters": [
      "kf",
      "kr",
@@ -5948,7 +5948,7 @@
    {
     "statement_type": "Phosphorylation",
     "policy": "comp",
-    "scheme": "enz(sub=None, inhibited_by=None) + sub(enz=None, mod='off') | enz(sub=1, inhibited_by=None) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc\nenz(sub=None, inhibited_by=None) + inhibited_by() | enz(sub=None, inhibited_by=1) % inhibited_by(enz=1) @ kon, koff",
+    "scheme": "enz(sub=None, inhibited_by=None) + sub(enz=None, mod='off') | enz(sub=1, inhibited_by=None) % sub(enz=1, mod='off') @ kf, kr\nenz(sub=1) % sub(enz=1, mod='off') >> enz(sub=None) + sub(enz=None, mod='on') @ kc\nenz(sub=None, inhibited_by=None) + inhibited_by(enz=None) | enz(sub=None, inhibited_by=1) % inhibited_by(enz=1) @ kon, koff",
     "parameters": [
      "kf",
      "kr",

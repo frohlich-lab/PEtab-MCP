@@ -26,6 +26,58 @@
  "advice/products_at_0/ras_sos/product_stated": {
   "verdict": "accepted"
  },
+ "issue140/activator": {
+  "verdict": "accepted"
+ },
+ "issue140/as_written": {
+  "kind": "build",
+  "verdict": "refused"
+ },
+ "issue140/binds_substrate": {
+  "kind": "unseen",
+  "verdict": "refused"
+ },
+ "issue140/both_act": {
+  "kind": "unseen",
+  "verdict": "refused"
+ },
+ "issue140/bound_acts": {
+  "derived": {
+   "p": {
+    "inhibited_by_0": "activated_by"
+   }
+  },
+  "verdict": "accepted"
+ },
+ "issue140/competitive": {
+  "verdict": "accepted"
+ },
+ "issue140/complex_read": {
+  "verdict": "accepted"
+ },
+ "issue140/free_read": {
+  "derived": {
+   "p": {
+    "modulated_by_0": "inhibited_by"
+   }
+  },
+  "verdict": "accepted"
+ },
+ "issue140/one_bound_one_read": {
+  "verdict": "accepted"
+ },
+ "issue140/review_t2_named": {
+  "verdict": "accepted"
+ },
+ "issue140/sequestering": {
+  "verdict": "accepted"
+ },
+ "issue140/stated_state": {
+  "verdict": "accepted"
+ },
+ "issue140/uncompetitive": {
+  "verdict": "accepted"
+ },
  "netrate/1/advice": {
   "verdict": "accepted"
  },
@@ -1589,7 +1641,7 @@
   "verdict": "accepted"
  },
  "refusals/t2/inhibitor_molecule": {
-  "kind": "unnamed",
+  "kind": "build",
   "verdict": "refused"
  },
  "refusals/t4a/by_name": {
@@ -1601,7 +1653,7 @@
   "verdict": "refused"
  },
  "refusals/t4b/1": {
-  "kind": "unnamed",
+  "kind": "build",
   "verdict": "refused"
  },
  "refusals/t4c/two_spellings": {
