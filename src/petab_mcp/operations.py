@@ -748,6 +748,7 @@ def statements_to_antimony(
 
     # Imported here: INDRA takes seconds to import, and only this route needs it.
     from indra.statements import Agent, stmts_from_json
+    from indra.statements.validate import InvalidStatement, assert_valid_statement_semantics
 
     from . import mechanisms, problem_sbml, regulation
     from .statements import (
@@ -831,6 +832,21 @@ def statements_to_antimony(
             f"not statements INDRA can read: {'; '.join(unread)}. A list role is a list "
             '(`"obj_from": [{"name": "A"}]`); the notation is easier: '
             "`conv: A + B -> C`. NOTHING was applied.",
+            cause="unreadable_statement",
+        )
+    # INDRA's own check of what each statement holds, behind `problems` above, which names the
+    # field: a Translocation to and from nowhere was refused only once it built no rule, and then
+    # told to change its policy.
+    invalid = []
+    for stmt, row in zip(stmts, rows):
+        try:
+            assert_valid_statement_semantics(stmt)
+        except InvalidStatement as exc:
+            invalid.append(f"`{row['prefix']}`: {str(exc).rstrip('.')}")
+    if invalid:
+        raise OperationError(
+            f"make_changes: these `statements` do not build as written: {'; '.join(invalid)}. "
+            "NOTHING was applied.",
             cause="unreadable_statement",
         )
     declared = [

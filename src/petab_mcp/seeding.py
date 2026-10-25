@@ -28,19 +28,13 @@ from pathlib import Path
 from indra.statements import Agent
 
 from .errors import EntityMapError
+from .statements import fields
 
-#: The keys an entry is read by: INDRA's ``Agent`` JSON. Any other key is left to the map's other
+#: The keys an entry is read by: INDRA's ``Agent`` JSON, without the ``sbo`` INDRA writes on a
+#: statement's agent, which is its role in that statement. Any other key is left to the map's other
 #: readers (a benchmark's own annotation keys), except one close to these, which is a typo that
 #: would otherwise be dropped without a word.
-ENTRY_KEYS = (
-    "name",
-    "db_refs",
-    "mods",
-    "mutations",
-    "bound_conditions",
-    "activity",
-    "location",
-)
+ENTRY_KEYS = fields(Agent)
 
 
 def _entries(path: str) -> dict[str, dict]:

@@ -1137,6 +1137,19 @@ def test_a_statement_missing_a_field_is_refused_by_name(tmp_path):
     assert "`p`: `sub.mods[0]` has no `mod_type`, one of [" in out["error"]
 
 
+def test_a_translocation_to_and_from_nowhere_is_refused_as_written(tmp_path):
+    """`A moves`, every field present, was refused only once it built no rule, and told to give
+    the row a policy that builds one; INDRA's own check of a statement refuses it first."""
+    out = _call(
+        _statements_server(tmp_path),
+        "make_changes",
+        {"justification": "x", "statements": ["conv: A becomes B", "t: A moves"],
+         "bindings": {"conv": "mass_action", "t": "default"}},
+    )
+    assert out["applied"] is False and out["error_cause"] == "unreadable_statement"
+    assert "`t`: Translocation with no locations. NOTHING was applied." in out["error"]
+
+
 def test_a_type_the_library_lacks_is_a_library_gap(tmp_path):
     """INDRA's own types are statement types whether or not the library has a mechanism for them:
     refused as no statement type, RegulateAmount was neither counted as a gap nor pointed at
