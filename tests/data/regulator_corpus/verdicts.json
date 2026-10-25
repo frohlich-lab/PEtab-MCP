@@ -26,6 +26,23 @@
  "advice/products_at_0/ras_sos/product_stated": {
   "verdict": "accepted"
  },
+ "issue138/t_gate/binding": {
+  "verdict": "accepted"
+ },
+ "issue138/t_gate/condition": {
+  "verdict": "accepted"
+ },
+ "issue138/t_gate/direction": {
+  "derived": {
+   "conv": {
+    "activated_by_0": "modulated_by"
+   }
+  },
+  "verdict": "accepted"
+ },
+ "issue138/t_gate/rate": {
+  "verdict": "accepted"
+ },
  "netrate/1/advice": {
   "verdict": "accepted"
  },
