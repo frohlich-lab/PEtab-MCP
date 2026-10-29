@@ -52,8 +52,8 @@ perl, slim container images do not.
 petab-mcp --petab-yaml path/to/problem.yaml
 # --provenance-dir DIR   --reference-validation {required,best_effort,off}
 # --build-root DIR       --skills-dir DIR
-# --entity-map PATH      (offers make_changes the `statements` route; see src/petab_mcp/seeding.py)
-# --statements-only      (with --entity-map: the `statements` route alone, no Antimony routes)
+# --entity-map PATH      (make_changes offers the `statements` route in place of the Antimony
+#                         routes, never both; see src/petab_mcp/seeding.py)
 # --constraints PATH     (with --entity-map: causal claims every model must make; see src/petab_mcp/constraints.py)
 # --constraint-updates {off,any}   (any: offers set_constraints, which replaces them mid-session)
 # --transport {stdio,sse,streamable-http}

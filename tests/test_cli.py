@@ -137,11 +137,12 @@ def test_a_pool_main_cannot_run_is_refused_before_anything_starts(monkeypatch, c
     assert says in capsys.readouterr().err
 
 
-def test_statements_only_without_a_map_is_refused_before_anything_starts(monkeypatch, capsys):
-    """Refused only inside ``create_server``, it was written to the store's stderr.log, where
-    ``main`` has pointed stderr by then, and the terminal saw the process exit without a word."""
+def test_constraints_without_a_map_are_refused_before_anything_starts(monkeypatch, capsys):
+    """Refused only inside ``create_server``, a flag that needs ``--entity-map`` (first
+    ``--statements-only``, since removed) was written to the store's stderr.log, where ``main``
+    has pointed stderr by then, and the terminal saw the process exit without a word."""
     monkeypatch.setattr(cli, "_send_stderr_to", _never)
-    assert cli.main(["--petab-yaml", "problem.yaml", "--statements-only"]) == 2
+    assert cli.main(["--petab-yaml", "problem.yaml", "--constraints", "c.txt"]) == 2
     assert "--entity-map" in capsys.readouterr().err
 
 

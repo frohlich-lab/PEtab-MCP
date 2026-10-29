@@ -1039,11 +1039,11 @@ rate law, and a THIRD widening of a still-pinned parameter: that is unidentifiab
 sigma past its data-driven cap only WARNS; it hides a missing mechanism behind inflated noise."""
 
 
-def _make_changes_doc(text_routes: bool = True, statements_doc: str | None = None) -> str:
+def _make_changes_doc(statements_doc: str | None = None) -> str:
     """``make_changes``'s description for the model routes one registration offers: the text
-    routes (``antimony``, ``model_edits``), the ``statements`` route's paragraphs, or both."""
-    routes = (["`antimony`", "`model_edits`"] if text_routes else []) + (
-        ["`statements`", "`statement_edits`"] if statements_doc else []
+    routes (``antimony``, ``model_edits``), or the ``statements`` route's paragraphs, never both."""
+    routes = (
+        ["`statements`", "`statement_edits`"] if statements_doc else ["`antimony`", "`model_edits`"]
     )
     required = (
         f"Give ONE model route per call; at least one of {' / '.join(routes)} / `parameters` "
@@ -1053,7 +1053,7 @@ def _make_changes_doc(text_routes: bool = True, statements_doc: str | None = Non
         p
         for p in (
             _MAKE_CHANGES_SUMMARY,
-            _MAKE_CHANGES_TEXT_ROUTES if text_routes else None,
+            None if statements_doc else _MAKE_CHANGES_TEXT_ROUTES,
             statements_doc,
             _MAKE_CHANGES_PARAMETERS_ROUTE + " " + required,
             _MAKE_CHANGES_CONTRACT,
@@ -1092,17 +1092,14 @@ _MAKE_CHANGES_CONSTRAINTS = (
 )
 
 
-def _make_changes_statements_doc(
-    bound: bool = True, held: dict[str, Any] | None = None, alone: bool = False
-) -> str:
+def _make_changes_statements_doc(bound: bool = True, held: dict[str, Any] | None = None) -> str:
     """The `statements` route's paragraph, naming the entries the library holds right now.
 
     ``bound`` says whether the problem's entity map binds species or readouts. One that does not
     binds nothing of the model: the readouts, and how the condition targets enter, are the
     caller's own, and saying the map binds them would send it looking for names that do not exist.
     ``held`` (agent name to :class:`protocols.Input`) are the inputs held all the same, named with
-    their protocol (e.g. a stimulus ramped within a period). ``alone`` is a registration that
-    offers no text route beside it."""
+    their protocol (e.g. a stimulus ramped within a period)."""
     from . import mechanisms
 
     from indra.statements import AddModification, RemoveModification, Statement, get_all_descendants
@@ -1129,8 +1126,7 @@ def _make_changes_statements_doc(
 
     entries = "; ".join(f"`{policy}` for {named(c)}" for policy, c in sorted(by_policy.items()))
     return (
-        ("`statements` authors" if alone else "`statements` is a third model route: it authors")
-        + " the WHOLE model from mechanism assertions rather than text: each row an INDRA "
+        "`statements` authors the WHOLE model from mechanism assertions rather than text: each row an INDRA "
         "statement, the claim in words, under a `prefix` naming its parameters; and, apart, in "
         "`bindings` under the same prefix, the maths behind it: the `policy` (mechanism) that "
         "turns it into reactions, and its parameter bindings. A row may be one line instead of "
@@ -1194,12 +1190,6 @@ def _make_changes_statements_doc(
         "applies them to version N's rows instead (with `statements`, it is the whole set given "
         "afresh), and starts the fit from version N's search space and best fit. "
         "`get_model(format='statements')` shows the rows."
-        + (
-            ""
-            if alone
-            else " The result is an ordinary model; `model_edits` would edit it as text, after "
-            "which it has no rows to edit."
-        )
     )
 
 
@@ -1317,7 +1307,6 @@ def _register_model_tools(
     mcp: FastMCP,
     route: Callable[[], _Ctx],
     statements: bool = False,
-    statements_only: bool = False,
 ) -> None:
     # `make_changes` takes an argument named `statements`; the route flag goes by this name in it.
     statements_route = statements
@@ -1754,15 +1743,14 @@ def _register_model_tools(
 
     # One tool, `make_changes`, either way, and one implementation, `_make_changes`. FastMCP builds
     # the input schema from the registered function's signature, so the statements route is offered
-    # by registering `_make_changes` itself, alone by registering `make_changes_statements`, and
-    # withheld by registering `make_changes_antimony`; each wrapper takes only its routes and
-    # passes them on.
+    # by registering `make_changes_statements` and the text routes by registering
+    # `make_changes_antimony`; each wrapper takes only its routes and passes them on. A server
+    # offers one family, never both: `_make_changes` itself is never registered.
     if statements:
         session = route().session
         statements_doc = _make_changes_statements_doc(
             bound=bool(set(session.entities) - {i.id for i in session.inputs}),
             held={getattr(session.entities.get(i.id), "name", i.id): i for i in session.inputs},
-            alone=statements_only,
         )
         if session.constraints is not None:
             statements_doc += "\n\n" + _MAKE_CHANGES_CONSTRAINTS
@@ -1771,14 +1759,6 @@ def _register_model_tools(
                     " They may change during the session (`set_constraints`): `list_constraints` "
                     "shows the set in force."
                 )
-        if not statements_only:
-            mcp.tool(
-                description=_make_changes_doc(statements_doc=statements_doc),
-                name="make_changes",
-                annotations=_MAKE_CHANGES_ANNOTATIONS,
-            )(_make_changes)
-            return
-
         def make_changes_statements(
             justification: str,
             base_version: int | None = None,
@@ -1809,7 +1789,7 @@ def _register_model_tools(
             )
 
         mcp.tool(
-            description=_make_changes_doc(text_routes=False, statements_doc=statements_doc),
+            description=_make_changes_doc(statements_doc=statements_doc),
             name="make_changes",
             annotations=_MAKE_CHANGES_ANNOTATIONS,
         )(make_changes_statements)
@@ -2610,7 +2590,6 @@ def create_server(
     validation_measurements: str | None = None,
     score_shipped_model: bool = False,
     entity_map: str | None = None,
-    statements_only: bool = False,
     constraints: str | None = None,
     constraint_updates: str = "off",
     cluster: Any | None = None,
@@ -2648,14 +2627,13 @@ def create_server(
     model-less problem ignores it.
 
     ``entity_map`` is a JSON file binding the problem's species to INDRA agents
-    (:func:`seeding.load_entity_map`). Giving it offers ``make_changes`` the ``statements`` route;
-    omit it and the route does not exist. ``statements_only`` (which needs it) withholds the
-    ``antimony`` and ``model_edits`` routes, so the model is built from statements alone.
+    (:func:`seeding.load_entity_map`). Giving it offers ``make_changes`` the ``statements`` route
+    alone, without the ``antimony`` and ``model_edits`` routes, so the model is built from
+    statements; omit it and the text routes are offered alone. A server never offers both.
 
     ``constraints`` is a file of causal claims every model must make (:mod:`constraints`), each
     ending ``, directly`` or ``, indirectly``: ``make_changes`` refuses a model that breaks one,
-    naming it. It needs ``entity_map`` and implies ``statements_only``: a model built from Antimony
-    states no claims to check. A file that does not read is refused here. ``constraint_updates``
+    naming it. It needs ``entity_map``. A file that does not read is refused here. ``constraint_updates``
     (``off`` by default) set to ``any`` registers ``set_constraints``, for whoever drives the
     session to replace them; it needs ``constraints`` (a file holding none starts with none).
 
@@ -2665,10 +2643,6 @@ def create_server(
     more than one machine it must be on a filesystem they share. An AMICI built without HDF5 cannot
     send a start to a worker, so it refuses the cluster here.
     """
-    if statements_only and entity_map is None:
-        raise ValidationError(
-            "statements_only needs an entity_map: it offers the statements route alone."
-        )
     if constraints and entity_map is None:
         raise ValidationError(
             "constraints need an entity_map: a constraint is a claim the statements route's rows "
@@ -2681,7 +2655,6 @@ def create_server(
             "constraint_updates='any' needs constraints: give a file, one holding none to start "
             "with none."
         )
-    statements_only = statements_only or bool(constraints)
     fit_engine = None
     if cluster is not None:
         from .dask_engine import DaskEngine
@@ -2727,9 +2700,7 @@ def create_server(
     _register_read_tools(mcp, route)
     # Offered whenever a map was given, even an empty one: a problem whose observables all read
     # formulas, and whose starts are the statements' own, binds nothing in it.
-    _register_model_tools(
-        mcp, route, statements=entity_map is not None, statements_only=statements_only
-    )
+    _register_model_tools(mcp, route, statements=entity_map is not None)
     _register_parameter_tools(mcp, route)
     _register_fit_tools(mcp, route)
     if ctx.held_out is not None:

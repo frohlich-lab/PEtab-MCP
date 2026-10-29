@@ -27,7 +27,7 @@ from pathlib import Path
 from petab_mcp import operations as O
 from petab_mcp import parameters as P
 from petab_mcp.constants import DEFAULT_AUTO_FIT_STARTS
-from petab_mcp.errors import ModelUpdateError, ParameterError, ValidationError
+from petab_mcp.errors import ModelUpdateError, ParameterError
 from petab_mcp.operations import OperationError
 from petab_mcp.references import StubReferenceResolver
 from petab_mcp.server import create_server
@@ -820,7 +820,7 @@ def _statement_row(type_="PopulationTransition"):
     }
 
 
-def _statements_server(tmp_path, extra="", yaml_path=YAML_PATH, statements_only=False):
+def _statements_server(tmp_path, extra="", yaml_path=YAML_PATH):
     entity_map = tmp_path / "entities.json"
     entity_map.write_text(_BASE_ENTITY_MAP.format(extra=extra))
     return create_server(
@@ -829,7 +829,6 @@ def _statements_server(tmp_path, extra="", yaml_path=YAML_PATH, statements_only=
         resolver=StubReferenceResolver(),
         auto_fit=False,
         entity_map=str(entity_map),
-        statements_only=statements_only,
     )
 
 
@@ -860,11 +859,12 @@ def test_the_routes_text_names_statements_only_where_it_is_offered(tmp_path):
     assert "`statements`" in required.split(" is required.")[0]
 
 
-def test_statements_only_documents_and_accepts_no_text_route(tmp_path):
+def test_an_entity_map_documents_and_accepts_no_text_route(tmp_path):
     """A client that builds models from statements alone stripped `antimony`/`model_edits` from
     the schema itself and wrote its own description, so the agent read none of the server's
-    (frohlich-lab/PEtab-MCP#40)."""
-    mcp = _statements_server(tmp_path, statements_only=True)
+    (frohlich-lab/PEtab-MCP#40). A server now offers one family of routes, never both: an
+    entity map offers `statements` in place of the text routes, with no flag to keep them."""
+    mcp = _statements_server(tmp_path)
     args = set(_make_changes_schema(mcp))
     assert "statements" in args and "statement_edits" in args
     assert not {"antimony", "model_edits"} & args
@@ -875,8 +875,6 @@ def test_statements_only_documents_and_accepts_no_text_route(tmp_path):
         asyncio.run(
             mcp.call_tool("make_changes", {"justification": "x", "antimony": _antimony()})
         )
-    with pytest.raises(ValidationError, match="entity_map"):
-        create_server(str(YAML_PATH), provenance_dir=str(tmp_path / "p2"), statements_only=True)
 
 
 def _agent_facing_text(mcp):
@@ -912,7 +910,7 @@ def test_no_text_offers_the_statements_route_where_it_does_not_exist(tmp_path):
 
 def test_the_refusals_name_statements_only_where_it_is_offered(tmp_path):
     """Two routes at once and no route at all were each refused naming `model_edits` and
-    `antimony` only, where `statements` was a route too."""
+    `antimony` only, where `statements` was the route."""
     plain, offered = _server(tmp_path / "plain"), _statements_server(tmp_path)
 
     def error(mcp, args):
@@ -920,9 +918,9 @@ def test_the_refusals_name_statements_only_where_it_is_offered(tmp_path):
 
     edits = [{"op": "remove_reaction", "id": "r1"}]
     assert "`statements`" not in error(plain, {"antimony": _antimony(), "model_edits": edits})
-    both = {"antimony": _antimony(), "statements": [_statement_row()],
-            "bindings": {"conv": "mass_action"}}
-    assert "`statements`" in error(offered, both).split(")", 1)[1]  # past the routes given
+    both = {"statements": [_statement_row()], "statement_edits": [{"op": "remove_row", "prefix": "conv"}]}
+    said = error(offered, both).split(")", 1)[1]  # past the routes given
+    assert "`statements`" in said and "`model_edits`" not in said
     assert "`statements`" not in error(plain, {})
     assert "`statements`" in error(offered, {})
 
@@ -1363,8 +1361,10 @@ def test_a_version_without_new_rows_keeps_its_parents(tmp_path):
                                            "bindings": {"conv2": "saturating"}})[
         "applied"
     ] is True
-    # Model text without rows changes the model under them: that version records none.
-    out = _call(resumed, "make_changes", {"justification": "by hand", "antimony": _antimony()})
+    # Model text without rows changes the model under them: that version records none. A server
+    # offers the text routes or `statements`, never both, so the text comes from a server without
+    # the map resuming the same store.
+    out = _call(_server(tmp_path), "make_changes", {"justification": "by hand", "antimony": _antimony()})
     assert out["committed"] is True
     assert not (versions / "v3" / "statements.json").exists()
     # Resumed at v3, which has no rows, the run's written mechanisms still come back: a row names
@@ -1872,8 +1872,11 @@ def test_a_restore_brings_back_that_versions_rows(tmp_path):
         return _call(mcp, "make_changes", {"justification": row, "statement_edits": edits})
 
     assert add_row(_BACK)["applied"] is True
+    # A server offers the text routes or `statements`, never both: version 2 is model text from a
+    # server without the map resuming the store, and a statements server resumes it after.
     antimony = {"justification": "by hand", "antimony": _antimony()}
-    assert _call(mcp, "make_changes", antimony)["committed"] is True
+    assert _call(_server(tmp_path), "make_changes", antimony)["committed"] is True
+    mcp = _statements_server(tmp_path)
     _call(mcp, "restore_version", {"version": 0})
     text = _text(mcp, "get_model", {"format": "statements"})
     assert "conv: A becomes B" in text and "back:" not in text
