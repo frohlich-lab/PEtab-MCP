@@ -1361,8 +1361,10 @@ def test_a_version_without_new_rows_keeps_its_parents(tmp_path):
                                            "bindings": {"conv2": "saturating"}})[
         "applied"
     ] is True
-    # Model text without rows changes the model under them: that version records none.
-    out = _call(resumed, "make_changes", {"justification": "by hand", "antimony": _antimony()})
+    # Model text without rows changes the model under them: that version records none. A server
+    # offers the text routes or `statements`, never both, so the text comes from a server without
+    # the map resuming the same store.
+    out = _call(_server(tmp_path), "make_changes", {"justification": "by hand", "antimony": _antimony()})
     assert out["committed"] is True
     assert not (versions / "v3" / "statements.json").exists()
     # Resumed at v3, which has no rows, the run's written mechanisms still come back: a row names
