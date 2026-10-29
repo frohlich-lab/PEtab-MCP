@@ -1872,8 +1872,11 @@ def test_a_restore_brings_back_that_versions_rows(tmp_path):
         return _call(mcp, "make_changes", {"justification": row, "statement_edits": edits})
 
     assert add_row(_BACK)["applied"] is True
+    # A server offers the text routes or `statements`, never both: version 2 is model text from a
+    # server without the map resuming the store, and a statements server resumes it after.
     antimony = {"justification": "by hand", "antimony": _antimony()}
-    assert _call(mcp, "make_changes", antimony)["committed"] is True
+    assert _call(_server(tmp_path), "make_changes", antimony)["committed"] is True
+    mcp = _statements_server(tmp_path)
     _call(mcp, "restore_version", {"version": 0})
     text = _text(mcp, "get_model", {"format": "statements"})
     assert "conv: A becomes B" in text and "back:" not in text
