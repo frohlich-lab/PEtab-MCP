@@ -67,13 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--entity-map",
         default=None,
         help="JSON binding the problem's species to INDRA agents; offers make_changes the "
-        "`statements` route (see petab_mcp.seeding).",
-    )
-    parser.add_argument(
-        "--statements-only",
-        action="store_true",
-        help="With --entity-map: offer make_changes the `statements` route alone, without "
-        "`antimony` and `model_edits`.",
+        "`statements` route in place of `antimony` and `model_edits` (see petab_mcp.seeding).",
     )
     parser.add_argument(
         "--constraints",
@@ -81,7 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help="With --entity-map: causal claims every model must make (petab_mcp.constraints), "
         "one per line, each ending `, directly` or `, indirectly`; make_changes refuses a model "
-        "that breaks one. Implies --statements-only.",
+        "that breaks one.",
     )
     parser.add_argument(
         "--constraint-updates",
@@ -176,12 +170,6 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-    if args.statements_only and not args.entity_map:
-        print(
-            "error: --statements-only needs --entity-map: it offers the `statements` route alone.",
-            file=sys.stderr,
-        )
-        return 2
     if args.constraint_updates == "any" and not args.constraints:
         print(
             "error: --constraint-updates any needs --constraints (a file holding none starts with "
@@ -220,7 +208,6 @@ def main(argv: list[str] | None = None) -> int:
             skills_dir=args.skills_dir,
             criterion=args.criterion,
             entity_map=args.entity_map,
-            statements_only=args.statements_only,
             constraints=args.constraints,
             constraint_updates=args.constraint_updates,
             cluster=cluster,
