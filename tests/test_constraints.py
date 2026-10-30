@@ -19,7 +19,7 @@ import pytest
 
 from petab_mcp import constraints as K
 from petab_mcp import mechanisms as M
-from petab_mcp import problem_sbml
+from petab_mcp import notation, problem_sbml
 from petab_mcp.errors import ValidationError
 from petab_mcp.operations import OperationError
 from petab_mcp.references import StubReferenceResolver
@@ -29,8 +29,9 @@ from petab_mcp.statements import indra_part, regulators, with_defaults
 YAML_PATH = Path(__file__).parent / "data" / "toy_v2" / "problem.yaml"
 
 
-def _record(*rows) -> dict:
-    """A statements record of ``rows``, each ``(prefix, statement, derived?, policy?)``."""
+def _record(*rows, starts=()) -> dict:
+    """A statements record of ``rows``, each ``(prefix, statement, derived?, policy?)``, and
+    ``starts``, each ``(name, agent, amount)``."""
     return {
         "rows": [
             {
@@ -40,7 +41,11 @@ def _record(*rows) -> dict:
             }
             | ({"policy": rest[1]} if len(rest) > 1 else {})
             for prefix, text, *rest in rows
-        ]
+        ],
+        "starts": [
+            {"name": name, "agent": notation.parse_agent(agent), "amount": amount}
+            for name, agent, amount in starts
+        ],
     }
 
 
@@ -48,7 +53,13 @@ def _model(record: dict) -> tuple:
     """The model ``record``'s rows build, seeded and never reduced, and its emissions: each row
     under its ``policy`` or the library's own mechanism for its type, a row stating regulators
     under one whose rate reads them."""
-    from indra.statements import Modification, RemoveModification, SelfModification, stmts_from_json
+    from indra.statements import (
+        Agent,
+        Modification,
+        RemoveModification,
+        SelfModification,
+        stmts_from_json,
+    )
 
     library, rows = dict(M.REGISTRY), []
     for row in record["rows"]:
@@ -71,7 +82,8 @@ def _model(record: dict) -> tuple:
             library[(kind, read["policy"])] = M.written(read, library)
             policy = read["policy"]
         rows.append((stmt, policy, row["prefix"], None, stated))
-    return problem_sbml.to_antimony(rows, {}, library, seeded=True)
+    starts = [(s["name"], Agent._from_json(s["agent"]), s["amount"]) for s in record["starts"]]
+    return problem_sbml.to_antimony(rows, {}, library, starts=starts, seeded=True)
 
 
 def _check(lines: list[str], record: dict) -> dict[str, K.Verdict]:
@@ -410,6 +422,59 @@ def test_activity_rises_with_a_declared_active_form():
     # Refused, it names what it is about: the declared forms, not an activity the rows never write.
     late = _check([*forms, "c5: EGF activates AKT1, directly"], record)["c5"]
     assert not late.ok and late.why.startswith("rows `r23` change the activity of AKT1")
+
+
+#: perica_egf's route to BRAF and its constraint on a BRAF mutant (sweep 61551831, #164).
+_RAS = (("sos1_gef", "SOS1 activates RAS"), ("ras_braf", "RAS activates BRAF"))
+_MUTANT = "c1: SOS1 increases BRAF{mut:S151A, activity:on}, indirectly"
+
+
+def test_a_mutant_nothing_starts_is_named_as_missing():
+    """#164: a generic `RAS activates BRAF` and a `BRAF` start form no BRAF{mut:S151A}. The refusal
+    names the start that adds it, not `ras_braf` as the row that changes it; with that start,
+    `ras_braf` carries the claim."""
+    got = _check(
+        [_MUTANT, "c2: SOS1 increases BRAF{pS151}, indirectly"],
+        _record(*_RAS, starts=[("BRAF", "BRAF", 1)]),
+    )
+    assert not got["c1"].ok and got["c1"].why == (
+        "the model has no species BRAF{mut:S151A, activity:on}; nothing starts or forms it. A "
+        'start `{"name": "BRAF_S151A", "agent": "BRAF{mut:S151A}", "amount": ...}` adds one, and '
+        "`ras_braf` would then reach it"
+    )
+    # A form of an agent the model has, which no row forms, needs a row.
+    assert not got["c2"].ok and got["c2"].why.endswith("A row that forms it adds one")
+    started = _record(*_RAS, starts=[("BRAF", "BRAF", 1), ("BRAF_S151A", "BRAF{mut:S151A}", 1)])
+    assert _check([_MUTANT], started)["c1"].rows == ("ras_braf",)
+
+
+def test_a_mutant_named_as_its_own_agent_is_still_missing():
+    """#164: agents match by name, so `BRAF_S151A`, which the trace reaches, is no
+    BRAF{mut:S151A}; the refusal names the start, not `ras_braf_mut`."""
+    record = _record(
+        *_RAS,
+        ("ras_braf_mut", "RAS activates BRAF_S151A"),
+        starts=[("BRAF", "BRAF", 1), ("BRAF_S151A", "BRAF_S151A", "mutant_BRAF_S151A")],
+    )
+    got = _check([_MUTANT], record)["c1"]
+    assert not got.ok and got.why.startswith("the model has no species BRAF{mut:S151A, act")
+    assert got.why.endswith("adds one, and `ras_braf` would then reach it")
+
+
+def test_a_subject_the_model_lacks_is_named():
+    """#164: with no SOS1 the refusal names it, not "it reaches no other agent"; a `does not
+    affect` from it holds."""
+    record = _record(
+        ("egfr_ras", "EGFR activates RAS"),
+        ("ras_braf", "RAS activates BRAF"),
+        starts=[("BRAF_S151A", "BRAF{mut:S151A}", 1)],
+    )
+    got = _check([_MUTANT, "c2: SOS1 does not affect BRAF, indirectly"], record)
+    assert not got["c1"].ok and got["c1"].why == (
+        "the model has no SOS1; the constraint traces from it. Agents match by name: a row or a "
+        "start that names SOS1 adds it"
+    )
+    assert got["c2"].ok
 
 
 # -------------------------------------------------------------------------------------- enforce

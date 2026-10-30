@@ -53,7 +53,8 @@ Agents are matched by NAME, the model's identity: two agents may share a groundi
 SOCS3 and SOCS3_oe, a gene's nRNA, mRNA and protein), so INDRA's comparisons run on copies keyed
 by name (:func:`statements.named`, PEtab-MCP#137). Direct constraints
 read the statements record alone and cost milliseconds; an indirect one runs BioNetGen on the
-model the rows build, once per subject (seconds to a minute on the formulations measured). A
+model the rows build, once to expand it and once per subject it traces (seconds to a minute on the
+formulations measured). A
 constraint's statement is read by :func:`notation.statement`, the row reader's own; the
 qualifier, ``not``, ``does not affect`` and ``is active`` are this module's.
 """
@@ -561,8 +562,10 @@ def _traced(
     items: list[Constraint], record: dict | None, model: Callable[[], tuple] | None
 ) -> dict[str, Verdict]:
     """The indirect constraints' verdicts, one trace per subject (:mod:`tracing`): a model whose
-    rows move none of a constraint's forms from its subject, or not as claimed, breaks it. A
-    trace that fails is no reason to refuse a model: it holds, unchecked, and says why."""
+    rows move none of a constraint's forms from its subject, or not as claimed, breaks it. One
+    whose network holds no species of a constraint's subject, or of any of its forms, is not
+    traced for it (:func:`_missing`). A trace that fails is no reason to refuse a model: it
+    holds, unchecked, and says why."""
     import logging
 
     from . import tracing
@@ -572,6 +575,7 @@ def _traced(
                               "no row claims anything") for c in items}
     try:
         built, emissions = model()
+        tracing._expand(built)
     except Exception as exc:  # noqa: BLE001 - a check that breaks refuses nothing; never a crash
         logging.getLogger(__name__).exception("building the model to trace constraints on failed")
         return {c.id: Verdict(True, unchecked=f"its model could not be built to trace: {exc}")
@@ -585,37 +589,85 @@ def _traced(
     out = {}
     for (subject_text, unsigned), cs in groups.items():
         subject = cs[0].subject
+        missing = {c.id: why for c in cs if (why := _missing(built, c, claimed))}
+        # Nothing moves what no species holds: `does not affect` holds, a signed claim breaks.
+        out |= {
+            cid: Verdict(unsigned, why=None if unsigned else why) for cid, why in missing.items()
+        }
+        cs = [c for c in cs if c.id not in missing]
+        if not cs:
+            continue
         targets = {
             (c.id, i): (f.agent, f.active, f.way is None)
             for c in cs
             for i, f in enumerate(c.forms)
-            if _formed(built, f.agent)
+            if _held(built, f.agent)
         }
-        if not _formed(built, subject):
-            moved, reached = {}, []
-        else:
-            try:
-                found = tracing.trace(built, emissions, derived, subject, targets, unsigned=unsigned)
-            except Exception as exc:  # noqa: BLE001 - BioNetGen refusing refuses nothing
-                logging.getLogger(__name__).exception("tracing %s failed", subject_text)
-                out |= {c.id: Verdict(True, unchecked=f"tracing {subject_text} failed: {exc}")
-                        for c in cs}
-                continue
-            moved, reached = found.moved, found.reached
+        try:
+            found = tracing.trace(built, emissions, derived, subject, targets, unsigned=unsigned)
+        except Exception as exc:  # noqa: BLE001 - BioNetGen refusing refuses nothing
+            logging.getLogger(__name__).exception("tracing %s failed", subject_text)
+            out |= {c.id: Verdict(True, unchecked=f"tracing {subject_text} failed: {exc}")
+                    for c in cs}
+            continue
         for c in cs:
-            out[c.id] = _read_trace(c, moved, reached, claimed)
+            out[c.id] = _read_trace(c, found.moved, found.reached, claimed)
     return out
 
 
-def _formed(model, agent) -> bool:
-    """Whether ``model`` has the form ``agent`` writes: its monomer, with the sites it names."""
+def _held(model, agent) -> bool:
+    """Whether a species of ``model``'s expanded network is within the form ``agent`` writes."""
+    import pysb
+    from pysb.pattern import match_complex_pattern
+
     from .mechanisms import agent_pattern
 
     try:
-        agent_pattern(model, agent)
+        pattern = pysb.ComplexPattern(agent_pattern(model, agent), None)
     except Exception:  # noqa: BLE001 - a form the rows never write is formed nowhere
         return False
-    return True
+    return any(match_complex_pattern(pattern, sp) for sp in model.species)
+
+
+def _missing(model, c: Constraint, claimed: list[_Step]) -> str | None:
+    """What ``c`` needs that no species of ``model``'s expanded network holds, and what adds it:
+    its subject, or every one of its forms; ``None`` where the network holds both."""
+    if not _held(model, c.subject):
+        return _absent(model, c.subject, "; the constraint traces from it")
+    if any(_held(model, f.agent) for f in c.forms):
+        return None
+    form = c.forms[0]
+    changers = sorted({s.prefix for s in claimed if _moved(s, None, form)})
+    return _absent(model, form.agent, "", changers)
+
+
+def _absent(model, agent, role: str, changers: tuple[str, ...] | list[str] = ()) -> str:
+    """That ``model`` holds no species of ``agent`` (``role``: what the constraint does with it),
+    and what adds one: a start of a mutant, which no row makes (``changers``, the rows that change
+    a form of it, then reach it); a row naming an agent the model lacks; else a row forming it."""
+    from indra.statements import Agent
+
+    name = _name(agent.name)
+    mutant = Agent(agent.name, mutations=agent.mutations)
+    if agent.mutations and not _held(model, mutant):
+        start = "_".join([name, *(
+            "".join(str(p) for p in (m.residue_from, m.position, m.residue_to) if p)
+            for m in agent.mutations
+        )])
+        return (
+            f"the model has no species {_text(agent)}; nothing starts or forms it{role}. A start "
+            f'`{{"name": "{start}", "agent": "{_text(mutant)}", "amount": ...}}` adds one'
+            + (f", and `{'`, `'.join(changers)}` would then reach it" if changers else "")
+        )
+    if name not in model.monomers.keys():
+        return (
+            f"the model has no {agent.name}{role}. Agents match by name: a row or a start that "
+            f"names {agent.name} adds it"
+        )
+    return (
+        f"the model has no species {_text(agent)}; nothing starts or forms it{role}. A row that "
+        "forms it adds one"
+    )
 
 
 def _read_trace(c: Constraint, moved: dict, reached: list[str], claimed: list[_Step]) -> Verdict:
