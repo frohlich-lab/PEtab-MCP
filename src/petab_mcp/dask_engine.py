@@ -192,7 +192,13 @@ class DaskEngine(CappedEngine):
             for j, batch in enumerate(batches):
                 payloads = [cloudpickle.dumps(tasks[i]) for i in batch]
                 futures.append(self.client.submit(_work, payloads, priority=-j, pure=False))
-            stopped = watch(futures, sizes, self._wait, self._overrun(futures, sizes))
+            stopped = watch(
+                futures,
+                sizes,
+                self._wait,
+                self._overrun(futures, sizes),
+                fvals=lambda future: [result.fval for result in future.result()[0]],
+            )
             if stopped:
                 self.client.cancel([futures[j] for j in stopped])
             done = self.client.gather([f for j, f in enumerate(futures) if j not in stopped])
