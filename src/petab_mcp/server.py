@@ -564,9 +564,9 @@ class _Cancellation(Middleware):
         return result
 
 
-#: Seconds ``wait_for_fit`` waits when not told, and at most: under the 300 s an MCP client over
-#: SSE waits for a call by default (langchain-mcp-adapters), and under the 600 s tool timeout of
-#: gemot's native CLI driver, so a wait answers before its client gives up on it.
+#: Seconds ``wait_for_fit`` waits when not told, and at most: the cap is under the 600 s tool
+#: timeout of gemot's CLI drivers, so a wait answers before its client gives up on it, and the
+#: default leaves room for a client whose timeout is shorter.
 WAIT_FOR_FIT_S = 240
 WAIT_FOR_FIT_MAX_S = 540
 
