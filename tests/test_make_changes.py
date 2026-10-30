@@ -1418,7 +1418,7 @@ def test_a_redeclared_start_moves_its_row(tmp_path):
         params = {r["parameterId"]: r for r in _call(mcp, "get_parameters", {})["result"]}
         row = params["A_start_init"]
         rows.append((row["nominalValue"], int(row["estimate"])))
-        structure = _call(mcp, "get_model_structure", {})
+        structure = _call(mcp, "get_model_structure", {"initial_conditions": ""})
         view = {r["species"]: r for r in structure["initial_conditions"]}["A"]
         assert (view["ic_parameter"], view["t0"]) == ("A_start_init", row["nominalValue"])
     assert rows == [(1.0, 0), (5.0, 1), (1.0, 0)]
@@ -1495,7 +1495,7 @@ def test_a_held_input_is_reported_at_its_condition_value(tmp_path, add_condition
          "bindings": {"conv": "mass_action", "feed": "mass_action"}},
     )
     assert out["applied"] is True, out
-    ics = {r["species"]: r for r in _call(mcp, "get_model_structure", {})["initial_conditions"]}
+    ics = {r["species"]: r for r in _call(mcp, "get_model_structure", {"initial_conditions": ""})["initial_conditions"]}
     assert (ics["E"]["t0_source"], ics["E"]["t0"]) == ("rule", 3.0)
 
 

@@ -53,6 +53,7 @@ from . import model as model_mod
 from . import model_edits as model_edits_mod
 from . import operations as ops_mod
 from . import parameters as param_mod
+from . import provenance as prov_mod
 from . import reconcile as reconcile_mod
 from . import regimes as regimes_mod
 from . import skills as skills_mod
@@ -1296,7 +1297,7 @@ def _get_model_doc(statements: bool) -> str:
     return (
         "A model as text: the CURRENT one, or with `version=N` a prior version's stored model — "
         "read that before a `base_version=N` fork, not `get_version`, which also returns the "
-        f"version's per-point simulation and optimizer trace. `format` is {formats}. For the "
+        f"version's record and parameter table. `format` is {formats}. For the "
         "structure alone `get_model_structure` is the cheaper read.\n\n"
         "The trailing `const ...;` line is DERIVED (a parameter is constant unless declared "
         "`var`): read past it; no operation addresses it."
@@ -1380,20 +1381,29 @@ def _register_model_tools(
         return text
 
     @mcp.tool(annotations=_READ_ONLY)
-    def get_model_structure() -> dict[str, Any]:
-        """The model, structured: species, parameters, reactions (id, reversibility, rate law), and
-        `readouts`, each `readout_*` measurement mapping with the expression your model defines it
-        by (null while it has none). Empty until a model is built.
+    def get_model_structure(
+        reactions: str | None = None, initial_conditions: str | None = None
+    ) -> dict[str, Any]:
+        """The model, structured: species, parameters, `n_reactions`, and `readouts`, each
+        `readout_*` measurement mapping with the expression your model defines it by (null while it
+        has none). Empty until a model is built.
 
-        `initial_conditions` gives, per species, what the simulation starts it at (`t0`, one value
-        or one per experiment) and what governs it: `t0_source` is `estimated` (the DEFAULT, so a
+        `reactions` and `initial_conditions` are regular expressions, and each list comes only when
+        asked for: `reactions` lists the reactions whose id or rate law it matches (id,
+        reversibility, rate law), `initial_conditions` the species whose id it matches; '' lists
+        all. A species' initial condition says what the simulation starts it at (`t0`, one value or
+        one per experiment) and what governs it: `t0_source` is `estimated` (the DEFAULT, so a
         declared t=0 is only a starting guess), `fixed`, `condition_table` (set per condition, with
         no parameter row) or `rule`, and `ic_parameter` names the parameter carrying it. Read it to
         check that a t=0 you meant to pin took.
         """
         ctx = route()
         session = ctx.session
-        return model_mod.model_structure(session)
+        return ctx.run(
+            "get_model_structure",
+            lambda: model_mod.model_structure(session, reactions, initial_conditions),
+            {"reactions": reactions, "initial_conditions": initial_conditions},
+        )
 
     def _make_changes(
         justification: str,
@@ -2251,34 +2261,52 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         return session.provenance.recent_errors(limit)
 
     @mcp.tool(annotations=_READ_ONLY)
-    def list_versions() -> list[dict[str, Any]]:
-        """Every model version (each a fit snapshot) with its kind, label and fit metrics
-        (`neg_log_likelihood`, every score, `criterion_value`): which structures have been tried
-        and how they scored. `is_new_best` marks each version that became the best model (the last
-        one is `get_progress`'s `best_version`): the first, then each whose
-        `improvement_vs_best_prior` (over `best_prior_criterion_value`) reached
-        `new_best_min_improvement`, unless `new_best_declined` says why the earlier best stood.
-        Every version is kept, and the best one stands whatever comes after it. Where the session
-        holds constraints, a version they break (committed before they changed) carries `violates`,
-        their ids: it cannot be restored and does not count as the best."""
+    def list_versions(since: int | None = None) -> list[dict[str, Any]]:
+        """Every model version (each a fit), one row each: which structures have been tried and
+        how they scored. A row is its `version`, the `parent` it was derived from, its
+        `neg_log_likelihood`, `criterion_value` (the score this session ranks by), `k`,
+        `is_new_best` and `residual_flagged` (its residuals show structure the model misses).
+        `since=N` lists only the versions after N. `is_new_best` marks each version that became the
+        best model (the last one is `get_progress`'s `best_version`); every version is kept, and the
+        best one stands whatever comes after it. Where the session holds constraints, a version
+        they break (committed before they changed) carries `violates`, their ids: it cannot be
+        restored and does not count as the best. A version's whole record, every score and why it
+        did or did not become the best, is `get_version(N)`."""
         ctx = route()
         session = ctx.session
-        versions = session.provenance.list_versions()
         broken = session.constraint_violations()
         return [
-            {**meta, "violates": broken[meta["version"]]} if meta.get("version") in broken else meta
-            for meta in versions
+            prov_mod.summary(meta) | {"violates": broken[meta["version"]]}
+            if meta.get("version") in broken
+            else prov_mod.summary(meta)
+            for meta in session.provenance.list_versions(since)
         ]
 
     @mcp.tool(annotations=_READ_ONLY)
-    def get_version(version: int) -> dict[str, Any]:
-        """A prior version's Antimony model and parameter table, to INSPECT it, with its per-point
-        simulation and optimizer trace: large. For its model alone, `get_model(version=N)`."""
+    def get_version(
+        version: int, include: list[Literal["simulation", "optimization"]] | None = None
+    ) -> dict[str, Any]:
+        """A prior version's record (every score, the new-best bookkeeping, the noise model's
+        report), Antimony model and parameter table, to INSPECT it; for its model alone,
+        `get_model(version=N)`. `include` adds what its fit stored beside it, each large:
+        'simulation' (one record per data point) and 'optimization' (every start with its trace).
+        A version's per-point residuals are cheaper through `query_data` on `simulations_history`,
+        and the current fit's through `get_fit_diagnosis`."""
         ctx = route()
         session = ctx.session
-        return ctx.run(
-            "get_version", lambda: session.provenance.get_version(version), {"version": version}
-        )
+        parts = tuple(include or ())
+        omitted = [part for part in prov_mod.VERSION_PARTS if part not in parts]
+
+        def run() -> dict[str, Any]:
+            out = session.provenance.get_version(version, parts)
+            if omitted:
+                out["omitted"] = (
+                    f"{' and '.join(omitted)}: get_version(include=[...]); per point, query_data "
+                    "on simulations_history"
+                )
+            return out
+
+        return ctx.run("get_version", run, {"version": version, "include": list(parts)})
 
     @mcp.tool(annotations=_READ_ONLY)
     def diff_versions(from_version: int, to_version: int) -> dict[str, Any]:

@@ -32,6 +32,7 @@ _BAD_ARGS = {
         {"parameter_ids": ["no_such_parameter"], "role": "kinetic"},
     ],
     "get_version": [{"version": 9999}],
+    "get_model_structure": [{"reactions": "("}],
     "diff_versions": [{"a": 0, "b": 9999}],
     "restore_version": [{"version": 9999}],
     "query_data": [{"sql": "SELECT * FROM no_such_table"}],

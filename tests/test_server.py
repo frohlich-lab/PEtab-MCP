@@ -593,6 +593,45 @@ def test_a_re_author_and_its_bounds_are_one_edit_and_one_version(tmp_path):
     asyncio.run(go())
 
 
+def test_the_read_tools_leave_their_large_parts_out_unless_asked(tmp_path):
+    """`get_version`, `list_versions` and `get_model_structure` answered with up to 1 MB a call,
+    which a native CLI agent re-sends on every later turn (PEtab-MCP#171)."""
+    from petab_mcp.provenance import SUMMARY_FIELDS
+
+    mcp = _server(tmp_path)
+
+    async def call(name, args):
+        return _structured(await mcp.call_tool(name, args))
+
+    async def go():
+        for antimony in (_REVERSIBLE_ANTIMONY, _ONE_REACTION_ANTIMONY):
+            change = {"antimony": antimony, "justification": "x", "references": ["PMID:1"]}
+            assert (await call("make_changes", change))["committed"] is True
+        rows = (await call("list_versions", {}))["result"]
+        assert [tuple(row) for row in rows] == [SUMMARY_FIELDS] * 2
+        assert isinstance(rows[1]["k"], int) and rows[1]["parent"] == 0
+        assert [r["version"] for r in (await call("list_versions", {"since": 0}))["result"]] == [1]
+
+        version = await call("get_version", {"version": 0})
+        assert "simulation" not in version and "optimization" not in version
+        assert "simulations_history" in version["omitted"] and version["model_antimony"]
+        version = await call("get_version", {"version": 0, "include": ["simulation"]})
+        assert "simulation" in version and "optimization" not in version
+
+        structure = await call("get_model_structure", {})
+        assert structure["n_reactions"] == 1
+        assert "reactions" not in structure and "initial_conditions" not in structure
+        structure = await call(
+            "get_model_structure", {"reactions": "^r1$", "initial_conditions": "^A$"}
+        )
+        assert [r["id"] for r in structure["reactions"]] == ["r1"]
+        assert [ic["species"] for ic in structure["initial_conditions"]] == ["A"]
+        refused = await call("get_model_structure", {"reactions": "("})
+        assert refused["ok"] is False and "regular expression" in refused["error"]
+
+    asyncio.run(go())
+
+
 def test_a_re_author_is_not_refused_when_a_model_exists(tmp_path):
     # A re-author is NOT refused on an existing model — it replaces it wholesale.
     mcp = _server(tmp_path)
@@ -611,7 +650,7 @@ def test_a_re_author_is_not_refused_when_a_model_exists(tmp_path):
             )
         )
         assert res["applied"] is True
-        struct = _structured(await mcp.call_tool("get_model_structure", {}))
+        struct = _structured(await mcp.call_tool("get_model_structure", {"reactions": ""}))
         assert {r["id"] for r in struct["reactions"]} == {"r1"}  # the edit took effect
         # (the fit-time de-dup no-op for an identical model is covered in test_fit.py)
 
@@ -633,7 +672,7 @@ def test_restore_version_tool_registered_and_restores(tmp_path):
                 "references": ["PMID:1"],
             },
         )
-        struct = _structured(await mcp.call_tool("get_model_structure", {}))
+        struct = _structured(await mcp.call_tool("get_model_structure", {"reactions": ""}))
         assert {r["id"] for r in struct["reactions"]} == {"r1", "r2"}
         await mcp.call_tool(
             "make_changes",
@@ -643,11 +682,11 @@ def test_restore_version_tool_registered_and_restores(tmp_path):
                 "references": ["PMID:1"],
             },
         )
-        struct = _structured(await mcp.call_tool("get_model_structure", {}))
+        struct = _structured(await mcp.call_tool("get_model_structure", {"reactions": ""}))
         assert {r["id"] for r in struct["reactions"]} == {"r1"}
         out = _structured(await mcp.call_tool("restore_version", {"version": 0}))
         assert out["rolled_back_to"] == 0
-        struct = _structured(await mcp.call_tool("get_model_structure", {}))
+        struct = _structured(await mcp.call_tool("get_model_structure", {"reactions": ""}))
         assert {r["id"] for r in struct["reactions"]} == {"r1", "r2"}
 
     asyncio.run(go())

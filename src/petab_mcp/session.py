@@ -941,6 +941,7 @@ class PetabSession:
         for key in (*criteria.PENALTIES, "criterion", "criterion_value"):
             if meta.get(key) is None:
                 meta[key] = scores[key]
+        meta.setdefault("k", k)
 
         return self.provenance.snapshot_version(
             model_ant=self.model.to_antimony() if model_ant is None else model_ant,
@@ -1531,7 +1532,7 @@ class PetabSession:
         fit EVENT so the provenance trace names the edit behind each version — it is passed in
         rather than read off session state, because there is no unscored-edit state to read: the
         change and its score are one call. It is deliberately NOT written to the version meta,
-        which ``list_versions`` returns verbatim to the agent — a staged edit carries the whole
+        which ``get_version`` returns verbatim to the agent — a staged edit carries the whole
         Antimony string, and shipping every version's copy of it into the context each turn cost
         far more than the label was worth.
 

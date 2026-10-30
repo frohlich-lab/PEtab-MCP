@@ -574,7 +574,7 @@ def test_a_shipped_start_of_a_readout_id_starts_no_block(tmp_path):
     mcp = _statements_server(tmp_path, entities, auto_fit=False)
     out = _call(mcp, "make_changes", {"justification": "S is split", **_SPLITTING})
     assert out["applied"] is True and out["network"]["split"], out
-    structure = _call(mcp, "get_model_structure", {})
+    structure = _call(mcp, "get_model_structure", {"initial_conditions": ""})
     assert "A" not in structure["species"]
     assert "A_init" not in json.dumps(structure["initial_conditions"])
 
