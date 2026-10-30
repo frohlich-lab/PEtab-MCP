@@ -223,7 +223,10 @@ class RowBinding(BaseModel):
         default=None,
         description="binds a parameter the row makes, by its kind ('kf' for '<prefix>_kf'), to "
         "a SHARED id (another row's, a problem parameter's, or a new name several rows use) or "
-        "to a NUMBER, which fixes it — one rate constant across many reactions is one parameter.",
+        "to a NUMBER, which fixes it — one rate constant across many reactions is one parameter. "
+        "An estimated id is shared within one kind only: the same parameter of the same policy "
+        "and statement type in every row, an id inside an expression taking the kind of the "
+        "parameter it binds.",
     )
 
 
@@ -239,7 +242,8 @@ class StartRow(BaseModel):
     amount: float | str = Field(
         description="its starting amount: a number (1 is a fixed unit pool, 0 an empty start, "
         "anything else estimated from there) or an expression over parameter ids (a parameter "
-        "the problem ships, a condition-table column, a new name)."
+        "the problem ships, a condition-table column, a new name). An estimated id is shared "
+        "only between starts of one kind: populations, or pools the same readouts read."
     )
     name: str | None = Field(
         default=None,

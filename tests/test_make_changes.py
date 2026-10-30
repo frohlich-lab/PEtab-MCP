@@ -2675,3 +2675,107 @@ def test_concurrent_statement_edits_keep_each_others_rows(tmp_path, monkeypatch)
     assert all(out["applied"] for out in _concurrently(monkeypatch, mcp, *calls))
     text = _text(mcp, "get_model", {"format": "statements"})
     assert "conv: A becomes B" in text and all(f"{p}: B becomes A" in text for p in ("back", "back2"))
+
+
+# -- a shared id fills one kind (PEtab-MCP#167) --------------------------------------
+#: fontaine_states' `mean_approach`, cut to its two kinds: a production slowing as `obj` nears a
+#: level. Its `k` and `kd` are two kinds, whatever units they share.
+_MEAN_APPROACH = {
+    "statement_type": "IncreaseAmount", "policy": "mean_approach", "based_on": "mass_action",
+    "rate": "k*kd/(kd + obj)", "parameters": ["k", "kd"],
+}
+
+
+def _shared(mcp, statements, bindings, **args):
+    return _call(mcp, "make_changes", {"justification": "x", "statements": statements,
+                                       "bindings": bindings, **args})
+
+
+@pytest.mark.parametrize(
+    "statements, bindings, args, said",
+    [
+        # task 5, v23: a transition rate reused as OLIG2's approach `kd`.
+        (["t: A becomes B", "m: OLIG2 is produced"],
+         {"t": "mass_action k=k_BC", "m": "mean_approach kd=k_BC"}, {"mechanisms": [_MEAN_APPROACH]},
+         "`k_BC` is row `t`'s `k` (PopulationTransition under `mass_action`) and row `m`'s `kd` "
+         "(IncreaseAmount under `mean_approach`)"),
+        # The same tie inside one row.
+        (["m: OLIG2 is produced"], {"m": "mean_approach k=a_m kd=a_m"},
+         {"mechanisms": [_MEAN_APPROACH]},
+         "`a_m` is row `m`'s `k` (IncreaseAmount under `mean_approach`) and row `m`'s `kd`"),
+        # task 5, v23: PAX6's production `k` reused as its removal's `kf`.
+        (["p: PAX6 is produced", "d: PAX6 is degraded"],
+         {"p": "mass_action k=k_pax_kp", "d": "default kf=k_pax_kp"}, {},
+         "`k_pax_kp` is row `p`'s `k` (IncreaseAmount under `mass_action`) and row `d`'s `kf` "
+         "(DecreaseAmount under `indra_default`)"),
+        # task 9, v22: GLI's activation `k` inside PAX6's repression `kf`.
+        (["g: GLI -> GLIA", "r: PAX6 is degraded"],
+         {"g": "mass_action k=kg_on",
+          "r": {"policy": "default", "parameters": {"kf": "kg_on/(1 + KPx)"}}}, {},
+         "`kg_on` is row `g`'s `k` (Conversion under `mass_action`) and row `r`'s `kf` "
+         "(DecreaseAmount under `indra_default`)"),
+        # No exemption for a reparameterisation: counting ids cannot tell it from the tie above.
+        (["c: A binds B"], {"c": {"policy": "stated", "parameters": {"kf": "kf_on", "kr": "KD*kf_on"}}},
+         {}, "`kf_on` is row `c`'s `kf` (Complex under `stated`) and row `c`'s `kr`"),
+        # task 5, v23: a population's start reused as a marker's.
+        (["t: A becomes B", "m: NKX22 is produced"], {"t": "mass_action", "m": "mass_action"},
+         {"starts": [{"agent": "A", "amount": 0.3, "name": "nv"},
+                     {"agent": "NKX22", "amount": "nv_init", "name": "n22"}]},
+         "`nv_init` is start `nv` (a population) and start `n22` (a pool of NKX22 no readout "
+         "reads)"),
+        # A rate reused as a start.
+        (["t: A becomes B"], {"t": "mass_action k=k_t"},
+         {"starts": [{"agent": "A", "amount": "k_t", "name": "a0"}]},
+         "`k_t` is row `t`'s `k` (PopulationTransition under `mass_action`) and start `a0` (a "
+         "population)"),
+    ],
+)
+def test_an_id_shared_across_kinds_is_refused_naming_both_uses(
+    tmp_path, statements, bindings, args, said
+):
+    """fontaine_states (sweep 61551793) cut k from 56 to 44 at an unchanged chi2 by tying
+    parameters of unrelated processes; each tie was scored as a parameter saved."""
+    out = _shared(_statements_server(tmp_path), statements, bindings, **args)
+    assert out["applied"] is False and out["error_cause"] == "cross_kind_share", out
+    assert said in out["error"]
+    assert "Give each use its own id" in out["error"]
+
+
+def test_a_start_shared_across_readouts_is_refused(tmp_path):
+    """task 9, v22: PAX6's start in pMN reused as NKX2.2's in p3, pools two readouts read."""
+    mcp = _readout_server(tmp_path, extra="obs_N\treadout_N\tsigma_B\n")
+    out = _shared(
+        mcp, ["p: P1 is degraded", "n: N1 is degraded"], {"p": "default", "n": "default"},
+        readouts={"readout_B": "amount(P1)", "readout_N": "amount(N1)"},
+        starts=[{"agent": "P1", "amount": "pax6m_0", "name": "s1"},
+                {"agent": "N1", "amount": "pax6m_0", "name": "s2"}],
+    )
+    assert out["error_cause"] == "cross_kind_share", out
+    assert ("`pax6m_0` is start `s1` (a pool read by `readout_B`) and start `s2` (a pool read by "
+            "`readout_N`)") in out["error"]
+
+
+def test_an_id_shared_within_one_kind_is_kept(tmp_path):
+    """The intended use: one transition rate for steps argued the same process, one decay for
+    several species, one start for several populations."""
+    out = _shared(
+        _statements_server(tmp_path),
+        ["t1: A becomes B", "t2: B becomes C", "d1: A is degraded", "d2: C is degraded"],
+        {"t1": "mass_action k=k_t", "t2": "mass_action k=k_t", "d1": "default kf=kdeg",
+         "d2": "default kf=kdeg"},
+        starts=[{"agent": "A", "amount": "p0", "name": "a0"},
+                {"agent": "C", "amount": "p0", "name": "c0"}],
+    )
+    assert out["applied"] is True, out.get("error")
+
+
+def test_a_start_shared_by_pools_one_readout_reads_is_kept(tmp_path):
+    """Pools of one readout family (PAX6 in two states, one PAX6 readout) may start alike."""
+    out = _shared(
+        _readout_server(tmp_path), ["p1: P1 is degraded", "p2: P2 is degraded"],
+        {"p1": "default kf=kdeg", "p2": "default kf=kdeg"},
+        readouts={"readout_B": "amount(P1) + amount(P2)"},
+        starts=[{"agent": "P1", "amount": "p0", "name": "s1"},
+                {"agent": "P2", "amount": "p0", "name": "s2"}],
+    )
+    assert out["applied"] is True, out.get("error")

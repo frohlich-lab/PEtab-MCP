@@ -722,3 +722,24 @@ def test_a_row_binds_a_rate_to_an_expression_over_shared_ids():
     )
     assert {"KD", "kf_on"} <= params and "r1_k" not in params
     assert set(emissions[0].parameters) == {"KD", "kf_on"}
+
+
+def test_a_slot_is_the_ids_that_fill_it_once_every_row_is_bound():
+    """What a shared id's kinds are checked on (PEtab-MCP#167). A row naming an EARLIER-bound row's
+    constant reads the id that row bound it to, and one naming a LATER row's constant reads it too,
+    once that row has bound it: read at its own binding, `r1` would have kept `r2_k`, which the
+    model no longer holds. An expression reads each id it names, through the bindings of the rows
+    whose constants it names; a number pins the slot to none."""
+    def step(i):
+        return PopulationTransition(Agent(f"s{i}"), Agent(f"s{i + 1}"))
+
+    _, emissions = M.assemble([
+        (step(1), "mass_action", "r1", {"k": "r2_k"}),
+        (step(2), "mass_action", "r2", {"k": "k_on"}),
+        (step(3), "mass_action", "r3", {"k": "KD*r2_k"}),
+        (step(4), "mass_action", "r4", {"k": 0.5}),
+        (step(5), "mass_action", "r5"),
+    ])
+    assert [e.slots for e in emissions] == [
+        {"k": ["k_on"]}, {"k": ["k_on"]}, {"k": ["KD", "k_on"]}, {"k": []}, {"k": ["r5_k"]}
+    ]

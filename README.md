@@ -226,6 +226,10 @@ Principles to hold onto when extending this package.
   [`src/petab_mcp/literals.py`](src/petab_mcp/literals.py)), so freezing a fitted value costs
   what estimating it costs and there is no threshold to round past. A genuinely known constant
   ships as a fixed row: the problem author's call, not the agent's.
+- **A shared id is one quantity.** On the `statements` route an estimated id fills one kind only:
+  one parameter of one policy of one statement type, or the starts of populations, or of pools the
+  same readouts read. `make_changes` refuses any other tie, and the agent has no way to declare one
+  legitimate ([`operations.refuse_cross_kind`](src/petab_mcp/operations.py)).
 
 ## Development
 

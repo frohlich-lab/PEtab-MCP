@@ -97,6 +97,10 @@ class Emission:
     #: The row's binding (:func:`bind`): kind -> the shared id or the number that replaced
     #: ``<prefix>_<kind>``. Empty for a row that binds nothing.
     bound: dict[str, str | float] = field(default_factory=dict)
+    #: Each kind the row minted -> the parameter ids that fill it once every row is bound
+    #: (:func:`_slots`): its own ``<prefix>_<kind>``, the id it shares, or the ids its expression
+    #: reads; none where a number pins it.
+    slots: dict[str, list[str]] = field(default_factory=dict)
     #: The sites the row's scheme (:mod:`schemes`) gave molecules that had none such, and no
     #: earlier row's scheme had: molecule -> site -> its states (none for a binding site).
     sites_added: dict[str, dict[str, list[str]]] = field(default_factory=dict)
@@ -400,10 +404,12 @@ def bind(
 
     Every row mints its own rate constants, so one rate a model uses in many reactions became
     many estimated parameters: one constant shared by many steps of the same kind, or a fixed rate
-    the problem ships. A string binds the kind to that id: a parameter an earlier row bound, or a
+    the problem ships. Of the same kind only: ``make_changes`` refuses an estimated id filling
+    kinds of unequal statement type, policy or parameter (:func:`operations.refuse_cross_kind`).
+    A string binds the kind to that id: a parameter an earlier row bound, or a
     new one of that name — which reconcile then takes from the problem's own row when the problem
     ships it. A number pins the kind to that value; it is no longer estimated. Any other string is
-    an EXPRESSION over such ids (an off-rate written ``KD*kf_on``), each name resolved as a shared
+    an EXPRESSION over such ids (``KD*kf_on``), each name resolved as a shared
     id is, so the parameters are the problem's own and keep their rows. Bound for every entry
     alike, INDRA's and written ones, so no entry needs sharing of its own. What a row no longer
     reads stays behind unreferenced, and the SBML export drops it (as it drops a written
@@ -1067,17 +1073,44 @@ def assemble(
     # Bound once every row has minted its own: bound as each row was built, a row sharing a LATER
     # row's `back_k` made it a new shared id, and that row's own `back_k` then clashed with it.
     merged: dict[str, object] = {}
+    minted = [e.parameters for e in emissions]
     emissions = [
         bind(model, emission, row[3], merged, set(entities or {})) if row[3] else emission
         for emission, row in zip(emissions, rows)
     ]
     return model, [
-        replace(e, sites_added={
+        replace(e, slots=_slots(model, e, own, merged), sites_added={
             name: {site: list(agents.agents[name].site_states.get(site, [])) for site in sites}
             for name, sites in names.items() if sites
         })
-        for e, names in zip(emissions, added)
+        for e, own, names in zip(emissions, minted, added)
     ]
+
+
+def _slots(
+    model: pysb.Model, emission: Emission, minted: tuple[str, ...], merged: dict[str, object]
+) -> dict[str, list[str]]:
+    """Each kind of ``minted``, the parameters row ``emission`` made before :func:`bind`, to the
+    parameter ids that fill it once every row is bound: an id followed through ``merged`` to what
+    stands for it now (another row's binding may have renamed or replaced it), an expression read
+    through every expression it names."""
+    slots = {}
+    for name in minted:
+        kind = name.removeprefix(f"{emission.prefix}_")
+        target = emission.bound.get(kind, name)
+        if not isinstance(target, str):
+            slots[kind] = []
+            continue
+        held = (
+            _held(model, name, merged) if _IDENTIFIER.fullmatch(target)
+            else model.expressions[f"{name}_bound"]
+        )
+        read = (
+            [held] if isinstance(held, pysb.Parameter)
+            else [s for s in held.expand_expr().free_symbols if isinstance(s, pysb.Parameter)]
+        )
+        slots[kind] = sorted(p.name for p in read)
+    return slots
 
 
 def _monomer_policy(policy: str, library: dict[tuple[str, str], Policy]) -> str:

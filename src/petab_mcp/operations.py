@@ -32,7 +32,7 @@ from . import messages as M
 from . import reconcile as R
 from .constants import NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD, WIDENING_NEGLIGIBLE_BIC_GAIN
 from .errors import ModelUpdateError, PetabMcpError, ValidationError
-from .parameters import estimated_mask
+from .parameters import estimated_ids, estimated_mask
 from .provenance import binding_of
 from .references import resolve_references
 from .validation import frozen_parametric_stoichiometry_issues, validate_problem
@@ -897,6 +897,7 @@ def statements_to_antimony(
     )
     if seeded:
         return antimony, emissions
+    refuse_cross_kind(session, stmts, emissions, declared, read, amounts)
     record = {
         "rows": [
             {"prefix": row["prefix"], "statement": row["statement"], "emission": asdict(e)}
@@ -1043,6 +1044,94 @@ def bound_rows(
         binding["policy"] = notation.resolve_policy(binding["policy"], kind, library)
         out.append({"statement": row["statement"], "prefix": row["prefix"]} | binding_of(binding))
     return out
+
+
+def refuse_cross_kind(session, stmts, emissions, starts, readouts, amounts) -> None:
+    """Refuse a model in which one ESTIMATED id fills slots of unequal kind.
+
+    A row's slot is its statement type, its policy and the parameter that entry mints
+    (:attr:`mechanisms.Emission.slots`), so ``k`` and ``kd`` of one policy are two kinds; an id in a
+    binding's expression takes the kind of the slot the expression binds. A start
+    (``(name, agent, amount)``) is of a population, an agent a PopulationTransition row moves; else
+    of a pool, by the readouts that read its molecule (the entity map's ids, and ``readouts`` over
+    ``amounts``), or by its molecule where none does. It fills ``<name>_init`` for a number other
+    than 0 and the unit 1 reconcile fixes, else the ids its expression names. An id the problem
+    ships fixed, a condition input and a species are not estimated.
+    """
+    import libsbml
+    from indra.assemblers.pysb.assembler import _n
+
+    from .statements import PopulationTransition
+
+    def names(formula: str) -> set[str]:
+        return R._ast_names(libsbml.parseL3Formula(str(formula).replace("**", "^")))
+
+    populations = {
+        _n(agent.name)
+        for stmt in stmts if isinstance(stmt, PopulationTransition)
+        for agent in (stmt.source, stmt.target)
+    }
+    readers: dict[str, set[str]] = {}
+    for ident, agent in session.entities.items():
+        if ident not in (readouts or {}):
+            readers.setdefault(_n(agent.name), set()).add(ident)
+    for readout, formula in (readouts or {}).items():
+        for name in names(formula):
+            agent = amounts[name]["name"] if name in amounts else getattr(
+                session.entities.get(name), "name", None
+            )
+            if agent is not None:
+                readers.setdefault(_n(agent), set()).add(readout)
+
+    uses: dict[str, list[tuple[tuple, str]]] = {}
+    for e in emissions:
+        stmt_type, policy = e.entry
+        for kind, ids in e.slots.items():
+            for ident in ids:
+                uses.setdefault(ident, []).append(
+                    ((stmt_type, policy, kind),
+                     f"row `{e.prefix}`'s `{kind}` ({stmt_type} under `{policy}`)")
+                )
+    for name, agent, amount in starts:
+        molecule = _n(agent.name)
+        read = sorted(readers.get(molecule, ()))
+        key, what = (
+            (("population",), "a population") if molecule in populations
+            else (("read", *read), f"a pool read by {', '.join(f'`{r}`' for r in read)}") if read
+            else (("molecule", molecule), f"a pool of {agent.name} no readout reads")
+        )
+        try:
+            value = float(amount)
+        except (TypeError, ValueError):
+            ids = names(amount)
+        else:
+            ids = set() if value in (0.0, 1.0) else {f"{name}_init"}
+        for ident in ids:
+            uses.setdefault(ident, []).append((("start", key), f"start `{name}` ({what})"))
+
+    shipped = session.shipped_parameter_df
+    unestimated = (
+        set(shipped.index) - set(estimated_ids(shipped))
+        | R.condition_target_symbols(session.problem)
+        | set(session.entities)
+    )
+    clashes = []
+    for ident in sorted(set(uses) - unestimated):
+        (first, said), *rest = uses[ident]
+        other = next((d for key, d in rest if key != first), None)
+        if other is not None:
+            clashes.append(f"`{ident}` is {said} and {other}")
+    if clashes:
+        raise OperationError(
+            f"make_changes: an estimated id is shared across kinds: {'; '.join(clashes)}. "
+            "A shared id claims its uses are one quantity, which holds only within one kind: one "
+            "parameter of one policy of one statement type, or the starts of populations, or of "
+            "pools the same readouts read. An id inside an expression takes the kind of the "
+            "parameter the expression binds. Give each use its own id: bind one to a new name, or "
+            "leave it unbound so it keeps its own `<prefix>_<kind>`; for a start, name a new id in "
+            "its amount. NOTHING was applied.",
+            cause="cross_kind_share",
+        )
 
 
 def statements_model(session, record: dict) -> tuple[Any, list]:
