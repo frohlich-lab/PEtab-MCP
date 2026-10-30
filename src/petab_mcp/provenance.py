@@ -34,11 +34,29 @@ import logging
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
+from collections.abc import Iterable
 from typing import Any
 
 
 #: The layout a store's ``FORMAT`` file names (see the module docstring).
 STORE_FORMAT = "petab-v2"
+
+#: What :meth:`ProvenanceStore.get_version` can add to a version's meta, model and parameters: the
+#: fit's per-point records (``simulations.json``) and its starts with their traces
+#: (``optimization.json``), each far larger than the rest.
+VERSION_PARTS = ("simulation", "optimization")
+
+#: The fields of a version's ``meta.json`` that ``list_versions`` gives one row each; the rest of
+#: the meta is the version's own read.
+SUMMARY_FIELDS = (
+    "version",
+    "parent",
+    "neg_log_likelihood",
+    "criterion_value",
+    "k",
+    "is_new_best",
+    "residual_flagged",
+)
 
 #: A version's held-out score with its per-point records
 #: (:func:`petab_mcp.validation_data.score_session`); a harness that archives a version's files
@@ -73,6 +91,11 @@ def statements_record(record: dict[str, Any] | None) -> dict[str, Any] | None:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def summary(meta: dict[str, Any]) -> dict[str, Any]:
+    """``meta``'s :data:`SUMMARY_FIELDS`, ``None`` where it records none."""
+    return {key: meta.get(key) for key in SUMMARY_FIELDS}
 
 
 def _dumps(obj: Any) -> str:
@@ -406,18 +429,25 @@ class ProvenanceStore:
             if d.is_dir() and d.name[1:].isdigit()
         )
 
-    def get_version(self, n: int) -> dict[str, Any]:
+    def get_version(self, n: int, include: Iterable[str] = VERSION_PARTS) -> dict[str, Any]:
+        """Version ``n``'s meta, ``model_antimony`` and ``parameters``, plus each of
+        :data:`VERSION_PARTS` in ``include`` (``None`` where the version stored none); a part not
+        in ``include`` is neither read nor returned."""
         vdir = self._version_dir(n)
         meta = json.loads((vdir / "meta.json").read_text())
-        sim_path = vdir / "simulations.json"
-        simulation = json.loads(sim_path.read_text()) if sim_path.is_file() else None
-        opt_path = vdir / "optimization.json"
-        optimization = json.loads(opt_path.read_text()) if opt_path.is_file() else None
-        if optimization is not None:
-            # Point at this version's copy of the pyPESTO result file (if it was stored), so a
-            # later rollback can copy it forward and tools can locate it.
-            hdf5 = vdir / "pypesto_result.hdf5"
-            optimization["result_file"] = str(hdf5) if hdf5.is_file() else None
+        parts = {}
+        if "simulation" in include:
+            sim_path = vdir / "simulations.json"
+            parts["simulation"] = json.loads(sim_path.read_text()) if sim_path.is_file() else None
+        if "optimization" in include:
+            opt_path = vdir / "optimization.json"
+            optimization = json.loads(opt_path.read_text()) if opt_path.is_file() else None
+            if optimization is not None:
+                # Point at this version's copy of the pyPESTO result file (if it was stored), so a
+                # later rollback can copy it forward and tools can locate it.
+                hdf5 = vdir / "pypesto_result.hdf5"
+                optimization["result_file"] = str(hdf5) if hdf5.is_file() else None
+            parts["optimization"] = optimization
         # `parameters` stays a list of JSON records — the shape the MCP tool and diff want
         # (and it must be JSON-serializable). The raw DataFrame is available separately via
         # `get_parameter_df`, which the session uses to restore state directly.
@@ -427,12 +457,12 @@ class ProvenanceStore:
             **meta,
             "model_antimony": (vdir / "model.ant").read_text(encoding="utf-8"),
             "parameters": parameter_df_to_records(self._read_parameter_df(vdir)),
-            "simulation": simulation,
-            "optimization": optimization,
+            **parts,
         }
 
-    def list_versions(self) -> list[dict[str, Any]]:
-        """Every version's stored ``meta.json``, oldest first.
+    def list_versions(self, since: int | None = None) -> list[dict[str, Any]]:
+        """Every version's stored ``meta.json``, oldest first; with ``since``, only the versions
+        after it.
 
         An entry that is unreadable, malformed, or not a JSON OBJECT is skipped and logged, not
         returned: callers iterate the result and call ``.get`` on each element without guarding,
@@ -445,6 +475,8 @@ class ProvenanceStore:
         # dir, an editor artefact) so `int(name[1:])` can't raise and break version listing.
         vdirs = [d for d in self.versions_dir.glob("v*") if d.is_dir() and d.name[1:].isdigit()]
         for vdir in sorted(vdirs, key=lambda p: int(p.name[1:])):
+            if since is not None and int(vdir.name[1:]) <= since:
+                continue
             try:
                 meta = json.loads((vdir / "meta.json").read_text())
             except (OSError, ValueError):
@@ -466,7 +498,7 @@ class ProvenanceStore:
         return out
 
     def diff_versions(self, a: int, b: int) -> dict[str, Any]:
-        va, vb = self.get_version(a), self.get_version(b)
+        va, vb = self.get_version(a, include=()), self.get_version(b, include=())
         model_diff = "".join(
             difflib.unified_diff(
                 va["model_antimony"].splitlines(keepends=True),

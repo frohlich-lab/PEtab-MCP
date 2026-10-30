@@ -117,6 +117,6 @@ def test_a_species_the_conditions_set_is_held_while_the_rows_only_read_it(
     assert call("make_changes", {"justification": "A acts on B", "statements": [row],
                                  "bindings": {"r1": policy}})["applied"]
     assert ("$A" in call("get_model", {})["result"]) is held
-    ics = {r["species"]: r for r in call("get_model_structure", {})["initial_conditions"]}
+    ics = {r["species"]: r for r in call("get_model_structure", {"initial_conditions": ""})["initial_conditions"]}
     assert ics["A"]["t0_source"] == "condition_table"
     assert (ics["A"]["ic_parameter"] is None) is held

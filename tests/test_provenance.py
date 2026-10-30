@@ -216,3 +216,38 @@ def test_a_store_written_by_the_v1_server_is_refused(tmp_path):
     with pytest.raises(PetabMcpError, match="fresh --provenance-dir"):
         ProvenanceStore(root)
     ProvenanceStore(tmp_path / "empty")
+
+
+def test_a_version_is_read_without_its_fit_parts_unless_asked(tmp_path):
+    """`get_version` returned each version's per-point records and optimizer trace, up to 1 MB a
+    call, to an agent that wanted a parameter or two (PEtab-MCP#171); a part left out is not read."""
+    store = ProvenanceStore(tmp_path / ".petab_mcp")
+    store.snapshot_version(
+        "model m() end",
+        _pdf([{"parameterId": "k", "estimate": 1}]),
+        meta={"neg_log_likelihood": 1.0},
+        simulation={"records": [{"y": 1.0}]},
+        optimization={"n_starts": 1, "starts": [{"start": 0, "fval": 1.0}]},
+    )
+    light = store.get_version(0, include=())
+    assert light["neg_log_likelihood"] == 1.0 and light["parameters"][0]["parameterId"] == "k"
+    assert "simulation" not in light and "optimization" not in light
+    assert store.get_version(0, include=("simulation",))["simulation"] == {"records": [{"y": 1.0}]}
+    assert store.get_version(0)["optimization"]["n_starts"] == 1
+
+
+def test_versions_after_since_are_listed_one_summary_row_each(tmp_path):
+    """`list_versions` returned every version's whole meta, 178k chars by v11 of one run
+    (PEtab-MCP#171); a row now carries only `SUMMARY_FIELDS`, null where the meta has none."""
+    from petab_mcp.provenance import SUMMARY_FIELDS, summary
+
+    store = ProvenanceStore(tmp_path / ".petab_mcp")
+    for nll in (3.0, 2.0, 1.0):
+        store.snapshot_version(
+            "model m() end", _pdf([]), meta={"neg_log_likelihood": nll, "bic": 9.0}
+        )
+    assert [m["version"] for m in store.list_versions(since=0)] == [1, 2]
+    assert store.list_versions(since=2) == []
+    row = summary(store.list_versions()[0])
+    assert tuple(row) == SUMMARY_FIELDS
+    assert row["neg_log_likelihood"] == 3.0 and row["k"] is None and "bic" not in row

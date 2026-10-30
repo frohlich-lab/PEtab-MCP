@@ -16,7 +16,7 @@ def test_get_model_formats(session):
 
 
 def test_model_structure(session):
-    s = M.model_structure(session)
+    s = M.model_structure(session, reactions="")
     assert set(s["species"]) == {"A", "B"}
     assert {"k1", "k2", "A_init", "B_init"} <= set(s["parameters"])
     assert {r["id"] for r in s["reactions"]} == {"r1", "r2"}
