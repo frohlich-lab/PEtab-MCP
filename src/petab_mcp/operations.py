@@ -897,7 +897,6 @@ def statements_to_antimony(
     )
     if seeded:
         return antimony, emissions
-    refuse_cross_kind(session, stmts, emissions, declared, read, amounts)
     record = {
         "rows": [
             {"prefix": row["prefix"], "statement": row["statement"], "emission": asdict(e)}
@@ -915,6 +914,7 @@ def statements_to_antimony(
         "amounts": given,
         "network": network,
     }
+    refuse_cross_kind(session, record)
     names = ", ".join(dict.fromkeys(name for stmt in stmts for name in ungrounded(stmt)))
     warnings = M.warnings_from(
         M.SOURCE_EDIT, [names and f"`statements` agents carry no grounding: {names}.", *notes]
@@ -1046,69 +1046,83 @@ def bound_rows(
     return out
 
 
-def refuse_cross_kind(session, stmts, emissions, starts, readouts, amounts) -> None:
-    """Refuse a model in which one ESTIMATED id fills slots of unequal kind.
+def parameter_kinds(entities, record: dict) -> dict[str, list[tuple[tuple, str]]]:
+    """Each id a statements ``record`` (:func:`statements_to_antimony`'s) reads, to its uses: the
+    kind of each and how a refusal names it. ``entities`` is the entity map.
 
     A row's slot is its statement type, its policy and the parameter that entry mints
     (:attr:`mechanisms.Emission.slots`), so ``k`` and ``kd`` of one policy are two kinds; an id in a
-    binding's expression takes the kind of the slot the expression binds. A start
-    (``(name, agent, amount)``) is of a population, an agent a PopulationTransition row moves; else
-    of a pool, by the readouts that read its molecule (the entity map's ids, and ``readouts`` over
-    ``amounts``), or by its molecule where none does. It fills ``<name>_init`` for a number other
-    than 0 and the unit 1 reconcile fixes, else the ids its expression names. An id the problem
-    ships fixed, a condition input and a species are not estimated.
+    binding's expression takes the kind of the slot the expression binds. A start is of a
+    population, an agent a PopulationTransition row moves; else of a pool, by the readouts that read
+    its molecule (the entity map's ids, and ``readouts`` over ``amounts``), or by its molecule where
+    none does. It fills ``<name>_init`` for a number other than 0 and the unit 1 reconcile fixes,
+    else the ids its expression names.
     """
     import libsbml
     from indra.assemblers.pysb.assembler import _n
 
-    from .statements import PopulationTransition
+    from . import notation
 
     def names(formula: str) -> set[str]:
         return R._ast_names(libsbml.parseL3Formula(str(formula).replace("**", "^")))
 
+    def name(agent) -> str:
+        return (notation.parse_agent(agent) if isinstance(agent, str) else agent)["name"]
+
+    rows = record.get("rows") or []
     populations = {
-        _n(agent.name)
-        for stmt in stmts if isinstance(stmt, PopulationTransition)
-        for agent in (stmt.source, stmt.target)
+        _n(row["statement"][role]["name"])
+        for row in rows if row["statement"].get("type") == "PopulationTransition"
+        for role in ("source", "target")
     }
+    readouts, amounts = _readout_amounts(record.get("readouts"), record.get("amounts"))
     readers: dict[str, set[str]] = {}
-    for ident, agent in session.entities.items():
+    for ident, agent in entities.items():
         if ident not in (readouts or {}):
             readers.setdefault(_n(agent.name), set()).add(ident)
     for readout, formula in (readouts or {}).items():
-        for name in names(formula):
-            agent = amounts[name]["name"] if name in amounts else getattr(
-                session.entities.get(name), "name", None
+        for read in names(formula):
+            agent = name(amounts[read]) if read in amounts else getattr(
+                entities.get(read), "name", None
             )
             if agent is not None:
                 readers.setdefault(_n(agent), set()).add(readout)
 
     uses: dict[str, list[tuple[tuple, str]]] = {}
-    for e in emissions:
-        stmt_type, policy = e.entry
-        for kind, ids in e.slots.items():
+    for row in rows:
+        emission = row.get("emission") or {}
+        stmt_type, policy = emission["entry"]
+        for kind, ids in (emission.get("slots") or {}).items():
             for ident in ids:
                 uses.setdefault(ident, []).append(
                     ((stmt_type, policy, kind),
-                     f"row `{e.prefix}`'s `{kind}` ({stmt_type} under `{policy}`)")
+                     f"row `{row['prefix']}`'s `{kind}` ({stmt_type} under `{policy}`)")
                 )
-    for name, agent, amount in starts:
-        molecule = _n(agent.name)
+    for start in record.get("starts") or []:
+        agent = name(start["agent"])
+        molecule = _n(agent)
         read = sorted(readers.get(molecule, ()))
         key, what = (
             (("population",), "a population") if molecule in populations
             else (("read", *read), f"a pool read by {', '.join(f'`{r}`' for r in read)}") if read
-            else (("molecule", molecule), f"a pool of {agent.name} no readout reads")
+            else (("molecule", molecule), f"a pool of {agent} no readout reads")
         )
         try:
-            value = float(amount)
+            value = float(start["amount"])
         except (TypeError, ValueError):
-            ids = names(amount)
+            ids = names(start["amount"])
         else:
-            ids = set() if value in (0.0, 1.0) else {f"{name}_init"}
+            ids = set() if value in (0.0, 1.0) else {f"{start['name']}_init"}
         for ident in ids:
-            uses.setdefault(ident, []).append((("start", key), f"start `{name}` ({what})"))
+            uses.setdefault(ident, []).append((("start", key), f"start `{start['name']}` ({what})"))
+    return uses
 
+
+def refuse_cross_kind(session, record: dict) -> None:
+    """Refuse a statements ``record`` in which one ESTIMATED id fills slots of unequal kind
+    (:func:`parameter_kinds`). An id the problem ships fixed, a condition input and a species are
+    not estimated."""
+    uses = parameter_kinds(session.entities, record)
     shipped = session.shipped_parameter_df
     unestimated = (
         set(shipped.index) - set(estimated_ids(shipped))

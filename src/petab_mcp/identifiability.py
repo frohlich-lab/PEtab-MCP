@@ -52,6 +52,7 @@ def _identifiability_stats(
     se_unconstrained: float = 1.0,
     spread_unstable: float = 0.5,
     roles: dict[str, str] | None = None,
+    kinds: dict[str, tuple] | None = None,
     n_data: int | None = None,
     criterion: "criteria.Criterion | None" = None,
 ) -> dict[str, Any]:
@@ -195,6 +196,7 @@ def _identifiability_stats(
                 scales=[p.get("scale") for p in params_meta],
                 at_bound=[per[n]["at_bound"] for n in names],
                 roles=roles,
+                kinds=kinds,
                 n_data=n_data,
                 top_n=top_n,
                 criterion=criterion,
@@ -538,6 +540,7 @@ def merge_candidates(
     scales=None,
     at_bound=None,
     roles=None,
+    kinds=None,
     n_data=None,
     top_n=6,
     criterion=None,
@@ -574,7 +577,10 @@ def merge_candidates(
     price it honestly — same ROLE (nothing stops the arithmetic tying a rate to a noise sigma),
     same parameterScale (``log10(k_a) == k_b`` is not an equality anyone means), and neither member
     AT A BOUND (the expansion assumes an interior stationary point, so a pinned parameter's cost
-    would be understated). Each filter needs its table: whichever the caller leaves out is named in
+    would be understated). On a model built from statements, also the same KIND where both have
+    one (``kinds``, :func:`operations.parameter_kinds`): ``make_changes`` refuses an id shared
+    across kinds, so that tie is no edit at all. Each filter needs its table: whichever the caller
+    leaves out is named in
     ``filters_off``, and every pair a filter refused is counted by reason in ``n_ties_skipped``, so
     that "no free tie exists" and "the free tie was suppressed" read differently. The ranked list is
     truncated to ``top_n``.
@@ -635,6 +641,11 @@ def merge_candidates(
                     continue
                 if ri != rj:
                     _skip("role_mismatch")
+                    continue
+            if kinds is not None:
+                ki, kj = kinds.get(names[i]), kinds.get(names[j])
+                if ki is not None and kj is not None and ki != kj:
+                    _skip("kind_mismatch")
                     continue
             if scales is not None:
                 si, sj = _scale_key(scales[i]), _scale_key(scales[j])
@@ -866,7 +877,7 @@ def identifiability(session, *, top_n: int = 8, corr_threshold: float = 0.9) -> 
     # stops tying a kinetic rate to an observable scaling, and the arithmetic will call it free.
     # merge_candidates is their only consumer and needs the FIM, so without one this whole-model
     # walk would be discarded unused. Walked on the FROZEN problem — the structure that was fitted.
-    roles = None
+    roles = kinds = None
     if fim is not None:
         try:
             from .reconcile import parameter_roles
@@ -874,6 +885,7 @@ def identifiability(session, *, top_n: int = 8, corr_threshold: float = 0.9) -> 
             roles = parameter_roles(record.problem)
         except Exception:  # noqa: BLE001 - advisory; the payload says the filter is off
             roles = None
+        kinds = _kinds(session)
     out = _identifiability_stats(
         _params_meta(record),
         fim,
@@ -881,6 +893,7 @@ def identifiability(session, *, top_n: int = 8, corr_threshold: float = 0.9) -> 
         top_n=top_n,
         corr_threshold=corr_threshold,
         roles=roles,
+        kinds=kinds,
         n_data=_measurement_count(record.problem),
         criterion=session.criterion,
     )
@@ -892,6 +905,24 @@ def identifiability(session, *, top_n: int = 8, corr_threshold: float = 0.9) -> 
     elif working_table_moved(session, record):
         out["working_table_note"] = WORKING_TABLE_NOTE
     return out
+
+
+def _kinds(session) -> dict[str, tuple] | None:
+    """Each id the working model's statements record reads, to the kind it fills there
+    (:func:`operations.parameter_kinds`); ``None`` for a model not built from statements. The
+    record is the one being fitted: the submitted one while a change is fitted, else HEAD's."""
+    record = (
+        session.submitted_statements if getattr(session, "submitted_source", None)
+        else getattr(session, "model_statements", None)
+    )
+    if not record:
+        return None
+    try:
+        from .operations import parameter_kinds
+
+        return {i: uses[0][0] for i, uses in parameter_kinds(session.entities, record).items()}
+    except Exception:  # noqa: BLE001 - advisory: without kinds, merges are filtered by role alone
+        return None
 
 
 #: How many ties ride beside a fit's score. Every one shown is a merge the criterion already pays

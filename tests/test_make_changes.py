@@ -2779,3 +2779,27 @@ def test_a_start_shared_by_pools_one_readout_reads_is_kept(tmp_path):
                 {"agent": "P2", "amount": "p0", "name": "s2"}],
     )
     assert out["applied"] is True, out.get("error")
+
+
+def test_the_diagnosis_keys_each_id_by_its_kind_off_the_stored_record(tmp_path):
+    """The merge hints pair ids within a kind (PEtab-MCP#167), read off the version's record as
+    stored, so a hint never offers a tie `make_changes` refuses."""
+    from types import SimpleNamespace
+
+    from indra.statements import Agent
+
+    from petab_mcp import identifiability
+
+    out = _shared(
+        _statements_server(tmp_path),
+        ["t1: A becomes B", "t2: B becomes C", "m: OLIG2 is produced"],
+        {"t1": "mass_action k=k_t", "t2": "mass_action k=k_t", "m": "mean_approach"},
+        mechanisms=[_MEAN_APPROACH], starts=[{"agent": "A", "amount": 0.3, "name": "a0"}],
+    )
+    assert out["applied"] is True, out.get("error")
+    session = SimpleNamespace(entities={"A": Agent("A"), "B": Agent("B")}, submitted_source=None,
+                              model_statements=_stored_rows(tmp_path, 0))
+    kinds = identifiability._kinds(session)
+    assert kinds["k_t"] == ("PopulationTransition", "mass_action", "k")
+    assert kinds["m_k"] == ("IncreaseAmount", "mean_approach", "k") != kinds["m_kd"]
+    assert kinds["a0_init"] == ("start", ("population",))

@@ -64,7 +64,8 @@ different structure is in the working state.
 - `merge_candidates` prices giving a pair one shared value: `dnll`, `dscore` (negative when the
   merge lowers the score), `move_scaled` (how far the tie moves a parameter; cheap but many decades
   rarely survives a refit). Only same-role, same-scale pairs with neither member at a bound are
-  priced, so an absent pair may be one that was skipped, not a dear one.
+  priced, and where bindings built the model, only pairs of one kind (the ties a binding may
+  share), so an absent pair may be one that was skipped, not a dear one.
 
 ## SQL: one row per group
 

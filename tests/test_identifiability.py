@@ -435,6 +435,26 @@ def test_merge_candidates_only_offers_ties_within_a_role():
     assert off["n_ties_priced"] == 3 and "role" in off["filters_off"]
 
 
+def test_merge_candidates_only_offer_ties_within_a_kind():
+    """PEtab-MCP#167: `make_changes` refuses an id shared across kinds, so a hint tying a transition
+    rate to a marker's decay, both `kinetic`, asked for an edit it then refused. An id with no kind
+    (a sigma, a start the trace made) is left to the role filter."""
+    import numpy as np
+
+    from petab_mcp.identifiability import merge_candidates
+
+    names = ["t1_k", "t2_k", "m_kd", "s"]
+    transition = ("PopulationTransition", "mass_action", "k")
+    kinds = {"t1_k": transition, "t2_k": transition, "m_kd": ("IncreaseAmount", "mean_approach", "kd")}
+    rep = merge_candidates(
+        np.eye(4), names, [1.0] * 4, roles=dict.fromkeys(names, "kinetic"), kinds=kinds
+    )
+    priced = [set(t["parameters"]) for t in rep["ties"]]
+    assert {"t1_k", "t2_k"} in priced
+    assert {"t1_k", "m_kd"} not in priced and {"t2_k", "m_kd"} not in priced
+    assert rep["n_ties_priced"] == 4 and rep["n_ties_skipped"] == {"kind_mismatch": 2}
+
+
 def test_merge_candidates_refuse_pairs_they_cannot_price_honestly():
     """Fail closed. Across parameterScales the equality is meaningless (`log10(k_a) == k_b` is not
     an edit anyone writes), and at a bound the quadratic's interior-stationary-point assumption is
