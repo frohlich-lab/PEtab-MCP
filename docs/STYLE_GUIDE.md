@@ -91,7 +91,7 @@ actionable message.
 - **An upper bound needs a "revisit once…" condition**, so the next person knows what would
   let them lift it.
 - **A new import means a new pin.** Several dependencies are pinned precisely because
-  nothing imports them directly (`bionetgen` ships the BioNetGen that pysb runs) — a
+  nothing imports them directly (`h5py` is written _through_ pyPESTO's storage API) — a
   transitive graph change would otherwise break them silently.
 - **Optional deps must not silently skip tests.** Adding an `importorskip` means adding its
   dependency to `dev`.

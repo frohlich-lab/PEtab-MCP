@@ -2,9 +2,9 @@
 
 In one sweep the lab filesystem's quota filled for a few hours: 241 ``make_changes`` calls came
 back "could not be compiled/fit … ill-posed" (the build's install step failed, so only the import
-after it did), and 40 as raw ``[Errno 122]`` tool errors that the identical-fit guard then counted.
-Agents rewrote models that were fine. Nothing here compiles: pyPESTO's builder is replaced, and a
-full disk is the probe's write failing.
+after it did), 40 as raw ``[Errno 122]`` tool errors that the identical-fit guard then counted, and
+15 servers segfaulted in h5py writing the fit result. Agents rewrote models that were fine. Nothing
+here compiles: pyPESTO's builder is replaced, and a full disk is the probe's write failing.
 """
 
 from __future__ import annotations
@@ -17,9 +17,11 @@ import tempfile
 from pathlib import Path
 
 import pypesto.petab
+import pypesto.store
 import pytest
 from fastmcp.exceptions import ToolError
 
+from petab_mcp import fitting
 from petab_mcp.dedup import MAX_IDENTICAL_REAUTHORS
 from petab_mcp.engine import AmiciEngine
 from petab_mcp.errors import InfrastructureError, ModelUpdateError, disk_full_error
@@ -135,6 +137,16 @@ def test_a_failed_import_on_a_disk_with_room_is_still_the_models(tmp_path, insta
     session = _open(tmp_path)
     with pytest.raises(ModelUpdateError, match="ill-posed"):
         session.fit()
+
+
+def test_the_result_file_is_not_written_to_a_full_disk(tmp_path, disk_full, monkeypatch):
+    """h5py segfaults closing a file the disk refused, which no except catches: 15 servers died that
+    way. The disk is looked at before h5py is reached."""
+    writes = []
+    monkeypatch.setattr(pypesto.store, "write_result", lambda *a, **k: writes.append(a))
+    with pytest.raises(InfrastructureError):
+        fitting._write_pypesto_result(_open(tmp_path), object(), "h")
+    assert writes == []
 
 
 # -- the tool boundary --------------------------------------------------------------------------

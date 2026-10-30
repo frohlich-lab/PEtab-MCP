@@ -49,7 +49,7 @@ from .constants import (
     PARAMETER_AT_BOUND_RELATIVE_TOL,
 )
 from .engine import build_lock
-from .errors import ModelBuildBusyError, ModelUpdateError, PetabMcpError
+from .errors import ModelBuildBusyError, ModelUpdateError, PetabMcpError, disk_full_error
 from .formatting import finite_float as _flt
 from .parameters import structure_fingerprint
 from .problem import (
@@ -289,8 +289,8 @@ def _fitted_values(x_names, x_values, free_indices, parameter_df) -> dict[str, f
 
 def table_fitted_values(parameter_df) -> dict[str, float]:
     """``{estimated parameter id: nominalValue}``: a fit writes every estimated parameter's value
-    back into the table, so this is that fit's ``fitted_parameters``. A version stores them only in
-    its ``parameters.tsv``, and a restore reads them back through here."""
+    back into the table, so this is that fit's ``fitted_parameters``. A version keeps them by name
+    only in its ``parameters.tsv``, and a restore reads them back through here."""
     if ESTIMATE not in parameter_df.columns:
         return {}
     return {
@@ -429,6 +429,38 @@ def _inner_fitted_values(pypesto_problem, best, inner: dict[str, str]) -> dict[s
             "model: do not re-author it."
         )
     return found
+
+
+def _write_pypesto_result(session, result, problem_hash: str) -> str | None:
+    """Write the pyPESTO ``Result`` to a per-fit HDF5 file; return its path (or ``None``).
+
+    The file is cached under ``<provenance>/cache/`` keyed by the *problem* hash — model
+    SBML **and** parameter table, so fits that differ only in bounds/scale don't collide —
+    and is copied into a version directory when that fit is snapshotted. Best-effort: the
+    objective (an AMICI model) is not serialised (``problem=False``), and any storage
+    failure is logged and swallowed so it never fails a fit; the JSON traces remain the
+    primary, always-present artifact.
+
+    A full disk is the exception, and is looked for BEFORE the write: h5py segfaults closing a file
+    the disk refused, which no ``except`` catches, and took the server down in 15 runs of one sweep
+    (PEtab-MCP#83). It raises :class:`~petab_mcp.errors.InfrastructureError` instead.
+    """
+    if (disk_full := disk_full_error(None, session.provenance.root)) is not None:
+        raise disk_full
+    try:
+        import pypesto.store as pypesto_store
+
+        cache_dir = session.provenance.root / "cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        path = cache_dir / f"pypesto_result_{problem_hash}.hdf5"
+        try:
+            pypesto_store.write_result(result, str(path), overwrite=True, problem=False)
+        except TypeError:  # older signature without the `problem` kwarg
+            pypesto_store.write_result(result, str(path), overwrite=True)
+        return str(path)
+    except Exception:  # noqa: BLE001 - HDF5/pyPESTO storage is a best-effort interop artifact
+        session.logger.warning("could not write pyPESTO result file", exc_info=True)
+        return None
 
 
 def _optimization_payload(result) -> dict[str, Any]:
@@ -1343,6 +1375,7 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     # re-enter them as warm starts. See `previous_optima`.
     optimization["x_scales"] = [str(s) for s in problem.x_scales]
     optimization["n_starts_killed"] = len(killed)
+    optimization["result_file"] = _write_pypesto_result(session, result, session.problem_hash())
     return {
         "fitted": fitted,
         "neg_log_likelihood": nllh,
@@ -2514,11 +2547,13 @@ def build_sim_payload_for_version(payload: dict[str, Any] | None) -> dict[str, A
 def build_optimization_payload_for_version(
     payload: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
-    """The optimization blob persisted alongside a version (``optimization.json``).
+    """The optimization blob persisted alongside a version (``optimization.json`` + hdf5).
 
-    ``payload`` is ``session.optimization`` (a :func:`_optimization_payload` dict). Returns
-    ``None`` when there is no fit to store (simulate-only passes, legacy versions), so those
-    version dirs carry no optimization file.
+    ``payload`` is ``session.optimization`` (a :func:`_optimization_payload` dict, possibly
+    with a ``result_file``). Returns ``None`` when there is no fit to store (simulate-only
+    passes, legacy versions), so those version dirs carry no optimization files. The
+    ``result_file`` — the pyPESTO HDF5 written for this model — is carried through so the
+    snapshot can copy it into the version directory.
     """
     if not payload or not payload.get("starts"):
         return None
@@ -2532,6 +2567,7 @@ def build_optimization_payload_for_version(
         # "was this fit optimiser-limited or structure-limited?".
         "exitflag_counts": payload.get("exitflag_counts"),
         "n_starts_killed": payload.get("n_starts_killed"),
+        "result_file": payload.get("result_file"),
         # Without these a rollback restores the per-start optima with no way to read them: the
         # `x` vectors are positional. Rollback-then-re-author is exactly the path where reusing
         # them as warm starts matters most (see `previous_optima`).

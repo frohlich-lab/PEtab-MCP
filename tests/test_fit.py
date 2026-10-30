@@ -556,7 +556,8 @@ def test_a_restored_fit_reports_parameter_scales(fit_session):
 
 
 def test_a_version_keeps_its_fitted_values_in_its_parameter_table_only(fit_session):
-    """No other file in the store holds them, and a restore reads them back from the table."""
+    """No other text file in the store names them, and a restore reads them back from the table.
+    The pyPESTO result stays beside them."""
     import json
 
     sess = fit_session
@@ -566,7 +567,8 @@ def test_a_version_keeps_its_fitted_values_in_its_parameter_table_only(fit_sessi
     for name in ("meta.json", "simulations.json"):
         assert "fitted_parameters" not in json.loads((vdir / name).read_text())
     assert all("fitted_parameters" not in event for event in sess.provenance.recent_events(0))
-    assert [p.name for p in root.rglob("*") if p.suffix in (".hdf5", ".tsv")] == ["parameters.tsv"]
+    assert [p.name for p in root.rglob("*.tsv")] == ["parameters.tsv"]
+    assert (vdir / "pypesto_result.hdf5").is_file()
 
     sess.simulation = None
     sess.apply_version(0)

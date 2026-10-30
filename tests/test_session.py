@@ -64,15 +64,20 @@ def _reactions(session):
     return {sm.getReaction(i).getId() for i in range(sm.getNumReactions())}
 
 
-def test_rollback_restores_optimization(session):
-    # Snapshot a trace-free v0, then a "fitted" v1 carrying optimization traces, the way a real
-    # fitting commit would. (No engine here, so build them via the store.)
+def test_rollback_restores_and_copies_optimization(session):
+    # Snapshot a trace-free v0, then a "fitted" v1 carrying optimization traces + a (stand-in)
+    # pyPESTO result file, the way a real fitting commit would. (No engine here, so build them
+    # via the store.)
     session.provenance.snapshot_version(
         model_ant=session.model.to_antimony(),
         parameters=session.problem.parameter_df,
         label="fit",
         kind="fit",
     )
+    root = session.provenance.root
+    result_file = root / "cache" / "pypesto_result_xyz.hdf5"
+    result_file.parent.mkdir(parents=True, exist_ok=True)
+    result_file.write_bytes(b"fake pypesto result")
     session.provenance.snapshot_version(
         model_ant=session.model.to_antimony(),
         parameters=session.problem.parameter_df,
@@ -85,6 +90,7 @@ def test_rollback_restores_optimization(session):
                 {"start": 0, "iteration": 0, "fval": 9.0},
                 {"start": 0, "iteration": 1, "fval": 1.0},
             ],
+            "result_file": str(result_file),
         },
     )
     assert session.provenance.current_version == 1
@@ -94,6 +100,10 @@ def test_rollback_restores_optimization(session):
     opt = session.optimization
     assert opt is not None and opt["n_starts"] == 2
     assert [t["fval"] for t in opt["trace"]] == [9.0, 1.0]
+
+    # ... and the pyPESTO result file is copied forward into the new rollback version.
+    head = session.provenance.current_version
+    assert (session.provenance.versions_dir / f"v{head}" / "pypesto_result.hdf5").is_file()
 
     # rolling back to a version with no traces clears them
     session.rollback_to(0)

@@ -160,14 +160,14 @@ FIT_WEDGED = "fit_wedged"
 _DISK_FULL_ERRNOS = frozenset({errno.ENOSPC, errno.EDQUOT})
 
 #: How a full disk reads where no ``OSError`` carries its errno: a linker's or ``cmake --install``'s
-#: output. glibc's wording, which a cluster's build prints, and this platform's own (macOS spells it
-#: "Disc quota exceeded").
+#: output, h5py's message. glibc's wording, which a cluster's build prints, and this platform's own
+#: (macOS spells it "Disc quota exceeded").
 _DISK_FULL_TEXT = frozenset(
     {"No space left on device", "Disk quota exceeded"} | {os.strerror(e) for e in _DISK_FULL_ERRNOS}
 )
 
 #: What :func:`disk_full_error` writes to tell whether a folder's disk takes a write. A MiB rather
-#: than the one block a full disk refuses, so a disk with only a few left reads as full too.
+#: than the one block a full disk refuses, so a disk with only a few left fails here, not in h5py.
 _PROBE_BYTES = 1 << 20
 
 
@@ -196,8 +196,8 @@ def _chain(exc: BaseException | None) -> Iterator[BaseException]:
 
 def _disk_full_line(exc: BaseException) -> str | None:
     """The line naming a full disk in a failed command's output on ``exc``, or in ``exc``'s own text
-    if it is an ``OSError``. Not in any other message: a refusal may quote the agent's own text, as
-    a SQL error quotes the table it names."""
+    if it is an ``OSError`` (h5py's carries no errno). Not in any other message: a refusal may quote
+    the agent's own text, as a SQL error quotes the table it names."""
     output = getattr(exc, "output", None) or getattr(exc, "stderr", None) or ""
     if isinstance(output, bytes):
         output = output.decode("utf-8", "replace")
@@ -220,7 +220,9 @@ def _probe(folder: Path) -> InfrastructureError | None:
     return None
 
 
-def disk_full_error(exc: BaseException, *folders: str | Path | None) -> InfrastructureError | None:
+def disk_full_error(
+    exc: BaseException | None, *folders: str | Path | None
+) -> InfrastructureError | None:
     """``exc`` as a :data:`DISK_FULL` :class:`InfrastructureError` if a full disk caused it, else
     ``None``.
 
@@ -228,7 +230,8 @@ def disk_full_error(exc: BaseException, *folders: str | Path | None) -> Infrastr
     ``OSError`` with ENOSPC or EDQUOT, then the text a full disk leaves in an ``OSError``'s message
     or a failed build's output. Then a file is written and synced in each of ``folders``, for the
     failures that name no disk at all: a build whose ``cmake --install`` failed exits 0, and only
-    the import after it fails (``Module file not found``, no ``get_model``).
+    the import after it fails (``Module file not found``, no ``get_model``). ``exc`` may be ``None``
+    to only probe.
     """
     chain = list(_chain(exc))
     for e in chain:

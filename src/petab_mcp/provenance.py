@@ -5,15 +5,18 @@ Under ``<store_root>/`` (default ``<problem_dir>/.petab_mcp``):
 * ``provenance.jsonl`` — append-only event log (edits, fits, rollbacks, resets). Each
   event carries a UTC timestamp.
 * ``versions/vN/`` — a snapshot of the mutable model state at version N: ``model.ant``
-  (the canonical Antimony) and ``parameters.tsv`` (the parameter table, as a PEtab v2 TSV; a
-  fit's values are its estimated rows' nominal values, and are stored nowhere else), plus
+  (the canonical Antimony) and ``parameters.tsv`` (the parameter table, as a PEtab v2 TSV; its
+  estimated rows' nominal values are the one place a fit's values are kept by name), plus
   ``meta.json`` (label, kind, parent, timestamp, scores). A fitted version also carries
-  ``simulations.json`` (the measured-vs-simulated dataframe + residuals) and ``optimization.json``
-  (the pyPESTO per-start + per-iteration trace records) — so rolling back restores a version's
-  fit artifacts, not just its model. A model built from statements also carries
+  ``simulations.json`` (the measured-vs-simulated dataframe + residuals), ``optimization.json``
+  (the pyPESTO per-start + per-iteration trace records), and ``pypesto_result.hdf5`` (the
+  pyPESTO result file, copied in from the per-model cache) — so rolling back restores a
+  version's fit artifacts, not just its model. A model built from statements also carries
   ``statements.json``, its rows and their bindings (read through :func:`statements_record`). A
   version scored on held-out data also carries :data:`VALIDATION_SIMULATIONS`, which no
   agent-facing read opens.
+* ``cache/`` — pyPESTO result files keyed by problem hash (written on each fit, copied into
+  version dirs when snapshotted).
 * ``HEAD`` — the current version number.
 * ``FORMAT`` — :data:`STORE_FORMAT`. A store without it was written by the PEtab v1 server, whose
   versions hold v1 parameter tables and condition-keyed simulation records; it is refused rather
@@ -28,6 +31,7 @@ from __future__ import annotations
 import difflib
 import json
 import logging
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -216,7 +220,8 @@ class ProvenanceStore:
         if simulation is not None:
             (vdir / "simulations.json").write_text(_dumps(simulation), encoding="utf-8")
         # The optimization traces/results for this version: the per-start + per-iteration
-        # records, read back into the DuckDB tables.
+        # records (read back into the DuckDB tables) as JSON, plus the pyPESTO HDF5 result
+        # file copied in from the per-model cache (or the source version, on rollback).
         if optimization is not None:
             self._write_optimization(vdir, optimization)
         self._set_head(n)
@@ -245,6 +250,14 @@ class ProvenanceStore:
             )
         }
         (vdir / "optimization.json").write_text(_dumps(persist), encoding="utf-8")
+        result_file = optimization.get("result_file")
+        if result_file:
+            try:
+                src = Path(result_file)
+                if src.is_file():
+                    shutil.copyfile(src, vdir / "pypesto_result.hdf5")
+            except OSError:  # copying the interop hdf5 must never fail a snapshot
+                pass
 
     def write_validation_simulation(self, n: int, payload: dict[str, Any]) -> Path:
         """Write version ``n``'s held-out ``payload`` (:data:`VALIDATION_SIMULATIONS`), replacing
@@ -400,6 +413,11 @@ class ProvenanceStore:
         simulation = json.loads(sim_path.read_text()) if sim_path.is_file() else None
         opt_path = vdir / "optimization.json"
         optimization = json.loads(opt_path.read_text()) if opt_path.is_file() else None
+        if optimization is not None:
+            # Point at this version's copy of the pyPESTO result file (if it was stored), so a
+            # later rollback can copy it forward and tools can locate it.
+            hdf5 = vdir / "pypesto_result.hdf5"
+            optimization["result_file"] = str(hdf5) if hdf5.is_file() else None
         # `parameters` stays a list of JSON records — the shape the MCP tool and diff want
         # (and it must be JSON-serializable). The raw DataFrame is available separately via
         # `get_parameter_df`, which the session uses to restore state directly.
