@@ -1424,6 +1424,59 @@ def test_a_redeclared_start_moves_its_row(tmp_path):
     assert rows == [(1.0, 0), (5.0, 1), (1.0, 0)]
 
 
+def _starts_call(mcp, starts):
+    return _call(mcp, "make_changes", {
+        "justification": "A starts in two forms", "statements": [_statement_row()],
+        "bindings": {"conv": "mass_action"}, "starts": starts})
+
+
+def test_a_wild_type_and_its_mutant_start_each_under_its_forms_name(tmp_path):
+    """Two starts of one agent without `name` both took the agent's, and the build refused them as
+    named twice without saying what to send (PEtab-MCP#165: perica_egf's `BRAF` beside
+    `BRAF{mut:S151A}`, in three of five runs)."""
+    mcp = _statements_server(tmp_path)
+    out = _starts_call(mcp, [{"agent": "A", "amount": "1 - mutant_A"},
+                             {"agent": "A{mut:S151A}", "amount": "mutant_A"}])
+    assert out["applied"] is True, out.get("error")
+    assert [s["name"] for s in _stored_rows(tmp_path, 0)["starts"]] == ["A", "A_S151A"]
+    shown = _text(mcp, "get_model", {"format": "statements"})
+    assert "start A: A = 1 - mutant_A\nstart A_S151A: A{mut:S151A} = mutant_A" in shown
+
+
+def test_set_start_of_a_second_form_joins_the_first(tmp_path):
+    """A `set_start` without `name` replaced the start of the agent's name: a pre-phosphorylated
+    pool replaced the unmodified one it was to join (PEtab-MCP#165)."""
+    mcp = _statements_server(tmp_path)
+    assert _starts_call(mcp, [{"agent": "A", "amount": 1}])["applied"] is True
+    out = _call(mcp, "make_changes", {
+        "justification": "part of A starts phosphorylated",
+        "statement_edits": [{"op": "set_start", "start": {"agent": "A{pY10}", "amount": 0.5}}]})
+    assert out["applied"] is True, out.get("error")
+    assert out["statement_edits_applied"] == ["set_start A_pY10"]
+    assert [s["name"] for s in _stored_rows(tmp_path, 1)["starts"]] == ["A", "A_pY10"]
+    assert "A_pY10_init" in {r["parameterId"] for r in _call(mcp, "get_parameters", {})["result"]}
+
+
+def test_two_starts_of_one_form_are_refused_as_one_species_started_twice(tmp_path):
+    """Only two starts of one form share a default name, and renaming one would not help."""
+    out = _starts_call(_statements_server(tmp_path), [{"agent": "A{pY10}", "amount": 1},
+                                                      {"agent": "A{pY10}", "amount": 2}])
+    assert out["error_cause"] == "duplicate_start"
+    assert "`starts[0]` and `starts[1]` both start `A{pY10}`" in out["error"]
+
+
+def test_a_shared_name_is_refused_with_the_second_start_named_apart(tmp_path):
+    """The refusal said a second start needs a name of its own, but not which, nor how to send it
+    (PEtab-MCP#165); it now gives the second entry back, named."""
+    out = _starts_call(_statements_server(tmp_path), [
+        {"agent": "A", "amount": "1 - mutant_A"},
+        {"name": "A", "agent": "A{mut:S151A}", "amount": "mutant_A"}])
+    assert out["error_cause"] == "duplicate_start"
+    assert ('`starts[1]` is named `A`, as `starts[0]` is (a start without `name` is named after '
+            'its agent and form); each start is `<name>_init`, so name the second apart: '
+            '`{"name": "A_S151A", "agent": "A{mut:S151A}", "amount": "mutant_A"}`') in out["error"]
+
+
 def test_a_held_input_is_reported_at_its_condition_value(tmp_path, add_condition):
     """The view reported a held input as starting empty, though the condition table held it at
     its dose."""

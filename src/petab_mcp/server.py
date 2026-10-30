@@ -243,8 +243,9 @@ class StartRow(BaseModel):
     )
     name: str | None = Field(
         default=None,
-        description="names its parameter `<name>_init`; defaults to the agent's name, and must "
-        "differ for a second start of the same agent.",
+        description="names its parameter `<name>_init`; defaults to the agent's name and form "
+        "('BRAF' for 'BRAF', 'BRAF_S151A' for 'BRAF{mut:S151A}', 'EGFR_pY1068' for "
+        "'EGFR{pY1068}'), and must differ from every other start's.",
     )
 
 
