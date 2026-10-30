@@ -29,17 +29,14 @@ dependencies = [
     # removed there in mcp 2.0.0. `from fastmcp import FastMCP` replaces the old
     # `from mcp.server.fastmcp import FastMCP`; the tool/resource decorators, the
     # `FastMCP(name, instructions=...)` constructor, and `run(transport=...)` are unchanged.
-    # fastmcp 3.x pulls a compatible `mcp` (1.x) in transitively, which is what the agent
-    # harness's MCP *client* code imports (frohlich-lab/petab_mcp, which installs this server
-    # into the same environment) -- so no separate `mcp` pin is needed there.
-    # Held below 4 deliberately: fastmcp 4.x pulls in the mcp 2.0 SDK, and that harness's AGENT
-    # STACK cannot run on mcp 2.0 yet -- `langchain-mcp-adapters` (the load_mcp_tools bridge the
-    # deepagents driver needs) hard-imports the `mcp.server.fastmcp` module that mcp 2.0 deleted,
-    # in every released version (through 0.3.1), so merely importing it crashes under mcp 2.0.
-    # mcp 2.0 also reworks the client API the harness uses directly (streamablehttp_client ->
-    # streamable_http_client with a new signature; CallToolResult/Tool fields went snake_case).
-    # Revisit once langchain-mcp-adapters ships mcp 2.0 support.
-    "fastmcp>=3,<4",
+    # 4.x, built on the mcp 2.0 SDK: the server runs on it unchanged. The floor is what the
+    # harness (frohlich-lab/gemot, which installs this server into its own environment) moves
+    # with: `langchain-mcp-adapters`, its tool bridge, is archived at `mcp<2`, and its successor,
+    # LangChain's own `langchain.mcp`, needs fastmcp >= 4.0.11. A gemot pinned below this commit
+    # resolves fastmcp 3 and mcp 1.x; one pinned at or past it has to be on mcp 2.
+    # Revisit the cap when fastmcp 5 ships (4.x deprecates the bare-string `Client("server.py")`
+    # for removal there; tests/test_cli.py builds its client from a StdioTransport, not a string).
+    "fastmcp>=4,<5",
     # Imported directly by `server._Cancellation`, which hears a client's cancel beside a tool's
     # thread; only transitively present via fastmcp otherwise. 3.1 added `sleep_forever`.
     "anyio>=3.1",
