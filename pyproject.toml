@@ -43,18 +43,14 @@ dependencies = [
     # Ships each start to a worker process, as pyPESTO's own MultiProcessEngine does
     # (`multistart`, `dask_engine`). No version is known to break that, so it has no floor.
     "cloudpickle",
-    # An integration commit, not a release: PEtab-dev/libpetab-python#557's head (stacked on #556)
-    # merged with #546's head, on libpetab's `integrate/557-546` branch. #556 and #557 let
+    # 0.10.0 is the first release with PEtab-dev/libpetab-python#556 and #557, which let
     # `assignments_to_experiments` convert assignments that switch more than once (Brannmark) and
-    # values that ramp between switches (Fujita). Without #546 Raimundez's upgraded problem does
-    # not import. #557's head contains libpetab main (5fb4066), with `petab1to2(validate=False)`
-    # (#534), which upgrades a v1 problem that does not lint (every benchmark problem is, until its
-    # agent writes the model), and petab1to2's own rescaling of log10 noise onto log-normal (#535).
-    # Move to main once #546, #556 and #557 are merged, and to the first release with all of them.
-    # It must stay at or above 0.9, the first release whose v2 problem carries the SciML extension
-    # natively (`petab.v2.extensions.sciml`), which the harness's neural route stages its problems
-    # in.
-    "petab @ git+https://github.com/PEtab-dev/libpetab-python.git@bf98d4dc6cb7553b01f056ba57d4d345a288299c",
+    # values that ramp between switches (Fujita), and #546, without which Raimundez's upgraded
+    # problem does not import. It also has `petab1to2(validate=False)` (#534), which upgrades a v1
+    # problem that does not lint (every benchmark problem is, until its agent writes the model),
+    # petab1to2's own rescaling of log10 noise onto log-normal (#535), and the SciML extension
+    # (`petab.v2.extensions.sciml`), which the harness's neural route stages its problems in.
+    "petab>=0.10.0",
     "python-libsbml>=5.19",
     # Floored at 3.2 because `validation.frozen_parametric_stoichiometry_issues` is now the ONLY
     # guard against a symbolic reaction stoichiometry (issue frohlich-lab/petab_mcp#89). Below
@@ -73,32 +69,31 @@ dependencies = [
     # Imported directly for the chi2 goodness-of-fit p-value (residual_tests, fitting). Only
     # transitively present via pyPESTO otherwise.
     "scipy>=1.10",
-    # AMICI main at AMICI-dev/AMICI#3408's merge commit (a4dbb08); not a release. #3408 makes the
-    # JAX code compile for `And`/`Or`: sympy's `logical_or.reduce((a, b))` is refused by jax, and
+    # 1.2.0 is the first release with all five of these. AMICI-dev/AMICI#3408 makes the JAX code
+    # compile for `And`/`Or`: sympy's `logical_or.reduce((a, b))` is refused by jax, and
     # libpetab#546's flat initial assignments produce an `Or` wherever two experiments set a target
     # alike, so the JAX backend (gemot's neural-ODE route trains through it) could not build such a
-    # problem. Main has #3312, which gives the PEtab v2 simulator per-parameter scales, which
-    # pyPESTO's importer hands it (below), and #3309, which 1.1.0 lacks, and without which a
-    # hierarchical PEtab v2 problem cannot be unpickled once its objective has been evaluated
-    # (ICB-DCM/pyPESTO#1771) -- and every fit evaluates the objective before its parallel multistart
-    # pickles the problem into the workers. #3388: a noise formula that reads an assignment rule
-    # compiles (before it, `dsigmaydp.cpp` named the rule's target undeclared), which every
-    # proportional noise model does once its observable reads a readout rule. #3397: a trigger whose
-    # time an event sets fires at that time; the v2 import applies every condition by event, and
-    # root-finding switched such a trigger straight back off, so a v2 stimulus applied that way
-    # never stayed on. Built from source (no wheel for a commit), which is why CI installs a
-    # toolchain before it. Move to a release once one contains all five.
-    "amici @ git+https://github.com/AMICI-dev/AMICI.git@a4dbb08da4d3c782ba3a2bab47c92586467ea5bc#subdirectory=python/sdist",
-    # pyPESTO main (053079a), not a release. It has #1782: the PEtab v2 importer takes the
+    # problem. #3312 gives the PEtab v2 simulator per-parameter scales, which pyPESTO's importer
+    # hands it (below). Without #3309 a hierarchical PEtab v2 problem cannot be unpickled once its
+    # objective has been evaluated (ICB-DCM/pyPESTO#1771) -- and every fit evaluates the objective
+    # before its parallel multistart pickles the problem into the workers. #3388: a noise formula
+    # that reads an assignment rule compiles (before it, `dsigmaydp.cpp` named the rule's target
+    # undeclared), which every proportional noise model does once its observable reads a readout
+    # rule. #3397: a trigger whose time an event sets fires at that time; the v2 import applies
+    # every condition by event, and root-finding switched such a trigger straight back off, so a v2
+    # stimulus applied that way never stayed on. PyPI has only an sdist, so AMICI is built from
+    # source, which is why CI installs a toolchain before it.
+    "amici>=1.2.0",
+    # pyPESTO main (98cf21e), not a release. It has #1782: the PEtab v2 importer takes the
     # estimation scales (`PetabImporter(parameter_scales=...)`), which v2 dropped from the format;
     # without it every v2 problem is optimised linearly, with start points almost all in the top
     # decade of a log-spanning box. It has #1740, before which the v2 importer raised
     # NotImplementedError for `hierarchical=True`, so the fit inner-solves its noise sigmas and
     # observable scalings whenever the problem allows. And it has #1786 (merged), which keeps a
     # constant term out of a hierarchical scaling (`scale * h + c`, Alkan's readouts), which was
-    # scaled with it, silently. The importer reads AMICI through `amici.sim.sundials`, which the
-    # AMICI commit above has. Move to a release once one contains #1786.
-    "pypesto[petab] @ git+https://github.com/ICB-DCM/pyPESTO.git@053079aa71710a62c1db17f3d0342e96499a3768",
+    # scaled with it, silently. The importer reads AMICI through `amici.sim.sundials`, which AMICI
+    # 1.2.0 has. Move to a release once one contains #1786.
+    "pypesto[petab] @ git+https://github.com/ICB-DCM/pyPESTO.git@98cf21e101202b14dba5fc0b0adbdc05cd4f4871",
     "fides>=0.8.1",
     # INDRA supplies the Statement base class the mechanism vocabulary extends (`statements`),
     # Agent grounding, Preassembler deduplication, and the PySB assembler's monomer and site
@@ -153,8 +148,7 @@ petab-mcp = "petab_mcp.cli:main"
 Homepage = "https://github.com/frohlich-lab/PEtab-MCP"
 Repository = "https://github.com/frohlich-lab/PEtab-MCP"
 
-# The petab, amici, pypesto and pysb pins above are git commits, which hatchling refuses without
-# this.
+# The pypesto and pysb pins above are git commits, which hatchling refuses without this.
 [tool.hatch.metadata]
 allow-direct-references = true
 
