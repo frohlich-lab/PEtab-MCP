@@ -29,17 +29,14 @@ dependencies = [
     # removed there in mcp 2.0.0. `from fastmcp import FastMCP` replaces the old
     # `from mcp.server.fastmcp import FastMCP`; the tool/resource decorators, the
     # `FastMCP(name, instructions=...)` constructor, and `run(transport=...)` are unchanged.
-    # BOTH majors, deliberately. The harness (frohlich-lab/gemot) installs this server into its
-    # own environment, so the two must resolve together:
-    # - 4.x is built on the mcp 2.0 SDK, and the harness needs it to leave mcp 1.x:
-    #   `langchain-mcp-adapters`, its load_mcp_tools bridge, is archived at `mcp<2` (0.3.2), and
-    #   its successor, LangChain's own `langchain.mcp`, needs fastmcp >= 4.0.11. This server runs
-    #   on 4.x unchanged, and CI tests it there.
-    # - 3.x is what the harness resolves until it has moved (it caps `mcp<2`), so a floor of 4
-    #   would make the two uninstallable together. The harness's own CI drives this server on 3.x
-    #   in-process whenever it bumps its pin.
-    # Raise the floor to 4 once gemot's pin is past this and it has dropped `mcp<2`.
-    "fastmcp>=3,<5",
+    # 4.x, built on the mcp 2.0 SDK: the server runs on it unchanged. The floor is what the
+    # harness (frohlich-lab/gemot, which installs this server into its own environment) moves
+    # with: `langchain-mcp-adapters`, its tool bridge, is archived at `mcp<2`, and its successor,
+    # LangChain's own `langchain.mcp`, needs fastmcp >= 4.0.11. A gemot pinned below this commit
+    # resolves fastmcp 3 and mcp 1.x; one pinned at or past it has to be on mcp 2.
+    # Revisit the cap when fastmcp 5 ships (4.x deprecates the bare-string `Client("server.py")`
+    # for removal there; tests/test_cli.py builds its client from a StdioTransport, not a string).
+    "fastmcp>=4,<5",
     # Imported directly by `server._Cancellation`, which hears a client's cancel beside a tool's
     # thread; only transitively present via fastmcp otherwise. 3.1 added `sleep_forever`.
     "anyio>=3.1",
