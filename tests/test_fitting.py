@@ -256,22 +256,35 @@ def test_each_amici_tolerance_knob_reaches_the_solver(monkeypatch):
 
 
 # ------------------------------------------------------- fitted-parameters diff (payload diet)
+def _table(values: dict[str, float]):
+    """A stored parameter table whose estimated rows hold ``values``."""
+    import pandas as pd
+    from petab.v2.C import ESTIMATE, NOMINAL_VALUE, PARAMETER_ID
+
+    return pd.DataFrame(
+        {ESTIMATE: [True] * len(values), NOMINAL_VALUE: list(values.values())},
+        index=pd.Index(list(values), name=PARAMETER_ID),
+    )
+
+
 def test_slim_fitted_parameters_diffs_against_previous_version():
     """The 84-118-entry fitted dict rode on every make_changes/get_fit_summary payload, re-sent
-    in history every later turn. It becomes NEW-or-moved->1% vs the previous version's meta;
-    full values stay pullable (get_parameters) and archived (meta.json)."""
+    in history every later turn. It becomes NEW-or-moved->1% vs the previous version's table;
+    full values stay pullable (get_parameters) and archived (parameters.tsv)."""
     from petab_mcp.fitting import _slim_fitted_parameters
 
     class _Prov:
-        """Two reads now: get_meta(version) for the PARENT pointer, then get_meta(parent) for
-        its fitted values — the baseline is the recorded parent, not version-1, so a rollback
-        does not diff against the branch the session abandoned."""
+        """Two reads: get_meta(version) for the PARENT pointer, then the parent's parameter
+        table for its fitted values — the baseline is the recorded parent, not version-1, so a
+        rollback does not diff against the branch the session abandoned."""
 
         def get_meta(self, n):
-            if n == 5:
-                return {"parent": 4}
+            assert n == 5
+            return {"parent": 4}
+
+        def get_parameter_df(self, n):
             assert n == 4, f"baseline must be the parent (4), got {n}"
-            return {"fitted_parameters": {"a": 1.0, "b": 2.0, "c": 3.0}}
+            return _table({"a": 1.0, "b": 2.0, "c": 3.0})
 
     class _S:
         provenance = _Prov()
@@ -305,9 +318,10 @@ def test_slim_fit_payload_slims_a_block_that_carries_no_version_of_its_own():
 
     class _Prov:
         def get_meta(self, n):
-            return (
-                {"parent": 4} if n == 5 else {"fitted_parameters": {"a": 1.0, "b": 2.0, "c": 3.0}}
-            )
+            return {"parent": 4}
+
+        def get_parameter_df(self, n):
+            return _table({"a": 1.0, "b": 2.0, "c": 3.0})
 
     class _S:
         provenance = _Prov()

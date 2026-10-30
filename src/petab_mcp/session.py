@@ -39,7 +39,7 @@ from .errors import (
     ValidationError,
     disk_full_error,
 )
-from .fitting import noise_sigma_collapsed, noise_sigma_inflated
+from .fitting import noise_sigma_collapsed, noise_sigma_inflated, table_fitted_values
 from .parameters import problem_fingerprint, sha16
 from .problem import WorkingProblem, as_bool
 from .provenance import ProvenanceStore
@@ -854,14 +854,18 @@ class PetabSession:
 
         The parameter table is restored directly as the stored DataFrame (no JSON records
         round-trip). Also restores the version's stored simulation dataframe (``None`` for
-        legacy versions that predate it). Stays engine-free: this runs during durable resume
-        in ``__init__`` before the engine is wired.
+        legacy versions that predate it), with the fitted values its table holds. Stays
+        engine-free: this runs during durable resume in ``__init__`` before the engine is wired.
         """
         with self.lock:
             snap = self.provenance.get_version(version)
             self._set_model_from_antimony(snap["model_antimony"])
             self.problem.parameter_df = self.provenance.get_parameter_df(version)
             self.simulation = snap.get("simulation")
+            if self.simulation and self.simulation.get("status") in ("fit", "scored_at_nominal"):
+                self.simulation["fitted_parameters"] = table_fitted_values(
+                    self.problem.parameter_df
+                )
             self.version_score = (self.problem_hash(), snap.get("neg_log_likelihood"))
             # The branch source moves WITH the model. Without this, a structured edit after a
             # rollback applies its operations to the abandoned branch's text and silently
@@ -1708,7 +1712,6 @@ class PetabSession:
                     "noise_sigma_report": _nsr,
                     "noise_sigma_inflated": noise_sigma_inflated(_nsr),
                     "noise_sigma_collapsed": noise_sigma_collapsed(_nsr),
-                    "fitted_parameters": fitsim.get("fitted_parameters"),
                     **improvement,
                 },
                 sim=fitsim,
@@ -1748,7 +1751,6 @@ class PetabSession:
                     # whether a later valid experiment has since superseded it. See
                     # `_seed_progress_from_provenance`.
                     "invalid_comparison": self.invalid_comparison,
-                    "fitted_parameters": fitsim.get("fitted_parameters"),
                     **improvement,
                 }
             )

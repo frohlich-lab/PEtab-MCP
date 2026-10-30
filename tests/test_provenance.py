@@ -59,13 +59,8 @@ def test_snapshot_and_get(tmp_path):
     assert not (store.versions_dir / "v0" / "parameters.json").exists()
 
 
-def test_snapshot_persists_optimization_and_copies_result_file(tmp_path):
+def test_snapshot_persists_optimization(tmp_path):
     store = ProvenanceStore(tmp_path / ".petab_mcp")
-    # a stand-in pyPESTO result file (the fit would write a real HDF5 here)
-    result_file = tmp_path / "cache" / "pypesto_result_abc.hdf5"
-    result_file.parent.mkdir(parents=True)
-    result_file.write_bytes(b"\x89HDF\r\n\x1a\n fake result")
-
     optimization = {
         "n_starts": 2,
         "starts": [{"start": 0, "fval": 1.0}, {"start": 1, "fval": 5.0}],
@@ -73,7 +68,6 @@ def test_snapshot_persists_optimization_and_copies_result_file(tmp_path):
             {"start": 0, "iteration": 0, "fval": 9.0},
             {"start": 0, "iteration": 1, "fval": 1.0},
         ],
-        "result_file": str(result_file),
     }
     v = store.snapshot_version(
         "model m() end",
@@ -82,16 +76,12 @@ def test_snapshot_persists_optimization_and_copies_result_file(tmp_path):
         optimization=optimization,
     )
 
-    vdir = store.versions_dir / f"v{v}"
-    assert (vdir / "optimization.json").is_file()
-    assert (vdir / "pypesto_result.hdf5").is_file()  # the result file was copied in
+    assert (store.versions_dir / f"v{v}" / "optimization.json").is_file()
 
     snap = store.get_version(v)
     opt = snap["optimization"]
     assert opt["n_starts"] == 2 and len(opt["starts"]) == 2
     assert [t["fval"] for t in opt["trace"]] == [9.0, 1.0]
-    # result_file now points at this version's own copy
-    assert opt["result_file"] == str(vdir / "pypesto_result.hdf5")
 
     # a version without optimization simply carries none
     v2 = store.snapshot_version("model m() end", _pdf([]), label="plain")

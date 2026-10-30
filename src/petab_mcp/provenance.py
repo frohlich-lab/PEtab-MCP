@@ -5,17 +5,15 @@ Under ``<store_root>/`` (default ``<problem_dir>/.petab_mcp``):
 * ``provenance.jsonl`` — append-only event log (edits, fits, rollbacks, resets). Each
   event carries a UTC timestamp.
 * ``versions/vN/`` — a snapshot of the mutable model state at version N: ``model.ant``
-  (the canonical Antimony) and ``parameters.tsv`` (the parameter table, as a PEtab v2 TSV),
-  plus ``meta.json`` (label, kind, parent, timestamp). A fitted version also carries
-  ``simulations.json`` (the measured-vs-simulated dataframe + residuals), ``optimization.json``
-  (the pyPESTO per-start + per-iteration trace records), and ``pypesto_result.hdf5`` (the
-  pyPESTO result file, copied in from the per-model cache) — so rolling back restores a
-  version's fit artifacts, not just its model. A model built from statements also carries
+  (the canonical Antimony) and ``parameters.tsv`` (the parameter table, as a PEtab v2 TSV; a
+  fit's values are its estimated rows' nominal values, and are stored nowhere else), plus
+  ``meta.json`` (label, kind, parent, timestamp, scores). A fitted version also carries
+  ``simulations.json`` (the measured-vs-simulated dataframe + residuals) and ``optimization.json``
+  (the pyPESTO per-start + per-iteration trace records) — so rolling back restores a version's
+  fit artifacts, not just its model. A model built from statements also carries
   ``statements.json``, its rows and their bindings (read through :func:`statements_record`). A
   version scored on held-out data also carries :data:`VALIDATION_SIMULATIONS`, which no
   agent-facing read opens.
-* ``cache/`` — pyPESTO result files keyed by problem hash (written on each fit, copied into
-  version dirs when snapshotted).
 * ``HEAD`` — the current version number.
 * ``FORMAT`` — :data:`STORE_FORMAT`. A store without it was written by the PEtab v1 server, whose
   versions hold v1 parameter tables and condition-keyed simulation records; it is refused rather
@@ -30,7 +28,6 @@ from __future__ import annotations
 import difflib
 import json
 import logging
-import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -74,26 +71,9 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _write_simulations_tsv(vdir: Path, records: list[dict[str, Any]]) -> None:
-    """Best-effort PEtab simulation table for interop (never read back)."""
-    if not records:
-        return
-    try:
-        import pandas as pd
-        from petab.v2.C import EXPERIMENT_ID, OBSERVABLE_ID, SIMULATION, TIME
-
-        rows = [
-            {
-                OBSERVABLE_ID: r.get("observable_id"),
-                EXPERIMENT_ID: r.get("experiment_id"),
-                TIME: r.get("time"),
-                SIMULATION: r.get("simulation"),
-            }
-            for r in records
-        ]
-        pd.DataFrame(rows).to_csv(vdir / "simulations.tsv", sep="\t", index=False)
-    except Exception:  # interop convenience only — never fail a snapshot over it
-        pass
+def _dumps(obj: Any) -> str:
+    """``obj`` as compact JSON: programs read the store, not people."""
+    return json.dumps(obj, separators=(",", ":"))
 
 
 class ProvenanceStore:
@@ -121,7 +101,7 @@ class ProvenanceStore:
     def append_event(self, event: dict[str, Any]) -> dict[str, Any]:
         event = {"timestamp": _now(), **event}
         with self.log_path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(event) + "\n")
+            fh.write(_dumps(event) + "\n")
         return event
 
     def recent_events(self, limit: int = 50) -> list[dict[str, Any]]:
@@ -131,7 +111,7 @@ class ProvenanceStore:
     def log_error(self, record: dict[str, Any]) -> dict[str, Any]:
         record = {"timestamp": _now(), **record}
         with self.errors_path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record) + "\n")
+            fh.write(_dumps(record) + "\n")
         return record
 
     def recent_errors(self, limit: int = 50) -> list[dict[str, Any]]:
@@ -216,9 +196,7 @@ class ProvenanceStore:
         # commit that submits no model text inherits its rows, like its source (see
         # session._snapshot_version).
         if statements:
-            (vdir / "statements.json").write_text(
-                json.dumps(statements, indent=2), encoding="utf-8"
-            )
+            (vdir / "statements.json").write_text(_dumps(statements), encoding="utf-8")
         # The parameter table is stored as a DataFrame (PEtab-style TSV), not JSON records,
         # so it round-trips as a real table with its dtypes intact.
         from .parameters import parameter_df_to_tsv
@@ -232,18 +210,13 @@ class ProvenanceStore:
             "timestamp": _now(),
             **(meta or {}),
         }
-        (vdir / "meta.json").write_text(json.dumps(meta_obj, indent=2), encoding="utf-8")
+        (vdir / "meta.json").write_text(_dumps(meta_obj), encoding="utf-8")
         # The simulation dataframe generated for this version (measured vs simulated +
-        # residuals). Stored as JSON (read back by get_version) plus a best-effort PEtab
-        # simulation table for interop (never read back).
+        # residuals), read back by get_version.
         if simulation is not None:
-            (vdir / "simulations.json").write_text(
-                json.dumps(simulation, indent=2), encoding="utf-8"
-            )
-            _write_simulations_tsv(vdir, simulation.get("records") or [])
+            (vdir / "simulations.json").write_text(_dumps(simulation), encoding="utf-8")
         # The optimization traces/results for this version: the per-start + per-iteration
-        # records (read back into the DuckDB tables) as JSON, plus the pyPESTO HDF5 result
-        # file copied in from the per-model cache (or the source version, on rollback).
+        # records, read back into the DuckDB tables.
         if optimization is not None:
             self._write_optimization(vdir, optimization)
         self._set_head(n)
@@ -271,21 +244,13 @@ class ProvenanceStore:
                 "n_starts_killed",
             )
         }
-        (vdir / "optimization.json").write_text(json.dumps(persist, indent=2), encoding="utf-8")
-        result_file = optimization.get("result_file")
-        if result_file:
-            try:
-                src = Path(result_file)
-                if src.is_file():
-                    shutil.copyfile(src, vdir / "pypesto_result.hdf5")
-            except OSError:  # copying the interop hdf5 must never fail a snapshot
-                pass
+        (vdir / "optimization.json").write_text(_dumps(persist), encoding="utf-8")
 
     def write_validation_simulation(self, n: int, payload: dict[str, Any]) -> Path:
         """Write version ``n``'s held-out ``payload`` (:data:`VALIDATION_SIMULATIONS`), replacing
         an earlier score of it; returns the file."""
         path = self._version_dir(n) / VALIDATION_SIMULATIONS
-        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        path.write_text(_dumps(payload), encoding="utf-8")
         return path
 
     def _version_dir(self, n: int) -> Path:
@@ -435,11 +400,6 @@ class ProvenanceStore:
         simulation = json.loads(sim_path.read_text()) if sim_path.is_file() else None
         opt_path = vdir / "optimization.json"
         optimization = json.loads(opt_path.read_text()) if opt_path.is_file() else None
-        if optimization is not None:
-            # Point at this version's copy of the pyPESTO result file (if it was stored), so a
-            # later rollback can copy it forward and tools can locate it.
-            hdf5 = vdir / "pypesto_result.hdf5"
-            optimization["result_file"] = str(hdf5) if hdf5.is_file() else None
         # `parameters` stays a list of JSON records — the shape the MCP tool and diff want
         # (and it must be JSON-serializable). The raw DataFrame is available separately via
         # `get_parameter_df`, which the session uses to restore state directly.
