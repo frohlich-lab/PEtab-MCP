@@ -507,7 +507,7 @@ def test_initial_conditions_report_says_a_synthesised_species_starts_empty():
     )
     R.reconcile(prob)
     rep = {r["species"]: r for r in R.initial_conditions_report(prob)}
-    assert "`starts`" in rep["P"]["note"] and "`starts`" not in rep["Q"]["note"]
+    assert "`seeds`" in rep["P"]["note"] and "`seeds`" not in rep["Q"]["note"]
 
 
 def test_initial_conditions_report_needs_no_nominal_column(session):

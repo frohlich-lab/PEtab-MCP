@@ -380,9 +380,9 @@ def _sites(*sites: str, substrate: str = "S") -> list[tuple]:
 
 def test_independent_sites_read_together_are_split():
     """No rule reads Y1 and S2 together on one molecule, so each is a monomer of its own, started
-    in the declared start's form at its amount; readouts of both forms are products of the two."""
+    in the declared seed's form at its amount; readouts of both forms are products of the two."""
     entities = {"ppS": _p("S", "Y1", "S2"), "pS": _p("S", "-Y1", "S2")}
-    network = _assert_same(_sites("Y1", "S2"), entities, starts=[("S", _p("S", "Y1"), 1.5)])
+    network = _assert_same(_sites("Y1", "S2"), entities, seeds=[("S", _p("S", "Y1"), 1.5)])
     assert network["split"] == {"S": {"S_Y1": ["Y1"], "S_S2": ["S2"]}}
 
 
@@ -434,8 +434,8 @@ def test_a_readout_across_many_blocks_is_charged_no_constant():
         ),
         pytest.param(
             [],
-            {"starts": [("S_u", _p("S", "-Y1", "-S2"), 1.0), ("S_p", _p("S", "Y1", "S2"), 2.0)]},
-            id="two-start-forms",
+            {"seeds": [("S_u", _p("S", "-Y1", "-S2"), 1.0), ("S_p", _p("S", "Y1", "S2"), 2.0)]},
+            id="two-seed-forms",
         ),
         pytest.param([], {"targets": frozenset({"S"})}, id="species-the-conditions-set"),
         pytest.param([], {"inputs": (Input("S", "S_0", ("S_0",)),)}, id="input"),
@@ -454,12 +454,12 @@ def test_a_monomer_stays_whole(extra, kwargs):
 @pytest.mark.parametrize(
     "kwargs",
     [
-        pytest.param({"starts": [("S", Agent("S"), 0)]}, id="starts-empty"),
-        pytest.param({"starts": [("S", Agent("S"), "0")]}, id="starts-empty-as-text"),
-        pytest.param({"starts": [("S", Agent("S"), "2")]}, id="starts-at-a-number-as-text"),
+        pytest.param({"seeds": [("S", Agent("S"), 0)]}, id="seeds-empty"),
+        pytest.param({"seeds": [("S", Agent("S"), "0")]}, id="seeds-empty-as-text"),
+        pytest.param({"seeds": [("S", Agent("S"), "2")]}, id="seeds-at-a-number-as-text"),
         pytest.param(
-            {"starts": [("S", Agent("S"), "S_total")], "targets": frozenset({"S_total"})},
-            id="start-the-conditions-set",
+            {"seeds": [("S", Agent("S"), "S_total")], "targets": frozenset({"S_total"})},
+            id="seed-the-conditions-set",
         ),
     ],
 )
@@ -502,7 +502,7 @@ def test_a_knockout_of_a_monomer_named_as_indra_rewrites_it_reads_zero():
         (Dephosphorylation(Agent("P"), Agent("X"), "T", "3"), INDRA_DEFAULT, "dx"),
     ]
     entities = {"ppS": _p("S-1", "Y1", "S2"), "pX": _p("X", "T3")}
-    kwargs = {"starts": [("S", Agent("S-1"), "S_wt*(1 - ko_S)")], "targets": frozenset({"ko_S"})}
+    kwargs = {"seeds": [("S", Agent("S-1"), "S_wt*(1 - ko_S)")], "targets": frozenset({"ko_S"})}
     (reduced, network), (full, _) = _both(rows, entities, **kwargs)
     assert network["split"]["S_1"]
     times = np.linspace(0, 5, 6)

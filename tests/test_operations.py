@@ -710,8 +710,8 @@ def test_rejection_summary_falls_back_when_there_is_no_error_level_issue():
     assert _rejection_summary([]) == "the resulting problem is invalid."
 
 
-def test_a_start_without_a_name_is_named_after_its_form():
-    """A start given no `name` took its agent's, so every form of one agent took one name and the
+def test_a_seed_without_a_name_is_named_after_its_form():
+    """A seed given no `name` took its agent's, so every form of one agent took one name and the
     build refused the second (PEtab-MCP#165). The agent alone keeps its name, and a name that is no
     SBML id (`S-1`) becomes one."""
     from petab_mcp import notation
@@ -726,19 +726,19 @@ def test_a_start_without_a_name_is_named_after_its_form():
         'A{@"plasma membrane"}': "A_plasma_membrane",
         '"S-1"': "S_1",
     }
-    assert {t: O.start_name(notation.parse_agent(t)) for t in forms} == forms
+    assert {t: O.seed_name(notation.parse_agent(t)) for t in forms} == forms
 
 
-def test_a_stored_start_keeps_its_name_whatever_its_form():
-    """A record stores each start's name, so a start named before names came from forms (`A`, for
+def test_a_stored_seed_keeps_its_name_whatever_its_form():
+    """A record stores each seed's name, so a seed named before names came from forms (`A`, for
     `A{pY10}`) is rebuilt under it, its `A_init` with it (PEtab-MCP#165)."""
-    start = {
+    seed = {
         "name": "A",
         "agent": {"name": "A", "mods": [{"mod_type": "phosphorylation", "residue": "Y", "position": "10"}]},
         "amount": 2,
     }
     record = {
         "rows": [{"prefix": "conv", "statement": {"type": "PopulationTransition"}}],
-        "starts": [start],
+        "seeds": [seed],
     }
-    assert O.apply_statement_edits(record, [])[2] == [start]
+    assert O.apply_statement_edits(record, [])[2] == [seed]
