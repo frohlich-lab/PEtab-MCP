@@ -221,6 +221,10 @@ class PetabSession:
         # else None; read without the lock, so a second change is refused instead of queued (see
         # `change`).
         self.change_began: float | None = None
+        # The last change's starting point, the highest version stored when it began (None before
+        # one has run), and its fit's progress (see `change`), which `wait_for_fit` reads.
+        self.change_from: int | None = None
+        self.change_progress: Any | None = None
         self.provenance = ProvenanceStore(store_root(self.yaml_path, provenance_dir))
         self.resolver = resolver or EutilsReferenceResolver(mode=reference_mode)
         self.logger = logging_setup.configure(self.provenance.root)
@@ -1477,13 +1481,20 @@ class PetabSession:
     def change(self) -> Iterator[None]:
         """Hold :attr:`lock` for one change and its fit, with :attr:`change_began` set, which
         ``make_changes`` reads to refuse a second change at once
-        (:data:`~petab_mcp.errors.FIT_IN_PROGRESS`) rather than queue it behind this one."""
+        (:data:`~petab_mcp.errors.FIT_IN_PROGRESS`) rather than queue it behind this one. Its fit
+        reports its starts into :attr:`change_progress` (:data:`petab_mcp.multistart.PROGRESS`)."""
+        from .multistart import PROGRESS, Progress
+
         with self.lock:
+            self.change_from = self.provenance.last_version
+            self.change_progress = Progress()
+            token = PROGRESS.set(self.change_progress)
             self.change_began = time.monotonic()
             try:
                 yield
             finally:
                 self.change_began = None
+                PROGRESS.reset(token)
 
     # -- fit ---------------------------------------------------------------
     def _fit_dedup(self, starts: int) -> tuple[dict[str, Any], str]:
