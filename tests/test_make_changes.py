@@ -1457,35 +1457,6 @@ def test_set_seed_of_a_second_form_joins_the_first(tmp_path):
     assert "A_pY10_init" in {r["parameterId"] for r in _call(mcp, "get_parameters", {})["result"]}
 
 
-def test_a_run_spelled_with_starts_replays_as_seeds(tmp_path):
-    """PEtab-MCP#166 renamed the species placed at t = 0 from starts to seeds. For one release an
-    agent mid-run may still send `starts` and `set_start`, and a version stored before keeps its
-    record's `starts`: each replays as seeds, while the schema offers only the new names."""
-    mcp = _statements_server(tmp_path)
-    tools = asyncio.run(mcp.list_tools())
-    schema = json.dumps(next(t for t in tools if t.name == "make_changes").parameters)
-    assert '"seeds"' in schema and '"set_seed"' in schema
-    assert '"starts"' not in schema and "set_start" not in schema
-    out = _call(mcp, "make_changes", {
-        "justification": "A starts as a unit pool", "statements": [_statement_row()],
-        "bindings": {"conv": "mass_action"},
-        "starts": [{"agent": "A", "amount": 1, "name": "A_start"}]})
-    assert out["applied"] is True, out.get("error")
-    # v0's record as a server before the rename stored it.
-    path = tmp_path / "prov" / "versions" / "v0" / "statements.json"
-    stored = json.loads(path.read_text())
-    assert [s["name"] for s in stored["seeds"]] == ["A_start"]
-    stored["starts"] = stored.pop("seeds")
-    path.write_text(json.dumps(stored))
-    assert "seed A_start: A = 1" in _text(mcp, "get_model", {"format": "statements", "version": 0})
-    out = _call(mcp, "make_changes", {
-        "justification": "part of A starts phosphorylated", "base_version": 0,
-        "statement_edits": [{"op": "set_start", "start": {"agent": "A{pY10}", "amount": 0.5}}]})
-    assert out["applied"] is True, out.get("error")
-    assert out["statement_edits_applied"] == ["set_seed A_pY10"]
-    assert [s["name"] for s in _stored_rows(tmp_path, 1)["seeds"]] == ["A_start", "A_pY10"]
-
-
 def test_two_seeds_of_one_form_are_refused_as_one_species_seeded_twice(tmp_path):
     """Only two seeds of one form share a default name, and renaming one would not help."""
     out = _seeds_call(_statements_server(tmp_path), [{"agent": "A{pY10}", "amount": 1},

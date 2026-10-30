@@ -1371,20 +1371,6 @@ def _check_readouts_are_read(session, readouts) -> None:
         )
 
 
-#: The seed edits as they were spelled before PEtab-MCP#166, each read as its seed edit, its
-#: ``start`` as ``seed``, for one release (see docs/RATIONALE.md).
-SEED_EDIT_ALIASES = {"set_start": "set_seed", "remove_start": "remove_seed"}
-
-
-def seed_edit(edit: dict[str, Any]) -> dict[str, Any]:
-    """``edit`` as its seed edit where it is spelled the old way (:data:`SEED_EDIT_ALIASES`), else
-    as it is."""
-    if edit.get("op") not in SEED_EDIT_ALIASES:
-        return edit
-    renamed = {"seed" if key == "start" else key: value for key, value in edit.items()}
-    return {**renamed, "op": SEED_EDIT_ALIASES[edit["op"]]}
-
-
 def apply_statement_edits(
     record: dict[str, Any], edits: list[dict[str, Any]]
 ) -> tuple[list, dict[str, Any], list[dict[str, Any]], dict[str, str], dict[str, Any], list[str]]:
@@ -1398,7 +1384,6 @@ def apply_statement_edits(
     changes a row's binding alone, its statement as it was. A seed is keyed by its name (by
     default its form's, :func:`seed_name`), as :func:`statements_to_antimony` names it. Edits
     apply in order and an edit that names nothing raises, so the batch applies whole or not at all.
-    An edit spelled the old way (:data:`SEED_EDIT_ALIASES`) is read as its seed edit.
     """
     from . import notation
 
@@ -1432,7 +1417,7 @@ def apply_statement_edits(
     amounts = dict(record.get("amounts") or {})
     readouts = dict(record.get("readouts") or {})
     summary = []
-    for i, edit in enumerate(map(seed_edit, edits)):
+    for i, edit in enumerate(edits):
         op = edit.get("op")
         try:
             if op in ("add_row", "replace_row"):

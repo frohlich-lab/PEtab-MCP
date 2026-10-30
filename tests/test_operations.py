@@ -742,24 +742,3 @@ def test_a_stored_seed_keeps_its_name_whatever_its_form():
         "seeds": [seed],
     }
     assert O.apply_statement_edits(record, [])[2] == [seed]
-
-
-def test_a_record_and_edits_spelled_with_starts_read_as_seeds():
-    """PEtab-MCP#166 renamed the species placed at t = 0 from starts to seeds. A record stored
-    before keeps them as `starts` and an agent mid-run still sends `set_start`/`remove_start`; for
-    one release both read as seeds, where the record's would otherwise be dropped unsaid."""
-    from petab_mcp.provenance import statements_record
-
-    seed = {"name": "A", "agent": {"name": "A"}, "amount": 1}
-    record = statements_record({
-        "rows": [{"prefix": "conv", "statement": {"type": "PopulationTransition"}}],
-        "bindings": {"conv": {"policy": "mass_action"}},
-        "starts": [seed],
-    })
-    assert "starts" not in record and record["seeds"] == [seed]
-    *_, seeds, _, _, summary = O.apply_statement_edits(record, [
-        {"op": "set_start", "start": {"agent": "B", "amount": 2}},
-        {"op": "remove_start", "name": "A"},
-    ])
-    assert seeds == [{"agent": "B", "amount": 2, "name": "B"}]
-    assert summary == ["set_seed B", "remove_seed A"]

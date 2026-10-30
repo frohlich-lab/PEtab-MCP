@@ -40,7 +40,7 @@ import anyio
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.middleware import Middleware
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 from pydantic.json_schema import SkipJsonSchema
 from petab.v2.C import EXPERIMENT_ID, OBSERVABLE_ID
 
@@ -351,13 +351,6 @@ class StatementEdit(BaseModel):
     )
     formula: str | None = Field(default=None, description="set_readout: its formula.")
 
-    @model_validator(mode="before")
-    @classmethod
-    def _old_seed_edit(cls, data: Any) -> Any:
-        """An edit spelled the old way, ``set_start``/``remove_start`` with ``start``, as its seed
-        edit (:data:`operations.SEED_EDIT_ALIASES`), kept out of the schema."""
-        return ops_mod.seed_edit(data) if isinstance(data, dict) else data
-
 
 # Provider serialisation artefact: some clients emit a list-typed argument wrapped in a
 # single-key object -- `{"parameters": {"item": [{...}, {...}]}}` instead of
@@ -569,22 +562,6 @@ class _Cancellation(Middleware):
         if error is not None:
             raise error
         return result
-
-
-class _SeedAliases(Middleware):
-    """Reads ``make_changes``' ``starts``, its ``seeds`` as named before PEtab-MCP#166, as
-    ``seeds``, for one release (see docs/RATIONALE.md). Kept out of the schema, which names only
-    ``seeds``; given beside ``seeds``, it is refused as an unknown argument."""
-
-    async def on_call_tool(self, context, call_next):
-        arguments = context.message.arguments or {}
-        renamed = context.message.name == "make_changes" and "seeds" not in arguments
-        if renamed and "starts" in arguments:
-            arguments = {"seeds" if k == "starts" else k: v for k, v in arguments.items()}
-            context = context.copy(
-                message=context.message.model_copy(update={"arguments": arguments})
-            )
-        return await call_next(context)
 
 
 def _fit_in_progress(began: float) -> str:
@@ -2742,7 +2719,6 @@ def create_server(
                 ctx.session.logger, ctx.engine.build_root, ctx.session.provenance.root
             ),
             _Cancellation(),
-            _SeedAliases(),
         ],
     )
 
