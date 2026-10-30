@@ -29,17 +29,17 @@ dependencies = [
     # removed there in mcp 2.0.0. `from fastmcp import FastMCP` replaces the old
     # `from mcp.server.fastmcp import FastMCP`; the tool/resource decorators, the
     # `FastMCP(name, instructions=...)` constructor, and `run(transport=...)` are unchanged.
-    # fastmcp 3.x pulls a compatible `mcp` (1.x) in transitively, which is what the agent
-    # harness's MCP *client* code imports (frohlich-lab/petab_mcp, which installs this server
-    # into the same environment) -- so no separate `mcp` pin is needed there.
-    # Held below 4 deliberately: fastmcp 4.x pulls in the mcp 2.0 SDK, and that harness's AGENT
-    # STACK cannot run on mcp 2.0 yet -- `langchain-mcp-adapters` (the load_mcp_tools bridge the
-    # deepagents driver needs) hard-imports the `mcp.server.fastmcp` module that mcp 2.0 deleted,
-    # in every released version (through 0.3.1), so merely importing it crashes under mcp 2.0.
-    # mcp 2.0 also reworks the client API the harness uses directly (streamablehttp_client ->
-    # streamable_http_client with a new signature; CallToolResult/Tool fields went snake_case).
-    # Revisit once langchain-mcp-adapters ships mcp 2.0 support.
-    "fastmcp>=3,<4",
+    # BOTH majors, deliberately. The harness (frohlich-lab/gemot) installs this server into its
+    # own environment, so the two must resolve together:
+    # - 4.x is built on the mcp 2.0 SDK, and the harness needs it to leave mcp 1.x:
+    #   `langchain-mcp-adapters`, its load_mcp_tools bridge, is archived at `mcp<2` (0.3.2), and
+    #   its successor, LangChain's own `langchain.mcp`, needs fastmcp >= 4.0.11. This server runs
+    #   on 4.x unchanged, and CI tests it there.
+    # - 3.x is what the harness resolves until it has moved (it caps `mcp<2`), so a floor of 4
+    #   would make the two uninstallable together. The harness's own CI drives this server on 3.x
+    #   in-process whenever it bumps its pin.
+    # Raise the floor to 4 once gemot's pin is past this and it has dropped `mcp<2`.
+    "fastmcp>=3,<5",
     # Imported directly by `server._Cancellation`, which hears a client's cancel beside a tool's
     # thread; only transitively present via fastmcp otherwise. 3.1 added `sleep_forever`.
     "anyio>=3.1",

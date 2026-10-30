@@ -86,8 +86,9 @@ actionable message.
 
 ## Dependencies
 
-- **Every pin carries a why-comment** naming what breaks outside the range. `fastmcp>=3,<4`
-  documents the whole mcp-2.0 / langchain-mcp-adapters chain that forces the upper bound.
+- **Every pin carries a why-comment** naming what breaks outside the range. `fastmcp>=3,<5`
+  documents why both majors are allowed: the harness that installs this server leaves mcp 1.x
+  only through fastmcp 4, and resolves fastmcp 3 until it has.
 - **An upper bound needs a "revisit once…" condition**, so the next person knows what would
   let them lift it.
 - **A new import means a new pin.** Several dependencies are pinned precisely because
