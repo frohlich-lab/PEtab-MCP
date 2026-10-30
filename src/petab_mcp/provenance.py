@@ -78,7 +78,10 @@ def statements_record(record: dict[str, Any] | None) -> dict[str, Any] | None:
     (:func:`operations.statements_to_antimony`). A record stored before the two were given apart
     kept each row's ``policy`` and ``parameters`` on the row, and is read as the same rows and
     bindings, so a resume, a ``base_version`` fork or ``get_model`` of an older version reads it
-    as it was."""
+    as it was. A record stored before PEtab-MCP#166 keeps its ``seeds`` as ``starts``, and is read
+    with them as ``seeds``, for one release (see docs/RATIONALE.md)."""
+    if record and "starts" in record:
+        record = {"seeds" if key == "starts" else key: value for key, value in record.items()}
     if not record or "bindings" in record:
         return record
     split = {"policy", "parameters"}

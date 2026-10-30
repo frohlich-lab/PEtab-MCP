@@ -40,7 +40,7 @@ import anyio
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.middleware import Middleware
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
 from petab.v2.C import EXPERIMENT_ID, OBSERVABLE_ID
 
@@ -228,8 +228,8 @@ class RowBinding(BaseModel):
     )
 
 
-class StartRow(BaseModel):
-    """One species present at the start, and how much of it."""
+class SeedRow(BaseModel):
+    """One species present at t = 0, and how much of it."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -238,7 +238,7 @@ class StartRow(BaseModel):
         "e.g. 'A' or 'A{-pS10}'; a complex through its bound partners ('A{!B}')."
     )
     amount: float | str = Field(
-        description="its starting amount: a number (1 is a fixed unit pool, 0 an empty start, "
+        description="its starting amount: a number (1 is a fixed unit pool, 0 an empty seed, "
         "anything else estimated from there) or an expression over parameter ids (a parameter "
         "the problem ships, a condition-table column, a new name)."
     )
@@ -246,7 +246,7 @@ class StartRow(BaseModel):
         default=None,
         description="names its parameter `<name>_init`; defaults to the agent's name and form "
         "('BRAF' for 'BRAF', 'BRAF_S151A' for 'BRAF{mut:S151A}', 'EGFR_pY1068' for "
-        "'EGFR{pY1068}'), and must differ from every other start's.",
+        "'EGFR{pY1068}'), and must differ from every other seed's.",
     )
 
 
@@ -307,7 +307,7 @@ class MechanismDef(BaseModel):
 
 
 class StatementEdit(BaseModel):
-    """One change to a model built from statements: a row, its binding, a start, an amount or a
+    """One change to a model built from statements: a row, its binding, a seed, an amount or a
     readout."""
 
     model_config = ConfigDict(extra="forbid")
@@ -317,8 +317,8 @@ class StatementEdit(BaseModel):
         "replace_row",
         "rebind",
         "remove_row",
-        "set_start",
-        "remove_start",
+        "set_seed",
+        "remove_seed",
         "set_amount",
         "remove_amount",
         "set_readout",
@@ -326,8 +326,8 @@ class StatementEdit(BaseModel):
         description="`add_row` a new row with its `binding`; `replace_row` rewrites the statement "
         "of the row with that row's prefix, keeping its binding unless it gives one; `rebind` "
         "gives the row of `prefix` a new `binding`, its statement unchanged; `remove_row` by "
-        "`prefix`, with its binding; `set_start` adds or replaces the start of that name; "
-        "`set_amount`/`set_readout` add or replace one; `remove_start`/`remove_amount` by `name`. "
+        "`prefix`, with its binding; `set_seed` adds or replaces the seed of that name; "
+        "`set_amount`/`set_readout` add or replace one; `remove_seed`/`remove_amount` by `name`. "
         "A readout is never removed: each is one an observable reads."
     )
     row: StatementRow | str | None = Field(
@@ -339,9 +339,9 @@ class StatementEdit(BaseModel):
         "row's binding, one line ('two_step kf=k_on') or JSON.",
     )
     prefix: str | None = Field(default=None, description="rebind, remove_row: the row's prefix.")
-    start: StartRow | None = Field(default=None, description="set_start: the start.")
+    seed: SeedRow | None = Field(default=None, description="set_seed: the seed.")
     name: str | None = Field(
-        default=None, description="remove_start, set_amount, remove_amount: its name."
+        default=None, description="remove_seed, set_amount, remove_amount: its name."
     )
     agent: dict[str, Any] | str | None = Field(
         default=None, description="set_amount: the agent pattern whose amount it is."
@@ -350,6 +350,13 @@ class StatementEdit(BaseModel):
         default=None, description="set_readout: the readout id."
     )
     formula: str | None = Field(default=None, description="set_readout: its formula.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _old_seed_edit(cls, data: Any) -> Any:
+        """An edit spelled the old way, ``set_start``/``remove_start`` with ``start``, as its seed
+        edit (:data:`operations.SEED_EDIT_ALIASES`), kept out of the schema."""
+        return ops_mod.seed_edit(data) if isinstance(data, dict) else data
 
 
 # Provider serialisation artefact: some clients emit a list-typed argument wrapped in a
@@ -412,7 +419,7 @@ _Bindings = Annotated[dict[str, RowBinding | str] | None, BeforeValidator(_unwra
 _Readouts = Annotated[dict[str, str] | None, BeforeValidator(_unwrap_objectish)]
 _Amounts = Annotated[dict[str, dict[str, Any] | str] | None, BeforeValidator(_unwrap_objectish)]
 _MechanismDefs = Annotated[list[MechanismDef] | None, BeforeValidator(_unwrap_listish)]
-_StartRows = Annotated[list[StartRow] | None, BeforeValidator(_unwrap_listish)]
+_SeedRows = Annotated[list[SeedRow] | None, BeforeValidator(_unwrap_listish)]
 _StatementEdits = Annotated[list[StatementEdit] | None, BeforeValidator(_unwrap_listish)]
 
 
@@ -562,6 +569,22 @@ class _Cancellation(Middleware):
         if error is not None:
             raise error
         return result
+
+
+class _SeedAliases(Middleware):
+    """Reads ``make_changes``' ``starts``, its ``seeds`` as named before PEtab-MCP#166, as
+    ``seeds``, for one release (see docs/RATIONALE.md). Kept out of the schema, which names only
+    ``seeds``; given beside ``seeds``, it is refused as an unknown argument."""
+
+    async def on_call_tool(self, context, call_next):
+        arguments = context.message.arguments or {}
+        renamed = context.message.name == "make_changes" and "seeds" not in arguments
+        if renamed and "starts" in arguments:
+            arguments = {"seeds" if k == "starts" else k: v for k, v in arguments.items()}
+            context = context.copy(
+                message=context.message.model_copy(update={"arguments": arguments})
+            )
+        return await call_next(context)
 
 
 def _fit_in_progress(began: float) -> str:
@@ -1161,15 +1184,15 @@ def _make_changes_statements_doc(bound: bool = True, held: dict[str, Any] | None
             if bound
             else "NOTHING is bound: every readout the observables read is yours to define in "
             "`readouts`, and every target the condition table sets is a parameter id your rows "
-            "must read, in a binding (`kf=\"k*dose\"`) or a start's amount. "
+            "must read, in a binding (`kf=\"k*dose\"`) or a seed's amount. "
             + "".join(
                 f"But `{name}` is HELD to the experiment's protocol, `{name} = {item.formula}`: "
-                "read it as an agent in your rows; never start, make or degrade it. "
+                "read it as an agent in your rows; never seed, make or degrade it. "
                 for name, item in sorted((held or {}).items())
             )
         )
-        + "`starts` declares what is present at the start, in the state its agent writes; "
-        "without it every species no rule makes starts at an estimated `<name>_init` and every "
+        + "`seeds` declares what is present at t = 0, in the state its agent writes; "
+        "without it every species no rule makes is seeded at an estimated `<name>_init` and every "
         "made one empty. `readouts` defines a measurement mapping as a formula over `amounts` "
         "(agents whose amounts it reads, or `amount(<pattern>)` in place; every readout reads "
         "at least one)"
@@ -1178,15 +1201,15 @@ def _make_changes_statements_doc(bound: bool = True, held: dict[str, Any] | None
         "rule's enzyme, which the step leaves as it was, is a factor of its rate "
         "(`<rule>_catalysed` = k·amount of the enzyme), and a protein whose sites no rule reads "
         "together on one molecule is tracked as blocks of them: the first in amounts, from its "
-        "start, each other in the fraction of the protein in each form (from `start_fraction` = "
+        "seed, each other in the fraction of the protein in each form (from `start_fraction` = "
         "1), a readout across blocks their product. The result's `network` counts "
         "species and reactions before and after and names the blocks (`split`).\n\n"
         "`statement_edits` CHANGES the current rows instead of giving them all again: `add_row` a "
         "row with its `binding`, `replace_row` the statement of the row with that prefix (its "
         "binding kept, or given anew beside it), `rebind` a row's binding alone (`{op: 'rebind', "
         "prefix: 'r1', binding: 'two_step kf=k_shared'}`: a new policy, or a constant shared), "
-        "`remove_row` by prefix, and `set_start`/`set_amount`/`set_readout` or "
-        "`remove_start`/`remove_amount`; with them `mechanisms` you write for the new bindings. "
+        "`remove_row` by prefix, and `set_seed`/`set_amount`/`set_readout` or "
+        "`remove_seed`/`remove_amount`; with them `mechanisms` you write for the new bindings. "
         "They apply in "
         "order, all or nothing, and the model is rebuilt from the edited set. `base_version=N` "
         "applies them to version N's rows instead (with `statements`, it is the whole set given "
@@ -1237,7 +1260,7 @@ def _statement_record(session, version: int | None) -> dict | None:
 def _statements_text(session, version: int | None) -> str:
     """A model built from statements, as the notation (:mod:`notation`): its written mechanisms,
     its rows one per line (INDRA JSON where the notation has no lossless form), then each row's
-    binding, its starts, amounts and readouts. The current model, or a stored ``version``."""
+    binding, its seeds, amounts and readouts. The current model, or a stored ``version``."""
     import json
 
     from . import mechanisms, notation
@@ -1273,9 +1296,9 @@ def _statements_text(session, version: int | None) -> str:
         binding = (record.get("bindings") or {}).get(row["prefix"], {})
         text = notation.render_binding(binding, row["statement"].get("type"), library)
         lines.append(f"binding {row['prefix']}: {text or json.dumps(binding)}")
-    for start in record.get("starts") or []:
-        lines.append(f"start {start['name']}: {notation.agent_text(start['agent'])} = "
-                     f"{start['amount']}")
+    for seed in record.get("seeds") or []:
+        lines.append(f"seed {seed['name']}: {notation.agent_text(seed['agent'])} = "
+                     f"{seed['amount']}")
     for name, agent in (record.get("amounts") or {}).items():
         lines.append(f"amount {name} = {notation.agent_text(agent)}")
     for readout, formula in (record.get("readouts") or {}).items():
@@ -1416,7 +1439,7 @@ def _register_model_tools(
         statements: _StatementRows = None,
         bindings: _Bindings = None,
         mechanisms: _MechanismDefs = None,
-        starts: _StartRows = None,
+        seeds: _SeedRows = None,
         readouts: _Readouts = None,
         amounts: _Amounts = None,
         statement_edits: _StatementEdits = None,
@@ -1496,7 +1519,7 @@ def _register_model_tools(
                 "make_changes: nothing to do — give "
                 + (
                     "`statements` (the whole model as rows), `statement_edits` (changes to the "
-                    "current rows, starts, amounts and readouts), "
+                    "current rows, seeds, amounts and readouts), "
                     if statements_route
                     else "`model_edits` (structured operations on the committed model — the "
                     "usual route), `antimony` (author the model wholesale), "
@@ -1529,15 +1552,15 @@ def _register_model_tools(
                     cause="unnamed_reaction",
                 )
         statement_record, statement_warnings, written = None, [], None
-        if (starts or readouts or amounts) and edits:
+        if (seeds or readouts or amounts) and edits:
             return ctx.reject_operation(
                 "make_changes",
-                "make_changes: with `statement_edits`, change starts, amounts and readouts by "
-                "their own edits (`set_start`, `set_amount`, `set_readout`, `remove_start`, "
+                "make_changes: with `statement_edits`, change seeds, amounts and readouts by "
+                "their own edits (`set_seed`, `set_amount`, `set_readout`, `remove_seed`, "
                 "`remove_amount`), not "
-                "`starts`/`amounts`/`readouts`, which give the whole set with `statements`. "
+                "`seeds`/`amounts`/`readouts`, which give the whole set with `statements`. "
                 "NOTHING was applied.",
-                {"n_starts": len(starts or [])},
+                {"n_seeds": len(seeds or [])},
                 cause="statement_edit",
             )
         if bindings and edits:
@@ -1549,14 +1572,14 @@ def _register_model_tools(
                 {"bindings": sorted(bindings)},
                 cause="statement_edit",
             )
-        if (bindings or mechanisms or starts or readouts or amounts) and not (rows or edits):
+        if (bindings or mechanisms or seeds or readouts or amounts) and not (rows or edits):
             return ctx.reject_operation(
                 "make_changes",
-                "make_changes: `bindings`, `mechanisms`, `starts`, `readouts` and `amounts` belong "
+                "make_changes: `bindings`, `mechanisms`, `seeds`, `readouts` and `amounts` belong "
                 "to `statements` rows; send them together"
                 + (" (or `mechanisms` with `statement_edits`)" if statements_route else "")
                 + ". NOTHING was applied.",
-                {"n_mechanisms": len(mechanisms or []), "n_starts": len(starts or [])},
+                {"n_mechanisms": len(mechanisms or []), "n_seeds": len(seeds or [])},
             )
         # A change waits for no other: a client whose call timed out resends it, and queued behind
         # the fit it is already waiting for, it times out again (PEtab-MCP#108).
@@ -1590,7 +1613,7 @@ def _register_model_tools(
                         cause="statement_edit",
                     )
                 try:
-                    rows, bindings, starts, readouts, amounts, edit_summary = (
+                    rows, bindings, seeds, readouts, amounts, edit_summary = (
                         ops_mod.apply_statement_edits(base, edits)
                     )
                 except PetabMcpError as exc:
@@ -1611,7 +1634,7 @@ def _register_model_tools(
                             rows,
                             bindings,
                             definitions,
-                            [s.model_dump() if isinstance(s, StartRow) else s for s in starts or []],
+                            [s.model_dump() if isinstance(s, SeedRow) else s for s in seeds or []],
                             readouts,
                             amounts,
                         )
@@ -1779,7 +1802,7 @@ def _register_model_tools(
             statements: _StatementRows = None,
             bindings: _Bindings = None,
             mechanisms: _MechanismDefs = None,
-            starts: _StartRows = None,
+            seeds: _SeedRows = None,
             readouts: _Readouts = None,
             amounts: _Amounts = None,
             statement_edits: _StatementEdits = None,
@@ -1793,7 +1816,7 @@ def _register_model_tools(
                 statements=statements,
                 bindings=bindings,
                 mechanisms=mechanisms,
-                starts=starts,
+                seeds=seeds,
                 readouts=readouts,
                 amounts=amounts,
                 statement_edits=statement_edits,
@@ -2719,6 +2742,7 @@ def create_server(
                 ctx.session.logger, ctx.engine.build_root, ctx.session.provenance.root
             ),
             _Cancellation(),
+            _SeedAliases(),
         ],
     )
 
@@ -2728,7 +2752,7 @@ def create_server(
 
     _register_read_tools(mcp, route)
     # Offered whenever a map was given, even an empty one: a problem whose observables all read
-    # formulas, and whose starts are the statements' own, binds nothing in it.
+    # formulas, and whose seeds are the statements' own, binds nothing in it.
     _register_model_tools(mcp, route, statements=entity_map is not None)
     _register_parameter_tools(mcp, route)
     _register_fit_tools(mcp, route)

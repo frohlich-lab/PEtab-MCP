@@ -643,29 +643,29 @@ def _missing(model, c: Constraint, claimed: list[_Step]) -> str | None:
 
 def _absent(model, agent, role: str, changers: tuple[str, ...] | list[str] = ()) -> str:
     """That ``model`` holds no species of ``agent`` (``role``: what the constraint does with it),
-    and what adds one: a start of a mutant, which no row makes (``changers``, the rows that change
+    and what adds one: a seed of a mutant, which no row makes (``changers``, the rows that change
     a form of it, then reach it); a row naming an agent the model lacks; else a row forming it."""
     from indra.statements import Agent
 
     name = _name(agent.name)
     mutant = Agent(agent.name, mutations=agent.mutations)
     if agent.mutations and not _held(model, mutant):
-        start = "_".join([name, *(
+        seed = "_".join([name, *(
             "".join(str(p) for p in (m.residue_from, m.position, m.residue_to) if p)
             for m in agent.mutations
         )])
         return (
-            f"the model has no species {_text(agent)}; nothing starts or forms it{role}. A start "
-            f'`{{"name": "{start}", "agent": "{_text(mutant)}", "amount": ...}}` adds one'
+            f"the model has no species {_text(agent)}; nothing seeds or forms it{role}. A seed "
+            f'`{{"name": "{seed}", "agent": "{_text(mutant)}", "amount": ...}}` adds one'
             + (f", and `{'`, `'.join(changers)}` would then reach it" if changers else "")
         )
     if name not in model.monomers.keys():
         return (
-            f"the model has no {agent.name}{role}. Agents match by name: a row or a start that "
+            f"the model has no {agent.name}{role}. Agents match by name: a row or a seed that "
             f"names {agent.name} adds it"
         )
     return (
-        f"the model has no species {_text(agent)}; nothing starts or forms it{role}. A row that "
+        f"the model has no species {_text(agent)}; nothing seeds or forms it{role}. A row that "
         "forms it adds one"
     )
 

@@ -287,15 +287,15 @@ def test_a_complex_nothing_forms_is_refused():
         )
 
 
-def test_a_rule_that_never_fires_points_to_starts():
-    """The refusal said everything starts free, which `starts` made untrue, and never named it as
+def test_a_rule_that_never_fires_points_to_seeds():
+    """The refusal said everything starts free, which `seeds` made untrue, and never named it as
     the way to have the missing form present at t=0."""
     raf = Agent("RAF", bound_conditions=[BoundCondition(Agent("RAS"))])
-    with pytest.raises(ModelUpdateError, match="declare it in `starts`"):
+    with pytest.raises(ModelUpdateError, match="declare it in `seeds`"):
         PS.to_antimony([(Phosphorylation(raf, Agent("MEK")), INDRA_DEFAULT, "r1")], {})
 
 
-def _read_at(rate: str, *rows, starts=None, reduce=True):
+def _read_at(rate: str, *rows, seeds=None, reduce=True):
     """MEK phosphorylating ERK at T202 at ``rate``, beside ``rows``."""
     library = dict(M.REGISTRY)
     library[("Phosphorylation", "s")] = M.written(
@@ -304,7 +304,7 @@ def _read_at(rate: str, *rows, starts=None, reduce=True):
         library,
     )
     erk = Phosphorylation(Agent("MEK"), Agent("ERK"), "T", "202")
-    return PS.to_antimony([(erk, "s", "p"), *rows], {}, library, starts=starts, reduce=reduce)
+    return PS.to_antimony([(erk, "s", "p"), *rows], {}, library, seeds=seeds, reduce=reduce)
 
 
 @pytest.mark.parametrize(
@@ -316,7 +316,7 @@ def _read_at(rate: str, *rows, starts=None, reduce=True):
          r"reads `amount\(ERK\{pY187\}\)`, but nothing in the model forms it, so that amount is 0 "
          r"throughout: no row but this one gives ERK the site Y187. Read a form the rows make, on "
          r"the sites they give \(ERK's sites are T202 \['u', 'p'\]\), add the statement that forms "
-         r"this one, or declare it present in `starts`"),
+         r"this one, or declare it present in `seeds`"),
         ("kc*amount(ERK{pT20})", r"no row but this one gives ERK the site T20\. .*T202 \['u', 'p'\]"),
         # Written as a pattern, the same reads were already refused, before any expansion.
         ("kc*amount(sub(Y187='p'))", "adds site 'Y187' to ERK with the one state 'p'"),
@@ -333,17 +333,17 @@ def test_an_amount_nothing_forms_is_refused_naming_what_to_read(rate, match):
 
 
 @pytest.mark.parametrize("reduce", [True, False])
-def test_an_amount_another_row_or_a_start_forms_is_read(reduce):
+def test_an_amount_another_row_or_a_seed_forms_is_read(reduce):
     """The form the row itself makes, a site another row phosphorylates (which splits ERK into
-    blocks when reduced), and a form `starts` declares present all build."""
+    blocks when reduced), and a form `seeds` declares present all build."""
     other = (Phosphorylation(Agent("MEK"), Agent("ERK"), "Y", "187"), INDRA_DEFAULT, "q")
     p_erk = Agent("ERK", mods=[ModCondition("phosphorylation", "Y", "187")])
     _read_at("kc*amount(ERK{pT202})", reduce=reduce)
     _read_at("kc*amount(ERK{pY187})", other, reduce=reduce)
-    _read_at("kc*amount(ERK{pY187})", starts=[("pERK", p_erk, 1)], reduce=reduce)
+    _read_at("kc*amount(ERK{pY187})", seeds=[("pERK", p_erk, 1)], reduce=reduce)
 
 
-# -- declared starts (make_changes' `starts`) ----------------------------------------
+# -- declared seeds (make_changes' `seeds`) ------------------------------------------
 def _ia(sbml, sid):
     ia = sbml.getInitialAssignmentBySymbol(sid)
     return None if ia is None else libsbml.formulaToL3String(ia.getMath())
@@ -355,7 +355,7 @@ def test_a_declared_unit_pool_replaces_the_estimated_seed():
     antimony, _ = PS.to_antimony(
         [(_PHOSPHO, INDRA_DEFAULT, "r1")],
         {"MEK": Agent("MEK", db_refs={"HGNC": "6840"})},
-        starts=[("pERK", Agent("ERK"), 1)],
+        seeds=[("pERK", Agent("ERK"), 1)],
     )
     sbml = SbmlModel.from_antimony(antimony).sbml_model
     params = {p.getId(): p.getValue() for p in sbml.getListOfParameters()}
@@ -369,7 +369,7 @@ def test_a_made_monomer_can_be_declared_present():
     antimony, _ = PS.to_antimony(
         [(_TRANSITION, "mass_action", "r1")],
         {"effector": Agent("effector")},
-        starts=[("effector", Agent("effector"), 5)],
+        seeds=[("effector", Agent("effector"), 5)],
     )
     sbml = SbmlModel.from_antimony(antimony).sbml_model
     assert _ia(sbml, "effector") == "effector_init"
@@ -385,7 +385,7 @@ def test_a_declared_start_is_the_state_the_agent_writes():
     antimony, _ = PS.to_antimony(
         [(_PHOSPHO, INDRA_DEFAULT, "r1")],
         {"pERK": p_erk},
-        starts=[("pERK", p_erk, 0.5), ("ERK", Agent("ERK"), 2)],
+        seeds=[("pERK", p_erk, 0.5), ("ERK", Agent("ERK"), 2)],
     )
     sbml = SbmlModel.from_antimony(antimony).sbml_model
     names = {sp.getId(): sp.getName() for sp in sbml.getListOfSpecies()}
@@ -401,7 +401,7 @@ def test_a_declared_complex_starts_bound():
     antimony, _ = PS.to_antimony(
         [(Phosphorylation(raf_ras, Agent("MEK")), INDRA_DEFAULT, "r1")],
         {"RAF_RAS": raf_ras},
-        starts=[("RAF_RAS", raf_ras, 3)],
+        seeds=[("RAF_RAS", raf_ras, 3)],
     )
     sbml = SbmlModel.from_antimony(antimony).sbml_model
     assert sbml.getSpecies("RAF_RAS").getName().count("._br_") == 1
@@ -414,7 +414,7 @@ def test_a_declared_expression_names_parameters_the_table_fills():
     antimony, _ = PS.to_antimony(
         [(_TRANSITION, "mass_action", "r1")],
         {"naive": Agent("naive")},
-        starts=[("naive", Agent("naive"), "pool*fold")],
+        seeds=[("naive", Agent("naive"), "pool*fold")],
     )
     sbml = SbmlModel.from_antimony(antimony).sbml_model
     assert _ia(sbml, "naive") == "pool * fold"
@@ -422,38 +422,38 @@ def test_a_declared_expression_names_parameters_the_table_fills():
     assert {"pool", "fold"} <= ids and "naive_init" not in ids
 
 
-def test_two_starts_of_one_species_are_refused_naming_both():
+def test_two_seeds_of_one_species_are_refused_naming_both():
     """An unmodified site written out is its default state, so `ERK{-pT185}` starts what `ERK`
-    starts; PySB's "Duplicate species" named neither the other start nor the species."""
+    starts; PySB's "Duplicate species" named neither the other seed nor the species."""
     u_erk = Agent("ERK", mods=[ModCondition("phosphorylation", "T", "185", False)])
     with pytest.raises(
-        ModelUpdateError, match=r"starts 'S0' and 'S1' both start ERK\(T185='u'\)"
+        ModelUpdateError, match=r"seeds 'S0' and 'S1' both seed ERK\(T185='u'\)"
     ):
         PS.to_antimony(
             [(_PHOSPHO, INDRA_DEFAULT, "r1")], {},
-            starts=[("S0", Agent("ERK"), 1), ("S1", u_erk, 2)],
+            seeds=[("S0", Agent("ERK"), 1), ("S1", u_erk, 2)],
         )
 
 
 @pytest.mark.parametrize("name", ["EGF", "EGF-1"])
-def test_an_input_declares_no_start(name):
-    """An input is held to its protocol; a start for it would be overwritten at t=0."""
+def test_an_input_declares_no_seed(name):
+    """An input is held to its protocol; a seed for it would be overwritten at t=0."""
     egf = Agent(name)
     with pytest.raises(ModelUpdateError, match="is an input"):
         PS.to_antimony(
             [(Phosphorylation(egf, Agent("AKT")), INDRA_DEFAULT, "r1")],
             {"EGF": egf},
             inputs=(Input("EGF", "piecewise(EGF_0, time < 5, 0)", ("EGF_0",)),),
-            starts=[("EGF", egf, 1)],
+            seeds=[("EGF", egf, 1)],
         )
 
 
-def test_a_declared_empty_start_has_no_parameter():
+def test_a_declared_empty_seed_has_no_parameter():
     """A substrate every condition sets: an `_init` behind it, even a zero one, was an estimated
     row no condition left any effect to."""
     antimony, _ = PS.to_antimony(
         [(_TRANSITION, "mass_action", "r1")], {"naive": Agent("naive")},
-        starts=[("naive", Agent("naive"), 0)],
+        seeds=[("naive", Agent("naive"), 0)],
     )
     sbml = SbmlModel.from_antimony(antimony).sbml_model
     assert _ia(sbml, "naive") is None and sbml.getParameter("naive_init") is None
@@ -461,16 +461,16 @@ def test_a_declared_empty_start_has_no_parameter():
 
 
 def test_what_rules_make_from_nothing_is_noted_as_starting_empty():
-    """A kind made by zero-order synthesis started at 0 with nothing said. A start declared at 0
+    """A kind made by zero-order synthesis started at 0 with nothing said. A seed declared at 0
     says it, and drops the note."""
     from indra.statements import IncreaseAmount
 
     rows = [(IncreaseAmount(None, Agent("EGFR")), INDRA_DEFAULT, "r1")]
     notes = []
     PS.to_antimony(rows, {}, notes=notes)
-    assert len(notes) == 1 and "EGFR" in notes[0] and "`starts`" in notes[0]
+    assert len(notes) == 1 and "EGFR" in notes[0] and "`seeds`" in notes[0]
     notes = []
-    PS.to_antimony(rows, {}, starts=[("EGFR", Agent("EGFR"), 0)], notes=notes)
+    PS.to_antimony(rows, {}, seeds=[("EGFR", Agent("EGFR"), 0)], notes=notes)
     assert notes == []
 
 
@@ -818,7 +818,7 @@ def test_a_shared_rate_named_by_a_start_is_not_a_unit_pool():
     antimony, _ = PS.to_antimony(
         [(_TRANSITION, "mass_action", "r1", {"k": "total"})],
         {"naive": Agent("naive")},
-        starts=[("naive", Agent("naive"), "total")],
+        seeds=[("naive", Agent("naive"), "total")],
     )
     sbml = SbmlModel.from_antimony(antimony).sbml_model
     assert sbml.getParameter("total").getValue() != 1.0
