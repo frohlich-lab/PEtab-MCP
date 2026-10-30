@@ -2229,9 +2229,9 @@ def initial_conditions_report(problem, added: set[str] | None = None) -> list[di
             )
             if t0 == 0.0 and ic is None and assignment is None and sid in synthesised:
                 note += (
-                    " A reaction makes it from nothing and nothing declares it present at the "
-                    "start: if it is (a protein made at a steady rate is), declare its starting "
-                    "amount, in `starts` on the statements route."
+                    " A reaction makes it from nothing and nothing declares it present at "
+                    "t = 0: if it is (a protein made at a steady rate is), declare its starting "
+                    "amount, in `seeds` on the statements route."
                 )
         out.append(
             {

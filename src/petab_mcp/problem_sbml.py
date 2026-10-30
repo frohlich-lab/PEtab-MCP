@@ -7,27 +7,28 @@ be scored against it as it stands. This module is the difference, and it is all 
 * **Readouts.** PySB numbers every species (``__s0``, ``__s1`` ...), while the fixed observable
   table reads names: ``A_p``, or a ``readout_<observableId>`` mapping. Each species the entity
   map names is given that name, or for a ``readout_*`` mapping an assignment rule of that name.
-* **Starting amounts.** What is present at the start is traced (below); each present monomer
-  starts at an estimated ``<monomer>_init``, or at the row the problem ships (a fixed
-  ``<monomer>_init`` row) — unless the statements DECLARE what is there (``starts``, below).
+* **Seeds.** What is present at t = 0 is traced (below); each present monomer is seeded
+  at an estimated ``<monomer>_init``, or at the row the problem ships (a fixed
+  ``<monomer>_init`` row) — unless the statements DECLARE what is there (``seeds``, below).
 * **Inputs.** A species the experiment sets is held rather than built: one the condition table
   targets (a drug dose), which its periods set, and one the problem's ``inputs.tsv`` holds to a
   protocol (a stimulus ramp, :func:`protocols.hold`).
 * **Leftovers.** A rate constant an agent-written mechanism replaced is removed.
 
-The start rests on two assumptions, and a third check refuses the models they do not fit:
+What is present at t = 0 rests on two assumptions, and a third check refuses the models they do
+not fit:
 
-1. **The start holds free monomers in INDRA's default state** (``set_base_initial_condition``):
+1. **The seeds are free monomers in INDRA's default state** (``set_base_initial_condition``):
    unbound, unmodified, inactive, wild type, in the cytoplasm when that is a location (else in
    the first of its locations by name), as a rule makes a new molecule
-   (:func:`mechanisms.default_state`). No complex and no modified form exists at the start.
-2. **What the start makes is absent from it.** Every monomer no rule makes from other kinds is
+   (:func:`mechanisms.default_state`). No complex and no modified form exists at t = 0.
+2. **What the seeds make is absent at t = 0.** Every monomer no rule makes from other kinds is
    present (one that only proliferates included), and BioNetGen expands the rules from those. A
    made monomer that expansion reaches starts empty: a population that exists only once another
-   converts into it. One it does not reach traces back to nothing at the start (populations that
+   converts into it. One it does not reach traces back to nothing at t = 0 (populations that
    only interconvert), so it is present too. A protein synthesised at a steady rate therefore
    starts at zero, not at its steady state; nothing here tells the two apart.
-3. **Every rule fires, and every readout reads a species,** in the expansion from that start. A
+3. **Every rule fires, and every readout reads a species,** in the expansion from those seeds. A
    rule that needs a complex or modified form nothing forms (a kinase active only while bound to a
    partner no statement binds it to) is refused by its row, rather than built into a model whose
    fit can never move it. So is an amount a rate reads that nothing forms (``amount(ERK{pY187})``
@@ -36,16 +37,16 @@ The start rests on two assumptions, and a third check refuses the models they do
 This is MARM2's causal tracing (Fröhlich et al. 2023, MSB 19:e10988) asked statically. There, a
 synthetic site set by the rule that makes a molecule, and carried by BioNetGen through every
 later step, splits each simulated species by origin. Here the only question is whether an origin
-exists, whether a monomer traces back to the start at all, and the expansion's reactions answer
+exists, whether a monomer traces back to the seeds at all, and the expansion's reactions answer
 it without a site.
 
-A declared start (``make_changes``' ``starts``) replaces the trace for the monomers it names. The
+A declared seed (``make_changes``' ``seeds``) replaces the trace for the monomers it names. The
 species its Agent writes starts at that amount, in exactly the state the Agent writes (mods,
 location, activity, and the complex its ``bound_conditions`` form, partners in their default
-state), and no monomer named in any declaration is started any other way: declare each state it
+state), and no monomer named in any declaration is seeded any other way: declare each state it
 starts in. A number other than 0 becomes ``<name>_init`` and reconcile treats it as any other
 starting value (1 a unit normalisation, fixed; anything else estimated from there), so a unit pool
-costs nothing in k. A 0 is an empty start with no parameter at all — what lets a species the
+costs nothing in k. A 0 is an empty seed with no parameter at all — what lets a species the
 condition table sets (a substrate the conditions dose) carry no ``_init`` that every condition
 overrides. An expression is the starting amount itself, over parameter ids: a row the problem
 ships (a fixed total), a condition-table column (``init_X``), or a new name, estimated. A declared
@@ -84,7 +85,7 @@ def to_antimony(
     entities: dict[str, Agent],
     library: dict[tuple[str, str], M.Policy] = M.REGISTRY,
     inputs: tuple[Input, ...] = (),
-    starts: list[tuple[str, Agent, float | str]] | None = None,
+    seeds: list[tuple[str, Agent, float | str]] | None = None,
     formulas: dict[str, str] | None = None,
     amounts: dict[str, Agent] | None = None,
     notes: list[str] | None = None,
@@ -98,8 +99,9 @@ def to_antimony(
     """The model ``rows`` build, as Antimony the ``antimony`` route accepts unchanged.
 
     Every species in ``entities`` becomes a symbol of that name, the sum over its PySB pattern,
-    because that name is what the fixed observable table reads. The start is traced as the module
-    docstring sets out, and :class:`ModelUpdateError` names the rows a model breaking it fails on.
+    because that name is what the fixed observable table reads. What is present at t = 0 is traced
+    as the module docstring sets out, and :class:`ModelUpdateError` names the rows a model breaking
+    it fails on.
 
     An experiment's INPUT is held instead, with no starting amount of its own: a species of
     ``entities`` among ``targets`` (the problem's condition targets) that no row makes or
@@ -110,16 +112,17 @@ def to_antimony(
     ``times``, the problem's (:func:`regulation.times`), are what a rate's ``time`` ranges over
     where its regulators are checked.
 
-    ``starts`` (``(name, agent, amount)``: a number or an expression over parameter ids) declare
-    what is present at the start, as the module docstring sets out; each is ``<name>_init``.
+    ``seeds`` (``(name, agent, amount)``: a number or an expression over parameter ids) declare
+    what is present at t = 0, as the module docstring sets out; each is ``<name>_init``, so
+    no two share a name (:func:`operations.seed_name`).
 
     ``formulas`` (readout id to an expression; ``make_changes``' ``readouts``) define each readout that is not one pattern's amount as an
     assignment rule over ``amounts`` (name to the agent whose amount it is), the entity map's ids
     — each a symbol of the model by then — and parameter ids, a name the model does not hold
-    becoming a parameter as in a declared start.
+    becoming a parameter as in a declared seed.
 
-    ``notes``, when given, collects what the start holds that nothing declared and the caller may
-    not expect: kinds the rules make from nothing, which start empty, and a start location chosen
+    ``notes``, when given, collects what t = 0 holds that nothing declared and the caller may
+    not expect: kinds the rules make from nothing, which start empty, and a seed's location chosen
     among several.
 
     The rules are reduced before they are expanded (:mod:`reduction`), unless ``reduce`` is off
@@ -128,7 +131,7 @@ def to_antimony(
     itself, as the rows build it and seeded, before any reduction or expansion (what
     :mod:`tracing` traces), with the emissions.
     """
-    starts = [(name, agent, _numeric(amount)) for name, agent, amount in starts or []]
+    seeds = [(name, agent, _numeric(amount)) for name, agent, amount in seeds or []]
     entities = {**{item.id: Agent(item.id) for item in inputs}, **entities}
     clash = sorted(set(amounts or {}) & set(entities))
     if clash:
@@ -136,10 +139,10 @@ def to_antimony(
     # An amount a readout formula reads is named like an entity-map readout (below), for this
     # model only: the map itself is the problem's, and amounts are the agent's.
     entities = {**entities, **(amounts or {})}
-    # Start agents join the monomer pass (they may name a site or partner no row does); they are
+    # Seed agents join the monomer pass (they may name a site or partner no row does); they are
     # not readouts, so they stay out of `entities` below.
     model, emissions = M.assemble(
-        rows, {**entities, **{f"__start_{name}": agent for name, agent, _ in starts}}, library
+        rows, {**entities, **{f"__seed_{name}": agent for name, agent, _ in seeds}}, library
     )
     _refuse_chains(model, emissions)
     made, synthesised, converted = set(), set(), set()
@@ -166,7 +169,7 @@ def to_antimony(
     # name; the SBML export numbers observables anyway, and the rename below restores them.
     readouts = {f"readout_{species}": species for species in entities}
     patterns = {name: get_monomer_pattern(model, entities[s]) for name, s in readouts.items()}
-    declared = _declare(model, starts, set(held))
+    declared = _declare(model, seeds, set(held))
     _seed(
         model,
         [m for m in model.monomers if (m.name not in made or m.name in held) and m.name not in declared],
@@ -230,9 +233,9 @@ def to_antimony(
         empty = sorted((synthesised & reached) - held.keys() - declared)
         if empty:
             notes.append(
-                f"These start at 0, because rules make them from nothing and no `starts` entry "
+                f"These start at 0, because rules make them from nothing and no `seeds` entry "
                 f"declares them: {', '.join(empty)}. Declare each one present at t=0 (a protein "
-                "made at a steady rate is) in `starts`; one declared at 0 stays empty and leaves "
+                "made at a steady rate is) in `seeds`; one declared at 0 stays empty and leaves "
                 "this list."
             )
         chosen = []
@@ -250,8 +253,8 @@ def to_antimony(
         if chosen:
             notes.append(
                 f"These start in the first of their locations by name, since no statement puts "
-                f"them in the cytoplasm: {'; '.join(chosen)}. To start one elsewhere, declare it "
-                "in `starts`."
+                f"them in the cytoplasm: {'; '.join(chosen)}. To seed one elsewhere, declare it "
+                "in `seeds`."
             )
     fired = reduction.fired(model, reduced, present)
     never = []
@@ -277,12 +280,12 @@ def to_antimony(
         never.append(f"readouts {unread} read no species ({unformed})")
     if never:
         raise ModelUpdateError(
-            f"In the model these statements build, {' and '.join(never)}. The start holds free, "
-            "unmodified molecules and what `starts` declares, and a rule fires only on what the "
-            "statements form from there: one that never fires needs a complex or a modified form "
-            "that nothing forms, like a kinase active only while bound to a partner nothing binds "
-            "it to. Add the statement that forms it, or, if it is present at t=0, declare it in "
-            "`starts`."
+            f"In the model these statements build, {' and '.join(never)}. At t = 0 the model holds "
+            "free, unmodified molecules and what `seeds` declares, and a rule fires only on what "
+            "the statements form from there: one that never fires needs a complex or a modified "
+            "form that nothing forms, like a kinase active only while bound to a partner nothing "
+            "binds it to. Add the statement that forms it, or, if it is present at t=0, declare it "
+            "in `seeds`."
         )
     for e in emissions:
         for name, written in e.amounts.items():
@@ -341,7 +344,7 @@ def to_antimony(
             and species.getId() not in named
             and not new.startswith("readout_")
             # Nor a block of a split monomer (:mod:`reduction`), which is one species where the
-            # monomer whole is several: named, it took a shipped `<id>_init` for its start, which
+            # monomer whole is several: named, it took a shipped `<id>_init` for its seed, which
             # the unreduced model never gives it (the #116 review).
             and species.getName().split("(", 1)[0] not in blocks
         ):
@@ -362,7 +365,7 @@ def to_antimony(
     agents = {m.name for m in model.monomers}
     for readout, formula in (formulas or {}).items():
         _readout_formula(sbml_model, readout, formula, agents, set(entities))
-    for name, _, amount in starts:
+    for name, _, amount in seeds:
         if isinstance(amount, str):
             _initial_expression(sbml_model, f"{name}_init", name, amount)
         elif float(amount) == 0.0:
@@ -380,9 +383,9 @@ def to_antimony(
 
 
 def _numeric(amount):
-    """A start amount written as a number in text (``"2"``) is that number, as one written as a
+    """A seed amount written as a number in text (``"2"``) is that number, as one written as a
     number. Taken as an expression, its Antimony round trip made it a literal that reconcile
-    estimated once per species (the #116 review), and a ``"0"`` was no empty start."""
+    estimated once per species (the #116 review), and a ``"0"`` was no empty seed."""
     if isinstance(amount, str):
         try:
             return float(amount)
@@ -392,32 +395,25 @@ def _numeric(amount):
 
 
 def _declare(
-    model: pysb.Model, starts: list[tuple[str, Agent, float | str]], held: set[str]
+    model: pysb.Model, seeds: list[tuple[str, Agent, float | str]], held: set[str]
 ) -> set[str]:
-    """Start each declared species at ``<name>_init``, in the state its Agent writes; returns the
+    """Seed each declared species at ``<name>_init``, in the state its Agent writes; returns the
     monomers the declarations name, which :func:`_seed` then leaves alone."""
     named: set[str] = set()
-    names = [name for name, _, _ in starts]
-    repeated = sorted({n for n in names if names.count(n) > 1})
-    if repeated:
-        raise ModelUpdateError(
-            f"starts {repeated} are named twice; each start is `<name>_init`, so give a second "
-            "start of the same agent a name of its own"
-        )
-    for name, agent, amount in starts:
+    for name, agent, amount in seeds:
         if _n(agent.name) in held:
             raise ModelUpdateError(
-                f"start {name!r}: {agent.name} is an input, held to its protocol, so it has no "
-                "start of its own"
+                f"seed {name!r}: {agent.name} is an input, held to its protocol, so it has no "
+                "seed of its own"
             )
         if not isinstance(amount, (int, float, str)) or isinstance(amount, bool):
             raise ModelUpdateError(
-                f"start {name!r} is {amount!r}; give a number or an expression over parameter ids"
+                f"seed {name!r} is {amount!r}; give a number or an expression over parameter ids"
             )
         try:
             molecules = M.agent_pattern(model, agent, fresh=lambda name: True)
         except M.MechanismError as exc:
-            raise ModelUpdateError(f"start {name!r}: {exc}") from exc
+            raise ModelUpdateError(f"seed {name!r}: {exc}") from exc
         pattern = pysb.ComplexPattern(molecules, None)
         value = float(amount) if not isinstance(amount, str) else SEED_INITIAL_VALUE
         parameter = pysb.Parameter(f"{name}_init", value, _export=False)
@@ -429,15 +425,15 @@ def _declare(
         )
         if twin is not None:
             raise ModelUpdateError(
-                f"starts {twin!r} and {name!r} both start {pattern} (a site neither writes starts "
-                "in its default state), and one species takes one start: give it one, or write "
+                f"seeds {twin!r} and {name!r} both seed {pattern} (a site neither writes is in its "
+                "default state), and one species takes one seed: give it one, or write "
                 "each agent in the state that tells them apart"
             )
         try:
             model.add_initial(pysb.Initial(pattern, parameter, _export=False))
         except ValueError as exc:  # pysb: not concrete
             raise ModelUpdateError(
-                f"start {name!r} is not a start PySB accepts: {exc}"
+                f"seed {name!r} is not a seed PySB accepts: {exc}"
             ) from exc
         named |= {mp.monomer.name for mp in pattern.monomer_patterns}
     return named
@@ -456,7 +452,7 @@ def _initial_expression(sbml_model, placeholder: str, species: str, formula: str
     it, and anything else is estimated from reconcile's seed."""
     math = _parse(formula)
     if math is None:
-        raise ModelUpdateError(f"start {species!r} is no formula: {formula!r}")
+        raise ModelUpdateError(f"seed {species!r} is no formula: {formula!r}")
     _parameters_for_unknown_names(sbml_model, math)
     for assignment in sbml_model.getListOfInitialAssignments():
         if assignment.getMath().isName() and assignment.getMath().getName() == placeholder:
@@ -540,7 +536,7 @@ def _parameters_for_unknown_names(sbml_model, math) -> None:
 
 
 def _initial_empty(sbml_model, placeholder: str) -> None:
-    """Start the declared species at a literal 0: no assignment, so no parameter for reconcile to
+    """Seed the declared species at a literal 0: no assignment, so no parameter for reconcile to
     estimate or a condition to override."""
     for assignment in list(sbml_model.getListOfInitialAssignments()):
         if assignment.getMath().isName() and assignment.getMath().getName() == placeholder:
@@ -549,7 +545,7 @@ def _initial_empty(sbml_model, placeholder: str) -> None:
 
 
 def _free_form(model: pysb.Model, sbml_model, base: dict, monomer: str):
-    """The SBML species that is ``monomer`` alone and bound to nothing: its start, or, for one only
+    """The SBML species that is ``monomer`` alone and bound to nothing: its seed, or, for one only
     the rules make (a metabolite made from a precursor), the one such species the expansion
     reached; else ``None``."""
     if monomer in base:
@@ -568,14 +564,14 @@ def _free_form(model: pysb.Model, sbml_model, base: dict, monomer: str):
     return found[0] if len(found) == 1 else None
 
 def _seed(model: pysb.Model, monomers: list[pysb.Monomer]) -> None:
-    """Start each of ``monomers`` present, as assumption 1 of the module docstring sets out."""
+    """Seed each of ``monomers`` present, as assumption 1 of the module docstring sets out."""
     for monomer in monomers:
         # Not INDRA's `set_base_initial_condition` itself, whose state this is but for the location
         # (:func:`mechanisms.default_state`): its `<monomer>_0` silently skips a monomer whose name
         # is taken, and a condition column may already be named `<monomer>_0`.
         state = M.default_state(monomer)
         # Reconcile's own seed value, not 1, which it holds FIXED as a unit normalisation: a seed
-        # of 1 would have fixed every population at a unit start.
+        # of 1 would have fixed every population at a unit seed.
         amount = pysb.Parameter(f"{monomer.name}_init", SEED_INITIAL_VALUE, _export=False)
         model.add_component(amount)
         model.add_initial(pysb.Initial(monomer(**state), amount, _export=False))
@@ -589,7 +585,7 @@ MAX_COMPLEX = 20
 
 
 def _expand(model: pysb.Model) -> None:
-    """Fill in BioNetGen's expansion of ``model`` from its start. Left empty when nothing starts
+    """Fill in BioNetGen's expansion of ``model`` from its seeds. Left empty when nothing is seeded
     (populations that only interconvert), which PySB refuses to expand, or nothing fires, whose
     network BioNetGen refuses to write.
 
@@ -741,7 +737,7 @@ def _unformed(emission: M.Emission, observable: pysb.Observable, written: str) -
         "forms it, so that amount is 0 throughout"
         + (f": no row but this one gives {', '.join(alone)}" if alone else "")
         + f". Read a form the rows make, on the sites they give ({'; '.join(dict.fromkeys(held))}), "
-        "add the statement that forms this one, or declare it present in `starts`."
+        "add the statement that forms this one, or declare it present in `seeds`."
     )
 
 

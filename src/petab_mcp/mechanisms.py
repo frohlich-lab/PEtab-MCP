@@ -477,7 +477,7 @@ def _not_a_parameter(
 ) -> None:
     """Refuse a binding that reads ``ident`` as a parameter when it names something else: a
     molecule or one of ``species``, the ids the model names amounts by (a parameter of its name
-    clashed with it in the SBML), a starting amount ``<x>_init`` (the start made it again, a
+    clashed with it in the SBML), a starting amount ``<x>_init`` (the seed made it again, a
     duplicate in PySB), a rate function, or ``time`` (which BioNetGen refused as a parameter
     name); an expression the model builds, a row's rate (whose regulators the reading row would
     read unstated) or a value a binding pinned; or a regulator's name, which only a mechanism's
@@ -511,7 +511,7 @@ def _not_a_parameter(
         return
     elif ident.endswith("_init"):
         what = "a starting amount"
-        instead = " `<name>_init` is the amount a species starts at, which only `starts` declares."
+        instead = " `<name>_init` is the amount a species starts at, which only `seeds` declares."
     elif held is not None:
         what = f"the model's {type(held).__name__.lower()}"
     elif ident == "time":
@@ -685,8 +685,8 @@ def refuse_rate_names(
     from .model_edits import closest_symbols
 
     problem_ids = problem_ids or {}
-    starts = [n for n in unknown if n.endswith("_init")]
-    new = [n for n in unknown if n not in (*starts, *roles, *problem_ids)]
+    inits = [n for n in unknown if n.endswith("_init")]
+    new = [n for n in unknown if n not in (*inits, *roles, *problem_ids)]
     close = [
         f"{u} -> {' or '.join(map(repr, c))}"
         for u in new
@@ -695,8 +695,8 @@ def refuse_rate_names(
     sentences = [
         f"rate {rate!r} of {policy!r} may name only {allowed}{also}; it names {unknown}.",
         f"Did you mean: {'; '.join(close)}?" if close else "",
-        f"{starts}: `<name>_init` is the amount a species starts at, and a rate does not read it; "
-        f"read the amount itself, {amounts}." if starts else "",
+        f"{inits}: `<name>_init` is the amount a species starts at, and a rate does not read it; "
+        f"read the amount itself, {amounts}." if inits else "",
         *(f"`{r}` is a role: read its amount, `amount({r})`." for r in unknown if r in roles),
         *_how_ids_enter(unknown, problem_ids, amounts),
         "Declare each new constant in the mechanism's `parameters`; it is minted per row as "

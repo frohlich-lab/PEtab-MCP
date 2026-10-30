@@ -1238,13 +1238,13 @@ def test_statement_species_take_the_problems_own_initial_conditions(tmp_path):
     assert not {i for i in ids if i.endswith("_0")}
 
 
-def test_a_binding_to_a_start_or_a_species_is_refused_saying_what_reads_it(tmp_path):
-    """A binding to a shipped start, `k="A_init"`, met PySB's duplicate name once the start made
+def test_a_binding_to_a_seed_or_a_species_is_refused_saying_what_reads_it(tmp_path):
+    """A binding to a shipped seed, `k="A_init"`, met PySB's duplicate name once the seed made
     `A_init` again, and one to a readout id, `k="Btot"`, libSBML's duplicate id beside the
     readout: both escaped make_changes raw."""
     mcp = _statements_server(tmp_path, extra=', "Btot": {"name": "B"}')
     for binding, ident, what, instead in (
-        ("A_init", "A_init", "a starting amount", "which only `starts` declares"),
+        ("A_init", "A_init", "a starting amount", "which only `seeds` declares"),
         ("Btot", "Btot", "a species", "`Btot` is the amount of the agent the entity map"),
         ("k1*Btot", "Btot", "a species", "by that agent's own name and sites"),
     ):
@@ -1382,8 +1382,8 @@ def test_a_version_without_new_rows_keeps_its_parents(tmp_path):
     assert out["error_cause"] == "mechanism_redefined"
 
 
-def test_a_declared_unit_start_is_fixed_not_estimated(tmp_path):
-    """`starts`: a population declared to start at 1 takes reconcile's unit
+def test_a_declared_unit_seed_is_fixed_not_estimated(tmp_path):
+    """`seeds`: a population declared to start at 1 takes reconcile's unit
     normalisation, fixed, where the default seed would have estimated an `A_init`: one parameter
     too many."""
     mcp = _statements_server(tmp_path)
@@ -1394,7 +1394,7 @@ def test_a_declared_unit_start_is_fixed_not_estimated(tmp_path):
             "justification": "A becomes B",
             "statements": [_statement_row()],
             "bindings": {"conv": "mass_action"},
-            "starts": [{"agent": {"name": "A"}, "amount": 1, "name": "A_start"}],
+            "seeds": [{"agent": {"name": "A"}, "amount": 1, "name": "A_start"}],
         },
     )
     assert out["applied"] is True
@@ -1403,17 +1403,17 @@ def test_a_declared_unit_start_is_fixed_not_estimated(tmp_path):
     # The toy also SHIPS a fixed `A_init` row, which stays; neither may cost a k.
     assert not any(int(rows[p]["estimate"]) for p in ("A_start_init", "A_init") if p in rows)
     stored = json.loads((tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text())
-    assert stored["starts"] == [{"name": "A_start", "agent": {"name": "A"}, "amount": 1}]
+    assert stored["seeds"] == [{"name": "A_start", "agent": {"name": "A"}, "amount": 1}]
 
 
-def test_a_redeclared_start_moves_its_row(tmp_path):
-    """A start declared at 1 stayed FIXED at 1 through every later declaration."""
+def test_a_redeclared_seed_moves_its_row(tmp_path):
+    """A seed declared at 1 stayed FIXED at 1 through every later declaration."""
     mcp = _statements_server(tmp_path)
     rows = []
     for amount in (1, 5, 1):
-        start = {"agent": {"name": "A"}, "amount": amount, "name": "A_start"}
+        seed = {"agent": {"name": "A"}, "amount": amount, "name": "A_start"}
         args = {"justification": "A starts", "statements": [_statement_row()],
-                "bindings": {"conv": "mass_action"}, "starts": [start]}
+                "bindings": {"conv": "mass_action"}, "seeds": [seed]}
         assert _call(mcp, "make_changes", args)["applied"] is True
         params = {r["parameterId"]: r for r in _call(mcp, "get_parameters", {})["result"]}
         row = params["A_start_init"]
@@ -1422,6 +1422,59 @@ def test_a_redeclared_start_moves_its_row(tmp_path):
         view = {r["species"]: r for r in structure["initial_conditions"]}["A"]
         assert (view["ic_parameter"], view["t0"]) == ("A_start_init", row["nominalValue"])
     assert rows == [(1.0, 0), (5.0, 1), (1.0, 0)]
+
+
+def _seeds_call(mcp, seeds):
+    return _call(mcp, "make_changes", {
+        "justification": "A starts in two forms", "statements": [_statement_row()],
+        "bindings": {"conv": "mass_action"}, "seeds": seeds})
+
+
+def test_a_wild_type_and_its_mutant_seed_each_under_its_forms_name(tmp_path):
+    """Two seeds of one agent without `name` both took the agent's, and the build refused them as
+    named twice without saying what to send (PEtab-MCP#165: perica_egf's `BRAF` beside
+    `BRAF{mut:S151A}`, in three of five runs)."""
+    mcp = _statements_server(tmp_path)
+    out = _seeds_call(mcp, [{"agent": "A", "amount": "1 - mutant_A"},
+                            {"agent": "A{mut:S151A}", "amount": "mutant_A"}])
+    assert out["applied"] is True, out.get("error")
+    assert [s["name"] for s in _stored_rows(tmp_path, 0)["seeds"]] == ["A", "A_S151A"]
+    shown = _text(mcp, "get_model", {"format": "statements"})
+    assert "seed A: A = 1 - mutant_A\nseed A_S151A: A{mut:S151A} = mutant_A" in shown
+
+
+def test_set_seed_of_a_second_form_joins_the_first(tmp_path):
+    """A `set_seed` without `name` replaced the seed of the agent's name: a pre-phosphorylated
+    pool replaced the unmodified one it was to join (PEtab-MCP#165)."""
+    mcp = _statements_server(tmp_path)
+    assert _seeds_call(mcp, [{"agent": "A", "amount": 1}])["applied"] is True
+    out = _call(mcp, "make_changes", {
+        "justification": "part of A starts phosphorylated",
+        "statement_edits": [{"op": "set_seed", "seed": {"agent": "A{pY10}", "amount": 0.5}}]})
+    assert out["applied"] is True, out.get("error")
+    assert out["statement_edits_applied"] == ["set_seed A_pY10"]
+    assert [s["name"] for s in _stored_rows(tmp_path, 1)["seeds"]] == ["A", "A_pY10"]
+    assert "A_pY10_init" in {r["parameterId"] for r in _call(mcp, "get_parameters", {})["result"]}
+
+
+def test_two_seeds_of_one_form_are_refused_as_one_species_seeded_twice(tmp_path):
+    """Only two seeds of one form share a default name, and renaming one would not help."""
+    out = _seeds_call(_statements_server(tmp_path), [{"agent": "A{pY10}", "amount": 1},
+                                                     {"agent": "A{pY10}", "amount": 2}])
+    assert out["error_cause"] == "duplicate_seed"
+    assert "`seeds[0]` and `seeds[1]` both seed `A{pY10}`" in out["error"]
+
+
+def test_a_shared_name_is_refused_with_the_second_seed_named_apart(tmp_path):
+    """The refusal said a second seed needs a name of its own, but not which, nor how to send it
+    (PEtab-MCP#165); it now gives the second entry back, named."""
+    out = _seeds_call(_statements_server(tmp_path), [
+        {"agent": "A", "amount": "1 - mutant_A"},
+        {"name": "A", "agent": "A{mut:S151A}", "amount": "mutant_A"}])
+    assert out["error_cause"] == "duplicate_seed"
+    assert ('`seeds[1]` is named `A`, as `seeds[0]` is (a seed without `name` is named after '
+            'its agent and form); each seed is `<name>_init`, so name the second apart: '
+            '`{"name": "A_S151A", "agent": "A{mut:S151A}", "amount": "mutant_A"}`') in out["error"]
 
 
 def test_a_held_input_is_reported_at_its_condition_value(tmp_path, add_condition):
@@ -1729,7 +1782,7 @@ def test_statement_edits_change_the_rows_they_name_and_keep_the_rest(tmp_path):
             "statement_edits": [
                 {"op": "remove_row", "prefix": "back"},
                 {"op": "add_row", "row": "back2: B becomes A", "binding": "mass_action"},
-                {"op": "set_start", "start": {"agent": "A", "amount": 1, "name": "A_start"}},
+                {"op": "set_seed", "seed": {"agent": "A", "amount": 1, "name": "A_start"}},
             ],
         },
     )
@@ -1737,12 +1790,12 @@ def test_statement_edits_change_the_rows_they_name_and_keep_the_rest(tmp_path):
     assert out["statement_edits_applied"] == [
         "remove_row back",
         "add_row back2",
-        "set_start A_start",
+        "set_seed A_start",
     ]
     record = _stored_rows(tmp_path, 1)
     assert [r["prefix"] for r in record["rows"]] == ["conv", "back2"]
     assert record["bindings"] == {"conv": {"policy": "mass_action"}, "back2": {"policy": "mass_action"}}
-    assert [s["name"] for s in record["starts"]] == ["A_start"]
+    assert [s["name"] for s in record["seeds"]] == ["A_start"]
 
 
 def test_rebind_changes_a_rows_binding_and_leaves_its_statement(tmp_path):
@@ -1832,10 +1885,10 @@ def test_whole_sets_ride_with_statements_not_with_edits(tmp_path):
         {
             "justification": "mixed",
             "statement_edits": [{"op": "add_row", "row": _BACK, "binding": "mass_action"}],
-            "starts": [{"agent": "A", "amount": 1}],
+            "seeds": [{"agent": "A", "amount": 1}],
         },
     )
-    assert out["applied"] is False and "`set_start`" in out["error"]
+    assert out["applied"] is False and "`set_seed`" in out["error"]
 
 
 def test_base_version_applies_edits_to_that_versions_rows(tmp_path):

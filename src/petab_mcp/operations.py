@@ -341,7 +341,7 @@ _ISSUE_HINTS = (
         "Condition table contains invalid targets",
         " — each named target is an input the condition table SETS per experiment, so the model "
         "must have it: read it as a parameter of that id in a rate law or an initial amount "
-        "(on the statements route, a row's binding `kf=\"k*dose\"` in `bindings`, or a start's "
+        "(on the statements route, a row's binding `kf=\"k*dose\"` in `bindings`, or a seed's "
         "amount).",
     ),
 )
@@ -732,12 +732,97 @@ def _problem_ids(session) -> dict[str, str]:
     }
 
 
+def seed_name(agent: dict[str, Any]) -> str:
+    """The name of a seed given none, from the form its ``agent`` (INDRA Agent JSON) writes: the
+    agent's own name for the agent alone, so it takes the ``<agent>_init`` a problem may ship a row
+    for, and after it a part per tag of its notation (:mod:`notation`), in the notation's order: a
+    modification as written, a mutation without ``mut:``, an activity's type, a location, a
+    partner's own name and form, each prefixed ``no`` where the form is not so (``-pY1068``,
+    ``kinase:off``, ``~B``). ``BRAF{mut:S151A}`` is ``BRAF_S151A``, ``EGFR{pY1068}`` is
+    ``EGFR_pY1068``, ``A{~B, @nucleus}`` is ``A_nucleus_noB``; each an SBML id, as its
+    ``<name>_init`` must be."""
+    from indra.assemblers.pysb.assembler import _n
+
+    from .notation import ABBREV
+
+    def no(on: bool | None) -> str:
+        return "" if on is None or on else "no"
+
+    parts = [agent["name"]]
+    parts += [
+        no(mod.get("is_modified")) + ABBREV.get(mod["mod_type"], mod["mod_type"])
+        + "".join(str(mod[k]) for k in ("residue", "position") if mod.get(k) is not None)
+        for mod in agent.get("mods") or []
+    ]
+    parts += [
+        "".join("_" if mut.get(k) is None else str(mut[k])
+                for k in ("residue_from", "position", "residue_to"))
+        for mut in agent.get("mutations") or []
+    ]
+    if agent.get("activity"):
+        parts.append(no(agent["activity"].get("is_active")) + agent["activity"]["activity_type"])
+    if agent.get("location"):
+        parts.append(agent["location"])
+    parts += [
+        no(bound.get("is_bound")) + seed_name(bound["agent"])
+        for bound in agent.get("bound_conditions") or []
+    ]
+    return _n("_".join(parts))
+
+
+def _form(value: Any) -> Any:
+    """INDRA Agent JSON ``value`` without its groundings or empty fields, at any depth: the form it
+    writes, for telling two seeds apart."""
+    if isinstance(value, dict):
+        return {
+            k: _form(v) for k, v in value.items()
+            if k not in ("db_refs", "sbo") and v not in (None, [], {})
+        }
+    if isinstance(value, list):
+        return [_form(v) for v in value]
+    return value
+
+
+def _seed_names(seeds: list[dict[str, Any]], entries: list[dict[str, Any]]) -> list[str]:
+    """Each seed's name, its own or :func:`seed_name`'s, for ``seeds`` with their agents as
+    INDRA JSON and ``entries`` as the caller wrote them. Two of one name are refused: as one
+    species seeded twice where both write one form, else with the second's entry, named apart."""
+    names = [seed.get("name") or seed_name(seed["agent"]) for seed in seeds]
+    for j, name in enumerate(names):
+        i = names.index(name)
+        if i == j:
+            continue
+        agent = entries[j]["agent"]
+        if _form(seeds[i]["agent"]) == _form(seeds[j]["agent"]):
+            raise OperationError(
+                f"make_changes: `seeds[{i}]` and `seeds[{j}]` both seed "
+                f"`{agent if isinstance(agent, str) else json.dumps(agent)}`, and one species "
+                "takes one seed: give it once. NOTHING was applied.",
+                cause="duplicate_seed",
+            )
+        own = seed_name(seeds[j]["agent"])
+        free, n = own, 2
+        while free in names:
+            free, n = f"{own}_{n}", n + 1
+        fix = json.dumps({"name": free, "agent": agent, "amount": entries[j]["amount"]})
+        default = (
+            " (a seed without `name` is named after its agent and form)"
+            if not (seeds[i].get("name") and seeds[j].get("name")) else ""
+        )
+        raise OperationError(
+            f"make_changes: `seeds[{j}]` is named `{name}`, as `seeds[{i}]` is{default}; each "
+            f"seed is `<name>_init`, so name the second apart: `{fix}`. NOTHING was applied.",
+            cause="duplicate_seed",
+        )
+    return names
+
+
 def statements_to_antimony(
     session,
     rows: list[dict[str, Any] | str],
     bindings: dict[str, dict[str, Any] | str],
     written: list[dict[str, Any]] | None = None,
-    starts: list[dict[str, Any]] | None = None,
+    seeds: list[dict[str, Any]] | None = None,
     readouts: dict[str, str] | None = None,
     amounts: dict[str, dict[str, Any]] | None = None,
     *,
@@ -749,12 +834,12 @@ def statements_to_antimony(
     notation, and ``bindings`` gives each its policy and parameter bindings by prefix
     (:func:`bound_rows`): the claim and the maths, given apart. ``written`` are mechanisms the agent
     writes in this call (:func:`mechanisms.written`), joining those it wrote earlier in the run.
-    ``starts`` (``{agent, amount, name?}``) declare what is present at the start, ``readouts`` (id
+    ``seeds`` (``{agent, amount, name?}``) declare what is present at t = 0, ``readouts`` (id
     to formula) the measurement mappings that are not one pattern's amount, over ``amounts`` (name
     to agent) (:func:`problem_sbml.to_antimony`). Returns the Antimony; the provenance record —
     ``rows``, each with the :class:`mechanisms.Emission` it produced and with its definition when
     the agent wrote its mechanism, their ``bindings``, ``mechanisms``, the ``written`` ones whether
-    a row uses them or not, ``starts``, and the ``network`` the rows expand to before and after
+    a row uses them or not, ``seeds``, and the ``network`` the rows expand to before and after
     the reduction (:mod:`reduction`); one warning naming the ungrounded agents, since grounding is
     optional and its absence is reported, never refused; and the run's written mechanisms, for
     the caller to keep once the change applies. ``seeded`` returns instead the PySB model the rows
@@ -801,9 +886,10 @@ def statements_to_antimony(
     def agent_json(value):
         return notation.parse_agent(value, groundings) if isinstance(value, str) else value
 
+    entries = list(seeds or [])
     try:
         rows = bound_rows(rows, bindings, library, groundings)
-        starts = [{**start, "agent": agent_json(start["agent"])} for start in starts or []]
+        seeds = [{**seed, "agent": agent_json(seed["agent"])} for seed in entries]
         given = {k: agent_json(v) for k, v in (amounts or {}).items()}
         read, amounts = _readout_amounts(readouts, given)
         amounts = {k: agent_json(v) for k, v in amounts.items()}
@@ -824,7 +910,9 @@ def statements_to_antimony(
         for row in rows
         for problem in problems(row["statement"])
     ]
-    unread += [p for i, s in enumerate(starts) for p in agent_problems(s["agent"], f"starts[{i}].agent")]
+    unread += [
+        p for i, s in enumerate(seeds) for p in agent_problems(s["agent"], f"seeds[{i}].agent")
+    ]
     unread += [p for name, a in amounts.items() for p in agent_problems(a, f"amounts.{name}")]
     if unread:
         raise OperationError(
@@ -866,9 +954,8 @@ def statements_to_antimony(
             cause="unreadable_statement",
         )
     declared = [
-        (start.get("name") or start["agent"]["name"], Agent._from_json(start["agent"]),
-         start["amount"])
-        for start in starts or []
+        (name, Agent._from_json(seed["agent"]), seed["amount"])
+        for name, seed in zip(_seed_names(seeds, entries), seeds)
     ]
     notes: list[str] = []
     network: dict[str, dict[str, int]] = {}
@@ -905,9 +992,9 @@ def statements_to_antimony(
         ],
         "bindings": {row["prefix"]: binding_of(row) for row in rows},
         "mechanisms": list(written or []),
-        "starts": [
-            {"name": name, "agent": start["agent"], "amount": start["amount"]}
-            for (name, _, _), start in zip(declared, starts or [])
+        "seeds": [
+            {"name": name, "agent": seed["agent"], "amount": seed["amount"]}
+            for (name, _, _), seed in zip(declared, seeds or [])
         ],
         # As written: the names `amount(...)` reads are made again from it, each build.
         "readouts": dict(readouts or {}),
@@ -1050,9 +1137,9 @@ def statements_model(session, record: dict) -> tuple[Any, list]:
     what its constraints are traced on (:mod:`tracing`). Built again from the record, as a
     ``base_version`` fork builds from one, with the written mechanisms it carries; BioNetGen does
     not run."""
-    rows, bindings, starts, readouts, amounts, _ = apply_statement_edits(record, [])
+    rows, bindings, seeds, readouts, amounts, _ = apply_statement_edits(record, [])
     return statements_to_antimony(
-        session, rows, bindings, record.get("mechanisms"), starts, readouts, amounts, seeded=True
+        session, rows, bindings, record.get("mechanisms"), seeds, readouts, amounts, seeded=True
     )
 
 
@@ -1287,16 +1374,16 @@ def _check_readouts_are_read(session, readouts) -> None:
 def apply_statement_edits(
     record: dict[str, Any], edits: list[dict[str, Any]]
 ) -> tuple[list, dict[str, Any], list[dict[str, Any]], dict[str, str], dict[str, Any], list[str]]:
-    """The whole set the ``statements`` route builds from — ``(rows, bindings, starts, readouts,
+    """The whole set the ``statements`` route builds from — ``(rows, bindings, seeds, readouts,
     amounts)`` — after ``edits`` change the stored statement ``record``
     (:func:`statements_to_antimony`'s), and one line per edit saying what it did.
 
     A row is keyed by its prefix, which names its parameters and keys its binding. `add_row` takes
     a row and its binding; `replace_row` rewrites a row's statement in its place, keeping with the
     prefix its parameters' ids and fitted values, and its binding unless it gives one; `rebind`
-    changes a row's binding alone, its statement as it was. A start is keyed by its name (the
-    agent's, by default), as :func:`statements_to_antimony` names it. Edits apply in order and an
-    edit that names nothing raises, so the batch applies whole or not at all.
+    changes a row's binding alone, its statement as it was. A seed is keyed by its name (by
+    default its form's, :func:`seed_name`), as :func:`statements_to_antimony` names it. Edits
+    apply in order and an edit that names nothing raises, so the batch applies whole or not at all.
     """
     from . import notation
 
@@ -1312,10 +1399,10 @@ def apply_statement_edits(
             return head if ":" in row and head.isidentifier() else None
         return row.get("prefix") if isinstance(row, dict) else None
 
-    def name_of(start: dict) -> str:
-        agent = start["agent"]
-        return start.get("name") or (
-            notation.parse_agent(agent)["name"] if isinstance(agent, str) else agent["name"]
+    def name_of(seed: dict) -> str:
+        agent = seed["agent"]
+        return seed.get("name") or seed_name(
+            notation.parse_agent(agent) if isinstance(agent, str) else agent
         )
 
     def no_row(prefix) -> str:
@@ -1326,7 +1413,7 @@ def apply_statement_edits(
         for row in record["rows"]
     }
     bindings = dict(record.get("bindings") or {})
-    starts = {s["name"]: dict(s) for s in record.get("starts") or []}
+    seeds = {s["name"]: dict(s) for s in record.get("seeds") or []}
     amounts = dict(record.get("amounts") or {})
     readouts = dict(record.get("readouts") or {})
     summary = []
@@ -1371,15 +1458,15 @@ def apply_statement_edits(
                 del rows[edit["prefix"]]
                 bindings.pop(edit["prefix"], None)
                 summary.append(f"remove_row {edit['prefix']}")
-            elif op == "set_start":
-                if not edit.get("start"):
-                    raise fail(i, edit, "`start` is the start, `{agent, amount, name?}`")
-                name = name_of(edit["start"])
-                starts[name] = {**edit["start"], "name": name}
-                summary.append(f"set_start {name}")
-            elif op in ("remove_start", "remove_amount"):
+            elif op == "set_seed":
+                if not edit.get("seed"):
+                    raise fail(i, edit, "`seed` is the seed, `{agent, amount, name?}`")
+                name = name_of(edit["seed"])
+                seeds[name] = {**edit["seed"], "name": name}
+                summary.append(f"set_seed {name}")
+            elif op in ("remove_seed", "remove_amount"):
                 table, key = {
-                    "remove_start": (starts, edit.get("name")),
+                    "remove_seed": (seeds, edit.get("name")),
                     "remove_amount": (amounts, edit.get("name")),
                 }[op]
                 if key not in table:
@@ -1408,7 +1495,7 @@ def apply_statement_edits(
             "was applied.",
             cause="statement_edit",
         )
-    return list(rows.values()), bindings, list(starts.values()), readouts, amounts, summary
+    return list(rows.values()), bindings, list(seeds.values()), readouts, amounts, summary
 
 
 # -- public operations: parameters (justification required, references optional) --

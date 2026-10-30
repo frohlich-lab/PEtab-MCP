@@ -3,7 +3,7 @@
 A regulator ("RAF phosphorylates MEK, inhibited by sorafenib") is a claim about the statement's own
 reaction: which way the rate at which it makes its products moves as the regulator rises. That rate
 is the row's net rate J (:func:`net_rate`), read off the model the rows build, BioNetGen's expansion
-of every row's rules from the start (:func:`problem_sbml.to_antimony`), on the reactions the row's
+of every row's rules from the seeds (:func:`problem_sbml.to_antimony`), on the reactions the row's
 own rules make. So it is the rate of the row as built: its own agents in the states the model gives
 them, its bindings, and every species a regulator's pattern reads, however the mechanism spells
 it. Two names for one agent, an agent stated twice, an agent that is also a role: each reads the
@@ -274,7 +274,7 @@ def net_rate(model: pysb.Model, rules, stmt, molecules: dict | None = None) -> N
     if unknown and (len(solution) != 1 or any(set(unknown) & v.free_symbols for v in solution[0])):
         raise MechanismError("its intermediates have no unique steady state")
     # Solved for regulators of any amount but 0, where a step only a regulator drives stops: an
-    # enzyme it activates for good keeps whatever form it starts in, and J is the start's.
+    # enzyme it activates for good keeps whatever form it starts in, and J is the seed's.
     if unknown and not _unique_without(
         [e.xreplace(coefficients) for e in equations], unknown, set(regulator_amounts.values())
     ):
@@ -850,7 +850,7 @@ def record(model: pysb.Model, rows: list[tuple], emissions, times=None) -> list:
                 raise MechanismError(
                     f"row {prefix!r}: its rate reads `{_said(s, stated)}`, but nothing in the model "
                     f"forms {_agent(stated, s)}, so the rate does not change with it. Add the "
-                    "statement that forms it, declare it present in `starts`, or leave it out of "
+                    "statement that forms it, declare it present in `seeds`, or leave it out of "
                     "this statement and its rate"
                 )
         signed, domain = _timed(rate, times)
