@@ -732,6 +732,91 @@ def _problem_ids(session) -> dict[str, str]:
     }
 
 
+def start_name(agent: dict[str, Any]) -> str:
+    """The name of a start given none, from the form its ``agent`` (INDRA Agent JSON) writes: the
+    agent's own name for the agent alone, so it takes the ``<agent>_init`` a problem may ship a row
+    for, and after it a part per tag of its notation (:mod:`notation`), in the notation's order: a
+    modification as written, a mutation without ``mut:``, an activity's type, a location, a
+    partner's own name and form, each prefixed ``no`` where the form is not so (``-pY1068``,
+    ``kinase:off``, ``~B``). ``BRAF{mut:S151A}`` is ``BRAF_S151A``, ``EGFR{pY1068}`` is
+    ``EGFR_pY1068``, ``A{~B, @nucleus}`` is ``A_nucleus_noB``; each an SBML id, as its
+    ``<name>_init`` must be."""
+    from indra.assemblers.pysb.assembler import _n
+
+    from .notation import ABBREV
+
+    def no(on: bool | None) -> str:
+        return "" if on is None or on else "no"
+
+    parts = [agent["name"]]
+    parts += [
+        no(mod.get("is_modified")) + ABBREV.get(mod["mod_type"], mod["mod_type"])
+        + "".join(str(mod[k]) for k in ("residue", "position") if mod.get(k) is not None)
+        for mod in agent.get("mods") or []
+    ]
+    parts += [
+        "".join("_" if mut.get(k) is None else str(mut[k])
+                for k in ("residue_from", "position", "residue_to"))
+        for mut in agent.get("mutations") or []
+    ]
+    if agent.get("activity"):
+        parts.append(no(agent["activity"].get("is_active")) + agent["activity"]["activity_type"])
+    if agent.get("location"):
+        parts.append(agent["location"])
+    parts += [
+        no(bound.get("is_bound")) + start_name(bound["agent"])
+        for bound in agent.get("bound_conditions") or []
+    ]
+    return _n("_".join(parts))
+
+
+def _form(value: Any) -> Any:
+    """INDRA Agent JSON ``value`` without its groundings or empty fields, at any depth: the form it
+    writes, for telling two starts apart."""
+    if isinstance(value, dict):
+        return {
+            k: _form(v) for k, v in value.items()
+            if k not in ("db_refs", "sbo") and v not in (None, [], {})
+        }
+    if isinstance(value, list):
+        return [_form(v) for v in value]
+    return value
+
+
+def _start_names(starts: list[dict[str, Any]], entries: list[dict[str, Any]]) -> list[str]:
+    """Each start's name, its own or :func:`start_name`'s, for ``starts`` with their agents as
+    INDRA JSON and ``entries`` as the caller wrote them. Two of one name are refused: as one
+    species started twice where both write one form, else with the second's entry, named apart."""
+    names = [start.get("name") or start_name(start["agent"]) for start in starts]
+    for j, name in enumerate(names):
+        i = names.index(name)
+        if i == j:
+            continue
+        agent = entries[j]["agent"]
+        if _form(starts[i]["agent"]) == _form(starts[j]["agent"]):
+            raise OperationError(
+                f"make_changes: `starts[{i}]` and `starts[{j}]` both start "
+                f"`{agent if isinstance(agent, str) else json.dumps(agent)}`, and one species "
+                "takes one start: give it once. NOTHING was applied.",
+                cause="duplicate_start",
+            )
+        own = start_name(starts[j]["agent"])
+        free, n = own, 2
+        while free in names:
+            free, n = f"{own}_{n}", n + 1
+        fix = json.dumps({"name": free, "agent": agent, "amount": entries[j]["amount"]})
+        default = (
+            " (a start without `name` is named after its agent and form)"
+            if not (starts[i].get("name") and starts[j].get("name")) else ""
+        )
+        raise OperationError(
+            f"make_changes: `starts[{j}]` is named `{name}`, as `starts[{i}]` is{default}; each "
+            f"start is `<name>_init`, so name the second apart: `{fix}`. NOTHING was applied.",
+            cause="duplicate_start",
+        )
+    return names
+
+
 def statements_to_antimony(
     session,
     rows: list[dict[str, Any] | str],
@@ -801,9 +886,10 @@ def statements_to_antimony(
     def agent_json(value):
         return notation.parse_agent(value, groundings) if isinstance(value, str) else value
 
+    entries = list(starts or [])
     try:
         rows = bound_rows(rows, bindings, library, groundings)
-        starts = [{**start, "agent": agent_json(start["agent"])} for start in starts or []]
+        starts = [{**start, "agent": agent_json(start["agent"])} for start in entries]
         given = {k: agent_json(v) for k, v in (amounts or {}).items()}
         read, amounts = _readout_amounts(readouts, given)
         amounts = {k: agent_json(v) for k, v in amounts.items()}
@@ -866,9 +952,8 @@ def statements_to_antimony(
             cause="unreadable_statement",
         )
     declared = [
-        (start.get("name") or start["agent"]["name"], Agent._from_json(start["agent"]),
-         start["amount"])
-        for start in starts or []
+        (name, Agent._from_json(start["agent"]), start["amount"])
+        for name, start in zip(_start_names(starts, entries), starts)
     ]
     notes: list[str] = []
     network: dict[str, dict[str, int]] = {}
@@ -1294,9 +1379,9 @@ def apply_statement_edits(
     A row is keyed by its prefix, which names its parameters and keys its binding. `add_row` takes
     a row and its binding; `replace_row` rewrites a row's statement in its place, keeping with the
     prefix its parameters' ids and fitted values, and its binding unless it gives one; `rebind`
-    changes a row's binding alone, its statement as it was. A start is keyed by its name (the
-    agent's, by default), as :func:`statements_to_antimony` names it. Edits apply in order and an
-    edit that names nothing raises, so the batch applies whole or not at all.
+    changes a row's binding alone, its statement as it was. A start is keyed by its name (by
+    default its form's, :func:`start_name`), as :func:`statements_to_antimony` names it. Edits
+    apply in order and an edit that names nothing raises, so the batch applies whole or not at all.
     """
     from . import notation
 
@@ -1314,8 +1399,8 @@ def apply_statement_edits(
 
     def name_of(start: dict) -> str:
         agent = start["agent"]
-        return start.get("name") or (
-            notation.parse_agent(agent)["name"] if isinstance(agent, str) else agent["name"]
+        return start.get("name") or start_name(
+            notation.parse_agent(agent) if isinstance(agent, str) else agent
         )
 
     def no_row(prefix) -> str:

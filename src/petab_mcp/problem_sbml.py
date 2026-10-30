@@ -111,7 +111,8 @@ def to_antimony(
     where its regulators are checked.
 
     ``starts`` (``(name, agent, amount)``: a number or an expression over parameter ids) declare
-    what is present at the start, as the module docstring sets out; each is ``<name>_init``.
+    what is present at the start, as the module docstring sets out; each is ``<name>_init``, so
+    no two share a name (:func:`operations.start_name`).
 
     ``formulas`` (readout id to an expression; ``make_changes``' ``readouts``) define each readout that is not one pattern's amount as an
     assignment rule over ``amounts`` (name to the agent whose amount it is), the entity map's ids
@@ -397,13 +398,6 @@ def _declare(
     """Start each declared species at ``<name>_init``, in the state its Agent writes; returns the
     monomers the declarations name, which :func:`_seed` then leaves alone."""
     named: set[str] = set()
-    names = [name for name, _, _ in starts]
-    repeated = sorted({n for n in names if names.count(n) > 1})
-    if repeated:
-        raise ModelUpdateError(
-            f"starts {repeated} are named twice; each start is `<name>_init`, so give a second "
-            "start of the same agent a name of its own"
-        )
     for name, agent, amount in starts:
         if _n(agent.name) in held:
             raise ModelUpdateError(
