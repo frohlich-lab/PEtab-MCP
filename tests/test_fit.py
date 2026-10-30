@@ -555,6 +555,26 @@ def test_a_restored_fit_reports_parameter_scales(fit_session):
     assert all(v in ("lin", "log", "log10") for v in scales.values())
 
 
+def test_a_version_keeps_its_fitted_values_in_its_parameter_table_only(fit_session):
+    """No other text file in the store names them, and a restore reads them back from the table.
+    The pyPESTO result stays beside them."""
+    import json
+
+    sess = fit_session
+    fitted = sess.fit(n_starts=2)["fitted_parameters"]
+    root, vdir = sess.provenance.root, sess.provenance.versions_dir / "v0"
+
+    for name in ("meta.json", "simulations.json"):
+        assert "fitted_parameters" not in json.loads((vdir / name).read_text())
+    assert all("fitted_parameters" not in event for event in sess.provenance.recent_events(0))
+    assert [p.name for p in root.rglob("*.tsv")] == ["parameters.tsv"]
+    assert (vdir / "pypesto_result.hdf5").is_file()
+
+    sess.simulation = None
+    sess.apply_version(0)
+    assert sess.simulation["fitted_parameters"] == pytest.approx(fitted)
+
+
 def test_a_log_normal_observable_keeps_the_fit_joint(session):
     """pyPESTO refuses a log-normal observable that HAS inner parameters, but scores one without
     them as normal on the linear scale, so it beside an inner-solvable sigma would come out wrong:

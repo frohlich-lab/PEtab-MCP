@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from petab.v2.C import (
+    ESTIMATE,
     EXPERIMENT_ID,
     LOWER_BOUND,
     NOISE_DISTRIBUTION,
@@ -284,6 +285,19 @@ def _fitted_values(x_names, x_values, free_indices, parameter_df) -> dict[str, f
                 unscale(float(x_values[i]), parameter_df.loc[name, PARAMETER_SCALE])
             )
     return fitted
+
+
+def table_fitted_values(parameter_df) -> dict[str, float]:
+    """``{estimated parameter id: nominalValue}``: a fit writes every estimated parameter's value
+    back into the table, so this is that fit's ``fitted_parameters``. A version keeps them by name
+    only in its ``parameters.tsv``, and a restore reads them back through here."""
+    if ESTIMATE not in parameter_df.columns:
+        return {}
+    return {
+        str(pid): float(parameter_df.loc[pid, NOMINAL_VALUE])
+        for pid, est in parameter_df[ESTIMATE].items()
+        if est
+    }
 
 
 def pypesto_problem(problem, importer_kwargs: dict[str, Any], *, validate: bool = True):
@@ -1345,7 +1359,7 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     n_converged = sum(1 for v in fvals if v <= nllh + 1e-3)
     log.info(
         "fit: done best_nllh=%s self_improvement=%s time=%.2fs starts=%d converged~%d "
-        "fval[min/max]=%s/%s fitted=%s",
+        "fval[min/max]=%s/%s",
         _fmt(nllh),
         _fmt(objective_before - nllh if objective_before is not None else None),
         duration,
@@ -1353,7 +1367,6 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
         n_converged,
         _fmt(min(fvals) if fvals else None),
         _fmt(max(fvals) if fvals else None),
-        {k: round(v, 6) for k, v in fitted.items()},
     )
     optimization = _optimization_payload(result)
     optimization["x_names"] = list(problem.x_names)  # column order for each start's "x"
@@ -1612,9 +1625,10 @@ def score_at_nominal(session, engine) -> dict[str, Any]:
     with session.lock:
         payload = fit_and_simulate(session, engine, do_fit=False, n_starts=0)
         pdf = session.problem.parameter_df
-        free = [str(pid) for pid in session.problem.x_free_ids if pid in pdf.index]
-        payload["fitted_parameters"] = {pid: float(pdf.loc[pid, NOMINAL_VALUE]) for pid in free}
-        payload["parameter_scales"] = {pid: str(pdf.loc[pid, PARAMETER_SCALE]) for pid in free}
+        payload["fitted_parameters"] = table_fitted_values(pdf)
+        payload["parameter_scales"] = {
+            pid: str(pdf.loc[pid, PARAMETER_SCALE]) for pid in payload["fitted_parameters"]
+        }
         payload["status"] = "scored_at_nominal"
         session.simulation = payload
         return payload
@@ -1965,8 +1979,8 @@ def _slim_fitted_parameters(session, out: dict) -> None:
     such problem an agent's history grew ~15.5k tokens/turn and three of nine sessions died on the
     context window before their fit budget. Most entries barely move between commits; the
     caller acts on the ones that DID. Full values stay one call away (`get_parameters` serves
-    nominalValue = the last fit) and the ARCHIVE keeps the complete dict per version
-    (meta.json), so only the push is slimmed — the pull is intact.
+    nominalValue = the last fit) and the ARCHIVE keeps the complete values per version
+    (parameters.tsv), so only the push is slimmed — the pull is intact.
 
     Semantics: `fitted_parameters_changed` = entries NEW or moved >1% (relative, absolute floor
     for zeros) vs the PREVIOUS version's stored fit; `n_parameters_unchanged` counts the rest.
@@ -1986,9 +2000,8 @@ def _slim_fitted_parameters(session, out: dict) -> None:
         base_v = meta.get("parent")
         if not isinstance(base_v, int) or base_v < 0:
             base_v = version - 1
-        prev = session.provenance.get_meta(base_v) or {}  # meta only: no 600kB sims read
-        before = prev.get("fitted_parameters")
-        if not isinstance(before, dict) or not before:
+        before = table_fitted_values(session.provenance.get_parameter_df(base_v))
+        if not before:
             return
 
         def _num(x):
@@ -2506,7 +2519,6 @@ def build_sim_payload_for_version(payload: dict[str, Any] | None) -> dict[str, A
         # is a statistic of the built objective at the optimum, which a later process (a resume, a
         # restore) cannot reproduce without a build. This blob is where a client's scoring reads it.
         "k_eff": payload.get("k_eff"),
-        "fitted_parameters": payload.get("fitted_parameters"),
         "records": payload.get("records"),
     }
     # The PARAMETER-GEOMETRY verdict of this fit (see identifiability.fit_diagnosis_block). Persisted
