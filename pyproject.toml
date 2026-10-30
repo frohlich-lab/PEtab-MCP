@@ -107,6 +107,11 @@ dependencies = [
     # `indra.statements.statements`, none of which is a public interface.
     # Revisit once INDRA exposes a stable policy-registration interface.
     "indra>=1.24,<1.25",
+    # Never imported here: INDRA requires boto3, whose botocore caps python-dateutil below 3.
+    # Offered dateutil 3.0, uv keeps it and backtracks to boto3 0.0.3, whose six 1.7.3 breaks
+    # `import dateutil.tz`, and pandas with it. pip happens to backtrack dateutil instead.
+    # Drop this once botocore allows dateutil 3.
+    "python-dateutil<3",
     # The model language the mechanisms build, and its SBML export (`problem_sbml`). A commit on
     # master, not a release: 1.17.0 caps sympy below 1.12, which amici needs, and the commit lifting
     # the cap (pysb#611) is unreleased. Revisit with the next release, as `pysb>=1.18,<2`: the
