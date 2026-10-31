@@ -122,10 +122,15 @@ to a scheduler in another process.
   storage.
 - **A task asks for what its server uses between fits:** compiling, scoring at nominal values, and
   the simulations for diagnostics and held-out scoring.
-  - Start at 4 CPUs and size memory from measured MaxRSS, as `make_sweep.py` does now.
+  - 8 CPUs, because compiling sets the size. The server compiles every new model version on the
+    task's own node, and `array_task.sh` already caps `AMICI_PARALLEL_COMPILE` at 8: compiling is
+    memory-bound per process. With fewer CPUs, every compile is slower than today's. The rest
+    (simulations, the agent's driver) is mostly single-threaded.
+  - Memory is sized again from measured MaxRSS, as `make_sweep.py` does now, without the 100 fit
+    processes.
   - `--cpus-per-task 100` and the pinned `PETAB_MCP_FIT_N_WORKERS` go.
 - **The QOS budget is split** between the pool's `--slurm-max-jobs` and `throttle ×
-  cpus-per-task`. With 2000 CPUs, for example: 15 worker jobs of 100 CPUs, plus 100 runs of 4.
+  cpus-per-task`. With 2000 CPUs, for example: 12 worker jobs of 100 CPUs, plus 100 runs of 8.
 
 ### gemot
 
@@ -208,3 +213,6 @@ PEtabAgentBench does not change.
    this.
 5. **Who stops the pool** when a sweep ends? Proposed: the operator, as with Phoenix. The
    alternative is `make_sweep.py`, with a dependent job.
+6. **Compile on the pool too?** A task would then need only 1–2 CPUs. But workers would then build
+   into the runs' build roots, which `_NoBuild` forbids today to keep builds and their races in
+   one place, the server. Proposed: not now.
