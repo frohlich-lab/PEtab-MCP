@@ -105,8 +105,17 @@ to a scheduler in another process.
   (`infrastructure._SERVER_REPORT`).
   - A worker refusing to build reports the same cause: it means the build root is not shared.
   - A batch that kills its worker (`KilledWorker`, usually memory) stays a failed fit of this run.
-- **Progress shows queueing.** `wait_for_fit` (#177, open) reports `starts_queued` beside
-  `starts_done`, and its remaining-time estimate counts only running time.
+- **Every call sends a heartbeat.** A middleware beside each tool call (as `_Cancellation` is)
+  sends an MCP progress notification every 30 s while the call runs, on the call's own progress
+  token (`Context.report_progress`).
+  - It reports the session's running change: starts done out of `n_starts`, and its phase
+    (`compiling`, `queued` with batches waiting for a worker, or `running`), with the seconds spent
+    in that phase.
+  - It runs on the event loop, so it holds no thread and changes no tool.
+  - A call without a progress token gets no heartbeat.
+- **Progress shows queueing.** The change's `Progress` (#177, open) gains the phase and
+  `starts_queued`. `wait_for_fit` reports both, and its remaining-time estimate counts only running
+  time.
 
 ### The sweep (gemot_iclr_2026 `slurm/`)
 
@@ -138,15 +147,27 @@ to a scheduler in another process.
 
 - **`runner/server.py` passes `PETAB_MCP_FIT_POOL`** from its environment to
   `create_server(cluster=...)` in the bootstrap, and records it in `fit_settings`.
-- **The fit budget stops assuming a private pool.** `fit_time_budget` sizes a fit as
-  `ceil(n_starts / FIT_N_WORKERS)` waves. On a pool, a fit's wall time includes waiting behind
-  other runs, which no formula bounds. So with a pool:
-  - the deepagents driver waits for fits as the CLI drivers do: `make_changes`, then `wait_for_fit`
-    (#177), instead of one call sized to the whole fit;
-  - the stall watchdog counts each `still_running` answer as progress. `_fit_wedged` stays, for a
-    server that stops answering.
+- **A call's timeout becomes an idle timeout.** `fit_time_budget` sizes a fit as
+  `ceil(n_starts / FIT_N_WORKERS)` waves of the per-start cap. On a pool, a fit's wall time also
+  includes waiting behind other runs, which no formula bounds. So the deepagents driver gives a call
+  no fixed timeout and lives on the server's heartbeats instead, with no polling:
+  - `_wrap_call_timeout` runs the call in an anyio cancel scope, and each heartbeat pushes the
+    scope's deadline out by a window of about 5 min. mcp 2.3 cannot do this itself, because its
+    request clock only pauses for human input. The adapter's own progress callback is still called;
+  - with no heartbeat inside the window, the call takes today's timeout path (`_fit_wedged`). The
+    server is not told to stop the fit (`_ToolCallsRunOn`);
+  - a change in `compiling` for longer than `FIT_COMPILE_MARGIN_S` counts as no heartbeat, so a hung
+    compile is still caught;
+  - the stall watchdog (`_STEP_STALL_TIMEOUT_S`) is fed by the same heartbeats;
+  - the run's wall-time budget is the hard ceiling. It leaves out the run's `queue_seconds`, so a run
+    that waited for the pool is not left less time to think.
 
-  Without a pool, budgets stay as today.
+  This applies to every call, with or without a pool. A read waiting behind a fit gets heartbeats
+  too. It replaces the fit arithmetic in `_wrap_call_timeout`: the waves × cap budget, and the
+  `in_flight` term that held reads queued behind fits.
+- **The CLI drivers keep `wait_for_fit`.** Codex and Claude Code cut a call at their own 600 s tool
+  timeout, whatever arrives on it. Their model polls `wait_for_fit` (#177), about once per 9 min of
+  queueing.
 - **A lost pool ends the run as `infrastructure_error: fit_pool`,** which blames the pool, not the
   run. `infrastructure.find` already reads whatever cause the server reports, so this needs no new
   code. `FIT_POOL` is added beside `DISK_FULL` only to give the cause a name. Every other error
@@ -184,18 +205,34 @@ to a scheduler in another process.
    (PEtab-MCP, and on NEMO with `FITPOOL_NODELIST`).
 7. **`queue_seconds`** equals the time a fit waited with nothing running, on a pool of one worker
    with two fits (PEtab-MCP).
-8. **A queued fit does not end a run.** gemot's watchdog sees `still_running` with every start
-   queued for longer than the old budget, and carries on (gemot).
-9. **On NEMO:** a smoke sweep of 4 runs on a pool of 2 worker jobs, and a `fitpool_ctl.sh stop`
+8. **Heartbeats name the phase.** A call through a fit gets heartbeats at the set interval:
+   `compiling`, then `queued` on a pool with no free worker, then `running`. A read waiting on the
+   fit's lock gets them too (PEtab-MCP).
+9. **A queued fit does not end a run.** A fit queued for longer than the old budget keeps its call
+   alive on heartbeats and returns its result. A server that stops sending heartbeats ends the call
+   within the window, through `_fit_wedged` (gemot).
+10. **On NEMO:** a smoke sweep of 4 runs on a pool of 2 worker jobs, and a `fitpool_ctl.sh stop`
    with nothing processing that cancels the worker jobs (gemot_iclr_2026).
 
 ## Rollout
 
-1. **PEtab-MCP:** `petab-mcp-pool`, `--fit-pool`, the version check, `queue_seconds`, the
-   `fit_pool` infrastructure error and `starts_queued`, plus deleting the HDF5 requirement and the
-   registry. These go in separate PRs of under about 500 lines each.
-2. **gemot:** the bootstrap, the fit budget and watchdog under a pool, `FIT_POOL` and
-   `queue_seconds`. Its pin moves to step 1, together with the edits #175 and #184 need.
+1. **PEtab-MCP:**
+   - `petab-mcp-pool` and `--fit-pool`;
+   - the version check;
+   - `queue_seconds`;
+   - the `fit_pool` infrastructure error;
+   - the heartbeat, and the phase and `starts_queued` in `Progress`;
+   - deleting the HDF5 requirement and the registry.
+
+   These go in separate PRs of under about 500 lines each. The heartbeat does not depend on the
+   pool, so it can land first.
+2. **gemot:**
+   - the bootstrap;
+   - the idle timeout in place of the fit budget, and the watchdog fed by heartbeats;
+   - the wall-time budget without `queue_seconds`;
+   - `FIT_POOL` and `queue_seconds`.
+
+   Its pin moves to step 1, together with the edits #175 and #184 need.
 3. **gemot_iclr_2026:** `fitpool_server.sh`, `fitpool_ctl.sh`, `make_sweep.py --fit-pool` and
    `array_task.sh`, and a bump of the gemot pin.
 4. **Issues:** #187 and gemot#89 are rewritten to this plan.
@@ -238,3 +275,9 @@ hosting several sessions would need first, if one is ever built.
    one place, the server. Proposed: not now.
 7. **Delete `registry.py`, or keep it** for a multi-session server later? It is imported nowhere,
    and git keeps it. Proposed: delete it.
+8. **Do the CLI drivers' clients extend a call on progress?** If Claude Code or Codex reset their
+   tool timeout on progress notifications, those arms need no `wait_for_fit` either. Check this
+   before relying on it.
+9. **Fix #180 first?** With heartbeats, a `get_progress` or `get_run_timing` behind a fit no longer
+   times out, but it still waits out the fit, queue included. If those reads stop taking the lock
+   the change holds, they answer at once.
