@@ -53,9 +53,15 @@ to a scheduler in another process.
 - **Every run keeps its own server,** with its own tools, arm, held-out set, constraints and
   per-start cap. The pool needs no per-session settings. Moving settings onto the session is wanted
   on its own terms, later (see "Later").
-- **Each run's build root is its own directory on shared storage.** Workers import a run's modules
-  from it by the same absolute path. No two servers write to one build root, so no lock has to hold
-  across nodes.
+- **One build root for the pool, on shared storage.** Runs of the same model compile it once, and
+  workers import every module from it by the same absolute path.
+  - The build root is already keyed by AMICI build and module hash, so a pool started from another
+    environment builds into folders of its own.
+  - The build lock (#20) keeps two builds of one structure apart. It must hold across nodes:
+    `flock` does on NFS (`filelock.py`), and it has to be checked on NEMO's mount.
+- **Compiling stays on the run's node,** not on the pool. `_NoBuild` keeps builds, and their races,
+  in the servers.
+- **The operator starts and stops the pool,** as with Phoenix. A sweep never stops it.
 - **The multi-session server is not built now,** because the pool does not need it.
 
 ## Design
@@ -91,6 +97,14 @@ to a scheduler in another process.
   - Starts are pickled, so a pool started from another environment fails every fit, with errors
     that are hard to read.
   - The check catches a pin bump made without restarting the pool.
+- **A build another run holds is waited for, not refused.** Today the second builder of a structure
+  fails at once with `ModelBuildBusyError` (`engine.build_lock`). Across runs that would be common,
+  because every run of a problem scores the same shipped model at startup, and agents converge on
+  the same structures.
+  - So the lock is taken blocking: the waiter then finds the module finished and imports it.
+  - If the holder died, `flock` was released with it, and the waiter removes the unfinished folder
+    and builds the module itself.
+  - The wait is the `compiling` phase of the heartbeat.
 - **Nothing per fit changes.**
   - Each batch carries its own per-start cap (`DaskEngine.batched`), so runs with different caps
     share one pool: 1200 s for lucarelli, 12000 s for isensee.
@@ -129,8 +143,8 @@ to a scheduler in another process.
 - **`make_sweep.py --fit-pool`** refuses to submit unless the address is published and reachable,
   as `--phoenix` does.
 - **`array_task.sh`** reads the address at task start, checks that it connects, and exports
-  `PETAB_MCP_FIT_POOL`. It gives the server a build root under the run's directory on shared
-  storage.
+  `PETAB_MCP_FIT_POOL`. It passes the pool's build root, `fitpool_data/build/`, as the server's
+  `--build-root`. The operator clears that folder; nothing else does.
 - **A task asks for what its server uses between fits:** compiling, scoring at nominal values, and
   the simulations for diagnostics and held-out scoring.
   - 8 CPUs, because compiling sets the size. The server compiles every new model version on the
@@ -184,7 +198,8 @@ to a scheduler in another process.
 
   pyPESTO's result file is written by h5py, which brings its own HDF5, so it is not affected.
 - **`registry.py`** goes, with `tests/test_registry.py`, `NoSessionBoundError` and
-  `SessionLockedError` (see open question 7). `filelock.py` stays, because the build lock uses it.
+  `SessionLockedError`. `filelock.py` stays, because the build lock uses it. Git keeps the registry
+  for a multi-session server later.
 - **`route()` (#17) and per-session log routing (#16, #18) stay.** They cost nothing, and removing
   them would touch every tool.
 
@@ -197,8 +212,9 @@ to a scheduler in another process.
    and each batch is stopped at its own server's cap (PEtab-MCP).
 3. **A version mismatch is refused** at startup, naming both versions. The test patches the
    versions the scheduler reports (PEtab-MCP).
-4. **Same model, two build roots.** A worker runs batches from two runs whose identical models were
-   compiled under two build roots, and both import (PEtab-MCP).
+4. **Two runs, one structure.** Two servers build the same model at once. One builds it, and the
+   other waits, then imports it. A waiter whose holder is killed builds the module itself
+   (PEtab-MCP; across two nodes on NEMO's mount).
 5. **A lost pool ends the fit as `fit_pool`.** Killing the scheduler mid-fit gives
    `infrastructure_error: fit_pool`, and a `KilledWorker` gives a failed fit (PEtab-MCP).
 6. **A restarted pool at the same address serves the next fit** without restarting the server
@@ -222,6 +238,7 @@ to a scheduler in another process.
    - `queue_seconds`;
    - the `fit_pool` infrastructure error;
    - the heartbeat, and the phase and `starts_queued` in `Progress`;
+   - the build lock waiting for another run's build;
    - deleting the HDF5 requirement and the registry.
 
    These go in separate PRs of under about 500 lines each. The heartbeat does not depend on the
@@ -233,9 +250,7 @@ to a scheduler in another process.
    - `FIT_POOL` and `queue_seconds`.
 
    Its pin moves to step 1, together with the edits #175 and #184 need.
-3. **gemot_iclr_2026:** `fitpool_server.sh`, `fitpool_ctl.sh`, `make_sweep.py --fit-pool` and
-   `array_task.sh`, and a bump of the gemot pin.
-4. **Issues:** #187 and gemot#89 are rewritten to this plan.
+3. **Issues:** #187 and gemot#89 are rewritten to this plan.
 
 PEtabAgentBench does not change.
 
@@ -255,29 +270,19 @@ hosting several sessions would need first, if one is ever built.
 
 ## Open questions
 
-1. **Share one build root across runs?** Runs of the same model would then compile it once. But the
-   build lock (#20) would have to hold across nodes, which needs `flock` to work on NEMO's shared
-   filesystem. Proposed: one build root per run first, then measure the duplicate compiles.
-2. **Worker lifetime.** Jobqueue's worker `--lifetime` must exceed the largest per-start cap plus
+1. **Worker lifetime.** Jobqueue's worker `--lifetime` must exceed the largest per-start cap plus
    `FIT_DEADLINE_MARGIN_S` (isensee: 12000 s), or a worker retires in the middle of a batch. Check
    what dask does with a batch running on a retiring worker, and set the lifetime from the sweep's
    largest cap.
-3. **Worker memory.** A worker keeps every model module it has imported, across problems, and only
+2. **Worker memory.** A worker keeps every model module it has imported, across problems, and only
    its lifetime bounds that. Is one memory size per worker enough when isensee and small problems
    share workers, or does a sweep with isensee want a pool of its own?
-4. **Reconnecting.** Does `distributed.Client` reconnect by itself to a scheduler restarted at the
+3. **Reconnecting.** Does `distributed.Client` reconnect by itself to a scheduler restarted at the
    same address, or does `DaskEngine` need a new client after a `fit_pool` error? Check 6 answers
    this.
-5. **Who stops the pool** when a sweep ends? Proposed: the operator, as with Phoenix. The
-   alternative is `make_sweep.py`, with a dependent job.
-6. **Compile on the pool too?** A task would then need only 1–2 CPUs. But workers would then build
-   into the runs' build roots, which `_NoBuild` forbids today to keep builds and their races in
-   one place, the server. Proposed: not now.
-7. **Delete `registry.py`, or keep it** for a multi-session server later? It is imported nowhere,
-   and git keeps it. Proposed: delete it.
-8. **Do the CLI drivers' clients extend a call on progress?** If Claude Code or Codex reset their
+4. **Do the CLI drivers' clients extend a call on progress?** If Claude Code or Codex reset their
    tool timeout on progress notifications, those arms need no `wait_for_fit` either. Check this
    before relying on it.
-9. **Fix #180 first?** With heartbeats, a `get_progress` or `get_run_timing` behind a fit no longer
+5. **Fix #180 first?** With heartbeats, a `get_progress` or `get_run_timing` behind a fit no longer
    times out, but it still waits out the fit, queue included. If those reads stop taking the lock
    the change holds, they answer at once.
