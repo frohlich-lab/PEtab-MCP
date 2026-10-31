@@ -21,8 +21,10 @@ that this works on FastMCP 4.1.4, but it costs:
 - **A tool surface per connection.** The arms change the schema of `make_changes`, and constraints
   and held-out data add tools. So each session needs a FastMCP of its own, and the server forwards
   each connection's calls to it.
-- **Per-session settings.** Every setting that is per process today must become per session: the
-  per-start cap (#188), and any setting added later.
+- **Every per-session setting first.** Every setting that is per process today would have to become
+  per session before one server could host two runs: the per-start cap (#188), and any setting
+  added later. Per-session settings are wanted anyway (see "Later"), but sharing a pool should not
+  have to wait for all of them.
 - **Session plumbing:** `open_session`, `resume_session` and a durable `SessionSpec`.
 - **An older protocol.** Routing by connection needs the handshake protocol (2025-11-25).
   FastMCP's own `Client` defaults to 2026-07-28, in which every call is a new connection.
@@ -41,20 +43,20 @@ to a scheduler in another process.
   - It publishes its address to a file, which `make_sweep.py` and `array_task.sh` read, as they
     read `phoenix_ctl.sh`'s `endpoint.txt` for traces.
 - **PEtab-MCP ships the pool's process,** `petab-mcp-pool`. The contract with the workers is the
-  server's: no builds on a worker, AMICI with HDF5, the same environment. So the code that sets up
-  the workers lives beside `DaskEngine`.
+  server's: no builds on a worker, and the same environment. So the code that sets up the workers
+  lives beside `DaskEngine`.
 - **A server joins a pool by address:** `petab-mcp --fit-pool tcp://node:port` (or
   `PETAB_MCP_FIT_POOL`), or `create_server(cluster="tcp://node:port")`.
 - **`--slurm-max-jobs` and `--slurm-min-jobs` move from `petab-mcp` to `petab-mcp-pool`.** A server
   never owns a cluster, so there is one way to fit on SLURM, not two. A single run that wants SLURM
   starts a pool.
-- **Every run keeps its own server.** Its tools, arm, held-out set, constraints and per-start cap
-  stay process settings, as today.
+- **Every run keeps its own server,** with its own tools, arm, held-out set, constraints and
+  per-start cap. The pool needs no per-session settings. Moving settings onto the session is wanted
+  on its own terms, later (see "Later").
 - **Each run's build root is its own directory on shared storage.** Workers import a run's modules
   from it by the same absolute path. No two servers write to one build root, so no lock has to hold
   across nodes.
-- **The multi-session server is dropped.** `registry.py` and its errors go, and #188 and the
-  shared-server branch are no longer needed.
+- **The multi-session server is not built now,** because the pool does not need it.
 
 ## Design
 
@@ -153,13 +155,17 @@ to a scheduler in another process.
 
 ### What goes
 
-- `src/petab_mcp/registry.py`, `tests/test_registry.py`, `NoSessionBoundError` and
-  `SessionLockedError`. `filelock.py` stays, because the build lock uses it.
-- `route()` (#17) and per-session log routing (#16, #18) stay. They cost nothing, and removing them
-  would touch every tool.
-- #188 (the per-start cap per session) is not needed. Proposed: close it unmerged.
-- The shared-server branch `claude/187-shared-server-f5dbde` (local only) is not needed. Proposed:
-  discard it.
+- **AMICI's HDF5 requirement.** AMICI 1.2.0 pickles a solver as a dict of its settings
+  (`restore_solver`), not through HDF5. So these go:
+  - `DaskEngine`'s `hdf5_enabled` refusal and its test;
+  - the sentence about it in `create_server`'s docstring;
+  - CI's `libhdf5-dev` install, and the `hdf5` prefix on its cache key.
+
+  pyPESTO's result file is written by h5py, which brings its own HDF5, so it is not affected.
+- **`registry.py`** goes, with `tests/test_registry.py`, `NoSessionBoundError` and
+  `SessionLockedError` (see open question 7). `filelock.py` stays, because the build lock uses it.
+- **`route()` (#17) and per-session log routing (#16, #18) stay.** They cost nothing, and removing
+  them would touch every tool.
 
 ## Checks
 
@@ -186,8 +192,8 @@ to a scheduler in another process.
 ## Rollout
 
 1. **PEtab-MCP:** `petab-mcp-pool`, `--fit-pool`, the version check, `queue_seconds`, the
-   `fit_pool` infrastructure error and `starts_queued`, plus deleting the registry. These go in
-   separate PRs of under about 500 lines each.
+   `fit_pool` infrastructure error and `starts_queued`, plus deleting the HDF5 requirement and the
+   registry. These go in separate PRs of under about 500 lines each.
 2. **gemot:** the bootstrap, the fit budget and watchdog under a pool, `FIT_POOL` and
    `queue_seconds`. Its pin moves to step 1, together with the edits #175 and #184 need.
 3. **gemot_iclr_2026:** `fitpool_server.sh`, `fitpool_ctl.sh`, `make_sweep.py --fit-pool` and
@@ -195,6 +201,20 @@ to a scheduler in another process.
 4. **Issues:** #187 and gemot#89 are rewritten to this plan.
 
 PEtabAgentBench does not change.
+
+## Later: per-session settings
+
+The pool does not need them, but per-session settings are wanted. A setting should belong to the
+session that uses it, not be read from the environment once, at import. That is also what a server
+hosting several sessions would need first, if one is ever built.
+
+- **#188** moves the per-start cap onto the session. It is independent of this plan, and is
+  reviewed and merged on its own.
+- **Next candidates:** the rest of what a sweep sets per problem through the environment (the
+  fit settings `fit_budget.server_fit_settings` records), and `reference_mode`. The arm's files
+  (`entity_map`, `constraints`) already belong to the session.
+- **The shared-server branch** `claude/187-shared-server-f5dbde` (local only) adds these fields to
+  `SessionSpec`. It is kept, unpushed, as a reference.
 
 ## Open questions
 
@@ -216,3 +236,5 @@ PEtabAgentBench does not change.
 6. **Compile on the pool too?** A task would then need only 1–2 CPUs. But workers would then build
    into the runs' build roots, which `_NoBuild` forbids today to keep builds and their races in
    one place, the server. Proposed: not now.
+7. **Delete `registry.py`, or keep it** for a multi-session server later? It is imported nowhere,
+   and git keeps it. Proposed: delete it.
