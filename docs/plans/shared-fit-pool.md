@@ -159,8 +159,8 @@ to a scheduler in another process.
   - a change in `compiling` for longer than `FIT_COMPILE_MARGIN_S` counts as no heartbeat, so a hung
     compile is still caught;
   - the stall watchdog (`_STEP_STALL_TIMEOUT_S`) is fed by the same heartbeats;
-  - the run's wall-time budget is the hard ceiling. It leaves out the run's `queue_seconds`, so a run
-    that waited for the pool is not left less time to think.
+  - the run's wall-time budget is the hard ceiling. It leaves out the run's `queue_seconds`, so a
+    run that waited for the pool is not left less time to think.
 
   This applies to every call, with or without a pool. A read waiting behind a fit gets heartbeats
   too. It replaces the fit arithmetic in `_wrap_call_timeout`: the waves × cap budget, and the
