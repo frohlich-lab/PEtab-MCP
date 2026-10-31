@@ -94,9 +94,9 @@ jobqueue:
 ```
 
 A dask task runs as many starts as fill `PETAB_MCP_FIT_TASK_SECONDS` (default 270) at the median
-start time of the session's previous fit, or at the per-start cap `PETAB_MCP_FIT_PER_START_TIMEOUT`
-without one; `PETAB_MCP_FIT_STARTS_PER_TASK` fixes the number instead. A killed server's workers
-exit on their own after jobqueue's `death-timeout` (60 s).
+start time of the session's previous fit, or at its per-start cap (by default
+`PETAB_MCP_FIT_PER_START_TIMEOUT`) without one; `PETAB_MCP_FIT_STARTS_PER_TASK` fixes the number
+instead. A killed server's workers exit on their own after jobqueue's `death-timeout` (60 s).
 
 ## Tools
 
@@ -119,8 +119,9 @@ undone, and a fit it ends does not count against the identical-fit guard. A clie
 run on it and resubmit once the disk has room
 ([`errors.InfrastructureError`](src/petab_mcp/errors.py)).
 
-A start still running `PETAB_MCP_FIT_PER_START_TIMEOUT` + 600 s after it could have begun (stuck
-inside one simulation, where Fides never checks its cap) is stopped and scored as a failed start;
+A start still running its session's per-start cap (by default `PETAB_MCP_FIT_PER_START_TIMEOUT`)
+plus 600 s after it could have begun (stuck inside one simulation, where Fides never checks its
+cap) is stopped and scored as a failed start;
 the fit is scored from the rest and reports `n_starts_killed`. A stopped warm start from the
 parent's optimum is rerun once. A fit whose starts stop finishing ends the same way as a full disk,
 as `infrastructure_error: fit_wedged: `, with its workers stopped and nothing scored: when no

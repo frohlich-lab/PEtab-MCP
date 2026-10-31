@@ -258,7 +258,6 @@ def test_the_batch_size_fills_FIT_TASK_SECONDS_unless_FIT_STARTS_PER_TASK_is_set
     per-start cap without one, at least one and never more than it has. FIT_STARTS_PER_TASK, when
     set, replaces all of that."""
     monkeypatch.setattr(fitting, "FIT_TASK_SECONDS", 270.0)
-    monkeypatch.setattr(fitting, "FIT_PER_START_TIMEOUT_S", 60.0)
     monkeypatch.setattr(fitting, "FIT_STARTS_PER_TASK", 0)
     shared = SimpleNamespace(batched=lambda k, *_: k)  # hands back the batch size it is given
 
@@ -266,7 +265,7 @@ def test_the_batch_size_fills_FIT_TASK_SECONDS_unless_FIT_STARTS_PER_TASK_is_set
         previous = None
         if median is not None:  # the None is a start with no finite time
             previous = {"starts": [{"time": t} for t in (None, median / 3, median, 10 * median)]}
-        return fitting._fit_engine(n_starts, shared, previous)
+        return fitting._fit_engine(n_starts, 60.0, shared, previous)
 
     assert [k(20, median) for median in (30.0, 100.0, 400.0, None)] == [9, 2, 1, 4]
     assert k(4, 30.0) == 4

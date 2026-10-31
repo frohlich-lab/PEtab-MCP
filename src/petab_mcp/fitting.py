@@ -93,9 +93,10 @@ def _env_int(name: str, default: int) -> int:
     return val if val >= 1 else default
 
 
-# Per-start wall-clock cap for a single Fides optimization start (seconds; env
-# PETAB_MCP_FIT_PER_START_TIMEOUT, default 180). Fides defaults MAXTIME to inf, so one stiff start
-# can run unbounded and out-idle the MCP transport, which a client then mistakes for a hang.
+# Default per-start wall-clock cap for a single Fides optimization start (seconds; env
+# PETAB_MCP_FIT_PER_START_TIMEOUT, default 180): every session's own cap,
+# `PetabSession.fit_per_start_timeout`, starts here. Fides defaults MAXTIME to inf, so one stiff
+# start can run unbounded and out-idle the MCP transport, which a client then mistakes for a hang.
 # Bounding each start makes a full multistart fit's worst-case duration finite and predictable, so
 # a client can size its read timeout and stall watchdog to it; one that exports its own values onto
 # this server's environment has both sides use the SAME cap + worker count. Kept generous — Fides
@@ -130,7 +131,7 @@ FIT_N_WORKERS = _env_int("PETAB_MCP_FIT_N_WORKERS", _default_fit_workers())
 # Expected seconds of starts one dask task runs back to back (env PETAB_MCP_FIT_TASK_SECONDS,
 # default 270 = 4.5 min): long against a task's scheduling cost, short enough that concurrent fits
 # still take turns every few minutes. A start is expected to take the previous fit's median, or the
-# per-start cap FIT_PER_START_TIMEOUT_S without one (see _starts_per_task).
+# session's per-start cap without one (see _starts_per_task).
 FIT_TASK_SECONDS = _env_float("PETAB_MCP_FIT_TASK_SECONDS", 270.0)
 
 # A fixed number of starts per dask task (env PETAB_MCP_FIT_STARTS_PER_TASK); takes precedence over
@@ -211,28 +212,31 @@ WARM_START_FRACTION = 0.5
 WARM_START_JITTER = 0.05
 
 
-def _fides_maxtime_options() -> dict[str, Any]:
-    """``{fides.Options.MAXTIME: FIT_PER_START_TIMEOUT_S}`` when this ``fides`` exposes ``MAXTIME``,
+def _fides_maxtime_options(per_start_timeout: float) -> dict[str, Any]:
+    """``{fides.Options.MAXTIME: per_start_timeout}`` when this ``fides`` exposes ``MAXTIME``,
     else ``{}`` (older/absent fides just runs uncapped)."""
     try:
         import fides
 
-        return {fides.Options.MAXTIME: FIT_PER_START_TIMEOUT_S}
+        return {fides.Options.MAXTIME: per_start_timeout}
     except Exception:  # noqa: BLE001 - no fides / no MAXTIME on this version: run uncapped
         return {}
 
 
-def _starts_per_task(n_starts: int, previous: dict[str, Any] | None) -> int:
+def _starts_per_task(
+    n_starts: int, previous: dict[str, Any] | None, per_start_timeout: float
+) -> int:
     """How many starts one dask task runs, from 1 to ``n_starts``: ``FIT_STARTS_PER_TASK`` when set,
     else as many as fill ``FIT_TASK_SECONDS`` at the median start time of ``previous``, the
-    session's last fit (``session.optimization``), or at ``FIT_PER_START_TIMEOUT_S`` without one."""
+    session's last fit (``session.optimization``), or at ``per_start_timeout`` without one."""
     times = [s["time"] for s in (previous or {}).get("starts") or [] if s.get("time")]
-    expected = statistics.median(times) if times else FIT_PER_START_TIMEOUT_S
+    expected = statistics.median(times) if times else per_start_timeout
     return max(1, int(min(n_starts, FIT_STARTS_PER_TASK or FIT_TASK_SECONDS // expected)))
 
 
 def _fit_engine(
     n_starts: int,
+    per_start_timeout: float,
     shared=None,
     previous: dict[str, Any] | None = None,
     rerun: frozenset[str] = frozenset(),
@@ -241,16 +245,17 @@ def _fit_engine(
     :class:`~petab_mcp.dask_engine.DaskEngine`, when it has one, batched by :func:`_starts_per_task`;
     otherwise up to ``FIT_N_WORKERS`` local worker processes (never more than there are starts), or
     ``None`` (pyPESTO's sequential ``SingleCoreEngine``) for a single effective worker. Both pools
-    stop a start past its cap, rerunning the starts in ``rerun`` once, and end a fit whose starts
-    stop finishing (:mod:`petab_mcp.multistart`)."""
+    stop a start past ``per_start_timeout``, rerunning the starts in ``rerun`` once, and end a fit
+    whose starts stop finishing (:mod:`petab_mcp.multistart`)."""
     if shared is not None:
-        return shared.batched(_starts_per_task(n_starts, previous), FIT_PER_START_TIMEOUT_S, rerun)
+        k = _starts_per_task(n_starts, previous, per_start_timeout)
+        return shared.batched(k, per_start_timeout, rerun)
     workers = max(1, min(FIT_N_WORKERS, int(n_starts)))
     if workers < 2:
         return None
     from .multistart import ProcessEngine
 
-    return ProcessEngine(workers, FIT_PER_START_TIMEOUT_S, rerun)
+    return ProcessEngine(workers, per_start_timeout, rerun)
 
 
 def _fmt(x: Any) -> str:
@@ -1173,6 +1178,7 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     # there instead.
     pp_engine = _fit_engine(
         n_starts,
+        session.fit_per_start_timeout,
         engine.fit_engine,
         session.optimization,
         parent_starts(problem, guesses, session.optimization),
@@ -1192,8 +1198,8 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     )
     # Fides: a Newton trust-region optimizer that exploits AMICI's sensitivities; more
     # robust than the default L-BFGS-B on stiff ODE likelihoods. MAXTIME caps each start's
-    # wall time (FIT_PER_START_TIMEOUT_S) so a stiff start can't run unbounded and hang the
-    # transport; Fides returns that start's best-so-far when the cap is hit.
+    # wall time (the session's fit_per_start_timeout) so a stiff start can't run unbounded and
+    # hang the transport; Fides returns that start's best-so-far when the cap is hit.
     #
     # WARNING, not INFO. At INFO fides emits one line PER ITERATION PER START: a single
     # session wrote a 1.85 GB server.log, and ten concurrent sessions put ~18 GB on a SHARED
@@ -1223,7 +1229,7 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     # line, n_starts times per fit. `get_fitting_log` is likewise unaffected: it reads the
     # in-memory HistoryOptions(trace_record=True) trace, not this stream.
     optimizer = pypesto.optimize.FidesOptimizer(
-        verbose=logging.ERROR, options=_fides_maxtime_options()
+        verbose=logging.ERROR, options=_fides_maxtime_options(session.fit_per_start_timeout)
     )
     # Record the per-iteration optimization history in memory (no trace files) so the
     # traces can be exposed as SQL tables. Older pyPESTO without HistoryOptions just runs
