@@ -367,10 +367,10 @@ class PetabSession:
 
         # De-duplication memory for identical fits (see :mod:`dedup` and issue #59): how many times
         # each *identical* estimation problem has been handed to `fit` this session, keyed by
-        # structure fingerprint + estimation setup (see `dedup.reauthor_key`) so that only truly
-        # identical problems — not the same structure with changed bounds/scale — count toward
-        # the loop guard. A within-session counter (a fresh session legitimately starts over),
-        # not persisted.
+        # structure fingerprint + estimation setup + starts (see `dedup.reauthor_key`) so that only
+        # truly identical problems — not the same structure with changed bounds/scale or more
+        # starts — count toward the loop guard. A within-session counter (a fresh session
+        # legitimately starts over), not persisted.
         self._fit_attempts: dict[str, int] = {}
         # The edit and lint warnings the last committed `make_changes` result carried, each with
         # the version whose result first carried it in full (see `operations.bundle_result`).
@@ -1483,7 +1483,7 @@ class PetabSession:
         from .parameters import structure_fingerprint
 
         structure_hash = structure_fingerprint(self.model.sbml_model, self.problem.parameter_df)
-        fit_key = D.reauthor_key(structure_hash, self.problem.parameter_df)
+        fit_key = D.reauthor_key(structure_hash, self.problem.parameter_df, starts)
         decision = D.decide(
             structure_hash=structure_hash,
             setup=D.estimation_setup_signature(self.problem.parameter_df),
@@ -1531,10 +1531,8 @@ class PetabSession:
         current fitted version the refit is skipped and the stored metrics are returned
         (``committed: false, no_change: true``); a model identical to an EARLIER fitted version is
         refused, naming it, and HEAD stays put — in both cases unless this fit runs MORE
-        multistarts than that version did, which is a more thorough search and does run; a
-        structure revisited under another estimation setup warns that it is already committed and
-        scored; and the same structure fitted too many times is refused, to break an unproductive
-        loop.
+        multistarts than that version did, which is a more thorough search and does run; and the
+        same structure fitted too many times is refused, to break an unproductive loop.
         """
         from . import fitting, identifiability
         from .operations import _compile_fit_failure_message

@@ -293,7 +293,7 @@ def test_an_explicit_bound_in_the_fork_call_wins_over_the_restored_one(served):
     name is the one that survives.
 
     Implemented by EXCLUSION, not by overwrite: this call's `parameters` run first, against the
-    pristine table, and the restore then skips the search space of any id they claimed. That order
+    pristine table, and the restore then skips the columns they set. That order
     is load-bearing — the widening backstops compare against the PRE-EDIT bound, so restoring
     first would hand them v0's box as the baseline and let a third widening past the guard."""
     mcp, prov = served
@@ -321,6 +321,40 @@ def test_an_explicit_bound_in_the_fork_call_wins_over_the_restored_one(served):
     with open(prov / "versions" / f"v{fork['version']}" / "parameters.tsv") as fh:
         row = next(r for r in _csv.DictReader(fh, delimiter="\t") if r["parameterId"] == "k1")
     assert (float(row["lowerBound"]), float(row["upperBound"])) == (0.02, 20.0)
+
+
+def test_a_refit_keeps_the_base_versions_columns_its_parameters_do_not_set(served):
+    """REGRESSION (PEtab-MCP#202 review): naming a parameter withheld its WHOLE restored search
+    space, so refitting v0 with new bounds kept HEAD's scale, and with a new scale kept HEAD's box."""
+    import csv as _csv
+
+    mcp, prov = served
+
+    def k1(version):
+        with open(prov / "versions" / f"v{version}" / "parameters.tsv") as fh:
+            row = next(r for r in _csv.DictReader(fh, delimiter="\t") if r["parameterId"] == "k1")
+        return row["parameterScale"], float(row["lowerBound"]), float(row["upperBound"])
+
+    edit = [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*1.0)*A"}]
+    v0 = _call(mcp, "make_changes", {"justification": "v0", "model_edits": edit})["version"]
+    head = {"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 10.0, "scale": "lin"}
+    _call(mcp, "make_changes", {"justification": "HEAD's k1", "parameters": [head]})
+
+    def refit(**entry):
+        out = _call(
+            mcp,
+            "make_changes",
+            {
+                "justification": "refit v0",
+                "base_version": v0,
+                "parameters": [{"parameter_id": "k1", **entry}],
+            },
+        )
+        assert out.get("committed") is True, out
+        return k1(out["version"])
+
+    assert refit(lower_bound=1e-3, upper_bound=1e3) == ("log10", 1e-3, 1e3)
+    assert refit(scale="log") == ("log", 1e-4, 100.0)
 
 
 def test_a_fork_resumes_from_its_BASE_optimum_not_the_abandoned_branchs(served):

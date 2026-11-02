@@ -267,14 +267,62 @@ def test_a_parameters_only_call_fits_too(tmp_path):
 
 
 def test_a_call_that_changes_nothing_is_rejected_before_it_fits(tmp_path):
-    """`antimony`, `model_edits` and `parameters` are each optional, but not all three: with none
-    there is nothing to score, and the call would still spend a multistart fit."""
+    """`antimony`, `model_edits`, `parameters` and `n_starts` are each optional, but not all four:
+    with none there is nothing to score, and the call would still spend a multistart fit."""
     mcp = _server(tmp_path, auto_fit=True)
     res = _call(mcp, "make_changes", {"justification": "nothing to do"})
     assert res["applied"] is False
-    assert all(arg in res["error"] for arg in ("model_edits", "antimony", "parameters"))
+    assert all(arg in res["error"] for arg in ("model_edits", "antimony", "parameters", "n_starts"))
     assert "fit" not in res and "committed" not in res
     assert _head(mcp)["current_version"] == -1
+
+
+# -- refits (PEtab-MCP#194) ------------------------------------------------------
+def _meta(tmp_path, version):
+    return json.loads((tmp_path / "prov" / "versions" / f"v{version}" / "meta.json").read_text())
+
+
+def test_base_version_with_no_edit_refits_that_version(tmp_path):
+    """REGRESSION: `base_version` without an edit was refused, so agents carried a bound change on
+    a throw-away edit, and some of those dropped inputs or terms (bachmann, fujita). With new
+    bounds it refits that version as a new one of its structure, descending from it; with no new
+    bounds and no more starts it is that version, and alone it is nothing to do."""
+    mcp = _server(tmp_path, auto_fit=True)
+    _call(mcp, "make_changes", {"antimony": _antimony(), "justification": "v0", "n_starts": 2})
+    extra = {"antimony": _antimony("r3: A => ; k3 * A;"), "justification": "v1", "n_starts": 2}
+    assert _call(mcp, "make_changes", extra)["version"] == 1
+
+    same = {"justification": "v0 again", "base_version": 0, "n_starts": 2}
+    out = _call(mcp, "make_changes", same)
+    assert out["applied"] is False and "identical to v0" in out["error"], out["message"]
+    out = _call(mcp, "make_changes", {"justification": "v0 alone", "base_version": 0})
+    assert out["applied"] is False and "nothing to do" in out["error"]
+    assert _head(mcp)["current_version"] == 1
+
+    wider = [{"parameter_id": "k1", "lower_bound": 1e-4, "upper_bound": 1e4}]
+    out = _call(mcp, "make_changes", {**same, "parameters": wider})
+    assert out["committed"] is True and out["version"] == 2, out["message"]
+    assert _meta(tmp_path, 2)["parent"] == 0
+    assert _meta(tmp_path, 2)["structure_hash"] == _meta(tmp_path, 0)["structure_hash"]
+
+
+def test_a_refit_of_the_current_model_is_ranked_like_any_fit(tmp_path):
+    """A refit that clears the new-best bar becomes `best_version`. `n_starts` alone refits too,
+    and the same search again is the version it repeats."""
+    mcp = _server(tmp_path, auto_fit=True)
+
+    def k1(lb, ub, **call):
+        box = [{"parameter_id": "k1", "lower_bound": lb, "upper_bound": ub}]
+        return _call(mcp, "make_changes", {"parameters": box, "n_starts": 2, **call})
+
+    k1(1e-3, 2e-3, antimony=_antimony(), justification="k1 boxed in")  # the data need k1 ~ 0.5
+    out = k1(1e-3, 1e3, justification="let k1 go")
+    assert out["committed"] is True and out["improvement"]["is_new_best"] is True
+    assert out["progress"]["best_version"] == 1
+    out = _call(mcp, "make_changes", {"justification": "harder", "n_starts": 3})
+    assert out["committed"] is True and out["version"] == 2 and out["n_starts"] == 3
+    out = _call(mcp, "make_changes", {"justification": "as hard again", "n_starts": 3})
+    assert out["no_change"] is True and out["version"] == 2
 
 
 def test_dedup_skip_reports_no_change(tmp_path):
@@ -391,7 +439,7 @@ def test_a_revert_to_an_earlier_model_is_refused_as_that_version(tmp_path):
     """REGRESSION: with rates invisible to the fingerprint, going back to an earlier rate was
     refused as a duplicate of HEAD, which holds a different one. The version it returns to stands
     for it, so it is refused naming that version and HEAD stays put; under new bounds it is a new
-    search, fitted and named as a revisit."""
+    search, fitted as a new version."""
     mcp = _server(tmp_path, auto_fit=True)
     _call(mcp, "make_changes", {"antimony": _ruled("k1"), "justification": "v0", "n_starts": 2})
     _call(
@@ -407,7 +455,6 @@ def test_a_revert_to_an_earlier_model_is_refused_as_that_version(tmp_path):
     bounds = [{"parameter_id": "k1", "lower_bound": 1e-4, "upper_bound": 1e3}]
     wider = _call(mcp, "make_changes", {**back, "parameters": bounds})
     assert wider["committed"] is True and wider["version"] == 2, wider["message"]
-    assert any("version(s) [0]" in m["message"] for m in wider["messages"])
 
 
 def test_a_fit_failure_reverts_the_edit(tmp_path, monkeypatch):
@@ -2137,6 +2184,16 @@ def test_a_base_version_fork_that_changes_nothing_is_refused_as_that_version(tmp
     assert out["version"] == 1
 
 
+def test_a_refit_of_a_statements_version_keeps_its_rows(tmp_path):
+    """Version 0 refitted while HEAD holds another rate: version 0's model and rows, not HEAD's."""
+    mcp, _ = _two_rates(tmp_path)
+    harder = {"justification": "v0, harder", "base_version": 0, "n_starts": 3}
+    out = _call(mcp, "make_changes", harder)
+    assert out["committed"] is True and out["version"] == 2, out["message"]
+    assert _stored_rows(tmp_path, 2)["rows"] == _stored_rows(tmp_path, 0)["rows"]
+    assert _meta(tmp_path, 2)["structure_hash"] == _meta(tmp_path, 0)["structure_hash"]
+
+
 def test_on_the_statements_route_the_refusals_name_its_own_routes(tmp_path):
     """Told "nothing to do — give `model_edits` ... `antimony`", an agent whose model was built
     from statements wrote Antimony."""
@@ -2156,7 +2213,7 @@ def test_on_the_statements_route_the_refusals_name_its_own_routes(tmp_path):
     )
     assert "`statement_edits` for a change to the current rows" in out["error"]
     out = _call(mcp, "make_changes", {"justification": "bare", "base_version": 0})
-    assert "`statement_edits` (or the whole revised `statements`)" in out["error"]
+    assert "`statement_edits`" in out["error"] and "`antimony`" not in out["error"]
 
 
 def test_the_route_says_nothing_is_bound_when_the_map_is_empty(tmp_path):

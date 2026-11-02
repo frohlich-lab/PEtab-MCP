@@ -153,17 +153,19 @@ def test_setup_signature_ignores_estimated_nominal_but_not_bounds(session):
     assert D.estimation_setup_signature(df3) != base
 
 
-# -- reauthor_key: identical re-author identity (structure + setup) ---------
-def test_reauthor_key_distinguishes_different_bounds(session):
+# -- reauthor_key: identical re-author identity (structure + setup + starts) ---------
+def test_reauthor_key_distinguishes_different_bounds_and_starts(session):
     """The loop-guard key changes when bounds change, so re-authoring the same structure with
-    different bounds is NOT counted as an identical re-author (addresses PR #70 review)."""
+    different bounds is NOT counted as an identical re-author (addresses PR #70 review); nor is a
+    refit with more starts, which the guard terminated as "refits to the SAME result" (#194)."""
     df = session.problem.parameter_df
     sh = P.structure_fingerprint(_sm(REVERSIBLE), df)
     df2 = df.copy(deep=True)
     df2.loc["k1", UPPER_BOUND] = float(df2.loc["k1", UPPER_BOUND]) * 10
-    assert D.reauthor_key(sh, df) != D.reauthor_key(sh, df2)
+    assert D.reauthor_key(sh, df, 2) != D.reauthor_key(sh, df2, 2)
+    assert D.reauthor_key(sh, df, 2) != D.reauthor_key(sh, df, 4)
     # ...but it is stable for the same structure + same setup (an identical re-author).
-    assert D.reauthor_key(sh, df) == D.reauthor_key(sh, df.copy(deep=True))
+    assert D.reauthor_key(sh, df, 2) == D.reauthor_key(sh, df.copy(deep=True), 2)
 
 
 # -- decide() (pure) --------------------------------------------------------
@@ -237,12 +239,15 @@ def test_decide_refuses_an_earlier_version_with_the_same_setup():
     d = _decide(_reg((1, "X", 1.0), (2, "Y", 1.0)), head_version=2)
     assert d["action"] == "refuse" and d["duplicate_of"] == 1
     assert "identical to v1" in d["message"] and "base_version=1" in d["message"]
+    assert "`n_starts`" in d["message"]  # and how to refit it instead
 
 
-def test_decide_warns_on_revisiting_a_structure_under_a_new_setup():
-    d = _decide(_reg((1, "X", 1.0), (2, "Y", 1.0)), setup=NEW_SETUP, head_version=2)
+def test_decide_does_not_call_a_refit_under_new_bounds_a_duplicate():
+    """REGRESSION (PEtab-MCP#194): a widening refit of a structure first committed at v1 was told
+    "re-fitting it just creates a duplicate", though it ran a search v1 never did."""
+    d = _decide(_reg((1, "X", 1.0), (2, "X", 1.0)), setup=NEW_SETUP, head_version=2)
     assert d["action"] == "proceed"
-    assert any("version(s) [1]" in w for w in d["warnings"])
+    assert d["warnings"] == []
 
 
 def test_decide_refits_an_earlier_version_to_search_harder():

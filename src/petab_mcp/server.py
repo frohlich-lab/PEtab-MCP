@@ -1025,7 +1025,7 @@ express (an event, a compartment) is a re-author with `antimony`.
 
 With `base_version=N` the operations apply to version N's STORED model, and its search space and \
 best fit are restored as the fit's start: fork and change in one call, never retyping an earlier \
-model. It modifies an edit; sent alone it is rejected."""
+model."""
 
 _MAKE_CHANGES_PARAMETERS_ROUTE = (
     "`parameters` sets estimation BOUNDS and/or SCALE, never a value. Its entries apply after the "
@@ -1037,6 +1037,9 @@ _MAKE_CHANGES_CONTRACT = """\
 `n_starts` REPLACES the configured multistart count (`describe_problem` → \
 `fit_n_starts_default`) rather than adding to it: omit it unless you want MORE; below it fits \
 LESS hard.
+
+A REFIT is a call with no model route: `parameters` and/or `n_starts` alone fit the current \
+model again (version N's with `base_version=N`) as a new version. One with neither new bounds nor more starts than that model ran is refused.
 
 ALL-OR-NOTHING: a change that is rejected, or whose fit produces no version, is REVERTED, so the \
 working model is always a scored one. The result IS the fit, flat, in `get_fit_summary`'s \
@@ -1066,8 +1069,8 @@ def _make_changes_doc(statements_doc: str | None = None) -> str:
         ["`statements`", "`statement_edits`"] if statements_doc else ["`antimony`", "`model_edits`"]
     )
     required = (
-        f"Give ONE model route per call; at least one of {' / '.join(routes)} / `parameters` "
-        "is required."
+        f"Give ONE model route per call; at least one of {' / '.join(routes)} / `parameters` / "
+        "`n_starts` is required."
     )
     return "\n\n".join(
         p
@@ -1516,28 +1519,9 @@ def _register_model_tools(
                 {"routes": routes_given},
                 cause="route_conflict",
             )
-        if base_version is not None and not (ops or rows or edits):
-            # Names NO other tool. The obvious advice here — "to re-fit it unchanged use
-            # restore_version" — would send the agent to a tool its client may withhold (a
-            # client can leave restore_version out of the agent's tools), which is the
-            # defection-trigger class the sibling rejections below are written to avoid, and
-            # re-fitting an existing structure is a no-op the de-dup refuses anyway.
-            return ctx.reject_operation(
-                "make_changes",
-                "make_changes: `base_version` selects the version whose STORED model the "
-                "edits apply to — it does nothing on its own. Send the change you want as "
-                + (
-                    "`statement_edits` (or the whole revised `statements`)"
-                    if statements_route
-                    else "`model_edits`"
-                )
-                + "; a prior version re-committed unchanged is already a version "
-                "and is refused, not re-fitted. If you wanted to RETURN to that "
-                "version because it was better: you do not need to — every fitted version is "
-                "kept and the BEST one stands, wherever HEAD ends up.",
-                {"base_version": base_version},
-            )
-        if not antimony and not ops and not rows and not edits and not parameters:
+        if not (antimony or ops or rows or edits or parameters) and n_starts is None:
+            # Names NO other tool: advice to `restore_version` would send the agent to a tool its
+            # client may withhold, the defection-trigger class the sibling rejections avoid.
             return ctx.reject_operation(
                 "make_changes",
                 "make_changes: nothing to do — give "
@@ -1548,8 +1532,16 @@ def _register_model_tools(
                     else "`model_edits` (structured operations on the committed model — the "
                     "usual route), `antimony` (author the model wholesale), "
                 )
-                + "`parameters` (to set bounds/scale), or a combination.",
-                {"antimony": None, "parameters": None},
+                + "`parameters` (to set bounds/scale), `n_starts` (to refit with more starts), "
+                "or a combination."
+                + (
+                    " `base_version` only picks the version they apply to. To RETURN to it "
+                    "because it was better you need nothing: every fitted version is kept and "
+                    "the BEST one stands, wherever HEAD ends up."
+                    if base_version is not None
+                    else ""
+                ),
+                {"base_version": base_version},
             )
         rejected = ctx.check_n_starts("make_changes", n_starts)
         if rejected is not None:
@@ -1717,9 +1709,14 @@ def _register_model_tools(
             if base_version is not None and not ops:
                 # The statements route: the rows are this call's (given whole, or `base_version`'s
                 # record edited), and the version's SEARCH SPACE and fitted point come with them,
-                # as they do for `model_edits`.
+                # as they do for `model_edits`. With no model route at all it is a REFIT of that
+                # version: its stored source and rows, rebuilt as a fork with no edit.
                 try:
                     base_parameter_df = session.provenance.get_parameter_df(int(base_version))
+                    if not (antimony or rows):
+                        v, prov = int(base_version), session.provenance
+                        antimony = prov.get_model_source(v) or prov.get_model_antimony(v)
+                        statement_record = prov.get_statements(v)
                 except (PetabMcpError, OSError, ValueError, TypeError) as exc:
                     return ctx.reject_operation(
                         "make_changes",
@@ -1788,7 +1785,7 @@ def _register_model_tools(
                 session.model_statements = statement_record
                 if written is not None:
                     session.mechanisms = written
-            if statement_record is not None:
+            if rows:
                 out["network"] = statement_record["network"]
             if edit_summary:
                 out["statement_edits_applied"] = edit_summary

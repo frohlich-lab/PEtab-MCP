@@ -149,8 +149,9 @@ Principles to hold onto when extending this package.
 - **Every operation is versioned and logged.** Provenance under `.petab_mcp/` is append-only
   and durable; extend what a version records rather than bypassing it.
 - **Iteration is cheap; results are not cached.** Structural edits recompile, parameter
-  edits don't — but an identical or already-seen structure is refused a wasted refit, never
-  served from a fit-result cache (there isn't one).
+  edits don't — but a model an earlier version already fitted (its structure, its bounds, as many
+  starts) is refused a wasted refit, never served from a fit-result cache (there isn't one). A
+  refit is a `make_changes` without a model route, and a new version.
 - **Fit inspection is SQL, not a growing menu.** A new way to look at a fit should be a
   `query_data` query over the DuckDB tables, not a new bespoke tool.
 - **Comparisons must be valid before they're reported.** A commit that isn't nested in what
