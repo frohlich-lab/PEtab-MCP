@@ -100,6 +100,12 @@ _SKILLS_INSTRUCTION = (
     "`get_skill('reading-fits')` says what a fit result's scores, flags and diagnosis mean, and "
     "how to summarise the fit's tables in SQL."
 )
+#: Appended where the `statements` route is offered, with the skill only it registers.
+_STATEMENTS_SKILL_INSTRUCTION = (
+    " Before your first `statements` call, read `get_skill('statements-grammar')`: a row and its "
+    "binding, a condition input, regulators, a `rate` beside a `scheme`, and `seeds` beside "
+    "`set_amount`, by example."
+)
 
 
 # A TYPED model rather than `dict[str, Any]`, because the JSON schema is the only part of a tool
@@ -350,6 +356,9 @@ class StatementEdit(BaseModel):
         default=None, description="set_readout: the readout id."
     )
     formula: str | None = Field(default=None, description="set_readout: its formula.")
+    # Not in the schema, and refused when given (operations.apply_statement_edits): a starting
+    # amount is a seed's, which `set_amount` does not declare.
+    amount: SkipJsonSchema[Any] = None
 
 
 # Provider serialisation artefact: some clients emit a list-typed argument wrapped in a
@@ -2709,8 +2718,19 @@ def create_server(
     # Load tool-usage skills up front so the server instructions only advertise
     # `list_skills`/`get_skill` when skills are actually available (registered below).
     resolved_skills_dir = skills_dir or skills_mod.default_skills_dir()
-    skills = skills_mod.load_skills(resolved_skills_dir)
-    instructions = SERVER_INSTRUCTIONS + (_SKILLS_INSTRUCTION if skills else "")
+    # Offered whenever a map was given, even an empty one: a problem whose observables all read
+    # formulas, and whose seeds are the statements' own, binds nothing in it.
+    statements = entity_map is not None
+    skills = [
+        s
+        for s in skills_mod.load_skills(resolved_skills_dir)
+        if s.route is None or (s.route == "statements" and statements)
+    ]
+    instructions = (
+        SERVER_INSTRUCTIONS
+        + (_SKILLS_INSTRUCTION if skills else "")
+        + (_STATEMENTS_SKILL_INSTRUCTION if any(s.name == "statements-grammar" for s in skills) else "")
+    )
     mcp = FastMCP(
         "petab-mcp",
         instructions=instructions,
@@ -2727,9 +2747,7 @@ def create_server(
         return ctx
 
     _register_read_tools(mcp, route)
-    # Offered whenever a map was given, even an empty one: a problem whose observables all read
-    # formulas, and whose seeds are the statements' own, binds nothing in it.
-    _register_model_tools(mcp, route, statements=entity_map is not None)
+    _register_model_tools(mcp, route, statements=statements)
     _register_parameter_tools(mcp, route)
     _register_fit_tools(mcp, route)
     if ctx.held_out is not None:
