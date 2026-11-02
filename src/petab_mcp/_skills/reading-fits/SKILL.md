@@ -63,7 +63,8 @@ different structure is in the working state.
   `candidates` ranks the parameters to cut. The FIM is local: read it with the multistart spread.
 - `merge_candidates` prices giving a pair one shared value: `dnll`, `dscore` (negative when the
   merge lowers the score), `move_scaled` (how far the tie moves a parameter; cheap but many decades
-  rarely survives a refit). Only same-role, same-scale pairs with neither member at a bound are
+  rarely survives a refit). Only same-role, same-scale pairs whose dimensions the model's math does
+  not set apart (a rate is never paired with a concentration), with neither member at a bound, are
   priced, so an absent pair may be one that was skipped, not a dear one.
 
 ## SQL: one row per group

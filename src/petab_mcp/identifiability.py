@@ -38,6 +38,7 @@ import math
 from typing import Any
 
 from . import criteria
+from . import dimensions as dims_mod
 from .constants import PARAMETER_AT_BOUND_RELATIVE_TOL
 
 
@@ -52,6 +53,7 @@ def _identifiability_stats(
     se_unconstrained: float = 1.0,
     spread_unstable: float = 0.5,
     roles: dict[str, str] | None = None,
+    dimensions: dict[str, Any] | None = None,
     n_data: int | None = None,
     criterion: "criteria.Criterion | None" = None,
 ) -> dict[str, Any]:
@@ -195,6 +197,7 @@ def _identifiability_stats(
                 scales=[p.get("scale") for p in params_meta],
                 at_bound=[per[n]["at_bound"] for n in names],
                 roles=roles,
+                dimensions=dimensions,
                 n_data=n_data,
                 top_n=top_n,
                 criterion=criterion,
@@ -538,6 +541,7 @@ def merge_candidates(
     scales=None,
     at_bound=None,
     roles=None,
+    dimensions=None,
     n_data=None,
     top_n=6,
     criterion=None,
@@ -572,12 +576,15 @@ def merge_candidates(
 
     A pair is offered only when the merge is an edit someone could write and this quadratic can
     price it honestly — same ROLE (nothing stops the arithmetic tying a rate to a noise sigma),
-    same parameterScale (``log10(k_a) == k_b`` is not an equality anyone means), and neither member
+    same parameterScale (``log10(k_a) == k_b`` is not an equality anyone means), no DIMENSION the
+    model's math says differs (a closing rate tied to a Ca²⁺ midpoint, gemot#94; see
+    :mod:`petab_mcp.dimensions`, whose forms ``dimensions`` maps each id to), and neither member
     AT A BOUND (the expansion assumes an interior stationary point, so a pinned parameter's cost
     would be understated). Each filter needs its table: whichever the caller leaves out is named in
     ``filters_off``, and every pair a filter refused is counted by reason in ``n_ties_skipped``, so
-    that "no free tie exists" and "the free tie was suppressed" read differently. The ranked list is
-    truncated to ``top_n``.
+    that "no free tie exists" and "the free tie was suppressed" read differently. The dimension
+    filter alone fails OPEN on a member it cannot place (the module docstring says why). The ranked
+    list is truncated to ``top_n``.
 
     Read as a SCREEN. The quadratic is local: it separates cheap ties from expensive ones, but a
     single price can be off by a factor in EITHER direction, so the criterion adjudicates the
@@ -644,6 +651,11 @@ def merge_candidates(
                 if si != sj:
                     _skip("scale_mismatch")
                     continue
+            if dimensions is not None and dims_mod.differ(
+                dimensions.get(names[i]), dimensions.get(names[j])
+            ):
+                _skip("dimension_mismatch")
+                continue
             if at_bound is not None and (at_bound[i] or at_bound[j]):
                 _skip("at_bound")
                 continue
@@ -674,7 +686,12 @@ def merge_candidates(
         out["n_ties_skipped"] = dict(sorted(skipped.items()))
     off = [
         n
-        for n, table in (("role", roles), ("scale", scales), ("at_bound", at_bound))
+        for n, table in (
+            ("role", roles),
+            ("scale", scales),
+            ("dimension", dimensions),
+            ("at_bound", at_bound),
+        )
         if table is None
     ]
     if off:  # nothing refused these pairs, so merges nobody could write are in the list too
@@ -866,7 +883,7 @@ def identifiability(session, *, top_n: int = 8, corr_threshold: float = 0.9) -> 
     # stops tying a kinetic rate to an observable scaling, and the arithmetic will call it free.
     # merge_candidates is their only consumer and needs the FIM, so without one this whole-model
     # walk would be discarded unused. Walked on the FROZEN problem — the structure that was fitted.
-    roles = None
+    roles = dimensions = None
     if fim is not None:
         try:
             from .reconcile import parameter_roles
@@ -874,6 +891,10 @@ def identifiability(session, *, top_n: int = 8, corr_threshold: float = 0.9) -> 
             roles = parameter_roles(record.problem)
         except Exception:  # noqa: BLE001 - advisory; the payload says the filter is off
             roles = None
+        try:
+            dimensions = dims_mod.parameter_dimensions(record.problem)
+        except Exception:  # noqa: BLE001 - advisory; the payload says the filter is off
+            dimensions = None
     out = _identifiability_stats(
         _params_meta(record),
         fim,
@@ -881,6 +902,7 @@ def identifiability(session, *, top_n: int = 8, corr_threshold: float = 0.9) -> 
         top_n=top_n,
         corr_threshold=corr_threshold,
         roles=roles,
+        dimensions=dimensions,
         n_data=_measurement_count(record.problem),
         criterion=session.criterion,
     )

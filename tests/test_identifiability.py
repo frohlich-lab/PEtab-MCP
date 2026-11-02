@@ -447,7 +447,7 @@ def test_merge_candidates_refuse_pairs_they_cannot_price_honestly():
     mixed = merge_candidates(np.eye(2), names, [1.0, 1.0], scales=["log10", "lin"], roles=roles)
     assert mixed["ties"] == [] and mixed["n_ties_skipped"] == {"scale_mismatch": 1}
     same = merge_candidates(np.eye(2), names, [1.0, 1.0], scales=["log10", "log10"], roles=roles)
-    assert same["n_ties_priced"] == 1 and same["filters_off"] == ["at_bound"]
+    assert same["n_ties_priced"] == 1 and same["filters_off"] == ["dimension", "at_bound"]
 
     unusable = merge_candidates(
         np.eye(2), names, [1.0, 1.0], scales=[float("nan")] * 2, roles=roles
@@ -524,15 +524,27 @@ def test_stats_core_passes_scale_and_at_bound_to_the_merge_report():
 
 
 def test_roles_are_not_computed_when_there_is_no_fim(session, monkeypatch):
-    """merge_candidates is the only consumer of the role table and needs the FIM, so on the
-    FIM-less path the whole-model walk would be built and discarded."""
+    """merge_candidates is the only consumer of the role and dimension tables and needs the FIM, so
+    on the FIM-less path the whole-model walks would be built and discarded."""
+    import petab_mcp.dimensions as dimensions
     import petab_mcp.reconcile as reconcile
 
     calls = []
     monkeypatch.setattr(reconcile, "parameter_roles", lambda *a, **kw: calls.append(1) or {})
+    monkeypatch.setattr(dimensions, "parameter_dimensions", lambda *a, **kw: calls.append(2) or {})
     session.fit_record = _record(session, hess=None, sres=None)
     out = identifiability(session)
     assert out["merge_candidates"] is None and calls == []
+
+
+def test_the_diagnosis_supplies_the_dimension_table(session):
+    """The filter is only worth anything if the assembly path supplies it (gemot#94: the hints
+    offered a closing rate tied to a Ca2+ midpoint). On the toy model both rates are first-order,
+    so the pair stays priced and the payload names no filter as off but at_bound's own."""
+    session.fit_record = _record(session, hess=np.eye(2))
+    merges = identifiability(session)["merge_candidates"]
+    assert "dimension" not in merges.get("filters_off", [])
+    assert merges["n_ties_priced"] == 1
 
 
 # -- the merge HINTS: the rows of this diagnosis that ride on every fit result -------------------
