@@ -220,6 +220,13 @@ def test_a_derived_kind_is_marked_and_reads_back_as_stated():
     assert N.parse(text) == row
 
 
+def test_a_kind_stated_twice_is_refused_saying_several_are_one_clause():
+    """Agents read "each once" as one inhibitor per row and split a row into duplicates (5
+    problems, gemot round 3, #193)."""
+    with pytest.raises(N.NotationError, match=r"inhibited by C and D.*a list"):
+        N.parse("r: A becomes B, inhibited by C, inhibited by D")
+
+
 def test_a_reversed_or_downgraded_kind_is_marked_and_reads_back_as_stated():
     row = N.parse("r: A becomes B, inhibited by C and D")
     text = N.render(row, {"inhibited_by_0": "activated_by", "inhibited_by_1": "modulated_by"})
