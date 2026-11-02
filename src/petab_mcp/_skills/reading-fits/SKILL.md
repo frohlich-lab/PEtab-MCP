@@ -42,7 +42,8 @@ description: >-
   inflated sigma absorbs misfit, a collapsed one overfits the noise, and either way the score is
   not genuine adequacy. The fix is the model's form, not the noise.
 - `residual_structure`: the verdict over the residual tests, with a replicate lack-of-fit arm
-  where the design has replicates.
+  where the design has replicates. Its `sigma_heterogeneity` names the sigmas whose `p` (below)
+  survives Holm.
 - `merge_hints`: the cheapest few priced ties (below).
 
 ## Diagnosis: residuals

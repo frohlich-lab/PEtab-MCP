@@ -745,9 +745,9 @@ _SIGNALS_KEEP = 5
 
 #: :func:`structure_tests_caveat`'s line; ``{}`` is what is estimated.
 _ABSORBED_MISFIT_CAVEAT = (
-    "Estimated {} absorb misfit (a sigma inflates until chi2 is near n, a scale or offset takes "
-    "up a series' level), so the sign/runs tests have little power here and no structure flag "
-    "is NOT adequacy. sigma_heterogeneity and noise_sigma.fitted_over_data_noise rank where to look."
+    "Estimated {} absorb misfit, so the sign/runs tests have little power here and no structure "
+    "flag is NOT adequacy. get_fit_diagnosis's sigma_heterogeneity and "
+    "noise_sigma.fitted_over_data_noise rank where to look."
 )
 
 
@@ -838,7 +838,8 @@ def _sigma_heterogeneity(problem, sims) -> list[dict[str, Any]]:
 
 def structure_tests_caveat(problem) -> str | None:
     """The line :func:`fit_diagnosis` carries while noise sigmas or observable scales/offsets are
-    estimated, or ``None``."""
+    estimated, and :func:`residual_structure_rollup` while it also flags no observable, or
+    ``None``."""
     from . import reconcile as R
 
     df = getattr(problem, "parameter_df", None)
@@ -863,7 +864,8 @@ _STRUCTURE_UNAVAILABLE = "residual-structure tests unavailable (no weighted resi
 
 def residual_structure_rollup(session, sims=None) -> dict[str, Any]:
     """The current fit's residual-structure verdict, rolled up:
-    ``{flagged_observables, low_power, summary, replicate_lack_of_fit}``. THE authority on where
+    ``{flagged_observables, low_power, summary, replicate_lack_of_fit}``, plus the pointers
+    :func:`_absorbed_misfit` adds, which flag nothing. THE authority on where
     this verdict is reported: on every fit result and on ``get_fit_summary`` (both score payloads
     for one fit, assembled by :func:`fitting.fit_result_block`/:func:`fitting.fit_summary`) —
     and NOT by ``get_fit_diagnosis``, which returns the per-observable detail behind it.
@@ -912,7 +914,53 @@ def residual_structure_rollup(session, sims=None) -> dict[str, Any]:
         verdicts = []
     if not verdicts and not lof.get("available"):
         return _unavailable_structure()  # nothing was tested at all — NOT a clean bill
-    return _rollup_structure(verdicts, replicate_lof=lof)
+    out = _rollup_structure(verdicts, replicate_lof=lof)
+    return {**out, **_absorbed_misfit(session, df, flagged=bool(out["flagged_observables"]))}
+
+
+def _absorbed_misfit(session, sims, flagged: bool) -> dict[str, Any]:
+    """The rollup's pointers to where an estimated sigma absorbed a misfit (#195), each key absent
+    when empty, ``{}`` on any failure.
+
+    ``sigma_heterogeneity``: the sigmas whose :func:`residual_tests.sigma_heterogeneity` ``p`` stays
+    below ``_STRUCTURE_ALPHA`` after Holm across the sigmas tested, smallest first, each with that
+    ``p``, its ``worst_series`` and its ``fitted_over_data_noise``. Holm, where :func:`fit_diagnosis`
+    ranks raw ``p``, because these ride on every fit: across bachmann's ~20 sigmas the passing fit's
+    pEpoR (p = 0.006) would be named on every fit, the failing fit's (9e-5) is named either way. The
+    ratio rides only on a named sigma, as it has no threshold of its own (``fitting._entry_inflated``).
+
+    ``structure_tests_caveat`` while no observable is ``flagged``: where one is, the caveat does
+    not change how the verdict reads.
+    """
+    from . import fitting
+    from . import residual_tests as rt
+
+    out: dict[str, Any] = {}
+    try:
+        tested = [h for h in _sigma_heterogeneity(session.problem, sims) if h["p"] is not None]
+        adjusted = rt.holm_adjusted([h["p"] for h in tested])
+        named = [h for h, p in zip(tested, adjusted) if p < _STRUCTURE_ALPHA]
+        if named:
+            fitted = (session.simulation or {}).get("fitted_parameters")
+            ratios = {
+                r["parameter_id"]: r["fitted_over_data_noise"]
+                for r in _ranked_noise_ratios(fitting.noise_sigma_report(session.problem, fitted))
+            }
+            out["sigma_heterogeneity"] = [
+                {
+                    "parameter_id": h["parameter_id"],
+                    "p": h["p"],
+                    "worst_series": h["worst"][0]["series"],
+                    "fitted_over_data_noise": ratios.get(h["parameter_id"]),
+                }
+                for h in named
+            ]
+        caveat = None if flagged else structure_tests_caveat(session.problem)
+        if caveat:
+            out["structure_tests_caveat"] = caveat
+    except Exception:  # noqa: BLE001 - advisory; never fail the fit on a diagnostic
+        return {}
+    return out
 
 
 def _rollup_structure(verdicts, replicate_lof: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1410,9 +1458,9 @@ def residual_flag(structure: dict[str, Any]) -> bool | None:
 # verdict (the per-test p-values are always reported raw, so a caller can judge for itself).
 _STRUCTURE_ALPHA = 0.05
 
-# At most this many flagged or underpowered observables are NAMED in the summary and in a fit
-# result's ``flagged_observables`` (the rest as a count): both ride on every fit, and
-# get_fit_summary lists every flagged observable.
+# At most this many flagged or underpowered observables are NAMED in the summary, and flagged
+# observables or sigmas in a fit result's ``flagged_observables`` / ``sigma_heterogeneity`` (the
+# rest as a count): they ride on every fit, and get_fit_summary lists every one.
 _MAX_NAMED = 3
 
 
@@ -1423,17 +1471,18 @@ def _named(ids: list[str]) -> str:
 
 
 def residual_structure_on_fit(rollup: dict[str, Any] | None) -> dict[str, Any] | None:
-    """The rollup as a fit result carries it: ``flagged_observables`` cut to the first
-    ``_MAX_NAMED``, with ``n_flagged_observables`` counting all of them when any is cut, and no
-    ``replicate_lack_of_fit`` where the design leaves that arm nothing to test
-    (``_LOF_SILENT_STATUSES``, 13 of 16 problems measured)."""
+    """The rollup as a fit result carries it: ``flagged_observables`` and ``sigma_heterogeneity``
+    cut to the first ``_MAX_NAMED``, with ``n_flagged_observables`` / ``n_sigma_heterogeneity``
+    counting all of them when any is cut, and no ``replicate_lack_of_fit`` where the design leaves
+    that arm nothing to test (``_LOF_SILENT_STATUSES``, 13 of 16 problems measured)."""
     if not isinstance(rollup, dict):
         return rollup
     out = dict(rollup)
-    flagged = out.get("flagged_observables") or []
-    if len(flagged) > _MAX_NAMED:
-        out["flagged_observables"] = flagged[:_MAX_NAMED]
-        out["n_flagged_observables"] = len(flagged)
+    for key in ("flagged_observables", "sigma_heterogeneity"):
+        named = out.get(key) or []
+        if len(named) > _MAX_NAMED:
+            out[key] = named[:_MAX_NAMED]
+            out[f"n_{key}"] = len(named)
     if (out.get("replicate_lack_of_fit") or {}).get("status") in _LOF_SILENT_STATUSES:
         del out["replicate_lack_of_fit"]
     return out
