@@ -879,18 +879,20 @@ def test_an_entity_map_documents_and_accepts_no_text_route(tmp_path):
 
 def _agent_facing_text(mcp):
     """Everything a client is shown before it calls anything: the instructions, every tool's
-    description and argument schema, and every listed skill in full."""
+    description and argument schema, and every skill the server lists, in full."""
     import json
-
-    from petab_mcp import skills as skills_mod
 
     tools = asyncio.run(mcp.list_tools())
     names = {t.name for t in tools}
-    skills = skills_mod.load_skills(skills_mod.default_skills_dir()) if "get_skill" in names else []
+    listed = _listed(_call(mcp, "list_skills", {})) if "get_skill" in names else []
     return "\n".join(
         [mcp.instructions or ""]
         + [f"{t.description}\n{json.dumps(t.parameters)}" for t in tools]
-        + [f"{s.description}\n{s.text}" for s in skills]
+        + [s["name"] for s in listed]
+        + [
+            f"{s['description']}\n{_listed(_call(mcp, 'get_skill', {'name': s['name']}))}"
+            for s in listed
+        ]
     )
 
 
@@ -902,6 +904,7 @@ def test_no_text_offers_the_statements_route_where_it_does_not_exist(tmp_path):
     route = re.compile(r"(?i)\bstatements\b|statement_edits|list_mechanisms|\bindra\b")
     plain = _agent_facing_text(_server(tmp_path / "plain"))
     assert not route.findall(plain), sorted(set(route.findall(plain)))
+    assert "statements-grammar" not in plain  # the route's own skill (#193)
     tools = asyncio.run(_statements_server(tmp_path).list_tools())
     assert "'statements'" in next(t for t in tools if t.name == "get_model").description
     with pytest.raises(Exception, match="Unknown model format 'statements'"):
@@ -1036,12 +1039,14 @@ def test_a_scheme_mechanism_builds_and_is_listed_as_written(tmp_path):
         (tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text()
     )["rows"]
     assert stored["emission"]["parameters"] == ["conv_k_hop"]
-    listed = _text(mcp, "list_mechanisms", {"statement_type": "PopulationTransition"})
+    listed = _text(mcp, "list_mechanisms", {"statement_types": ["PopulationTransition"]})
     assert (
         "PopulationTransition | hop (written this run) | parameters: k_hop\n"
         "  source() >> target() @ k_hop"
     ) in listed
     assert "PopulationTransition | mass_action | parameters: k\n" in listed
+    index = _text(mcp, "list_mechanisms", {}).splitlines()
+    assert "PopulationTransition: hop(k_hop) (written this run), mass_action(k)" in index
     model = _text(mcp, "get_model", {"format": "statements"})
     assert (
         "mechanism hop: PopulationTransition, scheme, parameters k_hop\n"
@@ -1101,11 +1106,53 @@ def test_list_mechanisms_exists_only_with_the_route(tmp_path):
 
 
 def test_list_mechanisms_shows_two_step_as_its_rules(tmp_path):
-    listed = _text(_statements_server(tmp_path), "list_mechanisms", {"statement_type": "Phosphorylation"})
+    listed = _text(
+        _statements_server(tmp_path), "list_mechanisms", {"statement_types": ["Phosphorylation"]}
+    )
     assert (
         "Phosphorylation | indra_two_step | parameters: kc, kf, kr\n"
         "  enz(sub=None) + sub(mod='off', enz=None) >> enz(sub=1) % sub(mod='off', enz=1) @ kf"
     ) in listed
+
+
+def test_list_mechanisms_without_types_is_an_index_of_their_parameters(tmp_path):
+    """#191: every mechanism's rules at once was 7-9k tokens of a lead's context for the whole
+    run. The index names each entry with its parameters, the types sharing their entries on one
+    line, and the rules come from the types asked for, several in one call."""
+    mcp = _statements_server(tmp_path)
+    index = _text(mcp, "list_mechanisms", {})
+    assert " >> " not in index
+    (line,) = [line for line in index.splitlines() if "Phosphorylation" in line.split(": ")[0]]
+    assert line.startswith("Acetylation, ") and "indra_two_step(kc, kf, kr)" in line
+    assert "Dephosphorylation" not in line.split(": ")[0]
+    both = _text(mcp, "list_mechanisms", {"statement_types": ["Complex", "Conversion"]})
+    assert "Complex | indra_default | parameters: kf, kr" in both
+    assert "Conversion | mass_action | parameters: k" in both
+    assert _text(mcp, "list_mechanisms", {"statement_types": ["Complex", "Nope"]}).startswith(
+        "no mechanism for Nope; the statement types are"
+    )
+
+
+def test_a_written_mechanism_the_placeholder_cannot_build_stays_listed():
+    """A scheme reading a partner only its row's statement names (`amount(PTEN)`) fails on the
+    placeholder statement; the index lists it by what it declares and its type's rules show it as
+    written (review of #198). ActiveForm's built-ins, which build no rule, stay out."""
+    from types import SimpleNamespace
+
+    from petab_mcp.server import _mechanisms_text
+
+    scheme = "enz() + sub(mod='off') >> enz() + sub(mod='on') @ kf/(1 + amount(PTEN)/Ki)"
+    session = SimpleNamespace(mechanisms={("Phosphorylation", "pten"): {
+        "statement_type": "Phosphorylation", "policy": "pten", "scheme": scheme,
+        "parameters": ["kf", "Ki"]}})
+    index = _mechanisms_text(session, None).splitlines()
+    assert "Phosphorylation: basal(k), indra_default(kf), indra_interactions_only(kf), " \
+        "indra_michaelis_menten(Km, kc), indra_two_step(kc, kf, kr), processive(kf), " \
+        "pten(Ki, kf) (written this run)" in index
+    assert not any(line.startswith("ActiveForm") for line in index)
+    assert (
+        f"Phosphorylation | pten (written this run) | parameters: Ki, kf\n  {scheme}"
+    ) in _mechanisms_text(session, ["Phosphorylation"])
 
 
 def test_a_library_gap_is_its_own_rejection(tmp_path):
@@ -1603,6 +1650,56 @@ def test_a_condition_input_enters_a_written_rate_through_the_binding(
     assert out["applied"] is True, out.get("error")
     rows = {r["parameterId"] for r in _call(mcp, "get_parameters", {})["result"]}
     assert "EGF_0" not in rows and "conv_dose" not in rows  # the condition table sets it
+
+
+def _input_server(tmp_path, add_condition):
+    """The toy with a condition input `EGF` the entity map does not map, as in every gemot run."""
+    work = tmp_path / "problem"
+    shutil.copytree(YAML_PATH.parent, work)
+    add_condition(work / "problem.yaml", "EGF", 1.0)
+    return _statements_server(tmp_path, yaml_path=work / "problem.yaml")
+
+
+def test_a_condition_input_stated_as_an_agent_is_told_to_move_to_the_binding(
+    tmp_path, add_condition
+):
+    """`EGF` stated in a row and read in a binding was refused as "a molecule", and dropping it
+    from both failed as an unread target: 4-7 calls each in the three raimundez runs (#193)."""
+    feed = {**_statement_row(), "prefix": "feed"}
+    feed["statement"] = {**feed["statement"], "source": {"name": "EGF"}}
+    out = _call(_input_server(tmp_path, add_condition), "make_changes", {
+        "justification": "EGF drives A to B",
+        "statements": [_statement_row(), feed],
+        "bindings": {"conv": {"policy": "mass_action", "parameters": {"k": "k0*EGF"}},
+                     "feed": "mass_action"}})
+    assert out["applied"] is False
+    assert 'drop it from the statement and read it in the binding, `k="k*EGF"`' in out["error"]
+
+
+def test_an_unread_condition_input_is_reported_before_an_unknown_bound(tmp_path, add_condition):
+    """The bounds block's "Unknown parameter id" masked the unread condition target behind it,
+    3 calls in one isensee run (#193)."""
+    out = _call(_input_server(tmp_path, add_condition), "make_changes", {
+        "justification": "A becomes B", "statements": [_statement_row()],
+        "bindings": {"conv": "mass_action"},
+        "parameters": [{"parameter_id": "nope", "lower_bound": 1e-3, "upper_bound": 1e3}]})
+    assert out["applied"] is False
+    assert "invalid targets" in out["error"] and "Unknown parameter id" not in out["error"]
+
+
+def test_an_edit_carrying_an_amount_is_told_where_a_seed_goes(tmp_path):
+    """`statement_edits.0.amount Extra inputs are not permitted`, pydantic's own, in nearly every
+    run of gemot round 3 (#193): it named neither `seeds` nor what `set_amount` is."""
+    mcp = _statements_server(tmp_path)
+    assert _seeds_call(mcp, [{"agent": "A", "amount": 1}])["applied"] is True
+    for edit in ({"op": "set_amount", "name": "A", "agent": "A", "amount": 5},
+                 {"op": "set_seed", "agent": "A", "amount": 5}):
+        out = _call(mcp, "make_changes", {"justification": "more A", "statement_edits": [edit]})
+        assert out["applied"] is False
+        assert "`seed: {agent, amount}`" in out["error"] and "readout amount" in out["error"]
+    from petab_mcp.server import StatementEdit
+
+    assert "amount" not in StatementEdit.model_json_schema()["properties"]
 
 
 @_ROUTES
