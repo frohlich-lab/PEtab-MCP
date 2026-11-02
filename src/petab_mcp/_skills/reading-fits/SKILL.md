@@ -49,9 +49,14 @@ description: >-
 
 - Per observable: `chi2`, `mean_weighted_residual` (bias: far from 0 is a systematic over- or
   undershoot), the worst |residual|, `sign_test` (bias) and `runs_test` (time trend, serial
-  correlation), each with `p` and `low_power`. They read only residual SIGNS, so an estimated
-  sigma cannot hide them; on few points they have little power, so a `low_power` non-significant
-  result is weak evidence, not a pass.
+  correlation), each with `p` and `low_power`. They read only residual SIGNS, so no sigma rescales
+  them, but an estimated scale or offset takes up a series' bias and few points leave them little
+  power: a `low_power` non-significant result is weak evidence, not a pass.
+- `sigma_heterogeneity`: per estimated sigma, `p` that the series it covers share one spread of
+  weighted residuals, and the `worst` series by `rms` (about 1 over the whole sigma). A series far
+  above 1 is what the sigma was inflated for: look at that experiment first. A pointer, not a
+  verdict, `low_power` as above. `noise_sigma.fitted_over_data_noise` ranks the same question
+  per sigma.
 - On a problem with many observables the table keeps `max_observables` rows by chi2, up to 3 more
   by |bias| and up to 6 more carrying a `structure_flag`; `omitted` says what was dropped.
   Aggregating over it aggregates a worst-first subsample.
