@@ -300,6 +300,22 @@ def _parsimony_warnings(problem, old_species: set[str]) -> list[str]:
     ]
 
 
+def _pruned_warnings(pruned: list[str], names: dict[str, str]) -> list[str]:
+    """The species the reconcile pruned (:func:`reconcile.prune_orphans`), each by its name and id.
+
+    A seed whose species nothing reads goes with its initial amount, which may have been a
+    condition input's only reader: raimundez's ``Serum`` in 27 of 33 edits, with no reply saying so
+    (PEtab-MCP#205). An input that leaves unread is the lint's to name
+    (:func:`validation._unread_input_issues`)."""
+    if not pruned:
+        return []
+    shown = ", ".join(
+        f"`{names[sid]}` (`{sid}`)" if names.get(sid) not in (None, "", sid) else f"`{sid}`"
+        for sid in pruned
+    )
+    return [f"Removed species nothing in the model reads, with their initial amounts: {shown}."]
+
+
 _REJECTION_ISSUES_SHOWN = 3
 _REJECTION_ISSUE_CHARS = 320
 
@@ -405,6 +421,7 @@ def _commit_change(
         if model_build is not None:
             candidate, apply_result = model_build()
             problem.model = candidate
+            names = {sp.getId(): sp.getName() for sp in candidate.sbml_model.getListOfSpecies()}
             recon = R.reconcile(problem, shipped=session.shipped_parameter_df)
             # An EMPTY model is refused rather than committed — where "empty" is the same
             # predicate `model_authored` reports: no species at all, or no DYNAMICS (neither
@@ -489,7 +506,14 @@ def _commit_change(
             )
         report = lint()
 
-        warnings = _parsimony_warnings(problem, old_species) if recon is not None else []
+        warnings = (
+            [
+                *_pruned_warnings(recon["pruned"]["species"], names),
+                *_parsimony_warnings(problem, old_species),
+            ]
+            if recon is not None
+            else []
+        )
         # A row's regulators are signed on this version's bounds: an edit of a bound or a scale
         # can change what its rate records, and the record changes with the problem below.
         record = getattr(

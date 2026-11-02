@@ -28,9 +28,11 @@ from .reconcile import (
     condition_target_symbols,
     noise_sigma_ids,
     _model_math_names,
+    _reaction_species,
     has_dynamics,
     observation_model_symbols,
     parameter_ids,
+    species_ids,
 )
 
 # libsbml consistency categories that are pure noise for unit-less mechanistic models — we
@@ -432,6 +434,31 @@ def _first_period_only_issues(problem) -> list[dict[str, Any]]:
     ]
 
 
+def _unread_input_issues(problem) -> list[dict[str, Any]]:
+    """One warning naming each condition target the model declares and nothing reads: no rate,
+    rule, event, initial amount or observable, so no period's value reaches the model. libpetab's
+    invalid-target check passes it, as the target is declared; the reconcile leaves it so when it
+    prunes the seed whose initial amount read it (PEtab-MCP#205)."""
+    sm = getattr(problem.model, "sbml_model", None)
+    if sm is None:
+        return []
+    declared = parameter_ids(sm) | species_ids(sm)
+    read = _model_math_names(sm) | _reaction_species(sm) | _observable_and_measurement_symbols(problem)
+    unread = sorted((condition_target_symbols(problem) & declared) - read)
+    if not unread:
+        return []
+    return [
+        {
+            "level": "warning",
+            "message": (
+                f"condition target(s) {', '.join(f'`{t}`' for t in unread)} are read by nothing "
+                f"in the model, so the model never sees their value. For each, {INPUT_REMEDY}"
+            ),
+            "check": "input_unread",
+        }
+    ]
+
+
 # -- authoring-time check: frozen parametric reaction stoichiometry (checks the CONVERTED SBML) --
 def frozen_parametric_stoichiometry_issues(sbml_model) -> list[dict[str, Any]]:
     """Hard-error when a reaction stoichiometry was written as a PARAMETER/symbol in Antimony.
@@ -598,9 +625,9 @@ def validate_problem(problem, protected_fixed_ids=None, statements: bool = False
     issues += readout_issues
     n_errors += len(readout_issues)
 
-    stale_inputs = _first_period_only_issues(problem)
-    issues += stale_inputs
-    n_warnings += len(stale_inputs)
+    input_issues = _first_period_only_issues(problem) + _unread_input_issues(problem)
+    issues += input_issues
+    n_warnings += len(input_issues)
 
     return {
         "valid": (
