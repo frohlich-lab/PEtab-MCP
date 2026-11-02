@@ -1338,6 +1338,14 @@ class PetabSession:
         STRUCTURAL inadequacy, so ``stop_reason`` also carries the issue-#82 nudge to change the
         model's FORM rather than re-parameterize. An adequate stop is a success — it gets no such
         nudge (the model fits; there is nothing structural to fix).
+
+        A model whose noise sigmas are ESTIMATED is never shown adequate, so only the streak cap
+        ends its session: a fitted sigma absorbs a misfit inside the data-std band without a
+        residual flag (bachmann's round-3 run plateau-stopped "adequate" at ΔBIC +62,
+        PEtab-MCP#196). Do not restore it as a ratio against the data-driven noise floor: #140's
+        was deleted because no single threshold held across problems
+        (:func:`fitting._entry_inflated`), and the replicate lack-of-fit arm, its df-aware form,
+        has power against a few large misses, not against a diffuse inflation like that run's.
         """
         with self.lock:
             hist = self.op_history
@@ -1354,8 +1362,7 @@ class PetabSession:
             # The check that showed the best model adequate, which a plateau stop needs and names,
             # else None. Only a FIXED-sigma model can be shown adequate: by its chi2 GoF, two-sided
             # (below ADEQUATE_GOF_PVALUE an underfit, above OVERFIT_GOF_PVALUE a fit to the noise),
-            # with no residual structure flagged. An ESTIMATED-sigma model never is, so only the
-            # streak cap ends its session (docs/RATIONALE.md, PEtab-MCP#196).
+            # with no residual structure flagged. An ESTIMATED-sigma model never is.
             best = self.best
             adequate_by = None
             if (
