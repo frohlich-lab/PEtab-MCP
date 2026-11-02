@@ -2354,11 +2354,12 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         `non_improving_streak` counts consecutive fitted ops since the last real new best.
         `should_stop` is set (with a `stop_reason`) once the session has stopped making progress —
         the hard non-improving-streak cap, or a plateau once the best model is statistically
-        adequate.
+        adequate, which only a chi2 goodness of fit against FIXED noise sigmas can show: with
+        estimated sigmas only the streak cap stops.
         There is no cap on the TOTAL number of fits: a session that keeps genuinely improving keeps
         going, and only a stall stops it.
         A plateaued `stop_reason` also carries the structural-inadequacy nudge: when the score
-        stops moving and the best model is still not adequate, the misfit is the model's FORM — the
+        stops moving and the best model is shown not adequate, the misfit is the model's FORM — the
         next model must change the structure (add a latent state, add a feedback reaction, raise
         interaction order), not re-fit or widen the same one.
         """
