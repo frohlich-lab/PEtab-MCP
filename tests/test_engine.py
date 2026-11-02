@@ -176,7 +176,7 @@ def test_fit_tracks_improvement_vs_versions(fit_session):
     first = fit_session.fit()
     assert first["fit_status"] == "fit"
     imp1 = first["improvement"]
-    assert imp1["objective_before"] is not None
+    assert fit_session.provenance.get_meta(first["version"])["objective_before"] is not None
     assert imp1["self_improvement"] is not None
     assert imp1["is_new_best"] is True  # nothing to beat yet
     assert imp1["improvement_vs_best_prior"] is None
@@ -188,7 +188,7 @@ def test_fit_tracks_improvement_vs_versions(fit_session):
     )
     second = fit_session.fit()
     imp2 = second["improvement"]
-    assert imp2["best_prior_version"] is not None
+    assert second["progress"]["best_version"] is not None
     assert imp2["improvement_vs_best_prior"] is not None
 
 
