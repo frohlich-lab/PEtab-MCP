@@ -509,6 +509,18 @@ def test_streak_cap_stop_reason_carries_structural_nudge_when_inadequate(session
     assert "make_changes" in reason
 
 
+def test_a_missing_fixed_sigma_gof_adds_no_structural_nudge(session):
+    """A fixed-sigma best whose GoF could not be computed (no chi2) has a finite score but no test
+    that failed, so its streak-cap stop claims neither adequacy nor structural inadequacy."""
+    session.record_fit_progress(1, _fitsim(-50.0, None), {"is_new_best": True})
+    for v in range(2, 2 + NON_IMPROVING_STREAK_CAP):
+        session.record_fit_progress(v, _fitsim(-50.0, None), {"is_new_best": False})
+    p = session.progress_report()
+    assert p["best_version"] == 1 and p["best_gof_pvalue"] is None
+    assert p["stop_reason"].startswith("non-improving-streak cap reached")
+    assert "STRUCTURAL" not in p["stop_reason"] and "adequate" not in p["stop_reason"]
+
+
 def test_adequate_plateau_stop_reason_omits_structural_nudge(session):
     """An adequate-and-flat plateau is a SUCCESS stop, so its stop_reason must NOT append the
     structural nudge — telling an already-adequate model it 'cannot fit the data' is contradictory.

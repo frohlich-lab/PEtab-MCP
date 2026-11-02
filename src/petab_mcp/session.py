@@ -1381,11 +1381,16 @@ class PetabSession:
                 )
             # Evidence the best model is NOT adequate, which the structural nudge below needs: a
             # fixed-sigma GoF that fails, an estimated sigma outside its band, or flagged residual
-            # structure. A plausible, unflagged estimated sigma is evidence of neither.
+            # structure. A plausible, unflagged estimated sigma is evidence of neither, and so is a
+            # fixed-sigma GoF that could not be computed (no chi2, or n <= k).
             inadequate = (
                 best is not None
                 and adequate_by is None
-                and (not best.sigma_estimated or best.sigma_gamed or best.residual_flagged)
+                and (
+                    (not best.sigma_estimated and best.gof_pvalue is not None)
+                    or best.sigma_gamed
+                    or best.residual_flagged
+                )
             )
             stop_reason = None
             if streak >= NON_IMPROVING_STREAK_CAP:
