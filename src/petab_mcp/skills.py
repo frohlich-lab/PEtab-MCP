@@ -50,7 +50,7 @@ class Skill:
     description: str  # frontmatter `description`
     text: str  # full SKILL.md, as authored
     files: dict[str, str] = field(default_factory=dict)  # relative path -> content
-    route: str | None = None  # frontmatter `route`: registered only where that route is offered
+    route: str | None = None  # frontmatter `route` (`statements` or `text`): only where offered
 
     def summary(self) -> dict[str, object]:
         # The resource URI uses the directory `slug` (a safe path segment), not the
