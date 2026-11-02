@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from indra.statements import Agent, Complex, DecreaseAmount, IncreaseAmount
+from indra.statements import Agent, Complex, DecreaseAmount, IncreaseAmount, ModCondition
 from petab.v1.models.sbml_model import SbmlModel
 
 from petab_mcp import operations as O
@@ -112,6 +112,52 @@ def test_a_seed_at_a_condition_target_makes_its_agent_that_input(degraded):
     assert sbml.getSpecies("Fsk").getInitialAmount() == 0.0
     assert sbml.getInitialAssignmentBySymbol("Fsk") is None
     assert sbml.getParameter("forskolin_init") is None
+
+
+def test_a_condition_target_names_its_species_before_a_readout_does():
+    """With a readout of the same species in the entity map ahead of it, the target became a rule
+    over that readout, `dose := D_obs`, which no period can set (review of PEtab-MCP#199)."""
+    antimony, _ = PS.to_antimony(
+        [(IncreaseAmount(Agent("D"), Agent("B")), INDRA_DEFAULT, "r1")],
+        {"D_obs": Agent("D"), "B": Agent("B")},
+        seeds=[("D", Agent("D"), "dose")],
+        targets=frozenset({"dose"}),
+    )
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    assert sbml.getSpecies("dose").getBoundaryCondition()
+    assert sbml.getAssignmentRuleByVariable("dose") is None
+    assert sbml.getAssignmentRuleByVariable("D_obs").getMath().getName() == "dose"
+
+
+#: Another state of the drug the input stands for, which a seed may start.
+_PHOSPHO = Agent("forskolin", mods=[ModCondition("phosphorylation", "S", "10")])
+
+
+def test_a_started_input_is_the_state_its_own_seed_writes():
+    """Another seeded state of the input's agent, seeded after it, took the target's id: the
+    periods dosed the phosphorylated drug instead of the free one (review of PEtab-MCP#199)."""
+    antimony, _ = PS.to_antimony(
+        [
+            (Complex([Agent("forskolin"), Agent("ADCY")]), INDRA_DEFAULT, "r1"),
+            (DecreaseAmount(None, Agent("forskolin")), INDRA_DEFAULT, "deg"),
+        ],
+        {},
+        seeds=[("forskolin", Agent("forskolin"), "Fsk"), ("p", _PHOSPHO, 5)],
+        targets=frozenset({"Fsk"}),
+    )
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    assert sbml.getSpecies("Fsk").getName() == "forskolin(adcy=None, S10='u')"
+
+
+def test_a_held_input_takes_no_other_seed():
+    """A held input is the one state the periods set, as an entity-map input is."""
+    with pytest.raises(ModelUpdateError, match="seed 'p': forskolin is an input"):
+        PS.to_antimony(
+            [(Complex([Agent("forskolin"), Agent("ADCY")]), INDRA_DEFAULT, "r1")],
+            {},
+            seeds=[("forskolin", Agent("forskolin"), "Fsk"), ("p", _PHOSPHO, 5)],
+            targets=frozenset({"Fsk"}),
+        )
 
 
 def test_a_seed_at_an_input_another_agent_is_is_refused():
