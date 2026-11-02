@@ -368,10 +368,10 @@ class PetabSession:
 
         # De-duplication memory for identical fits (see :mod:`dedup` and issue #59): how many times
         # each *identical* estimation problem has been handed to `fit` this session, keyed by
-        # structure fingerprint + estimation setup (see `dedup.reauthor_key`) so that only truly
-        # identical problems — not the same structure with changed bounds/scale — count toward
-        # the loop guard. A within-session counter (a fresh session legitimately starts over),
-        # not persisted.
+        # structure fingerprint + estimation setup + starts (see `dedup.reauthor_key`) so that only
+        # truly identical problems — not the same structure with changed bounds/scale or more
+        # starts — count toward the loop guard. A within-session counter (a fresh session
+        # legitimately starts over), not persisted.
         self._fit_attempts: dict[str, int] = {}
 
         if self.provenance.current_version < 0:
@@ -1001,11 +1001,12 @@ class PetabSession:
 
     # -- fit + simulate ----------------------------------------------------
     def _auto_fit_and_improvement(
-        self, n_starts: int | None = None
+        self, n_starts: int | None = None, refit: bool = False
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Fit + simulate for a ``fit`` call, returning (payload, improvement).
 
-        ``n_starts`` is a multistart count >= 1; ``None`` uses the server default. No-ops (status
+        ``n_starts`` is a multistart count >= 1; ``None`` uses the server default. ``refit`` says
+        the model has its parent's structure (see :func:`fitting.warm_start_guesses`). No-ops (status
         ``"skipped"``) when no engine is wired or ``auto_fit`` is off. A fit/simulation error
         propagates to the caller.
         """
@@ -1034,7 +1035,7 @@ class PetabSession:
                 "(or keep using the shipped free parameters) — then re-author with "
                 "make_changes."
             )
-        fitsim = fitting.fit_and_simulate(self, engine, do_fit=True, n_starts=starts)
+        fitsim = fitting.fit_and_simulate(self, engine, do_fit=True, n_starts=starts, refit=refit)
         # The multistart count this fit ACTUALLY used, so a caller never has to infer whether its
         # `n_starts` raised or lowered the server default (`n_starts` overrides it).
         fitsim["n_starts"] = starts
@@ -1503,7 +1504,7 @@ class PetabSession:
         from .parameters import structure_fingerprint
 
         structure_hash = structure_fingerprint(self.model.sbml_model, self.problem.parameter_df)
-        fit_key = D.reauthor_key(structure_hash, self.problem.parameter_df)
+        fit_key = D.reauthor_key(structure_hash, self.problem.parameter_df, starts)
         decision = D.decide(
             structure_hash=structure_hash,
             setup=D.estimation_setup_signature(self.problem.parameter_df),
@@ -1511,6 +1512,7 @@ class PetabSession:
             head_version=self.provenance.current_version,
             registry=D.build_registry(self),
             prior_attempts=self._fit_attempts.get(fit_key, 0),  # READ only; incremented on proceed
+            parent=self.derived_from,
         )
         return decision, fit_key
 
@@ -1551,10 +1553,10 @@ class PetabSession:
         current fitted version the refit is skipped and the stored metrics are returned
         (``committed: false, no_change: true``); a model identical to an EARLIER fitted version is
         refused, naming it, and HEAD stays put — in both cases unless this fit runs MORE
-        multistarts than that version did, which is a more thorough search and does run; a
-        structure revisited under another estimation setup warns that it is already committed and
-        scored; and the same structure fitted too many times is refused, to break an unproductive
-        loop.
+        multistarts than that version did, which is a more thorough search and does run; and the
+        same structure fitted too many times is refused, to break an unproductive loop. A model of
+        its parent's structure is a REFIT, and its multistart starts once from the parent's
+        optimum (see :func:`fitting.warm_start_guesses`).
         """
         from . import fitting, identifiability
         from .operations import _compile_fit_failure_message
@@ -1585,7 +1587,9 @@ class PetabSession:
             # the disk is full: the build directory is written to before the model is blamed,
             # since a build whose install step hit the quota fails only at the import after it.
             try:
-                fitsim, improvement = self._auto_fit_and_improvement(n_starts)
+                fitsim, improvement = self._auto_fit_and_improvement(
+                    n_starts, refit=decision["refit"]
+                )
             except Exception as exc:  # noqa: BLE001 - surface as a clean, actionable rejection
                 if isinstance(exc, PetabMcpError):
                     error = disk_full_error(exc) or exc

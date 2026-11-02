@@ -2040,14 +2040,19 @@ def change_parameters(
 ) -> dict[str, Any]:
     """Batch-edit the bounds and/or scale of one or more parameters in ONE atomic edit.
 
-    ``parameters`` is a non-empty list of per-parameter dicts, each naming ``parameter_id`` and any
+    ``parameters`` is a list of per-parameter dicts, each naming ``parameter_id`` and any
     of ``lower_bound`` / ``upper_bound`` (a bound edit — give BOTH or neither) and ``scale``
-    ('lin'|'log'|'log10'). Group everything that belongs to one coherent retuning into a single
+    ('lin'|'log'|'log10'); an empty one changes nothing, for a refit with more starts. Group
+    everything that belongs to one coherent retuning into a single
     call. Every per-parameter backstop still applies (a re-pinned parameter's 3rd widening, a
     noise-sigma cap, a log scale on a non-positive box); because the whole batch is atomic, one
     rejected entry reverts ALL of them and nothing changes. An EDIT: mutates the parameter table
     but does NOT fit — the fit that scores it is wired at the server layer, not here."""
-    normalized = _normalize_parameter_changes(parameters, current=session.problem.parameter_df)
+    normalized = (
+        _normalize_parameter_changes(parameters, current=session.problem.parameter_df)
+        if parameters
+        else []
+    )
     return _commit_change(
         session,
         "make_changes",

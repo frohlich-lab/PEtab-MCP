@@ -911,10 +911,13 @@ def previous_optima(problem, optimization: dict[str, Any] | None, x0) -> list[li
     return out
 
 
-def warm_start_guesses(problem, parameter_df, n_starts: int, optimization=None):
+def warm_start_guesses(problem, parameter_df, n_starts: int, optimization=None, refit=False):
     """``WARM_START_FRACTION`` of the multistart's start points, seeded from the PREVIOUS fit.
     Returns a ``(n_warm, dim_full)`` array — pyPESTO fills the first ``n_warm`` starts from it
     and samples the remaining ``n_starts - n_warm`` freshly.
+
+    A ``refit`` (a model of its parent's structure) gets ONE warm start, the parent's optimum
+    clipped into the box, and samples every other: see docs/RATIONALE.md (PEtab-MCP#194).
 
     The warm starts are seeded from the PREVIOUS fit's optima — and any parameter the previous
     fit did not have (one this edit just introduced) is NOT left at the reconcile-minted default.
@@ -962,7 +965,7 @@ def warm_start_guesses(problem, parameter_df, n_starts: int, optimization=None):
     # `None` means an all-free problem; an EMPTY list means an all-FIXED one. Collapsing the two
     # (a plain `or` falls back on both) would warm-start a problem with nothing to estimate.
     free = list(range(dim_full)) if free_idx is None else list(free_idx)
-    n_warm = int(n_starts * WARM_START_FRACTION)
+    n_warm = 1 if refit else int(n_starts * WARM_START_FRACTION)
     if n_warm < 1 or not free:
         return np.zeros((0, dim_full))
     # Every FREE parameter needs a usable nominal value. Where one is missing,
@@ -990,6 +993,8 @@ def warm_start_guesses(problem, parameter_df, n_starts: int, optimization=None):
         row[free] = np.clip(row[free], lb, ub)
         return row
 
+    if refit:
+        return np.asarray([_clipped(x0)])
     # The neutral candidates, then x0 itself, then the previous fit's other optima, best-first.
     # Deduplicated on the FREE coordinates: a multistart that converged many starts to
     # the same optimum would otherwise spend the warm half re-running one optimization. Compared
@@ -1100,7 +1105,7 @@ def parent_starts(problem, guesses, optimization) -> frozenset[str]:
     return frozenset(str(j) for j, row in enumerate(guesses) if np.array_equal(row[shared], at))
 
 
-def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
+def _run_fit(session, engine, n_starts: int, refit: bool = False) -> dict[str, Any]:
     """Estimate the free parameters with pyPESTO and write the best fit back.
 
     Writes the best start's (unscaled) values into ``nominalValue``. Returns the fit's
@@ -1157,11 +1162,17 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     # ...but ONLY when there is something to rescue the point WITH. With no newly-added
     # parameter there are no candidates, so a non-finite objective at the nominal point means
     # exactly what it used to: the warm half would be spent jittering around a region that just
-    # failed, where the fresh sample is the only way in.
-    _has_new = bool(set(problem.x_names) - set((session.optimization or {}).get("x_names") or []))
+    # failed, where the fresh sample is the only way in. A refit has no candidates either.
+    _has_new = not refit and bool(
+        set(problem.x_names) - set((session.optimization or {}).get("x_names") or [])
+    )
     guesses = (
         warm_start_guesses(
-            problem, session.problem.parameter_df, n_starts, optimization=session.optimization
+            problem,
+            session.problem.parameter_df,
+            n_starts,
+            optimization=session.optimization,
+            refit=refit,
         )
         if (objective_before is not None or (_has_new and session.optimization))
         else np.zeros((0, len(problem.x_names)))
@@ -1507,10 +1518,13 @@ def _committed_score_note(session, nll_sim: float | None) -> str | None:
     return note
 
 
-def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[str, Any]:
+def fit_and_simulate(
+    session, engine, *, do_fit: bool, n_starts: int, refit: bool = False
+) -> dict[str, Any]:
     """Fit (optional) and simulate, storing the result on ``session.simulation``.
 
-    ``do_fit`` runs the optimiser first (writing fitted ``nominalValue``s); either way a
+    ``do_fit`` runs the optimiser first (writing fitted ``nominalValue``s), warm-started as a
+    ``refit`` or not (see :func:`warm_start_guesses`); either way a
     single :meth:`AmiciEngine.residuals` call builds the per-point records. The returned
     payload (also stored on ``session.simulation``) is the *simulation dataframe* the stats
     tools read. Fitting is assumed to succeed: a fit/simulation error propagates so the
@@ -1522,7 +1536,7 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
     ``session.optimization`` (``None`` on a simulate-only pass).
     """
     with session.lock:
-        fit = _run_fit(session, engine, n_starts) if do_fit else None
+        fit = _run_fit(session, engine, n_starts, refit) if do_fit else None
         # The effective parameter count at the optimum the fit just froze (see
         # identifiability.effective_parameter_count). It reaches a client through the stored
         # version (build_sim_payload_for_version) and no agent-facing result — docs/RATIONALE.md.

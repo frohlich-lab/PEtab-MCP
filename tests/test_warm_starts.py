@@ -391,3 +391,16 @@ def test_previous_optima_are_projected_into_the_current_bounds():
     assert any(corner)
     # ...and the second, which clips to that SAME corner, is not spent a second time
     assert sum(corner) == 1
+
+
+def test_a_refit_starts_once_from_the_parent_optimum_and_samples_the_rest():
+    """REGRESSION (PEtab-MCP#194): a refit's structure is its parent's, so the half-warm multistart
+    re-entered basins the parent had already found and spent the starts asked for to leave one.
+    The one warm start is the parent's optimum clipped into the refit's box, even where the
+    previous fit lacks a parameter (a refit of an older version) and even at one start."""
+    prev = _prev([np.log10(0.5), np.log10(0.1)], [np.log10(9.0), np.log10(0.02)])
+    g = fitting.warm_start_guesses(
+        _nested_problem(), _nested_pdf(k1=1e6), 40, optimization=prev, refit=True
+    )
+    assert g == pytest.approx(np.array([[2.0, np.log10(0.1), 0.0]]))
+    assert fitting.warm_start_guesses(_problem(), _pdf(), 1, refit=True).shape == (1, 3)

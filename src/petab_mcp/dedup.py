@@ -10,9 +10,8 @@ recompile+fit, decides whether to
 * **skip** a no-op fit (byte-identical to the current version) — no fit, no new version;
 * **refuse** a model byte-identical to an EARLIER fitted version — that version stands for it,
   so there is no fit, no new version, and HEAD stays where it is;
-* **warn** when revisiting a structure already in the history under another estimation setup,
-  or a family whose best score was materially worse than the best model so far (the best model
-  is kept and scored regardless);
+* **warn** when revisiting a structure family whose best score was materially worse than the
+  best model so far (the best model is kept and scored regardless);
 * **terminate** an identical-fit loop after a few repeats (they cannot change anything).
 
 The heavy lifting is the pure :func:`decide` — it takes fingerprints + a small registry of
@@ -40,6 +39,9 @@ MAX_IDENTICAL_REAUTHORS = 3
 # current best. ~5 units is the conventional "positive evidence" threshold; every criterion is on
 # the same deviance scale (see :mod:`criteria`), so it holds for whichever one is active.
 WORSE_SCORE_MARGIN = 5.0
+
+#: How the refusals below say a model is refitted (``make_changes`` with no model route).
+_REFIT = "give it new bounds (`parameters`) or more starts than it ran (`n_starts`)"
 
 
 def estimation_setup_signature(parameter_df) -> tuple:
@@ -75,20 +77,22 @@ def estimation_setup_signature(parameter_df) -> tuple:
     return tuple(rows)
 
 
-def reauthor_key(structure_hash: str, parameter_df) -> str:
-    """Identity of an *identical re-author* — the same structure AND the same estimation setup,
-    so the fit is fully determined and would reproduce byte-for-byte.
+def reauthor_key(structure_hash: str, parameter_df, starts: int) -> str:
+    """Identity of an *identical re-author* — the same structure, the same estimation setup AND
+    the same multistart count, so the fit is fully determined and would reproduce byte-for-byte.
 
     The re-author loop guard counts attempts under this key rather than ``structure_hash`` alone.
     That distinction matters: ``structure_hash`` deliberately ignores bounds/scale, so counting on
     it would also count re-authoring the SAME structure with DIFFERENT bounds/scale — a legitimate
-    change that CAN move the fit (e.g. iterative bound widening) — and could refuse it. Keying on
-    (structure + setup) means only a genuinely identical re-author (which truly cannot change the
-    result) is counted toward termination.
+    change that CAN move the fit (e.g. iterative bound widening) — and could refuse it; the same
+    holds for a refit with more starts. Keying on (structure + setup + starts) means only a
+    genuinely identical re-author (which truly cannot change the result) is counted toward
+    termination.
     """
     from .parameters import sha16
 
-    return sha16(structure_hash + "\n" + repr(estimation_setup_signature(parameter_df)))
+    setup = repr(estimation_setup_signature(parameter_df))
+    return sha16(f"{structure_hash}\n{setup}\n{starts}")
 
 
 def build_registry(session) -> list[dict[str, Any]]:
@@ -166,6 +170,7 @@ def decide(
     head_version: int,
     registry: list[dict[str, Any]],
     prior_attempts: int,
+    parent: int | None = None,
 ) -> dict[str, Any]:
     """Decide what a ``set_model`` re-author should do — run AFTER reconcile+validate, BEFORE
     the fit. Pure: all state comes in as arguments.
@@ -177,6 +182,7 @@ def decide(
         head_version: the current HEAD version number.
         registry: prior committed versions (see :func:`build_registry`).
         prior_attempts: how many times this exact structure has already been authored this session.
+        parent: the version the candidate descends from, ``head_version`` when None.
 
     Returns one of:
         ``{"action": "terminate", "message": ...}`` — refuse; the caller loops on one structure.
@@ -184,7 +190,8 @@ def decide(
             byte-identical to the current HEAD: skip the recompile+fit and the new version.
         ``{"action": "refuse", "duplicate_of": v, "message": ...}`` — byte-identical to an
             earlier fitted version ``v``: no fit, no new version, and HEAD stays where it is.
-        ``{"action": "proceed", "warnings": [...]}`` — commit normally, attaching any advisories.
+        ``{"action": "proceed", "warnings": [...], "refit": bool}`` — commit normally, attaching
+            any advisories; ``refit`` when the candidate has its parent's structure.
     """
     # (d) An identical structure fit too many times cannot change anything — stop the loop.
     if prior_attempts >= MAX_IDENTICAL_REAUTHORS:
@@ -218,7 +225,7 @@ def decide(
             "message": (
                 f"This model is identical to the current version (v{head_version}); the fit was "
                 "not re-run (its metrics are unchanged — see get_fit_summary). To improve the fit, "
-                "change the STRUCTURE and fit again; an earlier model you already committed is "
+                f"change the STRUCTURE, or {_REFIT}; an earlier model you already committed is "
                 "kept regardless."
             ),
         }
@@ -230,7 +237,7 @@ def decide(
             "message": (
                 f"This model is identical to v{k}, which is fitted, kept and scored; it was not "
                 f"re-fitted and no version was made. To build on it, send your next change with "
-                f"`base_version={k}`."
+                f"`base_version={k}`; to refit it, {_REFIT}."
             ),
         }
 
@@ -241,20 +248,6 @@ def decide(
             f"The model is identical to v{hardest['version']}, but this fit runs {starts} "
             f"multistarts against its {hardest['n_starts']}, so it is being re-fit rather than "
             "skipped. If you did not mean to search harder, omit n_starts."
-        )
-    # Prior versions with this structure under ANOTHER setup, excluding the current HEAD
-    # (re-authoring HEAD's own structure with new bounds is a deliberate edit, not a revisit).
-    twin_versions = {r.get("version") for r in twins}
-    prior_versions = sorted(
-        v
-        for r in matches
-        if (v := r.get("version")) is not None and v != head_version and v not in twin_versions
-    )
-    if prior_versions:
-        warnings.append(
-            f"This model structure was already committed at version(s) {prior_versions} and is "
-            "kept regardless; re-fitting it just creates a duplicate — make a genuinely "
-            "different change instead."
         )
     # (b) The structure family already scored materially worse than the best model so far.
     family = _min_score_entry(matches)
@@ -274,4 +267,9 @@ def decide(
                 f"unlikely to beat the best (v{best.get('version')} is kept regardless) "
                 "— try a different structure."
             )
-    return {"action": "proceed", "warnings": warnings}
+    parent = head_version if parent is None else parent
+    return {
+        "action": "proceed",
+        "warnings": warnings,
+        "refit": any(r.get("version") == parent for r in matches),
+    }
