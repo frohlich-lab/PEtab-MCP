@@ -1964,14 +1964,14 @@ def slim_fit_payload(session, out: dict, version: int | None = None) -> dict:
     leaving the 84-118-entry dict riding on every one of them. Only `get_fit_summary`, which
     happens to build `version` into its own out dict, was ever slimmed.
 
-    Past what it shares with `get_fit_summary`, a fit result names a scale and an at-bound pin
-    only where it is new since the parent (:func:`_since_parent`)."""
+    Past what it shares with `get_fit_summary`, a fit result names a scale, an at-bound pin and a
+    merge hint only where it is new since the parent (:func:`_since_parent`)."""
     own = {**out, "version": version} if version is not None and "version" not in out else out
     scales = own.get("parameter_scales")
     parent = _slim_fitted_parameters(session, own)
     if parent is not None:
         own["parameter_scales"] = scales
-        _since_parent(own, parent)
+        _since_parent(session, own, *parent)
     return own if own is out else {k: v for k, v in own.items() if k != "version"}
 
 
@@ -1984,15 +1984,18 @@ def _sig(value: Any, digits: int = 4) -> Any:
     return float(f"{f:.{digits}g}") if math.isfinite(f) else value
 
 
-def _since_parent(out: dict, parent_df: Any) -> None:
-    """Cut a slimmed fit result's ``parameter_scales`` and ``parameters_at_bound`` to what is new
-    since the parent version, in place.
+def _since_parent(session, out: dict, parent_v: int, parent_df: Any) -> None:
+    """Cut a slimmed fit result's ``parameter_scales``, ``parameters_at_bound`` and
+    ``merge_hints`` to what is new since the parent version, in place.
 
     A scale is listed where the parameter is newly estimated or re-scaled, whether or not its value
     moved; an earlier result named every other one. A pin is listed unless the parent sat at the
     same side and bound, so a re-pin after a
-    widening still shows; ``n_parameters_at_bound`` counts every pin when any is left out.
+    widening still shows; ``n_parameters_at_bound`` counts every pin when any is left out. A hint is
+    listed unless the parent's fit priced the same pair as a hint too, re-priced or not;
+    ``n_merge_hints`` counts every hint when any is left out, beside a possibly empty list.
     Best-effort, like the slimming before it."""
+    _new_merge_hints(session, out, parent_v)
     try:
         parent_fitted = table_fitted_values(parent_df)
         prior = {pid: str(parent_df.loc[pid, PARAMETER_SCALE]) for pid in parent_fitted}
@@ -2015,6 +2018,29 @@ def _since_parent(out: dict, parent_df: Any) -> None:
         out["n_parameters_at_bound"] = len(pins)
 
 
+def _new_merge_hints(session, out: dict, parent_v: int) -> None:
+    """:func:`_since_parent`'s ``merge_hints`` cut. The parent's hints are re-derived from its
+    stored diagnosis (see :func:`identifiability.fit_diagnosis_block`), so they are the ones its own
+    fit result carried, and a parent without one leaves every hint new."""
+    from .identifiability import STORED_DIAGNOSIS_KEY, merge_hints
+
+    hints = out.get("merge_hints")
+    if not hints:
+        return
+    try:
+        stored = (session.provenance.get_version_simulation(parent_v) or {}).get(
+            STORED_DIAGNOSIS_KEY
+        )
+        prior = merge_hints(stored.get("diagnosis") if isinstance(stored, dict) else None) or []
+        seen = {frozenset(h["parameters"]) for h in prior}
+    except Exception:  # noqa: BLE001 - never degrade the score payload over a slimming aid
+        return
+    new = [h for h in hints if frozenset(h["parameters"]) not in seen]
+    out["merge_hints"] = new
+    if len(new) < len(hints):
+        out["n_merge_hints"] = len(hints)
+
+
 def _slim_fitted_parameters(session, out: dict) -> Any:
     """Replace the full fitted-values dict with a CHANGED-vs-previous-commit view, in place.
 
@@ -2033,7 +2059,7 @@ def _slim_fitted_parameters(session, out: dict) -> Any:
     first read is where the whole vector genuinely informs. Best-effort: any failure keeps the
     full dict, because a slimming aid must never degrade the score payload.
 
-    Returns the parent's parameter table when it slimmed, else ``None``.
+    Returns the parent's version and parameter table when it slimmed, else ``None``.
     """
     fitted = out.get("fitted_parameters")
     version = out.get("version")
@@ -2092,7 +2118,7 @@ def _slim_fitted_parameters(session, out: dict) -> Any:
         out["parameter_scales"] = {k: v for k, v in scales.items() if k in named}
     except Exception:  # noqa: BLE001 - never degrade the score payload over a slimming aid
         return None
-    return parent
+    return base_v, parent
 
 
 def fit_summary(session, engine) -> dict[str, Any]:
@@ -2220,11 +2246,9 @@ def compute_improvement(
 
     The returned block carries the ranked pair ``criterion``/``criterion_value`` beside the
     canonical ``bic``, and is stamped into the fit event and the version meta — which is what
-    lets a resumed session and the de-dup registry recover the score. Only those three: this block
-    rides on every fit result and is re-sent in the agent's history each turn, and the full
-    criterion table is already on the fit block (and in the version meta) one level up. It also
-    states its own gate: past the first fit, ``is_new_best`` is ``improvement_vs_best_prior``
-    (over ``best_prior_criterion_value``) reaching ``new_best_min_improvement``.
+    lets a resumed session and the de-dup registry recover the score. A fit result carries only
+    :data:`IMPROVEMENT_ON_RESULT` of it; the gate itself is a constant, stated in the
+    ``make_changes`` description.
     """
     fitsim = fitsim or {}
     scores = goodness_of_fit(
@@ -2243,7 +2267,6 @@ def compute_improvement(
     _best = session.best
     best_prior_score = _flt(_best.score) if _best else None
     best_prior_version = _best.version if _best else None
-    best_prior_nllh = _best.nll if _best else None
 
     self_improvement = None
     if objective_before is not None and nllh is not None:
@@ -2263,13 +2286,22 @@ def compute_improvement(
         "criterion_value": score,
         "best_prior_version": best_prior_version,
         "best_prior_criterion_value": best_prior_score,
-        "best_prior_neg_log_likelihood": best_prior_nllh,
         "improvement_vs_best_prior": improvement_vs_best_prior,
-        # The gate itself, so an `is_new_best: false` says what the fit needed: an improvement
-        # over `best_prior_criterion_value` of at least this.
-        "new_best_min_improvement": NEW_BEST_MIN_DELTA_SCORE,
         "is_new_best": is_new_best,
     }
+
+
+#: The :func:`compute_improvement` keys a fit result carries; the fit event and the version meta
+#: keep them all. The rest are the block's own ``neg_log_likelihood``/``bic``/``criterion_value``
+#: or follow from them: ``objective_before`` is nll + ``self_improvement``, the prior best's score
+#: is ``criterion_value`` + ``improvement_vs_best_prior``, and its version is
+#: ``progress.best_version`` unless ``is_new_best``.
+IMPROVEMENT_ON_RESULT = (
+    "self_improvement",
+    "improvement_vs_best_prior",
+    "is_new_best",
+    "new_best_declined",
+)
 
 
 def clears_new_best_bar(score: float | None, best_score: float | None) -> bool:
@@ -2479,12 +2511,10 @@ def fit_result_block(
         "parameter_scales": _parameter_scales_for(
             fitted, fitsim.get("parameter_scales"), parameter_df
         ),
-        # The ranked pair is stripped from the AGENT's copy: it is already at the top level of
-        # this block, and this dict is re-sent in the agent's history every turn (PR #23). The
-        # RAW `improvement` keeps it — the fit event is spread from that one, and the durable
-        # resume seeds its checkpoint off exactly those two keys.
+        # The RAW `improvement` keeps every key: the fit event is spread from it, and the durable
+        # resume seeds its checkpoint off its `criterion`/`criterion_value`.
         "improvement": (
-            {k: v for k, v in improvement.items() if k not in ("criterion", "criterion_value")}
+            {k: improvement[k] for k in IMPROVEMENT_ON_RESULT if k in improvement}
             if improvement
             else None
         ),

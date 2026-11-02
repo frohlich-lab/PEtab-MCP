@@ -109,17 +109,19 @@ def test_is_new_best_rejects_nll_gain_that_worsens_bic(session):
 
 def test_a_fit_short_of_a_new_best_says_what_it_needed(session):
     """`is_new_best: false` named no threshold, so a real but sub-threshold gain read as a flag
-    that never fires. The fit result the agent reads names the gate beside the score it had to
-    beat and the gain it made."""
+    that never fires. The fit result names the gain it made over the best, and the `make_changes`
+    description states the gate once: it is a constant, and every fit result is re-sent."""
+    from petab_mcp.server import _MAKE_CHANGES_DOC
+
     best = fitting.goodness_of_fit(-50.0, 18.0, 2, 20)["criterion_value"]
     session.best = _checkpoint(score=best, version=1, nll=-50.0)
     fs = _fitsim(-50.0 - NEW_BEST_MIN_DELTA_SCORE / 4, 18.0)  # ΔBIC = half the gate
     imp = fitting.compute_improvement(session, nllh=fs["neg_log_likelihood"], fitsim=fs)
     shown = fitting.fit_result_block(fs, imp)["improvement"]
+    assert set(shown) == {"self_improvement", "improvement_vs_best_prior", "is_new_best"}
     assert shown["is_new_best"] is False
-    assert shown["new_best_min_improvement"] == NEW_BEST_MIN_DELTA_SCORE
-    assert shown["best_prior_criterion_value"] == pytest.approx(best)
     assert shown["improvement_vs_best_prior"] == pytest.approx(NEW_BEST_MIN_DELTA_SCORE / 2)
+    assert f"`improvement_vs_best_prior` reaches {NEW_BEST_MIN_DELTA_SCORE:g}" in _MAKE_CHANGES_DOC
 
 
 # --- (b) streak cap + plateau + (c) best-BIC checkpoint ------------------------------------
@@ -405,6 +407,27 @@ def test_a_declined_new_best_is_not_stamped_as_one(session, monkeypatch):
     event = [e for e in session.provenance.recent_events() if e["type"] == "fit"][-1]
     assert meta["is_new_best"] is False and event["is_new_best"] is False
     assert session.op_history[-1]["is_new_best"] is False
+
+
+def test_a_fit_result_carries_only_the_progress_counters_that_move(session, monkeypatch):
+    """PEtab-MCP#208: the constants are in the `make_changes` description, `criterion` is on the fit
+    block, and the best's score and p-value are on the best's own result. `get_progress` is whole."""
+    fits = iter([_fitsim(-50.0, 18.0), _fitsim(-50.0, 18.0)])
+
+    def fit_numbers(n_starts=None):
+        fs = {**next(fits), "n_starts": n_starts, "fitted_parameters": {}}
+        return fs, fitting.compute_improvement(session, fs["neg_log_likelihood"], fitsim=fs)
+
+    monkeypatch.setattr(session, "_auto_fit_and_improvement", fit_numbers)
+    first = session.fit(n_starts=1)
+    res = session.fit(n_starts=2)
+    assert res["progress"] == {
+        "n_fitted_ops": 2,
+        "non_improving_streak": 1,
+        "best_version": first["version"],
+        "should_stop": False,
+    }
+    assert {"streak_cap", "plateau_window", "best_score"} <= set(session.progress_report())
 
 
 def test_a_plausible_new_best_after_gaming_resets_the_streak(session):

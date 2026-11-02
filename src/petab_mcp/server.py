@@ -58,7 +58,12 @@ from . import reconcile as reconcile_mod
 from . import regimes as regimes_mod
 from . import skills as skills_mod
 from . import validation_data as validation_data_mod
-from .constants import DEFAULT_AUTO_FIT_STARTS
+from .constants import (
+    DEFAULT_AUTO_FIT_STARTS,
+    NEW_BEST_MIN_DELTA_SCORE,
+    NON_IMPROVING_STREAK_CAP,
+    PLATEAU_WINDOW,
+)
 from .engine import AmiciEngine
 from .errors import (
     FIT_IN_PROGRESS,
@@ -1033,7 +1038,7 @@ _MAKE_CHANGES_PARAMETERS_ROUTE = (
     "route when a structural change needs bounds."
 )
 
-_MAKE_CHANGES_CONTRACT = """\
+_MAKE_CHANGES_CONTRACT = f"""\
 `n_starts` REPLACES the configured multistart count (`describe_problem` → \
 `fit_n_starts_default`) rather than adding to it: omit it unless you want MORE; below it fits \
 LESS hard.
@@ -1043,13 +1048,19 @@ model again (version N's with `base_version=N`) as a new version. One with neith
 
 ALL-OR-NOTHING: a change that is rejected, or whose fit produces no version, is REVERTED, so the \
 working model is always a scored one. The result IS the fit, flat, in `get_fit_summary`'s \
-fields, with the noise report, the parameters at a bound and the flagged observables cut to what \
-is flagged or new since the parent version. Read `applied` first: `false` → nothing moved — \
-rejected, reverted because the fit failed, or already an earlier fitted version; `error`/`issues` \
-says which, act on THAT. Then `committed`: `true` → a version exists, read its score; `false` \
-with `no_change` → this model already IS the current version, so change something else. \
-`messages` is everything the call had to say, in pipeline order, each tagged `level` and \
-`source`.
+fields, with the noise report, the parameters at a bound, the `merge_hints` and the flagged \
+observables cut to what is flagged or new since the parent version. Read `applied` first: \
+`false` → nothing moved — rejected, reverted because the fit failed, or already an earlier fitted \
+version; `error`/`issues` says which, act on THAT. Then `committed`: `true` → a version exists, \
+read its score; `false` with `no_change` → this model already IS the current version, so change \
+something else. `messages` is everything the call had to say, in pipeline order, each tagged \
+`level` and `source`.
+
+`improvement.is_new_best` marks the version that became the best, `progress.best_version`: the \
+first fit, then one whose `improvement_vs_best_prior` reaches {NEW_BEST_MIN_DELTA_SCORE:g} \
+unless `new_best_declined` says why not. `progress` is `get_progress`'s moving part: a \
+`non_improving_streak` of {NON_IMPROVING_STREAK_CAP} sets `should_stop`, and \
+`score_improvement_over_last_n` spans the last {PLATEAU_WINDOW} fits.
 
 The score's `k` is `n_estimated` + `hardcoded_constants`: a numeric literal in the model's math \
 is charged as a parameter too, bar a few structural ones, so freezing a fitted value costs what \

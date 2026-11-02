@@ -53,22 +53,11 @@ def served(tmp_path):
     return _server(tmp_path)
 
 
-def _start_objective(result: dict) -> float:
-    """The objective AT the fit's starting point, before the optimizer moves.
-
-    Lives under `improvement` (`compute_improvement`'s dict, nested by `fitting.py`), not at the
-    top level — and that block is `improvement or None`, so a simulate-only commit has no starting
-    objective at all. Asserted rather than indexed so a payload change fails with THAT as the
-    message instead of a bare KeyError in a test about warm starts."""
-    imp = result.get("improvement")
-    assert imp, (
-        f"the commit response carries no `improvement` block (keys: {sorted(result)}) — "
-        "without it there is no observable for which point a fork started from"
-    )
-    assert "objective_before" in imp, (
-        f"`improvement` no longer carries `objective_before` (keys: {sorted(imp)})"
-    )
-    val = imp["objective_before"]
+def _start_objective(prov: Path, result: dict) -> float:
+    """The objective AT the fit's starting point, before the optimizer moves: the version meta's
+    `objective_before`. A fit result leaves it out, as nll + `self_improvement`."""
+    meta = json.loads((prov / "versions" / f"v{result['version']}" / "meta.json").read_text())
+    val = meta.get("objective_before")
     assert val is not None, "objective_before is None: the starting point was not evaluated"
     return val
 
@@ -369,7 +358,7 @@ def test_a_fork_resumes_from_its_BASE_optimum_not_the_abandoned_branchs(served):
     optimizer moves: for a fork whose edit is numerically inert, it must land on v0's own fitted
     objective, not the abandoned v1's.
     """
-    mcp, _ = served
+    mcp, prov = served
     v0 = _call(
         mcp,
         "make_changes",
@@ -404,8 +393,8 @@ def test_a_fork_resumes_from_its_BASE_optimum_not_the_abandoned_branchs(served):
         },
     )
     assert fork.get("committed") is True, fork
-    assert _start_objective(fork) == pytest.approx(v0_nllh, rel=1e-6), (
-        f"the fork started from {(fork.get('improvement') or {}).get('objective_before')}, "
+    assert _start_objective(prov, fork) == pytest.approx(v0_nllh, rel=1e-6), (
+        f"the fork started from {_start_objective(prov, fork)}, "
         f"not v0's optimum {v0_nllh} — "
         f"it inherited the abandoned branch's point (v1 fit to {v1['neg_log_likelihood']})"
     )
@@ -446,7 +435,7 @@ def test_the_starting_point_comes_back_even_for_a_parameter_the_fork_rebounds(se
         },
     )
     assert fork.get("committed") is True, fork
-    assert _start_objective(fork) == pytest.approx(v0["neg_log_likelihood"], rel=1e-6), (
+    assert _start_objective(prov, fork) == pytest.approx(v0["neg_log_likelihood"], rel=1e-6), (
         "naming k1 in `parameters` cost the fork k1's restored starting point"
     )
     # ...and the caller's own box is the one that survived.

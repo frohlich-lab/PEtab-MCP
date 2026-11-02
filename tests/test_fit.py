@@ -245,6 +245,33 @@ def test_a_near_free_tie_reaches_the_fit_result_as_a_merge_hint_row(fit_session,
     assert fitting.fit_summary(sess, sess.engine)["merge_hints"] == hints
 
 
+def test_a_change_lists_the_ties_new_since_its_parent_and_counts_the_rest(fit_session, monkeypatch):
+    """PEtab-MCP#208: a tie the parent's own fit result already carried is counted in
+    `n_merge_hints`, not repeated, however it was re-priced; the score read keeps every one."""
+    from petab_mcp import fitting
+    from petab_mcp import operations as O
+
+    sess = fit_session
+
+    def widened_fit(upper):
+        O.change_parameters(
+            sess,
+            [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": upper}],
+            justification="widen k1",
+        )
+        return sess.fit(n_starts=2)
+
+    _stub_fim(monkeypatch, 1.0)
+    assert "merge_hints" not in sess.fit(n_starts=2)
+    _stub_fim(monkeypatch, 1e-9)
+    new = widened_fit(1e3)
+    assert [h["parameters"] for h in new["merge_hints"]] == [["k1", "k2"]]
+    assert "n_merge_hints" not in new
+    again = widened_fit(1e4)
+    assert again["merge_hints"] == [] and again["n_merge_hints"] == 1
+    assert fitting.fit_summary(sess, sess.engine)["merge_hints"][0]["parameters"] == ["k1", "k2"]
+
+
 def test_no_hints_when_no_tie_beats_the_parameter_charge(fit_session, monkeypatch):
     """ABSENT, not a null verdict — the same convention as noise_sigma_advice and
     nesting_advisory, so a fit with nothing to say costs nothing."""

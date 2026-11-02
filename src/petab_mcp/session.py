@@ -95,6 +95,19 @@ _SIGMA_COLLAPSED_ADVICE = (
     "residuals to ~0."
 )
 
+#: The :meth:`PetabSession.progress_report` keys a fit result carries, each only when set;
+#: ``get_progress`` has the rest. ``streak_cap`` and ``plateau_window`` are constants the
+#: ``make_changes`` description states, ``criterion`` is on the fit block, and the best's score and
+#: GoF p-value are on its own result.
+_PROGRESS_ON_RESULT = (
+    "n_fitted_ops",
+    "non_improving_streak",
+    "best_version",
+    "score_improvement_over_last_n",
+    "should_stop",
+    "stop_reason",
+)
+
 
 def _n_unique(df, column: str) -> int:
     """How many distinct ``column`` ids ``df`` names; 0 for an absent table."""
@@ -1331,7 +1344,7 @@ class PetabSession:
 
     def progress_report(self) -> dict[str, Any]:
         """A snapshot of the early-stop chain state — a client polls this to stop a stalled
-        session, and it is surfaced in each commit result so the agent sees progress every turn.
+        session, and each fit result carries its :data:`_PROGRESS_ON_RESULT` keys.
 
         ``should_stop`` (with a human-readable ``stop_reason``) is the deterministic early-stop
         signal: the hard non-improving-streak cap, or a plateau (the best model shown adequate, by
@@ -1743,7 +1756,11 @@ class PetabSession:
             "version": version,
             "warnings": warnings,
             "event_timestamp": event["timestamp"],
-            "progress": self.progress_report(),
+            "progress": {
+                k: v
+                for k, v in self.progress_report().items()
+                if k in _PROGRESS_ON_RESULT and v is not None
+            },
             # ABSENT when the variant is a clean nested extension — like `noise_sigma_advice`,
             # this key rides on every fit and is re-sent in the agent's history each turn
             # (PR #23), so it is one line only when there is something to say.
