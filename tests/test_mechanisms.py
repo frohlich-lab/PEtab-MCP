@@ -440,6 +440,14 @@ def test_a_written_rate_names_only_what_the_mechanism_allows():
             _written(f', "rate": "{rate}"')  # a repeated JSON key: the later one wins
 
 
+def test_a_written_rate_refuses_amount_and_says_it_reads_the_name_bare():
+    """`kf*amount(activated_by)` in a `rate` was refused as naming ['amount'] and nothing more, and
+    agents carried the scheme's `amount()` rule into it (6 of 7 problems, gemot round 3, #193)."""
+    with pytest.raises(MechanismError, match=r"`enz`, not `amount\(enz\)`") as exc:
+        _written(', "rate": "kcat*amount(enz) / Km"')
+    assert "takes no `amount()`" in str(exc.value)
+
+
 def test_a_refused_rate_name_comes_with_the_names_it_could_have_meant():
     with pytest.raises(MechanismError, match=r"Did you mean: kcatt -> 'kcat'"):
         _written(', "rate": "kcatt / (Km + enz)"')
