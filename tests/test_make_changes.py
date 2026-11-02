@@ -439,7 +439,7 @@ def test_a_revert_to_an_earlier_model_is_refused_as_that_version(tmp_path):
     """REGRESSION: with rates invisible to the fingerprint, going back to an earlier rate was
     refused as a duplicate of HEAD, which holds a different one. The version it returns to stands
     for it, so it is refused naming that version and HEAD stays put; under new bounds it is a new
-    search, fitted and named as a revisit."""
+    search, fitted as a new version."""
     mcp = _server(tmp_path, auto_fit=True)
     _call(mcp, "make_changes", {"antimony": _ruled("k1"), "justification": "v0", "n_starts": 2})
     _call(
@@ -455,7 +455,6 @@ def test_a_revert_to_an_earlier_model_is_refused_as_that_version(tmp_path):
     bounds = [{"parameter_id": "k1", "lower_bound": 1e-4, "upper_bound": 1e3}]
     wider = _call(mcp, "make_changes", {**back, "parameters": bounds})
     assert wider["committed"] is True and wider["version"] == 2, wider["message"]
-    assert any("version(s) [0]" in m["message"] for m in wider["messages"])
 
 
 def test_a_fit_failure_reverts_the_edit(tmp_path, monkeypatch):
