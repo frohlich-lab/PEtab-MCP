@@ -917,7 +917,9 @@ def warm_start_guesses(problem, parameter_df, n_starts: int, optimization=None, 
     and samples the remaining ``n_starts - n_warm`` freshly.
 
     A ``refit`` (a model of its parent's structure) gets ONE warm start, the parent's optimum
-    clipped into the box, and samples every other: see docs/RATIONALE.md (PEtab-MCP#194).
+    clipped into the box, and samples every other. The warm half below re-enters the parent's
+    basins so an edit cannot lose its parent's fit; a refit's basins ARE its parent's, so they
+    would spend the starts an agent asked for to leave a basin on finding it again (#194).
 
     The warm starts are seeded from the PREVIOUS fit's optima — and any parameter the previous
     fit did not have (one this edit just introduced) is NOT left at the reconcile-minted default.
