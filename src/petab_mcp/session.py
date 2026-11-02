@@ -1621,7 +1621,7 @@ class PetabSession:
                 criterion=self.criterion,
             ).get("chi2_gof_pvalue")
             # Residual-structure verdict of THIS fit (the sign/runs tests and the replicate
-            # lack-of-fit test, all of which survive estimated sigmas),
+            # lack-of-fit test),
             # computed ONCE here and stashed on fitsim like the noise flags below. Three consumers:
             # the compact rollup rides on the fit RESULT so the agent doesn't spend a
             # get_fit_diagnosis call to learn its model's form is still incomplete (issue #113);

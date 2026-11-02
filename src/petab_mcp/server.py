@@ -2131,7 +2131,11 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         |residual| and two sign-based structure tests (`sign_test`, `runs_test`, each with `p` and
         `low_power`), plus the `worst_n` worst points (measurement vs simulation) and the
         noise-sigma report. Read it for WHERE and HOW the fit is off, not WHETHER: the rolled-up
-        `residual_structure` verdict rides on the fit result. On a large problem `per_observable`
+        `residual_structure` verdict rides on the fit result. An estimated sigma absorbs misfit, so
+        two ranked pointers say where it did: `sigma_heterogeneity` (per sigma, a Levene `p` that
+        its series share one spread, and the series with the largest `rms` weighted residual) and
+        `noise_sigma.fitted_over_data_noise` (`low_power` on few points); `structure_tests_caveat`
+        says when no structure flag is weak evidence. On a large problem `per_observable`
         is a worst-first subsample (`max_observables` by chi2, plus a few by bias and structure
         flag, with an `omitted` block); `max_observables=0` returns every row.
 

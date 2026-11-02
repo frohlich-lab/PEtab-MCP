@@ -1,5 +1,5 @@
-"""Residual-structure tests: the sign test, the Wald–Wolfowitz runs test, and the replicate
-lack-of-fit test.
+"""Residual-structure tests: the sign test, the Wald–Wolfowitz runs test, the replicate
+lack-of-fit test, and a per-sigma variance-heterogeneity test.
 
 These answer "do the residuals still show systematic structure?" — the half of the
 fit-adequacy question the magnitude-based scores (``reduced_chi2``, the χ² GoF p-value,
@@ -30,13 +30,17 @@ no answer leak).
   reach on a steady-state problem, where a design point IS an observable and every series has
   length 1 (see :func:`replicate_lack_of_fit`).
 
+* **Variance heterogeneity** — whether the series one estimated noise sigma covers share one
+  spread of weighted residuals (:func:`sigma_heterogeneity`), naming the series it was inflated
+  for. It feeds no gate: it ranks where to look.
+
 Everything here is pure numeric code over lists of numbers; :mod:`petab_mcp.data_access`
 feeds it the per-point residuals (and :mod:`petab_mcp.reconcile` the per-point replicate
 statistics, on the coordinate where the noise is additive) and surfaces the results through
 the ``fit`` result's ``residual_structure`` verdict (the per-observable detail behind it goes
 out through ``get_fit_diagnosis``).
 
-ALL THREE TESTS FEED THE SESSION'S PLATEAU-ADEQUACY GATE, through the one ``flagged_observables``
+THE FIRST THREE FEED THE SESSION'S PLATEAU-ADEQUACY GATE, through the one ``flagged_observables``
 list ``session.py`` reads via ``data_access.residual_flag`` — the sign/runs tests have fed it since
 PR #111 (underfits that plateau-stopped as "adequate" with a plausible sigma while flagging
 structured residuals), and the replicate test joins the same list rather than adding a gate.
@@ -527,4 +531,54 @@ def replicate_lof_unavailable(
         "max_abs_z": None,
         "min_p_holm": None,
         "points": [],
+    }
+
+
+# -- variance heterogeneity across the series one noise sigma covers ----------------------------
+
+#: Fewest finite weighted residuals a series needs to enter :func:`sigma_heterogeneity`.
+HETEROGENEITY_MIN_SERIES_N = 2
+
+
+def sigma_heterogeneity(series: dict[str, list[float]]) -> dict[str, Any] | None:
+    """Whether one noise sigma fits every series it covers: Levene's test about ZERO, i.e. a one-way
+    ANOVA of ``|r|`` across the series, ``r`` the weighted residuals.
+
+    ``series`` maps a label to one series' weighted residuals. Under a correct model with one shared
+    sigma every ``r`` has the same spread about 0 whichever series it is in; a sigma inflated to
+    absorb one badly fitted series leaves that series' ``|r|`` larger than the rest. Returns
+    ``{p, n_series, worst}``, ``worst`` every tested series as ``{series, n, rms}`` (``rms`` of its
+    ``r``, against about 1 over the whole sigma at its ML value), largest first; ``None`` below two
+    series of :data:`HETEROGENEITY_MIN_SERIES_N` points. The p is a ranked pointer: nothing flags or
+    gates on it (see docs/RATIONALE.md, #195).
+    """
+    import warnings
+
+    from scipy.stats import f_oneway
+
+    groups: dict[str, list[float]] = {}
+    for label, values in series.items():
+        finite = []
+        for v in values:
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(f):
+                finite.append(f)
+        if len(finite) >= HETEROGENEITY_MIN_SERIES_N:
+            groups[label] = finite
+    if len(groups) < 2:
+        return None
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # every |r| equal: scipy warns and returns nan
+        p = float(f_oneway(*([abs(f) for f in v] for v in groups.values())).pvalue)
+    rms = {label: math.sqrt(math.fsum(f * f for f in v) / len(v)) for label, v in groups.items()}
+    return {
+        "p": _sig3(p) if math.isfinite(p) else None,
+        "n_series": len(groups),
+        "worst": [
+            {"series": label, "n": len(groups[label]), "rms": round(rms[label], 3)}
+            for label in sorted(groups, key=rms.__getitem__, reverse=True)
+        ],
     }
