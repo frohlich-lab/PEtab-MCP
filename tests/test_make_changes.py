@@ -1105,6 +1105,28 @@ def test_list_mechanisms_without_types_is_an_index_of_their_parameters(tmp_path)
     )
 
 
+def test_a_written_mechanism_the_placeholder_cannot_build_stays_listed():
+    """A scheme reading a partner only its row's statement names (`amount(PTEN)`) fails on the
+    placeholder statement; the index lists it by what it declares and its type's rules show it as
+    written (review of #198). ActiveForm's built-ins, which build no rule, stay out."""
+    from types import SimpleNamespace
+
+    from petab_mcp.server import _mechanisms_text
+
+    scheme = "enz() + sub(mod='off') >> enz() + sub(mod='on') @ kf/(1 + amount(PTEN)/Ki)"
+    session = SimpleNamespace(mechanisms={("Phosphorylation", "pten"): {
+        "statement_type": "Phosphorylation", "policy": "pten", "scheme": scheme,
+        "parameters": ["kf", "Ki"]}})
+    index = _mechanisms_text(session, None).splitlines()
+    assert "Phosphorylation: basal(k), indra_default(kf), indra_interactions_only(kf), " \
+        "indra_michaelis_menten(Km, kc), indra_two_step(kc, kf, kr), processive(kf), " \
+        "pten(Ki, kf) (written this run)" in index
+    assert not any(line.startswith("ActiveForm") for line in index)
+    assert (
+        f"Phosphorylation | pten (written this run) | parameters: Ki, kf\n  {scheme}"
+    ) in _mechanisms_text(session, ["Phosphorylation"])
+
+
 def test_a_library_gap_is_its_own_rejection(tmp_path):
     """A pair the library does not hold must stay countable apart from a malformed call — it is
     the to-do list for the library. INDRA's default asked of a type INDRA does not have is one."""

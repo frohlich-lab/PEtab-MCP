@@ -1218,18 +1218,26 @@ def _mechanisms_text(session, statement_types: list[str] | None) -> str:
         return f"no mechanism for {', '.join(unknown)}; the statement types are {known}"
     blocks, index = [], {}
     for stmt_type, policy in sorted(k for k in library if k[0] in (statement_types or known)):
-        written = " (written this run)" if (stmt_type, policy) in session.mechanisms else ""
+        definition = session.mechanisms.get((stmt_type, policy))
         try:
             text = schemes.describe(stmt_type, policy, library)
+            names = schemes.rate_parameters(text)
         except MechanismError as exc:
-            text = f"({exc})"
-        names = [] if text.startswith("(") else schemes.rate_parameters(text)
+            if definition is None:
+                # A built-in that builds no rule for this type (ActiveForm's): no row can use it.
+                text, names = f"({exc})", None
+            else:
+                # A written one reading what only its own statement names (`amount(PTEN)` of a
+                # partner), absent from the placeholder: as written, with what it declares.
+                text = definition.get("scheme") or f"({exc})"
+                names = sorted(definition.get("parameters") or ())
+        written = " (written this run)" if definition is not None else ""
         if statement_types:
             header = f"{stmt_type} | {policy}{written}"
             if names:
                 header += f" | parameters: {', '.join(names)}"
             blocks.append(header + "\n" + "\n".join(f"  {line}" for line in text.splitlines()))
-        elif not text.startswith("("):
+        elif names is not None:
             index.setdefault(stmt_type, []).append(f"{policy}({', '.join(names)}){written}")
     if statement_types:
         return "\n".join(blocks)
