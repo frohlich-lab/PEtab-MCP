@@ -1598,6 +1598,19 @@ class PetabSession:
                     f"cap: {killed} of {starts}. They count as failed starts, and the fit is "
                     f"scored from the other {starts - killed}.",
                 ]
+            # Most starts out of time: Fides' MAXTIME, or stopped past the cap.
+            timed_out = (fitsim.get("exitflag_counts") or {}).get("ExitFlag.MAXTIME", 0) + (
+                killed or 0
+            )
+            if 2 * timed_out > starts:
+                warnings = [
+                    *warnings,
+                    f"{timed_out} of {starts} starts ran out of the "
+                    f"{fitting.FIT_PER_START_TIMEOUT_S:.0f}s per-start time limit (MAXTIME). More "
+                    "starts will not fix that: the limit applies to each start, so added starts "
+                    "hit it too. The usual causes are a stiff or badly scaled model, or bounds "
+                    "that allow extreme rates.",
+                ]
 
             staged = list(staged_edits or [])
             nllh = fitsim.get("neg_log_likelihood")
