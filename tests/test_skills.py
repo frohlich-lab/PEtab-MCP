@@ -142,6 +142,24 @@ def test_every_skill_the_instructions_name_is_bundled(tmp_path):
     assert "reading-fits" in named and named <= bundled, sorted(named - bundled)
 
 
+def test_a_route_skill_is_registered_and_named_only_where_its_route_is_offered(tmp_path):
+    """The `statements` grammar was taught by refusals alone, 4-14 per run before the first fit
+    (gemot round 3, #193); a server without the route neither lists the skill nor names it."""
+    entity_map = tmp_path / "entities.json"
+    entity_map.write_text("{}")
+    offered = create_server(
+        str(YAML_PATH),
+        provenance_dir=str(tmp_path / "prov2"),
+        resolver=StubReferenceResolver(),
+        skills_dir=str(SKILLS_DIR),
+        entity_map=str(entity_map),
+    )
+    for mcp, shown in ((_server(tmp_path), False), (offered, True)):
+        listed = _unwrap(_structured(asyncio.run(mcp.call_tool("list_skills", {}))))
+        assert ("statements-grammar" in {s["name"] for s in listed}) is shown
+        assert ("get_skill('statements-grammar')" in mcp.instructions) is shown
+
+
 # -- MCP exposure ----------------------------------------------------------
 def test_skill_tools_registered(tmp_path):
     mcp = _server(tmp_path)

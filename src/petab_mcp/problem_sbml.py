@@ -142,7 +142,10 @@ def to_antimony(
     # Seed agents join the monomer pass (they may name a site or partner no row does); they are
     # not readouts, so they stay out of `entities` below.
     model, emissions = M.assemble(
-        rows, {**entities, **{f"__seed_{name}": agent for name, agent, _ in seeds}}, library
+        rows,
+        {**entities, **{f"__seed_{name}": agent for name, agent, _ in seeds}},
+        library,
+        targets - entities.keys(),
     )
     _refuse_chains(model, emissions)
     made, synthesised, converted = set(), set(), set()
@@ -176,6 +179,8 @@ def to_antimony(
     )
     if seeded:
         return model, emissions
+    # Read before the reduction rewrites the rules: what a row that never fires is told.
+    sites = _site_states(model, emissions)
     # What the experiment sets stays whole (:mod:`reduction`): a form the conditions or a protocol
     # set.
     whole = set(set_keys.values())
@@ -259,6 +264,12 @@ def to_antimony(
     fired = reduction.fired(model, reduced, present)
     never = []
     stuck = sorted({e.prefix for e in emissions if not fired.issuperset(e.rules)})
+    misnamed = {
+        e.prefix: hint
+        for e in emissions
+        if e.prefix in stuck
+        and (hint := _misnamed(e.prefix, [r for r in e.rules if r not in fired], *sites))
+    }
     if stuck:
         # Named with the form each needs, which nothing forms: "never fire" alone does not say
         # what to add (a translocation row whose cargo must first be modified).
@@ -279,13 +290,22 @@ def to_antimony(
         unformed = "; ".join(f"{sp}: {patterns[f'readout_{sp}']}" for sp in unread)
         never.append(f"readouts {unread} read no species ({unformed})")
     if never:
+        generic = (
+            "At t = 0 the model holds free, unmodified molecules and what `seeds` declares, and a "
+            "rule fires only on what the statements form from there: one that never fires needs a "
+            "complex or a modified form that nothing forms, like a kinase active only while bound "
+            "to a partner nothing binds it to. Add the statement that forms it, or, if it is "
+            "present at t=0, declare it in `seeds`."
+        )
+        explained = misnamed.keys() == set(stuck) and not unread
         raise ModelUpdateError(
-            f"In the model these statements build, {' and '.join(never)}. At t = 0 the model holds "
-            "free, unmodified molecules and what `seeds` declares, and a rule fires only on what "
-            "the statements form from there: one that never fires needs a complex or a modified "
-            "form that nothing forms, like a kinase active only while bound to a partner nothing "
-            "binds it to. Add the statement that forms it, or, if it is present at t=0, declare it "
-            "in `seeds`."
+            " ".join(
+                [
+                    f"In the model these statements build, {' and '.join(never)}.",
+                    *misnamed.values(),
+                    *([] if explained else [generic]),
+                ]
+            )
         )
     for e in emissions:
         for name, written in e.amounts.items():
@@ -823,6 +843,56 @@ def _number_reactions(sbml_model) -> None:
         prefix += "_"
     for i, reaction in enumerate(reactions):
         reaction.setId(f"{prefix}{i}")
+
+
+def _states(patterns) -> set[tuple[str, str, str]]:
+    """``(molecule, site, state)`` of each site the complex ``patterns`` give a state."""
+    out = set()
+    for cp in patterns:
+        for mp in cp.monomer_patterns if cp is not None else ():
+            for site, state in mp.site_conditions.items():
+                state = state[0] if isinstance(state, tuple) else state
+                if isinstance(state, str):
+                    out.add((mp.monomer.name, site, state))
+    return out
+
+
+def _site_states(model: pysb.Model, emissions) -> tuple[dict, dict]:
+    """Each rule's site states it reads, and each site state, to the rows whose rules put it there
+    (``None`` for a starting amount)."""
+    reads, puts = {}, {}
+    row = {rule: e.prefix for e in emissions for rule in e.rules}
+    for rule in model.rules:
+        before = _states(rule.reactant_pattern.complex_patterns)
+        after = _states(rule.product_pattern.complex_patterns)
+        reads[rule.name] = before
+        for state in (after - before) | ((before - after) if rule.is_reversible else set()):
+            puts.setdefault(state, set()).add(row.get(rule.name))
+    for initial in model.initials:
+        for state in _states([initial.pattern]):
+            puts.setdefault(state, set()).add(None)
+    return reads, puts
+
+
+def _misnamed(prefix: str, rules: list[str], reads: dict, puts: dict) -> str:
+    """Why row ``prefix``'s ``rules`` never fire where a phosphorylation they read is put on
+    another site of the same molecule: a writer and a reader naming the site apart (`at Y1068` and
+    `E{p}`). Phosphorylation only: the other modifications share the states 'n'/'y', so a 'y' on
+    another site may be another modification."""
+    for molecule, site, state in sorted(set().union(*(reads[r] for r in rules))):
+        if state != "p" or (molecule, site, state) in puts:
+            continue
+        for (m, other, s), writers in sorted(puts.items(), key=str):
+            if m == molecule and s == state and other != site:
+                by = sorted(w for w in writers if w is not None)
+                return (
+                    f"Row {prefix!r} reads {molecule}'s site `{site}` as '{state}', which nothing "
+                    f"puts there, while {f'rows {by}' if by else 'a seed'} put '{state}' on its site "
+                    f"`{other}`: a phosphorylation sits on the site its statement names, by "
+                    "residue and position, or `phospho` where it names none. Name the same residue "
+                    "and position in both rows, or none in either; a seed joins no two sites."
+                )
+    return ""
 
 
 def _monomer_names(reaction_pattern) -> set[str]:

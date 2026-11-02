@@ -67,7 +67,13 @@ from .errors import (
     ValidationError,
     disk_full_error,
 )
-from .formatting import df_to_records, summarize_measurements
+from .formatting import (
+    conditions_tsv,
+    df_to_records,
+    df_to_tsv,
+    experiments_tsv,
+    summarize_measurements,
+)
 from .session import PetabSession
 
 # Deliberately SHORT. These instructions are re-sent to the client on every turn, and each
@@ -99,6 +105,12 @@ _SKILLS_INSTRUCTION = (
     "`get_skill('petab-model-building')` for the full tool-usage workflow; "
     "`get_skill('reading-fits')` says what a fit result's scores, flags and diagnosis mean, and "
     "how to summarise the fit's tables in SQL."
+)
+#: Appended where the `statements` route is offered, with the skill only it registers.
+_STATEMENTS_SKILL_INSTRUCTION = (
+    " Before your first `statements` call, read `get_skill('statements-grammar')`: a row and its "
+    "binding, a condition input, regulators, a `rate` beside a `scheme`, and `seeds` beside "
+    "`set_amount`, by example."
 )
 
 
@@ -350,6 +362,9 @@ class StatementEdit(BaseModel):
         default=None, description="set_readout: the readout id."
     )
     formula: str | None = Field(default=None, description="set_readout: its formula.")
+    # Not in the schema, and refused when given (operations.apply_statement_edits): a starting
+    # amount is a seed's, which `set_amount` does not declare.
+    amount: SkipJsonSchema[Any] = None
 
 
 # Provider serialisation artefact: some clients emit a list-typed argument wrapped in a
@@ -888,36 +903,38 @@ def _register_read_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         return session.describe()
 
     @mcp.tool(annotations=_READ_ONLY)
-    def list_observables() -> list[dict[str, Any]]:
-        """The (fixed) observables: id, formula, noise model, and `observableName`, WHAT each one
-        measures. A formula naming a `readout_*` symbol is a measurement mapping YOUR model must
-        define (`readout_x := <expression of your states>`); several observables may share one
-        readout (one per dataset/gel, differing only in shipped scalings), and one rule covers them
-        all. Scalings, offsets and the noise model are fixed parts of the assay.
+    def list_observables() -> str:
+        """The (fixed) observables as a TSV table: id, formula, noise model, and `observableName`,
+        WHAT each one measures. A formula naming a `readout_*` symbol is a measurement mapping YOUR
+        model must define (`readout_x := <expression of your states>`); several observables may
+        share one readout (one per dataset/gel, differing only in shipped scalings), and one rule
+        covers them all. Scalings, offsets and the noise model are fixed parts of the assay.
         """
         ctx = route()
         session = ctx.session
-        return df_to_records(session.problem.observable_df)
+        return df_to_tsv(session.problem.observable_df)
 
     @mcp.tool(annotations=_READ_ONLY)
-    def list_conditions() -> list[dict[str, Any]]:
-        """The (fixed) conditions, one row per change a condition makes: it sets `targetId` (a model
-        parameter, species or compartment) to `targetValue` — a dose, an input level, a switch.
-        Your model must define every target BY NAME, and a condition-set initial is an experimental
-        input to reproduce, not a value to fit. WHEN a condition applies is `list_experiments`."""
+    def list_conditions() -> str:
+        """The (fixed) conditions as a TSV table, one row per condition and one column per target
+        it sets (a model parameter, species or compartment) to that row's value — a dose, an input
+        level, a switch; blank where the condition does not set the target. Your model must define
+        every target BY NAME, and a condition-set initial is an experimental input to reproduce,
+        not a value to fit. WHEN a condition applies is `list_experiments`."""
         ctx = route()
         session = ctx.session
-        return df_to_records(session.problem.condition_df)
+        return conditions_tsv(session.problem.condition_df)
 
     @mcp.tool(annotations=_READ_ONLY)
-    def list_experiments() -> list[dict[str, Any]]:
-        """The (fixed) experiments, one row per period: from `time` on, experiment `experimentId`
-        applies condition `conditionId` (none: the model as is). `time` -inf is a
-        pre-equilibration to steady state before the experiment starts. Every measurement names
-        the experiment it was taken in; an empty `experimentId` simulates the model as is."""
+    def list_experiments() -> str:
+        """The (fixed) experiments as a TSV table, one row per period: from `time` on, experiment
+        `experimentId` applies every condition `conditionId` lists, space-separated (none: the
+        model as is). `time` -inf is a pre-equilibration to steady state before the experiment
+        starts. Every measurement names the experiment it was taken in; an empty `experimentId`
+        simulates the model as is."""
         ctx = route()
         session = ctx.session
-        return df_to_records(session.problem.experiment_df)
+        return experiments_tsv(session.problem.experiment_df)
 
     @mcp.tool(annotations=_READ_ONLY)
     def get_measurements(
@@ -1195,30 +1212,48 @@ def _make_changes_statements_doc(bound: bool = True, held: dict[str, Any] | None
     )
 
 
-def _mechanisms_text(session, statement_type: str | None) -> str:
-    """The library, and the run's written mechanisms, each as its scheme (:mod:`schemes`)."""
+def _mechanisms_text(session, statement_types: list[str] | None) -> str:
+    """The library, and the run's written mechanisms: those of ``statement_types`` each as its
+    scheme (:mod:`schemes`), or without them an index, each statement type's mechanisms with their
+    parameters, one line for the types whose entries are the same."""
     from . import mechanisms, schemes
     from .errors import MechanismError
 
     library = dict(mechanisms.REGISTRY)
     for key, definition in session.mechanisms.items():
         library[key] = mechanisms.written(definition, library)
-    keys = sorted(k for k in library if statement_type in (None, k[0]) and k[0] not in schemes.ABSTRACT)
-    if not keys:
-        known = sorted({t for t, _ in library} - schemes.ABSTRACT)
-        return f"no mechanism for {statement_type!r}; the statement types are {known}"
-    blocks = []
-    for stmt_type, policy in keys:
-        written = " (written this run)" if (stmt_type, policy) in session.mechanisms else ""
+    known = sorted({t for t, _ in library} - schemes.ABSTRACT)
+    if unknown := sorted(set(statement_types or ()) - set(known)):
+        return f"no mechanism for {', '.join(unknown)}; the statement types are {known}"
+    blocks, index = [], {}
+    for stmt_type, policy in sorted(k for k in library if k[0] in (statement_types or known)):
+        definition = session.mechanisms.get((stmt_type, policy))
         try:
             text = schemes.describe(stmt_type, policy, library)
+            names = schemes.rate_parameters(text)
         except MechanismError as exc:
-            text = f"({exc})"
-        header = f"{stmt_type} | {policy}{written}"
-        if not text.startswith("(") and (names := schemes.rate_parameters(text)):
-            header += f" | parameters: {', '.join(names)}"
-        blocks.append(header + "\n" + "\n".join(f"  {line}" for line in text.splitlines()))
-    return "\n".join(blocks)
+            if definition is None:
+                # A built-in that builds no rule for this type (ActiveForm's): no row can use it.
+                text, names = f"({exc})", None
+            else:
+                # A written one reading what only its own statement names (`amount(PTEN)` of a
+                # partner), absent from the placeholder: as written, with what it declares.
+                text = definition.get("scheme") or f"({exc})"
+                names = sorted(definition.get("parameters") or ())
+        written = " (written this run)" if definition is not None else ""
+        if statement_types:
+            header = f"{stmt_type} | {policy}{written}"
+            if names:
+                header += f" | parameters: {', '.join(names)}"
+            blocks.append(header + "\n" + "\n".join(f"  {line}" for line in text.splitlines()))
+        elif names is not None:
+            index.setdefault(stmt_type, []).append(f"{policy}({', '.join(names)}){written}")
+    if statement_types:
+        return "\n".join(blocks)
+    types_by_entries: dict[str, list[str]] = {}
+    for stmt_type, entries in index.items():
+        types_by_entries.setdefault(", ".join(entries), []).append(stmt_type)
+    return "\n".join(f"{', '.join(t)}: {entries}" for entries, t in types_by_entries.items())
 
 
 def _statement_record(session, version: int | None) -> dict | None:
@@ -1315,18 +1350,23 @@ def _register_model_tools(
     if statements:
 
         @mcp.tool(annotations=_READ_ONLY)
-        def list_mechanisms(statement_type: str | None = None) -> str:
-            """Every mechanism a `statements` row can use, as the PySB rules it builds, for one
-            `statement_type` or all: the library's own and those written this run. Read it before
-            choosing a row's policy, and to write a new one as a `scheme`: copy the nearest entry
-            and edit it. Each is written over the statement type's ROLES; `@` gives the rate, and
-            a name in it is one of the `parameters` its header lists, which a row's binding binds
-            as `kf=...` (`bindings={'r1': 'two_step kf=k_on'}`). A scheme reads no agent its row's
-            statement does not name: a molecule other than a role is a partner the statement writes
-            a role bound or not bound to (`C` of `enz{~C}`) or a regulator the statement states,
-            which `amount(inhibited_by)` reads and the rules bind as the molecule `inhibited_by`.
+        def list_mechanisms(
+            statement_types: Annotated[list[str] | None, BeforeValidator(_unwrap_listish)] = None,
+        ) -> str:
+            """The mechanisms a `statements` row can use: the library's own and those written this
+            run. Without `statement_types`, an index: each statement type's mechanisms with the
+            `parameters` each declares, `policy(parameters)`, one line for the types whose entries
+            are the same. With them, each of those types' mechanisms as the PySB rules it builds.
+            Read the rules of the types your rows use before choosing a row's policy, and to write
+            a new one as a `scheme`: copy the nearest entry and edit it. Each is written over the
+            statement type's ROLES; `@` gives the rate, and a name in it is one of the `parameters`
+            its header lists, which a row's binding binds as `kf=...` (`bindings={'r1': 'two_step
+            kf=k_on'}`). A scheme reads no agent its row's statement does not name: a molecule
+            other than a role is a partner the statement writes a role bound or not bound to (`C`
+            of `enz{~C}`) or a regulator the statement states, which `amount(inhibited_by)` reads
+            and the rules bind as the molecule `inhibited_by`.
             """
-            return _mechanisms_text(route().session, statement_type)
+            return _mechanisms_text(route().session, statement_types)
 
     @mcp.tool(annotations=_READ_ONLY, description=_get_model_doc(statements))
     def get_model(format: str = "antimony", version: int | None = None) -> str:
@@ -2710,8 +2750,19 @@ def create_server(
     # Load tool-usage skills up front so the server instructions only advertise
     # `list_skills`/`get_skill` when skills are actually available (registered below).
     resolved_skills_dir = skills_dir or skills_mod.default_skills_dir()
-    skills = skills_mod.load_skills(resolved_skills_dir)
-    instructions = SERVER_INSTRUCTIONS + (_SKILLS_INSTRUCTION if skills else "")
+    # Offered whenever a map was given, even an empty one: a problem whose observables all read
+    # formulas, and whose seeds are the statements' own, binds nothing in it.
+    statements = entity_map is not None
+    skills = [
+        s
+        for s in skills_mod.load_skills(resolved_skills_dir)
+        if s.route is None or (s.route == "statements" and statements)
+    ]
+    instructions = (
+        SERVER_INSTRUCTIONS
+        + (_SKILLS_INSTRUCTION if skills else "")
+        + (_STATEMENTS_SKILL_INSTRUCTION if any(s.name == "statements-grammar" for s in skills) else "")
+    )
     mcp = FastMCP(
         "petab-mcp",
         instructions=instructions,
@@ -2728,9 +2779,7 @@ def create_server(
         return ctx
 
     _register_read_tools(mcp, route)
-    # Offered whenever a map was given, even an empty one: a problem whose observables all read
-    # formulas, and whose seeds are the statements' own, binds nothing in it.
-    _register_model_tools(mcp, route, statements=entity_map is not None)
+    _register_model_tools(mcp, route, statements=statements)
     _register_parameter_tools(mcp, route)
     _register_fit_tools(mcp, route)
     if ctx.held_out is not None:
