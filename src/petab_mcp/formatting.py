@@ -1,4 +1,4 @@
-"""Helpers to turn PEtab/pandas objects into compact, JSON-serializable records.
+"""Helpers to turn PEtab/pandas objects into compact, JSON-serializable records or TSV text.
 
 MCP tool results must be plain JSON. The problem's tables are pandas DataFrames (``None``
 when a table is absent), and numpy/sympy/enum values need stringifying. These helpers
@@ -11,7 +11,15 @@ import math
 from typing import Any
 
 import pandas as pd
-from petab.v2.C import EXPERIMENT_ID, MEASUREMENT, OBSERVABLE_ID, TIME
+from petab.v2.C import (
+    CONDITION_ID,
+    EXPERIMENT_ID,
+    MEASUREMENT,
+    OBSERVABLE_ID,
+    TARGET_ID,
+    TARGET_VALUE,
+    TIME,
+)
 
 
 def finite_float(value: Any) -> float | None:
@@ -76,6 +84,34 @@ def df_to_records(df: "pd.DataFrame | None") -> list[dict[str, Any]]:
             record[str(col)] = _clean(val)
         records.append(record)
     return records
+
+
+def df_to_tsv(df: "pd.DataFrame | None") -> str:
+    """A table as TSV text, a missing cell empty and a named index its first column, as in
+    :func:`df_to_records`; ``"(none)"`` for an absent or empty table."""
+    if df is None or len(df) == 0:
+        return "(none)"
+    return df.to_csv(sep="\t", index=df.index.name is not None, lineterminator="\n")
+
+
+def conditions_tsv(df: "pd.DataFrame | None") -> str:
+    """The v2 condition table, one row per (condition, target), as TSV with one row per condition
+    and one column per target, blank where the condition does not set it."""
+    if df is None or len(df) == 0:
+        return df_to_tsv(df)
+    wide = df.pivot(index=CONDITION_ID, columns=TARGET_ID, values=TARGET_VALUE)
+    return df_to_tsv(wide.reindex(index=df[CONDITION_ID].unique(), columns=df[TARGET_ID].unique()))
+
+
+def experiments_tsv(df: "pd.DataFrame | None") -> str:
+    """The v2 experiment table, one row per (experiment, time, condition), as TSV with one row per
+    period, its conditions space-separated in ``conditionId``."""
+    if df is None or len(df) == 0:
+        return df_to_tsv(df)
+    periods = df.groupby([EXPERIMENT_ID, TIME], sort=False)[CONDITION_ID].agg(
+        lambda ids: " ".join(filter(None, ids.dropna()))
+    )
+    return df_to_tsv(periods.reset_index())
 
 
 def summarize_measurements(df: "pd.DataFrame | None", *, preview: int = 4) -> dict[str, Any]:
