@@ -31,7 +31,7 @@ from petab.v2.models.sbml_model import SbmlModel
 from . import messages as M
 from . import reconcile as R
 from .constants import NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD, WIDENING_NEGLIGIBLE_BIC_GAIN
-from .errors import ModelUpdateError, PetabMcpError, ValidationError
+from .errors import ModelUpdateError, ParameterError, PetabMcpError, ValidationError
 from .parameters import estimated_mask
 from .provenance import binding_of
 from .references import resolve_references
@@ -438,12 +438,42 @@ def _commit_change(
                 )
         else:
             recon = None
+
+        def lint() -> dict:
+            # A parameter that ships FIXED and is a mechanistic/structural constant (a
+            # conservation total, a known rate) must not be removed or freed by an edit —
+            # validation rejects either. Best-effort: an unreadable v0 yields an empty set.
+            try:
+                protected_fixed = session.protected_fixed_parameter_ids()
+            except Exception:  # noqa: BLE001 - never let the lookup break an edit
+                protected_fixed = None
+            report = validate_problem(
+                problem,
+                protected_fixed_ids=protected_fixed,
+                # A statements call reads its remedies in its own vocabulary (`readouts`).
+                statements=getattr(session, "submitted_statements", None) is not None,
+            )
+            if not report["valid"]:
+                hard = [i["message"] for i in report["issues"] if i["level"] in ("error", "critical")]
+                raise ValidationError(
+                    f"Operation {op!r} rejected: {_rejection_summary(hard)}",
+                    issues=hard,
+                )
+            return report
+
         if param_edit is not None:
             # AFTER the reconcile: the parameter table only holds the re-authored model's
             # parameters once reconcile has run, so a bundled bound edit can target a symbol
             # this very (re-)author introduced — and an entry naming a parameter the re-author
             # dropped is rejected loudly instead of silently doing nothing.
-            param_result = param_edit(problem)
+            try:
+                param_result = param_edit(problem)
+            except ParameterError:
+                # The bounds are on the model's parameters: a model the lint refuses is the
+                # blocker (a condition input it never reads), reported first.
+                if recon is not None:
+                    lint()
+                raise
             apply_result = (
                 {"model": apply_result, "parameters": param_result}
                 if recon is not None
@@ -459,25 +489,7 @@ def _commit_change(
                 "bypasses the SBML<->PEtab reconcile every authoring call runs. Author model "
                 "changes through `antimony`."
             )
-        # A parameter that ships FIXED and is a mechanistic/structural constant (a
-        # conservation total, a known rate) must not be removed or freed by an edit —
-        # validation rejects either. Best-effort: an unreadable v0 yields an empty set.
-        try:
-            protected_fixed = session.protected_fixed_parameter_ids()
-        except Exception:  # noqa: BLE001 - never let the lookup break an edit
-            protected_fixed = None
-        report = validate_problem(
-            problem,
-            protected_fixed_ids=protected_fixed,
-            # A statements call reads its remedies in its own vocabulary (`readouts`).
-            statements=getattr(session, "submitted_statements", None) is not None,
-        )
-        if not report["valid"]:
-            hard = [i["message"] for i in report["issues"] if i["level"] in ("error", "critical")]
-            raise ValidationError(
-                f"Operation {op!r} rejected: {_rejection_summary(hard)}",
-                issues=hard,
-            )
+        report = lint()
 
         warnings = _parsimony_warnings(problem, old_species) if recon is not None else []
         # A row's regulators are signed on this version's bounds: an edit of a bound or a scale
@@ -1371,6 +1383,14 @@ def _check_readouts_are_read(session, readouts) -> None:
         )
 
 
+#: What ``set_amount`` declares, said where an edit reads as a seed (:func:`apply_statement_edits`).
+_READOUT_AMOUNT = (
+    "`set_amount` declares a readout amount, the agent a readout formula reads by `name`, not a "
+    "seed: a starting amount is `set_seed`'s, `seed: {agent, amount}` (beside `statements`, "
+    "`seeds: [{agent, amount}]`)"
+)
+
+
 def apply_statement_edits(
     record: dict[str, Any], edits: list[dict[str, Any]]
 ) -> tuple[list, dict[str, Any], list[dict[str, Any]], dict[str, str], dict[str, Any], list[str]]:
@@ -1420,6 +1440,8 @@ def apply_statement_edits(
     for i, edit in enumerate(edits):
         op = edit.get("op")
         try:
+            if "amount" in edit:
+                raise fail(i, edit, f"an edit takes no `amount`. {_READOUT_AMOUNT}")
             if op in ("add_row", "replace_row"):
                 row = edit.get("row")
                 prefix = prefix_of(row)
@@ -1475,7 +1497,8 @@ def apply_statement_edits(
                 summary.append(f"{op} {key}")
             elif op == "set_amount":
                 if not edit.get("name") or not edit.get("agent"):
-                    raise fail(i, edit, "`name` and `agent` name the amount and its pattern")
+                    raise fail(i, edit, f"`name` and `agent` name the amount and its pattern. "
+                               f"{_READOUT_AMOUNT}")
                 amounts[edit["name"]] = edit["agent"]
                 summary.append(f"set_amount {edit['name']}")
             elif op == "set_readout":

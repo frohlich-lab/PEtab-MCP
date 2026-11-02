@@ -6,7 +6,14 @@ from __future__ import annotations
 import libsbml
 import pytest
 import sympy
-from indra.statements import Agent, BoundCondition, ModCondition, Phosphorylation, Translocation
+from indra.statements import (
+    Agent,
+    BoundCondition,
+    Dephosphorylation,
+    ModCondition,
+    Phosphorylation,
+    Translocation,
+)
 from petab.v1.models.sbml_model import SbmlModel
 
 from petab_mcp import mechanisms as M
@@ -961,3 +968,22 @@ def test_a_written_rate_leaves_no_unread_rules():
     )
     antimony, _ = PS.to_antimony([(_TRANSITION, "sat", "r1")], {"naive": Agent("naive")}, library)
     assert "__obs" not in antimony
+
+
+def test_a_reader_and_writer_naming_a_site_apart_are_told_so_not_to_seed():
+    """`at Y1068` puts 'p' on `Y1068` and `E{p}` reads `phospho`, so the eraser never fired; the
+    refusal said to declare it in `seeds`, which failed again (fujita, all 3 runs, #193)."""
+    rows = [
+        (Phosphorylation(Agent("K"), Agent("E"), "Y", "1068"), INDRA_DEFAULT, "w"),
+        (
+            Dephosphorylation(
+                Agent("P"), Agent("E", mods=[ModCondition("phosphorylation")])
+            ),
+            INDRA_DEFAULT,
+            "e",
+        ),
+    ]
+    with pytest.raises(ModelUpdateError, match=r"rows \['w'\] put 'p' on its site `Y1068`") as exc:
+        PS.to_antimony(rows, {})
+    assert "Name the same residue and position in both rows" in str(exc.value)
+    assert "declare it in `seeds`" not in str(exc.value)

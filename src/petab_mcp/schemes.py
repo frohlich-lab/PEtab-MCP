@@ -405,7 +405,11 @@ def _rate(text: str) -> _Rate:
                 amounts.append(ast.unparse(node.args[0]))
                 return  # its names are molecules and sites
             if fn not in _FUNCTIONS:
-                raise MechanismError(f"rate {text!r}: no function {fn!r}; amount, exp, log, sqrt")
+                from .mechanisms import IN_SCHEME
+
+                raise MechanismError(
+                    f"rate {text!r}: no function {fn!r}; amount, exp, log, sqrt. {IN_SCHEME}"
+                )
             if node.keywords or not 1 <= len(node.args) <= (2 if fn == "log" else 1):
                 takes = "one argument, or a base too" if fn == "log" else "one argument"
                 raise MechanismError(f"rate {text!r}: {fn}() takes {takes}")
