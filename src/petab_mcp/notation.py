@@ -606,7 +606,11 @@ def parse(text: str, groundings: dict[str, dict] | None = None) -> dict[str, Any
     while r.take(","):
         kind = next((k for k, words in REGULATORS.items() if r.take(words)), None)
         if kind is None or kind in st:
-            r.fail(f"expected one of {', '.join(map(repr, REGULATORS.values()))}, each once")
+            r.fail(
+                f"expected one of {', '.join(map(repr, REGULATORS.values()))}, each once: several "
+                "of one kind are one clause joined by `and` (`, inhibited by C and D`), and in a "
+                "JSON row a list (`inhibited_by: [{name: 'C'}, {name: 'D'}]`)"
+            )
         st[kind] = [r.agent()]
         while True:
             # What get_model marks a recorded kind with (`statement_text`): the row states it as is.
