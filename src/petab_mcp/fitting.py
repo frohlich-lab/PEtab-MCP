@@ -1100,6 +1100,10 @@ def parent_starts(problem, guesses, optimization) -> frozenset[str]:
     return frozenset(str(j) for j, row in enumerate(guesses) if np.array_equal(row[shared], at))
 
 
+#: How close to the best start's objective a start must end to count as having reached it.
+AT_BEST_NLL_TOL = 1e-3
+
+
 def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     """Estimate the free parameters with pyPESTO and write the best fit back.
 
@@ -1356,7 +1360,7 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
         for s in result.optimize_result.list
         if s.get("fval") is not None and math.isfinite(float(s["fval"]))
     ]
-    n_converged = sum(1 for v in fvals if v <= nllh + 1e-3)
+    n_converged = sum(1 for v in fvals if v <= nllh + AT_BEST_NLL_TOL)
     log.info(
         "fit: done best_nllh=%s self_improvement=%s time=%.2fs starts=%d converged~%d "
         "fval[min/max]=%s/%s",
@@ -1375,6 +1379,7 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     # re-enter them as warm starts. See `previous_optima`.
     optimization["x_scales"] = [str(s) for s in problem.x_scales]
     optimization["n_starts_killed"] = len(killed)
+    optimization["n_starts_at_best"] = n_converged
     optimization["result_file"] = _write_pypesto_result(session, result, session.problem_hash())
     return {
         "fitted": fitted,
@@ -1593,6 +1598,9 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
             # ...and, the same way, how many starts were stopped past their cap (see
             # :mod:`multistart`): scored as failed, so the fit searched less than `n_starts` names.
             "n_starts_killed": (fit["optimization"] or {}).get("n_starts_killed") if fit else None,
+            "n_starts_at_best": (
+                (fit["optimization"] or {}).get("n_starts_at_best") if fit else None
+            ),
             "records": records,
             "objective_before": fit["objective_before"] if fit else None,
             "version": None,
@@ -2474,6 +2482,7 @@ def fit_result_block(
         k = len(fitted)
     constants = fitsim.get("hardcoded_constants") or []
     killed = fitsim.get("n_starts_killed")
+    at_best = fitsim.get("n_starts_at_best")
     block = {
         "fit_status": fitsim.get("status"),
         # The multistart count the fit actually ran with (``None`` for a restored version, which
@@ -2483,8 +2492,14 @@ def fit_result_block(
         # How many of them were stopped past their cap and scored as failed, ABSENT when none was:
         # this block is re-sent in the caller's history every turn.
         **({"n_starts_killed": killed} if killed else {}),
-        # Per-start outcome histogram (e.g. {"ExitFlag.FTOL": 81, "ExitFlag.EXCEEDED_BOUNDARY":
-        # 19}): how many starts CONVERGED on their own criterion vs hit the per-start time cap.
+        # How many starts reached the best objective, out of how many ran (None without a fit).
+        "starts_at_best": (
+            f"{at_best}/{fitsim.get('n_starts')} (within {AT_BEST_NLL_TOL:g} nll)"
+            if at_best is not None
+            else None
+        ),
+        # Per-start outcome histogram (e.g. {"ExitFlag.FTOL": 81, "ExitFlag.MAXTIME": 19}): how
+        # many starts CONVERGED on their own criterion vs hit the per-start time cap.
         # A fit dominated by boundary exits is optimiser-budget-limited, not structure-limited --
         # the distinction that decides whether "fit harder" or "change the model" is the right
         # next move, previously only recoverable by grepping optimizer stdout that is no longer
