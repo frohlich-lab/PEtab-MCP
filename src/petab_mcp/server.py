@@ -2765,7 +2765,7 @@ def create_server(
     skills = [
         s
         for s in skills_mod.load_skills(resolved_skills_dir)
-        if s.route is None or (s.route == "statements" and statements)
+        if s.route in (None, "statements" if statements else "text")
     ]
     instructions = (
         SERVER_INSTRUCTIONS
