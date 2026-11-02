@@ -24,6 +24,8 @@ The numbers on the entries below are pull requests of
 [frohlich-lab/petab_mcp](https://github.com/frohlich-lab/petab_mcp), where this package was
 developed before it moved here.
 
+PEtab-MCP#205 A seed whose species nothing reads is pruned like any other orphan and named in the edit's warnings, deliberately NOT kept for having been declared (the issue's option 3): kept, it still reads nothing, so the condition input its amount read has no effect either way, while a numeric seed's `<name>_init` is an estimated parameter the score charges and the fit cannot move, and the de-dup fingerprints it apart from the model that simulates alike. `get_model(format="statements")` shows the seed as written regardless.
+
 PEtab-MCP#194 There is deliberately no warning that a model's structure was "already committed" at an earlier version: the de-dup refuses a model an earlier version already fitted with the same bounds and as many starts, so that warning fired only on a changed search space. In gemot's round-3 sweep it called widening refits that took fujita from BIC 226 to −7 "a duplicate".
 
 PEtab-MCP#190 A fit result (`make_changes`, its de-dup no-op, `restore_version`) names a scale, an at-bound pin, a merge hint or an edit warning only where it is new since the parent or the last commit, the noise report and flagged observables only where they flag something, and a constant such as the new-best gate not at all (the tool description states it), while `get_fit_summary` and `get_progress` keep them whole: these results were 12-40% of a long lead's prompt in round 3 of the GLM 5.3 Flash sweep. They are cut where they are made, not rewritten later in the client's history, because rewriting a sent result breaks every cached prefix after it.

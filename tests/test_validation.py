@@ -178,6 +178,14 @@ def test_an_input_read_only_at_the_start_is_named_with_its_later_periods(
         assert said[0].startswith("condition target(s) `dose` (e0 at t = 0) change in these")
 
 
+def test_an_input_whose_only_reader_was_pruned_is_named(dosed_session):
+    """The reconcile prunes `D = 2*dose` when no rate reads `D` and leaves `dose` declared, which
+    libpetab's invalid-target check passes (PEtab-MCP#205)."""
+    result = O.set_model(dosed_session, _DOSED.format(rate="k"), justification="dose B")
+    said = [m["message"] for m in result["messages"] if "read by nothing" in m["message"]]
+    assert len(said) == 1 and said[0].startswith("condition target(s) `dose` are read by nothing")
+
+
 def test_a_later_period_that_keeps_the_value_changes_nothing(dosed_session):
     """A period that sets an input to the value it already holds is no change to warn about."""
     yaml = dosed_session.yaml_path

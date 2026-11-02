@@ -1734,6 +1734,41 @@ def test_an_unread_condition_input_is_reported_before_an_unknown_bound(tmp_path,
     assert "invalid targets" in out["error"] and "Unknown parameter id" not in out["error"]
 
 
+def _serum_call(mcp, amount, rows=()):
+    return _call(mcp, "make_changes", {
+        "justification": "serum is present", "statements": [_statement_row(), *rows],
+        "bindings": {"conv": "mass_action", **{r["prefix"]: "mass_action" for r in rows}},
+        "seeds": [{"agent": "Serum", "amount": amount}]})
+
+
+@pytest.mark.parametrize(("amount", "pruned"), [("2*EGF", True), ("EGF", False)])
+def test_a_seed_nothing_reads_names_the_input_it_leaves_unread(
+    tmp_path, add_condition, amount, pruned
+):
+    """raimundez's `Serum`, seeded at `full_medium` and read by no row, was pruned with the
+    input's only reader in 27 of 33 edits, and no reply said so (PEtab-MCP#205). At the id alone
+    the seed makes `Serum` that input (#199): kept, but read by nothing all the same."""
+    out = _serum_call(_input_server(tmp_path, add_condition), amount)
+    assert out["applied"] is True, out.get("error")
+    said = [m["message"] for m in out["messages"]]
+    removed = [m for m in said if m.startswith("Removed species")]
+    assert bool(removed) == pruned
+    assert all(re.fullmatch(r"Removed species nothing in the model reads, with their initial "
+                            r"amounts: `Serum\(\)` \(`__s\d+`\)\.", m) for m in removed)
+    assert any(m.startswith("condition target(s) `EGF` are read by nothing in the model, so the "
+                            "model never sees their value. For each, read it as") for m in said)
+
+
+def test_a_seed_at_an_input_a_row_reads_is_neither_removed_nor_unread(tmp_path, add_condition):
+    """The #199 route the warnings point to: no warning of either kind."""
+    feed = {**_statement_row(), "prefix": "feed"}
+    feed["statement"] = {**feed["statement"], "source": {"name": "Serum"}}
+    out = _serum_call(_input_server(tmp_path, add_condition), "EGF", [feed])
+    assert out["applied"] is True, out.get("error")
+    assert not [m for m in out["messages"] if "Removed species" in m["message"]
+                or "read by nothing" in m["message"]]
+
+
 def test_an_edit_carrying_an_amount_is_told_where_a_seed_goes(tmp_path):
     """`statement_edits.0.amount Extra inputs are not permitted`, pydantic's own, in nearly every
     run of gemot round 3 (#193): it named neither `seeds` nor what `set_amount` is."""
