@@ -1993,10 +1993,11 @@ def _since_parent(out: dict, parent_df: Any) -> None:
     widening still shows; ``n_parameters_at_bound`` counts every pin when any is left out.
     Best-effort, like the slimming before it."""
     try:
-        prior = parent_df[PARAMETER_SCALE].astype(str).to_dict()
+        parent_fitted = table_fitted_values(parent_df)
+        prior = {pid: str(parent_df.loc[pid, PARAMETER_SCALE]) for pid in parent_fitted}
         held = {
             (f["parameter_id"], f["side"]): f["bound_value"]
-            for f in parameters_at_bound(table_fitted_values(parent_df), parent_df)
+            for f in parameters_at_bound(parent_fitted, parent_df)
         }
     except Exception:  # noqa: BLE001 - never degrade the score payload over a slimming aid
         return
