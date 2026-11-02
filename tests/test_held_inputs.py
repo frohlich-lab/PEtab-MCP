@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import pytest
-from indra.statements import Agent, Complex, DecreaseAmount
+from indra.statements import Agent, Complex, DecreaseAmount, IncreaseAmount
 from petab.v1.models.sbml_model import SbmlModel
 
+from petab_mcp import operations as O
 from petab_mcp import problem_sbml as PS
+from petab_mcp.errors import ModelUpdateError
 from petab_mcp.mechanisms import INDRA_DEFAULT
 from petab_mcp.statements import PopulationTransition
 
@@ -91,3 +93,65 @@ def test_a_started_state_the_rows_make_is_named_too():
     sbml = SbmlModel.from_antimony(antimony).sbml_model
     assert sbml.getSpecies("effector").getName() == "effector()"
     assert not sbml.getSpecies("effector").getBoundaryCondition()
+
+
+@pytest.mark.parametrize("degraded", [False, True])
+def test_a_seed_at_a_condition_target_makes_its_agent_that_input(degraded):
+    """A seed `forskolin = Fsk` was an initial assignment, which never saw a dose set after
+    pre-equilibration (PEtab-MCP#192). At the id alone it is the input, as an entity-map entry
+    is: the species takes the id, empty until a period sets it, held while the rows only read it."""
+    rows = [(Complex([Agent("forskolin"), Agent("ADCY")]), INDRA_DEFAULT, "r1")]
+    if degraded:
+        rows.append((DecreaseAmount(None, Agent("forskolin")), INDRA_DEFAULT, "deg"))
+    antimony, _ = PS.to_antimony(
+        rows, {}, seeds=[("forskolin", Agent("forskolin"), "Fsk")], targets=frozenset({"Fsk"})
+    )
+    sbml = SbmlModel.from_antimony(antimony).sbml_model
+    assert sbml.getSpecies("Fsk").getName() == "forskolin(adcy=None)"
+    assert sbml.getSpecies("Fsk").getBoundaryCondition() is not degraded
+    assert sbml.getSpecies("Fsk").getInitialAmount() == 0.0
+    assert sbml.getInitialAssignmentBySymbol("Fsk") is None
+    assert sbml.getParameter("forskolin_init") is None
+
+
+def test_a_seed_at_an_input_another_agent_is_is_refused():
+    with pytest.raises(ModelUpdateError, match="which is already forskolin"):
+        PS.to_antimony(
+            [(Complex([Agent("FSK"), Agent("ADCY")]), INDRA_DEFAULT, "r1")],
+            {"Fsk": Agent("forskolin")},
+            seeds=[("FSK", Agent("FSK"), "Fsk")],
+            targets=frozenset({"Fsk"}),
+        )
+
+
+_DEGRADED = (DecreaseAmount(None, Agent("B")), INDRA_DEFAULT, "deg")
+_MADE_BY_D = (IncreaseAmount(Agent("D"), Agent("B")), INDRA_DEFAULT, "r1")
+
+
+@pytest.mark.parametrize(
+    ("rows", "seeds", "dosed"),
+    [
+        ([_MADE_BY_D, _DEGRADED], [("D", Agent("D"), "2*dose")], False),
+        (
+            [(IncreaseAmount(None, Agent("B")), INDRA_DEFAULT, "r1", {"kf": "k*dose"}), _DEGRADED],
+            [],
+            True,
+        ),
+        ([_MADE_BY_D, _DEGRADED], [("D", Agent("D"), "dose")], True),
+    ],
+    ids=["seeded", "bound", "input"],
+)
+def test_after_pre_equilibration_only_a_rate_or_an_input_sees_the_dose(
+    dosed_session, amici_build_root, rows, seeds, dosed
+):
+    """isensee pre-equilibrates with every drug at 0 and doses at t = 0. libpetab's v2 import sets
+    the first period's targets as initial assignments and later ones as events, so a seed reading
+    the dose saw 0 throughout, while a rate reading it or a species of its id follows the event
+    (PEtab-MCP#192)."""
+    from petab_mcp.engine import AmiciEngine
+
+    antimony, _ = PS.to_antimony(rows, {"B": Agent("B")}, seeds=seeds, targets=frozenset({"dose"}))
+    O.set_model(dosed_session, antimony, justification="B made at a dosed rate")
+    engine = AmiciEngine(dosed_session, build_root=str(amici_build_root))
+    simulated = [r["simulation"] for r in engine.evaluate_objective()["simulations"]]
+    assert all(s == 0 for s in simulated) is not dosed

@@ -202,8 +202,9 @@ Principles to hold onto when extending this package.
   (`statements.as_indra`: "inhibited by sorafenib" on RAF's step is `Inhibition(sorafenib, RAF)`).
   A condition input the entity map
   does not map to an agent is no agent, so a row's binding may read it (`kf="k*dose"`) and the
-  condition table says what it is. Which inputs are agents is the problem author's call, made in
-  the entity map, and one it maps is read only as the agent it is.
+  condition table says what it is, unless a seed of an agent at its id alone makes it that agent.
+  Which inputs are agents is the problem author's call, made in the entity map, or the modeller's,
+  made by such a seed; one mapped either way is read only as the agent it is.
 - **A constraint is a claim the model must make.** A session may start with causal constraints
   (`--constraints`), statements rows without bindings that each end `, directly` (one row's claim
   entails it) or `, indirectly` (the network the rows expand to carries it, with its sign), with

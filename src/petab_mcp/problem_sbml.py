@@ -49,8 +49,10 @@ starting value (1 a unit normalisation, fixed; anything else estimated from ther
 costs nothing in k. A 0 is an empty seed with no parameter at all — what lets a species the
 condition table sets (a substrate the conditions dose) carry no ``_init`` that every condition
 overrides. An expression is the starting amount itself, over parameter ids: a row the problem
-ships (a fixed total), a condition-table column (``init_X``), or a new name, estimated. A declared
-monomer may also be one the rules make (e.g. a gene copy that starts at 1).
+ships (a fixed total), a condition-table column (``init_X``), or a new name, estimated. It is
+evaluated once, so it takes an experiment's first period's value; a seed at a condition target's
+id alone instead makes its agent that input, as an entity-map entry would, which every period
+sets. A declared monomer may also be one the rules make (e.g. a gene copy that starts at 1).
 
 It is a separate module because none of it is a mechanism: the same library rows would need
 none of this under a server that read PySB directly. This one reads SBML everywhere — reconcile,
@@ -114,7 +116,8 @@ def to_antimony(
 
     ``seeds`` (``(name, agent, amount)``: a number or an expression over parameter ids) declare
     what is present at t = 0, as the module docstring sets out; each is ``<name>_init``, so
-    no two share a name (:func:`operations.seed_name`).
+    no two share a name (:func:`operations.seed_name`). One whose amount is a condition target's id
+    alone makes its agent that input instead, as if the entity map named it so.
 
     ``formulas`` (readout id to an expression; ``make_changes``' ``readouts``) define each readout that is not one pattern's amount as an
     assignment rule over ``amounts`` (name to the agent whose amount it is), the entity map's ids
@@ -133,6 +136,20 @@ def to_antimony(
     """
     seeds = [(name, agent, _numeric(amount)) for name, agent, amount in seeds or []]
     entities = {**{item.id: Agent(item.id) for item in inputs}, **entities}
+    # A seed at a condition target's id alone makes its agent that input, as an entity-map entry
+    # does: the species takes the id, and it starts empty where no period sets it.
+    mapped: dict[str, Agent] = {}
+    for name, agent, amount in seeds:
+        target = amount.strip() if isinstance(amount, str) else None
+        if target in targets:
+            if other := entities.get(target) or mapped.get(target):
+                raise ModelUpdateError(
+                    f"seed {name!r} makes {agent.name} the input `{target}`, which is already "
+                    f"{other.name}; an input is one agent"
+                )
+            mapped[target] = agent
+    seeds = [(n, a, 0.0 if isinstance(x, str) and x.strip() in mapped else x) for n, a, x in seeds]
+    entities = {**entities, **mapped}
     clash = sorted(set(amounts or {}) & set(entities))
     if clash:
         raise ModelUpdateError(f"amounts {clash} are also entity-map or input ids; name them apart")
@@ -169,7 +186,7 @@ def to_antimony(
     # name; the SBML export numbers observables anyway, and the rename below restores them.
     readouts = {f"readout_{species}": species for species in entities}
     patterns = {name: get_monomer_pattern(model, entities[s]) for name, s in readouts.items()}
-    declared = _declare(model, seeds, set(held))
+    declared = _declare(model, seeds, set(held) - {_n(a.name) for a in mapped.values()})
     _seed(
         model,
         [m for m in model.monomers if (m.name not in made or m.name in held) and m.name not in declared],
