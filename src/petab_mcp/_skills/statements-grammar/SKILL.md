@@ -13,18 +13,17 @@ description: >-
 A row is the claim, under a prefix; its binding, under the same prefix, is the maths: the policy
 and its parameter bindings.
 
-    statements=["r1: RAF phosphorylates MEK at S218"], bindings={"r1": "two_step kf=k_on"}
+    statements=["r1: A phosphorylates B at S10"], bindings={"r1": "two_step kf=k_on"}
 
 ## A condition input no agent stands for is read in a binding
 
 Read it as a parameter in the binding of each row it drives; never state it as an agent:
 
-    statements=["r1: EGFR is phosphorylated at Y1068"], bindings={"r1": 'basal k="k0*EGF"'}
+    statements=["r1: B is phosphorylated at S10"], bindings={"r1": 'basal k="k0*dose"'}
 
-Stated as an agent (`EGF phosphorylates EGFR`) it is a molecule of its own, which the condition
-table never sets. An input that changes after the first period (a dose after pre-equilibration)
-must be read in a binding: a seed's amount takes only the first period's value, the
-pre-equilibration one where there is one.
+Stated as an agent (`dose phosphorylates B`) it is a molecule of its own, which the condition
+table never sets. A binding follows every period's value; a seed's amount that reads the input
+(`2*dose`) takes the first period's value alone, the pre-equilibration one where there is one.
 
 ## Several regulators of one kind are one clause
 
@@ -56,8 +55,8 @@ constant `k` alone is mass action.
 
 ## A site is the one its statement names
 
-`at Y1068` puts the phosphate on site `Y1068`, and a statement naming no residue (`E{p}`) on site
-`phospho`. A row reading `E{pY1068}` never sees the second: give the writing and the reading rows
+`at S10` puts the phosphate on site `S10`, and a statement naming no residue (`B{p}`) on site
+`phospho`. A row reading `B{pS10}` never sees the second: give the writing and the reading rows
 the same residue and position, or neither. A seed does not join two sites.
 
 ## `seeds` and `set_amount`
