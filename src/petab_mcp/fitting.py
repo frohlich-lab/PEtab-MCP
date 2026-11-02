@@ -1100,8 +1100,9 @@ def parent_starts(problem, guesses, optimization) -> frozenset[str]:
     return frozenset(str(j) for j, row in enumerate(guesses) if np.array_equal(row[shared], at))
 
 
-#: How close to the best start's objective a start must end to count as having reached it.
-AT_BEST_NLL_TOL = 1e-3
+#: How close to the best start's objective a start must end to count as having reached it: 1 nll,
+#: 2 in BIC.
+AT_BEST_NLL_TOL = 1.0
 
 
 def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
