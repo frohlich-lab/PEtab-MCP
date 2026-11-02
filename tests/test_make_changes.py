@@ -1011,12 +1011,14 @@ def test_a_scheme_mechanism_builds_and_is_listed_as_written(tmp_path):
         (tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text()
     )["rows"]
     assert stored["emission"]["parameters"] == ["conv_k_hop"]
-    listed = _text(mcp, "list_mechanisms", {"statement_type": "PopulationTransition"})
+    listed = _text(mcp, "list_mechanisms", {"statement_types": ["PopulationTransition"]})
     assert (
         "PopulationTransition | hop (written this run) | parameters: k_hop\n"
         "  source() >> target() @ k_hop"
     ) in listed
     assert "PopulationTransition | mass_action | parameters: k\n" in listed
+    index = _text(mcp, "list_mechanisms", {}).splitlines()
+    assert "PopulationTransition: hop(k_hop) (written this run), mass_action(k)" in index
     model = _text(mcp, "get_model", {"format": "statements"})
     assert (
         "mechanism hop: PopulationTransition, scheme, parameters k_hop\n"
@@ -1076,11 +1078,53 @@ def test_list_mechanisms_exists_only_with_the_route(tmp_path):
 
 
 def test_list_mechanisms_shows_two_step_as_its_rules(tmp_path):
-    listed = _text(_statements_server(tmp_path), "list_mechanisms", {"statement_type": "Phosphorylation"})
+    listed = _text(
+        _statements_server(tmp_path), "list_mechanisms", {"statement_types": ["Phosphorylation"]}
+    )
     assert (
         "Phosphorylation | indra_two_step | parameters: kc, kf, kr\n"
         "  enz(sub=None) + sub(mod='off', enz=None) >> enz(sub=1) % sub(mod='off', enz=1) @ kf"
     ) in listed
+
+
+def test_list_mechanisms_without_types_is_an_index_of_their_parameters(tmp_path):
+    """#191: every mechanism's rules at once was 7-9k tokens of a lead's context for the whole
+    run. The index names each entry with its parameters, the types sharing their entries on one
+    line, and the rules come from the types asked for, several in one call."""
+    mcp = _statements_server(tmp_path)
+    index = _text(mcp, "list_mechanisms", {})
+    assert " >> " not in index
+    (line,) = [line for line in index.splitlines() if "Phosphorylation" in line.split(": ")[0]]
+    assert line.startswith("Acetylation, ") and "indra_two_step(kc, kf, kr)" in line
+    assert "Dephosphorylation" not in line.split(": ")[0]
+    both = _text(mcp, "list_mechanisms", {"statement_types": ["Complex", "Conversion"]})
+    assert "Complex | indra_default | parameters: kf, kr" in both
+    assert "Conversion | mass_action | parameters: k" in both
+    assert _text(mcp, "list_mechanisms", {"statement_types": ["Complex", "Nope"]}).startswith(
+        "no mechanism for Nope; the statement types are"
+    )
+
+
+def test_a_written_mechanism_the_placeholder_cannot_build_stays_listed():
+    """A scheme reading a partner only its row's statement names (`amount(PTEN)`) fails on the
+    placeholder statement; the index lists it by what it declares and its type's rules show it as
+    written (review of #198). ActiveForm's built-ins, which build no rule, stay out."""
+    from types import SimpleNamespace
+
+    from petab_mcp.server import _mechanisms_text
+
+    scheme = "enz() + sub(mod='off') >> enz() + sub(mod='on') @ kf/(1 + amount(PTEN)/Ki)"
+    session = SimpleNamespace(mechanisms={("Phosphorylation", "pten"): {
+        "statement_type": "Phosphorylation", "policy": "pten", "scheme": scheme,
+        "parameters": ["kf", "Ki"]}})
+    index = _mechanisms_text(session, None).splitlines()
+    assert "Phosphorylation: basal(k), indra_default(kf), indra_interactions_only(kf), " \
+        "indra_michaelis_menten(Km, kc), indra_two_step(kc, kf, kr), processive(kf), " \
+        "pten(Ki, kf) (written this run)" in index
+    assert not any(line.startswith("ActiveForm") for line in index)
+    assert (
+        f"Phosphorylation | pten (written this run) | parameters: Ki, kf\n  {scheme}"
+    ) in _mechanisms_text(session, ["Phosphorylation"])
 
 
 def test_a_library_gap_is_its_own_rejection(tmp_path):
