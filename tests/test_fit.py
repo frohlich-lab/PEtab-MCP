@@ -146,14 +146,15 @@ def test_fit_returns_the_compact_residual_structure_verdict(fit_session):
     res = sess.fit(n_starts=2)
 
     rs = res["residual_structure"]
-    assert set(rs) == {"flagged_observables", "low_power", "summary", "replicate_lack_of_fit"}
+    # The toy problem measures each design point ONCE, so the replicate arm has nothing to test and
+    # is left off the fit result (#190)...
+    assert set(rs) == {"flagged_observables", "low_power", "summary"}
     assert isinstance(rs["flagged_observables"], list)
     assert isinstance(rs["low_power"], bool)
     assert rs["summary"]
-    # The toy problem measures each design point ONCE, so the replicate arm has nothing to test —
-    # and must say so rather than contributing a silent pass.
-    assert rs["replicate_lack_of_fit"]["available"] is False
-    assert rs["replicate_lack_of_fit"]["status"] == "no_replicated_points"
+    # ...while the full rollup says so rather than contributing a silent pass.
+    lof = data_access.residual_structure_rollup(sess)["replicate_lack_of_fit"]
+    assert lof["available"] is False and lof["status"] == "no_replicated_points"
     # ...and the diagnosis tool does NOT repeat it: one verdict, one place. The detail behind it
     # (the per-observable rows) is what that call is for.
     assert "residual_structure" not in data_access.fit_diagnosis(sess)
@@ -433,12 +434,7 @@ def test_restore_version_carries_the_verdict_too(fit_session):
     sess = fit_session
     sess.fit(n_starts=2)
     out = sess.restore_version(0)
-    assert set(out["residual_structure"]) == {
-        "flagged_observables",
-        "low_power",
-        "summary",
-        "replicate_lack_of_fit",
-    }
+    assert set(out["residual_structure"]) == {"flagged_observables", "low_power", "summary"}
 
 
 def test_untested_residuals_are_recorded_as_unknown_not_as_clean(session, monkeypatch):
@@ -504,8 +500,8 @@ def test_get_fit_summary_carries_the_residual_structure_verdict(fit_session):
     )
     rs = summary["residual_structure"]
     assert isinstance(rs, dict) and "summary" in rs
-    # Same shape the fit result reports, so one key name never means two things.
-    assert set(rs) == set(fit_res["residual_structure"])
+    # The fit result's is a cut of it (#190), so one key name never means two things.
+    assert set(fit_res["residual_structure"]) <= set(rs)
     # The replicate arm must be present and self-describing, since that is the one the gate keys
     # on: it reads `.get("available")` and `.get("n_flagged")`.
     assert "replicate_lack_of_fit" in rs
