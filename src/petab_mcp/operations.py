@@ -1871,7 +1871,7 @@ def _normalize_parameter_changes(
 
 
 def _restore_parameter_edit(
-    stored_df, skip: set[str] | None = None
+    stored_df, skip: dict[str, set[str]] | None = None
 ) -> Callable[[Any], dict[str, Any]]:
     """A ``param_edit`` that puts a STORED version's search space back.
 
@@ -1914,7 +1914,8 @@ def _restore_parameter_edit(
     # mattering. `estimate` is a STRUCTURAL choice that persists: restoring a 0 would re-fix a
     # parameter the agent had freed, with no argument able to free it again and nothing in the
     # payload naming what happened. One is a hint, the other is a lock.
-    # `skip` (the ids this call's own `parameters` claim) withholds only the SEARCH-SPACE columns.
+    # `skip` (each id this call's own `parameters` claim, with the columns it sets) withholds
+    # only those SEARCH-SPACE columns; the rest of that id's space is restored.
     # nominalValue is restored for every id regardless, because the caller has no way to ask for a
     # starting point: `ParameterChange` forbids the key outright (see `_require_positive_for_log`,
     # which exists to explain that rejection). Letting `skip` cover it would mean that naming one
@@ -1931,9 +1932,9 @@ def _restore_parameter_edit(
             if pid not in live.index:
                 skipped.append(pid)
                 continue
-            # theirs wins on the space they named; the point is restored either way
-            claimed = bool(skip) and pid in skip
-            cols = POINT if claimed else SPACE + POINT
+            # theirs wins on the columns they named; the point is restored either way
+            withheld = (skip or {}).get(pid, set())
+            cols = tuple(c for c in SPACE if c not in withheld) + POINT
             upd = {"id": pid}
             for c in cols:
                 if c not in stored_df.columns:
@@ -1946,7 +1947,7 @@ def _restore_parameter_edit(
                 upd[c] = str(raw) if c == PARAMETER_SCALE else float(raw)
             if len(upd) > 1:
                 updates.append(upd)
-                (point_only if claimed else restored).append(pid)
+                (restored if set(SPACE) & upd.keys() else point_only).append(pid)
         if updates:
             update_parameters(problem, updates)
         out = {"restored_parameters": restored}
@@ -1975,10 +1976,17 @@ def _composed_parameter_edit(session, normalized, stored_df):
     # widening backstops read the pre-edit bound (`_reject_repeated_widening` off the live table,
     # `_pinned_side` against HEAD's fitted values), and restoring first would hand them the old
     # version's bounds as the baseline — so a third widening could slip past the guard, or an
-    # ordinary entry be flagged as one. So: caller first, then restore only the parameters the
-    # caller did not mention. "An explicit entry wins" still holds, by exclusion rather than by
-    # overwrite.
-    claimed = {c["parameter_id"] for c in (normalized or [])}
+    # ordinary entry be flagged as one. So: caller first, then restore every column the caller
+    # did not set. "An explicit entry wins" still holds, by exclusion rather than by overwrite.
+    from petab.v2.C import LOWER_BOUND, UPPER_BOUND
+
+    from .problem import PARAMETER_SCALE
+
+    keys = {"lower_bound": LOWER_BOUND, "upper_bound": UPPER_BOUND, "scale": PARAMETER_SCALE}
+    claimed = {
+        c["parameter_id"]: {col for k, col in keys.items() if c[k] is not None}
+        for c in (normalized or [])
+    }
     restore = _restore_parameter_edit(stored_df, skip=claimed)
     if apply_new is None:
         return restore
@@ -1986,6 +1994,10 @@ def _composed_parameter_edit(session, normalized, stored_df):
     def edit(problem):
         first = apply_new(problem) or {}
         second = restore(problem) or {}
+        # a scale the caller set now sits on the bounds and point the restore brought back
+        for c in normalized:
+            if c["scale"] is not None:
+                _require_positive_for_log(problem, c["parameter_id"], c["scale"])
         merged = dict(second)
         merged.update(first)
         return merged
