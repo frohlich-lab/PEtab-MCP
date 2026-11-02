@@ -549,8 +549,14 @@ def sigma_heterogeneity(series: dict[str, list[float]]) -> dict[str, Any] | None
     absorb one badly fitted series leaves that series' ``|r|`` larger than the rest. Returns
     ``{p, n_series, worst}``, ``worst`` every tested series as ``{series, n, rms}`` (``rms`` of its
     ``r``, against about 1 over the whole sigma at its ML value), largest first; ``None`` below two
-    series of :data:`HETEROGENEITY_MIN_SERIES_N` points. The p is a ranked pointer: nothing flags or
-    gates on it (see docs/RATIONALE.md, #195).
+    series of :data:`HETEROGENEITY_MIN_SERIES_N` points.
+
+    Centred on zero, not on each series' mean: the ML sigma is the rms about the prediction, so a
+    series missed by a constant inflates it as much as one missed in shape, and only this centring
+    sees that (power 0.50 against 0.05 for the mean-centred tests, one series of six biased by 1.5
+    sigma). Not Bartlett: it reads a series its own scale and offset fit exactly as p = 0, and under
+    t3 noise it false-alarms 45% at alpha 0.05 where this test holds 4.4%. The p ranks and gates
+    nothing: bachmann's passing fit still shows p = 0.006 on pEpoR (#195).
     """
     import warnings
 
