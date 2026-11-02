@@ -339,14 +339,16 @@ def test_slim_fit_payload_slims_a_block_that_carries_no_version_of_its_own():
 
 def test_a_fit_result_names_only_what_is_new_since_the_parent():
     """#190: every make_changes result re-sent "log10" for each moved parameter, 16-digit values,
-    and every pin the parent's result had already reported. A re-pin at a widened bound is new."""
-    from petab.v2.C import LOWER_BOUND, UPPER_BOUND
+    and every pin the parent's result had already reported. A re-pin at a widened bound is new, and
+    so is the scale of a parameter re-scaled in place (`e`) or estimated for the first time (`f`)."""
+    from petab.v2.C import ESTIMATE, LOWER_BOUND, UPPER_BOUND
 
     from petab_mcp.fitting import slim_fit_payload
     from petab_mcp.problem import PARAMETER_SCALE
 
-    parent = _table({"a": 1e3, "b": 2.0, "c": 1e-3})
+    parent = _table({"a": 1e3, "b": 2.0, "c": 1e-3, "e": 5.0, "f": 1.0})
     parent[PARAMETER_SCALE], parent[LOWER_BOUND], parent[UPPER_BOUND] = "log10", 1e-3, 1e3
+    parent.loc["f", ESTIMATE] = False
 
     class _Prov:
         def get_meta(self, n):
@@ -364,14 +366,28 @@ def test_a_fit_result_names_only_what_is_new_since_the_parent():
         {"parameter_id": "d", "side": "upper", "value": 9.99999999, "bound_value": 10.0},
     ]
     block = {
-        "fitted_parameters": {"a": 99990.123, "b": 3.14159265, "c": 1e-3, "d": 9.99999999},
-        "parameter_scales": {"a": "log10", "b": "lin", "c": "log10", "d": "log10"},
+        "fitted_parameters": {
+            "a": 99990.123,
+            "b": 3.14159265,
+            "c": 1e-3,
+            "d": 9.99999999,
+            "e": 5.0,
+            "f": 1.0,
+        },
+        "parameter_scales": {
+            "a": "log10",
+            "b": "lin",
+            "c": "log10",
+            "d": "log10",
+            "e": "lin",
+            "f": "log10",
+        },
         "parameters_at_bound": pins,
     }
     out = slim_fit_payload(_S(), block, version=5)
 
-    assert out["fitted_parameters_changed"] == {"a": 99990.0, "b": 3.142, "d": 10.0}
-    assert out["parameter_scales"] == {"b": "lin", "d": "log10"}  # re-scaled, new
+    assert out["fitted_parameters_changed"] == {"a": 99990.0, "b": 3.142, "d": 10.0, "f": 1.0}
+    assert out["parameter_scales"] == {"b": "lin", "d": "log10", "e": "lin", "f": "log10"}
     assert [p["parameter_id"] for p in out["parameters_at_bound"]] == ["a", "d"]
     assert out["parameters_at_bound"][0]["value"] == 99990.0
     assert out["n_parameters_at_bound"] == 3

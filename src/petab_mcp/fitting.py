@@ -1988,8 +1988,9 @@ def _since_parent(out: dict, parent_df: Any) -> None:
     """Cut a slimmed fit result's ``parameter_scales`` and ``parameters_at_bound`` to what is new
     since the parent version, in place.
 
-    A named parameter's scale is listed where it is new or re-scaled; an earlier result named every
-    other one. A pin is listed unless the parent sat at the same side and bound, so a re-pin after a
+    A scale is listed where the parameter is newly estimated or re-scaled, whether or not its value
+    moved; an earlier result named every other one. A pin is listed unless the parent sat at the
+    same side and bound, so a re-pin after a
     widening still shows; ``n_parameters_at_bound`` counts every pin when any is left out.
     Best-effort, like the slimming before it."""
     try:
