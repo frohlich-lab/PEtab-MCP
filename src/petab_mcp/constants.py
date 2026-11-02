@@ -50,11 +50,11 @@ NEW_BEST_MIN_DELTA_SCORE = 2.0
 # to the client's step limit. Sized well below the ~40-46-op streaks observed in the trace review.
 NON_IMPROVING_STREAK_CAP = 15
 
-# (b, softer) Plateau early-stop: once the best model is statistically adequate AND the best score
-# has improved by less than ``PLATEAU_MIN_SCORE_GAIN`` over the last ``PLATEAU_WINDOW`` fitted ops,
-# stop — there is nothing left to gain. Complements the hard cap (which catches never-adequate
-# sessions); this one lets an already-good session finish promptly instead of polishing the noise
-# floor.
+# (b, softer) Plateau early-stop: once the best model is shown adequate (its chi2 GoF against FIXED
+# noise sigmas; see session.progress_report) AND the best score has improved by less than
+# ``PLATEAU_MIN_SCORE_GAIN`` over the last ``PLATEAU_WINDOW`` fitted ops, stop — there is nothing
+# left to gain. Complements the hard cap (which catches never-adequate sessions); this one lets an
+# already-good session finish promptly instead of polishing the noise floor.
 PLATEAU_MIN_SCORE_GAIN = 1.0
 PLATEAU_WINDOW = 5
 
@@ -74,7 +74,7 @@ ADEQUATE_GOF_PVALUE = 0.05
 # an overfit as "adequate" (observed: fits at chi2/n = 0.016 and 0.051 with p = 0.9999999).
 # Only meaningful for a FIXED sigma: when sigma is ESTIMATED the MLE absorbs residual shrinkage
 # into sigma itself, pinning chi2/n at ~1 from below (empirical floor 0.98 over 40 fits), so this
-# tail is unreachable there and the estimated-sigma branch judges the sigma's plausibility instead.
+# tail is unreachable there, and an estimated-sigma model is never adequate for the plateau stop.
 OVERFIT_GOF_PVALUE = 0.995
 
 # -- default parameter-table bounds ----------------------------------------
