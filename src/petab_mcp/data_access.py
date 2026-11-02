@@ -1278,10 +1278,33 @@ def residual_flag(structure: dict[str, Any]) -> bool | None:
 # verdict (the per-test p-values are always reported raw, so a caller can judge for itself).
 _STRUCTURE_ALPHA = 0.05
 
-# At most this many underpowered observables are NAMED in the summary (the rest as a count): the
-# summary rides on every fit, and the names are there to separate a low-power claim from the
-# replicate arm's pass — three is enough to tell the two apart.
-_MAX_NAMED_LOW_POWER = 3
+# At most this many flagged or underpowered observables are NAMED in the summary and in a fit
+# result's ``flagged_observables`` (the rest as a count): both ride on every fit, and
+# get_fit_summary lists every flagged observable.
+_MAX_NAMED = 3
+
+
+def _named(ids: list[str]) -> str:
+    """The first ``_MAX_NAMED`` of ``ids``, comma-joined, with a count of the rest."""
+    rest = len(ids) - _MAX_NAMED
+    return ", ".join(ids[:_MAX_NAMED]) + (f" (+{rest} more)" if rest > 0 else "")
+
+
+def residual_structure_on_fit(rollup: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The rollup as a fit result carries it: ``flagged_observables`` cut to the first
+    ``_MAX_NAMED``, with ``n_flagged_observables`` counting all of them when any is cut, and no
+    ``replicate_lack_of_fit`` where the design leaves that arm nothing to test
+    (``_LOF_SILENT_STATUSES``, 13 of 16 problems measured)."""
+    if not isinstance(rollup, dict):
+        return rollup
+    out = dict(rollup)
+    flagged = out.get("flagged_observables") or []
+    if len(flagged) > _MAX_NAMED:
+        out["flagged_observables"] = flagged[:_MAX_NAMED]
+        out["n_flagged_observables"] = len(flagged)
+    if (out.get("replicate_lack_of_fit") or {}).get("status") in _LOF_SILENT_STATUSES:
+        del out["replicate_lack_of_fit"]
+    return out
 
 
 def _safe_residual_structure(group) -> dict[str, Any]:
@@ -1389,7 +1412,7 @@ def _structure_summary(
             "lack-of-fit"
         )
         head = (
-            f"systematic residual structure in {', '.join(flagged)} ({how}) — the model's FORM "
+            f"systematic residual structure in {_named(flagged)} ({how}) — the model's FORM "
             "is missing something for those observables."
         )
     elif not sign_runs_tested:
@@ -1407,9 +1430,7 @@ def _structure_summary(
         # freedom remain), so that is a pass" is a flat contradiction the agent cannot resolve
         # (seen on every fit of one problem: three observables covered, a fourth's family too small
         # to test).
-        named = (low_power_observables or [])[:_MAX_NAMED_LOW_POWER]
-        rest = len(low_power_observables or []) - len(named)
-        where = f" for {', '.join(named)}{f' (+{rest} more)' if rest else ''}" if named else ""
+        where = f" for {_named(low_power_observables)}" if low_power_observables else ""
         head = (
             f"no significant residual structure, but the sign/runs tests are UNDERPOWERED{where} "
             f"at this sample size — that is weak evidence of adequacy{' there' if where else ''}"
