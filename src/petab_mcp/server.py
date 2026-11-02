@@ -1040,7 +1040,8 @@ LESS hard.
 
 ALL-OR-NOTHING: a change that is rejected, or whose fit produces no version, is REVERTED, so the \
 working model is always a scored one. The result IS the fit, flat, in `get_fit_summary`'s \
-fields. Read `applied` first: `false` → nothing moved — \
+fields, with the noise report, the parameters at a bound and the flagged observables cut to what \
+is flagged or new since the parent version. Read `applied` first: `false` → nothing moved — \
 rejected, reverted because the fit failed, or already an earlier fitted version; `error`/`issues` \
 says which, act on THAT. Then `committed`: `true` → a version exists, read its score; `false` \
 with `no_change` → this model already IS the current version, so change something else. \
@@ -1978,7 +1979,7 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
     @mcp.tool(annotations=_READ_ONLY)
     def get_fit_summary() -> dict[str, Any]:
         """The current fit's metrics without per-point records, a cheap score check: the same fields
-        every `make_changes` result carries. Models rank by `criterion_value`, the
+        every `make_changes` result carries, uncut. Models rank by `criterion_value`, the
         complexity-penalised score `criterion` names (`bic` unless configured otherwise; lower is
         better); the other scores are reported beside it, and the `k` they charge is
         `n_estimated` + `hardcoded_constants`.

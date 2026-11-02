@@ -987,6 +987,31 @@ def test_ungrounded_agents_are_named_once_per_call(tmp_path):
     ]
 
 
+def test_a_warning_the_last_version_carried_is_not_sent_again(tmp_path):
+    """#190: the grounding warning named ~20 species on every edit of a long session. A repeat
+    names the version whose result carried it in full; a warning that skipped a commit comes back
+    whole, since the version named must have a result that carries it."""
+    mcp = _statements_server(tmp_path)
+    back = {
+        **_statement_row(),
+        "statement": {"type": "PopulationTransition", "source": {"name": "B"}, "target": {"name": "A"}},
+        "prefix": "back",
+    }
+
+    def commit(rows, bindings):
+        out = _call(mcp, "make_changes", {"justification": "x", "statements": rows, "bindings": bindings})
+        assert out["committed"] is True, out
+        return [m["message"] for m in out["messages"] if m["source"] == "edit"]
+
+    grounding = "`statements` agents carry no grounding: A, B."
+    assert grounding in commit([_statement_row()], {"conv": "mass_action"})
+    one = {"conv": "mass_action", "back": "mass_action"}
+    assert commit([_statement_row(), back], one) == ["1 warning(s) unchanged since version 0."]
+    shared = {"conv": "mass_action k=k_ab", "back": "mass_action k=k_ab"}
+    said = commit([_statement_row(), back], shared)
+    assert "1 warning(s) unchanged since version 0." in said and grounding not in said
+
+
 def _text(mcp, name, args):
     """A tool's text return (FastMCP wraps a str in {"result": ...})."""
     return _listed(_call(mcp, name, args))

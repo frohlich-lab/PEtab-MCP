@@ -19,6 +19,8 @@ So every diagnostic a call produces goes onto ONE ordered stack::
   it top to bottom replays what happened. The FIRST error is the one that stopped the call: only
   one step can fail, and any error after it is that rejection's own structured issue (see
   :func:`errors_from_exception`).
+* An edit or lint warning the last committed result carried is not sent again: one line per source
+  says how many are unchanged since which version (``operations._unrepeated``).
 
 The stack is the ONLY channel: a result carries no flat list of warning texts beside it. The one
 flat field left is ``error``, and it is not derived from the stack either — it is the message from

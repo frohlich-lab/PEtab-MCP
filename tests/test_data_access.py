@@ -498,6 +498,26 @@ def test_residual_structure_rollup_agrees_with_fit_diagnosis_on_several_flagged(
     )
 
 
+def test_a_fit_result_names_three_flagged_observables_and_counts_the_rest():
+    """#190: the rollup named every flagged observable twice, in the list and in the summary, and
+    carried a replicate arm with nothing to test, on every fit result. get_fit_summary keeps the
+    whole list."""
+    from petab_mcp import residual_tests as rt
+
+    silent = data_access._lof_payload(rt.replicate_lof_unavailable("no_replicated_points"))
+    rollup = data_access._rollup_structure(
+        [(f"obs_{i}", {"structure_flag": True}) for i in range(5)], replicate_lof=silent
+    )
+    assert rollup["flagged_observables"] == [f"obs_{i}" for i in range(5)]
+    assert "in obs_0, obs_1, obs_2 (+2 more) (" in rollup["summary"]
+
+    on_fit = data_access.residual_structure_on_fit(rollup)
+    assert on_fit["flagged_observables"] == ["obs_0", "obs_1", "obs_2"]
+    assert on_fit["n_flagged_observables"] == 5
+    assert "replicate_lack_of_fit" not in on_fit
+    assert "replicate_lack_of_fit" in rollup  # a projection, not an edit of the rollup
+
+
 def test_the_two_rollup_callers_produce_IDENTICAL_verdicts(session, monkeypatch):
     """Not merely the same flagged SET: the same ``summary`` and the same ``low_power`` too.
 

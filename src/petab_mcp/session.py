@@ -373,6 +373,9 @@ class PetabSession:
         # the loop guard. A within-session counter (a fresh session legitimately starts over),
         # not persisted.
         self._fit_attempts: dict[str, int] = {}
+        # The edit and lint warnings the last committed `make_changes` result carried, each with
+        # the version whose result first carried it in full (see `operations.bundle_result`).
+        self.warnings_sent: dict[tuple[str, str], int] = {}
 
         if self.provenance.current_version < 0:
             # The initial model is WORKING STATE, not a version: every version is a fit, and
