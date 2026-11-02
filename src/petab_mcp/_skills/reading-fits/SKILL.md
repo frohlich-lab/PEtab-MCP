@@ -50,7 +50,8 @@ description: >-
 - `sigma_heterogeneity`: per estimated sigma, `p` that the series it covers share one spread of
   weighted residuals, and the `worst` series by `rms` (about 1 over the whole sigma). A series far
   above 1 is what the sigma was inflated for: look at that experiment first. A pointer, not a
-  verdict. `noise_sigma.fitted_over_data_noise` ranks the same question per sigma.
+  verdict, `low_power` as above. `noise_sigma.fitted_over_data_noise` ranks the same question
+  per sigma.
 - On a problem with many observables the table keeps `max_observables` rows by chi2, up to 3 more
   by |bias| and up to 6 more carrying a `structure_flag`; `omitted` says what was dropped.
   Aggregating over it aggregates a worst-first subsample.

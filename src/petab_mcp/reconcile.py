@@ -1069,12 +1069,13 @@ def classify_inner_parameters(problem) -> dict[str, str]:
     return out
 
 
-def _measurement_rows_for_sigma(problem, pid: str):
+def _measurement_rows_for_sigma(problem, pid: str, frame=None):
     """Measurement rows whose noise is modelled by sigma parameter ``pid`` — matched via a
     direct ``noiseParameters`` override, or (for a sigma named directly in the fixed
     ``noiseFormula`` rather than through a declared noise placeholder) via the observable(s)
-    whose formula names it. ``None`` if no match/no data."""
-    mdf = problem.measurement_df
+    whose formula names it. ``frame`` is any frame in the measurement table's column names (the
+    simulation records, say) to select from instead. ``None`` if no match/no data."""
+    mdf = problem.measurement_df if frame is None else frame
     if mdf is None or MEASUREMENT not in mdf.columns:
         return None
     if NOISE_PARAMETERS in mdf.columns:

@@ -46,6 +46,7 @@ from petab.v2.C import (
     LOWER_BOUND,
     MEASUREMENT,
     NOISE_FORMULA,
+    NOISE_PARAMETERS,
     NOMINAL_VALUE,
     OBSERVABLE_FORMULA,
     OBSERVABLE_ID,
@@ -93,6 +94,7 @@ SIMULATION_COLUMNS = [
     "residual",
     "residual_weighted",
     "noise",
+    "noise_parameters",
 ]
 
 # The cross-version copy of the simulation dataframe: SIMULATION_COLUMNS plus which stored
@@ -808,18 +810,21 @@ def _sigma_heterogeneity(problem, sims) -> list[dict[str, Any]]:
 
     if sims is None or sims.empty:
         return []
-    # reconcile's design-point keys speak PEtab's column names.
+    # A sigma's own records, picked as its measurement rows are: renamed to PEtab's columns.
     frame = sims[sims["residual_weighted"].notna()].rename(
-        columns={"observable_id": OBSERVABLE_ID, "experiment_id": EXPERIMENT_ID, "time": TIME}
+        columns={
+            "observable_id": OBSERVABLE_ID,
+            "experiment_id": EXPERIMENT_ID,
+            "noise_parameters": NOISE_PARAMETERS,
+        }
     )
-    keys = R._design_point_keys(frame)
     out = []
     for pid in _noise_parameter_ids(problem):
-        rows = R._measurement_rows_for_sigma(problem, pid)
-        if rows is None or not R.is_parameter_estimated(problem, pid):
+        if not R.is_parameter_estimated(problem, pid):
             continue
-        covered = set(R._design_point_keys(rows))
-        sub = frame[[k in covered for k in keys]]
+        sub = R._measurement_rows_for_sigma(problem, pid, frame)
+        if sub is None:
+            continue
         single = sub[OBSERVABLE_ID].nunique() == 1
         series = {}
         for (obs, exp), g in sub.groupby([OBSERVABLE_ID, EXPERIMENT_ID], sort=False, dropna=False):

@@ -547,9 +547,11 @@ def sigma_heterogeneity(series: dict[str, list[float]]) -> dict[str, Any] | None
     ``series`` maps a label to one series' weighted residuals. Under a correct model with one shared
     sigma every ``r`` has the same spread about 0 whichever series it is in; a sigma inflated to
     absorb one badly fitted series leaves that series' ``|r|`` larger than the rest. Returns
-    ``{p, n_series, worst}``, ``worst`` every tested series as ``{series, n, rms}`` (``rms`` of its
-    ``r``, against about 1 over the whole sigma at its ML value), largest first; ``None`` below two
-    series of :data:`HETEROGENEITY_MIN_SERIES_N` points.
+    ``{p, n_series, low_power, worst}``, ``worst`` every tested series as ``{series, n, rms}``
+    (``rms`` of its ``r``, against about 1 over the whole sigma at its ML value), largest first;
+    ``None`` below two series of :data:`HETEROGENEITY_MIN_SERIES_N` points. ``low_power`` when a
+    series has fewer than :data:`MIN_POWER_N` points: a 1.5-sigma miss in it is found 0.11-0.30 of
+    the time at alpha 0.05 and about half at 8, whether 2 or 6 series share the sigma.
 
     Centred on zero, not on each series' mean: the ML sigma is the rms about the prediction, so a
     series missed by a constant inflates it as much as one missed in shape, and only this centring
@@ -583,6 +585,7 @@ def sigma_heterogeneity(series: dict[str, list[float]]) -> dict[str, Any] | None
     return {
         "p": _sig3(p) if math.isfinite(p) else None,
         "n_series": len(groups),
+        "low_power": min(map(len, groups.values())) < MIN_POWER_N,
         "worst": [
             {"series": label, "n": len(groups[label]), "rms": round(rms[label], 3)}
             for label in sorted(groups, key=rms.__getitem__, reverse=True)

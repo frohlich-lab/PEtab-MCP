@@ -52,6 +52,13 @@ def test_a_series_its_own_scale_and_offset_fit_exactly_does_not_decide_p():
     assert rt.sigma_heterogeneity(series)["p"] > 0.05
 
 
+def test_a_series_shorter_than_min_power_n_marks_the_test_low_power():
+    series = {f"e{i}": _normal(10, seed=i) for i in range(3)}
+    assert rt.sigma_heterogeneity(series)["low_power"] is False
+    series["short"] = _normal(rt.MIN_POWER_N - 1, seed=9)
+    assert rt.sigma_heterogeneity(series)["low_power"] is True
+
+
 def test_too_few_series_is_no_verdict():
     assert rt.sigma_heterogeneity({"e1": _normal(10), "e2": [0.3]}) is None
     assert rt.sigma_heterogeneity({"e1": [None, math.nan, 1.0], "e2": _normal(5)}) is None
@@ -80,7 +87,9 @@ def _problem(tmp_path, overshoot: float) -> str:
     """The toy A <=> B model's problem with six experiments (A(0) per ``_A0``) sharing ONE
     estimated ``sigma_B``, and an ``obs_A`` read at four times in e1 under its own estimated
     ``sigma_A``. The data are the toy model at its true rates, plus a transient B overshoot of
-    ``overshoot * A(0)`` in e6 that a monotone A <=> B cannot follow."""
+    ``overshoot * A(0)`` in e6 that a monotone A <=> B cannot follow. e6's ``obs_B`` is read twice,
+    the second time under ``sigma_C``: the same design points as ``sigma_B``'s, told apart only by
+    the ``noiseParameters`` override."""
     work = tmp_path / "problem"
     work.mkdir()
     shutil.copy(DATA_DIR / "model.ant", work / "model.ant")
@@ -90,7 +99,8 @@ def _problem(tmp_path, overshoot: float) -> str:
         encoding="utf-8",
     )
     (work / "observables.tsv").write_text(
-        "observableId\tobservableFormula\tnoiseFormula\nobs_B\tB\tsigma_B\nobs_A\tA\tsigma_A\n",
+        "observableId\tobservableFormula\tnoiseFormula\tobservablePlaceholders\tnoisePlaceholders\n"
+        "obs_B\tB\tnoiseParameter1_obs_B\t\tnoiseParameter1_obs_B\nobs_A\tA\tsigma_A\t\t\n",
         encoding="utf-8",
     )
     (work / "parameters.tsv").write_text(
@@ -99,7 +109,8 @@ def _problem(tmp_path, overshoot: float) -> str:
         .replace(
             "sigma_B\tlin\t0.0001\t100.0\t0.1\tfalse", "sigma_B\tlin\t0.0001\t100.0\t0.1\ttrue"
         )
-        + "sigma_A\tlin\t0.0001\t100.0\t0.1\ttrue\n",
+        + "sigma_A\tlin\t0.0001\t100.0\t0.1\ttrue\n"
+        + "sigma_C\tlin\t0.0001\t100.0\t0.1\ttrue\n",
         encoding="utf-8",
     )
     (work / "conditions.tsv").write_text(
@@ -113,15 +124,21 @@ def _problem(tmp_path, overshoot: float) -> str:
     )
     rng = np.random.default_rng(4)
     k = 0.5 + 0.1
-    rows = ["observableId\texperimentId\ttime\tmeasurement"]
+    rows = ["observableId\texperimentId\ttime\tmeasurement\tnoiseParameters"]
+
+    def b_of(e, a0, t):
+        b = a0 * 0.5 / k * (1 - math.exp(-k * t))
+        return b + overshoot * a0 * t * math.exp(-t) if e == "e6" else b
+
     for e, a0 in _A0.items():
         for t in _TIMES:
-            b = a0 * 0.5 / k * (1 - math.exp(-k * t))
-            if e == "e6":
-                b += overshoot * a0 * t * math.exp(-t)
-            rows.append(f"obs_B\t{e}\t{t}\t{b + 0.02 * rng.normal()}")
+            b = b_of(e, a0, t)
+            rows.append(f"obs_B\t{e}\t{t}\t{b + 0.02 * rng.normal()}\tsigma_B")
             if e == "e1" and t in (1.0, 2.0, 4.0, 8.0):
-                rows.append(f"obs_A\t{e}\t{t}\t{a0 - b + 0.02 * rng.normal()}")
+                rows.append(f"obs_A\t{e}\t{t}\t{a0 - b + 0.02 * rng.normal()}\t")
+    rows += [
+        f"obs_B\te6\t{t}\t{b_of('e6', _A0['e6'], t) + 0.02 * rng.normal()}\tsigma_C" for t in _TIMES
+    ]
     (work / "measurements.tsv").write_text("\n".join(rows) + "\n", encoding="utf-8")
     return str(work / "problem.yaml")
 
@@ -156,7 +173,9 @@ def _fitted_diagnosis(tmp_path, overshoot: float) -> dict:
 def test_the_diagnosis_points_at_the_experiment_a_shared_sigma_absorbed(tmp_path, overshoot):
     diag = _fitted_diagnosis(tmp_path, overshoot)
     (het,) = [h for h in diag["sigma_heterogeneity"] if h["parameter_id"] == "sigma_B"]
-    assert het["n_series"] == 6 and len(het["worst"]) == 3
+    assert het["n_series"] == 6 and len(het["worst"]) == 3 and het["low_power"] is False
+    # sigma_C's rows share e6's design points but are not sigma_B's
+    assert all(w["n"] == len(_TIMES) for w in het["worst"])
     if overshoot:
         assert het["p"] < 0.01
         assert het["worst"][0]["series"] == "e6" and het["worst"][0]["rms"] > 1.5

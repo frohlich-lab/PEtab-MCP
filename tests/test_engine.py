@@ -70,7 +70,7 @@ def test_replicate_measurements_not_double_counted(engine, session):
 
 def test_records_carry_weighted_residuals(engine):
     rec = engine.evaluate_objective()["simulations"][0]
-    assert {"residual", "residual_weighted", "noise"} <= set(rec)
+    assert {"residual", "residual_weighted", "noise", "noise_parameters"} <= set(rec)
     # obs_B noise is sigma_B (nominal 0.1); weighted residual = residual / sigma
     assert rec["noise"] == pytest.approx(0.1)
     assert rec["residual_weighted"] == pytest.approx(rec["residual"] / rec["noise"])

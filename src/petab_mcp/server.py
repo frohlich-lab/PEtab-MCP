@@ -2104,7 +2104,8 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         column list from a `simulations` query onto `measurements`, or the reverse.
 
         `simulations` has one row per point of the last fit: `measurement`, `simulation`,
-        `residual`, `residual_weighted`, `noise` — residuals live there, not on `measurements`.
+        `residual`, `residual_weighted`, `noise`, and the row's `noise_parameters` — residuals
+        live there, not on `measurements`.
         `simulations_history` is the only way to compare versions point by point, e.g.
         `SELECT observable_id, experiment_id, time,
         max(CASE WHEN version=3 THEN residual_weighted END) AS v3,
@@ -2174,10 +2175,10 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         `residual_structure` verdict rides on the fit result. An estimated sigma absorbs misfit, so
         two ranked pointers say where it did: `sigma_heterogeneity` (per sigma, a Levene `p` that
         its series share one spread, and the series with the largest `rms` weighted residual) and
-        `noise_sigma.fitted_over_data_noise` (`low_power` on few points); `structure_tests_caveat`
-        says when no structure flag is weak evidence. On a large problem `per_observable`
-        is a worst-first subsample (`max_observables` by chi2, plus a few by bias and structure
-        flag, with an `omitted` block); `max_observables=0` returns every row.
+        `noise_sigma.fitted_over_data_noise`, each `low_power` on few points;
+        `structure_tests_caveat` says when no structure flag is weak evidence. On a large problem
+        `per_observable` is a worst-first subsample (`max_observables` by chi2, plus a few by bias
+        and structure flag, with an `omitted` block); `max_observables=0` returns every row.
 
         PARAMETERS (`identifiability`), from the Fisher information at the optimum and the
         multistart spread: per-parameter standard error and fold uncertainty, marginal and partial
