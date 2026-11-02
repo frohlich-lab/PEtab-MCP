@@ -366,7 +366,7 @@ def test_a_change_arriving_during_a_fit_is_refused_at_once(tmp_path, monkeypatch
     timing out again behind the fit it resends; once that fit ends the session takes changes."""
     fitting_, release = threading.Event(), threading.Event()
 
-    def _fit(self, n_starts=None, refit=False):
+    def _fit(self, n_starts=None):
         fitting_.set()
         release.wait(30)
         raise ModelUpdateError("the stub's fit ended")
@@ -393,7 +393,7 @@ def test_a_cancelled_call_stops_its_fit_and_undoes_its_edit(tmp_path, monkeypatc
     multistart.CANCELLED: the edit is undone and the session takes the next change."""
     started, heard = threading.Event(), threading.Event()
 
-    def _fit(self, n_starts=None, refit=False):
+    def _fit(self, n_starts=None):
         started.set()
         if M.CANCELLED.get().wait(30):
             heard.set()
@@ -417,5 +417,5 @@ def test_a_cancelled_call_stops_its_fit_and_undoes_its_edit(tmp_path, monkeypatc
     assert _call(mcp, "make_changes", _CHANGE).get("error_cause") != FIT_IN_PROGRESS
 
 
-def _fit_ends(self, n_starts=None, refit=False):
+def _fit_ends(self, n_starts=None):
     raise ModelUpdateError("the stub's fit ended")

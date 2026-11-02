@@ -385,7 +385,7 @@ def test_a_declined_new_best_is_not_stamped_as_one(session, monkeypatch):
     reports = iter([plausible, _fitsim_inflated_sigma(0.0, 0.0)["noise_sigma_report"]])
     fits = iter([_fitsim(-50.0, 18.0), _fitsim(-80.0, 18.0)])  # the second scores far better
 
-    def fit_numbers(n_starts=None, refit=False):
+    def fit_numbers(n_starts=None):
         fs = {**next(fits), "n_starts": n_starts, "fitted_parameters": {}}
         return fs, fitting.compute_improvement(session, fs["neg_log_likelihood"], fitsim=fs)
 
@@ -839,7 +839,7 @@ def test_a_resume_seeds_the_checkpoint_the_live_run_kept(
     script = iter(fits)
     reports = []
 
-    def _fit(n_starts=None, refit=False):
+    def _fit(n_starts=None):
         fs = {**next(script), "hardcoded_constants": ["0.0987"], "n_starts": n_starts}
         reports.append(fs.pop("noise_sigma_report"))
         return fs, fitting.compute_improvement(session, fs["neg_log_likelihood"], fitsim=fs)

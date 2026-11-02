@@ -1039,8 +1039,7 @@ _MAKE_CHANGES_CONTRACT = """\
 LESS hard.
 
 A REFIT is a call with no model route: `parameters` and/or `n_starts` alone fit the current \
-model again (version N's with `base_version=N`) as a new version, one start from its optimum and \
-the rest sampled. One with neither new bounds nor more starts than that model ran is refused.
+model again (version N's with `base_version=N`) as a new version. One with neither new bounds nor more starts than that model ran is refused.
 
 ALL-OR-NOTHING: a change that is rejected, or whose fit produces no version, is REVERTED, so the \
 working model is always a scored one. The result IS the fit, flat, in `get_fit_summary`'s \

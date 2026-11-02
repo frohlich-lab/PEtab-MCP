@@ -189,7 +189,7 @@ def _reg(*entries, setup=SETUP, fitted=True):
     ]
 
 
-def _decide(registry, *, head_version, setup=SETUP, starts=2, prior_attempts=1, parent=None):
+def _decide(registry, *, head_version, setup=SETUP, starts=2, prior_attempts=1):
     """``decide`` for a candidate of structure ``X``."""
     return D.decide(
         structure_hash="X",
@@ -198,7 +198,6 @@ def _decide(registry, *, head_version, setup=SETUP, starts=2, prior_attempts=1, 
         head_version=head_version,
         registry=registry,
         prior_attempts=prior_attempts,
-        parent=parent,
     )
 
 
@@ -249,12 +248,6 @@ def test_decide_does_not_call_a_refit_under_new_bounds_a_duplicate():
     d = _decide(_reg((1, "X", 1.0), (2, "X", 1.0)), setup=NEW_SETUP, head_version=2)
     assert d["action"] == "proceed"
     assert d["warnings"] == []
-
-
-def test_decide_marks_a_model_of_its_parents_structure_as_a_refit():
-    reg = _reg((1, "X", 1.0), (2, "Y", 1.0))
-    assert _decide(reg, setup=NEW_SETUP, head_version=2, parent=1)["refit"] is True
-    assert _decide(reg, setup=NEW_SETUP, head_version=2)["refit"] is False
 
 
 def test_decide_refits_an_earlier_version_to_search_harder():

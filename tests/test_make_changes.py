@@ -282,26 +282,11 @@ def _meta(tmp_path, version):
     return json.loads((tmp_path / "prov" / "versions" / f"v{version}" / "meta.json").read_text())
 
 
-def _refits(monkeypatch):
-    """The ``refit`` flag each fit's warm starts are built with, in order."""
-    from petab_mcp import fitting
-
-    seen, real = [], fitting.warm_start_guesses
-
-    def spy(*args, refit=False, **kwargs):
-        seen.append(refit)
-        return real(*args, refit=refit, **kwargs)
-
-    monkeypatch.setattr(fitting, "warm_start_guesses", spy)
-    return seen
-
-
-def test_base_version_with_no_edit_refits_that_version(tmp_path, monkeypatch):
+def test_base_version_with_no_edit_refits_that_version(tmp_path):
     """REGRESSION: `base_version` without an edit was refused, so agents carried a bound change on
     a throw-away edit, and some of those dropped inputs or terms (bachmann, fujita). With new
     bounds it refits that version as a new one of its structure, descending from it; with no new
     bounds and no more starts it is that version, and alone it is nothing to do."""
-    seen = _refits(monkeypatch)
     mcp = _server(tmp_path, auto_fit=True)
     _call(mcp, "make_changes", {"antimony": _antimony(), "justification": "v0", "n_starts": 2})
     extra = {"antimony": _antimony("r3: A => ; k3 * A;"), "justification": "v1", "n_starts": 2}
@@ -319,13 +304,11 @@ def test_base_version_with_no_edit_refits_that_version(tmp_path, monkeypatch):
     assert out["committed"] is True and out["version"] == 2, out["message"]
     assert _meta(tmp_path, 2)["parent"] == 0
     assert _meta(tmp_path, 2)["structure_hash"] == _meta(tmp_path, 0)["structure_hash"]
-    assert seen == [False, False, True]
 
 
-def test_a_refit_of_the_current_model_is_ranked_like_any_fit(tmp_path, monkeypatch):
+def test_a_refit_of_the_current_model_is_ranked_like_any_fit(tmp_path):
     """A refit that clears the new-best bar becomes `best_version`. `n_starts` alone refits too,
     and the same search again is the version it repeats."""
-    seen = _refits(monkeypatch)
     mcp = _server(tmp_path, auto_fit=True)
 
     def k1(lb, ub, **call):
@@ -338,7 +321,6 @@ def test_a_refit_of_the_current_model_is_ranked_like_any_fit(tmp_path, monkeypat
     assert out["progress"]["best_version"] == 1
     out = _call(mcp, "make_changes", {"justification": "harder", "n_starts": 3})
     assert out["committed"] is True and out["version"] == 2 and out["n_starts"] == 3
-    assert seen == [False, True, True]
     out = _call(mcp, "make_changes", {"justification": "as hard again", "n_starts": 3})
     assert out["no_change"] is True and out["version"] == 2
 

@@ -170,7 +170,6 @@ def decide(
     head_version: int,
     registry: list[dict[str, Any]],
     prior_attempts: int,
-    parent: int | None = None,
 ) -> dict[str, Any]:
     """Decide what a ``set_model`` re-author should do — run AFTER reconcile+validate, BEFORE
     the fit. Pure: all state comes in as arguments.
@@ -182,7 +181,6 @@ def decide(
         head_version: the current HEAD version number.
         registry: prior committed versions (see :func:`build_registry`).
         prior_attempts: how many times this exact structure has already been authored this session.
-        parent: the version the candidate descends from, ``head_version`` when None.
 
     Returns one of:
         ``{"action": "terminate", "message": ...}`` — refuse; the caller loops on one structure.
@@ -190,8 +188,7 @@ def decide(
             byte-identical to the current HEAD: skip the recompile+fit and the new version.
         ``{"action": "refuse", "duplicate_of": v, "message": ...}`` — byte-identical to an
             earlier fitted version ``v``: no fit, no new version, and HEAD stays where it is.
-        ``{"action": "proceed", "warnings": [...], "refit": bool}`` — commit normally, attaching
-            any advisories; ``refit`` when the candidate has its parent's structure.
+        ``{"action": "proceed", "warnings": [...]}`` — commit normally, attaching any advisories.
     """
     # (d) An identical structure fit too many times cannot change anything — stop the loop.
     if prior_attempts >= MAX_IDENTICAL_REAUTHORS:
@@ -267,9 +264,4 @@ def decide(
                 f"unlikely to beat the best (v{best.get('version')} is kept regardless) "
                 "— try a different structure."
             )
-    parent = head_version if parent is None else parent
-    return {
-        "action": "proceed",
-        "warnings": warnings,
-        "refit": any(r.get("version") == parent for r in matches),
-    }
+    return {"action": "proceed", "warnings": warnings}
