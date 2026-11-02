@@ -111,9 +111,10 @@ def test_fit_is_a_noop_when_model_unchanged(fit_session):
     # ...and so does the NOISE verdict. It must not be omitted: `noise_sigma_advice` is absent
     # when the noise model is plausible, so a no-op carrying none of these keys would read as
     # "plausible" — and the agent may have no get_fit_summary to check against.
-    for key in ("noise_sigma_report", "noise_sigma_inflated", "noise_sigma_collapsed"):
+    for key in ("noise_sigma_inflated", "noise_sigma_collapsed"):
         assert key in again, key
         assert again[key] == first[key]
+    assert again.get("noise_sigma_report") == first.get("noise_sigma_report")
     assert again.get("noise_sigma_advice") == first.get("noise_sigma_advice")
     # plus the duplicate version's stored flag, mirrored like the other scalar meta keys
     assert again["residual_flagged"] == data_access.residual_flag(first["residual_structure"])
@@ -145,14 +146,15 @@ def test_fit_returns_the_compact_residual_structure_verdict(fit_session):
     res = sess.fit(n_starts=2)
 
     rs = res["residual_structure"]
-    assert set(rs) == {"flagged_observables", "low_power", "summary", "replicate_lack_of_fit"}
+    # The toy problem measures each design point ONCE, so the replicate arm has nothing to test and
+    # is left off the fit result (#190)...
+    assert set(rs) == {"flagged_observables", "low_power", "summary"}
     assert isinstance(rs["flagged_observables"], list)
     assert isinstance(rs["low_power"], bool)
     assert rs["summary"]
-    # The toy problem measures each design point ONCE, so the replicate arm has nothing to test —
-    # and must say so rather than contributing a silent pass.
-    assert rs["replicate_lack_of_fit"]["available"] is False
-    assert rs["replicate_lack_of_fit"]["status"] == "no_replicated_points"
+    # ...while the full rollup says so rather than contributing a silent pass.
+    lof = data_access.residual_structure_rollup(sess)["replicate_lack_of_fit"]
+    assert lof["available"] is False and lof["status"] == "no_replicated_points"
     # ...and the diagnosis tool does NOT repeat it: one verdict, one place. The detail behind it
     # (the per-observable rows) is what that call is for.
     assert "residual_structure" not in data_access.fit_diagnosis(sess)
@@ -432,12 +434,7 @@ def test_restore_version_carries_the_verdict_too(fit_session):
     sess = fit_session
     sess.fit(n_starts=2)
     out = sess.restore_version(0)
-    assert set(out["residual_structure"]) == {
-        "flagged_observables",
-        "low_power",
-        "summary",
-        "replicate_lack_of_fit",
-    }
+    assert set(out["residual_structure"]) == {"flagged_observables", "low_power", "summary"}
 
 
 def test_untested_residuals_are_recorded_as_unknown_not_as_clean(session, monkeypatch):
@@ -472,15 +469,17 @@ def test_a_real_fit_populates_the_noise_sigma_verdict(fit_session):
     sess.problem.parameter_df.loc["sigma_B", ESTIMATE] = True
     res = sess.fit(n_starts=2)
 
-    assert res["noise_sigma_report"], "the fit block must carry the estimated sigma's report"
-    assert "sigma_B" in res["noise_sigma_report"]
-    # the verdict rides along, so the agent never needs get_fit_summary for it
+    report = sess.simulation["noise_sigma_report"]
+    assert "sigma_B" in report, "the fit must report the estimated sigma"
+    # the verdict rides along, so the agent never needs get_fit_summary for it, and the report
+    # with it only for the sigmas it flags (#190)
     assert isinstance(res["noise_sigma_inflated"], bool)
     assert isinstance(res["noise_sigma_collapsed"], bool)
+    flagged = {pid for pid, e in report.items() if e["status"] in ("inflated", "collapsed")}
+    assert set(res.get("noise_sigma_report", {})) == flagged
 
-    # ...and the SAME report reached the session's own bookkeeping, not a None that silently
-    # reads as "plausible": the event and the checkpoint must agree with the returned block.
-    assert sess.simulation["noise_sigma_report"] == res["noise_sigma_report"]
+    # ...and the report reached the session's own bookkeeping, not a None that silently reads as
+    # "plausible": the event and the checkpoint must agree with the returned block.
     ev = [e for e in sess.provenance.recent_events() if e["type"] == "fit"][-1]
     assert ev["noise_sigma_estimated"] is True
     assert ev["noise_sigma_inflated"] == res["noise_sigma_inflated"]
@@ -501,8 +500,8 @@ def test_get_fit_summary_carries_the_residual_structure_verdict(fit_session):
     )
     rs = summary["residual_structure"]
     assert isinstance(rs, dict) and "summary" in rs
-    # Same shape the fit result reports, so one key name never means two things.
-    assert set(rs) == set(fit_res["residual_structure"])
+    # The fit result's is a cut of it (#190), so one key name never means two things.
+    assert set(fit_res["residual_structure"]) <= set(rs)
     # The replicate arm must be present and self-describing, since that is the one the gate keys
     # on: it reads `.get("available")` and `.get("n_flagged")`.
     assert "replicate_lack_of_fit" in rs

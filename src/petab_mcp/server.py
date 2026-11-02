@@ -1044,7 +1044,8 @@ the rest sampled. One with neither new bounds nor more starts than that model ra
 
 ALL-OR-NOTHING: a change that is rejected, or whose fit produces no version, is REVERTED, so the \
 working model is always a scored one. The result IS the fit, flat, in `get_fit_summary`'s \
-fields. Read `applied` first: `false` → nothing moved — \
+fields, with the noise report, the parameters at a bound and the flagged observables cut to what \
+is flagged or new since the parent version. Read `applied` first: `false` → nothing moved — \
 rejected, reverted because the fit failed, or already an earlier fitted version; `error`/`issues` \
 says which, act on THAT. Then `committed`: `true` → a version exists, read its score; `false` \
 with `no_change` → this model already IS the current version, so change something else. \
@@ -1976,7 +1977,7 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
     @mcp.tool(annotations=_READ_ONLY)
     def get_fit_summary() -> dict[str, Any]:
         """The current fit's metrics without per-point records, a cheap score check: the same fields
-        every `make_changes` result carries. Models rank by `criterion_value`, the
+        every `make_changes` result carries, uncut. Models rank by `criterion_value`, the
         complexity-penalised score `criterion` names (`bic` unless configured otherwise; lower is
         better); the other scores are reported beside it, and the `k` they charge is
         `n_estimated` + `hardcoded_constants`.
@@ -2102,7 +2103,8 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         column list from a `simulations` query onto `measurements`, or the reverse.
 
         `simulations` has one row per point of the last fit: `measurement`, `simulation`,
-        `residual`, `residual_weighted`, `noise` — residuals live there, not on `measurements`.
+        `residual`, `residual_weighted`, `noise`, and the row's `noise_parameters` — residuals
+        live there, not on `measurements`.
         `simulations_history` is the only way to compare versions point by point, e.g.
         `SELECT observable_id, experiment_id, time,
         max(CASE WHEN version=3 THEN residual_weighted END) AS v3,
@@ -2169,9 +2171,13 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         |residual| and two sign-based structure tests (`sign_test`, `runs_test`, each with `p` and
         `low_power`), plus the `worst_n` worst points (measurement vs simulation) and the
         noise-sigma report. Read it for WHERE and HOW the fit is off, not WHETHER: the rolled-up
-        `residual_structure` verdict rides on the fit result. On a large problem `per_observable`
-        is a worst-first subsample (`max_observables` by chi2, plus a few by bias and structure
-        flag, with an `omitted` block); `max_observables=0` returns every row.
+        `residual_structure` verdict rides on the fit result. An estimated sigma absorbs misfit, so
+        two ranked pointers say where it did: `sigma_heterogeneity` (per sigma, a Levene `p` that
+        its series share one spread, and the series with the largest `rms` weighted residual) and
+        `noise_sigma.fitted_over_data_noise`, each `low_power` on few points;
+        `structure_tests_caveat` says when no structure flag is weak evidence. On a large problem
+        `per_observable` is a worst-first subsample (`max_observables` by chi2, plus a few by bias
+        and structure flag, with an `omitted` block); `max_observables=0` returns every row.
 
         PARAMETERS (`identifiability`), from the Fisher information at the optimum and the
         multistart spread: per-parameter standard error and fold uncertainty, marginal and partial
@@ -2392,11 +2398,12 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         `non_improving_streak` counts consecutive fitted ops since the last real new best.
         `should_stop` is set (with a `stop_reason`) once the session has stopped making progress —
         the hard non-improving-streak cap, or a plateau once the best model is statistically
-        adequate.
+        adequate, which only a chi2 goodness of fit against FIXED noise sigmas can show: with
+        estimated sigmas only the streak cap stops.
         There is no cap on the TOTAL number of fits: a session that keeps genuinely improving keeps
         going, and only a stall stops it.
         A plateaued `stop_reason` also carries the structural-inadequacy nudge: when the score
-        stops moving and the best model is still not adequate, the misfit is the model's FORM — the
+        stops moving and the best model is shown not adequate, the misfit is the model's FORM — the
         next model must change the structure (add a latent state, add a feedback reaction, raise
         interaction order), not re-fit or widen the same one.
         """

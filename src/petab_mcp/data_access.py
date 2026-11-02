@@ -34,6 +34,7 @@ itself prevent. Results come back as plain JSON records.
 from __future__ import annotations
 
 import logging
+import math
 import re
 from collections import Counter
 from typing import Any
@@ -45,6 +46,7 @@ from petab.v2.C import (
     LOWER_BOUND,
     MEASUREMENT,
     NOISE_FORMULA,
+    NOISE_PARAMETERS,
     NOMINAL_VALUE,
     OBSERVABLE_FORMULA,
     OBSERVABLE_ID,
@@ -92,6 +94,7 @@ SIMULATION_COLUMNS = [
     "residual",
     "residual_weighted",
     "noise",
+    "noise_parameters",
 ]
 
 # The cross-version copy of the simulation dataframe: SIMULATION_COLUMNS plus which stored
@@ -587,8 +590,8 @@ def fit_diagnosis(session, worst_n: int = 8, max_observables: int | None = 12) -
                     float(rw.mean()), 3
                 ),  # far from 0 => systematic bias
                 "max_abs_weighted_residual": round(float(rw.abs().max()), 3),
-                # Sign-based structure tests (see _residual_structure): these survive estimated
-                # noise sigmas, which flatten the magnitude scores above. Isolated so a failure in
+                # Sign-based structure tests (see _residual_structure): no sigma rescales these,
+                # unlike the magnitude scores above. Isolated so a failure in
                 # the added stats degrades to "tests unavailable" rather than taking down the whole
                 # (pre-existing, robust) magnitude diagnosis for this observable.
                 **_safe_residual_structure(g),
@@ -694,6 +697,7 @@ def fit_diagnosis(session, worst_n: int = 8, max_observables: int | None = 12) -
     # scorer outside the session calls this too). Empty {} when the problem has no estimated sigma
     # or no fit yet.
     noise_sigma: dict[str, Any] = {}
+    _rep = None
     try:
         from . import fitting
 
@@ -703,6 +707,10 @@ def fit_diagnosis(session, worst_n: int = 8, max_observables: int | None = 12) -
             noise_sigma = {"report": _rep, "advice": fitting.noise_sigma_advice(_rep)}
     except Exception:  # noqa: BLE001 - advisory; never break the diagnosis
         noise_sigma = {}
+    signals = sigma_misfit_signals(session, report=_rep, sims=df)
+    if signals["fitted_over_data_noise"]:
+        noise_sigma["fitted_over_data_noise"] = signals["fitted_over_data_noise"][:_SIGNALS_KEEP]
+    caveat = structure_tests_caveat(session.problem)
 
     return {
         "n_points": int(len(d)),
@@ -710,13 +718,19 @@ def fit_diagnosis(session, worst_n: int = 8, max_observables: int | None = 12) -
         "per_observable": per_observable,  # bounded: worst-12 by chi2 + all flagged rows
         **({"omitted": omitted_note} if omitted_note else {}),
         "worst_points": worst_points,  # bounded: <= worst_n rows
-        "noise_sigma": noise_sigma,  # {} if no estimated sigma/fit; else {report, advice} (advice None when plausible)
+        # {} if no estimated sigma/fit, else {report, advice (None when plausible),
+        # fitted_over_data_noise}
+        "noise_sigma": noise_sigma,
+        "sigma_heterogeneity": [
+            {**h, "worst": h["worst"][:3]} for h in signals["heterogeneity"][:_SIGNALS_KEEP]
+        ],
+        **({"structure_tests_caveat": caveat} if caveat else {}),
         "hint": (
             "mean_weighted_residual far from 0 = a systematic over/under-shoot for that "
             "observable; worst_points show the largest model-vs-data deviations. "
-            "sign_test / runs_test detect bias and time trend from residual SIGNS, so they "
-            "still work when estimated noise sigmas flatten chi2/reduced_chi2 — but are "
-            "underpowered on few points (low_power), so read a non-significant result as "
+            "sign_test / runs_test detect bias and time trend from residual SIGNS, which no "
+            "sigma rescales — but are underpowered on few points (low_power), so read a "
+            "non-significant result as "
             "weak, not as a pass. The rolled-up verdict over these tests — including the "
             "replicate_lack_of_fit arm, whose PASS is worth only its lof_df (replicated points "
             "MINUS your estimated structural parameters): weak: true, or no lof_df, certifies "
@@ -724,6 +738,124 @@ def fit_diagnosis(session, worst_n: int = 8, max_observables: int | None = 12) -
             "A full breakdown and the optimizer's log are separate reads."
         ),
     }
+
+
+#: How many sigmas each ranked list in :func:`fit_diagnosis` keeps, worst first.
+_SIGNALS_KEEP = 5
+
+#: :func:`structure_tests_caveat`'s line; ``{}`` is what is estimated.
+_ABSORBED_MISFIT_CAVEAT = (
+    "Estimated {} absorb misfit (a sigma inflates until chi2 is near n, a scale or offset takes "
+    "up a series' level), so the sign/runs tests have little power here and no structure flag "
+    "is NOT adequacy. sigma_heterogeneity and noise_sigma.fitted_over_data_noise rank where to look."
+)
+
+
+def sigma_misfit_signals(session, report=None, sims=None) -> dict[str, list[dict[str, Any]]]:
+    """Where an estimated noise sigma absorbed a misfit: two ranked lists, uncapped, worst first.
+
+    * ``heterogeneity``: per estimated noise sigma, :func:`residual_tests.sigma_heterogeneity`
+      across the (observable, experiment) series it covers, as ``{parameter_id, p, n_series,
+      worst}``, smallest ``p`` first. A series is labelled by its experiment, or as
+      ``observable[experiment]`` where the sigma covers several observables.
+    * ``fitted_over_data_noise``: ``{parameter_id, fitted_over_data_noise, n_points, low_power}``
+      off ``report`` (:func:`fitting.noise_sigma_report`, computed when ``None``), largest first;
+      ``low_power`` below ``NOISE_SIGMA_MIN_POINTS`` measurements, where the report's ``status`` is
+      ``unknown``.
+
+    ``sims`` is the simulations frame when the caller has one. Both lists are empty on any failure.
+    """
+    from . import fitting
+
+    try:
+        if report is None:
+            report = fitting.noise_sigma_report(
+                session.problem, (session.simulation or {}).get("fitted_parameters")
+            )
+        ratios = _ranked_noise_ratios(report)
+    except Exception:  # noqa: BLE001 - advisory; never break the diagnosis
+        ratios = []
+    try:
+        if sims is None:
+            sims = _frames(session)["simulations"]
+        heterogeneity = _sigma_heterogeneity(session.problem, sims)
+    except Exception:  # noqa: BLE001 - advisory; never break the diagnosis
+        heterogeneity = []
+    return {"heterogeneity": heterogeneity, "fitted_over_data_noise": ratios}
+
+
+def _ranked_noise_ratios(report) -> list[dict[str, Any]]:
+    from .constants import NOISE_SIGMA_MIN_POINTS
+
+    out = []
+    for pid, entry in (report or {}).items():
+        ratio = entry.get("fitted_over_data_noise")
+        if ratio is None or not math.isfinite(ratio):
+            continue
+        n = entry.get("n_points")
+        out.append(
+            {
+                "parameter_id": pid,
+                "fitted_over_data_noise": round(float(ratio), 3),
+                "n_points": n,
+                "low_power": n is None or n < NOISE_SIGMA_MIN_POINTS,
+            }
+        )
+    return sorted(out, key=lambda r: r["fitted_over_data_noise"], reverse=True)
+
+
+def _sigma_heterogeneity(problem, sims) -> list[dict[str, Any]]:
+    from . import reconcile as R
+    from . import residual_tests as rt
+
+    if sims is None or sims.empty:
+        return []
+    # A sigma's own records, picked as its measurement rows are: renamed to PEtab's columns.
+    frame = sims[sims["residual_weighted"].notna()].rename(
+        columns={
+            "observable_id": OBSERVABLE_ID,
+            "experiment_id": EXPERIMENT_ID,
+            "noise_parameters": NOISE_PARAMETERS,
+        }
+    )
+    out = []
+    for pid in _noise_parameter_ids(problem):
+        if not R.is_parameter_estimated(problem, pid):
+            continue
+        sub = R._measurement_rows_for_sigma(problem, pid, frame)
+        if sub is None:
+            continue
+        single = sub[OBSERVABLE_ID].nunique() == 1
+        series = {}
+        for (obs, exp), g in sub.groupby([OBSERVABLE_ID, EXPERIMENT_ID], sort=False, dropna=False):
+            label = (str(exp) if single else f"{obs}[{exp}]") if exp else str(obs)
+            series[label] = g["residual_weighted"].tolist()
+        verdict = rt.sigma_heterogeneity(series)
+        if verdict:
+            out.append({"parameter_id": pid, **verdict})
+    return sorted(out, key=lambda v: (v["p"] is None, v["p"] or 0.0))
+
+
+def structure_tests_caveat(problem) -> str | None:
+    """The line :func:`fit_diagnosis` carries while noise sigmas or observable scales/offsets are
+    estimated, or ``None``."""
+    from . import reconcile as R
+
+    df = getattr(problem, "parameter_df", None)
+    table = set() if df is None else {str(pid) for pid in df.index}
+
+    def estimated(ids) -> bool:
+        return any(R.is_parameter_estimated(problem, pid) for pid in ids & table)
+
+    what = [
+        name
+        for name, ids in (
+            ("noise sigmas", R.plausibility_sigma_ids(problem)),
+            ("observable scales/offsets", R.observable_scaling_ids(problem)),
+        )
+        if estimated(ids)
+    ]
+    return _ABSORBED_MISFIT_CAVEAT.format(" and ".join(what)) if what else None
 
 
 _STRUCTURE_UNAVAILABLE = "residual-structure tests unavailable (no weighted residuals yet)."
@@ -736,10 +868,10 @@ def residual_structure_rollup(session, sims=None) -> dict[str, Any]:
     for one fit, assembled by :func:`fitting.fit_result_block`/:func:`fitting.fit_summary`) —
     and NOT by ``get_fit_diagnosis``, which returns the per-observable detail behind it.
 
-    Which observables show significant residual STRUCTURE — a form-incompleteness signal that
-    SURVIVES estimated noise sigmas (unlike chi2 GoF, which a free sigma rescales to look adequate).
-    THREE tests, all feeding the one ``flagged_observables`` list the session's plateau-adequacy gate
-    already consumes:
+    Which observables show significant residual STRUCTURE — a form-incompleteness signal no sigma
+    rescales (unlike chi2 GoF), though estimated scales and offsets take most of its power
+    (:func:`structure_tests_caveat`). THREE tests, all feeding the one ``flagged_observables`` list
+    the session's plateau-adequacy gate already consumes:
 
     * the sign test and the runs test, per observable, over the points WITHIN a residual series;
     * the replicate lack-of-fit test, per replicated design point, ACROSS that point's own
@@ -1278,10 +1410,33 @@ def residual_flag(structure: dict[str, Any]) -> bool | None:
 # verdict (the per-test p-values are always reported raw, so a caller can judge for itself).
 _STRUCTURE_ALPHA = 0.05
 
-# At most this many underpowered observables are NAMED in the summary (the rest as a count): the
-# summary rides on every fit, and the names are there to separate a low-power claim from the
-# replicate arm's pass — three is enough to tell the two apart.
-_MAX_NAMED_LOW_POWER = 3
+# At most this many flagged or underpowered observables are NAMED in the summary and in a fit
+# result's ``flagged_observables`` (the rest as a count): both ride on every fit, and
+# get_fit_summary lists every flagged observable.
+_MAX_NAMED = 3
+
+
+def _named(ids: list[str]) -> str:
+    """The first ``_MAX_NAMED`` of ``ids``, comma-joined, with a count of the rest."""
+    rest = len(ids) - _MAX_NAMED
+    return ", ".join(ids[:_MAX_NAMED]) + (f" (+{rest} more)" if rest > 0 else "")
+
+
+def residual_structure_on_fit(rollup: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The rollup as a fit result carries it: ``flagged_observables`` cut to the first
+    ``_MAX_NAMED``, with ``n_flagged_observables`` counting all of them when any is cut, and no
+    ``replicate_lack_of_fit`` where the design leaves that arm nothing to test
+    (``_LOF_SILENT_STATUSES``, 13 of 16 problems measured)."""
+    if not isinstance(rollup, dict):
+        return rollup
+    out = dict(rollup)
+    flagged = out.get("flagged_observables") or []
+    if len(flagged) > _MAX_NAMED:
+        out["flagged_observables"] = flagged[:_MAX_NAMED]
+        out["n_flagged_observables"] = len(flagged)
+    if (out.get("replicate_lack_of_fit") or {}).get("status") in _LOF_SILENT_STATUSES:
+        del out["replicate_lack_of_fit"]
+    return out
 
 
 def _safe_residual_structure(group) -> dict[str, Any]:
@@ -1389,7 +1544,7 @@ def _structure_summary(
             "lack-of-fit"
         )
         head = (
-            f"systematic residual structure in {', '.join(flagged)} ({how}) — the model's FORM "
+            f"systematic residual structure in {_named(flagged)} ({how}) — the model's FORM "
             "is missing something for those observables."
         )
     elif not sign_runs_tested:
@@ -1407,9 +1562,7 @@ def _structure_summary(
         # freedom remain), so that is a pass" is a flat contradiction the agent cannot resolve
         # (seen on every fit of one problem: three observables covered, a fourth's family too small
         # to test).
-        named = (low_power_observables or [])[:_MAX_NAMED_LOW_POWER]
-        rest = len(low_power_observables or []) - len(named)
-        where = f" for {', '.join(named)}{f' (+{rest} more)' if rest else ''}" if named else ""
+        where = f" for {_named(low_power_observables)}" if low_power_observables else ""
         head = (
             f"no significant residual structure, but the sign/runs tests are UNDERPOWERED{where} "
             f"at this sample size — that is weak evidence of adequacy{' there' if where else ''}"
