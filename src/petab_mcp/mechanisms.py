@@ -512,8 +512,8 @@ def _not_a_parameter(
     elif ident in species:
         what = "a species"
         instead = (
-            f" `{ident}` is the amount of the agent the entity map (or `amounts`) maps it to, "
-            "read by that agent's own name and sites, not by this id."
+            f" `{ident}` is the amount of the agent the entity map, `amounts` or a seed at its id "
+            "maps it to, read by that agent's own name and sites, not by this id."
         )
     elif isinstance(held, pysb.Parameter):
         return

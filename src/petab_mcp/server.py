@@ -1086,11 +1086,11 @@ _MAKE_CHANGES_DOC = _make_changes_doc()
 
 
 # What the statements route holds, said once for every version of its paragraph.
-_HELD_INPUTS = (
+_SET_SPECIES = (
     "A species the conditions set stays at what they set while your rows only read it (bind, "
-    "catalyse, regulate); a row that makes or converts it makes it a state they only start. Each "
-    "of `describe_problem`'s `inputs` follows its rule."
+    "catalyse, regulate); a row that makes or converts it makes it a state they only start."
 )
+_HELD_INPUTS = _SET_SPECIES + " Each of `describe_problem`'s `inputs` follows its rule."
 
 
 #: What the `statements` route's paragraph adds on a server holding constraints (:mod:`constraints`).
@@ -1178,8 +1178,14 @@ def _make_changes_statements_doc(bound: bool = True, held: dict[str, Any] | None
             "as it does. " + _HELD_INPUTS + " "
             if bound
             else "NOTHING is bound: every readout the observables read is yours to define in "
-            "`readouts`, and every target the condition table sets is a parameter id your rows "
-            "must read, in a binding (`kf=\"k*dose\"`) or a seed's amount. "
+            "`readouts`, and every target the condition table sets is an input your rows must "
+            "read: in a binding (`kf=\"k*dose\"`), which follows every period's value, or as an "
+            "agent seeded at the target's id alone (`{\"agent\": \"FSK\", \"amount\": "
+            "\"Fsk\"}`), whose species then takes that id for every period to set. "
+            + _SET_SPECIES
+            + " A seed's amount that is any other expression of a target (`2*Fsk`) takes the "
+            "first period's value alone, which in a pre-equilibrated experiment is the "
+            "pre-equilibration one. "
             + "".join(
                 f"But `{name}` is HELD to the experiment's protocol, `{name} = {item.formula}`: "
                 "read it as an agent in your rows; never seed, make or degrade it. "

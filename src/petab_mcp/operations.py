@@ -35,7 +35,7 @@ from .errors import ModelUpdateError, ParameterError, PetabMcpError, ValidationE
 from .parameters import estimated_mask
 from .provenance import binding_of
 from .references import resolve_references
-from .validation import frozen_parametric_stoichiometry_issues, validate_problem
+from .validation import INPUT_REMEDY, frozen_parametric_stoichiometry_issues, validate_problem
 
 # AMICI reserves a handful of short symbols for its generated code (the state vector ``x``,
 # parameters ``p``, constants ``k``, expressions ``w``, time ``t``, the Heaviside/root vector
@@ -340,9 +340,7 @@ _ISSUE_HINTS = (
     (
         "Condition table contains invalid targets",
         " — each named target is an input the condition table SETS per experiment, so the model "
-        "must have it: read it as a parameter of that id in a rate law or an initial amount "
-        "(on the statements route, a row's binding `kf=\"k*dose\"` in `bindings`, or a seed's "
-        "amount).",
+        f"must have it: {INPUT_REMEDY}",
     ),
 )
 

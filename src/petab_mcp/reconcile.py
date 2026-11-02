@@ -677,16 +677,17 @@ def _reaction_species(sm) -> set[str]:
     return used
 
 
-def _model_math_names(sm) -> set[str]:
-    """Names the model's math reads: rate laws, initial assignments, rules, and events (trigger,
-    priority, delay, and each assignment's math). What an event ASSIGNS is :func:`_event_targets`:
-    the prune keeps it, while a role or reuse check reads only what the math reads."""
+def _model_math_names(sm, initial: bool = True) -> set[str]:
+    """Names the model's math reads: rate laws, initial assignments (unless ``initial`` is off),
+    rules, and events (trigger, priority, delay, and each assignment's math). What an event ASSIGNS
+    is :func:`_event_targets`: the prune keeps it, while a role or reuse check reads only what the
+    math reads."""
     names: set[str] = set()
     for i in range(sm.getNumReactions()):
         kl = sm.getReaction(i).getKineticLaw()
         if kl is not None:
             names |= _ast_names(kl.getMath())
-    for i in range(sm.getNumInitialAssignments()):
+    for i in range(sm.getNumInitialAssignments() if initial else 0):
         names |= _ast_names(sm.getInitialAssignment(i).getMath())
     for i in range(sm.getNumRules()):
         names |= _ast_names(sm.getRule(i).getMath())
