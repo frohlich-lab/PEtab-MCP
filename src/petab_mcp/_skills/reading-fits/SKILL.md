@@ -19,6 +19,11 @@ description: >-
   With estimated sigmas chi2 sits near `n_data_points` by construction whatever the model's form:
   judge adequacy from residual structure instead.
 - Fitted values are LINEAR whatever the estimation scale; `parameter_scales` gives each scale.
+- A change's result lists only what is new since the parent version in
+  `fitted_parameters_changed`, `parameter_scales` and `parameters_at_bound`, only flagged sigmas
+  in `noise_sigma_report`, and three flagged observables in `residual_structure`, with
+  `n_parameters_at_bound` and `n_flagged_observables` the full counts. A fit summary has every
+  pin, sigma and flagged observable.
 - `is_new_best`: this version became the best model, `progress.best_version`. A score that
   cleared `new_best_min_improvement` without that carries `new_best_declined`, saying why.
 

@@ -2142,7 +2142,8 @@ def bundle_result(
     Both halves' diagnostics are merged into ONE ordered ``messages`` stack (see :mod:`messages`) —
     the edit's advisories and lint warnings first, then the fit's — so a caller reads every
     warning and the error that stopped the call from a single place, each tagged with the step it
-    came from.
+    came from. An edit or lint warning the last committed result already carried is folded into
+    one line naming that version (see :func:`_unrepeated`).
 
     On a failure the message does NOT prescribe a fix, it forwards ``error`` — because that error
     is not always "the model is broken". The identical-structure loop guard reaches the same
@@ -2194,10 +2195,12 @@ def bundle_result(
     # Pipeline order: the edit's messages, then the fit's. `run_fit` / `edit_then_fit` already
     # shape a rejected fit as error entries; a fit that RAN reports its advisories as the flat
     # `warnings` the de-dup produces, so both shapes are folded in here.
-    messages = (
+    messages = _unrepeated(
+        session,
         list(edit_result.get("messages") or [])
         + list(fit_result.get("messages") or [])
-        + M.warnings_from(M.SOURCE_FIT, fit_result.get("warnings"))
+        + M.warnings_from(M.SOURCE_FIT, fit_result.get("warnings")),
+        version if committed else None,
     )
     result = {
         **{k: edit_result[k] for k in _EDIT_KEYS_KEPT if k in edit_result},
@@ -2213,3 +2216,42 @@ def bundle_result(
         "message": message,
     }
     return result
+
+
+#: Sources whose warnings describe the model as written, so they repeat word for word while it
+#: keeps the feature they name. The fit's warnings are always sent whole.
+_FOLDED_SOURCES = (M.SOURCE_EDIT, M.SOURCE_VALIDATION)
+
+
+def _unrepeated(session, messages: list[dict[str, str]], version: int | None) -> list[dict]:
+    """``messages`` with every edit or lint warning the last committed result carried folded into
+    one line per source, naming the version whose result carried it in full.
+
+    ``version`` is the version this call created, ``None`` when it created none. Only a committed
+    result is remembered, so the version a line names always has a result of its own, and a
+    warning that skipped a commit is sent whole again."""
+    sent = session.warnings_sent
+
+    def first_sent(m: dict[str, str]) -> int | None:
+        if m["level"] != M.LEVEL_WARNING or m["source"] not in _FOLDED_SOURCES:
+            return None
+        return sent.get((m["source"], m["message"]))
+
+    folded: dict[tuple[str, int], int] = {}
+    for m in messages:
+        if (v := first_sent(m)) is not None:
+            folded[m["source"], v] = folded.get((m["source"], v), 0) + 1
+    out = []
+    for m in messages:
+        v = first_sent(m)
+        if v is None:
+            out.append(m)
+        elif (n := folded.pop((m["source"], v), None)) is not None:
+            out.append(M.warning(m["source"], f"{n} warning(s) unchanged since version {v}."))
+    if version is not None:
+        session.warnings_sent = {
+            (m["source"], m["message"]): version if (v := first_sent(m)) is None else v
+            for m in messages
+            if m["level"] == M.LEVEL_WARNING and m["source"] in _FOLDED_SOURCES
+        }
+    return out

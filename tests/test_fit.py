@@ -111,9 +111,10 @@ def test_fit_is_a_noop_when_model_unchanged(fit_session):
     # ...and so does the NOISE verdict. It must not be omitted: `noise_sigma_advice` is absent
     # when the noise model is plausible, so a no-op carrying none of these keys would read as
     # "plausible" — and the agent may have no get_fit_summary to check against.
-    for key in ("noise_sigma_report", "noise_sigma_inflated", "noise_sigma_collapsed"):
+    for key in ("noise_sigma_inflated", "noise_sigma_collapsed"):
         assert key in again, key
         assert again[key] == first[key]
+    assert again.get("noise_sigma_report") == first.get("noise_sigma_report")
     assert again.get("noise_sigma_advice") == first.get("noise_sigma_advice")
     # plus the duplicate version's stored flag, mirrored like the other scalar meta keys
     assert again["residual_flagged"] == data_access.residual_flag(first["residual_structure"])
@@ -472,15 +473,17 @@ def test_a_real_fit_populates_the_noise_sigma_verdict(fit_session):
     sess.problem.parameter_df.loc["sigma_B", ESTIMATE] = True
     res = sess.fit(n_starts=2)
 
-    assert res["noise_sigma_report"], "the fit block must carry the estimated sigma's report"
-    assert "sigma_B" in res["noise_sigma_report"]
-    # the verdict rides along, so the agent never needs get_fit_summary for it
+    report = sess.simulation["noise_sigma_report"]
+    assert "sigma_B" in report, "the fit must report the estimated sigma"
+    # the verdict rides along, so the agent never needs get_fit_summary for it, and the report
+    # with it only for the sigmas it flags (#190)
     assert isinstance(res["noise_sigma_inflated"], bool)
     assert isinstance(res["noise_sigma_collapsed"], bool)
+    flagged = {pid for pid, e in report.items() if e["status"] in ("inflated", "collapsed")}
+    assert set(res.get("noise_sigma_report", {})) == flagged
 
-    # ...and the SAME report reached the session's own bookkeeping, not a None that silently
-    # reads as "plausible": the event and the checkpoint must agree with the returned block.
-    assert sess.simulation["noise_sigma_report"] == res["noise_sigma_report"]
+    # ...and the report reached the session's own bookkeeping, not a None that silently reads as
+    # "plausible": the event and the checkpoint must agree with the returned block.
     ev = [e for e in sess.provenance.recent_events() if e["type"] == "fit"][-1]
     assert ev["noise_sigma_estimated"] is True
     assert ev["noise_sigma_inflated"] == res["noise_sigma_inflated"]
