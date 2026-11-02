@@ -1967,8 +1967,10 @@ def slim_fit_payload(session, out: dict, version: int | None = None) -> dict:
     Past what it shares with `get_fit_summary`, a fit result names a scale and an at-bound pin
     only where it is new since the parent (:func:`_since_parent`)."""
     own = {**out, "version": version} if version is not None and "version" not in out else out
+    scales = own.get("parameter_scales")
     parent = _slim_fitted_parameters(session, own)
     if parent is not None:
+        own["parameter_scales"] = scales
         _since_parent(own, parent)
     return own if own is out else {k: v for k, v in own.items() if k != "version"}
 
