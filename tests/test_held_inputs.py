@@ -8,7 +8,7 @@ from petab.v1.models.sbml_model import SbmlModel
 
 from petab_mcp import operations as O
 from petab_mcp import problem_sbml as PS
-from petab_mcp.errors import ModelUpdateError
+from petab_mcp.errors import MechanismError, ModelUpdateError
 from petab_mcp.mechanisms import INDRA_DEFAULT
 from petab_mcp.statements import PopulationTransition
 
@@ -165,6 +165,21 @@ def test_a_seed_at_an_input_another_agent_is_is_refused():
         PS.to_antimony(
             [(Complex([Agent("FSK"), Agent("ADCY")]), INDRA_DEFAULT, "r1")],
             {"Fsk": Agent("forskolin")},
+            seeds=[("FSK", Agent("FSK"), "Fsk")],
+            targets=frozenset({"Fsk"}),
+        )
+
+
+def test_a_binding_reads_no_input_a_seed_made_a_species():
+    """The species is read where its agent is named, and the refusal names the seed that mapped
+    it, not the entity map."""
+    with pytest.raises(MechanismError, match="the entity map, `amounts` or a seed at its id"):
+        PS.to_antimony(
+            [
+                (Complex([Agent("FSK"), Agent("ADCY")]), INDRA_DEFAULT, "r1"),
+                (IncreaseAmount(None, Agent("X")), INDRA_DEFAULT, "r2", {"kf": "k*Fsk"}),
+            ],
+            {},
             seeds=[("FSK", Agent("FSK"), "Fsk")],
             targets=frozenset({"Fsk"}),
         )
