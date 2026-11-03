@@ -584,6 +584,61 @@ class _Cancellation(Middleware):
         return result
 
 
+#: Seconds between two heartbeats of a tool call (:class:`_Heartbeat`).
+HEARTBEAT_S = 30.0
+
+
+class _Heartbeat(Middleware):
+    """Sends a tool call an MCP progress notification every :data:`HEARTBEAT_S` while it runs, on
+    the call's own progress token, so its client can time it out on silence rather than on a
+    budget no formula bounds once fits queue for a shared pool (gemot's idle timeout).
+
+    ``progress`` is the call's seconds so far, which the protocol requires to increase, and
+    ``message`` the session's running change, ``"<phase> for <s>s, <done> of <n> starts done"``
+    (:class:`~petab_mcp.multistart.Progress`), the starts left out before its fit has begun; with
+    no change running there is none. The change is read without the session's lock, so a call
+    waiting on that lock behind a fit gets heartbeats too. A task beside the call sends them, as
+    :class:`_Cancellation` listens, so they hold no worker thread. A call without a progress token
+    gets none.
+    """
+
+    def __init__(self, session: PetabSession) -> None:
+        self.session = session
+
+    def _message(self) -> str | None:
+        if self.session.change_began is None:
+            return None
+        progress, now = self.session.change_progress, time.monotonic()
+        starts = f", {progress.done} of {progress.total} starts done" if progress.total else ""
+        return f"{progress.phase} for {now - progress.since:.0f}s{starts}"
+
+    async def on_call_tool(self, context, call_next):
+        ctx = context.fastmcp_context
+        request = ctx.request_context if ctx is not None else None
+        if request is None or "progressToken" not in (request.meta or {}):
+            return await call_next(context)
+        began = time.monotonic()
+
+        async def beat() -> None:
+            while True:
+                await anyio.sleep(HEARTBEAT_S)
+                with contextlib.suppress(Exception):  # a heartbeat lost never fails its call
+                    await ctx.report_progress(time.monotonic() - began, message=self._message())
+
+        result, error = None, None
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(beat)
+            try:
+                result = await call_next(context)
+            except Exception as exc:  # raised below: the group would wrap it in an ExceptionGroup
+                error = exc
+            finally:
+                tasks.cancel_scope.cancel()
+        if error is not None:
+            raise error
+        return result
+
+
 #: Seconds ``wait_for_fit`` waits when not told, and at most: the cap is under the 600 s tool
 #: timeout of gemot's CLI drivers, so a wait answers before its client gives up on it, and the
 #: default leaves room for a client whose timeout is shorter.
@@ -2040,11 +2095,12 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
     def get_run_timing() -> dict[str, Any]:
         """Cumulative server-side timing for this session, split by cost kind.
 
-        `{compile_seconds, fit_seconds, n_compiles, n_fits}`. `compile_seconds` is the AMICI
-        model-BUILD time (the one-time C++ compile per unique structure — ONE build, shared by
-        the fit and every objective evaluation); `fit_seconds` is the pyPESTO multistart
-        OPTIMIZATION time. Both
-        accumulate only when work actually happens, so a compile/fit cache hit adds nothing.
+        `{compile_seconds, fit_seconds, queue_seconds, n_compiles, n_fits}`. `compile_seconds` is
+        the AMICI model-BUILD time (the one-time C++ compile per unique structure — ONE build,
+        shared by the fit and every objective evaluation); `fit_seconds` is the pyPESTO multistart
+        OPTIMIZATION time, of which `queue_seconds` its starts waited for a worker with none of
+        them running. They accumulate only when work actually happens, so a compile/fit cache hit
+        adds nothing.
         These are server-side wall times (a breakdown of the heavy compute), distinct from the
         client's `compute_seconds` tool-busy measure, which also covers reads/SQL.
         """
@@ -2052,12 +2108,13 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         session = ctx.session
 
         def run() -> dict[str, Any]:
-            # Read under the lock so the four accumulators are a consistent snapshot even if a
+            # Read under the lock so the accumulators are a consistent snapshot even if a
             # fit is mid-update on another thread (a client may dispatch tool calls concurrently).
             with session.lock:
                 return {
                     "compile_seconds": round(float(session.compile_seconds), 3),
                     "fit_seconds": round(float(session.fit_seconds), 3),
+                    "queue_seconds": round(float(session.queue_seconds), 3),
                     "n_compiles": int(session.n_compiles),
                     "n_fits": int(session.n_fits),
                 }
@@ -2339,9 +2396,11 @@ _WAIT_FOR_FIT_DOC = (
     f"while its fit ran on) for up to `timeout_s` seconds, at most {WAIT_FOR_FIT_MAX_S}: keep it "
     "under your client's tool timeout. The wait is the server's, so call this again while the fit "
     "runs, not another tool. `status` is `committed`, with the new version's `list_versions` row; "
-    "`still_running`, with `elapsed_s`, `starts_done` of `n_starts` (0 while the model compiles), "
-    "`best_so_far` (the lowest neg_log_likelihood among the starts done) and `remaining_s` (the "
-    "starts left at the pace of those done; null before one is); `no_version`, when the change "
+    "`still_running`, with `elapsed_s`, `phase` (`compiling` its model, `queued` with none of its "
+    "starts running on the shared pool, else `running`), `starts_done` of `n_starts` (0 while the "
+    "model compiles), `starts_queued` (not yet begun), `best_so_far` (the lowest "
+    "neg_log_likelihood among the starts done) and `remaining_s` (the starts left at the pace of "
+    "those done while running; null before one is); `no_version`, when the change "
     "ended without one (refused or its fit failed, which `get_errors` says, or its model is one a "
     "version already scores); or `idle`, when no change has run."
 )
@@ -2368,8 +2427,10 @@ def _fit_outcome(session: PetabSession) -> dict[str, Any]:
         return {
             "status": "still_running",
             "elapsed_s": round(now - began),
+            "phase": progress.phase,
             "starts_done": progress.done,
             "n_starts": progress.total,
+            "starts_queued": progress.queued,
             "best_so_far": progress.best,
             "remaining_s": None if remaining is None else round(remaining),
         }
@@ -2873,6 +2934,7 @@ def create_server(
                 ctx.session.logger, ctx.engine.build_root, ctx.session.provenance.root
             ),
             _Cancellation(),
+            _Heartbeat(ctx.session),
         ],
     )
 

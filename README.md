@@ -131,7 +131,11 @@ fitted, a second `make_changes` on the session waits for nothing: it is refused 
 `error_cause: fit_in_progress` (text starting `make_changes: fit_in_progress: `), and the
 running fit's result becomes the next version: `wait_for_fit` waits for it on the server and
 answers with that version's row, or with how far the fit has got. A client that cancels a call (MCP
-`notifications/cancelled`) stops its fit, and the edit is undone.
+`notifications/cancelled`) stops its fit, and the edit is undone. A call that carries a progress
+token gets an MCP progress notification every 30 s while it runs, naming the session's running
+change: its phase (`compiling`, `queued` with none of its starts running, or `running`), the
+seconds spent in it and its starts done, so a client can time a call out on silence instead of on a
+budget.
 
 ## Design notes
 

@@ -281,8 +281,10 @@ class PetabSession:
         # is pyPESTO OPTIMIZATION time (the recurring multistart `minimize`). Both accumulate
         # only when work actually happens (a compile/fit cache hit adds nothing), and every
         # write is under `self.lock` (fits/sims already hold it). Read via `get_run_timing`.
+        # `queue_seconds` is the part of `fit_seconds` its starts waited with none running.
         self.compile_seconds: float = 0.0
         self.fit_seconds: float = 0.0
+        self.queue_seconds: float = 0.0
         self.n_compiles: int = 0
         self.n_fits: int = 0
 
