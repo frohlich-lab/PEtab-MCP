@@ -84,16 +84,14 @@ dependencies = [
     # stimulus applied that way never stayed on. PyPI has only an sdist, so AMICI is built from
     # source, which is why CI installs a toolchain before it.
     "amici>=1.2.0",
-    # pyPESTO main (98cf21e), not a release. It has #1782: the PEtab v2 importer takes the
-    # estimation scales (`PetabImporter(parameter_scales=...)`), which v2 dropped from the format;
-    # without it every v2 problem is optimised linearly, with start points almost all in the top
-    # decade of a log-spanning box. It has #1740, before which the v2 importer raised
-    # NotImplementedError for `hierarchical=True`, so the fit inner-solves its noise sigmas and
-    # observable scalings whenever the problem allows. And it has #1786 (merged), which keeps a
-    # constant term out of a hierarchical scaling (`scale * h + c`, Alkan's readouts), which was
-    # scaled with it, silently. The importer reads AMICI through `amici.sim.sundials`, which AMICI
-    # 1.2.0 has. Move to a release once one contains #1786.
-    "pypesto[petab] @ git+https://github.com/ICB-DCM/pyPESTO.git@98cf21e101202b14dba5fc0b0adbdc05cd4f4871",
+    # 0.8.0 is the first release with #1782: the PEtab v2 importer takes the estimation scales
+    # (`PetabImporter(parameter_scales=...)`), which v2 dropped from the format; without it every
+    # v2 problem is optimised linearly, with start points almost all in the top decade of a
+    # log-spanning box. It has #1740, before which the v2 importer raised NotImplementedError for
+    # `hierarchical=True`, so the fit inner-solves its noise sigmas and observable scalings
+    # whenever the problem allows. And it has #1786, which keeps a constant term out of a
+    # hierarchical scaling (`scale * h + c`, Alkan's readouts), which was scaled with it, silently.
+    "pypesto[petab]>=0.8.0",
     "fides>=0.8.1",
     # INDRA supplies the Statement base class the mechanism vocabulary extends (`statements`),
     # Agent grounding, Preassembler deduplication, and the PySB assembler's monomer and site
@@ -149,7 +147,7 @@ petab-mcp-pool = "petab_mcp.pool:main"
 Homepage = "https://github.com/frohlich-lab/PEtab-MCP"
 Repository = "https://github.com/frohlich-lab/PEtab-MCP"
 
-# The pypesto and pysb pins above are git commits, which hatchling refuses without this.
+# The pysb pin above is a git commit, which hatchling refuses without this.
 [tool.hatch.metadata]
 allow-direct-references = true
 

@@ -36,8 +36,7 @@ pip install -e .          # installs AMICI + pyPESTO (a C++ toolchain is require
 
 AMICI compiles generated C++ and needs a toolchain: a C++ compiler, CMake, Ninja, and the
 pip `swig` binary on `PATH`. AMICI ships only a source distribution, so it is built on install
-(BLAS comes from the `scipy-openblas64` wheel, or Accelerate on macOS). pyPESTO is pinned to a
-commit on its `main` branch until a release carries the PEtab v2 fixes named in `pyproject.toml`.
+(BLAS comes from the `scipy-openblas64` wheel, or Accelerate on macOS).
 
 A model built from statements (`make_changes`' `statements` route, `petab_mcp.problem_sbml`)
 has its rules expanded into reactions by BioNetGen, which the `bionetgen` package ships.
