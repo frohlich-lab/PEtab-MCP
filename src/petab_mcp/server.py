@@ -2732,8 +2732,7 @@ def create_server(
     ``cluster`` (a ``distributed`` cluster, the ``dask`` extra) runs every fit's starts on that
     cluster's workers through one client (:mod:`petab_mcp.dask_engine`); without one, each fit runs
     its starts in local processes. The workers import the compiled models from ``build_root``, so on
-    more than one machine it must be on a filesystem they share. An AMICI built without HDF5 cannot
-    send a start to a worker, so it refuses the cluster here.
+    more than one machine it must be on a filesystem they share.
     """
     if constraints and entity_map is None:
         raise ValidationError(

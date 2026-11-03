@@ -1,9 +1,9 @@
 """Exclusive file locks: a second process on shared on-disk state fails or waits, not races.
 
 :func:`try_lock` takes ``flock(LOCK_EX | LOCK_NB)`` and returns the descriptor, or raises
-:class:`Held` with the line the holder wrote into the file (``pid host time``), which the session
-registry turns into :class:`~petab_mcp.errors.SessionLockedError`. :func:`lock` waits instead, for
-the build lock (:func:`~petab_mcp.engine.build_lock`). Each holder writes that line.
+:class:`Held` with the line the holder wrote into the file (``pid host time``), which each caller
+turns into its own error. :func:`lock` waits instead, for the build lock
+(:func:`~petab_mcp.engine.build_lock`). Each holder writes that line.
 
 Why ``flock``:
 
@@ -14,7 +14,7 @@ Why ``flock``:
 * Not a pid file (stale after a crash, meaningless on another host), and not POSIX ``lockf``:
   that is per process — a second open in the same process succeeds, and closing ANY descriptor of
   the file drops the lock. Linux emulates ``flock`` that way on NFS, so there a process must never
-  open a lock file it holds twice; the registry's one live object per session id ensures it.
+  open a lock file it holds twice.
 * A filesystem that refuses ``flock`` (some cluster mounts) raises; nothing goes on unlocked.
 
 A child forked while a lock is held (pyPESTO's fit workers, under Linux's default ``fork`` start
