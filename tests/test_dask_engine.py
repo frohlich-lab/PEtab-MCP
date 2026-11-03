@@ -19,7 +19,7 @@ from types import SimpleNamespace
 import dask
 import numpy as np
 import pytest
-from distributed import LocalCluster, get_task_stream
+from distributed import LocalCluster, WorkerPlugin, get_task_stream
 from fastmcp import Client
 from pypesto.engine import Task
 
@@ -175,6 +175,22 @@ def _hold(path: str) -> None:
         time.sleep(0.05)
 
 
+class _SlowStarts(WorkerPlugin):
+    """Makes each optimizer start on a worker take a second longer, so the scheduler hears that its
+    batch runs before it ends."""
+
+    def setup(self, worker) -> None:
+        from pypesto.optimize.task import OptimizerTask
+
+        execute = OptimizerTask.execute
+
+        def slow(task):
+            time.sleep(1)
+            return execute(task)
+
+        OptimizerTask.execute = slow
+
+
 def test_a_call_through_a_fit_gets_heartbeats_naming_its_phase(
     yaml_path, amici_build_root, tmp_path, monkeypatch
 ):
@@ -217,6 +233,7 @@ def test_a_call_through_a_fit_gets_heartbeats_naming_its_phase(
             resolver=StubReferenceResolver(),
             cluster=engine.client.cluster,
         )
+        engine.client.register_plugin(_SlowStarts(), name="slow-starts")
         held = engine.client.submit(_hold, str(release), pure=False)  # noqa: F841 - kept queued
         out, timing = asyncio.run(change(mcp))
 
@@ -224,6 +241,7 @@ def test_a_call_through_a_fit_gets_heartbeats_naming_its_phase(
     phases = iter(k for k, _ in itertools.groupby(m.split(" for ")[0] for _, m in beats if m))
     assert all(phase in phases for phase in ("compiling", "queued", "running")), beats
     assert any(re.fullmatch(r"queued for \d+s, 0 of 2 starts done", m or "") for _, m in beats)
+    assert any(re.fullmatch(r"running for \d+s, [01] of 2 starts done", m or "") for _, m in beats)
     # Not a bound on the longest gap: the end of a build holds the GIL, the event loop's too, for
     # seconds.
     gaps = [b - a for (a, _), (b, _) in itertools.pairwise(beats)]
