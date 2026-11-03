@@ -299,6 +299,42 @@ def test_a_batched_fit_runs_k_starts_per_task_and_keeps_their_order_and_records(
     assert all(f"pypesto says {text}" in log for text in texts)
 
 
+class _Fval(Task):
+    """A start whose optimizer result has the objective ``fval``."""
+
+    def __init__(self, fval: float) -> None:
+        super().__init__()
+        self.fval, self.id = fval, str(fval)
+
+    def execute(self):
+        return SimpleNamespace(fval=self.fval)
+
+
+def test_a_batch_crosses_the_scheduler_once_though_its_progress_is_read(monkeypatch):
+    """The progress reader gathers each batch as it finishes, for the best objective so far
+    (PEtab-MCP#172). A batch it read is not gathered again, so the scheduler that a sweep's runs
+    share relays each result once, as before the reader."""
+    fvals = [3.0, 1.0, 2.0, 5.0]
+    with _engine() as engine:
+        gather, keys = engine.client._gather, []
+
+        async def counted(futures, *args, **kwargs):
+            keys.extend(future.key for future in futures)
+            return await gather(futures, *args, **kwargs)
+
+        monkeypatch.setattr(engine.client, "_gather", counted)
+        progress = multistart.Progress()
+        token = multistart.PROGRESS.set(progress)
+        try:
+            out = engine.batched(2).execute([_Fval(v) for v in fvals])
+        finally:
+            multistart.PROGRESS.reset(token)
+
+    assert [result.fval for result in out] == fvals
+    assert (progress.done, progress.best) == (4, 1.0)
+    assert len(keys) == len(set(keys)) == 2
+
+
 def test_the_starts_of_a_batch_share_nothing_on_their_worker():
     """Each start of a batch runs on its own copy of what it was given, as it would alone: starts
     that share one problem here do not share one objective there."""
