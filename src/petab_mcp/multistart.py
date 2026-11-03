@@ -4,9 +4,9 @@ end a fit whose starts stopped finishing.
 pyPESTO hands a multistart's starts to an engine and blocks until every one returns. Fides' per-start
 cap (``fitting.FIT_PER_START_TIMEOUT_S``, its ``MAXTIME``) is checked between a start's iterations,
 inside the worker, so it bounds a start only while that start keeps iterating: a worker stuck in one
-simulation or on a lock it inherited when it was forked, or a pool that stops handing out starts, is
-never checked against it, and pyPESTO waits on its pool with no timeout. One fit held its session
-for 9 h after its starts went quiet that way, and every later call queued behind it (PEtab-MCP#108).
+simulation or on a lock, or a pool that stops handing out starts, is never checked against it, and
+pyPESTO waits on its pool with no timeout. One fit held its session for 9 h after its starts went
+quiet that way, and every later call queued behind it (PEtab-MCP#108).
 This module owns that wait, for both pools a fit runs on (:class:`CappedEngine`):
 
 * **A start past its cap is stopped.** Locally (:class:`ProcessEngine`), once no start is left
@@ -59,6 +59,7 @@ import numpy as np
 from pypesto import OptimizerResult
 from pypesto.engine import Engine, Task
 
+from . import logging_setup
 from .errors import FIT_WEDGED, FitCancelledError, InfrastructureError
 
 #: Seconds a start gets beyond its cap before it is stopped: a start overruns its cap by up to one
@@ -67,6 +68,13 @@ from .errors import FIT_WEDGED, FitCancelledError, InfrastructureError
 #: client times the call out after (gemot's ``fit_budget``: a 600 s compile margin plus the waves,
 #: times 1.4), so the server ends a stuck start before its client gives up on the call.
 FIT_DEADLINE_MARGIN_S = 600.0
+
+#: How the local pool starts its workers. Deliberately NOT ``fork``, Linux's default before Python
+#: 3.14: a worker forked out of the threaded server inherits every lock another thread holds at that
+#: moment, and on NEMO all 16 workers of two fits sat at 0 CPU until the fit failed as wedged, while
+#: the same fit under ``forkserver`` ran. A worker started this way inherits no log routing, so
+#: :func:`logging_setup.init_worker` sets it up again.
+START_METHOD = "forkserver"
 
 #: Seconds between two progress lines in the session's log.
 PROGRESS_INTERVAL_S = 300.0
@@ -240,10 +248,11 @@ class ProcessEngine(CappedEngine):
                 handed_out = seconds
             return pending if handed_out is not None and seconds - handed_out > budget else []
 
-        # The platform's start method, as pyPESTO's: a forked worker (Linux) inherits the session's
-        # log routing (see logging_setup).
         pool = concurrent.futures.ProcessPoolExecutor(
-            n_procs, mp_context=multiprocessing.get_context()
+            n_procs,
+            mp_context=multiprocessing.get_context(START_METHOD),
+            initializer=logging_setup.init_worker,
+            initargs=(logging_setup.worker_store(),),
         )
         futures = [pool.submit(_work, cloudpickle.dumps(task)) for task in tasks]
         try:

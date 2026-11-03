@@ -25,7 +25,7 @@ import pypesto
 import pypesto.optimize
 import pytest
 
-from petab_mcp import fitting
+from petab_mcp import fitting, logging_setup
 from petab_mcp import multistart as M
 from petab_mcp.errors import (
     FIT_IN_PROGRESS,
@@ -74,7 +74,7 @@ class _Pool:
     ``n_procs`` at once, and records the workers it is told to kill: a hung worker without a
     process."""
 
-    def __init__(self, n_procs, mp_context=None):
+    def __init__(self, n_procs, mp_context=None, initializer=None, initargs=()):
         self.killed = []
         self._processes = {
             i: SimpleNamespace(kill=functools.partial(self.killed.append, i))
@@ -168,13 +168,11 @@ def _fit(engine, marker=None):
 
 @pytest.fixture
 def stuck(monkeypatch):
-    """Caps short enough to watch a start stopped, in workers forked on any platform: a spawned
-    one imports pyPESTO before its start begins, which on a loaded machine outlasts them."""
+    """Caps short enough to watch a start stopped, in forked workers: one started by the fork
+    server imports pyPESTO before its start begins, which on a loaded machine outlasts them."""
     monkeypatch.setattr(M, "FIT_DEADLINE_MARGIN_S", 1.0)
     monkeypatch.setattr(M, "POLL_S", 0.05)
-    monkeypatch.setattr(
-        M.multiprocessing, "get_context", functools.partial(multiprocessing.get_context, "fork")
-    )
+    monkeypatch.setattr(M, "START_METHOD", "fork")
 
 
 def _no_worker_left():
@@ -235,6 +233,21 @@ def test_a_fit_within_its_deadline_returns_its_starts_in_task_order(monkeypatch)
     monkeypatch.setattr(M, "POLL_S", 0.02)
     starts = [_start(-i) for i in range(5)]
     assert M.ProcessEngine(2, start_seconds=60).execute(starts) == [0, 1, 2, 3, 4]
+
+
+def test_a_worker_that_was_not_forked_logs_to_the_sessions_pypesto_log(monkeypatch, tmp_path):
+    """The workers are started by a fork server, not forked from the threaded server, whose
+    forked workers sat at 0 CPU until two fits failed as wedged; so they inherit no log routing
+    and must be given it, or every start's optimizer log is lost."""
+    monkeypatch.setattr(M, "POLL_S", 0.02)
+    assert M.START_METHOD != "fork"
+    logging_setup.configure_pypesto(tmp_path)
+    start = SimpleNamespace(
+        execute=functools.partial(logging.getLogger("pypesto").info, "a start ran")
+    )
+    with logging_setup.use_store(tmp_path):
+        M.ProcessEngine(2, start_seconds=60).execute([start, start])
+    assert logging_setup.pypesto_log_path(tmp_path).read_text().count("a start ran") == 2
 
 
 def test_a_cancelled_fit_kills_its_worker_processes(monkeypatch):

@@ -17,9 +17,9 @@ Why ``flock``:
   open a lock file it holds twice; the registry's one live object per session id ensures it.
 * A filesystem that refuses ``flock`` (some cluster mounts) raises; nothing goes on unlocked.
 
-A child forked while a lock is held (pyPESTO's fit workers, under Linux's default ``fork`` start
-method) inherits the descriptor and with it the lock, so a server killed mid-fit stays locked
-until those workers exit.
+A child forked while a lock is held inherits the descriptor and with it the lock. The fit workers
+are started by a fork server (:data:`petab_mcp.multistart.START_METHOD`), which forks them from
+itself, not from the server, so they hold no session's lock.
 """
 
 from __future__ import annotations

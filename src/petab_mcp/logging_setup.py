@@ -14,8 +14,9 @@ record logged outside any such scope goes to the store last passed to :func:`con
 :class:`~contextvars.ContextVar`, not a global, because sessions log at the same time from different
 threads; FastMCP runs every sync tool call in its own copy of the context
 (``anyio.to_thread.run_sync``), so even a plain :func:`use_store` inside a call is scoped to that
-call. A forked pyPESTO worker (Linux) inherits the handler and the variable from the tool thread
-that forked it; a spawned one (macOS) inherits neither and logs nothing to file.
+call. A fit's worker process inherits neither, since it is not forked (see
+:data:`petab_mcp.multistart.START_METHOD`): :func:`init_worker` routes it to the store
+:func:`worker_store` named in the tool thread that started it.
 
 The open files are a small LRU guarded by the routing handler's own lock, which ``logging``
 re-initialises in a forked child. Do not add a :class:`threading.Lock` here (see
@@ -153,6 +154,18 @@ def configure_pypesto(store_root: str | Path, level: int = logging.INFO) -> logg
     return logger
 
 
+def worker_store() -> Path | None:
+    """The store this context's ``pypesto`` records go to, for a worker process to write to."""
+    return _STORE_ROOT.get() or _PYPESTO_LOG.default_root
+
+
+def init_worker(store_root: Path | None) -> None:
+    """Route a fit worker's optimizer log to ``store_root`` (see :func:`worker_store`), which a
+    worker that was not forked does not inherit; ``None``, nothing configured, leaves it as is."""
+    if store_root is not None:
+        configure_pypesto(store_root)
+
+
 def pypesto_log_path(store_root: str | Path) -> Path:
     """Path of the pyPESTO/Fides optimizer log under ``store_root`` (see :func:`configure_pypesto`)."""
     return Path(store_root) / "pypesto.log"
@@ -202,9 +215,9 @@ class _RateLimitFilter(logging.Filter):
     DELIBERATELY UNLOCKED. The counter is a plain int mutated without synchronisation: reads and
     writes are individually atomic under the GIL, so the worst a race costs is an occasionally
     miscounted record, which a rate limiter does not care about. A :class:`threading.Lock` here
-    would be held across ``fork`` — a fit's ``multistart.ProcessEngine`` forks its workers out of
-    a threaded server — and a lock that happened to be held at fork time is held forever in the
-    child, deadlocking that worker on its first AMICI warning.
+    would be held across ``fork`` — the fit workers are no longer forked, but a fork out of the
+    threaded server anywhere else would bring it back — and a lock that happened to be held at fork
+    time is held forever in the child, deadlocking that worker on its first AMICI warning.
     """
 
     def __init__(self) -> None:
