@@ -273,6 +273,21 @@ def test_the_batch_size_fills_FIT_TASK_SECONDS_unless_FIT_STARTS_PER_TASK_is_set
     assert [k(20, 30.0), k(20, None), k(4, 400.0)] == [5, 5, 4]
 
 
+def test_each_fit_on_the_shared_pool_stops_its_batches_at_its_own_cap():
+    """Two fits batched off one engine keep their own caps, so a batch is stopped at its own
+    session's deadline, not at another's (#187: one pool serves sessions capped at 1200 s and at
+    12000 s)."""
+    shared = object.__new__(DaskEngine)  # no cluster: only the deadline is read
+    ran = multistart.FIT_DEADLINE_MARGIN_S + 100.0
+    shared.client = SimpleNamespace(run_on_scheduler=lambda _: {"batch": ran})
+    futures = [SimpleNamespace(key="batch")]
+
+    short, long = shared.batched(1, 60.0), shared.batched(1, 120.0)
+
+    assert short._overrun(futures, [1])([0], None) == {0}
+    assert long._overrun(futures, [1])([0], None) == set()
+
+
 def test_a_batched_fit_runs_k_starts_per_task_and_keeps_their_order_and_records(
     tmp_path, monkeypatch
 ):
