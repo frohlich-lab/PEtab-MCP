@@ -92,8 +92,7 @@ class MechanismError(PetabMcpError):
 
 class FitBackendError(PetabMcpError):
     """The cluster a fit's starts run on failed them (scheduler gone, a worker killed, a start
-    cancelled or unable to run on a worker), or cannot run them at all because this AMICI cannot
-    pickle a start (see :mod:`petab_mcp.dask_engine`)."""
+    cancelled or unable to run on a worker)."""
 
 
 class FitCancelledError(PetabMcpError):
