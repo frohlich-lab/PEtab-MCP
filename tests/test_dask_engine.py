@@ -369,8 +369,8 @@ def test_each_fit_on_the_shared_pool_stops_its_batches_at_its_own_cap():
 
     short, long = shared.batched(1, 60.0), shared.batched(1, 120.0)
 
-    assert short._overrun(futures, [1])([0], None) == {0}
-    assert long._overrun(futures, [1])([0], None) == set()
+    assert short._look(futures, [1])([0], None) == ({0}, set())
+    assert long._look(futures, [1])([0], None) == (set(), set())
 
 
 def test_a_batched_fit_runs_k_starts_per_task_and_keeps_their_order_and_records(
