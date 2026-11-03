@@ -130,7 +130,8 @@ stopped, or when a rerun warm start is stopped again ([`multistart`](src/petab_m
 Every 5 minutes a running fit logs how many of its starts are done. While a change is being
 fitted, a second `make_changes` on the session waits for nothing: it is refused at once with
 `error_cause: fit_in_progress` (text starting `make_changes: fit_in_progress: `), and the
-running fit's result becomes the next version. A client that cancels a call (MCP
+running fit's result becomes the next version: `wait_for_fit` waits for it on the server and
+answers with that version's row, or with how far the fit has got. A client that cancels a call (MCP
 `notifications/cancelled`) stops its fit, and the edit is undone.
 
 ## Design notes

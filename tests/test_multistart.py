@@ -12,6 +12,7 @@ import concurrent.futures
 import contextvars
 import functools
 import logging
+import math
 import multiprocessing
 import os
 import threading
@@ -284,6 +285,41 @@ def test_a_running_fit_logs_how_many_of_its_starts_are_done(monkeypatch, caplog)
     assert "fit: 2/4 starts done after 0s" in caplog.messages
 
 
+def test_a_running_fit_reports_its_starts_done_and_its_best_into_the_change(monkeypatch):
+    """`wait_for_fit` and the fit_in_progress refusal read how far a fit has got off its change's
+    Progress (PEtab-MCP#172); a start that raised has no objective to report."""
+    monkeypatch.setattr(M, "POLL_S", 0.02)
+    futures = [concurrent.futures.Future() for _ in range(3)]
+    futures[0].set_result([3.0, math.inf])
+    progress, seen = M.Progress(), []
+
+    def finish():
+        seen.append((progress.done, progress.best))
+        futures[1].set_exception(RuntimeError("a start that raised"))
+        futures[2].set_result([1.5])
+
+    threading.Timer(0.2, finish).start()
+    token = M.PROGRESS.set(progress)
+    try:
+        M.watch(
+            futures, [2, 1, 1], concurrent.futures.wait, lambda *_: (), fvals=lambda f: f.result()
+        )
+    finally:
+        M.PROGRESS.reset(token)
+
+    assert seen == [(2, 3.0)]
+    assert (progress.total, progress.done, progress.best) == (4, 4, 1.5)
+
+
+def test_the_starts_left_are_timed_by_the_pace_of_those_done():
+    progress = M.Progress()
+    assert progress.remaining_s(10.0) is None
+    progress.began, progress.total = 0.0, 10
+    assert progress.remaining_s(10.0) is None
+    progress.done = 2
+    assert progress.remaining_s(20.0) == 80.0
+
+
 def test_a_wedged_fit_is_not_rerun_sequentially(fit_session, monkeypatch):
     """A failure the server raised ends the fit: rerunning a wedged multistart in this thread
     would hold the session for as long again, with nothing to bound it."""
@@ -472,6 +508,78 @@ def test_a_cancelled_call_stops_its_fit_and_undoes_its_edit(tmp_path, monkeypatc
     assert "k3" not in {r["parameterId"] for r in params.get("result", params)}
     monkeypatch.setattr(PetabSession, "_auto_fit_and_improvement", _fit_ends)
     assert _call(mcp, "make_changes", _CHANGE).get("error_cause") != FIT_IN_PROGRESS
+
+
+def _stuck_fit(monkeypatch, **progress):
+    """Stub the fit to report ``progress`` and hold its session until the returned event is set;
+    returns ``(fitting, release)``."""
+    fitting_, release = threading.Event(), threading.Event()
+
+    def _fit(self, n_starts=None):
+        for key, value in progress.items():
+            setattr(M.PROGRESS.get(), key, value)
+        fitting_.set()
+        release.wait(30)
+        raise ModelUpdateError("the stub's fit ended")
+
+    monkeypatch.setattr(PetabSession, "_auto_fit_and_improvement", _fit)
+    return fitting_, release
+
+
+def test_a_wait_for_the_running_fit_says_how_it_stands_then_how_it_ended(tmp_path, monkeypatch):
+    """An agent whose make_changes timed out called list_versions 3-5 times in a row while one fit
+    ran, each call a model call re-sending a 250k-token context (PEtab-MCP#172). The refusal names
+    wait_for_fit and the time left; the wait is the server's, and answers once the fit has ended."""
+    fitting_, release = _stuck_fit(
+        monkeypatch, began=time.monotonic() - 60, total=8, done=2, best=4.5
+    )
+    mcp = _server(tmp_path)
+    assert _call(mcp, "wait_for_fit", {}) == {"status": "idle"}
+    first = threading.Thread(target=_call, args=(mcp, "make_changes", _CHANGE))
+    first.start()
+    assert fitting_.wait(30)
+
+    refused = _call(mcp, "make_changes", _CHANGE)["error"]
+    assert "2 of its 8 starts are done, the rest at that pace about 3 min" in refused
+    assert "call wait_for_fit" in refused
+    running = _call(mcp, "wait_for_fit", {"timeout_s": 0.1})
+    assert running["status"] == "still_running"
+    assert (running["starts_done"], running["n_starts"], running["best_so_far"]) == (2, 8, 4.5)
+    assert 175 <= running["remaining_s"] <= 200
+    threading.Timer(0.5, release.set).start()
+    began = time.monotonic()
+    ended = _call(mcp, "wait_for_fit", {"timeout_s": 30})
+    took = time.monotonic() - began
+    first.join(30)
+
+    assert ended == {"status": "no_version"}
+    assert took < 10, took
+
+
+def test_a_wait_for_a_fit_holds_no_worker_thread(tmp_path, monkeypatch):
+    """Sync tools share anyio's worker threads, 40 by default, which running fits already hold: a
+    wait holding one more would starve other calls. With one thread, a call made during the wait
+    still answers at once."""
+    fitting_, release = _stuck_fit(monkeypatch)
+    mcp = _server(tmp_path)
+    first = threading.Thread(target=_call, args=(mcp, "make_changes", _CHANGE))
+    first.start()
+    assert fitting_.wait(30)
+
+    async def call_during_a_wait():
+        anyio.to_thread.current_default_thread_limiter().total_tokens = 1
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(mcp.call_tool, "wait_for_fit", {"timeout_s": 30})
+            await anyio.sleep(0.5)
+            began = time.monotonic()
+            await mcp.call_tool("get_errors", {})
+            took = time.monotonic() - began
+            release.set()
+        return took
+
+    took = asyncio.run(call_during_a_wait())
+    first.join(30)
+    assert took < 5, took
 
 
 def _fit_ends(self, n_starts=None):
