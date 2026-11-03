@@ -91,9 +91,8 @@ class MechanismError(PetabMcpError):
 
 
 class FitBackendError(PetabMcpError):
-    """The cluster a fit's starts run on failed them (a worker killed, a start cancelled), or cannot
-    run them at all because this AMICI cannot pickle a start (see :mod:`petab_mcp.dask_engine`). A
-    pool lost or unusable is :data:`FIT_POOL` instead."""
+    """The cluster a fit's starts run on failed them (a worker killed, a start cancelled). A pool
+    lost or unusable is :data:`FIT_POOL` instead."""
 
 
 class FitCancelledError(PetabMcpError):
@@ -106,30 +105,6 @@ class FitCancelledError(PetabMcpError):
 #: client matches (gemot's ``circuit_breaker``). Nothing was applied, and that fit's result becomes
 #: the next version.
 FIT_IN_PROGRESS = "fit_in_progress"
-
-
-class NoSessionBoundError(PetabMcpError):
-    """A call arrived on a connection that has no session bound to it."""
-
-    def __init__(self) -> None:
-        super().__init__(
-            "no session is open on this connection: open_session starts one, resume_session "
-            "continues an existing one by its id"
-        )
-
-
-class SessionLockedError(PetabMcpError):
-    """The session is live in another server process: ``holder`` is the line that process wrote
-    into the session's ``LOCK`` file (``pid host time``)."""
-
-    def __init__(self, session_id: str, holder: str) -> None:
-        self.session_id = session_id
-        self.holder = holder
-        super().__init__(
-            f"session {session_id!r} is locked by another process (holder: "
-            f"{holder or 'unknown'}); a session is live in one server at a time, so stop that "
-            "one or wait for it to exit"
-        )
 
 
 class ModelBuildBusyError(PetabMcpError):
