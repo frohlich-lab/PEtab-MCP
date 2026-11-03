@@ -1,9 +1,9 @@
-"""Non-blocking exclusive file locks: a second process on shared on-disk state fails, not races.
+"""Exclusive file locks: a second process on shared on-disk state fails or waits, not races.
 
 :func:`try_lock` takes ``flock(LOCK_EX | LOCK_NB)`` and returns the descriptor, or raises
-:class:`Held` with the line the holder wrote into the file (``pid host time``), which each caller
-turns into its own error — the session registry into
-:class:`~petab_mcp.errors.SessionLockedError`. Nothing waits or retries.
+:class:`Held` with the line the holder wrote into the file (``pid host time``), which the session
+registry turns into :class:`~petab_mcp.errors.SessionLockedError`. :func:`lock` waits instead, for
+the build lock (:func:`~petab_mcp.engine.build_lock`). Each holder writes that line.
 
 Why ``flock``:
 
@@ -46,10 +46,19 @@ def try_lock(path: str | Path) -> int:
 
     The caller owns the descriptor: closing it releases the lock.
     """
+    return _lock(path, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def lock(path: str | Path) -> int:
+    """:func:`try_lock`, waiting while another holds the lock instead of raising :class:`Held`."""
+    return _lock(path, fcntl.LOCK_EX)
+
+
+def _lock(path: str | Path, operation: int) -> int:
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o666)
     try:
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, operation)
         except BlockingIOError:
             raise Held(os.pread(fd, 1024, 0).decode(errors="replace").strip()) from None
         except OSError as exc:

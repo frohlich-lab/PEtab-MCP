@@ -49,7 +49,7 @@ from .constants import (
     PARAMETER_AT_BOUND_RELATIVE_TOL,
 )
 from .engine import build_lock
-from .errors import ModelBuildBusyError, ModelUpdateError, PetabMcpError, disk_full_error
+from .errors import ModelUpdateError, PetabMcpError, disk_full_error
 from .formatting import finite_float as _flt
 from .parameters import structure_fingerprint
 from .problem import (
@@ -388,9 +388,6 @@ def _build_hierarchical_problem(session, importer_kwargs: dict[str, Any], petab_
             pypesto_problem(view, {**importer_kwargs, "hierarchical": True}, validate=False),
             inner,
         )
-    except ModelBuildBusyError:
-        # Not a hierarchical failure: falling back would fit jointly once the other build lands.
-        raise
     except Exception:  # noqa: BLE001 - hierarchical is best-effort; fall back to a joint fit
         session.logger.warning(
             "hierarchical optimization setup failed (%s inner params: %s); "

@@ -33,7 +33,6 @@ from .data_access import residual_flag, residual_structure_rollup
 from .errors import (
     FitCancelledError,
     InfrastructureError,
-    ModelBuildBusyError,
     ModelUpdateError,
     PetabMcpError,
     ValidationError,
@@ -1585,7 +1584,7 @@ class PetabSession:
                     error = disk_full_error(exc, build_root) or ModelUpdateError(
                         _compile_fit_failure_message(exc)
                     )
-                if isinstance(error, (ModelBuildBusyError, InfrastructureError, FitCancelledError)):
+                if isinstance(error, (InfrastructureError, FitCancelledError)):
                     self._fit_attempts[fit_key] -= 1  # nothing was scored, so a retry is not a loop
                 if error is exc:
                     raise
