@@ -748,6 +748,7 @@ def refit_problem(
     units=None,
     reference=None,
     fit_engine=None,
+    per_start_timeout: float | None = None,
 ) -> dict[str, Any]:
     """REFIT ``problem`` on its own measurements and report the optimum — the transfer score.
 
@@ -769,10 +770,10 @@ def refit_problem(
     One implementation, both sides, on the server's own fitting path — Fides on AMICI
     sensitivities, start-0 seeded at the nominal point, whose objective is also taken as a
     candidate optimum (a start whose gradient fails at iteration 0 would otherwise lose a good
-    point). The per-start cap and the worker count are NOT arguments: both sides run on the
-    server's own budget (``PETAB_MCP_FIT_PER_START_TIMEOUT``, ``PETAB_MCP_FIT_N_WORKERS``), the same
-    one the fit that produced the candidate ran on, so neither side can be given a wider search
-    than the other by its caller. ``fit_engine`` only says where the starts run: the server's
+    point). The worker count is NOT an argument: both sides run on the server's own
+    (``PETAB_MCP_FIT_N_WORKERS``). ``per_start_timeout`` is the cap the candidate's own fits ran
+    on: its session's, which :func:`score_session` passes, else ``PETAB_MCP_FIT_PER_START_TIMEOUT``,
+    the cap every session starts with. ``fit_engine`` only says where the starts run: the server's
     :class:`~petab_mcp.dask_engine.DaskEngine`, or local processes when ``None``.
 
     ``build_dir``/``model_name`` are the caller's build target, used as is only for a unit that
@@ -801,17 +802,20 @@ def refit_problem(
     split = _refit_units(measurement_df, units)
     if isinstance(split, str):
         return {"status": STATUS_TABLE_MISMATCH, "reason": split}
+    from .fitting import FIT_PER_START_TIMEOUT_S
+
+    cap = FIT_PER_START_TIMEOUT_S if per_start_timeout is None else per_start_timeout
 
     if units is None:
         uview = _unit_view(view, measurement_df)
         target = _build_target(uview, reference, build_dir, model_name)
-        return _refit_one(uview, target=target, n_starts=n_starts, fit_engine=fit_engine)
+        return _refit_one(uview, target=target, n_starts=n_starts, fit_engine=fit_engine, cap=cap)
     per_unit: dict[str, dict[str, Any]] = {}
     records: list[dict[str, Any]] = []
     for unit, rows in split.items():
         uview = _unit_view(view, rows)
         target = _build_target(uview, reference, build_dir, model_name)
-        out = _refit_one(uview, target=target, n_starts=n_starts, fit_engine=fit_engine)
+        out = _refit_one(uview, target=target, n_starts=n_starts, fit_engine=fit_engine, cap=cap)
         if out["status"] != STATUS_OK:
             return {**out, "unit": unit, "mode": MODE_TRANSFER}
         records.extend(out.pop("records"))
@@ -870,7 +874,9 @@ def _refit_units(measurement_df, units):
     return {unit: rows for unit, rows in measurement_df.groupby(unit_of, sort=True)}
 
 
-def _refit_one(view, *, target: dict[str, str], n_starts: int, fit_engine) -> dict[str, Any]:
+def _refit_one(
+    view, *, target: dict[str, str], n_starts: int, fit_engine, cap: float
+) -> dict[str, Any]:
     """One system's multistart refit — :func:`refit_problem` for a table that is one unit."""
     import logging
 
@@ -896,13 +902,13 @@ def _refit_one(view, *, target: dict[str, str], n_starts: int, fit_engine) -> di
     x_start = np.asarray(problem_x_full_from_nominal(pp, view.parameter_df), dtype=float)
     pp.set_x_guesses(x_start[None, :])
     optimizer = pypesto.optimize.FidesOptimizer(
-        verbose=logging.ERROR, options=_fides_maxtime_options()
+        verbose=logging.ERROR, options=_fides_maxtime_options(cap)
     )
     result = pypesto.optimize.minimize(
         pp,
         optimizer=optimizer,
         n_starts=int(n_starts),
-        engine=_fit_engine(int(n_starts), fit_engine),
+        engine=_fit_engine(int(n_starts), cap, fit_engine),
         progress_bar=False,
     )
 
@@ -959,7 +965,7 @@ def score_session(
     Fixed-θ: :func:`score_problem` at the parameter table's ``nominalValue``\\ s, which is where
     every fit writes its optimum back — so this scores exactly the model the caller is about to
     score on the training data. Transfer: :func:`transfer_view` then :func:`refit_problem`, with
-    the session's own default multistart when ``n_starts`` is ``None``.
+    the session's own per-start cap and its default multistart when ``n_starts`` is ``None``.
 
     Held under ``session.lock`` so the model and the table are one snapshot. The build target is
     the session's own (:meth:`session.PetabSession.module_hash`), so a held-out view that compiles
@@ -1005,6 +1011,7 @@ def _score_current(session, engine, held_out: HeldOut, n_starts: int | None) -> 
         units=held_out.units,
         reference=session.problem,
         fit_engine=engine.fit_engine,
+        per_start_timeout=session.fit_per_start_timeout,
         **build,
     )
 

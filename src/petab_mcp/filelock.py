@@ -2,8 +2,7 @@
 
 :func:`try_lock` takes ``flock(LOCK_EX | LOCK_NB)`` and returns the descriptor, or raises
 :class:`Held` with the line the holder wrote into the file (``pid host time``), which each caller
-turns into its own error — the session registry into
-:class:`~petab_mcp.errors.SessionLockedError`. Nothing waits or retries.
+turns into its own error. Nothing waits or retries.
 
 Why ``flock``:
 
@@ -14,7 +13,7 @@ Why ``flock``:
 * Not a pid file (stale after a crash, meaningless on another host), and not POSIX ``lockf``:
   that is per process — a second open in the same process succeeds, and closing ANY descriptor of
   the file drops the lock. Linux emulates ``flock`` that way on NFS, so there a process must never
-  open a lock file it holds twice; the registry's one live object per session id ensures it.
+  open a lock file it holds twice.
 * A filesystem that refuses ``flock`` (some cluster mounts) raises; nothing goes on unlocked.
 
 A child forked while a lock is held inherits the descriptor and with it the lock. The fit workers

@@ -124,23 +124,12 @@ class _NoBuild(WorkerPlugin):
 
 class DaskEngine(CappedEngine):
     """A pyPESTO engine that runs tasks on ``cluster``, ``starts_per_task`` to a dask task, through
-    a client of its own.
-
-    Refused before connecting when AMICI was built without HDF5: AMICI pickles a solver's settings
-    through HDF5, so no start could reach a worker and every fit on the cluster would fail.
-    """
+    a client of its own."""
 
     #: Starts per dask task; a fit sets its own, and their cap, through :meth:`batched`.
     starts_per_task = 1
 
     def __init__(self, cluster) -> None:
-        from amici.sim.sundials import hdf5_enabled
-
-        if not hdf5_enabled:
-            raise FitBackendError(
-                "this AMICI was built without HDF5, which it needs to pickle a start for a "
-                "worker: rebuild AMICI with the HDF5 headers installed to fit on a cluster"
-            )
         super().__init__()
         self.client = Client(cluster)
         self.client.register_plugin(_NoBuild(), name="petab-mcp-no-build")
@@ -192,10 +181,22 @@ class DaskEngine(CappedEngine):
             for j, batch in enumerate(batches):
                 payloads = [cloudpickle.dumps(tasks[i]) for i in batch]
                 futures.append(self.client.submit(_work, payloads, priority=-j, pure=False))
-            stopped = watch(futures, sizes, self._wait, self._overrun(futures, sizes))
+            # Each batch's result is gathered once: by the progress reader as it finishes, and the
+            # rest after the wait.
+            gathered: dict[str, Any] = {}
+
+            def fvals(future) -> list[float]:
+                gathered[future.key] = future.result()
+                return [result.fval for result in gathered[future.key][0]]
+
+            stopped = watch(futures, sizes, self._wait, self._overrun(futures, sizes), fvals=fvals)
             if stopped:
                 self.client.cancel([futures[j] for j in stopped])
-            done = self.client.gather([f for j, f in enumerate(futures) if j not in stopped])
+            kept = [f for j, f in enumerate(futures) if j not in stopped]
+            rest = [f for f in kept if f.key not in gathered]
+            if rest:
+                gathered.update(zip((f.key for f in rest), self.client.gather(rest)))
+            done = [gathered[f.key] for f in kept]
         except Exception as exc:  # noqa: BLE001 - every cluster failure fails the fit
             with contextlib.suppress(Exception):  # the client itself may be what failed
                 self.client.cancel(futures)

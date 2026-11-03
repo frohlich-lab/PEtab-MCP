@@ -12,7 +12,7 @@ Tool groups:
   dataframe + residuals + pyPESTO traces) with SQL via ``query_data`` / ``list_data_tables``,
   and the optimizer numerics with ``get_fitting_log`` (the pyPESTO/Fides log)
 * provenance/versions/errors: ``get_provenance``, ``get_errors``, ``list_versions``,
-  ``get_version``, ``diff_versions``, ``restore_version``, ``get_progress``
+  ``get_version``, ``diff_versions``, ``restore_version``, ``get_progress``, ``wait_for_fit``
 * skills (tool-usage documentation, bundled under ``_skills/``): ``list_skills``,
   ``get_skill``
 
@@ -584,14 +584,34 @@ class _Cancellation(Middleware):
         return result
 
 
-def _fit_in_progress(began: float) -> str:
+#: Seconds ``wait_for_fit`` waits when not told, and at most: the cap is under the 600 s tool
+#: timeout of gemot's CLI drivers, so a wait answers before its client gives up on it, and the
+#: default leaves room for a client whose timeout is shorter.
+WAIT_FOR_FIT_S = 240
+WAIT_FOR_FIT_MAX_S = 540
+
+#: Seconds between two looks of ``wait_for_fit`` at whether the change it waits for has ended.
+_WAIT_POLL_S = 1.0
+
+
+def _fit_in_progress(began: float, progress: Any) -> str:
     """The refusal of a ``make_changes`` that arrives while another change's fit, begun at
-    ``began`` (``time.monotonic()``), still holds the session."""
+    ``began`` (``time.monotonic()``) and at ``progress``
+    (:class:`~petab_mcp.multistart.Progress`), still holds the session."""
+    now = time.monotonic()
+    starts = ""
+    if progress.total:
+        remaining = progress.remaining_s(now)
+        starts = f"; {progress.done} of its {progress.total} starts are done, " + (
+            "none yet to time the rest by"
+            if remaining is None
+            else f"the rest at that pace about {max(1, round(remaining / 60))} min"
+        )
     return (
         f"make_changes: {FIT_IN_PROGRESS}: a fit is still running on this session (its change "
-        f"began {time.monotonic() - began:.0f}s ago), so NOTHING was applied. Its result becomes "
-        "the next version when it ends: read it then (list_versions) rather than resending this "
-        "change."
+        f"began {now - began:.0f}s ago{starts}), so NOTHING was applied. Its result becomes the "
+        "next version when it ends: call wait_for_fit, which answers once it is committed, rather "
+        "than resending this change or polling another tool."
     )
 
 
@@ -1614,7 +1634,10 @@ def _register_model_tools(
         # the fit it is already waiting for, it times out again (PEtab-MCP#108).
         if (began := session.change_began) is not None:
             return ctx.reject_operation(
-                "make_changes", _fit_in_progress(began), {}, cause=FIT_IN_PROGRESS
+                "make_changes",
+                _fit_in_progress(began, session.change_progress),
+                {},
+                cause=FIT_IN_PROGRESS,
             )
         # One critical section for the change and its fit, so nothing can fit in between
         # (`session.lock` is an RLock, so the nested acquisitions inside each call are fine).
@@ -2307,6 +2330,58 @@ def _register_validation_data_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> 
 
 
 # ------------------------------------------------------ provenance/version tools
+#: ``wait_for_fit``'s description. The tool blocks on the server, not a cheap status call to
+#: poll, because each poll is a model call that re-sends the agent's whole context (250k+ tokens on
+#: perica_egf, PEtab-MCP#172). It is async, so a wait holds none of the worker threads that the
+#: sync tools and the running fits share.
+_WAIT_FOR_FIT_DOC = (
+    "Wait for the change being fitted on this session (a `make_changes` whose call timed out "
+    f"while its fit ran on) for up to `timeout_s` seconds, at most {WAIT_FOR_FIT_MAX_S}: keep it "
+    "under your client's tool timeout. The wait is the server's, so call this again while the fit "
+    "runs, not another tool. `status` is `committed`, with the new version's `list_versions` row; "
+    "`still_running`, with `elapsed_s`, `starts_done` of `n_starts` (0 while the model compiles), "
+    "`best_so_far` (the lowest neg_log_likelihood among the starts done) and `remaining_s` (the "
+    "starts left at the pace of those done; null before one is); `no_version`, when the change "
+    "ended without one (refused or its fit failed, which `get_errors` says, or its model is one a "
+    "version already scores); or `idle`, when no change has run."
+)
+
+
+def _version_rows(session: PetabSession, metas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Each of ``metas`` as its ``list_versions`` row (:func:`petab_mcp.provenance.summary`), with
+    the session's constraints it breaks as ``violates``."""
+    broken = session.constraint_violations()
+    return [
+        prov_mod.summary(meta) | {"violates": broken[meta["version"]]}
+        if meta.get("version") in broken
+        else prov_mod.summary(meta)
+        for meta in metas
+    ]
+
+
+def _fit_outcome(session: PetabSession) -> dict[str, Any]:
+    """``wait_for_fit``'s answer: the running change's progress, or how the last one ended."""
+    start, began = session.change_from, session.change_began
+    if began is not None:
+        progress, now = session.change_progress, time.monotonic()
+        remaining = progress.remaining_s(now)
+        return {
+            "status": "still_running",
+            "elapsed_s": round(now - began),
+            "starts_done": progress.done,
+            "n_starts": progress.total,
+            "best_so_far": progress.best,
+            "remaining_s": None if remaining is None else round(remaining),
+        }
+    if start is None:
+        return {"status": "idle"}
+    version = session.provenance.last_version
+    if version <= start:
+        return {"status": "no_version"}
+    (row,) = _version_rows(session, [session.provenance.get_meta(version)])
+    return {"status": "committed", **row}
+
+
 def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
     @mcp.tool(annotations=_READ_ONLY)
     def get_provenance(limit: int = 50) -> list[dict[str, Any]]:
@@ -2336,13 +2411,18 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         did or did not become the best, is `get_version(N)`."""
         ctx = route()
         session = ctx.session
-        broken = session.constraint_violations()
-        return [
-            prov_mod.summary(meta) | {"violates": broken[meta["version"]]}
-            if meta.get("version") in broken
-            else prov_mod.summary(meta)
-            for meta in session.provenance.list_versions(since)
-        ]
+        return _version_rows(session, session.provenance.list_versions(since))
+
+    @mcp.tool(annotations=_READ_ONLY, description=_WAIT_FOR_FIT_DOC)
+    async def wait_for_fit(timeout_s: float = WAIT_FOR_FIT_S) -> dict[str, Any]:
+        ctx = route()
+        session = ctx.session
+        deadline = time.monotonic() + min(max(float(timeout_s), 0.0), WAIT_FOR_FIT_MAX_S)
+        while session.change_began is not None and time.monotonic() < deadline:
+            await anyio.sleep(_WAIT_POLL_S)
+        return await anyio.to_thread.run_sync(
+            lambda: ctx.run("wait_for_fit", lambda: _fit_outcome(session), {"timeout_s": timeout_s})
+        )
 
     @mcp.tool(annotations=_READ_ONLY)
     def get_version(
@@ -2732,8 +2812,7 @@ def create_server(
     ``cluster`` (a ``distributed`` cluster, the ``dask`` extra) runs every fit's starts on that
     cluster's workers through one client (:mod:`petab_mcp.dask_engine`); without one, each fit runs
     its starts in local processes. The workers import the compiled models from ``build_root``, so on
-    more than one machine it must be on a filesystem they share. An AMICI built without HDF5 cannot
-    send a start to a worker, so it refuses the cluster here.
+    more than one machine it must be on a filesystem they share.
     """
     if constraints and entity_map is None:
         raise ValidationError(

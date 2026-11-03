@@ -132,6 +132,7 @@ def test_tools_registered(tmp_path):
         "diff_versions",
         "restore_version",
         "get_progress",
+        "wait_for_fit",
     }
     assert expected <= names
     # `rollback_to` and `current_version` are NOT tools: restore_version IS rollback_to under the
@@ -628,6 +629,9 @@ def test_the_read_tools_leave_their_large_parts_out_unless_asked(tmp_path):
         assert [ic["species"] for ic in structure["initial_conditions"]] == ["A"]
         refused = await call("get_model_structure", {"reactions": "("})
         assert refused["ok"] is False and "regular expression" in refused["error"]
+
+        # The fit `wait_for_fit` waits for has ended: its answer is the version's row.
+        assert await call("wait_for_fit", {}) == {"status": "committed", **rows[1]}
 
     asyncio.run(go())
 
