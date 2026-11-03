@@ -167,6 +167,23 @@ def test_a_malformed_row_says_where(text, where):
         N.parse(text)
 
 
+@pytest.mark.parametrize(
+    "text, form",
+    [
+        ("r1: E converts A to B", "a Conversion is written `A -> B by E`"),
+        ("r1: A is converted to B by E", "a Conversion is written `A -> B by E`"),
+        ("r1: A forms B", "a Complex `A binds B`"),
+        ("r1: E produces B", "`E increases B`"),
+    ],
+)
+def test_a_verb_agents_write_is_answered_with_the_form_that_states_it(text, form):
+    """`converts` was refused as any unknown verb, naming no form: 9 of the 13 unknown-verb
+    rejections in gemot's round-4 sweep (#227)."""
+    with pytest.raises(N.NotationError) as refused:
+        N.parse(text)
+    assert form in str(refused.value)
+
+
 def test_a_row_with_its_binding_inline_is_refused_with_the_two_apart():
     """The row is the claim and its binding the maths, given apart: a row still written the way
     the route took before, `<statement> | <binding>`, is refused, one notation, with the row and
