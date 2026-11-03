@@ -94,9 +94,9 @@ def build_lock(output_folder: str | Path, model_name: str) -> Iterator[None]:
     """Hold ``<output_folder>.lock`` while pyPESTO may build the module ``model_name`` there,
     waiting while another session or process holds it.
 
-    The build root is shared by every session and process (every run of a fit pool, on shared
-    storage) and keyed by AMICI and module hash, so two of them reaching one structure name one
-    folder — and AMICI deletes the files it finds there before it generates code, so a second build
+    The build root is shared by every session and process (on a fit pool, every run's server, each
+    building on its own node; the pool's workers only import) and keyed by AMICI and module hash, so
+    two of them reaching one structure name one folder — and AMICI deletes the files it finds there before it generates code, so a second build
     corrupts the first. The second waits for the first (:func:`petab_mcp.filelock.lock`), then
     finds the module finished and imports it. Nothing bounds the wait here: it lasts the holder's
     build, which its client bounds, and a holder that dies releases the lock. A module whose build
