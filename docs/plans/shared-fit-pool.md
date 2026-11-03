@@ -42,8 +42,14 @@ to a scheduler in another process.
   - A control script starts, inspects and stops it, as `phoenix_ctl.sh` does the collector.
   - It publishes its address to a file, which the sweep driver reads, as it reads the collector's
     `endpoint.txt`.
+- **Sweep drivers live in the application repos.** Perica/Garrido, Fontaine/Briscoe and
+  Vuillemenot each carry their own `slurm/`, copied from gemot_iclr_2026. Each runs its own pool:
+  each pins its own gemot and server, and the version check refuses a pool from another
+  environment.
 - **gemot_iclr_2026 does not change.** Its pins are frozen with the paper, so its sweeps keep their
-  private pools. The pool is for the next sweep driver.
+  private pools.
+- **`petab-mcp-pool` does everything but the SLURM submission:** readiness, the address file and
+  the drain on SIGTERM. So the copies in the application repos stay thin.
 - **PEtab-MCP ships the pool's process,** `petab-mcp-pool`. The contract with the workers is the
   server's: no builds on a worker, and the same environment. So the code that sets up the workers
   lives beside `DaskEngine`.
@@ -79,8 +85,8 @@ to a scheduler in another process.
     registration replaces the first;
   - writes `tcp://<host>:<port>` to `--address-file` once the scheduler listens, and removes the
     file on exit;
-  - on SIGTERM, removes the address file first, then closes the cluster, which cancels its worker
-    jobs.
+  - on SIGTERM, removes the address file first, waits (bounded) until no task is processing, then
+    closes the cluster, which cancels its worker jobs.
 - **A fixed port** lets a restarted pool come back at the same address, as `PHOENIX_NODELIST` does
   for Phoenix.
 - **One thread per worker process** (jobqueue's `processes` equal to `cores`), so each start has a
@@ -147,19 +153,20 @@ to a scheduler in another process.
   `starts_queued`. `wait_for_fit` reports both, and its remaining-time estimate counts only running
   time.
 
-### The sweep driver
+### The application repos' sweep drivers
 
-gemot_iclr_2026 stays as it is (see Decisions). A sweep driver that uses the pool needs what
-gemot_iclr_2026's `slurm/` does for the Phoenix collector (`phoenix_ctl.sh`, `make_sweep.py
---phoenix`):
+Each application repo's `slurm/` adds to its copy what it already does for the Phoenix collector
+(`phoenix_ctl.sh`, `make_sweep.py --phoenix`). gemot_iclr_2026 stays as it is (see Decisions).
 
-- **A service job and its control script:**
+- **A service job and its control script.** The script only submits, finds and signals the job;
+  `petab-mcp-pool` does the rest.
   - `start` submits the pool's job unless one is running. Its resources come from the stress check
     (Checks 10), and its walltime runs past the sweep's. A node pin restarts it on the old job's
     node;
   - `status` prints the job and the published address;
-  - `stop` removes the address file, waits (bounded) until no task is processing, then sends
-    SIGTERM. `stop --force` cancels at once, which fails every fit in flight.
+  - `stop` sends SIGTERM, and `petab-mcp-pool` then removes the address file, waits (bounded) until
+    no task is processing, and closes the cluster. `stop --force` cancels at once, which fails
+    every fit in flight.
 - **Submission is refused** unless the address is published and reachable, as `--phoenix` does.
 - **Each task** reads the address when it starts, checks that it connects, and exports
   `PETAB_MCP_FIT_POOL`. It passes the pool's build root as the server's `--build-root`. The operator
@@ -262,7 +269,7 @@ gemot_iclr_2026's `slurm/` does for the Phoenix collector (`phoenix_ctl.sh`, `ma
     It sets the service job's resources and `worker-ttl` (PEtab-MCP, a script beside
     `petab-mcp-pool`).
 11. **On NEMO:** a smoke sweep of 4 runs on a pool of 2 worker jobs, and a `stop` with nothing
-    processing that cancels the worker jobs (the sweep driver).
+    processing that cancels the worker jobs (one application repo).
 
 ## Rollout
 
@@ -285,7 +292,10 @@ gemot_iclr_2026's `slurm/` does for the Phoenix collector (`phoenix_ctl.sh`, `ma
    - `FIT_POOL` and `queue_seconds`.
 
    Its pin moves to step 1, together with the edits #175 and #184 need.
-3. **Issues:** #187 and gemot#89 are rewritten to this plan.
+3. **Application repos** (Perica/Garrido, Fontaine/Briscoe, Vuillemenot): the pool's control
+   script, the submission check and the task's pool address in their `slurm/`, at the gemot pin
+   bump that brings step 2.
+4. **Issues:** #187 and gemot#89 are rewritten to this plan.
 
 PEtabAgentBench does not change.
 
