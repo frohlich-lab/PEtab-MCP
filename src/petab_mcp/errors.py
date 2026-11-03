@@ -107,30 +107,6 @@ class FitCancelledError(PetabMcpError):
 FIT_IN_PROGRESS = "fit_in_progress"
 
 
-class NoSessionBoundError(PetabMcpError):
-    """A call arrived on a connection that has no session bound to it."""
-
-    def __init__(self) -> None:
-        super().__init__(
-            "no session is open on this connection: open_session starts one, resume_session "
-            "continues an existing one by its id"
-        )
-
-
-class SessionLockedError(PetabMcpError):
-    """The session is live in another server process: ``holder`` is the line that process wrote
-    into the session's ``LOCK`` file (``pid host time``)."""
-
-    def __init__(self, session_id: str, holder: str) -> None:
-        self.session_id = session_id
-        self.holder = holder
-        super().__init__(
-            f"session {session_id!r} is locked by another process (holder: "
-            f"{holder or 'unknown'}); a session is live in one server at a time, so stop that "
-            "one or wait for it to exit"
-        )
-
-
 class ModelBuildBusyError(PetabMcpError):
     """Another session or process is compiling the AMICI module this call needs: ``holder`` is the
     line that build wrote into the module's lock file (``pid host time``)."""
