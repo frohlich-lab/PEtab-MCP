@@ -39,7 +39,12 @@ from .errors import (
     ValidationError,
     disk_full_error,
 )
-from .fitting import noise_sigma_collapsed, noise_sigma_inflated, table_fitted_values
+from .fitting import (
+    FIT_PER_START_TIMEOUT_S,
+    noise_sigma_collapsed,
+    noise_sigma_inflated,
+    table_fitted_values,
+)
 from .parameters import problem_fingerprint, sha16
 from .problem import WorkingProblem, as_bool
 from .provenance import ProvenanceStore
@@ -269,6 +274,9 @@ class PetabSession:
         self.fit_record: Any | None = None
         self.auto_fit: bool = True
         self.auto_fit_starts: int = DEFAULT_AUTO_FIT_STARTS
+        # Each start's wall-clock cap in seconds, for this session's fits and held-out refits; a
+        # server hosting several problems sets it per session.
+        self.fit_per_start_timeout: float = FIT_PER_START_TIMEOUT_S
 
         # Cumulative server-side timing for this session, split so the two very different costs
         # are legible: `compile_seconds` is AMICI model BUILD time (the one-time C++ compile
@@ -1594,7 +1602,7 @@ class PetabSession:
             if killed := fitsim.get("n_starts_killed"):
                 warnings = [
                     *warnings,
-                    f"Starts stopped past the {fitting.FIT_PER_START_TIMEOUT_S:.0f}s per-start "
+                    f"Starts stopped past the {self.fit_per_start_timeout:.0f}s per-start "
                     f"cap: {killed} of {starts}. They count as failed starts, and the fit is "
                     f"scored from the other {starts - killed}.",
                 ]
@@ -1606,7 +1614,7 @@ class PetabSession:
                 warnings = [
                     *warnings,
                     f"{timed_out} of {starts} starts ran out of the "
-                    f"{fitting.FIT_PER_START_TIMEOUT_S:.0f}s per-start time limit (MAXTIME). More "
+                    f"{self.fit_per_start_timeout:.0f}s per-start time limit (MAXTIME). More "
                     "starts will not fix that: the limit applies to each start, so added starts "
                     "hit it too. The usual causes are a stiff or badly scaled model, or bounds "
                     "that allow extreme rates.",

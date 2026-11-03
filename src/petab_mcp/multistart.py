@@ -2,12 +2,12 @@
 end a fit whose starts stopped finishing.
 
 pyPESTO hands a multistart's starts to an engine and blocks until every one returns. Fides' per-start
-cap (``fitting.FIT_PER_START_TIMEOUT_S``, its ``MAXTIME``) is checked between a start's iterations,
-inside the worker, so it bounds a start only while that start keeps iterating: a worker stuck in one
-simulation or on a lock it inherited when it was forked, or a pool that stops handing out starts, is
-never checked against it, and pyPESTO waits on its pool with no timeout. One fit held its session
-for 9 h after its starts went quiet that way, and every later call queued behind it (PEtab-MCP#108).
-This module owns that wait, for both pools a fit runs on (:class:`CappedEngine`):
+cap (the session's ``fit_per_start_timeout``, its ``MAXTIME``) is checked between a start's
+iterations, inside the worker, so it bounds a start only while that start keeps iterating: a worker
+stuck in one simulation or on a lock it inherited when it was forked, or a pool that stops handing
+out starts, is never checked against it, and pyPESTO waits on its pool with no timeout. One fit
+held its session for 9 h after its starts went quiet that way, and every later call queued behind
+it (PEtab-MCP#108). This module owns that wait, for both pools a fit runs on (:class:`CappedEngine`):
 
 * **A start past its cap is stopped.** Locally (:class:`ProcessEngine`), once no start is left
   queued every start still running began by then, so one still running its cap plus
