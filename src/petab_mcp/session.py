@@ -33,7 +33,6 @@ from .data_access import residual_flag, residual_structure_rollup
 from .errors import (
     FitCancelledError,
     InfrastructureError,
-    ModelBuildBusyError,
     ModelUpdateError,
     PetabMcpError,
     ValidationError,
@@ -289,8 +288,10 @@ class PetabSession:
         # is pyPESTO OPTIMIZATION time (the recurring multistart `minimize`). Both accumulate
         # only when work actually happens (a compile/fit cache hit adds nothing), and every
         # write is under `self.lock` (fits/sims already hold it). Read via `get_run_timing`.
+        # `queue_seconds` is the part of `fit_seconds` its starts waited with none running.
         self.compile_seconds: float = 0.0
         self.fit_seconds: float = 0.0
+        self.queue_seconds: float = 0.0
         self.n_compiles: int = 0
         self.n_fits: int = 0
 
@@ -1604,7 +1605,7 @@ class PetabSession:
                     error = disk_full_error(exc, build_root) or ModelUpdateError(
                         _compile_fit_failure_message(exc)
                     )
-                if isinstance(error, (ModelBuildBusyError, InfrastructureError, FitCancelledError)):
+                if isinstance(error, (InfrastructureError, FitCancelledError)):
                     self._fit_attempts[fit_key] -= 1  # nothing was scored, so a retry is not a loop
                 if error is exc:
                     raise

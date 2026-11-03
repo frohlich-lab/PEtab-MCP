@@ -15,6 +15,7 @@ import logging
 import math
 import multiprocessing
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -25,8 +26,10 @@ import numpy as np
 import pypesto
 import pypesto.optimize
 import pytest
+from fastmcp import Client
 
 from petab_mcp import fitting, logging_setup
+from petab_mcp import server
 from petab_mcp import multistart as M
 from petab_mcp.errors import (
     FIT_IN_PROGRESS,
@@ -293,7 +296,7 @@ def test_a_running_fit_logs_how_many_of_its_starts_are_done(monkeypatch, caplog)
     threading.Timer(0.1, futures[1].set_result, (None,)).start()
     threading.Timer(0.2, futures[2].set_result, (None,)).start()
     with caplog.at_level(logging.INFO, logger=M.__name__):
-        M.watch(futures, [2, 1, 1], concurrent.futures.wait, lambda *_: ())
+        M.watch(futures, [2, 1, 1], concurrent.futures.wait, lambda *_: ((), ()))
 
     assert "fit: 2/4 starts done after 0s" in caplog.messages
 
@@ -315,7 +318,11 @@ def test_a_running_fit_reports_its_starts_done_and_its_best_into_the_change(monk
     token = M.PROGRESS.set(progress)
     try:
         M.watch(
-            futures, [2, 1, 1], concurrent.futures.wait, lambda *_: (), fvals=lambda f: f.result()
+            futures,
+            [2, 1, 1],
+            concurrent.futures.wait,
+            lambda *_: ((), ()),
+            fvals=lambda f: f.result(),
         )
     finally:
         M.PROGRESS.reset(token)
@@ -324,13 +331,18 @@ def test_a_running_fit_reports_its_starts_done_and_its_best_into_the_change(monk
     assert (progress.total, progress.done, progress.best) == (4, 4, 1.5)
 
 
-def test_the_starts_left_are_timed_by_the_pace_of_those_done():
+def test_the_starts_left_are_timed_by_the_pace_of_those_done_while_running():
+    """A fit queued for a shared pool's workers is not slower: its time queued is left out."""
     progress = M.Progress()
     assert progress.remaining_s(10.0) is None
     progress.began, progress.total = 0.0, 10
     assert progress.remaining_s(10.0) is None
     progress.done = 2
     assert progress.remaining_s(20.0) == 80.0
+    progress.enter("queued", 20.0)
+    assert progress.remaining_s(30.0) == 80.0
+    progress.enter("running", 30.0)
+    assert progress.remaining_s(40.0) == 120.0
 
 
 def test_a_wedged_fit_is_not_rerun_sequentially(fit_session, monkeypatch):
@@ -544,7 +556,13 @@ def test_a_wait_for_the_running_fit_says_how_it_stands_then_how_it_ended(tmp_pat
     ran, each call a model call re-sending a 250k-token context (PEtab-MCP#172). The refusal names
     wait_for_fit and the time left; the wait is the server's, and answers once the fit has ended."""
     fitting_, release = _stuck_fit(
-        monkeypatch, began=time.monotonic() - 60, total=8, done=2, best=4.5
+        monkeypatch,
+        began=time.monotonic() - 60,
+        total=8,
+        done=2,
+        best=4.5,
+        phase="queued",
+        queued=3,
     )
     mcp = _server(tmp_path)
     assert _call(mcp, "wait_for_fit", {}) == {"status": "idle"}
@@ -558,6 +576,7 @@ def test_a_wait_for_the_running_fit_says_how_it_stands_then_how_it_ended(tmp_pat
     running = _call(mcp, "wait_for_fit", {"timeout_s": 0.1})
     assert running["status"] == "still_running"
     assert (running["starts_done"], running["n_starts"], running["best_so_far"]) == (2, 8, 4.5)
+    assert (running["phase"], running["starts_queued"]) == ("queued", 3)
     assert 175 <= running["remaining_s"] <= 200
     threading.Timer(0.5, release.set).start()
     began = time.monotonic()
@@ -593,6 +612,36 @@ def test_a_wait_for_a_fit_holds_no_worker_thread(tmp_path, monkeypatch):
     took = asyncio.run(call_during_a_wait())
     first.join(30)
     assert took < 5, took
+
+
+def test_a_read_waiting_on_a_fits_lock_gets_heartbeats_naming_the_fits_phase(tmp_path, monkeypatch):
+    """A read behind a fit waits out the fit (#180), so on gemot's protocol, 2025-11-25, its client
+    hears the running change every HEARTBEAT_S meanwhile, as the fit's own call does (#217)."""
+    monkeypatch.setattr(server, "HEARTBEAT_S", 0.1)
+    fitting_, release = _stuck_fit(monkeypatch, total=4, done=1, phase="queued")
+    mcp = _server(tmp_path)
+    first = threading.Thread(target=_call, args=(mcp, "make_changes", _CHANGE))
+    first.start()
+    assert fitting_.wait(30)
+    beats = []
+
+    async def heard(progress, total, message):
+        beats.append((progress, message))
+        if len(beats) == 3:
+            release.set()
+
+    async def read():
+        async with Client(mcp, mode="legacy", progress_handler=heard) as client:
+            assert client.protocol_version == "2025-11-25"
+            return await client.call_tool("get_run_timing", {})
+
+    timing = asyncio.run(read()).structured_content
+    first.join(30)
+
+    assert timing["queue_seconds"] == 0.0
+    assert len(beats) >= 3
+    assert all(re.fullmatch(r"queued for \d+s, 1 of 4 starts done", m) for _, m in beats[:3])
+    assert [p for p, _ in beats] == sorted(p for p, _ in beats)
 
 
 def _fit_ends(self, n_starts=None):

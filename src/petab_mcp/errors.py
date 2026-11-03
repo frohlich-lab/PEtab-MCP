@@ -107,20 +107,6 @@ class FitCancelledError(PetabMcpError):
 FIT_IN_PROGRESS = "fit_in_progress"
 
 
-class ModelBuildBusyError(PetabMcpError):
-    """Another session or process is compiling the AMICI module this call needs: ``holder`` is the
-    line that build wrote into the module's lock file (``pid host time``)."""
-
-    def __init__(self, module: str, holder: str) -> None:
-        self.module = module
-        self.holder = holder
-        super().__init__(
-            f"another session or process is compiling this exact model right now ({module}, "
-            f"held by {holder or 'unknown'}); nothing was built or scored here, so retrying the "
-            "change is safe once that build finishes"
-        )
-
-
 #: What every :class:`InfrastructureError` reads as, before its cause: the text of the MCP error a
 #: tool call ends with is ``infrastructure_error: <cause>: <detail>``.
 INFRASTRUCTURE_ERROR = "infrastructure_error"

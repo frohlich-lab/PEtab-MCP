@@ -21,7 +21,8 @@ one :class:`DaskEngine`, and every fit and held-out refit of that server runs it
   hears from its worker's heartbeats. One past it is cancelled and its starts are scored as failed
   (:class:`petab_mcp.multistart.CappedEngine`); its worker runs on until it retires. Not from when
   it was submitted: it may wait behind other sessions' batches, or for the pool's jobs to start,
-  for any time.
+  for any time. A fit none of whose batches is running, as the scheduler hears it the same way, is
+  queued: those seconds are its ``queue_seconds``.
 * **Workers never build.** Unpickling a start imports its compiled module from the server's build
   root at the same absolute path. pyPESTO's creator and AMICI's importer would instead compile it
   there, inside the build root every session shares, so :class:`_NoBuild` makes them raise.
@@ -155,22 +156,21 @@ class DaskEngine(CappedEngine):
             if future.status == "error":
                 future.result()
 
-    def _overrun(self, futures: list, sizes: list[int]) -> Callable[[list[int], float], set[int]]:
+    def _look(
+        self, futures: list, sizes: list[int]
+    ) -> Callable[[list[int], float], tuple[set[int], set[int]]]:
         """Names the batches of ``futures`` still pending that have run longer than their starts'
-        caps allow."""
+        caps allow, and those not yet running, in one read of the scheduler."""
 
-        def overrun(pending: list[int], _) -> set[int]:
-            if math.isinf(self.start_seconds):
-                return set()
+        def look(pending: list[int], _) -> tuple[set[int], set[int]]:
             ran = self.client.run_on_scheduler(_executing)
-            return {
-                i
-                for i in pending
-                if ran.get(futures[i].key, 0.0)
-                > sizes[i] * self.start_seconds + FIT_DEADLINE_MARGIN_S
-            }
+            cap = [size * self.start_seconds + FIT_DEADLINE_MARGIN_S for size in sizes]
+            return (
+                {i for i in pending if ran.get(futures[i].key, 0.0) > cap[i]},
+                {i for i in pending if futures[i].key not in ran},
+            )
 
-        return overrun
+        return look
 
     def _run(self, tasks: list[Task]) -> tuple[list[Any], set[int]]:
         """A failure cancels the starts still queued, so a failed fit leaves nothing queued on the
@@ -189,7 +189,10 @@ class DaskEngine(CappedEngine):
                 gathered[future.key] = future.result()
                 return [result.fval for result in gathered[future.key][0]]
 
-            stopped = watch(futures, sizes, self._wait, self._overrun(futures, sizes), fvals=fvals)
+            stopped, waited = watch(
+                futures, sizes, self._wait, self._look(futures, sizes), fvals=fvals
+            )
+            self.queue_seconds += waited
             if stopped:
                 self.client.cancel([futures[j] for j in stopped])
             kept = [f for j, f in enumerate(futures) if j not in stopped]

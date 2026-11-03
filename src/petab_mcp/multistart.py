@@ -28,7 +28,9 @@ owns that wait, for both pools a fit runs on (:class:`CappedEngine`):
   edit is undone, and the identical-fit guard does not count it.
 * **Progress.** Every :data:`PROGRESS_INTERVAL_S` the count of starts done goes to the session's
   log, so a fit that hangs can be located, and the change's :class:`Progress` in :data:`PROGRESS`
-  is kept current for a caller waiting on the fit (``wait_for_fit``).
+  is kept current for a caller waiting on the fit (``wait_for_fit``) and for the call's heartbeat
+  (``server._Heartbeat``). The seconds a fit's starts waited with none of them running are its
+  :attr:`CappedEngine.queue_seconds`.
 * **The client's cancel.** A call its client cancels (MCP ``notifications/cancelled``) sets the
   event in :data:`CANCELLED` (``server._Cancellation``), and its fit stops with
   :class:`~petab_mcp.errors.FitCancelledError`.
@@ -46,12 +48,13 @@ A sequential fit (one worker) runs in the tool's own thread, and nothing here bo
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
 import logging
 import math
 import multiprocessing
 import threading
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextvars import ContextVar
 from typing import Any
 
@@ -92,22 +95,40 @@ _log = logging.getLogger(__name__)
 
 class Progress:
     """A change's fit as :func:`watch` sees it: ``done`` of its ``total`` starts finished since the
-    multistart ``began`` (``time.monotonic()``, ``None`` before it has), and ``best``, the lowest
-    objective among them (``None`` until one is finite). A sequential fit is not watched, and leaves
-    it empty."""
+    multistart ``began`` (``time.monotonic()``, ``None`` before it has), ``queued`` of them not yet
+    begun, and ``best``, the lowest objective among them (``None`` until one is finite). A
+    sequential fit is not watched, and leaves it empty.
+
+    ``phase`` is the change's since ``since``: ``compiling`` while it builds a model
+    (:func:`compiling`), ``queued`` while none of its multistart's starts is running, else
+    ``running``. ``waited`` is the multistart's seconds queued before the current phase."""
 
     def __init__(self) -> None:
         self.began: float | None = None
         self.total = 0
         self.done = 0
+        self.queued = 0
         self.best: float | None = None
+        self.phase = "running"
+        self.since = time.monotonic()
+        self.waited = 0.0
+
+    def enter(self, phase: str, now: float) -> None:
+        """Move to ``phase`` at ``now``, unless already in it."""
+        if phase != self.phase:
+            self.waited = self.queue_s(now)
+            self.phase, self.since = phase, now
+
+    def queue_s(self, now: float) -> float:
+        """Seconds the multistart has spent queued by ``now``."""
+        return self.waited + (now - self.since if self.phase == "queued" else 0.0)
 
     def remaining_s(self, now: float) -> float | None:
-        """Seconds the starts left will take at the rate the finished ones took, ``None`` before
-        one has finished."""
+        """Seconds the starts left will take at the rate the finished ones took while running,
+        ``None`` before one has finished."""
         if self.began is None or not self.done:
             return None
-        return (now - self.began) * (self.total - self.done) / self.done
+        return (now - self.began - self.queue_s(now)) * (self.total - self.done) / self.done
 
 
 #: The current change's :class:`Progress`, which ``PetabSession.change`` sets for its fit to report
@@ -115,28 +136,43 @@ class Progress:
 PROGRESS: ContextVar[Progress | None] = ContextVar("petab_mcp_progress", default=None)
 
 
+@contextlib.contextmanager
+def compiling() -> Iterator[None]:
+    """The current change's phase is ``compiling`` within (:data:`PROGRESS`)."""
+    progress = PROGRESS.get()
+    if progress is None:
+        yield
+        return
+    previous = progress.phase
+    progress.enter("compiling", time.monotonic())
+    try:
+        yield
+    finally:
+        progress.enter(previous, time.monotonic())
+
+
 def watch(
     futures: Sequence[Any],
     sizes: Sequence[int],
     wait: Callable[[list, float], Any],
-    overrun: Callable[[list[int], float], Iterable[int]],
+    look: Callable[[list[int], float], tuple[Iterable[int], Iterable[int]]],
     quiet: float = math.inf,
     fvals: Callable[[Any], Iterable[float]] | None = None,
-) -> set[int]:
+) -> tuple[set[int], float]:
     """Return once each of ``futures`` is done or overrun, ``futures[i]`` running ``sizes[i]``
-    starts; returns the indices of the overrun ones.
+    starts; returns the indices of the overrun ones, and the seconds none of them was running.
 
     ``wait(pending, timeout)`` blocks until some of ``pending`` is done or ``timeout`` passes, and
-    ``overrun(pending, seconds)`` names those of the ``pending`` indices that ran past their caps
-    that many seconds after this began. Raises the ``fit_wedged`` error once no start has finished
-    for ``quiet`` seconds and none is overrun, and :class:`FitCancelledError` when the call's client
-    cancels it; the caller stops the workers. ``fvals(future)`` reads a finished future's
-    objectives for :data:`PROGRESS`.
+    ``look(pending, seconds)`` names those of the ``pending`` indices that ran past their caps
+    that many seconds after this began, and those not yet begun. Raises the ``fit_wedged`` error
+    once no start has finished for ``quiet`` seconds and none is overrun, and
+    :class:`FitCancelledError` when the call's client cancels it; the caller stops the workers.
+    ``fvals(future)`` reads a finished future's objectives for :data:`PROGRESS`.
     """
     cancelled, progress = CANCELLED.get(), PROGRESS.get() or Progress()
     total = sum(sizes)
     began = logged = moved = time.monotonic()
-    progress.began, progress.total, progress.done = began, total, 0
+    progress.began, progress.total, progress.done, progress.waited = began, total, 0, 0.0
     finished, stopped, read = 0, set(), set()
     while left := [i for i, f in enumerate(futures) if i not in stopped and not f.done()]:
         now = time.monotonic()
@@ -151,9 +187,12 @@ def watch(
                 f"the client cancelled the call: {done} of {total} starts had finished, the rest "
                 "were stopped and nothing was scored"
             )
-        if overdue := set(overrun(left, now - began)):
+        overdue, waiting = (set(names) for names in look(left, now - began))
+        if overdue:
             stopped |= overdue
             continue
+        progress.queued = sum(sizes[i] for i in waiting)
+        progress.enter("queued" if waiting == set(left) else "running", now)
         if now - moved > quiet:
             raise InfrastructureError(
                 FIT_WEDGED,
@@ -165,10 +204,11 @@ def watch(
             _log.info("fit: %d/%d starts done after %.0fs", done, total, now - began)
             logged = now
         wait([futures[i] for i in left], POLL_S)
-    progress.done = total - sum(sizes[i] for i in stopped)
+    progress.enter("running", time.monotonic())
+    progress.done, progress.queued = total - sum(sizes[i] for i in stopped), 0
     if fvals is not None:
         _read_best(progress, futures, fvals, read | stopped, read)
-    return stopped
+    return stopped, progress.waited
 
 
 def _read_best(
@@ -222,14 +262,17 @@ class CappedEngine(Engine):
     rerun: frozenset[str] = frozenset()
     #: The ids of the starts the last :meth:`execute` stopped and scored as failed.
     killed: list[str] = []
+    #: The seconds the last :meth:`execute` waited with none of its starts running.
+    queue_seconds = 0.0
 
     def _run(self, tasks: list[Task]) -> tuple[list[Any], set[int]]:
         """``tasks``' results in task order, ``None`` for each one stopped, and the indices of
-        those."""
+        those; adds the seconds none of them was running to :attr:`queue_seconds`."""
         raise NotImplementedError
 
     def execute(self, tasks: list[Task], progress_bar: bool | None = None) -> list[Any]:
         """The tasks' results, in task order."""
+        self.queue_seconds = 0.0
         results, stopped = self._run(tasks)
         again = sorted(i for i in stopped if tasks[i].id in self.rerun)
         if again:
@@ -299,11 +342,12 @@ class ProcessEngine(CappedEngine):
         budget = self.start_seconds + FIT_DEADLINE_MARGIN_S
         handed_out = None  # seconds into the wait at which no start was left queued
 
-        def overrun(pending: list[int], seconds: float) -> list[int]:
+        def look(pending: list[int], seconds: float) -> tuple[list[int], list[int]]:
             nonlocal handed_out
             if handed_out is None and len(pending) <= n_procs:
                 handed_out = seconds
-            return pending if handed_out is not None and seconds - handed_out > budget else []
+            overdue = pending if handed_out is not None and seconds - handed_out > budget else []
+            return overdue, pending[n_procs:]
 
         pool = concurrent.futures.ProcessPoolExecutor(
             n_procs,
@@ -313,11 +357,11 @@ class ProcessEngine(CappedEngine):
         )
         futures = [pool.submit(_work, cloudpickle.dumps(task)) for task in tasks]
         try:
-            stopped = watch(
+            stopped, _ = watch(
                 futures,
                 [1] * len(futures),
                 concurrent.futures.wait,
-                overrun,
+                look,
                 budget,
                 lambda future: [future.result().fval],
             )
