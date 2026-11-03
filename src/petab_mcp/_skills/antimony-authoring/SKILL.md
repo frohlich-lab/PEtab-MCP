@@ -1,5 +1,6 @@
 ---
 name: antimony-authoring
+route: text
 description: >-
   Read before writing an Antimony model string. The syntax and naming mistakes that make a model
   fail to parse, fail to compile under AMICI, or silently fit wrong — expecting the arrow to

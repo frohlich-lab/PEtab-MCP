@@ -381,6 +381,20 @@ def test_a_stopped_start_reaches_the_result_the_version_and_the_de_dup(fit_sessi
     assert reruns == [frozenset(), frozenset({"0"})]
 
 
+def test_a_fit_whose_starts_mostly_run_out_of_time_says_more_starts_will_not_help(
+    fit_session, monkeypatch
+):
+    """MAXTIME is a per-start cap, so a fit most of whose starts hit it is told that more starts
+    would hit it too (#213)."""
+    import fides
+
+    monkeypatch.setattr(fitting, "_fides_maxtime_options", lambda: {fides.Options.MAXTIME: 1e-9})
+    out = fit_session.fit(n_starts=3)
+
+    assert out["exitflag_counts"] == {"ExitFlag.MAXTIME": 3}
+    assert any("3 of 3 starts ran out of" in w and "More starts" in w for w in out["warnings"])
+
+
 # -- the tool boundary --------------------------------------------------------------------------
 def _server(tmp_path):
     return create_server(

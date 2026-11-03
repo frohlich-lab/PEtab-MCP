@@ -1100,6 +1100,11 @@ def parent_starts(problem, guesses, optimization) -> frozenset[str]:
     return frozenset(str(j) for j, row in enumerate(guesses) if np.array_equal(row[shared], at))
 
 
+#: How close to the best start's objective a start must end to count as having reached it: 1 nll,
+#: 2 in BIC.
+AT_BEST_NLL_TOL = 1.0
+
+
 def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     """Estimate the free parameters with pyPESTO and write the best fit back.
 
@@ -1356,7 +1361,7 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
         for s in result.optimize_result.list
         if s.get("fval") is not None and math.isfinite(float(s["fval"]))
     ]
-    n_converged = sum(1 for v in fvals if v <= nllh + 1e-3)
+    n_converged = sum(1 for v in fvals if v <= nllh + AT_BEST_NLL_TOL)
     log.info(
         "fit: done best_nllh=%s self_improvement=%s time=%.2fs starts=%d converged~%d "
         "fval[min/max]=%s/%s",
@@ -1375,6 +1380,7 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     # re-enter them as warm starts. See `previous_optima`.
     optimization["x_scales"] = [str(s) for s in problem.x_scales]
     optimization["n_starts_killed"] = len(killed)
+    optimization["n_starts_at_best"] = n_converged
     optimization["result_file"] = _write_pypesto_result(session, result, session.problem_hash())
     return {
         "fitted": fitted,
@@ -1593,6 +1599,9 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
             # ...and, the same way, how many starts were stopped past their cap (see
             # :mod:`multistart`): scored as failed, so the fit searched less than `n_starts` names.
             "n_starts_killed": (fit["optimization"] or {}).get("n_starts_killed") if fit else None,
+            "n_starts_at_best": (
+                (fit["optimization"] or {}).get("n_starts_at_best") if fit else None
+            ),
             "records": records,
             "objective_before": fit["objective_before"] if fit else None,
             "version": None,
@@ -1962,16 +1971,86 @@ def slim_fit_payload(session, out: dict, version: int | None = None) -> dict:
     returned on its first guard. That made this a silent no-op on all three of make_changes,
     the duplicate-commit result and rollback -- i.e. on the dominant instance it was written for,
     leaving the 84-118-entry dict riding on every one of them. Only `get_fit_summary`, which
-    happens to build `version` into its own out dict, was ever slimmed."""
-    if version is not None and "version" not in out:
-        out = {**out, "version": version}
-        _slim_fitted_parameters(session, out)
-        return {k: v for k, v in out.items() if k != "version"}
-    _slim_fitted_parameters(session, out)
-    return out
+    happens to build `version` into its own out dict, was ever slimmed.
+
+    Past what it shares with `get_fit_summary`, a fit result names a scale, an at-bound pin and a
+    merge hint only where it is new since the parent (:func:`_since_parent`)."""
+    own = {**out, "version": version} if version is not None and "version" not in out else out
+    scales = own.get("parameter_scales")
+    parent = _slim_fitted_parameters(session, own)
+    if parent is not None:
+        own["parameter_scales"] = scales
+        _since_parent(session, own, *parent)
+    return own if own is out else {k: v for k, v in own.items() if k != "version"}
 
 
-def _slim_fitted_parameters(session, out: dict) -> None:
+def _sig(value: Any, digits: int = 4) -> Any:
+    """``value`` to ``digits`` significant digits when it is a finite number, else unchanged."""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return value
+    return float(f"{f:.{digits}g}") if math.isfinite(f) else value
+
+
+def _since_parent(session, out: dict, parent_v: int, parent_df: Any) -> None:
+    """Cut a slimmed fit result's ``parameter_scales``, ``parameters_at_bound`` and
+    ``merge_hints`` to what is new since the parent version, in place.
+
+    A scale is listed where the parameter is newly estimated or re-scaled, whether or not its value
+    moved; an earlier result named every other one. A pin is listed unless the parent sat at the
+    same side and bound, so a re-pin after a
+    widening still shows; ``n_parameters_at_bound`` counts every pin when any is left out. A hint is
+    listed unless the parent's fit priced the same pair as a hint too, re-priced or not;
+    ``n_merge_hints`` counts every hint when any is left out, beside a possibly empty list.
+    Best-effort, like the slimming before it."""
+    _new_merge_hints(session, out, parent_v)
+    try:
+        parent_fitted = table_fitted_values(parent_df)
+        prior = {pid: str(parent_df.loc[pid, PARAMETER_SCALE]) for pid in parent_fitted}
+        held = {
+            (f["parameter_id"], f["side"]): f["bound_value"]
+            for f in parameters_at_bound(parent_fitted, parent_df)
+        }
+    except Exception:  # noqa: BLE001 - never degrade the score payload over a slimming aid
+        return
+    scales = out.get("parameter_scales") or {}
+    out["parameter_scales"] = {k: v for k, v in scales.items() if prior.get(k) != v}
+    pins = out.get("parameters_at_bound") or []
+    new = [
+        {**f, "value": _sig(f["value"])}
+        for f in pins
+        if not math.isclose(held.get((f["parameter_id"], f["side"]), math.nan), f["bound_value"])
+    ]
+    out["parameters_at_bound"] = new
+    if len(new) < len(pins):
+        out["n_parameters_at_bound"] = len(pins)
+
+
+def _new_merge_hints(session, out: dict, parent_v: int) -> None:
+    """:func:`_since_parent`'s ``merge_hints`` cut. The parent's hints are re-derived from its
+    stored diagnosis (see :func:`identifiability.fit_diagnosis_block`), so they are the ones its own
+    fit result carried, and a parent without one leaves every hint new."""
+    from .identifiability import STORED_DIAGNOSIS_KEY, merge_hints
+
+    hints = out.get("merge_hints")
+    if not hints:
+        return
+    try:
+        stored = (session.provenance.get_version_simulation(parent_v) or {}).get(
+            STORED_DIAGNOSIS_KEY
+        )
+        prior = merge_hints(stored.get("diagnosis") if isinstance(stored, dict) else None) or []
+        seen = {frozenset(h["parameters"]) for h in prior}
+    except Exception:  # noqa: BLE001 - never degrade the score payload over a slimming aid
+        return
+    new = [h for h in hints if frozenset(h["parameters"]) not in seen]
+    out["merge_hints"] = new
+    if len(new) < len(hints):
+        out["n_merge_hints"] = len(hints)
+
+
+def _slim_fitted_parameters(session, out: dict) -> Any:
     """Replace the full fitted-values dict with a CHANGED-vs-previous-commit view, in place.
 
     The full dict is 84-118 entries on the large problems and rides on every make_changes /
@@ -1983,15 +2062,18 @@ def _slim_fitted_parameters(session, out: dict) -> None:
     (parameters.tsv), so only the push is slimmed — the pull is intact.
 
     Semantics: `fitted_parameters_changed` = entries NEW or moved >1% (relative, absolute floor
-    for zeros) vs the PREVIOUS version's stored fit; `n_parameters_unchanged` counts the rest.
+    for zeros) vs the PREVIOUS version's stored fit, to 4 significant digits;
+    `n_parameters_unchanged` counts the rest.
     The FIRST fit keeps the full dict under the original key — nothing to diff against, and the
     first read is where the whole vector genuinely informs. Best-effort: any failure keeps the
     full dict, because a slimming aid must never degrade the score payload.
+
+    Returns the parent's version and parameter table when it slimmed, else ``None``.
     """
     fitted = out.get("fitted_parameters")
     version = out.get("version")
     if not isinstance(fitted, dict) or not isinstance(version, int) or version <= 0:
-        return
+        return None
     try:
         # The PARENT, not version-1: after a restore/rollback the tip of the abandoned branch is
         # not what this fit descends from, and diffing against it reports parameters identical to
@@ -2000,9 +2082,10 @@ def _slim_fitted_parameters(session, out: dict) -> None:
         base_v = meta.get("parent")
         if not isinstance(base_v, int) or base_v < 0:
             base_v = version - 1
-        before = table_fitted_values(session.provenance.get_parameter_df(base_v))
+        parent = session.provenance.get_parameter_df(base_v)
+        before = table_fitted_values(parent)
         if not before:
-            return
+            return None
 
         def _num(x):
             try:
@@ -2026,7 +2109,7 @@ def _slim_fitted_parameters(session, out: dict) -> None:
         # otherwise be invisible, since the loop above only walks the current vector.
         removed = sorted(set(before) - set(fitted))
         scales = out.get("parameter_scales") or {}
-        out["fitted_parameters_changed"] = changed
+        out["fitted_parameters_changed"] = {pid: _sig(val) for pid, val in changed.items()}
         if removed:
             out["parameters_removed"] = removed
         out["n_parameters_unchanged"] = len(fitted) - len(changed)
@@ -2043,7 +2126,8 @@ def _slim_fitted_parameters(session, out: dict) -> None:
         named = set(changed) | set(removed)
         out["parameter_scales"] = {k: v for k, v in scales.items() if k in named}
     except Exception:  # noqa: BLE001 - never degrade the score payload over a slimming aid
-        return
+        return None
+    return base_v, parent
 
 
 def fit_summary(session, engine) -> dict[str, Any]:
@@ -2171,11 +2255,9 @@ def compute_improvement(
 
     The returned block carries the ranked pair ``criterion``/``criterion_value`` beside the
     canonical ``bic``, and is stamped into the fit event and the version meta — which is what
-    lets a resumed session and the de-dup registry recover the score. Only those three: this block
-    rides on every fit result and is re-sent in the agent's history each turn, and the full
-    criterion table is already on the fit block (and in the version meta) one level up. It also
-    states its own gate: past the first fit, ``is_new_best`` is ``improvement_vs_best_prior``
-    (over ``best_prior_criterion_value``) reaching ``new_best_min_improvement``.
+    lets a resumed session and the de-dup registry recover the score. A fit result carries only
+    :data:`IMPROVEMENT_ON_RESULT` of it; the gate itself is a constant, stated in the
+    ``make_changes`` description.
     """
     fitsim = fitsim or {}
     scores = goodness_of_fit(
@@ -2194,7 +2276,6 @@ def compute_improvement(
     _best = session.best
     best_prior_score = _flt(_best.score) if _best else None
     best_prior_version = _best.version if _best else None
-    best_prior_nllh = _best.nll if _best else None
 
     self_improvement = None
     if objective_before is not None and nllh is not None:
@@ -2214,13 +2295,22 @@ def compute_improvement(
         "criterion_value": score,
         "best_prior_version": best_prior_version,
         "best_prior_criterion_value": best_prior_score,
-        "best_prior_neg_log_likelihood": best_prior_nllh,
         "improvement_vs_best_prior": improvement_vs_best_prior,
-        # The gate itself, so an `is_new_best: false` says what the fit needed: an improvement
-        # over `best_prior_criterion_value` of at least this.
-        "new_best_min_improvement": NEW_BEST_MIN_DELTA_SCORE,
         "is_new_best": is_new_best,
     }
+
+
+#: The :func:`compute_improvement` keys a fit result carries; the fit event and the version meta
+#: keep them all. The rest are the block's own ``neg_log_likelihood``/``bic``/``criterion_value``
+#: or follow from them: ``objective_before`` is nll + ``self_improvement``, the prior best's score
+#: is ``criterion_value`` + ``improvement_vs_best_prior``, and its version is
+#: ``progress.best_version`` unless ``is_new_best``.
+IMPROVEMENT_ON_RESULT = (
+    "self_improvement",
+    "improvement_vs_best_prior",
+    "is_new_best",
+    "new_best_declined",
+)
 
 
 def clears_new_best_bar(score: float | None, best_score: float | None) -> bool:
@@ -2367,17 +2457,17 @@ def fit_result_block(
     when the fit is already at the noise floor and stop adding parameters,
     ``parameters_at_bound`` (see :func:`parameters_at_bound`; empty when ``parameter_df`` is
     not passed) so a parameter pinned to its bound is flagged in the SAME report instead of
-    requiring a separate ``get_parameters()`` comparison, the noise-model verdict
-    (``noise_sigma_report`` plus ``noise_sigma_inflated`` / ``noise_sigma_collapsed`` and, only
-    when implausible, ``noise_sigma_advice`` — the same flat keys :func:`fit_summary` reports, so
-    a score read off ``fit`` names things exactly as one read off ``get_fit_summary``), and the
-    compact
+    requiring a separate ``get_parameters()`` comparison, the noise-model verdict (see
+    :func:`noise_sigma_block`), and the compact
     ``residual_structure`` verdict the caller stashed on ``fitsim`` (see
-    :func:`data_access.residual_structure_rollup`) so the agent learns whether its model's FORM is
+    :func:`data_access.residual_structure_on_fit`) so the agent learns whether its model's FORM is
     still incomplete without spending a separate ``get_fit_diagnosis`` call — and, on the same
     reasoning for the model's PARAMETERISATION, the ``merge_hints`` the caller stashed there (see
     :func:`identifiability.merge_hints`), present only when a tie is worth taking.
+    ``get_fit_summary`` carries the noise report and the rollup in full.
     """
+    from .data_access import residual_structure_on_fit
+
     fitsim = fitsim or {}
     fitted = fitsim.get("fitted_parameters")
     nll = fitsim.get("neg_log_likelihood")
@@ -2393,6 +2483,7 @@ def fit_result_block(
         k = len(fitted)
     constants = fitsim.get("hardcoded_constants") or []
     killed = fitsim.get("n_starts_killed")
+    at_best = fitsim.get("n_starts_at_best")
     block = {
         "fit_status": fitsim.get("status"),
         # The multistart count the fit actually ran with (``None`` for a restored version, which
@@ -2402,8 +2493,14 @@ def fit_result_block(
         # How many of them were stopped past their cap and scored as failed, ABSENT when none was:
         # this block is re-sent in the caller's history every turn.
         **({"n_starts_killed": killed} if killed else {}),
-        # Per-start outcome histogram (e.g. {"ExitFlag.FTOL": 81, "ExitFlag.EXCEEDED_BOUNDARY":
-        # 19}): how many starts CONVERGED on their own criterion vs hit the per-start time cap.
+        # How many starts reached the best objective, out of how many ran (None without a fit).
+        "starts_at_best": (
+            f"{at_best}/{fitsim.get('n_starts')} (within {AT_BEST_NLL_TOL:g} nll)"
+            if at_best is not None
+            else None
+        ),
+        # Per-start outcome histogram (e.g. {"ExitFlag.FTOL": 81, "ExitFlag.MAXTIME": 19}): how
+        # many starts CONVERGED on their own criterion vs hit the per-start time cap.
         # A fit dominated by boundary exits is optimiser-budget-limited, not structure-limited --
         # the distinction that decides whether "fit harder" or "change the model" is the right
         # next move, previously only recoverable by grepping optimizer stdout that is no longer
@@ -2430,12 +2527,10 @@ def fit_result_block(
         "parameter_scales": _parameter_scales_for(
             fitted, fitsim.get("parameter_scales"), parameter_df
         ),
-        # The ranked pair is stripped from the AGENT's copy: it is already at the top level of
-        # this block, and this dict is re-sent in the agent's history every turn (PR #23). The
-        # RAW `improvement` keeps it — the fit event is spread from that one, and the durable
-        # resume seeds its checkpoint off exactly those two keys.
+        # The RAW `improvement` keeps every key: the fit event is spread from it, and the durable
+        # resume seeds its checkpoint off its `criterion`/`criterion_value`.
         "improvement": (
-            {k: v for k, v in improvement.items() if k not in ("criterion", "criterion_value")}
+            {k: improvement[k] for k in IMPROVEMENT_ON_RESULT if k in improvement}
             if improvement
             else None
         ),
@@ -2444,13 +2539,13 @@ def fit_result_block(
         # adequacy gate and this block cannot disagree; computed here for the paths that don't
         # stash one (a restore).
         **noise_sigma_block(problem, fitted, report=fitsim.get("noise_sigma_report")),
-        # The COMPACT residual-structure verdict only — which observables the sign/runs tests or the
-        # replicate lack-of-fit test flag, a one-line summary, and the bounded replicate verdict
-        # (`replicate_lack_of_fit`: the counts plus at most REPLICATE_LOF_MAX_REPORTED_POINTS named
-        # points). Deliberately not the per-observable table or worst_points: those would ride on
-        # EVERY fit result and pile up in the agent's re-sent history, so they stay behind
-        # get_fit_diagnosis (issue #113).
-        "residual_structure": fitsim.get("residual_structure"),
+        # The COMPACT residual-structure verdict only — the first few observables the sign/runs
+        # tests or the replicate lack-of-fit test flag, a one-line summary, and the bounded
+        # replicate verdict where the design has replicates (see
+        # data_access.residual_structure_on_fit). Deliberately not the per-observable table or
+        # worst_points: those would ride on EVERY fit result and pile up in the agent's re-sent
+        # history, so they stay behind get_fit_diagnosis (issue #113).
+        "residual_structure": residual_structure_on_fit(fitsim.get("residual_structure")),
     }
     # The cheapest parameter ties BIC would pay for (see :func:`identifiability.merge_hints`), ABSENT
     # when there are none — like `noise_sigma_advice` and `nesting_advisory`: this rides on every fit
@@ -2472,28 +2567,26 @@ def noise_sigma_block(
 ) -> dict[str, Any]:
     """The noise-model verdict as it appears on any fit-bearing result.
 
-    The raw ``noise_sigma_report`` plus the ``noise_sigma_inflated`` / ``noise_sigma_collapsed``
-    verdict and — ONLY when implausible — ``noise_sigma_advice``, mirroring :func:`fit_summary`'s
-    flat keys so a score read off ``fit`` names things exactly as one read off ``get_fit_summary``.
+    The ``noise_sigma_inflated`` / ``noise_sigma_collapsed`` verdict, named as in
+    :func:`fit_summary`, and — ONLY when one is set — ``noise_sigma_advice`` and the
+    ``noise_sigma_report`` entries of the sigmas it flags. ``get_fit_summary`` keeps every entry.
 
-    Shared by :func:`fit_result_block` and the ``fit`` no-op deliberately: because the advice key
-    is ABSENT when the noise model is plausible, a result that omits these keys entirely reads to
-    an agent as "plausible". Any fit-bearing shape must therefore carry the whole verdict or none of
-    it, and the agent may have no ``get_fit_summary`` to fall back on. ``report`` short-circuits the
+    Shared by every fit-bearing result deliberately: because the advice key is ABSENT when the
+    noise model is plausible, a result that omits these keys entirely reads to an agent as
+    "plausible". Any fit-bearing shape must therefore carry the whole verdict or none of it, and
+    the agent may have no ``get_fit_summary`` to fall back on. ``report`` short-circuits the
     computation for a caller that already has one.
     """
     if report is None:
         report = noise_sigma_report(problem, fitted)
     inflated = noise_sigma_inflated(report)
     collapsed = noise_sigma_collapsed(report)
-    block = {
-        "noise_sigma_report": report,
-        "noise_sigma_inflated": inflated,
-        "noise_sigma_collapsed": collapsed,
-    }
-    advice = noise_sigma_advice(report)  # report-based: quotes the replicate ratio when reliable
-    if advice is not None:
-        block["noise_sigma_advice"] = advice
+    block = {"noise_sigma_inflated": inflated, "noise_sigma_collapsed": collapsed}
+    if inflated or collapsed:
+        block["noise_sigma_advice"] = noise_sigma_advice_for(inflated, collapsed)
+        block["noise_sigma_report"] = {
+            pid: e for pid, e in report.items() if _entry_inflated(e) or _entry_collapsed(e)
+        }
     return block
 
 

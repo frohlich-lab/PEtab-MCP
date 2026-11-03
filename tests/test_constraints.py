@@ -49,10 +49,10 @@ def _record(*rows, seeds=()) -> dict:
     }
 
 
-def _model(record: dict) -> tuple:
+def _model(record: dict, targets: frozenset[str] = frozenset()) -> tuple:
     """The model ``record``'s rows build, seeded and never reduced, and its emissions: each row
     under its ``policy`` or the library's own mechanism for its type, a row stating regulators
-    under one whose rate reads them."""
+    under one whose rate reads them; ``targets`` the problem's condition targets."""
     from indra.statements import (
         Agent,
         Modification,
@@ -83,11 +83,13 @@ def _model(record: dict) -> tuple:
             policy = read["policy"]
         rows.append((stmt, policy, row["prefix"], None, stated))
     seeds = [(s["name"], Agent._from_json(s["agent"]), s["amount"]) for s in record["seeds"]]
-    return problem_sbml.to_antimony(rows, {}, library, seeds=seeds, seeded=True)
+    return problem_sbml.to_antimony(
+        rows, {}, library, seeds=seeds, targets=targets, seeded=True
+    )
 
 
-def _check(lines: list[str], record: dict) -> dict[str, K.Verdict]:
-    return K.check(K.parse(lines), record, lambda: _model(record))
+def _check(lines: list[str], record: dict, targets=frozenset()) -> dict[str, K.Verdict]:
+    return K.check(K.parse(lines), record, lambda: _model(record, targets))
 
 
 #: A cascade, as fujita's formulation writes it.
@@ -302,6 +304,18 @@ def test_tracing_carries_a_cascade_with_its_sign():
         "tracing EGF through the network its rows expand to never lowers RPS6{pS235}; it reaches "
         "AKT1, EGFR, RPS6"
     )
+
+
+def test_an_agent_seeded_at_a_condition_target_keeps_its_name():
+    """A seed at a condition target's id names EGF's species `EGF_dose` (PEtab-MCP#192); the
+    constraints still name the agent EGF, and trace it as before."""
+    got = _check(
+        ["c1: EGF increases RPS6{pS235}, indirectly", "c2: EGF decreases RPS6{pS235}, indirectly"],
+        _record(*_CASCADE, seeds=[("EGF", "EGF", "EGF_dose")]),
+        frozenset({"EGF_dose"}),
+    )
+    assert got["c1"].ok and got["c1"].rows == ("r56",)
+    assert not got["c2"].ok
 
 
 def test_a_tag_alone_is_no_change():

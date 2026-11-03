@@ -21,15 +21,18 @@ from typing import Any
 from petab.v2.C import ESTIMATE
 from petab.v2.lint import ValidationIssueSeverity
 
-from .problem import as_bool
+from .problem import as_bool, later_changes
 from .reconcile import (
     _ast_names,
+    _observable_and_measurement_symbols,
     condition_target_symbols,
     noise_sigma_ids,
     _model_math_names,
+    _reaction_species,
     has_dynamics,
     observation_model_symbols,
     parameter_ids,
+    species_ids,
 )
 
 # libsbml consistency categories that are pure noise for unit-less mechanistic models — we
@@ -381,6 +384,81 @@ def _undefined_readout_issues(problem, statements: bool = False) -> list[dict[st
         return []
 
 
+#: How a condition target enters a model so that every period's value reaches it: the remedy of
+#: :func:`_first_period_only_issues` and of the invalid-targets hint (:mod:`operations`).
+INPUT_REMEDY = (
+    "read it as a parameter of its id in a rate law, which follows every period's value, or name "
+    "a species by its id, which every period sets (on the statements route: a row's binding "
+    '`kf="k*dose"`, or a seed of the agent it stands for at the id alone, '
+    '`{"agent": "FSK", "amount": "Fsk"}`). An initial amount that reads it (a seed `2*dose`) '
+    "takes the first period's value alone, which in a pre-equilibrated experiment is the "
+    "pre-equilibration one."
+)
+
+#: Periods named per target in :func:`_first_period_only_issues`; the rest are counted.
+_PERIODS_SHOWN = 3
+
+
+def _first_period_only_issues(problem) -> list[dict[str, Any]]:
+    """One warning naming each condition target that a period after an experiment's first sets
+    while the model reads it only in initial assignments, with the periods: those see the first
+    period's value alone (:func:`problem.later_changes`), so the later one never reaches the model.
+    libpetab's unread-target check passes it, as the target is read."""
+    sm = getattr(problem.model, "sbml_model", None)
+    later = later_changes(problem) if sm is not None else {}
+    if not later:
+        return []
+    at_start = set()
+    for assignment in sm.getListOfInitialAssignments():
+        at_start |= _ast_names(assignment.getMath())
+    read = _model_math_names(sm, initial=False) | _observable_and_measurement_symbols(problem)
+    stale = sorted(t for t in later if t in at_start and t not in read)
+    if not stale:
+        return []
+
+    def periods(target: str) -> str:
+        shown = ", ".join(f"{e} at t = {t:g}" for e, t in later[target][:_PERIODS_SHOWN])
+        more = len(later[target]) - _PERIODS_SHOWN
+        return f"`{target}` ({shown}{f' and {more} more' if more > 0 else ''})"
+
+    return [
+        {
+            "level": "warning",
+            "message": (
+                f"condition target(s) {'; '.join(map(periods, stale))} change in these periods, "
+                "after their experiment's first, but are read only in initial amounts, so the "
+                f"model never sees the new value. For each, {INPUT_REMEDY}"
+            ),
+            "check": "input_read_only_at_start",
+        }
+    ]
+
+
+def _unread_input_issues(problem) -> list[dict[str, Any]]:
+    """One warning naming each condition target the model declares and nothing reads: no rate,
+    rule, event, initial amount or observable, so no period's value reaches the model. libpetab's
+    invalid-target check passes it, as the target is declared; the reconcile leaves it so when it
+    prunes the seed whose initial amount read it (PEtab-MCP#205)."""
+    sm = getattr(problem.model, "sbml_model", None)
+    if sm is None:
+        return []
+    declared = parameter_ids(sm) | species_ids(sm)
+    read = _model_math_names(sm) | _reaction_species(sm) | _observable_and_measurement_symbols(problem)
+    unread = sorted((condition_target_symbols(problem) & declared) - read)
+    if not unread:
+        return []
+    return [
+        {
+            "level": "warning",
+            "message": (
+                f"condition target(s) {', '.join(f'`{t}`' for t in unread)} are read by nothing "
+                f"in the model, so the model never sees their value. For each, {INPUT_REMEDY}"
+            ),
+            "check": "input_unread",
+        }
+    ]
+
+
 # -- authoring-time check: frozen parametric reaction stoichiometry (checks the CONVERTED SBML) --
 def frozen_parametric_stoichiometry_issues(sbml_model) -> list[dict[str, Any]]:
     """Hard-error when a reaction stoichiometry was written as a PARAMETER/symbol in Antimony.
@@ -546,6 +624,10 @@ def validate_problem(problem, protected_fixed_ids=None, statements: bool = False
     readout_issues = _undefined_readout_issues(problem, statements)
     issues += readout_issues
     n_errors += len(readout_issues)
+
+    input_issues = _first_period_only_issues(problem) + _unread_input_issues(problem)
+    issues += input_issues
+    n_warnings += len(input_issues)
 
     return {
         "valid": (

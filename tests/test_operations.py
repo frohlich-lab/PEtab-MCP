@@ -236,9 +236,11 @@ def test_change_parameters_requires_justification(session):
         )
 
 
-def test_change_parameters_empty_list_rejected(session):
-    with pytest.raises(OperationError, match="non-empty list"):
-        O.change_parameters(session, [], justification="nothing to do")
+def test_change_parameters_with_no_entry_is_a_refit_that_changes_nothing(session):
+    """`make_changes(n_starts=...)` alone refits the working model: an edit of no bound."""
+    before = P.parameters_to_records(session.problem)
+    assert O.change_parameters(session, [], justification="more starts")["applied"] is True
+    assert P.parameters_to_records(session.problem) == before
 
 
 def test_change_parameters_invalid_scale_is_reverted(session):

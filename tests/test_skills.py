@@ -144,7 +144,8 @@ def test_every_skill_the_instructions_name_is_bundled(tmp_path):
 
 def test_a_route_skill_is_registered_and_named_only_where_its_route_is_offered(tmp_path):
     """The `statements` grammar was taught by refusals alone, 4-14 per run before the first fit
-    (gemot round 3, #193); a server without the route neither lists the skill nor names it."""
+    (gemot round 3, #193); a server without the route neither lists the skill nor names it. The
+    text routes' `antimony-authoring` is likewise listed only where they are offered."""
     entity_map = tmp_path / "entities.json"
     entity_map.write_text("{}")
     offered = create_server(
@@ -156,7 +157,9 @@ def test_a_route_skill_is_registered_and_named_only_where_its_route_is_offered(t
     )
     for mcp, shown in ((_server(tmp_path), False), (offered, True)):
         listed = _unwrap(_structured(asyncio.run(mcp.call_tool("list_skills", {}))))
-        assert ("statements-grammar" in {s["name"] for s in listed}) is shown
+        listed = {s["name"] for s in listed}
+        assert ("statements-grammar" in listed) is shown
+        assert ("antimony-authoring" in listed) is not shown
         assert ("get_skill('statements-grammar')" in mcp.instructions) is shown
 
 

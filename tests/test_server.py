@@ -963,12 +963,9 @@ def test_fit_tools(tmp_path):
         # the compact residual-structure verdict rides on the fit result (issue #113), so the
         # agent doesn't spend a get_fit_diagnosis call to learn its model's form is incomplete —
         # but the DETAIL behind it deliberately does not, or it would ride on every fit.
-        assert set(res["residual_structure"]) == {
-            "flagged_observables",
-            "low_power",
-            "summary",
-            "replicate_lack_of_fit",
-        }
+        # The toy has no replicated design point, so the replicate arm, with nothing to test, is
+        # left out (#190).
+        assert set(res["residual_structure"]) == {"flagged_observables", "low_power", "summary"}
         assert "per_observable" not in res and "worst_points" not in res
         # `parameters_at_bound` stays HERE, on every fit result: it is the at-bound signal the agent
         # acts on (get_parameters carries none), and it costs ~25 bytes when empty.
