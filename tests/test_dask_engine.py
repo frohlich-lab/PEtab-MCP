@@ -29,7 +29,7 @@ from petab_mcp import logging_setup
 from petab_mcp import multistart
 from petab_mcp import server
 from petab_mcp.dask_engine import DaskEngine
-from petab_mcp.errors import FIT_WEDGED, FitBackendError, InfrastructureError
+from petab_mcp.errors import FIT_POOL, FIT_WEDGED, FitBackendError, InfrastructureError
 from petab_mcp.references import StubReferenceResolver
 from petab_mcp.server import create_server
 
@@ -551,8 +551,8 @@ def test_a_fits_queue_seconds_are_its_wait_with_none_of_its_starts_running(monke
 
 
 def test_a_lost_cluster_fails_the_fit_and_nothing_reruns_it_here(fit_session, monkeypatch):
-    """A cluster failure fails the fit: `minimize` runs once, on the cluster, never again
-    sequentially on the server node."""
+    """A client that lost its cluster fails the fit as the pool's failure, ``fit_pool``: `minimize`
+    runs once, on the cluster, never again sequentially on the server node."""
     import pypesto.optimize
 
     engines = []
@@ -565,20 +565,22 @@ def test_a_lost_cluster_fails_the_fit_and_nothing_reruns_it_here(fit_session, mo
     monkeypatch.setattr(pypesto.optimize, "minimize", spy)
     with _engine(n_workers=1) as engine:
         fit_session.engine.fit_engine = engine
-    with pytest.raises(FitBackendError, match="ClosedClientError"):
+    with pytest.raises(InfrastructureError, match="^infrastructure_error: fit_pool: .*Closed"):
         fitting.fit_and_simulate(fit_session, fit_session.engine, do_fit=True, n_starts=2)
     assert len(engines) == 1 and engines[0].client is engine.client
 
 
 def test_a_worker_never_builds_a_model(tmp_path):
     """On a worker, pyPESTO's creators and AMICI's importer refuse to build in the shared build root,
-    naming the folder and the host, and leave the folder as it was."""
+    naming the folder and the host, and leave the folder as it was. The pool failed the run: its
+    build root is not the server's."""
     folder = tmp_path / "pypesto_hash"
     folder.mkdir()
     (folder / "half_built").write_text("", encoding="utf-8")
     refusal = re.escape(f"{folder} is not importable on worker {socket.gethostname()}")
     with _engine(n_workers=1) as engine:
         for how in ("v1", "v2", "amici"):
-            with pytest.raises(FitBackendError, match=refusal):
+            with pytest.raises(InfrastructureError, match=refusal) as refused:
                 engine.execute([_Build(str(folder), how)])
+            assert refused.value.cause == FIT_POOL
     assert [p.name for p in folder.iterdir()] == ["half_built"]

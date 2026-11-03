@@ -87,6 +87,9 @@ the fits still waiting. It needs:
   itself, and a worker never does;
 - **one `--build-root` on storage the compute nodes share**, the same for every server of the pool,
   not `$TMPDIR`: the workers import the compiled models by the server's path;
+- **one environment for the pool and its servers**: a start is pickled, so a server refuses a pool
+  whose `amici`, `pypesto`, `petab` or `petab-mcp` differs from its own, naming both. After a pin
+  bump, restart the pool;
 - **the worker jobs configured in dask's own config**, not by flags: `~/.config/dask/jobqueue.yaml`
   (or `DASK_JOBQUEUE__SLURM__*`) where the pool runs, for example:
 
@@ -107,7 +110,8 @@ jobqueue:
 A dask task runs as many starts as fill `PETAB_MCP_FIT_TASK_SECONDS` (default 270) at the median
 start time of the session's previous fit, or at its per-start cap (by default
 `PETAB_MCP_FIT_PER_START_TIMEOUT`) without one; `PETAB_MCP_FIT_STARTS_PER_TASK` fixes the number
-instead.
+instead. A pool lost mid-fit, or a worker that cannot import a model, ends the call with
+`infrastructure_error: fit_pool: `, as a full disk does (see "Tools").
 
 ## Tools
 

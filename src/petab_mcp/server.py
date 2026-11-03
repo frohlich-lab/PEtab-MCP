@@ -513,8 +513,9 @@ def unknown_ids_message(
 
 
 class _InfrastructureErrors(Middleware):
-    """Ends a tool call that failed for want of disk with the MCP error a client ends the run on,
-    whichever tool and wherever in it (:class:`~petab_mcp.errors.InfrastructureError`).
+    """Ends a tool call that failed for want of disk, or that a fit pool failed (``fit_pool``,
+    :mod:`petab_mcp.dask_engine`), with the MCP error a client ends the run on, whichever tool and
+    wherever in it (:class:`~petab_mcp.errors.InfrastructureError`).
 
     The one place every tool's exception passes, so a raw ``OSError`` from a path no :class:`_Ctx`
     wrapper guards reads the same as a fit's. FastMCP has wrapped the exception by then (``Error

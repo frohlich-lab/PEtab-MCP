@@ -25,23 +25,29 @@ import numpy as np
 import pandas as pd
 import pytest
 from distributed import Client, get_task_stream
+from fastmcp.exceptions import ToolError
 
-from petab_mcp import fitting, pool
+from petab_mcp import dask_engine, fitting, pool
 from petab_mcp.dask_engine import DaskEngine
+from petab_mcp.errors import FIT_POOL, InfrastructureError
 from petab_mcp.references import StubReferenceResolver
 from petab_mcp.server import create_server
 
-#: A pool whose workers are local processes, one per job.
+#: A pool whose workers are local processes, one per job, whose scheduler reports the versions of
+#: this environment but for an ``amici`` of ``argv[1]`` (``-``: this environment's own).
 _POOL = textwrap.dedent("""
     import sys
     from distributed import LocalCluster
-    from petab_mcp import pool
+    from petab_mcp import dask_engine, pool
 
     if __name__ == "__main__":
+        if sys.argv[1] != "-":
+            ours = dask_engine.versions
+            dask_engine.versions = lambda: {**ours(), "amici": sys.argv[1]}
         pool._slurm_cluster = lambda port, min_jobs, max_jobs: LocalCluster(
             n_workers=max_jobs, threads_per_worker=1, scheduler_port=port, dashboard_address=":0"
         )
-        raise SystemExit(pool.main(sys.argv[1:]))
+        raise SystemExit(pool.main(sys.argv[2:]))
 """)
 
 
@@ -52,7 +58,7 @@ def _free_port() -> int:
 
 
 @contextlib.contextmanager
-def _pool(tmp_path: Path, workers: int = 2):
+def _pool(tmp_path: Path, workers: int = 2, amici: str = "-"):
     """A pool of ``workers`` in another process; yields its published address, its address file
     and its process. Its process group is killed on exit."""
     (tmp_path / "pool.py").write_text(_POOL, encoding="utf-8")
@@ -60,7 +66,7 @@ def _pool(tmp_path: Path, workers: int = 2):
     flags = ["--slurm-max-jobs", str(workers), "--port", str(_free_port())]
     flags += ["--address-file", str(published)]
     proc = subprocess.Popen(
-        [sys.executable, str(tmp_path / "pool.py"), *flags], start_new_session=True
+        [sys.executable, str(tmp_path / "pool.py"), amici, *flags], start_new_session=True
     )
     try:
         deadline = time.monotonic() + 300
@@ -164,6 +170,48 @@ def test_two_servers_on_different_problems_fit_at_once_and_each_gets_its_own_sta
     order = ["ab"[arrived.index(submitted[task["key"]])] for task in began]
     assert sorted(order) == ["a"] * 4 + ["b"] * 4
     assert sum(x != y for x, y in zip(order, order[1:])) >= 2, order
+
+
+def test_a_pool_from_another_environment_is_refused_at_startup_naming_both_versions(
+    yaml_path, tmp_path
+):
+    """A start is pickled, so a pool whose scheduler imports another AMICI would fail every fit
+    with errors that are hard to read: the server refuses it before opening, naming both."""
+    with _pool(tmp_path, workers=1, amici="0.0.1") as (address, _, _):
+        with pytest.raises(InfrastructureError) as refused:
+            create_server(
+                yaml_path,
+                provenance_dir=str(tmp_path / "prov"),
+                resolver=StubReferenceResolver(),
+                auto_fit=False,
+                cluster=address,
+            )
+    assert refused.value.cause == FIT_POOL
+    assert f"amici 0.0.1 there, {dask_engine.versions()['amici']} here" in str(refused.value)
+    assert "pypesto" not in str(refused.value)
+    assert not (tmp_path / "prov").exists()
+
+
+def test_a_pool_lost_mid_fit_ends_the_call_as_fit_pool(
+    yaml_path, amici_build_root, tmp_path, monkeypatch
+):
+    """The pool's scheduler killed while a fit waits on it is the pool's failure, not the run's:
+    the call ends as the ``fit_pool`` infrastructure error a client ends the run on."""
+    with _pool(tmp_path, workers=1) as (address, _, proc):
+        mcp = _server(yaml_path, amici_build_root, tmp_path / "prov", address)
+        wait = DaskEngine._wait
+
+        def kill_then_wait(self, pending, timeout):
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait()
+            return wait(self, pending, timeout)
+
+        monkeypatch.setattr(DaskEngine, "_wait", kill_then_wait)
+        with pytest.raises(
+            ToolError, match="^infrastructure_error: fit_pool: the fit's client lost"
+        ):
+            _fit(mcp)
 
 
 def test_sigterm_unpublishes_the_pool_then_waits_for_the_batch_running(tmp_path):
