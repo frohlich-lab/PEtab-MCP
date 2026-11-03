@@ -14,6 +14,7 @@ from __future__ import annotations
 import math
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -286,6 +287,30 @@ def test_score_session_refits_the_toy_on_a_transfer_set_and_leaves_the_session_a
     assert session.problem.condition_df is None and session.problem.experiment_df is None
 
 
+def test_a_transfer_refit_runs_at_its_sessions_per_start_cap(session, tmp_path, monkeypatch):
+    """A held-out refit runs at the per-start cap its session's own fits ran on, which a server
+    hosting several problems sets per session (#187); a caller without a session, such as the
+    reference bar's, gets the default every session starts with."""
+    from petab_mcp import fitting
+
+    caps = []
+    monkeypatch.setattr(
+        V, "_refit_one", lambda view, *, cap, **_: caps.append(cap) or {"status": V.STATUS_OK}
+    )
+    build = {"output_folder": str(tmp_path / "build"), "model_name": "m"}
+    engine = SimpleNamespace(pypesto_importer_kwargs=lambda h: build, fit_engine=None)
+    held = V.HeldOut(
+        measurement_df=session.problem.measurement_df,
+        parameter_df=_params([("A_init", "lin", 0.0, 100.0, 2.0, 0)]),
+    )
+    session.fit_per_start_timeout = 1200.0
+
+    V.score_session(session, engine, held, n_starts=2)
+    V.refit_problem(session.problem, build_dir=tmp_path / "b", model_name="m", n_starts=1)
+
+    assert caps == [1200.0, fitting.FIT_PER_START_TIMEOUT_S]
+
+
 def test_the_server_tool_takes_n_starts_and_refits_a_transfer_bundle(tmp_path):
     """The registered tool is what whoever runs the session reaches over MCP: it must accept
     `n_starts` (or that call fails and the caller records `unavailable`) and must read the bundle
@@ -433,7 +458,7 @@ def test_a_single_named_unit_is_still_carried_under_units(monkeypatch):
     block is carried the same way — a consumer reading `units` must not find it missing."""
     seen = []
 
-    def _fake_one(view, *, target, n_starts, fit_engine):
+    def _fake_one(view, *, target, n_starts, fit_engine, cap):
         seen.append(view)
         return {
             "status": "ok",
@@ -464,7 +489,7 @@ def _fake_refit(monkeypatch):
     """Replace one system's refit: record the view it was handed, report a fixed optimum."""
     seen = []
 
-    def _fake_one(view, *, target, n_starts, fit_engine):
+    def _fake_one(view, *, target, n_starts, fit_engine, cap):
         seen.append(view)
         return {
             "status": "ok",

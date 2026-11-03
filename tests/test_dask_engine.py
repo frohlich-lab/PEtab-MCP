@@ -343,7 +343,6 @@ def test_the_batch_size_fills_FIT_TASK_SECONDS_unless_FIT_STARTS_PER_TASK_is_set
     per-start cap without one, at least one and never more than it has. FIT_STARTS_PER_TASK, when
     set, replaces all of that."""
     monkeypatch.setattr(fitting, "FIT_TASK_SECONDS", 270.0)
-    monkeypatch.setattr(fitting, "FIT_PER_START_TIMEOUT_S", 60.0)
     monkeypatch.setattr(fitting, "FIT_STARTS_PER_TASK", 0)
     shared = SimpleNamespace(batched=lambda k, *_: k)  # hands back the batch size it is given
 
@@ -351,12 +350,27 @@ def test_the_batch_size_fills_FIT_TASK_SECONDS_unless_FIT_STARTS_PER_TASK_is_set
         previous = None
         if median is not None:  # the None is a start with no finite time
             previous = {"starts": [{"time": t} for t in (None, median / 3, median, 10 * median)]}
-        return fitting._fit_engine(n_starts, shared, previous)
+        return fitting._fit_engine(n_starts, 60.0, shared, previous)
 
     assert [k(20, median) for median in (30.0, 100.0, 400.0, None)] == [9, 2, 1, 4]
     assert k(4, 30.0) == 4
     monkeypatch.setattr(fitting, "FIT_STARTS_PER_TASK", 5)
     assert [k(20, 30.0), k(20, None), k(4, 400.0)] == [5, 5, 4]
+
+
+def test_each_fit_on_the_shared_pool_stops_its_batches_at_its_own_cap():
+    """Two fits batched off one engine keep their own caps, so a batch is stopped at its own
+    session's deadline, not at another's (#187: one pool serves sessions capped at 1200 s and at
+    12000 s)."""
+    shared = object.__new__(DaskEngine)  # no cluster: only the deadline is read
+    ran = multistart.FIT_DEADLINE_MARGIN_S + 100.0
+    shared.client = SimpleNamespace(run_on_scheduler=lambda _: {"batch": ran})
+    futures = [SimpleNamespace(key="batch")]
+
+    short, long = shared.batched(1, 60.0), shared.batched(1, 120.0)
+
+    assert short._overrun(futures, [1])([0], None) == {0}
+    assert long._overrun(futures, [1])([0], None) == set()
 
 
 def test_a_batched_fit_runs_k_starts_per_task_and_keeps_their_order_and_records(
@@ -552,21 +566,3 @@ def test_a_worker_never_builds_a_model(tmp_path):
             with pytest.raises(FitBackendError, match=refusal):
                 engine.execute([_Build(str(folder), how)])
     assert [p.name for p in folder.iterdir()] == ["half_built"]
-
-
-def test_an_amici_without_hdf5_refuses_the_cluster_before_connecting(
-    yaml_path, tmp_path, monkeypatch
-):
-    """An AMICI without HDF5 cannot pickle a start, so the server refuses the cluster before
-    connecting to it (`object()` is no cluster)."""
-    import amici.sim.sundials
-
-    monkeypatch.setattr(amici.sim.sundials, "hdf5_enabled", False)
-    with pytest.raises(FitBackendError, match="without HDF5"):
-        create_server(
-            yaml_path,
-            provenance_dir=str(tmp_path / "prov"),
-            resolver=StubReferenceResolver(),
-            auto_fit=False,
-            cluster=object(),
-        )

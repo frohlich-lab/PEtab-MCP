@@ -367,22 +367,23 @@ class _StopsTheLast(M.CappedEngine):
 
 
 def test_a_stopped_start_reaches_the_result_the_version_and_the_de_dup(fit_session, monkeypatch):
-    """A fit scored without a stopped start says so: in its result, with a warning, and in its
-    version, whose fit the de-dup then lets stand only for one of as many starts as it completed,
-    so the same model asked for with all three is refit, its warm start from that fit's optimum
-    named for a rerun (#118)."""
+    """A fit scored without a stopped start says so: in its result, with a warning naming its
+    session's cap, and in its version, whose fit the de-dup then lets stand only for one of as many
+    starts as it completed, so the same model asked for with all three is refit, its warm start
+    from that fit's optimum named for a rerun (#118)."""
     reruns = []
 
-    def engine(n_starts, shared, previous, rerun):
+    def engine(n_starts, per_start_timeout, shared, previous, rerun):
         reruns.append(rerun)
         return _StopsTheLast()
 
     monkeypatch.setattr(fitting, "_fit_engine", engine)
+    fit_session.fit_per_start_timeout = 42.0
     out = fit_session.fit(n_starts=3)
 
     assert out["committed"] is True and out["neg_log_likelihood"] is not None
     assert out["n_starts"] == 3 and out["n_starts_killed"] == 1
-    assert "Starts stopped past the" in out["warnings"][-1] and "1 of 3" in out["warnings"][-1]
+    assert "Starts stopped past the 42s per-start cap: 1 of 3" in out["warnings"][-1]
     assert fit_session.provenance.get_meta(out["version"])["n_starts_killed"] == 1
     stored = fit_session.provenance.get_version(out["version"])["optimization"]
     assert stored["n_starts"] == 3 and stored["n_starts_killed"] == 1
@@ -393,18 +394,60 @@ def test_a_stopped_start_reaches_the_result_the_version_and_the_de_dup(fit_sessi
     assert reruns == [frozenset(), frozenset({"0"})]
 
 
+def test_two_sessions_on_one_pool_fit_under_their_own_caps(tmp_path, monkeypatch):
+    """Each session's fits run at its own per-start cap, not one process-wide value: Fides' MAXTIME,
+    the cap the shared pool stops a start at, and the starts batched per task all follow the
+    session (#187: one server's sessions need 1200 s on one problem and 12000 s on another)."""
+    import fides
+
+    from petab_mcp.errors import PetabMcpError
+
+    class Seen(PetabMcpError):
+        pass
+
+    seen = []
+
+    def minimize(problem, *, optimizer, engine, **kwargs):
+        cap = optimizer.options[fides.Options.MAXTIME]
+        seen.append((cap, engine.start_seconds, engine.starts_per_task))
+        raise Seen
+
+    monkeypatch.setattr(pypesto.optimize, "minimize", minimize)
+    problem = SimpleNamespace(x_names=["k1"], x_free_indices=[0])
+    monkeypatch.setattr(fitting, "estimation_problem", lambda session, engine: (problem, {}))
+    monkeypatch.setattr(fitting, "FIT_TASK_SECONDS", 270.0)
+    monkeypatch.setattr(fitting, "FIT_STARTS_PER_TASK", 0)
+    pool = SimpleNamespace(
+        batched=lambda k, cap, rerun: SimpleNamespace(starts_per_task=k, start_seconds=cap)
+    )
+    engine = SimpleNamespace(
+        evaluate_objective=lambda: {"neg_log_likelihood": None}, fit_engine=pool
+    )
+    for name, cap in (("a", 100.0), ("b", 300.0)):
+        session = PetabSession(
+            str(TOY / "problem.yaml"),
+            provenance_dir=str(tmp_path / name),
+            resolver=StubReferenceResolver(),
+        )
+        session.fit_per_start_timeout = cap
+        with pytest.raises(Seen):
+            fitting._run_fit(session, engine, n_starts=4)
+
+    assert seen == [(100.0, 100.0, 2), (300.0, 300.0, 1)]
+
+
 def test_a_fit_whose_starts_mostly_run_out_of_time_says_more_starts_will_not_help(
     fit_session, monkeypatch
 ):
     """MAXTIME is a per-start cap, so a fit most of whose starts hit it is told that more starts
-    would hit it too (#213)."""
-    import fides
-
-    monkeypatch.setattr(fitting, "_fides_maxtime_options", lambda: {fides.Options.MAXTIME: 1e-9})
+    would hit it too, and what its session's cap is (#213)."""
+    fit_session.fit_per_start_timeout = 1e-9
     out = fit_session.fit(n_starts=3)
 
     assert out["exitflag_counts"] == {"ExitFlag.MAXTIME": 3}
-    assert any("3 of 3 starts ran out of" in w and "More starts" in w for w in out["warnings"])
+    assert any(
+        "3 of 3 starts ran out of the 0s" in w and "More starts" in w for w in out["warnings"]
+    )
 
 
 # -- the tool boundary --------------------------------------------------------------------------
