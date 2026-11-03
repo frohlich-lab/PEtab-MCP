@@ -1,15 +1,12 @@
-"""Exclusive file locks: a second process on shared on-disk state fails or waits, not races.
+"""Exclusive file locks: a second process on shared on-disk state waits, not races.
 
-:func:`try_lock` takes ``flock(LOCK_EX | LOCK_NB)`` and returns the descriptor, or raises
-:class:`Held` with the line the holder wrote into the file (``pid host time``), which each caller
-turns into its own error. :func:`lock` waits instead, for the build lock
-(:func:`~petab_mcp.engine.build_lock`). Each holder writes that line.
+:func:`lock` takes ``flock(LOCK_EX)``, waiting while another holds it, and returns the descriptor.
+Its one caller is the build lock (:func:`~petab_mcp.engine.build_lock`).
 
 Why ``flock``:
 
 * The OS releases it when the holder dies, SIGKILL included, so there is no stale lock to clean
-  up. The holder line only feeds the next contender's message; nothing deletes a lock file (that
-  races).
+  up, and nothing deletes a lock file (that races).
 * On a local disk two opens of the file conflict even within one process.
 * Not a pid file (stale after a crash, meaningless on another host), and not POSIX ``lockf``:
   that is per process — a second open in the same process succeeds, and closing ANY descriptor of
@@ -17,58 +14,32 @@ Why ``flock``:
   open a lock file it holds twice.
 * A filesystem that refuses ``flock`` (some cluster mounts) raises; nothing goes on unlocked.
 
-A child forked while a lock is held (pyPESTO's fit workers, under Linux's default ``fork`` start
-method) inherits the descriptor and with it the lock, so a server killed mid-fit stays locked
-until those workers exit.
+A child forked while a lock is held inherits the descriptor and with it the lock, which then lasts
+until that child exits too.
 """
 
 from __future__ import annotations
 
 import fcntl
 import os
-import socket
-from datetime import datetime, timezone
 from pathlib import Path
 
 from .errors import PetabMcpError
 
 
-class Held(Exception):
-    """The lock is taken: ``holder`` is the line its holder wrote (``""`` if not yet written)."""
-
-    def __init__(self, holder: str) -> None:
-        super().__init__(holder)
-        self.holder = holder
-
-
-def try_lock(path: str | Path) -> int:
-    """Lock ``path`` (created if missing) and return its descriptor, or raise :class:`Held`.
-
-    The caller owns the descriptor: closing it releases the lock.
-    """
-    return _lock(path, fcntl.LOCK_EX | fcntl.LOCK_NB)
-
-
 def lock(path: str | Path) -> int:
-    """:func:`try_lock`, waiting while another holds the lock instead of raising :class:`Held`."""
-    return _lock(path, fcntl.LOCK_EX)
-
-
-def _lock(path: str | Path, operation: int) -> int:
+    """Lock ``path`` (created if missing), waiting while another holds it, and return its
+    descriptor. The caller owns the descriptor: closing it releases the lock.
+    """
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o666)
     try:
         try:
-            fcntl.flock(fd, operation)
-        except BlockingIOError:
-            raise Held(os.pread(fd, 1024, 0).decode(errors="replace").strip()) from None
+            fcntl.flock(fd, fcntl.LOCK_EX)
         except OSError as exc:
             raise PetabMcpError(
                 f"cannot lock {path}: {exc.strerror}. Its filesystem may not support flock "
                 "(some cluster mounts do not); put it on a local disk."
             ) from exc
-        os.ftruncate(fd, 0)
-        stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        os.write(fd, f"{os.getpid()} {socket.gethostname()} {stamp}\n".encode())
     except BaseException:
         os.close(fd)
         raise
