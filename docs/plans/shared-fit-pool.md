@@ -42,14 +42,15 @@ to a scheduler in another process.
   - A control script starts, inspects and stops it, as `phoenix_ctl.sh` does the collector.
   - It publishes its address to a file, which the sweep driver reads, as it reads the collector's
     `endpoint.txt`.
-- **Sweep drivers live in the application repos.** Perica/Garrido, Fontaine/Briscoe and
-  Vuillemenot each carry their own `slurm/`, copied from gemot_iclr_2026. Each runs its own pool:
-  each pins its own gemot and server, and the version check refuses a pool from another
-  environment.
+- **The sweep driver lives in gemot.** Today Perica/Garrido, Fontaine/Briscoe and Vuillemenot each
+  carry their own copy of gemot_iclr_2026's `slurm/`. With the pool, one driver lives in gemot, and
+  the application repos keep only what is theirs: their problems, arms and settings.
+  - A pool serves one environment: the version check refuses a pool from another gemot or server.
+    So an application repo on its own pin runs its own pool.
 - **gemot_iclr_2026 does not change.** Its pins are frozen with the paper, so its sweeps keep their
   private pools.
 - **`petab-mcp-pool` does everything but the SLURM submission:** readiness, the address file and
-  the drain on SIGTERM. So the copies in the application repos stay thin.
+  the drain on SIGTERM. gemot's control script only submits, finds and signals the job.
 - **PEtab-MCP ships the pool's process,** `petab-mcp-pool`. The contract with the workers is the
   server's: no builds on a worker, and the same environment. So the code that sets up the workers
   lives beside `DaskEngine`.
@@ -153,10 +154,11 @@ to a scheduler in another process.
   `starts_queued`. `wait_for_fit` reports both, and its remaining-time estimate counts only running
   time.
 
-### The application repos' sweep drivers
+### The sweep driver (gemot)
 
-Each application repo's `slurm/` adds to its copy what it already does for the Phoenix collector
-(`phoenix_ctl.sh`, `make_sweep.py --phoenix`). gemot_iclr_2026 stays as it is (see Decisions).
+gemot takes in the sweep driver the application repos copied from gemot_iclr_2026, and adds what
+it already does for the Phoenix collector (`phoenix_ctl.sh`, `make_sweep.py --phoenix`).
+gemot_iclr_2026 stays as it is (see Decisions).
 
 - **A service job and its control script.** The script only submits, finds and signals the job;
   `petab-mcp-pool` does the rest.
@@ -269,7 +271,7 @@ Each application repo's `slurm/` adds to its copy what it already does for the P
     It sets the service job's resources and `worker-ttl` (PEtab-MCP, a script beside
     `petab-mcp-pool`).
 11. **On NEMO:** a smoke sweep of 4 runs on a pool of 2 worker jobs, and a `stop` with nothing
-    processing that cancels the worker jobs (one application repo).
+    processing that cancels the worker jobs (gemot's driver).
 
 ## Rollout
 
@@ -289,12 +291,13 @@ Each application repo's `slurm/` adds to its copy what it already does for the P
    - the bootstrap;
    - the idle timeout in place of the fit budget, and the watchdog fed by heartbeats;
    - the wall-time budget without `queue_seconds`;
-   - `FIT_POOL` and `queue_seconds`.
+   - `FIT_POOL` and `queue_seconds`;
+   - the sweep driver, taken in from the application repos' copies, with the pool's control
+     script, the submission check and each task's pool address.
 
-   Its pin moves to step 1, together with the edits #175 and #184 need.
-3. **Application repos** (Perica/Garrido, Fontaine/Briscoe, Vuillemenot): the pool's control
-   script, the submission check and the task's pool address in their `slurm/`, at the gemot pin
-   bump that brings step 2.
+   Its pin moves to step 1, together with the edits gemot#99 lists.
+3. **Application repos** (Perica/Garrido, Fontaine/Briscoe, Vuillemenot): drop their copied
+   `slurm/` for gemot's driver, at the gemot pin bump that brings it.
 4. **Issues:** #187 and gemot#89 are rewritten to this plan.
 
 PEtabAgentBench does not change.
