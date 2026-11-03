@@ -19,5 +19,5 @@ def test_filesystem_without_flock_fails_loudly(tmp_path, monkeypatch):
 
     monkeypatch.setattr(filelock.fcntl, "flock", no_flock)
     with pytest.raises(PetabMcpError, match="local disk") as exc:
-        filelock.try_lock(tmp_path / "LOCK")
+        filelock.lock(tmp_path / "LOCK")
     assert str(tmp_path / "LOCK") in str(exc.value)
