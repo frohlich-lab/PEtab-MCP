@@ -16,7 +16,9 @@ one :class:`DaskEngine`, and every fit and held-out refit of that server runs it
   and are re-emitted in the calling thread, so :mod:`petab_mcp.logging_setup` files them in that
   session's ``pypesto.log``.
 * **A cluster failure fails the fit** with :class:`~petab_mcp.errors.FitBackendError`, and the
-  starts never rerun on the server node (see ``fitting._run_fit``).
+  starts never rerun on the server node (see ``fitting._run_fit``). A worker killed under a batch
+  (``KilledWorker``, usually memory) is one. A lost scheduler is the pool's failure, not the run's:
+  it ends the call as the ``fit_pool`` :class:`~petab_mcp.errors.InfrastructureError`.
 * **A batch has a deadline**: its starts' caps plus
   :data:`~petab_mcp.multistart.FIT_DEADLINE_MARGIN_S` from when it began running, as the scheduler
   hears from its worker's heartbeats. One past it is cancelled and its starts are scored as failed
@@ -25,7 +27,11 @@ one :class:`DaskEngine`, and every fit and held-out refit of that server runs it
   for any time.
 * **Workers never build.** Unpickling a start imports its compiled module from the server's build
   root at the same absolute path. pyPESTO's creator and AMICI's importer would instead compile it
-  there, inside the build root every session shares, so :class:`_NoBuild` makes them raise.
+  there, inside the build root every session shares, so :class:`_NoBuild` makes them raise
+  ``fit_pool``: the build root is not shared with the workers.
+* **A pool from another environment is refused** as the engine connects, naming both versions
+  (:func:`versions`): a start is pickled, so it would fail every fit with errors that are hard to
+  read. This catches a pin bump made without restarting the pool.
 
 With :mod:`petab_mcp.pool`, the only module that imports ``distributed`` (the ``dask`` extra); a
 server without a cluster never imports it.
@@ -35,7 +41,9 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import importlib.metadata
 import itertools
+import json
 import logging
 import math
 import socket
@@ -47,11 +55,25 @@ import cloudpickle
 from distributed import Client, WorkerPlugin, wait
 from pypesto.engine import Task
 
-from .errors import FitBackendError, PetabMcpError
+from .errors import FIT_POOL, FitBackendError, InfrastructureError, PetabMcpError
 from .multistart import FIT_DEADLINE_MARGIN_S, CappedEngine, watch
 
 #: The loggers whose records a start carries back, the ones ``configure_pypesto`` routes.
 _LOGGERS = ("pypesto", "fides")
+
+#: The distributions a pickled start needs at the same version on the server and on its pool.
+_PINNED = ("amici", "pypesto", "petab", "petab-mcp")
+
+
+def versions() -> dict[str, str]:
+    """The version of each of :data:`_PINNED` in this process's environment, with the commit it was
+    installed from where the installer recorded one: a git pin's version does not move with it."""
+    found = {}
+    for name in _PINNED:
+        dist = importlib.metadata.distribution(name)
+        commit = json.loads(dist.read_text("direct_url.json") or "{}").get("vcs_info", {})
+        found[name] = "@".join(filter(None, (dist.version, commit.get("commit_id"))))
+    return found
 
 
 class _Records(logging.Handler):
@@ -101,9 +123,10 @@ def _refuse_build(builder, *args, **kwargs):
     """Stands in for a model build on a worker; ``builder`` is the pyPESTO creator or AMICI
     importer that was about to compile."""
     path = getattr(builder, "output_folder", None) or builder.output_dir
-    raise FitBackendError(
+    raise InfrastructureError(
+        FIT_POOL,
         f"the AMICI module at {path} is not importable on worker {socket.gethostname()}: the "
-        "build root must be on a filesystem the workers share, with an identical Python env"
+        "build root must be on a filesystem the workers share, with an identical Python env",
     )
 
 
@@ -147,6 +170,18 @@ class DaskEngine(CappedEngine):
             )
         super().__init__()
         self.client = Client(cluster)
+        here, there = versions(), self.client.run_on_scheduler(versions)
+        if here != there:
+            pool = self.client.scheduler.address
+            self.client.close()
+            differ = [
+                f"{n} {there.get(n)} there, {v} here" for n, v in here.items() if there.get(n) != v
+            ]
+            raise InfrastructureError(
+                FIT_POOL,
+                f"the pool at {pool} runs another environment ({'; '.join(differ)}): start a pool "
+                "from this server's environment",
+            )
         self.client.register_plugin(_NoBuild())
 
     def batched(
@@ -205,6 +240,10 @@ class DaskEngine(CappedEngine):
                 self.client.cancel(futures)
             if isinstance(exc, PetabMcpError):  # ours: a worker's refusal, a wedge, a cancel
                 raise
+            if self.client.status != "running":  # reconnecting, or closed after failing to
+                raise InfrastructureError(
+                    FIT_POOL, f"the fit's client lost the pool's scheduler: {exc!r}"
+                ) from exc
             raise FitBackendError(f"the fit's dask cluster failed it: {exc!r}") from exc
         for _, records in done:
             for name, levelno, message, created in records:

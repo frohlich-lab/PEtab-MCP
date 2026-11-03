@@ -91,9 +91,9 @@ class MechanismError(PetabMcpError):
 
 
 class FitBackendError(PetabMcpError):
-    """The cluster a fit's starts run on failed them (scheduler gone, a worker killed, a start
-    cancelled or unable to run on a worker), or cannot run them at all because this AMICI cannot
-    pickle a start (see :mod:`petab_mcp.dask_engine`)."""
+    """The cluster a fit's starts run on failed them (a worker killed, a start cancelled), or cannot
+    run them at all because this AMICI cannot pickle a start (see :mod:`petab_mcp.dask_engine`). A
+    pool lost or unusable is :data:`FIT_POOL` instead."""
 
 
 class FitCancelledError(PetabMcpError):
@@ -157,6 +157,10 @@ DISK_FULL = "disk_full"
 #: :mod:`petab_mcp.multistart`): its workers were stopped and nothing was scored.
 FIT_WEDGED = "fit_wedged"
 
+#: The cause a fit pool that failed the server is reported under (see :mod:`petab_mcp.dask_engine`):
+#: its scheduler lost, a worker unable to import a model, or a pool from another environment.
+FIT_POOL = "fit_pool"
+
 _DISK_FULL_ERRNOS = frozenset({errno.ENOSPC, errno.EDQUOT})
 
 #: How a full disk reads where no ``OSError`` carries its errno: a linker's or ``cmake --install``'s
@@ -173,7 +177,7 @@ _PROBE_BYTES = 1 << 20
 
 class InfrastructureError(PetabMcpError):
     """The host failed the call, so nothing the agent can change fixes it: ``cause`` names how
-    (:data:`DISK_FULL`, :data:`FIT_WEDGED`).
+    (:data:`DISK_FULL`, :data:`FIT_WEDGED`, :data:`FIT_POOL`).
 
     Not a rejection. The tool call ends as an MCP error reading ``infrastructure_error: <cause>:
     <detail>``, which a client takes as the end of the run; the edit it carried is not counted
@@ -182,8 +186,11 @@ class InfrastructureError(PetabMcpError):
     """
 
     def __init__(self, cause: str, detail: str) -> None:
-        self.cause = cause
+        self.cause, self.detail = cause, detail
         super().__init__(f"{INFRASTRUCTURE_ERROR}: {cause}: {detail}")
+
+    def __reduce__(self):  # raised on a worker, it reaches the server pickled
+        return type(self), (self.cause, self.detail)
 
 
 def _chain(exc: BaseException | None) -> Iterator[BaseException]:
