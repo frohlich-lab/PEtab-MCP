@@ -15,7 +15,8 @@ Why ``flock``:
 * A filesystem that refuses ``flock`` (some cluster mounts) raises; nothing goes on unlocked.
 
 A child forked while a lock is held inherits the descriptor and with it the lock, which then lasts
-until that child exits too.
+until that child exits too. The fit workers are started by a fork server
+(:data:`petab_mcp.multistart.START_METHOD`), not forked from the server, so they hold none.
 """
 
 from __future__ import annotations
