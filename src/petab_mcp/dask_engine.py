@@ -199,7 +199,9 @@ class DaskEngine(CappedEngine):
     def _wait(self, pending: list, timeout: float) -> None:
         """Block until one of ``pending`` finishes or ``timeout`` passes; raise a failed start's
         error at once, so the fit's other batches are cancelled instead of run."""
-        with contextlib.suppress(TimeoutError):
+        # `wait` runs on the current client, else on the process's latest, another server's in a
+        # process that hosts two.
+        with contextlib.suppress(TimeoutError), self.client.as_current():
             wait(pending, timeout=timeout, return_when="FIRST_COMPLETED")
         for future in pending:
             if future.status == "error":
