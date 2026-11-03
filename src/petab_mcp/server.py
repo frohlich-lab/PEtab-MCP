@@ -2729,8 +2729,8 @@ def create_server(
     (``off`` by default) set to ``any`` registers ``set_constraints``, for whoever drives the
     session to replace them; it needs ``constraints`` (a file holding none starts with none).
 
-    ``cluster`` (a ``distributed`` cluster, the ``dask`` extra) runs every fit's starts on that
-    cluster's workers through one client (:mod:`petab_mcp.dask_engine`); without one, each fit runs
+    ``cluster`` (a ``distributed`` cluster or a pool's scheduler address, the ``dask`` extra) runs
+    every fit's starts on its workers (:mod:`petab_mcp.dask_engine`); without one, each fit runs
     its starts in local processes. The workers import the compiled models from ``build_root``, so on
     more than one machine it must be on a filesystem they share. An AMICI built without HDF5 cannot
     send a start to a worker, so it refuses the cluster here.
