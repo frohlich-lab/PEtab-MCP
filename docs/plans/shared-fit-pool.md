@@ -39,9 +39,11 @@ to a scheduler in another process.
 
 - **The pool is a service job, managed like the Phoenix collector.**
   - A long-lived SLURM job hosts the dask scheduler and adds SLURM worker jobs on demand.
-  - `slurm/fitpool_ctl.sh start|status|stop` manages it.
-  - It publishes its address to a file, which `make_sweep.py` and `array_task.sh` read, as they
-    read `phoenix_ctl.sh`'s `endpoint.txt` for traces.
+  - A control script starts, inspects and stops it, as `phoenix_ctl.sh` does the collector.
+  - It publishes its address to a file, which the sweep driver reads, as it reads the collector's
+    `endpoint.txt`.
+- **gemot_iclr_2026 does not change.** Its pins are frozen with the paper, so its sweeps keep their
+  private pools. The pool is for the next sweep driver.
 - **PEtab-MCP ships the pool's process,** `petab-mcp-pool`. The contract with the workers is the
   server's: no builds on a worker, and the same environment. So the code that sets up the workers
   lives beside `DaskEngine`.
@@ -85,6 +87,20 @@ to a scheduler in another process.
   core to itself. Otherwise contention would slow starts until the per-start cap stops them, which
   is why `DaskEngine` exists.
 - **Adaptive scaling sees every run's load,** because the scheduler holds every run's tasks.
+- **One scheduler carries every run's load.** It handles:
+  - every worker's heartbeats: up to `--slurm-max-jobs` × processes per job, about 1200 at 12 jobs
+    of 100;
+  - every batch's state changes;
+  - one client per server;
+  - one `_overrun` poll (`run_on_scheduler(_executing)`) per running fit.
+
+  If its event loop falls behind, it can miss heartbeats and drop a worker past
+  `distributed.scheduler.worker-ttl`. It then reruns that worker's batches elsewhere: the work is
+  lost, and their starts' deadlines restart. So:
+  - batches stay long (about 4.5 min, `PETAB_MCP_FIT_TASK_SECONDS`), which keeps state changes
+    few;
+  - `worker-ttl` is set well above the longest stall the stress check (Checks 10) measures;
+  - the service job's resources come from that check, not from a guess.
 
 ### The server (PEtab-MCP)
 
@@ -131,29 +147,31 @@ to a scheduler in another process.
   `starts_queued`. `wait_for_fit` reports both, and its remaining-time estimate counts only running
   time.
 
-### The sweep (gemot_iclr_2026 `slurm/`)
+### The sweep driver
 
-- **`fitpool_server.sh` and `fitpool_ctl.sh`,** modelled on `phoenix_server.sh` and
-  `phoenix_ctl.sh`:
-  - `start` submits the service job (1–2 CPUs, walltime past the sweep's) unless one is running.
-    `FITPOOL_NODELIST` pins a restart to the old job's node;
+gemot_iclr_2026 stays as it is (see Decisions). A sweep driver that uses the pool needs what
+gemot_iclr_2026's `slurm/` does for the Phoenix collector (`phoenix_ctl.sh`, `make_sweep.py
+--phoenix`):
+
+- **A service job and its control script:**
+  - `start` submits the pool's job unless one is running. Its resources come from the stress check
+    (Checks 10), and its walltime runs past the sweep's. A node pin restarts it on the old job's
+    node;
   - `status` prints the job and the published address;
   - `stop` removes the address file, waits (bounded) until no task is processing, then sends
     SIGTERM. `stop --force` cancels at once, which fails every fit in flight.
-- **`make_sweep.py --fit-pool`** refuses to submit unless the address is published and reachable,
-  as `--phoenix` does.
-- **`array_task.sh`** reads the address at task start, checks that it connects, and exports
-  `PETAB_MCP_FIT_POOL`. It passes the pool's build root, `fitpool_data/build/`, as the server's
-  `--build-root`. The operator clears that folder; nothing else does.
+- **Submission is refused** unless the address is published and reachable, as `--phoenix` does.
+- **Each task** reads the address when it starts, checks that it connects, and exports
+  `PETAB_MCP_FIT_POOL`. It passes the pool's build root as the server's `--build-root`. The operator
+  clears that folder; nothing else does.
 - **A task asks for what its server uses between fits:** compiling, scoring at nominal values, and
   the simulations for diagnostics and held-out scoring.
   - 8 CPUs, because compiling sets the size. The server compiles every new model version on the
-    task's own node, and `array_task.sh` already caps `AMICI_PARALLEL_COMPILE` at 8: compiling is
-    memory-bound per process. With fewer CPUs, every compile is slower than today's. The rest
-    (simulations, the agent's driver) is mostly single-threaded.
-  - Memory is sized again from measured MaxRSS, as `make_sweep.py` does now, without the 100 fit
-    processes.
-  - `--cpus-per-task 100` and the pinned `PETAB_MCP_FIT_N_WORKERS` go.
+    task's own node, and gemot_iclr_2026's `array_task.sh` caps `AMICI_PARALLEL_COMPILE` at 8:
+    compiling is memory-bound per process. With fewer CPUs, every compile is slower than today's.
+    The rest (simulations, the agent's driver) is mostly single-threaded.
+  - Memory is sized again from measured MaxRSS, without the 100 fit processes.
+  - The 100 CPUs per task and the pinned `PETAB_MCP_FIT_N_WORKERS` go.
 - **The QOS budget is split** between the pool's `--slurm-max-jobs` and `throttle ×
   cpus-per-task`. With 2000 CPUs, for example: 12 worker jobs of 100 CPUs, plus 100 runs of 8.
 
@@ -227,8 +245,19 @@ to a scheduler in another process.
 9. **A queued fit does not end a run.** A fit queued for longer than the old budget keeps its call
    alive on heartbeats and returns its result. A server that stops sending heartbeats ends the call
    within the window, through `_fit_wedged` (gemot).
-10. **On NEMO:** a smoke sweep of 4 runs on a pool of 2 worker jobs, and a `fitpool_ctl.sh stop`
-   with nothing processing that cancels the worker jobs (gemot_iclr_2026).
+10. **The scheduler holds up under a sweep's load.** This runs on NEMO, on the pool at full size
+    with every worker job up. As many clients as a sweep has servers (100, say) each submit a fit's
+    batches in one burst, then poll as `_overrun` does. The batches are short sleeps, so the
+    scheduler is under test, not the fits. It passes when:
+    - no worker is removed for missed heartbeats;
+    - no batch runs twice (each batch records its runs);
+    - the scheduler's event loop stays responsive, with no "Event loop was unresponsive" warning
+      past a few seconds.
+
+    It sets the service job's resources and `worker-ttl` (PEtab-MCP, a script beside
+    `petab-mcp-pool`).
+11. **On NEMO:** a smoke sweep of 4 runs on a pool of 2 worker jobs, and a `stop` with nothing
+    processing that cancels the worker jobs (the sweep driver).
 
 ## Rollout
 
@@ -239,6 +268,7 @@ to a scheduler in another process.
    - the `fit_pool` infrastructure error;
    - the heartbeat, and the phase and `starts_queued` in `Progress`;
    - the build lock waiting for another run's build;
+   - the scheduler stress script (Checks 10), run before any sweep shares a pool;
    - deleting the HDF5 requirement and the registry.
 
    These go in separate PRs of under about 500 lines each. The heartbeat does not depend on the
