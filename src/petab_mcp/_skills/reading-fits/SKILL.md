@@ -19,8 +19,13 @@ description: >-
   With estimated sigmas chi2 sits near `n_data_points` by construction whatever the model's form:
   judge adequacy from residual structure instead.
 - Fitted values are LINEAR whatever the estimation scale; `parameter_scales` gives each scale.
+- A change's result lists only what is new since the parent version in
+  `fitted_parameters_changed`, `parameter_scales`, `parameters_at_bound` and `merge_hints`, only
+  flagged sigmas in `noise_sigma_report`, and three flagged observables in `residual_structure`,
+  with `n_parameters_at_bound`, `n_merge_hints` and `n_flagged_observables` the full counts. A fit
+  summary has every pin, tie, sigma and flagged observable.
 - `is_new_best`: this version became the best model, `progress.best_version`. A score that
-  cleared `new_best_min_improvement` without that carries `new_best_declined`, saying why.
+  cleared the new-best gate without that carries `new_best_declined`, saying why.
 
 ## Flags
 
@@ -37,16 +42,22 @@ description: >-
   inflated sigma absorbs misfit, a collapsed one overfits the noise, and either way the score is
   not genuine adequacy. The fix is the model's form, not the noise.
 - `residual_structure`: the verdict over the residual tests, with a replicate lack-of-fit arm
-  where the design has replicates.
+  where the design has replicates. Its `sigma_heterogeneity` names the sigmas whose `p` (below)
+  survives Holm.
 - `merge_hints`: the cheapest few priced ties (below).
 
 ## Diagnosis: residuals
 
 - Per observable: `chi2`, `mean_weighted_residual` (bias: far from 0 is a systematic over- or
   undershoot), the worst |residual|, `sign_test` (bias) and `runs_test` (time trend, serial
-  correlation), each with `p` and `low_power`. They read only residual SIGNS, so an estimated
-  sigma cannot hide them; on few points they have little power, so a `low_power` non-significant
-  result is weak evidence, not a pass.
+  correlation), each with `p` and `low_power`. They read only residual SIGNS, so no sigma rescales
+  them, but an estimated scale or offset takes up a series' bias and few points leave them little
+  power: a `low_power` non-significant result is weak evidence, not a pass.
+- `sigma_heterogeneity`: per estimated sigma, `p` that the series it covers share one spread of
+  weighted residuals, and the `worst` series by `rms` (about 1 over the whole sigma). A series far
+  above 1 is what the sigma was inflated for: look at that experiment first. A pointer, not a
+  verdict, `low_power` as above. `noise_sigma.fitted_over_data_noise` ranks the same question
+  per sigma.
 - On a problem with many observables the table keeps `max_observables` rows by chi2, up to 3 more
   by |bias| and up to 6 more carrying a `structure_flag`; `omitted` says what was dropped.
   Aggregating over it aggregates a worst-first subsample.

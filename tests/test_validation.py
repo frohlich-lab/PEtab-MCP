@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
 from petab.v2.models.sbml_model import SbmlModel
 
+from petab_mcp import operations as O
+from petab_mcp.problem import WorkingProblem, later_changes
 from petab_mcp.validation import (
     _fixed_constant_role_issues,
     frozen_parametric_stoichiometry_issues,
@@ -148,3 +153,43 @@ def test_same_symbol_both_sides_is_flagged():
     issues = _stoich_issues("N A -> N B; k*A; N=2; k=0.1")
     assert [i["check"] for i in issues] == ["symbolic_stoichiometry"]
     assert "N" in issues[0]["message"]
+
+
+_DOSED = """model dosed
+  r1: -> B; {rate}
+  r2: B -> ; kd*B
+  D = 2*dose
+  B = 0; k = 0.1; kd = 0.1; dose = 0
+end
+"""
+
+
+@pytest.mark.parametrize(("rate", "warned"), [("k*D", True), ("k*dose", False)])
+def test_an_input_read_only_at_the_start_is_named_with_its_later_periods(
+    dosed_session, rate, warned
+):
+    """isensee's seeds read each dose in an initial assignment, which saw only the
+    pre-equilibration 0; libpetab's unread-target check passed, and 16 fits ran blind to every
+    drug (PEtab-MCP#192). Read in a rate as well, the dose reaches the model."""
+    result = O.set_model(dosed_session, _DOSED.format(rate=rate), justification="dose B")
+    said = [m["message"] for m in result["messages"] if "initial amounts" in m["message"]]
+    assert bool(said) == warned
+    if warned:
+        assert said[0].startswith("condition target(s) `dose` (e0 at t = 0) change in these")
+
+
+def test_an_input_whose_only_reader_was_pruned_is_named(dosed_session):
+    """The reconcile prunes `D = 2*dose` when no rate reads `D` and leaves `dose` declared, which
+    libpetab's invalid-target check passes (PEtab-MCP#205)."""
+    result = O.set_model(dosed_session, _DOSED.format(rate="k"), justification="dose B")
+    said = [m["message"] for m in result["messages"] if "read by nothing" in m["message"]]
+    assert len(said) == 1 and said[0].startswith("condition target(s) `dose` are read by nothing")
+
+
+def test_a_later_period_that_keeps_the_value_changes_nothing(dosed_session):
+    """A period that sets an input to the value it already holds is no change to warn about."""
+    yaml = dosed_session.yaml_path
+    assert later_changes(WorkingProblem.from_yaml(yaml)) == {"dose": [("e0", 0.0)]}
+    conditions = Path(yaml).parent / "conditions.tsv"
+    conditions.write_text(conditions.read_text().replace("treat\tdose\t1", "treat\tdose\t0"))
+    assert later_changes(WorkingProblem.from_yaml(yaml)) == {}

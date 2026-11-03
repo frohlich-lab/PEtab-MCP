@@ -25,7 +25,14 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
-from petab.v2.C import EXPERIMENT_ID, MEASUREMENT, OBSERVABLE_ID, SIMULATION, TIME
+from petab.v2.C import (
+    EXPERIMENT_ID,
+    MEASUREMENT,
+    NOISE_PARAMETERS,
+    OBSERVABLE_ID,
+    SIMULATION,
+    TIME,
+)
 
 from . import filelock
 from .errors import ModelBuildBusyError
@@ -468,6 +475,12 @@ class AmiciEngine:
         return bad
 
     @staticmethod
+    def _noise_parameters(row) -> str | None:
+        """The measurement row's ``noiseParameters`` cell as text, ``None`` when blank."""
+        value = row.get(NOISE_PARAMETERS)
+        return None if value is None or value != value or value == "" else str(value)
+
+    @staticmethod
     def _records_without_simulation(meas) -> list[dict[str, Any]]:
         """One record per measurement with ``simulation`` unset — the honest shape for an
         evaluation that produced no trajectory. ``simulation_gap`` counts every one of these as
@@ -483,6 +496,7 @@ class AmiciEngine:
                 "residual": None,
                 "residual_weighted": None,
                 "noise": None,
+                "noise_parameters": AmiciEngine._noise_parameters(row),
             }
             for _, row in meas.iterrows()
         ]
@@ -591,6 +605,7 @@ class AmiciEngine:
                     "residual": residual,
                     "residual_weighted": weighted,
                     "noise": noise,
+                    "noise_parameters": cls._noise_parameters(row),
                 }
             )
         return records

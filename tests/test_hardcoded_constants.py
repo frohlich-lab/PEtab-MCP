@@ -229,7 +229,6 @@ def test_a_fit_carries_the_constants_through_every_score(fit_session):
     assert res["k"] == k and res["hardcoded_constants"] == ["0.0987"]
     expected = k * math.log(sim["n_data_points"]) + 2 * sim["neg_log_likelihood"]
     assert res["bic"] == pytest.approx(expected)
-    assert res["improvement"]["bic"] == pytest.approx(expected)
     assert sess.provenance.get_meta(res["version"])["bic"] == pytest.approx(expected)
     summary = fitting.fit_summary(sess, sess.engine)
     assert summary["k"] == k and summary["bic"] == pytest.approx(expected)

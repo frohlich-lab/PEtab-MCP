@@ -70,7 +70,7 @@ def test_replicate_measurements_not_double_counted(engine, session):
 
 def test_records_carry_weighted_residuals(engine):
     rec = engine.evaluate_objective()["simulations"][0]
-    assert {"residual", "residual_weighted", "noise"} <= set(rec)
+    assert {"residual", "residual_weighted", "noise", "noise_parameters"} <= set(rec)
     # obs_B noise is sigma_B (nominal 0.1); weighted residual = residual / sigma
     assert rec["noise"] == pytest.approx(0.1)
     assert rec["residual_weighted"] == pytest.approx(rec["residual"] / rec["noise"])
@@ -176,7 +176,7 @@ def test_fit_tracks_improvement_vs_versions(fit_session):
     first = fit_session.fit()
     assert first["fit_status"] == "fit"
     imp1 = first["improvement"]
-    assert imp1["objective_before"] is not None
+    assert fit_session.provenance.get_meta(first["version"])["objective_before"] is not None
     assert imp1["self_improvement"] is not None
     assert imp1["is_new_best"] is True  # nothing to beat yet
     assert imp1["improvement_vs_best_prior"] is None
@@ -188,7 +188,7 @@ def test_fit_tracks_improvement_vs_versions(fit_session):
     )
     second = fit_session.fit()
     imp2 = second["improvement"]
-    assert imp2["best_prior_version"] is not None
+    assert second["progress"]["best_version"] is not None
     assert imp2["improvement_vs_best_prior"] is not None
 
 

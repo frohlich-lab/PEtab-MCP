@@ -473,6 +473,30 @@ def experiment_inputs(problem) -> pd.DataFrame | None:
     return pd.DataFrame.from_dict(rows, orient="index")
 
 
+def later_changes(problem) -> dict[str, list[tuple[str, float]]]:
+    """Per condition target, the periods after an experiment's first (``(experimentId, time)``)
+    that set it to a value other than the one in effect. The first period is the earliest, the
+    pre-equilibration one where there is one: the PEtab v2 import sets its targets as initial
+    assignments and every later period's as events, which re-run no initial assignment."""
+    edf, cdf = problem.experiment_df, problem.condition_df
+    if edf is None or cdf is None or not len(edf) or not len(cdf):
+        return {}
+    changes = {
+        str(cid): dict(zip(sub[TARGET_ID], sub[TARGET_VALUE]))
+        for cid, sub in cdf.groupby(CONDITION_ID, sort=False)
+    }
+    out: dict[str, list[tuple[str, float]]] = {}
+    for eid, periods in edf.groupby(EXPERIMENT_ID, sort=False):
+        applied: dict[str, Any] = {}
+        for i, t in enumerate(sorted(float(t) for t in periods[TIME].unique())):
+            for cid in periods.loc[periods[TIME] == t, CONDITION_ID].dropna():
+                for target, value in changes.get(str(cid), {}).items():
+                    if i and applied.get(target) != value:
+                        out.setdefault(str(target), []).append((str(eid), t))
+                    applied[target] = value
+    return out
+
+
 def experiment_starts(problem) -> dict[str, tuple[float, dict[str, Any]]]:
     """Per experiment id the measurements simulate (``""`` for none), the time its first simulated
     period starts and the condition targets in effect then: the pre-equilibration period's and the

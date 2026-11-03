@@ -388,6 +388,20 @@ def test_two_sessions_on_one_pool_fit_under_their_own_caps(tmp_path, monkeypatch
     assert seen == [(100.0, 100.0, 2), (300.0, 300.0, 1)]
 
 
+def test_a_fit_whose_starts_mostly_run_out_of_time_says_more_starts_will_not_help(
+    fit_session, monkeypatch
+):
+    """MAXTIME is a per-start cap, so a fit most of whose starts hit it is told that more starts
+    would hit it too, and what its session's cap is (#213)."""
+    fit_session.fit_per_start_timeout = 1e-9
+    out = fit_session.fit(n_starts=3)
+
+    assert out["exitflag_counts"] == {"ExitFlag.MAXTIME": 3}
+    assert any(
+        "3 of 3 starts ran out of the 0s" in w and "More starts" in w for w in out["warnings"]
+    )
+
+
 # -- the tool boundary --------------------------------------------------------------------------
 def _server(tmp_path):
     return create_server(

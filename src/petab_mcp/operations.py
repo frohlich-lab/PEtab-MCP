@@ -31,11 +31,11 @@ from petab.v2.models.sbml_model import SbmlModel
 from . import messages as M
 from . import reconcile as R
 from .constants import NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD, WIDENING_NEGLIGIBLE_BIC_GAIN
-from .errors import ModelUpdateError, PetabMcpError, ValidationError
+from .errors import ModelUpdateError, ParameterError, PetabMcpError, ValidationError
 from .parameters import estimated_mask
 from .provenance import binding_of
 from .references import resolve_references
-from .validation import frozen_parametric_stoichiometry_issues, validate_problem
+from .validation import INPUT_REMEDY, frozen_parametric_stoichiometry_issues, validate_problem
 
 # AMICI reserves a handful of short symbols for its generated code (the state vector ``x``,
 # parameters ``p``, constants ``k``, expressions ``w``, time ``t``, the Heaviside/root vector
@@ -300,6 +300,22 @@ def _parsimony_warnings(problem, old_species: set[str]) -> list[str]:
     ]
 
 
+def _pruned_warnings(pruned: list[str], names: dict[str, str]) -> list[str]:
+    """The species the reconcile pruned (:func:`reconcile.prune_orphans`), each by its name and id.
+
+    A seed whose species nothing reads goes with its initial amount, which may have been a
+    condition input's only reader: raimundez's ``Serum`` in 27 of 33 edits, with no reply saying so
+    (PEtab-MCP#205). An input that leaves unread is the lint's to name
+    (:func:`validation._unread_input_issues`)."""
+    if not pruned:
+        return []
+    shown = ", ".join(
+        f"`{names[sid]}` (`{sid}`)" if names.get(sid) not in (None, "", sid) else f"`{sid}`"
+        for sid in pruned
+    )
+    return [f"Removed species nothing in the model reads, with their initial amounts: {shown}."]
+
+
 _REJECTION_ISSUES_SHOWN = 3
 _REJECTION_ISSUE_CHARS = 320
 
@@ -340,9 +356,7 @@ _ISSUE_HINTS = (
     (
         "Condition table contains invalid targets",
         " — each named target is an input the condition table SETS per experiment, so the model "
-        "must have it: read it as a parameter of that id in a rate law or an initial amount "
-        "(on the statements route, a row's binding `kf=\"k*dose\"` in `bindings`, or a seed's "
-        "amount).",
+        f"must have it: {INPUT_REMEDY}",
     ),
 )
 
@@ -407,6 +421,7 @@ def _commit_change(
         if model_build is not None:
             candidate, apply_result = model_build()
             problem.model = candidate
+            names = {sp.getId(): sp.getName() for sp in candidate.sbml_model.getListOfSpecies()}
             recon = R.reconcile(problem, shipped=session.shipped_parameter_df)
             # An EMPTY model is refused rather than committed — where "empty" is the same
             # predicate `model_authored` reports: no species at all, or no DYNAMICS (neither
@@ -438,12 +453,42 @@ def _commit_change(
                 )
         else:
             recon = None
+
+        def lint() -> dict:
+            # A parameter that ships FIXED and is a mechanistic/structural constant (a
+            # conservation total, a known rate) must not be removed or freed by an edit —
+            # validation rejects either. Best-effort: an unreadable v0 yields an empty set.
+            try:
+                protected_fixed = session.protected_fixed_parameter_ids()
+            except Exception:  # noqa: BLE001 - never let the lookup break an edit
+                protected_fixed = None
+            report = validate_problem(
+                problem,
+                protected_fixed_ids=protected_fixed,
+                # A statements call reads its remedies in its own vocabulary (`readouts`).
+                statements=getattr(session, "submitted_statements", None) is not None,
+            )
+            if not report["valid"]:
+                hard = [i["message"] for i in report["issues"] if i["level"] in ("error", "critical")]
+                raise ValidationError(
+                    f"Operation {op!r} rejected: {_rejection_summary(hard)}",
+                    issues=hard,
+                )
+            return report
+
         if param_edit is not None:
             # AFTER the reconcile: the parameter table only holds the re-authored model's
             # parameters once reconcile has run, so a bundled bound edit can target a symbol
             # this very (re-)author introduced — and an entry naming a parameter the re-author
             # dropped is rejected loudly instead of silently doing nothing.
-            param_result = param_edit(problem)
+            try:
+                param_result = param_edit(problem)
+            except ParameterError:
+                # The bounds are on the model's parameters: a model the lint refuses is the
+                # blocker (a condition input it never reads), reported first.
+                if recon is not None:
+                    lint()
+                raise
             apply_result = (
                 {"model": apply_result, "parameters": param_result}
                 if recon is not None
@@ -459,27 +504,16 @@ def _commit_change(
                 "bypasses the SBML<->PEtab reconcile every authoring call runs. Author model "
                 "changes through `antimony`."
             )
-        # A parameter that ships FIXED and is a mechanistic/structural constant (a
-        # conservation total, a known rate) must not be removed or freed by an edit —
-        # validation rejects either. Best-effort: an unreadable v0 yields an empty set.
-        try:
-            protected_fixed = session.protected_fixed_parameter_ids()
-        except Exception:  # noqa: BLE001 - never let the lookup break an edit
-            protected_fixed = None
-        report = validate_problem(
-            problem,
-            protected_fixed_ids=protected_fixed,
-            # A statements call reads its remedies in its own vocabulary (`readouts`).
-            statements=getattr(session, "submitted_statements", None) is not None,
-        )
-        if not report["valid"]:
-            hard = [i["message"] for i in report["issues"] if i["level"] in ("error", "critical")]
-            raise ValidationError(
-                f"Operation {op!r} rejected: {_rejection_summary(hard)}",
-                issues=hard,
-            )
+        report = lint()
 
-        warnings = _parsimony_warnings(problem, old_species) if recon is not None else []
+        warnings = (
+            [
+                *_pruned_warnings(recon["pruned"]["species"], names),
+                *_parsimony_warnings(problem, old_species),
+            ]
+            if recon is not None
+            else []
+        )
         # A row's regulators are signed on this version's bounds: an edit of a bound or a scale
         # can change what its rate records, and the record changes with the problem below.
         record = getattr(
@@ -1371,6 +1405,14 @@ def _check_readouts_are_read(session, readouts) -> None:
         )
 
 
+#: What ``set_amount`` declares, said where an edit reads as a seed (:func:`apply_statement_edits`).
+_READOUT_AMOUNT = (
+    "`set_amount` declares a readout amount, the agent a readout formula reads by `name`, not a "
+    "seed: a starting amount is `set_seed`'s, `seed: {agent, amount}` (beside `statements`, "
+    "`seeds: [{agent, amount}]`)"
+)
+
+
 def apply_statement_edits(
     record: dict[str, Any], edits: list[dict[str, Any]]
 ) -> tuple[list, dict[str, Any], list[dict[str, Any]], dict[str, str], dict[str, Any], list[str]]:
@@ -1420,6 +1462,8 @@ def apply_statement_edits(
     for i, edit in enumerate(edits):
         op = edit.get("op")
         try:
+            if "amount" in edit:
+                raise fail(i, edit, f"an edit takes no `amount`. {_READOUT_AMOUNT}")
             if op in ("add_row", "replace_row"):
                 row = edit.get("row")
                 prefix = prefix_of(row)
@@ -1475,7 +1519,8 @@ def apply_statement_edits(
                 summary.append(f"{op} {key}")
             elif op == "set_amount":
                 if not edit.get("name") or not edit.get("agent"):
-                    raise fail(i, edit, "`name` and `agent` name the amount and its pattern")
+                    raise fail(i, edit, f"`name` and `agent` name the amount and its pattern. "
+                               f"{_READOUT_AMOUNT}")
                 amounts[edit["name"]] = edit["agent"]
                 summary.append(f"set_amount {edit['name']}")
             elif op == "set_readout":
@@ -1848,7 +1893,7 @@ def _normalize_parameter_changes(
 
 
 def _restore_parameter_edit(
-    stored_df, skip: set[str] | None = None
+    stored_df, skip: dict[str, set[str]] | None = None
 ) -> Callable[[Any], dict[str, Any]]:
     """A ``param_edit`` that puts a STORED version's search space back.
 
@@ -1891,7 +1936,8 @@ def _restore_parameter_edit(
     # mattering. `estimate` is a STRUCTURAL choice that persists: restoring a 0 would re-fix a
     # parameter the agent had freed, with no argument able to free it again and nothing in the
     # payload naming what happened. One is a hint, the other is a lock.
-    # `skip` (the ids this call's own `parameters` claim) withholds only the SEARCH-SPACE columns.
+    # `skip` (each id this call's own `parameters` claim, with the columns it sets) withholds
+    # only those SEARCH-SPACE columns; the rest of that id's space is restored.
     # nominalValue is restored for every id regardless, because the caller has no way to ask for a
     # starting point: `ParameterChange` forbids the key outright (see `_require_positive_for_log`,
     # which exists to explain that rejection). Letting `skip` cover it would mean that naming one
@@ -1908,9 +1954,9 @@ def _restore_parameter_edit(
             if pid not in live.index:
                 skipped.append(pid)
                 continue
-            # theirs wins on the space they named; the point is restored either way
-            claimed = bool(skip) and pid in skip
-            cols = POINT if claimed else SPACE + POINT
+            # theirs wins on the columns they named; the point is restored either way
+            withheld = (skip or {}).get(pid, set())
+            cols = tuple(c for c in SPACE if c not in withheld) + POINT
             upd = {"id": pid}
             for c in cols:
                 if c not in stored_df.columns:
@@ -1923,7 +1969,7 @@ def _restore_parameter_edit(
                 upd[c] = str(raw) if c == PARAMETER_SCALE else float(raw)
             if len(upd) > 1:
                 updates.append(upd)
-                (point_only if claimed else restored).append(pid)
+                (restored if set(SPACE) & upd.keys() else point_only).append(pid)
         if updates:
             update_parameters(problem, updates)
         out = {"restored_parameters": restored}
@@ -1952,10 +1998,17 @@ def _composed_parameter_edit(session, normalized, stored_df):
     # widening backstops read the pre-edit bound (`_reject_repeated_widening` off the live table,
     # `_pinned_side` against HEAD's fitted values), and restoring first would hand them the old
     # version's bounds as the baseline — so a third widening could slip past the guard, or an
-    # ordinary entry be flagged as one. So: caller first, then restore only the parameters the
-    # caller did not mention. "An explicit entry wins" still holds, by exclusion rather than by
-    # overwrite.
-    claimed = {c["parameter_id"] for c in (normalized or [])}
+    # ordinary entry be flagged as one. So: caller first, then restore every column the caller
+    # did not set. "An explicit entry wins" still holds, by exclusion rather than by overwrite.
+    from petab.v2.C import LOWER_BOUND, UPPER_BOUND
+
+    from .problem import PARAMETER_SCALE
+
+    keys = {"lower_bound": LOWER_BOUND, "upper_bound": UPPER_BOUND, "scale": PARAMETER_SCALE}
+    claimed = {
+        c["parameter_id"]: {col for k, col in keys.items() if c[k] is not None}
+        for c in (normalized or [])
+    }
     restore = _restore_parameter_edit(stored_df, skip=claimed)
     if apply_new is None:
         return restore
@@ -1963,6 +2016,10 @@ def _composed_parameter_edit(session, normalized, stored_df):
     def edit(problem):
         first = apply_new(problem) or {}
         second = restore(problem) or {}
+        # a scale the caller set now sits on the bounds and point the restore brought back
+        for c in normalized:
+            if c["scale"] is not None:
+                _require_positive_for_log(problem, c["parameter_id"], c["scale"])
         merged = dict(second)
         merged.update(first)
         return merged
@@ -2040,14 +2097,19 @@ def change_parameters(
 ) -> dict[str, Any]:
     """Batch-edit the bounds and/or scale of one or more parameters in ONE atomic edit.
 
-    ``parameters`` is a non-empty list of per-parameter dicts, each naming ``parameter_id`` and any
+    ``parameters`` is a list of per-parameter dicts, each naming ``parameter_id`` and any
     of ``lower_bound`` / ``upper_bound`` (a bound edit — give BOTH or neither) and ``scale``
-    ('lin'|'log'|'log10'). Group everything that belongs to one coherent retuning into a single
+    ('lin'|'log'|'log10'); an empty one changes nothing, for a refit with more starts. Group
+    everything that belongs to one coherent retuning into a single
     call. Every per-parameter backstop still applies (a re-pinned parameter's 3rd widening, a
     noise-sigma cap, a log scale on a non-positive box); because the whole batch is atomic, one
     rejected entry reverts ALL of them and nothing changes. An EDIT: mutates the parameter table
     but does NOT fit — the fit that scores it is wired at the server layer, not here."""
-    normalized = _normalize_parameter_changes(parameters, current=session.problem.parameter_df)
+    normalized = (
+        _normalize_parameter_changes(parameters, current=session.problem.parameter_df)
+        if parameters
+        else []
+    )
     return _commit_change(
         session,
         "make_changes",
@@ -2142,7 +2204,8 @@ def bundle_result(
     Both halves' diagnostics are merged into ONE ordered ``messages`` stack (see :mod:`messages`) —
     the edit's advisories and lint warnings first, then the fit's — so a caller reads every
     warning and the error that stopped the call from a single place, each tagged with the step it
-    came from.
+    came from. An edit or lint warning the last committed result already carried is folded into
+    one line naming that version (see :func:`_unrepeated`).
 
     On a failure the message does NOT prescribe a fix, it forwards ``error`` — because that error
     is not always "the model is broken". The identical-structure loop guard reaches the same
@@ -2194,10 +2257,12 @@ def bundle_result(
     # Pipeline order: the edit's messages, then the fit's. `run_fit` / `edit_then_fit` already
     # shape a rejected fit as error entries; a fit that RAN reports its advisories as the flat
     # `warnings` the de-dup produces, so both shapes are folded in here.
-    messages = (
+    messages = _unrepeated(
+        session,
         list(edit_result.get("messages") or [])
         + list(fit_result.get("messages") or [])
-        + M.warnings_from(M.SOURCE_FIT, fit_result.get("warnings"))
+        + M.warnings_from(M.SOURCE_FIT, fit_result.get("warnings")),
+        version if committed else None,
     )
     result = {
         **{k: edit_result[k] for k in _EDIT_KEYS_KEPT if k in edit_result},
@@ -2213,3 +2278,42 @@ def bundle_result(
         "message": message,
     }
     return result
+
+
+#: Sources whose warnings describe the model as written, so they repeat word for word while it
+#: keeps the feature they name. The fit's warnings are always sent whole.
+_FOLDED_SOURCES = (M.SOURCE_EDIT, M.SOURCE_VALIDATION)
+
+
+def _unrepeated(session, messages: list[dict[str, str]], version: int | None) -> list[dict]:
+    """``messages`` with every edit or lint warning the last committed result carried folded into
+    one line per source, naming the version whose result carried it in full.
+
+    ``version`` is the version this call created, ``None`` when it created none. Only a committed
+    result is remembered, so the version a line names always has a result of its own, and a
+    warning that skipped a commit is sent whole again."""
+    sent = session.warnings_sent
+
+    def first_sent(m: dict[str, str]) -> int | None:
+        if m["level"] != M.LEVEL_WARNING or m["source"] not in _FOLDED_SOURCES:
+            return None
+        return sent.get((m["source"], m["message"]))
+
+    folded: dict[tuple[str, int], int] = {}
+    for m in messages:
+        if (v := first_sent(m)) is not None:
+            folded[m["source"], v] = folded.get((m["source"], v), 0) + 1
+    out = []
+    for m in messages:
+        v = first_sent(m)
+        if v is None:
+            out.append(m)
+        elif (n := folded.pop((m["source"], v), None)) is not None:
+            out.append(M.warning(m["source"], f"{n} warning(s) unchanged since version {v}."))
+    if version is not None:
+        session.warnings_sent = {
+            (m["source"], m["message"]): version if (v := first_sent(m)) is None else v
+            for m in messages
+            if m["level"] == M.LEVEL_WARNING and m["source"] in _FOLDED_SOURCES
+        }
+    return out
