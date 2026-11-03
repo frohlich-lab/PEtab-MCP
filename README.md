@@ -108,10 +108,10 @@ jobqueue:
 ```
 
 A dask task runs as many starts as fill `PETAB_MCP_FIT_TASK_SECONDS` (default 270) at the median
-start time of the session's previous fit, or at the per-start cap `PETAB_MCP_FIT_PER_START_TIMEOUT`
-without one; `PETAB_MCP_FIT_STARTS_PER_TASK` fixes the number instead. A pool lost mid-fit, or a
-worker that cannot import a model, ends the call with `infrastructure_error: fit_pool: `, as a full
-disk does (see "Tools").
+start time of the session's previous fit, or at its per-start cap (by default
+`PETAB_MCP_FIT_PER_START_TIMEOUT`) without one; `PETAB_MCP_FIT_STARTS_PER_TASK` fixes the number
+instead. A pool lost mid-fit, or a worker that cannot import a model, ends the call with
+`infrastructure_error: fit_pool: `, as a full disk does (see "Tools").
 
 ## Tools
 
@@ -134,8 +134,9 @@ undone, and a fit it ends does not count against the identical-fit guard. A clie
 run on it and resubmit once the disk has room
 ([`errors.InfrastructureError`](src/petab_mcp/errors.py)).
 
-A start still running `PETAB_MCP_FIT_PER_START_TIMEOUT` + 600 s after it could have begun (stuck
-inside one simulation, where Fides never checks its cap) is stopped and scored as a failed start;
+A start still running its session's per-start cap (by default `PETAB_MCP_FIT_PER_START_TIMEOUT`)
+plus 600 s after it could have begun (stuck inside one simulation, where Fides never checks its
+cap) is stopped and scored as a failed start;
 the fit is scored from the rest and reports `n_starts_killed`. A stopped warm start from the
 parent's optimum is rerun once. A fit whose starts stop finishing ends the same way as a full disk,
 as `infrastructure_error: fit_wedged: `, with its workers stopped and nothing scored: when no
@@ -144,7 +145,8 @@ stopped, or when a rerun warm start is stopped again ([`multistart`](src/petab_m
 Every 5 minutes a running fit logs how many of its starts are done. While a change is being
 fitted, a second `make_changes` on the session waits for nothing: it is refused at once with
 `error_cause: fit_in_progress` (text starting `make_changes: fit_in_progress: `), and the
-running fit's result becomes the next version. A client that cancels a call (MCP
+running fit's result becomes the next version: `wait_for_fit` waits for it on the server and
+answers with that version's row, or with how far the fit has got. A client that cancels a call (MCP
 `notifications/cancelled`) stops its fit, and the edit is undone.
 
 ## Design notes

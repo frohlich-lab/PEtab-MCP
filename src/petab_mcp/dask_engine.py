@@ -222,10 +222,22 @@ class DaskEngine(CappedEngine):
             for j, batch in enumerate(batches):
                 payloads = [cloudpickle.dumps(tasks[i]) for i in batch]
                 futures.append(self.client.submit(_work, payloads, priority=-j, pure=False))
-            stopped = watch(futures, sizes, self._wait, self._overrun(futures, sizes))
+            # Each batch's result is gathered once: by the progress reader as it finishes, and the
+            # rest after the wait.
+            gathered: dict[str, Any] = {}
+
+            def fvals(future) -> list[float]:
+                gathered[future.key] = future.result()
+                return [result.fval for result in gathered[future.key][0]]
+
+            stopped = watch(futures, sizes, self._wait, self._overrun(futures, sizes), fvals=fvals)
             if stopped:
                 self.client.cancel([futures[j] for j in stopped])
-            done = self.client.gather([f for j, f in enumerate(futures) if j not in stopped])
+            kept = [f for j, f in enumerate(futures) if j not in stopped]
+            rest = [f for f in kept if f.key not in gathered]
+            if rest:
+                gathered.update(zip((f.key for f in rest), self.client.gather(rest)))
+            done = [gathered[f.key] for f in kept]
         except Exception as exc:  # noqa: BLE001 - every cluster failure fails the fit
             with contextlib.suppress(Exception):  # the client itself may be what failed
                 self.client.cancel(futures)
