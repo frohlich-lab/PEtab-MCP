@@ -49,7 +49,7 @@ from .constants import (
     PARAMETER_AT_BOUND_RELATIVE_TOL,
 )
 from .engine import build_lock
-from .errors import ModelBuildBusyError, ModelUpdateError, PetabMcpError, disk_full_error
+from .errors import ModelUpdateError, PetabMcpError, disk_full_error
 from .formatting import finite_float as _flt
 from .parameters import structure_fingerprint
 from .problem import (
@@ -318,10 +318,12 @@ def pypesto_problem(problem, importer_kwargs: dict[str, Any], *, validate: bool 
     through ``importer_kwargs``.
 
     The one place a module is compiled — ``create_problem`` builds into a target folder that is not
-    there yet — so it runs under :func:`engine.build_lock`.
+    there yet — so it runs under :func:`engine.build_lock`, in the change's ``compiling`` phase.
     """
     import pypesto.petab
     from petab import v2
+
+    from .multistart import compiling
 
     pdf = problem.parameter_df
     scales = pdf[PARAMETER_SCALE]
@@ -339,7 +341,7 @@ def pypesto_problem(problem, importer_kwargs: dict[str, Any], *, validate: bool 
     importer = pypesto.petab.PetabImporter(
         petab_problem, validate_petab=validate, parameter_scales=dict(scales), **importer_kwargs
     )
-    with build_lock(importer_kwargs["output_folder"], importer_kwargs["model_name"]):
+    with compiling(), build_lock(importer_kwargs["output_folder"], importer_kwargs["model_name"]):
         return importer.create_problem()
 
 
@@ -393,9 +395,6 @@ def _build_hierarchical_problem(session, importer_kwargs: dict[str, Any], petab_
             pypesto_problem(view, {**importer_kwargs, "hierarchical": True}, validate=False),
             inner,
         )
-    except ModelBuildBusyError:
-        # Not a hierarchical failure: falling back would fit jointly once the other build lands.
-        raise
     except Exception:  # noqa: BLE001 - hierarchical is best-effort; fall back to a joint fit
         session.logger.warning(
             "hierarchical optimization setup failed (%s inner params: %s); "
@@ -1254,8 +1253,10 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
             progress_bar=False,
             **minimize_kwargs,
         )
-        # The starts the engine stopped past their cap and scored as failed (multistart).
+        # The starts the engine stopped past their cap and scored as failed, and the seconds they
+        # waited with none running (multistart).
         killed = getattr(pp_engine, "killed", [])
+        queued = getattr(pp_engine, "queue_seconds", 0.0)
     except Exception as exc:  # noqa: BLE001 - retry sequentially before giving up
         # A parallel multistart can construct its engine fine yet still fail at runtime
         # (pickling/spawn issues, a worker dying). That is a parallel-only failure — the same fit
@@ -1280,11 +1281,12 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
             progress_bar=False,
             **minimize_kwargs,
         )
-        killed = []
+        killed, queued = [], 0.0
     duration = time.perf_counter() - t0
     # The multistart optimization is the recurring "fit" cost (a fit-cache hit returns above
     # without reaching here, so it correctly adds nothing). Under `session.lock`.
     session.fit_seconds += duration
+    session.queue_seconds += queued
     session.n_fits += 1
 
     # pyPESTO's own multistart report -> pypesto.log (its native logging is otherwise

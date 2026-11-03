@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import itertools
 import logging
 import os
 import re
 import socket
+import statistics
 import threading
 import time
 from pathlib import Path
@@ -17,13 +19,15 @@ from types import SimpleNamespace
 import dask
 import numpy as np
 import pytest
-from distributed import Client, LocalCluster, default_client, get_task_stream, wait
+from distributed import LocalCluster, WorkerPlugin, default_client, get_task_stream, wait
+from fastmcp import Client
 from pypesto.engine import Task
 
 from petab_mcp import dask_engine
 from petab_mcp import fitting
 from petab_mcp import logging_setup
 from petab_mcp import multistart
+from petab_mcp import server
 from petab_mcp.dask_engine import DaskEngine
 from petab_mcp.errors import FIT_WEDGED, FitBackendError, InfrastructureError
 from petab_mcp.references import StubReferenceResolver
@@ -164,6 +168,87 @@ def test_a_server_given_a_cluster_fits_there_and_each_start_ends_as_it_would_her
     assert len(local) == 4 and remote == local
 
 
+def _hold(path: str) -> None:
+    """Hold a worker until ``path`` exists, at most a minute."""
+    deadline = time.monotonic() + 60
+    while not os.path.exists(path) and time.monotonic() < deadline:
+        time.sleep(0.05)
+
+
+class _SlowStarts(WorkerPlugin):
+    """Makes each optimizer start on a worker take a second longer, so the scheduler hears that its
+    batch runs before it ends."""
+
+    def setup(self, worker) -> None:
+        from pypesto.optimize.task import OptimizerTask
+
+        execute = OptimizerTask.execute
+
+        def slow(task):
+            time.sleep(1)
+            return execute(task)
+
+        OptimizerTask.execute = slow
+
+
+def test_a_call_through_a_fit_gets_heartbeats_naming_its_phase(
+    yaml_path, amici_build_root, tmp_path, monkeypatch
+):
+    """Once fits queue for a shared pool no budget bounds a call, so gemot times it out on silence
+    (#217). On its protocol, 2025-11-25, a make_changes gets a heartbeat every HEARTBEAT_S while its
+    model builds, while it waits for the pool's only worker, and while its starts run; the wait is
+    its queue_seconds."""
+    import pypesto.petab
+
+    monkeypatch.setattr(server, "HEARTBEAT_S", 0.2)
+    monkeypatch.setattr(multistart, "POLL_S", 0.1)
+    create = pypesto.petab.PetabImporter.create_problem
+
+    def slow(self, *args, **kwargs):  # a build lasts a few heartbeats, its module cached or not
+        time.sleep(1)
+        return create(self, *args, **kwargs)
+
+    monkeypatch.setattr(pypesto.petab.PetabImporter, "create_problem", slow)
+    release, beats = tmp_path / "release", []
+
+    async def heard(progress, total, message):
+        beats.append((progress, message))
+        if message and message.startswith("queued"):
+            release.touch()
+
+    async def change(mcp):
+        async with Client(mcp, mode="legacy", progress_handler=heard) as client:
+            assert client.protocol_version == "2025-11-25"
+            bounds = {"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}
+            args = {"parameters": [bounds], "justification": "x", "n_starts": 2}
+            out = await client.call_tool("make_changes", args)
+            timing = await client.call_tool("get_run_timing", {})
+        return out.structured_content, timing.structured_content
+
+    with _engine(n_workers=1) as engine:
+        mcp = create_server(
+            yaml_path,
+            build_root=str(amici_build_root),
+            provenance_dir=str(tmp_path / "prov"),
+            resolver=StubReferenceResolver(),
+            cluster=engine.client.cluster,
+        )
+        engine.client.register_plugin(_SlowStarts(), name="slow-starts")
+        held = engine.client.submit(_hold, str(release), pure=False)  # noqa: F841 - kept queued
+        out, timing = asyncio.run(change(mcp))
+
+    assert out["applied"] is True, out
+    phases = iter(k for k, _ in itertools.groupby(m.split(" for ")[0] for _, m in beats if m))
+    assert all(phase in phases for phase in ("compiling", "queued", "running")), beats
+    assert any(re.fullmatch(r"queued for \d+s, 0 of 2 starts done", m or "") for _, m in beats)
+    assert any(re.fullmatch(r"running for \d+s, [01] of 2 starts done", m or "") for _, m in beats)
+    # Not a bound on the longest gap: the end of a build holds the GIL, the event loop's too, for
+    # seconds.
+    gaps = [b - a for (a, _), (b, _) in itertools.pairwise(beats)]
+    assert 0.15 < min(gaps) and statistics.median(gaps) < 0.3, gaps
+    assert 0 < timing["queue_seconds"] < timing["fit_seconds"], timing
+
+
 class _Tolerances(Task):
     """A start that reports the tolerances its problem's AMICI solver carries on its worker."""
 
@@ -228,7 +313,7 @@ def test_a_fit_waits_on_its_own_client_not_the_latest_one_in_the_process(monkeyp
         return wait(*args, **kwargs)
 
     monkeypatch.setattr(dask_engine, "wait", spy)
-    with _engine(n_workers=1) as engine, Client(engine.client.cluster):
+    with _engine(n_workers=1) as engine, dask_engine.Client(engine.client.cluster):
         engine.execute([_Sleep("a", 0, 0.1)])
     assert waited_on and all(client is engine.client for client in waited_on)
 
@@ -300,8 +385,8 @@ def test_each_fit_on_the_shared_pool_stops_its_batches_at_its_own_cap():
 
     short, long = shared.batched(1, 60.0), shared.batched(1, 120.0)
 
-    assert short._overrun(futures, [1])([0], None) == {0}
-    assert long._overrun(futures, [1])([0], None) == set()
+    assert short._look(futures, [1])([0], None) == ({0}, set())
+    assert long._look(futures, [1])([0], None) == (set(), set())
 
 
 def test_a_batched_fit_runs_k_starts_per_task_and_keeps_their_order_and_records(
@@ -435,6 +520,34 @@ def test_a_batch_waiting_behind_another_fits_is_not_wedged(monkeypatch):
         other.join()
 
     assert [label for label, _, _ in done["a"] + done["b"]] == ["a", "b"]
+
+
+def test_a_fits_queue_seconds_are_its_wait_with_none_of_its_starts_running(monkeypatch):
+    """On a pool of one worker, a fit arriving while another's batch runs waits with none of its own
+    running until that batch ends: those seconds are its queue_seconds, and meanwhile its Progress
+    says it is queued with all its starts (#217). The fit already running waited for nothing."""
+    monkeypatch.setattr(multistart, "POLL_S", 0.1)
+    done = {}
+    with _engine(n_workers=1) as engine:
+        engine.client.run(_Sleep, "warm", 0, 0)
+        first, second = engine.batched(1), engine.batched(1)
+        other = threading.Thread(target=lambda: done.update(a=first.execute([_Sleep("a", 0, 3)])))
+        other.start()
+        time.sleep(1)  # the scheduler has heard that the first fit's batch runs
+        progress, seen = multistart.Progress(), []
+        threading.Timer(1, lambda: seen.append((progress.phase, progress.queued))).start()
+        token = multistart.PROGRESS.set(progress)
+        submitted = time.time()
+        try:
+            second.execute([_Sleep("b", 0, 0.1), _Sleep("b", 1, 0.1)])
+        finally:
+            multistart.PROGRESS.reset(token)
+        other.join()
+
+    waited = done["a"][0][2] - submitted
+    assert seen == [("queued", 2)]
+    assert waited - 0.2 < second.queue_seconds < waited + 1, (second.queue_seconds, waited)
+    assert first.queue_seconds < 1
 
 
 def test_a_lost_cluster_fails_the_fit_and_nothing_reruns_it_here(fit_session, monkeypatch):

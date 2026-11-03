@@ -1,15 +1,19 @@
-"""A module build fails fast instead of racing another: :func:`petab_mcp.engine.build_lock`.
+"""A module build waits for another instead of racing it: :func:`petab_mcp.engine.build_lock`.
 
-Every session and process shares one build root keyed by AMICI and module hash, so these tests hold a
-module's lock file the way another build would and drive the real build paths — the fit's, the
-hierarchical one's and the held-out scorer's — with pyPESTO's builder replaced, so nothing compiles.
+Every session and process shares one build root keyed by AMICI and module hash, so these tests run
+another server's build in a process of its own and drive the real build paths — the fit's and the
+held-out scorer's — with pyPESTO's builder replaced, so nothing compiles.
 """
 
 from __future__ import annotations
 
 import errno
-import os
 import shutil
+import subprocess
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 
 import pypesto.petab
@@ -19,7 +23,6 @@ from petab_mcp import filelock
 from petab_mcp import fitting
 from petab_mcp import validation_data as V
 from petab_mcp.engine import AmiciEngine, build_lock
-from petab_mcp.errors import ModelBuildBusyError
 from petab_mcp.references import StubReferenceResolver
 from petab_mcp.session import PetabSession
 
@@ -44,9 +47,36 @@ def builds(monkeypatch):
     return calls
 
 
-def _open(tmp_path, problem_dir=TOY):
+@pytest.fixture
+def locks(monkeypatch):
+    """``filelock.lock``, recording each path it is asked for before it waits for that lock."""
+    paths = []
+    lock = filelock.lock
+
+    def _lock(path):
+        paths.append(Path(path))
+        return lock(path)
+
+    monkeypatch.setattr(filelock, "lock", _lock)
+    return paths
+
+
+def _builder(monkeypatch, folder):
+    """pyPESTO's builder, replaced by a recorder of what it finds in ``folder`` (``None`` for no
+    folder); it then stops."""
+    found = []
+
+    def _create_problem(self, *a, **k):
+        found.append(sorted(p.name for p in folder.iterdir()) if folder.exists() else None)
+        raise _Built
+
+    monkeypatch.setattr(pypesto.petab.PetabImporter, "create_problem", _create_problem)
+    return found
+
+
+def _open(tmp_path):
     session = PetabSession(
-        str(problem_dir / "problem.yaml"),
+        str(TOY / "problem.yaml"),
         provenance_dir=str(tmp_path / "prov"),
         resolver=StubReferenceResolver(),
     )
@@ -67,53 +97,89 @@ def _build_lands(engine, h):
     (folder / ".built").touch()
 
 
-def test_a_build_another_holds_fails_fast_and_touches_nothing(tmp_path, builds):
-    """While another session or process holds a module's lock, the fit's build of that module raises
-    ModelBuildBusyError carrying the holder's line — before pyPESTO's builder, which would clear the
-    folder the holder is writing, or any rmtree runs. Once the holder lets go, the build goes ahead."""
+_HOLDER = """
+import sys, time
+from pathlib import Path
+from petab_mcp.engine import build_lock
+folder, name, release = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
+with build_lock(folder, name):
+    (folder / name).mkdir(parents=True)
+    (folder / name / f"_{name}.so").touch()
+    print("building", flush=True)
+    while not release.exists():
+        time.sleep(0.01)
+"""
+
+
+@contextmanager
+def _another_server_building(folder, name, release):
+    """Another server's build of module ``name`` in ``folder``, in a process of its own: under the
+    build lock it writes the extension, says so, and holds until ``release`` exists. Killed on exit.
+    """
+    cmd = [sys.executable, "-c", _HOLDER, str(folder), name, str(release)]
+    with subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True) as holder:
+        try:
+            assert holder.stdout.readline() == "building\n"
+            yield holder
+        finally:
+            holder.kill()
+
+
+def _waits_for_the_lock(waiter, locks):
+    """``waiter`` (a future) asks for the build lock, and still waits for it half a second later."""
+    deadline = time.monotonic() + 60
+    while not (locks or waiter.done()) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert locks, "never asked for the build lock"
+    with pytest.raises(TimeoutError):
+        waiter.result(timeout=0.5)
+
+
+def test_a_build_another_server_holds_is_waited_for_then_imported(tmp_path, locks, monkeypatch):
+    """PEtab-MCP#218, check 1: two servers on one build root build the same structure at once. The
+    second waits for the first, the extension already there notwithstanding (the install step
+    writes it before the build is done), then finds the module finished and imports it, removing
+    nothing."""
     session, engine = _open(tmp_path)
-    folder = engine.module_root / f"pypesto_{session.module_hash()}"
-    held = filelock.try_lock(f"{folder}.lock")
-    with pytest.raises(ModelBuildBusyError) as busy:
-        fitting.estimation_problem(session, engine)
-    os.close(held)
-    assert busy.value.holder.split()[0] == str(os.getpid()) and busy.value.holder in str(busy.value)
-    assert builds == []
-    with pytest.raises(_Built):
-        fitting.estimation_problem(session, engine)
-    assert builds == [("build", str(folder))]
+    folder, name = engine._module_target(session.module_hash())
+    found = _builder(monkeypatch, folder)
+    release = tmp_path / "release"
+    with ThreadPoolExecutor(1) as pool, _another_server_building(folder, name, release) as holder:
+        waiter = pool.submit(fitting.estimation_problem, session, engine)
+        _waits_for_the_lock(waiter, locks)
+        release.touch()
+        with pytest.raises(_Built):
+            waiter.result(timeout=60)
+        assert holder.wait(60) == 0
+    assert found == [[".built", name]]
 
 
-def test_a_built_module_takes_no_lock(tmp_path, builds):
+def test_a_waiter_whose_holder_is_killed_builds_the_module_itself(tmp_path, locks, monkeypatch):
+    """PEtab-MCP#218, check 2: the server holding the build is killed mid-build, which releases its
+    lock and leaves its folder unfinished. The waiter removes that folder and builds the module."""
+    session, engine = _open(tmp_path)
+    folder, name = engine._module_target(session.module_hash())
+    found = _builder(monkeypatch, folder)
+    release = tmp_path / "never"
+    with ThreadPoolExecutor(1) as pool, _another_server_building(folder, name, release) as holder:
+        waiter = pool.submit(fitting.estimation_problem, session, engine)
+        _waits_for_the_lock(waiter, locks)
+        holder.kill()
+        with pytest.raises(_Built):
+            waiter.result(timeout=60)
+    assert found == [None]
+
+
+def test_a_built_module_takes_no_lock(tmp_path, builds, locks):
     """Importing a built module is safe beside anything, so it takes no lock: the build path reaches
-    pyPESTO, which imports, even while the lock file is held."""
+    pyPESTO, which imports, without asking for one."""
     session, engine = _open(tmp_path)
     h = session.module_hash()
     _build_lands(engine, h)
-    held = filelock.try_lock(engine.module_root / f"pypesto_{h}.lock")
     with pytest.raises(_Built):
         fitting.estimation_problem(session, engine)
-    os.close(held)
+    assert locks == []
     assert builds == [("build", str(engine.module_root / f"pypesto_{h}"))]
-
-
-def test_an_extension_without_the_finished_mark_still_meets_the_lock(tmp_path):
-    """The install step writes the extension before its build is done, so finding it is no proof the
-    build finished: a caller still meets the holder's lock, and the error names the AMICI module. A
-    build that returns marks the module, and the next import takes no lock."""
-    folder, name = tmp_path / "pypesto_h", "petab_mcp_pp_h"
-    _install(folder, name)
-    held = filelock.try_lock(f"{folder}.lock")
-    with pytest.raises(ModelBuildBusyError, match=name), build_lock(folder, name):
-        pass
-    os.close(held)
-    assert (folder / name / f"_{name}.so").exists()  # the holder's build, not the contender's
-    with build_lock(folder, name):
-        _install(folder, name)
-    held = filelock.try_lock(f"{folder}.lock")
-    with build_lock(folder, name):
-        pass
-    os.close(held)
 
 
 def test_a_failed_build_is_removed_so_the_next_one_compiles(tmp_path, monkeypatch):
@@ -154,21 +220,20 @@ def test_a_build_that_stopped_is_removed_before_the_next(tmp_path):
 
 def test_a_finished_build_is_never_removed(tmp_path, monkeypatch):
     """Other processes import a finished module without the lock, so no failure removes it: not one
-    that follows its lock-free import, and not one that follows a build which landed between the
-    look for it and taking the lock."""
+    that follows its lock-free import, and not one that follows a build it waited for."""
     folder, name = tmp_path / "pypesto_h", "petab_mcp_pp_h"
-    try_lock = filelock.try_lock
+    lock = filelock.lock
 
     def _lands_first(path):
         _install(folder, name)
         (folder / ".built").touch()
-        return try_lock(path)
+        return lock(path)
 
-    monkeypatch.setattr(filelock, "try_lock", _lands_first)
+    monkeypatch.setattr(filelock, "lock", _lands_first)
     with pytest.raises(_Built), build_lock(folder, name):
         assert (folder / ".built").exists()
         raise _Built
-    monkeypatch.setattr(filelock, "try_lock", try_lock)
+    monkeypatch.setattr(filelock, "lock", lock)
     with pytest.raises(_Built), build_lock(folder, name):
         raise _Built
     assert (folder / ".built").exists() and (folder / name / f"_{name}.so").exists()
@@ -191,59 +256,17 @@ def test_an_unreadable_folder_is_not_taken_for_an_unfinished_one(tmp_path, monke
     assert (folder / ".built").exists() and (folder / name / f"_{name}.so").exists()
 
 
-def test_a_busy_build_is_not_counted_as_a_fit_of_its_structure(tmp_path, builds):
-    """The error says a retry is safe, so retrying must not trip the identical-fit loop guard, which
-    refuses a structure fitted MAX_IDENTICAL_REAUTHORS times: a busy build fitted nothing."""
-    from petab_mcp.dedup import MAX_IDENTICAL_REAUTHORS
-
-    session, engine = _open(tmp_path)
-    session.engine = engine
-    held = filelock.try_lock(engine.module_root / f"pypesto_{session.module_hash()}.lock")
-    for _ in range(MAX_IDENTICAL_REAUTHORS + 1):
-        with pytest.raises(ModelBuildBusyError):
-            session.fit()
-    os.close(held)
-
-
-def test_a_busy_hierarchical_build_is_not_retried_as_a_joint_one(tmp_path, builds, monkeypatch):
-    """The hierarchical setup falls back to a joint objective when it fails, and contention is not a
-    failure of it: falling back would import the module as soon as the other build landed and fit the
-    model JOINTLY — a different fit of the same model, chosen by timing."""
-    work = tmp_path / "toy"
-    shutil.copytree(TOY, work)
-    params = work / "parameters.tsv"
-    params.write_text(params.read_text().replace("0.1\tfalse", "0.1\ttrue"))  # sigma_B: inner
-    session, engine = _open(tmp_path, work)
-    h = session.module_hash()
-
-    def _lands_while_refused(path):
-        _build_lands(engine, h)
-        raise filelock.Held("4242 elsewhere 2026-10-10T00:00:00+00:00")
-
-    monkeypatch.setattr(filelock, "try_lock", _lands_while_refused)
-    with pytest.raises(ModelBuildBusyError):
-        fitting.estimation_problem(session, engine)
-    assert builds == []
-
-
-def test_a_held_out_build_locks_its_own_sibling_folder(tmp_path, builds):
+def test_a_held_out_build_locks_its_own_sibling_folder(tmp_path, builds, locks):
     """The held-out scorer builds a SIBLING module (``<dir>_<tag>``) for a design that may differ
-    from the training one; it takes the lock next to that folder, so the training module's build
-    does not stop it and a build of the sibling does."""
+    from the training one, and takes the lock next to that folder, not the training module's."""
     session, engine = _open(tmp_path)
     kwargs = engine.pypesto_importer_kwargs(session.module_hash())
     build = {"build_dir": kwargs["output_folder"], "model_name": kwargs["model_name"]}
-    training = filelock.try_lock(f"{kwargs['output_folder']}.lock")
     with pytest.raises(_Built):
         V.refit_problem(session.problem, n_starts=1, **build)
-    os.close(training)
     ((_, sibling),) = builds
     assert Path(sibling).name.startswith(f"{Path(kwargs['output_folder']).name}_")
-    held = filelock.try_lock(f"{sibling}.lock")
-    with pytest.raises(ModelBuildBusyError):
-        V.refit_problem(session.problem, n_starts=1, **build)
-    os.close(held)
-    assert len(builds) == 1
+    assert locks == [Path(f"{sibling}.lock")]
 
 
 def _engine_as(session, tmp_path, monkeypatch, identity):
