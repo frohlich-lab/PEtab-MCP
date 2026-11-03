@@ -242,6 +242,11 @@ gemot_iclr_2026's `slurm/` does for the Phoenix collector (`phoenix_ctl.sh`, `ma
 8. **Heartbeats name the phase.** A call through a fit gets heartbeats at the set interval:
    `compiling`, then `queued` on a pool with no free worker, then `running`. A read waiting on the
    fit's lock gets them too (PEtab-MCP).
+   - The test runs on the protocol gemot negotiates, which is 2025-11-25 from its raw
+     `ClientSession.initialize()`.
+   - `fastmcp.Client` defaults to `mode="auto"`, which gets 2026-07-28, where every request is its
+     own connection. So a test through `Client(mcp)` passes `mode="legacy"`.
+   - Progress notifications have not yet been tried on either protocol.
 9. **A queued fit does not end a run.** A fit queued for longer than the old budget keeps its call
    alive on heartbeats and returns its result. A server that stops sending heartbeats ends the call
    within the window, through `_fit_wedged` (gemot).
@@ -292,9 +297,16 @@ hosting several sessions would need first, if one is ever built.
 
 - **#188** moves the per-start cap onto the session. It is independent of this plan, and is
   reviewed and merged on its own.
-- **Next candidates:** the rest of what a sweep sets per problem through the environment (the
-  fit settings `fit_budget.server_fit_settings` records), and `reference_mode`. The arm's files
-  (`entity_map`, `constraints`) already belong to the session.
+- **Next candidates:**
+  - the rest of what a sweep sets per problem through the environment, i.e. the fit settings
+    `fit_budget.server_fit_settings` records;
+  - among them, the AMICI tolerances (`PETAB_MCP_FIT_AMICI_ATOL`, `_RTOL`, `_RTOL_STEADY_STATE`,
+    `_ATOL_STEADY_STATE`), which `fitting.py` reads once at import, as it does the cap. gemot
+    exports them per problem, as for raimundez. The pool needs nothing from them, because they are
+    set on the server's solver, which travels pickled with each start;
+  - `reference_mode`.
+
+  The arm's files (`entity_map`, `constraints`) already belong to the session.
 - **The shared-server branch** `claude/187-shared-server-f5dbde` (local only) adds these fields to
   `SessionSpec`. It is kept, unpushed, as a reference.
 
