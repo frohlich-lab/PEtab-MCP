@@ -19,7 +19,7 @@ from types import SimpleNamespace
 import dask
 import numpy as np
 import pytest
-from distributed import LocalCluster, WorkerPlugin, get_task_stream
+from distributed import LocalCluster, WorkerPlugin, default_client, get_task_stream, wait
 from fastmcp import Client
 from pypesto.engine import Task
 
@@ -300,6 +300,22 @@ def test_a_fit_arriving_during_another_takes_turns_with_it():
     assert [i for _, i, _ in done["a"]] == list(range(6)), "results come back in task order"
     finished = [label for label, _, _ in sorted(done["a"] + done["b"], key=lambda r: r[2])]
     assert sum(x != y for x, y in zip(finished, finished[1:])) >= 4, finished
+
+
+def test_a_fit_waits_on_its_own_client_not_the_latest_one_in_the_process(monkeypatch):
+    """``distributed.wait`` runs on the process's default client, the latest one made. With servers
+    in one process (as tests/test_pool.py runs them), a fit waited on another server's client and
+    failed in ``distributed.utils.sync`` once that server closed it (#219's stress script)."""
+    waited_on = []
+
+    def spy(*args, **kwargs):
+        waited_on.append(default_client())
+        return wait(*args, **kwargs)
+
+    monkeypatch.setattr(dask_engine, "wait", spy)
+    with _engine(n_workers=1) as engine, dask_engine.Client(engine.client.cluster):
+        engine.execute([_Sleep("a", 0, 0.1)])
+    assert waited_on and all(client is engine.client for client in waited_on)
 
 
 def test_a_starts_records_land_in_the_pypesto_log_of_the_session_that_ran_it(tmp_path):

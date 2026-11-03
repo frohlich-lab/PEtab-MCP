@@ -58,7 +58,7 @@ petab-mcp --petab-yaml path/to/problem.yaml
 # --constraint-updates {off,any}   (any: offers set_constraints, which replaces them mid-session)
 # --transport {stdio,sse,streamable-http}
 # --criterion {bic,caic,aic,aicc,hqc,tic}   (env PETAB_MCP_CRITERION; default bic)
-# --slurm-max-jobs N     --slurm-min-jobs M   (see "Fitting on SLURM")
+# --fit-pool ADDRESS     (env PETAB_MCP_FIT_POOL; see "Fitting on SLURM")
 ```
 
 Provenance is written to `<problem_dir>/.petab_mcp/` by default and is durable — restarting
@@ -68,23 +68,34 @@ problem lives at `tests/data/toy_v2/`; `tests/data/toy_v1/` is the same problem 
 
 ## Fitting on SLURM
 
-`--slurm-max-jobs N` runs the fits' multistarts on a pool of up to N SLURM jobs that the server
-submits while fits wait for workers and cancels when it stops; `--slurm-min-jobs M` (default 0)
-keeps M of them while idle. It needs the `dask` extra (`pip install -e '.[dask]'`), and:
+The fits of many servers, a sweep's runs say, share one pool of SLURM workers. `petab-mcp-pool`
+runs the pool as a SLURM job of its own, and a server joins it with `--fit-pool ADDRESS` (or
+`PETAB_MCP_FIT_POOL`). Both need the `dask` extra (`pip install -e '.[dask]'`).
 
-- **the server inside a SLURM allocation**, never on the login node: it compiles every model
-  itself, and its node must be able to `sbatch`;
-- **a `--build-root` on storage the compute nodes share**, not `$TMPDIR`: the workers import the
-  compiled models by the server's path;
-- **the jobs configured in dask's own config**, not by flags: `~/.config/dask/jobqueue.yaml` (or
-  `DASK_JOBQUEUE__SLURM__*`), for example:
+```bash
+petab-mcp-pool --slurm-max-jobs N --address-file PATH   # --slurm-min-jobs M   --port 8786
+petab-mcp --petab-yaml problem.yaml --build-root DIR --fit-pool "$(cat PATH)"
+```
+
+The pool's scheduler listens on `--port` of the pool's node, so a pool restarted there comes back
+at the same address, and the address goes to `--address-file` once it listens. The pool submits up
+to N worker jobs while batches wait for a worker and keeps M (default 0) while idle. On SIGTERM it
+removes the address file, waits up to 10 min for the batches running, then cancels its jobs, failing
+the fits still waiting. It needs:
+
+- **every server inside a SLURM allocation**, never on the login node: a server compiles every model
+  itself, and a worker never does;
+- **one `--build-root` on storage the compute nodes share**, the same for every server of the pool,
+  not `$TMPDIR`: the workers import the compiled models by the server's path;
+- **the worker jobs configured in dask's own config**, not by flags: `~/.config/dask/jobqueue.yaml`
+  (or `DASK_JOBQUEUE__SLURM__*`) where the pool runs, for example:
 
 ```yaml
 jobqueue:
   slurm:
     queue: <partition>
     cores: 32
-    processes: 32              # = cores: one start per process
+    processes: 32              # = cores: one single-threaded worker per core, a core per start
     memory: 64GiB
     walltime: "06:00:00"
     # Below the walltime, so workers retire (and are replaced) instead of being killed.
@@ -96,7 +107,7 @@ jobqueue:
 A dask task runs as many starts as fill `PETAB_MCP_FIT_TASK_SECONDS` (default 270) at the median
 start time of the session's previous fit, or at its per-start cap (by default
 `PETAB_MCP_FIT_PER_START_TIMEOUT`) without one; `PETAB_MCP_FIT_STARTS_PER_TASK` fixes the number
-instead. A killed server's workers exit on their own after jobqueue's `death-timeout` (60 s).
+instead.
 
 ## Tools
 

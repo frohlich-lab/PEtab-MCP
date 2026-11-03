@@ -1,12 +1,13 @@
-"""Run a fit's multistart on the server's dask cluster, one worker pool for every session.
+"""Run a fit's multistart on a dask cluster: usually a fit pool every server of a sweep shares, which
+``petab-mcp-pool`` runs (:mod:`petab_mcp.pool`) and a server joins by its scheduler's address.
 
 Without a cluster, each fit starts up to ``FIT_N_WORKERS`` local processes, so sessions fitting at
 once oversubscribe the node, and Fides' per-start time cap then stops slowed starts early:
 contention changes results, not only speed. With one, :func:`petab_mcp.server.create_server` builds
 one :class:`DaskEngine`, and every fit and held-out refit of that server runs its starts there.
 
-* **Starts go in batches.** A task per start would flood the scheduler, which runs in the server's
-  process, with second-long tasks, so a fit sends ``k`` starts per task, run one after another on
+* **Starts go in batches.** A task per start would flood the scheduler, which every server's fits
+  share, with second-long tasks, so a fit sends ``k`` starts per task, run one after another on
   one worker (:meth:`DaskEngine.batched`). Each is unpickled on its own there, so a start's result
   does not depend on the batch it ran in.
 * **Fits take turns.** Batch ``j`` is submitted at ``priority=-j``; dask runs higher priorities
@@ -27,8 +28,8 @@ one :class:`DaskEngine`, and every fit and held-out refit of that server runs it
   root at the same absolute path. pyPESTO's creator and AMICI's importer would instead compile it
   there, inside the build root every session shares, so :class:`_NoBuild` makes them raise.
 
-The only module that imports ``distributed`` (the ``dask`` extra); a server without a cluster never
-imports it.
+With :mod:`petab_mcp.pool`, the only module that imports ``distributed`` (the ``dask`` extra); a
+server without a cluster never imports it.
 """
 
 from __future__ import annotations
@@ -109,7 +110,10 @@ def _refuse_build(builder, *args, **kwargs):
 
 class _NoBuild(WorkerPlugin):
     """Replaces pyPESTO's and AMICI's model-build entry points with :func:`_refuse_build`, in each
-    worker process."""
+    worker process. The pool and every server register it under one name, so each replaces the
+    last."""
+
+    name = "petab-mcp-no-build"
 
     def setup(self, worker) -> None:
         from amici.importers.petab import PetabImporter
@@ -124,8 +128,8 @@ class _NoBuild(WorkerPlugin):
 
 
 class DaskEngine(CappedEngine):
-    """A pyPESTO engine that runs tasks on ``cluster``, ``starts_per_task`` to a dask task, through
-    a client of its own."""
+    """A pyPESTO engine that runs tasks on ``cluster``, a cluster or its scheduler's address,
+    ``starts_per_task`` to a dask task, through a client of its own."""
 
     #: Starts per dask task; a fit sets its own, and their cap, through :meth:`batched`.
     starts_per_task = 1
@@ -133,7 +137,7 @@ class DaskEngine(CappedEngine):
     def __init__(self, cluster) -> None:
         super().__init__()
         self.client = Client(cluster)
-        self.client.register_plugin(_NoBuild(), name="petab-mcp-no-build")
+        self.client.register_plugin(_NoBuild())
 
     def batched(
         self, k: int, start_seconds: float = math.inf, rerun: frozenset[str] = frozenset()
@@ -150,7 +154,9 @@ class DaskEngine(CappedEngine):
     def _wait(self, pending: list, timeout: float) -> None:
         """Block until one of ``pending`` finishes or ``timeout`` passes; raise a failed start's
         error at once, so the fit's other batches are cancelled instead of run."""
-        with contextlib.suppress(TimeoutError):
+        # `wait` runs on the current client, else on the process's latest, another server's in a
+        # process that hosts two.
+        with contextlib.suppress(TimeoutError), self.client.as_current():
             wait(pending, timeout=timeout, return_when="FIRST_COMPLETED")
         for future in pending:
             if future.status == "error":
