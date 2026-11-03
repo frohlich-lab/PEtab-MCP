@@ -128,23 +128,12 @@ class _NoBuild(WorkerPlugin):
 
 class DaskEngine(CappedEngine):
     """A pyPESTO engine that runs tasks on ``cluster``, a cluster or its scheduler's address,
-    ``starts_per_task`` to a dask task, through a client of its own.
-
-    Refused before connecting when AMICI was built without HDF5: AMICI pickles a solver's settings
-    through HDF5, so no start could reach a worker and every fit on the cluster would fail.
-    """
+    ``starts_per_task`` to a dask task, through a client of its own."""
 
     #: Starts per dask task; a fit sets its own, and their cap, through :meth:`batched`.
     starts_per_task = 1
 
     def __init__(self, cluster) -> None:
-        from amici.sim.sundials import hdf5_enabled
-
-        if not hdf5_enabled:
-            raise FitBackendError(
-                "this AMICI was built without HDF5, which it needs to pickle a start for a "
-                "worker: rebuild AMICI with the HDF5 headers installed to fit on a cluster"
-            )
         super().__init__()
         self.client = Client(cluster)
         self.client.register_plugin(_NoBuild())

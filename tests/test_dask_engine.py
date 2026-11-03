@@ -419,21 +419,3 @@ def test_a_worker_never_builds_a_model(tmp_path):
             with pytest.raises(FitBackendError, match=refusal):
                 engine.execute([_Build(str(folder), how)])
     assert [p.name for p in folder.iterdir()] == ["half_built"]
-
-
-def test_an_amici_without_hdf5_refuses_the_cluster_before_connecting(
-    yaml_path, tmp_path, monkeypatch
-):
-    """An AMICI without HDF5 cannot pickle a start, so the server refuses the cluster before
-    connecting to it (`object()` is no cluster)."""
-    import amici.sim.sundials
-
-    monkeypatch.setattr(amici.sim.sundials, "hdf5_enabled", False)
-    with pytest.raises(FitBackendError, match="without HDF5"):
-        create_server(
-            yaml_path,
-            provenance_dir=str(tmp_path / "prov"),
-            resolver=StubReferenceResolver(),
-            auto_fit=False,
-            cluster=object(),
-        )
