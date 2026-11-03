@@ -319,8 +319,9 @@ class _Reader:
     def __init__(self, text: str, groundings: dict[str, dict]):
         self.text, self.pos, self.groundings = text, 0, groundings
 
-    def fail(self, what: str):
-        raise NotationError(f"{what} at column {self.pos + 1}: {self.text!r}")
+    def fail(self, what: str, hint: str | None = None):
+        said = f"{what} at column {self.pos + 1}: {self.text!r}"
+        raise NotationError(said + (f"; {hint}" if hint else ""))
 
     def space(self) -> None:
         while self.pos < len(self.text) and self.text[self.pos].isspace():
@@ -450,6 +451,17 @@ class _Reader:
         return out
 
 
+_CONVERSION = "a Conversion is written `A -> B by E`"
+#: The verbs agents write for a statement the notation states otherwise (#227), each answered
+#: with the form that states it.
+_FORM_OF = {
+    "converts": _CONVERSION,
+    "converted": _CONVERSION,
+    "forms": f"{_CONVERSION}, a Complex `A binds B`",
+    "produces": "a production is written `E increases B`",
+}
+
+
 def _at(r: _Reader, st: dict[str, Any]) -> None:
     if r.take("at"):
         r.space()
@@ -499,7 +511,7 @@ def statement(r: _Reader) -> dict[str, Any]:
             return {"type": kind, "subj": None, "obj": first}
         cls = _PASSIVE.get(word)
         if cls is None:
-            r.fail(f"unknown verb 'is {word}'")
+            r.fail(f"unknown verb 'is {word}'", _FORM_OF.get(word))
         st = {"type": cls, "enz": None, "sub": first, "residue": None, "position": None}
         _at(r, st)
         return st
@@ -519,7 +531,7 @@ def statement(r: _Reader) -> dict[str, Any]:
         return st
     cls = _ACTIVE.get(word)
     if cls is None:
-        r.fail(f"unknown verb {word!r}")
+        r.fail(f"unknown verb {word!r}", _FORM_OF.get(word))
     st = {"type": cls, "enz": first, "sub": r.agent(), "residue": None, "position": None}
     _at(r, st)
     return st
