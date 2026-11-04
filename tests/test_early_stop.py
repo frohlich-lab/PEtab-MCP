@@ -725,8 +725,8 @@ def test_only_an_estimated_co_factor_breaks_comparability(gain_estimated, expect
 
     Built as a real problem whose noise formula multiplies a per-gel scale by a shared sigma,
     rather than probed on the toy session: the toy sigma has no composite noiseFormula at all, so
-    `sigma_scale_coupled` returned False at the `len(parts) < 2` guard and never reached the
-    `is_parameter_estimated` branch. Inverting that check would have left such a test passing
+    `sigma_scale_coupled` found no co-parameter for the `is_parameter_estimated` test to judge.
+    Inverting that check would have left such a test passing
     while silently re-flagging every problem of that shape.
     """
     import pandas as pd

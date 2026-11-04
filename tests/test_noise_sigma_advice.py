@@ -885,3 +885,59 @@ def test_observable_formulas_with_function_calls_still_parse():
     # and the plain case the real=True binding exists for still resolves
     expr = _sympify_real("s_A * (2*A_2 + x)")
     assert expr is not None and all(sym.is_real for sym in expr.free_symbols)
+
+
+# --- a scale the noise formula names, behind an offset (isensee) ----------------------------
+def _offset_scale_problem(scale_estimate=1):
+    """isensee's Calpha readout at its smallest: a background before the scale (``b + s*x``) and a
+    noise formula that names the scale (``s*rho``), so ``s`` is no amplitude to divide out."""
+    import pandas as pd
+
+    obs = pd.DataFrame(
+        {
+            "observableId": ["o"],
+            "observableFormula": ["b + s*x"],
+            "observableTransformation": ["lin"],
+            "noiseFormula": ["s*rho"],
+        }
+    ).set_index("observableId")
+    meas = pd.DataFrame(
+        {
+            "observableId": "o",
+            "simulationConditionId": "c",
+            "time": range(8),
+            "measurement": [1100.0, 700.0, 480.0, 330.0, 240.0, 180.0, 150.0, 125.0],
+        }
+    )
+    pdf = pd.DataFrame(
+        {
+            "parameterScale": ["log10"] * 3,
+            "lowerBound": [1e-5] * 3,
+            "upperBound": [1e5] * 3,
+            "nominalValue": [100.0, 1000.0, 0.03],
+            "estimate": [1, scale_estimate, 1],
+        },
+        index=pd.Index(["b", "s", "rho"], name="parameterId"),
+    )
+    return _upgraded(observable_df=obs, measurement_df=meas, parameter_df=pdf)
+
+
+def test_a_split_between_scale_and_sigma_does_not_move_the_verdict():
+    """Two models whose x differs 100x fit s 100x smaller and rho 100x larger: the same noise,
+    s*rho = 30 in measurement units. The scale was taken for the observable, so the noise read as
+    proportional and rho alone was judged against std(ln y): isensee r1 read `collapsed` on every
+    new best from v5 on, at the noise of fits that beat the reference (#237)."""
+    from petab_mcp import reconcile as R
+
+    p = _offset_scale_problem()
+    one, other = (
+        noise_sigma_report(p, {"b": 100.0, "s": 1000.0 / c, "rho": 0.03 * c})["rho"]
+        for c in (1.0, 100.0)
+    )
+    assert one["effective_sigma"] == pytest.approx(30.0)
+    for key in ("effective_sigma", "data_std", "fraction_of_data_std"):
+        assert other[key] == pytest.approx(one[key]), key
+    assert one["status"] == other["status"] == "ok"
+    # Its raw number is still the model's own, so a judge must not compare it across models.
+    assert one["scale_coupled"] and other["scale_coupled"]
+    assert not R.sigma_scale_coupled(_offset_scale_problem(scale_estimate=0), "rho")
