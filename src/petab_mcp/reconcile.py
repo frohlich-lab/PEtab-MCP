@@ -1589,6 +1589,11 @@ def _noise_expr_and_observable(problem, pid: str, rows):
     this wrong is what made an earlier attempt evaluate the formula without reference to the sigma
     at all.) Requires the covered rows to share one observable and one override list, which is the
     normal case; ``None`` otherwise so callers fail open rather than average incomparable formulas.
+
+    The observable symbol is never a parameter-table id. A scale both formulas name (isensee's
+    ``s_Calpha_global`` in ``b + s_Calpha_global*x`` and in ``s_Calpha_global*rho``) taken for it
+    made the noise read as proportional, so ``rho`` alone was judged against ``std(ln y)`` and a
+    model at other internal units read ``collapsed`` at the same noise (#237).
     """
     odf = getattr(problem, "observable_df", None)
     if odf is None or NOISE_FORMULA not in odf.columns or OBSERVABLE_ID not in rows.columns:
@@ -1626,11 +1631,11 @@ def _noise_expr_and_observable(problem, pid: str, rows):
         # is taken with respect to the symbol actually present.
         candidates = [sp.Symbol(observable_id, real=True)]
         if OBSERVABLE_FORMULA in odf.columns:
+            pdf = getattr(problem, "parameter_df", None)
+            parameter_ids = set() if pdf is None else {str(i) for i in pdf.index}
             try:
-                candidates += [
-                    sp.Symbol(name, real=True)
-                    for name in sorted(formula_symbols(odf.loc[observable_id, OBSERVABLE_FORMULA]))
-                ]
+                names = formula_symbols(odf.loc[observable_id, OBSERVABLE_FORMULA])
+                candidates += [sp.Symbol(n, real=True) for n in sorted(names - parameter_ids)]
             except KeyError:
                 pass
         free = expr.free_symbols
@@ -1916,6 +1921,11 @@ def sigma_scale_coupled(problem, pid: str) -> bool:
     """True when ``pid`` shares its noiseFormula with an ESTIMATED co-parameter, so the sigma's own
     numeric value is not comparable ACROSS MODELS -- only the combination is.
 
+    A co-parameter counts wherever it enters: as a ``noiseParameters`` entry or named in the
+    noiseFormula itself. Reading only the column missed isensee, whose formulas name their scales
+    (``s_Calpha_global*rho_Calpha_Microscopy``), so a judge compared ``rho`` raw and rejected fits
+    that beat the reference (#237).
+
     Deliberately NOT restricted to a product, and does not inspect the formula's FORM: any estimated
     co-parameter (``gain * sigma``, ``sigma + offset``) leaves the raw sigma under-determined on its
     own, and every such case is one where a cross-model raw-sigma ratio is the wrong statistic. A
@@ -1940,18 +1950,20 @@ def sigma_scale_coupled(problem, pid: str) -> bool:
     called them 179x inflated. Of 21 problems measured, that one is the ONLY one with this shape.
     """
     rows = _measurement_rows_for_sigma(problem, pid)
-    if rows is None or rows.empty or NOISE_PARAMETERS not in rows.columns:
+    if rows is None or rows.empty:
         return False
-    for cell in rows[NOISE_PARAMETERS].dropna().astype(str).unique():
-        parts = [p.strip() for p in cell.split(";")]
-        if len(parts) < 2 or pid not in parts:
-            continue
-        for other in parts:
-            # A co-factor that is itself ESTIMATED is what breaks comparability. A FIXED co-factor
-            # is a declared constant of the problem: identical on both sides, so the ratio survives.
-            if other != pid and other and is_parameter_estimated(problem, other):
-                return True
-    return False
+    names: set[str] = set()
+    if NOISE_PARAMETERS in rows.columns:
+        for cell in rows[NOISE_PARAMETERS].dropna().astype(str).unique():
+            names |= {p.strip() for p in cell.split(";")}
+    odf = getattr(problem, "observable_df", None)
+    if odf is not None and NOISE_FORMULA in odf.columns and OBSERVABLE_ID in rows.columns:
+        for oid in rows[OBSERVABLE_ID].dropna().unique():
+            if oid in odf.index:
+                names |= formula_symbols(odf.loc[oid, NOISE_FORMULA])
+    names.discard(pid)
+    # ESTIMATED co-parameters only: a FIXED one is identical on both sides, so the ratio survives.
+    return any(is_parameter_estimated(problem, n) for n in names)
 
 
 def sigma_effective_value(
@@ -1974,7 +1986,8 @@ def sigma_effective_value(
     gate uses, so the ratio is unaffected, but two models that split the same fit differently
     between gain and sigma report different values here. For a per-gel scale times a shared sigma
     the amplitude is an exact divisor of the formula, so the normalised value coincides with the
-    raw sigma.
+    raw sigma. A scale behind an offset (isensee's ``b + s*x``) is no amplitude and stays in, so
+    there the value is the sd in measurement units.
     """
     rows = _measurement_rows_for_sigma(problem, pid)
     if rows is None or rows.empty:
