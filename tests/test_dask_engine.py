@@ -565,7 +565,7 @@ def test_a_lost_cluster_fails_the_fit_and_nothing_reruns_it_here(fit_session, mo
     monkeypatch.setattr(pypesto.optimize, "minimize", spy)
     with _engine(n_workers=1) as engine:
         fit_session.engine.fit_engine = engine
-    with pytest.raises(InfrastructureError, match="^infrastructure_error: fit_pool: .*Closed"):
+    with pytest.raises(InfrastructureError, match="^infrastructure_error: fit_pool: .*closed"):
         fitting.fit_and_simulate(fit_session, fit_session.engine, do_fit=True, n_starts=2)
     assert len(engines) == 1 and engines[0].client is engine.client
 

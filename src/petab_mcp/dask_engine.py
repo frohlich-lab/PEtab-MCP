@@ -18,7 +18,8 @@ one :class:`DaskEngine`, and every fit and held-out refit of that server runs it
 * **A cluster failure fails the fit** with :class:`~petab_mcp.errors.FitBackendError`, and the
   starts never rerun on the server node (see ``fitting._run_fit``). A worker killed under a batch
   (``KilledWorker``, usually memory) is one. A lost scheduler is the pool's failure, not the run's:
-  it ends the call as the ``fit_pool`` :class:`~petab_mcp.errors.InfrastructureError`.
+  it ends the call as the ``fit_pool`` :class:`~petab_mcp.errors.InfrastructureError`, and the
+  next fit runs on the pool once it is back at the same address (:class:`DaskEngine`).
 * **A batch has a deadline**: its starts' caps plus
   :data:`~petab_mcp.multistart.FIT_DEADLINE_MARGIN_S` from when it began running, as the scheduler
   hears from its worker's heartbeats. One past it is cancelled and its starts are scored as failed
@@ -30,9 +31,10 @@ one :class:`DaskEngine`, and every fit and held-out refit of that server runs it
   root at the same absolute path. pyPESTO's creator and AMICI's importer would instead compile it
   there, inside the build root every session shares, so :class:`_NoBuild` makes them raise
   ``fit_pool``: the build root is not shared with the workers.
-* **A pool from another environment is refused** as the engine connects, naming both versions
-  (:func:`versions`): a start is pickled, so it would fail every fit with errors that are hard to
-  read. This catches a pin bump made without restarting the pool.
+* **A pool from another environment is refused** as the engine connects and at every fit, naming
+  both versions (:func:`versions`): a start is pickled, so it would fail every fit with errors that
+  are hard to read. This catches a pin bump made without restarting the pool, and a pool restarted
+  from another environment.
 
 With :mod:`petab_mcp.pool`, the only module that imports ``distributed`` (the ``dask`` extra); a
 server without a cluster never imports it.
@@ -153,29 +155,70 @@ class _NoBuild(WorkerPlugin):
         PetabImporter._do_import_sbml = _refuse_build
 
 
+def _check(client: Client) -> None:
+    """Refuse the pool ``client`` is on, as ``fit_pool``, unless its scheduler runs this
+    environment, naming both."""
+    here, there = versions(), client.run_on_scheduler(versions)
+    if here != there:
+        differ = [
+            f"{n} {there.get(n)} there, {v} here" for n, v in here.items() if there.get(n) != v
+        ]
+        raise InfrastructureError(
+            FIT_POOL,
+            f"the pool at {client.scheduler.address} runs another environment "
+            f"({'; '.join(differ)}): start a pool from this server's environment",
+        )
+
+
+def _connect(cluster) -> Client:
+    """A new client of ``cluster``, its pool checked and :class:`_NoBuild` registered on it; closed
+    again if either fails."""
+    client = Client(cluster)
+    try:
+        _check(client)
+        client.register_plugin(_NoBuild())  # a no-op where the pool registered it first
+    except BaseException:
+        client.close()
+        raise
+    return client
+
+
+class _Connection:
+    """The client a :class:`DaskEngine` and its copies fit through, replaced under :attr:`lock`."""
+
+    def __init__(self, cluster) -> None:
+        self.cluster, self.lock, self.client = cluster, threading.Lock(), _connect(cluster)
+
+    def open(self) -> Client:
+        """The client, a new one where it has closed, its pool checked."""
+        with self.lock:
+            if self.client.status == "closed":
+                self.client = _connect(self.cluster)
+            client = self.client
+        _check(client)
+        return client
+
+
 class DaskEngine(CappedEngine):
     """A pyPESTO engine that runs tasks on ``cluster``, a cluster or its scheduler's address,
-    ``starts_per_task`` to a dask task, through a client of its own."""
+    ``starts_per_task`` to a dask task, through a client of its own.
+
+    A pool restarted at the same address serves the next fit without restarting the server. The
+    client reconnects by itself for ``distributed.comm.timeouts.connect`` (30 s), then closes for
+    good, and a pool resubmitted to SLURM took 4 min to come back (NEMO, 2026-11-04). So a fit that
+    finds the client closed opens a new one, which this engine and every copy :meth:`batched` made
+    then share; while the pool is still away, that fit fails as ``fit_pool`` and the next one tries
+    again. Every fit checks the pool's versions first, one call to the scheduler as each of its
+    polls is, since a client that reconnected by itself never checked the pool it is now on.
+    """
 
     #: Starts per dask task; a fit sets its own, and their cap, through :meth:`batched`.
     starts_per_task = 1
 
     def __init__(self, cluster) -> None:
         super().__init__()
-        self.client = Client(cluster)
-        here, there = versions(), self.client.run_on_scheduler(versions)
-        if here != there:
-            pool = self.client.scheduler.address
-            self.client.close()
-            differ = [
-                f"{n} {there.get(n)} there, {v} here" for n, v in here.items() if there.get(n) != v
-            ]
-            raise InfrastructureError(
-                FIT_POOL,
-                f"the pool at {pool} runs another environment ({'; '.join(differ)}): start a pool "
-                "from this server's environment",
-            )
-        self.client.register_plugin(_NoBuild())  # a no-op where the pool registered it first
+        self._connection = _Connection(cluster)
+        self.client = self._connection.client
 
     def batched(
         self, k: int, start_seconds: float = math.inf, rerun: frozenset[str] = frozenset()
@@ -222,6 +265,7 @@ class DaskEngine(CappedEngine):
         futures, batches = [], list(itertools.batched(range(len(tasks)), self.starts_per_task))
         sizes = [len(batch) for batch in batches]
         try:
+            self.client = self._connection.open()  # this fit's, for _wait and _look too
             for j, batch in enumerate(batches):
                 payloads = [cloudpickle.dumps(tasks[i]) for i in batch]
                 futures.append(self.client.submit(_work, payloads, priority=-j, pure=False))
