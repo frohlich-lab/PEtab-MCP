@@ -85,7 +85,9 @@ the fits still waiting. It needs:
 - **every server inside a SLURM allocation**, never on the login node: a server compiles every model
   itself, and a worker never does;
 - **one `--build-root` on storage the compute nodes share**, the same for every server of the pool,
-  not `$TMPDIR`: the workers import the compiled models by the server's path;
+  not `$TMPDIR`: the workers import the compiled models by the server's path. Servers on two nodes
+  building one model wait for each other through a POSIX (`fcntl`) lock there, so the storage's
+  locks must hold across nodes, as GPFS's do;
 - **one environment for the pool and its servers**: a start is pickled, so a server refuses a pool
   whose `amici`, `pypesto`, `petab` or `petab-mcp` differs from its own, naming both. After a pin
   bump, restart the pool;

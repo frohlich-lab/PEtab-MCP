@@ -92,17 +92,19 @@ def _looks_finished(output_folder: str | Path, model_name: str) -> bool:
 @contextmanager
 def build_lock(output_folder: str | Path, model_name: str) -> Iterator[None]:
     """Hold ``<output_folder>.lock`` while pyPESTO may build the module ``model_name`` there,
-    waiting while another session or process holds it.
+    waiting while another session or process, on this node or another, holds it.
 
     The build root is shared by every session and process (on a fit pool, every run's server, each
     building on its own node; the pool's workers only import) and keyed by AMICI and module hash, so
-    two of them reaching one structure name one folder — and AMICI deletes the files it finds there before it generates code, so a second build
-    corrupts the first. The second waits for the first (:func:`petab_mcp.filelock.lock`), then
-    finds the module finished and imports it. Nothing bounds the wait here: it lasts the holder's
-    build, which its client bounds, and a holder that dies releases the lock. A module whose build
-    FINISHED takes no lock: importing it is safe beside anything, and that is what every re-fit of a
-    structure does. Finished means its holder marked it (``.built``) once its own import succeeded —
-    the extension alone is no signal, since the install step writes it before the build is done.
+    two of them reaching one structure name one folder — and AMICI deletes the files it finds there
+    before it generates code, so a second build corrupts the first. The second waits for the first
+    (:func:`petab_mcp.filelock.lock`, which holds across the nodes of a GPFS share; ``flock`` does
+    not), then finds the module finished and imports it. Nothing bounds the wait here: it lasts the
+    holder's build, which its client bounds, and a holder that dies releases the lock. A module
+    whose build FINISHED takes no lock: importing it is safe beside anything, and that is what every
+    re-fit of a structure does. Finished means its holder marked it (``.built``) once its own import
+    succeeded — the extension alone is no signal, since the install step writes it before the build
+    is done.
 
     AMICI compiles only into a missing folder and imports whatever folder is there, so a build that
     stopped would fail every later build of its structure. Under the lock, an unfinished folder is
@@ -116,8 +118,7 @@ def build_lock(output_folder: str | Path, model_name: str) -> Iterator[None]:
         yield
         return
     folder.parent.mkdir(parents=True, exist_ok=True)
-    fd = filelock.lock(folder.with_name(f"{folder.name}.lock"))
-    try:
+    with filelock.lock(folder.with_name(f"{folder.name}.lock")):
         if _build_finished(folder, model_name):  # the build we waited for, or one before the lock
             yield
             return
@@ -131,8 +132,6 @@ def build_lock(output_folder: str | Path, model_name: str) -> Iterator[None]:
                 shutil.rmtree(folder, ignore_errors=True)
             raise
         (folder / ".built").touch()
-    finally:
-        os.close(fd)
 
 
 class AmiciEngine:
