@@ -636,6 +636,87 @@ def test_the_read_tools_leave_their_large_parts_out_unless_asked(tmp_path):
     asyncio.run(go())
 
 
+def test_get_version_summarises_a_part_the_mcp_client_would_refuse(tmp_path):
+    """lucarelli's `get_version(include=["simulation"])` passed the MCP Python client's 1 MiB SSE
+    event limit and ended a gemot run (PEtab-MCP#231). Its 1755 records are ~0.55 MB of JSON but
+    ~1.1 MB as the result is sent, text content and structuredContent both, so the cap must be
+    measured on the wire. Driven over streamable HTTP with the client gemot runs on, which raises on
+    a reply over the limit."""
+    from fastmcp.utilities.tests import run_server_async
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamable_http_client
+
+    mcp = _server(tmp_path)
+    record = {
+        "experiment_id": "experiment_condition_with_a_long_name_12",
+        "time": 123.456789,
+        "measurement": 0.123456789012,
+        "simulation": 0.123456789012,
+        "residual": 0.0123456789012,
+        "residual_weighted": 0.5,
+        "noise": 0.0123456789012,
+        "noise_parameters": ["sigma_obs_a_long_observable_name"],
+    }
+
+    def store(version, n_records):
+        vdir = tmp_path / "prov" / "versions" / f"v{version}"
+        records = [{"observable_id": f"observable_{i % 2}", **record} for i in range(n_records)]
+        simulation = {
+            "n_data_points": n_records,
+            "k_eff": 2.5,
+            "noise_sigma_report": {"sigma_A": {"value": 0.1}},
+            "records": records,
+        }
+        optimization = {
+            "n_starts": 50,
+            "starts": [{"start": i, "fval": float(i), "x": [0.1] * 10} for i in range(50)],
+            "trace": [{"start": 0, "iteration": 0, "fval": 1.0, "time": 0.1}] * 20_000,
+        }
+        (vdir / "simulations.json").write_text(json.dumps(simulation))
+        (vdir / "optimization.json").write_text(json.dumps(optimization))
+
+    async def go():
+        for antimony in (_REVERSIBLE_ANTIMONY, _ONE_REACTION_ANTIMONY):
+            change = {"antimony": antimony, "justification": "x", "references": ["PMID:1"]}
+            assert _structured(await mcp.call_tool("make_changes", change))["committed"] is True
+        store(0, 1755)
+        store(1, 10)
+        async with (
+            run_server_async(mcp, transport="streamable-http") as url,
+            streamable_http_client(url) as (read, write),
+            ClientSession(read, write) as client,
+        ):
+            await client.initialize()
+
+            async def get(version, include):
+                args = {"version": version, "include": include}
+                result = await client.call_tool("get_version", args)
+                assert not result.is_error
+                return result.structured_content
+
+            simulation = (await get(0, ["simulation"]))["simulation"]
+            assert "records" not in simulation
+            assert "simulations_history WHERE version = 0" in simulation["omitted"]
+            assert simulation["chi2_by_observable"] == {
+                "observable_0": {"n": 878, "chi2": 219.5},
+                "observable_1": {"n": 877, "chi2": 219.25},
+            }
+            # What gemot's judge reads off the part.
+            assert simulation["k_eff"] == 2.5 and simulation["n_data_points"] == 1755
+            assert simulation["noise_sigma_report"] == {"sigma_A": {"value": 0.1}}
+
+            both = await get(0, ["simulation", "optimization"])
+            assert "records" not in both["simulation"]
+            assert "starts" not in both["optimization"] and "trace" not in both["optimization"]
+            assert both["optimization"]["fvals"] == [float(i) for i in range(50)]
+            # The larger part goes first, so v1's small simulation comes back whole.
+            both = await get(1, ["simulation", "optimization"])
+            assert len(both["simulation"]["records"]) == 10
+            assert "fvals" in both["optimization"]
+
+    asyncio.run(go())
+
+
 def test_a_re_author_is_not_refused_when_a_model_exists(tmp_path):
     # A re-author is NOT refused on an existing model — it replaces it wholesale.
     mcp = _server(tmp_path)
