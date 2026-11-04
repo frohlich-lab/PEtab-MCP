@@ -67,6 +67,7 @@ from copy import deepcopy
 
 import libsbml
 import pysb
+import sympy
 from indra.assemblers.pysb.assembler import _n, get_monomer_pattern
 from indra.statements import Agent
 from petab.v1.models.sbml_model import SbmlModel
@@ -126,7 +127,8 @@ def to_antimony(
 
     ``notes``, when given, collects what t = 0 holds that nothing declared and the caller may
     not expect: kinds the rules make from nothing, which start empty, and a seed's location chosen
-    among several.
+    among several; each catalyst a row takes in every state (:func:`_stateless_catalysts`); and the
+    readouts no input reaches (:func:`_input_free_readouts`).
 
     The rules are reduced before they are expanded (:mod:`reduction`), unless ``reduce`` is off
     (the expansion the tests compare it with), and ``network``, when given, receives the
@@ -330,6 +332,24 @@ def to_antimony(
             observable = model.observables[name]
             if not reduction.reads(reduced.amounts.get(observable, observable), present):
                 raise MechanismError(_unformed(e, observable, written))
+    if notes is not None:
+        # On the reduced rules' expansion, where a catalyst is its amount (:mod:`reduction`).
+        constant = {
+            e.prefix
+            for e in emissions
+            if (catalysts := [reduced.catalysts[r][1] for r in e.rules if r in reduced.catalysts])
+            and not any(
+                _species_set(model, c, whole) or _rate_of_change(model, c) != 0 for c in catalysts
+            )
+        }
+        notes.extend(_stateless_catalysts(rows, emissions, constant))
+        read = {readouts[k]: amount for k, amount in amounts.items()}
+        if free := _input_free_readouts(model, read, whole, targets, seeds):
+            notes.append(
+                f"No input reaches the readouts {', '.join(f'`{r}`' for r in free)}: nothing "
+                "their rates of change read, nor in turn what those read, is set by an experiment, "
+                "so each is the same in every experiment, and flat after pre-equilibration."
+            )
     if network is not None:
         network.update(reduction.sizes(model, reduced, present))
     if as_written is not None:
@@ -900,6 +920,159 @@ def _site_states(model: pysb.Model, emissions) -> tuple[dict, dict]:
         for state in _states([initial.pattern]):
             puts.setdefault(state, set()).add(None)
     return reads, puts
+
+
+def _stateless_catalysts(rows, emissions, constant: set[str]) -> list[str]:
+    """What each row whose catalyst names no state, while another row's statement changes that
+    agent's state, is told: every state catalyses, and the row as it would name one; and for the
+    rows in ``constant``, that what their rate reads of the catalyst never changes. raimundez's
+    ``MEK phosphorylates MAPK`` read ``MEK{u} + MEK{p}``, which sum to the seed: ``pMAPK`` stayed
+    flat in every experiment of 18 versions, and the agent never looked at that rate
+    (PEtab-MCP#232)."""
+    from .notation import agent_text, statement_text
+    from .statements import _catalyst, _products, _reactants
+
+    out = []
+    for row, e in zip(rows, emissions):
+        stmt, enzyme = row[0], _catalyst(row[0])[0]
+        if enzyme is None or enzyme.mods or enzyme.activity is not None:
+            continue
+        name = _n(enzyme.name)
+        forms, writers = {}, []  # the catalyst's forms other rows turn into each other, and they
+        for other in rows:
+            taken = [a for a in _reactants(other[0]) if _n(a.name) == name]
+            given = [a for a, effect in _products(other[0]) if effect > 0 and _n(a.name) == name]
+            if other[2] != e.prefix and taken and given:
+                writers.append(other[2])
+                forms |= {agent_text(a.to_json()): a for a in taken + given}
+        if not writers:
+            continue
+        active = next(
+            (
+                agent
+                for agent in forms.values()
+                if (agent.mods or agent.activity)
+                and all(m.is_modified for m in agent.mods)
+                and (agent.activity is None or agent.activity.is_active)
+            ),
+            None,
+        )
+        example = ""
+        if active is not None:
+            named = deepcopy(enzyme)
+            named.mods, named.activity = list(active.mods), active.activity
+            written = deepcopy(stmt)
+            setattr(written, next(k for k, v in vars(stmt).items() if v is enzyme), named)
+            regulators = {k: [a.to_json() for a in v] for k, v in (row[4:5] or [{}])[0].items()}
+            try:
+                example = f": `{statement_text({**written.to_json(), **regulators})}`"
+            except ValueError:
+                example = f": `{agent_text(named.to_json())}`"
+        text = (
+            f"Row `{e.prefix}` names no state of {enzyme.name}, its catalyst, so every state of it "
+            f"catalyses ({' and '.join(sorted(forms))} alike), though "
+            f"{', '.join(f'`{w}`' for w in writers)} changes it. To make one form the enzyme, "
+            f"name its state{example}."
+        )
+        if e.prefix in constant:
+            text += (
+                f" No reaction changes the amount of {enzyme.name} this rate reads, and no "
+                f"condition sets it, so nothing upstream of {enzyme.name} moves the rate."
+            )
+        out.append(text)
+    return out
+
+
+def _input_free_readouts(
+    model: pysb.Model, amounts: dict, set_: set[str], targets, seeds
+) -> list[str]:
+    """The readouts no input reaches in ``model``'s equations, as BioNetGen expands the reduced
+    rules: from each readout's amount, what its time derivative reads, and in turn what theirs read,
+    with no species of a molecule the experiment sets (``set_``), no condition target among the
+    parameters or the starting amounts (``targets``, ``seeds``), and no ``time``. A catalyst is its
+    amount there (:mod:`reduction`), whose derivative is 0 where it sums every state of a molecule
+    nothing makes or removes: raimundez's ``MEK()`` (PEtab-MCP#232). Empty where the problem has
+    no input at all."""
+    if not (set_ or targets):
+        return []
+    declared = {
+        f"{name}_init": {n.getName() for n in _ast_nodes(_parse(amount)) if n.isName()}
+        for name, _, amount in seeds
+        if isinstance(amount, str)
+    }
+    starts = {
+        model.get_species_index(initial.pattern): {
+            x.name for x in _species_amount(initial.value).free_symbols
+        }
+        | declared.get(initial.value.name, set())
+        for initial in model.initials
+    }
+
+    def reached(amount) -> bool:
+        todo, seen = [amount], set()
+        while todo:
+            quantity = todo.pop()
+            if quantity in seen:
+                continue
+            seen.add(quantity)
+            if _species_set(model, quantity, set_) or any(
+                starts.get(i, set()) & targets for i in _species_set(model, quantity)
+            ):
+                return True
+            for x in _rate_of_change(model, quantity).free_symbols:
+                if x == time or x.name in targets:
+                    return True
+                if isinstance(x, pysb.Observable) or _species_index(x) is not None:
+                    todo.append(x)
+        return False
+
+    return sorted(name for name, amount in amounts.items() if not reached(amount))
+
+
+def _species_amount(quantity) -> sympy.Expr:
+    """``quantity`` (an observable, an expression, a :class:`reduction.Amount`, a species symbol, a
+    parameter) over the species it sums."""
+    if isinstance(quantity, reduction.Amount):
+        quantity = quantity.value()
+    if isinstance(quantity, pysb.Observable):
+        return quantity.expand_obs()
+    if isinstance(quantity, pysb.Expression):
+        return quantity.expand_expr(expand_observables=True)
+    return quantity.subs({o: o.expand_obs() for o in quantity.atoms(pysb.Observable)})
+
+
+def _species_index(symbol) -> int | None:
+    """The species a symbol of PySB's equations stands for (``__s3``), or ``None``."""
+    name = symbol.name
+    return int(name[3:]) if name.startswith("__s") and name[3:].isdigit() else None
+
+
+def _species_set(model: pysb.Model, quantity, monomers: set[str] | None = None) -> set[int]:
+    """The species ``quantity`` sums, or only those holding one of ``monomers``."""
+    found = {
+        i for x in _species_amount(quantity).free_symbols if (i := _species_index(x)) is not None
+    }
+    if monomers is None:
+        return found
+    return {
+        i
+        for i in found
+        if any(mp.monomer.name in monomers for mp in model.species[i].monomer_patterns)
+    }
+
+
+def _rate_of_change(model: pysb.Model, quantity) -> sympy.Expr:
+    """The time derivative of ``quantity`` in ``model``'s equations, with each rate's expressions
+    written out and its observables kept: 0 where no reaction changes it, else what it reads."""
+    total = _species_amount(quantity)
+    rate = sympy.Add(
+        *(
+            total.diff(x) * model.odes[i]
+            for x in total.free_symbols
+            if (i := _species_index(x)) is not None
+        )
+    )
+    return sympy.expand(rate.subs({e: e.expand_expr() for e in rate.atoms(pysb.Expression)}))
 
 
 def _misnamed(prefix: str, rules: list[str], reads: dict, puts: dict) -> str:
