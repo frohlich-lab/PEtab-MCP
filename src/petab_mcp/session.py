@@ -12,6 +12,7 @@ import contextlib
 import math
 import threading
 import time
+from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -116,19 +117,6 @@ _PROGRESS_ON_RESULT = (
 def _n_unique(df, column: str) -> int:
     """How many distinct ``column`` ids ``df`` names; 0 for an absent table."""
     return 0 if df is None or column not in df.columns else int(df[column].nunique())
-
-
-def _noise_sigma_assessable(report: "dict[str, Any] | None") -> bool:
-    """Whether ANY entry in a noise_sigma_report was actually assessable — i.e. carries a usable
-    ``fraction_of_data_std``. An entry whose observable std can't be computed is reported with
-    ``status: "unknown"`` and makes both plausibility predicates fail open, so callers must not
-    read "not inflated and not collapsed" as evidence of plausibility."""
-    if not isinstance(report, dict):
-        return False
-    return any(
-        isinstance(e, dict) and isinstance(e.get("fraction_of_data_std"), (int, float))
-        for e in report.values()
-    )
 
 
 @dataclass(frozen=True)
@@ -304,21 +292,12 @@ class PetabSession:
         #   * ``non_improving_streak`` — consecutive fitted ops since the last new best; the hard
         #     stall cap fires on it.
         #   * ``best`` — the best-scoring fitted model so far (see :class:`Checkpoint`).
-        #   * ``op_history`` — per-op (version, score, running best_score, gof p, is_new_best), to
-        #     surface "best-score improvement over the last N ops" and to detect a plateau.
+        #   * ``op_history`` — per-op (version, score, running best_score, gof p, is_new_best, and
+        #     ``no_reset``: why a new best did not reset the streak), to surface "best-score
+        #     improvement over the last N ops", to detect a plateau, and for the cap's stop_reason.
         # All writes happen under ``self.lock`` on the commit path (fits already hold it); reads go
         # through ``progress_report`` which takes the lock for a consistent snapshot.
         self.non_improving_streak: int = 0
-        # Whether ANY fit of this session has produced a plausible (non-flagged) estimated sigma.
-        # While False, the sigma-plausibility term is a CONSTANT for this problem -- on some
-        # problems (96 of 96 streak-capped sessions on two of them) no fit ever clears the data-std
-        # band, usually because ONE observable's explainable variance puts its ML sigma over the
-        # 0.75 cap regardless of model quality.
-        # A constant cannot discriminate progress from stagnation, so letting it block the streak
-        # reset silently turns the adaptive cap into a FIXED 15-fit budget and mislabels the stop
-        # "structural inadequacy". Fits with no estimated sigma at all leave this False; they take
-        # the plain-score reset below anyway, so the flag is only consulted where it is real.
-        self.ever_sigma_plausible: bool = False
         self.best: Checkpoint | None = None
         self.op_history: list[dict[str, Any]] = []
 
@@ -549,19 +528,6 @@ class PetabSession:
             for ev in self.provenance.recent_events(0):
                 if "invalid_comparison" in ev:
                     self.invalid_comparison = ev.get("invalid_comparison")
-                # Rebuild the plausibility latch from EVERY event, before the best-score filter
-                # below: it records whether the band was ever satisfiable on this problem, which
-                # is a property of the session, not of its best model. Without this a resume
-                # restarts with the latch False and silently re-enters the uninformative regime —
-                # gamed improvements would advance the streak at the discounted weight on a problem
-                # the session had already demonstrated clears the band. Same predicates as the live
-                # latch in record_fit_progress, off the same persisted fields.
-                if (
-                    ev.get("noise_sigma_estimated")
-                    and ev.get("noise_sigma_assessable")
-                    and not (ev.get("noise_sigma_inflated") or ev.get("noise_sigma_collapsed"))
-                ):
-                    self.ever_sigma_plausible = True
                 # `score_of` already rejects non-finite values, so a resume can't seed the
                 # checkpoint with a NaN that no later fit could beat (see record_fit_progress).
                 score = self.criterion.score_of(ev)
@@ -1216,17 +1182,20 @@ class PetabSession:
 
         Called after a fit ran. Restores and simulate-only passes are NOT ops and never perturb
         the streak or the checkpoint.
-        Resets the non-improving streak and adopts this version as the best-score checkpoint when
-        ``is_new_best`` fires, else increments the streak. Since ``is_new_best`` tracks the
-        session's criterion (see :func:`fitting.compute_improvement`), a new best is exactly a new
-        best-score checkpoint — the
-        flag, the streak, and the checkpoint stay in lock step on one score. EXCEPTION: a new best
-        whose better score was bought by an implausible ESTIMATED noise sigma (inflated/collapsed) does
-        NOT reset the streak, and is NOT adopted at all when it would OVERWRITE a currently-plausible
-        best (the sigma gate would fail the gamed model). So a plausible would-pass checkpoint
-        survives a later gamed fit, and an all-gamed session trips the streak cap instead of
-        running to the client's step limit. A gamed fit is still recorded as best over an
-        absent/already-gamed best.
+        A new best the checkpoint adopts (see :meth:`_adopt_checkpoint`) resets the non-improving
+        streak; any other fit increments it. Since ``is_new_best`` tracks the session's criterion
+        (see :func:`fitting.compute_improvement`), the flag, the streak, and the checkpoint stay in
+        lock step on one score.
+
+        One exception: an adopted new best whose ESTIMATED noise sigma collapsed increments the
+        streak, and its op records why (``no_reset``), which the cap's ``stop_reason`` counts. The
+        two implausible tails differ in whether a model can keep improving through them. An
+        INFLATED sigma cannot buy a lower score: at the ML optimum sigma_hat is the rms residual, so
+        nll = n/2 * log(2*pi*e*sigma^2) rises with sigma, and the inflation is a symptom of the
+        misfit, not the source of the gain. A COLLAPSED one can: nll is unbounded below as
+        sigma_hat -> 0, checked only by k*ln(n), so a model fitting a small observable group nearly
+        exactly gains without limit. The plateau stop never fires on an estimated sigma (see
+        :meth:`progress_report`), so the cap is the only bound on that.
 
         Takes ``self.lock`` itself (a reentrant ``RLock``, so this is safe whether or not the
         caller already holds it) so the write path is self-contained and symmetric with the locked
@@ -1262,20 +1231,8 @@ class PetabSession:
             if "noise_sigma_collapsed" in fitsim
             else noise_sigma_collapsed(report)
         )
-        sig_assessable = (
-            fitsim["noise_sigma_assessable"]
-            if "noise_sigma_assessable" in fitsim
-            else _noise_sigma_assessable(report)
-        )
 
         with self.lock:
-            # Latch BEFORE the streak decision, off EVERY fit (not only new bests): one plausible
-            # sigma anywhere in the session proves the band is satisfiable on this problem, which is
-            # exactly the condition under which "implausible" regains meaning as a progress signal.
-            # sig_assessable guards the vacuous case -- a report whose every entry is status
-            # "unknown" is not evidence the band was cleared, only that it was never tested.
-            if sigma_estimated and sig_assessable and not (sig_inflated or sig_collapsed):
-                self.ever_sigma_plausible = True
             # `score is not None` is NOT enough: a NaN is a float, so a fit whose likelihood
             # came back non-finite would be adopted as the checkpoint and then never beaten
             # (every later `score <= NaN - delta` is False). goodness_of_fit already maps
@@ -1298,50 +1255,15 @@ class PetabSession:
                 else None
             )
             adopted = candidate is not None and self._adopt_checkpoint(candidate, is_new_best)
-            if adopted:
-                # A sigma-gamed "improvement" is not genuine progress even when adopted (it can
-                # only be adopted here over an absent/already-gamed best): it does NOT reset the
-                # non-improving streak, so an all-gamed session trips the streak cap instead of
-                # burning to the client's step limit.
-                #
-                # ...but the penalty is only MEANINGFUL once this session has shown a plausible
-                # sigma is reachable at all. On a problem where no fit ever clears the band the term
-                # is a constant: it cannot tell a gamed improvement from an honest one, and blocking
-                # every reset on it converts the cap into a fixed fit budget (on two such problems,
-                # 96 of 96 sessions stopped at exactly cap fits with BIC still falling, and were
-                # told the stop meant "structural inadequacy").
-                #
-                # There IS one case where dropping the penalty would be unsafe, and it is not
-                # the inflated one. The PLATEAU stop never fires on an estimated sigma (see
-                # progress_report), so the cap is the only stop left. But the two tails differ in
-                # whether a session can keep IMPROVING through them:
-                #
-                #   * INFLATED cannot. At the ML optimum sigma_hat IS the rms residual, so
-                #     nll = n/2 * log(2*pi*e*sigma^2) RISES monotonically with sigma: a model
-                #     cannot buy a lower BIC by widening its noise, and a fit whose sigma is
-                #     inflated is one whose residuals are large. The inflation is a SYMPTOM of
-                #     the misfit, not the mechanism of the gain -- so a new best carrying it is
-                #     genuine BIC progress, and a session that stops making progress still trips the
-                #     cap through the non-improving branch below.
-                #   * COLLAPSED can. nll is unbounded BELOW as sigma_hat -> 0, checked only by
-                #     k*ln(n), so a model that fits a small observable group nearly exactly gains
-                #     without limit. That is a real exploit with no natural floor, and it is the
-                #     case the streak cap has to keep bounding even while the band is
-                #     uninformative.
-                #
-                # Hence: reset on an improvement whose only implausibility is inflation; keep the
-                # penalty when the sigma collapsed. Discounting both tails by a fixed fraction
-                # would be a magic constant guarding a runaway the inflated tail cannot produce.
-                if not candidate.sigma_gamed or (
-                    sig_inflated and not sig_collapsed and not self.ever_sigma_plausible
-                ):
-                    self.non_improving_streak = 0
-                else:
-                    self.non_improving_streak += 1
+            # The one adopted new best that is not progress (see the docstring).
+            no_reset = (
+                "a collapsed estimated noise sigma"
+                if adopted and candidate.sigma_estimated and candidate.sigma_collapsed
+                else None
+            )
+            if adopted and no_reset is None:
+                self.non_improving_streak = 0
             else:
-                # Not progress -> advance the streak: a non-improving fit, a non-finite score, OR a
-                # gamed fit blocked from overwriting a plausible best. None is adopted; none resets
-                # the streak, so a stalled/gaming session still trips the cap rather than reset it.
                 self.non_improving_streak += 1
 
             self.op_history.append(
@@ -1352,6 +1274,7 @@ class PetabSession:
                     "best_score": self.best.score if self.best else None,
                     "gof_pvalue": gof_p,
                     "is_new_best": adopted,
+                    **({"no_reset": no_reset} if no_reset else {}),
                 }
             )
 
@@ -1420,9 +1343,17 @@ class PetabSession:
             )
             stop_reason = None
             if streak >= NON_IMPROVING_STREAK_CAP:
+                # The new bests inside the streak, by why they did not reset it.
+                kept = Counter(op["no_reset"] for op in hist[n_ops - streak :] if "no_reset" in op)
                 stop_reason = (
                     f"non-improving-streak cap reached ({streak} consecutive fitted ops with no "
-                    f"new best, cap {NON_IMPROVING_STREAK_CAP})."
+                    f"new best{' that counts as progress' if kept else ''}, cap "
+                    f"{NON_IMPROVING_STREAK_CAP}"
+                    + "".join(
+                        f"; {n} of them were new bests with {why}, which does not"
+                        for why, n in kept.items()
+                    )
+                    + ")."
                 )
             elif (
                 adequate_by is not None
@@ -1745,7 +1676,6 @@ class PetabSession:
             fitsim["noise_sigma_estimated"] = bool(_nsr)
             fitsim["noise_sigma_inflated"] = noise_sigma_inflated(_nsr)
             fitsim["noise_sigma_collapsed"] = noise_sigma_collapsed(_nsr)
-            fitsim["noise_sigma_assessable"] = _noise_sigma_assessable(_nsr)
             # NOTE: fitsim["residual_flagged"] is already set above from the SAME rollup, as the
             # TRI-STATE bool|None (None = NEITHER arm could run — not merely the sign/runs tests: a
             # collapsed or unevaluable sigma leaves no weighted residual, and the replicate
@@ -1768,7 +1698,6 @@ class PetabSession:
                     "noise_sigma_inflated": fitsim["noise_sigma_inflated"],
                     "noise_sigma_collapsed": fitsim["noise_sigma_collapsed"],
                     "residual_flagged": fitsim["residual_flagged"],
-                    "noise_sigma_assessable": fitsim["noise_sigma_assessable"],
                     "nesting_advisory": nesting_advisory,
                     # The OUTSTANDING flag as it stands after this commit (this fit's advisory, an
                     # earlier one this fit did not clear, or None). `nesting_advisory` alone cannot
