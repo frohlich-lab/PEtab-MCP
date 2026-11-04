@@ -56,9 +56,9 @@ Or seed an agent at the input's id alone, which makes that agent the input; rows
     statements=["r1: A phosphorylates B at S10"], bindings={"r1": "two_step"},
     seeds=[{"agent": "A", "amount": "dose"}]
 
-Every period sets `A`. It is held while the rows only bind it or catalyse with it, and started when
-a row makes, converts or degrades it. A binding reads parameters only: beside this seed,
-`k="k0*dose"` is refused.
+Every period sets `A`. It is held while rows only catalyse with it or bind it reversibly, and started
+when a row makes, converts, degrades, modifies or binds it one way. A binding reads parameters only:
+beside this seed, `k="k0*dose"` is refused.
 
 The binding and the seed at the id follow every period's value. A seed's amount that reads the
 input (`2*dose`) takes the first period's value alone, the pre-equilibration one where there is

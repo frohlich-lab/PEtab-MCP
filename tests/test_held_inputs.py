@@ -3,7 +3,14 @@
 from __future__ import annotations
 
 import pytest
-from indra.statements import Agent, Complex, DecreaseAmount, IncreaseAmount, ModCondition
+from indra.statements import (
+    Agent,
+    Complex,
+    DecreaseAmount,
+    IncreaseAmount,
+    ModCondition,
+    Phosphorylation,
+)
 from petab.v1.models.sbml_model import SbmlModel
 
 from petab_mcp import operations as O
@@ -112,6 +119,52 @@ def test_a_seed_at_a_condition_target_makes_its_agent_that_input(degraded):
     assert sbml.getSpecies("Fsk").getInitialAmount() == 0.0
     assert sbml.getInitialAssignmentBySymbol("Fsk") is None
     assert sbml.getParameter("forskolin_init") is None
+
+
+@pytest.mark.parametrize(
+    ("row", "agent", "target"),
+    [
+        (
+            (Phosphorylation(Agent("TGFBR1"), Agent("SMAD2"), "S", "465"), "processive", "S2_phos"),
+            Agent("SMAD2"),
+            "init_S2",
+        ),
+        (
+            (Complex([Agent("TGFB1"), Agent("TGFBR1")]), "assembly", "rec_act"),
+            Agent("TGFB1"),
+            "init_TGFb",
+        ),
+        (
+            (Phosphorylation(Agent("A"), Agent("B"), "S", "10"), "indra_two_step", "r1"),
+            Agent("B"),
+            "dose",
+        ),
+    ],
+    ids=["phosphorylated", "bound", "two-step substrate"],
+)
+def test_a_seed_a_row_uses_up_is_a_started_state(row, agent, target):
+    """lucarelli seeds its SMADs and TGF-beta at condition targets and its rows phosphorylate them
+    and bind them for good. Neither made nor converted into another monomer, they were held and
+    never depleted: nll 4963.76 where it scored 2379.369 before PEtab-MCP#199 (PEtab-MCP#246)."""
+    antimony, _ = PS.to_antimony(
+        [row], {}, seeds=[("s", agent, target)], targets=frozenset({target})
+    )
+    model = SbmlModel.from_antimony(antimony)
+    assert not model.sbml_model.getSpecies(target).getBoundaryCondition()
+
+
+@pytest.mark.parametrize("policy", [INDRA_DEFAULT, "indra_two_step"])
+def test_a_seed_a_row_only_catalyses_with_stays_held(policy):
+    """A two-step enzyme binds its substrate and is let go by the same row: the statements-grammar
+    skill's own seed at `dose`, which stays the input as a one-step catalyst does (PEtab-MCP#246)."""
+    antimony, _ = PS.to_antimony(
+        [(Phosphorylation(Agent("A"), Agent("B"), "S", "10"), policy, "r1")],
+        {},
+        seeds=[("A", Agent("A"), "dose")],
+        targets=frozenset({"dose"}),
+    )
+    model = SbmlModel.from_antimony(antimony)
+    assert model.sbml_model.getSpecies("dose").getBoundaryCondition()
 
 
 def test_a_condition_target_names_its_species_before_a_readout_does():

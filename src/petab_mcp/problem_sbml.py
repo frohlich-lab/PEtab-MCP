@@ -107,10 +107,11 @@ def to_antimony(
     it fails on.
 
     An experiment's INPUT is held instead, with no starting amount of its own: a species of
-    ``entities`` among ``targets`` (the problem's condition targets) that no row makes or
-    converts, which its periods set, and each of ``inputs`` (the problem's :mod:`protocols`),
-    under its protocol. An input the entity map does not name is the agent of its id. A
-    condition target the rows make or convert is a state its periods only start.
+    ``entities`` among ``targets`` (the problem's condition targets) that no row makes, converts
+    or uses up (:func:`_used_up`), which its periods set, and each of ``inputs`` (the problem's
+    :mod:`protocols`), under its protocol. An input the entity map does not name is the agent of
+    its id. A condition target the rows make, convert or use up is a state its periods only
+    start.
 
     ``times``, the problem's (:func:`regulation.times`), are what a rate's ``time`` ranges over
     where its regulators are checked.
@@ -179,14 +180,15 @@ def to_antimony(
         if rule.is_reversible:
             made |= reactants - products
             converted |= products - reactants
-    # A species the conditions set is an input when the rows only read it (a drug that binds, a
-    # hormone that activates). One they make or convert is a state the conditions only start:
-    # held, such a species would never change.
+    # A species the conditions set is an input when the rows only read it (a drug that binds and
+    # comes off, a hormone that activates). One they make, convert or use up is a state the
+    # conditions only start: held, such a species would never change.
     protocol = {item.id: item for item in inputs}
     # Each by the name PySB gives its monomer (INDRA's `_n`: `S-1` is `S_1`), as `made` and the
     # model know it.
     set_keys = {s: _n(entities[s].name) for s in entities if s in protocol or s in targets}
-    keys = {s for s in set_keys if s in protocol or set_keys[s] not in made | converted}
+    changed = made | converted | _used_up(model, emissions)
+    keys = {s for s in set_keys if s in protocol or set_keys[s] not in changed}
     held = {set_keys[s]: protocol.get(s) for s in keys}
     # Readouts are named apart from the species they stand for, which may share a monomer's
     # name; the SBML export numbers observables anyway, and the rename below restores them.
@@ -249,8 +251,8 @@ def to_antimony(
                         and f"Held at what the conditions set, as your rows only read them: "
                         f"{', '.join(kept)}.",
                         started
-                        and f"Started by the conditions, then changed by your rows, which make or "
-                        f"convert each: {', '.join(started)}.",
+                        and f"Started by the conditions, then changed by your rows, which make, "
+                        f"convert, modify or bind each one way: {', '.join(started)}.",
                     )
                     if part
                 )
@@ -1094,6 +1096,43 @@ def _misnamed(prefix: str, rules: list[str], reads: dict, puts: dict) -> str:
                     "and position in both rows, or none in either; a seed joins no two sites."
                 )
     return ""
+
+
+def _used_up(model: pysb.Model, emissions: list[M.Emission]) -> set[str]:
+    """The monomers a row gives out in a state none of its rules take them in: modified, bound or
+    moved one way (lucarelli's SMADs phosphorylated, its TGF-beta bound by ``assembly``,
+    PEtab-MCP#246). A row that also takes that state back (a reversible binding, a ``two_step``
+    enzyme let go) uses up nothing, as a catalyst does not."""
+    used = set()
+    for emission in emissions:
+        taken, given = set(), set()
+        for rule in (model.rules[name] for name in emission.rules):
+            lhs, rhs = _forms(rule.reactant_pattern), _forms(rule.product_pattern)
+            if rule.is_reversible:
+                lhs = rhs = lhs | rhs
+            taken |= lhs
+            given |= rhs
+        used |= {m for m, _ in given - taken} & {m for m, _ in taken}
+    return used
+
+
+def _forms(reaction_pattern) -> set[tuple]:
+    """Each molecule on a rule's side, as its monomer and site conditions, a bond as ``!`` whatever
+    its number."""
+
+    def plain(condition):
+        if isinstance(condition, int):
+            return "!"
+        if isinstance(condition, (tuple, list)):
+            return tuple(plain(c) for c in condition)
+        return repr(condition)
+
+    return {
+        (mp.monomer.name, tuple(sorted((s, plain(c)) for s, c in mp.site_conditions.items())))
+        for cp in reaction_pattern.complex_patterns
+        if cp is not None
+        for mp in cp.monomer_patterns
+    }
 
 
 def _monomer_names(reaction_pattern) -> set[str]:

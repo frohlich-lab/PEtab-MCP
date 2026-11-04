@@ -1180,8 +1180,9 @@ _MAKE_CHANGES_DOC = _make_changes_doc()
 
 # What the statements route holds, said once for every version of its paragraph.
 _SET_SPECIES = (
-    "A species the conditions set stays at what they set while your rows only read it (bind, "
-    "catalyse, regulate); a row that makes or converts it makes it a state they only start."
+    "A species the conditions set stays at what they set while your rows only read it (catalyse, "
+    "regulate, bind it reversibly); a row that makes or converts it, or modifies, binds or moves "
+    "it one way, makes it a state they only start."
 )
 _HELD_INPUTS = _SET_SPECIES + " Each of `describe_problem`'s `inputs` follows its rule."
 
