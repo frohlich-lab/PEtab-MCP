@@ -1,7 +1,8 @@
 # Plan: one fit pool for a sweep
 
-**Status:** a proposal for review. Nothing here is implemented. It replaces the shared server that
-#187 asks for. frohlich-lab/gemot#89, the client side of #187, changes with it.
+**Status:** approved. It replaces the shared server that #187 asked for (closed as superseded).
+PEtab-MCP's part is on main except Check 6, which #216 finishes. gemot's part is
+frohlich-lab/gemot#105, #106 and #107, which replace frohlich-lab/gemot#89.
 
 ## Goal
 
@@ -15,7 +16,7 @@ Nothing else about a run changes. It keeps its own server, session, tools and se
 
 ## Why not one shared server
 
-#187 asks for one `petab-mcp` process that hosts every run's session. A spike on 2026-10-31 showed
+#187 asked for one `petab-mcp` process that hosts every run's session. A spike on 2026-10-31 showed
 that this works on FastMCP 4.1.4, but it costs:
 
 - **A tool surface per connection.** The arms change the schema of `make_changes`, and constraints
@@ -66,8 +67,9 @@ to a scheduler in another process.
   workers import every module from it by the same absolute path.
   - The build root is already keyed by AMICI build and module hash, so a pool started from another
     environment builds into folders of its own.
-  - The build lock (#20) keeps two builds of one structure apart. It must hold across nodes:
-    `flock` does on NFS (`filelock.py`), and it has to be checked on NEMO's mount.
+  - The build lock (#20) keeps two builds of one structure apart. It must hold across nodes. On
+    NEMO's GPFS `flock` does not, so it is a POSIX `lockf` under a per-path mutex (#240), checked
+    there across two nodes.
 - **Compiling stays on the run's node,** not on the pool. `_NoBuild` keeps builds, and their races,
   in the servers.
 - **The operator starts and stops the pool,** as with Phoenix. A sweep never stops it.
@@ -82,8 +84,9 @@ to a scheduler in another process.
     `adapt(minimum_jobs=M, maximum_jobs=N)`. Every other SLURM setting comes from dask's
     `jobqueue.yaml`, as with `--slurm-max-jobs` today (`cli._slurm_pool`, which moves here);
   - registers `_NoBuild` on the workers itself, so a worker never compiles, even before any server
-    connects. Each server's `DaskEngine` also registers it, under the same name, and a second
-    registration replaces the first;
+    connects. Each server's `DaskEngine` registers it too. It is idempotent (#239, distributed
+    ≥ 2023.12.0), so a server joining a pool sends nothing to its workers: at 1200 workers, one
+    broadcast per server stalled the scheduler for 6–37 s;
   - writes `tcp://<host>:<port>` to `--address-file` once the scheduler listens, and removes the
     file on exit;
   - on SIGTERM, removes the address file first, waits (bounded) until no task is processing, then
@@ -109,6 +112,13 @@ to a scheduler in another process.
   - `worker-ttl` is set well above the longest stall the stress check (Checks 10) measures;
   - the service job's resources come from that check, not from a guess.
 
+  On NEMO, at 1200 workers and 100 clients, the loop fell behind by at most 2.4 s, no worker went
+  more than 9.1 s without a heartbeat, and the scheduler peaked at 1.4 GB. So the service job gets
+  2 CPUs and 8 GB, and `worker-ttl` is 10 minutes (README, "Fitting on SLURM").
+- **Worker jobs outlive the pool.** With several workers to a job, jobqueue never replaces a job
+  that ends, and a worker reaching `--lifetime` drops its running batch. So worker jobs ask for a
+  walltime past the pool's life and set no `--lifetime`, and the pool is restarted between sweeps.
+
 ### The server (PEtab-MCP)
 
 - **`--fit-pool ADDRESS`** passes the address to `create_server(cluster=...)`. `DaskEngine` hands
@@ -125,7 +135,7 @@ to a scheduler in another process.
   because every run of a problem scores the same shipped model at startup, and agents converge on
   the same structures.
   - So the lock is taken blocking: the waiter then finds the module finished and imports it.
-  - If the holder died, `flock` was released with it, and the waiter removes the unfinished folder
+  - If the holder died, its lock was released with it, and the waiter removes the unfinished folder
     and builds the module itself.
   - The wait is the `compiling` phase of the heartbeat.
 - **Nothing per fit changes.**
@@ -150,11 +160,11 @@ to a scheduler in another process.
     in that phase.
   - It runs on the event loop, so it holds no thread and changes no tool.
   - A call without a progress token gets no heartbeat.
-- **Progress shows queueing.** The change's `Progress` (#177, open) gains the phase and
+- **Progress shows queueing.** The change's `Progress` (#177) gains the phase and
   `starts_queued`. `wait_for_fit` reports both, and its remaining-time estimate counts only running
   time.
 
-### The sweep driver (gemot)
+### The sweep driver (gemot, frohlich-lab/gemot#107)
 
 gemot takes in the sweep driver the application repos copied from gemot_iclr_2026, and adds what
 it already does for the Phoenix collector (`phoenix_ctl.sh`, `make_sweep.py --phoenix`).
@@ -164,7 +174,8 @@ gemot_iclr_2026 stays as it is (see Decisions).
   `petab-mcp-pool` does the rest.
   - `start` submits the pool's job unless one is running. Its resources come from the stress check
     (Checks 10), and its walltime runs past the sweep's. A node pin restarts it on the old job's
-    node;
+    node. On NEMO a job of 6 h or less is moved to QOS `short`, which runs only on cn077–cn088, so
+    the pool's job and its worker jobs ask for more;
   - `status` prints the job and the published address;
   - `stop` sends SIGTERM, and `petab-mcp-pool` then removes the address file, waits (bounded) until
     no task is processing, and closes the cluster. `stop --force` cancels at once, which fails
@@ -184,7 +195,7 @@ gemot_iclr_2026 stays as it is (see Decisions).
 - **The QOS budget is split** between the pool's `--slurm-max-jobs` and `throttle ×
   cpus-per-task`. With 2000 CPUs, for example: 12 worker jobs of 100 CPUs, plus 100 runs of 8.
 
-### gemot
+### gemot (frohlich-lab/gemot#105, #106)
 
 - **`runner/server.py` passes `PETAB_MCP_FIT_POOL`** from its environment to
   `create_server(cluster=...)` in the bootstrap, and records it in `fit_settings`.
@@ -231,6 +242,10 @@ gemot_iclr_2026 stays as it is (see Decisions).
   them would touch every tool.
 
 ## Checks
+
+Checks 1–5, 7 and 8 have tests on main. Checks 4 and 10 also passed on NEMO on 2026-11-04, Check
+10 only after #239. Check 6 is #216's last item. Checks 9 and 11 are gemot's
+(frohlich-lab/gemot#106, #107).
 
 1. **Two servers, one pool.** Two servers on different problems fit at the same time on a
    `LocalCluster` started in another process. Batches of both run interleaved, and each server gets
@@ -286,8 +301,8 @@ gemot_iclr_2026 stays as it is (see Decisions).
    - deleting the HDF5 requirement and the registry.
 
    These go in separate PRs of under about 500 lines each. The heartbeat does not depend on the
-   pool, so it can land first.
-2. **gemot:**
+   pool, so it can land first. Done (#188, #221–#226, #239–#241), except Check 6 (#216).
+2. **gemot** (frohlich-lab/gemot#105, #106, #107):
    - the bootstrap;
    - the idle timeout in place of the fit budget, and the watchdog fed by heartbeats;
    - the wall-time budget without `queue_seconds`;
@@ -298,7 +313,8 @@ gemot_iclr_2026 stays as it is (see Decisions).
    Its pin moves to step 1, together with the edits gemot#99 lists.
 3. **Application repos** (Perica/Garrido, Fontaine/Briscoe, Vuillemenot): drop their copied
    `slurm/` for gemot's driver, at the gemot pin bump that brings it.
-4. **Issues:** #187 and gemot#89 are rewritten to this plan.
+4. **Issues:** #187 is closed as superseded, and frohlich-lab/gemot#89 is replaced by
+   frohlich-lab/gemot#105, #106 and #107.
 
 PEtabAgentBench does not change.
 
@@ -325,19 +341,19 @@ hosting several sessions would need first, if one is ever built.
 
 ## Open questions
 
-1. **Worker lifetime.** Jobqueue's worker `--lifetime` must exceed the largest per-start cap plus
-   `FIT_DEADLINE_MARGIN_S` (isensee: 12000 s), or a worker retires in the middle of a batch. Check
-   what dask does with a batch running on a retiring worker, and set the lifetime from the sweep's
-   largest cap.
+1. **Worker lifetime.** Answered on NEMO: a worker reaching `--lifetime` drops its running batch
+   within 20 ms instead of finishing it, and with several workers to a job, jobqueue never replaces
+   the job. So worker jobs set no `--lifetime` and ask for a walltime past the pool's life (see
+   "The pool").
 2. **Worker memory.** A worker keeps every model module it has imported, across problems, and only
-   its lifetime bounds that. Is one memory size per worker enough when isensee and small problems
-   share workers, or does a sweep with isensee want a pool of its own?
-3. **Reconnecting.** Does `distributed.Client` reconnect by itself to a scheduler restarted at the
-   same address, or does `DaskEngine` need a new client after a `fit_pool` error? Check 6 answers
-   this.
+   the pool's restart bounds that. Is one memory size per worker enough when isensee and small
+   problems share workers, or does a sweep with isensee want a pool of its own?
+3. **Reconnecting.** Answered on NEMO: a client reconnects by itself to a pool back within its 30 s
+   window (18 s for a restart in place), but not to one resubmitted (about 4 min). After that,
+   `DaskEngine` opens a new client: Check 6 (#216).
 4. **Do the CLI drivers' clients extend a call on progress?** If Claude Code or Codex reset their
    tool timeout on progress notifications, those arms need no `wait_for_fit` either. Check this
    before relying on it.
 5. **Fix #180 first?** With heartbeats, a `get_progress` or `get_run_timing` behind a fit no longer
    times out, but it still waits out the fit, queue included. If those reads stop taking the lock
-   the change holds, they answer at once.
+   the change holds, they answer at once. Being fixed.
