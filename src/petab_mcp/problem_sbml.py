@@ -10,9 +10,14 @@ be scored against it as it stands. This module is the difference, and it is all 
 * **Seeds.** What is present at t = 0 is traced (below); each present monomer is seeded
   at an estimated ``<monomer>_init``, or at the row the problem ships (a fixed
   ``<monomer>_init`` row) — unless the statements DECLARE what is there (``seeds``, below).
-* **Inputs.** A species the experiment sets is held rather than built: one the condition table
-  targets (a drug dose), which its periods set, and one the problem's ``inputs.tsv`` holds to a
-  protocol (a stimulus ramp, :func:`protocols.hold`).
+* **Inputs.** A species the condition table targets (a drug dose) is the one its periods set,
+  empty where none does, and changed by the rows as any other species is: one they only catalyse
+  with or regulate with stays at what was set. Deliberately not held on the boundary: held, it
+  never changed whatever the rows did, which kept lucarelli's free SMADs and TGF-beta at their
+  starting amounts while rows phosphorylated and bound them (PEtab-MCP#246); a dose in excess is
+  the agent's to state, a parameter its binding reads or a ``nondepleting`` binding. One the
+  problem's ``inputs.tsv`` holds to a protocol (a stimulus ramp, :func:`protocols.hold`) is held
+  to it.
 * **Leftovers.** A rate constant an agent-written mechanism replaced is removed.
 
 What is present at t = 0 rests on two assumptions, and a third check refuses the models they do
@@ -106,12 +111,10 @@ def to_antimony(
     as the module docstring sets out, and :class:`ModelUpdateError` names the rows a model breaking
     it fails on.
 
-    An experiment's INPUT is held instead, with no starting amount of its own: a species of
-    ``entities`` among ``targets`` (the problem's condition targets) that no row makes, converts
-    or uses up (:func:`_used_up`), which its periods set, and each of ``inputs`` (the problem's
-    :mod:`protocols`), under its protocol. An input the entity map does not name is the agent of
-    its id. A condition target the rows make, convert or use up is a state its periods only
-    start.
+    An experiment's INPUT has no starting amount of its own: a species of ``entities`` among
+    ``targets`` (the problem's condition targets) starts at what its periods set, and each of
+    ``inputs`` (the problem's :mod:`protocols`) is held under its protocol. An input the entity
+    map does not name is the agent of its id.
 
     ``times``, the problem's (:func:`regulation.times`), are what a rate's ``time`` ranges over
     where its regulators are checked.
@@ -169,32 +172,24 @@ def to_antimony(
         targets - entities.keys(),
     )
     _refuse_chains(model, emissions)
-    made, synthesised, converted = set(), set(), set()
+    made, synthesised = set(), set()
     for rule in model.rules:
         reactants = _monomer_names(rule.reactant_pattern)
         products = _monomer_names(rule.product_pattern)
         made |= products - reactants
         if reactants <= products:  # consumes nothing it does not give back
             synthesised |= products - reactants
-        converted |= reactants - products
         if rule.is_reversible:
             made |= reactants - products
-            converted |= products - reactants
-    # A species the conditions set is an input when the rows only read it (a drug that binds and
-    # comes off, a hormone that activates). One they make, convert or use up is a state the
-    # conditions only start: held, such a species would never change.
     protocol = {item.id: item for item in inputs}
-    # Each by the name PySB gives its monomer (INDRA's `_n`: `S-1` is `S_1`), as `made` and the
-    # model know it.
+    # Each by the name PySB gives its monomer (INDRA's `_n`: `S-1` is `S_1`), as the model knows it.
     set_keys = {s: _n(entities[s].name) for s in entities if s in protocol or s in targets}
-    changed = made | converted | _used_up(model, emissions)
-    keys = {s for s in set_keys if s in protocol or set_keys[s] not in changed}
-    held = {set_keys[s]: protocol.get(s) for s in keys}
+    held = {set_keys[s]: protocol[s] for s in set_keys if s in protocol}
     # Readouts are named apart from the species they stand for, which may share a monomer's
     # name; the SBML export numbers observables anyway, and the rename below restores them.
     readouts = {f"readout_{species}": species for species in entities}
     patterns = {name: get_monomer_pattern(model, entities[s]) for name, s in readouts.items()}
-    declared = _declare(model, seeds, set(held), set(by_seed))
+    declared = _declare(model, seeds, set(held))
     _seed(
         model,
         [m for m in model.monomers if (m.name not in made or m.name in held) and m.name not in declared],
@@ -239,24 +234,6 @@ def to_antimony(
         _expand(model)
         present = reduction.reached(model, reduced)
     if notes is not None:
-        set_by = sorted(s for s in entities if s in targets)
-        kept = [s for s in set_by if s in keys]
-        started = [s for s in set_by if s not in keys]
-        if set_by:
-            notes.append(
-                " ".join(
-                    part
-                    for part in (
-                        kept
-                        and f"Held at what the conditions set, as your rows only read them: "
-                        f"{', '.join(kept)}.",
-                        started
-                        and f"Started by the conditions, then changed by your rows, which make, "
-                        f"convert, modify or bind each one way: {', '.join(started)}.",
-                    )
-                    if part
-                )
-            )
         empty = sorted((synthesised & reached) - held.keys() - declared)
         if empty:
             notes.append(
@@ -383,9 +360,11 @@ def to_antimony(
         for initial in model.initials
         if (target := by_seed.get(initial.value.name.removesuffix("_init")))
     }
+    # What the experiment sets starts at what it sets, never at an estimated `<monomer>_init`.
+    unseeded = set(set_keys.values()) - declared
     for assignment in list(sbml_model.getListOfInitialAssignments()):
         amount = assignment.getMath().getName()
-        if amount.removesuffix("_init") in held:
+        if amount.removesuffix("_init") in unseeded:
             sbml_model.getSpecies(assignment.getSymbol()).setInitialAmount(0.0)
             sbml_model.removeParameter(amount)
             assignment.removeFromParentAndDelete()
@@ -399,7 +378,7 @@ def to_antimony(
     ):
         old, new = parameter.getId(), readouts[parameter.getName()]
         rule = sbml_model.getAssignmentRuleByVariable(old)
-        # A species the conditions or a protocol set is its free form, held or only started: named
+        # A species the conditions or a protocol set is its free form: named
         # for the sum over the complexes it binds into, a condition target that binds into
         # complexes would set nothing.
         free = _free_form(model, sbml_model, base, set_keys[new]) if new in set_keys else None
@@ -438,12 +417,7 @@ def to_antimony(
             _initial_empty(sbml_model, f"{name}_init")
     _drop_unreferenced_parameters(sbml_model)
     for monomer, item in held.items():
-        if item is None:
-            # A species may sit in reactions and be set by a condition, unchanged by them, only
-            # on the boundary.
-            base[monomer].setBoundaryCondition(True)
-        else:
-            hold(sbml_model, base[monomer].getId(), item)
+        hold(sbml_model, base[monomer].getId(), item)
     _number_reactions(sbml_model)
     return SbmlModel.from_string(libsbml.writeSBMLToString(document)).to_antimony(), emissions
 
@@ -461,17 +435,13 @@ def _numeric(amount):
 
 
 def _declare(
-    model: pysb.Model,
-    seeds: list[tuple[str, Agent, float | str]],
-    held: set[str],
-    inputs: set[str] = frozenset(),
+    model: pysb.Model, seeds: list[tuple[str, Agent, float | str]], held: set[str]
 ) -> set[str]:
     """Seed each declared species at ``<name>_init``, in the state its Agent writes; returns the
-    monomers the declarations name, which :func:`_seed` then leaves alone. A ``held`` monomer
-    takes no seed but the one of ``inputs`` (seed names) that makes it its input."""
+    monomers the declarations name, which :func:`_seed` then leaves alone."""
     named: set[str] = set()
     for name, agent, amount in seeds:
-        if _n(agent.name) in held and name not in inputs:
+        if _n(agent.name) in held:
             raise ModelUpdateError(
                 f"seed {name!r}: {agent.name} is an input, held to its protocol, so it has no "
                 "seed of its own"
@@ -1096,43 +1066,6 @@ def _misnamed(prefix: str, rules: list[str], reads: dict, puts: dict) -> str:
                     "and position in both rows, or none in either; a seed joins no two sites."
                 )
     return ""
-
-
-def _used_up(model: pysb.Model, emissions: list[M.Emission]) -> set[str]:
-    """The monomers a row gives out in a state none of its rules take them in: modified, bound or
-    moved one way (lucarelli's SMADs phosphorylated, its TGF-beta bound by ``assembly``,
-    PEtab-MCP#246). A row that also takes that state back (a reversible binding, a ``two_step``
-    enzyme let go) uses up nothing, as a catalyst does not."""
-    used = set()
-    for emission in emissions:
-        taken, given = set(), set()
-        for rule in (model.rules[name] for name in emission.rules):
-            lhs, rhs = _forms(rule.reactant_pattern), _forms(rule.product_pattern)
-            if rule.is_reversible:
-                lhs = rhs = lhs | rhs
-            taken |= lhs
-            given |= rhs
-        used |= {m for m, _ in given - taken} & {m for m, _ in taken}
-    return used
-
-
-def _forms(reaction_pattern) -> set[tuple]:
-    """Each molecule on a rule's side, as its monomer and site conditions, a bond as ``!`` whatever
-    its number."""
-
-    def plain(condition):
-        if isinstance(condition, int):
-            return "!"
-        if isinstance(condition, (tuple, list)):
-            return tuple(plain(c) for c in condition)
-        return repr(condition)
-
-    return {
-        (mp.monomer.name, tuple(sorted((s, plain(c)) for s, c in mp.site_conditions.items())))
-        for cp in reaction_pattern.complex_patterns
-        if cp is not None
-        for mp in cp.monomer_patterns
-    }
 
 
 def _monomer_names(reaction_pattern) -> set[str]:

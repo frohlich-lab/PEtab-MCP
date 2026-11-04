@@ -394,7 +394,7 @@ def test_gef_and_gap_catalysts():
     ],
 )
 def test_a_catalyst_the_experiment_sets(kwargs):
-    """A dose that catalyses: held, as a boundary species or under its protocol."""
+    """A dose that catalyses: set by the conditions, or held under its protocol."""
     rows = _rows(
         [
             ("p: D phosphorylates S at S2", "indra_default"),

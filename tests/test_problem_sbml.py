@@ -66,7 +66,7 @@ def test_an_input_is_held_to_its_protocol():
     assert {"EGF_0", "EGF_rate", "EGF_end"} <= {p.getId() for p in sbml.getListOfParameters()}
 
 
-def test_a_species_the_conditions_set_is_held_without_a_rule():
+def test_a_species_the_conditions_set_has_no_rule():
     """Conditions that set the species `Fsk` itself say it is an input: no file declares it a
     second time, and a rule `Fsk := Fsk` would read itself."""
     antimony, _ = PS.to_antimony(
@@ -75,22 +75,20 @@ def test_a_species_the_conditions_set_is_held_without_a_rule():
         targets=frozenset({"Fsk"}),
     )
     sbml = SbmlModel.from_antimony(antimony).sbml_model
-    assert sbml.getSpecies("Fsk").getBoundaryCondition()
     assert sbml.getAssignmentRuleByVariable("Fsk") is None
     assert sbml.getInitialAssignmentBySymbol("Fsk") is None
 
 
 @pytest.mark.parametrize("name", ["S-1", "S 1"])
-def test_a_condition_target_indra_renames_is_held(name):
-    """INDRA names the monomer of `S-1` `S_1`. Held under the agent's own name, it was looked up
-    among the monomers and not found: a KeyError, not a model."""
+def test_a_condition_target_indra_renames_is_found(name):
+    """INDRA names the monomer of `S-1` `S_1`. Looked up under the agent's own name, it was not
+    found among the monomers: a KeyError, not a model."""
     antimony, _ = PS.to_antimony(
         [(Phosphorylation(Agent(name), Agent("AKT")), INDRA_DEFAULT, "r1")],
         {"Fsk": Agent(name)},
         targets=frozenset({"Fsk"}),
     )
     sbml = SbmlModel.from_antimony(antimony).sbml_model
-    assert sbml.getSpecies("Fsk").getBoundaryCondition()
     assert sbml.getInitialAssignmentBySymbol("Fsk") is None
 
 
