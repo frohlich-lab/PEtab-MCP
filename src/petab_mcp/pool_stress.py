@@ -150,11 +150,8 @@ def _server(
     try:
         engine = DaskEngine(address)
         connected.wait()
-        # The engine waits through `distributed.wait`, i.e. the process's default client: a server
-        # has one client, and this thread is a server.
-        with engine.client.as_current():
-            fit = [_Batch(f"{i}:{j}", seconds) for j in range(batches)]
-            engine.batched(1, _CAP_S).execute(fit)
+        fit = [_Batch(f"{i}:{j}", seconds) for j in range(batches)]
+        engine.batched(1, _CAP_S).execute(fit)
     except Exception as exc:  # noqa: BLE001 - a failed fit fails the check, reported with the rest
         connected.abort()
         return repr(exc)
