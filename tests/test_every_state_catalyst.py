@@ -1,6 +1,6 @@
-"""A catalyst a row takes in every state, the constant rate it reads where no rule changes what the
-row reads of it, and the readouts no input reaches, named on the edit from the rules alone
-(PEtab-MCP#232)."""
+"""A catalyst a row takes in every state, the constant amount of it a rate reads, and the readouts no
+input reaches, named on the edit from the statements and the model's equations, never a
+simulation (PEtab-MCP#232)."""
 
 from __future__ import annotations
 
@@ -76,7 +76,7 @@ def test_a_bare_enzyme_and_its_constant_rate_are_named_on_the_edit(tmp_path, emp
     said = " ".join(m["message"] for m in out["messages"])
     assert "Row `r2` names no state of E, its catalyst" in said
     assert "name its state: `E{p} phosphorylates S`" in said
-    assert "this rate reads a constant amount of E: nothing upstream of E moves it" in said
+    assert "No reaction changes the amount of E this rate reads" in said
     assert "No input reaches the readouts `B`" in said
 
     fixed = _build(mcp, "E{p}")
@@ -125,12 +125,12 @@ _SUB = (Dephosphorylation(None, Agent("S")), "basal", "r3")
     ],
 )
 def test_the_state_another_row_gives_the_enzyme_is_the_one_offered(rows, form, constant, policy):
-    """The form offered is the state another row puts on the enzyme, and a constant rate is
-    claimed only where no rule makes, removes or changes the enzyme as the row reads it; a
-    synthesis, which puts E's first state on a new molecule, changes no state."""
+    """The form offered is the state another row's statement puts on the enzyme, and a constant
+    amount is claimed only where its derivative in the equations is 0; a synthesis, which makes E
+    in one form, changes no state."""
     (note,) = _notes([*rows, (Phosphorylation(Agent("E"), Agent("S")), policy, "r2"), _SUB])
-    assert f"`{form} phosphorylates S`" in note and "changes in `r1`." in note
-    assert ("reads a constant amount of E" in note) is constant
+    assert f"`{form} phosphorylates S`" in note and "though `r1` changes it." in note
+    assert ("No reaction changes the amount of E" in note) is constant
 
 
 def test_an_enzyme_no_row_changes_says_nothing():
@@ -148,19 +148,29 @@ def test_an_enzyme_no_row_changes_says_nothing():
 
 
 _P_S = Agent._from_json({"name": "S", "mods": [{"mod_type": "phosphorylation"}]})
+_P_E = Agent._from_json({"name": "E", "mods": [{"mod_type": "phosphorylation"}]})
 
 
 @pytest.mark.parametrize(
     ("rows", "seeds", "reached"),
     [
-        # `two_step` binds every state of E alike: the dose still never reaches S.
+        # The dose turns E over, but the rate reads E's total.
         (
             [
                 (Phosphorylation(Agent("K"), Agent("E")), INDRA_DEFAULT, "r1"),
-                (Phosphorylation(Agent("E"), Agent("S")), "indra_two_step", "r2"),
+                (Phosphorylation(Agent("E"), Agent("S")), INDRA_DEFAULT, "r2"),
             ],
             [("K", Agent("K"), "dose")],
             False,
+        ),
+        # ...and the form it puts on E.
+        (
+            [
+                (Phosphorylation(Agent("K"), Agent("E")), INDRA_DEFAULT, "r1"),
+                (Phosphorylation(_P_E, Agent("S")), INDRA_DEFAULT, "r2"),
+            ],
+            [("K", Agent("K"), "dose")],
+            True,
         ),
         # A binding that reads the dose.
         ([(Phosphorylation(None, Agent("S")), "basal", "r2", {"k": "k0*dose"})], [], True),
@@ -173,8 +183,8 @@ _P_S = Agent._from_json({"name": "S", "mods": [{"mod_type": "phosphorylation"}]}
     ],
 )
 def test_a_readout_no_input_reaches_is_named(rows, seeds, reached):
-    """Traced from the readout through the rules that change what it reads, never simulated: the
-    rate, a binding and a starting amount each carry an input."""
+    """Traced from the readout through what its time derivative reads, never simulated: a form the
+    input changes, a binding and a starting amount each carry it."""
     notes: list[str] = []
     PS.to_antimony(
         [*rows, _SUB], {"B": _P_S}, seeds=seeds, targets=frozenset({"dose"}), notes=notes

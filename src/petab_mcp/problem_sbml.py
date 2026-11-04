@@ -63,12 +63,11 @@ downstream has to know where a model came from.
 
 from __future__ import annotations
 
-from collections import Counter
-import re
 from copy import deepcopy
 
 import libsbml
 import pysb
+import sympy
 from indra.assemblers.pysb.assembler import _n, get_monomer_pattern
 from indra.statements import Agent
 from petab.v1.models.sbml_model import SbmlModel
@@ -128,8 +127,8 @@ def to_antimony(
 
     ``notes``, when given, collects what t = 0 holds that nothing declared and the caller may
     not expect: kinds the rules make from nothing, which start empty, and a seed's location chosen
-    among several; each catalyst taken in every state (:func:`_every_state`); and the readouts no
-    input reaches (:func:`_no_input`).
+    among several; each catalyst a row takes in every state (:func:`_stateless_catalysts`); and the
+    readouts no input reaches (:func:`_input_free_readouts`).
 
     The rules are reduced before they are expanded (:mod:`reduction`), unless ``reduce`` is off
     (the expansion the tests compare it with), and ``network``, when given, receives the
@@ -205,16 +204,6 @@ def to_antimony(
     # What the experiment sets stays whole (:mod:`reduction`): a form the conditions or a protocol
     # set.
     whole = set(set_keys.values())
-    if notes is not None:
-        notes.extend(_every_state(rows, model, emissions, whole))
-        read = {readouts[k]: p for k, p in patterns.items()}
-        if free := _no_input(model, read, whole, targets, seeds):
-            notes.append(
-                f"No input reaches the readouts {', '.join(f'`{r}`' for r in free)}: the rules "
-                "that change each, and in turn the rules that change what those read, read "
-                "nothing an experiment sets, so each is the same in every experiment, and flat "
-                "after pre-equilibration."
-            )
     # A row's regulators are checked on its reactions as BioNetGen expands the rules as written
     # (:mod:`regulation`): reduced, a catalyst is out of its rule and a monomer is blocks, no
     # longer the statement's agents.
@@ -343,6 +332,24 @@ def to_antimony(
             observable = model.observables[name]
             if not reduction.reads(reduced.amounts.get(observable, observable), present):
                 raise MechanismError(_unformed(e, observable, written))
+    if notes is not None:
+        # On the reduced rules' expansion, where a catalyst is its amount (:mod:`reduction`).
+        constant = {
+            e.prefix
+            for e in emissions
+            if (catalysts := [reduced.catalysts[r][1] for r in e.rules if r in reduced.catalysts])
+            and not any(
+                _species_set(model, c, whole) or _rate_of_change(model, c) != 0 for c in catalysts
+            )
+        }
+        notes.extend(_stateless_catalysts(rows, emissions, constant))
+        read = {readouts[k]: amount for k, amount in amounts.items()}
+        if free := _input_free_readouts(model, read, whole, targets, seeds):
+            notes.append(
+                f"No input reaches the readouts {', '.join(f'`{r}`' for r in free)}: nothing "
+                "their rates of change read, nor in turn what those read, is set by an experiment, "
+                "so each is the same in every experiment, and flat after pre-equilibration."
+            )
     if network is not None:
         network.update(reduction.sizes(model, reduced, present))
     if as_written is not None:
@@ -915,66 +922,45 @@ def _site_states(model: pysb.Model, emissions) -> tuple[dict, dict]:
     return reads, puts
 
 
-def _every_state(rows, model: pysb.Model, emissions, set_: set[str]) -> list[str]:
-    """What each row whose catalyst names no state, on a site other rows change, is told: every
-    state of it catalyses, the row as it would name one, and, where no rule makes, removes or
-    changes the catalyst as the row reads it (its pattern's sites) and nothing the experiment sets
-    (``set_``) is it, that its rate reads a constant amount of it. Read off the rules, not a
-    simulation: raimundez's ``MEK phosphorylates MAPK`` read ``MEK{u} + MEK{p}``, which sum to the
-    seed: ``pMAPK`` stayed flat in every experiment of 18 versions, and the agent never looked at
-    that rate (PEtab-MCP#232)."""
+def _stateless_catalysts(rows, emissions, constant: set[str]) -> list[str]:
+    """What each row whose catalyst names no state, while another row's statement changes that
+    agent's state, is told: every state catalyses, and the row as it would name one; and for the
+    rows in ``constant``, that what their rate reads of the catalyst never changes. raimundez's
+    ``MEK phosphorylates MAPK`` read ``MEK{u} + MEK{p}``, which sum to the seed: ``pMAPK`` stayed
+    flat in every experiment of 18 versions, and the agent never looked at that rate
+    (PEtab-MCP#232)."""
     from .notation import agent_text, statement_text
-    from .statements import _catalyst, _products
+    from .statements import _catalyst, _products, _reactants
 
-    row_of = {rule: e.prefix for e in emissions for rule in e.rules}
-    changed: dict[tuple[str, str], set] = {}  # (molecule, site) -> the rows changing its value
-    made: set[str] = set()  # the molecules a rule makes or removes
-    for rule in model.rules:
-        rule_made, rule_changed = _changes(rule)
-        made |= rule_made
-        for key in rule_changed:
-            changed.setdefault(key, set()).add(row_of.get(rule.name))
     out = []
     for row, e in zip(rows, emissions):
         stmt, enzyme = row[0], _catalyst(row[0])[0]
-        if enzyme is None or (name := _n(enzyme.name)) not in model.monomers.keys():
+        if enzyme is None or enzyme.mods or enzyme.activity is not None:
             continue
-        sites = model.monomers[name].site_states
-        read = [
-            mp
-            for rule in e.rules
-            for mp in _molecules(model.rules[rule].reactant_pattern)
-            if mp.monomer.name == name
-        ]
-        open_ = {
-            site
-            for mp in read
-            for site in sites
-            if site != "loc" and site not in mp.site_conditions
-        }
-        writers = sorted(
-            set().union(*(changed.get((name, s), ()) for s in open_)) - {e.prefix, None}
-        )
+        name = _n(enzyme.name)
+        forms, writers = {}, []  # the catalyst's forms other rows turn into each other, and they
+        for other in rows:
+            taken = [a for a in _reactants(other[0]) if _n(a.name) == name]
+            given = [a for a, effect in _products(other[0]) if effect > 0 and _n(a.name) == name]
+            if other[2] != e.prefix and taken and given:
+                writers.append(other[2])
+                forms |= {agent_text(a.to_json()): a for a in taken + given}
         if not writers:
             continue
-        state = next(
+        active = next(
             (
                 agent
-                for other in rows
-                for agent, effect in _products(other[0])
-                if effect > 0
-                and _n(agent.name) == name
-                and (agent.mods or agent.activity)
+                for agent in forms.values()
+                if (agent.mods or agent.activity)
                 and all(m.is_modified for m in agent.mods)
                 and (agent.activity is None or agent.activity.is_active)
             ),
             None,
         )
         example = ""
-        if state is not None:
+        if active is not None:
             named = deepcopy(enzyme)
-            named.mods = [*named.mods, *state.mods]
-            named.activity = named.activity or state.activity
+            named.mods, named.activity = list(active.mods), active.activity
             written = deepcopy(stmt)
             setattr(written, next(k for k, v in vars(stmt).items() if v is enzyme), named)
             regulators = {k: [a.to_json() for a in v] for k, v in (row[4:5] or [{}])[0].items()}
@@ -982,118 +968,111 @@ def _every_state(rows, model: pysb.Model, emissions, set_: set[str]) -> list[str
                 example = f": `{statement_text({**written.to_json(), **regulators})}`"
             except ValueError:
                 example = f": `{agent_text(named.to_json())}`"
-        states = "; ".join(f"`{site}` {' and '.join(sites[site])}" for site in sorted(open_))
         text = (
             f"Row `{e.prefix}` names no state of {enzyme.name}, its catalyst, so every state of it "
-            f"catalyses ({states} alike), though its state changes in "
-            f"{', '.join(f'`{w}`' for w in writers)}. To make one form the enzyme, name its "
-            f"state{example}."
+            f"catalyses ({' and '.join(sorted(forms))} alike), though "
+            f"{', '.join(f'`{w}`' for w in writers)} changes it. To make one form the enzyme, "
+            f"name its state{example}."
         )
-        if name not in set_ | made and not any(
-            (name, site) in changed for mp in read for site in mp.site_conditions
-        ):
+        if e.prefix in constant:
             text += (
-                f" No rule makes, removes or changes {enzyme.name} as this row reads it, and no "
-                f"condition sets it, so this rate reads a constant amount of {enzyme.name}: "
-                f"nothing upstream of {enzyme.name} moves it."
+                f" No reaction changes the amount of {enzyme.name} this rate reads, and no "
+                f"condition sets it, so nothing upstream of {enzyme.name} moves the rate."
             )
         out.append(text)
     return out
 
 
-def _changes(rule) -> tuple[set[str], set[tuple[str, str]]]:
-    """The molecules ``rule`` makes or removes, and each ``(molecule, site)`` whose state or bond it
-    changes on a molecule it keeps."""
-    sides = [_molecules(rule.reactant_pattern), _molecules(rule.product_pattern)]
-    counts = [Counter(mp.monomer.name for mp in side) for side in sides]
-    values = [
-        Counter(
-            (mp.monomer.name, site, _site_value(value))
-            for mp in side
-            for site, value in mp.site_conditions.items()
-        )
-        for side in sides
-    ]
-    made = {m for m in counts[0] | counts[1] if counts[0][m] != counts[1][m]}
-    differ = (values[0] - values[1]) + (values[1] - values[0])
-    return made, {(m, site) for m, site, _ in differ if m not in made}
-
-
-def _no_input(model: pysb.Model, readouts: dict, set_: set[str], targets, seeds) -> list[str]:
-    """The readouts no input reaches, read off the rules: from what each reads (its molecule and
-    the sites its pattern fixes), every rule that changes that, and in turn what those rules read
-    (their reactants, the amounts and parameters their rates read), with no molecule the experiment
-    sets (``set_``), no condition target among the parameters (``targets``), no ``time``, and no
-    starting amount reading a target. A pattern that fixes no site of a molecule is its total, which
-    only a rule making or removing it changes: raimundez's ``MEK()`` (PEtab-MCP#232). Empty where
-    the problem has no input at all."""
+def _input_free_readouts(
+    model: pysb.Model, amounts: dict, set_: set[str], targets, seeds
+) -> list[str]:
+    """The readouts no input reaches in ``model``'s equations, as BioNetGen expands the reduced
+    rules: from each readout's amount, what its time derivative reads, and in turn what theirs read,
+    with no species of a molecule the experiment sets (``set_``), no condition target among the
+    parameters or the starting amounts (``targets``, ``seeds``), and no ``time``. A catalyst is its
+    amount there (:mod:`reduction`), whose derivative is 0 where it sums every state of a molecule
+    nothing makes or removes: raimundez's ``MEK()`` (PEtab-MCP#232). Empty where the problem has
+    no input at all."""
     if not (set_ or targets):
         return []
-    rules = [(rule, *_changes(rule)) for rule in model.rules]
-    seeded = {
-        f"{name}_init": set(re.findall(r"[A-Za-z_]\w*", amount))
+    declared = {
+        f"{name}_init": {n.getName() for n in _ast_nodes(_parse(amount)) if n.isName()}
         for name, _, amount in seeds
         if isinstance(amount, str)
     }
+    starts = {
+        model.get_species_index(initial.pattern): {
+            x.name for x in _species_amount(initial.value).free_symbols
+        }
+        | declared.get(initial.value.name, set())
+        for initial in model.initials
+    }
 
-    def symbols(value) -> set:
-        if isinstance(value, pysb.Expression):
-            return value.expand_expr(expand_observables=False).free_symbols
-        return {value}
-
-    def reached(pattern) -> bool:
-        todo = [(pattern.monomer.name, frozenset(pattern.site_conditions))]
-        seen, used = set(), set()
+    def reached(amount) -> bool:
+        todo, seen = [amount], set()
         while todo:
-            name, sites = read = todo.pop()
-            if read in seen:
+            quantity = todo.pop()
+            if quantity in seen:
                 continue
-            seen.add(read)
-            if name in set_:
+            seen.add(quantity)
+            if _species_set(model, quantity, set_) or any(
+                starts.get(i, set()) & targets for i in _species_set(model, quantity)
+            ):
                 return True
-            for rule, made, changed in rules:
-                if rule.name in used or not (
-                    name in made or any((name, site) in changed for site in sites)
-                ):
-                    continue
-                used.add(rule.name)
-                rates = [rule.rate_forward, *([rule.rate_reverse] if rule.is_reversible else [])]
-                read_by = set().union(*map(symbols, rates))
-                if any(x == time or getattr(x, "name", None) in targets for x in read_by):
+            for x in _rate_of_change(model, quantity).free_symbols:
+                if x == time or x.name in targets:
                     return True
-                todo += [
-                    (mp.monomer.name, frozenset(mp.site_conditions))
-                    for mp in [
-                        *_molecules(rule.reactant_pattern),
-                        *(_molecules(rule.product_pattern) if rule.is_reversible else []),
-                        *(
-                            mp
-                            for x in read_by
-                            if isinstance(x, pysb.Observable)
-                            for mp in _molecules(x.reaction_pattern)
-                        ),
-                    ]
-                ]
-        molecules = {name for name, _ in seen}
-        return any(
-            {mp.monomer.name for mp in initial.pattern.monomer_patterns} & molecules
-            and (
-                {getattr(x, "name", None) for x in symbols(initial.value)}
-                | seeded.get(initial.value.name, set())
-            )
-            & targets
-            for initial in model.initials
+                if isinstance(x, pysb.Observable) or _species_index(x) is not None:
+                    todo.append(x)
+        return False
+
+    return sorted(name for name, amount in amounts.items() if not reached(amount))
+
+
+def _species_amount(quantity) -> sympy.Expr:
+    """``quantity`` (an observable, an expression, a :class:`reduction.Amount`, a species symbol, a
+    parameter) over the species it sums."""
+    if isinstance(quantity, reduction.Amount):
+        quantity = quantity.value()
+    if isinstance(quantity, pysb.Observable):
+        return quantity.expand_obs()
+    if isinstance(quantity, pysb.Expression):
+        return quantity.expand_expr(expand_observables=True)
+    return quantity.subs({o: o.expand_obs() for o in quantity.atoms(pysb.Observable)})
+
+
+def _species_index(symbol) -> int | None:
+    """The species a symbol of PySB's equations stands for (``__s3``), or ``None``."""
+    name = symbol.name
+    return int(name[3:]) if name.startswith("__s") and name[3:].isdigit() else None
+
+
+def _species_set(model: pysb.Model, quantity, monomers: set[str] | None = None) -> set[int]:
+    """The species ``quantity`` sums, or only those holding one of ``monomers``."""
+    found = {
+        i for x in _species_amount(quantity).free_symbols if (i := _species_index(x)) is not None
+    }
+    if monomers is None:
+        return found
+    return {
+        i
+        for i in found
+        if any(mp.monomer.name in monomers for mp in model.species[i].monomer_patterns)
+    }
+
+
+def _rate_of_change(model: pysb.Model, quantity) -> sympy.Expr:
+    """The time derivative of ``quantity`` in ``model``'s equations, with each rate's expressions
+    written out and its observables kept: 0 where no reaction changes it, else what it reads."""
+    total = _species_amount(quantity)
+    rate = sympy.Add(
+        *(
+            total.diff(x) * model.odes[i]
+            for x in total.free_symbols
+            if (i := _species_index(x)) is not None
         )
-
-    return sorted(name for name, pattern in readouts.items() if not reached(pattern))
-
-
-def _site_value(value):
-    """A site condition as a rule changes it: its state, and whether it is bound, not by which
-    bond number."""
-    if isinstance(value, tuple):
-        return value[0], _site_value(value[1])
-    return "bound" if _is_bond(value) else value
+    )
+    return sympy.expand(rate.subs({e: e.expand_expr() for e in rate.atoms(pysb.Expression)}))
 
 
 def _misnamed(prefix: str, rules: list[str], reads: dict, puts: dict) -> str:
