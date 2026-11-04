@@ -91,8 +91,10 @@ the fits still waiting. It needs:
 - **one environment for the pool and its servers**: a start is pickled, so a server refuses a pool
   whose `amici`, `pypesto`, `petab` or `petab-mcp` differs from its own, naming both. After a pin
   bump, restart the pool;
-- **the worker jobs configured in dask's own config**, not by flags: `~/.config/dask/jobqueue.yaml`
-  (or `DASK_JOBQUEUE__SLURM__*`) where the pool runs, for example:
+- **a job of 2 CPUs and 8 GB for the pool itself**: at 1200 workers and 100 servers its scheduler
+  used about one core and 1.4 GB (`python -m petab_mcp.pool_stress`, on NEMO);
+- **the worker jobs and the scheduler configured in dask's own config**, not by flags: a YAML file
+  in `~/.config/dask/` (or `DASK_*` variables) where the pool runs, for example:
 
 ```yaml
 jobqueue:
@@ -101,12 +103,21 @@ jobqueue:
     cores: 32
     processes: 32              # = cores: one single-threaded worker per core, a core per start
     memory: 64GiB
-    walltime: "06:00:00"
-    # Below the walltime, so workers retire (and are replaced) instead of being killed.
-    worker-extra-args: ["--lifetime", "5h45m", "--lifetime-stagger", "5m"]
+    walltime: "3-00:00:00"     # longer than the pool will run
+    death-timeout: 600         # seconds a starting worker waits for the scheduler
     local-directory: $TMPDIR   # the node's own scratch
     log-directory: <shared storage>/dask-logs
+distributed:
+  scheduler:
+    worker-ttl: "10 minutes"   # well above the longest heartbeat gap pool_stress reports
 ```
+
+A worker job is not replaced when it ends: with several workers to a job, jobqueue's `adapt` never
+resubmits it, and the pool stays smaller. Its running batches are rerun on other workers. So give
+worker jobs a walltime longer than the pool will run, and restart the pool between sweeps. A worker
+`--lifetime` buys nothing: a worker reaching it drops its running batch, as a killed one does. The
+default `death-timeout` of 60 s is too short for a full job's workers to import from shared
+storage.
 
 A dask task runs as many starts as fill `PETAB_MCP_FIT_TASK_SECONDS` (default 270) at the median
 start time of the session's previous fit, or at its per-start cap (by default
