@@ -58,12 +58,13 @@ def _free_port() -> int:
 
 
 @contextlib.contextmanager
-def _pool(tmp_path: Path, workers: int = 2, amici: str = "-"):
-    """A pool of ``workers`` in another process; yields its published address, its address file
-    and its process. Its process group is killed on exit."""
+def _pool(tmp_path: Path, workers: int = 2, amici: str = "-", port: int | None = None):
+    """A pool of ``workers`` in another process, on ``port`` or a free one; yields its published
+    address, its address file and its process. Its process group is killed on exit."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "pool.py").write_text(_POOL, encoding="utf-8")
     published = tmp_path / "address"
-    flags = ["--slurm-max-jobs", str(workers), "--port", str(_free_port())]
+    flags = ["--slurm-max-jobs", str(workers), "--port", str(port or _free_port())]
     flags += ["--address-file", str(published)]
     proc = subprocess.Popen(
         [sys.executable, str(tmp_path / "pool.py"), amici, *flags], start_new_session=True
@@ -90,13 +91,13 @@ def _server(yaml: str, build_root, store: Path, cluster=None):
     )
 
 
-def _fit(mcp) -> dict:
-    """Fit 4 starts of a widened k1; each start's ``(fval, n_fval)`` by its id."""
+def _fit(mcp, upper: float = 1e3) -> dict:
+    """Fit 4 starts of k1 widened up to ``upper``; each start's ``(fval, n_fval)`` by its id."""
 
     def call(tool, args):
         return asyncio.run(mcp.call_tool(tool, args)).structured_content
 
-    bounds = {"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}
+    bounds = {"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": upper}
     call("make_changes", {"parameters": [bounds], "justification": "x", "n_starts": 4})
     sql = "SELECT id, fval, n_fval FROM optimization_starts"
     return {r["id"]: (r["fval"], r["n_fval"]) for r in call("query_data", {"sql": sql})["rows"]}
@@ -212,6 +213,48 @@ def test_a_pool_lost_mid_fit_ends_the_call_as_fit_pool(
             ToolError, match="^infrastructure_error: fit_pool: the fit's client lost"
         ):
             _fit(mcp)
+
+
+def test_a_pool_restarted_at_its_address_serves_the_next_fit_unless_from_another_environment(
+    yaml_path, amici_build_root, tmp_path, monkeypatch
+):
+    """A pool resubmitted to SLURM came back 4 min later (NEMO, 2026-11-04), long after its client
+    had stopped reconnecting and closed, and every later fit failed as ``fit_pool`` until the server
+    restarted (#216). A fit while the pool is away still fails so; the next one, once it is back,
+    opens a new client there and runs. A pool back from another environment is refused naming
+    both, also when the client reconnected to it by itself."""
+    opened, connect = [], dask_engine._connect
+
+    def spy(cluster):
+        opened.append(connect(cluster))
+        return opened[-1]
+
+    monkeypatch.setattr(dask_engine, "_connect", spy)
+    port, window = _free_port(), "distributed.comm.timeouts.connect"
+    with _pool(tmp_path / "a", workers=1, port=port) as (address, _, _):
+        with dask.config.set({window: "2s"}):
+            mcp = _server(yaml_path, amici_build_root, tmp_path / "prov", address)
+    deadline = time.monotonic() + 60
+    while opened[0].status != "closed":
+        assert time.monotonic() < deadline, "the client never stopped reconnecting"
+        time.sleep(0.1)
+    with dask.config.set({window: "2s"}):
+        with pytest.raises(ToolError, match="^infrastructure_error: fit_pool: "):
+            _fit(mcp)
+    with _pool(tmp_path / "b", workers=1, port=port):
+        with dask.config.set({window: "300s"}):  # the new client outlasts pool c's start
+            assert len(_fit(mcp)) == 4
+    assert len(opened) == 2
+    with _pool(tmp_path / "c", workers=1, amici="0.0.1", port=port):
+        with pytest.raises(ToolError, match="^infrastructure_error: fit_pool: ") as refused:
+            _fit(mcp, upper=1e4)
+    assert len(opened) == 2, "the client reconnected to pool c by itself"
+    here = dask_engine.versions()["amici"]
+    assert f"the pool at {address} runs another environment (amici 0.0.1 there, {here} here)" in (
+        str(refused.value)
+    )
+    for client in opened:
+        client.close()
 
 
 def test_sigterm_unpublishes_the_pool_then_waits_for_the_batch_running(tmp_path):
