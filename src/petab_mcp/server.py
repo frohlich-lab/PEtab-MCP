@@ -2484,7 +2484,7 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         """Every model version (each a fit), one row each: which structures have been tried and
         how they scored. A row is its `version`, the `parent` it was derived from, its
         `neg_log_likelihood`, `criterion_value` (the score this session ranks by), `k`,
-        `is_new_best` and `residual_flagged` (its residuals show structure the model misses).
+        `is_new_best` and `residual_flagged` (a residual test flagged one of its observables).
         `since=N` lists only the versions after N. `is_new_best` marks each version that became the
         best model (the last one is `get_progress`'s `best_version`); every version is kept, and the
         best one stands whatever comes after it. Where the session holds constraints, a version

@@ -449,9 +449,6 @@ def test_fit_writes_the_structure_flag_into_the_version_meta(fit_session):
     meta = sess.provenance.list_versions()[-1]
     assert meta["residual_flagged"] == bool(res["residual_structure"]["flagged_observables"])
     assert "residual_structure" not in meta
-    # the gate's own bookkeeping still reads the same bool off the fit event
-    fit_ev = [e for e in sess.provenance.recent_events() if e["type"] == "fit"][-1]
-    assert fit_ev["residual_flagged"] == meta["residual_flagged"]
 
 
 def test_restore_version_carries_the_verdict_too(fit_session):

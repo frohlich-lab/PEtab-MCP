@@ -141,7 +141,6 @@ class Checkpoint:
     sigma_estimated: bool
     sigma_inflated: bool
     sigma_collapsed: bool
-    residual_flagged: bool
 
     def __post_init__(self) -> None:
         if self.score is None or not math.isfinite(self.score):
@@ -550,7 +549,6 @@ class PetabSession:
                         sigma_estimated=bool(ev.get("noise_sigma_estimated", False)),
                         sigma_inflated=bool(ev.get("noise_sigma_inflated", False)),
                         sigma_collapsed=bool(ev.get("noise_sigma_collapsed", False)),
-                        residual_flagged=bool(ev.get("residual_flagged", False)),
                     ),
                     fitting.clears_new_best_bar(score, self.best.score if self.best else None),
                 )
@@ -1271,7 +1269,6 @@ class PetabSession:
                     sigma_estimated=sigma_estimated,
                     sigma_inflated=sig_inflated,
                     sigma_collapsed=sig_collapsed,
-                    residual_flagged=bool(fitsim.get("residual_flagged", False)),
                 )
                 if usable
                 else None
@@ -1335,33 +1332,25 @@ class PetabSession:
 
             # The check that showed the best model adequate, which a plateau stop needs and names,
             # else None. Only a FIXED-sigma model can be shown adequate: by its chi2 GoF, two-sided
-            # (below ADEQUATE_GOF_PVALUE an underfit, above OVERFIT_GOF_PVALUE a fit to the noise),
-            # with no residual structure flagged. An ESTIMATED-sigma model never is.
+            # (below ADEQUATE_GOF_PVALUE an underfit, above OVERFIT_GOF_PVALUE a fit to the noise).
+            # An ESTIMATED-sigma model never is. A residual flag is not read here (PEtab-MCP#247).
             best = self.best
             adequate_by = None
             if (
                 best is not None
                 and not best.sigma_estimated
-                and not best.residual_flagged
                 and best.gof_pvalue is not None
                 and ADEQUATE_GOF_PVALUE <= best.gof_pvalue <= OVERFIT_GOF_PVALUE
             ):
-                adequate_by = (
-                    f"chi2 GoF p={best.gof_pvalue:.3g} against fixed noise sigmas, "
-                    "no residual structure flagged"
-                )
+                adequate_by = f"chi2 GoF p={best.gof_pvalue:.3g} against fixed noise sigmas"
             # Evidence the best model is NOT adequate, which the structural nudge below needs: a
-            # fixed-sigma GoF that fails, an estimated sigma outside its band, or flagged residual
-            # structure. A plausible, unflagged estimated sigma is evidence of neither, and so is a
-            # fixed-sigma GoF that could not be computed (no chi2, or n <= k).
+            # fixed-sigma GoF that fails, or an estimated sigma outside its band. A plausible
+            # estimated sigma is evidence of neither, and so is a fixed-sigma GoF that could not
+            # be computed (no chi2, or n <= k).
             inadequate = (
                 best is not None
                 and adequate_by is None
-                and (
-                    (not best.sigma_estimated and best.gof_pvalue is not None)
-                    or best.sigma_gamed
-                    or best.residual_flagged
-                )
+                and ((not best.sigma_estimated and best.gof_pvalue is not None) or best.sigma_gamed)
             )
             stop_reason = None
             if streak >= NON_IMPROVING_STREAK_CAP:
@@ -1502,10 +1491,9 @@ class PetabSession:
         Antimony string, and shipping every version's copy of it into the context each turn cost
         far more than the label was worth.
 
-        The result also carries the two adequacy verdicts this method computes anyway for the
-        plateau-adequacy gate: ``residual_structure`` (the compact residual-structure verdict on
-        whether the model's FORM is still incomplete — the sign/runs tests plus the replicate
-        lack-of-fit test) and the noise-model verdict
+        The result also carries the two verdicts this method computes anyway for the version meta
+        and the checkpoint: ``residual_structure`` (the compact residual-structure verdict — the
+        sign/runs tests plus the replicate lack-of-fit test) and the noise-model verdict
         (``noise_sigma_inflated``/``noise_sigma_collapsed`` + advice), plus — when there is any —
         the ``merge_hints`` naming the cheapest parameter ties the criterion would pay for. Returning them
         saves the caller a separate ``get_fit_summary``/``get_fit_diagnosis`` round-trip;
@@ -1598,16 +1586,12 @@ class PetabSession:
                 criterion=self.criterion,
             ).get("chi2_gof_pvalue")
             # Residual-structure verdict of THIS fit (the sign/runs tests and the replicate
-            # lack-of-fit test),
-            # computed ONCE here and stashed on fitsim like the noise flags below. Three consumers:
-            # the compact rollup rides on the fit RESULT so the agent doesn't spend a
-            # get_fit_diagnosis call to learn its model's form is still incomplete (issue #113);
-            # the bare bool goes into the version meta + event, and feeds the adequacy gate in
-            # record_fit_progress/progress_report so a structurally-mis-specified best model is NOT
-            # treated as adequate (underfits used to plateau-stop as "adequate" while
-            # flagging structured residuals). Must run BEFORE _snapshot_version so the version meta
-            # can carry the flag; safe here since _auto_fit_and_improvement already set
-            # self.simulation, which is what the diagnosis reads.
+            # lack-of-fit test), computed ONCE here and stashed on fitsim like the noise flags
+            # below. The compact rollup rides on the fit RESULT so the agent doesn't spend a
+            # get_fit_diagnosis call on it (issue #113); the bare bool goes into the version meta.
+            # Must run BEFORE _snapshot_version so the version meta can carry the flag; safe here
+            # since _auto_fit_and_improvement already set self.simulation, which is what the
+            # diagnosis reads.
             fitsim["residual_structure"] = residual_structure_rollup(self)
             fitsim["residual_flagged"] = residual_flag(fitsim["residual_structure"])
             # The PARAMETERISATION counterpart of that verdict, on the same reasoning: the cheapest
@@ -1698,13 +1682,6 @@ class PetabSession:
             fitsim["noise_sigma_estimated"] = bool(_nsr)
             fitsim["noise_sigma_inflated"] = noise_sigma_inflated(_nsr)
             fitsim["noise_sigma_collapsed"] = noise_sigma_collapsed(_nsr)
-            # NOTE: fitsim["residual_flagged"] is already set above from the SAME rollup, as the
-            # TRI-STATE bool|None (None = NEITHER arm could run — not merely the sign/runs tests: a
-            # collapsed or unevaluable sigma leaves no weighted residual, and the replicate
-            # lack-of-fit test needs none, so it can still return a definite True/False there). Do not
-            # recompute it here: that both duplicated the residual pass and coerced None -> False,
-            # so the version meta recorded null while the fit event recorded false for one fit, and
-            # a resumed session restored "residuals verified clean" for a model never tested.
             event = self.provenance.append_event(
                 {
                     "type": "fit",
@@ -1719,7 +1696,6 @@ class PetabSession:
                     "noise_sigma_estimated": fitsim["noise_sigma_estimated"],
                     "noise_sigma_inflated": fitsim["noise_sigma_inflated"],
                     "noise_sigma_collapsed": fitsim["noise_sigma_collapsed"],
-                    "residual_flagged": fitsim["residual_flagged"],
                     "nesting_advisory": nesting_advisory,
                     # The OUTSTANDING flag as it stands after this commit (this fit's advisory, an
                     # earlier one this fit did not clear, or None). `nesting_advisory` alone cannot

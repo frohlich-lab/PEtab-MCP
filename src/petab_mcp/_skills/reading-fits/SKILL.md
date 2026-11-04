@@ -16,8 +16,7 @@ description: >-
 - `k` = `n_estimated` (estimated parameter rows) + `hardcoded_constants` (the numeric literals in
   the model's math, each distinct value charged once).
 - `chi2_dof`, `reduced_chi2`, `chi2_gof_pvalue` mean something only with a KNOWN noise level.
-  With estimated sigmas chi2 sits near `n_data_points` by construction whatever the model's form:
-  judge adequacy from residual structure instead.
+  With estimated sigmas chi2 sits near `n_data_points` by construction.
 - Fitted values are LINEAR whatever the estimation scale; `parameter_scales` gives each scale.
 - A change's result lists only what is new since the parent version in
   `fitted_parameters_changed`, `parameter_scales`, `parameters_at_bound` and `merge_hints`, only
@@ -42,8 +41,8 @@ description: >-
   inflated sigma absorbs misfit, a collapsed one overfits the noise, and either way the score is
   not genuine adequacy. The fix is the model's form, not the noise.
 - `residual_structure`: the verdict over the residual tests, with a replicate lack-of-fit arm
-  where the design has replicates. Its `sigma_heterogeneity` names the sigmas whose `p` (below)
-  survives Holm.
+  where the design has replicates. A flag marks where the fit is off, not proof of a better form,
+  and stops nothing. Its `sigma_heterogeneity` names the sigmas whose `p` (below) survives Holm.
 - `merge_hints`: the cheapest few priced ties (below).
 
 ## Diagnosis: residuals

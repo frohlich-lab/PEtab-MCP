@@ -218,9 +218,9 @@ def _replicated_records(session, deviation: float, n_points: int = 3):
 
 
 def test_rollup_flags_the_observable_from_the_replicate_arm(session):
-    """The arm sets the flag through the EXISTING consumer: `flagged_observables` is what the
-    session's plateau-adequacy gate reads (PR #111), so a lack-of-fit finding blocks an early
-    plateau stop with no new gate and no new instruction to the agent."""
+    """The arm flags its observable in the one `flagged_observables` list the sign/runs tests
+    feed, and the summary reports the finding without claiming the form is wrong: gemot#97 found
+    lucarelli's true model flagged at 63 of 453 points (PEtab-MCP#247)."""
     _replicated_records(session, deviation=0.5)
     out = data_access.residual_structure_rollup(session)
     lof = out["replicate_lack_of_fit"]
@@ -231,6 +231,9 @@ def test_rollup_flags_the_observable_from_the_replicate_arm(session):
     assert "Replicate lack-of-fit" in out["summary"] and "obs_B" in out["summary"]
     # ...but never leaks the reference
     assert "delta_bic" not in out["summary"] and "true model" not in out["summary"].lower()
+    # ...and reads as where the fit is off, not as a missing form
+    assert "not proof that a better form exists" in out["summary"]
+    assert "FORM" not in out["summary"] and "form is wrong" not in out["summary"]
     # and the per-observable table agrees with the rolled-up verdict rather than contradicting it —
     # the arm flags a DESIGN POINT, so without that marking the row would read structure_flag: false
     # while its observable sits in flagged_observables
@@ -370,7 +373,7 @@ def test_rollup_runs_the_replicate_arm_without_any_weighted_residual(session):
     this arm exists for: `engine._weighted_residual` returns (None, None) when the noise formula
     references model states or unresolved parameters, and (noise, None) when the evaluated sd is
     0.0, a COLLAPSED sigma. Gated, the verdict degraded to `n_points: 0` and residual_flag None, so
-    the plateau gate was not blocked and the agent was told nothing had been tested."""
+    the agent was told nothing had been tested."""
     recs = _replicated_records(session, deviation=0.5)
     for r in recs:  # a collapsed sigma: noise 0 -> no weighted residual at all
         r["noise"], r["residual_weighted"] = 0.0, None
@@ -382,9 +385,7 @@ def test_rollup_runs_the_replicate_arm_without_any_weighted_residual(session):
     assert "Replicate lack-of-fit" in out["summary"]
     # ...and the head attributes the finding only to the test that RAN: quoting the sign/runs
     # threshold for tests that produced no p at all is the same over-claim in the other direction.
-    assert out["summary"].startswith(
-        "systematic residual structure in obs_B (replicate lack-of-fit)"
-    )
+    assert out["summary"].startswith("residual structure in obs_B (replicate lack-of-fit)")
     assert "sign-test bias" not in out["summary"]
     # get_fit_diagnosis's own no-weighted-residuals early return has no rows and no verdict to
     # contradict this one — the replicate arm reaches the agent through the fit result

@@ -169,9 +169,9 @@ NOISE_SIGMA_REPLICATE_MIN_DOF = 6
 # Per-point two-sided Student-t p on the pooled df, HOLM-adjusted across the replicated points of
 # ONE noise parameter, flagged below this alpha. On that problem (15 points, pooled df 237) the 1%
 # Holm bar is |z| > 3.45: the truth's worst point sits at 1.483 (Holm p 1) and the failing fit's at
-# 11.050 (Holm p 5.5e-22), with 8 of its 15 points flagged. 0.01 rather than 0.05 because the flag
-# is a STOP condition and these p-values are not exact (below). Per point rather than one
-# lack-of-fit F over the family because the advice has to NAME the points where the form is wrong.
+# 11.050 (Holm p 5.5e-22), with 8 of its 15 points flagged. 0.01 rather than 0.05 because a flag
+# sends the agent after those points and these p-values are not exact (below). Per point rather
+# than one lack-of-fit F over the family because the advice has to NAME the points.
 #
 # NOT an axis independent of the noise report. With one ML-fitted sigma over rows that are ALL
 # replicated, sum z_i^2 = N * r^2 - sum(n_i - 1) exactly, r = fitted sigma / that sigma's
@@ -240,14 +240,13 @@ REPLICATE_LOF_MIN_POINTS = 3
 #
 # ADVISORY, and only that. The df BAND reaches the summary prose the agent reads and the coverage
 # credit that clears `low_power` — that last one keys on the band, since `weak` is False on a flag
-# by construction. NO stop condition consumes any of it: a weak pass clears the plateau stop and the
-# finish gate exactly as a powered one does. That is deliberate (the objective and how a fit is
-# scored stay as published); the reader is an agent reading the prose, so here the wording IS the
-# mechanism.
+# by construction. NO stop condition consumes any of it, nor the flag (the objective and how a fit
+# is scored stay as published); the reader is an agent reading the prose, so here the wording IS
+# the mechanism.
 REPLICATE_LOF_MIN_LOF_DF = 3
 
 # At most this many of the worst FLAGGED points (by |z|) ride on a fit result — flagged only, since
-# the advice built from them tells the agent that is where the form is wrong, and a point the model
+# the advice built from them tells the agent that is where the fit is off, and a point the model
 # already reproduces is not one of those. The verdict is re-sent in the agent's history on EVERY
 # subsequent turn (PR #23 cut ~40% of the per-call prompt by trimming exactly this kind of payload),
 # so the arm emits a one-line verdict plus a handful of NAMED points — never the full table (a

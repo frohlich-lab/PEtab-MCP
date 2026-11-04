@@ -33,7 +33,6 @@ def _checkpoint(*, score, version, nll, **over):
         sigma_estimated=False,
         sigma_inflated=False,
         sigma_collapsed=False,
-        residual_flagged=False,
     )
     fields.update(over)
     return Checkpoint(**fields)
@@ -198,8 +197,8 @@ def test_inflated_sigma_blocks_the_adequate_plateau_stop(session):
 
 
 def _fitsim_absorbed_misfit(nll: float, ratio: float) -> dict:
-    """Three ESTIMATED sigmas inside the data-std band, no residual flag, and one of them `ratio`
-    times its data-driven noise floor: a misfit absorbed into that sigma at ratio > 1."""
+    """Three ESTIMATED sigmas inside the data-std band, one of them `ratio` times its data-driven
+    noise floor: a misfit absorbed into that sigma at ratio > 1."""
     fs = _fitsim(nll, 20.0)
     fs["noise_sigma_report"] = {
         f"sigma_{obs}": {
@@ -214,7 +213,6 @@ def _fitsim_absorbed_misfit(nll: float, ratio: float) -> dict:
         }
         for obs, r in (("pSTAT5", ratio), ("tSTAT5", 1.0), ("pEpoR", 1.0))
     }
-    fs["residual_flagged"] = False
     return fs
 
 
@@ -445,31 +443,36 @@ def test_a_plausible_new_best_after_gaming_resets_the_streak(session):
     assert session.progress_report()["non_improving_streak"] == 0  # a real fix clears it
 
 
-def test_flagged_residual_structure_blocks_the_adequate_plateau_stop(session):
-    """A best model whose fixed-sigma chi2 GoF passes but whose residuals are structurally flagged
-    is NOT adequate — its form is incomplete — so a flat-BIC session does NOT plateau-stop."""
-    fs = _fitsim(-50.0, 18.0)
+def _flagged(fs: dict) -> dict:
+    """``fs`` with a residual flag on one observable, as ``PetabSession.fit`` stashes it."""
+    fs["residual_structure"] = {"flagged_observables": ["obs_a"], "summary": "flagged"}
     fs["residual_flagged"] = True
+    return fs
+
+
+def test_a_flagged_best_still_plateau_stops(session):
+    """PEtab-MCP#247: a residual flag decides nothing. gemot#97 found flags no model clears on true
+    models at their published optimum (sneyd's sign test p = 6.6e-7), so a fixed-sigma best whose
+    GoF passes plateau-stops on a flat score, flag or not."""
+    fs = _flagged(_fitsim(-50.0, 18.0))
     session.record_fit_progress(1, fs, {"is_new_best": True})
     for v in range(2, 2 + PLATEAU_WINDOW):
         session.record_fit_progress(v, fs, {"is_new_best": False})
     p = session.progress_report()
-    assert 0.05 <= p["best_gof_pvalue"] <= 0.995  # the GoF alone would pass
-    assert p["score_improvement_over_last_n"] == pytest.approx(0.0)  # BIC is flat...
-    assert p["should_stop"] is False  # ...but residual structure blocks it
+    assert p["should_stop"] is True
+    assert p["stop_reason"].startswith("plateau: best model is adequate (chi2 GoF")
 
 
-def test_flagged_residual_streak_cap_carries_structural_nudge(session):
-    """When a residual-flagged session finally trips the streak cap, its stop_reason carries the
-    structural nudge (change the FORM), its plausible estimated sigma notwithstanding."""
-    fs = _fitsim_plausible_sigma(-50.0, 18.0)
-    fs["residual_flagged"] = True
+def test_a_flagged_best_at_the_streak_cap_gets_no_structural_nudge(session):
+    """PEtab-MCP#247: a flag alone does not make the cap's stop_reason say the model's FORM
+    cannot fit the data; a plausible estimated sigma is no evidence either way."""
+    fs = _flagged(_fitsim_plausible_sigma(-50.0, 18.0))
     session.record_fit_progress(1, fs, {"is_new_best": True})
     for v in range(2, 2 + NON_IMPROVING_STREAK_CAP):
         session.record_fit_progress(v, fs, {"is_new_best": False})
     p = session.progress_report()
-    assert p["should_stop"] is True
-    assert "structural" in p["stop_reason"].lower()
+    assert p["stop_reason"].startswith("non-improving-streak cap reached")
+    assert "STRUCTURAL" not in p["stop_reason"]
 
 
 def test_collapsed_sigma_blocks_the_adequate_plateau_stop(session):
