@@ -287,26 +287,24 @@ def _fitsim_plausible_sigma(nll: float, chi2: float, *, n: int = 20, k: int = 2)
     return fs
 
 
-def test_a_gamed_improvement_advances_the_streak_once_plausible_was_seen(session):
-    """A sigma-GAMED new best does NOT reset the streak once the session has shown the band is
-    reachable — only then does "implausible" describe the FIT rather than the problem.
+@pytest.mark.parametrize(
+    ("gamed", "streak_after"),
+    [(_fitsim_inflated_sigma, 0), (_fitsim_collapsed_sigma, 3)],
+    ids=["inflated", "collapsed"],
+)
+def test_a_gamed_new_best_after_a_plausible_version(session, gamed, streak_after):
+    """#238: once one version had a plausible sigma, an inflated new best stopped resetting the
+    streak, and lucarelli's run hit the cap 475 BIC into its descent, beside six versions saying
+    `is_new_best: true`. An inflated new best resets it whatever came before; a collapsed one
+    does not.
 
-    The plausible fit must NOT be the best, or the checkpoint-protection branch takes over and
-    the gated line is never reached: a plausible best BLOCKS adoption of every later gamed fit
-    (`not (sigma_implausible and best_is_plausible)`), so the streak advances through the generic
-    else-branch and the test would pass with the gate deleted. Ordering here — gamed best first,
-    then a plausible NON-best to arm the latch — is what makes this exercise the gate itself."""
-    session.record_fit_progress(1, _fitsim_inflated_sigma(-60.0, 18.0), {"is_new_best": True})
-    assert session.ever_sigma_plausible is False
-    # A plausible fit that is NOT a new best: arms the latch, leaves the gamed best in place.
+    The plausible fit is NOT the best: a plausible best declines every later gamed fit, so the
+    streak would advance through the not-adopted branch and the test would pass either way."""
+    session.record_fit_progress(1, gamed(-60.0, 18.0), {"is_new_best": True})
     session.record_fit_progress(2, _fitsim_plausible_sigma(-40.0, 18.0), {"is_new_best": False})
-    assert session.ever_sigma_plausible is True
-    assert session.best is not None and session.best.sigma_inflated is True  # gamed best kept
-
-    before = session.non_improving_streak
-    session.record_fit_progress(3, _fitsim_inflated_sigma(-70.0, 18.0), {"is_new_best": True})
-    # Full weight, not the discounted uninformative weight: the latch is armed.
-    assert session.non_improving_streak == before + 1
+    session.record_fit_progress(3, gamed(-70.0, 18.0), {"is_new_best": True})
+    assert session.best.version == 3
+    assert session.non_improving_streak == streak_after
 
 
 def test_an_unsatisfiable_inflation_band_does_not_convert_the_cap_into_a_fixed_budget(session):
@@ -323,35 +321,39 @@ def test_an_unsatisfiable_inflation_band_does_not_convert_the_cap_into_a_fixed_b
             v, _fitsim_inflated_sigma(-50.0 - i, 18.0), {"is_new_best": True}
         )
     p = session.progress_report()
-    assert session.ever_sigma_plausible is False
     assert p["non_improving_streak"] == 0
     assert p["should_stop"] is False  # not cut off mid-descent
 
 
-def test_a_collapsing_sigma_still_advances_the_streak_when_uninformative(session):
+def test_a_collapsed_new_best_advances_the_streak_and_the_cap_says_so(session):
     """The other tail is NOT safe to reset on, which is why the two are split. nll is unbounded
     BELOW as sigma_hat -> 0 (checked only by k*ln n), so a model fitting a small observable group
     nearly exactly gains without limit — a real exploit with no floor. The plateau stop never fires
-    on an estimated sigma, so the cap must keep bounding it even while the inflation half is
-    uninformative."""
-    for i, v in enumerate(range(1, 1 + NON_IMPROVING_STREAK_CAP)):
+    on an estimated sigma, so the cap must keep bounding it.
+
+    #238: the cap said "no new best" beside versions saying `is_new_best: true`; it now counts the
+    new bests that did not reset the streak, and says why."""
+    for i, v in enumerate(range(1, 4)):
         session.record_fit_progress(
             v, _fitsim_collapsed_sigma(-50.0 - i, 18.0), {"is_new_best": True}
         )
+    for v in range(4, 1 + NON_IMPROVING_STREAK_CAP):
+        session.record_fit_progress(v, _fitsim_collapsed_sigma(-50.0, 18.0), {"is_new_best": False})
     p = session.progress_report()
-    assert session.ever_sigma_plausible is False
     assert p["non_improving_streak"] == NON_IMPROVING_STREAK_CAP
     assert p["should_stop"] is True
+    assert "3 of them were new bests with a collapsed estimated noise sigma" in p["stop_reason"]
 
 
-def test_a_non_improving_fit_still_advances_the_streak_when_uninformative(session):
-    """The discount applies to IMPROVEMENTS only. A genuine plateau must still trip the cap in
-    exactly cap fits, or the weight would slow down the stop it exists to preserve."""
+def test_a_non_improving_inflated_fit_still_advances_the_streak(session):
+    """The inflated reset applies to new bests only. A genuine plateau must still trip the cap in
+    exactly cap fits, and with nothing to explain, the reason says only that."""
     for v in range(1, 1 + NON_IMPROVING_STREAK_CAP):
         session.record_fit_progress(v, _fitsim_inflated_sigma(-50.0, 18.0), {"is_new_best": False})
     p = session.progress_report()
     assert p["non_improving_streak"] == NON_IMPROVING_STREAK_CAP
     assert p["should_stop"] is True
+    assert "of them" not in p["stop_reason"]
 
 
 def test_gamed_fit_does_not_overwrite_a_plausible_best_checkpoint(session):
@@ -431,10 +433,8 @@ def test_a_fit_result_carries_only_the_progress_counters_that_move(session, monk
 
 
 def test_a_plausible_new_best_after_gaming_resets_the_streak(session):
-    """The gate is specific to gamed improvements: a genuine (plausible-sigma) new best still resets
-    the streak, so fixing the noise model immediately clears the accumulated penalty. Seeded with a
-    plausible first fit so the gamed-improvement penalty is ARMED (see ever_sigma_plausible: before
-    any plausible sigma is seen the term is uninformative and gamed improvements reset on BIC)."""
+    """Gamed fits a plausible best declines advance the streak; a genuine (plausible-sigma) new best
+    still resets it, so fixing the noise model immediately clears the accumulated penalty."""
     session.record_fit_progress(1, _fitsim_plausible_sigma(-45.0, 18.0), {"is_new_best": True})
     for i, v in enumerate(range(2, 5)):
         session.record_fit_progress(
