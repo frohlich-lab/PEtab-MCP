@@ -1,5 +1,6 @@
-"""A catalyst a row takes in every state, and the constant rate it reads where no rule changes what
-the row reads of it, named on the edit from the rules alone (PEtab-MCP#232)."""
+"""A catalyst a row takes in every state, the constant rate it reads where no rule changes what the
+row reads of it, and the readouts no input reaches, named on the edit from the rules alone
+(PEtab-MCP#232)."""
 
 from __future__ import annotations
 
@@ -76,10 +77,13 @@ def test_a_bare_enzyme_and_its_constant_rate_are_named_on_the_edit(tmp_path, emp
     assert "Row `r2` names no state of E, its catalyst" in said
     assert "name its state: `E{p} phosphorylates S`" in said
     assert "this rate reads a constant amount of E: nothing upstream of E moves it" in said
+    assert "No input reaches the readouts `B`" in said
 
     fixed = _build(mcp, "E{p}")
     assert fixed["applied"] is True, fixed.get("error")
-    assert not any("catalyst" in m["message"] for m in fixed["messages"])
+    assert not any(
+        "catalyst" in m["message"] or "No input" in m["message"] for m in fixed["messages"]
+    )
 
 
 def _notes(rows):
@@ -141,3 +145,48 @@ def test_an_enzyme_no_row_changes_says_nothing():
         notes=notes,
     )
     assert not [n for n in notes if "catalyst" in n]
+
+
+_P_S = Agent._from_json({"name": "S", "mods": [{"mod_type": "phosphorylation"}]})
+
+
+@pytest.mark.parametrize(
+    ("rows", "seeds", "reached"),
+    [
+        # `two_step` binds every state of E alike: the dose still never reaches S.
+        (
+            [
+                (Phosphorylation(Agent("K"), Agent("E")), INDRA_DEFAULT, "r1"),
+                (Phosphorylation(Agent("E"), Agent("S")), "indra_two_step", "r2"),
+            ],
+            [("K", Agent("K"), "dose")],
+            False,
+        ),
+        # A binding that reads the dose.
+        ([(Phosphorylation(None, Agent("S")), "basal", "r2", {"k": "k0*dose"})], [], True),
+        # A starting amount that reads it: the total E is read, and set per experiment.
+        (
+            [(Phosphorylation(Agent("E"), Agent("S")), INDRA_DEFAULT, "r2")],
+            [("E", Agent("E"), "2*dose"), ("S", Agent("S"), 1.0)],
+            True,
+        ),
+    ],
+)
+def test_a_readout_no_input_reaches_is_named(rows, seeds, reached):
+    """Traced from the readout through the rules that change what it reads, never simulated: the
+    rate, a binding and a starting amount each carry an input."""
+    notes: list[str] = []
+    PS.to_antimony(
+        [*rows, _SUB], {"B": _P_S}, seeds=seeds, targets=frozenset({"dose"}), notes=notes
+    )
+    assert any("No input reaches the readouts `B`" in n for n in notes) is not reached
+
+
+def test_a_problem_without_inputs_names_no_readout():
+    """Where no experiment sets anything, every readout reads no input, and saying so tells
+    nothing: every toy test without conditions would carry the note."""
+    notes: list[str] = []
+    PS.to_antimony(
+        [(Phosphorylation(None, Agent("S")), "basal", "r2"), _SUB], {"B": _P_S}, notes=notes
+    )
+    assert not [n for n in notes if "No input" in n]
