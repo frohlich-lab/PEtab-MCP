@@ -537,6 +537,40 @@ def run_query(session, sql: str, max_rows: int = 1000, offset: int = 0) -> dict[
     return out
 
 
+def version_part_summary(part: str, blob: dict[str, Any], version: int) -> dict[str, Any]:
+    """Version ``version``'s stored ``part`` (:data:`provenance.VERSION_PARTS`) without its rows,
+    for a ``get_version`` reply the rows would make too large to send.
+
+    ``simulation`` keeps everything but ``records`` (the scores, ``k_eff``, the noise report and the
+    parameter diagnosis a client's judge reads) and adds ``chi2_by_observable``; ``optimization``
+    keeps everything but ``starts`` and ``trace`` and adds ``fvals``, each start's objective, best
+    first. ``omitted`` says what was dropped and where its rows are.
+    """
+    if part == "simulation":
+        records = blob.get("records") or []
+        by_observable: dict[str, dict[str, Any]] = {}
+        for r in records:
+            rw = r.get("residual_weighted")
+            if rw is not None:
+                entry = by_observable.setdefault(r["observable_id"], {"n": 0, "chi2": 0.0})
+                entry["n"] += 1
+                entry["chi2"] += rw * rw
+        for entry in by_observable.values():
+            entry["chi2"] = round(entry["chi2"], 3)
+        return {k: v for k, v in blob.items() if k != "records"} | {
+            "chi2_by_observable": by_observable,
+            "omitted": f"its {len(records)} records, more than one reply carries: query_data on "
+            f"simulations_history WHERE version = {version}",
+        }
+    starts = blob.get("starts") or []
+    return {k: v for k, v in blob.items() if k not in ("starts", "trace")} | {
+        "fvals": [s.get("fval") for s in starts],
+        "omitted": f"its {len(starts)} starts and {len(blob.get('trace') or [])} trace rows, more "
+        "than one reply carries: query_data's optimization_starts and optimization_trace hold the "
+        "head version's",
+    }
+
+
 #: Why the residual section is empty: there are no per-point records for this model and a READ does
 #: not compile one to make them (see :func:`fitting.ensure_simulation`). Says what to do instead.
 _NO_SIMULATION_STATUS = (

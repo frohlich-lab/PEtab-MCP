@@ -40,6 +40,7 @@ import anyio
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.middleware import Middleware
+from fastmcp.tools import ToolResult
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 from pydantic.json_schema import SkipJsonSchema
 from petab.v2.C import EXPERIMENT_ID, OBSERVABLE_ID
@@ -2406,6 +2407,38 @@ _WAIT_FOR_FIT_DOC = (
     "version already scores); or `idle`, when no change has run."
 )
 
+#: Most bytes a ``get_version`` reply may take as the MCP result it is sent as. The MCP Python
+#: client refuses an SSE event over 1 MiB (``mcp.client.streamable_http.DEFAULT_MAX_SSE_EVENT_SIZE``)
+#: and ended a lucarelli run on a 1755-point ``simulation`` (PEtab-MCP#231); the rest is margin for
+#: the JSON-RPC envelope and the SSE framing.
+_REPLY_MAX_BYTES = 768 * 1024
+
+#: ``get_version``'s description. A part over :data:`_REPLY_MAX_BYTES` is summarised, not paged:
+#: ``simulations_history`` already pages a version's records in SQL, and a second pager over the
+#: same rows is the growing menu the README's design notes rule out.
+_GET_VERSION_DOC = (
+    "A prior version's record (every score, the new-best bookkeeping, the noise model's report), "
+    "Antimony model and parameter table, to INSPECT it; for its model alone, "
+    "`get_model(version=N)`. `include` adds what its fit stored beside it: 'simulation' (one "
+    "record per data point) and 'optimization' (every start with its trace). A reply is at most "
+    f"{_REPLY_MAX_BYTES // 1024} KiB, under the 1 MiB the MCP Python client takes in one message: "
+    "a part that would take it past that comes back without its rows, 'simulation' with each "
+    "observable's chi2 and 'optimization' with each start's objective, and the part's `omitted` "
+    "says where its rows are. A version's per-point rows are `query_data` on "
+    "`simulations_history`, paged, and the current fit's residuals `get_fit_diagnosis`."
+)
+
+
+def _wire_bytes(out: dict[str, Any]) -> int:
+    """Bytes of the MCP result FastMCP sends for a tool returning ``out``: its JSON twice, as text
+    content and as ``structuredContent``, the text's quotes escaped."""
+    result = ToolResult(structured_content=out)
+    wire = {
+        "content": [block.model_dump(by_alias=True, exclude_none=True) for block in result.content],
+        "structuredContent": result.structured_content,
+    }
+    return len(json.dumps(wire, separators=(",", ":"), ensure_ascii=False).encode())
+
 
 def _version_rows(session: PetabSession, metas: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Each of ``metas`` as its ``list_versions`` row (:func:`petab_mcp.provenance.summary`), with
@@ -2486,16 +2519,10 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
             lambda: ctx.run("wait_for_fit", lambda: _fit_outcome(session), {"timeout_s": timeout_s})
         )
 
-    @mcp.tool(annotations=_READ_ONLY)
+    @mcp.tool(annotations=_READ_ONLY, description=_GET_VERSION_DOC)
     def get_version(
         version: int, include: list[Literal["simulation", "optimization"]] | None = None
     ) -> dict[str, Any]:
-        """A prior version's record (every score, the new-best bookkeeping, the noise model's
-        report), Antimony model and parameter table, to INSPECT it; for its model alone,
-        `get_model(version=N)`. `include` adds what its fit stored beside it, each large:
-        'simulation' (one record per data point) and 'optimization' (every start with its trace).
-        A version's per-point residuals are cheaper through `query_data` on `simulations_history`,
-        and the current fit's through `get_fit_diagnosis`."""
         ctx = route()
         session = ctx.session
         parts = tuple(include or ())
@@ -2508,6 +2535,12 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
                     f"{' and '.join(omitted)}: get_version(include=[...]); per point, query_data "
                     "on simulations_history"
                 )
+            # The largest part first, so a smaller one comes back whole where it can.
+            for part in sorted(set(parts), key=lambda p: len(json.dumps(out[p])), reverse=True):
+                if _wire_bytes(out) <= _REPLY_MAX_BYTES:
+                    break
+                if out[part] is not None:
+                    out[part] = data_mod.version_part_summary(part, out[part], version)
             return out
 
         return ctx.run("get_version", run, {"version": version, "include": list(parts)})
