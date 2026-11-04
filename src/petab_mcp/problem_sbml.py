@@ -126,7 +126,7 @@ def to_antimony(
 
     ``notes``, when given, collects what t = 0 holds that nothing declared and the caller may
     not expect: kinds the rules make from nothing, which start empty, and a seed's location chosen
-    among several.
+    among several; and each catalyst taken in every state (:func:`_every_state`).
 
     The rules are reduced before they are expanded (:mod:`reduction`), unless ``reduce`` is off
     (the expansion the tests compare it with), and ``network``, when given, receives the
@@ -202,6 +202,8 @@ def to_antimony(
     # What the experiment sets stays whole (:mod:`reduction`): a form the conditions or a protocol
     # set.
     whole = set(set_keys.values())
+    if notes is not None:
+        notes.extend(_every_state(rows, model, emissions, whole))
     # A row's regulators are checked on its reactions as BioNetGen expands the rules as written
     # (:mod:`regulation`): reduced, a catalyst is out of its rule and a monomer is blocks, no
     # longer the statement's agents.
@@ -900,6 +902,86 @@ def _site_states(model: pysb.Model, emissions) -> tuple[dict, dict]:
         for state in _states([initial.pattern]):
             puts.setdefault(state, set()).add(None)
     return reads, puts
+
+
+def _every_state(rows, model: pysb.Model, emissions, set_: set[str]) -> list[str]:
+    """What each row whose catalyst names no state, on a site other rows change, is told: every
+    state of it catalyses, the row as it would name one, and, where no rule makes or removes the
+    catalyst and nothing the experiment sets (``set_``) is it, that its rate reads a constant
+    total. raimundez's ``MEK phosphorylates MAPK`` read ``MEK{u} + MEK{p}``, which sum to the
+    seed: ``pMAPK`` stayed flat in every experiment of 18 versions, and the agent never looked at
+    that rate (PEtab-MCP#232)."""
+    from .notation import agent_text, statement_text
+    from .statements import _catalyst, _products
+
+    changed: dict[tuple[str, str], set[str]] = {}  # (molecule, site) -> the rows changing it
+    for e in emissions:
+        for rule in map(model.rules.__getitem__, e.rules):
+            after = _states(rule.product_pattern.complex_patterns)
+            for m, site, state in _states(rule.reactant_pattern.complex_patterns):
+                if any((a, b) == (m, site) and c != state for a, b, c in after):
+                    changed.setdefault((m, site), set()).add(e.prefix)
+    out = []
+    for row, e in zip(rows, emissions):
+        stmt, enzyme = row[0], _catalyst(row[0])[0]
+        if enzyme is None or (name := _n(enzyme.name)) not in model.monomers.keys():
+            continue
+        sites = model.monomers[name].site_states
+        open_ = {
+            site
+            for rule in e.rules
+            for mp in _molecules(model.rules[rule].reactant_pattern)
+            if mp.monomer.name == name
+            for site in sites
+            if site != "loc" and site not in mp.site_conditions
+        }
+        writers = sorted(set().union(*(changed.get((name, s), ()) for s in open_)) - {e.prefix})
+        if not writers:
+            continue
+        state = next(
+            (
+                agent
+                for other in rows
+                for agent, effect in _products(other[0])
+                if effect > 0
+                and _n(agent.name) == name
+                and (agent.mods or agent.activity)
+                and all(m.is_modified for m in agent.mods)
+                and (agent.activity is None or agent.activity.is_active)
+            ),
+            None,
+        )
+        example = ""
+        if state is not None:
+            named = deepcopy(enzyme)
+            named.mods = [*named.mods, *state.mods]
+            named.activity = named.activity or state.activity
+            written = deepcopy(stmt)
+            setattr(written, next(k for k, v in vars(stmt).items() if v is enzyme), named)
+            regulators = {k: [a.to_json() for a in v] for k, v in (row[4:5] or [{}])[0].items()}
+            try:
+                example = f": `{statement_text({**written.to_json(), **regulators})}`"
+            except ValueError:
+                example = f": `{agent_text(named.to_json())}`"
+        states = "; ".join(f"`{site}` {' and '.join(sites[site])}" for site in sorted(open_))
+        text = (
+            f"Row `{e.prefix}` names no state of {enzyme.name}, its catalyst, so every state of it "
+            f"catalyses ({states} alike), though its state changes in "
+            f"{', '.join(f'`{w}`' for w in writers)}. To make one form the enzyme, name its "
+            f"state{example}."
+        )
+        if name not in set_ and all(
+            sum(mp.monomer.name == name for mp in _molecules(rule.reactant_pattern))
+            == sum(mp.monomer.name == name for mp in _molecules(rule.product_pattern))
+            for rule in model.rules
+        ):
+            text += (
+                f" No row makes or removes {enzyme.name} and no condition sets it, so its total is "
+                f"constant, and so is what this rate reads of it: nothing that changes "
+                f"{enzyme.name}'s state moves the rate."
+            )
+        out.append(text)
+    return out
 
 
 def _misnamed(prefix: str, rules: list[str], reads: dict, puts: dict) -> str:

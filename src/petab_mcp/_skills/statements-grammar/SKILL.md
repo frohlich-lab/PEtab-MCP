@@ -42,6 +42,9 @@ No other verb reads: `E converts A to B` is `A -> B by E`.
 A site is one residue letter and its position (`pRY` is refused). A bound partner is `!B`, never
 a bare tag: `A{B}` is refused.
 
+An enzyme without a tag catalyses in every state, `E` and `E{p}` alike. To make the active form
+the enzyme, name its state: `E{p} phosphorylates B`.
+
 ## A condition input is read in a binding, or is the agent seeded at its id
 
 Read it as a parameter in the binding of each row it drives:
