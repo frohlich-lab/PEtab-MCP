@@ -614,9 +614,9 @@ def test_a_wait_for_a_fit_holds_no_worker_thread(tmp_path, monkeypatch):
     assert took < 5, took
 
 
-def test_a_read_waiting_on_a_fits_lock_gets_heartbeats_naming_the_fits_phase(tmp_path, monkeypatch):
-    """A read behind a fit waits out the fit (#180), so on gemot's protocol, 2025-11-25, its client
-    hears the running change every HEARTBEAT_S meanwhile, as the fit's own call does (#217)."""
+def test_a_call_waiting_on_a_fit_gets_heartbeats_naming_the_fits_phase(tmp_path, monkeypatch):
+    """A call that lasts as long as a fit, as wait_for_fit does, hears the running change every
+    HEARTBEAT_S on gemot's protocol, 2025-11-25, as the fit's own call does (#217)."""
     monkeypatch.setattr(server, "HEARTBEAT_S", 0.1)
     fitting_, release = _stuck_fit(monkeypatch, total=4, done=1, phase="queued")
     mcp = _server(tmp_path)
@@ -630,18 +630,115 @@ def test_a_read_waiting_on_a_fits_lock_gets_heartbeats_naming_the_fits_phase(tmp
         if len(beats) == 3:
             release.set()
 
-    async def read():
+    async def wait():
         async with Client(mcp, mode="legacy", progress_handler=heard) as client:
             assert client.protocol_version == "2025-11-25"
-            return await client.call_tool("get_run_timing", {})
+            return await client.call_tool("wait_for_fit", {"timeout_s": 30})
 
-    timing = asyncio.run(read()).structured_content
+    outcome = asyncio.run(wait()).structured_content
     first.join(30)
 
-    assert timing["queue_seconds"] == 0.0
+    assert outcome == {"status": "no_version"}
     assert len(beats) >= 3
     assert all(re.fullmatch(r"queued for \d+s, 1 of 4 starts done", m) for _, m in beats[:3])
     assert [p for p, _ in beats] == sorted(p for p, _ in beats)
+
+
+#: A genuine fit's payload, as ``record_fit_progress`` reads it.
+_FITSIM = {
+    "status": "fit",
+    "neg_log_likelihood": -50.0,
+    "chi2": 18.0,
+    "n_data_points": 20,
+    "n_estimated": 2,
+}
+
+
+def test_progress_and_timing_answer_during_a_fit_with_what_it_has_recorded(tmp_path, monkeypatch):
+    """get_progress and get_run_timing took the session's lock, which a change holds for its whole
+    edit and fit: in #177's test a get_progress mid-fit answered after 29.6 s, when the stub's fit
+    ended (PEtab-MCP#180). Both answer while the change holds it, with what it has recorded."""
+    fitting_, release, released = threading.Event(), threading.Event(), []
+
+    def _fit(self, n_starts=None):
+        self.add_timing(compile_seconds=2.5, n_compiles=1)
+        self.record_fit_progress(1, _FITSIM, {"is_new_best": True})
+        fitting_.set()
+        released.append(release.wait(30))
+        raise ModelUpdateError("the stub's fit ended")
+
+    monkeypatch.setattr(PetabSession, "_auto_fit_and_improvement", _fit)
+    mcp = _server(tmp_path)
+    first = threading.Thread(target=_call, args=(mcp, "make_changes", _CHANGE))
+    first.start()
+    assert fitting_.wait(30)
+    progress, timing = _call(mcp, "get_progress", {}), _call(mcp, "get_run_timing", {})
+    release.set()
+    first.join(30)
+
+    assert released == [True]
+    assert (progress["n_fitted_ops"], progress["best_version"]) == (1, 1)
+    assert (timing["compile_seconds"], timing["n_compiles"], timing["n_fits"]) == (2.5, 1, 0)
+
+
+class _Asked:
+    """A lock that says when it is asked for, so a test knows a reader is waiting on it."""
+
+    def __init__(self, lock):
+        self.lock, self.asked = lock, threading.Event()
+
+    def __enter__(self):
+        self.asked.set()
+        self.lock.acquire()
+
+    def __exit__(self, *exc):
+        self.lock.release()
+
+
+@pytest.mark.parametrize(
+    "write, pause_after, read",
+    [
+        (
+            lambda s: s.record_fit_progress(1, _FITSIM, {"is_new_best": True}),
+            "best",
+            PetabSession.progress_report,
+        ),
+        (
+            lambda s: s.add_timing(fit_seconds=2.5, queue_seconds=1.0, n_fits=1),
+            "fit_seconds",
+            PetabSession.run_timing,
+        ),
+    ],
+    ids=["progress", "timing"],
+)
+def test_a_read_racing_an_update_sees_all_of_it(session, monkeypatch, write, pause_after, read):
+    """A writer is stopped after its first counter (the best checkpoint before the streak and
+    op_history; fit_seconds before queue_seconds and n_fits): it holds the counters' lock there,
+    and a read asking for that lock meanwhile answers with the whole update (PEtab-MCP#180)."""
+    paused, go = threading.Event(), threading.Event()
+
+    def stop_after(self, name, value):
+        object.__setattr__(self, name, value)
+        if name == pause_after and not paused.is_set():
+            paused.set()
+            go.wait(30)
+
+    monkeypatch.setattr(PetabSession, "__setattr__", stop_after)
+    writer = threading.Thread(target=write, args=(session,))
+    writer.start()
+    assert paused.wait(30)
+    assert session.counters_lock.locked()
+    session.counters_lock = lock = _Asked(session.counters_lock)
+    seen = []
+    reader = threading.Thread(target=lambda: seen.append(read(session)))
+    reader.start()
+    assert lock.asked.wait(30)
+    assert seen == []
+    go.set()
+    writer.join(30)
+    reader.join(30)
+
+    assert seen == [read(session)]
 
 
 def _fit_ends(self, n_starts=None):
