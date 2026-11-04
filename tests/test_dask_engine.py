@@ -570,6 +570,21 @@ def test_a_lost_cluster_fails_the_fit_and_nothing_reruns_it_here(fit_session, mo
     assert len(engines) == 1 and engines[0].client is engine.client
 
 
+def _no_build_plugin(dask_worker) -> int:
+    """The identity of the :class:`_NoBuild` instance installed on this worker (run on a worker)."""
+    return id(dask_worker.plugins[dask_engine._NoBuild.name])
+
+
+def test_a_server_joining_a_cluster_that_has_no_build_reaches_no_worker():
+    """A server joining a pool, which registered _NoBuild first, leaves every worker's plugin as it
+    was: no plugin-add is broadcast. At 1200 workers, 100 servers' broadcasts stalled the
+    scheduler past every connect's 30 s deadline (NEMO, 2026-11-04)."""
+    with _engine() as engine:
+        installed = engine.client.run(_no_build_plugin)
+        with DaskEngine(engine.client.cluster).client:
+            assert engine.client.run(_no_build_plugin) == installed
+
+
 def test_a_worker_never_builds_a_model(tmp_path):
     """On a worker, pyPESTO's creators and AMICI's importer refuse to build in the shared build root,
     naming the folder and the host, and leave the folder as it was. The pool failed the run: its

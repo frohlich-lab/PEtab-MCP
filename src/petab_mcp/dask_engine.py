@@ -133,10 +133,13 @@ def _refuse_build(builder, *args, **kwargs):
 
 class _NoBuild(WorkerPlugin):
     """Replaces pyPESTO's and AMICI's model-build entry points with :func:`_refuse_build`, in each
-    worker process. The pool and every server register it under one name, so each replaces the
-    last."""
+    worker process. The pool registers it before any server joins, so a server's registration is a
+    no-op (``idempotent``); on a bare cluster it is the first. One that replaced the last would be
+    broadcast to every worker: a sweep's 100 servers joining a pool of 1200 workers within seconds
+    stalled its scheduler past every connect's 30 s deadline (NEMO, 2026-11-04)."""
 
     name = "petab-mcp-no-build"
+    idempotent = True
 
     def setup(self, worker) -> None:
         from amici.importers.petab import PetabImporter
@@ -172,7 +175,7 @@ class DaskEngine(CappedEngine):
                 f"the pool at {pool} runs another environment ({'; '.join(differ)}): start a pool "
                 "from this server's environment",
             )
-        self.client.register_plugin(_NoBuild())
+        self.client.register_plugin(_NoBuild())  # a no-op where the pool registered it first
 
     def batched(
         self, k: int, start_seconds: float = math.inf, rerun: frozenset[str] = frozenset()
