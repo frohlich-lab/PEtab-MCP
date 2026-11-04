@@ -40,21 +40,17 @@ statistics, on the coordinate where the noise is additive) and surfaces the resu
 the ``fit`` result's ``residual_structure`` verdict (the per-observable detail behind it goes
 out through ``get_fit_diagnosis``).
 
-THE FIRST THREE FEED THE SESSION'S PLATEAU-ADEQUACY GATE, through the one ``flagged_observables``
-list ``session.py`` reads via ``data_access.residual_flag`` — the sign/runs tests have fed it since
-PR #111 (underfits that plateau-stopped as "adequate" with a plausible sigma while flagging
-structured residuals), and the replicate test joins the same list rather than adding a gate.
-So loosening any alpha here loosens a STOP CONDITION; none of this is merely advisory. What differs
-is POWER, not consequence: at these sample sizes the sign/runs tests are weak, so a non-significant
-result there is reported as ``low_power`` rather than as a pass, while the replicate test has real
+THE FIRST THREE FEED ONE ``flagged_observables`` list, which a fit result reports and no stop
+condition reads (PEtab-MCP#247). What differs between them is POWER: at these sample sizes the
+sign/runs tests are weak, so a non-significant result there is reported as ``low_power`` rather
+than as a pass, while the replicate test has real
 power wherever design points repeat AND enough LACK-OF-FIT degrees of freedom remain after the fit
 (:func:`lof_power`: below ``REPLICATE_LOF_MIN_LOF_DF`` of them a PASS is reported ``weak``, and with
 none left — or with no replicated design points at all — the arm reports NO EVIDENCE). That df is a
 WHOLE-PROBLEM count — replicated points add across noise families while the structural parameters
 are shared — so :func:`replicate_lack_of_fit` here judges NO df at all: it tests one family's points
-and ``data_access._merge_lof_verdicts`` applies :func:`lof_power` once, to the pooled total. It is
-the FLAG that gates, on all three tests; ``weak`` and ``low_power`` are advisory qualifications of a
-non-flag, read by the prose and by no stop condition.
+and ``data_access._merge_lof_verdicts`` applies :func:`lof_power` once, to the pooled total.
+``weak`` and ``low_power`` qualify a non-flag, in the prose.
 """
 
 from __future__ import annotations
@@ -263,8 +259,8 @@ def holm_adjusted(pvalues: list[float]) -> list[float]:
     non-decreasing along the sorted order and capped at 1. Holm rather than plain Bonferroni
     because the question is "is ANY replicated point off?" across a family of up to ~150 points,
     where Bonferroni on the minimum alone throws away the rest of the family; and rather than a
-    false-discovery rule because the consumer is a GATE — one flagged point blocks a plateau stop,
-    so the error that matters is the family-wise one.
+    false-discovery rule because one flagged point flags its observable, so the error that matters
+    is the family-wise one.
     """
     ps = [float(p) for p in pvalues]
     m = len(ps)
@@ -394,8 +390,8 @@ def replicate_lack_of_fit(
         se_i = s_g / sqrt(n_i)        z_i = (ybar_i - f_i) / se_i
 
     and ``p_i`` is the two-sided Student-t tail on ``df_g``, Holm-adjusted across the family. A
-    point whose adjusted p falls below ``alpha`` is FLAGGED: the model cannot reach that point no
-    matter how its parameters move, which is missing STRUCTURE, not noise.
+    point whose adjusted p falls below ``alpha`` is FLAGGED: the fit misses it by more than its
+    replicates allow, which no sigma absorbs.
 
     Why this arm exists and why it is scoped this way is in ``constants.REPLICATE_LOF_ALPHA``. The
     guards, each with the measured case that forces it:

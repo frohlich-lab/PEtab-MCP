@@ -373,7 +373,7 @@ def test_fit_diagnosis_flags_systematic_bias(session):
     assert rollup["low_power"] is False  # 10 points -> powered
 
 
-# -- the bare structure boolean the session's plateau-adequacy gate consumes ---------------
+# -- the bare structure boolean the version meta records -------------------------------------
 # `PetabSession.fit` derives it as bool(rollup["flagged_observables"]) rather than calling a
 # second helper; these pin that expression against fit_diagnosis's own flagged set.
 def _flagged(session) -> bool:
@@ -467,7 +467,7 @@ def test_residual_structure_rollup_degrades_to_a_well_formed_verdict(session, re
 
 
 def test_residual_structure_rollup_never_raises(session, monkeypatch):
-    """An advisory stat must never take down the fit or the plateau gate that consume it."""
+    """An advisory stat must never take down the fit that computes it."""
     monkeypatch.setattr(
         data_access, "_frames", lambda _s: (_ for _ in ()).throw(RuntimeError("boom"))
     )

@@ -24,6 +24,8 @@ The numbers on the entries below are pull requests of
 [frohlich-lab/petab_mcp](https://github.com/frohlich-lab/petab_mcp), where this package was
 developed before it moved here.
 
+PEtab-MCP#247 No stop reads a residual flag: the plateau stop rests on the fixed-sigma chi2 GoF alone, a cap stop's structural nudge ignores flags, and a flagged fit's summary says where the fit is off, not that its form is missing something. gemot#97 found flags no model clears on true models at their published optimum (sneyd's `open_probability` sign test at p = 6.6e-7, lucarelli's replicate lack-of-fit at 63 of 453 points), and gemot#102 dropped its flag-keyed finish refusal on the same runs. Do not key a stop on flags again without run evidence that they separate good models from bad.
+
 PEtab-MCP#205 A seed whose species nothing reads is pruned like any other orphan and named in the edit's warnings, deliberately NOT kept for having been declared (the issue's option 3): kept, it still reads nothing, so the condition input its amount read has no effect either way, while a numeric seed's `<name>_init` is an estimated parameter the score charges and the fit cannot move, and the de-dup fingerprints it apart from the model that simulates alike. `get_model(format="statements")` shows the seed as written regardless.
 
 PEtab-MCP#194 There is deliberately no warning that a model's structure was "already committed" at an earlier version: the de-dup refuses a model an earlier version already fitted with the same bounds and as many starts, so that warning fired only on a changed search space. In gemot's round-3 sweep it called widening refits that took fujita from BIC 226 to −7 "a duplicate".
