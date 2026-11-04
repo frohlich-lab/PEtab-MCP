@@ -63,6 +63,7 @@ downstream has to know where a model came from.
 
 from __future__ import annotations
 
+from collections import Counter
 from copy import deepcopy
 
 import libsbml
@@ -906,36 +907,54 @@ def _site_states(model: pysb.Model, emissions) -> tuple[dict, dict]:
 
 def _every_state(rows, model: pysb.Model, emissions, set_: set[str]) -> list[str]:
     """What each row whose catalyst names no state, on a site other rows change, is told: every
-    state of it catalyses, the row as it would name one, and, where no rule makes or removes the
-    catalyst and nothing the experiment sets (``set_``) is it, that its rate reads a constant
-    total. raimundez's ``MEK phosphorylates MAPK`` read ``MEK{u} + MEK{p}``, which sum to the
+    state of it catalyses, the row as it would name one, and, where no rule makes, removes or
+    changes the catalyst as the row reads it (its pattern's sites) and nothing the experiment sets
+    (``set_``) is it, that its rate reads a constant amount of it. Read off the rules, not a
+    simulation: raimundez's ``MEK phosphorylates MAPK`` read ``MEK{u} + MEK{p}``, which sum to the
     seed: ``pMAPK`` stayed flat in every experiment of 18 versions, and the agent never looked at
     that rate (PEtab-MCP#232)."""
     from .notation import agent_text, statement_text
     from .statements import _catalyst, _products
 
-    changed: dict[tuple[str, str], set[str]] = {}  # (molecule, site) -> the rows changing it
-    for e in emissions:
-        for rule in map(model.rules.__getitem__, e.rules):
-            after = _states(rule.product_pattern.complex_patterns)
-            for m, site, state in _states(rule.reactant_pattern.complex_patterns):
-                if any((a, b) == (m, site) and c != state for a, b, c in after):
-                    changed.setdefault((m, site), set()).add(e.prefix)
+    row_of = {rule: e.prefix for e in emissions for rule in e.rules}
+    changed: dict[tuple[str, str], set] = {}  # (molecule, site) -> the rows changing its value
+    made: set[str] = set()  # the molecules a rule makes or removes
+    for rule in model.rules:
+        sides = [_molecules(rule.reactant_pattern), _molecules(rule.product_pattern)]
+        counts = [Counter(mp.monomer.name for mp in side) for side in sides]
+        made |= {m for m in counts[0] | counts[1] if counts[0][m] != counts[1][m]}
+        values = [
+            Counter(
+                (mp.monomer.name, site, _site_value(value))
+                for mp in side
+                for site, value in mp.site_conditions.items()
+            )
+            for side in sides
+        ]
+        for m, site, _ in (values[0] - values[1]) + (values[1] - values[0]):
+            if counts[0][m] == counts[1][m]:
+                changed.setdefault((m, site), set()).add(row_of.get(rule.name))
     out = []
     for row, e in zip(rows, emissions):
         stmt, enzyme = row[0], _catalyst(row[0])[0]
         if enzyme is None or (name := _n(enzyme.name)) not in model.monomers.keys():
             continue
         sites = model.monomers[name].site_states
-        open_ = {
-            site
+        read = [
+            mp
             for rule in e.rules
             for mp in _molecules(model.rules[rule].reactant_pattern)
             if mp.monomer.name == name
+        ]
+        open_ = {
+            site
+            for mp in read
             for site in sites
             if site != "loc" and site not in mp.site_conditions
         }
-        writers = sorted(set().union(*(changed.get((name, s), ()) for s in open_)) - {e.prefix})
+        writers = sorted(
+            set().union(*(changed.get((name, s), ()) for s in open_)) - {e.prefix, None}
+        )
         if not writers:
             continue
         state = next(
@@ -970,18 +989,24 @@ def _every_state(rows, model: pysb.Model, emissions, set_: set[str]) -> list[str
             f"{', '.join(f'`{w}`' for w in writers)}. To make one form the enzyme, name its "
             f"state{example}."
         )
-        if name not in set_ and all(
-            sum(mp.monomer.name == name for mp in _molecules(rule.reactant_pattern))
-            == sum(mp.monomer.name == name for mp in _molecules(rule.product_pattern))
-            for rule in model.rules
+        if name not in set_ | made and not any(
+            (name, site) in changed for mp in read for site in mp.site_conditions
         ):
             text += (
-                f" No row makes or removes {enzyme.name} and no condition sets it, so its total is "
-                f"constant, and so is what this rate reads of it: nothing that changes "
-                f"{enzyme.name}'s state moves the rate."
+                f" No rule makes, removes or changes {enzyme.name} as this row reads it, and no "
+                f"condition sets it, so this rate reads a constant amount of {enzyme.name}: "
+                f"nothing upstream of {enzyme.name} moves it."
             )
         out.append(text)
     return out
+
+
+def _site_value(value):
+    """A site condition as a rule changes it: its state, and whether it is bound, not by which
+    bond number."""
+    if isinstance(value, tuple):
+        return value[0], _site_value(value[1])
+    return "bound" if _is_bond(value) else value
 
 
 def _misnamed(prefix: str, rules: list[str], reads: dict, puts: dict) -> str:

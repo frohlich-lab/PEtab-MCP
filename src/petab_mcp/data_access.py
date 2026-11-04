@@ -717,7 +717,6 @@ def fit_diagnosis(session, worst_n: int = 8, max_observables: int | None = 12) -
         "total_chi2": round(float((d["_rw"] * d["_rw"]).sum()), 3),
         "per_observable": per_observable,  # bounded: worst-12 by chi2 + all flagged rows
         **({"omitted": omitted_note} if omitted_note else {}),
-        **({"constant_in_time": flat[: _CAP or None]} if (flat := constant_in_time(df)) else {}),
         "worst_points": worst_points,  # bounded: <= worst_n rows
         # {} if no estimated sigma/fit, else {report, advice (None when plausible),
         # fitted_over_data_noise}
@@ -866,11 +865,10 @@ _STRUCTURE_UNAVAILABLE = "residual-structure tests unavailable (no weighted resi
 def residual_structure_rollup(session, sims=None) -> dict[str, Any]:
     """The current fit's residual-structure verdict, rolled up:
     ``{flagged_observables, low_power, summary, replicate_lack_of_fit}``, plus the pointers
-    :func:`_absorbed_misfit` and :func:`constant_in_time` add, which flag nothing. THE authority
-    on where this verdict is reported: on every fit result and on ``get_fit_summary`` (both score
-    payloads for one fit, assembled by :func:`fitting.fit_result_block` and
-    :func:`fitting.fit_summary`) — and NOT by ``get_fit_diagnosis``, which returns the
-    per-observable detail behind it.
+    :func:`_absorbed_misfit` adds, which flag nothing. THE authority on where
+    this verdict is reported: on every fit result and on ``get_fit_summary`` (both score payloads
+    for one fit, assembled by :func:`fitting.fit_result_block`/:func:`fitting.fit_summary`) —
+    and NOT by ``get_fit_diagnosis``, which returns the per-observable detail behind it.
 
     Which observables show significant residual STRUCTURE — a form-incompleteness signal no sigma
     rescales (unlike chi2 GoF), though estimated scales and offsets take most of its power
@@ -917,69 +915,7 @@ def residual_structure_rollup(session, sims=None) -> dict[str, Any]:
     if not verdicts and not lof.get("available"):
         return _unavailable_structure()  # nothing was tested at all — NOT a clean bill
     out = _rollup_structure(verdicts, replicate_lof=lof)
-    if flat := constant_in_time(df):
-        out["summary"] = f"{out['summary']} {_constant_line(flat)}"
-        out["constant_in_time"] = flat
     return {**out, **_absorbed_misfit(session, df, flagged=bool(out["flagged_observables"]))}
-
-
-#: A series (an observable in one experiment, at two times or more) is constant in time when its
-#: simulation moves by at most this fraction of what its data move there, the range of each. A line
-#: that flat follows none of the data's change: its χ² is a flat line's to a few percent.
-#: Integration and pre-equilibration error (AMICI calls a steady state at a relative rate of 1e-6)
-#: stay below it, so a readout nothing moves is not missed for them. The issue's block was flat to
-#: 1e-6 of its data (PEtab-MCP#232).
-_CONSTANT_IN_TIME_RTOL = 1e-2
-
-#: The data in an observable's constant series change when their spread about each series' mean,
-#: in noise units, is beyond noise at this p (χ², pooled). Small: the data are the same on every
-#: fit, so a false call would repeat on each. The issue's block alone had χ² 13,577.
-_DATA_CHANGE_ALPHA = 1e-3
-
-
-def constant_in_time(sims) -> list[dict[str, Any]]:
-    """Each observable whose simulation is constant in time (:data:`_CONSTANT_IN_TIME_RTOL`) in
-    experiments where its data change, as ``{observable_id, experiments: "k/n"}``: constant in k of
-    the n experiments measuring it at two times or more. Most k first, ``[]`` on any failure.
-
-    Read off the fit's own records, in the noise's coordinate (``residual_weighted``), so a readout
-    whose data are noise about one level, as a total protein's are, is not named. An estimated sigma
-    that absorbed the change hides it here as it does from χ² (:func:`sigma_misfit_signals`)."""
-    from scipy.stats import chi2
-
-    found = []
-    try:
-        d = sims[sims["time"].notna() & sims["simulation"].notna() & sims["measurement"].notna()]
-        for obs, g in d.groupby("observable_id"):
-            n = k = dof = 0
-            stat = 0.0
-            for _, s in g.groupby("experiment_id", dropna=False):
-                if s["time"].nunique() < 2:
-                    continue
-                n += 1
-                sim, meas = s["simulation"].astype(float), s["measurement"].astype(float)
-                if sim.max() - sim.min() > _CONSTANT_IN_TIME_RTOL * (meas.max() - meas.min()):
-                    continue
-                k += 1
-                rw = s["residual_weighted"].dropna().astype(float)
-                stat += float(((rw - rw.mean()) ** 2).sum())
-                dof += max(len(rw) - 1, 0)
-            if dof and chi2.sf(stat, dof) < _DATA_CHANGE_ALPHA:
-                found.append((k, _clean(obs), n))
-    except Exception:  # noqa: BLE001 - advisory; never fail the fit on a diagnostic
-        return []
-    found.sort(key=lambda f: -f[0])
-    return [{"observable_id": obs, "experiments": f"{k}/{n}"} for k, obs, n in found]
-
-
-def _constant_line(flat: list[dict[str, Any]]) -> str:
-    """The summary's sentence for :func:`constant_in_time`'s observables."""
-    named = _named([f"{f['observable_id']} ({f['experiments']} experiments)" for f in flat])
-    return (
-        f"Constant in time while the data change: {named}. Their rates likely read nothing that "
-        "changes there, such as an enzyme taken in every state whose total is conserved: a cause "
-        "in the model, not the solver."
-    )
 
 
 def _absorbed_misfit(session, sims, flagged: bool) -> dict[str, Any]:
@@ -1542,7 +1478,7 @@ def residual_structure_on_fit(rollup: dict[str, Any] | None) -> dict[str, Any] |
     if not isinstance(rollup, dict):
         return rollup
     out = dict(rollup)
-    for key in ("flagged_observables", "sigma_heterogeneity", "constant_in_time"):
+    for key in ("flagged_observables", "sigma_heterogeneity"):
         named = out.get(key) or []
         if len(named) > _MAX_NAMED:
             out[key] = named[:_MAX_NAMED]

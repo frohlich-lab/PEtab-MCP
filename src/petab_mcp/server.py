@@ -2274,9 +2274,7 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         two ranked pointers say where it did: `sigma_heterogeneity` (per sigma, a Levene `p` that
         its series share one spread, and the series with the largest `rms` weighted residual) and
         `noise_sigma.fitted_over_data_noise`, each `low_power` on few points;
-        `structure_tests_caveat` says when no structure flag is weak evidence. `constant_in_time`
-        names each observable simulated flat over time where its data change (`k/n` experiments):
-        what makes it likely reads nothing that changes there. On a large problem
+        `structure_tests_caveat` says when no structure flag is weak evidence. On a large problem
         `per_observable` is a worst-first subsample (`max_observables` by chi2, plus a few by bias
         and structure flag, with an `omitted` block); `max_observables=0` returns every row.
 
