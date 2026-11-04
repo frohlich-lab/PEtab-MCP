@@ -720,8 +720,7 @@ def estimation_problem(session, engine, *, solve_inner: bool = True):
     # After the branch, so the hierarchical and joint objectives are integrated identically.
     _apply_amici_solver_defaults(problem)
     if first_build:
-        session.compile_seconds += time.perf_counter() - t0
-        session.n_compiles += 1
+        session.add_timing(compile_seconds=time.perf_counter() - t0, n_compiles=1)
         engine._pypesto_hashes.add(h)
 
     engine._estimation_problem_cache = (key, problem, inner)
@@ -1284,10 +1283,8 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
         killed, queued = [], 0.0
     duration = time.perf_counter() - t0
     # The multistart optimization is the recurring "fit" cost (a fit-cache hit returns above
-    # without reaching here, so it correctly adds nothing). Under `session.lock`.
-    session.fit_seconds += duration
-    session.queue_seconds += queued
-    session.n_fits += 1
+    # without reaching here, so it correctly adds nothing).
+    session.add_timing(fit_seconds=duration, queue_seconds=queued, n_fits=1)
 
     # pyPESTO's own multistart report -> pypesto.log (its native logging is otherwise
     # sparse for a successful minimize; warnings/errors it emits are captured there too).

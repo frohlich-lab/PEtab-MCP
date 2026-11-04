@@ -2108,20 +2108,7 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         """
         ctx = route()
         session = ctx.session
-
-        def run() -> dict[str, Any]:
-            # Read under the lock so the accumulators are a consistent snapshot even if a
-            # fit is mid-update on another thread (a client may dispatch tool calls concurrently).
-            with session.lock:
-                return {
-                    "compile_seconds": round(float(session.compile_seconds), 3),
-                    "fit_seconds": round(float(session.fit_seconds), 3),
-                    "queue_seconds": round(float(session.queue_seconds), 3),
-                    "n_compiles": int(session.n_compiles),
-                    "n_fits": int(session.n_fits),
-                }
-
-        return ctx.run("get_run_timing", run)
+        return ctx.run("get_run_timing", session.run_timing)
 
     @mcp.tool(annotations=_READ_ONLY)
     def get_data_regimes(observables: str | None = None) -> dict[str, Any]:

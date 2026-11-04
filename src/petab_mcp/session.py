@@ -221,6 +221,10 @@ class PetabSession:
             self._set_model_from_antimony(f"model {R.ZERO_SHOT_MODEL_ID}\nend")
 
         self.lock = threading.RLock()
+        # Held only while the timing accumulators and the early-stop state below are updated
+        # (`add_timing`, `record_fit_progress`, `reseed_best`) or read whole (`run_timing`,
+        # `progress_report`); the reads take it instead of `lock`.
+        self.counters_lock = threading.Lock()
         # When the change holding `lock` (a `make_changes` and its fit) began, by time.monotonic(),
         # else None; read without the lock, so a second change is refused instead of queued (see
         # `change`).
@@ -274,8 +278,8 @@ class PetabSession:
         # per unique structure — ONE build now, made by `fitting.estimation_problem` and shared
         # by the fit and every objective evaluation), `fit_seconds`
         # is pyPESTO OPTIMIZATION time (the recurring multistart `minimize`). Both accumulate
-        # only when work actually happens (a compile/fit cache hit adds nothing), and every
-        # write is under `self.lock` (fits/sims already hold it). Read via `get_run_timing`.
+        # only when work actually happens (a compile/fit cache hit adds nothing), through
+        # `add_timing`. Read via `run_timing` (`get_run_timing`).
         # `queue_seconds` is the part of `fit_seconds` its starts waited with none running.
         self.compile_seconds: float = 0.0
         self.fit_seconds: float = 0.0
@@ -295,8 +299,7 @@ class PetabSession:
         #   * ``op_history`` — per-op (version, score, running best_score, gof p, is_new_best, and
         #     ``no_reset``: why a new best did not reset the streak), to surface "best-score
         #     improvement over the last N ops", to detect a plateau, and for the cap's stop_reason.
-        # All writes happen under ``self.lock`` on the commit path (fits already hold it); reads go
-        # through ``progress_report`` which takes the lock for a consistent snapshot.
+        # Every write holds ``counters_lock``, and ``progress_report`` reads them under it.
         self.non_improving_streak: int = 0
         self.best: Checkpoint | None = None
         self.op_history: list[dict[str, Any]] = []
@@ -611,9 +614,30 @@ class PetabSession:
         """Rebuild the best-score checkpoint from the log without the versions ``excluded``, the ones
         the constraints in force break: the best version, the new-best bar and the plateau stop
         then rank only models that make the session's claims."""
-        with self.lock:
+        with self.lock, self.counters_lock:
             self.best = None
             self._seed_progress_from_provenance(frozenset(excluded))
+
+    def add_timing(self, **amounts: float) -> None:
+        """Add each of ``amounts`` to the timing accumulator of its name (``fit_seconds=2.5,
+        n_fits=1``), all under :attr:`counters_lock`, so :meth:`run_timing` sees all or none."""
+        with self.counters_lock:
+            for name, amount in amounts.items():
+                setattr(self, name, getattr(self, name) + amount)
+
+    def run_timing(self) -> dict[str, Any]:
+        """The timing accumulators ``get_run_timing`` returns, read under :attr:`counters_lock`
+        as :meth:`progress_report` reads the early-stop state, and never under :attr:`lock`: a
+        change holds that for its whole edit and fit, so a read during a fit waited it out (29.6 s
+        of a 30 s stub, PEtab-MCP#180) instead of answering with what the change has recorded."""
+        with self.counters_lock:
+            return {
+                "compile_seconds": round(float(self.compile_seconds), 3),
+                "fit_seconds": round(float(self.fit_seconds), 3),
+                "queue_seconds": round(float(self.queue_seconds), 3),
+                "n_compiles": int(self.n_compiles),
+                "n_fits": int(self.n_fits),
+            }
 
     def set_constraints(self, constraints: Any, rationale: str) -> dict[str, Any]:
         """Replace the session's constraints with ``constraints`` (:mod:`constraints`): the next change
@@ -1197,9 +1221,7 @@ class PetabSession:
         exactly gains without limit. The plateau stop never fires on an estimated sigma (see
         :meth:`progress_report`), so the cap is the only bound on that.
 
-        Takes ``self.lock`` itself (a reentrant ``RLock``, so this is safe whether or not the
-        caller already holds it) so the write path is self-contained and symmetric with the locked
-        read in :meth:`progress_report`.
+        Takes :attr:`counters_lock` itself, under which :meth:`progress_report` reads.
         """
         from . import fitting
 
@@ -1232,7 +1254,7 @@ class PetabSession:
             else noise_sigma_collapsed(report)
         )
 
-        with self.lock:
+        with self.counters_lock:
             # `score is not None` is NOT enough: a NaN is a float, so a fit whose likelihood
             # came back non-finite would be adopted as the checkpoint and then never beaten
             # (every later `score <= NaN - delta` is False). goodness_of_fit already maps
@@ -1299,7 +1321,7 @@ class PetabSession:
         (:func:`fitting._entry_inflated`), and the replicate lack-of-fit arm, its df-aware form,
         has power against a few large misses, not against a diffuse inflation like that run's.
         """
-        with self.lock:
+        with self.counters_lock:
             hist = self.op_history
             n_ops = len(hist)
             streak = self.non_improving_streak
