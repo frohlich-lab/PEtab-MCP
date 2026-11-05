@@ -90,6 +90,9 @@ _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*")
 #: parameters (``<prefix>_kf``).
 _ROW_PREFIX = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*")
 _RESIDUE_SITE = re.compile(r"([A-Z])([0-9]+)?")
+#: A control character but tab and newline, which no row, prefix or name holds: a client's stray
+#: ``\r`` (``r\r_act``) prints as the name without it.
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 
 
 class NotationError(ValueError):
@@ -579,6 +582,16 @@ def split_advice(prefix: str, statement: str, binding: str, op: str | None = Non
     )
 
 
+def refuse_control(what: str, text: str) -> None:
+    """Refuse ``text`` (``what`` names it) where it holds a control character, named by its escape
+    and column."""
+    if m := _CONTROL.search(text):
+        raise NotationError(
+            f"{what} {text!r} holds the control character {m.group()!r} at column {m.start()}: "
+            "send it without one"
+        )
+
+
 def refuse_inline(text: str) -> None:
     """Refuse ``text``, a row, where it carries its binding after a ``|`` (:class:`InlineBinding`);
     whether the rest reads is :func:`parse`'s to say."""
@@ -608,6 +621,7 @@ def parse(text: str, groundings: dict[str, dict] | None = None) -> dict[str, Any
     from .statements import REGULATORS
 
     groundings = groundings or {}
+    refuse_control("row", text)
     m = _ROW_PREFIX.match(text)
     if not m:
         raise NotationError(f"a row starts with its prefix and ':': {text!r}")

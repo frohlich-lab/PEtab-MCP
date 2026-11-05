@@ -515,7 +515,7 @@ def test_a_rate_reading_a_role_the_row_leaves_empty_is_refused():
         )
     for stmt, role in ((Phosphorylation(None, Agent("ERK"), "T", "185"), "enz"),
                        (Complex([Agent("A"), Agent("B")]), "members")):
-        with pytest.raises(MechanismError, match=rf"row 'r1': .* reads \['{role}'\], which its "):
+        with pytest.raises(MechanismError, match=rf"row 'r1': the rate of 'w' reads `{role}`, which `"):
             M.assemble([(stmt, "w", "r1")], library=library)
 
 
@@ -730,3 +730,20 @@ def test_a_row_binds_a_rate_to_an_expression_over_shared_ids():
     )
     assert {"KD", "kf_on"} <= params and "r1_k" not in params
     assert set(emissions[0].parameters) == {"KD", "kf_on"}
+
+
+def test_a_row_that_builds_no_rule_is_told_the_entries_that_build_one():
+    """A policy that builds nothing for the row was refused with only "give it a policy that
+    builds one", the largest group not in the skill: 14 refusals in 8 runs of gemot round 5
+    (#251)."""
+    stmt = Dephosphorylation(None, Agent("AKT1"), "S", "473")
+    with pytest.raises(MechanismError, match=r"under 'indra_michaelis_menten' builds no rule.*"
+                       r"`basal`.* build one for it"):
+        M.assemble([(stmt, "indra_michaelis_menten", "r1")])
+    # INDRA names `B{-pS10}`'s rule as `B{pS10}`'s and builds it once.
+    produced = [IncreaseAmount(None, Agent("B", mods=[ModCondition("phosphorylation", "S", "10",
+                                                                   is_modified)]))
+                for is_modified in (True, False)]
+    with pytest.raises(MechanismError, match=r"row 'r2': .* builds \['B_phosphoS10_synthesized'\], "
+                       r"which rows \['r1'\] build already.*`mass_action`"):
+        M.assemble([(produced[0], M.INDRA_DEFAULT, "r1"), (produced[1], M.INDRA_DEFAULT, "r2")])

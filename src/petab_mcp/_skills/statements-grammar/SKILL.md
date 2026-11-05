@@ -5,7 +5,8 @@ description: >-
   Read before your first `statements` call. By example: a row and its binding, each verb and tag,
   a condition input read in a binding or seeded at its id, regulators stated and read, the
   mechanism library's rules, a `rate` beside a `scheme` (where `amount()` is required or refused,
-  and what multiplies the rate), a site the writer and the reader name alike, and each edit.
+  and what multiplies the rate), a scheme's bonds and sites, a site the writer and the reader name
+  alike, and each edit.
 ---
 
 # Writing rows and bindings
@@ -29,14 +30,12 @@ and its parameter bindings.
     E activates B, E inhibits B     Activation, Inhibition
     E is a GEF for B, E is a GAP for B   Gef, Gap
 
-No other verb reads: `E converts A to B` is `A -> B by E`.
-
 ## An agent's tags, in braces: `A{pS10, kinase:on}`
 
     pS10, -pS10      phosphorylated at S10, not phosphorylated there; acK5, ubK48 alike
     kinase:on        an activity, or :off
     @nucleus         a location
-    !B, ~B           bound to B, not bound to B
+    !B, ~B           bound to B, not bound to B: `A{~B} binds B{~A}` grows no chains
     mut:V600E        a mutation
 
 A site is one residue letter and its position (`pRY` is refused). A bound partner is `!B`, never
@@ -76,9 +75,8 @@ split the row into one per regulator.
 
 ## The mechanism library
 
-A policy is one statement type's, and `list_mechanisms` lists each type's with the parameters
-each binds: `basal` is a modification's (`B is phosphorylated`), and a DecreaseAmount has no
-`mass_action`.
+A policy is one statement type's: `list_mechanisms` lists each type's roles, the names a rate
+reads its agents by, and its entries with the parameters each binds.
 
 - `based_on` names an entry of the mechanism's own `statement_type`.
 - A `rate` re-rates exactly one irreversible reaction: `indra_two_step` builds three, so a rate
@@ -108,11 +106,13 @@ Both rates are MULTIPLIED by the reaction's reactants, the enzyme included: each
 `kcat·E·S/((Km + S)(1 + C/Ki))`. A rate written `kcat*enz/(Km + sub)` counts the enzyme twice; a
 constant `k` alone is mass action.
 
+In a scheme a bond number joins exactly two sites, `A(b=1) % B(a=1)`; a site it adds is written in
+every state it takes, its start state first; `mod=` is a modification's own site; a regulator is
+read in every rule it acts on.
+
 ## A site is the one its statement names
 
-`at S10` puts the phosphate on site `S10`, and a statement naming no residue (`B{p}`) on site
-`phospho`. A row reading `B{pS10}` never sees the second: give the writing and the reading rows
-the same residue and position, or neither. A seed does not join two sites.
+`at S10` writes site `S10`, and no residue (`B{p}`) site `phospho`: `B{pS10}` never reads it.
 
 ## Edits
 
@@ -120,14 +120,14 @@ the same residue and position, or neither. A seed does not join two sites.
     {"op": "replace_row", "row": "r2: E decreases B"}
     {"op": "rebind", "prefix": "r2", "binding": "indra_default"}
     {"op": "remove_row", "prefix": "r2"}
-    {"op": "set_seed", "seed": {"agent": "A{pY10}", "amount": 0.5}}
+    {"op": "set_seed", "agent": "A{pY10}", "amount": 0.5}
     {"op": "remove_seed", "name": "A_pY10"}
 
 `add_row` takes a new prefix; `replace_row` (its binding kept unless it gives one), `rebind` and
-`remove_row` an existing one. A `row` or `binding` is one line or its JSON.
+`remove_row` an existing one, each row once a batch. A `row` or `binding` is one line or its JSON.
+`statement_edits` take no `seeds`, `amounts`, `readouts` or `bindings` beside them.
 
 A seed is what is present at t = 0, and how much; beside `statements`, `seeds=[{"agent":
-"A{pY10}", "amount": 0.5}]`. Its fields nest under `seed`: `{"op": "set_seed", "agent": "A",
-"amount": 1}` is refused. It is named after its agent's form (`A_pY10`) unless it gives `name`.
+"A{pY10}", "amount": 0.5}]`. It is named after its agent's form (`A_pY10`) unless it gives `name`.
 `set_amount` seeds nothing: `{"op": "set_amount", "name": "pA", "agent": "A{pY10}"}` names an
 amount a readout formula reads as `pA`.

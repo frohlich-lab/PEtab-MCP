@@ -357,20 +357,23 @@ class StatementEdit(BaseModel):
         "row's binding, one line ('two_step kf=k_on') or JSON.",
     )
     prefix: str | None = Field(default=None, description="rebind, remove_row: the row's prefix.")
-    seed: SeedRow | None = Field(default=None, description="set_seed: the seed.")
-    name: str | None = Field(
-        default=None, description="remove_seed, set_amount, remove_amount: its name."
-    )
     agent: dict[str, Any] | str | None = Field(
-        default=None, description="set_amount: the agent pattern whose amount it is."
+        default=None,
+        description="set_seed: the species in the state it starts in, as a seed's `agent`; "
+        "set_amount: the agent pattern whose amount it is.",
+    )
+    amount: float | str | None = Field(
+        default=None, description="set_seed only: its starting amount, as a seed's `amount`."
+    )
+    name: str | None = Field(
+        default=None,
+        description="remove_seed, set_amount, remove_amount: its name; set_seed: as a seed's "
+        "`name`, by default its agent's form.",
     )
     readout: str | None = Field(
         default=None, description="set_readout: the readout id."
     )
     formula: str | None = Field(default=None, description="set_readout: its formula.")
-    # Not in the schema, and refused when given (operations.apply_statement_edits): a starting
-    # amount is a seed's, which `set_amount` does not declare.
-    amount: SkipJsonSchema[Any] = None
 
 
 # Provider serialisation artefact: some clients emit a list-typed argument wrapped in a
@@ -1351,10 +1354,24 @@ def _mechanisms_text(session, statement_types: list[str] | None) -> str:
             index.setdefault(stmt_type, []).append(f"{policy}({', '.join(names)}){written}")
     if statement_types:
         return "\n".join(blocks)
-    types_by_entries: dict[str, list[str]] = {}
+
+    def roles(stmt_type: str) -> str:
+        """`` [roles ...]``, the names a rate reads its statement's agents by, a list role by
+        position; empty for a type no placeholder statement stands for."""
+        try:
+            stmt = schemes.placeholder(stmt_type)
+        except MechanismError:
+            return ""
+        return " [roles " + ", ".join(
+            f"{r}_0..." if isinstance(getattr(stmt, r), list) else r for r in stmt._agent_order
+        ) + "]"
+
+    types_by_entries: dict[tuple[str, str], list[str]] = {}
     for stmt_type, entries in index.items():
-        types_by_entries.setdefault(", ".join(entries), []).append(stmt_type)
-    return "\n".join(f"{', '.join(t)}: {entries}" for entries, t in types_by_entries.items())
+        types_by_entries.setdefault((roles(stmt_type), ", ".join(entries)), []).append(stmt_type)
+    return "\n".join(
+        f"{', '.join(t)}{r}: {entries}" for (r, entries), t in types_by_entries.items()
+    )
 
 
 def _statement_record(session, version: int | None) -> dict | None:
@@ -1455,10 +1472,10 @@ def _register_model_tools(
             statement_types: Annotated[list[str] | None, BeforeValidator(_unwrap_listish)] = None,
         ) -> str:
             """The mechanisms a `statements` row can use: the library's own and those written this
-            run. Without `statement_types`, an index: each statement type's mechanisms with the
-            `parameters` each declares, `policy(parameters)`, one line for the types whose entries
-            are the same. With them, each of those types' mechanisms as the PySB rules it builds.
-            Read the rules of the types your rows use before choosing a row's policy, and to write
+            run. Without `statement_types`, an index: each statement type's roles, the names a rate
+            reads its agents by, and its mechanisms with the `parameters` each declares,
+            `policy(parameters)`, one line for the types whose entries are the same. With them,
+            each of those types' mechanisms as the PySB rules it builds. Read the rules of the types your rows use before choosing a row's policy, and to write
             a new one as a `scheme`: copy the nearest entry and edit it. Each is written over the
             statement type's ROLES; `@` gives the rate, and a name in it is one of the `parameters`
             its header lists, which a row's binding binds as `kf=...` (`bindings={'r1': 'two_step
