@@ -72,15 +72,16 @@ runs the pool as a SLURM job of its own, and a server joins it with `--fit-pool 
 `PETAB_MCP_FIT_POOL`). Both need the `dask` extra (`pip install -e '.[dask]'`).
 
 ```bash
-petab-mcp-pool --slurm-max-jobs N --address-file PATH   # --slurm-min-jobs M   --port 8786
+petab-mcp-pool --slurm-max-jobs N --address-file PATH   # --port 8786
 petab-mcp --petab-yaml problem.yaml --build-root DIR --fit-pool "$(cat PATH)"
 ```
 
-The pool's scheduler listens on `--port` of the pool's node, so a pool restarted there comes back
-at the same address, and the address goes to `--address-file` once it listens. The pool submits up
-to N worker jobs while batches wait for a worker and keeps M (default 0) while idle. On SIGTERM it
-removes the address file, waits up to 10 min for the batches running, then cancels its jobs, failing
-the fits still waiting. It needs:
+The pool's scheduler listens on `--port` of the pool's node, so a pool restarted there comes back at
+the same address, and the address goes to `--address-file` once it listens. The pool submits N
+worker jobs as it starts and keeps them, idle or not, until it stops, so start it for a sweep and
+stop it after. It does not scale with its queue: dask's `adapt` cancelled each new job before its
+workers could take a batch (#250). On SIGTERM it removes the address file, waits up to 10 min for
+the batches running, then cancels its jobs, failing the fits still waiting. It needs:
 
 - **every server inside a SLURM allocation**, never on the login node: a server compiles every model
   itself, and a worker never does;
@@ -112,12 +113,11 @@ distributed:
     worker-ttl: "10 minutes"   # well above the longest heartbeat gap pool_stress reports
 ```
 
-A worker job is not replaced when it ends: with several workers to a job, jobqueue's `adapt` never
-resubmits it, and the pool stays smaller. Its running batches are rerun on other workers. So give
-worker jobs a walltime longer than the pool will run, and restart the pool between sweeps. A worker
-`--lifetime` buys nothing: a worker reaching it drops its running batch, as a killed one does. The
-default `death-timeout` of 60 s is too short for a full job's workers to import from shared
-storage.
+A worker job is not replaced when it ends: with several workers to a job, jobqueue never resubmits
+it, and the pool stays smaller. Its running batches are rerun on other workers. So give worker jobs
+a walltime longer than the pool will run, and restart the pool between sweeps. A worker `--lifetime`
+buys nothing: a worker reaching it drops its running batch, as a killed one does. The default
+`death-timeout` of 60 s is too short for a full job's workers to import from shared storage.
 
 A dask task runs as many starts as fill `PETAB_MCP_FIT_TASK_SECONDS` (default 270) at the median
 start time of the session's previous fit, or at its per-start cap (by default

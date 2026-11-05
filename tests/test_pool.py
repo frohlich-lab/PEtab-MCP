@@ -2,7 +2,8 @@
 another process: what crosses that boundary is the contract.
 
 CI has no SLURM, so the pool's process runs ``pool.main`` with a ``LocalCluster`` in place of its
-``SLURMCluster`` (:data:`_POOL`), and the SLURM cluster itself is only built, never submits a job.
+``SLURMCluster`` (:data:`_POOL`), and the SLURM cluster itself submits its jobs to an ``sbatch``
+that runs them on this machine (:data:`_FAKE_SLURM`).
 """
 
 from __future__ import annotations
@@ -21,10 +22,11 @@ import time
 from pathlib import Path
 
 import dask
+import dask_jobqueue  # noqa: F401 - its config defaults, here, outside every test's dask.config.set
 import numpy as np
 import pandas as pd
 import pytest
-from distributed import Client, get_task_stream
+from distributed import Client, WorkerPlugin, get_task_stream
 from fastmcp.exceptions import ToolError
 
 from petab_mcp import dask_engine, fitting, pool
@@ -44,8 +46,8 @@ _POOL = textwrap.dedent("""
         if sys.argv[1] != "-":
             ours = dask_engine.versions
             dask_engine.versions = lambda: {**ours(), "amici": sys.argv[1]}
-        pool._slurm_cluster = lambda port, min_jobs, max_jobs: LocalCluster(
-            n_workers=max_jobs, threads_per_worker=1, scheduler_port=port, dashboard_address=":0"
+        pool._slurm_cluster = lambda port, jobs: LocalCluster(
+            n_workers=jobs, threads_per_worker=1, scheduler_port=port, dashboard_address=":0"
         )
         raise SystemExit(pool.main(sys.argv[2:]))
 """)
@@ -276,7 +278,7 @@ def test_the_pool_listens_on_its_port_and_takes_every_slurm_setting_from_dask_co
     """``_slurm_cluster`` gives ``SLURMCluster`` the port and nothing else, so what the README's
     ``jobqueue.yaml`` sets must reach the job script from dask's config alone: partition, cores,
     one single-threaded worker process per core, memory, walltime, the workers' lifetime, both
-    directories, and the scheduler's host. With a minimum of 0 jobs nothing is submitted."""
+    directories, and the scheduler's host. With no job asked for, nothing is submitted."""
     logs = tmp_path / "logs"
     config = {
         "jobqueue.slurm.queue": "ncpu",
@@ -291,7 +293,7 @@ def test_the_pool_listens_on_its_port_and_takes_every_slurm_setting_from_dask_co
     }
     port = _free_port()
     # Every job reads the config as it is described, the script's one included.
-    with dask.config.set(config), pool._slurm_cluster(port, min_jobs=0, max_jobs=2) as cluster:
+    with dask.config.set(config), pool._slurm_cluster(port, jobs=0) as cluster:
         script = cluster.job_script()
         assert cluster.scheduler_address == f"tcp://127.0.0.1:{port}"
     for directive in ("-p ncpu", "--cpus-per-task=4", "--mem=8G", "-t 01:00:00", f"-o {logs}/"):
@@ -300,15 +302,92 @@ def test_the_pool_listens_on_its_port_and_takes_every_slurm_setting_from_dask_co
         assert arg in script
 
 
-@pytest.mark.parametrize(
-    "jobs", [["0"], ["2", "--slurm-min-jobs", "3"], ["2", "--slurm-min-jobs", "-1"]]
-)
-def test_job_bounds_the_pool_cannot_keep_are_refused_before_it_starts(
-    monkeypatch, capsys, tmp_path, jobs
+#: ``sbatch`` and ``scancel`` that run a job script on this machine, in a process group of its own
+#: whose id is the job's, and log each submission and cancellation in ``../ledger``, beside the
+#: jobs' output in ``../jobs.out``.
+_FAKE_SLURM = {
+    "sbatch": """
+        out = open(LEDGER.with_name("jobs.out"), "a")
+        script = Path(sys.argv[1]).read_text()
+        job = subprocess.Popen(["bash", "-c", script], start_new_session=True, stdout=out, stderr=out)
+        log("submitted", job.pid)
+        print(f"Submitted batch job {job.pid}")
+    """,
+    "scancel": """
+        log("cancelled", sys.argv[1])
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(int(sys.argv[1]), signal.SIGKILL)
+    """,
+}
+_FAKE_SLURM_HEAD = """
+    import contextlib, os, signal, subprocess, sys
+    from pathlib import Path
+
+    LEDGER = Path(sys.argv[0]).resolve().parent.parent / "ledger"
+
+    def log(event, job):
+        with LEDGER.open("a") as ledger:
+            ledger.write(f"{event} {job}\\n")
+"""
+
+
+class _UnpickledSlowly(WorkerPlugin):
+    """Takes 8 s to unpickle on a worker, as :class:`~petab_mcp.dask_engine._NoBuild` does where
+    ``import petab_mcp`` is cold (48-98 s on NEMO)."""
+
+    def __reduce__(self):
+        def unpickle():
+            time.sleep(8)
+            return WorkerPlugin()
+
+        return unpickle, ()
+
+
+def test_a_fit_of_fewer_starts_than_a_jobs_workers_runs_on_the_job_the_pool_submitted_once(
+    tmp_path, monkeypatch
 ):
-    """Bounds outside 0 <= min <= max, max >= 1 would otherwise pass without a word: a pool of no
-    jobs serves no fit, and dask clamps the rest."""
+    """A worker joins the scheduler, then unpickles its plugins, and takes no batch until it has.
+    While a job's workers did, ``adapt`` saw them all idle beside the queued batches, cancelled the
+    job and submitted another, and so on: on NEMO five 64-worker jobs came up and were cancelled
+    within 15 s each, and the fit ran 0/100 starts in 300 s (#250). Here ``sbatch`` runs the job on
+    this machine, and its 2 workers' plugin takes 8 s: the one job submitted runs the batch."""
+    for name, body in _FAKE_SLURM.items():
+        command = tmp_path / "bin" / name
+        command.parent.mkdir(exist_ok=True)
+        head, body = textwrap.dedent(_FAKE_SLURM_HEAD), textwrap.dedent(body)
+        command.write_text(f"#!{sys.executable}\n{head}\n{body}", encoding="utf-8")
+        command.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    config = {
+        "jobqueue.slurm.cores": 2,
+        "jobqueue.slurm.processes": 2,
+        "jobqueue.slurm.memory": "2GiB",
+        "jobqueue.slurm.scheduler-options": {"host": "127.0.0.1"},
+    }
+    ledger = tmp_path / "ledger"
+    try:
+        with (
+            dask.config.set(config),
+            pool._slurm_cluster(_free_port(), jobs=1) as cluster,
+            Client(cluster) as client,
+        ):
+            client.register_plugin(_UnpickledSlowly(), name="unpickled-slowly")
+            batch = client.submit(time.sleep, 1, pure=False)
+            with contextlib.suppress(TimeoutError):
+                batch.result(timeout=120)
+            events = [line.split()[0] for line in ledger.read_text().splitlines()]
+            assert events == ["submitted"] and batch.done()
+            assert len(client.scheduler_info()["workers"]) == 2
+    finally:
+        for line in ledger.read_text().splitlines() if ledger.exists() else []:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(int(line.split()[1]), signal.SIGKILL)
+
+
+@pytest.mark.parametrize("jobs", ["0", "-1"])
+def test_a_pool_of_no_jobs_is_refused_before_it_starts(monkeypatch, capsys, tmp_path, jobs):
+    """A pool of no jobs would otherwise start without a word and serve no fit."""
     monkeypatch.setattr(pool, "_slurm_cluster", lambda *a: pytest.fail("the pool started"))
-    argv = ["--slurm-max-jobs", *jobs, "--address-file", str(tmp_path / "address")]
+    argv = ["--slurm-max-jobs", jobs, "--address-file", str(tmp_path / "address")]
     assert pool.main(argv) == 2
-    assert "0 <= --slurm-min-jobs <= --slurm-max-jobs" in capsys.readouterr().err
+    assert "--slurm-max-jobs >= 1" in capsys.readouterr().err
