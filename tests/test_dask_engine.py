@@ -353,25 +353,88 @@ def test_a_failed_start_cancels_the_fits_starts_still_queued(tmp_path):
     assert len(list(ran.iterdir())) <= 1
 
 
-def test_the_batch_size_fills_FIT_TASK_SECONDS_unless_FIT_STARTS_PER_TASK_is_set(monkeypatch):
-    """A fit on the cluster runs as many starts per task as fill FIT_TASK_SECONDS at the MEDIAN start
-    time of the session's previous fit (the mean would be dragged by one slow start), or at the
-    per-start cap without one, at least one and never more than it has. FIT_STARTS_PER_TASK, when
-    set, replaces all of that."""
+@pytest.fixture
+def batch_size(monkeypatch):
+    """The starts per task of a fit of ``n_starts`` on a pool with ``free`` idle workers, after a
+    fit whose starts took ``times`` (``None``: no previous fit), at a per-start cap of 60 s."""
     monkeypatch.setattr(fitting, "FIT_TASK_SECONDS", 270.0)
     monkeypatch.setattr(fitting, "FIT_STARTS_PER_TASK", 0)
-    shared = SimpleNamespace(batched=lambda k, *_: k)  # hands back the batch size it is given
 
-    def k(n_starts, median):
-        previous = None
-        if median is not None:  # the None is a start with no finite time
-            previous = {"starts": [{"time": t} for t in (None, median / 3, median, 10 * median)]}
+    def k(n_starts, times, free=0):
+        shared = SimpleNamespace(free_workers=lambda: free, batched=lambda k, *_: k)
+        previous = None if times is None else {"starts": [{"time": t} for t in times]}
         return fitting._fit_engine(n_starts, 60.0, shared, previous)
 
-    assert [k(20, median) for median in (30.0, 100.0, 400.0, None)] == [9, 2, 1, 4]
-    assert k(4, 30.0) == 4
+    return k
+
+
+def test_the_batch_size_fills_FIT_TASK_SECONDS_unless_FIT_STARTS_PER_TASK_is_set(
+    batch_size, monkeypatch
+):
+    """On a pool with no idle worker, a fit runs as many starts per task as fill FIT_TASK_SECONDS at
+    the 90th percentile start time of the session's previous fit (here 9 of its 10 timed starts), or
+    at the per-start cap without one, at least one and never more than it has. FIT_STARTS_PER_TASK,
+    when set, replaces all of that, idle workers or not."""
+
+    def times(p90):  # the None is a start with no finite time
+        return [None, *[p90] * 9, 10 * p90]
+
+    assert [batch_size(20, times(p90)) for p90 in (30.0, 100.0, 400.0)] == [9, 2, 1]
+    assert [batch_size(20, None), batch_size(4, times(30.0))] == [4, 4]
     monkeypatch.setattr(fitting, "FIT_STARTS_PER_TASK", 5)
-    assert [k(20, 30.0), k(20, None), k(4, 400.0)] == [5, 5, 4]
+    assert [batch_size(20, times(30.0)), batch_size(20, None)] == [5, 5]
+    assert [batch_size(4, times(400.0)), batch_size(20, times(30.0), free=100)] == [4, 5]
+
+
+def test_a_fast_fit_on_an_idle_pool_runs_about_one_start_per_task(batch_size):
+    """A fit with idle workers is spread over them, however many of its fast starts would fill
+    FIT_TASK_SECONDS: fujita's starts packed 43 to a task left a 384-worker pool idle while its
+    75-start fit took 2,638 s (#253)."""
+    fast = [2.0] * 50
+
+    assert [batch_size(75, fast, free=384), batch_size(50, fast, free=50)] == [1, 1]
+    assert batch_size(50, fast, free=20) == 3
+
+
+def test_a_fit_on_a_pool_with_few_idle_workers_keeps_its_time_based_batches(batch_size):
+    """Idle workers only ever shorten a fit's tasks: with too few to spread over, it fills
+    FIT_TASK_SECONDS as on a busy pool, which keeps the shared scheduler's state changes few (#189's
+    Check 10)."""
+    thirty = [30.0] * 50
+
+    assert [batch_size(100, thirty, free=free) for free in (0, 2, 11)] == [9, 9, 9]
+    assert batch_size(100, thirty, free=25) == 4
+
+
+def test_a_heavy_tailed_history_keeps_its_tail_out_of_one_task(batch_size):
+    """A task runs as long as all its starts together. At the median of a history whose slowest
+    fifth took 135 s, a 50-start fit would go in one task of 1,430 s; at its 90th percentile no task
+    runs past FIT_TASK_SECONDS at the tail's pace (#253)."""
+    tail = [2.0] * 40 + [135.0] * 10
+
+    assert batch_size(50, tail) == 2
+
+
+def test_a_fit_spreads_over_the_threads_its_pool_has_idle(monkeypatch):
+    """The engine reads its pool's idle threads from the scheduler (a thread running a batch is not
+    idle), and a fit's batch size is spread over them; a closed client reads none, so its fit packs
+    by time until it reconnects."""
+    monkeypatch.setattr(fitting, "FIT_TASK_SECONDS", 270.0)
+    monkeypatch.setattr(fitting, "FIT_STARTS_PER_TASK", 0)
+    fast = {"starts": [{"time": 2.0}] * 10}
+    with _engine() as engine:
+        assert engine.free_workers() == 2
+        assert fitting._fit_engine(4, 60.0, engine, fast).starts_per_task == 2
+        held = engine.client.submit(time.sleep, 30, pure=False)
+        deadline = time.monotonic() + 10
+        while engine.free_workers() != 1 and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert engine.free_workers() == 1
+        assert fitting._fit_engine(4, 60.0, engine, fast).starts_per_task == 4
+        engine.client.cancel(held)
+        engine.client.close()
+        assert engine.free_workers() == 0
+        assert fitting._fit_engine(4, 60.0, engine, fast).starts_per_task == 4
 
 
 def test_each_fit_on_the_shared_pool_stops_its_batches_at_its_own_cap():

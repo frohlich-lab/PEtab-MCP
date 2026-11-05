@@ -8,8 +8,9 @@ one :class:`DaskEngine`, and every fit and held-out refit of that server runs it
 
 * **Starts go in batches.** A task per start would flood the scheduler, which every server's fits
   share, with second-long tasks, so a fit sends ``k`` starts per task, run one after another on
-  one worker (:meth:`DaskEngine.batched`). Each is unpickled on its own there, so a start's result
-  does not depend on the batch it ran in.
+  one worker (:meth:`DaskEngine.batched`), fewer where the pool has idle workers to spread them over
+  (``fitting._starts_per_task``). Each is unpickled on its own there, so a start's result does not
+  depend on the batch it ran in.
 * **Fits take turns.** Batch ``j`` is submitted at ``priority=-j``; dask runs higher priorities
   first and equal ones in submission order, so concurrent fits interleave batch by batch.
 * **Logs follow the session.** A start's ``pypesto``/``fides`` records come back with its result
@@ -122,6 +123,11 @@ def _executing(dask_scheduler) -> dict[str, float]:
     }
 
 
+def _free(dask_scheduler) -> int:
+    """The threads of the cluster's running workers that no task holds (run on the scheduler)."""
+    return sum(max(0, ws.nthreads - len(ws.processing)) for ws in dask_scheduler.running)
+
+
 def _refuse_build(builder, *args, **kwargs):
     """Stands in for a model build on a worker; ``builder`` is the pyPESTO creator or AMICI
     importer that was about to compile."""
@@ -231,6 +237,16 @@ class DaskEngine(CappedEngine):
         engine.start_seconds = start_seconds
         engine.rerun = rerun
         return engine
+
+    def free_workers(self) -> int:
+        """The pool's idle worker threads (:func:`_free`), in one read of its scheduler; 0 while the
+        client is not connected or the read fails: the fit's :meth:`_run` then reconnects, or fails
+        as ``fit_pool``."""
+        client = self._connection.client
+        if client.status == "running":
+            with contextlib.suppress(Exception):
+                return client.run_on_scheduler(_free)
+        return 0
 
     def _wait(self, pending: list, timeout: float) -> None:
         """Block until one of ``pending`` finishes or ``timeout`` passes; raise a failed start's

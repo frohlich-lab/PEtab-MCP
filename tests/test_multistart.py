@@ -431,7 +431,8 @@ def test_two_sessions_on_one_pool_fit_under_their_own_caps(tmp_path, monkeypatch
     monkeypatch.setattr(fitting, "FIT_TASK_SECONDS", 270.0)
     monkeypatch.setattr(fitting, "FIT_STARTS_PER_TASK", 0)
     pool = SimpleNamespace(
-        batched=lambda k, cap, rerun: SimpleNamespace(starts_per_task=k, start_seconds=cap)
+        free_workers=lambda: 0,
+        batched=lambda k, cap, rerun: SimpleNamespace(starts_per_task=k, start_seconds=cap),
     )
     engine = SimpleNamespace(
         evaluate_objective=lambda: {"neg_log_likelihood": None}, fit_engine=pool
