@@ -899,7 +899,8 @@ def test_only_a_client_that_renders_apps_lists_the_fit_status_page(tmp_path):
     tools, uris, page = asyncio.run(listing(host))
     assert tools.keys() == plain_tools.keys()
     assert {name: ui for name, ui in tools.items() if ui} == {
-        name: {"resourceUri": FIT_STATUS_URI} for name in ("make_changes", "wait_for_fit")
+        name: {"resourceUri": FIT_STATUS_URI, "visibility": ["model", "app"]}
+        for name in ("make_changes", "wait_for_fit")
     }
     assert uris == plain_uris | {FIT_STATUS_URI}
     assert page.mimeType == UI_MIME_TYPE

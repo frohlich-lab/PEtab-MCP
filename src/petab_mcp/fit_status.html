@@ -78,7 +78,7 @@
 </div>
 <script>
   "use strict";
-  const POLL_MS = 2000;
+  const POLL_MS = 2000, ANSWER_MS = 5000;
   const TONES = {
     compiling: "--run", queued: "--wait", running: "--run", committed: "--done",
     refused: "--bad", failed: "--bad", unchanged: "--wait", cancelled: "--wait", idle: "--wait",
@@ -94,7 +94,12 @@
   function request(method, params) {
     const id = nextId++;
     send({ id, method, params });
-    return new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
+    return new Promise((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      setTimeout(() => {
+        if (pending.delete(id)) reject(new Error(`no answer to ${method} in ${ANSWER_MS / 1000} s`));
+      }, ANSWER_MS);
+    });
   }
 
   // A tool result's object: its structured content, else the JSON of its first text block.
@@ -201,7 +206,12 @@
         const o = outcome(await request("tools/call",
           { name: "wait_for_fit", arguments: { timeout_s: 0 } }));
         if (live && o && (sawRunning || o.status === "still_running")) render(o);
-      } catch {}
+      } catch (error) {
+        if (live) {
+          $("note").hidden = false;
+          $("note").textContent = `live updates unavailable: ${error?.message || JSON.stringify(error)}`;
+        }
+      }
       await new Promise((resolve) => setTimeout(resolve, POLL_MS));
     }
     polling = false;
