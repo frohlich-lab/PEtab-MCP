@@ -1,0 +1,261 @@
+<!doctype html>
+<!-- The MCP Apps page server.FIT_STATUS_URI serves: a badge for the fit of a make_changes or
+     wait_for_fit call, drawn from that call's result and from wait_for_fit(timeout_s=0) every 2 s
+     while the fit runs. -->
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    color-scheme: light dark;
+    --done: var(--color-text-success, #2e8b57);
+    --run: var(--color-text-info, #2f6fdb);
+    --wait: var(--color-text-tertiary, #8a8f98);
+    --bad: var(--color-text-danger, #c0392b);
+  }
+  body {
+    margin: 0;
+    background: transparent;
+    color: var(--color-text-primary, CanvasText);
+    font: var(--font-text-sm-size, 13px) / 1.45 var(--font-sans, system-ui, sans-serif);
+  }
+  .badge {
+    display: grid;
+    gap: 7px;
+    padding: 10px 12px;
+    border: 1px solid var(--color-border-secondary, color-mix(in srgb, CanvasText 15%, transparent));
+    border-radius: var(--border-radius-lg, 10px);
+  }
+  .top, .legend { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .chip {
+    padding: 1px 9px;
+    border-radius: 999px;
+    font-weight: var(--font-weight-semibold, 600);
+    font-size: 12px;
+    color: var(--tone);
+    background: color-mix(in srgb, var(--tone) 16%, transparent);
+  }
+  .title { font-weight: var(--font-weight-medium, 500); }
+  .clock, .legend { font-variant-numeric: tabular-nums; }
+  .clock { margin-left: auto; color: var(--color-text-secondary, GrayText); }
+  .bar {
+    display: flex;
+    height: 8px;
+    border-radius: 4px;
+    overflow: hidden;
+    background: color-mix(in srgb, var(--wait) 22%, transparent);
+  }
+  .bar > span { transition: flex-grow 0.6s ease; }
+  .bar .done { background: var(--done); }
+  .bar .running {
+    background: repeating-linear-gradient(-45deg, var(--run) 0 5px,
+      color-mix(in srgb, var(--run) 55%, transparent) 5px 10px);
+    background-size: 14px 14px;
+    animation: slide 0.8s linear infinite;
+  }
+  .bar.busy > span { flex-grow: 1 !important; }
+  .bar.busy .done, .bar.busy .queued { display: none; }
+  @keyframes slide { to { background-position: 14px 0; } }
+  .legend { color: var(--color-text-secondary, GrayText); font-size: 12px; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
+  .note { color: var(--color-text-secondary, GrayText); font-size: 12px; overflow-wrap: anywhere; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="badge" role="status" aria-live="polite">
+  <div class="top">
+    <span class="chip" id="phase">waiting</span>
+    <span class="title" id="title">fit</span>
+    <span class="clock" id="clock"></span>
+  </div>
+  <div class="bar busy" id="bar">
+    <span class="done"></span><span class="running"></span><span class="queued"></span>
+  </div>
+  <div class="legend" id="legend"></div>
+  <div class="note" id="note" hidden></div>
+</div>
+<script>
+  "use strict";
+  const POLL_MS = 2000;
+  const TONES = {
+    compiling: "--run", queued: "--wait", running: "--run", committed: "--done",
+    refused: "--bad", failed: "--bad", unchanged: "--wait", cancelled: "--wait", idle: "--wait",
+    waiting: "--wait",
+  };
+  const $ = (id) => document.getElementById(id);
+  let nextId = 1, live = true, polling = false, sawRunning = false, shown = null, at = 0;
+  const pending = new Map();
+
+  function send(message) {
+    window.parent.postMessage({ jsonrpc: "2.0", ...message }, "*");
+  }
+  function request(method, params) {
+    const id = nextId++;
+    send({ id, method, params });
+    return new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
+  }
+
+  // A tool result's object: its structured content, else the JSON of its first text block.
+  function outcome(result) {
+    if (!result) return null;
+    const text = (result.content || []).find((block) => block.type === "text")?.text;
+    if (result.isError) return { status: "failed", error: text };
+    if (result.structuredContent) return result.structuredContent;
+    try { return JSON.parse(text); } catch { return { status: "failed", error: text }; }
+  }
+
+  function clock(seconds) {
+    const s = Math.max(0, Math.round(seconds));
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  }
+  function score(row) {
+    const parts = [];
+    if (row.version != null) parts.push(`v${row.version}`);
+    if (row.criterion_value != null) {
+      const name = (row.criterion || "score").toUpperCase();
+      parts.push(`${name} ${Number(row.criterion_value).toFixed(2)}`);
+    }
+    if (row.is_new_best || row.improvement?.is_new_best) parts.push("new best");
+    return parts.join(" · ");
+  }
+  function setBar(done, running, queued, busy) {
+    const bar = $("bar");
+    bar.classList.toggle("busy", busy);
+    bar.querySelector(".done").style.flexGrow = done;
+    bar.querySelector(".running").style.flexGrow = running;
+    bar.querySelector(".queued").style.flexGrow = queued;
+  }
+  function legend(items) {
+    $("legend").replaceChildren(...items.map(([tone, text]) => {
+      const item = document.createElement("span");
+      if (tone) {
+        const dot = document.createElement("span");
+        dot.className = "dot";
+        dot.style.background = `var(${tone})`;
+        item.append(dot);
+      }
+      item.append(text);
+      return item;
+    }));
+  }
+
+  // Draws `o`: a wait_for_fit answer, or the make_changes result the call ended with.
+  function render(o) {
+    shown = o; at = performance.now();
+    if (o.status === "still_running") sawRunning = true;
+    let state = o.status;
+    if (state === "still_running") state = o.phase;
+    else if (state == null) {
+      state = o.no_change ? "unchanged" : o.applied === false ? "refused"
+        : o.committed === false || o.error ? "failed" : "committed";
+    }
+    else if (state === "no_version") state = "failed";
+    const phase = $("phase");
+    phase.textContent = state === "committed" ? "done" : state;
+    phase.style.setProperty("--tone", `var(${TONES[state] || "--wait"})`);
+    $("note").hidden = !o.error;
+    $("note").textContent = o.error ? String(o.error).slice(0, 240) : "";
+    if (o.status === "still_running") {
+      const n = o.n_starts || 0, done = o.starts_done || 0, queued = o.starts_queued || 0;
+      const running = Math.max(0, n - done - queued);
+      $("title").textContent = n ? `${done} of ${n} starts` : "compiling the model";
+      setBar(done, running, queued, !n || o.phase === "compiling");
+      const items = n ? [["--done", `${done} done`], ["--run", `${running} running`],
+                         ["--wait", `${queued} queued`]] : [];
+      if (o.best_so_far != null) items.push([null, `best nll ${Number(o.best_so_far).toFixed(2)}`]);
+      legend(items);
+    } else {
+      const ended = state === "committed";
+      $("title").textContent = ended ? score(o) || "committed"
+        : { refused: "change refused", failed: "fit ended without a version",
+            unchanged: `same model as v${o.duplicate_of_version}, no new version`,
+            cancelled: "cancelled", idle: "no fit running", waiting: "waiting for the fit" }[state];
+      setBar(ended ? 1 : 0, 0, ended ? 0 : 1, false);
+      const items = [];
+      if (ended && o.neg_log_likelihood != null) {
+        items.push([null, `nll ${Number(o.neg_log_likelihood).toFixed(2)}`]);
+      }
+      if (ended && o.starts_at_best) items.push([null, `starts at best ${o.starts_at_best}`]);
+      legend(items);
+    }
+    tick();
+  }
+
+  // Counts the clock on between two polls: elapsed up, time left down.
+  function tick() {
+    if (!shown || shown.status !== "still_running") { $("clock").textContent = ""; return; }
+    const since = (performance.now() - at) / 1000;
+    const left = shown.remaining_s == null ? "" : ` · ~${clock(shown.remaining_s - since)} left`;
+    $("clock").textContent = `${clock(shown.elapsed_s + since)}${left}`;
+  }
+  setInterval(tick, 1000);
+
+  // Reads wait_for_fit(timeout_s=0) every POLL_MS until the call ends or the fit it saw has.
+  async function poll() {
+    if (polling) return;
+    polling = true;
+    while (live && !(sawRunning && shown.status !== "still_running")) {
+      try {
+        const o = outcome(await request("tools/call",
+          { name: "wait_for_fit", arguments: { timeout_s: 0 } }));
+        if (live && o && (sawRunning || o.status === "still_running")) render(o);
+      } catch {}
+      await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+    }
+    polling = false;
+  }
+
+  function finish(o) {
+    render(o);
+    live = o.status === "still_running";
+    if (live) poll();
+  }
+
+  function applyHost(context) {
+    if (!context) return;
+    const root = document.documentElement;
+    if (context.theme) root.style.colorScheme = context.theme;
+    for (const [name, value] of Object.entries(context.styles?.variables || {})) {
+      if (value) root.style.setProperty(name, value);
+    }
+  }
+
+  window.addEventListener("message", (event) => {
+    const m = event.data;
+    if (event.source !== window.parent || !m || m.jsonrpc !== "2.0") return;
+    if (m.method === undefined) {
+      const p = pending.get(m.id);
+      if (p) { pending.delete(m.id); m.error ? p.reject(m.error) : p.resolve(m.result); }
+    } else if (m.method === "ui/notifications/tool-result") {
+      finish(outcome(m.params));
+    } else if (m.method === "ui/notifications/tool-cancelled") {
+      live = false; render({ status: "cancelled" });
+    } else if (m.method === "ui/notifications/host-context-changed") {
+      applyHost(m.params);
+    } else if (m.id !== undefined) {
+      if (m.method === "ui/resource-teardown") live = false;
+      const known = m.method === "ping" || m.method === "ui/resource-teardown";
+      send(known ? { id: m.id, result: {} }
+                 : { id: m.id, error: { code: -32601, message: `no ${m.method}` } });
+    }
+  });
+
+  new ResizeObserver(() => send({ method: "ui/notifications/size-changed",
+    params: { height: Math.ceil(document.documentElement.getBoundingClientRect().height) } }))
+    .observe(document.body);
+
+  render({ status: "waiting" });
+  request("ui/initialize", {
+    appInfo: { name: "petab-mcp fit status", version: "1" },
+    appCapabilities: {},
+    protocolVersion: "2026-01-26",
+  }).then((result) => {
+    applyHost(result && result.hostContext);
+    send({ method: "ui/notifications/initialized", params: {} });
+    if (live) poll();
+  });
+</script>
+</body>
+</html>

@@ -31,6 +31,7 @@ session, engine, and the error-wrapping helpers. The tools stay thin: the real w
 from __future__ import annotations
 
 import contextlib
+import importlib.resources
 import json
 import threading
 import time
@@ -38,6 +39,7 @@ from typing import Annotated, Any, Callable, Literal
 
 import anyio
 from fastmcp import FastMCP
+from fastmcp.apps import UI_EXTENSION_ID
 from fastmcp.exceptions import ToolError
 from fastmcp.server.middleware import Middleware
 from fastmcp.tools import ToolResult
@@ -639,6 +641,46 @@ class _Heartbeat(Middleware):
         if error is not None:
             raise error
         return result
+
+
+#: The MCP Apps page (``fit_status.html``) a client that renders apps shows for a call of one of
+#: :data:`_FIT_STATUS_TOOLS`: its fit's phase, starts done, running and queued, time spent and left.
+FIT_STATUS_URI = "ui://petab-mcp/fit-status.html"
+_FIT_STATUS_TOOLS = frozenset({"make_changes", "wait_for_fit"})
+
+
+class _FitStatusPage(Middleware):
+    """Names :data:`FIT_STATUS_URI` on :data:`_FIT_STATUS_TOOLS`, and lists it as a resource, to a
+    client that declares the MCP Apps extension (Claude Code's desktop app); any other client's
+    tools and resources are as they were. The page is for the people watching: what a call
+    returns is unchanged, and the page reads the fit through ``wait_for_fit(timeout_s=0)``.
+
+    Not ``@mcp.tool(app=...)``, which names the page to every client: gemot hands each tool's
+    ``_meta`` on to a headless Claude Code, which treats a tool naming a page differently (it lets
+    such a result's structured content grow to 8 MB rather than 1 MB)."""
+
+    @staticmethod
+    def _renders(context) -> bool:
+        ctx = context.fastmcp_context
+        return ctx is not None and ctx.client_supports_extension(UI_EXTENSION_ID)
+
+    async def on_list_tools(self, context, call_next):
+        tools = await call_next(context)
+        if not self._renders(context):
+            return tools
+        page = {"ui": {"resourceUri": FIT_STATUS_URI}}
+        return [
+            tool.model_copy(update={"meta": {**(tool.meta or {}), **page}})
+            if tool.name in _FIT_STATUS_TOOLS
+            else tool
+            for tool in tools
+        ]
+
+    async def on_list_resources(self, context, call_next):
+        resources = await call_next(context)
+        if self._renders(context):
+            return resources
+        return [resource for resource in resources if str(resource.uri) != FIT_STATUS_URI]
 
 
 #: Seconds ``wait_for_fit`` waits when not told, and at most: the cap is under the 600 s tool
@@ -2595,6 +2637,10 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
 
 # --------------------------------------------------------------------- resources
 def _register_resources(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
+    @mcp.resource(FIT_STATUS_URI)
+    def _res_fit_status() -> str:
+        return importlib.resources.files(__package__).joinpath("fit_status.html").read_text()
+
     @mcp.resource("petab://model/antimony")
     def _res_model_antimony() -> str:
         ctx = route()
@@ -2956,6 +3002,7 @@ def create_server(
             ),
             _Cancellation(),
             _Heartbeat(ctx.session),
+            _FitStatusPage(),
         ],
     )
 

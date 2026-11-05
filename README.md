@@ -165,6 +165,12 @@ change: its phase (`compiling`, `queued` with none of its starts running, or `ru
 seconds spent in it and its starts done, so a client can time a call out on silence instead of on a
 budget.
 
+A client that renders MCP Apps (Claude Code's desktop app) shows a `make_changes` or `wait_for_fit`
+call as a badge for the person watching it: the fit's phase, its starts done, running and queued, the
+time spent and, at the pace so far, left, and the best start, then the version it committed. The page,
+[`fit_status.html`](src/petab_mcp/fit_status.html), reads `wait_for_fit(timeout_s=0)` every 2 s. Only
+such a client finds it in `tools/list` and `resources/list`, and no call returns anything new.
+
 ## Design notes
 
 Principles to hold onto when extending this package.

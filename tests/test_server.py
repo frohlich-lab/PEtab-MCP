@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from petab_mcp.references import StubReferenceResolver
-from petab_mcp.server import create_server
+from petab_mcp.server import FIT_STATUS_URI, create_server
 from conftest import with_empty_sbml
 
 YAML_PATH = Path(__file__).parent / "data" / "toy_v2" / "problem.yaml"
@@ -871,6 +871,39 @@ def test_resources_registered(tmp_path):
     assert any("petab://simulations" in u for u in uris)
     assert any("petab://data/schema" in u for u in uris)
     assert any("model/antimony" in u for u in uris)
+
+
+def test_only_a_client_that_renders_apps_lists_the_fit_status_page(tmp_path):
+    """The fit-status page is for the people watching a session in an MCP Apps host (Claude
+    Code's desktop app). A client that declares the extension finds it on make_changes and
+    wait_for_fit and reads it; any other client, the harness and a headless CLI included, lists
+    the same tools and resources as before it existed."""
+    from fastmcp import Client
+    from fastmcp.apps import UI_EXTENSION_ID, UI_MIME_TYPE
+    from mcp.client import advertise
+
+    mcp = _server(tmp_path)
+
+    async def listing(extensions):
+        async with Client(mcp, mode="legacy", extensions=extensions) as client:
+            tools = {tool.name: (tool.meta or {}).get("ui") for tool in await client.list_tools()}
+            uris = {str(resource.uri) for resource in await client.list_resources()}
+            (page,) = await client.read_resource(FIT_STATUS_URI)
+        return tools, uris, page
+
+    plain_tools, plain_uris, _ = asyncio.run(listing([]))
+    assert not any(plain_tools.values())
+    assert FIT_STATUS_URI not in plain_uris
+
+    host = [advertise(UI_EXTENSION_ID, {"mimeTypes": [UI_MIME_TYPE]})]
+    tools, uris, page = asyncio.run(listing(host))
+    assert tools.keys() == plain_tools.keys()
+    assert {name: ui for name, ui in tools.items() if ui} == {
+        name: {"resourceUri": FIT_STATUS_URI} for name in ("make_changes", "wait_for_fit")
+    }
+    assert uris == plain_uris | {FIT_STATUS_URI}
+    assert page.mimeType == UI_MIME_TYPE
+    assert page.text.startswith("<!doctype html>")
 
 
 def test_a_tool_acts_on_the_session_routed_to_at_call_time(tmp_path):
