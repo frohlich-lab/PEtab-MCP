@@ -643,19 +643,25 @@ class _Heartbeat(Middleware):
         return result
 
 
-#: The MCP Apps page (``fit_status.html``) a client that renders apps shows for a call of one of
-#: :data:`_FIT_STATUS_TOOLS`: its fit's phase, starts done, running and queued, time spent and left.
+#: The MCP Apps page (``fit_status.html``) a client that renders apps shows for a ``make_changes``
+#: call: its fit's phase, starts done, running and queued, time spent and left.
 FIT_STATUS_URI = "ui://petab-mcp/fit-status.html"
-_FIT_STATUS_TOOLS = frozenset({"make_changes", "wait_for_fit"})
+
+#: What :class:`_FitStatusPage` adds to a tool's ``_meta``: the page on ``make_changes``, and on
+#: ``wait_for_fit``, which the page polls, that the page may call it.
+_FIT_STATUS_META = {
+    "make_changes": {"ui": {"resourceUri": FIT_STATUS_URI}},
+    "wait_for_fit": {"ui": {"visibility": ["model", "app"]}},
+}
 
 
 class _FitStatusPage(Middleware):
-    """Names :data:`FIT_STATUS_URI` on :data:`_FIT_STATUS_TOOLS`, and lists it as a resource, to a
-    client that declares the MCP Apps extension (Claude Code's desktop app); any other client's
-    tools and resources are as they were. The page is for the people watching: what a call
-    returns is unchanged, and the page reads the fit through ``wait_for_fit(timeout_s=0)``, which
-    the page may call (``visibility``). A host draws a call's page once the call returns, so a
-    fit shows live under a ``wait_for_fit`` made while its ``make_changes`` runs in the background.
+    """Adds :data:`_FIT_STATUS_META` to the tools, and lists :data:`FIT_STATUS_URI` as a resource,
+    for a client that declares the MCP Apps extension (Claude Code's desktop app); any other
+    client's tools and resources are as they were. The page is for the people watching: what a
+    call returns is unchanged. A host draws the page when the call returns, which in Claude Code
+    includes the call moving to the background; from then the page reads the fit through
+    ``wait_for_fit(timeout_s=0)``.
 
     Not ``@mcp.tool(app=...)``, which names the page to every client: gemot hands each tool's
     ``_meta`` on to a headless Claude Code, which treats a tool naming a page differently (it lets
@@ -670,10 +676,9 @@ class _FitStatusPage(Middleware):
         tools = await call_next(context)
         if not self._renders(context):
             return tools
-        page = {"ui": {"resourceUri": FIT_STATUS_URI, "visibility": ["model", "app"]}}
         return [
-            tool.model_copy(update={"meta": {**(tool.meta or {}), **page}})
-            if tool.name in _FIT_STATUS_TOOLS
+            tool.model_copy(update={"meta": {**(tool.meta or {}), **_FIT_STATUS_META[tool.name]}})
+            if tool.name in _FIT_STATUS_META
             else tool
             for tool in tools
         ]

@@ -1,7 +1,6 @@
 <!doctype html>
-<!-- The MCP Apps page server.FIT_STATUS_URI serves: a badge for the fit of a make_changes or
-     wait_for_fit call, drawn from that call's result and from wait_for_fit(timeout_s=0) every 2 s
-     while the fit runs. -->
+<!-- The MCP Apps page server.FIT_STATUS_URI serves: a badge for the fit of a make_changes call,
+     drawn from wait_for_fit(timeout_s=0) every 2 s while the fit runs and from the call's result. -->
 <html>
 <head>
 <meta charset="utf-8">
@@ -80,7 +79,7 @@
   "use strict";
   const POLL_MS = 2000, ANSWER_MS = 5000;
   const TONES = {
-    compiling: "--run", queued: "--wait", running: "--run", committed: "--done",
+    background: "--run", compiling: "--run", queued: "--wait", running: "--run", committed: "--done",
     refused: "--bad", failed: "--bad", unchanged: "--wait", cancelled: "--wait", idle: "--wait",
     waiting: "--wait",
   };
@@ -102,13 +101,14 @@
     });
   }
 
-  // A tool result's object: its structured content, else the JSON of its first text block.
+  // A tool result's object: its structured content, else the JSON of its first text block. A
+  // result that is neither is the host's note that the call moved to the background.
   function outcome(result) {
     if (!result) return null;
     const text = (result.content || []).find((block) => block.type === "text")?.text;
     if (result.isError) return { status: "failed", error: text };
     if (result.structuredContent) return result.structuredContent;
-    try { return JSON.parse(text); } catch { return { status: "failed", error: text }; }
+    try { return JSON.parse(text); } catch { return { status: "background" }; }
   }
 
   function clock(seconds) {
@@ -119,7 +119,7 @@
     const parts = [];
     if (row.version != null) parts.push(`v${row.version}`);
     if (row.criterion_value != null) {
-      const name = (row.criterion || "score").toUpperCase();
+      const name = row.criterion ? row.criterion.toUpperCase() : "score";
       parts.push(`${name} ${Number(row.criterion_value).toFixed(2)}`);
     }
     if (row.is_new_best || row.improvement?.is_new_best) parts.push("new best");
@@ -156,7 +156,7 @@
       state = o.no_change ? "unchanged" : o.applied === false ? "refused"
         : o.committed === false || o.error ? "failed" : "committed";
     }
-    else if (state === "no_version") state = "failed";
+    else if (state === "no_version" || (state === "idle" && sawRunning)) state = "failed";
     const phase = $("phase");
     phase.textContent = state === "committed" ? "done" : state;
     phase.style.setProperty("--tone", `var(${TONES[state] || "--wait"})`);
@@ -176,6 +176,7 @@
       $("title").textContent = ended ? score(o) || "committed"
         : { refused: "change refused", failed: "fit ended without a version",
             unchanged: `same model as v${o.duplicate_of_version}, no new version`,
+            background: "running in the background",
             cancelled: "cancelled", idle: "no fit running", waiting: "waiting for the fit" }[state];
       setBar(ended ? 1 : 0, 0, ended ? 0 : 1, false);
       const items = [];
@@ -219,7 +220,7 @@
 
   function finish(o) {
     render(o);
-    live = o.status === "still_running";
+    live = o.status === "still_running" || o.status === "background";
     if (live) poll();
   }
 

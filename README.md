@@ -165,16 +165,16 @@ change: its phase (`compiling`, `queued` with none of its starts running, or `ru
 seconds spent in it and its starts done, so a client can time a call out on silence instead of on a
 budget.
 
-A client that renders MCP Apps (Claude Code's desktop app) shows a `make_changes` or `wait_for_fit`
-call as a badge for the person watching it: the fit's phase, its starts done, running and queued, the
-time spent and, at the pace so far, left, and the best start, then the version it committed. The page,
-[`fit_status.html`](src/petab_mcp/fit_status.html), reads `wait_for_fit(timeout_s=0)` every 2 s. Only
-such a client finds it in `tools/list` and `resources/list`, and no call returns anything new. A host
-draws a call's page once the call returns, so the fit shows live under a `wait_for_fit` made while its
-`make_changes` runs in the background. Claude Code's Code tab passes the page's calls on only for a
-server declared in `claude_desktop_config.json`
-([anthropics/claude-code#106708](https://github.com/anthropics/claude-code/issues/106708)); for any
-other, the badge says so and shows each call's result.
+A client that renders MCP Apps (Claude Code's desktop app) shows a `make_changes` call as a badge for
+the person watching it: the fit's phase, its starts done, running and queued, the time spent and, at
+the pace so far, left, and the best start, then the version it committed. The page,
+[`fit_status.html`](src/petab_mcp/fit_status.html), reads `wait_for_fit(timeout_s=0)` every 2 s from
+when its host draws it: in Claude Code, once the call moves to the background. Only such a client
+finds it in `tools/list` and `resources/list`, and no call returns anything new. Claude Code's Code tab
+passes the page's calls on only for a server declared in `claude_desktop_config.json`
+([anthropics/claude-code#106708](https://github.com/anthropics/claude-code/issues/106708)), and cuts
+such a server's call off after about 60 s; for any other server the badge says so and shows the call's
+result.
 
 ## Design notes
 

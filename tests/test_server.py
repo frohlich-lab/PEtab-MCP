@@ -875,9 +875,9 @@ def test_resources_registered(tmp_path):
 
 def test_only_a_client_that_renders_apps_lists_the_fit_status_page(tmp_path):
     """The fit-status page is for the people watching a session in an MCP Apps host (Claude
-    Code's desktop app). A client that declares the extension finds it on make_changes and
-    wait_for_fit and reads it; any other client, the harness and a headless CLI included, lists
-    the same tools and resources as before it existed."""
+    Code's desktop app). A client that declares the extension finds it on make_changes, with
+    wait_for_fit open to the page, and reads it; any other client, the harness and a headless CLI
+    included, lists the same tools and resources as before it existed."""
     from fastmcp import Client
     from fastmcp.apps import UI_EXTENSION_ID, UI_MIME_TYPE
     from mcp.client import advertise
@@ -899,8 +899,8 @@ def test_only_a_client_that_renders_apps_lists_the_fit_status_page(tmp_path):
     tools, uris, page = asyncio.run(listing(host))
     assert tools.keys() == plain_tools.keys()
     assert {name: ui for name, ui in tools.items() if ui} == {
-        name: {"resourceUri": FIT_STATUS_URI, "visibility": ["model", "app"]}
-        for name in ("make_changes", "wait_for_fit")
+        "make_changes": {"resourceUri": FIT_STATUS_URI},
+        "wait_for_fit": {"visibility": ["model", "app"]},
     }
     assert uris == plain_uris | {FIT_STATUS_URI}
     assert page.mimeType == UI_MIME_TYPE
