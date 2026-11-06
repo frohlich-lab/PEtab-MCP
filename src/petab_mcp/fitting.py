@@ -20,7 +20,6 @@ import copy
 import logging
 import math
 import os
-import statistics
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -130,8 +129,9 @@ FIT_N_WORKERS = _env_int("PETAB_MCP_FIT_N_WORKERS", _default_fit_workers())
 
 # Expected seconds of starts one dask task runs back to back (env PETAB_MCP_FIT_TASK_SECONDS,
 # default 270 = 4.5 min): long against a task's scheduling cost, short enough that concurrent fits
-# still take turns every few minutes. A start is expected to take the previous fit's median, or the
-# session's per-start cap without one (see _starts_per_task).
+# still take turns every few minutes. A start is expected to take the previous fit's 90th
+# percentile, or the session's per-start cap without one; a pool with idle workers gets shorter
+# tasks (see _starts_per_task).
 FIT_TASK_SECONDS = _env_float("PETAB_MCP_FIT_TASK_SECONDS", 270.0)
 
 # A fixed number of starts per dask task (env PETAB_MCP_FIT_STARTS_PER_TASK); takes precedence over
@@ -224,14 +224,26 @@ def _fides_maxtime_options(per_start_timeout: float) -> dict[str, Any]:
 
 
 def _starts_per_task(
-    n_starts: int, previous: dict[str, Any] | None, per_start_timeout: float
+    n_starts: int, previous: dict[str, Any] | None, per_start_timeout: float, shared
 ) -> int:
-    """How many starts one dask task runs, from 1 to ``n_starts``: ``FIT_STARTS_PER_TASK`` when set,
-    else as many as fill ``FIT_TASK_SECONDS`` at the median start time of ``previous``, the
-    session's last fit (``session.optimization``), or at ``per_start_timeout`` without one."""
-    times = [s["time"] for s in (previous or {}).get("starts") or [] if s.get("time")]
-    expected = statistics.median(times) if times else per_start_timeout
-    return max(1, int(min(n_starts, FIT_STARTS_PER_TASK or FIT_TASK_SECONDS // expected)))
+    """How many starts one dask task of ``shared`` runs, from 1 to ``n_starts``:
+    ``FIT_STARTS_PER_TASK`` when set. Else as many as fill ``FIT_TASK_SECONDS`` at the 90th
+    percentile start time of ``previous``, the session's last fit (``session.optimization``), or at
+    ``per_start_timeout`` without one, but at most ``ceil(n_starts / free)`` with ``free`` idle
+    workers on the pool (:meth:`~petab_mcp.dask_engine.DaskEngine.free_workers`).
+
+    Few long tasks keep the shared scheduler's state changes few on a busy pool (#189's Check 10).
+    On an idle one they ran a fit's starts one after another on a few workers: a 75-start fujita fit
+    packed 43 to a task took 2,638 s on a mostly idle pool of 384 workers, against 128-197 s on one
+    node (#253). A task runs as long as all its starts together, so the 90th percentile, not the
+    median, sizes it."""
+    if FIT_STARTS_PER_TASK:
+        return max(1, min(n_starts, FIT_STARTS_PER_TASK))
+    times = sorted(s["time"] for s in (previous or {}).get("starts") or [] if s.get("time"))
+    expected = times[math.ceil(0.9 * len(times)) - 1] if times else per_start_timeout
+    free = shared.free_workers()
+    spread = math.ceil(n_starts / free) if free else n_starts
+    return max(1, int(min(n_starts, spread, FIT_TASK_SECONDS // expected)))
 
 
 def _fit_engine(
@@ -248,7 +260,7 @@ def _fit_engine(
     stop a start past ``per_start_timeout``, rerunning the starts in ``rerun`` once, and end a fit
     whose starts stop finishing (:mod:`petab_mcp.multistart`)."""
     if shared is not None:
-        k = _starts_per_task(n_starts, previous, per_start_timeout)
+        k = _starts_per_task(n_starts, previous, per_start_timeout, shared)
         return shared.batched(k, per_start_timeout, rerun)
     workers = max(1, min(FIT_N_WORKERS, int(n_starts)))
     if workers < 2:
