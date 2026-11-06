@@ -13,6 +13,7 @@ from indra.statements import (
     Agent,
     Autophosphorylation,
     BoundCondition,
+    Conversion,
     Dephosphorylation,
     Gap,
     Gef,
@@ -356,6 +357,14 @@ def test_a_policy_indra_cannot_assemble_is_a_library_gap():
     with pytest.raises(MechanismError, match="INDRA has no default assembly") as exc:
         M._indra("default")(_TRANSITION, pysb.Model(_export=False), "r1")
     assert exc.value.cause == "library_gap"
+
+
+def test_a_conversion_to_nothing_under_indra_default_is_refused_not_crashed():
+    """`A -> nothing` raised IndexError inside INDRA's conversion assembly, which names its
+    constant after the first product: `make_changes` crashed instead of refusing the row."""
+    with pytest.raises(MechanismError, match=r"row 'r1': Conversion under 'indra_default' builds "
+                       r"no rule"):
+        M.assemble([(Conversion(None, [Agent("A")], []), M.INDRA_DEFAULT, "r1")])
 
 
 def test_reregistering_an_entry_raises():

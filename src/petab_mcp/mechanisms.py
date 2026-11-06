@@ -1735,7 +1735,10 @@ def _indra(name: str) -> Policy:
     """INDRA's own ``name`` policy for a statement; what it added is read off the model, before
     against after. Its parameters are renamed ``<prefix>_<kind>`` (``kf``, ``kr``, ``Km``...):
     INDRA's own names (``kf_ar_phosphorylation_1``) say neither which row minted them nor which
-    statement, and an agent widening a bound had to look each one up."""
+    statement, and an agent widening a bound had to look each one up. A Conversion with no product
+    builds nothing, as INDRA's own does with several reactants: INDRA names its constant after the
+    first product, and indexed past the end of none (:func:`_refuse_ruleless` names the entries
+    that build it)."""
     entry = INDRA_DEFAULT if name == "default" else f"indra_{name}"
 
     def apply(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
@@ -1743,7 +1746,8 @@ def _indra(name: str) -> Policy:
         indra = PysbAssembler()
         indra.processed_policies = {stmt.uuid: IndraPolicy(name)}
         try:
-            indra._dispatch(_state_unwritten(stmt), "assemble", model, BaseAgentSet(), {})
+            if not isinstance(stmt, Conversion) or stmt.obj_to:
+                indra._dispatch(_state_unwritten(stmt), "assemble", model, BaseAgentSet(), {})
         except UnknownPolicyError as exc:
             raise MechanismError(
                 f"INDRA has no {name} assembly for {type(stmt).__name__}", cause="library_gap"
