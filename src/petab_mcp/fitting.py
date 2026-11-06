@@ -160,10 +160,12 @@ FIT_AMICI_ATOL_STEADY_STATE = _env_float("PETAB_MCP_FIT_AMICI_ATOL_STEADY_STATE"
 
 # Threads one objective evaluation simulates its experiments on, at most one per experiment (env
 # PETAB_MCP_FIT_AMICI_N_THREADS, default 1). Every running start uses this many, so they multiply:
-# keep PETAB_MCP_FIT_N_WORKERS x threads within the server's cores, and on a fit pool set each
-# worker job's `processes` to `cores` / threads. Neither worker count is derived from it. A problem
-# with one experiment gains nothing; one with many experiments and fewer starts than cores finishes
-# each start sooner.
+# keep PETAB_MCP_FIT_N_WORKERS x threads within the server's cores. On a fit pool keep jobqueue's
+# `cores` equal to `processes` (one dask thread, so one batch, per worker) and book `job-cpu` =
+# processes x threads; lowering `processes` alone gives each worker cores / processes dask threads,
+# each running a batch on this many threads. Neither worker count is derived from it. A problem with
+# one experiment gains nothing; one with many experiments and fewer starts than cores finishes each
+# start sooner.
 FIT_AMICI_N_THREADS = _env_int("PETAB_MCP_FIT_AMICI_N_THREADS", 1)
 
 
