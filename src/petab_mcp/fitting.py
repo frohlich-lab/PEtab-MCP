@@ -158,6 +158,14 @@ FIT_AMICI_RTOL = _env_float("PETAB_MCP_FIT_AMICI_RTOL", None)
 FIT_AMICI_RTOL_STEADY_STATE = _env_float("PETAB_MCP_FIT_AMICI_RTOL_STEADY_STATE", None)
 FIT_AMICI_ATOL_STEADY_STATE = _env_float("PETAB_MCP_FIT_AMICI_ATOL_STEADY_STATE", None)
 
+# Threads one objective evaluation simulates its experiments on, at most one per experiment (env
+# PETAB_MCP_FIT_AMICI_N_THREADS, default 1). Every running start uses this many, so they multiply:
+# keep PETAB_MCP_FIT_N_WORKERS x threads within the server's cores, and on a fit pool set each
+# worker job's `processes` to `cores` / threads. Neither worker count is derived from it. A problem
+# with one experiment gains nothing; one with many experiments and fewer starts than cores finishes
+# each start sooner.
+FIT_AMICI_N_THREADS = _env_int("PETAB_MCP_FIT_AMICI_N_THREADS", 1)
+
 
 def _apply_amici_solver_defaults(problem) -> None:
     """Set :data:`FIT_AMICI_ATOL`, and each of the tolerances above that is set, on ``problem``'s
@@ -329,6 +337,9 @@ def pypesto_problem(problem, importer_kwargs: dict[str, Any], *, validate: bool 
     edit that produced it, a held-out view was not. Passes ``hierarchical`` and the output target
     through ``importer_kwargs``.
 
+    Its objective simulates on :data:`FIT_AMICI_N_THREADS` threads. AMICI's PEtab simulator holds
+    the count and pickles with it, so a start on a worker process or a pool runs as many.
+
     The one place a module is compiled — ``create_problem`` builds into a target folder that is not
     there yet — so it runs under :func:`engine.build_lock`, in the change's ``compiling`` phase.
     """
@@ -354,7 +365,7 @@ def pypesto_problem(problem, importer_kwargs: dict[str, Any], *, validate: bool 
         petab_problem, validate_petab=validate, parameter_scales=dict(scales), **importer_kwargs
     )
     with compiling(), build_lock(importer_kwargs["output_folder"], importer_kwargs["model_name"]):
-        return importer.create_problem()
+        return importer.create_problem(n_threads=FIT_AMICI_N_THREADS)
 
 
 def _build_hierarchical_problem(session, importer_kwargs: dict[str, Any], petab_problem=None):
@@ -1202,11 +1213,12 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     if engine.fit_engine is not None:
         workers = f"dask({pp_engine.starts_per_task} starts per task)"
     log.info(
-        "fit: start optimizer=fides n_starts=%d warm_starts=%d workers=%s n_free=%d "
-        "sbml=%s objective_before=%s",
+        "fit: start optimizer=fides n_starts=%d warm_starts=%d workers=%s amici_threads=%d "
+        "n_free=%d sbml=%s objective_before=%s",
         n_starts,
         len(guesses),
         workers,
+        FIT_AMICI_N_THREADS,
         n_free,
         session.sbml_hash(),
         _fmt(objective_before),
