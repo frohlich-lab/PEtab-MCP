@@ -2,11 +2,15 @@
 (``petab-mcp --fit-pool ADDRESS``) to run their fits' starts on shared SLURM workers.
 
 It runs a ``dask_jobqueue.SLURMCluster`` whose scheduler lives in this process, on ``--port`` of
-this node, so a pool restarted on the same node comes back at the same address. The cluster grows to
-``--slurm-max-jobs`` SLURM jobs while batches wait for a worker and shrinks to ``--slurm-min-jobs``
-when idle; every other SLURM setting comes from dask's own ``jobqueue.slurm`` config (README,
-"Fitting on SLURM").
+this node, so a pool restarted on the same node comes back at the same address. Every SLURM setting
+but the number of jobs comes from dask's own ``jobqueue.slurm`` config (README, "Fitting on SLURM").
 
+* **The pool is its ``--slurm-max-jobs`` jobs**, submitted as it starts and kept until it closes;
+  one that ends is not replaced. It does not ``adapt``: a worker joins the scheduler before it has
+  unpickled :class:`~petab_mcp.dask_engine._NoBuild`, a cold ``import petab_mcp``, and takes no
+  batch until then, so adapt saw a new job's workers idle beside the queued batches and cancelled
+  the job, then submitted another, and no fit got a worker (#250). The sweep driver stops the pool
+  when its sweep ends, which frees them.
 * **Workers never build** (:class:`~petab_mcp.dask_engine._NoBuild`), from the moment they start,
   not only once a server has connected.
 * **The address is published** in ``--address-file`` once the scheduler listens, and removed on
@@ -44,15 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         required=True,
         metavar="N",
-        help="SLURM jobs the pool grows to while batches wait for a worker. The jobs are set up in "
-        "dask's jobqueue.slurm config.",
-    )
-    parser.add_argument(
-        "--slurm-min-jobs",
-        type=int,
-        default=0,
-        metavar="M",
-        help="SLURM jobs the pool keeps while idle, at most N (default 0).",
+        help="SLURM jobs the pool submits as it starts and keeps until it stops; one that ends is "
+        "not replaced. The jobs are set up in dask's jobqueue.slurm config.",
     )
     parser.add_argument(
         "--port", type=int, default=8786, help="The scheduler's port on this node (default 8786)."
@@ -67,15 +64,15 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _slurm_cluster(port: int, min_jobs: int, max_jobs: int) -> Any:
-    """A ``SLURMCluster`` whose scheduler listens on ``port``, bounded in jobs by the two flags; the
-    rest of ``jobqueue.slurm.scheduler-options`` (a host or interface) is kept."""
+def _slurm_cluster(port: int, jobs: int) -> Any:
+    """A ``SLURMCluster`` of ``jobs`` jobs whose scheduler listens on ``port``; the rest of
+    ``jobqueue.slurm.scheduler-options`` (a host or interface) is kept."""
     import dask
     from dask_jobqueue import SLURMCluster
 
     options = {**dask.config.get("jobqueue.slurm.scheduler-options", {}), "port": port}
     cluster = SLURMCluster(scheduler_options=options)
-    cluster.adapt(minimum_jobs=min_jobs, maximum_jobs=max_jobs)
+    cluster.scale(jobs=jobs)
     return cluster
 
 
@@ -109,16 +106,12 @@ def serve(cluster, address_file: Path) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if not 0 <= args.slurm_min_jobs <= args.slurm_max_jobs or args.slurm_max_jobs < 1:
-        print(
-            "error: the pool needs 0 <= --slurm-min-jobs <= --slurm-max-jobs, and 1 <= "
-            "--slurm-max-jobs.",
-            file=sys.stderr,
-        )
+    if args.slurm_max_jobs < 1:
+        print("error: the pool needs --slurm-max-jobs >= 1.", file=sys.stderr)
         return 2
     # Before the cluster starts its threads, which inherit the mask: `serve` waits for these.
     signal.pthread_sigmask(signal.SIG_BLOCK, _SIGNALS)
-    serve(_slurm_cluster(args.port, args.slurm_min_jobs, args.slurm_max_jobs), args.address_file)
+    serve(_slurm_cluster(args.port, args.slurm_max_jobs), args.address_file)
     return 0
 
 
