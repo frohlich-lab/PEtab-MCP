@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+
 import pandas as pd
 import pytest
 
@@ -260,6 +262,64 @@ def test_fit_objective_and_reported_nll_are_the_same_number(fit_session):
     problem, _ = fitting.estimation_problem(fit_session, fit_session.engine)
     x = fitting.problem_x_from_nominal(problem, fit_session.problem.parameter_df)
     assert float(problem.objective(x)) == pytest.approx(reported, rel=rtol)
+
+
+def test_the_experiments_are_simulated_on_the_amici_threads_the_server_is_given(
+    tmp_path, amici_build_root, monkeypatch
+):
+    """``PETAB_MCP_FIT_AMICI_N_THREADS`` reaches AMICI's call, whose threads share out the
+    experiments; unset, it is one thread, as before the knob. Each experiment is simulated on its
+    own, so four threads score the problem as one does, gradient included."""
+    import amici.sim.sundials
+
+    from petab_mcp import fitting
+    from petab_mcp.engine import AmiciEngine
+    from petab_mcp.references import StubReferenceResolver
+    from petab_mcp.session import PetabSession
+
+    work = tmp_path / "problem"
+    shutil.copytree(Path(__file__).parent / "data" / "toy_v2", work)
+    (work / "conditions.tsv").write_text(
+        "conditionId\ttargetId\ttargetValue\n" + "".join(f"c{i}\tA\t{i + 1}\n" for i in range(4))
+    )
+    (work / "experiments.tsv").write_text(
+        "experimentId\ttime\tconditionId\n" + "".join(f"e{i}\t0\tc{i}\n" for i in range(4))
+    )
+    header, *rows = (work / "measurements.tsv").read_text().splitlines()
+    measured = [r.replace("obs_B\t\t", f"obs_B\te{i}\t") for i in range(4) for r in rows]
+    (work / "measurements.tsv").write_text("\n".join([header, *measured]) + "\n")
+    yaml = work / "problem.yaml"
+    yaml.write_text(
+        yaml.read_text()
+        + "condition_files:\n- conditions.tsv\nexperiment_files:\n- experiments.tsv\n"
+    )
+
+    calls = []
+    run = amici.sim.sundials.run_simulations
+
+    def counted(model, solver, edatas, *args, num_threads=1, **kwargs):
+        calls.append((len(edatas), num_threads))
+        return run(model, solver, edatas, *args, num_threads=num_threads, **kwargs)
+
+    monkeypatch.setattr(amici.sim.sundials, "run_simulations", counted)
+
+    def score(name):
+        session = PetabSession(
+            str(yaml), provenance_dir=str(tmp_path / name), resolver=StubReferenceResolver()
+        )
+        session.engine = AmiciEngine(session, build_root=str(amici_build_root))
+        problem, _ = fitting.estimation_problem(session, session.engine)
+        x = fitting.problem_x_from_nominal(problem, session.problem.parameter_df)
+        calls.clear()
+        fval, grad = problem.objective(x, sensi_orders=(0, 1))
+        return fval, grad, list(calls)
+
+    one = score("default")
+    monkeypatch.setattr(fitting, "FIT_AMICI_N_THREADS", 4)
+    four = score("four")
+
+    assert one[2] == [(4, 1)] and four[2] == [(4, 4)]
+    assert four[0] == one[0] and (four[1] == one[1]).all()
 
 
 def test_one_amici_build_per_structure(fit_session):

@@ -58,6 +58,7 @@ petab-mcp --petab-yaml path/to/problem.yaml
 # --transport {stdio,sse,streamable-http}
 # --criterion {bic,caic,aic,aicc,hqc,tic}   (env PETAB_MCP_CRITERION; default bic)
 # --fit-pool ADDRESS     (env PETAB_MCP_FIT_POOL; see "Fitting on SLURM")
+# env PETAB_MCP_FIT_AMICI_N_THREADS=T   (AMICI threads per start, default 1; workers x T <= cores; on a pool, job-cpu = processes x T)
 ```
 
 Provenance is written to `<problem_dir>/.petab_mcp/` by default and is durable — restarting

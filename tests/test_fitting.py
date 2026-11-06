@@ -224,6 +224,24 @@ def test_the_amici_tolerance_knobs_are_read_from_the_env_and_default_to_amicis(m
         importlib.reload(fitting)
 
 
+def test_the_amici_thread_count_is_read_from_the_env_and_defaults_to_one(monkeypatch):
+    """Unset or unreadable, every objective simulates on one thread, as before the knob. The env
+    name is what a launcher exports."""
+    import importlib
+
+    try:
+        monkeypatch.delenv("PETAB_MCP_FIT_AMICI_N_THREADS", raising=False)
+        importlib.reload(fitting)
+        assert fitting.FIT_AMICI_N_THREADS == 1
+        for raw, threads in (("4", 4), ("0", 1), ("garbage", 1)):
+            monkeypatch.setenv("PETAB_MCP_FIT_AMICI_N_THREADS", raw)
+            importlib.reload(fitting)
+            assert fitting.FIT_AMICI_N_THREADS == threads, raw
+    finally:
+        monkeypatch.undo()
+        importlib.reload(fitting)
+
+
 def test_each_amici_tolerance_knob_reaches_the_solver(monkeypatch):
     """Every knob that is set lands on the objective's AMICI solver, and one that is not is never
     set: AMICI's default is not a value to restate."""
