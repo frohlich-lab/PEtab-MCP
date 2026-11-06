@@ -983,5 +983,16 @@ def test_a_reader_and_writer_naming_a_site_apart_are_told_so_not_to_seed():
     ]
     with pytest.raises(ModelUpdateError, match=r"rows \['w'\] put 'p' on its site `Y1068`") as exc:
         PS.to_antimony(rows, {})
-    assert "Name the same residue and position in both rows" in str(exc.value)
+    assert "Name the same residue and position in both" in str(exc.value)
     assert "declare it in `seeds`" not in str(exc.value)
+
+
+def test_a_readout_and_its_writer_naming_a_site_apart_are_told_both_sites():
+    """A readout reading `Y1068` beside a row writing `phospho` was told only that it read no
+    species, with neither site's naming (12 refusals in 11 runs of gemot round 5, #251)."""
+    rows = [(Phosphorylation(Agent("K"), Agent("E")), INDRA_DEFAULT, "w")]
+    entities = {"pE": Agent("E", mods=[ModCondition("phosphorylation", "Y", "1068")])}
+    with pytest.raises(ModelUpdateError, match=r"Readout 'pE' reads E's site `Y1068`, named by "
+                       r"residue, as 'p', which nothing puts there, while rows \['w'\] put 'p' on "
+                       r"its site `phospho`, named with no residue"):
+        PS.to_antimony(rows, entities)

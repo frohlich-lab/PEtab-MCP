@@ -9,6 +9,7 @@ extension column (lin/log/log10; see :mod:`petab_mcp.problem`). Edits operate di
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Collection
 from typing import Any
 
 from petab.v2.C import (
@@ -278,13 +279,43 @@ def _coerce_estimate(value: Any) -> bool:
         raise ParameterError(f"Cannot interpret estimate value {value!r} as true/false.") from None
 
 
-def update_parameters(problem, updates: list[dict[str, Any]]) -> dict[str, Any]:
+#: How many ids the refusal of an unknown one lists (:func:`_unknown_id`).
+_NEAR_CAP = 12
+
+
+def _unknown_id(pid: str, known: list[str], prefixes: Collection[str]) -> str:
+    """What the refusal of ``pid`` lists: the ``known`` ids sharing its head or tail at a ``_``
+    (``koff_*``, ``*_ip3_1``, ``*_Ka``), the closest first, else the closest spelt, else all; and,
+    where a row of ``prefixes`` mints ``<prefix>_<pid>``, how a mechanism's parameter is named."""
+    from .model_edits import closest_symbols
+
+    parts = pid.split("_")
+    heads = ["_".join(parts[:i]) + "_" for i in range(1, len(parts))]
+    tails = [t for i in range(len(parts)) if len(t := "_" + "_".join(parts[i:])) > 2]
+    near = [k for k in known if k.startswith(tuple(heads)) or k.endswith(tuple(tails))]
+    near = closest_symbols(pid, near, _NEAR_CAP, 0) if near else closest_symbols(pid, known, 5)
+    minted = [f"{p}_{pid}" for p in prefixes if f"{p}_{pid}" in known]
+    said = (
+        f"The ids nearest it: {near}, of {len(known)}." if near else f"Known ids: {sorted(known)}"
+    )
+    if minted:
+        said += (
+            " A mechanism's parameter that its row's binding does not name is "
+            f"`<prefix>_<name>`: {minted}."
+        )
+    return said
+
+
+def update_parameters(
+    problem, updates: list[dict[str, Any]], prefixes: Collection[str] = ()
+) -> dict[str, Any]:
     """Apply a batch of parameter-table edits, transactionally.
 
     Each update is a dict with an ``id`` (or ``parameterId``) plus any editable
     column (``nominalValue``, ``lowerBound``, ``upperBound``, ``estimate``,
     ``parameterScale``). Unknown ids, non-editable columns, bad bounds, or an invalid scale
-    raise ``ParameterError`` and leave the table unchanged.
+    raise ``ParameterError`` and leave the table unchanged; an unknown id is told the ids nearest
+    it, and the statement rows' ``prefixes`` their parameters' names.
     """
     if not isinstance(updates, list):
         raise ParameterError("`updates` must be a list of {id, ...field} objects.")
@@ -298,7 +329,9 @@ def update_parameters(problem, updates: list[dict[str, Any]]) -> dict[str, Any]:
         if pid not in df.index:
             from .reconcile import not_a_parameter
 
-            why = not_a_parameter(problem, pid) or f"Known ids: {sorted(df.index)}"
+            why = not_a_parameter(problem, pid) or _unknown_id(
+                str(pid), [str(k) for k in df.index], prefixes
+            )
             raise ParameterError(f"Unknown parameter id {pid!r}. {why}")
         fields: dict[str, Any] = {}
         for field, value in upd.items():

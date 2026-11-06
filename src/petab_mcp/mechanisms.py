@@ -719,13 +719,13 @@ def refuse_rate_names(
     ]
     sentences = [
         f"rate {rate!r} of {policy!r} may name only {allowed}{also}; it names {unknown}.",
+        *_how_ids_enter(unknown, problem_ids, amounts),
         IN_SCHEME if roles else IN_RATE,
         f"Did you mean: {'; '.join(close)}?" if close else "",
         f"{inits}: `<name>_init` is the amount a species starts at, and a rate does not read it; "
         f"read the amount itself, {amounts}." if inits else "",
         f"Write {', '.join(f'`amount({r})`' for r in bare)}." if bare else "",
         f"Write {', '.join(f'`{r}`, not `amount({r})`' for r in wrapped)}." if wrapped else "",
-        *_how_ids_enter(unknown, problem_ids, amounts),
         "Declare each new constant in the mechanism's `parameters`; it is minted per row as "
         "`<prefix>_<name>`." if new else "",
     ]
@@ -913,16 +913,15 @@ def written(
                 f"{base_key} builds {len(emitted.rules)} reaction(s) for this statement; a written "
                 "mechanism re-rates exactly one irreversible reaction"
             )
-        from .schemes import role_agents
+        from .schemes import empty_role, role_agents
 
         params = {n: pysb.Parameter(f"{prefix}_{n}", 1.0, _export=False) for n in sorted(names)}
         agents = role_agents(stmt) | (regulators or {})
         used = {t for t in tokens if t in agents}
         if missing := sorted({t for t in tokens if t in roles or positional.match(t)} - set(agents)):
             raise MechanismError(
-                f"row {prefix!r}: the rate of {policy!r} reads {missing}, which its statement "
-                "leaves empty; a role holding several agents is read by position (`obj_from_0`). "
-                "Give the statement that agent, or use a mechanism whose rate does not read it"
+                empty_role(prefix, f"the rate of {policy!r}", stmt, missing[0])
+                + "; a role holding several agents is read by position (`obj_from_0`)"
             )
         amounts = {
             name: pysb.Observable(
@@ -1033,6 +1032,31 @@ def assemble(
     ``inputs`` are the condition inputs no agent stands for (:func:`bind`).
     """
     rows = [(*row, *[None] * (5 - len(row))) for row in rows]
+    model, emissions, agents, added = _emit(rows, entities, library)
+    _refuse_ruleless(rows, emissions, library)
+    _refuse_unchanging(rows, emissions, model)
+    # Bound once every row has minted its own: bound as each row was built, a row sharing a LATER
+    # row's `back_k` made it a new shared id, and that row's own `back_k` then clashed with it.
+    merged: dict[str, object] = {}
+    emissions = [
+        bind(model, emission, row[3], merged, set(entities or {}), inputs) if row[3] else emission
+        for emission, row in zip(emissions, rows)
+    ]
+    return model, [
+        replace(e, sites_added={
+            name: {site: list(agents.agents[name].site_states.get(site, [])) for site in sites}
+            for name, sites in names.items() if sites
+        })
+        for e, names in zip(emissions, added)
+    ]
+
+
+def _emit(
+    rows: list[tuple], entities, library
+) -> tuple[pysb.Model, list[Emission], BaseAgentSet, list[dict[str, list[str]]]]:
+    """:func:`assemble`'s ``rows``, each of five elements, built into one model before any is
+    refused or bound: the model, each row's emission, the monomer pass's agents and the sites each
+    row's scheme added."""
     stmts = [row[0] for row in rows]
     # INDRA's monomer pass collects every site its own statement types imply; it skips the
     # vocabulary in :mod:`statements`, whose agents carry only the sites their own conditions
@@ -1091,22 +1115,7 @@ def assemble(
         instantiate(stmt, model, policy, prefix, library, regulators)
         for stmt, policy, prefix, _, regulators in rows
     ]
-    _refuse_ruleless(rows, emissions)
-    _refuse_unchanging(rows, emissions, model)
-    # Bound once every row has minted its own: bound as each row was built, a row sharing a LATER
-    # row's `back_k` made it a new shared id, and that row's own `back_k` then clashed with it.
-    merged: dict[str, object] = {}
-    emissions = [
-        bind(model, emission, row[3], merged, set(entities or {}), inputs) if row[3] else emission
-        for emission, row in zip(emissions, rows)
-    ]
-    return model, [
-        replace(e, sites_added={
-            name: {site: list(agents.agents[name].site_states.get(site, [])) for site in sites}
-            for name, sites in names.items() if sites
-        })
-        for e, names in zip(emissions, added)
-    ]
+    return model, emissions, agents, added
 
 
 def _monomer_policy(policy: str, library: dict[tuple[str, str], Policy]) -> str:
@@ -1116,12 +1125,14 @@ def _monomer_policy(policy: str, library: dict[tuple[str, str], Policy]) -> str:
     return getattr(entries[0], "indra_policy", "default") if entries else "default"
 
 
-def _refuse_ruleless(rows: list[tuple], emissions: list[Emission]) -> None:
+def _refuse_ruleless(rows: list[tuple], emissions: list[Emission], library) -> None:
     """Refuse a row whose entry built no rule: the model would not contain what it asserts, and a
     constant it minted would be fitted to nothing. INDRA builds a rule once, so the same statement
     in a second row built nothing beside an orphan ``kf``, and it builds none for an ActiveForm.
     The same statement is the same by name (:func:`statements.name_key`), as INDRA names its rules:
-    one agent grounded in one row and not in the other was told to take a policy that builds one."""
+    one agent grounded in one row and not in the other was told to take a policy that builds one.
+    Any other is told the rows that build its rules' names already, where alone it builds them,
+    and which other entries of ``library`` build a rule for its statement."""
     for i, (row, emission) in enumerate(zip(rows, emissions)):
         if emission.rules:
             continue
@@ -1134,11 +1145,35 @@ def _refuse_ruleless(rows: list[tuple], emissions: list[Emission]) -> None:
                 "rule once, so this row builds nothing: merge the two rows, or give one another "
                 "policy"
             )
-        raise MechanismError(
-            f"row {prefix!r}: {type(stmt).__name__} under {policy!r} builds no rule, so the "
-            "model would not contain it. Give it a policy that builds one, or write one with "
-            "`mechanisms`"
+        stmt_type = type(stmt).__name__
+        alone = {p: _rules_alone(stmt, p, library) for t, p in sorted(library) if t == stmt_type}
+        others = [f"`{p}`" for p, rules in alone.items() if rules and p != policy]
+        instead = (
+            f"{', '.join(others)} build one for it: bind one, or write a mechanism with "
+            "`mechanisms`" if others else "No other library entry builds one for it: write one "
+            "with `mechanisms`, a `scheme` of its own rules"
         )
+        if clash := sorted({e.prefix for e in emissions if set(e.rules) & set(alone[policy])}):
+            raise MechanismError(
+                f"row {prefix!r}: {stmt_type} under {policy!r} builds {list(alone[policy])}, "
+                f"which rows {clash} build already: INDRA builds a rule of one name once, and "
+                "names it by its agents' tags but not their `-` (`B{-pS10}` as `B{pS10}`). "
+                + instead
+            )
+        raise MechanismError(
+            f"row {prefix!r}: {stmt_type} under {policy!r} builds no rule, so the model would "
+            f"not contain it. {instead}"
+        )
+
+
+def _rules_alone(stmt: Statement, policy: str, library) -> tuple[str, ...]:
+    """The rules ``library``'s entry ``policy`` builds for ``stmt`` alone, none where it refuses
+    it."""
+    try:
+        _, (emission,), *_ = _emit([(stmt, policy, "r", None, None)], {}, library)
+    except MechanismError:
+        return ()
+    return emission.rules
 
 
 def _refuse_unchanging(rows: list[tuple], emissions: list[Emission], model: pysb.Model) -> None:

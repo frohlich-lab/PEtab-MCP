@@ -523,3 +523,17 @@ def test_a_builtin_name_is_refused_for_a_scheme():
              "scheme": "enz() + sub() >> enz() + sub() @ k"},
             M.REGISTRY,
         )
+
+
+def test_a_role_the_statement_leaves_empty_is_refused_naming_the_row():
+    """`the statement gives no subj` named neither row nor statement type, and the agent guessed
+    which row (bachmann, isensee, lucarelli, blasi; #251)."""
+    library = dict(M.REGISTRY)
+    library[("IncreaseAmount", "syn")] = M.written(
+        {"statement_type": "IncreaseAmount", "policy": "syn", "parameters": ["k"],
+         "scheme": "subj() >> subj() + obj() @ k"},
+        library,
+    )
+    with pytest.raises(MechanismError, match=r"row 'b_syn': mechanism 'syn' reads `subj`, which "
+                       r"`B is produced` leaves empty\. `E increases B`"):
+        M.assemble([(IncreaseAmount(None, Agent("B")), "syn", "b_syn")], {}, library)

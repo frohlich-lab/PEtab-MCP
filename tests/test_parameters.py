@@ -93,3 +93,19 @@ def test_update_coerces_numeric_string(session):
 def test_update_non_editable_field(session):
     with pytest.raises(ParameterError):
         P.update_parameters(session.problem, [{"id": "k1", "parameterName": "x"}])
+
+
+def test_an_unknown_id_is_told_the_ids_nearest_it(session):
+    """`Unknown parameter id` listed every id, 17 times in 11 runs of gemot round 5, for guesses
+    like `koff_ip3_1` beside `kon_ip3_1` and a mechanism's bare `Ka` for `s6_phos_Ka` (#251)."""
+    known = ["kon_ip3_1", "egfr_act_k1", "s6_phos_Ka", "sigma_B", *(f"x{i}" for i in range(30))]
+    assert "['kon_ip3_1']" in P._unknown_id("koff_ip3_1", known, ())
+    assert "['egfr_act_k1']" in P._unknown_id("egfr_erec_k", known, ())
+    said = P._unknown_id("Ka", known, ("s6_phos",))
+    assert "['s6_phos_Ka']" in said and "`<prefix>_<name>`: ['s6_phos_Ka']" in said
+    with pytest.raises(
+        ParameterError,
+        match=r"Unknown parameter id 'init'.*`<prefix>_<name>`: "
+        r"\['A_init'\]",
+    ):
+        P.update_parameters(session.problem, [{"id": "init", "lowerBound": 0.1}], ["A"])

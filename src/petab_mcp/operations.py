@@ -1106,6 +1106,9 @@ def bound_rows(
         for row in rows
     ]
     prefixes = [row["prefix"] for row in rows]
+    for prefix in [*prefixes, *(bindings or {})]:
+        if isinstance(prefix, str):
+            notation.refuse_control("prefix", prefix)
     repeated = sorted({p for p in prefixes if prefixes.count(p) > 1})
     if repeated:
         # Caught here rather than met inside PySB as a component-name clash, which is not a
@@ -1408,8 +1411,8 @@ def _check_readouts_are_read(session, readouts) -> None:
 #: What ``set_amount`` declares, said where an edit reads as a seed (:func:`apply_statement_edits`).
 _READOUT_AMOUNT = (
     "`set_amount` declares a readout amount, the agent a readout formula reads by `name`, not a "
-    "seed: a starting amount is `set_seed`'s, `seed: {agent, amount}` (beside `statements`, "
-    "`seeds: [{agent, amount}]`)"
+    "seed: a starting amount is `set_seed`'s, `{op: 'set_seed', agent, amount}` (beside "
+    "`statements`, `seeds: [{agent, amount}]`)"
 )
 
 
@@ -1425,7 +1428,8 @@ def apply_statement_edits(
     prefix its parameters' ids and fitted values, and its binding unless it gives one; `rebind`
     changes a row's binding alone, its statement as it was. A seed is keyed by its name (by
     default its form's, :func:`seed_name`), as :func:`statements_to_antimony` names it. Edits
-    apply in order and an edit that names nothing raises, so the batch applies whole or not at all.
+    apply in order and an edit that names nothing raises, so the batch applies whole or not at all;
+    so does a second edit of one row, seed, amount or readout, which would undo the first.
     """
     from . import notation
 
@@ -1448,7 +1452,7 @@ def apply_statement_edits(
         )
 
     def no_row(prefix) -> str:
-        return f"no row `{prefix}`; the rows are {sorted(rows)}"
+        return f"no row {prefix!r}; the rows are {sorted(rows)}"
 
     rows = {
         row["prefix"]: {"prefix": row["prefix"], "statement": row["statement"]}
@@ -1459,16 +1463,32 @@ def apply_statement_edits(
     amounts = dict(record.get("amounts") or {})
     readouts = dict(record.get("readouts") or {})
     summary = []
+    edited: dict[tuple[str, Any], int] = {}
+
+    def once(i: int, edit: dict, kind: str, name) -> None:
+        if (first := edited.setdefault((kind, name), i)) != i:
+            raise fail(i, edit, f"`statement_edits[{first}]` edits {kind} {name!r} already, and "
+                       f"this edit would undo it: one edit per {kind}"
+                       + (", `replace_row` with a `binding` to change both" if kind == "row" else ""))
+
     for i, edit in enumerate(edits):
         op = edit.get("op")
         try:
-            if "amount" in edit:
-                raise fail(i, edit, f"an edit takes no `amount`. {_READOUT_AMOUNT}")
+            for key in ("prefix", "name", "readout"):
+                if isinstance(edit.get(key), str):
+                    notation.refuse_control(f"`{key}`", edit[key])
+            if "amount" in edit and op != "set_seed":
+                raise fail(i, edit, f"only `set_seed` takes an `amount`. {_READOUT_AMOUNT}")
             if op in ("add_row", "replace_row"):
                 row = edit.get("row")
+                if isinstance(row, str):
+                    notation.refuse_control("`row`", row)
+                elif isinstance(row, dict) and isinstance(row.get("prefix"), str):
+                    notation.refuse_control("prefix", row["prefix"])
                 prefix = prefix_of(row)
                 if prefix is None:
                     raise fail(i, edit, "`row` is one row, `prefix: <statement>`, or its JSON")
+                once(i, edit, "row", prefix)
                 # Refused by its edit, with the edit that gives the two apart; whether the row
                 # reads is the build's to say, with the notation's hint.
                 if isinstance(row, str):
@@ -1489,6 +1509,7 @@ def apply_statement_edits(
                 summary.append(f"{op} {prefix}")
             elif op == "rebind":
                 prefix = edit.get("prefix")
+                once(i, edit, "row", prefix)
                 if prefix not in rows:
                     raise fail(i, edit, no_row(prefix))
                 if not edit.get("binding"):
@@ -1497,22 +1518,25 @@ def apply_statement_edits(
                 bindings[prefix] = edit["binding"]
                 summary.append(f"rebind {prefix}")
             elif op == "remove_row":
+                once(i, edit, "row", edit.get("prefix"))
                 if edit.get("prefix") not in rows:
                     raise fail(i, edit, no_row(edit.get("prefix")))
                 del rows[edit["prefix"]]
                 bindings.pop(edit["prefix"], None)
                 summary.append(f"remove_row {edit['prefix']}")
             elif op == "set_seed":
-                if not edit.get("seed"):
-                    raise fail(i, edit, "`seed` is the seed, `{agent, amount, name?}`")
-                name = name_of(edit["seed"])
-                seeds[name] = {**edit["seed"], "name": name}
+                if edit.get("agent") is None or edit.get("amount") is None:
+                    raise fail(i, edit, "a seed is `{op: 'set_seed', agent, amount, name?}`")
+                name = name_of(edit)
+                once(i, edit, "seed", name)
+                seeds[name] = {"agent": edit["agent"], "amount": edit["amount"], "name": name}
                 summary.append(f"set_seed {name}")
             elif op in ("remove_seed", "remove_amount"):
                 table, key = {
                     "remove_seed": (seeds, edit.get("name")),
                     "remove_amount": (amounts, edit.get("name")),
                 }[op]
+                once(i, edit, op.removeprefix("remove_"), key)
                 if key not in table:
                     raise fail(i, edit, f"no `{key}`; there are {sorted(table)}")
                 del table[key]
@@ -1521,11 +1545,13 @@ def apply_statement_edits(
                 if not edit.get("name") or not edit.get("agent"):
                     raise fail(i, edit, f"`name` and `agent` name the amount and its pattern. "
                                f"{_READOUT_AMOUNT}")
+                once(i, edit, "amount", edit["name"])
                 amounts[edit["name"]] = edit["agent"]
                 summary.append(f"set_amount {edit['name']}")
             elif op == "set_readout":
                 if not edit.get("readout") or not edit.get("formula"):
                     raise fail(i, edit, "`readout` and `formula` give the readout")
+                once(i, edit, "readout", edit["readout"])
                 readouts[edit["readout"]] = edit["formula"]
                 summary.append(f"set_readout {edit['readout']}")
             else:
@@ -2069,7 +2095,8 @@ def _parameter_edit(session, normalized: list[dict[str, Any]]) -> Callable[[Any]
                 summary["scale"] = scale
             changed.append(summary)
         # One transactional write for the whole batch — a single parameter-table snapshot.
-        update_parameters(problem, updates)
+        rows = (session.model_statements or {}).get("rows") or []
+        update_parameters(problem, updates, [row["prefix"] for row in rows])
         for pid, scale in scale_checks:
             # Positive-box check reads the NEW scale + bounds, so it runs AFTER the update.
             _require_positive_for_log(problem, pid, scale)

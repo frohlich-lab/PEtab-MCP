@@ -68,6 +68,7 @@ downstream has to know where a model came from.
 
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 
 import libsbml
@@ -78,7 +79,7 @@ from indra.statements import Agent
 from petab.v1.models.sbml_model import SbmlModel
 from pysb import ANY
 from pysb.bng import NoInitialConditionsError, generate_equations
-from pysb.core import time
+from pysb.core import as_complex_pattern, time
 from pysb.export import export
 
 from . import mechanisms as M
@@ -267,7 +268,10 @@ def to_antimony(
         e.prefix: hint
         for e in emissions
         if e.prefix in stuck
-        and (hint := _misnamed(e.prefix, [r for r in e.rules if r not in fired], *sites))
+        and (hint := _misnamed(
+            f"Row {e.prefix!r}", set().union(*(sites[0][r] for r in e.rules if r not in fired)),
+            sites[1],
+        ))
     }
     if stuck:
         # Named with the form each needs, which nothing forms: "never fire" alone does not say
@@ -288,6 +292,10 @@ def to_antimony(
     if unread:
         unformed = "; ".join(f"{sp}: {patterns[f'readout_{sp}']}" for sp in unread)
         never.append(f"readouts {unread} read no species ({unformed})")
+        for sp in unread:
+            pattern = as_complex_pattern(patterns[f"readout_{sp}"])
+            if hint := _misnamed(f"Readout {sp!r}", _states([pattern]), sites[1]):
+                misnamed[sp] = hint
     if never:
         generic = (
             "At t = 0 the model holds free, unmodified molecules and what `seeds` declares, and a "
@@ -296,7 +304,7 @@ def to_antimony(
             "to a partner nothing binds it to. Add the statement that forms it, or, if it is "
             "present at t=0, declare it in `seeds`."
         )
-        explained = misnamed.keys() == set(stuck) and not unread
+        explained = misnamed.keys() == {*stuck, *unread}
         raise ModelUpdateError(
             " ".join(
                 [
@@ -1047,23 +1055,29 @@ def _rate_of_change(model: pysb.Model, quantity) -> sympy.Expr:
     return sympy.expand(rate.subs({e: e.expand_expr() for e in rate.atoms(pysb.Expression)}))
 
 
-def _misnamed(prefix: str, rules: list[str], reads: dict, puts: dict) -> str:
-    """Why row ``prefix``'s ``rules`` never fire where a phosphorylation they read is put on
-    another site of the same molecule: a writer and a reader naming the site apart (`at Y1068` and
-    `E{p}`). Phosphorylation only: the other modifications share the states 'n'/'y', so a 'y' on
-    another site may be another modification."""
-    for molecule, site, state in sorted(set().union(*(reads[r] for r in rules))):
+def _misnamed(reader: str, read: set, puts: dict) -> str:
+    """Why ``reader`` (a row, or a readout) never fires or reads nothing where a phosphorylation in
+    ``read`` (its ``(molecule, site, state)``) is put on another site of the same molecule: a writer
+    and a reader naming the site apart (`at Y1068` and `E{p}`). Phosphorylation only: the other
+    modifications share the states 'n'/'y', so a 'y' on another site may be another
+    modification."""
+
+    def named(site: str) -> str:
+        return "named by residue" if re.fullmatch(r"[A-Z][0-9]*", site) else "named with no residue"
+
+    for molecule, site, state in sorted(read):
         if state != "p" or (molecule, site, state) in puts:
             continue
         for (m, other, s), writers in sorted(puts.items(), key=str):
             if m == molecule and s == state and other != site:
                 by = sorted(w for w in writers if w is not None)
                 return (
-                    f"Row {prefix!r} reads {molecule}'s site `{site}` as '{state}', which nothing "
-                    f"puts there, while {f'rows {by}' if by else 'a seed'} put '{state}' on its site "
-                    f"`{other}`: a phosphorylation sits on the site its statement names, by "
-                    "residue and position, or `phospho` where it names none. Name the same residue "
-                    "and position in both rows, or none in either; a seed joins no two sites."
+                    f"{reader} reads {molecule}'s site `{site}`, {named(site)}, as '{state}', "
+                    f"which nothing puts there, while {f'rows {by}' if by else 'a seed'} put "
+                    f"'{state}' on its site `{other}`, {named(other)}: a phosphorylation sits on "
+                    "the site its statement or tag names, by residue and position, or `phospho` "
+                    "where it names none. Name the same residue and position in both, or none in "
+                    "either; a seed joins no two sites."
                 )
     return ""
 

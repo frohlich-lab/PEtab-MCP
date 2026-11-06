@@ -1095,7 +1095,8 @@ def test_a_scheme_mechanism_builds_and_is_listed_as_written(tmp_path):
     ) in listed
     assert "PopulationTransition | mass_action | parameters: k\n" in listed
     index = _text(mcp, "list_mechanisms", {}).splitlines()
-    assert "PopulationTransition: hop(k_hop) (written this run), mass_action(k)" in index
+    assert ("PopulationTransition [roles source, target]: hop(k_hop) (written this run), "
+            "mass_action(k)") in index
     model = _text(mcp, "get_model", {"format": "statements"})
     assert (
         "mechanism hop: PopulationTransition, scheme, parameters k_hop\n"
@@ -1173,6 +1174,7 @@ def test_list_mechanisms_without_types_is_an_index_of_their_parameters(tmp_path)
     assert " >> " not in index
     (line,) = [line for line in index.splitlines() if "Phosphorylation" in line.split(": ")[0]]
     assert line.startswith("Acetylation, ") and "indra_two_step(kc, kf, kr)" in line
+    assert "[roles enz, sub]: " in line
     assert "Dephosphorylation" not in line.split(": ")[0]
     both = _text(mcp, "list_mechanisms", {"statement_types": ["Complex", "Conversion"]})
     assert "Complex | indra_default | parameters: kf, kr" in both
@@ -1195,7 +1197,7 @@ def test_a_written_mechanism_the_placeholder_cannot_build_stays_listed():
         "statement_type": "Phosphorylation", "policy": "pten", "scheme": scheme,
         "parameters": ["kf", "Ki"]}})
     index = _mechanisms_text(session, None).splitlines()
-    assert "Phosphorylation: basal(k), indra_default(kf), indra_interactions_only(kf), " \
+    assert "Phosphorylation [roles enz, sub]: basal(k), indra_default(kf), indra_interactions_only(kf), " \
         "indra_michaelis_menten(Km, kc), indra_two_step(kc, kf, kr), processive(kf), " \
         "pten(Ki, kf) (written this run)" in index
     assert not any(line.startswith("ActiveForm") for line in index)
@@ -1571,7 +1573,7 @@ def test_set_seed_of_a_second_form_joins_the_first(tmp_path):
     assert _seeds_call(mcp, [{"agent": "A", "amount": 1}])["applied"] is True
     out = _call(mcp, "make_changes", {
         "justification": "part of A starts phosphorylated",
-        "statement_edits": [{"op": "set_seed", "seed": {"agent": "A{pY10}", "amount": 0.5}}]})
+        "statement_edits": [{"op": "set_seed", "agent": "A{pY10}", "amount": 0.5}]})
     assert out["applied"] is True, out.get("error")
     assert out["statement_edits_applied"] == ["set_seed A_pY10"]
     assert [s["name"] for s in _stored_rows(tmp_path, 1)["seeds"]] == ["A", "A_pY10"]
@@ -1771,19 +1773,15 @@ def test_a_seed_at_an_input_a_row_reads_is_neither_removed_nor_unread(tmp_path, 
                 or "read by nothing" in m["message"]]
 
 
-def test_an_edit_carrying_an_amount_is_told_where_a_seed_goes(tmp_path):
+def test_an_amount_edit_carrying_an_amount_is_told_where_a_seed_goes(tmp_path):
     """`statement_edits.0.amount Extra inputs are not permitted`, pydantic's own, in nearly every
     run of gemot round 3 (#193): it named neither `seeds` nor what `set_amount` is."""
     mcp = _statements_server(tmp_path)
     assert _seeds_call(mcp, [{"agent": "A", "amount": 1}])["applied"] is True
-    for edit in ({"op": "set_amount", "name": "A", "agent": "A", "amount": 5},
-                 {"op": "set_seed", "agent": "A", "amount": 5}):
-        out = _call(mcp, "make_changes", {"justification": "more A", "statement_edits": [edit]})
-        assert out["applied"] is False
-        assert "`seed: {agent, amount}`" in out["error"] and "readout amount" in out["error"]
-    from petab_mcp.server import StatementEdit
-
-    assert "amount" not in StatementEdit.model_json_schema()["properties"]
+    edit = {"op": "set_amount", "name": "A", "agent": "A", "amount": 5}
+    out = _call(mcp, "make_changes", {"justification": "more A", "statement_edits": [edit]})
+    assert out["applied"] is False
+    assert "`{op: 'set_seed', agent, amount}`" in out["error"] and "readout amount" in out["error"]
 
 
 @_ROUTES
@@ -1920,7 +1918,7 @@ def test_bindings_ride_with_statements(tmp_path):
          '`{"op": "replace_row", "row": "conv: A becomes B", "binding": "mass_action k=k1"}`'),
         ({"op": "replace_row", "row": {**_statement_row(), "policy": "mass_action"}},
          '`{"op": "replace_row", "row": "conv: A becomes B", "binding": "mass_action"}`'),
-        ({"op": "rebind", "prefix": "gone", "binding": "mass_action"}, "no row `gone`"),
+        ({"op": "rebind", "prefix": "gone", "binding": "mass_action"}, "no row 'gone'"),
         ({"op": "rebind", "prefix": "conv"}, "`binding` is the row's policy"),
         ({"op": "add_row", "row": _CONV, "binding": "mass_action"}, "`rebind` its binding"),
     ],
@@ -1988,7 +1986,7 @@ def test_statement_edits_change_the_rows_they_name_and_keep_the_rest(tmp_path):
             "statement_edits": [
                 {"op": "remove_row", "prefix": "back"},
                 {"op": "add_row", "row": "back2: B becomes A", "binding": "mass_action"},
-                {"op": "set_seed", "seed": {"agent": "A", "amount": 1, "name": "A_start"}},
+                {"op": "set_seed", "agent": "A", "amount": 1, "name": "A_start"},
             ],
         },
     )
@@ -2067,7 +2065,7 @@ def test_an_edit_that_names_nothing_applies_nothing(tmp_path):
         },
     )
     assert out["applied"] is False
-    assert "`statement_edits[1]` (replace_row): no row `gone`" in out["error"]
+    assert "`statement_edits[1]` (replace_row): no row 'gone'" in out["error"]
     assert "['back', 'conv']" in out["error"]
     assert not (tmp_path / "prov" / "versions" / "v1").exists()
 

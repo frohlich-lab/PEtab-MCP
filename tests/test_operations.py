@@ -744,3 +744,43 @@ def test_a_stored_seed_keeps_its_name_whatever_its_form():
         "seeds": [seed],
     }
     assert O.apply_statement_edits(record, [])[2] == [seed]
+
+
+_RECORD = {
+    "rows": [{"prefix": "r_act", "statement": {"type": "PopulationTransition"}},
+             {"prefix": "c2S", "statement": {"type": "PopulationTransition"}}],
+    "bindings": {"r_act": "mass_action", "c2S": "mass_action"},
+}
+
+
+def test_set_seed_takes_its_seed_flat():
+    """`{"op": "set_seed", "agent": ..., "amount": ...}` was refused for not nesting under `seed`,
+    14 times in 10 of 24 runs of gemot round 5 (#251)."""
+    _, _, seeds, _, _, summary = O.apply_statement_edits(
+        _RECORD, [{"op": "set_seed", "agent": "A", "amount": 1}]
+    )
+    assert seeds == [{"agent": "A", "amount": 1, "name": "A"}] and summary == ["set_seed A"]
+    with pytest.raises(OperationError, match="only `set_seed` takes an `amount`"):
+        O.apply_statement_edits(_RECORD, [{"op": "set_amount", "name": "A", "agent": "A",
+                                           "amount": 1}])
+
+
+def test_a_batch_editing_one_row_twice_is_refused_naming_it():
+    """alkan r3 sent three `rebind`s to row `c2S`: the last won, and the bounds for the others
+    named ids that never existed (#251)."""
+    rebind = {"op": "rebind", "prefix": "c2S", "binding": "mass_action kf=k1"}
+    with pytest.raises(OperationError, match=r"`statement_edits\[0\]` edits row 'c2S' already"):
+        O.apply_statement_edits(_RECORD, [rebind, {**rebind, "binding": "mass_action kf=k2"}])
+    with pytest.raises(OperationError, match="edits seed 'A' already"):
+        O.apply_statement_edits(_RECORD, [{"op": "set_seed", "agent": "A", "amount": 1},
+                                          {"op": "remove_seed", "name": "A"}])
+
+
+def test_a_control_character_in_a_prefix_or_row_is_named():
+    """fujita r1 wrote `r\\r_act`, refused as "no row `r_act`" beside a list holding `r_act`
+    (#251)."""
+    with pytest.raises(OperationError, match=r"`prefix` 'r\\r_act' holds the control character '\\r'"):
+        O.apply_statement_edits(_RECORD, [{"op": "remove_row", "prefix": "r\r_act"}])
+    with pytest.raises(OperationError, match=r"`row` 'r2\\r: A becomes B' holds the control"):
+        O.apply_statement_edits(_RECORD, [{"op": "add_row", "row": "r2\r: A becomes B",
+                                           "binding": "mass_action"}])

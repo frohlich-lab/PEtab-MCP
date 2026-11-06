@@ -278,6 +278,31 @@ def _by_name(stmt: Statement) -> dict[str, Agent]:
     return agents
 
 
+#: How a row names a role its statement type may leave empty, said where a mechanism reads it.
+ROLE_IN_ROW = {
+    "subj": "`E increases B`, `E decreases B` and `A -> B by E` name a subject `E`; `B is produced`, "
+    "`B is degraded` and `A -> B` name none",
+    "enz": "`E phosphorylates B` names an enzyme `E` (every modification alike); `B is "
+    "phosphorylated` names none",
+}
+
+
+def empty_role(prefix: str, reads: str, stmt: Statement, role: str) -> str:
+    """Row ``prefix``'s mechanism (``reads`` says where) reading ``role``, which ``stmt`` leaves
+    empty: what the row says, and how a row names one."""
+    from .notation import statement_text
+
+    try:
+        said = f"`{statement_text(stmt.to_json())}`"
+    except ValueError:  # what the notation cannot write
+        said = "its statement"
+    return (
+        f"row {prefix!r}: {reads} reads `{role}`, which {said} leaves empty. "
+        + (f"{ROLE_IN_ROW[role]}. " if role in ROLE_IN_ROW else "")
+        + "Name it in the row, or bind a mechanism that does not read it"
+    )
+
+
 def _molecule_agent(stmt: Statement, name: str, agents: dict[str, Agent]) -> Agent:
     """The agent a scheme's molecule ``name`` is: a role's, or another the statement names."""
     agent = agents.get(name) or _by_name(stmt).get(name)
@@ -524,6 +549,8 @@ def compile_scheme(definition: dict, problem_ids: dict[str, str] | None = None):
         for mol in patterns:
             if mol.name not in agents and mol.name not in named and mol.name not in known_roles:
                 refuse_unnamed(prefix, stmt, f"mechanism {policy!r}", Agent(mol.name), regulators)
+            if mol.name in known_roles and mol.name not in agents:
+                raise MechanismError(empty_role(prefix, f"mechanism {policy!r}", stmt, mol.name))
             agent = _molecule_agent(stmt, mol.name, agents)
             sites, site_states = given.get(_n(agent.name), ((), {}))
             for site, value in mol.sites:
