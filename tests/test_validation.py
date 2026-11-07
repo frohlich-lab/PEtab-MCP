@@ -186,6 +186,22 @@ def test_an_input_whose_only_reader_was_pruned_is_named(dosed_session):
     assert len(said) == 1 and said[0].startswith("condition target(s) `dose` are read by nothing")
 
 
+@pytest.mark.parametrize(("rate", "warned"), [("k", True), ("k*drive", False)])
+def test_an_input_read_only_by_a_rule_nothing_reads_is_named(dosed_session, rate, warned):
+    """An edit that drops the last reader of `drive := dose` leaves `dose` read by the rule
+    alone, which the unread-input check counted as read, so the model lost its input with no
+    warning (PEtab-MCP#264). A rate reading `drive` reaches it."""
+    driven = _DOSED.replace("D = 2*dose", "drive := dose")
+    result = O.set_model(dosed_session, driven.format(rate=rate), justification="dose B")
+    said = [m["message"] for m in result["messages"] if "read by nothing" in m["message"]]
+    assert bool(said) == warned
+    if warned:
+        assert said[0].startswith(
+            "condition target(s) `dose` are read by nothing in the model, or only by assignment "
+            "rules nothing reads, so the model never sees their value."
+        )
+
+
 def test_a_later_period_that_keeps_the_value_changes_nothing(dosed_session):
     """A period that sets an input to the value it already holds is no change to warn about."""
     yaml = dosed_session.yaml_path

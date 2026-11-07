@@ -316,6 +316,40 @@ def _pruned_warnings(pruned: list[str], names: dict[str, str]) -> list[str]:
     return [f"Removed species nothing in the model reads, with their initial amounts: {shown}."]
 
 
+def _orphan_warnings(session, seeded: list[str]) -> list[str]:
+    """One warning for each name the reconcile seeded (``seeded`` of
+    :func:`reconcile.sync_parameter_table`) that the version this edit changes defined as a
+    species, a rule or a reaction: the edit dropped that definition and kept a reader, so the
+    quantity is now a constant the fit tunes. fontaine's `GliS`, renamed away from the reaction
+    making it, was fitted so, 140 nll worse, with no reply naming it (PEtab-MCP#264).
+
+    A name no earlier model defined is not named: a rate law reading a new name is how a rate
+    constant is introduced (the `model_edits` route documents it), about 19 times a session. The
+    parent is ``session.derived_from`` for a ``base_version`` fork, else the working model, read
+    before the edit replaces it."""
+    if not seeded:
+        return []
+    fork = getattr(session, "derived_from", None)
+    if fork is not None:
+        parent = SbmlModel.from_antimony(session.provenance.get_model_antimony(fork)).sbml_model
+    else:
+        parent = session.problem.model.sbml_model
+    version = fork if fork is not None else session.provenance.current_version
+    defined = {r.getId(): "a reaction" for r in parent.getListOfReactions()}
+    defined |= {s.getId(): "a species" for s in parent.getListOfSpecies()}
+    for rule in parent.getListOfRules():
+        if rule.isAssignment():
+            defined[rule.getVariable()] = f"an assignment rule (`{rule.getVariable()} := …`)"
+        elif rule.isRate():
+            defined[rule.getVariable()] = "a rate rule"
+    return [
+        f"`{pid}` is used but defined nowhere; it was created as an estimated parameter. Version "
+        f"{version} had it as {defined[pid]}: define it again, or read the name that replaced it."
+        for pid in seeded
+        if pid in defined
+    ]
+
+
 _REJECTION_ISSUES_SHOWN = 3
 _REJECTION_ISSUE_CHARS = 320
 
@@ -509,6 +543,7 @@ def _commit_change(
         warnings = (
             [
                 *_pruned_warnings(recon["pruned"]["species"], names),
+                *_orphan_warnings(session, recon["parameters"]["seeded"]),
                 *_parsimony_warnings(problem, old_species),
             ]
             if recon is not None

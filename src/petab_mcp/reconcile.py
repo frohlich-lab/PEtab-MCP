@@ -679,11 +679,11 @@ def _reaction_species(sm) -> set[str]:
     return used
 
 
-def _model_math_names(sm, initial: bool = True) -> set[str]:
+def _model_math_names(sm, initial: bool = True, assignments: bool = True) -> set[str]:
     """Names the model's math reads: rate laws, initial assignments (unless ``initial`` is off),
-    rules, and events (trigger, priority, delay, and each assignment's math). What an event ASSIGNS
-    is :func:`_event_targets`: the prune keeps it, while a role or reuse check reads only what the
-    math reads."""
+    rules (assignment rules unless ``assignments`` is off), and events (trigger, priority, delay,
+    and each assignment's math). What an event ASSIGNS is :func:`_event_targets`: the prune keeps
+    it, while a role or reuse check reads only what the math reads."""
     names: set[str] = set()
     for i in range(sm.getNumReactions()):
         kl = sm.getReaction(i).getKineticLaw()
@@ -692,7 +692,8 @@ def _model_math_names(sm, initial: bool = True) -> set[str]:
     for i in range(sm.getNumInitialAssignments() if initial else 0):
         names |= _ast_names(sm.getInitialAssignment(i).getMath())
     for i in range(sm.getNumRules()):
-        names |= _ast_names(sm.getRule(i).getMath())
+        if assignments or not sm.getRule(i).isAssignment():
+            names |= _ast_names(sm.getRule(i).getMath())
     for i in range(sm.getNumEvents()):
         event = sm.getEvent(i)
         for part in (event.getTrigger(), event.getPriority(), event.getDelay()):
@@ -2408,7 +2409,9 @@ def _ic_convention(v0: float) -> tuple[str, bool]:
 
 def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
     """Add rows for new model parameters; remove rows for parameters gone from the model
-    (keeping observable/noise parameters). Returns the add/remove diff.
+    (keeping observable/noise parameters). Returns the add/remove diff, and ``seeded``: the
+    parameters nothing gives a value (no assignment in the model, no row, no shipped row), each
+    started at the seed. :func:`operations._orphan_warnings` names those the parent defined.
 
     ``shipped`` is the parameter table the PROBLEM shipped with
     (:attr:`session.PetabSession.shipped_parameter_df`). A parameter being added that appears
@@ -2463,7 +2466,7 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
     keep_table -= species_ids(sm)
     keep_table -= mappings
 
-    added, removed = [], []
+    added, removed, seeded = [], [], []
 
     shipped_ids = set(getattr(shipped, "index", []))
     # A parameter the model uses but never assigns (`deg: A -> ; k*A;` with no `k = …`) loads
@@ -2486,6 +2489,7 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
         if value is None:
             exponent = pid in exp_params and pid not in ic_params
             value = EXPONENT_LOWER_BOUND if exponent else SEED_INITIAL_VALUE
+            seeded.append(pid)
         parameter.setValue(value)
 
     for pid in sorted(valid - table_ids):
@@ -2578,7 +2582,7 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
         problem.parameter_df = problem.parameter_df.drop(index=pid)
         removed.append(pid)
 
-    return {"added": added, "removed": removed}
+    return {"added": added, "removed": removed, "seeded": seeded}
 
 
 #: The species minted when a model would otherwise have none. Named to be obviously not the
