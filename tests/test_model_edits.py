@@ -707,6 +707,34 @@ def test_set_assignment_replaces_an_existing_rule_in_place():
     assert twice.count(":=") == 1 and "readout_total := 2*B;" in twice
 
 
+@pytest.mark.parametrize("payload", ["readout_total := A + B;", "readout_total = A + B"])
+def test_set_assignment_keeps_the_right_hand_side_of_its_own_statement(payload):
+    out, summary = me.apply_model_edits(
+        SRC, [{"op": "set_assignment", "id": "readout_total", "antimony": payload}]
+    )
+    assert summary == ["set assignment readout_total := A + B"]
+    assert out.count(":=") == 1 and "readout_total := A + B;" in out
+
+
+@pytest.mark.parametrize(
+    ("payload", "named"),
+    [("readout_other := A + B", "'readout_other'"), ("fwd: A => B", "right-hand side only")],
+)
+def test_set_assignment_refuses_a_statement_that_is_not_its_own(payload, named):
+    with pytest.raises(OperationError, match=named) as ei:
+        me.apply_model_edits(
+            SRC, [{"op": "set_assignment", "id": "readout_total", "antimony": payload}]
+        )
+    assert "the symbol goes in `id`" in str(ei.value)
+
+
+@pytest.mark.parametrize("payload", ["fwd: A => B; k1*A*A;", "A -> B; k1*A", "fwd: k1*A*A"])
+def test_set_rate_law_refuses_a_whole_reaction_naming_the_ops_that_change_one(payload):
+    with pytest.raises(OperationError, match="rate expression only") as ei:
+        me.apply_model_edits(SRC, [{"op": "set_rate_law", "id": "fwd", "antimony": payload}])
+    assert "remove_reaction" in str(ei.value) and "';'" not in str(ei.value)
+
+
 def test_set_assignment_refuses_a_species():
     """A state integrated by the ODEs cannot also carry an assignment rule — the model would be
     over-determined, and libantimony's rejection would not name the cause."""

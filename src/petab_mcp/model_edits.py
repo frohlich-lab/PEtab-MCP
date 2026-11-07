@@ -188,6 +188,10 @@ _ASSIGN_STMT = re.compile(
 #: An arrow — what makes a statement a reaction rather than an assignment.
 _ARROW = re.compile(r"->|=>")
 
+#: What an op's expression never holds and a statement does: a label or `:=` colon, a `->`
+#: arrow, or a lone `=` (which also covers `=>`; `==`, `<=`, `>=`, `!=` stay comparisons).
+_STATEMENT_MARK = re.compile(r":|->|(?<![<>!=])=(?!=)")
+
 OPS = (
     "add_reaction",
     "remove_reaction",
@@ -674,6 +678,13 @@ def _op_set_rate_law(text, op, where):
             f"{where}: set_rate_law needs `antimony` — the new rate law, e.g. "
             "'k*u*X1'. NOTHING was applied."
         )
+    if _STATEMENT_MARK.search(law):
+        raise OperationError(
+            f"{where}: set_rate_law's `antimony` is the rate expression only, e.g. 'k*u*X1', "
+            "not a reaction statement. It cannot change reactants or products: for that, use "
+            "remove_reaction, then add_reaction with the new statement. NOTHING was applied.",
+            cause="statement_not_expression",
+        )
     _reject_semicolons(where, antimony=law)
     m = _find_reaction(text, rid)
     if m is None:
@@ -871,7 +882,24 @@ def _op_set_assignment(text, op, where):
             "{op: 'set_assignment', id: 'readout_001', antimony: 'X2 + X3'}. "
             "NOTHING was applied."
         )
-    _reject_semicolons(where, antimony=str(expr))
+    expr = str(expr)
+    # A whole `id := expr` (or `id = expr`) statement: keep its right-hand side if it assigns `id`.
+    lhs = re.match(r"([A-Za-z_]\w*)\s*:?=(?![=>])", expr)
+    if lhs and lhs[1] != sid:
+        raise OperationError(
+            f"{where}: `antimony` assigns {lhs[1]!r}, but `id` is {sid!r}. `antimony` is the "
+            "right-hand side only, e.g. `X2 + X3`; the symbol goes in `id`. NOTHING was applied.",
+            cause="id_mismatch",
+        )
+    if lhs:
+        expr = expr[lhs.end() :].strip()
+    if not expr or _STATEMENT_MARK.search(expr):
+        raise OperationError(
+            f"{where}: `antimony` is the right-hand side only, e.g. `X2 + X3`; the symbol goes in "
+            "`id`. NOTHING was applied.",
+            cause="statement_not_expression",
+        )
+    _reject_semicolons(where, antimony=expr)
     if sid in _PROTECTED_SYMBOLS:
         raise OperationError(
             f"{where}: {sid!r} is a reserved Antimony/SBML name and cannot be assigned. "
