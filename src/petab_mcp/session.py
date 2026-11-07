@@ -1103,24 +1103,26 @@ class PetabSession:
         """Advisory for a commit that gained parameters yet fits WORSE than its parent.
 
         See :mod:`nesting`: for a NESTED model the ML nll cannot rise when a parameter is added,
-        so "k up AND nll up" means the edit displaced a term or the optimizer under-converged —
-        either way the agent must not read the worse score as "the added structure does not
-        help". Advisory only; the commit is never blocked.
+        so "k up AND nll up" on a nested child is an INVALID COMPARISON, and on any other child a
+        line naming why it is not nested. Advisory only; the commit is never blocked.
 
         Also maintains ``self.invalid_comparison`` — the session's outstanding invalid
         does-adding-structure-help experiment, which ``fit_summary`` surfaces so a client's finish
-        check cannot rest on one. Two things clear it: a later commit that adds parameters
-        WITHOUT worsening the nll (the experiment, redone properly), and a later NEW BEST — the
-        note exists to stop a finish resting on the botched comparison, and a session that has
-        since found a strictly better model is resting on that instead. Without the second path
-        the flag would stick for the rest of any session that pivots to SIMPLIFYING after the
-        botched experiment, since no later commit raises k.
+        check cannot rest on one. Only a nested child sets it: a client's finish gate repeats the
+        re-fit advice, which a not-nested child must not get. Two things clear it: a later commit
+        that adds parameters WITHOUT worsening the nll (the experiment, redone properly), and a
+        later NEW BEST — the note exists to stop a finish resting on the botched comparison, and a
+        session that has since found a strictly better model is resting on that instead. Without
+        the second path the flag would stick for the rest of any session that pivots to
+        SIMPLIFYING after the botched experiment, since no later commit raises k.
 
         Called from ``fit`` while holding ``self.lock``, BEFORE the snapshot, so
         ``provenance.current_version`` is still the parent. Best-effort: ANY failure in here —
         the parent read, the child's parameter table, the comparison itself — leaves the payload
         advisory-free rather than failing a commit whose fit has already run.
         """
+        from petab.v2.C import LOWER_BOUND, NOMINAL_VALUE, UPPER_BOUND
+
         from . import nesting
         from .parameters import estimated_ids
 
@@ -1142,12 +1144,15 @@ class PetabSession:
                 "n_estimated": len(parent_ids),
                 "neg_log_likelihood": parent_meta.get("neg_log_likelihood"),
                 "estimated_ids": parent_ids,
-                # LAZY: the Antimony is read only to name a displaced parameter, i.e. only once
-                # the advisory has already fired. The overwhelming majority of commits improve
-                # the nll and never resolve it, so the common path stays off model.ant.
+                # A version's estimated rows' nominal values are its fitted values.
+                "values": parent_df.loc[parent_ids, NOMINAL_VALUE].to_dict(),
+                # LAZY: the Antimony is read only once k rose and the nll got worse. The
+                # overwhelming majority of commits improve the nll and never resolve it, so the
+                # common path stays off model.ant.
                 "model": lambda: self.provenance.get_model_antimony(parent_version),
             }
-            child_ids = estimated_ids(self.problem.parameter_df)
+            child_df = self.problem.parameter_df
+            child_ids = estimated_ids(child_df)
             child = {
                 # Count the estimate=1 ROWS on both sides so the two k's are commensurable;
                 # fitsim's n_estimated can also carry analytically-profiled inner parameters the
@@ -1155,14 +1160,19 @@ class PetabSession:
                 "n_estimated": len(child_ids),
                 "neg_log_likelihood": fitsim.get("neg_log_likelihood"),
                 "estimated_ids": child_ids,
+                "bounds": {
+                    pid: (child_df.at[pid, LOWER_BOUND], child_df.at[pid, UPPER_BOUND])
+                    for pid in child_ids
+                },
                 "model": child_model_ant,
             }
-            advisory = nesting.nesting_advisory(parent, child)
-            valid = advisory is None and nesting.valid_added_parameter_experiment(parent, child)
+            found = nesting.nesting_advisory(parent, child)
+            valid = found is None and nesting.valid_added_parameter_experiment(parent, child)
         except Exception:  # noqa: BLE001 - advisory only; never fail a commit over it
             self.logger.warning("nesting check failed; committing without it", exc_info=True)
             return None
-        if advisory is not None:
+        advisory, invalid = found or (None, False)
+        if invalid:
             self.invalid_comparison = advisory
         elif valid or is_new_best:
             self.invalid_comparison = None
@@ -1653,8 +1663,8 @@ class PetabSession:
                 )
             # Is this variant actually NESTED in the version it will be compared against? Must run
             # BEFORE _snapshot_version, while provenance.current_version is still the parent. The
-            # Antimony is serialized once and handed to both the check (which diffs parameter
-            # references against the parent's model.ant) and the snapshot.
+            # Antimony is serialized once and handed to both the check (which diffs it against the
+            # parent's model.ant) and the snapshot.
             child_model_ant = self.model.to_antimony()
             nesting_advisory = self._check_nesting_vs_parent(
                 fitsim, child_model_ant, is_new_best=bool(improvement.get("is_new_best"))
