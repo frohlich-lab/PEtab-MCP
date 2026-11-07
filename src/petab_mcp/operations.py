@@ -669,7 +669,7 @@ def set_model(
             "loop no model can hold."
             + (
                 f" {readout!r} is not a parameter to scale: it is what the assay measures of the "
-                f"model's state, `{readout} := <expression of your species>`."
+                "model's state, so its rule reads your species, never itself."
                 if readout
                 else ""
             )

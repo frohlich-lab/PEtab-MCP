@@ -301,6 +301,7 @@ def test_a_readout_that_reads_itself_is_refused_with_what_a_readout_is(blinded, 
     res = _call(mcp, "make_changes", {**route, "justification": "scale the readout"})
     assert res["applied"] is False
     assert "'readout_B' is not a parameter to scale" in res["error"]
+    assert ":=" not in res["error"], "the hint must not offer a statement to send to an op"
     assert _call(mcp, "describe_problem")["model_authored"] is False
 
 
