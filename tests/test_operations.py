@@ -784,3 +784,54 @@ def test_a_control_character_in_a_prefix_or_row_is_named():
     with pytest.raises(OperationError, match=r"`row` 'r2\\r: A becomes B' holds the control"):
         O.apply_statement_edits(_RECORD, [{"op": "add_row", "row": "r2\r: A becomes B",
                                            "binding": "mass_action"}])
+
+
+# -- a name the parent defined, used but defined nowhere (#264) ------------------------------
+_GLI = ["gli_on: B => GliS; k3*B;", "gli_read: A => B; k4*GliS*A;"]
+
+
+def _commit(session):
+    """Snapshot the working model as a version, as a fit would; its number."""
+    return session.provenance.snapshot_version(
+        session.model.to_antimony(), session.problem.parameter_df
+    )
+
+
+def _orphaned(result):
+    return [m["message"] for m in result["messages"] if "defined nowhere" in m["message"]]
+
+
+def test_a_name_the_parent_defined_is_named_when_an_edit_mints_it(session):
+    """fontaine 5 v7: `gli_on` was changed to make `GliF` while a rate law still read `GliS`, and
+    `GliS` became an estimated constant (fitted to 53.5, 140 nll worse) with no warning
+    (PEtab-MCP#264). `k_new`, a new name a rate law reads, is a new rate constant: not named."""
+    _set_model(session, _GLI)
+    v = _commit(session)
+    result = _set_model(
+        session,
+        [
+            "gli_on: B => GliF; k3*B;",
+            "gli_read: A => B; k4*GliS*A;",
+            "gli_off: GliF => ; k_new*GliF;",
+        ],
+    )
+    assert {"GliS", "k_new"} <= set(result["parameter_diff"]["added"])
+    assert _orphaned(result) == [
+        "`GliS` is used but defined nowhere; it was created as an estimated parameter. Version "
+        f"{v} had it as a species: define it again, or read the name that replaced it."
+    ]
+
+
+def test_a_fork_is_checked_against_the_version_it_forks(session):
+    """A `base_version` fork changes that version, not HEAD: `GliS` is a species of the forked
+    version only, and `k4`, a parameter there, is no definition this warning names (#264)."""
+    _set_model(session, _GLI)
+    v = _commit(session)
+    _set_model(session)
+    _commit(session)
+    session.derived_from = v
+    result = _set_model(session, ["gli_read: A => B; k4*GliS*A;"])
+    assert _orphaned(result) == [
+        "`GliS` is used but defined nowhere; it was created as an estimated parameter. Version "
+        f"{v} had it as a species: define it again, or read the name that replaced it."
+    ]

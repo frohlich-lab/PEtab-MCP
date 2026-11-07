@@ -863,7 +863,8 @@ def test_an_unassigned_parameter_is_seeded_not_exported_empty():
     from petab_mcp.problem import LOG10, PARAMETER_SCALE
 
     prob = _bare_problem(_UNASSIGNED)
-    R.reconcile(prob)
+    # Named for operations._orphan_warnings (#264); `k_third`'s assignment is its value.
+    assert R.reconcile(prob)["parameters"]["seeded"] == ["k_deg", "n"]
     row = prob.parameter_df.loc["k_deg"]
     assert (row[NOMINAL_VALUE], row[PARAMETER_SCALE]) == (R.SEED_INITIAL_VALUE, LOG10)
     assert bool(row[ESTIMATE])
@@ -890,7 +891,7 @@ def test_an_unassigned_parameter_takes_its_rows_nominal():
     shipped.loc["n", NOMINAL_VALUE] = 2.0
     prob.parameter_df = prob.parameter_df.drop(index="n")
     prob.model = SbmlModel.from_antimony(_UNASSIGNED)
-    R.reconcile(prob, shipped=shipped)
+    assert R.reconcile(prob, shipped=shipped)["parameters"]["seeded"] == []  # a row is a definition
     sm = prob.model.sbml_model
     assert (sm.getParameter("k_deg").getValue(), sm.getParameter("n").getValue()) == (0.0019, 2.0)
     assert prob.parameter_df.loc["k_deg", NOMINAL_VALUE] == 0.0019

@@ -436,14 +436,24 @@ def _first_period_only_issues(problem) -> list[dict[str, Any]]:
 
 def _unread_input_issues(problem) -> list[dict[str, Any]]:
     """One warning naming each condition target the model declares and nothing reads: no rate,
-    rule, event, initial amount or observable, so no period's value reaches the model. libpetab's
-    invalid-target check passes it, as the target is declared; the reconcile leaves it so when it
-    prunes the seed whose initial amount read it (PEtab-MCP#205)."""
+    event, initial amount or observable, directly or through the assignment rules they read, so no
+    period's value reaches the model. libpetab's invalid-target check passes it, as the target is
+    declared; the reconcile leaves it so when it prunes the seed whose initial amount read it
+    (PEtab-MCP#205), and an edit when it drops the last reader of a rule that reads it
+    (PEtab-MCP#264)."""
     sm = getattr(problem.model, "sbml_model", None)
     if sm is None:
         return []
     declared = parameter_ids(sm) | species_ids(sm)
-    read = _model_math_names(sm) | _reaction_species(sm) | _observable_and_measurement_symbols(problem)
+    rules = {r.getVariable(): _ast_names(r.getMath()) for r in sm.getListOfRules() if r.isAssignment()}
+    read = (
+        _model_math_names(sm, assignments=False)
+        | _reaction_species(sm)
+        | _observable_and_measurement_symbols(problem)
+    )
+    while reached := read & rules.keys():
+        for target in reached:
+            read |= rules.pop(target)
     unread = sorted((condition_target_symbols(problem) & declared) - read)
     if not unread:
         return []
@@ -452,7 +462,8 @@ def _unread_input_issues(problem) -> list[dict[str, Any]]:
             "level": "warning",
             "message": (
                 f"condition target(s) {', '.join(f'`{t}`' for t in unread)} are read by nothing "
-                f"in the model, so the model never sees their value. For each, {INPUT_REMEDY}"
+                "in the model, or only by assignment rules nothing reads, so the model never sees "
+                f"their value. For each, {INPUT_REMEDY}"
             ),
             "check": "input_unread",
         }

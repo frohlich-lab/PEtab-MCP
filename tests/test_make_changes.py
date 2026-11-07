@@ -1759,8 +1759,9 @@ def test_a_seed_nothing_reads_names_the_input_it_leaves_unread(
     assert bool(removed) == pruned
     assert all(re.fullmatch(r"Removed species nothing in the model reads, with their initial "
                             r"amounts: `Serum\(\)` \(`__s\d+`\)\.", m) for m in removed)
-    assert any(m.startswith("condition target(s) `EGF` are read by nothing in the model, so the "
-                            "model never sees their value. For each, read it as") for m in said)
+    assert any(m.startswith("condition target(s) `EGF` are read by nothing in the model, or only "
+                            "by assignment rules nothing reads, so the model never sees their "
+                            "value. For each, read it as") for m in said)
 
 
 def test_a_seed_at_an_input_a_row_reads_is_neither_removed_nor_unread(tmp_path, add_condition):
