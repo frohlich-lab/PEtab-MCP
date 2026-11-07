@@ -50,7 +50,11 @@ dependencies = [
     # problem that does not lint (every benchmark problem is, until its agent writes the model),
     # petab1to2's own rescaling of log10 noise onto log-normal (#535), and the SciML extension
     # (`petab.v2.extensions.sciml`), which the harness's neural route stages its problems in.
-    "petab>=0.10.0",
+    # At PEtab-dev/libpetab-python#579, on top of 0.10.0, until a release has it: the PR keeps
+    # per-experiment constants in the condition table, where `ExperimentsToSbmlConverter` made
+    # each a piecewise initial assignment with a branch per experiment, which kept
+    # Froehlich_CellSystems2018 (9169 experiments) from importing. Back to a floor once released.
+    "petab @ git+https://github.com/PEtab-dev/libpetab-python.git@08a13908b060dd605df09f3a58c65ac01464520b",
     "python-libsbml>=5.19",
     # Floored at 3.2 because `validation.frozen_parametric_stoichiometry_issues` is now the ONLY
     # guard against a symbolic reaction stoichiometry (issue frohlich-lab/petab_mcp#89). Below
