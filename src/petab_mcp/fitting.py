@@ -1343,6 +1343,18 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
         # `A/(A + B)` with both starting at 0, measured at t=0). The plain objective drops such a
         # point and stays finite; the hierarchical one, which solves the noise from every residual,
         # is non-finite at every start. Named, with the readout.
+        #
+        # Before that, a rule or rate that is not a number where a simulation starts: that
+        # simulation fails at its first step, and every point it was to give with it.
+        try:
+            start = _undefined_at_start(session) if objective_before is None else ""
+        except Exception:  # noqa: BLE001 - a model it cannot evaluate keeps the messages below
+            start = ""
+        if start:
+            raise ModelUpdateError(
+                "the fit produced NO usable optimum: every multistart failed, because "
+                f"{start}, so the simulation cannot start. Write it so it is a number there."
+            )
         undefined = _undefined_points(session, before.get("simulations") or [])
         if undefined:
             raise ModelUpdateError(
@@ -1437,7 +1449,9 @@ def _undefined_points(session, records: list[dict[str, Any]]) -> str:
     """The measured points a simulation that otherwise ran leaves without a value, by observable,
     with the readout each reads; ``""`` when there are none, or when nothing simulated at all (an
     integration failure, a different cause)."""
-    missing = [r for r in records if r.get("measurement") is not None and r.get("simulation") is None]
+    missing = [
+        r for r in records if r.get("measurement") is not None and r.get("simulation") is None
+    ]
     if not missing or len(missing) == len(records):
         return ""
     import libsbml
@@ -1463,6 +1477,174 @@ def _undefined_points(session, records: list[dict[str, Any]]) -> str:
                     reads += f"; it reads `{name} := {rules[name]}`"
         parts.append(f"`{obs_id}` at {shown}{reads}")
     return "; ".join(parts)
+
+
+def _undefined_at_start(session) -> str:
+    """The first rate, or rule a rate reads, that is NaN or infinite where a simulation starts,
+    with where and the symbols in it that are 0 or not finite; ``""`` when there is none.
+
+    A simulation starts at t=0 of an experiment's first period, its pre-equilibration where it has
+    one. The values there are the model's own initial ones, the table's nominal values and that
+    period's condition targets, which the PEtab v2 import sets as initial assignments. The math is
+    parsed by sbmlmath with the settings AMICI's SBML import uses, and an assignment rule is
+    evaluated apart from the rates that read it, as AMICI compiles it: ``R/R`` is 1, and
+    ``EGF/(EGF + kpE*P2dose)`` with both inputs at 0 is NaN. A rule no rate reads (a readout) is
+    left out, since no simulation evaluates it before its first output.
+    """
+    import libsbml
+    import numpy as np
+    import pandas as pd
+    import sympy as sp
+    from petab.v2.C import CONDITION_ID, TARGET_ID, TARGET_VALUE, TIME, TIME_PREEQUILIBRATION
+    from petab.v2.math import sympify_petab
+    from sbmlmath import SBMLMathMLParser, TimeSymbol
+
+    problem = session.problem
+    sm = getattr(problem.model, "sbml_model", None)
+    if sm is None:
+        return ""
+    edf, cdf = problem.experiment_df, problem.condition_df
+    changes = {}
+    if cdf is not None and len(cdf):
+        changes = {
+            str(cid): dict(zip(sub[TARGET_ID], sub[TARGET_VALUE]))
+            for cid, sub in cdf.groupby(CONDITION_ID, sort=False)
+        }
+    # Each distinct first period of a measured experiment, by how the message names it.
+    starts: dict[str, dict[str, Any]] = {}
+    for eid in sorted(set(problem.measurement_df[EXPERIMENT_ID])):
+        periods = edf[edf[EXPERIMENT_ID] == eid] if eid and edf is not None else None
+        if periods is None or not len(periods):
+            starts["a simulation with no condition"] = {}
+            continue
+        times = periods[TIME].astype(float)
+        cids = sorted(str(c) for c in periods.loc[times == times.min(), CONDITION_ID].dropna())
+        where = f"condition {', '.join(f'`{c}`' for c in cids)}" if cids else "no condition"
+        if times.min() == TIME_PREEQUILIBRATION:
+            where = f"the pre-equilibration under {where}"
+        starts[where] = {k: v for c in cids for k, v in changes.get(c, {}).items()}
+    n = len(starts)
+
+    # Evaluated on a copy with the function definitions expanded; named as written in `sm`.
+    doc = sm.getSBMLDocument().clone()
+    expand = libsbml.ConversionProperties()
+    expand.addOption("expandFunctionDefinitions", True)
+    doc.convert(expand)
+    model = doc.getModel()
+    level, version = model.getLevel(), model.getVersion()
+    parser = SBMLMathMLParser(
+        sbml_level=level,
+        sbml_version=version,
+        symbol_kwargs={"real": True},
+        ignore_units=True,
+        evaluate=True,
+    )
+    namespaces = libsbml.SBMLNamespaces(level, version)
+
+    def parse(math):
+        return parser.parse_str(libsbml.writeMathMLWithNamespaceToString(math, namespaces))
+
+    initial = {c.getId(): c.getSize() for c in model.getListOfCompartments() if c.isSetSize()}
+    initial.update((p.getId(), p.getValue()) for p in model.getListOfParameters() if p.isSetValue())
+    for s in model.getListOfSpecies():
+        if s.isSetInitialConcentration():
+            initial[s.getId()] = s.getInitialConcentration()
+        elif s.isSetInitialAmount():
+            size = 1.0 if s.getHasOnlySubstanceUnits() else initial.get(s.getCompartment(), 1.0)
+            initial[s.getId()] = s.getInitialAmount() / size
+    nominal = pd.to_numeric(problem.parameter_df[NOMINAL_VALUE], errors="coerce")
+    initial.update((str(p), float(v)) for p, v in nominal.items() if np.isfinite(v))
+    values = {k: np.full(n, float(v)) for k, v in initial.items()}
+
+    # What defines each symbol at the start, in the groups of starts it holds for; a later entry
+    # wins: a condition target over the model's initial assignment, a rule over both.
+    everywhere = np.ones(n, dtype=bool)
+    defs = {
+        a.getSymbol(): [(everywhere, parse(a.getMath()))]
+        for a in model.getListOfInitialAssignments()
+    }
+    masks: dict[tuple[str, str], Any] = {}
+    for g, targets in enumerate(starts.values()):
+        for target, value in targets.items():
+            masks.setdefault((str(target), str(value)), np.zeros(n, dtype=bool))[g] = True
+    for (target, value), mask in masks.items():
+        defs.setdefault(target, []).append((mask, sympify_petab(value)))
+    rules = {
+        r.getVariable(): parse(r.getMath()) for r in model.getListOfRules() if r.isAssignment()
+    }
+    defs.update((x, [(everywhere, e)]) for x, e in rules.items())
+
+    def known(expr) -> bool:
+        return all(
+            isinstance(s, TimeSymbol) or (s.name in values and s.name not in pending)
+            for s in expr.free_symbols
+        )
+
+    def evaluate(expr):
+        symbols = sorted(expr.free_symbols, key=str)
+        f = sp.lambdify(symbols, expr, "numpy", dummify=True)
+        with np.errstate(all="ignore"):
+            out = f(
+                *(np.zeros(n) if isinstance(s, TimeSymbol) else values[s.name] for s in symbols)
+            )
+        return np.broadcast_to(np.asarray(out, dtype=float), (n,))
+
+    pending, order = dict(defs), []
+    while ready := [x for x, d in pending.items() if all(known(e) for _, e in d)]:
+        for x in ready:
+            value = values.get(x, np.full(n, np.nan)).copy()
+            for mask, expr in pending.pop(x):
+                value[mask] = evaluate(expr)[mask]
+            values[x] = value
+            order.append(x)
+
+    def text(math) -> str:
+        return libsbml.formulaToL3String(math)
+
+    rates = [
+        (
+            f"the rate of `{r.getId()}` (`{text(sm.getReaction(r.getId()).getKineticLaw().getMath())}`)",
+            parse(r.getKineticLaw().getMath()),
+        )
+        for r in model.getListOfReactions()
+        if r.isSetKineticLaw()
+    ] + [
+        (
+            f"`{r.getVariable()}' = {text(sm.getRule(r.getVariable()).getMath())}`",
+            parse(r.getMath()),
+        )
+        for r in model.getListOfRules()
+        if r.isRate()
+    ]
+    # The rules the rates read, through other rules.
+    read, stack = set(), [s.name for _, e in rates for s in e.free_symbols]
+    while stack:
+        x = stack.pop()
+        if x not in read:
+            read.add(x)
+            if x in rules:
+                stack.extend(s.name for s in rules[x].free_symbols)
+    ruled = [
+        (f"`{x} := {text(sm.getRule(x).getMath())}`", rules[x])
+        for x in order
+        if x in rules and x in read
+    ]
+    for label, expr in ruled + rates:
+        if not known(expr):
+            continue
+        result = evaluate(expr)
+        if np.isfinite(result).all():
+            continue
+        g = int(np.argmin(np.isfinite(result)))
+        at = [
+            f"{s} = {values[s][g]:g}"
+            for s in sorted(s.name for s in expr.free_symbols if s.name in values)
+            if values[s][g] == 0 or not np.isfinite(values[s][g])
+        ]
+        kind = "NaN" if np.isnan(result[g]) else "infinite"
+        where = f", where {' and '.join(at)}" if at else ""
+        return f"{label} is {kind} at the start of {list(starts)[g]}{where}"
+    return ""
 
 
 def _reconcile_objective(

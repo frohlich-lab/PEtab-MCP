@@ -550,3 +550,70 @@ def test_overrides_that_vary_only_across_conditions_are_taken_natively():
         ]
     )
     assert needs_flattening(_problem(mdf)) is False
+
+
+_STARTS = """model lun
+  species R = 1;
+  EGF = 0; P2dose = 0; kpE = 1; k = 1;
+  EGFdrive := EGF/(EGF + kpE*P2dose)
+  J1: R -> ; k*EGFdrive*R
+{extra}end
+"""
+
+
+def _starting(p2dose_preeq, extra=""):
+    """A session pre-equilibrating with ``EGF`` at 0 and ``P2dose`` at ``p2dose_preeq``."""
+    import types
+
+    import pandas as pd
+    from petab.v2.models.sbml_model import SbmlModel
+
+    return types.SimpleNamespace(
+        problem=types.SimpleNamespace(
+            model=SbmlModel.from_antimony(_STARTS.format(extra=extra), model_id="lun"),
+            condition_df=pd.DataFrame(
+                {
+                    "conditionId": ["preeq", "preeq", "stim"],
+                    "targetId": ["EGF", "P2dose", "EGF"],
+                    "targetValue": [0.0, p2dose_preeq, 10.0],
+                }
+            ),
+            experiment_df=pd.DataFrame(
+                {
+                    "experimentId": ["e1", "e1"],
+                    "time": [float("-inf"), 0.0],
+                    "conditionId": ["preeq", "stim"],
+                }
+            ),
+            measurement_df=pd.DataFrame({"experimentId": ["e1"]}),
+            parameter_df=pd.DataFrame(
+                {"nominalValue": [2.0]}, index=pd.Index(["kpE"], name="parameterId")
+            ),
+        )
+    )
+
+
+def test_a_rule_a_rate_reads_that_is_0_over_0_where_the_simulation_starts_is_named():
+    """lun 13 (sweep 63372750): `EGFdrive := EGF/(EGF + kpE*P2dose)` was 0/0 at
+    pre-equilibration, where both inputs are 0. Every start failed, the refusal named two other
+    causes, and the agent took three failed fits and a bisection to find it (PEtab-MCP#266)."""
+    assert fitting._undefined_at_start(_starting(0.0)) == (
+        "`EGFdrive := EGF / (EGF + kpE * P2dose)` is NaN at the start of the pre-equilibration "
+        "under condition `preeq`, where EGF = 0 and P2dose = 0"
+    )
+    # A rate law, named by its reaction.
+    assert fitting._undefined_at_start(
+        _starting(1.0, extra="  Kd = 0;\n  J2: R -> ; k*R/Kd\n")
+    ) == (
+        "the rate of `J2` (`k * R / Kd`) is infinite at the start of the pre-equilibration under "
+        "condition `preeq`, where Kd = 0"
+    )
+
+
+def test_nothing_is_named_where_every_rate_starts_as_a_number():
+    """With a dose at pre-equilibration nothing is 0/0, so the refusal keeps its two causes. A
+    readout no rate reads is not named either: 0/0 before the system has run fails no
+    simulation."""
+    assert fitting._undefined_at_start(_starting(1.0)) == ""
+    readout = "  pR = 0;\n  ratio := pR/(pR + EGF)\n"
+    assert fitting._undefined_at_start(_starting(1.0, extra=readout)) == ""
