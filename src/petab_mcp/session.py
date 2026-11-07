@@ -1743,6 +1743,16 @@ class PetabSession:
             if fitsim.get("status") == "fit":
                 self.record_fit_progress(version, fitsim, improvement)
 
+        block = fitting.fit_result_block(
+            fitsim,
+            improvement,
+            self.problem.parameter_df,
+            problem=self.problem,
+            criterion=self.criterion,
+        )
+        # The fit's note on its own score goes to `messages` (see :mod:`messages`), not a field.
+        if note := block.pop("objective_note", None):
+            warnings = [*warnings, note]
         return {
             "committed": True,
             "version": version,
@@ -1757,17 +1767,7 @@ class PetabSession:
             # this key rides on every fit and is re-sent in the agent's history each turn
             # (PR #23), so it is one line only when there is something to say.
             **({"nesting_advisory": nesting_advisory} if nesting_advisory else {}),
-            **fitting.slim_fit_payload(
-                self,
-                fitting.fit_result_block(
-                    fitsim,
-                    improvement,
-                    self.problem.parameter_df,
-                    problem=self.problem,
-                    criterion=self.criterion,
-                ),
-                version=version,
-            ),
+            **fitting.slim_fit_payload(self, block, version=version),
         }
 
     def _fit_noop_result(

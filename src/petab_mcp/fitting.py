@@ -1432,9 +1432,9 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
 
 
 #: Relative gap between the optimizer's objective and the re-simulated one above which the
-#: two are reported as disagreeing. Both evaluate the same likelihood at the same parameters,
-#: so anything past a loose numerical tolerance means the two evaluations differ in substance
-#: (solver settings, or a parameter that did not round-trip), not in rounding.
+#: two disagree and the fit is not scored (see :func:`_reconcile_objective`). Both evaluate the
+#: same likelihood at the same parameters the same way, so anything past a loose numerical
+#: tolerance means the two evaluations differ in substance, not in rounding.
 OBJECTIVE_AGREEMENT_RTOL = 1e-3
 
 
@@ -1517,55 +1517,46 @@ def _non_finite(session, rdatas) -> str:
 def _reconcile_objective(
     session, fit: dict[str, Any] | None, sim: dict[str, Any]
 ) -> tuple[float | None, str | None]:
-    """Pick the authoritative neg-log-likelihood for a fit, returning ``(nllh, note)``.
+    """The neg-log-likelihood a pass is scored on, and a note when a fit has none: ``(nllh,
+    note)``.
 
-    Two numbers claim to be "the" nll of a fitted model: the objective pyPESTO minimised
-    (``fit["neg_log_likelihood"]``, its best start's ``fval``) and the one obtained by
-    re-simulating at the written-back parameters (``sim["neg_log_likelihood"]``). They are
-    the same quantity at the same point and normally agree — but not always: the
-    re-simulation goes through :meth:`AmiciEngine.residuals`, whose ``simulate_petab`` call
-    uses AMICI's default solver settings rather than the ones pyPESTO's objective was
-    configured with. At a stiff optimum (parameters pinned at their bounds) the default
-    solver can fail to integrate the full time course where the optimizer's succeeded,
-    yielding a NaN llh for a fit that in fact converged.
+    A fit is scored on the objective pyPESTO minimised (``fit["neg_log_likelihood"]``, its best
+    start's ``fval``) only where re-simulating the written-back point (``sim``) reproduces it.
+    The re-simulation evaluates the same objective at the same point the same way, gradient
+    included (see :meth:`engine.AmiciEngine._objective_evaluate`), so a gap, or a value only one
+    side has, means one of the two evaluations is wrong, and nothing here says which. The fit is
+    then not scored: ``None``, which no gate ranks (see :func:`compute_improvement`). Scoring it
+    on the optimizer's value ranked a model on a number nothing reproduced, beside a ``chi2``
+    from the re-simulation that contradicted it, and its agent refit it for 116 min into the same
+    gap (#265).
 
-    Taking the re-simulated value unconditionally — as this did — meant a converged fit
-    could be recorded as NaN, which then propagated into a NaN BIC and, via
-    :meth:`session.record_fit_progress`, into a best-BIC checkpoint that no later fit could
-    ever beat (NaN comparisons are always False). So the optimizer's value wins whenever it
-    is finite: it is what was actually optimised, and it is defined over the complete
-    dataset. The re-simulated value is kept in the payload either way, and a disagreement
-    is surfaced as a note rather than silently resolved.
-
-    A simulate-only pass (no fit) has only the simulated value, which is then authoritative.
+    A pass with no fit has only the simulated value, which is then its score.
     """
     nll_sim = _flt(sim.get("neg_log_likelihood"))
     if fit is None:
         return nll_sim, None
     nll_opt = _flt(fit.get("neg_log_likelihood"))
-    n_missing = sim.get("n_missing_simulations") or 0
+    if nll_opt is not None and nll_sim is not None and not _disagree(nll_opt, nll_sim):
+        return nll_opt, None
     if nll_opt is None:
-        # The optimizer itself has no usable objective (every start non-finite). Nothing to
-        # prefer; the fit genuinely failed to produce a score.
-        return nll_sim, ("optimizer returned no finite objective" if nll_sim is None else None)
-    if nll_sim is None:
+        note = "This fit is not scored: the optimizer reached no finite objective."
+    elif nll_sim is None:
         note = (
-            f"re-simulating the fitted point did not reach {n_missing} of "
-            f"{sim.get('n_expected_points')} measured points, so its likelihood is "
-            f"undefined; reporting the optimizer's objective ({_fmt(nll_opt)}) instead. "
-            "The fit converged — this is a solver/integration gap at the optimum, not a "
-            "failed fit."
+            f"This fit is not scored: re-simulating its optimum leaves "
+            f"{sim.get('n_missing_simulations')} of {sim.get('n_expected_points')} measured points "
+            f"without a value, so its likelihood is undefined there, and the optimizer's "
+            f"{_fmt(nll_opt)} counts only the points that simulated. Make the model reach every "
+            "measured point with a defined readout."
         )
-        session.logger.warning("fit: %s", note)
-        return nll_opt, note
-    if _disagree(nll_opt, nll_sim):
+    else:
         note = (
-            f"optimizer objective {_fmt(nll_opt)} disagrees with the re-simulated "
-            f"{_fmt(nll_sim)} at the same parameters; reporting the optimizer's."
+            f"This fit is not scored: the optimizer reached {_fmt(nll_opt)}, but re-simulating "
+            f"its optimum gives {_fmt(nll_sim)} at the same parameters. That is a fault in how the "
+            "server evaluates this model, not a verdict on it, and a refit returns the same gap: "
+            "make a different change."
         )
-        session.logger.warning("fit: %s", note)
-        return nll_opt, note
-    return nll_opt, None
+    session.logger.warning("fit: %s", note)
+    return None, note
 
 
 def _disagree(expected: float, nll: float) -> bool:
@@ -1627,8 +1618,9 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
                 fit["record"].x_free,
                 k=complexity_k({"n_estimated": n_estimated, "hardcoded_constants": constants}),
             )
-        # A pass with no fit scores the table's sigmas and scalings as they stand.
-        sim = engine.residuals(solve_inner=do_fit)
+        # A pass with no fit scores the table's sigmas and scalings as they stand; a fit's point
+        # is re-scored as its optimizer scored it, gradient included.
+        sim = engine.residuals(solve_inner=do_fit, gradient=do_fit)
         records = sim["records"]
         nllh, nll_note = _reconcile_objective(session, fit, sim)
         if fit is None:
@@ -1657,15 +1649,16 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
             # ...and the count the data actually see, which is what TIC charges for. Otherwise
             # not agent-facing: fit_result_block and goodness_of_fit deliberately do not copy it.
             "k_eff": k_eff,
-            # The OPTIMIZER's objective at its best start when that is available (see
-            # _reconcile_objective) — the quantity actually minimised, and the one every
-            # downstream score (bic, is_new_best, a client's own scoring) must agree with.
+            # The OPTIMIZER's objective at its best start where the re-simulation reproduces it,
+            # else None (see _reconcile_objective) — the quantity actually minimised, and the one
+            # every downstream score (bic, is_new_best, a client's own scoring) must agree with.
             "neg_log_likelihood": nllh,
             # What re-simulating the fitted point produced, kept alongside so a
             # disagreement between the two stays visible rather than silently resolved.
             "neg_log_likelihood_simulated": sim["neg_log_likelihood"],
             "objective_note": nll_note,
-            "chi2": sim["chi2"],
+            # None on a fit left unscored, as `neg_log_likelihood` is.
+            "chi2": None if fit is not None and nllh is None else sim["chi2"],
             "n_data_points": sim["n_data_points"],
             "n_missing_simulations": sim.get("n_missing_simulations"),
             # Per-start exit histogram, set HERE rather than bridged from `session.optimization`
