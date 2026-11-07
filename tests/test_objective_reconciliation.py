@@ -1,17 +1,12 @@
 """Unit tests for :func:`petab_mcp.fitting._reconcile_objective`.
 
 Two numbers claim to be "the" neg-log-likelihood of a fitted model: the objective pyPESTO
-minimised, and the one obtained by re-simulating at the written-back parameters. They are the
-same quantity at the same point, but they are produced by different code paths — the
-re-simulation goes through ``simulate_petab`` with AMICI's default solver settings rather than
-the ones pyPESTO's objective was built with — so they can disagree, and at a stiff optimum the
-re-simulation can fail outright while the fit itself converged.
-
-Regression for the session where exactly that happened: pyPESTO reported
-``best value: 266.62`` over 50 starts ("Converged according to fval difference"), the
-re-simulation failed to integrate past t=22, and the fit's likelihood was recorded as
-NaN — which then poisoned the best-BIC checkpoint (see test_early_stop.py) and cost the session
-its score. This is pure bookkeeping over two payloads, so no AMICI/pyPESTO fit is needed.
+minimised, and the one obtained by re-simulating at the written-back parameters. The
+re-simulation evaluates the same objective the same way, gradient included, so they agree, and a
+fit is scored only where they do. Where they do not, it is committed unscored, and its note says
+why: scoring it on the optimizer's value ranked lun's v3 on a number its re-simulation put 18%
+higher, and its agent refit it for 116 min into the same gap (#265). This is pure bookkeeping over
+two payloads, so no AMICI/pyPESTO fit is needed.
 """
 
 from __future__ import annotations
@@ -49,56 +44,50 @@ def _sim(nll, *, missing=0, expected=21):
     }
 
 
-def test_optimizer_value_wins_when_resimulation_fails(sess):
-    """The lost-score case: a converged fit whose re-simulation could not be evaluated."""
-    nllh, note = fitting._reconcile_objective(
-        sess, {"neg_log_likelihood": 266.6246503480759}, _sim(float("nan"), missing=5)
-    )
-    assert nllh == pytest.approx(266.6246503480759)
-    assert note is not None
-    assert "5 of 21" in note
-    # The score must now be a real, comparable BIC rather than NaN.
-    bic = fitting.goodness_of_fit(nllh, None, 10, 21)["bic"]
-    assert bic == pytest.approx(563.69, abs=0.01)
-
-
-def test_agreeing_values_produce_no_note(sess):
+def test_agreeing_values_score_the_optimizers(sess):
     nllh, note = fitting._reconcile_objective(
         sess, {"neg_log_likelihood": 250.0}, _sim(250.0 + 1e-9)
     )
-    assert nllh == pytest.approx(250.0)
+    assert nllh == 250.0
     assert note is None
 
 
-def test_material_disagreement_is_surfaced_not_hidden(sess):
-    """Both finite but materially different: keep the optimizer's, and say so."""
-    nllh, note = fitting._reconcile_objective(sess, {"neg_log_likelihood": 250.0}, _sim(311.0))
-    assert nllh == pytest.approx(250.0)
-    assert note is not None and "disagrees" in note
+def test_a_persistent_gap_leaves_the_fit_unscored(sess):
+    """lun 10 v3's numbers: neither value is the score, and the note names both."""
+    nllh, note = fitting._reconcile_objective(
+        sess, {"neg_log_likelihood": 2426.61}, _sim(2857.15, expected=2700)
+    )
+    assert nllh is None
+    assert "not scored" in note and "2426.61" in note and "2857.15" in note
+    imp = fitting.compute_improvement(
+        sess, nllh, fitsim={"neg_log_likelihood": nllh, "n_data_points": 2700, "n_estimated": 10}
+    )
+    assert imp["criterion_value"] is None and imp["is_new_best"] is False
+
+
+def test_a_resimulation_with_no_value_leaves_the_fit_unscored(sess):
+    """Not the optimizer's value: it can count only the points that simulated (pyPESTO#1794)."""
+    nllh, note = fitting._reconcile_objective(
+        sess, {"neg_log_likelihood": 266.62}, _sim(float("nan"), missing=5)
+    )
+    assert nllh is None
+    assert "not scored" in note and "5 of 21" in note
+
+
+@pytest.mark.parametrize("nll_sim", [float("nan"), 263.28])
+def test_an_optimizer_with_no_finite_objective_leaves_the_fit_unscored(sess, nll_sim):
+    nllh, note = fitting._reconcile_objective(
+        sess, {"neg_log_likelihood": float("inf")}, _sim(nll_sim, missing=21)
+    )
+    assert nllh is None
+    assert "no finite objective" in note
 
 
 def test_simulate_only_pass_uses_the_simulated_value(sess):
-    """No fit ran (rollback restore / n_starts=0), so there is no optimizer value to prefer."""
+    """No fit ran (rollback restore / n_starts=0), so there is no optimizer value to compare."""
     nllh, note = fitting._reconcile_objective(sess, None, _sim(263.28))
     assert nllh == pytest.approx(263.28)
     assert note is None
-
-
-def test_no_finite_objective_anywhere_stays_unscored(sess):
-    """A genuinely failed fit must NOT be rescued into a fake number."""
-    nllh, note = fitting._reconcile_objective(
-        sess, {"neg_log_likelihood": float("nan")}, _sim(float("nan"), missing=21)
-    )
-    assert nllh is None
-    assert note is not None and "no finite objective" in note
-
-
-def test_optimizer_nan_but_resimulation_fine(sess):
-    """Symmetric case: trust the value that exists rather than the one that doesn't."""
-    nllh, note = fitting._reconcile_objective(
-        sess, {"neg_log_likelihood": float("inf")}, _sim(263.28)
-    )
-    assert nllh == pytest.approx(263.28)
 
 
 def test_missing_pre_fit_objective_does_not_abort_the_fit(sess):

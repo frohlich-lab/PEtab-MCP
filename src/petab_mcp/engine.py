@@ -271,19 +271,25 @@ class AmiciEngine:
             out.extend(float(v) for v in r)
         return out or None
 
-    def _objective_evaluate(self, solve_inner: bool = True):
+    def _objective_evaluate(self, solve_inner: bool = True, gradient: bool = False):
         """``(nllh, records, res)`` from the pyPESTO objective at the current nominal values.
         ``solve_inner`` (the fit's objective) solves the noise sigmas and observable scalings at
         every evaluation instead of reading them; ``solve_inner=False`` evaluates at the table's
-        own values. See :func:`fitting.estimation_problem`.
+        own values. See :func:`fitting.estimation_problem`. ``gradient`` evaluates it with its
+        gradient, as the fit's optimizer does.
 
         The single evaluation path for "what is this model's likelihood". It deliberately does
         NOT build a second AMICI model with its own default-configured solver (as a direct
         ``simulate_petab`` call would): evaluating the likelihood there while the fit evaluated
         it through pyPESTO's objective is what let the two disagree — a converged fit could be
-        recorded as NaN because the *other* path failed to integrate its optimum. Here the
-        number the fit minimised and the number reported for it are produced by the same
-        objective, so they cannot drift.
+        recorded as NaN because the *other* path failed to integrate its optimum.
+
+        The same objective still gives two values at one point when one evaluation has the
+        gradient and the other has not. With sensitivities, AMICI integrates a pre- or
+        post-equilibration until they have converged as well as the states (its
+        ``sensi_steady_state_check``), so a slow mode leaves the steady state reached without
+        them short of the one the optimizer scored: a pre-equilibrated toy re-scored 6% worse
+        that way (#265). Hence ``gradient`` on the re-scoring of a fit.
 
         Per-point records still come from AMICI's ``ReturnData``: pyPESTO hands them back when
         the objective is called with ``return_dict=True`` (it switches AMICI to full reporting),
@@ -295,7 +301,7 @@ class AmiciEngine:
 
         problem, _ = fitting.estimation_problem(self.session, self, solve_inner=solve_inner)
         x = fitting.problem_x_from_nominal(problem, self.session.problem.parameter_df)
-        ret = problem.objective(x, sensi_orders=(0,), return_dict=True)
+        ret = problem.objective(x, sensi_orders=(0, 1) if gradient else (0,), return_dict=True)
         rdatas = ret[RDATAS]
         # pyPESTO's fval IS the negative log-likelihood it minimises.
         nllh = finite_float(ret[FVAL])
@@ -324,9 +330,9 @@ class AmiciEngine:
             "simulations": records,
         }
 
-    def residuals(self, solve_inner: bool = True) -> dict[str, Any]:
+    def residuals(self, solve_inner: bool = True, gradient: bool = False) -> dict[str, Any]:
         """Per-point residuals (raw + noise-weighted) with an objective summary; ``solve_inner``
-        as in :meth:`_objective_evaluate`.
+        and ``gradient`` as in :meth:`_objective_evaluate`.
 
         This is the data source for fit inspection: every measurement point is
         returned with its ``residual`` (natural units), noise-weighted
@@ -335,7 +341,7 @@ class AmiciEngine:
         :mod:`petab_mcp.data_access`.
         """
         with self.session.lock:
-            nllh, records, res = self._objective_evaluate(solve_inner)
+            nllh, records, res = self._objective_evaluate(solve_inner, gradient)
 
         n_expected, n_missing = self.simulation_gap(records)
         return {
