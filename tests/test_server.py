@@ -1062,7 +1062,7 @@ def test_fit_tools(tmp_path):
         params_only = _structured(
             await mcp.call_tool("get_fit_diagnosis", {"sections": "parameters"})
         )
-        assert set(params_only) == {"identifiability"}
+        assert set(params_only) == {"version", "identifiability"}
         assert params_only["identifiability"] == both["identifiability"]
         # a typo must not silently hand back half a diagnosis
         bad = _structured(await mcp.call_tool("get_fit_diagnosis", {"sections": "resid"}))

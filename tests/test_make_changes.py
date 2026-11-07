@@ -93,6 +93,22 @@ def test_a_re_author_and_its_parameters_apply_atomically(session):
     assert edits[-1]["args"]["antimony_chars"] > 0
 
 
+def test_a_forks_dropped_parameter_warning_is_against_its_base(session):
+    """REGRESSION (#268): a fork's warning compared the re-author against HEAD's table, so it named
+    a parameter only HEAD had (lun 14 forked v2 and was told it dropped `KEGF`) and missed one only
+    the base estimated."""
+    O.set_model(session, _antimony("r3: A => ; k3 * A;"), justification="the base estimates k3")
+    base = session.problem.parameter_df.copy()
+    O.set_model(session, _antimony("r4: B => ; k4 * B;"), justification="HEAD estimates k4")
+    res = O.set_model(
+        session, _antimony(), justification="fork the base without k3", restore_parameter_df=base
+    )
+    assert [w for w in res["warnings"] if "dropped previously-estimated" in w] == [
+        "the re-author dropped previously-estimated parameter(s) ['k3']: their fitted values are "
+        "gone. Re-declare them in the Antimony if that was unintended."
+    ]
+
+
 def test_parameters_can_target_a_newly_introduced_parameter(session):
     """The parameter edit runs AFTER the reconcile, so it can bound a symbol this very re-author
     introduced — the whole point of taking both in one call."""
