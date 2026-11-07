@@ -66,11 +66,14 @@ PLATEAU_WINDOW = 5
 
 # The chi2 goodness-of-fit p-value at/above which the best model is considered statistically
 # adequate for the plateau gate (its residuals are consistent with the known measurement noise).
-ADEQUATE_GOF_PVALUE = 0.05
+# 0.1, stricter than the conventional 0.05, and the level of gemot's own chi2 bar
+# (``gemot.scenario.REFERENCE_FREE_GOF_ALPHA``): at 0.05 the plateau gate stopped, as adequate, a
+# run that the judge then failed with 0.05 <= p < 0.1.
+ADEQUATE_GOF_PVALUE = 0.1
 
 # The OTHER tail of the same chi2 GoF test. A p-value close to 1 means chi2 is far BELOW its
 # degrees of freedom — the residuals are much smaller than the KNOWN noise, i.e. the model is
-# fitting the noise rather than the signal. Testing only `p >= 0.05` is one-sided and scores such
+# fitting the noise rather than the signal. Testing only `p >= ADEQUATE_GOF_PVALUE` is one-sided and scores such
 # an overfit as "adequate" (observed: fits at chi2/n = 0.016 and 0.051 with p = 0.9999999).
 # Only meaningful for a FIXED sigma: when sigma is ESTIMATED the MLE absorbs residual shrinkage
 # into sigma itself, pinning chi2/n at ~1 from below (empirical floor 0.98 over 40 fits), so this
@@ -108,7 +111,7 @@ PARAMETER_AT_BOUND_RELATIVE_TOL = 0.01
 # An ESTIMATED noise-sigma parameter above this fraction of its observable's own raw
 # measurement std (across every time point / condition) is flagged in the standard fit report.
 # A sigma free to float lets the optimizer make almost ANY mechanism look "statistically
-# adequate" (chi2_gof_pvalue >= 0.05) by simply inflating the assumed noise until residuals fit
+# adequate" (chi2_gof_pvalue >= ADEQUATE_GOF_PVALUE) by simply inflating the assumed noise until residuals fit
 # inside it — agents did exactly this (sigma fit to 20-60x its nominal scale) while
 # the underlying mechanism was missing whole reaction pathways. A sigma that has to explain a
 # large fraction of the data's own variability isn't measurement noise anymore; it's covering

@@ -14,9 +14,11 @@ import pytest
 
 from petab_mcp import fitting
 from petab_mcp.constants import (
+    ADEQUATE_GOF_PVALUE,
     NEW_BEST_MIN_DELTA_SCORE,
     NOISE_SIGMA_COLLAPSE_FRACTION,
     NON_IMPROVING_STREAK_CAP,
+    OVERFIT_GOF_PVALUE,
     PLATEAU_WINDOW,
 )
 
@@ -143,7 +145,9 @@ def test_streak_cap_stops_a_never_adequate_session(session):
         session.record_fit_progress(v, _fitsim(-50.0, 500.0), {"is_new_best": False})
 
     p = session.progress_report()
-    assert p["best_gof_pvalue"] is not None and p["best_gof_pvalue"] < 0.05  # never adequate
+    assert (
+        p["best_gof_pvalue"] is not None and p["best_gof_pvalue"] < ADEQUATE_GOF_PVALUE
+    )  # never adequate
     assert p["non_improving_streak"] == NON_IMPROVING_STREAK_CAP
     assert p["best_version"] == 1  # the checkpoint stayed on the best model
     assert p["should_stop"] is True
@@ -161,7 +165,7 @@ def test_plateau_stops_an_adequate_flat_session(session):
     p = session.progress_report()
     assert p["n_fitted_ops"] == PLATEAU_WINDOW + 1
     assert p["non_improving_streak"] == PLATEAU_WINDOW < NON_IMPROVING_STREAK_CAP  # cap not hit
-    assert p["best_gof_pvalue"] is not None and p["best_gof_pvalue"] >= 0.05
+    assert p["best_gof_pvalue"] is not None and p["best_gof_pvalue"] >= ADEQUATE_GOF_PVALUE
     assert p["score_improvement_over_last_n"] == pytest.approx(0.0)
     assert p["should_stop"] is True
     assert "plateau" in p["stop_reason"].lower()
@@ -190,7 +194,9 @@ def test_inflated_sigma_blocks_the_adequate_plateau_stop(session):
     for v in range(2, 2 + PLATEAU_WINDOW):
         session.record_fit_progress(v, _fitsim_inflated_sigma(-50.0, 18.0), {"is_new_best": False})
     p = session.progress_report()
-    assert p["best_gof_pvalue"] is not None and p["best_gof_pvalue"] >= 0.05  # GoF LOOKS adequate
+    assert (
+        p["best_gof_pvalue"] is not None and p["best_gof_pvalue"] >= ADEQUATE_GOF_PVALUE
+    )  # GoF LOOKS adequate
     assert session.best.sigma_inflated is True  # but sigma inflated
     assert p["score_improvement_over_last_n"] == pytest.approx(0.0)  # and BIC is flat
     assert p["should_stop"] is False  # -> no plateau stop
@@ -658,7 +664,7 @@ def _fitsim_fixed_sigma(chi2: float, *, n: int = 20, k: int = 2) -> dict:
 
 def test_fixed_sigma_overfit_is_not_adequate(session):
     """chi2 FAR BELOW its dof means the residuals are much smaller than the KNOWN noise — the model
-    is fitting the noise, which is not adequacy. A one-sided `p >= 0.05` test scored exactly this as
+    is fitting the noise, which is not adequacy. A one-sided `p >= ADEQUATE_GOF_PVALUE` test scored exactly this as
     adequate (chi2/n = 0.016, p = 0.9999999), letting an overfit session plateau-stop."""
     # chi2 << dof -> p -> 1
     fs = _fitsim_fixed_sigma(0.3)
@@ -667,7 +673,7 @@ def test_fixed_sigma_overfit_is_not_adequate(session):
         session.record_fit_progress(v, fs, {"is_new_best": False})
     p = session.progress_report()
     assert session.best.sigma_estimated is False
-    assert p["best_gof_pvalue"] > 0.99  # would pass a one-sided `>= 0.05` test
+    assert p["best_gof_pvalue"] > 0.99  # would pass a one-sided `>= ADEQUATE_GOF_PVALUE` test
     assert p["should_stop"] is False  # ...but the two-sided gate blocks the stop
 
 
@@ -678,7 +684,7 @@ def test_fixed_sigma_well_calibrated_fit_is_still_adequate(session):
     for v in range(2, 2 + PLATEAU_WINDOW):
         session.record_fit_progress(v, fs, {"is_new_best": False})
     p = session.progress_report()
-    assert 0.05 <= p["best_gof_pvalue"] <= 0.995
+    assert ADEQUATE_GOF_PVALUE <= p["best_gof_pvalue"] <= OVERFIT_GOF_PVALUE
     assert p["should_stop"] is True and "plateau" in p["stop_reason"].lower()
 
 
