@@ -552,68 +552,55 @@ def test_overrides_that_vary_only_across_conditions_are_taken_natively():
     assert needs_flattening(_problem(mdf)) is False
 
 
-_STARTS = """model lun
+_LUN = """model lun
   species R = 1;
-  EGF = 0; P2dose = 0; kpE = 1; k = 1;
+  EGF = 0; P2dose = 0; kpE = 1; k = 1; Kd = 0;
   EGFdrive := EGF/(EGF + kpE*P2dose)
   J1: R -> ; k*EGFdrive*R
-{extra}end
+  J2: R -> ; k*R/Kd
+end
 """
 
 
-def _starting(p2dose_preeq, extra=""):
-    """A session pre-equilibrating with ``EGF`` at 0 and ``P2dose`` at ``p2dose_preeq``."""
+def _caught(*messages, preeq_status=(0, -1, 0)):
+    """What `_non_finite` names in one experiment `e1` whose ReturnData carries ``messages``,
+    ``(identifier, text)`` as AMICI logs them."""
     import types
 
-    import pandas as pd
     from petab.v2.models.sbml_model import SbmlModel
 
-    return types.SimpleNamespace(
-        problem=types.SimpleNamespace(
-            model=SbmlModel.from_antimony(_STARTS.format(extra=extra), model_id="lun"),
-            condition_df=pd.DataFrame(
-                {
-                    "conditionId": ["preeq", "preeq", "stim"],
-                    "targetId": ["EGF", "P2dose", "EGF"],
-                    "targetValue": [0.0, p2dose_preeq, 10.0],
-                }
-            ),
-            experiment_df=pd.DataFrame(
-                {
-                    "experimentId": ["e1", "e1"],
-                    "time": [float("-inf"), 0.0],
-                    "conditionId": ["preeq", "stim"],
-                }
-            ),
-            measurement_df=pd.DataFrame({"experimentId": ["e1"]}),
-            parameter_df=pd.DataFrame(
-                {"nominalValue": [2.0]}, index=pd.Index(["kpE"], name="parameterId")
-            ),
-        )
+    session = types.SimpleNamespace(
+        problem=types.SimpleNamespace(model=SbmlModel.from_antimony(_LUN, model_id="lun"))
     )
+    rdata = types.SimpleNamespace(
+        id="e1",
+        preeq_status=list(preeq_status),
+        messages=[types.SimpleNamespace(identifier=i, message=m) for i, m in messages],
+    )
+    return fitting._non_finite(session, [rdata])
 
 
-def test_a_rule_a_rate_reads_that_is_0_over_0_where_the_simulation_starts_is_named():
+def test_the_expression_amici_finds_not_finite_is_named_as_written():
     """lun 13 (sweep 63372750): `EGFdrive := EGF/(EGF + kpE*P2dose)` was 0/0 at
     pre-equilibration, where both inputs are 0. Every start failed, the refusal named two other
-    causes, and the agent took three failed fits and a bisection to find it (PEtab-MCP#266)."""
-    assert fitting._undefined_at_start(_starting(0.0)) == (
-        "`EGFdrive := EGF / (EGF + kpE * P2dose)` is NaN at the start of the pre-equilibration "
-        "under condition `preeq`, where EGF = 0 and P2dose = 0"
-    )
-    # A rate law, named by its reaction.
-    assert fitting._undefined_at_start(
-        _starting(1.0, extra="  Kd = 0;\n  J2: R -> ; k*R/Kd\n")
+    causes, and the agent took three failed fits and a bisection to find it (PEtab-MCP#266).
+    AMICI names the state first and then the expression it reads, which is the cause."""
+    assert _caught(
+        ("AMICI:NaN", "AMICI encountered a NaN value for xdot[0] (R) at t=0.000000 "),
+        ("AMICI:NaN", "AMICI encountered a NaN value for w[0] (EGFdrive) at t=0.000000 "),
+        ("OTHER", "AMICI equilibration failed at t=0."),
     ) == (
-        "the rate of `J2` (`k * R / Kd`) is infinite at the start of the pre-equilibration under "
-        "condition `preeq`, where Kd = 0"
+        "`EGFdrive := EGF / (EGF + kpE * P2dose)` is NaN at t=0 in the pre-equilibration of "
+        "experiment `e1`"
     )
+    # A reaction's rate is AMICI's expression `flux_<reaction>`.
+    assert _caught(
+        ("AMICI:Inf", "AMICI encountered an Inf value for w[2] (flux_J2) at t=3.500000 "),
+        preeq_status=(0, 0, 0),
+    ) == ("the rate of `J2` (`k * R / Kd`) is infinite at t=3.5 in experiment `e1`")
 
 
-def test_nothing_is_named_where_every_rate_starts_as_a_number():
-    """With a dose at pre-equilibration nothing is 0/0, so the refusal keeps its two causes. A
-    readout no rate reads is not named either: 0/0 before the system has run fails no
-    simulation."""
-    assert fitting._undefined_at_start(_starting(1.0)) == ""
-    readout = "  pR = 0;\n  ratio := pR/(pR + EGF)\n"
-    assert fitting._undefined_at_start(_starting(1.0, extra=readout)) == ""
+def test_nothing_is_named_where_amici_caught_no_value_that_is_not_finite():
+    """An integration that fails on stiffness reports no NaN, so the refusal keeps its two
+    causes."""
+    assert _caught(("CVODES:CVode:TOO_MUCH_WORK", "mxstep steps taken before tout")) == ""

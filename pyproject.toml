@@ -88,9 +88,6 @@ dependencies = [
     # stimulus applied that way never stayed on. PyPI has only an sdist, so AMICI is built from
     # source, which is why CI installs a toolchain before it.
     "amici>=1.2.0",
-    # Imported directly by `fitting._undefined_at_start`, which parses the model's math as AMICI's
-    # SBML import does; only transitively present via amici otherwise. 0.4.0 is amici 1.2.0's floor.
-    "sbmlmath>=0.4.0",
     # 0.8.0 is the first release with #1782: the PEtab v2 importer takes the estimation scales
     # (`PetabImporter(parameter_scales=...)`), which v2 dropped from the format; without it every
     # v2 problem is optimised linearly, with start points almost all in the top decade of a

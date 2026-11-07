@@ -746,6 +746,6 @@ def test_a_rate_that_is_0_over_0_at_pre_equilibration_is_named(dosed_session, am
     with pytest.raises(ModelUpdateError) as refused:
         dosed_session.fit()
     assert (
-        "because `drive := dose / (dose + K * B)` is NaN at the start of the pre-equilibration "
-        "under condition `pre`, where B = 0 and dose = 0, so the simulation cannot start"
+        "because `drive := dose / (dose + K * B)` is NaN at t=0 in the pre-equilibration of "
+        "experiment `e0`, which stops the simulation"
     ) in str(refused.value)
