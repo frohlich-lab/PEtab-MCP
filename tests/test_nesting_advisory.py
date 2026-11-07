@@ -1,146 +1,218 @@
 """The commit-time nesting check (``petab_mcp.nesting``).
 
-A committed variant whose estimated-parameter count ROSE while its nll got WORSE cannot be
-nested in its parent — the ML nll of a nested model cannot rise when a parameter is added — so
-the comparison the agent is about to reason from is invalid. The regression case is real: a
-session whose v3 -> v4 edit meant to ADD a ``c2`` factor to ``r_dbc_a`` instead OVERWROTE
-the ``c1`` already in that rate law. v4 gained a parameter, lost 3.984 nll, and the agent read
-the worse score as "the model is complete" and finished — on its only structure-adding
-experiment.
+A committed variant whose estimated-parameter count ROSE while its nll got WORSE is an INVALID
+COMPARISON only when it is nested in its parent: the edit only added reactions and rules, every
+parent parameter is still estimated, and every parent fitted value lies inside the child's bounds.
+Otherwise the line names why it is not nested and gives no re-fit advice. #263: in sweep 63372750
+the advisory fired on removed reactions, rewritten rate laws and narrowed bounds alike, and agents
+re-fitted each with 200-250 starts for up to 99 minutes, to the same nll.
 """
 
 from __future__ import annotations
 
 from petab_mcp.nesting import nesting_advisory, valid_added_parameter_experiment
 
-# --- the real v3/v4 case ------------------------------------------------------------------
-# nll values are verbatim from that session's versions/v{3,4}/meta.json, the estimated ids from
-# its parameters.tsv under placeholder names. Structural k is 6 -> 7 (a1/a2/a3/a4/c3/c1 plus, in
-# v4, c2); the ESTIMATED count the check compares is 7 -> 8, since `sigma` is free in both.
-_V3_NLL = -987.832003765968
-_V4_NLL = -983.848189476257  # 3.983814289711 WORSE
-_V3_IDS = ["a3", "a4", "a1", "a2", "c3", "c1", "sigma"]
-_V4_IDS = [*_V3_IDS, "c2"]
+# --- a lun-shaped parent and its additive child ---------------------------------------------
+# Canonical libantimony layout: rules and reactions each on a line of their own.
+_PARENT_MODEL = """\
+  // Assignment Rules:
+  Act := kact*ERK;
 
-# The rate laws that mention c1, from each version's model.ant under the same placeholder names
-# (9 references in v3, 8 in v4 — `r_dbc_a` lost its c1 to the new c2).
-_V3_MODEL = """\
+  // Reactions:
+  R_on: R -> RL; kon*R*L;
+  R_off: RL -> R; koff*RL;
+
+  // Variable initializations:
+  kon = 100;
+  koff = 0;
+"""
+_ADDITIVE_MODEL = _PARENT_MODEL.replace(
+    "  R_off: RL -> R; koff*RL;\n",
+    "  R_off: RL -> R; koff*RL;\n  R_int: RL -> RLi; kint*RL;\n",
+).replace("  koff = 0;\n", "  koff = 0;\n  kint = 1;\n")
+_PARENT_IDS = ["kact", "koff", "kon"]
+_CHILD_IDS = [*_PARENT_IDS, "kint"]
+
+
+def _parent(**over):
+    return {
+        "version": 12,
+        "n_estimated": len(_PARENT_IDS),
+        "neg_log_likelihood": -50.0,
+        "estimated_ids": _PARENT_IDS,
+        "values": {"kact": 1.0, "koff": 0.0, "kon": 100.0},
+        "model": _PARENT_MODEL,
+        **over,
+    }
+
+
+def _child(**over):
+    return {
+        "n_estimated": len(_CHILD_IDS),
+        "neg_log_likelihood": -45.0,  # 5 WORSE
+        "estimated_ids": _CHILD_IDS,
+        "bounds": {pid: (0.0, 1000.0) for pid in _CHILD_IDS},
+        "model": _ADDITIVE_MODEL,
+        **over,
+    }
+
+
+def _not_nested(parent, child) -> str:
+    """The not-nested line, asserting it is one: no INVALID COMPARISON and no re-fit advice."""
+    found = nesting_advisory(parent, child)
+    assert found is not None
+    line, invalid = found
+    assert invalid is False
+    assert "INVALID COMPARISON" not in line and "more starts" not in line
+    return line
+
+
+def test_a_purely_additive_edit_that_fits_worse_is_an_invalid_comparison():
+    # The one case the advisory exists for: R_int added, nothing else touched, the parent's
+    # values inside the box. A nested child cannot fit worse, so the fit under-converged.
+    line, invalid = nesting_advisory(_parent(), _child())
+    assert invalid is True
+    assert line.startswith("INVALID COMPARISON vs v12") and "3->4" in line and "5" in line
+    assert "more starts" in line and "does NOT show the added structure fails to help" in line
+
+
+def test_a_removed_reaction_is_not_nested():
+    # lun 14 turn 9: R_off removed; the agent re-fitted with 250 starts for 61 min, same nll.
+    child = _child(model=_ADDITIVE_MODEL.replace("  R_off: RL -> R; koff*RL;\n", ""))
+    line = _not_nested(_parent(), child)
+    assert line.startswith("vs v12, not nested: reaction R_off removed.")
+    assert "3->4" in line and "add only that structure to v12" in line
+
+
+def test_a_rewritten_rate_law_is_not_nested():
+    # lun 12 turns 16-17: two rate laws rewritten; re-fitted with 250 starts for 99 min.
+    child = _child(model=_ADDITIVE_MODEL.replace("kon*R*L;", "kon*R*L/(1 + Act);"))
+    assert "not nested: reaction R_on rewritten." in _not_nested(_parent(), child)
+
+
+def test_a_rewritten_rule_is_not_nested():
+    child = _child(model=_ADDITIVE_MODEL.replace("Act := kact*ERK;", "Act := kact*ERK*RSK;"))
+    assert "not nested: rule Act rewritten." in _not_nested(_parent(), child)
+
+
+def test_a_rate_law_extended_by_a_factor_is_rewritten():
+    # The case the advisory was first written for: v4 meant to add a c2 factor to r_dbc_a's rate
+    # law and overwrote its c1 instead. Multiplying by c2 elsewhere rewrites a rate law too, and
+    # the diff cannot see whether the box holds c2's neutral value, so it is not nested.
+    parent = """\
   r_ab_c: AB -> ABC; c1*a4*AB - d*ABC;
-  r_ac_b: AC -> ABC; c1*a3*AC - d*ABC;
-  r_bc_a: BC -> ABC; c1*a2*BC - d*ABC;
-  r_dab_c: DAB -> DABC; c1*a4*DAB - d*DABC;
-  r_dac_b: DAC -> DABC; c1*a3*DAC - d*DABC;
   r_dbc_a: DBC -> DABC; c1*a2*DBC - d*DABC;
-  r_abc_d: ABC -> DABC; c3*c1*a1*ABC - d*DABC;
-  c1 = 1;
-  const d, a1, a2, a3, a4, c3, c1;
 """
-
-_V4_MODEL = """\
+    child = """\
   r_ab_c: AB -> ABC; c1*c2*a4*AB - d*ABC;
-  r_ac_b: AC -> ABC; c1*a3*AC - d*ABC;
-  r_bc_a: BC -> ABC; c1*c2*a2*BC - d*ABC;
-  r_dab_c: DAB -> DABC; c1*c2*a4*DAB - d*DABC;
-  r_dac_b: DAC -> DABC; c1*a3*DAC - d*DABC;
   r_dbc_a: DBC -> DABC; c2*a2*DBC - d*DABC;
-  r_abc_d: ABC -> DABC; c3*c1*c2*a1*ABC - d*DABC;
-  c1 = 1;
-  c2 = 1;
-  const d, a1, a2, a3, a4, c3, c1, c2;
 """
+    line = _not_nested(_parent(model=parent), _child(model=child))
+    assert "not nested: reaction r_ab_c rewritten." in line
 
 
-def _v3(**over):
-    return {
-        "version": 3,
-        "n_estimated": 7,
-        "neg_log_likelihood": _V3_NLL,
-        "estimated_ids": _V3_IDS,
-        "model": _V3_MODEL,
-        **over,
-    }
+def test_a_parameter_no_longer_estimated_is_not_nested():
+    # koff fixed while two new parameters keep k rising: the child no longer contains the parent.
+    ids = ["kact", "kon", "kint", "kint2"]
+    child = _child(estimated_ids=ids, n_estimated=len(ids))
+    assert "not nested: koff no longer estimated." in _not_nested(_parent(), child)
 
 
-def _v4(**over):
-    return {
-        "version": 4,
-        "n_estimated": 8,
-        "neg_log_likelihood": _V4_NLL,
-        "estimated_ids": _V4_IDS,
-        "model": _V4_MODEL,
-        **over,
-    }
+def test_an_upper_bound_below_the_parents_value_is_not_nested():
+    # lun 14 turns 11-12: a reaction added, but the parent's 100 cut to at most 5.
+    child = _child(bounds={**_child()["bounds"], "kon": (1e-3, 5.0)})
+    line = _not_nested(_parent(), child)
+    assert "not nested: kon's upper bound 5 excludes v12's fitted 100." in line
 
 
-def test_an_overwritten_factor_flags_the_displaced_parameter():
-    msg = nesting_advisory(_v3(), _v4())
-    assert msg is not None
-    # names the parent it is invalid against, the k rise, and how much worse the nll got
-    assert "v3" in msg and "7->8" in msg and "3.9838" in msg
-    # ...and names WHICH parameter was displaced: c1 stayed ESTIMATED but lost one of its
-    # nine rate-law references, so only the reference-count diff can find it.
-    assert "c1 now appears in 8 places, was 9" in msg
-    # both causes are on the table — the optimizer is the other way this can happen
-    assert "not additive" in msg and "under-converged" in msg
-    # and it says what the agent must NOT conclude from it
-    assert "does NOT show the added structure fails to help" in msg
+def test_a_lower_bound_above_the_parents_value_is_not_nested():
+    # fontaine 9 turns 29-30: new lower bounds of 0.01 excluded the parent's 0.
+    child = _child(bounds={**_child()["bounds"], "koff": (0.01, 10.0)})
+    line = _not_nested(_parent(), child)
+    assert "not nested: koff's lower bound 0.01 excludes v12's fitted 0." in line
 
 
-def test_an_overwritten_factor_is_not_a_valid_added_parameter_experiment():
-    assert valid_added_parameter_experiment(_v3(), _v4()) is False
+def test_a_parent_value_on_the_childs_bound_is_inside_it():
+    child = _child(bounds={**_child()["bounds"], "kon": (1e-3, 100.0 * (1 - 1e-12))})
+    assert nesting_advisory(_parent(), child)[1] is True
 
 
-def test_parameter_dropped_from_the_table_is_named_outright():
-    # The unambiguous shape: c1 is present in the parent and ABSENT from the child, so the
-    # estimated-id diff alone identifies it — no reference counting needed.
-    child = _v4(
-        estimated_ids=[i for i in _V4_IDS if i != "c1"],
-        n_estimated=8,
-        model=_V4_MODEL.replace("c1*", "").replace("c1", ""),
+def test_the_first_reason_found_is_named():
+    # Structure, then estimation, then bounds.
+    ids = ["kact", "kon", "kint", "kint2"]
+    dropped_and_narrowed = _child(
+        estimated_ids=ids, n_estimated=len(ids), bounds={pid: (1e-3, 5.0) for pid in ids}
     )
-    # keep k rising: the child swapped c1 for two new factors
-    child["estimated_ids"] = [*child["estimated_ids"], "c4"]
-    child["n_estimated"] = len(child["estimated_ids"])
-    msg = nesting_advisory(_v3(), child)
-    assert msg is not None and "c1 no longer estimated" in msg
+    assert "not nested: koff no longer estimated." in _not_nested(_parent(), dropped_and_narrowed)
+    removed_too = {
+        **dropped_and_narrowed,
+        "model": _ADDITIVE_MODEL.replace("  R_off: RL -> R; koff*RL;\n", ""),
+    }
+    assert "not nested: reaction R_off removed." in _not_nested(_parent(), removed_too)
+
+
+def test_a_moved_or_renumbered_reaction_is_kept():
+    # A rule-built model renumbers its reactions when one is added; the text is what counts.
+    parent = "  r0: A -> B; k1*A;\n  r1: B -> C; k2*B;\n"
+    child = "  r0: X -> A; k0*X;\n  r1: A -> B; k1*A;\n  r2: B -> C; k2*B;\n"
+    assert nesting_advisory(_parent(model=parent), _child(model=child))[1] is True
 
 
 def test_no_advisory_when_the_added_parameter_actually_helps():
-    # v2 -> v3 in the same session: k rose AND the nll improved by 150.7. Nothing to say.
-    v2 = _v3(
-        version=2,
-        n_estimated=6,
-        neg_log_likelihood=-837.1807567142856,
-        estimated_ids=[i for i in _V3_IDS if i != "c1"],
-    )
-    assert nesting_advisory(v2, _v3()) is None
-    assert valid_added_parameter_experiment(v2, _v3()) is True
+    child = _child(neg_log_likelihood=-80.0)
+    assert nesting_advisory(_parent(), child) is None
+    assert valid_added_parameter_experiment(_parent(), child) is True
 
 
 def test_no_advisory_when_k_did_not_rise():
     # A SIMPLER model fitting worse is ordinary and expected — the invariant only binds one way.
-    assert nesting_advisory(_v4(), _v3()) is None
-    assert valid_added_parameter_experiment(_v4(), _v3()) is False
+    simpler = _parent(n_estimated=2, estimated_ids=["kact", "kon"], neg_log_likelihood=-45.0)
+    assert nesting_advisory(_parent(), simpler) is None
+    assert valid_added_parameter_experiment(_parent(), simpler) is False
 
 
 def test_no_advisory_for_a_noise_floor_worsening():
     # k rose but the nll is worse by 1e-9 — the same optimum re-reported, not a violation.
-    assert nesting_advisory(_v3(), _v4(neg_log_likelihood=_V3_NLL + 1e-9)) is None
+    assert nesting_advisory(_parent(), _child(neg_log_likelihood=-50.0 + 1e-9)) is None
 
 
 def test_no_advisory_when_the_parent_was_never_fitted():
-    # v0/initial and legacy versions carry no nll: no comparison, so no claim about one.
-    assert nesting_advisory(_v3(neg_log_likelihood=None), _v4()) is None
-    assert nesting_advisory(_v3(n_estimated=None), _v4()) is None
-    assert nesting_advisory(_v3(neg_log_likelihood=float("nan")), _v4()) is None
+    # v0/initial versions carry no nll: no comparison, so no claim about one.
+    assert nesting_advisory(_parent(neg_log_likelihood=None), _child()) is None
+    assert nesting_advisory(_parent(n_estimated=None), _child()) is None
+    assert nesting_advisory(_parent(neg_log_likelihood=float("nan")), _child()) is None
 
 
-def test_cause_left_open_when_no_parameter_can_be_named():
-    # Nothing dropped and no reference count fell (the models are unavailable): still advise, but
-    # point at diff_versions instead of guessing a culprit.
-    msg = nesting_advisory(_v3(model=None), _v4(model=None))
-    assert msg is not None
-    assert "diff_versions" in msg and "under-converged" in msg
+def test_no_advisory_without_both_models():
+    # Nestedness cannot be read without the diff, so no claim either way.
+    assert nesting_advisory(_parent(model=None), _child()) is None
+    assert nesting_advisory(_parent(), _child(model=lambda: "")) is None
+
+
+def test_the_model_is_only_read_once_k_rose_and_the_nll_got_worse():
+    """The session hands the parent's Antimony as a lazy callable — it lives on disk, and the
+    overwhelming majority of commits improve the nll and never need it."""
+    reads = []
+
+    def _lazy(text):
+        def read():
+            reads.append(text)
+            return text
+
+        return read
+
+    improving = _child(neg_log_likelihood=-80.0, model=_lazy(_ADDITIVE_MODEL))
+    assert nesting_advisory(_parent(model=_lazy(_PARENT_MODEL)), improving) is None
+    assert reads == []
+
+    worse = _child(model=_lazy(_ADDITIVE_MODEL))
+    assert nesting_advisory(_parent(model=_lazy(_PARENT_MODEL)), worse)[1] is True
+    assert len(reads) == 2
+
+
+def test_advisory_names_the_parent_generically_without_a_version():
+    line, _ = nesting_advisory(_parent(version=None), _child())
+    assert "vNone" not in line and "vs its parent" in line
 
 
 # --- the session wiring: read the parent from the version store ----------------------------
@@ -269,38 +341,19 @@ def test_the_outstanding_flag_survives_a_durable_resume(session, tmp_path):
     assert again.invalid_comparison is None
 
 
-def test_the_model_is_only_read_when_the_advisory_fires():
-    """The session hands the parent's Antimony as a lazy callable — it lives on disk, and the
-    overwhelming majority of commits improve the nll and never need it to name a culprit."""
-    reads = []
+def test_session_leaves_the_flag_unset_on_a_not_nested_commit(session):
+    """A client's finish gate repeats the re-fit advice for whatever `invalid_comparison` holds,
+    so a not-nested child must not set it: the child's k1 box excludes the parent's fitted 0.5."""
+    from petab.v2.C import ESTIMATE, UPPER_BOUND
 
-    def _lazy(text):
-        def read():
-            reads.append(text)
-            return text
-
-        return read
-
-    # clean comparison: the model is never resolved
-    v2 = _v3(
-        version=2,
-        n_estimated=6,
-        neg_log_likelihood=-837.1807567142856,
-        estimated_ids=[i for i in _V3_IDS if i != "c1"],
-        model=_lazy(_V3_MODEL),
+    _snapshot_parent(session, -100.0)
+    session.problem.parameter_df.loc["sigma_B", ESTIMATE] = True
+    session.problem.parameter_df.loc["k1", UPPER_BOUND] = 0.1
+    advisory = session._check_nesting_vs_parent(
+        {"neg_log_likelihood": -90.0}, session.model.to_antimony()
     )
-    assert nesting_advisory(v2, _v3(model=_lazy(_V3_MODEL))) is None
-    assert reads == []
-
-    # firing comparison: resolved, and still names the displaced parameter
-    msg = nesting_advisory(_v3(model=_lazy(_V3_MODEL)), _v4(model=_lazy(_V4_MODEL)))
-    assert "c1 now appears in 8 places, was 9" in msg
-    assert len(reads) == 2
-
-
-def test_advisory_names_the_parent_generically_without_a_version():
-    msg = nesting_advisory(_v3(version=None), _v4())
-    assert msg is not None and "vNone" not in msg and "vs its parent" in msg
+    assert advisory is not None and "not nested: k1's upper bound 0.1 excludes" in advisory
+    assert session.invalid_comparison is None
 
 
 def test_a_new_best_supersedes_the_outstanding_flag(session):

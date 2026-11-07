@@ -209,3 +209,55 @@ def test_a_later_period_that_keeps_the_value_changes_nothing(dosed_session):
     conditions = Path(yaml).parent / "conditions.tsv"
     conditions.write_text(conditions.read_text().replace("treat\tdose\t1", "treat\tdose\t0"))
     assert later_changes(WorkingProblem.from_yaml(yaml)) == {}
+
+
+_EGFR = """model egfr
+  rE = 1; rD = 0; B = 0
+  egfr_int: rE -> {product}; k_intE*rE
+  rec: rD -> rE; {recycling}
+  deg: rD -> ; k_deg*rD
+  act: -> B; k_act*rE
+  k_intE = 0.1; k_rec = 0.1; k_back = 0.1; k_deg = 0.1; k_act = 0.1
+end
+"""
+
+
+def _sourceless(result) -> list[str]:
+    return [m["message"] for m in result["messages"] if "stays 0" in m["message"]]
+
+
+@pytest.mark.parametrize(
+    ("product", "recycling", "warned"),
+    [("", "k_rec*rD", True), ("rD", "k_rec*rD", False), ("", "k_rec*rD - k_back*rE", False)],
+)
+def test_a_species_nothing_produces_is_named_with_its_readers(session, product, recycling, warned):
+    """dessauges' `set_rate_law` kept `egfr_int: rE ->`, so `rD` started at 0 with nothing making
+    it; its rates' parameters pinned at a bound and the only reply was "1 warning(s) unchanged"
+    (PEtab-MCP#270). A product of `egfr_int`, or `rec` running back at `rD` = 0, is a source."""
+    antimony = _EGFR.format(product=product, recycling=recycling)
+    said = _sourceless(O.set_model(session, antimony, justification="endocytosis"))
+    assert said == (
+        [
+            "species `rD` starts at 0 and stays 0: no reaction produces it, and no condition, event "
+            "or rule sets it. The rate laws and rules that read it (`rec`, `deg`) see 0 throughout, "
+            "so a parameter acting only through it cannot change the fit. Give it a source: a "
+            "reaction that produces it, or a nonzero initial amount."
+        ]
+        if warned
+        else []
+    )
+
+
+def test_a_species_a_period_sets_has_a_source(dosed_session):
+    """`dose` starts at 0 and no reaction makes it, but the `treat` period sets it to 1; `X`, read
+    the same way and set by nothing, is the one named."""
+    antimony = """model dosed
+  species dose = 0, X = 0
+  r1: -> B; k*dose
+  r2: -> B; kx*X
+  r3: B -> ; kd*B
+  B = 0; k = 0.1; kx = 0.1; kd = 0.1
+end
+"""
+    said = _sourceless(O.set_model(dosed_session, antimony, justification="dose B"))
+    assert len(said) == 1 and said[0].startswith("species `X` starts at 0")

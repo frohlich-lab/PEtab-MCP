@@ -18,14 +18,17 @@ from __future__ import annotations
 
 from typing import Any
 
-from petab.v2.C import ESTIMATE
+import libsbml
+from petab.v2.C import ESTIMATE, NOMINAL_VALUE, TARGET_ID, TARGET_VALUE
 from petab.v2.lint import ValidationIssueSeverity
 
 from .problem import as_bool, later_changes
 from .reconcile import (
     _ast_names,
+    _declared_initial,
     _observable_and_measurement_symbols,
     condition_target_symbols,
+    input_species,
     noise_sigma_ids,
     _model_math_names,
     _reaction_species,
@@ -361,8 +364,8 @@ def _undefined_readout_issues(problem, statements: bool = False) -> list[dict[st
                 measures = raw.strip() if isinstance(raw, str) else ""
                 measured = f" It measures: {measures}." if measures else ""
                 how = (
-                    f"in `readouts`, a formula over the amounts it reads (`\"{name}\": "
-                    f"\"amount(<agent pattern>)\"`, or over names declared in `amounts`)"
+                    f'in `readouts`, a formula over the amounts it reads (`"{name}": '
+                    f'"amount(<agent pattern>)"`, or over names declared in `amounts`)'
                     if statements
                     else f"with an ASSIGNMENT RULE: `{name} := <expression of your species>` (op "
                     f"set_assignment)"
@@ -468,6 +471,148 @@ def _unread_input_issues(problem) -> list[dict[str, Any]]:
             "check": "input_unread",
         }
     ]
+
+
+def _sourceless_species_issues(problem) -> list[dict[str, Any]]:
+    """One warning per species a rate law or rule reads that stays 0: it starts at 0, nothing sets
+    it (an input, an event, a condition) to a value that is not 0, and no reaction that can run
+    changes it. ``set_rate_law`` replaces a reaction's rate alone, so one sent to give a reaction a
+    new product left that species with no source: the rate laws reading it read 0, their
+    parameters pinned at a bound, and the agent took that for the data rejecting the mechanism
+    (PEtab-MCP#270).
+
+    "Can run" is decided all together: a reaction runs unless its rate law is 0 whenever every
+    species still held at 0 and every parameter the table fixes at 0 is 0
+    (:func:`_vanishes_at`), and each species such a reaction changes is let go, until none is."""
+    sm = getattr(problem.model, "sbml_model", None)
+    if sm is None:
+        return []
+    ruled = {r.getVariable(): r.getMath() for r in sm.getListOfRules() if r.isAssignment()}
+    zero = _fixed_zero_parameters(problem)
+
+    def vanishes(math) -> bool:
+        return math is not None and _vanishes_at(math, zero, ruled)
+
+    cdf = problem.condition_df
+    conditions = (
+        zip(cdf[TARGET_ID], cdf[TARGET_VALUE])
+        if cdf is not None and {TARGET_ID, TARGET_VALUE} <= set(cdf.columns)
+        else ()
+    )
+    held = (
+        input_species(sm)
+        | {str(target) for target, value in conditions if not _is_zero(value)}
+        | {
+            ea.getVariable()
+            for event in sm.getListOfEvents()
+            for ea in event.getListOfEventAssignments()
+            if not vanishes(ea.getMath())
+        }
+    )
+
+    def starts_at_zero(sp) -> bool:
+        assignment = sm.getInitialAssignmentBySymbol(sp.getId())
+        if assignment is not None:
+            return vanishes(assignment.getMath())
+        value, _ = _declared_initial(sm, sp)
+        return value is None or value == 0
+
+    zero |= {
+        sp.getId() for sp in sm.getListOfSpecies() if sp.getId() not in held and starts_at_zero(sp)
+    }
+    reactions = []
+    for rxn in sm.getListOfReactions():
+        net: dict[str, float] = {}
+        for sign, refs in ((-1, rxn.getListOfReactants()), (1, rxn.getListOfProducts())):
+            for ref in refs:
+                net[ref.getSpecies()] = net.get(ref.getSpecies(), 0) + sign * ref.getStoichiometry()
+        law = rxn.getKineticLaw()
+        reactions.append((law.getMath() if law is not None else None, net))
+    while (
+        changed := {
+            sid for math, net in reactions if not vanishes(math) for sid, n in net.items() if n != 0
+        }
+        & zero
+    ):
+        zero -= changed
+
+    readers: dict[str, list[str]] = {}
+    for rxn, (math, _) in zip(sm.getListOfReactions(), reactions):
+        for sid in _ast_names(math) & zero:
+            readers.setdefault(sid, []).append(f"`{rxn.getId()}`")
+    for rule in sm.getListOfRules():
+        for sid in _ast_names(rule.getMath()) & zero:
+            readers.setdefault(sid, []).append(f"the rule for `{rule.getVariable()}`")
+    return [
+        {
+            "level": "warning",
+            "message": (
+                f"species `{sid}` starts at 0 and stays 0: no reaction produces it, and no "
+                f"condition, event or rule sets it. The rate laws and rules that read it "
+                f"({', '.join(readers[sid])}) see 0 throughout, so a parameter acting only "
+                "through it cannot change the fit. Give it a source: a reaction that produces "
+                "it, or a nonzero initial amount."
+            ),
+            "check": "species_without_source",
+        }
+        for sid in sorted(readers.keys() & species_ids(sm))
+    ]
+
+
+def _vanishes_at(node, zero: set[str], ruled: dict, seen: frozenset = frozenset()) -> bool:
+    """Whether the math ``node`` is 0 wherever every name in ``zero`` is 0, read off its shape: such
+    a name, or an assignment rule's target whose math vanishes (``ruled``); a literal 0; a product
+    with a vanishing factor; a quotient with a vanishing numerator; a sum or difference of vanishing
+    terms; a vanishing base to a positive literal power. Anything else is taken not to vanish, so a
+    rate law this cannot read counts as one that runs and nothing is warned about."""
+
+    def at(child) -> bool:
+        return _vanishes_at(child, zero, ruled, seen)
+
+    kind = node.getType()
+    children = [node.getChild(i) for i in range(node.getNumChildren())]
+    if kind == libsbml.AST_NAME:
+        name = node.getName()
+        return name in zero or (
+            name in ruled
+            and name not in seen
+            and _vanishes_at(ruled[name], zero, ruled, seen | {name})
+        )
+    if node.isNumber():
+        return node.getValue() == 0
+    if kind == libsbml.AST_TIMES:
+        return any(map(at, children))
+    if kind == libsbml.AST_DIVIDE:
+        return at(children[0])
+    if kind in (libsbml.AST_PLUS, libsbml.AST_MINUS):
+        return all(map(at, children))
+    if kind in (libsbml.AST_POWER, libsbml.AST_FUNCTION_POWER):
+        base, exponent = children
+        return exponent.isNumber() and exponent.getValue() > 0 and at(base)
+    return False
+
+
+def _fixed_zero_parameters(problem) -> set[str]:
+    """The parameters the parameter table fixes at 0 (a shipped ``B_init`` of an empty start)."""
+    pdf = getattr(problem, "parameter_df", None)
+    if pdf is None or not {ESTIMATE, NOMINAL_VALUE} <= set(pdf.columns):
+        return set()
+    out = set()
+    for pid, estimate, nominal in zip(pdf.index, pdf[ESTIMATE], pdf[NOMINAL_VALUE]):
+        try:
+            if not as_bool(estimate) and _is_zero(nominal):
+                out.add(str(pid))
+        except ValueError:
+            continue
+    return out
+
+
+def _is_zero(value) -> bool:
+    """Whether a table cell is the number 0; an expression is taken not to be."""
+    try:
+        return float(value) == 0
+    except (TypeError, ValueError):
+        return False
 
 
 # -- authoring-time check: frozen parametric reaction stoichiometry (checks the CONVERTED SBML) --
@@ -636,9 +781,13 @@ def validate_problem(problem, protected_fixed_ids=None, statements: bool = False
     issues += readout_issues
     n_errors += len(readout_issues)
 
-    input_issues = _first_period_only_issues(problem) + _unread_input_issues(problem)
-    issues += input_issues
-    n_warnings += len(input_issues)
+    advisory = (
+        _first_period_only_issues(problem)
+        + _unread_input_issues(problem)
+        + _sourceless_species_issues(problem)
+    )
+    issues += advisory
+    n_warnings += len(advisory)
 
     return {
         "valid": (

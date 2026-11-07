@@ -64,6 +64,19 @@ SUMMARY_FIELDS = (
 VALIDATION_SIMULATIONS = "validation_simulations.json"
 
 
+def model_diff(before: str, after: str, fromfile: str = "", tofile: str = "") -> str:
+    """The unified diff of two Antimony sources: ``diff_versions``' ``model_diff``, and what
+    :mod:`nesting` reads a commit's removed and rewritten reactions and rules from."""
+    return "".join(
+        difflib.unified_diff(
+            before.splitlines(keepends=True),
+            after.splitlines(keepends=True),
+            fromfile=fromfile,
+            tofile=tofile,
+        )
+    )
+
+
 def binding_of(row: dict[str, Any]) -> dict[str, Any]:
     """A row's binding as a statements record keeps it, ``{policy, parameters?}``, from a row that
     carries its ``policy`` and ``parameters``."""
@@ -84,7 +97,9 @@ def statements_record(record: dict[str, Any] | None) -> dict[str, Any] | None:
     split = {"policy", "parameters"}
     return {
         **record,
-        "rows": [{k: v for k, v in row.items() if k not in split} for row in record.get("rows", [])],
+        "rows": [
+            {k: v for k, v in row.items() if k not in split} for row in record.get("rows", [])
+        ],
         "bindings": {row["prefix"]: binding_of(row) for row in record.get("rows", [])},
     }
 
@@ -467,8 +482,8 @@ class ProvenanceStore:
         An entry that is unreadable, malformed, or not a JSON OBJECT is skipped and logged, not
         returned: callers iterate the result and call ``.get`` on each element without guarding,
         and a raise there escapes into the commit path. Callers also degrade a raise from this
-        method to an empty list, which would silently disable de-duplication and the
-        repeated-widening backstop. Skipping per file degrades proportionally.
+        method to an empty list, which would silently disable de-duplication. Skipping per file
+        degrades proportionally.
         """
         out = []
         # Only ``v<int>`` directories are versions; skip any stray ``v*`` entry (a leftover temp
@@ -499,14 +514,6 @@ class ProvenanceStore:
 
     def diff_versions(self, a: int, b: int) -> dict[str, Any]:
         va, vb = self.get_version(a, include=()), self.get_version(b, include=())
-        model_diff = "".join(
-            difflib.unified_diff(
-                va["model_antimony"].splitlines(keepends=True),
-                vb["model_antimony"].splitlines(keepends=True),
-                fromfile=f"v{a}/model.ant",
-                tofile=f"v{b}/model.ant",
-            )
-        )
         pa = {p["parameterId"]: p for p in va["parameters"]}
         pb = {p["parameterId"]: p for p in vb["parameters"]}
         param_diff = {
@@ -527,7 +534,9 @@ class ProvenanceStore:
         return {
             "from": a,
             "to": b,
-            "model_diff": model_diff,
+            "model_diff": model_diff(
+                va["model_antimony"], vb["model_antimony"], f"v{a}/model.ant", f"v{b}/model.ant"
+            ),
             "parameter_diff": param_diff,
             "fit": fit,
         }

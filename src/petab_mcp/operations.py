@@ -721,14 +721,14 @@ def set_model(
         else []
     )
 
-    # Snapshot the currently-estimated parameter ids so we can flag any the re-author drops.
+    # The parameters estimated in the version this edit starts from (the fork's base, else HEAD), so
+    # we can flag any the re-author drops.
     from petab.v2.C import ESTIMATE
 
     prior_estimated: set[str] = set()
     try:
-        df = session.problem.parameter_df
-        if ESTIMATE in df.columns:
-            prior_estimated = {str(p) for p in df.index[estimated_mask(df)]}
+        if ESTIMATE in current.columns:
+            prior_estimated = {str(p) for p in current.index[estimated_mask(current)]}
     except Exception:  # never let the warning bookkeeping break the op
         prior_estimated = set()
 
@@ -774,9 +774,9 @@ def set_model(
 
     # Guardrail: a re-author that no longer declares a previously-estimated parameter drops
     # its row (and its fitted value). Surface that — it is the one real footgun of a wholesale
-    # replace; fixed/table-referenced parameters are not affected.
-    removed = ((result.get("reconcile") or {}).get("parameters") or {}).get("removed") or []
-    dropped = sorted(p for p in removed if str(p) in prior_estimated)
+    # replace; fixed/table-referenced parameters are not affected. Read off the committed table
+    # rather than the reconcile's `removed`, which a fork measures against HEAD's table.
+    dropped = sorted(prior_estimated - {str(p) for p in session.problem.parameter_df.index})
     if dropped:
         note = (
             f"the re-author dropped previously-estimated parameter(s) {dropped}: their fitted "
@@ -1762,63 +1762,62 @@ def _pinned_side(session, problem, parameter_id: str) -> str | None:
 
 
 def _widening_history(session, parameter_id: str, side: str) -> tuple[int, float | None]:
-    """``(count, last_bic_gain)`` for the CURRENT run of widenings of ``parameter_id`` on ``side``.
+    """``(count, last_bic_gain)`` for the CURRENT run of bounds-only widenings of ``parameter_id``
+    on ``side``, along the lineage the next commit descends from.
 
-    Reconstructed from each committed version's STORED parameter table (not from event args), so
-    it is faithful across fits, rollbacks, and resets alike — the version snapshot is the
-    ground truth of what the bounds actually were, however the version was produced. Walking the
-    version history in order:
+    The walk follows each version's stored ``parent`` back from that commit's parent
+    (``session.derived_from`` on a ``base_version`` fork, else HEAD), so a fork sees its own
+    ancestors and never the branch it left. Each step compares the two versions' STORED parameter
+    tables and metas, which are the ground truth of what the bounds were however a version came
+    to be:
 
-    * ``count`` increments on every step where the ``side`` bound moved OUTWARD (a widening) and
-      RESETS to 0 on any step where it moved INWARD — a ``rollback_to`` / ``reset`` (or an
-      explicit narrowing) restores a smaller box and legitimately starts exploration over, so the
-      count reflects only the current uninterrupted run of widenings, not stale ones already undone.
-    * ``last_bic_gain`` is the BIC improvement the MOST RECENT widening bought — ``delta_bic =
-      2 * delta_nll``, since a bounds-only re-fit keeps k and n fixed — or ``None`` when either
-      version's ``neg_log_likelihood`` is missing (e.g. a simulate-only commit).
+    * ``count`` is the number of steps that moved the ``side`` bound OUTWARD with the
+      ``structure_hash`` unchanged, since the last step that moved it INWARD. A widening made in
+      the same step as a structural edit is not counted, since that step's fit change belongs to
+      the structure.
+    * ``last_bic_gain`` is ``2 * (parent nll - child nll)`` over the most recent counted step (a
+      bounds-only re-fit keeps k and n fixed), or ``None`` when either nll is missing.
 
-    Needs no extra per-session state; ``None``/``0`` whenever the history can't be read."""
+    A step needs both versions, so the first version, which descends from the shipped problem
+    rather than from a version, is never counted. ``0``/``None`` whenever the history can't be
+    read."""
     prov = session.provenance
     bound_col = UPPER_BOUND if side == "upper" else LOWER_BOUND
-    try:
-        metas = prov.list_versions()
-    except Exception:  # noqa: BLE001 - unreadable version store
-        return 0, None
-    nllh_by_version: dict[int, float | None] = {}
-    for m in metas:
-        v = m.get("version")
-        if v is None:
-            continue
-        nll = m.get("neg_log_likelihood")
-        nllh_by_version[int(v)] = float(nll) if nll is not None else None
+    outward = 1.0 if side == "upper" else -1.0  # signed so that OUTWARD is always up
 
-    count = 0
-    last_gain: float | None = None
-    prev_nllh: float | None = None
-    # Anchor on the table the problem SHIPPED, so the walk sees a transition into the first
-    # version instead of consuming it to establish a baseline.
+    def node(v: int) -> tuple[dict[str, Any], float]:
+        return prov.get_meta(v), outward * float(
+            prov.get_parameter_df(v).loc[parameter_id, bound_col]
+        )
+
+    v = session.derived_from if session.derived_from is not None else prov.current_version
     try:
-        prev_bound = float(session.shipped_parameter_df.loc[parameter_id, bound_col])
-    except Exception:  # noqa: BLE001 - parameter not in the shipped table
-        prev_bound = None
-    for v in sorted(nllh_by_version):
+        child, child_bound = node(v)
+    except Exception:  # noqa: BLE001 - no version yet / parameter absent / unreadable snapshot
+        return 0, None
+    count, last_gain = 0, None
+    while isinstance(p := child.get("parent"), int) and 0 <= p < v:
         try:
-            bound = float(prov.get_parameter_df(v).loc[parameter_id, bound_col])
-        except Exception:  # noqa: BLE001 - parameter absent at this version / unreadable snapshot
-            continue
-        nllh = nllh_by_version[v]
-        if prev_bound is not None:
-            if (bound > prev_bound) if side == "upper" else (bound < prev_bound):  # widened
-                count += 1
-                last_gain = (
-                    2.0 * (prev_nllh - nllh)
-                    if (prev_nllh is not None and nllh is not None)
-                    else None
-                )
-            elif (bound < prev_bound) if side == "upper" else (bound > prev_bound):  # narrowed
-                count, last_gain = 0, None
-        prev_bound, prev_nllh = bound, nllh
+            parent, parent_bound = node(p)
+        except Exception:  # noqa: BLE001 - parameter absent at the parent: the run starts here
+            break
+        if child_bound < parent_bound:  # narrowed: the run starts after this step
+            break
+        sh = child.get("structure_hash")
+        if child_bound > parent_bound and sh and sh == parent.get("structure_hash"):
+            count += 1
+            if count == 1:
+                nll, parent_nll = child.get("neg_log_likelihood"), parent.get("neg_log_likelihood")
+                if nll is not None and parent_nll is not None:
+                    last_gain = 2.0 * (float(parent_nll) - float(nll))
+        v, child, child_bound = p, parent, parent_bound
     return count, last_gain
+
+
+def _ordinal(n: int) -> str:
+    """``1st``, ``2nd``, ``3rd``, ``4th`` … ``11th``, ``12th``, ``13th`` … ``21st``."""
+    suffix = "th" if n % 100 in (11, 12, 13) else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
 
 
 def _reject_repeated_widening(
@@ -1855,14 +1854,15 @@ def _reject_repeated_widening(
     count, last_gain = _widening_history(session, parameter_id, side)
     if count < 2:  # a first or second widening is fine; the guard blocks the third
         return
-    # Block ONLY on a KNOWN, negligible gain — the backstop is defined by negligible BIC
-    # improvement, so an unknown gain (e.g. a simulate-only commit with no neg_log_likelihood)
-    # must not trigger it, and neither may a widening that is still buying a real improvement.
-    if last_gain is None or last_gain >= WIDENING_NEGLIGIBLE_BIC_GAIN:
+    # Block ONLY on a KNOWN gain in [0, threshold): an unknown gain (e.g. a simulate-only commit
+    # with no neg_log_likelihood) is no evidence, a widening still buying a real improvement is
+    # fine, and a widening that LOST BIC is not the negligible gain this guards.
+    if last_gain is None or not 0.0 <= last_gain < WIDENING_NEGLIGIBLE_BIC_GAIN:
         return
     raise OperationError(
-        f"Refusing to widen {parameter_id!r} a {count + 1}th time: it re-pinned at its {side} "
-        f"bound after {count} previous widenings for a negligible ~{last_gain:.2g} BIC gain. A "
+        f"Refusing to widen {parameter_id!r} a {_ordinal(count + 1)} time: it re-pinned at its "
+        f"{side} bound after {count} bounds-only widenings, the last for a negligible "
+        f"~{last_gain:.2g} BIC gain. A "
         "parameter pinned at a bound with a flat/collinear FIM direction (check "
         'get_fit_diagnosis(sections="parameters")) is UNIDENTIFIABLE, not under-explored — widening chases it toward '
         "infinity while it keeps re-pinning. Instead re-author with make_changes to REMOVE its "
@@ -2099,6 +2099,11 @@ def _parameter_edit(session, normalized: list[dict[str, Any]]) -> Callable[[Any]
         scale_checks: list[tuple[str, str]] = []  # (pid, scale) to verify AFTER the batched update
         changed = []
         warnings: list[str] = []
+        inner = (
+            R.classify_inner_parameters(problem)
+            if any(ch["upper_bound"] is not None for ch in normalized)
+            else {}
+        )
         for ch in normalized:
             pid, lb, ub, scale = (
                 ch["parameter_id"],
@@ -2107,6 +2112,14 @@ def _parameter_edit(session, normalized: list[dict[str, Any]]) -> Callable[[Any]
                 ch["scale"],
             )
             update: dict[str, Any] = {"id": pid}
+            if ub is not None and inner.get(pid) == R.INNER_TYPE_SIGMA:
+                raise OperationError(
+                    f"Refusing bounds on {pid!r}: the fit solves this noise sigma analytically, "
+                    "as the RMS of the residuals it covers, on [0, inf), so a bound on it does "
+                    "not apply. Only the model moves it: one that fits those data better lowers "
+                    f"it. Leave {pid!r} out of `parameters`.",
+                    cause="inner_solved_bound",
+                )
             if ub is not None:
                 # Widening backstops read the pre-edit bound, so they must run BEFORE any update.
                 # Entries are distinct parameters, so checking them all against the pristine table
@@ -2164,7 +2177,8 @@ def change_parameters(
     ('lin'|'log'|'log10'); an empty one changes nothing, for a refit with more starts. Group
     everything that belongs to one coherent retuning into a single
     call. Every per-parameter backstop still applies (a re-pinned parameter's 3rd widening, a
-    noise-sigma cap, a log scale on a non-positive box); because the whole batch is atomic, one
+    bound on a noise sigma the fit solves analytically, a noise-sigma cap, a log scale on a
+    non-positive box); because the whole batch is atomic, one
     rejected entry reverts ALL of them and nothing changes. An EDIT: mutates the parameter table
     but does NOT fit — the fit that scores it is wired at the server layer, not here."""
     normalized = (

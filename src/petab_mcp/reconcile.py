@@ -29,9 +29,11 @@ from petab.v2.C import (
     EXPERIMENT_ID,
     LOWER_BOUND,
     MEASUREMENT,
+    NOISE_DISTRIBUTION,
     NOISE_FORMULA,
     NOISE_PARAMETERS,
     NOMINAL_VALUE,
+    NORMAL,
     OBSERVABLE_FORMULA,
     OBSERVABLE_ID,
     OBSERVABLE_PARAMETERS,
@@ -1048,10 +1050,19 @@ def classify_inner_parameters(problem) -> dict[str, str]:
     OUT: it is not cleanly separable, so it stays an ordinary outer parameter. Only
     currently-ESTIMATED parameters are returned (a fixed sigma/scaling has nothing to solve).
 
+    A problem with any observable whose noise is not normal has none. pyPESTO refuses a
+    non-normal noise distribution only on an observable that HAS inner parameters, and scores
+    every other observable as normal on the linear scale whatever its distribution
+    (``calculate_quantitative_result``): a log-normal observable beside an inner-solved sigma comes
+    out with a wrong likelihood, silently (5.8 nll on a two-observable toy). Such a problem is
+    fitted jointly.
+
     Hierarchical optimization is best-effort — see ``fitting`` — so anything this misclassifies
     fails pyPESTO's own validation there and falls back to a joint fit rather than corrupting
     anything.
     """
+    if (problem.observable_df[NOISE_DISTRIBUTION] != NORMAL).any():
+        return {}
     sigmas = noise_sigma_ids(problem)
     scalings = observable_scaling_ids(problem)
     roles = observable_parameter_roles(problem)

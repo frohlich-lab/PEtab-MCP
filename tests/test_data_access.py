@@ -324,6 +324,58 @@ def test_nan_values_cleaned_to_none(session):
 
 
 # -- fit_diagnosis: the compact, bounded residual read for the agent --------
+def _inner_solved_toy(session, *, sigma: bool, offset: bool):
+    """The toy on 10 time points with fontaine's observation model, ``obs_B = B + offset_B`` with
+    noise ``sigma_B``, either one estimated or fixed, and records as an inner-solved offset and
+    sigma leave them: residuals centred, weighted chi2 equal to the point count."""
+    import pandas as pd
+
+    p = session.problem
+    times = [float(t) for t in range(10)]
+    mdf = pd.DataFrame({"observableId": "obs_B", "experimentId": "", "time": times})
+    mdf["measurement"] = 1.0
+    odf = p.observable_df
+    if offset:
+        odf = odf.assign(
+            observableFormula="B + observableOffset_obs_B",
+            observablePlaceholders="observableOffset_obs_B",
+        )
+        mdf["observableParameters"] = "offset_B"
+    p = session.problem = p.replace(observable_df=odf, measurement_df=mdf)
+    p.parameter_df.loc["offset_B"] = p.parameter_df.loc["k1"]
+    columns = ["parameterScale", "lowerBound", "upperBound", "nominalValue", "estimate"]
+    p.parameter_df.loc["offset_B", columns] = ["lin", -10, 10, 0.0, offset]
+    p.parameter_df.loc["sigma_B", "estimate"] = sigma
+    residuals = [0.1, 0.2, -0.15, 0.05, -0.1, -0.2, 0.3, -0.25, 0.15, -0.1]  # sum 0, 8 runs
+    sd = math.sqrt(sum(r * r for r in residuals) / len(residuals))
+    session.simulation = {
+        "records": [
+            _rec("obs_B", "", t, 1.0, 1.0 - r, r, r / sd, sd) for t, r in zip(times, residuals)
+        ]
+    }
+
+
+@pytest.mark.parametrize("sigma", [True, False])
+@pytest.mark.parametrize("offset", [True, False])
+def test_goodness_of_fit_that_holds_by_construction_says_so(session, sigma, offset):
+    """#267: with per-batch offsets and inner-solved sigmas every fontaine diagnosis read
+    total_chi2 = n (640), mean residual 0 and sign-test p 1.0 with low_power false, and agents cited
+    "zero mean bias" against readout changes. An estimated offset marks its observable's row
+    low-power and says why; a sigma solved over every point notes total_chi2. Neither is said where
+    the parameter is fixed, though the numbers are the same."""
+    _inner_solved_toy(session, sigma=sigma, offset=offset)
+    out = data_access.fit_diagnosis(session)
+    assert out["total_chi2"] == pytest.approx(10.0)
+    assert ("total_chi2_note" in out) is sigma
+    (row,) = out["per_observable"]
+    assert row["mean_weighted_residual"] == pytest.approx(0.0)
+    assert ("by_construction" in row) is offset
+    assert row["structure_flag"] is False
+    # 10 points are enough for both tests, unless an offset centred them
+    assert row["sign_test"]["low_power"] is row["structure_low_power"] is offset
+    assert data_access.residual_structure_rollup(session)["low_power"] is offset
+
+
 def test_fit_diagnosis_empty_without_simulation(session):
     out = data_access.fit_diagnosis(session)
     assert out["per_observable"] == [] and out["worst_points"] == []
