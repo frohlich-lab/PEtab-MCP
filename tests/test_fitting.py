@@ -550,3 +550,57 @@ def test_overrides_that_vary_only_across_conditions_are_taken_natively():
         ]
     )
     assert needs_flattening(_problem(mdf)) is False
+
+
+_LUN = """model lun
+  species R = 1;
+  EGF = 0; P2dose = 0; kpE = 1; k = 1; Kd = 0;
+  EGFdrive := EGF/(EGF + kpE*P2dose)
+  J1: R -> ; k*EGFdrive*R
+  J2: R -> ; k*R/Kd
+end
+"""
+
+
+def _caught(*messages, preeq_status=(0, -1, 0)):
+    """What `_non_finite` names in one experiment `e1` whose ReturnData carries ``messages``,
+    ``(identifier, text)`` as AMICI logs them."""
+    import types
+
+    from petab.v2.models.sbml_model import SbmlModel
+
+    session = types.SimpleNamespace(
+        problem=types.SimpleNamespace(model=SbmlModel.from_antimony(_LUN, model_id="lun"))
+    )
+    rdata = types.SimpleNamespace(
+        id="e1",
+        preeq_status=list(preeq_status),
+        messages=[types.SimpleNamespace(identifier=i, message=m) for i, m in messages],
+    )
+    return fitting._non_finite(session, [rdata])
+
+
+def test_the_expression_amici_finds_not_finite_is_named_as_written():
+    """lun 13 (sweep 63372750): `EGFdrive := EGF/(EGF + kpE*P2dose)` was 0/0 at
+    pre-equilibration, where both inputs are 0. Every start failed, the refusal named two other
+    causes, and the agent took three failed fits and a bisection to find it (PEtab-MCP#266).
+    AMICI names the state first and then the expression it reads, which is the cause."""
+    assert _caught(
+        ("AMICI:NaN", "AMICI encountered a NaN value for xdot[0] (R) at t=0.000000 "),
+        ("AMICI:NaN", "AMICI encountered a NaN value for w[0] (EGFdrive) at t=0.000000 "),
+        ("OTHER", "AMICI equilibration failed at t=0."),
+    ) == (
+        "`EGFdrive := EGF / (EGF + kpE * P2dose)` is NaN at t=0 in the pre-equilibration of "
+        "experiment `e1`"
+    )
+    # A reaction's rate is AMICI's expression `flux_<reaction>`.
+    assert _caught(
+        ("AMICI:Inf", "AMICI encountered an Inf value for w[2] (flux_J2) at t=3.500000 "),
+        preeq_status=(0, 0, 0),
+    ) == ("the rate of `J2` (`k * R / Kd`) is infinite at t=3.5 in experiment `e1`")
+
+
+def test_nothing_is_named_where_amici_caught_no_value_that_is_not_finite():
+    """An integration that fails on stiffness reports no NaN, so the refusal keeps its two
+    causes."""
+    assert _caught(("CVODES:CVode:TOO_MUCH_WORK", "mxstep steps taken before tout")) == ""

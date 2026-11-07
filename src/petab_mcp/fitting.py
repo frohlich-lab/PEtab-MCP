@@ -1335,6 +1335,19 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
         # `A/(A + B)` with both starting at 0, measured at t=0). The plain objective drops such a
         # point and stays finite; the hierarchical one, which solves the noise from every residual,
         # is non-finite at every start. Named, with the readout.
+        #
+        # Before that, what AMICI's own check for values that are not finite caught at the nominal
+        # point: a rule or rate that is not a number stops the simulation, and every point after it.
+        if objective_before is None:
+            from pypesto.C import RDATAS
+
+            x = problem_x_from_nominal(problem, session.problem.parameter_df)
+            rdatas = problem.objective(x, sensi_orders=(0,), return_dict=True)[RDATAS]
+            if caught := _non_finite(session, rdatas):
+                raise ModelUpdateError(
+                    "the fit produced NO usable optimum: every multistart failed, because "
+                    f"{caught}, which stops the simulation. Write it so it is a number there."
+                )
         undefined = _undefined_points(session, before.get("simulations") or [])
         if undefined:
             raise ModelUpdateError(
@@ -1429,7 +1442,9 @@ def _undefined_points(session, records: list[dict[str, Any]]) -> str:
     """The measured points a simulation that otherwise ran leaves without a value, by observable,
     with the readout each reads; ``""`` when there are none, or when nothing simulated at all (an
     integration failure, a different cause)."""
-    missing = [r for r in records if r.get("measurement") is not None and r.get("simulation") is None]
+    missing = [
+        r for r in records if r.get("measurement") is not None and r.get("simulation") is None
+    ]
     if not missing or len(missing) == len(records):
         return ""
     import libsbml
@@ -1455,6 +1470,48 @@ def _undefined_points(session, records: list[dict[str, Any]]) -> str:
                     reads += f"; it reads `{name} := {rules[name]}`"
         parts.append(f"`{obs_id}` at {shown}{reads}")
     return "; ".join(parts)
+
+
+def _non_finite(session, rdatas) -> str:
+    """What AMICI's check for values that are not finite caught in ``rdatas``: the expression as
+    written (an assignment rule, or a reaction's rate), else the state whose rate of change, with
+    the time and the experiment; ``""`` when it caught nothing.
+
+    When a state's rate of change is not finite, AMICI checks every expression and names the first
+    in its evaluation order that is not (``check_finite`` in its ``model.cpp``). A rule comes before
+    the rates that read it, so that is where a 0/0 starts rather than where it spread to. A rule only
+    a readout reads, not finite there too and earlier in that order, is named instead.
+    """
+    import re
+
+    import libsbml
+
+    sm = session.problem.model.sbml_model
+    caught = [
+        (rd, m.identifier, found.groups())
+        for rd in rdatas
+        for m in rd.messages
+        if m.identifier in ("AMICI:NaN", "AMICI:Inf")
+        and (found := re.search(r"value for (\w+)\[\d+\] \(([^)]*)\)(?: at t=(\S+))?", m.message))
+    ]
+    if not caught:
+        return ""
+    rd, identifier, (quantity, sid, t) = next((c for c in caught if c[2][0] == "w"), caught[0])
+    text = libsbml.formulaToL3String
+    if quantity == "w" and (rule := sm.getAssignmentRuleByVariable(sid)) is not None:
+        what = f"`{sid} := {text(rule.getMath())}`"
+    elif quantity == "w" and (reaction := sm.getReaction(sid.removeprefix("flux_"))) is not None:
+        what = f"the rate of `{reaction.getId()}` (`{text(reaction.getKineticLaw().getMath())}`)"
+    elif quantity == "xdot":
+        what = f"the rate of change of `{sid}`"
+    else:
+        what = f"`{sid}`"
+    where = f"experiment `{rd.id}`" if rd.id else "the simulation"
+    statuses = [int(s) for s in rd.preeq_status]
+    if any(statuses) and 1 not in statuses:  # a pre-equilibration ran, and did not succeed
+        where = f"the pre-equilibration of {where}"
+    when = f" at t={float(t):g}" if t else ""
+    return f"{what} is {'NaN' if identifier == 'AMICI:NaN' else 'infinite'}{when} in {where}"
 
 
 def _reconcile_objective(

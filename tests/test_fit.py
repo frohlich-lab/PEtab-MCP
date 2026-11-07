@@ -715,3 +715,38 @@ def test_every_inner_value_must_come_back_from_the_fit():
             fitting._inner_fitted_values(problem, lost, inner)
     with pytest.raises(ModelUpdateError, match="s_B"):
         fitting._inner_fitted_values(problem, best, {**inner, "s_B": "scaling"})
+
+
+_DOSE_DRIVEN = """model conversion_reaction
+  compartment compartment_ = 1;
+  species A in compartment_, B in compartment_;
+  A = A_init;
+  B = B_init;
+  A_init = 1.0;
+  B_init = 0.0;
+  dose = 0;
+  K = 1;
+  k1 = 0.5;
+  k2 = 0.1;
+  drive := dose/(dose + K*B)
+  r1: A => B; k1 * drive * A;
+  r2: B => A; k2 * B;
+end
+"""
+
+
+def test_a_rate_that_is_0_over_0_at_pre_equilibration_is_named(dosed_session, amici_build_root):
+    """lun 13 (sweep 63372750): `EGFdrive := EGF/(EGF + kpE*P2dose)` was 0/0 at
+    pre-equilibration, where both inputs are 0. Every start failed, the refusal named two other
+    causes, and the agent took three failed fits and a bisection to find it (PEtab-MCP#266)."""
+    from petab_mcp.engine import AmiciEngine
+
+    O.set_model(dosed_session, _DOSE_DRIVEN, justification="B made at a dose-driven rate")
+    dosed_session.engine = AmiciEngine(dosed_session, build_root=str(amici_build_root))
+    dosed_session.auto_fit_starts = 2
+    with pytest.raises(ModelUpdateError) as refused:
+        dosed_session.fit()
+    assert (
+        "because `drive := dose / (dose + K * B)` is NaN at t=0 in the pre-equilibration of "
+        "experiment `e0`, which stops the simulation"
+    ) in str(refused.value)
