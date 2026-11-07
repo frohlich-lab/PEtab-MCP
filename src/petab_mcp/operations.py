@@ -686,14 +686,14 @@ def set_model(
         else []
     )
 
-    # Snapshot the currently-estimated parameter ids so we can flag any the re-author drops.
+    # The parameters estimated in the version this edit starts from (the fork's base, else HEAD), so
+    # we can flag any the re-author drops.
     from petab.v2.C import ESTIMATE
 
     prior_estimated: set[str] = set()
     try:
-        df = session.problem.parameter_df
-        if ESTIMATE in df.columns:
-            prior_estimated = {str(p) for p in df.index[estimated_mask(df)]}
+        if ESTIMATE in current.columns:
+            prior_estimated = {str(p) for p in current.index[estimated_mask(current)]}
     except Exception:  # never let the warning bookkeeping break the op
         prior_estimated = set()
 
@@ -739,9 +739,9 @@ def set_model(
 
     # Guardrail: a re-author that no longer declares a previously-estimated parameter drops
     # its row (and its fitted value). Surface that — it is the one real footgun of a wholesale
-    # replace; fixed/table-referenced parameters are not affected.
-    removed = ((result.get("reconcile") or {}).get("parameters") or {}).get("removed") or []
-    dropped = sorted(p for p in removed if str(p) in prior_estimated)
+    # replace; fixed/table-referenced parameters are not affected. Read off the committed table
+    # rather than the reconcile's `removed`, which a fork measures against HEAD's table.
+    dropped = sorted(prior_estimated - {str(p) for p in session.problem.parameter_df.index})
     if dropped:
         note = (
             f"the re-author dropped previously-estimated parameter(s) {dropped}: their fitted "

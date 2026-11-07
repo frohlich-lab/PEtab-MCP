@@ -1009,16 +1009,43 @@ def stored_diagnosis(session) -> dict[str, Any] | None:
     is bounded the way the fit bounded it.
     """
     stored = (getattr(session, "simulation", None) or {}).get(STORED_DIAGNOSIS_KEY)
-    diagnosis = stored.get("diagnosis") if isinstance(stored, dict) else None
-    if not isinstance(diagnosis, dict) or not diagnosis.get("available"):
+    out = _stored_verdict(stored)
+    if out is None:
         return unavailable(NO_OPTIMUM_NOTE)
-    out = {
-        k: v for k, v in diagnosis.items() if k not in ("stale", "stale_note", "working_table_note")
-    }
     if structure_moved(session, stored.get("structure_hash")):
         out["stale"] = True
         out["stale_note"] = STALE_NOTE
     return out
+
+
+#: Why ``get_fit_diagnosis(version=N)`` has no parameter section for that version.
+NO_STORED_DIAGNOSIS_NOTE = (
+    "version {version} stored no parameter diagnosis: its fit froze no optimum, or the FIM "
+    "there could not be computed. A read never refits to make one."
+)
+
+
+def version_diagnosis(simulation: dict[str, Any] | None, version: int) -> dict[str, Any]:
+    """Stored ``version``'s parameter diagnosis, off the ``simulation`` blob it stored
+    (:func:`fit_diagnosis_block`), or the ``available: False`` payload saying there is none.
+
+    Nothing is recomputed, so ``top_n`` has no effect, and nothing is labelled stale: it describes
+    that version's own fit, whatever the working state is now."""
+    out = _stored_verdict((simulation or {}).get(STORED_DIAGNOSIS_KEY))
+    if out is None:
+        return unavailable(NO_STORED_DIAGNOSIS_NOTE.format(version=version))
+    return out
+
+
+def _stored_verdict(stored: Any) -> dict[str, Any] | None:
+    """The verdict of a stored :func:`fit_diagnosis_block` without the labels that compare it to
+    the working state then, or ``None`` where it holds no available one."""
+    diagnosis = stored.get("diagnosis") if isinstance(stored, dict) else None
+    if not isinstance(diagnosis, dict) or not diagnosis.get("available"):
+        return None
+    return {
+        k: v for k, v in diagnosis.items() if k not in ("stale", "stale_note", "working_table_note")
+    }
 
 
 def stored_merge_hints(session) -> list[dict[str, Any]] | None:

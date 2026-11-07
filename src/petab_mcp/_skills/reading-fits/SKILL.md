@@ -64,7 +64,7 @@ description: >-
 
 ## Diagnosis: parameters
 
-`identifiability` describes the LAST fit: `available: false` before one, `stale: true` once a
+`identifiability` describes `version`'s fit: `available: false` before one, `stale: true` once a
 different structure is in the working state.
 
 - Per parameter: `se_scaled`, `fold_uncertainty`, `at_bound`, and `multistart_std` (how far it

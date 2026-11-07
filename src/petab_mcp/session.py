@@ -16,6 +16,7 @@ from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from petab.v2.C import CONDITION_ID, ESTIMATE, EXPERIMENT_ID
@@ -117,6 +118,14 @@ _PROGRESS_ON_RESULT = (
 def _n_unique(df, column: str) -> int:
     """How many distinct ``column`` ids ``df`` names; 0 for an absent table."""
     return 0 if df is None or column not in df.columns else int(df[column].nunique())
+
+
+def _with_fitted_values(simulation: dict[str, Any] | None, parameter_df) -> dict[str, Any] | None:
+    """A version's stored ``simulation`` with the ``fitted_parameters`` its ``parameter_df``
+    holds, where the simulation is a fit's: a version keeps them by name only in its table."""
+    if simulation and simulation.get("status") in ("fit", "scored_at_nominal"):
+        simulation["fitted_parameters"] = table_fitted_values(parameter_df)
+    return simulation
 
 
 @dataclass(frozen=True)
@@ -876,11 +885,7 @@ class PetabSession:
             snap = self.provenance.get_version(version)
             self._set_model_from_antimony(snap["model_antimony"])
             self.problem.parameter_df = self.provenance.get_parameter_df(version)
-            self.simulation = snap.get("simulation")
-            if self.simulation and self.simulation.get("status") in ("fit", "scored_at_nominal"):
-                self.simulation["fitted_parameters"] = table_fitted_values(
-                    self.problem.parameter_df
-                )
+            self.simulation = _with_fitted_values(snap.get("simulation"), self.problem.parameter_df)
             self.version_score = (self.problem_hash(), snap.get("neg_log_likelihood"))
             # The branch source moves WITH the model. Without this, a structured edit after a
             # rollback applies its operations to the abandoned branch's text and silently
@@ -893,6 +898,23 @@ class PetabSession:
             # persisted per version (``None`` for legacy/unfitted versions), so a rollback or
             # durable resume brings them back rather than dropping them.
             self.optimization = snap.get("optimization")
+
+    def stored_fit(self, version: int) -> SimpleNamespace:
+        """Stored ``version``'s fit as :meth:`apply_version` would restore it, without touching the
+        working state: ``problem`` is the working problem with that version's parameter table,
+        ``simulation`` its stored records with the fitted values that table holds, ``optimization``
+        ``None``. ``get_fit_diagnosis(version=N)`` hands it to the residual reads of
+        :mod:`data_access` in place of the session. Those read the tables and the records, never the
+        model, so ``problem`` keeps the working model and nothing is built or refit. Raises
+        ``UnknownEntityError`` for a version that does not exist."""
+        parameter_df = self.provenance.get_parameter_df(version)
+        return SimpleNamespace(
+            problem=self.problem.replace(parameter_df=parameter_df),
+            simulation=_with_fitted_values(
+                self.provenance.get_version_simulation(version), parameter_df
+            ),
+            optimization=None,
+        )
 
     def _snapshot_version(
         self,

@@ -2265,12 +2265,16 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         worst_n: int = 8,
         top_n: int = 8,
         max_observables: int = 12,
+        version: int | None = None,
     ) -> dict[str, Any]:
         """The size-bounded DETAIL behind the verdicts every fit result already carries: where the
         fit is off, and which parameters it cannot pin. `sections` picks the half: 'residuals'
         (the default), 'parameters', or 'all'. Neither compiles a model, so the cost is the
         payload (2-8 kB each), re-sent in your history on every later turn: ask for 'parameters'
         when the score has stalled and you need to know what to cut, not by reflex.
+
+        It describes HEAD's fit, or with `version=N` stored version N's, read from what that fit
+        stored and never refit; the reply's `version` names which.
 
         RESIDUALS: per observable the weighted `chi2`, `mean_weighted_residual` (bias), the worst
         |residual| and two sign-based structure tests (`sign_test`, `runs_test`, each with `p` and
@@ -2303,7 +2307,27 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
 
         def run() -> dict[str, Any]:
             want = _diagnosis_sections(sections)
-            out: dict[str, Any] = {}
+            head = session.provenance.current_version
+            if version is not None and version != head:
+                # Off what that version's fit stored: its records and the parameter verdict
+                # beside them. Neither section simulates or falls back to HEAD.
+                fit = session.stored_fit(version)
+                out: dict[str, Any] = {"version": version}
+                if "residuals" in want:
+                    out.update(
+                        data_mod.fit_diagnosis(
+                            fit,
+                            worst_n,
+                            max_observables=max_observables or None,
+                            no_records=data_mod.NO_STORED_RECORDS_STATUS.format(version=version),
+                        )
+                    )
+                if "parameters" in want:
+                    out["identifiability"] = identifiability_mod.version_diagnosis(
+                        fit.simulation, version
+                    )
+                return out
+            out = {"version": head if head >= 0 else None}
             if "residuals" in want:
                 if session.simulation is None or not session.simulation.get("records"):
                     # On demand, and only where that is an integration rather than a C++ build:
@@ -2341,7 +2365,9 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
             return out
 
         return ctx.run(
-            "get_fit_diagnosis", run, {"sections": sections, "worst_n": worst_n, "top_n": top_n}
+            "get_fit_diagnosis",
+            run,
+            {"sections": sections, "worst_n": worst_n, "top_n": top_n, "version": version},
         )
 
 
@@ -2430,7 +2456,7 @@ _GET_VERSION_DOC = (
     "a part that would take it past that comes back without its rows, 'simulation' with each "
     "observable's chi2 and 'optimization' with each start's objective, and the part's `omitted` "
     "says where its rows are. A version's per-point rows are `query_data` on "
-    "`simulations_history`, paged, and the current fit's residuals `get_fit_diagnosis`."
+    "`simulations_history`, paged, and its fit's diagnosis `get_fit_diagnosis(version=N)`."
 )
 
 

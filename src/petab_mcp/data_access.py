@@ -578,10 +578,23 @@ _NO_SIMULATION_STATUS = (
     "a model to make one. Commit the model with make_changes (which fits it), then read this again."
 )
 
+#: Why ``get_fit_diagnosis(version=N)`` has no residual section for that version.
+NO_STORED_RECORDS_STATUS = (
+    "version {version} stored no per-point records (its fit produced none), so it has no "
+    "residuals to diagnose. A read never refits to make them."
+)
 
-def fit_diagnosis(session, worst_n: int = 8, max_observables: int | None = 12) -> dict[str, Any]:
+
+def fit_diagnosis(
+    session,
+    worst_n: int = 8,
+    max_observables: int | None = 12,
+    *,
+    no_records: str = _NO_SIMULATION_STATUS,
+) -> dict[str, Any]:
     """A COMPACT, size-bounded residual diagnosis of the current fit — the ``residuals`` section of
-    ``get_fit_diagnosis``.
+    ``get_fit_diagnosis``. ``session`` may be a stored version's fit (:meth:`PetabSession.stored_fit`)
+    instead, and ``no_records`` is the ``status`` said where there are no per-point records.
 
     Unlike :func:`run_query` (arbitrary SQL, can return the whole dataset), this returns fixed
     aggregations with capped output — one row per observable (weighted χ², mean weighted
@@ -602,7 +615,7 @@ def fit_diagnosis(session, worst_n: int = 8, max_observables: int | None = 12) -
     """
     df = _frames(session)["simulations"]
     if df is None or df.empty:
-        return {"status": _NO_SIMULATION_STATUS, "per_observable": [], "worst_points": []}
+        return {"status": no_records, "per_observable": [], "worst_points": []}
     d = df[df["residual_weighted"].notna()].copy()
     if d.empty:
         return {
