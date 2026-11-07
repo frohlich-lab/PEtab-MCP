@@ -747,5 +747,5 @@ def test_a_rate_that_is_0_over_0_at_pre_equilibration_is_named(dosed_session, am
         dosed_session.fit()
     assert (
         "because `drive := dose / (dose + K * B)` is NaN at the start of the pre-equilibration "
-        "under condition `pre`, where dose = 0 and B = 0, so the simulation cannot start"
+        "under condition `pre`, where B = 0 and dose = 0, so the simulation cannot start"
     ) in str(refused.value)
