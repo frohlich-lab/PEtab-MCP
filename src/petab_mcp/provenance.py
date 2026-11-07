@@ -467,8 +467,8 @@ class ProvenanceStore:
         An entry that is unreadable, malformed, or not a JSON OBJECT is skipped and logged, not
         returned: callers iterate the result and call ``.get`` on each element without guarding,
         and a raise there escapes into the commit path. Callers also degrade a raise from this
-        method to an empty list, which would silently disable de-duplication and the
-        repeated-widening backstop. Skipping per file degrades proportionally.
+        method to an empty list, which would silently disable de-duplication. Skipping per file
+        degrades proportionally.
         """
         out = []
         # Only ``v<int>`` directories are versions; skip any stray ``v*`` entry (a leftover temp

@@ -389,20 +389,30 @@ def test_change_parameters_bad_range_reverts(session):
     assert float(recs["k1"]["upperBound"]) != 1.0  # not applied
 
 
-# -- repeated-widening backstop (issue #56) --------------------------------
-def _add_version(session, *, upper, nllh, kind="fit"):
-    """Snapshot a real version whose stored parameter table sets k1's UPPER bound to ``upper``
-    and whose meta records ``neg_log_likelihood`` (``None`` => a simulate-only fit). The
-    guard reconstructs widening history from these stored tables, so this mirrors exactly how a
-    real fit / rollback lands on disk."""
+# -- repeated-widening backstop (issues #56, #269) --------------------------
+def _add_version(session, *, upper, nllh, structure="s0", parent=None):
+    """Snapshot a real version whose stored parameter table sets k1's UPPER bound to ``upper``,
+    whose meta records ``structure_hash`` ``structure`` and ``neg_log_likelihood`` ``nllh``
+    (``None`` => none recorded), descending from ``parent`` (default HEAD). The guard walks these
+    stored tables and metas along ``parent``, so this mirrors how a real fit lands on disk."""
     from petab.v2.C import UPPER_BOUND
 
     df = session.problem.parameter_df.copy(deep=True)
     df.loc["k1", UPPER_BOUND] = upper
-    meta = {} if nllh is None else {"neg_log_likelihood": nllh}
-    session.provenance.snapshot_version(
-        session.problem.model.to_antimony(), df, kind=kind, meta=meta
+    meta = {"structure_hash": structure}
+    if nllh is not None:
+        meta["neg_log_likelihood"] = nllh
+    return session.provenance.snapshot_version(
+        session.problem.model.to_antimony(), df, kind="fit", parent=parent, meta=meta
     )
+
+
+def _two_negligible_widenings(session, parent=None):
+    """A base version and two bounds-only widenings of k1 (100 -> 1e3 -> 1e4), each for
+    ΔBIC = 0.1. Returns the last version."""
+    base = _add_version(session, upper=100.0, nllh=100.0, parent=parent)
+    _add_version(session, upper=1e3, nllh=99.95, parent=base)
+    return _add_version(session, upper=1e4, nllh=99.9)
 
 
 def _pin_k1_at_upper(session, upper):
@@ -414,12 +424,11 @@ def _pin_k1_at_upper(session, upper):
 
 
 def test_reject_third_widening_of_repinning_parameter(session):
-    # Two prior widenings (100 -> 1e3 -> 1e4), still pinned, negligible last gain (ΔBIC=0.2) ->
-    # the third widening is refused.
-    _add_version(session, upper=1e3, nllh=100.0)
-    _add_version(session, upper=1e4, nllh=99.9)
+    # Two prior bounds-only widenings, still pinned, negligible last gain -> the third widening
+    # is refused, and the message counts it as the 3rd, not the "3th" of #269.
+    _two_negligible_widenings(session)
     _pin_k1_at_upper(session, 1e4)
-    with pytest.raises(OperationError, match="Refusing to widen"):
+    with pytest.raises(OperationError, match="Refusing to widen 'k1' a 3rd time"):
         O._reject_repeated_widening(session, session.problem, "k1", 1e-4, 1e5)
 
 
@@ -427,8 +436,7 @@ def test_third_widening_rejected_through_full_operation_and_reverts(session):
     # Same, but through the public op: it must raise without applying the new bound.
     from petab.v2.C import UPPER_BOUND
 
-    _add_version(session, upper=1e3, nllh=100.0)
-    _add_version(session, upper=1e4, nllh=99.9)
+    _two_negligible_widenings(session)
     _pin_k1_at_upper(session, 1e4)
     with pytest.raises(OperationError):
         O.change_parameters(
@@ -442,63 +450,111 @@ def test_third_widening_rejected_through_full_operation_and_reverts(session):
 def test_second_widening_is_allowed(session):
     # Only one prior widening -> the next one is fine (widen at most once is skill guidance;
     # the hard backstop only blocks the THIRD).
-    _add_version(session, upper=1e3, nllh=100.0)
+    _add_version(session, upper=100.0, nllh=100.0)
+    _add_version(session, upper=1e3, nllh=99.95)
     _pin_k1_at_upper(session, 1e3)
     O._reject_repeated_widening(session, session.problem, "k1", 1e-4, 1e5)  # no raise
 
 
 def test_widening_allowed_when_not_at_bound(session):
     # Two prior widenings but the parameter now sits mid-range -> not the pathology; allowed.
-    _add_version(session, upper=1e3, nllh=100.0)
-    _add_version(session, upper=1e4, nllh=99.9)
+    _two_negligible_widenings(session)
     session.problem.parameter_df.loc["k1", "upperBound"] = 1e4
     session.simulation = {"fitted_parameters": {"k1": 1.0}}  # comfortably inside the box
     O._reject_repeated_widening(session, session.problem, "k1", 1e-4, 1e5)  # no raise
 
 
 def test_widening_allowed_when_last_gain_is_meaningful(session):
-    # The last widening bought a real BIC improvement (ΔBIC = 2*(100-80) = 40) -> keep going.
-    _add_version(session, upper=1e3, nllh=100.0)
+    # The last widening bought a real BIC improvement (ΔBIC = 2*(99.95-80) ≈ 40) -> keep going.
+    _add_version(session, upper=100.0, nllh=100.0)
+    _add_version(session, upper=1e3, nllh=99.95)
     _add_version(session, upper=1e4, nllh=80.0)
     _pin_k1_at_upper(session, 1e4)
     O._reject_repeated_widening(session, session.problem, "k1", 1e-4, 1e5)  # no raise
 
 
 def test_widening_allowed_when_last_gain_unknown(session):
-    # A simulate-only commit before the last widening leaves its BIC gain undeterminable. The
-    # backstop is defined by a NEGLIGIBLE gain, so an unknown gain must NOT trigger it.
-    _add_version(session, upper=1e3, nllh=None)  # no neg_log_likelihood recorded
+    # A version with no neg_log_likelihood before the last widening leaves its BIC gain
+    # undeterminable. The backstop is defined by a NEGLIGIBLE gain, so an unknown gain must NOT
+    # trigger it.
+    _add_version(session, upper=100.0, nllh=100.0)
+    _add_version(session, upper=1e3, nllh=None)
     _add_version(session, upper=1e4, nllh=99.9)
     _pin_k1_at_upper(session, 1e4)
     O._reject_repeated_widening(session, session.problem, "k1", 1e-4, 1e5)  # no raise
 
 
+def test_a_widening_that_lost_bic_is_not_a_negligible_gain(session):
+    # #269: the last widening LOST ~710 BIC; it was refused "for a negligible ~-7.1e+02 BIC gain".
+    _add_version(session, upper=100.0, nllh=100.0)
+    _add_version(session, upper=1e3, nllh=99.95)
+    _add_version(session, upper=1e4, nllh=455.0)
+    _pin_k1_at_upper(session, 1e4)
+    assert O._widening_history(session, "k1", "upper") == (2, pytest.approx(-710.1))
+    O._reject_repeated_widening(session, session.problem, "k1", 1e-4, 1e5)  # no raise
+
+
+def test_a_widening_made_with_a_structural_edit_is_not_counted(session):
+    # #269: a step that widened k1 AND changed the structure was counted, and its fit change
+    # (here ΔBIC = 0.1) taken as the widening's gain. Only the two bounds-only steps count, and
+    # the gain is the last of THOSE (ΔBIC ≈ 19.9), so the next widening is allowed.
+    _add_version(session, upper=100.0, nllh=100.0)
+    _add_version(session, upper=1e3, nllh=99.95)
+    _add_version(session, upper=1e4, nllh=90.0)
+    _add_version(session, upper=1e5, nllh=89.95, structure="s1")
+    _pin_k1_at_upper(session, 1e5)
+    assert O._widening_history(session, "k1", "upper") == (2, pytest.approx(19.9))
+    O._reject_repeated_widening(session, session.problem, "k1", 1e-4, 1e6)  # no raise
+
+
 def test_narrowing_a_repinning_parameter_is_never_blocked(session):
     # Moving the pinned bound INWARD is not a widening -> never guarded.
-    _add_version(session, upper=1e3, nllh=100.0)
-    _add_version(session, upper=1e4, nllh=99.9)
+    _two_negligible_widenings(session)
     _pin_k1_at_upper(session, 1e4)
     O._reject_repeated_widening(session, session.problem, "k1", 1e-4, 5e3)  # no raise
 
 
-def test_rollback_resets_widening_count(session):
-    # Two widenings then a rollback that restores the smaller box (an inward move) -> the run of
+def test_narrowing_resets_widening_count(session):
+    # Two widenings then a step that restores the smaller box (an inward move) -> the run of
     # widenings resets, so the next widening is a fresh first, not a blocked third.
-    _add_version(session, upper=1e3, nllh=100.0)
-    _add_version(session, upper=1e4, nllh=99.9)
-    _add_version(session, upper=1e3, nllh=100.0, kind="rollback")  # restores the smaller box
+    _two_negligible_widenings(session)
+    _add_version(session, upper=1e3, nllh=99.95)
     _pin_k1_at_upper(session, 1e3)
+    assert O._widening_history(session, "k1", "upper") == (0, None)
     O._reject_repeated_widening(session, session.problem, "k1", 1e-4, 1e4)  # no raise
 
 
-def test_widenings_across_fitted_versions_are_counted(session):
-    # A widening that reaches a version via any fit snapshot counts toward the backstop exactly
-    # like any other; the guard reads stored parameter tables regardless of the version's kind.
-    _add_version(session, upper=1e3, nllh=100.0, kind="fit")
-    _add_version(session, upper=1e4, nllh=99.9, kind="fit")
+def test_a_fork_does_not_inherit_the_abandoned_branchs_widenings(session):
+    # #269: the history walked version NUMBERS, so a `base_version` fork was charged with the
+    # widenings of the branch it left. Forking from the base sees only the base's lineage.
+    base = _two_negligible_widenings(session) - 2
     _pin_k1_at_upper(session, 1e4)
+    session.derived_from = base
+    assert O._widening_history(session, "k1", "upper") == (0, None)
+    O._reject_repeated_widening(session, session.problem, "k1", 1e-4, 1e5)  # no raise
+
+
+def test_widenings_are_counted_along_parents_not_version_numbers(session):
+    # The reverse of the fork case: v0 -> v1 -> v2 is abandoned, and v3 -> v4 descend from v0.
+    # In number order v2 -> v3 reads as a narrowing that resets the run; along parents, v4 is the
+    # second negligible widening since v0, so the third is refused.
+    base = _two_negligible_widenings(session) - 2
+    fork = _add_version(session, upper=1e3, nllh=99.95, parent=base)
+    _add_version(session, upper=1e4, nllh=99.9, parent=fork)
+    _pin_k1_at_upper(session, 1e4)
+    assert O._widening_history(session, "k1", "upper") == (2, pytest.approx(0.1))
     with pytest.raises(OperationError, match="Refusing to widen"):
         O._reject_repeated_widening(session, session.problem, "k1", 1e-4, 1e5)
+
+
+@pytest.mark.parametrize(
+    ("n", "word"),
+    [(1, "1st"), (2, "2nd"), (3, "3rd"), (4, "4th"), (11, "11th"), (12, "12th"), (13, "13th")]
+    + [(21, "21st"), (22, "22nd"), (111, "111th")],
+)
+def test_ordinal(n, word):
+    # #269: the refusal said "a 3th time".
+    assert O._ordinal(n) == word
 
 
 def test_compile_fit_failure_message_reserved_name():

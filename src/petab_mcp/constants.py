@@ -297,10 +297,11 @@ NOISE_SIGMA_BAND_MIN_DF = 3.0
 # under-explored: widening its box just lets the optimum slide to the new edge and re-pin for a
 # negligible fit gain, chasing the search space toward infinity (one agent widened one rate 4x
 # this way before finally fixing it). ``change_parameters`` REJECTS a THIRD such widening
-# of a still-pinned parameter when the previous widening bought less than this much BIC. The
-# threshold is in BIC because a bounds-only re-fit keeps k and n fixed, so an NLL improvement
-# converts as delta_bic = 2 * delta_nll; a BIC gain below ~2 is "not worth more than a bare
-# mention". The skill guidance is stricter still (widen at most once) — this is the hard backstop.
+# of a still-pinned parameter when the previous bounds-only widening bought a BIC gain of at
+# least 0 but less than this. The threshold is in BIC because a bounds-only re-fit keeps k and n
+# fixed, so an NLL improvement converts as delta_bic = 2 * delta_nll; a BIC gain below ~2 is "not
+# worth more than a bare mention". The skill guidance is stricter still (widen at most once) —
+# this is the hard backstop.
 WIDENING_NEGLIGIBLE_BIC_GAIN = 2.0
 
 # -- structural-inadequacy nudge (issue #82) --------------------------------
