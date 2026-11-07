@@ -340,7 +340,7 @@ def test_the_statistics_documented_shape_is_its_actual_shape():
 
 def test_rollup_replicate_arm_never_raises(session, monkeypatch):
     """Fail OPEN: this runs on every commit and feeds a gate, so a plumbing failure must degrade to
-    NO EVIDENCE rather than take down the fit."""
+    NOT TESTED rather than take down the fit."""
     from petab_mcp import reconcile as R
 
     _replicated_records(session, deviation=0.5)
@@ -489,7 +489,18 @@ def test_the_summary_speaks_when_the_arm_could_not_run(session):
         r["simulation"] += 0.001 * i
     out = data_access.residual_structure_rollup(session)
     assert out["replicate_lack_of_fit"]["status"] == "unavailable"
-    assert "replicate lack-of-fit: NO EVIDENCE" in out["summary"]
+    assert "replicate lack-of-fit: NOT TESTED (unavailable)" in out["summary"]
+
+
+@pytest.mark.parametrize(
+    "status", ["replicates_too_thin", "too_few_usable_points", "vacuous", "unavailable"]
+)
+def test_an_arm_that_never_ran_reads_not_tested(status):
+    """#267: these lines read "NO EVIDENCE", and one agent's final report turned "NO EVIDENCE —
+    too thin" into "replicate lack-of-fit: no evidence", a pass. The test never ran, so the line
+    says so and names why."""
+    line = data_access._replicate_lof_line({"available": False, "status": status, "n_points": 4})
+    assert line.startswith(f"replicate lack-of-fit: NOT TESTED ({status}) — "), line
 
 
 def test_a_problem_whose_noise_is_fixed_data_says_nothing_every_fit(session):
@@ -537,7 +548,7 @@ def test_a_benign_family_cannot_silence_an_unresolvable_one():
     for order in (verdicts, list(reversed(verdicts))):
         merged = data_access._merge_lof_verdicts(order, {})
         assert merged["status"] == "unavailable"
-        assert "NO EVIDENCE" in data_access._replicate_lof_line(merged)
+        assert "NOT TESTED (unavailable)" in data_access._replicate_lof_line(merged)
 
 
 def test_a_pass_is_not_hedged_against_a_family_with_nothing_in_it():
@@ -849,7 +860,7 @@ def test_a_flag_stands_at_any_lack_of_fit_df():
     assert v["available"] is True and v["status"] == "flagged", v
     assert v["flagged_observables"] == ["p0"] and "weak" not in v, v
     # ...but at df <= 0 the arm is VACUOUS and the flag goes with it: a fit that flexible could have
-    # placed that point anywhere, so NO EVIDENCE is the honest reading and the fail-open one. This is
+    # placed that point anywhere, so NOT TESTED is the honest reading and the fail-open one. This is
     # the one place the flag does not survive, and it is why `vacuous` is decided on the POOLED count
     # rather than per family — a family whose own points are outnumbered is not a saturated problem.
     v = data_access._merge_lof_verdicts([arm], {}, n_structural=15)
@@ -947,7 +958,7 @@ def test_a_pooled_family_that_is_powered_is_not_refused_as_vacuous():
     three_small = _merged_flat(4, 10, families=3)
     assert three_small["available"] is True and three_small["lof_df"] == 2, three_small
     assert three_small["weak"] is True, three_small
-    assert "NO EVIDENCE" not in data_access._replicate_lof_line(three_small)
+    assert "NOT TESTED" not in data_access._replicate_lof_line(three_small)
     # ...and a problem that really IS saturated still reports nothing: 3 x 4 points against 12
     assert _merged_flat(4, 12, families=3)["status"] == "vacuous"
 

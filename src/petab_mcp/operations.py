@@ -2064,6 +2064,11 @@ def _parameter_edit(session, normalized: list[dict[str, Any]]) -> Callable[[Any]
         scale_checks: list[tuple[str, str]] = []  # (pid, scale) to verify AFTER the batched update
         changed = []
         warnings: list[str] = []
+        inner = (
+            R.classify_inner_parameters(problem)
+            if any(ch["upper_bound"] is not None for ch in normalized)
+            else {}
+        )
         for ch in normalized:
             pid, lb, ub, scale = (
                 ch["parameter_id"],
@@ -2072,6 +2077,14 @@ def _parameter_edit(session, normalized: list[dict[str, Any]]) -> Callable[[Any]
                 ch["scale"],
             )
             update: dict[str, Any] = {"id": pid}
+            if ub is not None and inner.get(pid) == R.INNER_TYPE_SIGMA:
+                raise OperationError(
+                    f"Refusing bounds on {pid!r}: the fit solves this noise sigma analytically, "
+                    "as the RMS of the residuals it covers, on [0, inf), so a bound on it does "
+                    "not apply. Only the model moves it: one that fits those data better lowers "
+                    f"it. Leave {pid!r} out of `parameters`.",
+                    cause="inner_solved_bound",
+                )
             if ub is not None:
                 # Widening backstops read the pre-edit bound, so they must run BEFORE any update.
                 # Entries are distinct parameters, so checking them all against the pristine table
@@ -2129,7 +2142,8 @@ def change_parameters(
     ('lin'|'log'|'log10'); an empty one changes nothing, for a refit with more starts. Group
     everything that belongs to one coherent retuning into a single
     call. Every per-parameter backstop still applies (a re-pinned parameter's 3rd widening, a
-    noise-sigma cap, a log scale on a non-positive box); because the whole batch is atomic, one
+    bound on a noise sigma the fit solves analytically, a noise-sigma cap, a log scale on a
+    non-positive box); because the whole batch is atomic, one
     rejected entry reverts ALL of them and nothing changes. An EDIT: mutates the parameter table
     but does NOT fit — the fit that scores it is wired at the server layer, not here."""
     normalized = (

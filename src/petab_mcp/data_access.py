@@ -50,6 +50,7 @@ from petab.v2.C import (
     NOMINAL_VALUE,
     OBSERVABLE_FORMULA,
     OBSERVABLE_ID,
+    OBSERVABLE_PARAMETERS,
     PARAMETER_ID,
     TARGET_ID,
     TARGET_VALUE,
@@ -625,6 +626,7 @@ def fit_diagnosis(
         }
     d["_rw"] = d["residual_weighted"].astype(float)
 
+    centred = _offset_centred_observables(session.problem)
     per_observable = []
     for obs, g in d.groupby("observable_id"):
         rw = g["_rw"]
@@ -641,7 +643,8 @@ def fit_diagnosis(
                 # unlike the magnitude scores above. Isolated so a failure in
                 # the added stats degrades to "tests unavailable" rather than taking down the whole
                 # (pre-existing, robust) magnitude diagnosis for this observable.
-                **_safe_residual_structure(g),
+                **_safe_residual_structure(g, centred=_clean(obs) in centred),
+                **({"by_construction": _OFFSET_CENTRED} if _clean(obs) in centred else {}),
             }
         )
     per_observable.sort(key=lambda r: r["chi2"], reverse=True)
@@ -758,10 +761,15 @@ def fit_diagnosis(
     if signals["fitted_over_data_noise"]:
         noise_sigma["fitted_over_data_noise"] = signals["fitted_over_data_noise"][:_SIGNALS_KEEP]
     caveat = structure_tests_caveat(session.problem)
+    total_chi2 = float((d["_rw"] * d["_rw"]).sum())
+    chi2_note = math.isclose(total_chi2, len(d), rel_tol=1e-3) and _sigma_solved_everywhere(
+        session.problem, d
+    )
 
     return {
         "n_points": int(len(d)),
-        "total_chi2": round(float((d["_rw"] * d["_rw"]).sum()), 3),
+        "total_chi2": round(total_chi2, 3),
+        **({"total_chi2_note": _CHI2_BY_CONSTRUCTION} if chi2_note else {}),
         "per_observable": per_observable,  # bounded: worst-12 by chi2 + all flagged rows
         **({"omitted": omitted_note} if omitted_note else {}),
         "worst_points": worst_points,  # bounded: <= worst_n rows
@@ -789,6 +797,76 @@ def fit_diagnosis(
 
 #: How many sigmas each ranked list in :func:`fit_diagnosis` keeps, worst first.
 _SIGNALS_KEEP = 5
+
+#: :func:`fit_diagnosis`'s ``total_chi2_note``, where :func:`_sigma_solved_everywhere` holds.
+_CHI2_BY_CONSTRUCTION = (
+    "total_chi2 equals n_points by construction: the fit solves every noise sigma as the RMS of "
+    "the residuals it covers, so it says nothing about the model."
+)
+
+#: A ``per_observable`` row's ``by_construction``, on an observable of
+#: :func:`_offset_centred_observables`.
+_OFFSET_CENTRED = (
+    "an estimated offset centres these residuals: mean_weighted_residual is ~0 and sign_test "
+    "cannot see a bias, whatever the model."
+)
+
+
+def _sigma_solved_everywhere(problem, d) -> bool:
+    """Whether every row of ``d`` (:func:`fit_diagnosis`'s weighted records) has a noise sigma the
+    fit solves analytically (:func:`reconcile.classify_inner_parameters`). Each such sigma is the RMS
+    of its own residuals, so its points' weighted chi2 is their count. ``False`` on any failure."""
+    from . import reconcile as R
+
+    try:
+        inner = R.classify_inner_parameters(problem)
+        frame = d.rename(
+            columns={
+                "observable_id": OBSERVABLE_ID,
+                "experiment_id": EXPERIMENT_ID,
+                "noise_parameters": NOISE_PARAMETERS,
+            }
+        )
+        covered: set = set()
+        for pid in (pid for pid, kind in inner.items() if kind == R.INNER_TYPE_SIGMA):
+            rows = R._measurement_rows_for_sigma(problem, pid, frame)
+            if rows is not None:
+                covered |= set(rows.index)
+        return bool(covered) and covered >= set(d.index)
+    except Exception:  # noqa: BLE001 - advisory; never break the diagnosis
+        return False
+
+
+def _offset_centred_observables(problem) -> set[str]:
+    """Observables every measurement of which reads an offset the fit solves analytically
+    (:func:`reconcile.classify_inner_parameters`), in its formula or through its
+    ``observableParameters``. That offset is the mean of its points' residuals, so it puts their
+    mean at 0 and takes the sign test's power on bias. Empty on any failure."""
+    from . import reconcile as R
+    from .problem import split_overrides
+
+    try:
+        inner = R.classify_inner_parameters(problem)
+        offsets = {pid for pid, kind in inner.items() if kind == R.INNER_TYPE_OFFSET}
+        if not offsets:
+            return set()
+        odf, mdf = problem.observable_df, problem.measurement_df
+        out = set()
+        for obs_id, formula in odf[OBSERVABLE_FORMULA].items():
+            if R.formula_symbols(formula) & offsets:
+                out.add(str(obs_id))
+                continue
+            if OBSERVABLE_PARAMETERS not in mdf.columns:
+                continue
+            cells = mdf.loc[mdf[OBSERVABLE_ID] == obs_id, OBSERVABLE_PARAMETERS]
+            if len(cells) and all(
+                isinstance(c, str) and set(map(str, split_overrides(c))) & offsets for c in cells
+            ):
+                out.add(str(obs_id))
+        return out
+    except Exception:  # noqa: BLE001 - advisory; never break the diagnosis
+        return set()
+
 
 #: :func:`structure_tests_caveat`'s line; ``{}`` is what is estimated.
 _ABSORBED_MISFIT_CAVEAT = (
@@ -950,11 +1028,13 @@ def residual_structure_rollup(session, sims=None) -> dict[str, Any]:
         d = df[df["residual_weighted"].notna()]
         # The sign/runs arm keeps taking its rows from the SAME filter fit_diagnosis's magnitude
         # table uses, so the two builders cannot roll up different inputs.
+        centred = _offset_centred_observables(session.problem)
         verdicts = (
             []
             if d.empty
             else [
-                (_clean(obs), _safe_residual_structure(g)) for obs, g in d.groupby("observable_id")
+                (_clean(obs), _safe_residual_structure(g, centred=_clean(obs) in centred))
+                for obs, g in d.groupby("observable_id")
             ]
         )
     except Exception:  # noqa: BLE001 - advisory; never fail the fit on a diagnostic
@@ -1366,7 +1446,7 @@ def _merge_lof_verdicts(
     lof_df, power = rt.lof_power(n_points, n_structural, min_lof_df)
     if power == "vacuous":
         # Saturation, on the POOLED count: no direction left to disagree in, so nothing was tested —
-        # including the flags, which a fit that flexible could have placed anywhere. NO EVIDENCE is
+        # including the flags, which a fit that flexible could have placed anywhere. NOT TESTED is
         # the fail-open reading, and the one the arm gave before the df moved here.
         return _lof_payload(
             rt.replicate_lof_unavailable("vacuous", available[0]["alpha"], n_points=n_points)
@@ -1399,7 +1479,7 @@ def _merge_lof_verdicts(
         # conclusive however few directions remain. Absent (not False) when the df is UNKNOWN — see
         # _replicate_lof_line, which claims no power there either.
         "weak": bool(not flagged and power == "weak"),
-        # The most informative reason among the arms that produced NO EVIDENCE, so a partial pass
+        # The most informative reason among the arms that were NOT TESTED, so a partial pass
         # cannot read as a whole one. None when every arm ran — and also when the only arms that did
         # not run are the silent ones, which have no untested points to hedge about.
         "untested_status": _untested_status(untested, _worst_status),
@@ -1530,13 +1610,13 @@ def residual_structure_on_fit(rollup: dict[str, Any] | None) -> dict[str, Any] |
     return out
 
 
-def _safe_residual_structure(group) -> dict[str, Any]:
+def _safe_residual_structure(group, centred: bool = False) -> dict[str, Any]:
     """:func:`_residual_structure`, but any failure in the added stats degrades to a
     tests-unavailable stub instead of taking down the whole diagnosis (which the magnitude
     aggregations above compute robustly). fit_diagnosis is called by the agent's
     get_fit_diagnosis AND by offline scorers, so a raise here must not break either."""
     try:
-        return _residual_structure(group)
+        return _residual_structure(group, centred=centred)
     except Exception:  # noqa: BLE001 - advisory stats; never fail the diagnosis on them
         return {
             "sign_test": None,
@@ -1546,7 +1626,7 @@ def _safe_residual_structure(group) -> dict[str, Any]:
         }
 
 
-def _residual_structure(group) -> dict[str, Any]:
+def _residual_structure(group, centred: bool = False) -> dict[str, Any]:
     """Sign-test + runs-test summary for one observable's residuals (see
     :mod:`petab_mcp.residual_tests`).
 
@@ -1562,7 +1642,8 @@ def _residual_structure(group) -> dict[str, Any]:
     ``group`` is the observable's rows from :func:`fit_diagnosis`, already restricted to points
     with a weighted residual; the raw ``residual`` (same sign, sigma being positive) is the sign
     source. Experiments are iterated once, collecting both per-series p-values and the usable
-    (non-zero) point count that gauges power.
+    (non-zero) point count that gauges power. ``centred`` (an observable of
+    :func:`_offset_centred_observables`) marks the sign test low-power whatever its count.
     """
     from . import residual_tests as rt
 
@@ -1600,7 +1681,7 @@ def _residual_structure(group) -> dict[str, Any]:
             "n_neg": n_neg,
             "p": _round_p(sign_p),
             "n_series": len(sign_ps),
-            "low_power": low_power,
+            "low_power": low_power or centred,
         },
         "runs_test": {
             "p": _round_p(runs_p),
@@ -1608,7 +1689,7 @@ def _residual_structure(group) -> dict[str, Any]:
             "low_power": low_power or not runs_ps,
         },
         "structure_flag": bool(sig_bias or sig_trend),
-        "structure_low_power": bool(low_power or not runs_ps),
+        "structure_low_power": bool(low_power or centred or not runs_ps),
     }
 
 
@@ -1738,31 +1819,32 @@ def _replicate_lof_line(lof: dict[str, Any]) -> str:
             + partial
         )
     if status == "replicates_too_thin":
-        return (
-            "replicate lack-of-fit: NO EVIDENCE — the repeated design points have only one "
-            "degree of freedom each, too thin to be a yardstick."
+        why = (
+            "the repeated design points have only one degree of freedom each, too thin to be a "
+            "yardstick."
         )
-    if status == "too_few_usable_points":
-        return (
-            "replicate lack-of-fit: NO EVIDENCE — too few usable replicated design points to test."
-        )
-    if status == "vacuous":
+    elif status == "too_few_usable_points":
+        why = "too few usable replicated design points to test."
+    elif status == "vacuous":
         # "at least as many", and counted over ALL the replicated design points this problem has:
         # said of one noise family at a time this sentence was simply false for a problem whose
         # families add up (e.g. 12 points against 10 parameters).
-        return (
-            "replicate lack-of-fit: NO EVIDENCE — this model has at least as many estimated "
-            f"structural parameters as it has replicated design points ({lof.get('n_points')}), "
-            "so the test would measure its flexibility, not its form."
+        why = (
+            "this model has at least as many estimated structural parameters as it has replicated "
+            f"design points ({lof.get('n_points')}), so the test would measure its flexibility, "
+            "not its form."
         )
-    # The catch-all, and it no longer covers "there is no noise parameter at all" — that has its own
-    # SILENT status. What is left is a sigma that exists and still would not resolve: its observables
-    # mix lin and log so there is no single coordinate, a gain will not reduce to a number, no
-    # prediction was constant across a point's replicates, or the diagnostic itself raised. Every one
-    # of those is a real, fixable failure on a problem that may well HAVE replicates, so it speaks:
-    # an untested arm read as a pass is the more expensive mistake.
-    return (
-        "replicate lack-of-fit: NO EVIDENCE — the arm could not be run for this problem's noise "
-        "parameter (no single noise coordinate for its observables, an unresolvable amplitude, "
-        "or no constant prediction across a design point's replicates)."
-    )
+    else:
+        # The catch-all, and it no longer covers "there is no noise parameter at all" — that has
+        # its own SILENT status. What is left is a sigma that exists and still would not resolve:
+        # its observables mix lin and log so there is no single coordinate, a gain will not reduce
+        # to a number, no prediction was constant across a point's replicates, or the diagnostic
+        # itself raised. Every one of those is a real, fixable failure on a problem that may well
+        # HAVE replicates, so it speaks: an untested arm read as a pass is the more expensive
+        # mistake.
+        why = (
+            "the arm could not be run for this problem's noise parameter (no single noise "
+            "coordinate for its observables, an unresolvable amplitude, or no constant prediction "
+            "across a design point's replicates)."
+        )
+    return f"replicate lack-of-fit: NOT TESTED ({status or 'unavailable'}) — {why}"

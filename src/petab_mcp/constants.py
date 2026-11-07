@@ -210,7 +210,7 @@ REPLICATE_LOF_ALPHA = 0.01
 REPLICATE_LOF_MIN_DF = 2
 
 # Below this many usable replicated points the Holm family is too small to conclude anything, so the
-# arm reports NO EVIDENCE either way. 3 is the smallest count at which a single flagged point
+# arm reports NOT TESTED either way. 3 is the smallest count at which a single flagged point
 # survives a Holm correction at alpha 0.01 without needing an absurd |z|.
 #
 # This is the floor for a FAMILY to be testable at all, not the threshold for a pass —
