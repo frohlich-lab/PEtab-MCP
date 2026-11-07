@@ -1150,7 +1150,8 @@ estimating it costs.
 
 REJECTS an empty model, dropping (or re-estimating) a shipped-FIXED constant, leaving a \
 condition-table target unused, an observation-model symbol (a scaling factor or noise sigma) in a \
-rate law, and a THIRD widening of a still-pinned parameter: that is unidentifiability, see \
+rate law, a bound on a noise sigma the fit solves analytically (only the model moves it), and a \
+THIRD widening of a still-pinned parameter: that is unidentifiability, see \
 `get_fit_diagnosis(sections='parameters')`, not a bounds problem. Widening an estimated noise \
 sigma past its data-driven cap only WARNS; it hides a missing mechanism behind inflated noise."""
 

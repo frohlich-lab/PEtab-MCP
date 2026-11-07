@@ -28,10 +28,8 @@ from petab.v2.C import (
     ESTIMATE,
     EXPERIMENT_ID,
     LOWER_BOUND,
-    NOISE_DISTRIBUTION,
     NOISE_PARAMETERS,
     NOMINAL_VALUE,
-    NORMAL,
     OBSERVABLE_FORMULA,
     OBSERVABLE_ID,
     OBSERVABLE_PARAMETERS,
@@ -375,15 +373,16 @@ def _build_hierarchical_problem(session, importer_kwargs: dict[str, Any], petab_
 
     Returns ``(pypesto_problem, inner)`` where ``inner`` maps each inner parameter id to its
     pyPESTO type (see :func:`reconcile.classify_inner_parameters`), or ``(None, {})`` when the
-    problem has no cleanly-separable inner parameters, has an observable whose noise is not normal,
-    or pyPESTO rejects the hierarchical setup.
+    problem has none (no cleanly-separable inner parameter, or an observable whose noise is not
+    normal) or pyPESTO rejects the hierarchical setup.
 
     The whole win is optimization efficiency/robustness: the inner parameters (noise sigmas,
     observable-scaling factors) are solved analytically per objective evaluation instead of by
-    the outer multistart, shrinking the outer search (e.g. 13 estimated params → 5 outer). It
-    does NOT change what the parameters converge to — a sigma's analytic optimum is
-    the same RMS the joint optimizer finds — so the fit's nllh/identity is unchanged. pyPESTO
-    solves inner parameters in linear space whatever their ``parameterScale``.
+    the outer multistart, shrinking the outer search (e.g. 13 estimated params → 5 outer). A
+    scaling or offset is clipped to its table bounds, as the joint fit would hold it. A sigma is
+    not: ``correct_parameter_df_bounds`` solves it on [0, inf), so it lands on the RMS of its
+    residuals wherever the table bounds it, and ``operations`` refuses a bound edit on one.
+    pyPESTO solves inner parameters in linear space whatever their ``parameterScale``.
 
     Tagging is applied to a COPY of the parameter table handed to pyPESTO; the session's own
     table is left untouched (the agent keeps seeing ordinary parameters, ``n_estimated``/``k``
@@ -396,13 +395,6 @@ def _build_hierarchical_problem(session, importer_kwargs: dict[str, Any], petab_
     base = petab_problem if petab_problem is not None else session.problem
     inner = _reconcile.classify_inner_parameters(session.problem)
     if not inner:
-        return None, {}
-    # pyPESTO refuses a non-normal noise distribution only on an observable that HAS inner
-    # parameters, and scores every other observable as normal on the linear scale whatever its
-    # distribution (`calculate_quantitative_result`): a log-normal observable beside an
-    # inner-solved sigma comes out with a wrong likelihood, silently (5.8 nll on a two-observable
-    # toy). Such a problem is fitted jointly.
-    if (session.problem.observable_df[NOISE_DISTRIBUTION] != NORMAL).any():
         return None, {}
     try:
         from pypesto.hierarchical.petab import correct_parameter_df_bounds

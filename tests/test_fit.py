@@ -601,7 +601,8 @@ def test_a_version_keeps_its_fitted_values_in_its_parameter_table_only(fit_sessi
 def test_a_log_normal_observable_keeps_the_fit_joint(session):
     """pyPESTO refuses a log-normal observable that HAS inner parameters, but scores one without
     them as normal on the linear scale, so it beside an inner-solvable sigma would come out wrong:
-    such a problem is fitted jointly, before anything is built."""
+    such a problem has no inner parameters, so it is fitted jointly and its sigmas keep their
+    bounds."""
     import pandas as pd
 
     from petab_mcp import fitting
@@ -626,7 +627,7 @@ def test_a_log_normal_observable_keeps_the_fit_joint(session):
         measurement_df=pd.concat([b, b.assign(observableId="obs_A", noiseParameters="")]),
     )
     p.parameter_df.loc["sigma_B", "estimate"] = True
-    assert fitting._reconcile.classify_inner_parameters(p) == {"sigma_B": "sigma"}
+    assert fitting._reconcile.classify_inner_parameters(p) == {}
     assert fitting._build_hierarchical_problem(session, {}) == (None, {})
 
 

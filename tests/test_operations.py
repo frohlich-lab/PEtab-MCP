@@ -322,6 +322,25 @@ def test_change_parameters_names_a_noise_placeholder(session):
         )
 
 
+def test_a_bound_on_an_inner_solved_sigma_is_refused(session):
+    """#267: the fit solves an estimated noise sigma analytically on [0, inf), whatever its table
+    says, so a bound on one was stored and ignored: fontaine 8 v29 bounded one at 9.0 and got 11.96
+    back, reported "at upper bound". Refused, and the batch with it; a FIXED sigma, which the fit
+    never solves, still takes bounds (test_the_seed_survives_a_parameters_only_edit)."""
+    session.problem.parameter_df.loc["sigma_B", "estimate"] = True
+    with pytest.raises(OperationError, match="'sigma_B'.*solves this noise sigma") as exc:
+        O.change_parameters(
+            session,
+            [
+                {"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3},
+                {"parameter_id": "sigma_B", "lower_bound": 1e-3, "upper_bound": 9.0},
+            ],
+            justification="cap the noise",
+        )
+    assert exc.value.cause == "inner_solved_bound"
+    assert session.problem.parameter_df.loc[["k1", "sigma_B"], "upperBound"].tolist() == [100, 100]
+
+
 def test_change_parameters_batch_applies_bounds_and_scale_atomically(session):
     # One call retunes several parameters at once — the point of the batched editor.
     res = O.change_parameters(
