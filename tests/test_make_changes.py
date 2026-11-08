@@ -26,7 +26,7 @@ from pathlib import Path
 
 from petab_mcp import operations as O
 from petab_mcp import parameters as P
-from petab_mcp.constants import DEFAULT_AUTO_FIT_STARTS
+from petab_mcp.constants import DEFAULT_AUTO_FIT_STARTS, MAX_FIT_STARTS_FACTOR
 from petab_mcp.errors import ModelUpdateError, ParameterError
 from petab_mcp.operations import OperationError
 from petab_mcp.references import StubReferenceResolver
@@ -587,6 +587,24 @@ def test_the_multistart_default_and_the_starts_actually_used_are_reported(tmp_pa
         },
     )
     assert res["n_starts"] == default + 2
+
+
+def test_n_starts_above_the_cap_is_refused_before_the_edit(tmp_path, session):
+    """dessauges raised `n_starts` to 8000 a fit, each with 1 start at the best (PEtab-MCP#287):
+    the count is capped at MAX_FIT_STARTS_FACTOR times the default, and a call above it is refused
+    before its edit applies, naming the cap and why more starts would not help."""
+    cap = MAX_FIT_STARTS_FACTOR * DEFAULT_AUTO_FIT_STARTS
+    mcp = _server(tmp_path)
+    res = _call(
+        mcp,
+        "make_changes",
+        {"antimony": _antimony(), "justification": "fit harder", "n_starts": cap + 1},
+    )
+    assert res["applied"] is False and _head(mcp)["current_version"] == -1
+    assert f"at most {cap}" in res["error"] and "needle" in res["error"]
+    # the cap itself is allowed, and it follows the session's own default
+    session.auto_fit_starts = 3
+    assert session._coerce_n_starts(MAX_FIT_STARTS_FACTOR * 3) == MAX_FIT_STARTS_FACTOR * 3
 
 
 def test_a_harder_fit_of_an_unchanged_model_is_not_skipped(tmp_path):

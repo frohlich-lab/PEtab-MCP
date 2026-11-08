@@ -40,8 +40,16 @@ MAX_IDENTICAL_REAUTHORS = 3
 # the same deviance scale (see :mod:`criteria`), so it holds for whichever one is active.
 WORSE_SCORE_MARGIN = 5.0
 
-#: How the refusals below say a model is refitted (``make_changes`` with no model route).
-_REFIT = "give it new bounds (`parameters`) or more starts than it ran (`n_starts`)"
+
+def _refit(ran: int | None, max_starts: int) -> str:
+    """How the refusals below say a model that ran ``ran`` starts is refitted (``make_changes``
+    with no model route): new bounds, or more starts unless it already ran the cap."""
+    if isinstance(ran, int) and ran >= max_starts:
+        return (
+            f"give it new bounds (`parameters`): it ran {ran} starts, and `n_starts` is capped "
+            f"at {max_starts}"
+        )
+    return "give it new bounds (`parameters`) or more starts than it ran (`n_starts`)"
 
 
 def estimation_setup_signature(parameter_df) -> tuple:
@@ -167,6 +175,7 @@ def decide(
     structure_hash: str,
     setup: tuple,
     starts: int,
+    max_starts: int,
     head_version: int,
     registry: list[dict[str, Any]],
     prior_attempts: int,
@@ -178,6 +187,7 @@ def decide(
         structure_hash: the candidate's :func:`structure_fingerprint`.
         setup: the candidate's :func:`estimation_setup_signature`.
         starts: the multistart count this fit would run with.
+        max_starts: the most starts a fit may run (``PetabSession.max_fit_starts``).
         head_version: the current HEAD version number.
         registry: prior committed versions (see :func:`build_registry`).
         prior_attempts: how many times this exact structure has already been authored this session.
@@ -214,7 +224,7 @@ def decide(
     standing = [
         r for r in twins if not (isinstance(r.get("n_starts"), int) and starts > r["n_starts"])
     ]
-    if any(r.get("version") == head_version for r in standing):
+    if head := next((r for r in standing if r.get("version") == head_version), None):
         return {
             "action": "skip",
             "duplicate_of": head_version,
@@ -222,19 +232,20 @@ def decide(
             "message": (
                 f"This model is identical to the current version (v{head_version}); the fit was "
                 "not re-run (its metrics are unchanged — see get_fit_summary). To improve the fit, "
-                f"change the STRUCTURE, or {_REFIT}; an earlier model you already committed is "
-                "kept regardless."
+                f"change the STRUCTURE, or {_refit(head.get('n_starts'), max_starts)}; an earlier "
+                "model you already committed is kept regardless."
             ),
         }
     if standing:
-        k = max(r["version"] for r in standing)
+        twin = max(standing, key=lambda r: r["version"])
+        k = twin["version"]
         return {
             "action": "refuse",
             "duplicate_of": k,
             "message": (
                 f"This model is identical to v{k}, which is fitted, kept and scored; it was not "
                 f"re-fitted and no version was made. To build on it, send your next change with "
-                f"`base_version={k}`; to refit it, {_REFIT}."
+                f"`base_version={k}`; to refit it, {_refit(twin.get('n_starts'), max_starts)}."
             ),
         }
 
