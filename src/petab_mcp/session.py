@@ -26,6 +26,7 @@ from . import criteria, logging_setup, protocols
 from .constants import (
     ADEQUATE_GOF_PVALUE,
     DEFAULT_AUTO_FIT_STARTS,
+    MAX_FIT_STARTS_FACTOR,
     NON_IMPROVING_STREAK_CAP,
     OVERFIT_GOF_PVALUE,
     PLATEAU_MIN_SCORE_GAIN,
@@ -103,6 +104,14 @@ _SIGMA_COLLAPSED_ADVICE = (
     "overfitting the noise, so its low score is not genuine adequacy. Prefer a simpler / more "
     "parsimonious mechanism at a plausible sigma rather than a more flexible one that drives the "
     "residuals to ~0."
+)
+
+# A fit's optimum only 1 or 2 starts of a raised multistart reach (PEtab-MCP#287), for the
+# `n_starts` cap's refusal and the warning on such a fit.
+_NEEDLE_ADVICE = (
+    "the optimum is a needle, and more starts will not make it reliable: reformulate the model "
+    "where it is that sharp (a switch-like term, e.g. a steep Hill exponent or a gate at a bound; "
+    "`get_fit_diagnosis(sections='parameters')`)"
 )
 
 #: The :meth:`PetabSession.progress_report` keys a fit result carries, each only when set;
@@ -1045,10 +1054,15 @@ class PetabSession:
             optimization=fitting.build_optimization_payload_for_version(self.optimization),
         )
 
-    @staticmethod
-    def _coerce_n_starts(n_starts: int | None) -> int | None:
-        """Validate ``n_starts`` — ``None`` (server default) or an integer >= 1 — returning the
-        coerced int. Raises :class:`ValidationError` otherwise.
+    @property
+    def max_fit_starts(self) -> int:
+        """The most starts one fit may run: :data:`MAX_FIT_STARTS_FACTOR` times the default."""
+        return MAX_FIT_STARTS_FACTOR * int(self.auto_fit_starts)
+
+    def _coerce_n_starts(self, n_starts: int | None) -> int | None:
+        """Validate ``n_starts`` — ``None`` (server default) or an integer from 1 to
+        :attr:`max_fit_starts` — returning the coerced int. Raises :class:`ValidationError`
+        otherwise.
 
         0 used to mean "simulate without optimising". It is refused now: every change is scored,
         and a version whose parameters were never optimised is not a score — it records whatever
@@ -1064,6 +1078,11 @@ class PetabSession:
             raise ValidationError(f"n_starts must be an integer >= 1, got {n_starts!r}.")
         if n_starts < 1:
             raise ValidationError(f"n_starts must be an integer >= 1, got {n_starts}.")
+        if n_starts > (cap := self.max_fit_starts):
+            raise ValidationError(
+                f"n_starts must be at most {cap}, {MAX_FIT_STARTS_FACTOR}x the default, got "
+                f"{n_starts}. If a raise still leaves 1 or 2 starts at the best, {_NEEDLE_ADVICE}."
+            )
         return n_starts
 
     # -- fit + simulate ----------------------------------------------------
@@ -1536,6 +1555,7 @@ class PetabSession:
             structure_hash=structure_hash,
             setup=D.estimation_setup_signature(self.problem.parameter_df),
             starts=starts,
+            max_starts=self.max_fit_starts,
             head_version=self.provenance.current_version,
             registry=D.build_registry(self),
             prior_attempts=self._fit_attempts.get(fit_key, 0),  # READ only; incremented on proceed
@@ -1644,6 +1664,19 @@ class PetabSession:
                     "starts will not fix that: the limit applies to each start, so added starts "
                     "hit it too. The usual causes are a stiff or badly scaled model, or bounds "
                     "that allow extreme rates.",
+                ]
+            # A raise that still leaves 1 or 2 starts at the best, fewer than half of those that
+            # ran to the end (2 of 2 completed is no needle): more will not help (#287).
+            elif (
+                starts > self.auto_fit_starts
+                and (at_best := fitsim.get("n_starts_at_best")) in (1, 2)
+                and 2 * at_best < starts - (killed or 0)
+            ):
+                warnings = [
+                    *warnings,
+                    f"{fitsim['n_starts_at_best']} of {starts} starts reached the best value, "
+                    f"though this fit ran more than the default {self.auto_fit_starts}: "
+                    f"{_NEEDLE_ADVICE}.",
                 ]
 
             staged = list(staged_edits or [])
