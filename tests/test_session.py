@@ -108,3 +108,9 @@ def test_rollback_restores_and_copies_optimization(session):
     # rolling back to a version with no traces clears them
     session.rollback_to(0)
     assert session.optimization is None
+
+
+def test_describe_names_the_condition_targets(dosed_session):
+    """froehlich's analysts spent rounds listing its 145 targets out of a 36 MB `list_conditions`
+    (PEtab-MCP#290)."""
+    assert dosed_session.describe()["condition_targets"] == ["dose"]

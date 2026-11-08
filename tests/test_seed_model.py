@@ -99,9 +99,7 @@ def test_the_seed_declares_no_parameters_of_its_own(seeded):
     structure the seed does not have."""
     sm = seeded.model.sbml_model
     declared = {sm.getParameter(i).getId() for i in range(sm.getNumParameters())}
-    # only the parametric IC reconcile minted for the seeded species
-    assert declared == {"B_init"}
-    assert "k1" not in declared and "k2" not in declared
+    assert declared == set()  # not even a `<species>_init`: see the test of the seed's ICs below
 
 
 def test_shipped_fixed_constants_are_still_protected(seeded):
@@ -264,17 +262,18 @@ def test_design_only_lint_warnings_never_reach_the_caller(seeded):
 # -- the seed is reconciled like any other model -------------------------------
 
 
-def test_the_seed_is_reconciled_and_its_initial_conditions_are_estimated(tmp_path):
-    """The seed goes through `reconcile` like anything else, so its species get parametric ICs.
-    That only works because they are seeded at a POSITIVE value: at 0 (or 1) the leak-free
-    convention would hold the minted `<species>_init` FIXED, and reconcile never re-touches an
-    existing row — so the caller's first authoring would inherit a frozen initial condition,
-    which is the trap of #90 on the very species it is about to build a mechanism around."""
+def test_the_seed_mints_no_initial_condition_and_a_model_built_on_it_estimates_one(tmp_path):
+    """REGRESSION #281: the seed's reconcile minted an estimated `<species>_init` per placeholder,
+    so `free_parameters` and `get_parameters` named the seed's species before any model existed.
+    The seed's species keep their declared POSITIVE value instead, so a model built on the seed's
+    text gets its `B_init` minted then, estimated: at 0 (or 1) the convention would hold it FIXED,
+    the trap of #90 on the very species the caller is about to build a mechanism around."""
     from petab.v2.C import ESTIMATE
+    from petab_mcp import operations as O
     from petab_mcp.problem import LOG10, PARAMETER_SCALE
 
     yaml_path = _model_less_problem(tmp_path)
-    # Ship no IC rows, so the seed's reconcile is what mints them.
+    # Ship no IC rows, so only a reconcile could add one.
     params = yaml_path.parent / "parameters.tsv"
     kept = [ln for ln in params.read_text().splitlines() if not ln.startswith(("A_init", "B_init"))]
     params.write_text("\n".join(kept) + "\n", encoding="utf-8")
@@ -282,11 +281,14 @@ def test_the_seed_is_reconciled_and_its_initial_conditions_are_estimated(tmp_pat
     session = PetabSession(
         str(yaml_path), provenance_dir=str(tmp_path / "prov"), resolver=StubReferenceResolver()
     )
+    assert "B_init" not in session.problem.parameter_df.index
+    assert session.describe()["free_parameters"] == []
+
+    seed, _, _ = session.model.to_antimony().rpartition("end")
+    O.set_model(session, seed + "  k = 0.5;\n  r1: B => ; k * B;\nend", justification="decay")
     pdf = session.problem.parameter_df
-    assert "B_init" in pdf.index  # reconcile minted it
     assert int(pdf.loc["B_init", ESTIMATE]) == 1  # ...ESTIMATED, not frozen
     assert pdf.loc["B_init", PARAMETER_SCALE] == LOG10
-    assert int(session.problem.n_estimated) > 0  # so the seed is fittable
 
 
 def test_a_shipped_row_comes_back_as_the_problem_defined_it(tmp_path):
@@ -341,7 +343,7 @@ def test_a_pruned_shipped_parameter_is_still_shown_to_the_caller(seeded):
     assert float(by_id["k1"]["upperBound"]) == 100.0
 
     assert by_id["sigma_B"]["in_model"] is True  # used by the fixed noise formula: kept
-    assert by_id["B_init"]["in_model"] is True  # the seed's own parametric IC
+    assert by_id["B_init"]["in_model"] is False  # the seed's species get no parametric IC
 
 
 def test_a_re_declared_parameter_stops_being_flagged_absent(tmp_path):

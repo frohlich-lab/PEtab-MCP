@@ -24,6 +24,8 @@ The numbers on the entries below are pull requests of
 [frohlich-lab/petab_mcp](https://github.com/frohlich-lab/petab_mcp), where this package was
 developed before it moved here.
 
+PEtab-MCP#281 Until a model is authored, `describe_problem` carries no `n_species` or `n_model_parameters`, `get_model_structure` lists no species, parameters or initial conditions, and the seed's species get no `<sid>_init` row, deliberately under no other key either: the working model is then the seed, whose species stand in for the names the observable and condition tables use. In sweep 63522750 sneyd 29 read `n_species: 2` (its two inputs) as the model to build and fit a two-state chain to ΔBIC +15.4, and armistead read 5 the same way.
+
 PEtab-MCP#247 No stop reads a residual flag: the plateau stop rests on the fixed-sigma chi2 GoF alone, a cap stop's structural nudge ignores flags, and a flagged fit's summary says where the fit is off, not that its form is missing something. gemot#97 found flags no model clears on true models at their published optimum (sneyd's `open_probability` sign test at p = 6.6e-7, lucarelli's replicate lack-of-fit at 63 of 453 points), and gemot#102 dropped its flag-keyed finish refusal on the same runs. Do not key a stop on flags again without run evidence that they separate good models from bad.
 
 PEtab-MCP#205 A seed whose species nothing reads is pruned like any other orphan and named in the edit's warnings, deliberately NOT kept for having been declared (the issue's option 3): kept, it still reads nothing, so the condition input its amount read has no effect either way, while a numeric seed's `<name>_init` is an estimated parameter the score charges and the fit cannot move, and the de-dup fingerprints it apart from the model that simulates alike. `get_model(format="statements")` shows the seed as written regardless.
@@ -84,9 +86,16 @@ boundary (17% of payload bytes, duplicated on 62.8% of 915 payloads) while `bund
 computing it. Do not reintroduce it; filter `messages` by level. The operations-layer `warnings` is
 a DIFFERENT field and stays.
 
+PEtab-MCP#271 The best version is the strict minimum of the criterion, with no effect-size bar
+on it: gemot's judge and finish gate take the minimum, and a 2-unit bar left `best_version`, the
+plateau window and its stop reason on a version the judge did not score (perelson 0, rahman
+10/12/14, bruno 53, dessauges 1 in sweep 63522750). The bar survives only as
+`STREAK_RESET_MIN_SCORE_GAIN`, what resets the non-improving streak, where noise-floor wander must
+not count as progress.
+
 #167 No scalar weight on the complexity penalty in `petab_mcp.criteria` — named penalties and
 nothing between them. One was built and removed: every effect-size threshold in the loop
-(`NEW_BEST_MIN_DELTA_SCORE`, `PLATEAU_MIN_SCORE_GAIN`, `dedup.WORSE_SCORE_MARGIN`, the benchmark
+(`STREAK_RESET_MIN_SCORE_GAIN`, `PLATEAU_MIN_SCORE_GAIN`, `dedup.WORSE_SCORE_MARGIN`, the benchmark
 bar) is a fixed count of deviance units calibrated on BIC, which survives SWAPPING the penalty but
 not SCALING it. Deriving those thresholds from the criterion rather than writing them as literals
 in `constants.py` is the precondition for reintroducing the knob.
