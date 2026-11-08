@@ -1665,8 +1665,13 @@ class PetabSession:
                     "hit it too. The usual causes are a stiff or badly scaled model, or bounds "
                     "that allow extreme rates.",
                 ]
-            # A raise that still leaves 1 or 2 starts at the best: more will not help (#287).
-            elif starts > self.auto_fit_starts and fitsim.get("n_starts_at_best") in (1, 2):
+            # A raise that still leaves 1 or 2 starts at the best, fewer than half of those that
+            # ran to the end (2 of 2 completed is no needle): more will not help (#287).
+            elif (
+                starts > self.auto_fit_starts
+                and (at_best := fitsim.get("n_starts_at_best")) in (1, 2)
+                and 2 * at_best < starts - (killed or 0)
+            ):
                 warnings = [
                     *warnings,
                     f"{fitsim['n_starts_at_best']} of {starts} starts reached the best value, "

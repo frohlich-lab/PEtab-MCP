@@ -469,18 +469,21 @@ def test_a_raised_fit_that_still_leaves_one_start_at_the_best_names_a_needle(
 ):
     """dessauges raised `n_starts` step by step to 8000, each fit with 1 start at the best
     (PEtab-MCP#287): a raised fit that still leaves 1 or 2 there says the optimum is a needle. One
-    at the default does not, since there a raise is still the advice."""
-    real = fitting.fit_and_simulate
+    at the default does not, since there a raise is still the advice, and neither does one where
+    those are half the starts or more."""
+    real, at_best = fitting.fit_and_simulate, {"n": 1}
 
-    def one_at_best(*args, **kwargs):
+    def forced_at_best(*args, **kwargs):
         out = real(*args, **kwargs)
-        out["n_starts_at_best"] = 1
+        out["n_starts_at_best"] = at_best["n"]
         return out
 
-    monkeypatch.setattr(fitting, "fit_and_simulate", one_at_best)
+    monkeypatch.setattr(fitting, "fit_and_simulate", forced_at_best)
     assert not any("needle" in w for w in fit_session.fit()["warnings"])
     raised = fit_session.fit(n_starts=3)
     assert any("1 of 3 starts reached" in w and "needle" in w for w in raised["warnings"])
+    at_best["n"] = 2
+    assert not any("needle" in w for w in fit_session.fit(n_starts=4)["warnings"])
 
 
 def test_a_refit_at_the_cap_is_not_offered_more_starts(fit_session):
