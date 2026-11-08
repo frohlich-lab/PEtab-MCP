@@ -432,17 +432,14 @@ def test_state_trajectories_are_one_row_per_value(session):
     assert tables["state_trajectories"]["n_rows"] == 6
 
 
-def test_state_trajectories_are_kept_with_a_version_and_left_out_of_its_summary(session):
-    """A restore reads a version's stored simulation back, so the trajectories must be stored with
-    it; a get_version reply too large to send drops them with the records."""
+def test_state_trajectories_are_kept_with_a_version():
+    """A restore reads a version's stored simulation back, so the trajectories are stored with it."""
     from petab_mcp import fitting
 
     stored = fitting.build_sim_payload_for_version(
         {"records": SIM_RECORDS, "state_trajectories": TRAJECTORIES}
     )
     assert stored["state_trajectories"] == TRAJECTORIES
-    summary = data_access.version_part_summary("simulation", stored, 1)
-    assert "state_trajectories" not in summary and "records" not in summary
 
 
 def test_fit_diagnosis_flags_systematic_bias(session):

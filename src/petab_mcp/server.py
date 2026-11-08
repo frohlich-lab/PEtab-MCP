@@ -2587,6 +2587,8 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
 
         def run() -> dict[str, Any]:
             out = session.provenance.get_version(version, parts)
+            # ids × points values, which query_data's state_trajectories pages instead.
+            (out.get("simulation") or {}).pop("state_trajectories", None)
             if omitted:
                 out["omitted"] = (
                     f"{' and '.join(omitted)}: get_version(include=[...]); per point, "

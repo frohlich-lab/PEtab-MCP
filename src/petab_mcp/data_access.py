@@ -582,11 +582,10 @@ def version_part_summary(part: str, blob: dict[str, Any], version: int) -> dict[
     """Version ``version``'s stored ``part`` (:data:`provenance.VERSION_PARTS`) without its rows,
     for a ``get_version`` reply the rows would make too large to send.
 
-    ``simulation`` keeps everything but ``records`` and ``state_trajectories`` (the scores,
-    ``k_eff``, the noise report and the parameter diagnosis a client's judge reads) and adds
-    ``chi2_by_observable``; ``optimization`` keeps everything but ``starts`` and ``trace`` and adds
-    ``fvals``, each start's objective, best first. ``omitted`` says what was dropped and where its
-    rows are.
+    ``simulation`` keeps everything but ``records`` (the scores, ``k_eff``, the noise report and the
+    parameter diagnosis a client's judge reads) and adds ``chi2_by_observable``; ``optimization``
+    keeps everything but ``starts`` and ``trace`` and adds ``fvals``, each start's objective, best
+    first. ``omitted`` says what was dropped and where its rows are.
     """
     if part == "simulation":
         records = blob.get("records") or []
@@ -599,11 +598,10 @@ def version_part_summary(part: str, blob: dict[str, Any], version: int) -> dict[
                 entry["chi2"] += rw * rw
         for entry in by_observable.values():
             entry["chi2"] = round(entry["chi2"], 3)
-        return {k: v for k, v in blob.items() if k not in ("records", "state_trajectories")} | {
+        return {k: v for k, v in blob.items() if k != "records"} | {
             "chi2_by_observable": by_observable,
-            "omitted": f"its {len(records)} records and state trajectories, more than one reply "
-            f"carries: simulations_history WHERE version = {version} holds the records, "
-            "state_trajectories the head version's trajectories",
+            "omitted": f"its {len(records)} records, more than one reply carries: "
+            f"simulations_history WHERE version = {version} holds them",
         }
     starts = blob.get("starts") or []
     return {k: v for k, v in blob.items() if k not in ("starts", "trace")} | {
