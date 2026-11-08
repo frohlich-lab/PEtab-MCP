@@ -2033,7 +2033,8 @@ def _composed_parameter_edit(session, normalized, stored_df):
     a caller can fork a version AND change one bound in one transaction.
     """
     have_stored = stored_df is not None and len(stored_df)
-    apply_new = _parameter_edit(session, normalized) if normalized else None
+    kept = stored_df if have_stored else None
+    apply_new = _parameter_edit(session, normalized, kept) if normalized else None
     if not have_stored:
         return apply_new
     # The caller's OWN entries must be measured against the PRISTINE table: `_parameter_edit`'s
@@ -2069,10 +2070,14 @@ def _composed_parameter_edit(session, normalized, stored_df):
     return edit
 
 
-def _parameter_edit(session, normalized: list[dict[str, Any]]) -> Callable[[Any], dict[str, Any]]:
+def _parameter_edit(
+    session, normalized: list[dict[str, Any]], kept=None
+) -> Callable[[Any], dict[str, Any]]:
     """Build the ``param_edit(problem)`` callback that applies ``normalized`` (from
     :func:`_normalize_parameter_changes`) as ONE transactional write, with every per-parameter
-    backstop. Shared by ``change_parameters`` and ``set_model(parameters=[...])``."""
+    backstop. Shared by ``change_parameters`` and ``set_model(parameters=[...])``. A bound an
+    entry leaves out keeps its value in ``kept`` (a fork's stored table), else in the problem's,
+    and a warning tells the caller which value that is."""
     from .parameters import update_parameters
 
     def edit(problem):
@@ -2095,14 +2100,19 @@ def _parameter_edit(session, normalized: list[dict[str, Any]]) -> Callable[[Any]
             update: dict[str, Any] = {"id": pid}
             if len(bounds) == 1 and pid in df.index:
                 # A bound left out stays as it is (#284), so the checks read the box it leaves.
-                kept = "upper" if lb is not None else "lower"
-                lb = float(df.loc[pid, LOWER_BOUND]) if lb is None else lb
-                ub = float(df.loc[pid, UPPER_BOUND]) if ub is None else ub
+                box = kept if kept is not None and pid in kept.index else df
+                side = "upper" if lb is not None else "lower"
+                lb = float(box.loc[pid, LOWER_BOUND]) if lb is None else lb
+                ub = float(box.loc[pid, UPPER_BOUND]) if ub is None else ub
                 if lb >= ub:
                     raise OperationError(
-                        f"{pid!r}: the box would be [{lb:g}, {ub:g}], since its {kept} bound "
-                        f"stays as it is. Send {kept}_bound too."
+                        f"{pid!r}: the box would be [{lb:g}, {ub:g}], since its {side} bound "
+                        f"stays as it is. Send {side}_bound too."
                     )
+                warnings.append(
+                    f"{pid!r}: only its {'lower' if side == 'upper' else 'upper'} bound was "
+                    f"sent, so the box is [{lb:g}, {ub:g}]."
+                )
             if bounds and inner.get(pid) == R.INNER_TYPE_SIGMA:
                 raise OperationError(
                     f"Refusing bounds on {pid!r}: the fit solves this noise sigma analytically, "

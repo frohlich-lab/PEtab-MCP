@@ -268,11 +268,13 @@ def test_change_parameters_bounds(session):
 
 def test_a_one_bound_edit_keeps_the_other_bound(session):
     """A one-sided edit was refused 21x in 21 runs of one sweep (#284), and its meaning is plain:
-    the bound it leaves out stays as it is."""
+    the bound it leaves out stays as it is. The result says which box that makes."""
     res = O.change_parameters(
         session, [{"parameter_id": "k1", "lower_bound": 1e-3}], justification="one side"
     )
     assert res["applied"] is True
+    said = "'k1': only its lower bound was sent, so the box is [0.001, 100]."
+    assert said in [m["message"] for m in res["messages"]]
     recs = {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
     assert (float(recs["k1"]["lowerBound"]), float(recs["k1"]["upperBound"])) == (1e-3, 100.0)
 
@@ -293,7 +295,7 @@ def test_a_forks_one_bound_edit_keeps_the_forked_versions_other_bound(session):
     the abandoned branch's."""
     stored = session.problem.parameter_df.copy()
     stored.loc["k1", "lowerBound"] = 1e-2  # the forked version's box; HEAD's lower is 1e-4
-    _set_model(
+    res = _set_model(
         session,
         justification="fork",
         parameters=[{"parameter_id": "k1", "upper_bound": 5.0}],
@@ -301,6 +303,8 @@ def test_a_forks_one_bound_edit_keeps_the_forked_versions_other_bound(session):
     )
     recs = {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
     assert (float(recs["k1"]["lowerBound"]), float(recs["k1"]["upperBound"])) == (1e-2, 5.0)
+    said = "'k1': only its upper bound was sent, so the box is [0.01, 5]."
+    assert said in [m["message"] for m in res["messages"]]
 
 
 def test_change_parameters_names_an_assignment_rule_symbol(session):

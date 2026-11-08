@@ -727,13 +727,15 @@ def _op_remove_reaction(text, op, where):
     return cut, f"removed reaction {rid}"
 
 
-def _law_of(law: str, rid: str, rxn: re.Match, where: str) -> str:
-    """The rate law in set_rate_law's ``antimony``.
+def _law_of(law: str, rid: str, rxn: re.Match, where: str) -> tuple[str, str]:
+    """The rate law in set_rate_law's ``antimony``, and how it was read ("" when as sent).
 
     Agents send it as ``v = k*A`` or as the reaction's whole statement (#284), so a leading
     ``X =`` is dropped, and a statement is read for its law when its reactants and products are
     ``rxn``'s own. Any other statement is refused: this op cannot change reactants or products.
+    The summary names what was read, so the caller sees what it sent was not taken as written.
     """
+    how = ""
     if _ARROW.search(law):
         named = law if _reactions(law) else f"{rid}: {law}"
         found = _reactions(named)
@@ -747,8 +749,10 @@ def _law_of(law: str, rid: str, rxn: re.Match, where: str) -> str:
                 )
             if _sides(s.group("stoich")) == _sides(rxn.group("stoich")):
                 law = s.group("law").strip()
-    else:
-        law = re.sub(r"^[A-Za-z_]\w*\s*:?=(?![=>])\s*", "", law)
+                how = f" to {law}, the statement's law ({rid} stays {rxn['stoich'].strip()})"
+    elif lhs := re.match(r"([A-Za-z_]\w*)\s*:?=(?![=>])\s*", law):
+        law = law[lhs.end() :]
+        how = f" to {law} ({lhs[0].strip()!r} dropped)"
     if not law or _STATEMENT_MARK.search(law):
         raise OperationError(
             f"{where}: set_rate_law's `antimony` is the rate expression only, e.g. 'k*u*X1', "
@@ -756,7 +760,7 @@ def _law_of(law: str, rid: str, rxn: re.Match, where: str) -> str:
             "remove_reaction, then add_reaction with the new statement. NOTHING was applied.",
             cause="statement_not_expression",
         )
-    return law
+    return law, how
 
 
 def _op_set_rate_law(text, op, where):
@@ -770,7 +774,7 @@ def _op_set_rate_law(text, op, where):
     m = _find_reaction(text, rid)
     if m is None:
         raise _unknown_reaction(where, rid, text)
-    law = _law_of(law, rid, m, where)
+    law, how = _law_of(law, rid, m, where)
     _reject_semicolons(where, antimony=law)
     stmt = f"{rid}: {m.group('stoich').strip()}; {law};"
     tail = text[m.end() :]
@@ -779,7 +783,7 @@ def _op_set_rate_law(text, op, where):
     # the source the caller reads is `...; k1*A; rev: ...` rather than `...; k1*A;rev: ...`.
     if tail[:1] not in ("", " ", "\t", "\n", ";"):
         tail = " " + tail
-    return text[: m.start()] + stmt + tail, f"set rate law of {rid}"
+    return text[: m.start()] + stmt + tail, f"set rate law of {rid}{how}"
 
 
 def _op_set_initial(text, op, where):
@@ -826,7 +830,10 @@ def _op_set_initial(text, op, where):
     # A species a reaction names (one an earlier op of this batch added included) has an initial
     # value whether or not the text writes one, so writing it creates nothing (#284).
     if sid in _reaction_species(masked) and sid not in rule_target_symbols(text):
-        return _insert_statement(text, f"{sid} = {value};"), f"set {sid} = {value}"
+        return (
+            _insert_statement(text, f"{sid} = {value};"),
+            f"set {sid} = {value} (a new line: the model gave {sid} no initial value)",
+        )
     # NOT assigned anywhere. Creating the assignment silently would mint a parameter the caller
     # never asked for: the reconcile gives it a row, the fit estimates it, BIC pays for it, and
     # the summary says "set". A typo'd symbol must fail like every other unknown id does.

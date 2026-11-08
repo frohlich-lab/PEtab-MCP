@@ -127,7 +127,8 @@ def test_set_initial_writes_the_initial_value_of_a_reaction_species():
             {"op": "set_initial", "id": "C", "antimony": "C_init"},
         ],
     )
-    assert summary[0] == "set B = 2" and summary[2] == "set C = C_init"
+    assert summary[0] == "set B = 2 (a new line: the model gave B no initial value)"
+    assert summary[2].startswith("set C = C_init (a new line")
     assert "  B = 2;\n" in out and "  C = C_init;\n" in out and out.endswith("end\n")
     with pytest.raises(OperationError, match="nothing named 'D'"):
         me.apply_model_edits(src, [{"op": "set_initial", "id": "D", "antimony": "1"}])
@@ -783,15 +784,22 @@ def test_set_rate_law_refuses_a_whole_reaction_naming_the_ops_that_change_one(pa
 
 
 @pytest.mark.parametrize(
-    "payload", ["fwd: A => B; k1*A*A;", "A -> B; k1*A*A", "v_fwd = k1*A*A", "fwd := k1*A*A;"]
+    ("payload", "read"),
+    [
+        ("fwd: A => B; k1*A*A;", ", the statement's law (fwd stays A => B)"),
+        ("A -> B; k1*A*A", ", the statement's law (fwd stays A => B)"),
+        ("v_fwd = k1*A*A", " ('v_fwd =' dropped)"),
+        ("fwd := k1*A*A;", " ('fwd :=' dropped)"),
+    ],
 )
-def test_set_rate_law_takes_the_law_out_of_a_prefix_or_its_own_reaction(payload):
+def test_set_rate_law_takes_the_law_out_of_a_prefix_or_its_own_reaction(payload, read):
     """30 refusals in 24 runs of one sweep (#284) sent a law whose meaning is plain: behind an
-    `X =`, or in the reaction's own statement with its reactants and products unchanged."""
+    `X =`, or in the reaction's own statement with its reactants and products unchanged. The
+    summary says what was read, so an arrow the statement changed is not taken as applied."""
     out, summary = me.apply_model_edits(
         SRC, [{"op": "set_rate_law", "id": "fwd", "antimony": payload}]
     )
-    assert summary == ["set rate law of fwd"]
+    assert summary == [f"set rate law of fwd to k1*A*A{read}"]
     assert "fwd: A => B; k1*A*A;" in out
 
 
