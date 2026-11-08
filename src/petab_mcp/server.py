@@ -976,8 +976,9 @@ def _register_read_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
     def describe_problem() -> dict[str, Any]:
         """Orientation, and cheap: whether a model has been authored (`model_authored`), table and
         entity counts, the current version, `readouts_to_define` (the `readout_*` measurement
-        mappings your model does not define yet), and `fit_n_starts_default`, the multistart count
-        a fit uses when `n_starts` is omitted.
+        mappings your model does not define yet), `condition_targets` (the ids the condition table
+        sets, `list_conditions`), and `fit_n_starts_default`, the multistart count a fit uses when
+        `n_starts` is omitted.
 
         `inputs` are what the experiments impose within a period, each read in your model by its
         id: define it by its `rule` exactly as given, and never estimate the condition targets the
@@ -1003,9 +1004,12 @@ def _register_read_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
     def list_conditions() -> str:
         """The (fixed) conditions as a TSV table, one row per condition and one column per target
         it sets (a model parameter, species or compartment) to that row's value — a dose, an input
-        level, a switch; blank where the condition does not set the target. Your model must define
-        every target BY NAME, and a condition-set initial is an experimental input to reproduce,
-        not a value to fit. WHEN a condition applies is `list_experiments`."""
+        level, a switch; blank where the condition does not set the target. A table too large for
+        one reply comes back as one row per target instead: how many conditions set it and the
+        range of its values. Your model declares every target under its id and reads one only
+        where it has an effect: leaving an input unread is allowed. A condition-set initial is an
+        experimental input to reproduce, not a value to fit. WHEN a condition applies is
+        `list_experiments`."""
         ctx = route()
         session = ctx.session
         return conditions_tsv(session.problem.condition_df)

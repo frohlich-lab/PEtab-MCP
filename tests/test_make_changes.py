@@ -1777,7 +1777,7 @@ def test_a_seed_nothing_reads_names_the_input_it_leaves_unread(
                             r"amounts: `Serum\(\)` \(`__s\d+`\)\.", m) for m in removed)
     assert any(m.startswith("condition target(s) `EGF` are read by nothing in the model, or only "
                             "by assignment rules nothing reads, so the model never sees their "
-                            "value. For each, read it as") for m in said)
+                            "value.") for m in said)
 
 
 def test_a_seed_at_an_input_a_row_reads_is_neither_removed_nor_unread(tmp_path, add_condition):
@@ -2292,10 +2292,14 @@ def test_the_route_says_nothing_is_bound_when_the_map_is_empty(tmp_path):
 
 
 def test_an_unread_condition_target_is_explained():
+    """The hint said the model "must have it: read it as …", which froehlich leads took for a
+    refusal of every unread input: it must be declared, and need not be read (PEtab-MCP#290)."""
     from petab_mcp.operations import _rejection_summary
+    from petab_mcp.validation import INPUT_UNREAD
 
     text = _rejection_summary(["Condition table contains invalid targets: {'rit'}"])
     assert "{'rit'}" in text and "input the condition table SETS" in text
+    assert "must declare it under its id" in text and text.endswith(INPUT_UNREAD)
     assert "SETS" not in _rejection_summary(["something else"])
 
 
