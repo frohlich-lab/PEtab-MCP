@@ -32,17 +32,13 @@ DEFAULT_AUTO_FIT_STARTS = 5
 # scale every named penalty shares, so they carry over unchanged when the penalty is swapped.
 # They are literals rather than derived from the criterion; docs/RATIONALE.md says what that costs.
 #
-# (a) Minimum score improvement for a fit to count as a NEW BEST — the gate on ``is_new_best``
-# (see :func:`fitting.clears_new_best_bar`). ``is_new_best`` tracks the same score the checkpoint
-# stores, so the flag, the non-improving-streak reset, and the best-model
-# checkpoint all move on one coherent notion of "better". Without a threshold the flag fired on
-# ANY score twitch (down to ~1e-6, or an nll drop bought by an extra parameter that actually
-# RAISES the score), so noise-floor wander looked like progress and kept resetting the streak.
-# Δ ≥ 2 is the conventional "positive evidence" bar. The comparison is against the current
-# best-score CHECKPOINT (not the raw running minimum), so a steady sub-threshold creep still
-# registers a new best once it CUMULATIVELY clears the bar, rather than starving the streak while
-# it improves.
-NEW_BEST_MIN_DELTA_SCORE = 2.0
+# (a) The score gain a new best must make for the non-improving streak to reset. The best itself
+# is the strict minimum of the score (see :func:`fitting.beats_best`); this bar decides only what
+# counts as PROGRESS. Without it any score twitch (down to ~1e-6) reset the streak, so noise-floor
+# wander looked like progress. Δ ≥ 2 is the conventional "positive evidence" bar. The gain is
+# measured from the best at the streak's last reset (``PetabSession.streak_mark``), so a steady
+# sub-threshold creep still resets it once it CUMULATIVELY clears the bar.
+STREAK_RESET_MIN_SCORE_GAIN = 2.0
 
 # (b) Hard cap on consecutive fitted commits with NO new best (post the gate above): once the
 # streak reaches this, the session stops. This is the load-bearing early-stop lever — the worst

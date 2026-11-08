@@ -61,9 +61,9 @@ from . import skills as skills_mod
 from . import validation_data as validation_data_mod
 from .constants import (
     DEFAULT_AUTO_FIT_STARTS,
-    NEW_BEST_MIN_DELTA_SCORE,
     NON_IMPROVING_STREAK_CAP,
     PLATEAU_WINDOW,
+    STREAK_RESET_MIN_SCORE_GAIN,
 )
 from .engine import AmiciEngine, resolve_build_root
 from .errors import (
@@ -1147,10 +1147,12 @@ read its score; `false` with `no_change` → this model already IS the current v
 something else. `messages` is everything the call had to say, in pipeline order, each tagged \
 `level` and `source`.
 
-`improvement.is_new_best` marks the version that became the best, `progress.best_version`: the \
-first fit, then one whose `improvement_vs_best_prior` reaches {NEW_BEST_MIN_DELTA_SCORE:g} \
-unless `new_best_declined` says why not. `progress` is `get_progress`'s moving part: a \
-`non_improving_streak` of {NON_IMPROVING_STREAK_CAP} sets `should_stop`, and \
+`message` names the version the change was applied to (the working model, or `base_version`'s) \
+and the best version. `improvement.is_new_best` marks the version that became the best, \
+`progress.best_version`: the lowest score so far (`improvement_vs_best_prior` > 0), unless \
+`new_best_declined` says why not. `progress` is `get_progress`'s moving part: a new best resets \
+`non_improving_streak` only once the best has gained {STREAK_RESET_MIN_SCORE_GAIN:g} since the \
+last reset, a streak of {NON_IMPROVING_STREAK_CAP} sets `should_stop`, and \
 `score_improvement_over_last_n` spans the last {PLATEAU_WINDOW} fits.
 
 The score's `k` is `n_estimated` + `hardcoded_constants`: a numeric literal in the model's math \
@@ -2639,9 +2641,10 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         `{n_fitted_ops, non_improving_streak, streak_cap, best_version, criterion, best_score,
         best_gof_pvalue, score_improvement_over_last_n, plateau_window, should_stop, stop_reason}`.
         `best_score` is under `criterion` — the complexity penalty this session ranks by.
-        `best_version` is the best model so far (the session's result), the last version whose fit
-        says `is_new_best`;
-        `non_improving_streak` counts consecutive fitted ops since the last real new best.
+        `best_version` is the best model so far (the session's result), the lowest-scoring version,
+        the last whose fit says `is_new_best`;
+        `non_improving_streak` counts consecutive fitted ops since a new best last counted as
+        progress (`make_changes` states the gain that takes).
         `should_stop` is set (with a `stop_reason`) once the session has stopped making progress —
         the hard non-improving-streak cap, or a plateau once the best model is statistically
         adequate, which only a chi2 goodness of fit against FIXED noise sigmas can show: with
