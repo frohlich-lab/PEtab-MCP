@@ -158,7 +158,7 @@ def test_same_symbol_both_sides_is_flagged():
 _DOSED = """model dosed
   r1: -> B; {rate}
   r2: B -> ; kd*B
-  D = 2*dose
+  species D = 2*dose
   B = 0; k = 0.1; kd = 0.1; dose = 0
 end
 """
@@ -170,9 +170,10 @@ def test_an_input_read_only_at_the_start_is_named_with_its_later_periods(
 ):
     """isensee's seeds read each dose in an initial assignment, which saw only the
     pre-equilibration 0; libpetab's unread-target check passed, and 16 fits ran blind to every
-    drug (PEtab-MCP#192). Read in a rate as well, the dose reaches the model."""
+    drug (PEtab-MCP#192). Read in a rate as well, the dose reaches the model. `D` is a species, as
+    isensee's seeds were: a parameter assigned so takes an estimated row, refused (#286)."""
     result = O.set_model(dosed_session, _DOSED.format(rate=rate), justification="dose B")
-    said = [m["message"] for m in result["messages"] if "initial amounts" in m["message"]]
+    said = [m["message"] for m in result["messages"] if "only in initial amounts" in m["message"]]
     assert bool(said) == warned
     if warned:
         assert said[0].startswith("condition target(s) `dose` (e0 at t = 0) change in these")
@@ -191,7 +192,7 @@ def test_an_input_read_only_by_a_rule_nothing_reads_is_named(dosed_session, rate
     """An edit that drops the last reader of `drive := dose` leaves `dose` read by the rule
     alone, which the unread-input check counted as read, so the model lost its input with no
     warning (PEtab-MCP#264). A rate reading `drive` reaches it."""
-    driven = _DOSED.replace("D = 2*dose", "drive := dose")
+    driven = _DOSED.replace("species D = 2*dose", "drive := dose")
     result = O.set_model(dosed_session, driven.format(rate=rate), justification="dose B")
     said = [m["message"] for m in result["messages"] if "read by nothing" in m["message"]]
     assert bool(said) == warned
