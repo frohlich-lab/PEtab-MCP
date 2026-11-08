@@ -128,12 +128,12 @@ def test_a_parameters_rejection_reverts_the_re_author(session):
     before_model = session.problem.model.to_sbml_str()
     before_params = _records(session)
 
-    with pytest.raises(OperationError, match="only one bound"):
+    with pytest.raises(OperationError, match="upper bound stays"):
         O.set_model(
             session,
             _antimony("r3: A => ; k3 * A;"),
             justification="bad bound entry",
-            parameters=[{"parameter_id": "k1", "lower_bound": 1e-3}],
+            parameters=[{"parameter_id": "k1", "lower_bound": 1e3}],
         )
 
     assert session.problem.model.to_sbml_str() == before_model
@@ -178,12 +178,11 @@ def test_a_malformed_parameters_argument_is_rejected(session):
         O.set_model(session, _antimony(), justification="x", parameters={"parameter_id": "k1"})
 
 
-@pytest.mark.parametrize("bad", ["1e-3", None, True, float("nan"), float("inf")])
+@pytest.mark.parametrize("bad", ["1e-3", True, float("nan"), float("inf")])
 def test_a_non_numeric_bound_is_a_clean_rejection(session, bad):
     """Bounds are type-checked during normalization, not left to `update_parameters`' bare
     `float(value)`: a ValueError there is not a PetabMcpError, so it would escape the tool's error
-    wrapper as an unstructured MCP failure instead of `applied: false`. (`None` trips the
-    both-bounds-or-neither rule; the rest trip the numeric/finite checks.)"""
+    wrapper as an unstructured MCP failure instead of `applied: false`."""
     with pytest.raises(OperationError):
         O.set_model(
             session,

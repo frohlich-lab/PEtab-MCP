@@ -266,31 +266,45 @@ def test_change_parameters_bounds(session):
     assert float(recs["k1"]["upperBound"]) == 1e3
 
 
-def test_a_one_bound_edit_is_refused_quoting_the_current_box(session):
-    """The server never picks a bound the caller did not send, so a one-sided edit is refused. The
-    bare "needs BOTH" left agents guessing (9x, #86); the refusal now quotes the box to resend."""
+def test_a_one_bound_edit_keeps_the_other_bound(session):
+    """A one-sided edit was refused 21x in 21 runs of one sweep (#284), and its meaning is plain:
+    the bound it leaves out stays as it is. The result says which box that makes."""
+    res = O.change_parameters(
+        session, [{"parameter_id": "k1", "lower_bound": 1e-3}], justification="one side"
+    )
+    assert res["applied"] is True
+    said = "'k1': only its lower bound was sent, so the box is [0.001, 100]."
+    assert said in [m["message"] for m in res["messages"]]
+    recs = {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
+    assert (float(recs["k1"]["lowerBound"]), float(recs["k1"]["upperBound"])) == (1e-3, 100.0)
+
+
+def test_a_one_bound_edit_past_the_kept_bound_names_the_bound_to_send(session):
+    """The table's own refusal of an empty box speaks of a zero-width pin, which is not what a
+    lower bound above the kept upper one is."""
     before = P.parameters_to_records(session.problem)
-    with pytest.raises(OperationError, match=r"'k1' sets only one bound.*\[0\.0001, 100\]: send"):
+    with pytest.raises(OperationError, match=r"\[1000, 100\].*upper bound stays.*upper_bound"):
         O.change_parameters(
-            session, [{"parameter_id": "k1", "lower_bound": 1e-3}], justification="one side"
+            session, [{"parameter_id": "k1", "lower_bound": 1e3}], justification="one side"
         )
     assert P.parameters_to_records(session.problem) == before
-    both = [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 100.0}]
-    assert O.change_parameters(session, both, justification="both sides")["applied"] is True
 
 
-def test_a_forks_one_bound_refusal_quotes_the_forked_versions_box(session):
-    """A `base_version` fork restores that version's box, so the box to resend is that one, not
+def test_a_forks_one_bound_edit_keeps_the_forked_versions_other_bound(session):
+    """A `base_version` fork restores that version's box, so the bound left out is that one, not
     the abandoned branch's."""
     stored = session.problem.parameter_df.copy()
-    stored.loc["k1", "upperBound"] = 10.0  # the forked version's box; HEAD's upper is 100
-    with pytest.raises(OperationError, match=r"\[0\.0001, 10\]: send both"):
-        _set_model(
-            session,
-            justification="fork",
-            parameters=[{"parameter_id": "k1", "upper_bound": 5.0}],
-            restore_parameter_df=stored,
-        )
+    stored.loc["k1", "lowerBound"] = 1e-2  # the forked version's box; HEAD's lower is 1e-4
+    res = _set_model(
+        session,
+        justification="fork",
+        parameters=[{"parameter_id": "k1", "upper_bound": 5.0}],
+        restore_parameter_df=stored,
+    )
+    recs = {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
+    assert (float(recs["k1"]["lowerBound"]), float(recs["k1"]["upperBound"])) == (1e-2, 5.0)
+    said = "'k1': only its upper bound was sent, so the box is [0.01, 5]."
+    assert said in [m["message"] for m in res["messages"]]
 
 
 def test_change_parameters_names_an_assignment_rule_symbol(session):
