@@ -94,13 +94,73 @@ def df_to_tsv(df: "pd.DataFrame | None") -> str:
     return df.to_csv(sep="\t", index=df.index.name is not None, lineterminator="\n")
 
 
-def conditions_tsv(df: "pd.DataFrame | None") -> str:
+#: Most bytes :func:`conditions_tsv` returns. froehlich's table, 145 targets set per cell line,
+#: drug and dose, was 36 MB, which no lead could read and a harness re-sent with every later
+#: result (PEtab-MCP#290); isensee's, the widest of the rest, is 13 KB.
+CONDITIONS_MAX_BYTES = 32 * 1024
+
+#: Expressions named per target in :func:`conditions_summary`; the rest are counted.
+_EXPRESSIONS_SHOWN = 3
+
+
+def conditions_tsv(df: "pd.DataFrame | None", max_bytes: int = CONDITIONS_MAX_BYTES) -> str:
     """The v2 condition table, one row per (condition, target), as TSV with one row per condition
-    and one column per target, blank where the condition does not set it."""
+    and one column per target, blank where the condition does not set it; :func:`conditions_summary`
+    where that would pass ``max_bytes``. Each cell takes at least its tab, so a table with more
+    cells than ``max_bytes`` is summarised without being pivoted."""
     if df is None or len(df) == 0:
         return df_to_tsv(df)
-    wide = df.pivot(index=CONDITION_ID, columns=TARGET_ID, values=TARGET_VALUE)
-    return df_to_tsv(wide.reindex(index=df[CONDITION_ID].unique(), columns=df[TARGET_ID].unique()))
+    conditions, targets = df[CONDITION_ID].unique(), df[TARGET_ID].unique()
+    if len(conditions) * len(targets) <= max_bytes:
+        wide = df.pivot(index=CONDITION_ID, columns=TARGET_ID, values=TARGET_VALUE)
+        text = df_to_tsv(wide.reindex(index=conditions, columns=targets))
+        if len(text.encode()) <= max_bytes:
+            return text
+    return conditions_summary(df, max_bytes)
+
+
+def conditions_summary(df: "pd.DataFrame", max_bytes: int = CONDITIONS_MAX_BYTES) -> str:
+    """A condition table too large for one reply, as TSV with one row per target in the table's
+    order: how many conditions set it, how many distinct values it takes, the range of the numeric
+    ones and the first few expressions, under a line that says where a condition's own values are.
+    Targets past ``max_bytes`` are counted, not listed."""
+    numeric = pd.to_numeric(df[TARGET_VALUE], errors="coerce")
+    by = df.assign(_numeric=numeric).groupby(TARGET_ID, sort=False)
+    table = pd.DataFrame(
+        {
+            "n_conditions": by[CONDITION_ID].nunique(),
+            "n_values": by[TARGET_VALUE].nunique(),
+            "min": by["_numeric"].min(),
+            "max": by["_numeric"].max(),
+        }
+    )
+    expressions = df[numeric.isna() & df[TARGET_VALUE].notna()]
+    if len(expressions):
+
+        def named(values: pd.Series) -> str:
+            distinct = values.astype(str).unique()
+            more = len(distinct) - _EXPRESSIONS_SHOWN
+            return ", ".join(distinct[:_EXPRESSIONS_SHOWN]) + (f" (+{more})" if more > 0 else "")
+
+        table["expressions"] = expressions.groupby(TARGET_ID, sort=False)[TARGET_VALUE].agg(named)
+    head = (
+        f"{df[CONDITION_ID].nunique()} conditions set {len(table)} targets, too large a table for "
+        "one reply: one row per target instead. A condition's own values are query_data `SELECT "
+        f"targetId, targetValue FROM conditions WHERE conditionId = '{df[CONDITION_ID].iloc[0]}'`.\n"
+    )
+    header, *rows = table.to_csv(sep="\t", float_format="%.6g", lineterminator="\n").splitlines(
+        keepends=True
+    )
+    tail = "(+{} more targets: query_data `SELECT DISTINCT targetId FROM conditions`)\n"
+    budget = max_bytes - len((head + header + tail.format(len(rows))).encode())
+    kept = []
+    for row in rows:
+        budget -= len(row.encode())
+        if budget < 0:
+            break
+        kept.append(row)
+    more = len(rows) - len(kept)
+    return head + header + "".join(kept) + (tail.format(more) if more else "")
 
 
 def experiments_tsv(df: "pd.DataFrame | None") -> str:

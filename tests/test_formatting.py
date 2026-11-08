@@ -2,9 +2,17 @@ from __future__ import annotations
 
 import io
 
+import numpy as np
 import pandas as pd
+import pytest
 
-from petab_mcp.formatting import conditions_tsv, df_to_records, df_to_tsv, experiments_tsv
+from petab_mcp.formatting import (
+    CONDITIONS_MAX_BYTES,
+    conditions_tsv,
+    df_to_records,
+    df_to_tsv,
+    experiments_tsv,
+)
 
 
 def test_named_index_becomes_id_key(session):
@@ -50,6 +58,50 @@ def test_conditions_tsv_is_the_condition_table_pivoted_without_loss():
         "conditionId", var_name="targetId", value_name="targetValue"
     )
     assert len(back.dropna()) == len(long)
+
+
+def _wide(n_conditions: int, n_targets: int) -> pd.DataFrame:
+    """A long condition table in which condition `line<c>` sets `gene<t>` to (c * t mod 997) / 7."""
+    c, t = (a.ravel() for a in np.meshgrid(range(n_conditions), range(n_targets), indexing="ij"))
+    return pd.DataFrame(
+        {
+            "conditionId": "line" + pd.Series(c).astype(str),
+            "targetId": "gene" + pd.Series(t).astype(str),
+            "targetValue": (c * t % 997) / 7,
+        }
+    )
+
+
+def test_a_wide_condition_table_comes_back_one_row_per_target_under_the_cap():
+    """froehlich's 9169 conditions setting 145 targets came back as 36 MB of TSV, which no lead
+    could read (PEtab-MCP#290)."""
+    dose = pd.DataFrame({"conditionId": ["line3"], "targetId": ["dose"], "targetValue": ["2*u"]})
+    text = conditions_tsv(pd.concat([_wide(9169, 145), dose]))
+    assert len(text.encode()) <= CONDITIONS_MAX_BYTES
+    head, *table = text.splitlines()
+    assert head.startswith("9169 conditions set 146 targets")
+    assert "WHERE conditionId = 'line0'" in head
+    summary = pd.read_csv(io.StringIO("\n".join(table)), sep="\t", index_col="targetId")
+    assert list(summary.index) == [f"gene{t}" for t in range(145)] + ["dose"]
+    assert summary.loc["gene1", ["n_conditions", "n_values", "min", "max"]].tolist() == [
+        9169,
+        997,
+        0,
+        pytest.approx(996 / 7, rel=1e-5),
+    ]
+    assert summary.loc["dose", "expressions"] == "2*u" and pd.isna(summary.loc["dose", "min"])
+
+
+def test_a_summary_counts_the_targets_past_the_cap():
+    """A summary of more targets than one reply holds stays under the cap too."""
+    text = conditions_tsv(_wide(40, 900), max_bytes=4096)
+    assert len(text.encode()) <= 4096
+    *_, last = text.splitlines()
+    listed = len(text.splitlines()) - 3
+    assert (
+        last
+        == f"(+{900 - listed} more targets: query_data `SELECT DISTINCT targetId FROM conditions`)"
+    )
 
 
 def test_experiments_tsv_is_one_row_per_period():

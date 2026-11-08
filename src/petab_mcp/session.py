@@ -19,7 +19,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from petab.v2.C import CONDITION_ID, ESTIMATE, EXPERIMENT_ID
+from petab.v2.C import CONDITION_ID, ESTIMATE, EXPERIMENT_ID, TARGET_ID
 from petab.v2.models.sbml_model import SbmlModel
 
 from . import criteria, logging_setup, protocols
@@ -118,6 +118,11 @@ _PROGRESS_ON_RESULT = (
 def _n_unique(df, column: str) -> int:
     """How many distinct ``column`` ids ``df`` names; 0 for an absent table."""
     return 0 if df is None or column not in df.columns else int(df[column].nunique())
+
+
+def _unique_ids(df, column: str) -> list[str]:
+    """The distinct ``column`` ids ``df`` names, in its order; none for an absent table."""
+    return [] if df is None or column not in df.columns else list(map(str, df[column].unique()))
 
 
 def _with_fitted_values(simulation: dict[str, Any] | None, parameter_df) -> dict[str, Any] | None:
@@ -857,6 +862,7 @@ class PetabSession:
             "readouts_to_define": [r for r, rule in R.readouts(p).items() if rule is None],
             "observables": [str(x) for x in getattr(p.observable_df, "index", [])],
             "n_conditions": _n_unique(p.condition_df, CONDITION_ID),
+            "condition_targets": _unique_ids(p.condition_df, TARGET_ID),
             "n_experiments": _n_unique(p.experiment_df, EXPERIMENT_ID),
             "n_measurements": 0 if p.measurement_df is None else int(len(p.measurement_df)),
             "n_reactions_detail": [sm.getReaction(i).getId() for i in range(sm.getNumReactions())],
