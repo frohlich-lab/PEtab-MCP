@@ -1692,6 +1692,7 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
                 (fit["optimization"] or {}).get("n_starts_at_best") if fit else None
             ),
             "records": records,
+            "state_trajectories": sim["state_trajectories"],
             "objective_before": fit["objective_before"] if fit else None,
             "version": None,
         }
@@ -2694,6 +2695,7 @@ def build_sim_payload_for_version(payload: dict[str, Any] | None) -> dict[str, A
         # restore) cannot reproduce without a build. This blob is where a client's scoring reads it.
         "k_eff": payload.get("k_eff"),
         "records": payload.get("records"),
+        "state_trajectories": payload.get("state_trajectories"),
     }
     # The PARAMETER-GEOMETRY verdict of this fit (see identifiability.fit_diagnosis_block). Persisted
     # because it cannot be recomputed later without the built problem the optimizer used: a process

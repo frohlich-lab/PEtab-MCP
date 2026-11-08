@@ -539,6 +539,7 @@ def test_list_data_tables(tmp_path):
             "parameters",
             "simulations",
             "simulations_history",
+            "state_trajectories",
             "optimization_starts",
             "optimization_trace",
         }
@@ -666,6 +667,7 @@ def test_get_version_summarises_a_part_the_mcp_client_would_refuse(tmp_path):
             "k_eff": 2.5,
             "noise_sigma_report": {"sigma_A": {"value": 0.1}},
             "records": records,
+            "state_trajectories": {"ids": ["A"], "points": [["", 0.0]], "values": [[1.0]]},
         }
         optimization = {
             "n_starts": 50,
@@ -712,6 +714,8 @@ def test_get_version_summarises_a_part_the_mcp_client_would_refuse(tmp_path):
             # The larger part goes first, so v1's small simulation comes back whole.
             both = await get(1, ["simulation", "optimization"])
             assert len(both["simulation"]["records"]) == 10
+            # Never sent whole, however small: query_data pages them (#289).
+            assert "state_trajectories" not in both["simulation"]
             assert "fvals" in both["optimization"]
 
     asyncio.run(go())

@@ -237,10 +237,13 @@ def test_table_schema(session):
         "parameters",
         "simulations",
         "simulations_history",
+        "state_trajectories",
         "optimization_starts",
         "optimization_trace",
     }
     assert tables["simulations_history"]["n_rows"] == 0  # no versions stored yet
+    assert tables["state_trajectories"]["n_rows"] == 0
+    assert tables["state_trajectories"]["columns"] == data_access.STATE_TRAJECTORY_COLUMNS
     assert set(data_access.SIMULATION_HISTORY_COLUMNS) <= set(
         tables["simulations_history"]["columns"]
     )
@@ -407,6 +410,36 @@ def test_fit_diagnosis_compact_and_bounded(session):
     # too few points here -> the rollup calls the tests underpowered, so "nothing flagged" is not
     # a pass; it is read off the fit result's verdict
     assert data_access.residual_structure_rollup(session)["low_power"] is True
+
+
+#: Two species and an assignment rule at two times of experiment e0, as the engine stores them.
+TRAJECTORIES = {
+    "ids": ["A", "B", "total"],
+    "points": [["e0", 0.0], ["e0", 1.0]],
+    "values": [[1.0, 0.0, 1.0], [0.6, 0.4, 1.0]],
+}
+
+
+def test_state_trajectories_are_one_row_per_value(session):
+    """#289: the hidden states a fit simulated are SQL, not reconstructed by hand from readouts."""
+    session.simulation = {"records": SIM_RECORDS, "state_trajectories": TRAJECTORIES}
+    out = data_access.run_query(
+        session,
+        "SELECT time, value FROM state_trajectories WHERE entity_id = 'B' ORDER BY time",
+    )
+    assert [(r["time"], r["value"]) for r in out["rows"]] == [(0.0, 0.0), (1.0, 0.4)]
+    tables = {t["table"]: t for t in data_access.table_schema(session)["tables"]}
+    assert tables["state_trajectories"]["n_rows"] == 6
+
+
+def test_state_trajectories_are_kept_with_a_version():
+    """A restore reads a version's stored simulation back, so the trajectories are stored with it."""
+    from petab_mcp import fitting
+
+    stored = fitting.build_sim_payload_for_version(
+        {"records": SIM_RECORDS, "state_trajectories": TRAJECTORIES}
+    )
+    assert stored["state_trajectories"] == TRAJECTORIES
 
 
 def test_fit_diagnosis_flags_systematic_bias(session):
@@ -993,8 +1026,9 @@ def test_page_args_rejected(session):
 def test_head_simulations_reference_gate():
     # Decides whether query_data pays an AMICI build: HEAD `simulations` reads must, queries
     # touching only the history (or the static tables) must not.
-    ref = data_access.query_references_head_simulations
+    ref = data_access.query_reads_head_simulation
     assert ref("SELECT * FROM simulations WHERE residual_weighted IS NOT NULL")
     assert ref("select s.time from SIMULATIONS s")
+    assert ref("SELECT value FROM state_trajectories WHERE entity_id = 'B'")
     assert not ref("SELECT version FROM simulations_history")
     assert not ref("SELECT count(*) FROM measurements")

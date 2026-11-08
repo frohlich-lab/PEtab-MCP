@@ -297,7 +297,8 @@ class AmiciEngine:
 
         Per-point records still come from AMICI's ``ReturnData``: pyPESTO hands them back when
         the objective is called with ``return_dict=True`` (it switches AMICI to full reporting),
-        so the simulation dataframe is unchanged.
+        so the simulation dataframe is unchanged. Returns ``(nllh, records, res, states)``, the
+        last :meth:`_state_trajectories` off the same ``ReturnData``.
         """
         from pypesto.C import FVAL, RDATAS
 
@@ -318,12 +319,50 @@ class AmiciEngine:
             # AMICI's own llh is NaN) -- a 0/0 readout at t=0 scored finite and lower than any
             # real fit.
             nllh = None
-        return nllh, records, self._res_from_rdatas(rdatas)
+        states = self._state_trajectories(problem.objective.amici_model, rdatas)
+        return nllh, records, self._res_from_rdatas(rdatas), states
+
+    def _state_trajectories(self, model, rdatas) -> dict[str, Any] | None:
+        """The model's species and assignment rules at every time AMICI simulated, off the
+        ``rdatas`` of one evaluation: ``{"ids", "points", "values"}``, one ``[experiment_id, time]``
+        and one row of values in ``ids`` order per point, which :mod:`data_access` serves as
+        ``state_trajectories``. ``None`` where an experiment returned no output, as the records then
+        hold no simulation either.
+
+        Those times are the measurement times, each once. AMICI's full reporting holds every
+        state (``x``) and expression (``w``) there, so this needs no simulation of its own, where
+        a time grid would integrate every experiment again for a read. The states are AMICI's
+        state vector, rate-rule targets included. Of the expressions only the SBML model's
+        assignment-rule targets are kept, not the ``flux_*`` AMICI adds per reaction.
+        """
+        import numpy as np
+
+        if self._unusable_rdatas(rdatas):
+            return None
+        sbml = self.session.model.sbml_model
+        rules = {r.getVariable() for r in sbml.getListOfRules() if r.isAssignment()}
+        expressions = list(model.get_expression_ids())
+        kept = [i for i, e in enumerate(expressions) if e in rules]
+        experiments = set(self.session.problem.measurement_df[EXPERIMENT_ID])
+        points, values = [], []
+        for rd in rdatas:
+            # AMICI names an experiment-less simulation with an id of its own: "" here.
+            eid = rd.id if rd.id in experiments else ""
+            x = np.asarray(rd.x)
+            w = np.asarray(rd.w)[:, kept] if kept else np.empty((len(x), 0))
+            ts = list(rd.ts)
+            for j, t in enumerate(ts):
+                if j and t == ts[j - 1]:
+                    continue  # a replicate's repeat of the time before it
+                points.append([eid, finite_float(t)])
+                values.append([finite_float(v) for v in (*x[j], *w[j])])
+        ids = [*model.get_state_ids(), *(expressions[i] for i in kept)]
+        return {"ids": ids, "points": points, "values": values}
 
     def evaluate_objective(self) -> dict[str, Any]:
         """Score the current model + parameters against the fixed measurements."""
         with self.session.lock:
-            nllh, records, res = self._objective_evaluate()
+            nllh, records, res, _ = self._objective_evaluate()
 
         chi2 = self._chi2(records, res)
         return {
@@ -345,7 +384,7 @@ class AmiciEngine:
         :mod:`petab_mcp.data_access`.
         """
         with self.session.lock:
-            nllh, records, res = self._objective_evaluate(solve_inner, gradient)
+            nllh, records, res, states = self._objective_evaluate(solve_inner, gradient)
 
         n_expected, n_missing = self.simulation_gap(records)
         return {
@@ -358,6 +397,7 @@ class AmiciEngine:
             "n_expected_points": n_expected,
             "n_missing_simulations": n_missing,
             "records": records,
+            "state_trajectories": states,
         }
 
     # -- helpers -----------------------------------------------------------
@@ -437,12 +477,15 @@ class AmiciEngine:
             return None
 
     @staticmethod
-    def _weighted_residual(ctx, row, m, s):
+    def _weighted_residual(ctx, row, m, s, sigmay=None):
         """petab-consistent (noise, weighted residual) for one point, or (None, None).
 
         The weighted residual is ``(scale(m) - scale(s)) / sigma`` in the coordinate the
         observable's noise distribution is additive in — the quantity that enters chi2 —
-        matching ``petab.v2.calculate.calculate_residuals``.
+        matching ``petab.v2.calculate.calculate_residuals``. ``sigma`` is the noise formula as
+        petab evaluates it from the parameter table and the measurement's overrides, or, where
+        the formula names a model entity petab cannot evaluate (``sd*readout_X``, #289),
+        ``sigmay``: the noise AMICI evaluated for the point, which its likelihood used.
         """
         if ctx is None or m is None or s is None:
             return None, None
@@ -453,13 +496,40 @@ class AmiciEngine:
             obs_id = row.get(OBSERVABLE_ID)
             trafo = observable_transformation(observable_df, obs_id)
             observable = observable_df.loc[obs_id].to_dict()
-            noise = float(evaluate_noise_formula(row, noise_formulas, parameter_df, s, observable))
+            try:
+                noise = float(
+                    evaluate_noise_formula(row, noise_formulas, parameter_df, s, observable)
+                )
+            except Exception:  # the formula names a model entity
+                noise = sigmay
+            if noise is None:
+                return None, None
             if noise == 0.0:
                 return noise, None
             weighted = (scale(m, trafo) - scale(s, trafo)) / noise
             return noise, float(weighted)
-        except Exception:  # noise formula references model states / unresolved params
+        except Exception:  # an observable petab cannot read
             return None, None
+
+    @staticmethod
+    def _sigmay(model, rdatas, experiments) -> dict[tuple, float | None]:
+        """AMICI's ``sigmay`` by ``(experiment_id, observable_id, time, replicate)``, the replicate
+        counted in measurement order as ``ExpData`` lays replicates out: the ``r``-th measurement
+        at a time sits ``r`` rows after the time's first. ``experiments`` are the measurement
+        table's ids; AMICI's id for an experiment-less simulation is ``""`` here."""
+        import numpy as np
+
+        observables = list(model.get_observable_ids())
+        out: dict[tuple, float | None] = {}
+        for rd in rdatas:
+            eid = rd.id if rd.id in experiments else ""
+            sigmay = np.asarray(rd.sigmay)
+            first: dict[float, int] = {}
+            for j, t in enumerate(float(t) for t in rd.ts):
+                r = j - first.setdefault(t, j)
+                for i, obs in enumerate(observables):
+                    out[(eid, obs, t, r)] = finite_float(sigmay[j, i])
+        return out
 
     @staticmethod
     def _unusable_rdatas(rdatas) -> int:
@@ -585,6 +655,14 @@ class AmiciEngine:
         merged = meas.merge(
             simdf[keys + [rep, SIMULATION]], on=keys + [rep], how="left", validate="1:1"
         )
+        # Row by row with `merged`, looked up in AMICI's vocabulary like the simulation.
+        sigmay = cls._sigmay(objective.amici_model, rdatas, set(meas[EXPERIMENT_ID]))
+        sigmas = [
+            sigmay.get((e, o, float(t), r))
+            for e, o, t, r in zip(
+                merged[EXPERIMENT_ID], merged[OBSERVABLE_ID], merged[TIME], merged[rep]
+            )
+        ]
         if flattened is not None:
             # Back to the session's vocabulary for everything downstream (records, residual
             # structure, query_data). AMICI's inverse does exactly this and nothing else -- it
@@ -598,11 +676,11 @@ class AmiciEngine:
         ctx = cls._noise_context(problem)
 
         records: list[dict[str, Any]] = []
-        for _, row in merged.iterrows():
+        for (_, row), sigma in zip(merged.iterrows(), sigmas):
             m = finite_float(row.get(MEASUREMENT))
             s = finite_float(row.get(SIMULATION))
             residual = (m - s) if (m is not None and s is not None) else None
-            noise, weighted = cls._weighted_residual(ctx, row, m, s)
+            noise, weighted = cls._weighted_residual(ctx, row, m, s, sigma)
             records.append(
                 {
                     "observable_id": row.get(OBSERVABLE_ID),
