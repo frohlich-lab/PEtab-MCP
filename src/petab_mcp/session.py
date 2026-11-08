@@ -1604,6 +1604,19 @@ class PetabSession:
                     "hit it too. The usual causes are a stiff or badly scaled model, or bounds "
                     "that allow extreme rates.",
                 ]
+            # Most starts stopped on a value that is not a number (PEtab-MCP#285).
+            not_finite = (fitsim.get("exitflag_counts") or {}).get("ExitFlag.NOT_FINITE", 0)
+            if 2 * not_finite > starts:
+                warnings = [
+                    *warnings,
+                    f"{not_finite} of {starts} starts ended NOT_FINITE: the objective or its "
+                    "gradient was not a number where they went, so this score comes from the "
+                    f"other {starts - not_finite} and need not be the best this structure fits. "
+                    "Usual causes: a power of a state that reaches 0 with an estimated exponent "
+                    "(its gradient is 0*log(0)), a rate that is 0/0 somewhere in the bounds, or "
+                    "bounds wide enough to blow the ODE up. Fix that before judging the "
+                    "structure on this fit.",
+                ]
 
             staged = list(staged_edits or [])
             nllh = fitsim.get("neg_log_likelihood")

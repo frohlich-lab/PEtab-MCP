@@ -604,3 +604,47 @@ def test_nothing_is_named_where_amici_caught_no_value_that_is_not_finite():
     """An integration that fails on stiffness reports no NaN, so the refusal keeps its two
     causes."""
     assert _caught(("CVODES:CVode:TOO_MUCH_WORK", "mxstep steps taken before tout")) == ""
+
+
+def test_a_gradient_that_is_not_finite_where_the_objective_is_says_what_it_fails_on(monkeypatch):
+    """#285: bachmann 78 [33] lost every start on a finite objective, was told the objective was
+    non-finite at EVERY start, and concluded "that direction is settled". AMICI writes the
+    derivative of `S^n` in `n` as 0 at `S` = 0, so a power with an estimated exponent fails where
+    its base reaches 0 or below, named with the value it reaches; otherwise the parameters whose
+    derivative is not a number."""
+    import types
+
+    import numpy as np
+    import pandas as pd
+    from petab.v2.models.sbml_model import SbmlModel
+    from pypesto.C import FVAL, GRAD, RDATAS
+
+    model = SbmlModel.from_antimony(
+        "model m\n species A, S; A = 1; S = 0; k = 1; Ki = 1; n = 2;\n"
+        " r1: A => ; k*A*Ki^n/(Ki^n + S^n);\n r2: => S; k*A;\nend\n"
+    )
+    table = pd.DataFrame({"estimate": [True, True, True]}, index=["k", "Ki", "n"])
+    session = types.SimpleNamespace(problem=types.SimpleNamespace(model=model, parameter_df=table))
+    monkeypatch.setattr(fitting, "problem_x_from_nominal", lambda problem, df: [1.0, 1.0, 2.0])
+
+    def said(grad, s_low):
+        rdata = types.SimpleNamespace(
+            state_ids=["A", "S"], x0=np.array([1.0, 0.1]), x=np.array([[0.5, s_low]])
+        )
+
+        def objective(x, sensi_orders, return_dict):
+            if 1 in sensi_orders:
+                return {FVAL: 1.0, GRAD: np.array(grad)}
+            return {FVAL: 1.0, RDATAS: [rdata]}
+
+        problem = types.SimpleNamespace(
+            objective=objective, x_names=["k", "Ki", "n"], x_free_indices=[0, 1, 2]
+        )
+        return fitting._non_finite_gradient(session, problem)
+
+    nan = float("nan")
+    assert said([1.0, 1.0, nan], -1e-12).startswith(
+        "`S^n` raises a base that is not above 0 (`S` reaches -1e-12) to the estimated `n`. "
+    )
+    assert said([1.0, nan, nan], 0.1) == "Its derivative in `Ki`, `n` is not a number there."
+    assert said([1.0, 1.0, 1.0], -1e-12) == ""

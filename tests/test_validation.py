@@ -8,6 +8,7 @@ from petab.v2.models.sbml_model import SbmlModel
 from petab_mcp import operations as O
 from petab_mcp.problem import WorkingProblem, later_changes
 from petab_mcp.validation import (
+    _constant_noise_species_issues,
     _fixed_constant_role_issues,
     frozen_parametric_stoichiometry_issues,
     validate_problem,
@@ -261,3 +262,42 @@ end
 """
     said = _sourceless(O.set_model(dosed_session, antimony, justification="dose B"))
     assert len(said) == 1 and said[0].startswith("species `X` starts at 0")
+
+
+@pytest.mark.parametrize(
+    ("reaction", "refused"),
+    [
+        ("r1: A => ; k*A", True),  # B in no reaction
+        ("r1: A => ; k*A*B", True),  # B read in a rate, changed by none
+        ("r1: A + B => B; k*A*B", True),  # a catalyst: as much B on each side
+        ("r1: A => B; k*A", False),
+    ],
+)
+def test_a_noise_that_reads_a_species_no_reaction_changes_is_refused(reaction, refused):
+    """#285: armistead's metabolites are observed with noise proportional to each; one no reaction
+    changed made AMICI refuse the import ("the sigma of obs_B depends on tcl_B"), which the agent
+    was told was an ill-posed model and answered by changing three unrelated things."""
+    import types
+
+    import pandas as pd
+
+    antimony = f"model m\n species A, B; A = 1; B = 2; k = 1;\n {reaction}\nend\n"
+    model = SbmlModel.from_antimony(antimony)
+    observables = pd.DataFrame(
+        {"observableFormula": ["B"], "noiseFormula": ["sigma_B * B"]},
+        index=pd.Index(["obs_B"], name="observableId"),
+    )
+    measurements = pd.DataFrame({"observableId": ["obs_B"], "noiseParameters": [float("nan")]})
+    problem = types.SimpleNamespace(
+        model=model, observable_df=observables, measurement_df=measurements
+    )
+    issues = _constant_noise_species_issues(problem)
+    assert [i["message"] for i in issues] == (
+        [
+            "the noise of `obs_B` reads species `B`, which no reaction changes: AMICI holds such "
+            "a species as a constant total and cannot build a noise model that reads one, so the "
+            "fit would fail. Put `B` in a reaction that produces or consumes it."
+        ]
+        if refused
+        else []
+    )

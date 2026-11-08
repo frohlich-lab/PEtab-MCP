@@ -28,6 +28,7 @@ from .reconcile import (
     _declared_initial,
     _observable_and_measurement_symbols,
     condition_target_symbols,
+    formula_symbols,
     input_species,
     noise_sigma_ids,
     _model_math_names,
@@ -559,6 +560,51 @@ def _sourceless_species_issues(problem) -> list[dict[str, Any]]:
     ]
 
 
+def _constant_noise_species_issues(problem) -> list[dict[str, Any]]:
+    """One error per species a noise formula reads that no reaction changes (it takes part in none,
+    or with as much on each side) and no rule sets. AMICI holds such a species as a constant total
+    and refuses at import to build a noise model that reads one ("the sigma of obs depends on
+    tcl_B"): armistead 21 met it as an ill-posed model and changed three unrelated things
+    (PEtab-MCP#285). A condition target or a modifier in no reaction is fine where no noise reads
+    it."""
+    from petab.v2.C import NOISE_FORMULA, NOISE_PARAMETERS, OBSERVABLE_ID
+
+    sm = getattr(problem.model, "sbml_model", None)
+    if sm is None or not has_dynamics(sm):
+        return []
+    changed = {r.getVariable() for r in sm.getListOfRules()}
+    for rxn in sm.getListOfReactions():
+        net: dict[str, float] = {}
+        for sign, refs in ((-1, rxn.getListOfReactants()), (1, rxn.getListOfProducts())):
+            for ref in refs:
+                net[ref.getSpecies()] = net.get(ref.getSpecies(), 0) + sign * ref.getStoichiometry()
+        changed |= {sid for sid, n in net.items() if n != 0}
+    constant = {s.getId() for s in sm.getListOfSpecies() if not s.getConstant()} - changed
+    readers: dict[str, set[str]] = {}
+    odf, mdf = problem.observable_df, problem.measurement_df
+    if odf is not None and NOISE_FORMULA in odf.columns:
+        for obs_id, formula in odf[NOISE_FORMULA].items():
+            for sid in formula_symbols(formula) & constant:
+                readers.setdefault(sid, set()).add(str(obs_id))
+    if mdf is not None and NOISE_PARAMETERS in mdf.columns:
+        for obs_id, cell in zip(mdf[OBSERVABLE_ID], mdf[NOISE_PARAMETERS]):
+            for sid in formula_symbols(cell) & constant:
+                readers.setdefault(sid, set()).add(str(obs_id))
+    return [
+        {
+            "level": "error",
+            "message": (
+                f"the noise of {', '.join(f'`{o}`' for o in sorted(readers[sid]))} reads species "
+                f"`{sid}`, which no reaction changes: AMICI holds such a species as a constant "
+                "total and cannot build a noise model that reads one, so the fit would fail. Put "
+                f"`{sid}` in a reaction that produces or consumes it."
+            ),
+            "check": "noise_reads_constant_species",
+        }
+        for sid in sorted(readers)
+    ]
+
+
 def _vanishes_at(node, zero: set[str], ruled: dict, seen: frozenset = frozenset()) -> bool:
     """Whether the math ``node`` is 0 wherever every name in ``zero`` is 0, read off its shape: such
     a name, or an assignment rule's target whose math vanishes (``ruled``); a literal 0; a product
@@ -781,6 +827,10 @@ def validate_problem(problem, protected_fixed_ids=None, statements: bool = False
     issues += readout_issues
     n_errors += len(readout_issues)
 
+    noise_issues = _constant_noise_species_issues(problem)
+    issues += noise_issues
+    n_errors += len(noise_issues)
+
     advisory = (
         _first_period_only_issues(problem)
         + _unread_input_issues(problem)
@@ -796,6 +846,7 @@ def validate_problem(problem, protected_fixed_ids=None, statements: bool = False
             and not reuse_errors
             and not role_errors
             and not readout_issues
+            and not noise_issues
         ),
         "n_errors": n_errors,
         "n_warnings": n_warnings,

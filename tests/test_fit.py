@@ -750,3 +750,65 @@ def test_a_rate_that_is_0_over_0_at_pre_equilibration_is_named(dosed_session, am
         "because `drive := dose / (dose + K * B)` is NaN at t=0 in the pre-equilibration of "
         "experiment `e0`, which stops the simulation"
     ) in str(refused.value)
+
+
+def test_a_fit_most_of_whose_starts_end_not_finite_says_so(fit_session, monkeypatch):
+    """#285: bachmann 78 lost 45-98% of its starts NOT_FINITE in every fit, and its structures were
+    judged on collapsed fits (v6 98/100, v9 95/100) with nothing in the result to say so."""
+    from petab_mcp import fitting
+
+    payload = fitting._optimization_payload
+
+    def collapsed(result):
+        out = payload(result)
+        out["exitflag_counts"] = {"ExitFlag.NOT_FINITE": 2, "ExitFlag.FTOL": 1}
+        return out
+
+    monkeypatch.setattr(fitting, "_optimization_payload", collapsed)
+    out = fit_session.fit(n_starts=3)
+    assert any("2 of 3 starts ended NOT_FINITE" in w for w in out["warnings"])
+
+
+_SOURCED = """model conversion_reaction
+  compartment compartment_ = 1;
+  species A in compartment_, B in compartment_;
+  A = 1; B = 0;
+  dose = 0; k1 = 0.5; k2 = 0.1; kb = 0.01;
+  r1: A => B; k1 * (1 + dose) * A;
+  r2: B => A; k2 * B;
+  r3: => B; kb * A;
+{sink}end
+"""
+
+
+@pytest.mark.parametrize("sink", ["", "  r4: B => ; kb * B;\n"])
+def test_an_unscored_fit_under_a_source_that_breaks_a_total_names_it(dosed_session, sink):
+    """#285: brannmark 42 wrote `IRS1_bas: -> IRS1p; k_basal*IRS1` under pre-equilibration, so the
+    IRS1 total grew without a steady state, and its unscored fit was called a server fault. The
+    lead blamed the numerics and dropped the basal flux that runs 41 and 43 kept (written
+    `I -> Ip`). A source whose product has a sink leaves a steady state, and the note as it was."""
+    from petab_mcp import fitting
+
+    O.set_model(dosed_session, _SOURCED.format(sink=sink), justification="basal flux")
+    sim = {"neg_log_likelihood": 12.0, "n_missing_simulations": 0, "n_expected_points": 6}
+    nllh, note = fitting._reconcile_objective(dosed_session, {"neg_log_likelihood": 10.0}, sim)
+    assert nllh is None
+    if sink:
+        assert "fault in how the server evaluates" in note
+    else:
+        assert "pre-equilibration has no steady state to reach: `r3` (`-> B; kb * A`)" in note
+        assert "server" not in note
+
+
+def test_a_fit_with_no_steady_state_to_pre_equilibrate_to_names_the_source(
+    dosed_session, amici_build_root
+):
+    """#285: the same source fails every start where no pre-equilibration converges, which the
+    refusal read as an ODE that will not integrate or an undefined readout."""
+    from petab_mcp.engine import AmiciEngine
+
+    O.set_model(dosed_session, _SOURCED.format(sink=""), justification="basal flux")
+    dosed_session.engine = AmiciEngine(dosed_session, build_root=str(amici_build_root))
+    dosed_session.auto_fit_starts = 2
+    with pytest.raises(ModelUpdateError, match="no steady state to reach: `r3` "):
+        dosed_session.fit()
