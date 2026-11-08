@@ -65,7 +65,7 @@ from .constants import (
     NON_IMPROVING_STREAK_CAP,
     PLATEAU_WINDOW,
 )
-from .engine import AmiciEngine
+from .engine import AmiciEngine, resolve_build_root
 from .errors import (
     FIT_IN_PROGRESS,
     PetabMcpError,
@@ -2938,8 +2938,9 @@ def create_server(
 
     ``cluster`` (a ``distributed`` cluster or a pool's scheduler address, the ``dask`` extra) runs
     every fit's starts on its workers (:mod:`petab_mcp.dask_engine`); without one, each fit runs
-    its starts in local processes. The workers import the compiled models from ``build_root``, so on
-    more than one machine it must be on a filesystem they share.
+    its starts in local processes. The workers import the compiled models from ``build_root`` and
+    read each fit's problem there, so on more than one machine it must be on a filesystem they
+    share.
     """
     if constraints and entity_map is None:
         raise ValidationError(
@@ -2957,7 +2958,7 @@ def create_server(
     if cluster is not None:
         from .dask_engine import DaskEngine
 
-        fit_engine = DaskEngine(cluster)
+        fit_engine = DaskEngine(cluster, resolve_build_root(build_root))
     ctx = _open_ctx(
         yaml_path,
         provenance_dir=provenance_dir,
