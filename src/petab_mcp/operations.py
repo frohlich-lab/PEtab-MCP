@@ -259,7 +259,8 @@ def _parsimony_warnings(problem, old_species: set[str]) -> list[str]:
     that feeds no observable — a dead-end sink like ``B -> C`` — can degenerately fit a single
     observable just as well as a repair that reuses existing species (e.g. making a reaction
     reversible). We flag *only* that case, in-loop, without rejecting the (structurally valid)
-    edit.
+    edit. "New" is against ``old_species``, the species of the version the edit applies to
+    (:func:`_parent_model`): a fork's base, not HEAD.
 
     We deliberately do NOT flag species that are legitimately unobserved, because doing so
     trained the agent to ignore the warning entirely (it fired 62× on correct choices on one
@@ -316,24 +317,28 @@ def _pruned_warnings(pruned: list[str], names: dict[str, str]) -> list[str]:
     return [f"Removed species nothing in the model reads, with their initial amounts: {shown}."]
 
 
-def _orphan_warnings(session, seeded: list[str]) -> list[str]:
+def _parent_model(session):
+    """The SBML model of the version an edit applies to: ``session.derived_from`` for a
+    ``base_version`` fork, else the working model, read before the edit replaces it."""
+    fork = getattr(session, "derived_from", None)
+    if fork is not None:
+        return SbmlModel.from_antimony(session.provenance.get_model_antimony(fork)).sbml_model
+    return session.problem.model.sbml_model
+
+
+def _orphan_warnings(session, seeded: list[str], parent) -> list[str]:
     """One warning for each name the reconcile seeded (``seeded`` of
-    :func:`reconcile.sync_parameter_table`) that the version this edit changes defined as a
-    species, a rule or a reaction: the edit dropped that definition and kept a reader, so the
-    quantity is now a constant the fit tunes. fontaine's `GliS`, renamed away from the reaction
-    making it, was fitted so, 140 nll worse, with no reply naming it (PEtab-MCP#264).
+    :func:`reconcile.sync_parameter_table`) that ``parent``, the version this edit changes
+    (:func:`_parent_model`), defined as a species, a rule or a reaction: the edit dropped that
+    definition and kept a reader, so the quantity is now a constant the fit tunes. fontaine's
+    `GliS`, renamed away from the reaction making it, was fitted so, 140 nll worse, with no reply
+    naming it (PEtab-MCP#264).
 
     A name no earlier model defined is not named: a rate law reading a new name is how a rate
-    constant is introduced (the `model_edits` route documents it), about 19 times a session. The
-    parent is ``session.derived_from`` for a ``base_version`` fork, else the working model, read
-    before the edit replaces it."""
+    constant is introduced (the `model_edits` route documents it), about 19 times a session."""
     if not seeded:
         return []
     fork = getattr(session, "derived_from", None)
-    if fork is not None:
-        parent = SbmlModel.from_antimony(session.provenance.get_model_antimony(fork)).sbml_model
-    else:
-        parent = session.problem.model.sbml_model
     version = fork if fork is not None else session.provenance.current_version
     defined = {r.getId(): "a reaction" for r in parent.getListOfReactions()}
     defined |= {s.getId(): "a species" for s in parent.getListOfSpecies()}
@@ -437,7 +442,6 @@ def _commit_change(
     resolved = resolve_references(session.resolver, references, required=require_references)
 
     with session.lock:
-        old_species = set(R.species_ids(session.problem.model.sbml_model))
         # The edit runs against a CANDIDATE problem, never the live one. Shallow copy (the fixed
         # measurement/condition/observable tables are read-only and shared, as
         # `fitting._build_hierarchical_problem` already does) with its own parameter table, since
@@ -540,15 +544,14 @@ def _commit_change(
             )
         report = lint()
 
-        warnings = (
-            [
+        warnings = []
+        if recon is not None:
+            parent = _parent_model(session)
+            warnings = [
                 *_pruned_warnings(recon["pruned"]["species"], names),
-                *_orphan_warnings(session, recon["parameters"]["seeded"]),
-                *_parsimony_warnings(problem, old_species),
+                *_orphan_warnings(session, recon["parameters"]["seeded"], parent),
+                *_parsimony_warnings(problem, set(R.species_ids(parent))),
             ]
-            if recon is not None
-            else []
-        )
         # A row's regulators are signed on this version's bounds: an edit of a bound or a scale
         # can change what its rate records, and the record changes with the problem below.
         record = getattr(
@@ -2291,19 +2294,30 @@ def bundle_result(
 
     Whether a version was created is decided by comparing HEAD against ``head_before`` — the only
     signal that survives a failure between the snapshot and the end of ``session.fit``.
+
+    ``message`` opens with the version the change was applied to (the ``base_version`` fork's, else
+    ``head_before``) and the best version after it. Where the change was applied to a version that
+    is not the best, and the working model it leaves is not the best either, a ``make_changes``
+    warning says so and names the ``base_version`` that edits the best (PEtab-MCP#282).
     """
     committed = bool(fit_result.get("committed"))
     no_change = bool(fit_result.get("no_change"))
     version = fit_result.get("version")
     head_now = session.provenance.current_version
     snapshotted = head_now != head_before
+    fork = getattr(session, "derived_from", None)
+    base = fork if fork is not None else head_before
+    best = session.best.version if session.best is not None else None
+    on = f"v{base}" if base >= 0 else "the loaded problem"
+    best_is = f"best is v{best}." if best is not None else "no version is scored yet."
+    lineage = f"Applied to {on}; {best_is}"
     if committed:
         applied = True
-        message = f"Change applied and scored as version {version}."
+        message = f"Change applied to {on} and saved as v{version}; {best_is}"
     elif no_change:
         applied = True
         message = (
-            "No new version: this change gives the same model as version "
+            f"{lineage} No new version: this change gives the same model as version "
             f"{fit_result.get('duplicate_of_version')} (the same equations and estimated "
             "parameters), so the working model stays that version exactly as stored and its "
             "metrics stand. Make a genuinely different change; that version is kept and scored "
@@ -2315,27 +2329,38 @@ def bundle_result(
         applied = True
         version = version if version is not None else head_now
         message = (
-            "Change applied and a version was snapshotted, but the fit did not finish cleanly, so "
-            f"this call carries no metrics: the working model is now version {version}. Read "
-            "`error`, then read that version's score with list_versions before making another "
+            f"{lineage} Change applied and a version was snapshotted, but the fit did not finish "
+            f"cleanly, so this call carries no metrics: the working model is now version {version}. "
+            "Read `error`, then read that version's score with list_versions before making another "
             "change — do NOT re-send it, the model is already scored."
         )
     else:
         applied = False
         version = head_now
         message = (
-            "Change REVERTED: it could not be scored, so it was undone — the working model is "
-            f"unchanged, still version {head_now}, and nothing is left half-done. The fit "
+            f"{lineage} Change REVERTED: it could not be scored, so it was undone — the working "
+            f"model is unchanged, still version {head_now}, and nothing is left half-done. The fit "
             f"reported: {fit_result.get('error') or 'no error message'} — ACT ON THAT rather than "
             "assuming the model is broken: it says whether to fix the change and send it again, "
             "or to stop re-sending this structure and make a genuinely different change instead."
         )
-    # Pipeline order: the edit's messages, then the fit's. `run_fit` / `edit_then_fit` already
-    # shape a rejected fit as error entries; a fit that RAN reports its advisories as the flat
-    # `warnings` the de-dup produces, so both shapes are folded in here.
+    off_best = []
+    if best is not None and best not in (base, version):
+        off_best = [
+            M.warning(
+                M.SOURCE_TOOL,
+                f"v{base}, which this change was applied to, is not the best version; v{best} "
+                f"is. A change applies to the working model, now v{head_now}, unless "
+                f"`base_version` names another: send `base_version={best}` to change the best.",
+            )
+        ]
+    # Pipeline order: the tool's, the edit's messages, then the fit's. `run_fit` /
+    # `edit_then_fit` already shape a rejected fit as error entries; a fit that RAN reports its
+    # advisories as the flat `warnings` the de-dup produces, so both shapes are folded in here.
     messages = _unrepeated(
         session,
-        list(edit_result.get("messages") or [])
+        off_best
+        + list(edit_result.get("messages") or [])
         + list(fit_result.get("messages") or [])
         + M.warnings_from(M.SOURCE_FIT, fit_result.get("warnings")),
         version if committed else None,

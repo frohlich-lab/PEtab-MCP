@@ -23,8 +23,8 @@ description: >-
   flagged sigmas in `noise_sigma_report`, and three flagged observables in `residual_structure`,
   with `n_parameters_at_bound`, `n_merge_hints` and `n_flagged_observables` the full counts. A fit
   summary has every pin, tie, sigma and flagged observable.
-- `is_new_best`: this version became the best model, `progress.best_version`. A score that
-  cleared the new-best gate without that carries `new_best_declined`, saying why.
+- `is_new_best`: this version became the best model, `progress.best_version`, the lowest score
+  so far. A lower score that did not carries `new_best_declined`, saying why.
 
 ## Flags
 

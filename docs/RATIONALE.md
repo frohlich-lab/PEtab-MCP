@@ -84,9 +84,16 @@ boundary (17% of payload bytes, duplicated on 62.8% of 915 payloads) while `bund
 computing it. Do not reintroduce it; filter `messages` by level. The operations-layer `warnings` is
 a DIFFERENT field and stays.
 
+PEtab-MCP#271 The best version is the strict minimum of the criterion, with no effect-size bar
+on it: gemot's judge and finish gate take the minimum, and a 2-unit bar left `best_version`, the
+plateau window and its stop reason on a version the judge did not score (perelson 0, rahman
+10/12/14, bruno 53, dessauges 1 in sweep 63522750). The bar survives only as
+`STREAK_RESET_MIN_SCORE_GAIN`, what resets the non-improving streak, where noise-floor wander must
+not count as progress.
+
 #167 No scalar weight on the complexity penalty in `petab_mcp.criteria` — named penalties and
 nothing between them. One was built and removed: every effect-size threshold in the loop
-(`NEW_BEST_MIN_DELTA_SCORE`, `PLATEAU_MIN_SCORE_GAIN`, `dedup.WORSE_SCORE_MARGIN`, the benchmark
+(`STREAK_RESET_MIN_SCORE_GAIN`, `PLATEAU_MIN_SCORE_GAIN`, `dedup.WORSE_SCORE_MARGIN`, the benchmark
 bar) is a fixed count of deviance units calibrated on BIC, which survives SWAPPING the penalty but
 not SCALING it. Deriving those thresholds from the criterion rather than writing them as literals
 in `constants.py` is the precondition for reintroducing the knob.

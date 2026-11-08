@@ -2959,3 +2959,30 @@ def test_concurrent_statement_edits_keep_each_others_rows(tmp_path, monkeypatch)
     assert all(out["applied"] for out in _concurrently(monkeypatch, mcp, *calls))
     text = _text(mcp, "get_model", {"format": "statements"})
     assert "conv: A becomes B" in text and all(f"{p}: B becomes A" in text for p in ("back", "back2"))
+
+
+def test_a_result_names_the_version_it_was_applied_to_and_the_best(tmp_path):
+    """PEtab-MCP#282: a change applies to the working model unless `base_version` names another,
+    and agents assumed it was the best. Each result says which it was applied to and which is the
+    best, and warns where neither that version nor the one it leaves is the best."""
+    mcp = _server(tmp_path, auto_fit=True)
+
+    def k1(lb, ub, **call):
+        box = [{"parameter_id": "k1", "lower_bound": lb, "upper_bound": ub}]
+        return _call(mcp, "make_changes", {"parameters": box, "n_starts": 2, **call})
+
+    def off_best(out):
+        return [m["message"] for m in out["messages"] if "is not the best" in m["message"]]
+
+    out = k1(1e-3, 2e-3, antimony=_antimony(), justification="k1 boxed in")
+    assert out["message"] == "Change applied to the loaded problem and saved as v0; best is v0."
+    out = k1(1e-3, 1e3, justification="let k1 go")  # the data need k1 ~ 0.5
+    assert out["message"] == "Change applied to v0 and saved as v1; best is v1."
+    assert not off_best(out)
+    out = k1(1e-3, 3e-3, justification="k1 boxed in again", base_version=0)
+    assert out["message"] == "Change applied to v0 and saved as v2; best is v1."
+    assert off_best(out) == [
+        "v0, which this change was applied to, is not the best version; v1 is. A change applies "
+        "to the working model, now v2, unless `base_version` names another: send "
+        "`base_version=1` to change the best."
+    ]

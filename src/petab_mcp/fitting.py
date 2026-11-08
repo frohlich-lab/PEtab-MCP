@@ -41,7 +41,6 @@ from . import literals as _literals
 from . import reconcile as _reconcile
 from .constants import (
     NOISE_SIGMA_MIN_POINTS,
-    NEW_BEST_MIN_DELTA_SCORE,
     NOISE_SIGMA_COLLAPSE_FRACTION,
     PARAMETER_AT_BOUND_RELATIVE_TOL,
 )
@@ -2310,21 +2309,17 @@ def compute_improvement(
     complexity criterion** (``bic`` unless configured otherwise — see :mod:`criteria`).
 
     ``is_new_best`` tracks ``criterion_value`` — the same complexity-penalised score the
-    early-stop checkpoint stores — so the flag, the non-improving-streak reset, and the
-    best-model checkpoint all move on one coherent notion of "better". A fit is a new best only
-    when that score beats the reference by at least ``NEW_BEST_MIN_DELTA_SCORE`` (the conventional
-    "positive evidence" bar), so a raw nll drop bought by an extra parameter that actually RAISES
-    the score does NOT count, and neither does a 1e-6 noise-floor twitch.
+    early-stop checkpoint stores — and is set when that score is strictly below the session's
+    best-score :class:`~petab_mcp.session.Checkpoint` (:func:`beats_best`), so the best is the
+    strict minimum, as a client's judge takes it. A raw nll drop bought by an extra parameter that
+    RAISES the score does not count. What counts as progress for the non-improving streak is a
+    separate, larger bar (:meth:`session.PetabSession.record_fit_progress`).
 
-    The reference is the session's best-score :class:`~petab_mcp.session.Checkpoint`, set on the
-    previous new best — not the raw running minimum. Comparing against
-    the checkpoint is what lets a slow, steady creep of < ``NEW_BEST_MIN_DELTA_SCORE`` per op
-    still register a new best once it CUMULATIVELY clears the bar, instead of starving the streak
-    while the fit genuinely improves. Must be called BEFORE :meth:`session.record_fit_progress`
-    updates the checkpoint, so a fit never compares against itself. The first scored fit (no
-    checkpoint yet) is always a new best. :meth:`session.PetabSession.fit` withdraws the flag
-    before stamping it where the checkpoint declines the fit, naming why in
-    ``new_best_declined``, so ``is_new_best`` marks exactly the versions that became the best.
+    Must be called BEFORE :meth:`session.record_fit_progress` updates the checkpoint, so a fit
+    never compares against itself. The first scored fit (no checkpoint yet) is always a new best.
+    :meth:`session.PetabSession.fit` withdraws the flag before stamping it where the checkpoint
+    declines the fit, naming why in ``new_best_declined``, so ``is_new_best`` marks exactly the
+    versions that became the best.
 
     The returned block carries the ranked pair ``criterion``/``criterion_value`` beside the
     canonical ``bic``, and is stamped into the fit event and the version meta — which is what
@@ -2357,7 +2352,7 @@ def compute_improvement(
     improvement_vs_best_prior = None
     if best_prior_score is not None and score is not None:
         improvement_vs_best_prior = best_prior_score - score
-    is_new_best = clears_new_best_bar(score, best_prior_score)
+    is_new_best = beats_best(score, best_prior_score)
 
     return {
         "neg_log_likelihood": nllh,
@@ -2386,17 +2381,14 @@ IMPROVEMENT_ON_RESULT = (
 )
 
 
-def clears_new_best_bar(score: float | None, best_score: float | None) -> bool:
-    """The ``is_new_best`` gate: there is a ``score``, and no checkpoint yet or it beats the
-    checkpoint by at least ``NEW_BEST_MIN_DELTA_SCORE``. One function because a durable resume
-    replays it over the fit events (:meth:`session.PetabSession._seed_progress_from_provenance`),
-    and a resume that gated differently would rebuild a checkpoint the live run never had.
+def beats_best(score: float | None, best_score: float | None) -> bool:
+    """The ``is_new_best`` test: there is a ``score``, and no checkpoint yet or it is strictly
+    below the checkpoint's, so a tie keeps the earlier version. One function because a durable
+    resume replays it over the fit events
+    (:meth:`session.PetabSession._seed_progress_from_provenance`), and a resume that ranked
+    differently would rebuild a checkpoint the live run never had.
     """
-    # ``<=`` so an improvement EXACTLY at the threshold counts as a new best — i.e. Δscore >= the
-    # gate (a strict ``<`` would exclude the boundary and leave the streak un-reset there).
-    return score is not None and (
-        best_score is None or score <= best_score - NEW_BEST_MIN_DELTA_SCORE
-    )
+    return score is not None and (best_score is None or score < best_score)
 
 
 def complexity_k(fitsim: dict[str, Any] | None) -> int | None:
