@@ -52,17 +52,21 @@ from .provenance import ProvenanceStore
 from .references import EutilsReferenceResolver
 
 # Appended to an early-stop ``stop_reason`` only when the best model is NOT adequate (see
-# progress_report): a stall with an inadequate best is the signature of STRUCTURAL inadequacy —
-# the model's form, not the optimizer or the bounds. The nudge stays model-agnostic (issue #82):
-# it names generic structural MOVE CATEGORIES, never a specific mechanism, so it can't hand over
-# the answer to a problem whose model is withheld.
+# progress_report). The nudge stays model-agnostic (issue #82): it names generic structural MOVE
+# CATEGORIES, never a specific mechanism, so it can't hand over the answer to a problem whose model
+# is withheld. It claims only what a streak shows. It once called the stall "not an optimizer or
+# bounds problem", while dessauges 90 (gemot#134) ended on a streak made mostly of exactly
+# equivalent rewrites of its best structure that failed to find its optimum again: an optimizer
+# outcome, each. Either way, a refit or an equivalent rewrite cannot beat the optimum its structure
+# already has.
 _STRUCTURAL_PLATEAU_ADVICE = (
-    "The best model is still not adequate and the fit has plateaued: this is the signature of "
-    "STRUCTURAL inadequacy — the model's FORM cannot fit the data — not an optimizer or bounds "
-    "problem, so re-parameterizing or widening bounds will not help. Change the model's structure "
-    "rather than re-fitting the same one: consider a generic structural move (categories, not a "
-    "specific answer) — add a latent / unobserved state; add a feedback / regulation reaction; or "
-    "raise the interaction order (linear -> nonlinear / higher-order)."
+    "The best model is still not adequate, and none of these fits beat it. A refit or an "
+    "equivalent rewrite of a structure already fitted can at best find that structure's optimum "
+    "again (one that misses it scores worse), so neither can make the model adequate: that takes a "
+    "STRUCTURAL change to the model's FORM, not another fit of the same structure. Consider a "
+    "generic structural move (categories, not a specific answer) — add a latent / unobserved "
+    "state; add a feedback / regulation reaction; or raise the interaction order (linear -> "
+    "nonlinear / higher-order)."
 )
 
 # Appended instead of the structural nudge when a stall happened without ever scoring a model.
@@ -1336,10 +1340,10 @@ class PetabSession:
         signal: the hard non-improving-streak cap, or a plateau (the best model shown adequate, by
         a check the reason names, AND the best score gained less than ``PLATEAU_MIN_SCORE_GAIN``
         over the last ``PLATEAU_WINDOW`` ops). When a
-        stop fires and the best model is **shown not adequate**, the stall is the signature of
-        STRUCTURAL inadequacy, so ``stop_reason`` also carries the issue-#82 nudge to change the
-        model's FORM rather than re-parameterize. An adequate stop is a success — it gets no such
-        nudge (the model fits; there is nothing structural to fix).
+        stop fires and the best model is **shown not adequate** (only the streak cap can, a plateau
+        needing an adequate best), ``stop_reason`` also carries the issue-#82 nudge to change the
+        model's FORM rather than refit or rewrite the same structure. An adequate stop is a success
+        — it gets no such nudge (the model fits; there is nothing structural to fix).
 
         A model whose noise sigmas are ESTIMATED is never shown adequate, so only the streak cap
         ends its session: a fitted sigma absorbs a misfit inside the data-std band without a
