@@ -189,12 +189,13 @@ def _reg(*entries, setup=SETUP, fitted=True):
     ]
 
 
-def _decide(registry, *, head_version, setup=SETUP, starts=2, prior_attempts=1):
+def _decide(registry, *, head_version, setup=SETUP, starts=2, max_starts=20, prior_attempts=1):
     """``decide`` for a candidate of structure ``X``."""
     return D.decide(
         structure_hash="X",
         setup=setup,
         starts=starts,
+        max_starts=max_starts,
         head_version=head_version,
         registry=registry,
         prior_attempts=prior_attempts,
@@ -240,6 +241,15 @@ def test_decide_refuses_an_earlier_version_with_the_same_setup():
     assert d["action"] == "refuse" and d["duplicate_of"] == 1
     assert "identical to v1" in d["message"] and "base_version=1" in d["message"]
     assert "`n_starts`" in d["message"]  # and how to refit it instead
+
+
+def test_decide_at_the_cap_offers_new_bounds_not_more_starts():
+    """`n_starts` is capped (PEtab-MCP#287), so a version that ran the cap cannot be refitted with
+    more starts: the skip and the refusal offer new bounds only, and say why."""
+    for head_version, action in ((1, "skip"), (2, "refuse")):
+        d = _decide(_reg((1, "X", 1.0), (2, "Y", 1.0)), head_version=head_version, max_starts=2)
+        assert d["action"] == action
+        assert "`n_starts` is capped at 2" in d["message"] and "more starts" not in d["message"]
 
 
 def test_decide_does_not_call_a_refit_under_new_bounds_a_duplicate():

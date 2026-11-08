@@ -61,6 +61,7 @@ from . import skills as skills_mod
 from . import validation_data as validation_data_mod
 from .constants import (
     DEFAULT_AUTO_FIT_STARTS,
+    MAX_FIT_STARTS_FACTOR,
     NON_IMPROVING_STREAK_CAP,
     PLATEAU_WINDOW,
     STREAK_RESET_MIN_SCORE_GAIN,
@@ -1129,10 +1130,12 @@ _MAKE_CHANGES_PARAMETERS_ROUTE = (
 
 _MAKE_CHANGES_CONTRACT = f"""\
 `n_starts` REPLACES the configured multistart count (`describe_problem` → \
-`fit_n_starts_default`) rather than adding to it: omit it unless you want MORE; below it fits \
-LESS hard. MORE is warranted when `starts_at_best` shows only 1 or 2 starts reaching the best \
-value. It multiplies the fit's wall time, and it does not help starts that run out of the \
-per-start time limit (`ExitFlag.MAXTIME`).
+`fit_n_starts_default`) rather than adding to it, and may be at most {MAX_FIT_STARTS_FACTOR}x it: \
+omit it unless you want MORE; below it fits LESS hard. MORE is warranted once, when \
+`starts_at_best` shows only 1 or 2 starts reaching the best value; if the raised fit still shows 1 \
+or 2, the optimum is a needle, and the model needs reformulating where it is that sharp (a \
+switch-like term), not more starts. Starts multiply the fit's wall time, and do not help starts \
+that run out of the per-start time limit (`ExitFlag.MAXTIME`).
 
 A REFIT is a call with no model route: `parameters` and/or `n_starts` alone fit the current \
 model again (version N's with `base_version=N`) as a new version. One with neither new bounds nor more starts than that model ran is refused.

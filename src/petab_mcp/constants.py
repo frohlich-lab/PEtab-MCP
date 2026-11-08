@@ -20,6 +20,14 @@ from __future__ import annotations
 # CLI default read this one value so they cannot drift; overridable per commit via ``n_starts``.
 DEFAULT_AUTO_FIT_STARTS = 5
 
+#: The most starts one fit may run, as a multiple of the session's configured default
+#: (``PetabSession.max_fit_starts``). dessauges in sweep 63522750 climbed to 8000 starts a fit,
+#: each still with 1 start at the best: an optimum that narrow is the model's, and every start
+#: past the first raise only cost the shared fit pool (PEtab-MCP#287). 10, not lower, keeps
+#: gemot's scripted reference builds legal: bruno floors its fit at 400 starts, fujita at 300,
+#: on a default of 50 or more.
+MAX_FIT_STARTS_FACTOR = 10
+
 # -- early-stop chain (effect-size gate + non-improving-streak cap + best-score checkpoint) ---
 # The model-building loop otherwise wanders past the noise floor until the client's step limit or
 # a provider error fires — a whole-model op is ~4 agent steps, so by the time a 500-step limit

@@ -26,7 +26,7 @@ from pathlib import Path
 
 from petab_mcp import operations as O
 from petab_mcp import parameters as P
-from petab_mcp.constants import DEFAULT_AUTO_FIT_STARTS
+from petab_mcp.constants import DEFAULT_AUTO_FIT_STARTS, MAX_FIT_STARTS_FACTOR
 from petab_mcp.errors import ModelUpdateError, ParameterError
 from petab_mcp.operations import OperationError
 from petab_mcp.references import StubReferenceResolver
@@ -128,12 +128,12 @@ def test_a_parameters_rejection_reverts_the_re_author(session):
     before_model = session.problem.model.to_sbml_str()
     before_params = _records(session)
 
-    with pytest.raises(OperationError, match="only one bound"):
+    with pytest.raises(OperationError, match="upper bound stays"):
         O.set_model(
             session,
             _antimony("r3: A => ; k3 * A;"),
             justification="bad bound entry",
-            parameters=[{"parameter_id": "k1", "lower_bound": 1e-3}],
+            parameters=[{"parameter_id": "k1", "lower_bound": 1e3}],
         )
 
     assert session.problem.model.to_sbml_str() == before_model
@@ -178,12 +178,11 @@ def test_a_malformed_parameters_argument_is_rejected(session):
         O.set_model(session, _antimony(), justification="x", parameters={"parameter_id": "k1"})
 
 
-@pytest.mark.parametrize("bad", ["1e-3", None, True, float("nan"), float("inf")])
+@pytest.mark.parametrize("bad", ["1e-3", True, float("nan"), float("inf")])
 def test_a_non_numeric_bound_is_a_clean_rejection(session, bad):
     """Bounds are type-checked during normalization, not left to `update_parameters`' bare
     `float(value)`: a ValueError there is not a PetabMcpError, so it would escape the tool's error
-    wrapper as an unstructured MCP failure instead of `applied: false`. (`None` trips the
-    both-bounds-or-neither rule; the rest trip the numeric/finite checks.)"""
+    wrapper as an unstructured MCP failure instead of `applied: false`."""
     with pytest.raises(OperationError):
         O.set_model(
             session,
@@ -587,6 +586,24 @@ def test_the_multistart_default_and_the_starts_actually_used_are_reported(tmp_pa
         },
     )
     assert res["n_starts"] == default + 2
+
+
+def test_n_starts_above_the_cap_is_refused_before_the_edit(tmp_path, session):
+    """dessauges raised `n_starts` to 8000 a fit, each with 1 start at the best (PEtab-MCP#287):
+    the count is capped at MAX_FIT_STARTS_FACTOR times the default, and a call above it is refused
+    before its edit applies, naming the cap and why more starts would not help."""
+    cap = MAX_FIT_STARTS_FACTOR * DEFAULT_AUTO_FIT_STARTS
+    mcp = _server(tmp_path)
+    res = _call(
+        mcp,
+        "make_changes",
+        {"antimony": _antimony(), "justification": "fit harder", "n_starts": cap + 1},
+    )
+    assert res["applied"] is False and _head(mcp)["current_version"] == -1
+    assert f"at most {cap}" in res["error"] and "needle" in res["error"]
+    # the cap itself is allowed, and it follows the session's own default
+    session.auto_fit_starts = 3
+    assert session._coerce_n_starts(MAX_FIT_STARTS_FACTOR * 3) == MAX_FIT_STARTS_FACTOR * 3
 
 
 def test_a_harder_fit_of_an_unchanged_model_is_not_skipped(tmp_path):
@@ -1071,7 +1088,10 @@ def test_a_warning_the_last_version_carried_is_not_sent_again(tmp_path):
     grounding = "`statements` agents carry no grounding: A, B."
     assert grounding in commit([_statement_row()], {"conv": "mass_action"})
     one = {"conv": "mass_action", "back": "mass_action"}
-    assert commit([_statement_row(), back], one) == ["1 warning(s) unchanged since version 0."]
+    assert commit([_statement_row(), back], one) == [
+        "1 warning(s) unchanged since version 0.",
+        "New estimated parameter(s): `back_k`.",  # PEtab-MCP#286
+    ]
     shared = {"conv": "mass_action k=k_ab", "back": "mass_action k=k_ab"}
     said = commit([_statement_row(), back], shared)
     assert "1 warning(s) unchanged since version 0." in said and grounding not in said
