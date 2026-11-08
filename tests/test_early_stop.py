@@ -538,7 +538,7 @@ def test_streak_cap_stop_reason_carries_structural_nudge_when_inadequate(session
     reason = session.progress_report()["stop_reason"].lower()
     assert "streak" in reason
     assert "structural" in reason and "form" in reason
-    assert "make_changes" in reason
+    assert "make_changes" not in reason
 
 
 def test_a_missing_fixed_sigma_gof_adds_no_structural_nudge(session):

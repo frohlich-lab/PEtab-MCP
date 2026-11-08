@@ -239,6 +239,5 @@ def summarize_measurements(df: "pd.DataFrame | None", *, preview: int = 4) -> di
         "note": "Summary view (per observable×experiment: n, time span, value min/max/mean, and a "
         "few preview points). get_measurements(summarize=False) returns raw points "
         "PAGED (max_rows per call, with total_rows/truncated/next_offset) — page it, or "
-        "narrow with experiment_id/observable_id, or use query_data for SQL over the "
-        "`measurements` table.",
+        "narrow with experiment_id/observable_id.",
     }

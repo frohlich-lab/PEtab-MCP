@@ -474,7 +474,7 @@ def run_query(session, sql: str, max_rows: int = 1000, offset: int = 0) -> dict[
         # to the session, and the whole database is discarded when the connection closes.
         # Table names are fixed internal constants, so the CREATE is not an injection point.
         # A failure HERE (e.g. an un-registerable frame) happens before the user's SQL runs, so
-        # surface it as a clean, actionable client error — pointing at the working alternatives —
+        # surface it as a clean, actionable client error — pointing at `list_data_tables` —
         # rather than letting a raw exception crash the tool and get blindly re-proposed.
         try:
             for name, df in frames.items():
@@ -485,9 +485,8 @@ def run_query(session, sql: str, max_rows: int = 1000, offset: int = 0) -> dict[
                     con.unregister("_src")  # always drop the alias, even if the CREATE raised
         except duckdb.Error as exc:
             raise ValidationError(
-                f"Could not prepare the data tables for the query ({exc}). Use "
-                "`get_measurements` for the raw measurement data, or `list_data_tables` for "
-                "the available tables and their columns."
+                f"Could not prepare the data tables for the query ({exc}). Call "
+                "`list_data_tables` for the exact table/column names."
             ) from exc
         # Copying isolates the *data*, but not the host: a query could still read/write local
         # files or reach the network (read_csv/parquet, ATTACH, COPY, INSTALL/LOAD, httpfs).
@@ -515,8 +514,7 @@ def run_query(session, sql: str, max_rows: int = 1000, offset: int = 0) -> dict[
             rows = rel.fetchmany(max_rows + 1)
         except duckdb.Error as exc:
             raise ValidationError(
-                f"SQL error: {exc}. Call `list_data_tables` for the exact table/column names, "
-                "or use `get_measurements` for the raw measurement data."
+                f"SQL error: {exc}. Call `list_data_tables` for the exact table/column names."
             ) from exc
     finally:
         con.close()
@@ -560,23 +558,23 @@ def version_part_summary(part: str, blob: dict[str, Any], version: int) -> dict[
             entry["chi2"] = round(entry["chi2"], 3)
         return {k: v for k, v in blob.items() if k != "records"} | {
             "chi2_by_observable": by_observable,
-            "omitted": f"its {len(records)} records, more than one reply carries: query_data on "
-            f"simulations_history WHERE version = {version}",
+            "omitted": f"its {len(records)} records, more than one reply carries: "
+            f"simulations_history WHERE version = {version} holds them",
         }
     starts = blob.get("starts") or []
     return {k: v for k, v in blob.items() if k not in ("starts", "trace")} | {
         "fvals": [s.get("fval") for s in starts],
         "omitted": f"its {len(starts)} starts and {len(blob.get('trace') or [])} trace rows, more "
-        "than one reply carries: query_data's optimization_starts and optimization_trace hold the "
+        "than one reply carries: optimization_starts and optimization_trace hold the "
         "head version's",
     }
 
 
 #: Why the residual section is empty: there are no per-point records for this model and a READ does
-#: not compile one to make them (see :func:`fitting.ensure_simulation`). Says what to do instead.
+#: not compile one to make them (see :func:`fitting.ensure_simulation`).
 _NO_SIMULATION_STATUS = (
     "no simulation to diagnose — no fit of this model has produced one, and a read does not compile "
-    "a model to make one. Commit the model with make_changes (which fits it), then read this again."
+    "a model to make one."
 )
 
 #: Why ``get_fit_diagnosis(version=N)`` has no residual section for that version.
@@ -871,8 +869,7 @@ def _offset_centred_observables(problem) -> set[str]:
 #: :func:`structure_tests_caveat`'s line; ``{}`` is what is estimated.
 _ABSORBED_MISFIT_CAVEAT = (
     "Estimated {} absorb misfit, so the sign/runs tests have little power here and no structure "
-    "flag is NOT adequacy. get_fit_diagnosis's sigma_heterogeneity and "
-    "noise_sigma.fitted_over_data_noise rank where to look."
+    "flag is NOT adequacy. sigma_heterogeneity and fitted_over_data_noise rank where to look."
 )
 
 

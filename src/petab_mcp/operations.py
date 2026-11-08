@@ -1361,8 +1361,8 @@ def regulator_warning(record: dict, base: dict | None, unsigned=(), failed=()) -
            "reaction" if split else "")
         + ("; a rate law that can go negative is one to rewrite (`k/(1 + X/K)`, not "
            "`k*(1 - X)`)" if negative else "")
-        + ". The statements stay as you wrote them; `get_model` marks each regulator with the "
-        "kind its rate shows (`(inhibits, from its rate)`)." if changed or negative else ""
+        + ". The statements stay as you wrote them; the model as text marks each regulator with "
+        "the kind its rate shows (`(inhibits, from its rate)`)." if changed or negative else ""
     )
     return "; ".join(parts) + "." + advice
 
@@ -1775,7 +1775,7 @@ def _warn_sigma_bound_widening(problem, parameter_id: str, upper_bound: float) -
         "under-mechanistic model look statistically adequate. This is ADVISORY — check the fit "
         "result's residual_structure verdict: if it flags an observable (sign/runs tests, "
         "or a replicated design point the model cannot reach), the mechanism is missing something "
-        "and widening the noise will only hide it (get_fit_diagnosis has the detail behind it)."
+        "and widening the noise will only hide it."
     )
 
 
@@ -1897,8 +1897,8 @@ def _reject_repeated_widening(
         f"Refusing to widen {parameter_id!r} a {_ordinal(count + 1)} time: it re-pinned at its "
         f"{side} bound after {count} bounds-only widenings, the last for a negligible "
         f"~{last_gain:.2g} BIC gain. A "
-        "parameter pinned at a bound with a flat/collinear FIM direction (check "
-        'get_fit_diagnosis(sections="parameters")) is UNIDENTIFIABLE, not under-explored — widening chases it toward '
+        "parameter pinned at a bound with a flat/collinear FIM direction "
+        "is UNIDENTIFIABLE, not under-explored — widening chases it toward "
         "infinity while it keeps re-pinning. Instead re-author with make_changes to REMOVE its "
         "reaction or use its LIMITING form (make the reaction irreversible / the step "
         "instantaneous); if neither is possible, LEAVE it pinned — do not widen again or "
@@ -2351,8 +2351,8 @@ def bundle_result(
         message = (
             "Change applied and a version was snapshotted, but the fit did not finish cleanly, so "
             f"this call carries no metrics: the working model is now version {version}. Read "
-            "`error`, then read that version's score with list_versions before making another "
-            "change — do NOT re-send it, the model is already scored."
+            "`error`, then read that version's score before making another change — do NOT "
+            "re-send it, the model is already scored."
         )
     else:
         applied = False
