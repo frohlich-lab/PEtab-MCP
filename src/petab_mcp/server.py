@@ -54,6 +54,7 @@ from . import model as model_mod
 from . import model_edits as model_edits_mod
 from . import operations as ops_mod
 from . import parameters as param_mod
+from . import progress_signals as signals_mod
 from . import provenance as prov_mod
 from . import reconcile as reconcile_mod
 from . import regimes as regimes_mod
@@ -546,6 +547,65 @@ class _InfrastructureErrors(Middleware):
                 raise
             self.logger.error("%s: %s", context.message.name, infra)
             raise ToolError(str(infra)) from exc
+
+
+class _ProgressSignals(Middleware):
+    """Sends every tool result, tool error, tool description and resource with its progress
+    signals kept or cut, as ``create_server(progress_signals=...)`` says
+    (:func:`progress_signals.strip`). Every tool but :data:`progress_signals.HARNESS_TOOLS`, which
+    only whoever runs the session reads. Outermost, so it renders the other middleware's errors
+    too."""
+
+    def __init__(self, signals: bool) -> None:
+        self.signals = signals
+
+    async def on_call_tool(self, context, call_next):
+        try:
+            result = await call_next(context)
+        except ToolError as exc:
+            raise ToolError(signals_mod.render(str(exc), self.signals)) from exc
+        signals = self.signals or context.message.name in signals_mod.HARNESS_TOOLS
+        structured = result.structured_content
+        if structured is None:
+            return result.model_copy(
+                update={
+                    "content": [
+                        b.model_copy(update={"text": signals_mod.render(b.text, signals)})
+                        if isinstance(getattr(b, "text", None), str)
+                        else b
+                        for b in result.content
+                    ]
+                }
+            )
+        if (structured := signals_mod.strip(structured, signals)) == result.structured_content:
+            return result
+        wrapped = (result.meta or {}).get("fastmcp", {}).get("wrap_result")
+        return ToolResult(
+            content=structured["result"] if wrapped else structured,
+            structured_content=structured,
+            meta=result.meta,
+        )
+
+    async def on_list_tools(self, context, call_next):
+        return [
+            t.model_copy(
+                update={
+                    "description": t.description and signals_mod.render(t.description, self.signals),
+                    "parameters": signals_mod.render_all(t.parameters, self.signals),
+                }
+            )
+            for t in await call_next(context)
+        ]
+
+    async def on_read_resource(self, context, call_next):
+        result = await call_next(context)
+        contents = [
+            c.model_copy(update={"content": signals_mod.render(c.content, self.signals)})
+            if isinstance(c.content, str)
+            else c
+            for c in result.contents
+        ]
+        return result.model_copy(update={"contents": contents})
 
 
 class _Cancellation(Middleware):
@@ -1197,13 +1257,13 @@ read its score; `false` with `no_change` → this model already IS the current v
 something else. `messages` is everything the call had to say, in pipeline order, each tagged \
 `level` and `source`.
 
-`message` names the version the change was applied to (the working model, or `base_version`'s) \
+`message` names the version the change was applied to (the working model, or `base_version`'s)⦃ \
 and the best version. `improvement.is_new_best` marks the version that became the best, \
 `progress.best_version`: the lowest score so far (`improvement_vs_best_prior` > 0), unless \
 `new_best_declined` says why not. `progress` is `get_progress`'s moving part: a new best resets \
 `non_improving_streak` only once the best has gained {STREAK_RESET_MIN_SCORE_GAIN:g} since the \
 last reset, a streak of {NON_IMPROVING_STREAK_CAP} sets `should_stop`, and \
-`score_improvement_over_last_n` spans the last {PLATEAU_WINDOW} fits.
+`score_improvement_over_last_n` spans the last {PLATEAU_WINDOW} fits⦄.
 
 The score's `k` is `n_estimated` + `hardcoded_constants`: a numeric literal in the model's math \
 is charged as a parameter too, bar a few structural ones, so freezing a fitted value costs what \
@@ -2176,9 +2236,9 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         UNIDENTIFIABLE, not under-explored), `noise_sigma_report` with `noise_sigma_inflated` /
         `noise_sigma_collapsed` (an estimated sigma absorbing misfit or overfitting the noise: fix
         the model's form, not the noise), the `residual_structure` verdict, and `merge_hints`
-        (parameter pairs the data cannot separate whose merge the criterion would pay for). With
+        (parameter pairs the data cannot separate whose merge the criterion would pay for).⦃ With
         estimated sigmas, `reduced_chi2` and `chi2_gof_pvalue` sit near their null whatever the
-        fit and say nothing about adequacy.
+        fit and say nothing about adequacy.⦄
         """
         ctx = route()
         session = ctx.session
@@ -2524,7 +2584,7 @@ _REPLY_MAX_BYTES = 768 * 1024
 #: ``simulations_history`` already pages a version's records in SQL, and a second pager over the
 #: same rows is the growing menu the README's design notes rule out.
 _GET_VERSION_DOC = (
-    "A prior version's record (every score, the new-best bookkeeping, the noise model's report, "
+    "A prior version's record (every score, ⦃the new-best bookkeeping, ⦄the noise model's report, "
     "and `edit_warnings`: every warning its change and lint gave, in full, where its "
     "`make_changes` result folded a repeated one into a count), Antimony model and parameter "
     "table, to INSPECT it; for its model alone, "
@@ -2605,14 +2665,14 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
     def list_versions(since: int | None = None) -> list[dict[str, Any]]:
         """Every model version (each a fit), one row each: which structures have been tried and
         how they scored. A row is its `version`, the `parent` it was derived from, its
-        `neg_log_likelihood`, `criterion_value` (the score this session ranks by), `k`,
-        `is_new_best` and `residual_flagged` (a residual test flagged one of its observables).
-        `since=N` lists only the versions after N. `is_new_best` marks each version that became the
-        best model (the last one is `get_progress`'s `best_version`); every version is kept, and the
-        best one stands whatever comes after it. Where the session holds constraints, a version
-        they break (committed before they changed) carries `violates`, their ids: it cannot be
-        restored and does not count as the best. A version's whole record, every score and why it
-        did or did not become the best, is `get_version(N)`."""
+        `neg_log_likelihood`, `criterion_value` (the score this session ranks by)⦃, `k`,
+        `is_new_best` and `residual_flagged` (a residual test flagged one of its observables)⦄⦅ and
+        `k`⦆. `since=N` lists only the versions after N. ⦃`is_new_best` marks each version that
+        became the best model (the last one is `get_progress`'s `best_version`); every⦄⦅Every⦆
+        version is kept, and the best one stands whatever comes after it. Where the session holds
+        constraints, a version they break (committed before they changed) carries `violates`, their
+        ids: it cannot be restored and does not count as the best. A version's whole record, every
+        score⦃ and why it did or did not become the best⦄, is `get_version(N)`."""
         ctx = route()
         session = ctx.session
         return _version_rows(session, session.provenance.list_versions(since))
@@ -2659,8 +2719,8 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
     @mcp.tool(annotations=_READ_ONLY)
     def diff_versions(from_version: int, to_version: int) -> dict[str, Any]:
         """Diff two versions: Antimony unified diff + parameter add/remove/change + a `fit`
-        block with each version's neg_log_likelihood/chi2 and the neg-log-likelihood delta
-        (positive = the `to` version fits better)."""
+        block with each version's neg_log_likelihood/chi2⦃ and the neg-log-likelihood delta
+        (positive = the `to` version fits better)⦄."""
         ctx = route()
         session = ctx.session
         return ctx.run(
@@ -2679,7 +2739,7 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         fit instead of recompiling and refitting. Prefer this over re-authoring an earlier model
         with `make_changes`, which refuses an exact re-author of a fitted version; this reuses the
         existing fit and records a clean restore. Find the target with `list_versions`
-        (the best model is the last `is_new_best` one), then `restore_version(v)`. HEAD moves back
+        ⦃(the best model is the last `is_new_best` one), ⦄then `restore_version(v)`. HEAD moves back
         to that version: no version is added or erased, and the restore is recorded as a
         `rollback` event in the provenance log."""
         ctx = route()
@@ -2974,6 +3034,7 @@ def create_server(
     constraint_updates: str = "off",
     cluster: Any | None = None,
     fix_pointers: bool = True,
+    progress_signals: bool = True,
 ) -> FastMCP:
     """Build a FastMCP server bound to the PEtab problem at ``yaml_path``.
 
@@ -3028,6 +3089,13 @@ def create_server(
     that point the agent at what to change or where the fit is off (the merge hints, the payoff of
     a tie, the per-observable residual tables and outliers, which observables a verdict flags; see
     :mod:`withheld`) and still computes and stores them.
+
+    ``progress_signals`` (default on) keeps the numbers that tell the agent how well it is doing:
+    the best version and which fit became it, score differences against the parent or the best,
+    and the chi2 goodness of fit. Off withholds them from every tool but ``get_progress`` and
+    ``evaluate_validation_data``, which whoever runs the session reads (:mod:`progress_signals`,
+    :class:`_ProgressSignals`); each fit's own numbers stay, and the stored record keeps
+    everything.
     """
     if constraints and entity_map is None:
         raise ValidationError(
@@ -3081,8 +3149,9 @@ def create_server(
     )
     mcp = FastMCP(
         "petab-mcp",
-        instructions=instructions,
+        instructions=signals_mod.render(instructions, progress_signals),
         middleware=[
+            _ProgressSignals(progress_signals),
             *([] if fix_pointers else [_FixPointers()]),
             _InfrastructureErrors(
                 ctx.session.logger, ctx.engine.build_root, ctx.session.provenance.root

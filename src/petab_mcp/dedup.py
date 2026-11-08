@@ -26,6 +26,7 @@ from typing import Any
 
 from .formatting import finite_float
 from .parameters import estimated_ids
+from .progress_signals import signal
 
 # The same structure may be authored at most this many times before ``set_model`` refuses
 # further identical re-authors: an identical structure recompiles + refits to the SAME result
@@ -269,10 +270,11 @@ def decide(
             # numbers beside it. A registry built without one degrades to the generic word.
             name = best.get("criterion") or "score"
             warnings.append(
-                f"This structure family previously scored {name}≈{fb:.1f}, {fb - gb:.1f} WORSE "
-                f"than the best model so far ({name}≈{gb:.1f}, v{best.get('version')}). "
-                f"Revisiting it is "
-                f"unlikely to beat the best (v{best.get('version')} is kept regardless) "
-                "— try a different structure."
+                signal(
+                    f"This structure family previously scored {name}≈{fb:.1f}, {fb - gb:.1f} "
+                    f"WORSE than the best model so far ({name}≈{gb:.1f}, "
+                    f"v{best.get('version')}). Revisiting it is unlikely to beat the best "
+                    f"(v{best.get('version')} is kept regardless) — try a different structure."
+                )
             )
     return {"action": "proceed", "warnings": warnings}

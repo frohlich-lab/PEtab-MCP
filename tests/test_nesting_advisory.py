@@ -11,6 +11,7 @@ re-fitted each with 200-250 starts for up to 99 minutes, to the same nll.
 from __future__ import annotations
 
 from petab_mcp.nesting import nesting_advisory, valid_added_parameter_experiment
+from petab_mcp.progress_signals import render
 
 # --- a lun-shaped parent and its additive child ---------------------------------------------
 # Canonical libantimony layout: rules and reactions each on a line of their own.
@@ -61,7 +62,7 @@ def _not_nested(parent, child) -> str:
     """The not-nested line, asserting it is one: no INVALID COMPARISON and no re-fit advice."""
     found = nesting_advisory(parent, child)
     assert found is not None
-    line, invalid = found
+    line, invalid = render(found[0], True), found[1]
     assert invalid is False
     assert "INVALID COMPARISON" not in line and "more starts" not in line
     return line
@@ -71,6 +72,7 @@ def test_a_purely_additive_edit_that_fits_worse_is_an_invalid_comparison():
     # The one case the advisory exists for: R_int added, nothing else touched, the parent's
     # values inside the box. A nested child cannot fit worse, so the fit under-converged.
     line, invalid = nesting_advisory(_parent(), _child())
+    line = render(line, True)
     assert invalid is True
     assert line.startswith("INVALID COMPARISON vs v12") and "3->4" in line and "5" in line
     assert "more starts" in line and "does NOT show the added structure fails to help" in line
