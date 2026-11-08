@@ -62,8 +62,7 @@ _STRUCTURAL_PLATEAU_ADVICE = (
     "problem, so re-parameterizing or widening bounds will not help. Change the model's structure "
     "rather than re-fitting the same one: consider a generic structural move (categories, not a "
     "specific answer) — add a latent / unobserved state; add a feedback / regulation reaction; or "
-    "raise the interaction order (linear -> nonlinear / higher-order) — and re-author it with "
-    "make_changes."
+    "raise the interaction order (linear -> nonlinear / higher-order)."
 )
 
 # Appended instead of the structural nudge when a stall happened without ever scoring a model.
@@ -73,7 +72,7 @@ _UNSCORED_STALL_ADVICE = (
     "No fit in this session produced a usable score, so there is no best model to compare against: "
     "this is an EVALUATION failure, not evidence about the model's form. The likelihood is "
     "undefined when the simulation does not reach every measured timepoint — check "
-    "get_fit_summary's n_missing_simulations and the per-point records for unsimulated points, "
+    "n_missing_simulations and the per-point records for unsimulated points, "
     "and address why the trajectory stops (stiffness / a parameter pinned at a bound / an "
     "unbounded rate) before drawing any conclusion about the structure."
 )
@@ -1903,7 +1902,7 @@ class PetabSession:
                     f"restore_version: version {version} breaks the session's constraints "
                     + ", ".join(f"`{c.id}` ({c.text})" for c in broken)
                     + ", given after it was committed; restore a version that makes them, or "
-                    "build one with `make_changes`.",
+                    "build one.",
                     cause="constraint_violated",
                 )
         return self.rollback_to(version, justification)

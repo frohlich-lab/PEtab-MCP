@@ -2564,8 +2564,8 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
             out = session.provenance.get_version(version, parts)
             if omitted:
                 out["omitted"] = (
-                    f"{' and '.join(omitted)}: get_version(include=[...]); per point, query_data "
-                    "on simulations_history"
+                    f"{' and '.join(omitted)}: get_version(include=[...]); per point, "
+                    "simulations_history"
                 )
             # The largest part first, so a smaller one comes back whole where it can.
             for part in sorted(set(parts), key=lambda p: len(json.dumps(out[p])), reverse=True):
