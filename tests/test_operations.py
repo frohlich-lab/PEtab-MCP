@@ -999,3 +999,16 @@ def test_a_fork_is_checked_against_the_version_it_forks(session):
         "`GliS` is used but defined nowhere; it was created as an estimated parameter. Version "
         f"{v} had it as a species: define it again, or read the name that replaced it."
     ]
+
+
+def test_a_species_new_against_the_forked_version_is_warned_about(session):
+    """PEtab-MCP#282, perelson 0: a `base_version` fork took "the species before this edit" from
+    HEAD, so a species new against the base but present in HEAD (a phantom `Ie2`) went unwarned."""
+    base = _commit(session)
+    _set_model(session, ["J: B => D; k3 * B;"])
+    _commit(session)
+    again = _set_model(session, ["J: B => D; k3 * B;"])  # on HEAD, `D` is not new
+    assert not any("unobserved species" in w for w in again["warnings"])
+    session.derived_from = base
+    forked = _set_model(session, ["J: B => D; k3 * B;"])
+    assert any("unobserved species ['D']" in w for w in forked["warnings"])

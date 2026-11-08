@@ -1777,7 +1777,7 @@ def test_a_seed_nothing_reads_names_the_input_it_leaves_unread(
                             r"amounts: `Serum\(\)` \(`__s\d+`\)\.", m) for m in removed)
     assert any(m.startswith("condition target(s) `EGF` are read by nothing in the model, or only "
                             "by assignment rules nothing reads, so the model never sees their "
-                            "value. For each, read it as") for m in said)
+                            "value.") for m in said)
 
 
 def test_a_seed_at_an_input_a_row_reads_is_neither_removed_nor_unread(tmp_path, add_condition):
@@ -2292,10 +2292,14 @@ def test_the_route_says_nothing_is_bound_when_the_map_is_empty(tmp_path):
 
 
 def test_an_unread_condition_target_is_explained():
+    """The hint said the model "must have it: read it as …", which froehlich leads took for a
+    refusal of every unread input: it must be declared, and need not be read (PEtab-MCP#290)."""
     from petab_mcp.operations import _rejection_summary
+    from petab_mcp.validation import INPUT_UNREAD
 
     text = _rejection_summary(["Condition table contains invalid targets: {'rit'}"])
     assert "{'rit'}" in text and "input the condition table SETS" in text
+    assert "must declare it under its id" in text and text.endswith(INPUT_UNREAD)
     assert "SETS" not in _rejection_summary(["something else"])
 
 
@@ -2959,3 +2963,59 @@ def test_concurrent_statement_edits_keep_each_others_rows(tmp_path, monkeypatch)
     assert all(out["applied"] for out in _concurrently(monkeypatch, mcp, *calls))
     text = _text(mcp, "get_model", {"format": "statements"})
     assert "conv: A becomes B" in text and all(f"{p}: B becomes A" in text for p in ("back", "back2"))
+
+
+def test_a_result_names_the_version_it_was_applied_to_and_the_best(tmp_path):
+    """PEtab-MCP#282: a change applies to the working model unless `base_version` names another,
+    and agents assumed it was the best. Each result says which it was applied to and which is the
+    best, and warns where neither that version nor the one it leaves is the best."""
+    mcp = _server(tmp_path, auto_fit=True)
+
+    def k1(lb, ub, **call):
+        box = [{"parameter_id": "k1", "lower_bound": lb, "upper_bound": ub}]
+        return _call(mcp, "make_changes", {"parameters": box, "n_starts": 2, **call})
+
+    def off_best(out):
+        return [m["message"] for m in out["messages"] if "is not the best" in m["message"]]
+
+    out = k1(1e-3, 2e-3, antimony=_antimony(), justification="k1 boxed in")
+    assert out["message"] == "Change applied to the loaded problem and saved as v0; best is v0."
+    out = k1(1e-3, 1e3, justification="let k1 go")  # the data need k1 ~ 0.5
+    assert out["message"] == "Change applied to v0 and saved as v1; best is v1."
+    assert not off_best(out)
+    out = k1(1e-3, 3e-3, justification="k1 boxed in again", base_version=0)
+    assert out["message"] == "Change applied to v0 and saved as v2; best is v1."
+    assert off_best(out) == [
+        "v0, which this change was applied to, is not the best version; v1 is. A change applies "
+        "to the working model, now v2, unless `base_version` names another: send "
+        "`base_version=1` to change the best."
+    ]
+
+
+def test_a_merge_hint_names_its_rename_and_taking_it_merges_the_pair(tmp_path):
+    """PEtab-MCP#283, end to end: `k1*k3` is one rate written as two, so the fit's hints offer the
+    tie with the op that makes it. Sent as given, it merges the two in one op: the result says
+    which row stayed and warns of no dropped parameter."""
+    mcp = _server(tmp_path, auto_fit=True)
+    first = _call(
+        mcp,
+        "make_changes",
+        {
+            "antimony": _antimony("k3 = 2.0;").replace("k1 * A;", "k1 * k3 * A;"),
+            "justification": "a split rate",
+            "n_starts": 4,
+        },
+    )
+    assert first["committed"] is True, first["message"]
+    (hint,) = [h for h in first["merge_hints"] if set(h["parameters"]) == {"k1", "k3"}]
+    old, new = hint["parameters"][1], hint["parameters"][0]
+    assert hint["take"] == {"op": "rename", "old": old, "new": new}
+    res = _call(
+        mcp,
+        "make_changes",
+        {"model_edits": [hint["take"]], "justification": "one rate", "n_starts": 2},
+    )
+    assert res["committed"] is True, res["message"]
+    texts = [m["message"] for m in res["messages"]]
+    assert any(t.startswith(f"rename merged `{old}` into `{new}`") for t in texts), texts
+    assert not any("dropped previously-estimated" in t for t in texts), texts

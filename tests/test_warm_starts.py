@@ -391,3 +391,31 @@ def test_previous_optima_are_projected_into_the_current_bounds():
     assert any(corner)
     # ...and the second, which clips to that SAME corner, is not spent a second time
     assert sum(corner) == 1
+
+
+def test_a_renamed_parameter_keeps_its_coordinate_in_every_basin():
+    """PEtab-MCP#283: warm starts match the previous fit by name, so a `rename` made the renamed
+    parameter a new one, warm-started at unit and its bounds instead of where the parent fitted it.
+    Carried under its new name, every basin holds it where the parent had it; a merge moves
+    nothing, since the target keeps its own coordinate."""
+    prev = _prev(
+        [np.log10(0.5), np.log10(0.1)],
+        [np.log10(9.0), np.log10(0.02)],
+    )
+    child = _FakeProblem(
+        names=["k1", "k_back", "d"],
+        scales=["log10", "log10", "lin"],
+        free=[0, 1],
+        lb=[-4.0, -4.0],
+        ub=[2.0, 2.0],
+        fixed_vals=[1.0],
+    )
+    pdf = _pdf().rename(index={"k2": "k_back"})
+    moved = fitting.renamed_optimization(prev, [("k2", "k_back")])
+    g = fitting.warm_start_guesses(child, pdf, 8, optimization=moved)
+    assert g[1, :2] == pytest.approx([np.log10(9.0), np.log10(0.02)])
+    assert fitting.parent_starts(child, g, moved) == {"0"}
+    stale = fitting.warm_start_guesses(child, pdf, 8, optimization=prev)
+    assert stale[0, 1] == pytest.approx(0.0)  # unnamed, it read as new: a unit-scale candidate
+    assert fitting.renamed_optimization(prev, [("k2", "k1")]) is prev
+    assert fitting.renamed_optimization(prev, []) is prev

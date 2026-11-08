@@ -199,8 +199,8 @@ def decide(
             "message": (
                 f"This same model structure has already been fit {prior_attempts} times. Re-fitting an "
                 "identical structure recompiles and refits to the SAME result — it cannot improve the "
-                "fit. Stop re-fitting it: your best model is kept regardless (see "
-                "list_versions), so make a genuinely different structural change and fit THAT."
+                "fit. Stop re-fitting it: your best model is kept regardless, so make a "
+                "genuinely different structural change and fit THAT."
             ),
         }
 
@@ -221,7 +221,7 @@ def decide(
             "warnings": [],
             "message": (
                 f"This model is identical to the current version (v{head_version}); the fit was "
-                "not re-run (its metrics are unchanged — see get_fit_summary). To improve the fit, "
+                "not re-run (its metrics are unchanged). To improve the fit, "
                 f"change the STRUCTURE, or {_REFIT}; an earlier model you already committed is "
                 "kept regardless."
             ),

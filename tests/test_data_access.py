@@ -93,13 +93,12 @@ def test_empty_parameter_table_schema_keeps_columns(session):
     assert set(data_access.PARAMETER_COLUMNS) <= set(tables["parameters"]["columns"])
 
 
-def test_sql_error_points_at_working_alternatives(session):
-    # A failed query should guide the agent to the tools that DO work rather than being
-    # re-proposed blindly — the error names get_measurements and list_data_tables.
+def test_sql_error_points_at_list_data_tables_only(session):
+    # The SQL error names list_data_tables, query_data's companion, and no other tool.
     with pytest.raises(ValidationError) as excinfo:
         data_access.run_query(session, "SELECT * FROM nonexistent_table")
     msg = str(excinfo.value)
-    assert "get_measurements" in msg and "list_data_tables" in msg
+    assert "list_data_tables" in msg and "get_measurements" not in msg
 
 
 def test_named_index_promoted_to_column(session):

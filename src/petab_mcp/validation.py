@@ -389,7 +389,7 @@ def _undefined_readout_issues(problem, statements: bool = False) -> list[dict[st
 
 
 #: How a condition target enters a model so that every period's value reaches it: the remedy of
-#: :func:`_first_period_only_issues` and of the invalid-targets hint (:mod:`operations`).
+#: :func:`_first_period_only_issues`, and the end of :data:`INPUT_UNREAD`.
 INPUT_REMEDY = (
     "read it as a parameter of its id in a rate law, which follows every period's value, or name "
     "a species by its id, which every period sets (on the statements route: a row's binding "
@@ -397,6 +397,15 @@ INPUT_REMEDY = (
     '`{"agent": "FSK", "amount": "Fsk"}`). An initial amount that reads it (a seed `2*dose`) '
     "takes the first period's value alone, which in a pre-equilibrated experiment is the "
     "pre-equilibration one."
+)
+
+#: What a model may do with a condition target it declares, and :data:`INPUT_REMEDY` for one it
+#: means to read: the end of :func:`_unread_input_issues`' warning and of the invalid-targets hint
+#: (:mod:`operations`), which agents read as "every input must be read" (PEtab-MCP#290).
+INPUT_UNREAD = (
+    "Leaving an input unread is allowed, and right for one with no effect on the data, such as a "
+    "control: a term for it is a parameter the score charges. To give one an effect, "
+    + INPUT_REMEDY
 )
 
 #: Periods named per target in :func:`_first_period_only_issues`; the rest are counted.
@@ -467,7 +476,7 @@ def _unread_input_issues(problem) -> list[dict[str, Any]]:
             "message": (
                 f"condition target(s) {', '.join(f'`{t}`' for t in unread)} are read by nothing "
                 "in the model, or only by assignment rules nothing reads, so the model never sees "
-                f"their value. For each, {INPUT_REMEDY}"
+                f"their value. {INPUT_UNREAD}"
             ),
             "check": "input_unread",
         }
