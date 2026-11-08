@@ -29,10 +29,19 @@ the step that refused, copied straight through by whoever built the result.
 
 Deliberately its own module: :mod:`operations` builds the edit half and :mod:`server` builds the
 tool-layer and fit halves, and neither should have to import the other to agree on the shape.
+
+FIX POINTERS. Any text the agent reads, here or anywhere else, may tell it WHAT TO CHANGE ("send X
+instead", "remove its term") beside what was found. :func:`fix` brackets such a pointer where the
+text is written, and :func:`fix_or` gives the fact-only wording of a sentence whose fix cannot be cut
+out of it. Nothing decides at that point: :func:`render` keeps one side, by the server's
+``fix_pointers`` (``server._FixPointers``), on everything the server sends. So a module constant, a
+docstring or a ``SKILL.md`` carries its brackets as it is written, and stored text replays under the
+setting of the server reading it back.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 LEVEL_ERROR = "error"
@@ -75,3 +84,43 @@ def errors_from_exception(source: str, exc: BaseException) -> list[dict[str, str
     out = [error(source, exc)]
     out += [error(SOURCE_VALIDATION, issue) for issue in (getattr(exc, "issues", None) or [])]
     return out
+
+
+_BRACKETS = "⟦⟧⟪⟫"
+#: A fix pointer, kept with fix pointers on (:func:`fix`), and its fact-only stand-in, kept off
+#: (:func:`fix_or`). Bodies hold no bracket, so each pass of :func:`render` takes the innermost.
+_FIX = re.compile(f"⟦([^{_BRACKETS}]*)⟧")
+_FACT = re.compile(f"⟪([^{_BRACKETS}]*)⟫")
+
+
+def fix(pointer: str) -> str:
+    """``pointer``, text telling the agent what to change, bracketed for :func:`render`."""
+    return f"⟦{pointer}⟧"
+
+
+def fix_or(pointer: str, fact: str) -> str:
+    """``pointer`` with fix pointers on, ``fact`` (its fact-only wording) with them off."""
+    return f"⟦{pointer}⟧⟪{fact}⟫"
+
+
+def render(text: str, pointers: bool) -> str:
+    """``text`` with its fix pointers kept (``pointers``) or cut, and no brackets left."""
+    if not any(b in text for b in _BRACKETS):
+        return text
+    keep, cut = (_FIX, _FACT) if pointers else (_FACT, _FIX)
+    while True:
+        out = cut.sub("", keep.sub(lambda m: m[1], text))
+        if out == text:
+            return out
+        text = out
+
+
+def render_all(value: Any, pointers: bool) -> Any:
+    """:func:`render` on every string in a JSON-like ``value`` (dict values, list items)."""
+    if isinstance(value, str):
+        return render(value, pointers)
+    if isinstance(value, dict):
+        return {k: render_all(v, pointers) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [render_all(v, pointers) for v in value]
+    return value

@@ -248,6 +248,22 @@ def test_a_near_free_tie_reaches_the_fit_result_as_a_merge_hint_row(fit_session,
     assert fitting.fit_summary(sess, sess.engine)["merge_hints"] == hints
 
 
+def test_off_the_tie_is_priced_but_offered_nowhere(fit_session, monkeypatch):
+    """`create_server(fix_pointers=False)`: no `merge_hints` on the fit or the score read, while
+    the diagnosis still prices the same tie (gemot's `fix_pointers` arm)."""
+    from petab_mcp import fitting
+    from petab_mcp import identifiability as I
+
+    sess = fit_session
+    sess.fix_pointers = False
+    _stub_fim(monkeypatch, 1e-9)
+    res = sess.fit(n_starts=2)
+
+    assert "merge_hints" not in res
+    assert "merge_hints" not in fitting.fit_summary(sess, sess.engine)
+    assert I.identifiability(sess)["merge_candidates"]["ties"][0]["parameters"] == ["k1", "k2"]
+
+
 def test_a_change_lists_the_ties_new_since_its_parent_and_counts_the_rest(fit_session, monkeypatch):
     """PEtab-MCP#208: a tie the parent's own fit result already carried is counted in
     `n_merge_hints`, not repeated, however it was re-priced; the score read keeps every one."""

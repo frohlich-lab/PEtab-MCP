@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 import threading
 import time
 from typing import Annotated, Any, Callable, Literal
@@ -645,6 +646,69 @@ class _Heartbeat(Middleware):
         return result
 
 
+_ESCAPED_BRACKET = re.compile(r"\\u(27e[67ab])")
+
+
+class _FixPointers(Middleware):
+    """Sends every tool result, tool error, tool description and resource with its fix pointers kept
+    or cut, as ``create_server(fix_pointers=...)`` says (:func:`messages.render`).
+
+    The one place everything the server sends passes, so the text is written once with its pointers
+    bracketed (:func:`messages.fix`) and nothing upstream needs the setting; a stored result read
+    back (``get_version``) is rendered as it leaves. Outermost, so it renders the other middleware's
+    errors too.
+    """
+
+    def __init__(self, pointers: bool) -> None:
+        self.pointers = pointers
+
+    def _render(self, text: str) -> str:
+        """``text`` rendered, a JSON dump's ``\\u27e6``-escaped brackets included (``json.dumps``
+        escapes them, and a resource is one)."""
+        return msg_mod.render(
+            _ESCAPED_BRACKET.sub(lambda m: chr(int(m[1], 16)), text), self.pointers
+        )
+
+    def _text(self, block: Any) -> Any:
+        text = getattr(block, "text", None)
+        if not isinstance(text, str):
+            return block
+        return block.model_copy(update={"text": self._render(text)})
+
+    async def on_call_tool(self, context, call_next):
+        try:
+            result = await call_next(context)
+        except ToolError as exc:
+            raise ToolError(msg_mod.render(str(exc), self.pointers)) from exc
+        return result.model_copy(
+            update={
+                "content": [self._text(b) for b in result.content],
+                "structured_content": msg_mod.render_all(result.structured_content, self.pointers),
+            }
+        )
+
+    async def on_list_tools(self, context, call_next):
+        return [
+            t.model_copy(
+                update={
+                    "description": t.description and msg_mod.render(t.description, self.pointers),
+                    "parameters": msg_mod.render_all(t.parameters, self.pointers),
+                }
+            )
+            for t in await call_next(context)
+        ]
+
+    async def on_read_resource(self, context, call_next):
+        result = await call_next(context)
+        contents = [
+            c.model_copy(update={"content": self._render(c.content)})
+            if isinstance(c.content, str)
+            else c
+            for c in result.contents
+        ]
+        return result.model_copy(update={"contents": contents})
+
+
 #: Seconds ``wait_for_fit`` waits when not told, and at most: the cap is under the 600 s tool
 #: timeout of gemot's CLI drivers, so a wait answers before its client gives up on it, and the
 #: default leaves room for a client whose timeout is shorter.
@@ -1119,7 +1183,7 @@ k*u*X1'}`, `{op: 'remove_reaction', id}`, `{op: 'set_rate_law', id, antimony: 'k
 `id := expr` rule holding at ALL times — how a `readout_*` symbol an observable formula \
 references is defined in terms of YOUR states), `{op: 'remove_assignment', id}`, `{op: 'rename', \
 old, new}` (`new` keeps `old`'s fitted value, bounds and scale; onto an existing parameter it \
-MERGES the two in one op, keeping `new`'s: a `merge_hints` row's `take`). Nothing to quote; they \
+MERGES the two in one op, keeping `new`'s⟦: a `merge_hints` row's `take`⟧). Nothing to quote; they \
 apply in order, all or nothing, and a bad id is rejected with the valid ids listed. Put the WHOLE \
 change in ONE call: one call is one fit. What they cannot express (an event, a compartment) is a \
 re-author with `antimony`.
@@ -1137,10 +1201,11 @@ _MAKE_CHANGES_PARAMETERS_ROUTE = (
 _MAKE_CHANGES_CONTRACT = f"""\
 `n_starts` REPLACES the configured multistart count (`describe_problem` → \
 `fit_n_starts_default`) rather than adding to it, and may be at most {MAX_FIT_STARTS_FACTOR}x it: \
-omit it unless you want MORE; below it fits LESS hard. MORE is warranted once, when \
+omit it unless you want MORE; below it fits LESS hard. ⟦MORE is warranted once, when \
 `starts_at_best` shows only 1 or 2 starts reaching the best value; if the raised fit still shows 1 \
 or 2, the optimum is a needle, and the model needs reformulating where it is that sharp (a \
-switch-like term), not more starts. Starts multiply the fit's wall time, and do not help starts \
+switch-like term), not more starts.⟧⟪If a raised fit still shows only 1 or 2 starts reaching the \
+best value (`starts_at_best`), the optimum is a needle.⟫ Starts multiply the fit's wall time, and do not help starts \
 that run out of the per-start time limit (`ExitFlag.MAXTIME`).
 
 A REFIT is a call with no model route: `parameters` and/or `n_starts` alone fit the current \
@@ -1148,12 +1213,12 @@ model again (version N's with `base_version=N`) as a new version. One with neith
 
 ALL-OR-NOTHING: a change that is rejected, or whose fit produces no version, is REVERTED, so the \
 working model is always a scored one. The result IS the fit, flat, in `get_fit_summary`'s \
-fields, with the noise report, the parameters at a bound, the `merge_hints` and the flagged \
+fields, with the noise report, the parameters at a bound, ⟦the `merge_hints` ⟧and the flagged \
 observables cut to what is flagged or new since the parent version. Read `applied` first: \
 `false` → nothing moved — rejected, reverted because the fit failed, or already an earlier fitted \
-version; `error`/`issues` says which, act on THAT. Then `committed`: `true` → a version exists, \
-read its score; `false` with `no_change` → this model already IS the current version, so change \
-something else. `messages` is everything the call had to say, in pipeline order, each tagged \
+version; `error`/`issues` says which⟦, act on THAT⟧. Then `committed`: `true` → a version exists, \
+read its score; `false` with `no_change` → this model already IS the current version⟦, so change \
+something else⟧. `messages` is everything the call had to say, in pipeline order, each tagged \
 `level` and `source`.
 
 `message` names the version the change was applied to (the working model, or `base_version`'s) \
@@ -1690,9 +1755,12 @@ def _register_model_tools(
                     f"make_changes: {len(unnamed)} reaction(s) have no id ({shown}"
                     f"{', …' if len(unnamed) > 3 else ''}). Every reaction needs one — it is how "
                     "`model_edits` addresses it later, and an unnamed reaction can only ever be "
-                    "changed by re-authoring the whole model. Write 'name: A => B; k*A;' and "
-                    "choose names you will recognise (transfer, decay), not r1/r2. "
-                    "NOTHING was applied.",
+                    "changed by re-authoring the whole model."
+                    + msg_mod.fix(
+                        " Write 'name: A => B; k*A;' and choose names you will recognise "
+                        "(transfer, decay), not r1/r2."
+                    )
+                    + " NOTHING was applied.",
                     {"unnamed": unnamed[:5]},
                     cause="unnamed_reaction",
                 )
@@ -2131,11 +2199,12 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         better); the other scores are reported beside it, and the `k` they charge is
         `n_estimated` + `hardcoded_constants`.
 
-        The flags to act on: `parameters_at_bound` (a parameter that re-pins after one widening is
+        The flags⟦ to act on⟧: `parameters_at_bound` (a parameter that re-pins after one widening is
         UNIDENTIFIABLE, not under-explored), `noise_sigma_report` with `noise_sigma_inflated` /
-        `noise_sigma_collapsed` (an estimated sigma absorbing misfit or overfitting the noise: fix
-        the model's form, not the noise), the `residual_structure` verdict, and `merge_hints`
-        (parameter pairs the data cannot separate whose merge the criterion would pay for). With
+        `noise_sigma_collapsed` (an estimated sigma absorbing misfit or overfitting the noise⟦: fix
+        the model's form, not the noise⟧)⟦, the `residual_structure` verdict, and `merge_hints`
+        (parameter pairs the data cannot separate whose merge the criterion would pay for)⟧⟪, and
+        the `residual_structure` verdict⟫. With
         estimated sigmas, `reduced_chi2` and `chi2_gof_pvalue` sit near their null whatever the
         fit and say nothing about adequacy.
         """
@@ -2176,18 +2245,18 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         the payload):
 
         - `shape` — does the response RISE AND FALL under a held input? A pulse cannot be produced
-          by constant production plus first-order decay at ANY rate constants, so it REQUIRES a
-          depletable pool, a second state, or feedback.
+          by constant production plus first-order decay at ANY rate constants⟦, so it REQUIRES a
+          depletable pool, a second state, or feedback⟧.
         - `timescales` — is a second relaxation timescale distinguishable, by BIC.
           `delta_bic_favouring_two` is POSITIVE when the two-timescale form fits better.
         - `dose_response` — the steepest local log-log slope against a numeric condition input,
           with its uncertainty. Above 1 rules out a single mass-action binding step.
-        - `conservation` — is the sum of the observables constant in time? Imposing the total is
-          a constraint rather than an addition: it REMOVES a parameter.
+        - `conservation` — is the sum of the observables constant in time?⟦ Imposing the total is
+          a constraint rather than an addition: it REMOVES a parameter.⟧
 
         Each entry carries a `requirement` (non-null only when ESTABLISHED — then any model must
         reproduce it) and `support_for_extension`, where `suggestive` means the estimate leans
-        toward the richer structure without establishing it, which is a reason to TRY it.
+        toward the richer structure without establishing it⟦, which is a reason to TRY it⟧.
 
         THESE FINDINGS CAN FORCE STRUCTURE IN; THEY NEVER RULE IT OUT. `testable: false` means the
         DESIGN cannot answer; a null `requirement` means this design did not settle it. Neither is
@@ -2329,13 +2398,13 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         pin), and a ranked `candidates` list. `merge_candidates` prices giving a pair ONE SHARED
         value: `dnll`, cheapest first; `dscore`, NEGATIVE when the merge lowers the score;
         `move_scaled`, how far the tie moves a parameter. Only same-role, same-scale pairs with
-        neither member at a bound are priced (`n_ties_skipped` counts the rest), and the fit
-        result's `merge_hints` are the cheapest few. Remedies are MODEL edits, in this order: drop
+        neither member at a bound are priced (`n_ties_skipped` counts the rest)⟦, and the fit
+        result's `merge_hints` are the cheapest few⟧. ⟦Remedies are MODEL edits, in this order: drop
         the term; take its limiting (irreversible or instantaneous) form; merge a pair, into the
         combination the data constrain (`ka*kb` → one `kab`) or one shared value; last, for a pure
         scale degeneracy where every value fits equally well, write one member as 1 in the rate
         law (a 1 is never charged). The expansion is local, so refit and let the score decide
-        each.
+        each.⟧⟪The expansion is local.⟫
         """
         ctx = route()
         session = ctx.session
@@ -2666,10 +2735,10 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         estimated sigmas only the streak cap stops.
         There is no cap on the TOTAL number of fits: a session that keeps genuinely improving keeps
         going, and only a stall stops it.
-        A streak-cap `stop_reason` whose best model is shown not adequate also carries the
-        structural-inadequacy nudge: a refit or an equivalent rewrite cannot beat the optimum its
-        structure already has, so the next model must change the structure (add a latent state, add
-        a feedback reaction, raise interaction order), not re-fit the same one.
+        A streak-cap `stop_reason` whose best model is shown not adequate also ⟦carries the
+        structural-inadequacy nudge⟧⟪says so⟫: a refit or an equivalent rewrite cannot beat the optimum its
+        structure already has⟦, so the next model must change the structure (add a latent state, add
+        a feedback reaction, raise interaction order), not re-fit the same one⟧.
         """
         ctx = route()
         session = ctx.session
@@ -2861,6 +2930,7 @@ def _open_ctx(
     fit_engine: Any | None,
     constraints: str | None = None,
     constraint_updates: str = "off",
+    fix_pointers: bool = True,
 ) -> _Ctx:
     """Open the session on the problem at ``yaml_path``: its :class:`PetabSession`, the
     :class:`AmiciEngine` wired into it, and its held-out set. The arguments are
@@ -2895,6 +2965,7 @@ def _open_ctx(
     if entities is not None:
         session.entities = entities
     session.text_route = entity_map is None
+    session.fix_pointers = fix_pointers
     if loaded is not None:
         session.constraints = loaded
         session.constraint_updates = constraint_updates
@@ -2932,6 +3003,7 @@ def create_server(
     constraints: str | None = None,
     constraint_updates: str = "off",
     cluster: Any | None = None,
+    fix_pointers: bool = True,
 ) -> FastMCP:
     """Build a FastMCP server bound to the PEtab problem at ``yaml_path``.
 
@@ -2981,6 +3053,11 @@ def create_server(
     its starts in local processes. The workers import the compiled models from ``build_root`` and
     read each fit's problem there, so on more than one machine it must be on a filesystem they
     share.
+
+    ``fix_pointers`` (default on) keeps the text telling the agent WHAT TO CHANGE: a refusal's or a
+    warning's remedy, the ``merge_hints`` and the ``rename`` each carries, a stop's structural
+    advice. Off, the server sends only the facts: what was refused or flagged, and why
+    (:func:`messages.fix`, :class:`_FixPointers`).
     """
     if constraints and entity_map is None:
         raise ValidationError(
@@ -3014,6 +3091,7 @@ def create_server(
         fit_engine=fit_engine,
         constraints=constraints,
         constraint_updates=constraint_updates,
+        fix_pointers=fix_pointers,
     )
 
     # Load tool-usage skills up front so the server instructions only advertise
@@ -3034,8 +3112,9 @@ def create_server(
     )
     mcp = FastMCP(
         "petab-mcp",
-        instructions=instructions,
+        instructions=msg_mod.render(instructions, fix_pointers),
         middleware=[
+            _FixPointers(fix_pointers),
             _InfrastructureErrors(
                 ctx.session.logger, ctx.engine.build_root, ctx.session.provenance.root
             ),

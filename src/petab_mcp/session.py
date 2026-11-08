@@ -42,6 +42,7 @@ from .errors import (
     ValidationError,
     disk_full_error,
 )
+from .messages import fix
 from .fitting import (
     FIT_PER_START_TIMEOUT_S,
     noise_sigma_collapsed,
@@ -64,11 +65,14 @@ from .references import EutilsReferenceResolver
 _STRUCTURAL_PLATEAU_ADVICE = (
     "The best model is still not adequate, and none of these fits beat it. A refit or an "
     "equivalent rewrite of a structure already fitted can at best find that structure's optimum "
-    "again (one that misses it scores worse), so neither can make the model adequate: that takes a "
-    "STRUCTURAL change to the model's FORM, not another fit of the same structure. Consider a "
-    "generic structural move (categories, not a specific answer) — add a latent / unobserved "
-    "state; add a feedback / regulation reaction; or raise the interaction order (linear -> "
-    "nonlinear / higher-order)."
+    "again (one that misses it scores worse), so neither can make the model adequate"
+    + fix(
+        ": that takes a STRUCTURAL change to the model's FORM, not another fit of the same "
+        "structure. Consider a generic structural move (categories, not a specific answer) — add a "
+        "latent / unobserved state; add a feedback / regulation reaction; or raise the interaction "
+        "order (linear -> nonlinear / higher-order)"
+    )
+    + "."
 )
 
 # Appended instead of the structural nudge when a stall happened without ever scoring a model.
@@ -77,10 +81,13 @@ _STRUCTURAL_PLATEAU_ADVICE = (
 _UNSCORED_STALL_ADVICE = (
     "No fit in this session produced a usable score, so there is no best model to compare against: "
     "this is an EVALUATION failure, not evidence about the model's form. The likelihood is "
-    "undefined when the simulation does not reach every measured timepoint — check "
-    "n_missing_simulations and the per-point records for unsimulated points, "
-    "and address why the trajectory stops (stiffness / a parameter pinned at a bound / an "
-    "unbounded rate) before drawing any conclusion about the structure."
+    "undefined when the simulation does not reach every measured timepoint"
+    + fix(
+        " — check n_missing_simulations and the per-point records for unsimulated points, and "
+        "address why the trajectory stops (stiffness / a parameter pinned at a bound / an "
+        "unbounded rate) before drawing any conclusion about the structure"
+    )
+    + "."
 )
 
 # Appended to the structural nudge when the best model's chi2 GoF only looks adequate because an
@@ -91,9 +98,11 @@ _UNSCORED_STALL_ADVICE = (
 _SIGMA_INFLATED_ADVICE = (
     " NOTE: the best model's fit only looks statistically adequate because its ESTIMATED noise "
     "sigma is inflated above its data-driven cap, absorbing the misfit — the chi2 goodness-of-fit "
-    "is not real adequacy here. Do NOT widen or lean on the noise; fix the mechanism so the "
-    "residuals shrink at a plausible sigma (the fit result's residual_structure verdict still "
-    "flags the structure)."
+    "is not real adequacy here."
+    + fix(
+        " Do NOT widen or lean on the noise; fix the mechanism so the residuals shrink at a "
+        "plausible sigma (the fit result's residual_structure verdict still flags the structure)."
+    )
 )
 
 # The other tail: the best model's ESTIMATED noise sigma collapsed implausibly small, so the fit
@@ -101,17 +110,18 @@ _SIGMA_INFLATED_ADVICE = (
 _SIGMA_COLLAPSED_ADVICE = (
     " NOTE: the best model's ESTIMATED noise sigma has collapsed far below the data's own "
     "variability — the fit is absorbing nearly all the data into the mean, the fingerprint of "
-    "overfitting the noise, so its low score is not genuine adequacy. Prefer a simpler / more "
-    "parsimonious mechanism at a plausible sigma rather than a more flexible one that drives the "
-    "residuals to ~0."
+    "overfitting the noise, so its low score is not genuine adequacy."
+    + fix(
+        " Prefer a simpler / more parsimonious mechanism at a plausible sigma rather than a more "
+        "flexible one that drives the residuals to ~0."
+    )
 )
 
 # A fit's optimum only 1 or 2 starts of a raised multistart reach (PEtab-MCP#287), for the
 # `n_starts` cap's refusal and the warning on such a fit.
-_NEEDLE_ADVICE = (
-    "the optimum is a needle, and more starts will not make it reliable: reformulate the model "
-    "where it is that sharp (a switch-like term, e.g. a steep Hill exponent or a gate at a bound; "
-    "`get_fit_diagnosis(sections='parameters')`)"
+_NEEDLE_ADVICE = "the optimum is a needle, and more starts will not make it reliable" + fix(
+    ": reformulate the model where it is that sharp (a switch-like term, e.g. a steep Hill "
+    "exponent or a gate at a bound; `get_fit_diagnosis(sections='parameters')`)"
 )
 
 #: The :meth:`PetabSession.progress_report` keys a fit result carries, each only when set;
@@ -409,6 +419,9 @@ class PetabSession:
         # Which `make_changes` routes the server offers: True for the text routes, whose
         # `model_edits` take a merge hint as a `rename` (`identifiability.merge_hints`).
         self.text_route: bool = True
+        # Whether the server sends fix pointers (`create_server(fix_pointers=...)`): off, the
+        # results carry no `merge_hints`; text pointers are cut where the server sends them.
+        self.fix_pointers: bool = True
 
         # De-duplication memory for identical fits (see :mod:`dedup` and issue #59): how many times
         # each *identical* estimation problem has been handed to `fit` this session, keyed by
@@ -1114,11 +1127,12 @@ class PetabSession:
         # not iterable") deep in the optimizer.
         if int(self.problem.n_estimated or 0) == 0:
             raise ModelUpdateError(
-                "the model has NO estimated (free) parameters, so there is nothing to "
-                "fit. Give it at least one free parameter — a new symbol you use in a "
-                "rate law becomes an estimated parameter automatically, so declare one "
-                "(or keep using the shipped free parameters) — then re-author with "
-                "make_changes."
+                "the model has NO estimated (free) parameters, so there is nothing to fit."
+                + fix(
+                    " Give it at least one free parameter — a new symbol you use in a rate law "
+                    "becomes an estimated parameter automatically, so declare one (or keep using "
+                    "the shipped free parameters) — then re-author with make_changes."
+                )
             )
         fitsim = fitting.fit_and_simulate(self, engine, do_fit=True, n_starts=starts)
         # The multistart count this fit ACTUALLY used, so a caller never has to infer whether its
@@ -1670,8 +1684,11 @@ class PetabSession:
                     f"{timed_out} of {starts} starts ran out of the "
                     f"{self.fit_per_start_timeout:.0f}s per-start time limit (MAXTIME). More "
                     "starts will not fix that: the limit applies to each start, so added starts "
-                    "hit it too. The usual causes are a stiff or badly scaled model, or bounds "
-                    "that allow extreme rates.",
+                    "hit it too."
+                    + fix(
+                        " The usual causes are a stiff or badly scaled model, or bounds that allow "
+                        "extreme rates."
+                    ),
                 ]
             # A raise that still leaves 1 or 2 starts at the best, fewer than half of those that
             # ran to the end (2 of 2 completed is no needle): more will not help (#287).
@@ -1693,10 +1710,13 @@ class PetabSession:
                     *warnings,
                     f"{not_finite} of {starts} starts ended NOT_FINITE: the objective or its "
                     "gradient was not a number where they went, so this score comes from the "
-                    f"other {starts - not_finite} and need not be the best this structure fits. "
-                    "Usual causes: a power with an estimated exponent of a state that goes "
-                    "below 0, a rate that is 0/0 somewhere in the bounds, or bounds wide enough to "
-                    "blow the ODE up. Fix that before judging the structure on this fit.",
+                    f"other {starts - not_finite} and need not be the best this structure fits."
+                    + fix(
+                        " Usual causes: a power with an estimated exponent of a state that goes "
+                        "below 0, a rate that is 0/0 somewhere in the bounds, or bounds wide "
+                        "enough to blow the ODE up. Fix that before judging the structure on this "
+                        "fit."
+                    ),
                 ]
 
             staged = list(staged_edits or [])
@@ -1736,9 +1756,10 @@ class PetabSession:
                 block = identifiability.fit_diagnosis_block(self)
                 if block:
                     fitsim[identifiability.STORED_DIAGNOSIS_KEY] = block
-                fitsim["merge_hints"] = identifiability.merge_hints(
-                    (block or {}).get("diagnosis"), rename=self.text_route
-                )
+                if self.fix_pointers:
+                    fitsim["merge_hints"] = identifiability.merge_hints(
+                        (block or {}).get("diagnosis"), rename=self.text_route
+                    )
             # Noise-sigma report + flags computed ONCE here and stashed on fitsim, so this event,
             # the checkpoint update in record_fit_progress (below) and the returned fit block all
             # read the SAME verdict instead of recomputing (or disagreeing).
@@ -1999,8 +2020,9 @@ class PetabSession:
                 raise OperationError(
                     f"restore_version: version {version} breaks the session's constraints "
                     + ", ".join(f"`{c.id}` ({c.text})" for c in broken)
-                    + ", given after it was committed; restore a version that makes them, or "
-                    "build one.",
+                    + ", given after it was committed"
+                    + fix("; restore a version that makes them, or build one")
+                    + ".",
                     cause="constraint_violated",
                 )
         return self.rollback_to(version, justification)
