@@ -2364,7 +2364,7 @@ def bundle_result(
         version = version if version is not None else head_now
         message = (
             f"{lineage} Change applied and a version was snapshotted, but the fit did not finish "
-            f"cleanly, so this call carries no metrics: the working model is now version {version}."
+            f"cleanly, so this call carries no metrics: the working model is now version {version}. "
             "Read `error`, then read that version's score before making another change — do NOT "
             "re-send it, the model is already scored."
         )
