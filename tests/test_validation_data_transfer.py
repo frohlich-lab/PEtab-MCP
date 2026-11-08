@@ -406,6 +406,36 @@ def test_score_session_refits_each_unit_on_its_own_and_sums_the_units(session, e
     assert session.problem.experiment_df is None
 
 
+def test_a_refit_optimum_that_does_not_simulate_again_is_non_finite(session, engine, monkeypatch):
+    """AMICI-backed (#288): the solver is left one step once the multistart is done, so the unit's
+    optimum, finite to the optimizer, fails when simulated again for its records. That is no score:
+    `non_finite`, naming the unit, the experiment and AMICI's status, never `ok` with `nll: null`."""
+    import pypesto.optimize
+
+    minimize = pypesto.optimize.minimize
+
+    def _then_one_step(problem, **kwargs):
+        result = minimize(problem, **kwargs)
+        problem.objective.amici_solver.set_max_steps(1)
+        return result
+
+    monkeypatch.setattr(pypesto.optimize, "minimize", _then_one_step)
+    meas = session.problem.measurement_df
+    held = V.HeldOut(
+        measurement_df=meas.assign(experimentId="e1", measurement=meas.measurement * 2),
+        experiment_df=_experiments(["e1"]),
+        parameter_df=_params([("A_init", "lin", 0.0, 100.0, 2.0, 0)]),
+        units={"e1": "u1"},
+    )
+
+    out = V.score_session(session, engine, held, n_starts=2)
+
+    assert out["status"] == V.STATUS_NON_FINITE and out["unit"] == "u1", out
+    assert "nll" not in out
+    assert out["reason"].startswith("unit `u1`: the refit's optimum (nll "), out["reason"]
+    assert "fails in `e1` (AMICI_TOO_MUCH_WORK at t=" in out["reason"], out["reason"]
+
+
 def test_a_transfer_score_stores_each_units_records_at_its_own_optimum(session, engine):
     """AMICI-backed, on a committed version: the per-point records of a transfer score (#119) are
     each unit's, at THAT unit's refitted optimum, in the head version's directory. With sigma_B

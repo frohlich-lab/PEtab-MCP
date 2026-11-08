@@ -779,8 +779,7 @@ def working_table_moved(session, record) -> bool:
 #: FIM already produces, so every consumer's existing fail-open path covers them.
 NO_OPTIMUM_NOTE = (
     "no fitted optimum to diagnose — every number here is a local expansion around "
-    "one, so none was computed. Commit a model with make_changes (which fits it) "
-    "and read this again."
+    "one, so none was computed."
 )
 FAILED_NOTE = (
     "the parameter diagnosis could not be computed for this fit (see the server log); "
@@ -790,8 +789,7 @@ FAILED_NOTE = (
 #: re-priced: pricing the current structure would mean fitting (and building) it.
 STALE_NOTE = (
     "this describes the LAST FIT, not the model in front of you — a different structure is "
-    "in the working state now (a restore). Commit the current model with make_changes "
-    "(which fits it) to get its own diagnosis."
+    "in the working state now (a restore); only a fit of it gives its own diagnosis."
 )
 #: Said when the working parameter TABLE has moved but the structure has not — a restored version of
 #: the same structure with other values. The geometry still describes this structure at its fitted

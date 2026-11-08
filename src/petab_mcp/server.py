@@ -1020,7 +1020,10 @@ def _register_read_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         `experimentId` applies every condition `conditionId` lists, space-separated (none: the
         model as is). `time` -inf is a pre-equilibration to steady state before the experiment
         starts. Every measurement names the experiment it was taken in; an empty `experimentId`
-        simulates the model as is."""
+        simulates the model as is. A table too large for one reply comes back as one row per
+        period layout instead: how many experiments share it, their periods' start times and how
+        many conditions each period applies, under the `query_data` SQL that reads one
+        experiment's periods."""
         ctx = route()
         session = ctx.session
         return experiments_tsv(session.problem.experiment_df)
@@ -2584,8 +2587,8 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
             out = session.provenance.get_version(version, parts)
             if omitted:
                 out["omitted"] = (
-                    f"{' and '.join(omitted)}: get_version(include=[...]); per point, query_data "
-                    "on simulations_history"
+                    f"{' and '.join(omitted)}: get_version(include=[...]); per point, "
+                    "simulations_history"
                 )
             # The largest part first, so a smaller one comes back whole where it can.
             for part in sorted(set(parts), key=lambda p: len(json.dumps(out[p])), reverse=True):

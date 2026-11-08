@@ -2204,8 +2204,7 @@ def _slim_fitted_parameters(session, out: dict) -> Any:
         out["n_parameters_unchanged"] = len(fitted) - len(changed)
         out["fitted_parameters_note"] = (
             f"only parameters NEW, REMOVED or moved >1% vs version {base_v} (this fit's parent) "
-            f"are listed; {len(fitted) - len(changed)} unchanged "
-            "(read any value via get_parameters)."
+            f"are listed; {len(fitted) - len(changed)} unchanged."
         )
         out["fitted_parameters"] = None
         # Scales for everything the payload still NAMES (changed + removed). Nulling them
