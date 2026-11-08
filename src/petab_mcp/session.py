@@ -62,11 +62,11 @@ from .references import EutilsReferenceResolver
 _STRUCTURAL_PLATEAU_ADVICE = (
     "The best model is still not adequate, and none of these fits beat it. A refit or an "
     "equivalent rewrite of a structure already fitted can at best find that structure's optimum "
-    "again (one that misses it scores worse), so neither can make the model adequate. Change the "
-    "model's STRUCTURE, its FORM, rather than re-fitting the same one: consider a generic "
-    "structural move (categories, not a specific answer) — add a latent / unobserved state; add a "
-    "feedback / regulation reaction; or raise the interaction order (linear -> nonlinear / "
-    "higher-order) — and re-author it with make_changes."
+    "again (one that misses it scores worse), so neither can make the model adequate: that takes a "
+    "STRUCTURAL change to the model's FORM, not another fit of the same structure. Consider a "
+    "generic structural move (categories, not a specific answer) — add a latent / unobserved "
+    "state; add a feedback / regulation reaction; or raise the interaction order (linear -> "
+    "nonlinear / higher-order) — and re-author it with make_changes."
 )
 
 # Appended instead of the structural nudge when a stall happened without ever scoring a model.
