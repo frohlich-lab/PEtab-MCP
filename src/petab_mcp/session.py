@@ -19,7 +19,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from petab.v2.C import CONDITION_ID, ESTIMATE, EXPERIMENT_ID
+from petab.v2.C import CONDITION_ID, ESTIMATE, EXPERIMENT_ID, TARGET_ID
 from petab.v2.models.sbml_model import SbmlModel
 
 from . import criteria, logging_setup, protocols
@@ -52,18 +52,21 @@ from .provenance import ProvenanceStore
 from .references import EutilsReferenceResolver
 
 # Appended to an early-stop ``stop_reason`` only when the best model is NOT adequate (see
-# progress_report): a stall with an inadequate best is the signature of STRUCTURAL inadequacy —
-# the model's form, not the optimizer or the bounds. The nudge stays model-agnostic (issue #82):
-# it names generic structural MOVE CATEGORIES, never a specific mechanism, so it can't hand over
-# the answer to a problem whose model is withheld.
+# progress_report). The nudge stays model-agnostic (issue #82): it names generic structural MOVE
+# CATEGORIES, never a specific mechanism, so it can't hand over the answer to a problem whose model
+# is withheld. It claims only what a streak shows. It once called the stall "not an optimizer or
+# bounds problem", while dessauges 90 (gemot#134) ended on a streak made mostly of exactly
+# equivalent rewrites of its best structure that failed to find its optimum again: an optimizer
+# outcome, each. Either way, a refit or an equivalent rewrite cannot beat the optimum its structure
+# already has.
 _STRUCTURAL_PLATEAU_ADVICE = (
-    "The best model is still not adequate and the fit has plateaued: this is the signature of "
-    "STRUCTURAL inadequacy — the model's FORM cannot fit the data — not an optimizer or bounds "
-    "problem, so re-parameterizing or widening bounds will not help. Change the model's structure "
-    "rather than re-fitting the same one: consider a generic structural move (categories, not a "
-    "specific answer) — add a latent / unobserved state; add a feedback / regulation reaction; or "
-    "raise the interaction order (linear -> nonlinear / higher-order) — and re-author it with "
-    "make_changes."
+    "The best model is still not adequate, and none of these fits beat it. A refit or an "
+    "equivalent rewrite of a structure already fitted can at best find that structure's optimum "
+    "again (one that misses it scores worse), so neither can make the model adequate: that takes a "
+    "STRUCTURAL change to the model's FORM, not another fit of the same structure. Consider a "
+    "generic structural move (categories, not a specific answer) — add a latent / unobserved "
+    "state; add a feedback / regulation reaction; or raise the interaction order (linear -> "
+    "nonlinear / higher-order)."
 )
 
 # Appended instead of the structural nudge when a stall happened without ever scoring a model.
@@ -73,7 +76,7 @@ _UNSCORED_STALL_ADVICE = (
     "No fit in this session produced a usable score, so there is no best model to compare against: "
     "this is an EVALUATION failure, not evidence about the model's form. The likelihood is "
     "undefined when the simulation does not reach every measured timepoint — check "
-    "get_fit_summary's n_missing_simulations and the per-point records for unsimulated points, "
+    "n_missing_simulations and the per-point records for unsimulated points, "
     "and address why the trajectory stops (stiffness / a parameter pinned at a bound / an "
     "unbounded rate) before drawing any conclusion about the structure."
 )
@@ -118,6 +121,11 @@ _PROGRESS_ON_RESULT = (
 def _n_unique(df, column: str) -> int:
     """How many distinct ``column`` ids ``df`` names; 0 for an absent table."""
     return 0 if df is None or column not in df.columns else int(df[column].nunique())
+
+
+def _unique_ids(df, column: str) -> list[str]:
+    """The distinct ``column`` ids ``df`` names, in its order; none for an absent table."""
+    return [] if df is None or column not in df.columns else list(map(str, df[column].unique()))
 
 
 def _with_fitted_values(simulation: dict[str, Any] | None, parameter_df) -> dict[str, Any] | None:
@@ -380,6 +388,15 @@ class PetabSession:
         # the duration of such a call (see server.make_changes); everything else leaves it None
         # and the snapshot falls back to HEAD, which is correct for an edit of the working model.
         self.derived_from: int | None = None
+        # The `(old, new)` of each `rename` in the running `make_changes` call's `model_edits`
+        # (:func:`model_edits.renames`), set by the server for the call like `derived_from`: the
+        # reconcile carries each old id's row to its new id (`operations.set_model`), and the fit
+        # its warm-start coordinate (`fitting._run_fit`).
+        self.renamed: list[tuple[str, str]] = []
+
+        # Which `make_changes` routes the server offers: True for the text routes, whose
+        # `model_edits` take a merge hint as a `rename` (`identifiability.merge_hints`).
+        self.text_route: bool = True
 
         # De-duplication memory for identical fits (see :mod:`dedup` and issue #59): how many times
         # each *identical* estimation problem has been handed to `fit` this session, keyed by
@@ -864,6 +881,7 @@ class PetabSession:
             "readouts_to_define": [r for r, rule in R.readouts(p).items() if rule is None],
             "observables": [str(x) for x in getattr(p.observable_df, "index", [])],
             "n_conditions": _n_unique(p.condition_df, CONDITION_ID),
+            "condition_targets": _unique_ids(p.condition_df, TARGET_ID),
             "n_experiments": _n_unique(p.experiment_df, EXPERIMENT_ID),
             "n_measurements": 0 if p.measurement_df is None else int(len(p.measurement_df)),
             "n_reactions_detail": [sm.getReaction(i).getId() for i in range(sm.getNumReactions())],
@@ -1344,10 +1362,10 @@ class PetabSession:
         signal: the hard non-improving-streak cap, or a plateau (the best model shown adequate, by
         a check the reason names, AND the best score gained less than ``PLATEAU_MIN_SCORE_GAIN``
         over the last ``PLATEAU_WINDOW`` ops). When a
-        stop fires and the best model is **shown not adequate**, the stall is the signature of
-        STRUCTURAL inadequacy, so ``stop_reason`` also carries the issue-#82 nudge to change the
-        model's FORM rather than re-parameterize. An adequate stop is a success — it gets no such
-        nudge (the model fits; there is nothing structural to fix).
+        stop fires and the best model is **shown not adequate** (only the streak cap can, a plateau
+        needing an adequate best), ``stop_reason`` also carries the issue-#82 nudge to change the
+        model's FORM rather than refit or rewrite the same structure. An adequate stop is a success
+        — it gets no such nudge (the model fits; there is nothing structural to fix).
 
         A model whose noise sigmas are ESTIMATED is never shown adequate, so only the streak cap
         ends its session: a fitted sigma absorbs a misfit inside the data-std band without a
@@ -1649,7 +1667,9 @@ class PetabSession:
                 block = identifiability.fit_diagnosis_block(self)
                 if block:
                     fitsim[identifiability.STORED_DIAGNOSIS_KEY] = block
-                fitsim["merge_hints"] = identifiability.merge_hints((block or {}).get("diagnosis"))
+                fitsim["merge_hints"] = identifiability.merge_hints(
+                    (block or {}).get("diagnosis"), rename=self.text_route
+                )
             # Noise-sigma report + flags computed ONCE here and stashed on fitsim, so this event,
             # the checkpoint update in record_fit_progress (below) and the returned fit block all
             # read the SAME verdict instead of recomputing (or disagreeing).
@@ -1910,7 +1930,7 @@ class PetabSession:
                     f"restore_version: version {version} breaks the session's constraints "
                     + ", ".join(f"`{c.id}` ({c.text})" for c in broken)
                     + ", given after it was committed; restore a version that makes them, or "
-                    "build one with `make_changes`.",
+                    "build one.",
                     cause="constraint_violated",
                 )
         return self.rollback_to(version, justification)
