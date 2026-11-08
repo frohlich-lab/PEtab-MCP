@@ -10,7 +10,8 @@ description: >-
 
 ## Scores
 
-- `neg_log_likelihood`, `chi2`, `n_data_points`.
+- `neg_log_likelihood`, `chi2`, `n_data_points`. The chi2 test passes at α = 0.1 at this `k`
+  where `chi2` ≤ `chi2_pass_max`.
 - `bic`, `aic`, `aicc`, `caic`, `hqc`, `tic` are `2·nll + penalty`, lower is better, each at its
   textbook weight. `criterion` names the one models are ranked by, `criterion_value` is its value.
 - `k` = `n_estimated` (estimated parameter rows) + `hardcoded_constants` (the numeric literals in
@@ -102,5 +103,3 @@ GROUP BY observable_id ORDER BY chi2 DESC
 ```
 
 DuckDB is not SQLite or pandas: check that a function exists before leaning on it.
-`optimization_starts` holds one row per start (`start` 0 is the best), `optimization_trace` the
-objective per start and iteration.

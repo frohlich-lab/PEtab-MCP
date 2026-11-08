@@ -15,6 +15,8 @@ loop produces is queryable in one place:
 * ``simulations_history`` — those same per-point rows for EVERY stored version, with a
   ``version`` column, so model versions can be compared point-by-point in one query
   (assembled lazily from the version store; see :func:`_simulation_history_frame`);
+* ``state_trajectories`` — the last commit's species and assignment rules at the measurement
+  times (see :meth:`engine.AmiciEngine._state_trajectories`), one row per value;
 * the last fit's pyPESTO multistart — ``optimization_starts`` (one row per start) and
   ``optimization_trace`` (one row per start/iteration, the objective over the run).
 
@@ -102,6 +104,9 @@ SIMULATION_COLUMNS = [
 # version each row belongs to. Same stable-schema rationale as SIMULATION_COLUMNS.
 SIMULATION_HISTORY_COLUMNS = ["version", *SIMULATION_COLUMNS]
 
+#: The ``state_trajectories`` table: long, so its schema does not depend on the model's ids.
+STATE_TRAJECTORY_COLUMNS = ["experiment_id", "time", "entity_id", "value"]
+
 #: Rows discarded per fetch when skipping to a page ``offset``. Bounds the peak allocation of
 #: the skip itself, which would otherwise be O(offset) in one go.
 _OFFSET_SKIP_CHUNK = 1000
@@ -156,6 +161,11 @@ TABLE_DESCRIPTIONS: dict[str, str] = {
         "residuals across model versions in one query (e.g. pivot residual_weighted on "
         "version to see per-point where v4 got worse than v3). A version whose fit failed "
         "stores no simulation and contributes no rows."
+    ),
+    "state_trajectories": (
+        "Every species and assignment rule of the last commit's model (entity_id) at each time its "
+        "experiment was measured, in model units: one row per value. AMICI simulates no other "
+        "times. Empty until the first fit."
     ),
     "optimization_starts": (
         "pyPESTO multistart results from the last fit: one row per start (start=0 is best) "
@@ -246,6 +256,25 @@ def _frames(session) -> dict[str, Any]:
     return frames
 
 
+def _state_trajectories(session) -> dict[str, Any]:
+    """The stored ``{"ids", "points", "values"}`` of the last commit, ``{}`` where it has none."""
+    return (session.simulation or {}).get("state_trajectories") or {}
+
+
+def _state_trajectory_frame(session):
+    """The ``state_trajectories`` table: one row per (point, id) of :func:`_state_trajectories`.
+    Built only for a query that names it, like ``simulations_history``: it is ids × points rows."""
+    import pandas as pd
+
+    traj = _state_trajectories(session)
+    rows = [
+        (eid, t, entity, value)
+        for (eid, t), values in zip(traj.get("points") or [], traj.get("values") or [])
+        for entity, value in zip(traj.get("ids") or [], values)
+    ]
+    return pd.DataFrame(rows, columns=STATE_TRAJECTORY_COLUMNS)
+
+
 def _simulation_history_frame(session):
     """One row per (stored version, measurement point): the ``simulations_history`` table.
 
@@ -329,10 +358,11 @@ def query_references(sql: Any, table: str) -> bool:
     """Does ``sql`` name ``table``? A word-boundary scan of the raw query text.
 
     Two callers gate expensive work on this: the server skips generating the HEAD simulation
-    dataframe (an AMICI build+simulate — minutes on a cold session) when a query does not read
-    ``simulations``, and :func:`run_query` skips assembling ``simulations_history`` when a
-    query does not read it. ``\\b`` does not match between ``simulations`` and ``_`` (both word
-    characters), so the two names do not alias each other.
+    dataframe (an AMICI build+simulate — minutes on a cold session) when a query reads neither
+    ``simulations`` nor ``state_trajectories``, and :func:`run_query` skips assembling
+    ``simulations_history`` or ``state_trajectories`` when a query does not read it. ``\\b`` does
+    not match between ``simulations`` and ``_`` (both word characters), so the two names do not
+    alias each other.
 
     Deliberately a text scan, with the failure modes stated: a false positive (the bare name
     inside a comment or a string literal) costs one unnecessary build, and a name reached only
@@ -346,9 +376,10 @@ def query_references(sql: Any, table: str) -> bool:
     return bool(re.search(rf"\b{re.escape(table)}\b", sql, re.IGNORECASE))
 
 
-def query_references_head_simulations(sql: Any) -> bool:
-    """Does ``sql`` read the HEAD ``simulations`` table (as opposed to only the history)?"""
-    return query_references(sql, "simulations")
+def query_reads_head_simulation(sql: Any) -> bool:
+    """Does ``sql`` read a table of the HEAD simulation, ``simulations`` or
+    ``state_trajectories`` (as opposed to only the history)?"""
+    return query_references(sql, "simulations") or query_references(sql, "state_trajectories")
 
 
 def validate_page_args(max_rows: Any, offset: Any = 0) -> "tuple[int, int]":
@@ -432,6 +463,15 @@ def table_schema(session) -> dict[str, Any]:
             "n_rows": n_history,
         }
     )
+    traj = _state_trajectories(session)
+    tables.append(
+        {
+            "table": "state_trajectories",
+            "description": TABLE_DESCRIPTIONS["state_trajectories"],
+            "columns": list(STATE_TRAJECTORY_COLUMNS),
+            "n_rows": len(traj.get("ids") or []) * len(traj.get("points") or []),
+        }
+    )
     return {"tables": tables}
 
 
@@ -440,8 +480,8 @@ def run_query(session, sql: str, max_rows: int = 1000, offset: int = 0) -> dict[
 
     Copies the queryable tables (``measurements``, ``conditions``, ``experiments``, ``observables``,
     ``parameters``, ``simulations``, ``optimization_starts``, ``optimization_trace`` — plus
-    ``simulations_history``, materialized only when the query names it) into a
-    fresh in-memory DuckDB database, executes ``sql``, and returns
+    ``simulations_history`` and ``state_trajectories``, each materialized only when the query
+    names it) into a fresh in-memory DuckDB database, executes ``sql``, and returns
     ``{columns, rows, row_count, truncated}`` with at most ``max_rows`` records (one extra
     row is fetched to set ``truncated``). Because the tables are a disposable copy, the query
     may use any SQL it likes without affecting the session; a SQL error is surfaced as a
@@ -466,6 +506,8 @@ def run_query(session, sql: str, max_rows: int = 1000, offset: int = 0) -> dict[
                 f"Could not read the version store for `simulations_history` ({exc}). The other "
                 "tables are unaffected — query `simulations` for the current model's residuals."
             ) from exc
+    if query_references(sql, "state_trajectories"):
+        frames["state_trajectories"] = _state_trajectory_frame(session)
 
     con = duckdb.connect()
     try:
@@ -542,10 +584,11 @@ def version_part_summary(part: str, blob: dict[str, Any], version: int) -> dict[
     """Version ``version``'s stored ``part`` (:data:`provenance.VERSION_PARTS`) without its rows,
     for a ``get_version`` reply the rows would make too large to send.
 
-    ``simulation`` keeps everything but ``records`` (the scores, ``k_eff``, the noise report and the
-    parameter diagnosis a client's judge reads) and adds ``chi2_by_observable``; ``optimization``
-    keeps everything but ``starts`` and ``trace`` and adds ``fvals``, each start's objective, best
-    first. ``omitted`` says what was dropped and where its rows are.
+    ``simulation`` keeps everything but ``records`` and ``state_trajectories`` (the scores,
+    ``k_eff``, the noise report and the parameter diagnosis a client's judge reads) and adds
+    ``chi2_by_observable``; ``optimization`` keeps everything but ``starts`` and ``trace`` and adds
+    ``fvals``, each start's objective, best first. ``omitted`` says what was dropped and where its
+    rows are.
     """
     if part == "simulation":
         records = blob.get("records") or []
@@ -558,10 +601,11 @@ def version_part_summary(part: str, blob: dict[str, Any], version: int) -> dict[
                 entry["chi2"] += rw * rw
         for entry in by_observable.values():
             entry["chi2"] = round(entry["chi2"], 3)
-        return {k: v for k, v in blob.items() if k != "records"} | {
+        return {k: v for k, v in blob.items() if k not in ("records", "state_trajectories")} | {
             "chi2_by_observable": by_observable,
-            "omitted": f"its {len(records)} records, more than one reply carries: query_data on "
-            f"simulations_history WHERE version = {version}",
+            "omitted": f"its {len(records)} records and state trajectories, more than one reply "
+            f"carries: query_data on simulations_history WHERE version = {version}, and on "
+            "state_trajectories for the head version",
         }
     starts = blob.get("starts") or []
     return {k: v for k, v in blob.items() if k not in ("starts", "trace")} | {
@@ -761,6 +805,15 @@ def fit_diagnosis(
     if signals["fitted_over_data_noise"]:
         noise_sigma["fitted_over_data_noise"] = signals["fitted_over_data_noise"][:_SIGNALS_KEEP]
     caveat = structure_tests_caveat(session.problem)
+    from . import fitting
+
+    sim = session.simulation or {}
+    pass_max = fitting.goodness_of_fit(
+        sim.get("neg_log_likelihood"),
+        sim.get("chi2"),
+        fitting.complexity_k(sim),
+        sim.get("n_data_points"),
+    )["chi2_pass_max"]
     total_chi2 = float((d["_rw"] * d["_rw"]).sum())
     chi2_note = math.isclose(total_chi2, len(d), rel_tol=1e-3) and _sigma_solved_everywhere(
         session.problem, d
@@ -769,6 +822,7 @@ def fit_diagnosis(
     return {
         "n_points": int(len(d)),
         "total_chi2": round(total_chi2, 3),
+        **({"chi2_pass_max": pass_max} if pass_max is not None else {}),
         **({"total_chi2_note": _CHI2_BY_CONSTRUCTION} if chi2_note else {}),
         "per_observable": per_observable,  # bounded: worst-12 by chi2 + all flagged rows
         **({"omitted": omitted_note} if omitted_note else {}),

@@ -98,6 +98,75 @@ def test_residuals_summary_matches_chi2(engine):
     assert nllh == pytest.approx(data["neg_log_likelihood"], rel=1e-6)
 
 
+@pytest.fixture
+def readout_engine(tmp_path, amici_build_root):
+    """An engine on the toy with armistead's noise shape (#289): an assignment rule
+    ``readout_B := B`` that the noise formula ``sigma_B * (1 + readout_B)`` names, so petab cannot
+    evaluate it, and every point measured twice."""
+    from petab_mcp.engine import AmiciEngine
+    from petab_mcp.references import StubReferenceResolver
+    from petab_mcp.session import PetabSession
+
+    work = tmp_path / "readout"
+    shutil.copytree(Path(__file__).parent / "data" / "toy_v2", work)
+    model = work / "model.ant"
+    model.write_text(model.read_text().replace("\nend", "\n  readout_B := B;\nend"))
+    (work / "observables.tsv").write_text(
+        "observableId\tobservableFormula\tnoiseFormula\nobs_B\tB\tsigma_B * (1 + readout_B)\n"
+    )
+    meas = pd.read_csv(work / "measurements.tsv", sep="\t", keep_default_na=False)
+    pd.concat([meas, meas.assign(measurement=meas["measurement"] + 0.05)]).to_csv(
+        work / "measurements.tsv", sep="\t", index=False
+    )
+    session = PetabSession(
+        str(work / "problem.yaml"),
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+    )
+    return AmiciEngine(session, build_root=str(amici_build_root))
+
+
+def test_a_noise_formula_naming_a_model_entity_still_weights_residuals(readout_engine):
+    """armistead's `sd*readout_X` (#289): petab cannot evaluate a noise formula that names a model
+    entity, which left every weighted residual None and the residual tests unrun. AMICI's sigmay is
+    the noise its likelihood used: the Gaussian identity ties the records back to its nll."""
+    import math
+
+    import numpy as np
+
+    data = readout_engine.residuals()
+    recs = data["records"]
+    assert len(recs) == 12 and all(r["residual_weighted"] is not None for r in recs)
+    for r in recs:
+        assert r["noise"] == pytest.approx(0.1 * (1 + r["simulation"]))
+        assert r["residual_weighted"] == pytest.approx(r["residual"] / r["noise"])
+    noise = np.array([r["noise"] for r in recs])
+    nllh = 0.5 * (data["chi2"] + float(np.sum(np.log(2 * math.pi * noise**2))))
+    assert nllh == pytest.approx(data["neg_log_likelihood"], rel=1e-6)
+
+
+def test_state_trajectories_hold_species_and_assignment_rules(readout_engine):
+    """#289: the species and assignment rules a fit simulated, at the measured times (each once,
+    however many replicates), queryable after a fit like the readouts."""
+    from petab_mcp import data_access
+    from petab_mcp import fitting as F
+
+    session = readout_engine.session
+    payload = F.fit_and_simulate(session, readout_engine, do_fit=False, n_starts=0)
+    traj = payload["state_trajectories"]
+    assert traj["ids"] == ["A", "B", "readout_B"]
+    assert traj["points"] == [["", t] for t in (0.0, 1.0, 2.0, 4.0, 6.0, 10.0)]
+    simulated_b = {r["time"]: r["simulation"] for r in payload["records"]}
+    for (_, t), (a, b, readout) in zip(traj["points"], traj["values"]):
+        assert b == pytest.approx(simulated_b[t]) and readout == pytest.approx(b)
+        assert a + b == pytest.approx(1.0)  # A <=> B conserves A_init + B_init
+    out = data_access.run_query(
+        session,
+        "SELECT time, value FROM state_trajectories WHERE entity_id = 'readout_B' ORDER BY time",
+    )
+    assert [r["value"] for r in out["rows"]] == pytest.approx([v[2] for v in traj["values"]])
+
+
 def test_parameter_change_no_recompile(engine, session):
     from petab_mcp import parameters as P
 

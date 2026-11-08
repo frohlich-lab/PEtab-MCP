@@ -2203,14 +2203,16 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         `experiments(experimentId, time, conditionId)`, `observables(observableId, ...)`,
         `parameters(parameterId, ...)`. The DERIVED tables use snake_case:
         `simulations(observable_id, experiment_id, time, ...)`, `simulations_history` (the same
-        plus `version`), and `optimization_starts` / `optimization_trace`. The measurement
-        table's key column is `experimentId` — NOT `experiment_id` (that is `simulations`); an
-        empty `experimentId` ('') is a measurement of the model simulated as is. Do not carry a
-        column list from a `simulations` query onto `measurements`, or the reverse.
+        plus `version`), `state_trajectories(experiment_id, time, entity_id, value)`, and
+        `optimization_starts` / `optimization_trace`. The measurement table's key column is
+        `experimentId` — NOT `experiment_id` (that is `simulations`); an empty `experimentId`
+        ('') is a measurement of the model simulated as is. Do not carry a column list from a
+        `simulations` query onto `measurements`, or the reverse.
 
         `simulations` has one row per point of the last fit: `measurement`, `simulation`,
         `residual`, `residual_weighted`, `noise`, and the row's `noise_parameters` — residuals
-        live there, not on `measurements`.
+        live there, not on `measurements`. `state_trajectories` has the last fit's hidden states:
+        each species and assignment rule (`entity_id`) at the times its experiment was measured.
         `simulations_history` is the only way to compare versions point by point, e.g.
         `SELECT observable_id, experiment_id, time,
         max(CASE WHEN version=3 THEN residual_weighted END) AS v3,
@@ -2237,12 +2239,12 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
             # Populate the stored simulation dataframe on demand so `simulations` is
             # queryable (a no-op once a commit has produced one). A simulation failure must
             # not block querying the static tables, so fall through with an empty table.
-            # Generate the HEAD simulation dataframe only when the query actually reads the
-            # `simulations` table: current_simulation() is an AMICI build+simulate — minutes
-            # of C++ compile on a cold/resumed session — and a query over the static tables or
-            # over `simulations_history` (assembled from per-version files on disk, no
-            # simulation involved) must not pay it.
-            if data_mod.query_references_head_simulations(sql) and (
+            # Generate the HEAD simulation dataframe only when the query actually reads
+            # `simulations` or `state_trajectories`: current_simulation() is an AMICI
+            # build+simulate — minutes of C++ compile on a cold/resumed session — and a query
+            # over the static tables or over `simulations_history` (assembled from per-version
+            # files on disk, no simulation involved) must not pay it.
+            if data_mod.query_reads_head_simulation(sql) and (
                 session.simulation is None or not session.simulation.get("records")
             ):
                 try:
