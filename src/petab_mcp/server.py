@@ -831,6 +831,12 @@ class _Ctx:
                     staged_edits=[edit_result["staged_edit"]]
                     if edit_result.get("staged_edit")
                     else None,
+                    # Before `bundle_result` folds the repeated ones into a count.
+                    edit_warnings=[
+                        m
+                        for m in edit_result.get("messages") or []
+                        if m.get("level") == msg_mod.LEVEL_WARNING
+                    ],
                 ),
                 {"n_starts": n_starts},
             )
@@ -2477,8 +2483,10 @@ _REPLY_MAX_BYTES = 768 * 1024
 #: ``simulations_history`` already pages a version's records in SQL, and a second pager over the
 #: same rows is the growing menu the README's design notes rule out.
 _GET_VERSION_DOC = (
-    "A prior version's record (every score, the new-best bookkeeping, the noise model's report), "
-    "Antimony model and parameter table, to INSPECT it; for its model alone, "
+    "A prior version's record (every score, the new-best bookkeeping, the noise model's report, "
+    "and `edit_warnings`: every warning its change and lint gave, in full, where its "
+    "`make_changes` result folded a repeated one into a count), Antimony model and parameter "
+    "table, to INSPECT it; for its model alone, "
     "`get_model(version=N)`. `include` adds what its fit stored beside it: 'simulation' (one "
     "record per data point) and 'optimization' (every start with its trace). A reply is at most "
     f"{_REPLY_MAX_BYTES // 1024} KiB, under the 1 MiB the MCP Python client takes in one message: "

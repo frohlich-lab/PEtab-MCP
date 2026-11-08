@@ -1567,6 +1567,7 @@ class PetabSession:
         n_starts: int | None = None,
         justification: str | None = None,
         staged_edits: "list[dict[str, Any]] | None" = None,
+        edit_warnings: "list[dict[str, str]] | None" = None,
     ) -> dict[str, Any]:
         """Fit the current working model, snapshot a version, and score it.
 
@@ -1583,6 +1584,13 @@ class PetabSession:
         which ``get_version`` returns verbatim to the agent — a staged edit carries the whole
         Antimony string, and shipping every version's copy of it into the context each turn cost
         far more than the label was worth.
+
+        ``edit_warnings`` are the warnings that change and its lint gave, as message-stack entries
+        (:mod:`messages`). They ARE written to the version meta, whole: the result folds a warning
+        the last committed result carried into a count (``operations._unrepeated``), so the meta
+        is the one place a version's warnings can still be read in full. The gemot harness reads
+        them there when its lead finishes, and its finish gate shows them again. bachmann 77's best
+        model kept a dead `pSTAT5n` its results had folded since v7 (PEtab-MCP#286).
 
         The result also carries the two verdicts this method computes anyway for the version meta
         and the checkpoint: ``residual_structure`` (the compact residual-structure verdict — the
@@ -1794,6 +1802,7 @@ class PetabSession:
                     "noise_sigma_report": _nsr,
                     "noise_sigma_inflated": noise_sigma_inflated(_nsr),
                     "noise_sigma_collapsed": noise_sigma_collapsed(_nsr),
+                    "edit_warnings": list(edit_warnings or []),
                     **improvement,
                 },
                 sim=fitsim,
