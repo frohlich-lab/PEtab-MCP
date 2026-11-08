@@ -1104,9 +1104,11 @@ k*u*X1'}`, `{op: 'remove_reaction', id}`, `{op: 'set_rate_law', id, antimony: 'k
 `{op: 'set_initial', id, antimony: '5'}`, `{op: 'set_assignment', id, antimony: 'X2 + X3'}` (an \
 `id := expr` rule holding at ALL times — how a `readout_*` symbol an observable formula \
 references is defined in terms of YOUR states), `{op: 'remove_assignment', id}`, `{op: 'rename', \
-old, new}`. Nothing to quote; they apply in order, all or nothing, and a bad id is rejected with \
-the valid ids listed. Put the WHOLE change in ONE call: one call is one fit. What they cannot \
-express (an event, a compartment) is a re-author with `antimony`.
+old, new}` (onto an existing parameter it MERGES the two in one op, keeping `new`: a \
+`merge_hints` row's `take`). Nothing to quote; they \
+apply in order, all or nothing, and a bad id is rejected with the valid ids listed. Put the WHOLE \
+change in ONE call: one call is one fit. What they cannot express (an event, a compartment) is a \
+re-author with `antimony`.
 
 With `base_version=N` the operations apply to version N's STORED model, and its search space and \
 best fit are restored as the fit's start: fork and change in one call, never retyping an earlier \
@@ -1800,7 +1802,17 @@ def _register_model_tools(
                             base_src = session.provenance.get_model_antimony(int(base_version))
                     else:
                         base_src = session.model_source or model_mod.get_model(session, "antimony")
-                    antimony, op_summary = model_edits_mod.apply_model_edits(base_src, ops)
+                    fixed = (
+                        reconcile_mod.fixed_table_parameters(session.problem)
+                        if any(
+                            isinstance(o, dict) and o.get("op") in ("rename", "set_assignment")
+                            for o in ops
+                        )
+                        else None
+                    )
+                    antimony, op_summary = model_edits_mod.apply_model_edits(
+                        base_src, ops, fixed=fixed
+                    )
                     # Read INSIDE the guard, next to the source read above: a version dir whose
                     # parameters.tsv is truncated raises EmptyDataError and the legacy json path
                     # raises FileNotFoundError, and evaluating this as a bare call argument let
@@ -2855,6 +2867,7 @@ def _open_ctx(
     session.auto_fit_starts = auto_fit_starts
     if entities is not None:
         session.entities = entities
+    session.text_route = entity_map is None
     if loaded is not None:
         session.constraints = loaded
         session.constraint_updates = constraint_updates

@@ -1082,6 +1082,52 @@ def classify_inner_parameters(problem) -> dict[str, str]:
     return out
 
 
+#: Key of :func:`fixed_table_parameters` for a row the model's math reads too.
+READ_BY_TABLES_TOO = "tables_read_it_too"
+
+#: How the fixed tables name a parameter (:func:`fixed_table_parameters`), by key. The merge
+#: pricer counts the pairs it skips under the key; a refused ``rename`` or ``set_assignment``
+#: (:mod:`model_edits`) gives the text after the parameter's id.
+FIXED_TABLE_REASONS = {
+    "solved_analytically": "is a noise sigma the fit solves analytically from the residuals it "
+    "covers; the model does not read it",
+    "measurement_tables_only": "is named only by the observable and measurement tables, which "
+    "are fixed; the model does not read it",
+    "condition_table_only": "is named only by the condition table, which is fixed; the model "
+    "does not read it",
+    READ_BY_TABLES_TOO: "is read by the fixed observable, measurement or condition tables as well "
+    "as the model, and they keep its name",
+}
+
+
+def fixed_table_parameters(problem) -> dict[str, str]:
+    """``{parameter_id: key of FIXED_TABLE_REASONS}`` for each parameter-table row the fixed tables
+    name: the ties no model edit can make (PEtab-MCP#283). A row the model's math does not read is
+    in no model text to rename, and a rule defining it takes the row the measurement table's
+    overrides need: ``solved_analytically`` for a noise sigma :func:`classify_inner_parameters`
+    solves (as the bound refusal on it says), else which table names it. A row the model reads
+    too (a total that also normalises an observable) is :data:`READ_BY_TABLES_TOO`: a tie keeps it
+    and renames the other onto it, since renamed away the tables would still read the old name."""
+    math = _model_math_names(problem.model.sbml_model)
+    observation = observation_model_symbols(problem)
+    tables = table_referenced_symbols(problem)
+    inner = classify_inner_parameters(problem)
+    out: dict[str, str] = {}
+    for raw in problem.parameter_df.index:
+        pid = str(raw)
+        if pid not in tables:
+            continue
+        if pid in math:
+            out[pid] = READ_BY_TABLES_TOO
+        elif inner.get(pid) == INNER_TYPE_SIGMA:
+            out[pid] = "solved_analytically"
+        elif pid in observation:
+            out[pid] = "measurement_tables_only"
+        else:
+            out[pid] = "condition_table_only"
+    return out
+
+
 def _measurement_rows_for_sigma(problem, pid: str, frame=None):
     """Measurement rows whose noise is modelled by sigma parameter ``pid`` — matched via a
     direct ``noiseParameters`` override, or (for a sigma named directly in the fixed

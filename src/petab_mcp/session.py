@@ -380,6 +380,9 @@ class PetabSession:
         # the duration of such a call (see server.make_changes); everything else leaves it None
         # and the snapshot falls back to HEAD, which is correct for an edit of the working model.
         self.derived_from: int | None = None
+        # Which `make_changes` routes the server offers: True for the text routes, whose
+        # `model_edits` take a merge hint as a `rename` (`identifiability.merge_hints`).
+        self.text_route: bool = True
 
         # De-duplication memory for identical fits (see :mod:`dedup` and issue #59): how many times
         # each *identical* estimation problem has been handed to `fit` this session, keyed by
@@ -1642,7 +1645,9 @@ class PetabSession:
                 block = identifiability.fit_diagnosis_block(self)
                 if block:
                     fitsim[identifiability.STORED_DIAGNOSIS_KEY] = block
-                fitsim["merge_hints"] = identifiability.merge_hints((block or {}).get("diagnosis"))
+                fitsim["merge_hints"] = identifiability.merge_hints(
+                    (block or {}).get("diagnosis"), rename=self.text_route
+                )
             # Noise-sigma report + flags computed ONCE here and stashed on fitsim, so this event,
             # the checkpoint update in record_fit_progress (below) and the returned fit block all
             # read the SAME verdict instead of recomputing (or disagreeing).
