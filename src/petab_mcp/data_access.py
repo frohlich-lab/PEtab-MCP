@@ -805,15 +805,6 @@ def fit_diagnosis(
     if signals["fitted_over_data_noise"]:
         noise_sigma["fitted_over_data_noise"] = signals["fitted_over_data_noise"][:_SIGNALS_KEEP]
     caveat = structure_tests_caveat(session.problem)
-    from . import fitting
-
-    sim = session.simulation or {}
-    pass_max = fitting.goodness_of_fit(
-        sim.get("neg_log_likelihood"),
-        sim.get("chi2"),
-        fitting.complexity_k(sim),
-        sim.get("n_data_points"),
-    )["chi2_pass_max"]
     total_chi2 = float((d["_rw"] * d["_rw"]).sum())
     chi2_note = math.isclose(total_chi2, len(d), rel_tol=1e-3) and _sigma_solved_everywhere(
         session.problem, d
@@ -822,7 +813,6 @@ def fit_diagnosis(
     return {
         "n_points": int(len(d)),
         "total_chi2": round(total_chi2, 3),
-        **({"chi2_pass_max": pass_max} if pass_max is not None else {}),
         **({"total_chi2_note": _CHI2_BY_CONSTRUCTION} if chi2_note else {}),
         "per_observable": per_observable,  # bounded: worst-12 by chi2 + all flagged rows
         **({"omitted": omitted_note} if omitted_note else {}),

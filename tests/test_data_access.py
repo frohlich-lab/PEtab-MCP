@@ -446,31 +446,6 @@ def test_state_trajectories_are_kept_with_a_version_and_left_out_of_its_summary(
     assert "state_trajectories" not in summary and "records" not in summary
 
 
-def test_fit_diagnosis_names_the_chi2_a_pass_needs(session):
-    """#289: the diagnosis names the chi2 a pass at the gate's level needs at the fit's k, the
-    number the fit result carries, also for a stored version's fit."""
-    from petab_mcp import fitting
-
-    payload = {
-        "records": SIM_RECORDS,
-        "neg_log_likelihood": 1.0,
-        "chi2": 5.0,
-        "n_data_points": 4,
-        "n_estimated": 1,
-        "hardcoded_constants": [],
-    }
-    expected = fitting.fit_result_block(payload)["chi2_pass_max"]
-    assert expected == fitting.goodness_of_fit(1.0, 5.0, 1, 4)["chi2_pass_max"] == 6.25
-    session.simulation = payload
-    assert data_access.fit_diagnosis(session)["chi2_pass_max"] == expected
-    v = session.provenance.snapshot_version(
-        model_ant="// test model",
-        parameters=session.problem.parameter_df,
-        simulation=fitting.build_sim_payload_for_version(payload),
-    )
-    assert data_access.fit_diagnosis(session.stored_fit(v))["chi2_pass_max"] == expected
-
-
 def test_fit_diagnosis_flags_systematic_bias(session):
     """A one-sided residual series must be flagged by the sign test through fit_diagnosis."""
     session.simulation = {

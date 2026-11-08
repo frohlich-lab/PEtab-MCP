@@ -40,7 +40,6 @@ from . import criteria
 from . import literals as _literals
 from . import reconcile as _reconcile
 from .constants import (
-    ADEQUATE_GOF_PVALUE,
     NOISE_SIGMA_MIN_POINTS,
     NEW_BEST_MIN_DELTA_SCORE,
     NOISE_SIGMA_COLLAPSE_FRACTION,
@@ -2446,19 +2445,15 @@ def goodness_of_fit(
       freedom. Both are only meaningful with a KNOWN noise level: when the observable noise
       sigmas are ESTIMATED, chi2 pins near ``n`` by construction, so reduced_chi2 ≈ 1 and the
       p-value are uninformative — rank models by ``criterion_value``, not by these.
-    * ``chi2_pass_max`` is the largest chi2 whose ``chi2_gof_pvalue`` reaches
-      ``ADEQUATE_GOF_PVALUE`` at this ``k``: the plateau gate's adequacy level, and gemot's chi2
-      bar, which counts ``k`` and the degrees of freedom the same way. Floored to 2 decimals, so a
-      chi2 at or under it passes.
 
     ``k`` is the complexity count — :func:`complexity_k`: the estimated parameters plus the
     model's hardcoded constants — ``n`` the number of data points, ``k_eff`` the fit's effective
     count (``None`` when the fit did not produce one). The criterion scores are ``None`` when
     ``nll``/``k``/``n`` are missing, and each is additionally ``None`` where that criterion is
     undefined (``aicc`` at ``n <= k+1``, ``hqc`` below ``n = 3``, ``tic`` without a ``k_eff``).
-    The chi2-based fields (``chi2_dof``, ``reduced_chi2``, ``chi2_gof_pvalue``,
-    ``chi2_pass_max``) are ``None`` when the degrees of freedom ``n - k`` are non-positive (an
-    under-determined fit), and all but ``chi2_dof`` and ``chi2_pass_max`` when ``chi2`` is missing.
+    The chi2-based fields (``chi2_dof``, ``reduced_chi2``, ``chi2_gof_pvalue``) are ``None`` when
+    the degrees of freedom ``n - k`` are non-positive (an under-determined fit) or ``chi2`` is
+    missing.
     """
     crit = criterion or criteria.Criterion()
     k_eff = _flt(k_eff)
@@ -2469,7 +2464,6 @@ def goodness_of_fit(
         "chi2_dof": None,
         "reduced_chi2": None,
         "chi2_gof_pvalue": None,
-        "chi2_pass_max": None,
     }
     # Non-finite inputs are MISSING scores, not scores. A NaN nll would otherwise produce
     # a score of k*ln(n) + 2*NaN = NaN, which is a float and passes every `is not None` guard
@@ -2484,13 +2478,15 @@ def goodness_of_fit(
     out.update(crit.values(nll, k, n, k_eff))
     dof = n - k
     if dof > 0:
-        from scipy.stats import chi2 as _chi2_dist
-
         out["chi2_dof"] = dof
-        out["chi2_pass_max"] = math.floor(_chi2_dist.isf(ADEQUATE_GOF_PVALUE, dof) * 100) / 100
         if chi2 is not None:
             out["reduced_chi2"] = chi2 / dof
-            out["chi2_gof_pvalue"] = float(_chi2_dist.sf(chi2, dof))
+            try:
+                from scipy.stats import chi2 as _chi2_dist
+
+                out["chi2_gof_pvalue"] = float(_chi2_dist.sf(chi2, dof))
+            except Exception:  # pragma: no cover - scipy always present via pypesto
+                pass
     return out
 
 
@@ -2690,10 +2686,6 @@ def build_sim_payload_for_version(payload: dict[str, Any] | None) -> dict[str, A
         # is a statistic of the built objective at the optimum, which a later process (a resume, a
         # restore) cannot reproduce without a build. This blob is where a client's scoring reads it.
         "k_eff": payload.get("k_eff"),
-        # The two addends of the `k` the fit was scored at (`complexity_k`), so a stored or
-        # restored fit's diagnosis names the chi2 a pass needs at that k.
-        "n_estimated": payload.get("n_estimated"),
-        "hardcoded_constants": payload.get("hardcoded_constants"),
         "records": payload.get("records"),
         "state_trajectories": payload.get("state_trajectories"),
     }

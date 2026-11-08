@@ -677,28 +677,6 @@ def test_fixed_sigma_overfit_is_not_adequate(session):
     assert p["should_stop"] is False  # ...but the two-sided gate blocks the stop
 
 
-@pytest.mark.parametrize("over, adequate", [(0.0, True), (0.02, False)])
-def test_chi2_pass_max_is_where_the_plateau_gate_turns_adequate(session, over, adequate):
-    """#289: a fit result names the chi2 a pass needs at its k. A fixed-sigma best model at that
-    chi2 plateau-stops as adequate and one 0.02 above it does not, and gemot's judge, which takes
-    p = sf(chi2, n - k) at the same level, splits them the same way."""
-    from scipy.stats import chi2 as chi2_dist
-
-    bar = fitting.fit_result_block(_fitsim_fixed_sigma(18.0))["chi2_pass_max"]
-    fs = _fitsim_fixed_sigma(bar + over)
-    session.record_fit_progress(1, fs, {"is_new_best": True})
-    for v in range(2, 2 + PLATEAU_WINDOW):
-        session.record_fit_progress(v, fs, {"is_new_best": False})
-    assert session.progress_report()["should_stop"] is adequate
-    assert bool(chi2_dist.sf(bar + over, 20 - 2) >= ADEQUATE_GOF_PVALUE) is adequate
-
-
-def test_chi2_pass_max_counts_shipped_scales_in_k():
-    """fontaine 97 (#289): k ~ 121 with 88 shipped scales and offsets left ~520 degrees of
-    freedom, so a pass needed chi2 <= ~561, which the markers "at their floors" (~640) missed."""
-    assert 561 < fitting.goodness_of_fit(0.0, 640.0, 121, 641)["chi2_pass_max"] < 562
-
-
 def test_fixed_sigma_well_calibrated_fit_is_still_adequate(session):
     """No regression: chi2 near its dof stays adequate and plateau-stops as before."""
     fs = _fitsim_fixed_sigma(18.0)  # chi2 ~ dof = 18 -> p comfortably mid-range
