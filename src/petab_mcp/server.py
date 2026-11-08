@@ -2627,10 +2627,10 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         estimated sigmas only the streak cap stops.
         There is no cap on the TOTAL number of fits: a session that keeps genuinely improving keeps
         going, and only a stall stops it.
-        A plateaued `stop_reason` also carries the structural-inadequacy nudge: when the score
-        stops moving and the best model is shown not adequate, the misfit is the model's FORM — the
-        next model must change the structure (add a latent state, add a feedback reaction, raise
-        interaction order), not re-fit or widen the same one.
+        A streak-cap `stop_reason` whose best model is shown not adequate also carries the
+        structural-inadequacy nudge: a refit or an equivalent rewrite cannot beat the optimum its
+        structure already has, so the next model must change the structure (add a latent state, add
+        a feedback reaction, raise interaction order), not re-fit the same one.
         """
         ctx = route()
         session = ctx.session
