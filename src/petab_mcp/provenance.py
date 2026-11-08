@@ -7,7 +7,8 @@ Under ``<store_root>/`` (default ``<problem_dir>/.petab_mcp``):
 * ``versions/vN/`` — a snapshot of the mutable model state at version N: ``model.ant``
   (the canonical Antimony) and ``parameters.tsv`` (the parameter table, as a PEtab v2 TSV; its
   estimated rows' nominal values are the one place a fit's values are kept by name), plus
-  ``meta.json`` (label, kind, parent, timestamp, scores). A fitted version also carries
+  ``meta.json`` (label, kind, parent, timestamp, scores, and ``edit_warnings``: the warnings
+  its change and lint gave, whole). A fitted version also carries
   ``simulations.json`` (the measured-vs-simulated dataframe + residuals), ``optimization.json``
   (the pyPESTO per-start + per-iteration trace records), and ``pypesto_result.hdf5`` (the
   pyPESTO result file, copied in from the per-model cache) — so rolling back restores a

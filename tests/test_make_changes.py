@@ -1097,6 +1097,31 @@ def test_a_warning_the_last_version_carried_is_not_sent_again(tmp_path):
     assert "1 warning(s) unchanged since version 0." in said and grounding not in said
 
 
+def test_a_folded_warning_is_kept_whole_in_its_version(tmp_path):
+    """A version's meta keeps every warning its change and lint gave, as its result carried them
+    before the fold. bachmann 77's dead `pSTAT5n` was a count in every result from v8 on, and the
+    best model, v10, kept it (PEtab-MCP#286): `get_version` is where a client reads it whole."""
+    mcp = _server(tmp_path)
+    dead = _antimony("species C in compartment_;", "C = 0;", "k3 = 0.2;", "r3: A => B; k3 * A * C;")
+    first = _call(mcp, "make_changes", {"antimony": dead, "justification": "C gates r3"})
+    (lint,) = [m for m in first["messages"] if m["source"] == "validation"]
+    assert "species `C` starts at 0 and stays 0" in lint["message"]
+    widen = {"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e2}
+    refit = _call(mcp, "make_changes", {"parameters": [widen], "justification": "widen k1"})
+    assert refit["committed"] is True, refit
+    assert refit["messages"] == [
+        {
+            "level": "warning",
+            "source": "validation",
+            "message": "1 warning(s) unchanged since version 0, naming `C`, `r3`.",
+        }
+    ]
+    assert _call(mcp, "get_version", {"version": 1})["edit_warnings"] == [lint]
+    assert _call(mcp, "get_version", {"version": 0})["edit_warnings"] == first["messages"]
+    # Kept out of `list_versions`, whose rows every turn may re-read.
+    assert all("edit_warnings" not in row for row in _listed(_call(mcp, "list_versions", {})))
+
+
 def _text(mcp, name, args):
     """A tool's text return (FastMCP wraps a str in {"result": ...})."""
     return _listed(_call(mcp, name, args))
