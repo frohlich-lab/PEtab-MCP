@@ -2453,11 +2453,16 @@ def _ic_convention(v0: float) -> tuple[str, bool]:
     return (LOG10 if v0 > 0.0 else LIN), True  # a guess: estimated, on log10 when it can be
 
 
-def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
+def sync_parameter_table(problem, shipped=None, carried=None) -> dict[str, list[str]]:
     """Add rows for new model parameters; remove rows for parameters gone from the model
     (keeping observable/noise parameters). Returns the add/remove diff, and ``seeded``: the
     parameters nothing gives a value (no assignment in the model, no row, no shipped row), each
     started at the seed. :func:`operations._orphan_warnings` names those the parent defined.
+
+    ``carried`` maps a ``rename``'s new id to the row its old id had (:func:`operations.set_model`).
+    A new id the table may hold takes that row, fitted value, bounds and scale, unless the problem
+    shipped one of its own; it is reported as ``carried``, never ``added`` or ``seeded``. Minting
+    it at a default instead lost the fit the rename was meant to keep (PEtab-MCP#283).
 
     ``shipped`` is the parameter table the PROBLEM shipped with
     (:attr:`session.PetabSession.shipped_parameter_df`). A parameter being added that appears
@@ -2485,6 +2490,12 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
     # A measurement mapping is not a parameter: no row, even while the seed holds it a constant.
     mappings = set(readouts(problem))
     valid -= mappings
+    shipped_ids = set(getattr(shipped, "index", []))
+    moved = []
+    for pid, row in sorted((carried or {}).items()):
+        if pid in valid and pid not in shipped_ids:
+            problem.parameter_df.loc[pid, list(row.index)] = list(row)
+            moved.append(pid)
     table_ids = set(problem.parameter_df.index)
     ic_params = _ic_parameter_ids(sm)
     exp_params = _exponent_symbols(sm)  # cooperativity/Hill exponents -> lin scale, tight bounds
@@ -2514,7 +2525,6 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
 
     added, removed, seeded = [], [], []
 
-    shipped_ids = set(getattr(shipped, "index", []))
     # A parameter the model uses but never assigns (`deg: A -> ; k*A;` with no `k = …`) loads
     # with no SBML value: NaN to anything that reads the model without this table, and `k = ;`
     # in the Antimony the caller reads back (issue #38). It takes its row's nominal, else
@@ -2628,7 +2638,7 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
         problem.parameter_df = problem.parameter_df.drop(index=pid)
         removed.append(pid)
 
-    return {"added": added, "removed": removed, "seeded": seeded}
+    return {"added": added, "removed": removed, "seeded": seeded, "carried": moved}
 
 
 #: The species minted when a model would otherwise have none. Named to be obviously not the
@@ -2672,14 +2682,14 @@ def ensure_one_species(sm) -> bool:
     return True
 
 
-def reconcile(problem, shipped=None) -> dict[str, Any]:
+def reconcile(problem, shipped=None, carried=None) -> dict[str, Any]:
     """Full reconciliation after a structural edit: promote local parameters, prune, parametric
     ICs, table sync.
 
     Initial conditions are estimated by default; an IC of exactly 1 is held FIXED and an IC of
     exactly 0 gets no parameter at all (see :func:`ensure_parametric_initial_conditions`). ``shipped`` is the problem's original parameter table, so a
     row the model reintroduces comes back as the problem defined it — see
-    :func:`sync_parameter_table`.
+    :func:`sync_parameter_table`, which also takes ``carried``, the rows a ``rename`` carries.
 
     Runs unchanged on the content-free seed: it needs no special pass, because a shipped row it
     prunes is restored the moment the caller's model declares that parameter.
@@ -2701,5 +2711,5 @@ def reconcile(problem, shipped=None) -> dict[str, Any]:
         skip_species=condition_target_symbols(problem),
         protect_ids=set(shipped.index) if shipped is not None else None,
     )
-    synced = sync_parameter_table(problem, shipped=shipped)
+    synced = sync_parameter_table(problem, shipped=shipped, carried=carried)
     return {"pruned": pruned, "parameters": synced}

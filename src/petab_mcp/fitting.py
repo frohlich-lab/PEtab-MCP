@@ -931,6 +931,22 @@ def previous_optima(problem, optimization: dict[str, Any] | None, x0) -> list[li
     return out
 
 
+def renamed_optimization(optimization, renamed) -> dict[str, Any] | None:
+    """``optimization`` (``session.optimization``) with each id a ``rename`` carried
+    (:func:`model_edits.carried_renames` of ``renamed``) under its new name, so the warm starts
+    hold it at its fitted coordinates, as the reconcile gave it the old id's row. A merge renames
+    nothing here: the target keeps its own coordinate. ``optimization`` itself when nothing
+    moves."""
+    from .model_edits import carried_renames
+
+    names = (optimization or {}).get("x_names")
+    moves = carried_renames(names, renamed)[0] if names and renamed else {}
+    if not moves:
+        return optimization
+    new_of = {old: new for new, old in moves.items()}
+    return {**optimization, "x_names": [new_of.get(str(n), n) for n in names]}
+
+
 def warm_start_guesses(problem, parameter_df, n_starts: int, optimization=None):
     """``WARM_START_FRACTION`` of the multistart's start points, seeded from the PREVIOUS fit.
     Returns a ``(n_warm, dim_full)`` array — pyPESTO fills the first ``n_warm`` starts from it
@@ -1183,12 +1199,13 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     # parameter there are no candidates, so a non-finite objective at the nominal point means
     # exactly what it used to: the warm half would be spent jittering around a region that just
     # failed, where the fresh sample is the only way in.
-    _has_new = bool(set(problem.x_names) - set((session.optimization or {}).get("x_names") or []))
+    # A `rename` in this call carries each previous coordinate to its new id, as the reconcile
+    # carried its row: the renamed parameter is the previous fit's, not a new one.
+    previous = renamed_optimization(session.optimization, session.renamed)
+    _has_new = bool(set(problem.x_names) - set((previous or {}).get("x_names") or []))
     guesses = (
-        warm_start_guesses(
-            problem, session.problem.parameter_df, n_starts, optimization=session.optimization
-        )
-        if (objective_before is not None or (_has_new and session.optimization))
+        warm_start_guesses(problem, session.problem.parameter_df, n_starts, optimization=previous)
+        if (objective_before is not None or (_has_new and previous))
         else np.zeros((0, len(problem.x_names)))
     )
     problem.x_guesses_full = guesses
@@ -1201,7 +1218,7 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
         session.fit_per_start_timeout,
         engine.fit_engine,
         session.optimization,
-        parent_starts(problem, guesses, session.optimization),
+        parent_starts(problem, guesses, previous),
     )
     workers = getattr(pp_engine, "n_procs", 1) or 1
     if engine.fit_engine is not None:

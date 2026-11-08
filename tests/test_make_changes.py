@@ -2963,3 +2963,32 @@ def test_concurrent_statement_edits_keep_each_others_rows(tmp_path, monkeypatch)
     assert all(out["applied"] for out in _concurrently(monkeypatch, mcp, *calls))
     text = _text(mcp, "get_model", {"format": "statements"})
     assert "conv: A becomes B" in text and all(f"{p}: B becomes A" in text for p in ("back", "back2"))
+
+
+def test_a_merge_hint_names_its_rename_and_taking_it_merges_the_pair(tmp_path):
+    """PEtab-MCP#283, end to end: `k1*k3` is one rate written as two, so the fit's hints offer the
+    tie with the op that makes it. Sent as given, it merges the two in one op: the result says
+    which row stayed and warns of no dropped parameter."""
+    mcp = _server(tmp_path, auto_fit=True)
+    first = _call(
+        mcp,
+        "make_changes",
+        {
+            "antimony": _antimony("k3 = 2.0;").replace("k1 * A;", "k1 * k3 * A;"),
+            "justification": "a split rate",
+            "n_starts": 4,
+        },
+    )
+    assert first["committed"] is True, first["message"]
+    (hint,) = [h for h in first["merge_hints"] if set(h["parameters"]) == {"k1", "k3"}]
+    old, new = hint["parameters"][1], hint["parameters"][0]
+    assert hint["take"] == {"op": "rename", "old": old, "new": new}
+    res = _call(
+        mcp,
+        "make_changes",
+        {"model_edits": [hint["take"]], "justification": "one rate", "n_starts": 2},
+    )
+    assert res["committed"] is True, res["message"]
+    texts = [m["message"] for m in res["messages"]]
+    assert any(t.startswith(f"rename merged `{old}` into `{new}`") for t in texts), texts
+    assert not any("dropped previously-estimated" in t for t in texts), texts
