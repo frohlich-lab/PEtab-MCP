@@ -1082,6 +1082,52 @@ def classify_inner_parameters(problem) -> dict[str, str]:
     return out
 
 
+#: Key of :func:`fixed_table_parameters` for a row the model's math reads too.
+READ_BY_TABLES_TOO = "tables_read_it_too"
+
+#: How the fixed tables name a parameter (:func:`fixed_table_parameters`), by key. The merge
+#: pricer counts the pairs it skips under the key; a refused ``rename`` or ``set_assignment``
+#: (:mod:`model_edits`) gives the text after the parameter's id.
+FIXED_TABLE_REASONS = {
+    "solved_analytically": "is a noise sigma the fit solves analytically from the residuals it "
+    "covers; the model does not read it",
+    "measurement_tables_only": "is named only by the observable and measurement tables, which "
+    "are fixed; the model does not read it",
+    "condition_table_only": "is named only by the condition table, which is fixed; the model "
+    "does not read it",
+    READ_BY_TABLES_TOO: "is read by the fixed observable, measurement or condition tables as well "
+    "as the model, and they keep its name",
+}
+
+
+def fixed_table_parameters(problem) -> dict[str, str]:
+    """``{parameter_id: key of FIXED_TABLE_REASONS}`` for each parameter-table row the fixed tables
+    name: the ties no model edit can make (PEtab-MCP#283). A row the model's math does not read is
+    in no model text to rename, and a rule defining it takes the row the measurement table's
+    overrides need: ``solved_analytically`` for a noise sigma :func:`classify_inner_parameters`
+    solves (as the bound refusal on it says), else which table names it. A row the model reads
+    too (a total that also normalises an observable) is :data:`READ_BY_TABLES_TOO`: a tie keeps it
+    and renames the other onto it, since renamed away the tables would still read the old name."""
+    math = _model_math_names(problem.model.sbml_model)
+    observation = observation_model_symbols(problem)
+    tables = table_referenced_symbols(problem)
+    inner = classify_inner_parameters(problem)
+    out: dict[str, str] = {}
+    for raw in problem.parameter_df.index:
+        pid = str(raw)
+        if pid not in tables:
+            continue
+        if pid in math:
+            out[pid] = READ_BY_TABLES_TOO
+        elif inner.get(pid) == INNER_TYPE_SIGMA:
+            out[pid] = "solved_analytically"
+        elif pid in observation:
+            out[pid] = "measurement_tables_only"
+        else:
+            out[pid] = "condition_table_only"
+    return out
+
+
 def _measurement_rows_for_sigma(problem, pid: str, frame=None):
     """Measurement rows whose noise is modelled by sigma parameter ``pid`` — matched via a
     direct ``noiseParameters`` override, or (for a sigma named directly in the fixed
@@ -2407,11 +2453,16 @@ def _ic_convention(v0: float) -> tuple[str, bool]:
     return (LOG10 if v0 > 0.0 else LIN), True  # a guess: estimated, on log10 when it can be
 
 
-def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
+def sync_parameter_table(problem, shipped=None, carried=None) -> dict[str, list[str]]:
     """Add rows for new model parameters; remove rows for parameters gone from the model
     (keeping observable/noise parameters). Returns the add/remove diff, and ``seeded``: the
     parameters nothing gives a value (no assignment in the model, no row, no shipped row), each
     started at the seed. :func:`operations._orphan_warnings` names those the parent defined.
+
+    ``carried`` maps a ``rename``'s new id to the row its old id had (:func:`operations.set_model`).
+    A new id the table may hold takes that row, fitted value, bounds and scale, unless the problem
+    shipped one of its own; it is reported as ``carried``, never ``added`` or ``seeded``. Minting
+    it at a default instead lost the fit the rename was meant to keep (PEtab-MCP#283).
 
     ``shipped`` is the parameter table the PROBLEM shipped with
     (:attr:`session.PetabSession.shipped_parameter_df`). A parameter being added that appears
@@ -2439,6 +2490,12 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
     # A measurement mapping is not a parameter: no row, even while the seed holds it a constant.
     mappings = set(readouts(problem))
     valid -= mappings
+    shipped_ids = set(getattr(shipped, "index", []))
+    moved = []
+    for pid, row in sorted((carried or {}).items()):
+        if pid in valid and pid not in shipped_ids:
+            problem.parameter_df.loc[pid, list(row.index)] = list(row)
+            moved.append(pid)
     table_ids = set(problem.parameter_df.index)
     ic_params = _ic_parameter_ids(sm)
     exp_params = _exponent_symbols(sm)  # cooperativity/Hill exponents -> lin scale, tight bounds
@@ -2468,7 +2525,6 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
 
     added, removed, seeded = [], [], []
 
-    shipped_ids = set(getattr(shipped, "index", []))
     # A parameter the model uses but never assigns (`deg: A -> ; k*A;` with no `k = …`) loads
     # with no SBML value: NaN to anything that reads the model without this table, and `k = ;`
     # in the Antimony the caller reads back (issue #38). It takes its row's nominal, else
@@ -2582,7 +2638,7 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
         problem.parameter_df = problem.parameter_df.drop(index=pid)
         removed.append(pid)
 
-    return {"added": added, "removed": removed, "seeded": seeded}
+    return {"added": added, "removed": removed, "seeded": seeded, "carried": moved}
 
 
 #: The species minted when a model would otherwise have none. Named to be obviously not the
@@ -2626,14 +2682,14 @@ def ensure_one_species(sm) -> bool:
     return True
 
 
-def reconcile(problem, shipped=None) -> dict[str, Any]:
+def reconcile(problem, shipped=None, carried=None) -> dict[str, Any]:
     """Full reconciliation after a structural edit: promote local parameters, prune, parametric
     ICs, table sync.
 
     Initial conditions are estimated by default; an IC of exactly 1 is held FIXED and an IC of
     exactly 0 gets no parameter at all (see :func:`ensure_parametric_initial_conditions`). ``shipped`` is the problem's original parameter table, so a
     row the model reintroduces comes back as the problem defined it — see
-    :func:`sync_parameter_table`.
+    :func:`sync_parameter_table`, which also takes ``carried``, the rows a ``rename`` carries.
 
     Runs unchanged on the content-free seed: it needs no special pass, because a shipped row it
     prunes is restored the moment the caller's model declares that parameter.
@@ -2655,5 +2711,5 @@ def reconcile(problem, shipped=None) -> dict[str, Any]:
         skip_species=condition_target_symbols(problem),
         protect_ids=set(shipped.index) if shipped is not None else None,
     )
-    synced = sync_parameter_table(problem, shipped=shipped)
+    synced = sync_parameter_table(problem, shipped=shipped, carried=carried)
     return {"pruned": pruned, "parameters": synced}

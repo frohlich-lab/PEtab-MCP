@@ -1777,7 +1777,7 @@ def test_a_seed_nothing_reads_names_the_input_it_leaves_unread(
                             r"amounts: `Serum\(\)` \(`__s\d+`\)\.", m) for m in removed)
     assert any(m.startswith("condition target(s) `EGF` are read by nothing in the model, or only "
                             "by assignment rules nothing reads, so the model never sees their "
-                            "value. For each, read it as") for m in said)
+                            "value.") for m in said)
 
 
 def test_a_seed_at_an_input_a_row_reads_is_neither_removed_nor_unread(tmp_path, add_condition):
@@ -2292,10 +2292,14 @@ def test_the_route_says_nothing_is_bound_when_the_map_is_empty(tmp_path):
 
 
 def test_an_unread_condition_target_is_explained():
+    """The hint said the model "must have it: read it as …", which froehlich leads took for a
+    refusal of every unread input: it must be declared, and need not be read (PEtab-MCP#290)."""
     from petab_mcp.operations import _rejection_summary
+    from petab_mcp.validation import INPUT_UNREAD
 
     text = _rejection_summary(["Condition table contains invalid targets: {'rit'}"])
     assert "{'rit'}" in text and "input the condition table SETS" in text
+    assert "must declare it under its id" in text and text.endswith(INPUT_UNREAD)
     assert "SETS" not in _rejection_summary(["something else"])
 
 
@@ -2986,3 +2990,32 @@ def test_a_result_names_the_version_it_was_applied_to_and_the_best(tmp_path):
         "to the working model, now v2, unless `base_version` names another: send "
         "`base_version=1` to change the best."
     ]
+
+
+def test_a_merge_hint_names_its_rename_and_taking_it_merges_the_pair(tmp_path):
+    """PEtab-MCP#283, end to end: `k1*k3` is one rate written as two, so the fit's hints offer the
+    tie with the op that makes it. Sent as given, it merges the two in one op: the result says
+    which row stayed and warns of no dropped parameter."""
+    mcp = _server(tmp_path, auto_fit=True)
+    first = _call(
+        mcp,
+        "make_changes",
+        {
+            "antimony": _antimony("k3 = 2.0;").replace("k1 * A;", "k1 * k3 * A;"),
+            "justification": "a split rate",
+            "n_starts": 4,
+        },
+    )
+    assert first["committed"] is True, first["message"]
+    (hint,) = [h for h in first["merge_hints"] if set(h["parameters"]) == {"k1", "k3"}]
+    old, new = hint["parameters"][1], hint["parameters"][0]
+    assert hint["take"] == {"op": "rename", "old": old, "new": new}
+    res = _call(
+        mcp,
+        "make_changes",
+        {"model_edits": [hint["take"]], "justification": "one rate", "n_starts": 2},
+    )
+    assert res["committed"] is True, res["message"]
+    texts = [m["message"] for m in res["messages"]]
+    assert any(t.startswith(f"rename merged `{old}` into `{new}`") for t in texts), texts
+    assert not any("dropped previously-estimated" in t for t in texts), texts

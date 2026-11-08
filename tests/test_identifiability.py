@@ -447,7 +447,7 @@ def test_merge_candidates_refuse_pairs_they_cannot_price_honestly():
     mixed = merge_candidates(np.eye(2), names, [1.0, 1.0], scales=["log10", "lin"], roles=roles)
     assert mixed["ties"] == [] and mixed["n_ties_skipped"] == {"scale_mismatch": 1}
     same = merge_candidates(np.eye(2), names, [1.0, 1.0], scales=["log10", "log10"], roles=roles)
-    assert same["n_ties_priced"] == 1 and same["filters_off"] == ["at_bound"]
+    assert same["n_ties_priced"] == 1 and same["filters_off"] == ["fixed_tables", "at_bound"]
 
     unusable = merge_candidates(
         np.eye(2), names, [1.0, 1.0], scales=[float("nan")] * 2, roles=roles
@@ -777,3 +777,44 @@ def test_a_hierarchical_fits_rank_is_read_against_its_own_dimension(session):
     assert [p["id"] for p in out["parameters"]] == ["k1", "k2"]
     # the omission is stated, so it does not read as a bug
     assert "inner-solved" in out["inner_parameters_omitted"]
+
+
+def test_merge_candidates_offer_only_ties_an_edit_can_make():
+    """PEtab-MCP#283: a sweep's hints offered `sd_Cer_obs = sd_Sphinga_obs` (a sigma the fit solves
+    analytically) and ties of shipped offsets the model never reads; agents spent calls on them and
+    argued about them at the finish. A pair with a member only the fixed tables name is skipped,
+    counted by why, and an absent table says the filter is off."""
+    from petab_mcp.identifiability import merge_candidates
+
+    names = ["k1", "k2", "sd_a", "sd_b", "off_a", "off_b"]
+    fixed = {
+        "sd_a": "solved_analytically",
+        "sd_b": "solved_analytically",
+        "off_a": "measurement_tables_only",
+        "off_b": "measurement_tables_only",
+    }
+    rep = merge_candidates(np.eye(6), names, [1.0] * 6, fixed_tables=fixed)
+    assert [t["parameters"] for t in rep["ties"]] == [["k1", "k2"]]
+    assert rep["n_ties_skipped"] == {"measurement_tables_only": 5, "solved_analytically": 9}
+    assert "fixed_tables" in merge_candidates(np.eye(2), ["k1", "k2"], [1.0, 1.0])["filters_off"]
+
+    # one the tables read as well as the model is listed first, the member a tie keeps; of two
+    # such, either renamed away leaves the tables reading its old name
+    both = {"k1": "tables_read_it_too", "k3": "tables_read_it_too"}
+    rep = merge_candidates(np.eye(3), ["k1", "k2", "k3"], [1.0] * 3, fixed_tables=both)
+    assert [t["parameters"] for t in rep["ties"]] == [["k1", "k2"], ["k3", "k2"]]
+    assert rep["n_ties_skipped"] == {"tables_read_it_too": 1}
+
+
+def test_a_merge_hint_names_the_rename_that_takes_it():
+    """PEtab-MCP#283: nothing said `rename` merges two parameters in one op, so blasi agents retyped
+    rate laws and lost a constant doing so. On a server whose `make_changes` takes `model_edits`
+    each hint carries the op; the statements route has none to name."""
+    from petab_mcp.identifiability import merge_hints
+
+    meta = _meta("a", "b", est_scaled=1.0)
+    meta[1]["estimate_scaled"] = 1.0001
+    diag = _identifiability_stats(meta, np.full((2, 2), 1e4) + np.eye(2) * 1e-5, {}, n_data=252)
+    (hint,) = merge_hints(diag, rename=True)
+    assert hint["take"] == {"op": "rename", "old": "b", "new": "a"}
+    assert "take" not in merge_hints(diag)[0]

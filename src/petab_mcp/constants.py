@@ -301,8 +301,8 @@ NOISE_SIGMA_BAND_MIN_DF = 3.0
 WIDENING_NEGLIGIBLE_BIC_GAIN = 2.0
 
 # -- structural-inadequacy nudge (issue #82) --------------------------------
-# When the misfit is STRUCTURAL — the model's structure itself cannot fit the data, not the
-# optimizer or the bounds — the fix is to change the model's FORM (add a latent/unobserved state,
+# When the misfit is STRUCTURAL — the model's structure itself cannot fit the data — the fix is to
+# change the model's FORM (add a latent/unobserved state,
 # add a feedback/regulation reaction, raise the interaction order), NOT to re-parameterize or widen
 # bounds within the same structure. The failure mode this addresses (seen across one problem's
 # deep-dive) is an agent that correctly DIAGNOSES structural inadequacy and then re-fits the same

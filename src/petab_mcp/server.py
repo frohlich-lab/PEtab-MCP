@@ -976,8 +976,9 @@ def _register_read_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
     def describe_problem() -> dict[str, Any]:
         """Orientation, and cheap: whether a model has been authored (`model_authored`), table and
         entity counts, the current version, `readouts_to_define` (the `readout_*` measurement
-        mappings your model does not define yet), and `fit_n_starts_default`, the multistart count
-        a fit uses when `n_starts` is omitted.
+        mappings your model does not define yet), `condition_targets` (the ids the condition table
+        sets, `list_conditions`), and `fit_n_starts_default`, the multistart count a fit uses when
+        `n_starts` is omitted.
 
         `inputs` are what the experiments impose within a period, each read in your model by its
         id: define it by its `rule` exactly as given, and never estimate the condition targets the
@@ -1003,9 +1004,12 @@ def _register_read_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
     def list_conditions() -> str:
         """The (fixed) conditions as a TSV table, one row per condition and one column per target
         it sets (a model parameter, species or compartment) to that row's value — a dose, an input
-        level, a switch; blank where the condition does not set the target. Your model must define
-        every target BY NAME, and a condition-set initial is an experimental input to reproduce,
-        not a value to fit. WHEN a condition applies is `list_experiments`."""
+        level, a switch; blank where the condition does not set the target. A table too large for
+        one reply comes back as one row per target instead: how many conditions set it and the
+        range of its values. Your model declares every target under its id and reads one only
+        where it has an effect: leaving an input unread is allowed. A condition-set initial is an
+        experimental input to reproduce, not a value to fit. WHEN a condition applies is
+        `list_experiments`."""
         ctx = route()
         session = ctx.session
         return conditions_tsv(session.problem.condition_df)
@@ -1104,9 +1108,11 @@ k*u*X1'}`, `{op: 'remove_reaction', id}`, `{op: 'set_rate_law', id, antimony: 'k
 `{op: 'set_initial', id, antimony: '5'}`, `{op: 'set_assignment', id, antimony: 'X2 + X3'}` (an \
 `id := expr` rule holding at ALL times — how a `readout_*` symbol an observable formula \
 references is defined in terms of YOUR states), `{op: 'remove_assignment', id}`, `{op: 'rename', \
-old, new}`. Nothing to quote; they apply in order, all or nothing, and a bad id is rejected with \
-the valid ids listed. Put the WHOLE change in ONE call: one call is one fit. What they cannot \
-express (an event, a compartment) is a re-author with `antimony`.
+old, new}` (`new` keeps `old`'s fitted value, bounds and scale; onto an existing parameter it \
+MERGES the two in one op, keeping `new`'s: a `merge_hints` row's `take`). Nothing to quote; they \
+apply in order, all or nothing, and a bad id is rejected with the valid ids listed. Put the WHOLE \
+change in ONE call: one call is one fit. What they cannot express (an event, a compartment) is a \
+re-author with `antimony`.
 
 With `base_version=N` the operations apply to version N's STORED model, and its search space and \
 best fit are restored as the fit's start: fork and change in one call, never retyping an earlier \
@@ -1802,7 +1808,17 @@ def _register_model_tools(
                             base_src = session.provenance.get_model_antimony(int(base_version))
                     else:
                         base_src = session.model_source or model_mod.get_model(session, "antimony")
-                    antimony, op_summary = model_edits_mod.apply_model_edits(base_src, ops)
+                    fixed = (
+                        reconcile_mod.fixed_table_parameters(session.problem)
+                        if any(
+                            isinstance(o, dict) and o.get("op") in ("rename", "set_assignment")
+                            for o in ops
+                        )
+                        else None
+                    )
+                    antimony, op_summary = model_edits_mod.apply_model_edits(
+                        base_src, ops, fixed=fixed
+                    )
                     # Read INSIDE the guard, next to the source read above: a version dir whose
                     # parameters.tsv is truncated raises EmptyDataError and the legacy json path
                     # raises FileNotFoundError, and evaluating this as a bare call argument let
@@ -1842,6 +1858,7 @@ def _register_model_tools(
             # session.derived_from). Set for the duration of this call only, and cleared in the
             # `finally` so a later ordinary commit cannot inherit a stale fork parent.
             session.derived_from = int(base_version) if base_version is not None else None
+            session.renamed = model_edits_mod.renames(ops or [])
             # PROVENANCE: the text SUBMITTED to the pipeline — the wholesale `antimony`, or
             # the result of applying this call's operations to the base source. Stored beside
             # the committed model as model_source.ant (see session.submitted_source), and read
@@ -1888,6 +1905,7 @@ def _register_model_tools(
                 out = ctx.edit_then_fit(result, n_starts, justification, before)
             finally:
                 session.derived_from = None
+                session.renamed = []
                 session.submitted_source = None
                 session.submitted_statements = None
             if out.get("applied") and not out.get("no_change") and antimony:
@@ -2630,10 +2648,10 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         estimated sigmas only the streak cap stops.
         There is no cap on the TOTAL number of fits: a session that keeps genuinely improving keeps
         going, and only a stall stops it.
-        A plateaued `stop_reason` also carries the structural-inadequacy nudge: when the score
-        stops moving and the best model is shown not adequate, the misfit is the model's FORM — the
-        next model must change the structure (add a latent state, add a feedback reaction, raise
-        interaction order), not re-fit or widen the same one.
+        A streak-cap `stop_reason` whose best model is shown not adequate also carries the
+        structural-inadequacy nudge: a refit or an equivalent rewrite cannot beat the optimum its
+        structure already has, so the next model must change the structure (add a latent state, add
+        a feedback reaction, raise interaction order), not re-fit the same one.
         """
         ctx = route()
         session = ctx.session
@@ -2858,6 +2876,7 @@ def _open_ctx(
     session.auto_fit_starts = auto_fit_starts
     if entities is not None:
         session.entities = entities
+    session.text_route = entity_map is None
     if loaded is not None:
         session.constraints = loaded
         session.constraint_updates = constraint_updates

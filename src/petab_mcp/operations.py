@@ -35,7 +35,7 @@ from .errors import ModelUpdateError, ParameterError, PetabMcpError, ValidationE
 from .parameters import estimated_mask
 from .provenance import binding_of
 from .references import resolve_references
-from .validation import INPUT_REMEDY, frozen_parametric_stoichiometry_issues, validate_problem
+from .validation import INPUT_UNREAD, frozen_parametric_stoichiometry_issues, validate_problem
 
 # AMICI reserves a handful of short symbols for its generated code (the state vector ``x``,
 # parameters ``p``, constants ``k``, expressions ``w``, time ``t``, the Heaviside/root vector
@@ -389,13 +389,14 @@ def _rejection_summary(issues: list[str]) -> str:
 
 
 #: A fix the agent can act on, for an issue libpetab states without one. "Condition table
-#: contains invalid targets" means the model never read an input the condition table sets, and
-#: the message names the targets without saying that the model has to.
+#: contains invalid targets" means the model does not declare an input the condition table sets,
+#: and the message names the targets without saying that the model has to.
 _ISSUE_HINTS = (
     (
         "Condition table contains invalid targets",
         " — each named target is an input the condition table SETS per experiment, so the model "
-        f"must have it: {INPUT_REMEDY}",
+        "must declare it under its id: a parameter (`dose = 0;`) or, on the statements route, a "
+        f'seed at its id alone (`{{"agent": "dose", "amount": "dose"}}`). {INPUT_UNREAD}',
     ),
 )
 
@@ -409,6 +410,7 @@ def _commit_change(
     *,
     model_build: Callable[[], tuple[Any, Any]] | None = None,
     param_edit: Callable[[Any], Any] | None = None,
+    carried: dict[str, Any] | None = None,
     # References are optional (only a non-empty justification is required); every caller passes
     # this explicitly, so the default just keeps a future caller from silently making them
     # mandatory again.
@@ -423,7 +425,8 @@ def _commit_change(
     model build (``set_model(parameters=[...])``, issue #114): both then land in the SAME
     transaction — the parameter edit runs AFTER the reconcile, so it can target a parameter the
     re-author just introduced, and a rejected entry reverts the re-author too. On any failure the
-    model and parameter table are reverted so an edit is atomic.
+    model and parameter table are reverted so an edit is atomic. ``carried`` is the rows a
+    ``rename`` carries to its new ids, for the reconcile (:func:`reconcile.sync_parameter_table`).
 
     Applies and reconciles + validates; the caller scores it (:meth:`session.PetabSession.fit`,
     which also carries the structure-level de-duplication). Returns ``applied: true`` with the
@@ -460,7 +463,7 @@ def _commit_change(
             candidate, apply_result = model_build()
             problem.model = candidate
             names = {sp.getId(): sp.getName() for sp in candidate.sbml_model.getListOfSpecies()}
-            recon = R.reconcile(problem, shipped=session.shipped_parameter_df)
+            recon = R.reconcile(problem, shipped=session.shipped_parameter_df, carried=carried)
             # An EMPTY model is refused rather than committed — where "empty" is the same
             # predicate `model_authored` reports: no species at all, or no DYNAMICS (neither
             # a reaction nor a rate/assignment rule). Both are unscoreable, and the first is
@@ -603,6 +606,7 @@ def _commit_change(
         param_diff = {
             "added": recon["parameters"]["added"] if recon else [],
             "removed": recon["parameters"]["removed"] if recon else [],
+            "carried": recon["parameters"]["carried"] if recon else [],
             "pruned_species": recon["pruned"]["species"] if recon else [],
         }
         # Per-species initial-condition account: for every species, whether its declared t=0
@@ -735,6 +739,12 @@ def set_model(
     except Exception:  # never let the warning bookkeeping break the op
         prior_estimated = set()
 
+    # This call's `rename` ops (session.renamed) carry each old id's row in that same table to its
+    # new id; one onto an id the table has merges the two, and the target keeps its own row.
+    from .model_edits import carried_renames
+
+    moves, merged = carried_renames(current.index, session.renamed)
+
     def build():
         try:
             candidate = SbmlModel.from_antimony(antimony, model_id=None)
@@ -772,6 +782,7 @@ def set_model(
         references,
         model_build=build,
         param_edit=_composed_parameter_edit(session, normalized, restore_parameter_df),
+        carried={new: current.loc[old] for new, old in moves.items()},
         require_references=False,
     )
 
@@ -779,15 +790,38 @@ def set_model(
     # its row (and its fitted value). Surface that — it is the one real footgun of a wholesale
     # replace; fixed/table-referenced parameters are not affected. Read off the committed table
     # rather than the reconcile's `removed`, which a fork measures against HEAD's table.
-    dropped = sorted(prior_estimated - {str(p) for p in session.problem.parameter_df.index})
+    # A renamed id is not dropped: its row went to the new id, or, merged, the target kept its own.
+    renamed = set(merged) | {moves[pid] for pid in result["reconcile"]["parameters"]["carried"]}
+    dropped = sorted(
+        prior_estimated - {str(p) for p in session.problem.parameter_df.index} - renamed
+    )
+    notes = [_merge_note(current, old, kept, moves) for old, kept in merged.items()]
     if dropped:
-        note = (
+        notes.append(
             f"the re-author dropped previously-estimated parameter(s) {dropped}: their fitted "
             "values are gone. Re-declare them in the Antimony if that was unintended."
         )
-        result["warnings"] = list(result.get("warnings") or []) + [note]
-        result["messages"] = list(result.get("messages") or []) + [M.warning(M.SOURCE_EDIT, note)]
+    if notes:
+        result["warnings"] = list(result.get("warnings") or []) + notes
+        result["messages"] = list(result.get("messages") or []) + M.warnings_from(
+            M.SOURCE_EDIT, notes
+        )
     return result
+
+
+def _merge_note(table, old: str, kept: str, moves: dict[str, str]) -> str:
+    """What a ``rename`` of ``old`` onto ``kept``, an id ``table`` already had, did: the two are
+    one parameter now, at ``kept``'s row (``moves`` maps a renamed ``kept`` to its name in
+    ``table``)."""
+
+    def value(pid: str) -> str:
+        v = R._finite_nominal(table, pid)
+        return f" ({v:.4g})" if v is not None else ""
+
+    return (
+        f"rename merged `{old}` into `{kept}`: `{kept}` keeps its row and value"
+        f"{value(moves.get(kept, kept))}; `{old}`'s{value(old)} is gone."
+    )
 
 
 def _problem_ids(session) -> dict[str, str]:

@@ -52,6 +52,7 @@ def _identifiability_stats(
     se_unconstrained: float = 1.0,
     spread_unstable: float = 0.5,
     roles: dict[str, str] | None = None,
+    fixed_tables: dict[str, str] | None = None,
     n_data: int | None = None,
     criterion: "criteria.Criterion | None" = None,
 ) -> dict[str, Any]:
@@ -195,6 +196,7 @@ def _identifiability_stats(
                 scales=[p.get("scale") for p in params_meta],
                 at_bound=[per[n]["at_bound"] for n in names],
                 roles=roles,
+                fixed_tables=fixed_tables,
                 n_data=n_data,
                 top_n=top_n,
                 criterion=criterion,
@@ -538,6 +540,7 @@ def merge_candidates(
     scales=None,
     at_bound=None,
     roles=None,
+    fixed_tables=None,
     n_data=None,
     top_n=6,
     criterion=None,
@@ -571,19 +574,25 @@ def merge_candidates(
     edit that will survive a refit.
 
     A pair is offered only when the merge is an edit someone could write and this quadratic can
-    price it honestly — same ROLE (nothing stops the arithmetic tying a rate to a noise sigma),
-    same parameterScale (``log10(k_a) == k_b`` is not an equality anyone means), and neither member
-    AT A BOUND (the expansion assumes an interior stationary point, so a pinned parameter's cost
-    would be understated). Each filter needs its table: whichever the caller leaves out is named in
-    ``filters_off``, and every pair a filter refused is counted by reason in ``n_ties_skipped``, so
-    that "no free tie exists" and "the free tie was suppressed" read differently. The ranked list is
-    truncated to ``top_n``.
+    price it honestly — an edit can tie them (``fixed_tables``, from
+    :func:`reconcile.fixed_table_parameters`: a member the model's math does not read, a noise
+    sigma the fit solves analytically among them, is in no model text to rename, and of two the
+    fixed tables read as well, either renamed away leaves them reading its old name; one of those
+    is listed FIRST, as the member a tie keeps), same ROLE (nothing stops the
+    arithmetic tying a rate to a noise sigma), same parameterScale (``log10(k_a) == k_b`` is not an
+    equality anyone means), and neither member AT A BOUND (the expansion assumes an interior
+    stationary point, so a pinned parameter's cost would be understated). Each filter needs its
+    table: whichever the caller leaves out is named in ``filters_off``, and every pair a filter
+    refused is counted by reason in ``n_ties_skipped``, so that "no free tie exists" and "the free
+    tie was suppressed" read differently. The ranked list is truncated to ``top_n``.
 
     Read as a SCREEN. The quadratic is local: it separates cheap ties from expensive ones, but a
     single price can be off by a factor in EITHER direction, so the criterion adjudicates the
     refit that follows a merge.
     """
     import numpy as np
+
+    from .reconcile import READ_BY_TABLES_TOO
 
     # Resolved ONCE: the price below and the label reported beside it must be the same criterion.
     # The session's, when a session is scoring (see `identifiability`); plain BIC for a bare call.
@@ -628,6 +637,13 @@ def merge_candidates(
             # Each filter FAILS CLOSED, and says which way it closed: "these two differ" is a claim
             # about the pair, "this one is unknown" is a claim about the table, and a reader acts on
             # them differently.
+            fi = fj = None
+            if fixed_tables is not None:
+                fi, fj = fixed_tables.get(names[i]), fixed_tables.get(names[j])
+                why = next((f for f in (fi, fj) if f and f != READ_BY_TABLES_TOO), None)
+                if why or (fi and fj):
+                    _skip(why or READ_BY_TABLES_TOO)
+                    continue
             if roles is not None:
                 ri, rj = roles.get(names[i]), roles.get(names[j])
                 if not (ri and rj):
@@ -658,7 +674,8 @@ def merge_candidates(
                 _skip("cost_not_finite")
                 continue
             dnll = _cost_nll(exact)
-            row = {"parameters": [names[i], names[j]], "dnll": dnll, "move_scaled": round(move, 3)}
+            pair = [names[j], names[i]] if fj else [names[i], names[j]]
+            row = {"parameters": pair, "dnll": dnll, "move_scaled": round(move, 3)}
             if price is not None:
                 # Both read off the DISPLAYED cost and price, so the row agrees with itself:
                 # dscore < 0 exactly when merge_improves_score is true.
@@ -674,7 +691,12 @@ def merge_candidates(
         out["n_ties_skipped"] = dict(sorted(skipped.items()))
     off = [
         n
-        for n, table in (("role", roles), ("scale", scales), ("at_bound", at_bound))
+        for n, table in (
+            ("fixed_tables", fixed_tables),
+            ("role", roles),
+            ("scale", scales),
+            ("at_bound", at_bound),
+        )
         if table is None
     ]
     if off:  # nothing refused these pairs, so merges nobody could write are in the list too
@@ -864,16 +886,22 @@ def identifiability(session, *, top_n: int = 8, corr_threshold: float = 0.9) -> 
     spread = _multistart_spread(record.optimization, list(record.x_names))
     # Roles keep the merge offers to edits a modeller would actually write: nothing mathematically
     # stops tying a kinetic rate to an observable scaling, and the arithmetic will call it free.
+    # `fixed_tables` keeps them to edits a modeller CAN write: a parameter only the fixed tables
+    # name (an observation offset, a noise sigma) is in no model text to rename.
     # merge_candidates is their only consumer and needs the FIM, so without one this whole-model
     # walk would be discarded unused. Walked on the FROZEN problem — the structure that was fitted.
-    roles = None
+    roles = fixed_tables = None
     if fim is not None:
-        try:
-            from .reconcile import parameter_roles
+        from .reconcile import fixed_table_parameters, parameter_roles
 
+        try:
             roles = parameter_roles(record.problem)
         except Exception:  # noqa: BLE001 - advisory; the payload says the filter is off
             roles = None
+        try:
+            fixed_tables = fixed_table_parameters(record.problem)
+        except Exception:  # noqa: BLE001 - advisory; the payload says the filter is off
+            fixed_tables = None
     out = _identifiability_stats(
         _params_meta(record),
         fim,
@@ -881,6 +909,7 @@ def identifiability(session, *, top_n: int = 8, corr_threshold: float = 0.9) -> 
         top_n=top_n,
         corr_threshold=corr_threshold,
         roles=roles,
+        fixed_tables=fixed_tables,
         n_data=_measurement_count(record.problem),
         criterion=session.criterion,
     )
@@ -904,7 +933,7 @@ MERGE_HINT_LIMIT = 3
 
 
 def merge_hints(
-    diagnosis: "dict[str, Any] | None", *, limit: int = MERGE_HINT_LIMIT
+    diagnosis: "dict[str, Any] | None", *, limit: int = MERGE_HINT_LIMIT, rename: bool = False
 ) -> list[dict[str, Any]] | None:
     """The ties worth reporting beside a fit's score: up to ``limit`` cheapest ONE-SHARED-VALUE
     merges whose ``dnll`` is below what the criterion charges for the parameter each deletes
@@ -912,9 +941,10 @@ def merge_hints(
 
     ``diagnosis`` is an :func:`identifiability` payload, so the hints cannot say anything the
     section does not: they ARE that payload's ONE-SHARED-VALUE ``merge_candidates`` rows that beat
-    the charge, cheapest first, minus the detail. Four fields each, kept short because this rides on every fit
-    result and is re-sent in the agent's history every later turn: the pair, its cost, ``dscore``
-    (negative = the merge lowers the score), and ``move_scaled``. The last one is not decoration —
+    the charge, cheapest first, minus the detail. Four fields each (and ``take``, below), kept
+    short because this rides on every fit result and is re-sent in the agent's history every later
+    turn: the pair, its cost, ``dscore`` (negative = the merge lowers the score), and
+    ``move_scaled``. The last one is not decoration —
     :func:`merge_candidates` prices a ONE-SHARED-VALUE tie and says that price must be read against
     the move: a hint naming a near-free tie without it invites taking a merge whose parameter
     travels many decades, which is the quadratic running off down a flat direction rather than an
@@ -937,18 +967,27 @@ def merge_hints(
     ``None`` covers every case the list has nothing to claim in — no FIM, no priceable pair, or no
     tie that beats the charge — so its ABSENCE is not a certificate of parsimony. Only the section
     distinguishes those (``n_ties_skipped``, ``filters_off``).
+
+    ``rename`` (a session whose ``make_changes`` offers ``model_edits``, ``session.text_route``)
+    adds ``take``, the ``model_edits`` op that makes the tie: a ``rename`` of the second onto the
+    first, which keeps its fitted value (and is the one the fixed tables read, if either is). Without it blasi agents retyped rate laws by hand and lost
+    a constant doing so (PEtab-MCP#283). The statements route ties by ``rebind``, row by row.
     """
     ties = ((diagnosis or {}).get("merge_candidates") or {}).get("ties") or []
-    out = [
-        {
-            "parameters": list(row.get("parameters") or ()),
+    out = []
+    for row in ties:  # cheapest-first; each is ONE SHARED VALUE, priced on its own
+        if not (isinstance(row, dict) and row.get("merge_improves_score")):
+            continue
+        pair = list(row.get("parameters") or ())
+        hint = {
+            "parameters": pair,
             "dnll": row.get("dnll"),
             "dscore": row.get("dscore"),
             "move_scaled": row.get("move_scaled"),
         }
-        for row in ties  # cheapest-first; each is ONE SHARED VALUE, priced on its own
-        if isinstance(row, dict) and row.get("merge_improves_score")
-    ]
+        if rename and len(pair) == 2:
+            hint["take"] = {"op": "rename", "old": pair[1], "new": pair[0]}
+        out.append(hint)
     return out[:limit] or None
 
 
@@ -996,7 +1035,9 @@ def fit_diagnosis_block(session) -> dict[str, Any] | None:
 def fit_merge_hints(session) -> list[dict[str, Any]] | None:
     """:func:`merge_hints` for the fit ``session`` has just frozen, for the fit result to carry —
     the rows of :func:`fit_diagnosis_block`'s verdict the result has room for."""
-    return merge_hints((fit_diagnosis_block(session) or {}).get("diagnosis"))
+    return merge_hints(
+        (fit_diagnosis_block(session) or {}).get("diagnosis"), rename=session.text_route
+    )
 
 
 def stored_diagnosis(session) -> dict[str, Any] | None:
@@ -1061,4 +1102,4 @@ def stored_merge_hints(session) -> list[dict[str, Any]] | None:
     diagnosis = stored_diagnosis(session)
     if not diagnosis.get("available") or diagnosis.get("stale"):
         return None
-    return merge_hints(diagnosis)
+    return merge_hints(diagnosis, rename=session.text_route)
