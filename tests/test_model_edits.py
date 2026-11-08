@@ -89,8 +89,48 @@ def test_set_initial_finds_a_symbol_sharing_a_line():
 
 
 def test_adding_a_duplicate_reaction_id_is_refused():
-    with pytest.raises(OperationError, match="already exists"):
-        me.apply_model_edits(SRC, [{"op": "add_reaction", "antimony": "fwd: A => B; k1*A;"}])
+    with pytest.raises(OperationError, match="already exists — use set_rate_law"):
+        me.apply_model_edits(SRC, [{"op": "add_reaction", "antimony": "fwd: A => B; k2*A;"}])
+
+
+def test_a_duplicate_reaction_id_changing_the_stoichiometry_says_to_remove_it_first():
+    """set_rate_law cannot change reactants or products, so it was the wrong advice for a
+    statement that does (16x in 15 runs, #284)."""
+    with pytest.raises(OperationError, match="put remove_reaction 'fwd' before this add_reaction"):
+        me.apply_model_edits(SRC, [{"op": "add_reaction", "antimony": "fwd: A => 2 B; k1*A;"}])
+    out, _ = me.apply_model_edits(
+        SRC,
+        [
+            {"op": "remove_reaction", "id": "fwd"},
+            {"op": "add_reaction", "antimony": "fwd: A => 2 B; k1*A;"},
+        ],
+    )
+    assert "fwd: A => 2 B; k1*A;" in out
+
+
+def test_remove_reaction_without_an_id_says_it_needs_one():
+    """It answered "no reaction ''" (5 runs, #284)."""
+    with pytest.raises(OperationError, match="remove_reaction needs `id`"):
+        me.apply_model_edits(SRC, [{"op": "remove_reaction", "antimony": "fwd"}])
+
+
+def test_set_initial_writes_the_initial_value_of_a_reaction_species():
+    """A species with no `X = v` line has an initial value all the same; refusing it (25x in 17
+    runs, #284) drove agents to renames and clock forcings. A species an earlier op of the batch
+    added counts too, and a name in no reaction is still refused."""
+    src = "model m\n  r1: A => B; k1*A;\n  A = 1;\nend\n"
+    out, summary = me.apply_model_edits(
+        src,
+        [
+            {"op": "set_initial", "id": "B", "antimony": "2"},
+            {"op": "add_reaction", "antimony": "r2: B => C; k2*B;"},
+            {"op": "set_initial", "id": "C", "antimony": "C_init"},
+        ],
+    )
+    assert summary[0] == "set B = 2" and summary[2] == "set C = C_init"
+    assert "  B = 2;\n" in out and "  C = C_init;\n" in out and out.endswith("end\n")
+    with pytest.raises(OperationError, match="nothing named 'D'"):
+        me.apply_model_edits(src, [{"op": "set_initial", "id": "D", "antimony": "1"}])
 
 
 def test_an_unknown_op_lists_the_real_ones():
@@ -401,8 +441,15 @@ def test_several_statements_on_one_line_stay_addressable():
 def test_a_comment_describing_a_reaction_is_not_a_reaction():
     """`// A -> B; k*A;` is a remark. Matching statement syntax inside comments made prose about
     the model read as model structure — for the unnamed-reaction refusal, that means refusing to
-    author a model whose only offence is a comment."""
+    author a model whose only offence is a comment. Antimony's `#` comment too: dessauges 94 was
+    refused for "no id ('# ERK->SOS negative feedback: …')" (#284)."""
     assert me.unnamed_reactions("model m\n  // A -> B; k*A;\nend") == []
+    assert me.unnamed_reactions("model m\n  # ERK->SOS negative feedback\nend") == []
+    out, _ = me.apply_model_edits(
+        "model m\n  # A = 1; the literature value\n  A = 3;\nend\n",
+        [{"op": "set_initial", "id": "A", "antimony": "9"}],
+    )
+    assert "# A = 1; the literature value" in out and "A = 9;" in out
     assert me.unnamed_reactions("model m\n  A -> B; k*A;\nend") == ["A -> B"]
     assert me.unnamed_reactions("model m\n  r1: A -> B; k*A;\nend") == []
 
@@ -728,11 +775,32 @@ def test_set_assignment_refuses_a_statement_that_is_not_its_own(payload, named):
     assert "the symbol goes in `id`" in str(ei.value)
 
 
-@pytest.mark.parametrize("payload", ["fwd: A => B; k1*A*A;", "A -> B; k1*A", "fwd: k1*A*A"])
+@pytest.mark.parametrize("payload", ["fwd: A => 2 B; k1*A;", "A -> C; k1*A", "fwd: k1*A*A"])
 def test_set_rate_law_refuses_a_whole_reaction_naming_the_ops_that_change_one(payload):
     with pytest.raises(OperationError, match="rate expression only") as ei:
         me.apply_model_edits(SRC, [{"op": "set_rate_law", "id": "fwd", "antimony": payload}])
     assert "remove_reaction" in str(ei.value) and "';'" not in str(ei.value)
+
+
+@pytest.mark.parametrize(
+    "payload", ["fwd: A => B; k1*A*A;", "A -> B; k1*A*A", "v_fwd = k1*A*A", "fwd := k1*A*A;"]
+)
+def test_set_rate_law_takes_the_law_out_of_a_prefix_or_its_own_reaction(payload):
+    """30 refusals in 24 runs of one sweep (#284) sent a law whose meaning is plain: behind an
+    `X =`, or in the reaction's own statement with its reactants and products unchanged."""
+    out, summary = me.apply_model_edits(
+        SRC, [{"op": "set_rate_law", "id": "fwd", "antimony": payload}]
+    )
+    assert summary == ["set rate law of fwd"]
+    assert "fwd: A => B; k1*A*A;" in out
+
+
+def test_set_rate_law_refuses_another_reactions_statement():
+    with pytest.raises(OperationError, match="statement of reaction 'rev'") as ei:
+        me.apply_model_edits(
+            SRC, [{"op": "set_rate_law", "id": "fwd", "antimony": "rev: B => A; k2*B*B"}]
+        )
+    assert ei.value.cause == "id_mismatch"
 
 
 def test_set_assignment_refuses_a_species():
@@ -741,6 +809,21 @@ def test_set_assignment_refuses_a_species():
     with pytest.raises(OperationError) as ei:
         me.apply_model_edits(SRC, [{"op": "set_assignment", "id": "A", "antimony": "2*B"}])
     assert ei.value.cause == "assign_to_species_refused"
+    assert "remove_reaction each one it is in, in this same batch" in str(ei.value)
+
+
+def test_set_assignment_on_a_species_the_batch_then_takes_out_of_its_reactions():
+    """alkan 71 assigned `Wip1prot` at op [1] and removed its reactions at ops [3-4]; refused at op
+    [1], it re-authored the whole model twice (#284). Only the batch's end state is checked."""
+    out, _ = me.apply_model_edits(
+        SRC,
+        [
+            {"op": "set_assignment", "id": "B", "antimony": "2*A"},
+            {"op": "remove_reaction", "id": "fwd"},
+            {"op": "remove_reaction", "id": "rev"},
+        ],
+    )
+    assert "B := 2*A;" in out and "fwd:" not in out and "rev:" not in out
 
 
 def test_set_assignment_refuses_a_reserved_name():

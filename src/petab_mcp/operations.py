@@ -712,17 +712,12 @@ def set_model(
             cause="self_assignment",
         )
 
-    # A fork quotes the forked version's box: that is the one it restores (#86).
-    forked = restore_parameter_df is not None and len(restore_parameter_df)
-    current = restore_parameter_df if forked else session.problem.parameter_df
-    normalized = (
-        _normalize_parameter_changes(parameters, arg="parameters", current=current)
-        if parameters
-        else []
-    )
+    normalized = _normalize_parameter_changes(parameters, arg="parameters") if parameters else []
 
     # The parameters estimated in the version this edit starts from (the fork's base, else HEAD), so
     # we can flag any the re-author drops.
+    forked = restore_parameter_df is not None and len(restore_parameter_df)
+    current = restore_parameter_df if forked else session.problem.parameter_df
     from petab.v2.C import ESTIMATE
 
     prior_estimated: set[str] = set()
@@ -1877,14 +1872,13 @@ def _normalize_parameter_changes(
     changes: list[dict[str, Any]],
     label: str = "make_changes",
     arg: str = "parameters",
-    current=None,
 ) -> list[dict[str, Any]]:
     """Validate + normalize a ``parameters`` list into ``{parameter_id, lower_bound, upper_bound,
     scale}`` entries (missing fields as ``None``), raising :class:`OperationError` on anything
     malformed. Shared by both edit paths so they enforce exactly the same entry contract (issue
     #114); ``label``/``arg`` name the offending argument in the rejection message, which is why
-    they default to the TOOL's names rather than these functions'. ``current`` is the parameter
-    table a one-bound refusal quotes the box from, so the caller can resend both (#86)."""
+    they default to the TOOL's names rather than these functions'. A bound left out stays as it is
+    (#284)."""
     if not isinstance(changes, list) or not changes:
         raise OperationError(
             f"{label}: {arg!r} must be a non-empty list of "
@@ -1915,20 +1909,7 @@ def _normalize_parameter_changes(
         if lb is None and ub is None and scale is None:
             raise OperationError(
                 f"{label}: the entry for {pid!r} changes nothing — give "
-                "lower_bound+upper_bound and/or scale."
-            )
-        if (lb is None) != (ub is None):
-            box = ""
-            if (
-                current is not None
-                and pid in current.index
-                and {LOWER_BOUND, UPPER_BOUND} <= set(current.columns)
-            ):
-                low, high = (float(current.loc[pid, c]) for c in (LOWER_BOUND, UPPER_BOUND))
-                box = f" Its current bounds are [{low:g}, {high:g}]: send both."
-            raise OperationError(
-                f"{label}: {pid!r} sets only one bound — a bound edit needs BOTH "
-                f"lower_bound and upper_bound (or neither).{box}"
+                "lower_bound, upper_bound and/or scale."
             )
         # Bounds must be real numbers HERE, not at the point of writing them: `update_parameters`
         # coerces with a bare `float(value)`, whose ValueError is not a PetabMcpError and so
@@ -2099,12 +2080,12 @@ def _parameter_edit(session, normalized: list[dict[str, Any]]) -> Callable[[Any]
         scale_checks: list[tuple[str, str]] = []  # (pid, scale) to verify AFTER the batched update
         changed = []
         warnings: list[str] = []
-        inner = (
-            R.classify_inner_parameters(problem)
-            if any(ch["upper_bound"] is not None for ch in normalized)
-            else {}
-        )
-        for ch in normalized:
+        df = problem.parameter_df
+        sent = [
+            {k for k in ("lower_bound", "upper_bound") if ch[k] is not None} for ch in normalized
+        ]
+        inner = R.classify_inner_parameters(problem) if any(sent) else {}
+        for ch, bounds in zip(normalized, sent):
             pid, lb, ub, scale = (
                 ch["parameter_id"],
                 ch["lower_bound"],
@@ -2112,7 +2093,17 @@ def _parameter_edit(session, normalized: list[dict[str, Any]]) -> Callable[[Any]
                 ch["scale"],
             )
             update: dict[str, Any] = {"id": pid}
-            if ub is not None and inner.get(pid) == R.INNER_TYPE_SIGMA:
+            if len(bounds) == 1 and pid in df.index:
+                # A bound left out stays as it is (#284), so the checks read the box it leaves.
+                kept = "upper" if lb is not None else "lower"
+                lb = float(df.loc[pid, LOWER_BOUND]) if lb is None else lb
+                ub = float(df.loc[pid, UPPER_BOUND]) if ub is None else ub
+                if lb >= ub:
+                    raise OperationError(
+                        f"{pid!r}: the box would be [{lb:g}, {ub:g}], since its {kept} bound "
+                        f"stays as it is. Send {kept}_bound too."
+                    )
+            if bounds and inner.get(pid) == R.INNER_TYPE_SIGMA:
                 raise OperationError(
                     f"Refusing bounds on {pid!r}: the fit solves this noise sigma analytically, "
                     "as the RMS of the residuals it covers, on [0, inf), so a bound on it does "
@@ -2120,7 +2111,7 @@ def _parameter_edit(session, normalized: list[dict[str, Any]]) -> Callable[[Any]
                     f"it. Leave {pid!r} out of `parameters`.",
                     cause="inner_solved_bound",
                 )
-            if ub is not None:
+            if bounds:
                 # Widening backstops read the pre-edit bound, so they must run BEFORE any update.
                 # Entries are distinct parameters, so checking them all against the pristine table
                 # (before the single batched write below) is equivalent to interleaving.
@@ -2131,14 +2122,17 @@ def _parameter_edit(session, normalized: list[dict[str, Any]]) -> Callable[[Any]
                 if sigma_warning:
                     warnings.append(sigma_warning)
                 _reject_repeated_widening(session, problem, pid, lb, ub)
-                update["lowerBound"], update["upperBound"] = lb, ub
+                if "lower_bound" in bounds:
+                    update["lowerBound"] = lb
+                if "upper_bound" in bounds:
+                    update["upperBound"] = ub
             if scale is not None:
                 update["parameterScale"] = scale
                 scale_checks.append((pid, scale))
             updates.append(update)
             summary: dict[str, Any] = {"parameter_id": pid}
-            if ub is not None:
-                summary["lower_bound"], summary["upper_bound"] = lb, ub
+            for k in bounds:
+                summary[k] = ch[k]
             if scale is not None:
                 summary["scale"] = scale
             changed.append(summary)
@@ -2173,7 +2167,7 @@ def change_parameters(
     """Batch-edit the bounds and/or scale of one or more parameters in ONE atomic edit.
 
     ``parameters`` is a list of per-parameter dicts, each naming ``parameter_id`` and any
-    of ``lower_bound`` / ``upper_bound`` (a bound edit — give BOTH or neither) and ``scale``
+    of ``lower_bound`` / ``upper_bound`` (one left out stays as it is) and ``scale``
     ('lin'|'log'|'log10'); an empty one changes nothing, for a refit with more starts. Group
     everything that belongs to one coherent retuning into a single
     call. Every per-parameter backstop still applies (a re-pinned parameter's 3rd widening, a
@@ -2181,11 +2175,7 @@ def change_parameters(
     non-positive box); because the whole batch is atomic, one
     rejected entry reverts ALL of them and nothing changes. An EDIT: mutates the parameter table
     but does NOT fit — the fit that scores it is wired at the server layer, not here."""
-    normalized = (
-        _normalize_parameter_changes(parameters, current=session.problem.parameter_df)
-        if parameters
-        else []
-    )
+    normalized = _normalize_parameter_changes(parameters) if parameters else []
     return _commit_change(
         session,
         "make_changes",

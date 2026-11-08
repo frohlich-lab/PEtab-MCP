@@ -128,12 +128,12 @@ def test_a_parameters_rejection_reverts_the_re_author(session):
     before_model = session.problem.model.to_sbml_str()
     before_params = _records(session)
 
-    with pytest.raises(OperationError, match="only one bound"):
+    with pytest.raises(OperationError, match="upper bound stays"):
         O.set_model(
             session,
             _antimony("r3: A => ; k3 * A;"),
             justification="bad bound entry",
-            parameters=[{"parameter_id": "k1", "lower_bound": 1e-3}],
+            parameters=[{"parameter_id": "k1", "lower_bound": 1e3}],
         )
 
     assert session.problem.model.to_sbml_str() == before_model
