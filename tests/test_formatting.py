@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from petab_mcp.formatting import (
+    EXPERIMENTS_MAX_BYTES,
     CONDITIONS_MAX_BYTES,
     conditions_tsv,
     df_to_records,
@@ -118,6 +119,53 @@ def test_experiments_tsv_is_one_row_per_period():
         "e1\t0.0\tdose",
         "e2\t0.0\t",
     ]
+
+
+def test_a_froehlich_sized_experiment_table_comes_back_one_row_per_layout_under_the_cap():
+    """froehlich's 9169 experiments, one per cell line, drug and dose, were 1 MB of TSV, the
+    table beside its 36 MB condition table (PEtab-MCP#290). A layout's periods are read in time
+    order, which a file need not keep."""
+    ids = [
+        f"TUMOR_line{i // 40:03d}_cellline_01_01_drug{i % 40:02d}_Conc{i % 7}_5nM"
+        for i in range(9169)
+    ]
+    froehlich = pd.DataFrame(
+        {"experimentId": [f"experiment____{c}" for c in ids], "time": 0.0, "conditionId": ids}
+    )
+    dosed = pd.DataFrame(
+        {
+            "experimentId": ["pre"] * 3,
+            "time": [0.0, float("-inf"), float("-inf")],
+            "conditionId": ["egf", "base", "cell"],
+        }
+    )
+    text = experiments_tsv(pd.concat([froehlich, dosed]))
+    assert len(text.encode()) <= EXPERIMENTS_MAX_BYTES
+    head, *table = text.splitlines()
+    assert head.startswith("9170 experiments, too large a table for one reply")
+    assert f"WHERE experimentId = 'experiment____{ids[0]}'" in head
+    assert table == [
+        "n_experiments\tn_periods\ttimes\tn_conditions\texample",
+        f"9169\t1\t0\t1\texperiment____{ids[0]}",
+        "1\t2\t-inf 0\t2 1\tpre",
+    ]
+
+
+def test_an_experiment_summary_counts_the_layouts_past_the_cap():
+    """A dose given at its own time per experiment is a layout per experiment: more than one reply
+    holds, so the summary stays under the cap too."""
+    long = pd.DataFrame(
+        {
+            "experimentId": [f"e{i}" for i in range(500) for _ in range(2)],
+            "time": [t for i in range(500) for t in (0.0, i + 1.0)],
+            "conditionId": "dose",
+        }
+    )
+    text = experiments_tsv(long, max_bytes=2048)
+    assert len(text.encode()) <= 2048
+    *_, last = text.splitlines()
+    more = 500 - (len(text.splitlines()) - 3)
+    assert last == f"(+{more} more layouts, {more} experiments)"
 
 
 def test_validation_reports_messages(session, broken_model):
