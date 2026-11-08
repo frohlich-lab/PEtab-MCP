@@ -352,9 +352,8 @@ def seed_model_antimony(problem) -> str | None:
     ``model_authored`` a meaningful flag.
 
     Species are seeded at :data:`SEED_INITIAL_VALUE`, and the seed is then RECONCILED like any
-    other model — same parametric ICs, same table sync (see
-    :meth:`session.PetabSession._seed_initial_model` for the one thing that pass does
-    differently).
+    other model except that its initial conditions are not parametrised (:func:`reconcile`'s
+    ``parametric_ics``): no ``<sid>_init`` parameter or row until a model is authored.
 
     Each id is declared with an explicit ``species`` statement. Antimony infers a bare
     ``B = 0.1;`` to be a PARAMETER — it only promotes a symbol to a species when a reaction uses
@@ -2547,10 +2546,9 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
         added.append(pid)
 
     # Re-derive the convention on IC rows that ALREADY EXIST, from the value the model declares
-    # now — the add-loop above only reaches params in `valid - table_ids`. That covers a seed row
-    # re-authored under the same state name (e.g. states x_0..x_4, each at 1) and a start
-    # re-declared at another value, neither of which the agent could move: a parameters-arg edit
-    # sets bounds/scale only. A shipped row is left as the problem defined it, and an estimated
+    # now — the add-loop above only reaches params in `valid - table_ids`. That covers a start
+    # re-declared at another value (e.g. states x_0..x_4 re-authored at 1), which the agent could
+    # not move: a parameters-arg edit sets bounds/scale only. A shipped row is left as the problem defined it, and an estimated
     # row whose value is still neither 0 nor 1 keeps its fitted nominal and bounds. Restricted to
     # DIRECT ICs (`<sid> = <param>`): a participant of a COMPOUND parametric IC (`Rec =
     # ini_R1*ini_R2fold`) valued 1 is a fold / normalisation seed to estimate, not a
@@ -2626,7 +2624,7 @@ def ensure_one_species(sm) -> bool:
     return True
 
 
-def reconcile(problem, shipped=None) -> dict[str, Any]:
+def reconcile(problem, shipped=None, parametric_ics: bool = True) -> dict[str, Any]:
     """Full reconciliation after a structural edit: promote local parameters, prune, parametric
     ICs, table sync.
 
@@ -2635,7 +2633,9 @@ def reconcile(problem, shipped=None) -> dict[str, Any]:
     row the model reintroduces comes back as the problem defined it — see
     :func:`sync_parameter_table`.
 
-    Runs unchanged on the content-free seed: it needs no special pass, because a shipped row it
+    The content-free seed passes ``parametric_ics=False``: its placeholder species get no
+    ``<sid>_init`` parameter or row, and keep the literal :data:`SEED_INITIAL_VALUE` they are
+    declared at, so the caller's first model gets the row minted from it. A shipped row the seed
     prunes is restored the moment the caller's model declares that parameter.
     """
     sm = problem.model.sbml_model
@@ -2650,10 +2650,11 @@ def reconcile(problem, shipped=None) -> dict[str, Any]:
     # row, that row is part of the problem definition and the zero/unset skip must not delete it
     # out from under them (`session.protected_fixed_parameter_ids` deliberately excludes IC
     # parameters, so nothing else would catch it).
-    ensure_parametric_initial_conditions(
-        sm,
-        skip_species=condition_target_symbols(problem),
-        protect_ids=set(shipped.index) if shipped is not None else None,
-    )
+    if parametric_ics:
+        ensure_parametric_initial_conditions(
+            sm,
+            skip_species=condition_target_symbols(problem),
+            protect_ids=set(shipped.index) if shipped is not None else None,
+        )
     synced = sync_parameter_table(problem, shipped=shipped)
     return {"pruned": pruned, "parameters": synced}

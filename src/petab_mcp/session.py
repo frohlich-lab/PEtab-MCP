@@ -448,10 +448,11 @@ class PetabSession:
         False until a ``make_changes`` call adds actual dynamics, so the model-less contract is
         unchanged.
 
-        The seed is RECONCILED exactly like any other model — no special pass. It declares no
-        mechanism, so the kinetic and initial-condition rows a model-less problem ships are pruned
-        at v0; that is safe because :func:`reconcile.sync_parameter_table` RESTORES a shipped row
-        the moment the caller's model reintroduces that parameter, its bounds intact.
+        The seed is RECONCILED like any other model, except that its species get no parametric
+        initial condition (``parametric_ics=False``). It declares no mechanism and no
+        ``<sid>_init``, so the kinetic and initial-condition rows a model-less problem ships are
+        pruned at v0; that is safe because :func:`reconcile.sync_parameter_table` RESTORES a
+        shipped row the moment the caller's model reintroduces that parameter, its bounds intact.
 
         It then LINTS, under the same rules every edit is held to, and a failure RAISES. It
         deliberately does not degrade to the empty skeleton: that state is the one nothing
@@ -477,7 +478,7 @@ class PetabSession:
             )
         try:
             self._set_model_from_antimony(antimony)
-            R.reconcile(self.problem, shipped=self.shipped_parameter_df)
+            R.reconcile(self.problem, shipped=self.shipped_parameter_df, parametric_ics=False)
         except Exception as exc:
             raise ValidationError(
                 f"could not build a valid initial model for this model-less problem "
