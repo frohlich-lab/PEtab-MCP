@@ -63,6 +63,19 @@ jobs:
           key: pip-ninja-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
           restore-keys: pip-ninja-${{ runner.os }}-py${{ matrix.python-version }}-
 
+      # The compiler cache the tests' model builds go through (`Run tests`): a model build is
+      # ~1.5 s of code generation and ~50 s of C++ compiling, and most of the job's slowest tests
+      # build models an earlier run built too. Saved under this run's id, restored from the
+      # latest one this branch or main saved; ccache keys each object on its preprocessed source,
+      # flags and compiler, so an entry is never stale.
+      - name: Cache ccache
+        if: env.RUN == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-py${{ matrix.python-version }}-${{ github.run_id }}
+          restore-keys: ccache-${{ runner.os }}-py${{ matrix.python-version }}-
+
       # AMICI generates and compiles C++ for every model, and is itself built
       # from source here (PyPI has only its sdist; its build pulls BLAS from
       # the scipy-openblas64 wheel). A C/C++ compiler and CMake ship on
@@ -77,7 +90,7 @@ jobs:
         if: env.RUN == 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ninja-build cmake build-essential
+          sudo apt-get install -y --no-install-recommends ninja-build cmake build-essential ccache
 
       # AMICI's source build compiles serially unless told otherwise; the pip
       # cache keeps the wheel it builds.
@@ -125,12 +138,26 @@ jobs:
         # amici_build_root, so the ~60-90s toy-model compile was paid twice for no parallelism.
         # The regulator corpus runs in its own job, below, only where it can change; a local
         # `pytest` still runs it. --durations lists the slowest tests at the end of the log.
+        #
+        # Every model build compiles through ccache: CMake takes the launchers from the
+        # environment. The tests build under /tmp, a different folder each run, so ccache rewrites
+        # paths below it relative to the build directory, where they are the same every run.
+        env:
+          CMAKE_C_COMPILER_LAUNCHER: ccache
+          CMAKE_CXX_COMPILER_LAUNCHER: ccache
+          CCACHE_BASEDIR: /tmp
+          CCACHE_MAXSIZE: 1G
         run: |
+          ccache --zero-stats
           pool=()
           if [ "$POOL" != "true" ]; then
             pool=(--ignore tests/test_dask_engine.py --ignore tests/test_pool.py --ignore tests/test_pool_stress.py)
           fi
           python -m pytest -v -n 2 --durations=30 --ignore tests/test_regulator_corpus.py "${pool[@]}"
+
+      - name: ccache statistics
+        if: ${{ !cancelled() && env.RUN == 'true' }}
+        run: ccache --show-stats --verbose
 
   # Whether a change can move a verdict of the regulator corpus (tests/test_regulator_corpus.py):
   # the files below, diffed against the merge base. A job-level filter, not the workflow's own
