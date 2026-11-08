@@ -195,6 +195,42 @@ def _math_nodes(sm):
             stack.extend(node.getChild(i) for i in range(node.getNumChildren()))
 
 
+def _saturation_constants(sm) -> set[str]:
+    """Parameters that are, alone or raised to a power, a summand of a denominator another summand
+    of which reads a species or a rule: ``K`` in ``V*S/(K + S)`` and ``S^n/(K^n + S^n)``, in the
+    model's rate laws, rules and initial assignments. Toward 0 such a constant turns the rate into
+    a constant flux; toward infinity, into the linear form."""
+    if sm is None:
+        return set()
+    dynamic = species_ids(sm) | {r.getVariable() for r in sm.getListOfRules()}
+
+    def summands(node):
+        if node.getType() == libsbml.AST_PLUS:
+            for i in range(node.getNumChildren()):
+                yield from summands(node.getChild(i))
+        else:
+            yield node
+
+    def constant(node) -> str | None:
+        if node.getType() in (libsbml.AST_POWER, libsbml.AST_FUNCTION_POWER):
+            node = node.getChild(0)
+        if node.getType() == libsbml.AST_NAME and node.getName() not in dynamic:
+            return node.getName()
+        return None
+
+    found: set[str] = set()
+    for node in _math_nodes(sm):
+        if node.getType() != libsbml.AST_DIVIDE or node.getNumChildren() != 2:
+            continue
+        terms = list(summands(node.getChild(1)))
+        for term in terms:
+            if (name := constant(term)) and any(
+                _ast_names(other) & dynamic for other in terms if other is not term
+            ):
+                found.add(name)
+    return found
+
+
 def _exponent_bounds(nominal) -> tuple[float, float]:
     """Tight LINEAR bounds for a cooperativity / Hill exponent (typical range ~1–8), always
     bracketing the nominal value so the fit starts feasible."""
