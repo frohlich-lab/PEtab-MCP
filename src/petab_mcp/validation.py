@@ -741,6 +741,82 @@ def _frozen_stoichiometry_message(rid, side: str, species: str, symbol: str, fro
     )
 
 
+def _math_of(sbml_model):
+    """``(where, math)`` for each reaction's rate law, rule, initial assignment and event
+    assignment of ``sbml_model``, ``where`` naming it as a message does."""
+    for rxn in sbml_model.getListOfReactions():
+        if rxn.getKineticLaw() is not None:
+            yield f"reaction `{rxn.getId()}`", rxn.getKineticLaw().getMath()
+    for rule in sbml_model.getListOfRules():
+        yield f"the rule for `{rule.getVariable()}`", rule.getMath()
+    for ia in sbml_model.getListOfInitialAssignments():
+        yield f"the initial assignment of `{ia.getSymbol()}`", ia.getMath()
+    for event in sbml_model.getListOfEvents():
+        for ea in event.getListOfEventAssignments():
+            yield f"event `{event.getId()}`'s assignment to `{ea.getVariable()}`", ea.getMath()
+
+
+def piecewise_order_issues(sbml_model) -> list[str]:
+    """One message per ``piecewise`` whose condition places (its 2nd, 4th, … argument) hold
+    something that compares nothing: Antimony and SBML read ``piecewise(value, condition, …,
+    otherwise)``, and libSBML accepts the arguments in any order. raimundez 87 wrote
+    ``piecewise(EGF > 0, EGF/(EGF + r_CET*CET), 0)``, which committed with no warning and scored
+    408 nll worse than the model it nests (PEtab-MCP#286). The statements route refuses the same
+    (:func:`mechanisms._piecewise`)."""
+    out = []
+    for where, math in _math_of(sbml_model):
+        stack = [math] if math is not None else []
+        while stack:
+            node = stack.pop()
+            children = [node.getChild(i) for i in range(node.getNumChildren())]
+            stack += children
+            if node.getType() != libsbml.AST_FUNCTION_PIECEWISE:
+                continue
+            if all(c.isBoolean() for c in children[1::2]):
+                continue
+            fix = []
+            for a, b in zip(children[0::2], children[1::2]):
+                fix += [b, a] if a.isBoolean() and not b.isBoolean() else [a, b]
+            fix += children[len(fix) :]
+            out.append(
+                f"{where}: `{libsbml.formulaToL3String(node)}` has a value where a condition goes. "
+                "piecewise reads (value, condition, …, otherwise): write `piecewise("
+                f"{', '.join(map(libsbml.formulaToL3String, fix))})`."
+            )
+    return out
+
+
+def estimated_assignment_issues(problem) -> list[str]:
+    """One message per parameter an initial assignment sets that has an estimated row. The row is
+    a parameter of its own to the fit, so the assignment ties nothing: schwen 47's
+    ``km_nExpID1 = km_nExpID2;`` was accepted and the two were fitted to 42650 and 1000
+    (PEtab-MCP#286). A parameter the observable and measurement tables name cannot be tied by any
+    edit; any other is computed by an assignment rule, which takes no row."""
+    sm = problem.model.sbml_model
+    tables = _observable_and_measurement_symbols(problem)
+    df = problem.parameter_df
+    out = []
+    for ia in sm.getListOfInitialAssignments():
+        pid = ia.getSymbol()
+        if sm.getParameter(pid) is None or pid not in df.index or ESTIMATE not in df.columns:
+            continue
+        if not as_bool(df.loc[pid, ESTIMATE]):
+            continue
+        rhs = libsbml.formulaToL3String(ia.getMath())
+        fix = (
+            f"`{pid}` is named by the observable and measurement tables, which are fixed, so no "
+            "edit can set it: drop the assignment."
+            if pid in tables
+            else f"To compute `{pid}` from other quantities, write the rule `{pid} := {rhs}`, "
+            "which takes no row; to estimate it, drop the assignment."
+        )
+        out.append(
+            f"`{pid} = {rhs}` assigns `{pid}`, whose row is estimated: a row the fit estimates "
+            f"and an assignment cannot both set it. {fix}"
+        )
+    return out
+
+
 def validate_problem(problem, protected_fixed_ids=None, statements: bool = False) -> dict[str, Any]:
     """Run PEtab v2 linting + libsbml SBML consistency and return a JSON-friendly report.
 

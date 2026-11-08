@@ -937,3 +937,107 @@ def test_a_species_new_against_the_forked_version_is_warned_about(session):
     session.derived_from = base
     forked = _set_model(session, ["J: B => D; k3 * B;"])
     assert any("unobserved species ['D']" in w for w in forked["warnings"])
+
+
+def test_a_name_another_version_defined_is_named(session):
+    """dessauges 91 forked version 32 with a rate law pasted from version 33, which read 33's
+    species `Sopt`; the fork minted it as a constant and the fit inverted a gain with it, with no
+    warning, since version 32 never had it (PEtab-MCP#286)."""
+    _set_model(session)
+    base = _commit(session)
+    _set_model(session, _GLI)
+    v = _commit(session)
+    session.derived_from = base
+    result = _set_model(session, ["gli_read: A => B; k4*GliS*A;"])
+    assert _orphaned(result) == [
+        "`GliS` is used but defined nowhere; it was created as an estimated parameter. Version "
+        f"{v} had it as a species, and version {base}, which this edit changes, does not: define "
+        "it here too, or read the name that replaced it."
+    ]
+
+
+def _said(result, start):
+    return [m["message"] for m in result["messages"] if m["message"].startswith(start)]
+
+
+def test_an_edit_lists_the_estimated_parameters_it_created(session):
+    """dessauges 91's `Sopt` and fujita 61's `M` were minted as estimated constants and no reply
+    said so (PEtab-MCP#286). A row the edit's parent or the shipped table has is not new."""
+    result = _set_model(session, ["r3: B => ; k_new*k1*B;", "r4: A => ; Sopt*A;"])
+    assert _said(result, "New estimated") == ["New estimated parameter(s): `Sopt`, `k_new`."]
+    assert _said(_set_model(session, ["r3: B => ; k_new*k1*B;"]), "New estimated") == []
+
+
+def test_an_assignment_to_an_estimated_row_is_refused(session):
+    """schwen 47's `km_nExpID1 = km_nExpID2;` was accepted with only the generic reuse warning, and
+    the fit estimated the two apart, to 42650 and 1000 (PEtab-MCP#286)."""
+    from petab_mcp.errors import ValidationError
+
+    with pytest.raises(ValidationError, match="the rule `k1 := k2`, which takes no row") as exc:
+        O.set_model(session, _BASE_MODEL.format(extra="").replace("k1 = 0.5", "k1 = k2"), "x")
+    assert exc.value.issues == [
+        "`k1 = k2` assigns `k1`, whose row is estimated: a row the fit estimates and an assignment "
+        "cannot both set it. To compute `k1` from other quantities, write the rule `k1 := k2`, "
+        "which takes no row; to estimate it, drop the assignment."
+    ]
+    session.problem.parameter_df.loc["sigma_B", "estimate"] = True
+    with pytest.raises(ValidationError, match="no edit can set it: drop the assignment"):
+        _set_model(session, ["sigma_B = k2;"])
+    _set_model(session, ["k_rule := 2*k2;", "r3: B => ; k_rule*B;"])  # a rule takes no row
+
+
+_STARTS = [
+    "species S in compartment_;",
+    "S = S_tot - C_init;",
+    "S_tot = 2;",
+    "C_init = 0.3;",
+    "species C in compartment_;",
+    "r3: S => C; k2*S;",
+]
+
+
+def test_a_start_set_without_its_parameter_names_what_still_reads_it(session):
+    """oliveira 59 set the exposed and infected starts to 0, and k did not drop: the susceptible
+    start still read their rows, and no message said so (PEtab-MCP#286)."""
+    _set_model(session, [*_STARTS, "C = C_init;"])
+    result = _set_model(session, [*_STARTS, "C = 0;"])
+    assert _said(result, "`C_init`") == [
+        "`C_init` no longer sets the initial amount of `C` but stays estimated, since it is still "
+        "read by the initial assignment of `S`: rewrite that without it to drop its row."
+    ]
+
+
+@pytest.mark.parametrize(
+    "rule", ["f := piecewise(A > 0, A/(A + k1), 0);", "f := piecewise(A/(A + k1), A > 0, 0);"]
+)
+def test_a_piecewise_with_a_value_where_its_condition_goes_is_refused(session, rule):
+    """raimundez 87 wrote `piecewise(EGF > 0, EGF/(EGF + r_CET*CET), 0)`, which committed with no
+    warning and scored 408 nll worse than the model it nests; the statements route refuses it
+    (PEtab-MCP#286)."""
+    from petab_mcp.errors import ValidationError
+
+    extra = [rule, "r3: B => ; k2*f*B;"]
+    if rule.startswith("f := piecewise(A >"):
+        with pytest.raises(ValidationError) as exc:
+            _set_model(session, extra)
+        assert exc.value.issues == [
+            "the rule for `f`: `piecewise(A > 0, A / (A + k1), 0)` has a value where a condition "
+            "goes. piecewise reads (value, condition, …, otherwise): write "
+            "`piecewise(A / (A + k1), A > 0, 0)`."
+        ]
+    else:
+        assert _set_model(session, extra)["applied"]
+
+
+def test_a_folded_warning_keeps_the_symbols_it_names(session):
+    """bachmann 77's dead `pSTAT5n`, read by three readouts, was "1 warning(s) unchanged since
+    version 7" from v8 on, and the best model kept the bug (PEtab-MCP#286). Only the model's and
+    the table's ids are kept: `statements` is a word, `gone` no symbol."""
+    from petab_mcp import messages as M
+
+    said = "species `B` starts at 0 and stays 0 (`r2`, 'k2', `statements`, `gone`)."
+    session.warnings_sent = {(M.SOURCE_VALIDATION, said): 7}
+    out = O._unrepeated(session, [M.warning(M.SOURCE_VALIDATION, said)], None)
+    assert [m["message"] for m in out] == [
+        "1 warning(s) unchanged since version 7, naming `B`, `r2`, `k2`."
+    ]

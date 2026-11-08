@@ -21,6 +21,7 @@ transient state inside one call.
 from __future__ import annotations
 
 import copy
+import functools
 import json
 import re
 from typing import Any, Callable
@@ -35,7 +36,15 @@ from .errors import ModelUpdateError, ParameterError, PetabMcpError, ValidationE
 from .parameters import estimated_mask
 from .provenance import binding_of
 from .references import resolve_references
-from .validation import INPUT_UNREAD, frozen_parametric_stoichiometry_issues, validate_problem
+from .reconcile import _ast_names
+from .validation import (
+    INPUT_UNREAD,
+    _math_of,
+    estimated_assignment_issues,
+    frozen_parametric_stoichiometry_issues,
+    piecewise_order_issues,
+    validate_problem,
+)
 
 # AMICI reserves a handful of short symbols for its generated code (the state vector ``x``,
 # parameters ``p``, constants ``k``, expressions ``w``, time ``t``, the Heaviside/root vector
@@ -260,7 +269,7 @@ def _parsimony_warnings(problem, old_species: set[str]) -> list[str]:
     observable just as well as a repair that reuses existing species (e.g. making a reaction
     reversible). We flag *only* that case, in-loop, without rejecting the (structurally valid)
     edit. "New" is against ``old_species``, the species of the version the edit applies to
-    (:func:`_parent_model`): a fork's base, not HEAD.
+    (:func:`_parent`): a fork's base, not HEAD.
 
     We deliberately do NOT flag species that are legitimately unobserved, because doing so
     trained the agent to ignore the warning entirely (it fired 62× on correct choices on one
@@ -317,42 +326,129 @@ def _pruned_warnings(pruned: list[str], names: dict[str, str]) -> list[str]:
     return [f"Removed species nothing in the model reads, with their initial amounts: {shown}."]
 
 
-def _parent_model(session):
-    """The SBML model of the version an edit applies to: ``session.derived_from`` for a
-    ``base_version`` fork, else the working model, read before the edit replaces it."""
+@functools.lru_cache(maxsize=64)
+def _stored_model(antimony: str) -> SbmlModel:
+    """A stored version's model, built once per text: a version never changes once written. The
+    caller holds the returned object while it reads its ``sbml_model``, which it owns."""
+    return SbmlModel.from_antimony(antimony)
+
+
+def _parent(session) -> tuple[int, SbmlModel, Any]:
+    """The version an edit changes, its model and its parameter table: ``session.derived_from``
+    for a ``base_version`` fork, else the working model, read before the edit replaces it."""
     fork = getattr(session, "derived_from", None)
-    if fork is not None:
-        return SbmlModel.from_antimony(session.provenance.get_model_antimony(fork)).sbml_model
-    return session.problem.model.sbml_model
+    if fork is None:
+        problem = session.problem
+        return session.provenance.current_version, problem.model, problem.parameter_df
+    prov = session.provenance
+    return fork, _stored_model(prov.get_model_antimony(fork)), prov.get_parameter_df(fork)
 
 
-def _orphan_warnings(session, seeded: list[str], parent) -> list[str]:
-    """One warning for each name the reconcile seeded (``seeded`` of
-    :func:`reconcile.sync_parameter_table`) that ``parent``, the version this edit changes
-    (:func:`_parent_model`), defined as a species, a rule or a reaction: the edit dropped that
-    definition and kept a reader, so the quantity is now a constant the fit tunes. fontaine's
-    `GliS`, renamed away from the reaction making it, was fitted so, 140 nll worse, with no reply
-    naming it (PEtab-MCP#264).
-
-    A name no earlier model defined is not named: a rate law reading a new name is how a rate
-    constant is introduced (the `model_edits` route documents it), about 19 times a session."""
-    if not seeded:
-        return []
-    fork = getattr(session, "derived_from", None)
-    version = fork if fork is not None else session.provenance.current_version
-    defined = {r.getId(): "a reaction" for r in parent.getListOfReactions()}
-    defined |= {s.getId(): "a species" for s in parent.getListOfSpecies()}
-    for rule in parent.getListOfRules():
+def _definitions(sm) -> dict[str, str]:
+    """What each species, rule target and reaction of the SBML model ``sm`` is, by id."""
+    defined = {r.getId(): "a reaction" for r in sm.getListOfReactions()}
+    defined |= {s.getId(): "a species" for s in sm.getListOfSpecies()}
+    for rule in sm.getListOfRules():
         if rule.isAssignment():
             defined[rule.getVariable()] = f"an assignment rule (`{rule.getVariable()} := …`)"
         elif rule.isRate():
             defined[rule.getVariable()] = "a rate rule"
-    return [
-        f"`{pid}` is used but defined nowhere; it was created as an estimated parameter. Version "
-        f"{version} had it as {defined[pid]}: define it again, or read the name that replaced it."
-        for pid in seeded
-        if pid in defined
-    ]
+    return defined
+
+
+def _orphan_warnings(session, seeded: list[str], version: int, parent: SbmlModel) -> list[str]:
+    """One warning for each name the reconcile seeded (``seeded`` of
+    :func:`reconcile.sync_parameter_table`) that a version defined as a species, a rule or a
+    reaction: the edit dropped that definition, or never had it, and kept a reader, so the
+    quantity is now a constant the fit tunes. fontaine's `GliS`, renamed away from the reaction
+    making it, was fitted so, 140 nll worse, with no reply naming it (PEtab-MCP#264).
+
+    ``version`` is the one this edit changes and ``parent`` its model. A name it does not define
+    is looked up in every other stored version, newest first, reading only those whose text
+    names it: dessauges 91 forked version 32 with a rate law from version 33 that read 33's
+    species `Sopt`, and the fit inverted a gain with it (PEtab-MCP#286). A name no version
+    defined is not named here: a rate law reading a new name is how a rate constant is introduced
+    (the `model_edits` route documents it), about 19 times a session."""
+    if not seeded:
+        return []
+    defined = _definitions(parent.sbml_model)
+    found = {pid: (version, defined[pid]) for pid in seeded if pid in defined}
+    prov = session.provenance
+    for n in reversed(prov.stored_version_numbers()):
+        rest = [pid for pid in seeded if pid not in found]
+        if not rest:
+            break
+        if n == version:
+            continue
+        text = prov.get_model_antimony(n)
+        named = [pid for pid in rest if re.search(rf"\b{pid}\b", text)]
+        if named:
+            kinds = _definitions(_stored_model(text).sbml_model)
+            found |= {pid: (n, kinds[pid]) for pid in named if pid in kinds}
+    out = []
+    for pid in seeded:
+        if pid not in found:
+            continue
+        n, kind = found[pid]
+        where = (
+            f"Version {n} had it as {kind}: define it again"
+            if n == version
+            else f"Version {n} had it as {kind}, and version {version}, which this edit changes, "
+            "does not: define it here too"
+        )
+        out.append(
+            f"`{pid}` is used but defined nowhere; it was created as an estimated parameter. "
+            f"{where}, or read the name that replaced it."
+        )
+    return out
+
+
+def _minted_warnings(problem, added: list[str], parent_df, shipped_df) -> list[str]:
+    """The estimated parameters the reconcile created (``added`` of
+    :func:`reconcile.sync_parameter_table`) that neither the edit's parent nor the shipped table
+    has a row for, in one line. A stale name minted as a constant was the only sign of a pasted
+    rate law in four 2026-11-08 runs (dessauges 91's `Sopt`, fujita 61's `M`), and nothing said it
+    was minted (PEtab-MCP#286)."""
+    known = {str(p) for p in parent_df.index} | {str(p) for p in shipped_df.index}
+    minted = [p for p in added if p not in known and R.is_parameter_estimated(problem, p)]
+    if not minted:
+        return []
+    return [f"New estimated parameter(s): {', '.join(f'`{p}`' for p in minted)}."]
+
+
+def _still_read_warnings(parent: SbmlModel, problem) -> list[str]:
+    """One warning per estimated parameter a species' initial assignment in ``parent`` read and
+    no longer reads, naming the expressions that keep it estimated. oliveira 59 set the exposed
+    and infected starts to 0, and the parameters count did not drop because the susceptible start
+    still read their rows, with no message (PEtab-MCP#286)."""
+    sm = problem.model.sbml_model
+    params = R.parameter_ids(sm)
+
+    def starts(model) -> dict[str, set[str]]:
+        return {
+            ia.getSymbol(): _ast_names(ia.getMath())
+            for ia in model.getListOfInitialAssignments()
+            if model.getSpecies(ia.getSymbol()) is not None
+        }
+
+    after = starts(sm)
+    dropped: dict[str, list[str]] = {}
+    for sid, names in starts(parent.sbml_model).items():
+        if sm.getSpecies(sid) is None:
+            continue
+        for pid in sorted((names - after.get(sid, set())) & params):
+            if R.is_parameter_estimated(problem, pid):
+                dropped.setdefault(pid, []).append(f"`{sid}`")
+    out = []
+    for pid, sids in dropped.items():
+        readers = [where for where, math in _math_of(sm) if pid in _ast_names(math)]
+        if readers:
+            out.append(
+                f"`{pid}` no longer sets the initial amount of {', '.join(sids)} but stays "
+                f"estimated, since it is still read by {', '.join(readers)}: rewrite "
+                f"{'that' if len(readers) == 1 else 'those'} without it to drop its row."
+            )
+    return out
 
 
 _REJECTION_ISSUES_SHOWN = 3
@@ -492,6 +588,10 @@ def _commit_change(
                         "reconciles to a model that cannot move."
                     ],
                 )
+            if assigned := estimated_assignment_issues(problem):
+                raise ValidationError(
+                    f"Operation {op!r} rejected: {_rejection_summary(assigned)}", issues=assigned
+                )
         else:
             recon = None
 
@@ -549,11 +649,14 @@ def _commit_change(
 
         warnings = []
         if recon is not None:
-            parent = _parent_model(session)
+            version, parent, parent_df = _parent(session)
+            added = recon["parameters"]["added"]
             warnings = [
                 *_pruned_warnings(recon["pruned"]["species"], names),
-                *_orphan_warnings(session, recon["parameters"]["seeded"], parent),
-                *_parsimony_warnings(problem, set(R.species_ids(parent))),
+                *_minted_warnings(problem, added, parent_df, session.shipped_parameter_df),
+                *_orphan_warnings(session, recon["parameters"]["seeded"], version, parent),
+                *_still_read_warnings(parent, problem),
+                *_parsimony_warnings(problem, set(R.species_ids(parent.sbml_model))),
             ]
         # A row's regulators are signed on this version's bounds: an edit of a bound or a scale
         # can change what its rate records, and the record changes with the problem below.
@@ -759,6 +862,10 @@ def set_model(
                 "make_changes rejected: a reaction uses a parameter/symbol as a stoichiometry "
                 "coefficient, which Antimony freezes to a constant and drops.",
                 issues=[i["message"] for i in stoich_issues],
+            )
+        if piecewise := piecewise_order_issues(sm):
+            raise ValidationError(
+                f"make_changes rejected: {_rejection_summary(piecewise)}", issues=piecewise
             )
         return candidate, {
             "model_id": candidate.model_id,
@@ -2420,9 +2527,33 @@ def bundle_result(
 _FOLDED_SOURCES = (M.SOURCE_EDIT, M.SOURCE_VALIDATION)
 
 
+#: A name a warning quotes, in backticks or single quotes.
+_QUOTED_NAME = re.compile(r"[`']([A-Za-z_]\w*)[`']")
+#: How many names a folded line keeps.
+_FOLDED_NAMES_SHOWN = 12
+
+
+def _folded(problem, texts: list[str], version: int) -> str:
+    """The one line standing for ``texts``, warnings first sent whole with ``version``, with the
+    model's and the parameter table's ids they quote: bachmann 77's dead `pSTAT5n`, still read by
+    three readouts, was "1 warning(s) unchanged since version 7" from then on, and the best model
+    kept the bug (PEtab-MCP#286)."""
+    sm = problem.model.sbml_model
+    known = R.species_ids(sm) | R.parameter_ids(sm) | {str(p) for p in problem.parameter_df.index}
+    known |= {r.getId() for r in sm.getListOfReactions()}
+    names = list(dict.fromkeys(n for t in texts for n in _QUOTED_NAME.findall(t) if n in known))
+    shown = ", ".join(f"`{n}`" for n in names[:_FOLDED_NAMES_SHOWN])
+    if len(names) > _FOLDED_NAMES_SHOWN:
+        shown += f" (+{len(names) - _FOLDED_NAMES_SHOWN} more)"
+    return f"{len(texts)} warning(s) unchanged since version {version}" + (
+        f", naming {shown}." if names else "."
+    )
+
+
 def _unrepeated(session, messages: list[dict[str, str]], version: int | None) -> list[dict]:
     """``messages`` with every edit or lint warning the last committed result carried folded into
-    one line per source, naming the version whose result carried it in full.
+    one line per source, naming the version whose result carried it in full and the symbols it
+    quotes (:func:`_folded`).
 
     ``version`` is the version this call created, ``None`` when it created none. Only a committed
     result is remembered, so the version a line names always has a result of its own, and a
@@ -2434,17 +2565,17 @@ def _unrepeated(session, messages: list[dict[str, str]], version: int | None) ->
             return None
         return sent.get((m["source"], m["message"]))
 
-    folded: dict[tuple[str, int], int] = {}
+    folded: dict[tuple[str, int], list[str]] = {}
     for m in messages:
         if (v := first_sent(m)) is not None:
-            folded[m["source"], v] = folded.get((m["source"], v), 0) + 1
+            folded.setdefault((m["source"], v), []).append(m["message"])
     out = []
     for m in messages:
         v = first_sent(m)
         if v is None:
             out.append(m)
-        elif (n := folded.pop((m["source"], v), None)) is not None:
-            out.append(M.warning(m["source"], f"{n} warning(s) unchanged since version {v}."))
+        elif (texts := folded.pop((m["source"], v), None)) is not None:
+            out.append(M.warning(m["source"], _folded(session.problem, texts, v)))
     if version is not None:
         session.warnings_sent = {
             (m["source"], m["message"]): version if (v := first_sent(m)) is None else v
