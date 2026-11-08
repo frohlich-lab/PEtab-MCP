@@ -388,7 +388,14 @@ def test_arity_is_reported_as_arity_not_as_a_name_mismatch():
         V._reduced_from_named(_PP(), [0.5], ["k", "sigma", "scale"])
 
 
+class _Model:
+    def get_observable_ids(self):
+        return ()
+
+
 class _Objective:
+    amici_model = _Model()
+
     def __call__(self, x, **kwargs):
         return {"fval": 1.0, "rdatas": []}
 

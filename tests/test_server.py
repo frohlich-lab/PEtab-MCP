@@ -539,6 +539,7 @@ def test_list_data_tables(tmp_path):
             "parameters",
             "simulations",
             "simulations_history",
+            "state_trajectories",
             "optimization_starts",
             "optimization_trace",
         }
