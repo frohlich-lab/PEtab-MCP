@@ -817,7 +817,12 @@ def refit_problem(
         target = _build_target(uview, reference, build_dir, model_name)
         out = _refit_one(uview, target=target, n_starts=n_starts, fit_engine=fit_engine, cap=cap)
         if out["status"] != STATUS_OK:
-            return {**out, "unit": unit, "mode": MODE_TRANSFER}
+            return {
+                **out,
+                "reason": f"unit `{unit}`: {out['reason']}",
+                "unit": unit,
+                "mode": MODE_TRANSFER,
+            }
         records.extend(out.pop("records"))
         per_unit[unit] = {k: v for k, v in out.items() if k not in ("status", "mode", "n_starts")}
     chi2s = [u["chi2"] for u in per_unit.values()]
@@ -877,11 +882,18 @@ def _refit_units(measurement_df, units):
 def _refit_one(
     view, *, target: dict[str, str], n_starts: int, fit_engine, cap: float
 ) -> dict[str, Any]:
-    """One system's multistart refit — :func:`refit_problem` for a table that is one unit."""
+    """One system's multistart refit — :func:`refit_problem` for a table that is one unit.
+
+    The optimum is simulated again for its records, with the sensitivities the optimizer scored it
+    with (none for the start point, which is scored without): they enter the solver's error
+    control, so a simulation without them takes other steps and can fail where the optimizer's
+    succeeded. An optimum that does not simulate again is :data:`STATUS_NON_FINITE`, not scored on
+    the optimizer's value alone."""
     import logging
 
     import numpy as np
     import pypesto.optimize
+    from amici.sim.sundials import simulation_status_to_str
     from pypesto.C import FVAL
     from pypesto.C import RDATAS as PP_RDATAS
 
@@ -921,10 +933,11 @@ def _refit_one(
     best = min(finite, key=lambda r: float(r["fval"])) if finite else None
     nll = float(best["fval"]) if best is not None else math.inf
     x_best = None if best is None else np.asarray(best["x"], dtype=float)
+    orders = (0, 1)
     x_red_start = pp.get_reduced_vector(x_start)
     fval_start = float(pp.objective(x_red_start))
     if math.isfinite(fval_start) and fval_start < nll:
-        nll, x_best = fval_start, x_start
+        nll, x_best, orders = fval_start, x_start, (0,)
     if not math.isfinite(nll):
         return {
             "status": STATUS_NON_FINITE,
@@ -932,7 +945,19 @@ def _refit_one(
             "start point has none either (the model could not be integrated there, "
             "or its likelihood diverged)",
         }
-    ret = pp.objective(pp.get_reduced_vector(x_best), sensi_orders=(0,), return_dict=True)
+    ret = pp.objective(pp.get_reduced_vector(x_best), sensi_orders=orders, return_dict=True)
+    if not math.isfinite(float(ret[FVAL])):
+        failed = [
+            f"`{rd.id}` ({simulation_status_to_str(rd.status)} at t={float(rd.t_last):g})"
+            for rd in ret[PP_RDATAS]
+            if rd.status != 0
+        ]
+        where = f"fails in {', '.join(failed)}" if failed else "has no finite likelihood"
+        return {
+            "status": STATUS_NON_FINITE,
+            "reason": f"the refit's optimum (nll {nll:.6g} to the optimizer) {where} when "
+            "simulated again, so nothing reproduces that score",
+        }
     res = AmiciEngine._res_from_rdatas(ret[PP_RDATAS])
     k = int(view.n_estimated)
     fitted = _fitted_values(

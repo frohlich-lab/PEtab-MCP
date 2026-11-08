@@ -19,7 +19,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from petab.v2.C import CONDITION_ID, ESTIMATE, EXPERIMENT_ID
+from petab.v2.C import CONDITION_ID, ESTIMATE, EXPERIMENT_ID, TARGET_ID
 from petab.v2.models.sbml_model import SbmlModel
 
 from . import criteria, logging_setup, protocols
@@ -30,6 +30,7 @@ from .constants import (
     OVERFIT_GOF_PVALUE,
     PLATEAU_MIN_SCORE_GAIN,
     PLATEAU_WINDOW,
+    STREAK_RESET_MIN_SCORE_GAIN,
 )
 from .data_access import residual_flag, residual_structure_rollup
 from .errors import (
@@ -52,18 +53,21 @@ from .provenance import ProvenanceStore
 from .references import EutilsReferenceResolver
 
 # Appended to an early-stop ``stop_reason`` only when the best model is NOT adequate (see
-# progress_report): a stall with an inadequate best is the signature of STRUCTURAL inadequacy —
-# the model's form, not the optimizer or the bounds. The nudge stays model-agnostic (issue #82):
-# it names generic structural MOVE CATEGORIES, never a specific mechanism, so it can't hand over
-# the answer to a problem whose model is withheld.
+# progress_report). The nudge stays model-agnostic (issue #82): it names generic structural MOVE
+# CATEGORIES, never a specific mechanism, so it can't hand over the answer to a problem whose model
+# is withheld. It claims only what a streak shows. It once called the stall "not an optimizer or
+# bounds problem", while dessauges 90 (gemot#134) ended on a streak made mostly of exactly
+# equivalent rewrites of its best structure that failed to find its optimum again: an optimizer
+# outcome, each. Either way, a refit or an equivalent rewrite cannot beat the optimum its structure
+# already has.
 _STRUCTURAL_PLATEAU_ADVICE = (
-    "The best model is still not adequate and the fit has plateaued: this is the signature of "
-    "STRUCTURAL inadequacy — the model's FORM cannot fit the data — not an optimizer or bounds "
-    "problem, so re-parameterizing or widening bounds will not help. Change the model's structure "
-    "rather than re-fitting the same one: consider a generic structural move (categories, not a "
-    "specific answer) — add a latent / unobserved state; add a feedback / regulation reaction; or "
-    "raise the interaction order (linear -> nonlinear / higher-order) — and re-author it with "
-    "make_changes."
+    "The best model is still not adequate, and none of these fits beat it. A refit or an "
+    "equivalent rewrite of a structure already fitted can at best find that structure's optimum "
+    "again (one that misses it scores worse), so neither can make the model adequate: that takes a "
+    "STRUCTURAL change to the model's FORM, not another fit of the same structure. Consider a "
+    "generic structural move (categories, not a specific answer) — add a latent / unobserved "
+    "state; add a feedback / regulation reaction; or raise the interaction order (linear -> "
+    "nonlinear / higher-order)."
 )
 
 # Appended instead of the structural nudge when a stall happened without ever scoring a model.
@@ -73,7 +77,7 @@ _UNSCORED_STALL_ADVICE = (
     "No fit in this session produced a usable score, so there is no best model to compare against: "
     "this is an EVALUATION failure, not evidence about the model's form. The likelihood is "
     "undefined when the simulation does not reach every measured timepoint — check "
-    "get_fit_summary's n_missing_simulations and the per-point records for unsimulated points, "
+    "n_missing_simulations and the per-point records for unsimulated points, "
     "and address why the trajectory stops (stiffness / a parameter pinned at a bound / an "
     "unbounded rate) before drawing any conclusion about the structure."
 )
@@ -118,6 +122,11 @@ _PROGRESS_ON_RESULT = (
 def _n_unique(df, column: str) -> int:
     """How many distinct ``column`` ids ``df`` names; 0 for an absent table."""
     return 0 if df is None or column not in df.columns else int(df[column].nunique())
+
+
+def _unique_ids(df, column: str) -> list[str]:
+    """The distinct ``column`` ids ``df`` names, in its order; none for an absent table."""
+    return [] if df is None or column not in df.columns else list(map(str, df[column].unique()))
 
 
 def _with_fitted_values(simulation: dict[str, Any] | None, parameter_df) -> dict[str, Any] | None:
@@ -298,17 +307,19 @@ class PetabSession:
         # Early-stop chain state (see constants.py). Every genuine fitted commit is recorded as
         # one "op" so a client can stop a session that has stopped improving and score the BEST
         # model rather than the last-committed one. ``is_new_best`` tracks the session's criterion
-        # (see fitting.compute_improvement), so `best` IS the version at which the last (gated) new
-        # best fired — one coherent notion of "better" drives the flag, the streak, and the
-        # checkpoint:
-        #   * ``non_improving_streak`` — consecutive fitted ops since the last new best; the hard
-        #     stall cap fires on it.
+        # (see fitting.compute_improvement), so `best` IS the version at which the last new best
+        # fired, the lowest score so far:
+        #   * ``non_improving_streak`` — consecutive fitted ops since a new best last counted as
+        #     progress; the hard stall cap fires on it.
+        #   * ``streak_mark`` — the best score when the streak last reset; a new best resets it
+        #     only ``STREAK_RESET_MIN_SCORE_GAIN`` below this.
         #   * ``best`` — the best-scoring fitted model so far (see :class:`Checkpoint`).
         #   * ``op_history`` — per-op (version, score, running best_score, gof p, is_new_best, and
         #     ``no_reset``: why a new best did not reset the streak), to surface "best-score
         #     improvement over the last N ops", to detect a plateau, and for the cap's stop_reason.
         # Every write holds ``counters_lock``, and ``progress_report`` reads them under it.
         self.non_improving_streak: int = 0
+        self.streak_mark: float | None = None
         self.best: Checkpoint | None = None
         self.op_history: list[dict[str, Any]] = []
 
@@ -380,6 +391,15 @@ class PetabSession:
         # the duration of such a call (see server.make_changes); everything else leaves it None
         # and the snapshot falls back to HEAD, which is correct for an edit of the working model.
         self.derived_from: int | None = None
+        # The `(old, new)` of each `rename` in the running `make_changes` call's `model_edits`
+        # (:func:`model_edits.renames`), set by the server for the call like `derived_from`: the
+        # reconcile carries each old id's row to its new id (`operations.set_model`), and the fit
+        # its warm-start coordinate (`fitting._run_fit`).
+        self.renamed: list[tuple[str, str]] = []
+
+        # Which `make_changes` routes the server offers: True for the text routes, whose
+        # `model_edits` take a merge hint as a `rename` (`identifiability.merge_hints`).
+        self.text_route: bool = True
 
         # De-duplication memory for identical fits (see :mod:`dedup` and issue #59): how many times
         # each *identical* estimation problem has been handed to `fit` this session, keyed by
@@ -448,10 +468,11 @@ class PetabSession:
         False until a ``make_changes`` call adds actual dynamics, so the model-less contract is
         unchanged.
 
-        The seed is RECONCILED exactly like any other model — no special pass. It declares no
-        mechanism, so the kinetic and initial-condition rows a model-less problem ships are pruned
-        at v0; that is safe because :func:`reconcile.sync_parameter_table` RESTORES a shipped row
-        the moment the caller's model reintroduces that parameter, its bounds intact.
+        The seed is RECONCILED like any other model, except that its species get no parametric
+        initial condition (``parametric_ics=False``). It declares no mechanism and no
+        ``<sid>_init``, so the kinetic and initial-condition rows a model-less problem ships are
+        pruned at v0; that is safe because :func:`reconcile.sync_parameter_table` RESTORES a
+        shipped row the moment the caller's model reintroduces that parameter, its bounds intact.
 
         It then LINTS, under the same rules every edit is held to, and a failure RAISES. It
         deliberately does not degrade to the empty skeleton: that state is the one nothing
@@ -477,7 +498,7 @@ class PetabSession:
             )
         try:
             self._set_model_from_antimony(antimony)
-            R.reconcile(self.problem, shipped=self.shipped_parameter_df)
+            R.reconcile(self.problem, shipped=self.shipped_parameter_df, parametric_ics=False)
         except Exception as exc:
             raise ValidationError(
                 f"could not build a valid initial model for this model-less problem "
@@ -516,11 +537,12 @@ class PetabSession:
 
         Replays the fit events in the log, scored under the session's criterion (see
         :meth:`criteria.Criterion.score_of`), through the live gates —
-        :func:`fitting.clears_new_best_bar` and :meth:`_adopt_checkpoint` — so the checkpoint is
+        :func:`fitting.beats_best` and :meth:`_adopt_checkpoint` — so the checkpoint is
         the one the last process kept, not the lowest score it saw: that may be a sigma-gamed fit
         the live run refused. ``compute_improvement`` and the streak then pick up where the last
         process left off. The streak and ``op_history`` stay reset — they
-        are within-session heuristics whose exact sequence isn't reconstructed. Best-effort: an
+        are within-session heuristics whose exact sequence isn't reconstructed — and
+        ``streak_mark`` is the seeded best's score, as if the streak had just reset. Best-effort: an
         event that carries no score under THIS criterion simply doesn't seed, which is also what
         makes resuming under a criterion the earlier process did not use safe — it starts fresh
         rather than ranking one criterion's scores against another's. Called under construction,
@@ -559,12 +581,13 @@ class PetabSession:
                         sigma_inflated=bool(ev.get("noise_sigma_inflated", False)),
                         sigma_collapsed=bool(ev.get("noise_sigma_collapsed", False)),
                     ),
-                    fitting.clears_new_best_bar(score, self.best.score if self.best else None),
+                    fitting.beats_best(score, self.best.score if self.best else None),
                 )
         except Exception:  # noqa: BLE001 - seeding is best-effort; a resume must never fail on it
             self.logger.warning(
                 "could not seed best-score checkpoint from provenance", exc_info=True
             )
+        self.streak_mark = self.best.score if self.best else None
 
     # -- constraints -------------------------------------------------------
     def constraint_verdicts(self, version: int | None, constraints: Any) -> dict[str, Any]:
@@ -619,8 +642,8 @@ class PetabSession:
 
     def reseed_best(self, excluded: set[int]) -> None:
         """Rebuild the best-score checkpoint from the log without the versions ``excluded``, the ones
-        the constraints in force break: the best version, the new-best bar and the plateau stop
-        then rank only models that make the session's claims."""
+        the constraints in force break: the best version, the streak's reset mark and the plateau
+        stop then rank only models that make the session's claims."""
         with self.lock, self.counters_lock:
             self.best = None
             self._seed_progress_from_provenance(frozenset(excluded))
@@ -841,22 +864,29 @@ class PetabSession:
         constrained = (
             {"n_constraints": len(self.constraints.items)} if self.constraints is not None else {}
         )
+        authored = self.model_authored()
+        # Counted on an authored model only, never on the seed's placeholders (docs/RATIONALE.md).
+        counts = (
+            {"n_species": int(sm.getNumSpecies()), "n_model_parameters": int(sm.getNumParameters())}
+            if authored
+            else {}
+        )
         return constrained | {
             "model_id": self.model.model_id,
             # Has a MECHANISM been authored? False for a problem that ships without one, whose
             # initial version is a content-free seed (species only, no dynamics) rather than the
             # broken empty skeleton it used to be. Replaces `model_initialized`, which since the
             # seed is True from construction and no longer answers the question anyone asked.
-            "model_authored": self.model_authored(),
-            "n_species": int(sm.getNumSpecies()),
+            "model_authored": authored,
+            **counts,
             "n_reactions": int(sm.getNumReactions()),
-            "n_model_parameters": int(sm.getNumParameters()),
             "n_table_parameters": int(len(p.parameter_df)),
             "n_estimated": int(p.n_estimated),
             "free_parameters": [str(x) for x in p.x_free_ids],
             "readouts_to_define": [r for r, rule in R.readouts(p).items() if rule is None],
             "observables": [str(x) for x in getattr(p.observable_df, "index", [])],
             "n_conditions": _n_unique(p.condition_df, CONDITION_ID),
+            "condition_targets": _unique_ids(p.condition_df, TARGET_ID),
             "n_experiments": _n_unique(p.experiment_df, EXPERIMENT_ID),
             "n_measurements": 0 if p.measurement_df is None else int(len(p.measurement_df)),
             "n_reactions_detail": [sm.getReaction(i).getId() for i in range(sm.getNumReactions())],
@@ -1241,10 +1271,12 @@ class PetabSession:
         (see :func:`fitting.compute_improvement`), the flag, the streak, and the checkpoint stay in
         lock step on one score.
 
-        One exception: an adopted new best whose ESTIMATED noise sigma collapsed increments the
-        streak, and its op records why (``no_reset``), which the cap's ``stop_reason`` counts. The
-        two implausible tails differ in whether a model can keep improving through them. An
-        INFLATED sigma cannot buy a lower score: at the ML optimum sigma_hat is the rms residual, so
+        Two exceptions, each an adopted new best that increments the streak, its op recording why
+        (``no_reset``), which the cap's ``stop_reason`` counts. One that gains less than
+        ``STREAK_RESET_MIN_SCORE_GAIN`` on ``streak_mark`` is the best but not progress: noise-floor
+        wander would otherwise reset the streak forever. One whose ESTIMATED noise sigma collapsed
+        is the other: the two implausible tails differ in whether a model can keep improving
+        through them. An INFLATED sigma cannot buy a lower score: at the ML optimum sigma_hat is the rms residual, so
         nll = n/2 * log(2*pi*e*sigma^2) rises with sigma, and the inflation is a symptom of the
         misfit, not the source of the gain. A COLLAPSED one can: nll is unbounded below as
         sigma_hat -> 0, checked only by k*ln(n), so a model fitting a small observable group nearly
@@ -1306,14 +1338,22 @@ class PetabSession:
                 else None
             )
             adopted = candidate is not None and self._adopt_checkpoint(candidate, is_new_best)
-            # The one adopted new best that is not progress (see the docstring).
-            no_reset = (
-                "a collapsed estimated noise sigma"
-                if adopted and candidate.sigma_estimated and candidate.sigma_collapsed
-                else None
-            )
+            # The adopted new bests that are not progress (see the docstring).
+            no_reset = None
+            if adopted and candidate.sigma_estimated and candidate.sigma_collapsed:
+                no_reset = "a collapsed estimated noise sigma"
+            elif (
+                adopted
+                and self.streak_mark is not None
+                and score > self.streak_mark - STREAK_RESET_MIN_SCORE_GAIN
+            ):
+                no_reset = (
+                    f"a {self.criterion.name} gain under {STREAK_RESET_MIN_SCORE_GAIN:g} on the "
+                    "best at the last reset"
+                )
             if adopted and no_reset is None:
                 self.non_improving_streak = 0
+                self.streak_mark = score
             else:
                 self.non_improving_streak += 1
 
@@ -1337,10 +1377,10 @@ class PetabSession:
         signal: the hard non-improving-streak cap, or a plateau (the best model shown adequate, by
         a check the reason names, AND the best score gained less than ``PLATEAU_MIN_SCORE_GAIN``
         over the last ``PLATEAU_WINDOW`` ops). When a
-        stop fires and the best model is **shown not adequate**, the stall is the signature of
-        STRUCTURAL inadequacy, so ``stop_reason`` also carries the issue-#82 nudge to change the
-        model's FORM rather than re-parameterize. An adequate stop is a success — it gets no such
-        nudge (the model fits; there is nothing structural to fix).
+        stop fires and the best model is **shown not adequate** (only the streak cap can, a plateau
+        needing an adequate best), ``stop_reason`` also carries the issue-#82 nudge to change the
+        model's FORM rather than refit or rewrite the same structure. An adequate stop is a success
+        — it gets no such nudge (the model fits; there is nothing structural to fix).
 
         A model whose noise sigmas are ESTIMATED is never shown adequate, so only the streak cap
         ends its session: a fitted sigma absorbs a misfit inside the data-std band without a
@@ -1354,7 +1394,8 @@ class PetabSession:
             hist = self.op_history
             n_ops = len(hist)
             streak = self.non_improving_streak
-            # best-score improvement over the last PLATEAU_WINDOW ops (positive => still falling).
+            # best-score improvement over the last PLATEAU_WINDOW ops (positive => still falling),
+            # on the running best: a gain too small to reset the streak still counts here.
             score_gain_over_window = None
             if n_ops > PLATEAU_WINDOW:
                 prev = hist[-PLATEAU_WINDOW - 1]["best_score"]
@@ -1404,7 +1445,7 @@ class PetabSession:
                 and score_gain_over_window < PLATEAU_MIN_SCORE_GAIN
             ):
                 stop_reason = (
-                    f"plateau: best model is adequate ({adequate_by}) and "
+                    f"plateau: best model v{best.version} is adequate ({adequate_by}) and "
                     f"best {self.criterion.name} improved by only "
                     f"{score_gain_over_window:.3g} over the last "
                     f"{PLATEAU_WINDOW} ops (< {PLATEAU_MIN_SCORE_GAIN})."
@@ -1655,7 +1696,9 @@ class PetabSession:
                 block = identifiability.fit_diagnosis_block(self)
                 if block:
                     fitsim[identifiability.STORED_DIAGNOSIS_KEY] = block
-                fitsim["merge_hints"] = identifiability.merge_hints((block or {}).get("diagnosis"))
+                fitsim["merge_hints"] = identifiability.merge_hints(
+                    (block or {}).get("diagnosis"), rename=self.text_route
+                )
             # Noise-sigma report + flags computed ONCE here and stashed on fitsim, so this event,
             # the checkpoint update in record_fit_progress (below) and the returned fit block all
             # read the SAME verdict instead of recomputing (or disagreeing).
@@ -1685,7 +1728,7 @@ class PetabSession:
             # because it could never see a report.
             fitsim["noise_sigma_report"] = _nsr
             # The checkpoint's decision, taken here so the version meta, the event and the result
-            # say what `best_version` will: a score that clears the new-best bar with an
+            # say what `best_version` will: a score below the best's with an
             # implausible estimated sigma does not displace a plausible best (see _declines).
             inflated, collapsed = noise_sigma_inflated(_nsr), noise_sigma_collapsed(_nsr)
             if improvement.get("is_new_best") and self._declines(
@@ -1916,7 +1959,7 @@ class PetabSession:
                     f"restore_version: version {version} breaks the session's constraints "
                     + ", ".join(f"`{c.id}` ({c.text})" for c in broken)
                     + ", given after it was committed; restore a version that makes them, or "
-                    "build one with `make_changes`.",
+                    "build one.",
                     cause="constraint_violated",
                 )
         return self.rollback_to(version, justification)

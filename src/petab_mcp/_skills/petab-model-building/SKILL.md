@@ -35,9 +35,8 @@ says when its conditions apply (time -inf: while the model equilibrates beforeha
 
 - **Names must match.** A condition targets a model entity by name; a mismatch means the
   perturbation silently never happens.
-- **The model must actually use it.** If nothing references a target, every experiment simulates
-  identically and the design is thrown away. Exception: a target set to the SAME value in every
-  condition encodes no design, so it need only exist.
+- **Read the inputs that act.** A target nothing reads changes no experiment: wrong for an input
+  the data respond to, right for one with no effect (a control). Unread, it need only exist.
 
 A condition-set initial value is an experimental *input*, not a value to fit.
 

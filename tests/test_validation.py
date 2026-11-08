@@ -8,6 +8,7 @@ from petab.v2.models.sbml_model import SbmlModel
 from petab_mcp import operations as O
 from petab_mcp.problem import WorkingProblem, later_changes
 from petab_mcp.validation import (
+    INPUT_UNREAD,
     _constant_noise_species_issues,
     _fixed_constant_role_issues,
     frozen_parametric_stoichiometry_issues,
@@ -185,6 +186,14 @@ def test_an_input_whose_only_reader_was_pruned_is_named(dosed_session):
     result = O.set_model(dosed_session, _DOSED.format(rate="k"), justification="dose B")
     said = [m["message"] for m in result["messages"] if "read by nothing" in m["message"]]
     assert len(said) == 1 and said[0].startswith("condition target(s) `dose` are read by nothing")
+
+
+def test_an_unread_input_is_said_to_be_allowed(dosed_session):
+    """The warning's "For each, read it as …" read as a refusal of every unread target to 3 of 5
+    froehlich leads, and isensee's inert control was given a term for it (PEtab-MCP#290)."""
+    result = O.set_model(dosed_session, _DOSED.format(rate="k"), justification="dose B")
+    (said,) = [m["message"] for m in result["messages"] if "read by nothing" in m["message"]]
+    assert said.endswith(INPUT_UNREAD) and "For each" not in said
 
 
 @pytest.mark.parametrize(("rate", "warned"), [("k", True), ("k*drive", False)])
