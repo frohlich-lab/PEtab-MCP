@@ -934,9 +934,10 @@ def _description(mcp):
 def test_the_routes_text_names_statements_only_where_it_is_offered(tmp_path):
     """It required one of `antimony` / `model_edits` / `parameters` on a server whose third
     route is `statements`; without the route the description is the one it was before."""
+    from petab_mcp.messages import render
     from petab_mcp.server import _MAKE_CHANGES_DOC
 
-    assert _description(_server(tmp_path / "plain")) == _MAKE_CHANGES_DOC
+    assert _description(_server(tmp_path / "plain")) == render(_MAKE_CHANGES_DOC, True)
     required = _description(_statements_server(tmp_path)).split("at least one of ")[1]
     assert "`statements`" in required.split(" is required.")[0]
 
