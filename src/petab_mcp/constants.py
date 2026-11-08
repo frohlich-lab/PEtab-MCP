@@ -96,6 +96,9 @@ DEFAULT_PARAMETER_UPPER_BOUND = 1e2
 # stiff and the fit plateau; tight linear bounds keep it biophysically sane.
 EXPONENT_LOWER_BOUND = 1.0
 EXPONENT_UPPER_BOUND = 8.0
+# An exponent's upper bound past which a bounds edit is warned: the Hill term is then near its
+# step-function limit. alkan 72 widened `n_p21` to 32 and alkan 73 `hrep` to 100 (PEtab-MCP#285).
+EXPONENT_WIDENING_WARNING_BOUND = 10.0
 
 # -- at-bound reporting -----------------------------------------------------
 # A fitted parameter within this fraction of its lower/upper bound (measured on its own

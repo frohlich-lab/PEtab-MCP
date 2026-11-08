@@ -30,8 +30,8 @@ description: >-
 
 - `parameters_at_bound`: fitted values within ~1% of a bound, on their estimation scale. Widen
   at most once. A parameter that re-pins after a widening is unidentifiable and its optimum
-  unbounded, often an exponent faking a mechanism the model lacks: remove its reaction or take its
-  limiting (irreversible or instantaneous) form, and if neither is possible leave it pinned.
+  unbounded, often an exponent faking a mechanism the model lacks: remove its term, or leave it
+  pinned. Its limit is safe only for some roles (an exponent's is a step function).
 - `noise_sigma_report`: each estimated noise sigma against a data-driven reference (a fraction of
   its observable's measurement std), with a `status` of `ok`, `inflated`, `collapsed`, or
   `unknown` (no std to compare with). `data_noise_estimate` is a model-free noise level from

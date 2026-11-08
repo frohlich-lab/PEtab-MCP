@@ -469,6 +469,54 @@ def test_reject_third_widening_of_repinning_parameter(session):
         O._reject_repeated_widening(session, session.problem, "k1", 1e-4, 1e5)
 
 
+_ROLES = [
+    "r3: A => B; V * A / (Km + A);",
+    "r4: B => A; kr * B^n / (K2^n + B^n);",
+]
+
+
+@pytest.mark.parametrize(
+    "pid,side,advice",
+    [
+        ("n", "upper", "step function"),
+        ("n", "lower", "no cooperativity"),
+        ("Km", "upper", "linear form"),
+        ("Km", "lower", "constant flux"),
+        ("K2", "lower", "constant flux"),
+        ("V", "lower", "REMOVE"),
+        ("V", "upper", "LEAVE 'V' pinned."),
+        ("sigma_B", "lower", "LEAVE 'sigma_B' pinned."),
+    ],
+)
+def test_the_widening_refusal_advises_by_the_parameters_role(session, pid, side, advice):
+    """#285: the refusal recommended the LIMITING form for every parameter. For a Hill exponent
+    that is a step function (fiedler 34 v12: 79/100 starts NOT_FINITE), for a Michaelis constant
+    toward 0 a constant flux (fiedler 31 v6 drove a state negative, 91/100 died). Only a limit the
+    solver can integrate is recommended; the others say to leave the parameter pinned."""
+    _set_model(session, _ROLES)
+    text = O._pinned_limit_advice(session.problem, pid, side)
+    assert advice in text
+    assert ("do not write it" in text) is (advice in ("step function", "constant flux"))
+
+
+def test_an_exponent_widened_past_ten_is_warned():
+    """#285: alkan 72 widened `n_p21` to 32 and alkan 73 `hrep` to 100."""
+    from types import SimpleNamespace
+
+    import pandas as pd
+    from petab.v2.models.sbml_model import SbmlModel
+
+    model = SbmlModel.from_antimony(
+        "model m\n species A, B; A = 1; B = 0; kr = 1; n = 2; K = 1;\n"
+        " r1: A => B; kr * A^n / (K^n + A^n);\nend\n"
+    )
+    table = pd.DataFrame({"upperBound": [8.0, 100.0]}, index=["n", "K"])
+    problem = SimpleNamespace(model=model, parameter_df=table)
+    assert "step function" in O._warn_exponent_widening(problem, "n", 32.0)
+    assert O._warn_exponent_widening(problem, "n", 10.0) is None
+    assert O._warn_exponent_widening(problem, "K", 1e3) is None  # not an exponent
+
+
 def test_third_widening_rejected_through_full_operation_and_reverts(session):
     # Same, but through the public op: it must raise without applying the new bound.
     from petab.v2.C import UPPER_BOUND

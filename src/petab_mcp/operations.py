@@ -30,7 +30,11 @@ from petab.v2.models.sbml_model import SbmlModel
 
 from . import messages as M
 from . import reconcile as R
-from .constants import NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD, WIDENING_NEGLIGIBLE_BIC_GAIN
+from .constants import (
+    EXPONENT_WIDENING_WARNING_BOUND,
+    NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD,
+    WIDENING_NEGLIGIBLE_BIC_GAIN,
+)
 from .errors import ModelUpdateError, ParameterError, PetabMcpError, ValidationError
 from .parameters import estimated_mask
 from .provenance import binding_of
@@ -1893,11 +1897,72 @@ def _reject_repeated_widening(
         f"~{last_gain:.2g} BIC gain. A "
         "parameter pinned at a bound with a flat/collinear FIM direction (check "
         'get_fit_diagnosis(sections="parameters")) is UNIDENTIFIABLE, not under-explored — widening chases it toward '
-        "infinity while it keeps re-pinning. Instead re-author with make_changes to REMOVE its "
-        "reaction or use its LIMITING form (make the reaction irreversible / the step "
-        "instantaneous); if neither is possible, LEAVE it pinned — do not widen again or "
-        "hard-code a value (there is no value/estimate tool, and a literal is just a magic "
-        "number — values come only from the fit)."
+        f"infinity while it keeps re-pinning. {_pinned_limit_advice(problem, parameter_id, side)} "
+        "Do not widen again or hard-code a value (there is no value/estimate tool, and a literal "
+        "is just a magic number — values come only from the fit)."
+    )
+
+
+def _pinned_limit_advice(problem, parameter_id: str, side: str) -> str:
+    """What the limit a parameter pinned at its ``side`` bound runs toward makes of the model, by
+    the role it plays, and whether to write that limit. Only the limits that leave a model the
+    solver can integrate are recommended: the LIMITING form for every role made a Hill exponent a
+    step function (fiedler 34 v12, 79/100 starts NOT_FINITE) and a Michaelis constant a constant
+    flux that drove a state negative (fiedler 31 v6, 91/100), PEtab-MCP#285."""
+    sm = getattr(problem.model, "sbml_model", None)
+    p = repr(parameter_id)
+    if sm is None:
+        return f"LEAVE {p} pinned."
+    if parameter_id in R._exponent_symbols(sm):
+        if side == "upper":
+            return (
+                f"As an exponent, {p}'s limit is a step function, which the solver cannot follow "
+                "(starts end NOT_FINITE): do not write it. LEAVE it pinned; the data say only "
+                "that the switch is steep."
+            )
+        return (
+            f"As an exponent pinned low, {p} says the data see no cooperativity: re-author "
+            "with make_changes to write the term without it (`S/(K + S)` for "
+            "`S^n/(K^n + S^n)`)."
+        )
+    if parameter_id in R._saturation_constants(sm):
+        if side == "upper":
+            return (
+                f"As a saturation constant, {p}'s limit is the linear form: re-author with "
+                "make_changes to replace the saturable term by it (`V*S/(K + S)` becomes `k*S`, "
+                "one constant in place of two)."
+            )
+        return (
+            f"As a saturation constant toward 0, {p}'s limit is a constant flux whatever the "
+            "substrate, which drains a species past 0: do not write it. LEAVE it pinned."
+        )
+    if side == "lower" and parameter_id in R._model_math_names(sm, initial=False):
+        return (
+            f"Toward 0, {p} switches off what it scales: re-author with make_changes to REMOVE "
+            "that reaction or term."
+        )
+    return f"LEAVE {p} pinned."
+
+
+def _warn_exponent_widening(problem, parameter_id: str, upper_bound: float) -> str | None:
+    """Advisory warning when an exponent's upper bound is raised past
+    ``EXPONENT_WIDENING_WARNING_BOUND``, or ``None``."""
+    sm = getattr(problem.model, "sbml_model", None)
+    if upper_bound <= EXPONENT_WIDENING_WARNING_BOUND or sm is None:
+        return None
+    if parameter_id not in R._exponent_symbols(sm):
+        return None
+    try:
+        current = float(problem.parameter_df.loc[parameter_id, UPPER_BOUND])
+    except (KeyError, TypeError, ValueError):
+        current = None
+    if current is not None and upper_bound <= current:
+        return None
+    return (
+        f"WARNING: an upper bound of {upper_bound:g} lets the exponent {parameter_id!r} make its "
+        f"term near a step function. Past ~{EXPONENT_WIDENING_WARNING_BOUND:g} the switch is "
+        "steeper than the solver resolves, starts end NOT_FINITE, and a fit pinned there says "
+        "only that the switch is steep."
     )
 
 
@@ -2155,9 +2220,12 @@ def _parameter_edit(session, normalized: list[dict[str, Any]]) -> Callable[[Any]
                 # The sigma cap only WARNS (#118) — it is a marginal-std heuristic with no ground
                 # truth to check it against on a real problem; the repeated-widening backstop below
                 # is unidentifiability evidence and still rejects.
-                sigma_warning = _warn_sigma_bound_widening(problem, pid, ub)
-                if sigma_warning:
-                    warnings.append(sigma_warning)
+                for warning in (
+                    _warn_sigma_bound_widening(problem, pid, ub),
+                    _warn_exponent_widening(problem, pid, ub),
+                ):
+                    if warning:
+                        warnings.append(warning)
                 _reject_repeated_widening(session, problem, pid, lb, ub)
                 update["lowerBound"], update["upperBound"] = lb, ub
             if scale is not None:

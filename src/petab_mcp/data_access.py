@@ -644,7 +644,7 @@ def fit_diagnosis(
                 # the added stats degrades to "tests unavailable" rather than taking down the whole
                 # (pre-existing, robust) magnitude diagnosis for this observable.
                 **_safe_residual_structure(g, centred=_clean(obs) in centred),
-                **({"by_construction": _OFFSET_CENTRED} if _clean(obs) in centred else {}),
+                **({"by_construction": _offset_note(g)} if _clean(obs) in centred else {}),
             }
         )
     per_observable.sort(key=lambda r: r["chi2"], reverse=True)
@@ -762,7 +762,7 @@ def fit_diagnosis(
         noise_sigma["fitted_over_data_noise"] = signals["fitted_over_data_noise"][:_SIGNALS_KEEP]
     caveat = structure_tests_caveat(session.problem)
     total_chi2 = float((d["_rw"] * d["_rw"]).sum())
-    chi2_note = math.isclose(total_chi2, len(d), rel_tol=1e-3) and _sigma_solved_everywhere(
+    chi2_note = math.isclose(total_chi2, len(d), rel_tol=1e-3) and _sigma_estimated_everywhere(
         session.problem, d
     )
 
@@ -798,28 +798,48 @@ def fit_diagnosis(
 #: How many sigmas each ranked list in :func:`fit_diagnosis` keeps, worst first.
 _SIGNALS_KEEP = 5
 
-#: :func:`fit_diagnosis`'s ``total_chi2_note``, where :func:`_sigma_solved_everywhere` holds.
+#: :func:`fit_diagnosis`'s ``total_chi2_note``, where :func:`_sigma_estimated_everywhere` holds.
 _CHI2_BY_CONSTRUCTION = (
-    "total_chi2 equals n_points by construction: the fit solves every noise sigma as the RMS of "
-    "the residuals it covers, so it says nothing about the model."
+    "total_chi2 equals n_points by construction: the fit estimates every noise sigma, and at its "
+    "optimum an estimated sigma sets the chi2 of the points it covers to their count, so it says "
+    "nothing about the model."
 )
 
 #: A ``per_observable`` row's ``by_construction``, on an observable of
-#: :func:`_offset_centred_observables`.
+#: :func:`_offset_centred_observables` whose points share one noise sd.
 _OFFSET_CENTRED = (
     "an estimated offset centres these residuals: mean_weighted_residual is ~0 and sign_test "
     "cannot see a bias, whatever the model."
 )
 
+#: ...and on one whose noise sd varies by point (SEMs per point, say).
+_OFFSET_CENTRED_PRECISION_WEIGHTED = (
+    "an estimated offset zeroes the precision-weighted mean of these residuals (weights "
+    "1/sigma^2), not mean_weighted_residual: sigma varies by point here, so mean_weighted_residual "
+    "and sign_test can still show a bias, unless sigma is one value across the points each offset "
+    "covers."
+)
 
-def _sigma_solved_everywhere(problem, d) -> bool:
-    """Whether every row of ``d`` (:func:`fit_diagnosis`'s weighted records) has a noise sigma the
-    fit solves analytically (:func:`reconcile.classify_inner_parameters`). Each such sigma is the RMS
-    of its own residuals, so its points' weighted chi2 is their count. ``False`` on any failure."""
+
+def _offset_note(group) -> str:
+    """The ``by_construction`` note of an offset-centred observable's rows ``group``. The offset
+    solves ``sum(residual / sigma^2) = 0`` over the points it covers, which zeroes the mean of
+    their weighted residuals only where they share one sigma (PEtab-MCP#285)."""
+    noise = group["noise"].dropna().astype(float)
+    varies = len(noise) > 1 and not math.isclose(noise.min(), noise.max(), rel_tol=1e-6)
+    return _OFFSET_CENTRED_PRECISION_WEIGHTED if varies else _OFFSET_CENTRED
+
+
+def _sigma_estimated_everywhere(problem, d) -> bool:
+    """Whether every row of ``d`` (:func:`fit_diagnosis`'s weighted records) has an estimated noise
+    sigma, solved analytically (:func:`reconcile.classify_inner_parameters`) or optimized with the
+    rest. Where the noise sd scales with its sigmas, the likelihood is stationary in them only where
+    the weighted chi2 of their points is their count, so an outer sigma pins it as an inner one does
+    (PEtab-MCP#285). ``False`` on any failure."""
     from . import reconcile as R
 
     try:
-        inner = R.classify_inner_parameters(problem)
+        estimated = {s for s in R.noise_sigma_ids(problem) if R.is_parameter_estimated(problem, s)}
         frame = d.rename(
             columns={
                 "observable_id": OBSERVABLE_ID,
@@ -828,7 +848,7 @@ def _sigma_solved_everywhere(problem, d) -> bool:
             }
         )
         covered: set = set()
-        for pid in (pid for pid, kind in inner.items() if kind == R.INNER_TYPE_SIGMA):
+        for pid in estimated:
             rows = R._measurement_rows_for_sigma(problem, pid, frame)
             if rows is not None:
                 covered |= set(rows.index)

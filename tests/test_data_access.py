@@ -374,6 +374,37 @@ def test_goodness_of_fit_that_holds_by_construction_says_so(session, sigma, offs
     # 10 points are enough for both tests, unless an offset centred them
     assert row["sign_test"]["low_power"] is row["structure_low_power"] is offset
     assert data_access.residual_structure_rollup(session)["low_power"] is offset
+    if offset:
+        assert row["by_construction"] == data_access._OFFSET_CENTRED
+
+
+def test_chi2_pinned_by_an_estimated_sigma_the_optimizer_fits_says_so(session):
+    """#285: fiedler 31 read "total χ² sits exactly at 72.0 … which no such trajectory could
+    produce" and spent 91 min on it. Its sigmas were estimated by the optimizer, not solved
+    analytically (a log-normal observable keeps the fit joint), which pins chi2 at n all the same."""
+    _inner_solved_toy(session, sigma=True, offset=False)
+    odf = session.problem.observable_df.assign(noiseDistribution="log-normal")
+    session.problem = session.problem.replace(observable_df=odf)
+    note = data_access.fit_diagnosis(session)["total_chi2_note"]
+    assert note == data_access._CHI2_BY_CONSTRUCTION
+
+
+def test_an_offset_under_per_point_sigmas_zeroes_only_the_precision_weighted_mean(session):
+    """#285: dessauges 94 v4 read a mean weighted residual of 0.89 and a sign-test p of 0.0005 on
+    an offset observable whose sigmas are SEMs per point, beside a note that the mean is ~0 and the
+    sign test blind. The offset solves sum(r / sigma^2) = 0, which zeroes mean(r / sigma) only
+    where sigma is one value."""
+    _inner_solved_toy(session, sigma=False, offset=True)
+    sds, residuals = [0.1, 1.0] * 5, [0.01, -1.0] * 5  # sum(r / sd^2) = 5 - 5 = 0
+    session.simulation = {
+        "records": [
+            _rec("obs_B", "", float(t), 1.0, 1.0 - r, r, r / sd, sd)
+            for t, (r, sd) in enumerate(zip(residuals, sds))
+        ]
+    }
+    (row,) = data_access.fit_diagnosis(session)["per_observable"]
+    assert row["mean_weighted_residual"] == pytest.approx(-0.45)
+    assert row["by_construction"] == data_access._OFFSET_CENTRED_PRECISION_WEIGHTED
 
 
 def test_fit_diagnosis_empty_without_simulation(session):
