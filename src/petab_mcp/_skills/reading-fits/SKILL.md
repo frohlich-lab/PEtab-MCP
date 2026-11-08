@@ -23,8 +23,8 @@ description: >-
   flagged sigmas in `noise_sigma_report`, and three flagged observables in `residual_structure`,
   with `n_parameters_at_bound`, `n_merge_hints` and `n_flagged_observables` the full counts. A fit
   summary has every pin, tie, sigma and flagged observable.
-- `is_new_best`: this version became the best model, `progress.best_version`. A score that
-  cleared the new-best gate without that carries `new_best_declined`, saying why.
+- `is_new_best`: this version became the best model, `progress.best_version`, the lowest score
+  so far. A lower score that did not carries `new_best_declined`, saying why.
 
 ## Flags
 
@@ -73,8 +73,8 @@ different structure is in the working state.
   `candidates` ranks the parameters to cut. The FIM is local: read it with the multistart spread.
 - `merge_candidates` prices giving a pair one shared value: `dnll`, `dscore` (negative when the
   merge lowers the score), `move_scaled` (how far the tie moves a parameter; cheap but many decades
-  rarely survives a refit). Only same-role, same-scale pairs with neither member at a bound are
-  priced, so an absent pair may be one that was skipped, not a dear one.
+  rarely survives a refit). Only pairs the model's math reads, of one role and scale, neither at a
+  bound, are priced: an absent pair may be one that was skipped, not a dear one.
 
 ## SQL: one row per group
 

@@ -912,6 +912,19 @@ def test_a_fork_is_checked_against_the_version_it_forks(session):
     ]
 
 
+def test_a_species_new_against_the_forked_version_is_warned_about(session):
+    """PEtab-MCP#282, perelson 0: a `base_version` fork took "the species before this edit" from
+    HEAD, so a species new against the base but present in HEAD (a phantom `Ie2`) went unwarned."""
+    base = _commit(session)
+    _set_model(session, ["J: B => D; k3 * B;"])
+    _commit(session)
+    again = _set_model(session, ["J: B => D; k3 * B;"])  # on HEAD, `D` is not new
+    assert not any("unobserved species" in w for w in again["warnings"])
+    session.derived_from = base
+    forked = _set_model(session, ["J: B => D; k3 * B;"])
+    assert any("unobserved species ['D']" in w for w in forked["warnings"])
+
+
 def test_a_name_another_version_defined_is_named(session):
     """dessauges 91 forked version 32 with a rate law pasted from version 33, which read 33's
     species `Sopt`; the fork minted it as a constant and the fit inverted a gain with it, with no

@@ -1004,14 +1004,86 @@ _HANDLERS = {
 }
 
 
+def _untied(text: str, op: dict[str, Any], fixed: dict[str, str]) -> str | None:
+    """Why ``op`` cannot tie the parameter it renames or defines, or ``None``. ``fixed`` is
+    :func:`reconcile.fixed_table_parameters`: a ``rename`` whose ``old`` only the fixed tables name
+    finds it nowhere in the model text, one whose ``old`` they read as well as the model leaves
+    them reading the old name, and a ``set_assignment`` defining one only they name takes the row
+    their overrides need. The rename's own refusal ("does not occur in the model") and the lint's
+    ("Missing parameter(s)") named no reason; bachmann and fiedler agents tried such ties on
+    offsets and gel sigmas a merge hint had offered (PEtab-MCP#283)."""
+    from .reconcile import FIXED_TABLE_REASONS, READ_BY_TABLES_TOO
+
+    name = (op.get("op") or "").strip()
+    pid = (op.get("old" if name == "rename" else "id") or "").strip()
+    key = fixed.get(pid) if name in ("rename", "set_assignment") else None
+    if key is None or (key == READ_BY_TABLES_TOO and name != "rename"):
+        return None
+    if key == READ_BY_TABLES_TOO:
+        return (
+            f"{pid!r} {FIXED_TABLE_REASONS[key]}, so renamed away the model stops reading what "
+            "they read. To tie it, rename the other parameter onto it."
+        )
+    if name == "rename" and re.search(rf"(?<![\w.]){re.escape(pid)}\b", mask_comments(text)):
+        return None
+    return (
+        f"{pid!r} {FIXED_TABLE_REASONS[key]}, so no edit renames it, defines it or ties it to "
+        "another parameter. Leave it out."
+    )
+
+
+def renames(edits: "list[dict[str, Any]]") -> list[tuple[str, str]]:
+    """The ``(old, new)`` of each ``rename`` in a batch :func:`apply_model_edits` applied, in
+    order: what :func:`carried_renames` follows a table's or a fit's ids through."""
+    return [
+        ((op.get("old") or "").strip(), (op.get("new") or "").strip())
+        for op in edits
+        if isinstance(op, dict) and (op.get("op") or "").strip() == "rename"
+    ]
+
+
+def carried_renames(names, pairs: "list[tuple[str, str]]") -> tuple[dict[str, str], dict[str, str]]:
+    """Where ``pairs`` (:func:`renames`) take each of ``names``, a parameter table's ids or a fit's:
+    ``({new: old}, {old: kept})``, each by the names the batch started and ended with.
+
+    A rename to a name not among them CARRIES ``old`` to ``new``: its row and its fitted
+    coordinate are ``new``'s. One to a name already there MERGES the two, and the target, ``kept``,
+    keeps its own: the batch says which symbol stays, so the tie starts from that one's value. A
+    rename of a name that is none of them (a species, a rule target) carries nothing."""
+    held = {str(n): str(n) for n in names}  # name now -> the name it started as
+    into: dict[str, str] = {}  # started as -> the started-as name it merged into
+    for old, new in pairs:
+        if old not in held:
+            continue
+        origin = held.pop(old)
+        if new in held:
+            into[origin] = held[new]
+        else:
+            held[new] = origin
+    now = {origin: name for name, origin in held.items()}
+    merged = {}
+    for origin, kept in into.items():
+        while kept in into:  # merged again later on
+            kept = into[kept]
+        merged[origin] = now[kept]
+    return {name: origin for name, origin in held.items() if name != origin}, merged
+
+
 def apply_model_edits(
-    source: str, edits: "list[dict[str, Any]]", *, where: str = "make_changes"
+    source: str,
+    edits: "list[dict[str, Any]]",
+    *,
+    where: str = "make_changes",
+    fixed: "dict[str, str] | None" = None,
 ) -> tuple[str, list[str]]:
     """Apply a batch of structured operations to the model SOURCE.
 
     Returns ``(new_source, summary)`` — the summary is one line per operation, which is also the
     pre-classified diff (add / remove / rate law / initial / rename) that an analysis would
     otherwise have to reconstruct from text.
+
+    ``fixed`` is :func:`reconcile.fixed_table_parameters` of the problem: a ``rename`` or
+    ``set_assignment`` that cannot tie one of its parameters is refused, saying why.
     """
     if not isinstance(edits, (list, tuple)) or not edits:
         raise OperationError(
@@ -1029,6 +1101,11 @@ def apply_model_edits(
             raise OperationError(
                 f"{label}: unknown op {name!r}; use one of {', '.join(OPS)}. NOTHING was applied.",
                 cause="unknown_op",
+            )
+        untied = _untied(text, op, fixed) if fixed else None
+        if untied is not None:
+            raise OperationError(
+                f"{label}: {untied} NOTHING was applied.", cause="untieable_parameter"
             )
         text, msg = handler(text, op, label)
         summary.append(msg)

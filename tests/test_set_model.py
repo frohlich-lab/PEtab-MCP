@@ -378,3 +378,52 @@ def test_set_model_estimates_created_ic_and_fixes_unit_normalization(model_less_
     ics = {r["species"]: r for r in res["initial_conditions"]}
     assert ics["B"]["t0_source"] == "estimated"
     assert ics["A"]["t0_source"] == "fixed"
+
+
+# -- a rename keeps the fitted value (PEtab-MCP#283) -----------------------------
+def _renamed(session, ops):
+    from petab_mcp import model_edits
+
+    session.renamed = model_edits.renames(ops)
+    return model_edits.apply_model_edits(REVERSIBLE_ANTIMONY, ops)[0]
+
+
+def test_a_rename_carries_its_row_to_the_new_id(session):
+    """PEtab-MCP#283: the op rewrote the text and the reconcile minted the new id at its default,
+    so the fitted value was gone and the only message was the dropped-parameter warning (dessauges
+    lost four fits to it). The new id takes the old row: value, bounds and scale."""
+    df = session.problem.parameter_df
+    df.loc["k2", ["nominalValue", "lowerBound", "upperBound"]] = [0.37, 1e-3, 10.0]
+    src = _renamed(session, [{"op": "rename", "old": "k2", "new": "k_back"}])
+    res = O.set_model(session, src, justification="name the back rate")
+    row = session.problem.parameter_df.loc["k_back"]
+    assert [row[c] for c in ("nominalValue", "lowerBound", "upperBound", "parameterScale")] == [
+        0.37,
+        1e-3,
+        10.0,
+        "log10",
+    ]
+    assert "k2" not in _ids(session)
+    assert not res["warnings"]  # not dropped, not minted
+    assert res["parameter_diff"]["carried"] == ["k_back"]
+    assert "k_back" not in res["parameter_diff"]["added"] + res["reconcile"]["parameters"]["seeded"]
+
+
+def test_a_rename_onto_a_parameter_merges_them_and_says_which_value_stays(session):
+    """Onto an existing id the rename MERGES the two: the target keeps its row, and the result says
+    whose value that is and whose is gone, rather than that k2 was dropped."""
+    src = _renamed(session, [{"op": "rename", "old": "k2", "new": "k1"}])
+    res = O.set_model(session, src, justification="one rate both ways")
+    assert session.problem.parameter_df.loc["k1", "nominalValue"] == 0.5
+    assert res["warnings"] == [
+        "rename merged `k2` into `k1`: `k1` keeps its row and value (0.5); `k2`'s (0.1) is gone."
+    ]
+
+
+def test_a_forked_rename_carries_the_forked_versions_row(session):
+    """A `base_version` fork starts from that version's table, so its row is the one carried."""
+    forked = session.problem.parameter_df.copy()
+    forked.loc["k2", "nominalValue"] = 0.77
+    src = _renamed(session, [{"op": "rename", "old": "k2", "new": "k_back"}])
+    O.set_model(session, src, "fork and rename", None, None, forked)
+    assert session.problem.parameter_df.loc["k_back", "nominalValue"] == 0.77

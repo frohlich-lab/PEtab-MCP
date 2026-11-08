@@ -38,7 +38,7 @@ from .provenance import binding_of
 from .references import resolve_references
 from .reconcile import _ast_names
 from .validation import (
-    INPUT_REMEDY,
+    INPUT_UNREAD,
     _math_of,
     estimated_assignment_issues,
     frozen_parametric_stoichiometry_issues,
@@ -268,7 +268,8 @@ def _parsimony_warnings(problem, old_species: set[str]) -> list[str]:
     that feeds no observable — a dead-end sink like ``B -> C`` — can degenerately fit a single
     observable just as well as a repair that reuses existing species (e.g. making a reaction
     reversible). We flag *only* that case, in-loop, without rejecting the (structurally valid)
-    edit.
+    edit. "New" is against ``old_species``, the species of the version the edit applies to
+    (:func:`_parent`): a fork's base, not HEAD.
 
     We deliberately do NOT flag species that are legitimately unobserved, because doing so
     trained the agent to ignore the warning entirely (it fired 62× on correct choices on one
@@ -484,13 +485,14 @@ def _rejection_summary(issues: list[str]) -> str:
 
 
 #: A fix the agent can act on, for an issue libpetab states without one. "Condition table
-#: contains invalid targets" means the model never read an input the condition table sets, and
-#: the message names the targets without saying that the model has to.
+#: contains invalid targets" means the model does not declare an input the condition table sets,
+#: and the message names the targets without saying that the model has to.
 _ISSUE_HINTS = (
     (
         "Condition table contains invalid targets",
         " — each named target is an input the condition table SETS per experiment, so the model "
-        f"must have it: {INPUT_REMEDY}",
+        "must declare it under its id: a parameter (`dose = 0;`) or, on the statements route, a "
+        f'seed at its id alone (`{{"agent": "dose", "amount": "dose"}}`). {INPUT_UNREAD}',
     ),
 )
 
@@ -504,6 +506,7 @@ def _commit_change(
     *,
     model_build: Callable[[], tuple[Any, Any]] | None = None,
     param_edit: Callable[[Any], Any] | None = None,
+    carried: dict[str, Any] | None = None,
     # References are optional (only a non-empty justification is required); every caller passes
     # this explicitly, so the default just keeps a future caller from silently making them
     # mandatory again.
@@ -518,7 +521,8 @@ def _commit_change(
     model build (``set_model(parameters=[...])``, issue #114): both then land in the SAME
     transaction — the parameter edit runs AFTER the reconcile, so it can target a parameter the
     re-author just introduced, and a rejected entry reverts the re-author too. On any failure the
-    model and parameter table are reverted so an edit is atomic.
+    model and parameter table are reverted so an edit is atomic. ``carried`` is the rows a
+    ``rename`` carries to its new ids, for the reconcile (:func:`reconcile.sync_parameter_table`).
 
     Applies and reconciles + validates; the caller scores it (:meth:`session.PetabSession.fit`,
     which also carries the structure-level de-duplication). Returns ``applied: true`` with the
@@ -537,7 +541,6 @@ def _commit_change(
     resolved = resolve_references(session.resolver, references, required=require_references)
 
     with session.lock:
-        old_species = set(R.species_ids(session.problem.model.sbml_model))
         # The edit runs against a CANDIDATE problem, never the live one. Shallow copy (the fixed
         # measurement/condition/observable tables are read-only and shared, as
         # `fitting._build_hierarchical_problem` already does) with its own parameter table, since
@@ -556,7 +559,7 @@ def _commit_change(
             candidate, apply_result = model_build()
             problem.model = candidate
             names = {sp.getId(): sp.getName() for sp in candidate.sbml_model.getListOfSpecies()}
-            recon = R.reconcile(problem, shipped=session.shipped_parameter_df)
+            recon = R.reconcile(problem, shipped=session.shipped_parameter_df, carried=carried)
             # An EMPTY model is refused rather than committed — where "empty" is the same
             # predicate `model_authored` reports: no species at all, or no DYNAMICS (neither
             # a reaction nor a rate/assignment rule). Both are unscoreable, and the first is
@@ -653,7 +656,7 @@ def _commit_change(
                 *_minted_warnings(problem, added, parent_df, session.shipped_parameter_df),
                 *_orphan_warnings(session, recon["parameters"]["seeded"], version, parent),
                 *_still_read_warnings(parent, problem),
-                *_parsimony_warnings(problem, old_species),
+                *_parsimony_warnings(problem, set(R.species_ids(parent.sbml_model))),
             ]
         # A row's regulators are signed on this version's bounds: an edit of a bound or a scale
         # can change what its rate records, and the record changes with the problem below.
@@ -706,6 +709,7 @@ def _commit_change(
         param_diff = {
             "added": recon["parameters"]["added"] if recon else [],
             "removed": recon["parameters"]["removed"] if recon else [],
+            "carried": recon["parameters"]["carried"] if recon else [],
             "pruned_species": recon["pruned"]["species"] if recon else [],
         }
         # Per-species initial-condition account: for every species, whether its declared t=0
@@ -838,6 +842,12 @@ def set_model(
     except Exception:  # never let the warning bookkeeping break the op
         prior_estimated = set()
 
+    # This call's `rename` ops (session.renamed) carry each old id's row in that same table to its
+    # new id; one onto an id the table has merges the two, and the target keeps its own row.
+    from .model_edits import carried_renames
+
+    moves, merged = carried_renames(current.index, session.renamed)
+
     def build():
         try:
             candidate = SbmlModel.from_antimony(antimony, model_id=None)
@@ -879,6 +889,7 @@ def set_model(
         references,
         model_build=build,
         param_edit=_composed_parameter_edit(session, normalized, restore_parameter_df),
+        carried={new: current.loc[old] for new, old in moves.items()},
         require_references=False,
     )
 
@@ -886,15 +897,38 @@ def set_model(
     # its row (and its fitted value). Surface that — it is the one real footgun of a wholesale
     # replace; fixed/table-referenced parameters are not affected. Read off the committed table
     # rather than the reconcile's `removed`, which a fork measures against HEAD's table.
-    dropped = sorted(prior_estimated - {str(p) for p in session.problem.parameter_df.index})
+    # A renamed id is not dropped: its row went to the new id, or, merged, the target kept its own.
+    renamed = set(merged) | {moves[pid] for pid in result["reconcile"]["parameters"]["carried"]}
+    dropped = sorted(
+        prior_estimated - {str(p) for p in session.problem.parameter_df.index} - renamed
+    )
+    notes = [_merge_note(current, old, kept, moves) for old, kept in merged.items()]
     if dropped:
-        note = (
+        notes.append(
             f"the re-author dropped previously-estimated parameter(s) {dropped}: their fitted "
             "values are gone. Re-declare them in the Antimony if that was unintended."
         )
-        result["warnings"] = list(result.get("warnings") or []) + [note]
-        result["messages"] = list(result.get("messages") or []) + [M.warning(M.SOURCE_EDIT, note)]
+    if notes:
+        result["warnings"] = list(result.get("warnings") or []) + notes
+        result["messages"] = list(result.get("messages") or []) + M.warnings_from(
+            M.SOURCE_EDIT, notes
+        )
     return result
+
+
+def _merge_note(table, old: str, kept: str, moves: dict[str, str]) -> str:
+    """What a ``rename`` of ``old`` onto ``kept``, an id ``table`` already had, did: the two are
+    one parameter now, at ``kept``'s row (``moves`` maps a renamed ``kept`` to its name in
+    ``table``)."""
+
+    def value(pid: str) -> str:
+        v = R._finite_nominal(table, pid)
+        return f" ({v:.4g})" if v is not None else ""
+
+    return (
+        f"rename merged `{old}` into `{kept}`: `{kept}` keeps its row and value"
+        f"{value(moves.get(kept, kept))}; `{old}`'s{value(old)} is gone."
+    )
 
 
 def _problem_ids(session) -> dict[str, str]:
@@ -1437,8 +1471,8 @@ def regulator_warning(record: dict, base: dict | None, unsigned=(), failed=()) -
            "reaction" if split else "")
         + ("; a rate law that can go negative is one to rewrite (`k/(1 + X/K)`, not "
            "`k*(1 - X)`)" if negative else "")
-        + ". The statements stay as you wrote them; `get_model` marks each regulator with the "
-        "kind its rate shows (`(inhibits, from its rate)`)." if changed or negative else ""
+        + ". The statements stay as you wrote them; the model as text marks each regulator with "
+        "the kind its rate shows (`(inhibits, from its rate)`)." if changed or negative else ""
     )
     return "; ".join(parts) + "." + advice
 
@@ -1851,7 +1885,7 @@ def _warn_sigma_bound_widening(problem, parameter_id: str, upper_bound: float) -
         "under-mechanistic model look statistically adequate. This is ADVISORY — check the fit "
         "result's residual_structure verdict: if it flags an observable (sign/runs tests, "
         "or a replicated design point the model cannot reach), the mechanism is missing something "
-        "and widening the noise will only hide it (get_fit_diagnosis has the detail behind it)."
+        "and widening the noise will only hide it."
     )
 
 
@@ -1973,8 +2007,8 @@ def _reject_repeated_widening(
         f"Refusing to widen {parameter_id!r} a {_ordinal(count + 1)} time: it re-pinned at its "
         f"{side} bound after {count} bounds-only widenings, the last for a negligible "
         f"~{last_gain:.2g} BIC gain. A "
-        "parameter pinned at a bound with a flat/collinear FIM direction (check "
-        'get_fit_diagnosis(sections="parameters")) is UNIDENTIFIABLE, not under-explored — widening chases it toward '
+        "parameter pinned at a bound with a flat/collinear FIM direction "
+        "is UNIDENTIFIABLE, not under-explored — widening chases it toward "
         "infinity while it keeps re-pinning. Instead re-author with make_changes to REMOVE its "
         "reaction or use its LIMITING form (make the reaction irreversible / the step "
         "instantaneous); if neither is possible, LEAVE it pinned — do not widen again or "
@@ -2401,19 +2435,30 @@ def bundle_result(
 
     Whether a version was created is decided by comparing HEAD against ``head_before`` — the only
     signal that survives a failure between the snapshot and the end of ``session.fit``.
+
+    ``message`` opens with the version the change was applied to (the ``base_version`` fork's, else
+    ``head_before``) and the best version after it. Where the change was applied to a version that
+    is not the best, and the working model it leaves is not the best either, a ``make_changes``
+    warning says so and names the ``base_version`` that edits the best (PEtab-MCP#282).
     """
     committed = bool(fit_result.get("committed"))
     no_change = bool(fit_result.get("no_change"))
     version = fit_result.get("version")
     head_now = session.provenance.current_version
     snapshotted = head_now != head_before
+    fork = getattr(session, "derived_from", None)
+    base = fork if fork is not None else head_before
+    best = session.best.version if session.best is not None else None
+    on = f"v{base}" if base >= 0 else "the loaded problem"
+    best_is = f"best is v{best}." if best is not None else "no version is scored yet."
+    lineage = f"Applied to {on}; {best_is}"
     if committed:
         applied = True
-        message = f"Change applied and scored as version {version}."
+        message = f"Change applied to {on} and saved as v{version}; {best_is}"
     elif no_change:
         applied = True
         message = (
-            "No new version: this change gives the same model as version "
+            f"{lineage} No new version: this change gives the same model as version "
             f"{fit_result.get('duplicate_of_version')} (the same equations and estimated "
             "parameters), so the working model stays that version exactly as stored and its "
             "metrics stand. Make a genuinely different change; that version is kept and scored "
@@ -2425,27 +2470,38 @@ def bundle_result(
         applied = True
         version = version if version is not None else head_now
         message = (
-            "Change applied and a version was snapshotted, but the fit did not finish cleanly, so "
-            f"this call carries no metrics: the working model is now version {version}. Read "
-            "`error`, then read that version's score with list_versions before making another "
-            "change — do NOT re-send it, the model is already scored."
+            f"{lineage} Change applied and a version was snapshotted, but the fit did not finish "
+            f"cleanly, so this call carries no metrics: the working model is now version {version}."
+            "Read `error`, then read that version's score before making another change — do NOT "
+            "re-send it, the model is already scored."
         )
     else:
         applied = False
         version = head_now
         message = (
-            "Change REVERTED: it could not be scored, so it was undone — the working model is "
-            f"unchanged, still version {head_now}, and nothing is left half-done. The fit "
+            f"{lineage} Change REVERTED: it could not be scored, so it was undone — the working "
+            f"model is unchanged, still version {head_now}, and nothing is left half-done. The fit "
             f"reported: {fit_result.get('error') or 'no error message'} — ACT ON THAT rather than "
             "assuming the model is broken: it says whether to fix the change and send it again, "
             "or to stop re-sending this structure and make a genuinely different change instead."
         )
-    # Pipeline order: the edit's messages, then the fit's. `run_fit` / `edit_then_fit` already
-    # shape a rejected fit as error entries; a fit that RAN reports its advisories as the flat
-    # `warnings` the de-dup produces, so both shapes are folded in here.
+    off_best = []
+    if best is not None and best not in (base, version):
+        off_best = [
+            M.warning(
+                M.SOURCE_TOOL,
+                f"v{base}, which this change was applied to, is not the best version; v{best} "
+                f"is. A change applies to the working model, now v{head_now}, unless "
+                f"`base_version` names another: send `base_version={best}` to change the best.",
+            )
+        ]
+    # Pipeline order: the tool's, the edit's messages, then the fit's. `run_fit` /
+    # `edit_then_fit` already shape a rejected fit as error entries; a fit that RAN reports its
+    # advisories as the flat `warnings` the de-dup produces, so both shapes are folded in here.
     messages = _unrepeated(
         session,
-        list(edit_result.get("messages") or [])
+        off_best
+        + list(edit_result.get("messages") or [])
         + list(fit_result.get("messages") or [])
         + M.warnings_from(M.SOURCE_FIT, fit_result.get("warnings")),
         version if committed else None,
