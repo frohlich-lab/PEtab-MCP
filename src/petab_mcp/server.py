@@ -59,6 +59,7 @@ from . import reconcile as reconcile_mod
 from . import regimes as regimes_mod
 from . import skills as skills_mod
 from . import validation_data as validation_data_mod
+from . import withheld
 from .constants import (
     DEFAULT_AUTO_FIT_STARTS,
     MAX_FIT_STARTS_FACTOR,
@@ -643,6 +644,46 @@ class _Heartbeat(Middleware):
         if error is not None:
             raise error
         return result
+
+
+class _FixPointers(Middleware):
+    """Sends every tool result and resource without the numbers :mod:`withheld` cuts; installed
+    only by ``create_server(fix_pointers=False)``. A JSON text block is cut as its structured
+    content is, and one that loses nothing is sent as it was."""
+
+    @staticmethod
+    def _text(text: str) -> str:
+        try:
+            value = json.loads(text)
+        except ValueError:
+            return text
+        cut = withheld.strip(value)
+        return text if cut == value else json.dumps(cut, ensure_ascii=False)
+
+    async def on_call_tool(self, context, call_next):
+        result = await call_next(context)
+        content = [
+            b.model_copy(update={"text": self._text(b.text)})
+            if isinstance(getattr(b, "text", None), str)
+            else b
+            for b in result.content
+        ]
+        return result.model_copy(
+            update={
+                "content": content,
+                "structured_content": withheld.strip(result.structured_content),
+            }
+        )
+
+    async def on_read_resource(self, context, call_next):
+        result = await call_next(context)
+        contents = [
+            c.model_copy(update={"content": self._text(c.content)})
+            if isinstance(c.content, str)
+            else c
+            for c in result.contents
+        ]
+        return result.model_copy(update={"contents": contents})
 
 
 #: Seconds ``wait_for_fit`` waits when not told, and at most: the cap is under the 600 s tool
@@ -2932,6 +2973,7 @@ def create_server(
     constraints: str | None = None,
     constraint_updates: str = "off",
     cluster: Any | None = None,
+    fix_pointers: bool = True,
 ) -> FastMCP:
     """Build a FastMCP server bound to the PEtab problem at ``yaml_path``.
 
@@ -2981,6 +3023,11 @@ def create_server(
     its starts in local processes. The workers import the compiled models from ``build_root`` and
     read each fit's problem there, so on more than one machine it must be on a filesystem they
     share.
+
+    ``fix_pointers`` (default on) sends every result whole. Off, the server withholds the numbers
+    that point the agent at what to change or where the fit is off (the merge hints, the payoff of
+    a tie, the per-observable residual tables and outliers, which observables a verdict flags; see
+    :mod:`withheld`) and still computes and stores them.
     """
     if constraints and entity_map is None:
         raise ValidationError(
@@ -3036,6 +3083,7 @@ def create_server(
         "petab-mcp",
         instructions=instructions,
         middleware=[
+            *([] if fix_pointers else [_FixPointers()]),
             _InfrastructureErrors(
                 ctx.session.logger, ctx.engine.build_root, ctx.session.provenance.root
             ),
