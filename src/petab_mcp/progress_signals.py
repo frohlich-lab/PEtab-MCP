@@ -1,12 +1,11 @@
-"""What tells the agent how well it is doing, and the switch that withholds it.
+"""The numbers that tell the agent how well it is doing, and the switch that withholds them.
 
-``create_server(progress_signals=False)`` withholds every progress signal from the agent:
-standing (the best version, which version is new best), comparisons with another version
-(improvement over the parent or the best, a nesting comparison, a structure family's score
-against the best), verdicts on the model as a whole (the chi2 goodness of fit, the rolled-up
-residual verdict, "not genuine adequacy"), and nudges that make trying again look free ("kept
-regardless"). Each fit still reports its own numbers: nll, criterion values, k, chi2, and the
-diagnostics that say where it is off.
+``create_server(progress_signals=False)`` withholds them from the agent: the fields that rank,
+compare or judge a fit (:data:`KEYS`), the lines that state the best version or a score
+difference against another version ("best is vM", the off-best warning, a structure family's
+score against the best, the nesting comparison), and the description text naming a withheld
+field. The rest of the prose is unchanged. Each fit still reports its own nll, criterion values,
+k and chi2.
 
 Nothing upstream reads the setting. Text is written with its signal bracketed (:func:`signal`,
 :func:`signal_or`), and a result's fields are what they always were; ``server._ProgressSignals``
@@ -48,10 +47,6 @@ KEYS = frozenset(
     }
 )
 
-#: A ``residual_structure`` block's verdict on the fit as a whole; its flagged observables and
-#: sigmas, which say where the fit is off, stay.
-_VERDICT_KEYS = ("summary", "low_power")
-
 #: Tools whoever runs the session reads, never the agent: sent whole.
 HARNESS_TOOLS = frozenset({"get_progress", "evaluate_validation_data"})
 
@@ -78,16 +73,6 @@ def render(text: str, signals: bool) -> str:
         text = out
 
 
-def _residual_where(block: dict[str, Any]) -> dict[str, Any]:
-    """A ``residual_structure`` block without its whole-fit verdict, the replicate arm kept only
-    where it flags points."""
-    out = {k: v for k, v in block.items() if k not in _VERDICT_KEYS}
-    lof = out.get("replicate_lack_of_fit")
-    if isinstance(lof, dict) and lof.get("status") != "flagged":
-        del out["replicate_lack_of_fit"]
-    return out
-
-
 def render_all(value: Any, signals: bool) -> Any:
     """:func:`render` on every string in a JSON-like ``value`` (dict values, list items)."""
     if isinstance(value, str):
@@ -100,8 +85,8 @@ def render_all(value: Any, signals: bool) -> Any:
 
 
 def _cut(value: Any) -> Any:
-    """``value`` rendered with signals off, without :data:`KEYS`, a ``residual_structure``
-    verdict, or what rendered to nothing: a string field, a list item, or a ``messages`` entry."""
+    """``value`` rendered with signals off, without :data:`KEYS` or what rendered to nothing: a
+    string field, a list item, or a ``messages`` entry."""
     if isinstance(value, str):
         return render(value, False)
     if isinstance(value, dict):
@@ -109,8 +94,6 @@ def _cut(value: Any) -> Any:
         for k, v in value.items():
             if k in KEYS:
                 continue
-            if k == "residual_structure" and isinstance(v, dict):
-                v = _residual_where(v)
             if (cut := _cut(v)) != "" or not v:
                 out[k] = cut
         return out

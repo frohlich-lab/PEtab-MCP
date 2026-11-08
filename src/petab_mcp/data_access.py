@@ -63,7 +63,6 @@ from petab.v2.C import (
 from .errors import MissingDependencyError, ValidationError
 from .formatting import _clean
 from .problem import PARAMETER_SCALE
-from .progress_signals import signal
 
 # Canonical (minimal) column schema for each FIXED PEtab table. Used only as a FALLBACK when
 # the live table is absent (an optional table petab loaded as ``None``) or empty with no
@@ -827,14 +826,11 @@ def fit_diagnosis(
             "sign_test / runs_test detect bias and time trend from residual SIGNS, which no "
             "sigma rescales — but are underpowered on few points (low_power), so read a "
             "non-significant result as "
-            "weak, not as a pass. "
-            + signal(
-                "The rolled-up verdict over these tests — including the replicate_lack_of_fit "
-                "arm, whose PASS is worth only its lof_df (replicated points MINUS your estimated "
-                "structural parameters): weak: true, or no lof_df, certifies nothing — is the "
-                "residual_structure block on the fit result, not repeated here. "
-            )
-            + "A full breakdown and the optimizer's log are separate reads."
+            "weak, not as a pass. The rolled-up verdict over these tests — including the "
+            "replicate_lack_of_fit arm, whose PASS is worth only its lof_df (replicated points "
+            "MINUS your estimated structural parameters): weak: true, or no lof_df, certifies "
+            "nothing — is the residual_structure block on the fit result, not repeated here. "
+            "A full breakdown and the optimizer's log are separate reads."
         ),
     }
 
@@ -934,9 +930,8 @@ def _offset_centred_observables(problem) -> set[str]:
 
 #: :func:`structure_tests_caveat`'s line; ``{}`` is what is estimated.
 _ABSORBED_MISFIT_CAVEAT = (
-    "Estimated {} absorb misfit, so the sign/runs tests have little power here"
-    + signal(" and no structure flag is NOT adequacy")
-    + ". sigma_heterogeneity and fitted_over_data_noise rank where to look."
+    "Estimated {} absorb misfit, so the sign/runs tests have little power here and no structure "
+    "flag is NOT adequacy. sigma_heterogeneity and fitted_over_data_noise rank where to look."
 )
 
 

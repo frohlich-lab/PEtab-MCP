@@ -15,13 +15,17 @@ description: >-
   textbook weight. `criterion` names the one models are ranked by, `criterion_value` is its value.
 - `k` = `n_estimated` (estimated parameter rows) + `hardcoded_constants` (the numeric literals in
   the model's math, each distinct value charged once).
-- Fitted values are LINEAR whatever the estimation scale; `parameter_scales` gives each scale.
+⦃- `chi2_dof`, `reduced_chi2`, `chi2_gof_pvalue` mean something only with a KNOWN noise level.
+  With estimated sigmas chi2 sits near `n_data_points` by construction.
+⦄- Fitted values are LINEAR whatever the estimation scale; `parameter_scales` gives each scale.
 - A change's result lists only what is new since the parent version in
   `fitted_parameters_changed`, `parameter_scales`, `parameters_at_bound` and `merge_hints`, only
   flagged sigmas in `noise_sigma_report`, and three flagged observables in `residual_structure`,
   with `n_parameters_at_bound`, `n_merge_hints` and `n_flagged_observables` the full counts. A fit
   summary has every pin, tie, sigma and flagged observable.
-
+⦃- `is_new_best`: this version became the best model, `progress.best_version`, the lowest score
+  so far. A lower score that did not carries `new_best_declined`, saying why.
+⦄
 ## Flags
 
 - `parameters_at_bound`: fitted values within ~1% of a bound, on their estimation scale. Widen
@@ -34,8 +38,8 @@ description: >-
   successive measurement differences, biased HIGH, so a sigma far above it (`fitted_over_data_noise`)
   is strong evidence of inflation and one below it only weak evidence of collapse.
   `noise_sigma_inflated` / `noise_sigma_collapsed` with `noise_sigma_advice` flag either case: an
-  inflated sigma absorbs misfit, a collapsed one overfits the noise. The fix is the model's form,
-  not the noise.
+  inflated sigma absorbs misfit, a collapsed one overfits the noise, and either way the score is
+  not genuine adequacy. The fix is the model's form, not the noise.
 - `residual_structure`: the verdict over the residual tests, with a replicate lack-of-fit arm
   where the design has replicates. A flag marks where the fit is off, not proof of a better form,
   and stops nothing. Its `sigma_heterogeneity` names the sigmas whose `p` (below) survives Holm.

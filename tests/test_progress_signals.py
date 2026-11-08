@@ -1,5 +1,5 @@
-"""``create_server(progress_signals=False)``: the agent gets each fit's own numbers and nothing that
-ranks, compares or judges them (:mod:`petab_mcp.progress_signals`)."""
+"""``create_server(progress_signals=False)``: the agent gets each fit's own numbers and none of the
+numbers that rank, compare or judge them (:mod:`petab_mcp.progress_signals`)."""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ def _keys(value) -> set[str]:
     return set()
 
 
-def test_off_cuts_standing_and_verdicts_and_keeps_the_fits_own_numbers():
+def test_off_cuts_the_standing_numbers_and_keeps_the_fits_own():
     result = {
         "neg_log_likelihood": 3.0,
         "bic": 8.0,
@@ -69,7 +69,7 @@ def test_off_cuts_standing_and_verdicts_and_keeps_the_fits_own_numbers():
         "neg_log_likelihood": 3.0,
         "bic": 8.0,
         "chi2": 4.0,
-        "residual_structure": {"flagged_observables": ["obs_a"]},
+        "residual_structure": result["residual_structure"],
         "message": "Change applied to v0 and saved as v1.",
         "messages": [{"level": "warning", "source": "fit", "message": "a pinned parameter"}],
         "nesting_advisory": "nested in v0: re-fit.",
@@ -78,8 +78,6 @@ def test_off_cuts_standing_and_verdicts_and_keeps_the_fits_own_numbers():
     assert on["message"] == "Change applied to v0 and saved as v1; best is v1."
     assert on["nesting_advisory"] == "INVALID COMPARISON vs v0: re-fit."
     assert on["progress"] == result["progress"] and on["chi2_gof_pvalue"] == 0.4
-    flagged = {"replicate_lack_of_fit": {"status": "flagged", "n_flagged": 2}}
-    assert S.strip({"residual_structure": flagged}, False) == {"residual_structure": flagged}
 
 
 @pytest.mark.parametrize("signals", [True, False])
@@ -129,8 +127,7 @@ def test_end_to_end_through_real_fits(tmp_path, signals):
         assert all(r[k] is not None for k in _OWN), r
     off_best = [m for m in results[2]["messages"] if "is not the best" in m["message"]]
     assert bool(off_best) is signals
-    assert {"summary", "low_power"} <= set(results[2]["residual_structure"]) or not signals
-    assert {"summary", "low_power"}.isdisjoint(results[2]["residual_structure"]) or signals
+    assert {"summary", "low_power"} <= set(results[2]["residual_structure"])
     assert all(row["criterion_value"] is not None for row in call("list_versions"))
 
     progress = call("get_progress")
@@ -143,5 +140,7 @@ def test_end_to_end_through_real_fits(tmp_path, signals):
         [(t.name, t.description, t.parameters) for t in tools if t.name != "get_progress"],
         ensure_ascii=False,
     )
-    assert ("is_new_best" in text and "chi2_gof_pvalue" in text) is signals
-    assert not any(b in text for b in S._BRACKETS)
+    skill = asyncio.run(mcp.call_tool("get_skill", {"name": "reading-fits"})).content[0].text
+    for read in (text, skill):
+        assert ("is_new_best" in read and "chi2_gof_pvalue" in read) is signals
+        assert not any(b in read for b in S._BRACKETS)

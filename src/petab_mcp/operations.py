@@ -2560,9 +2560,8 @@ def bundle_result(
             f"{lineage} No new version: this change gives the same model as version "
             f"{fit_result.get('duplicate_of_version')} (the same equations and estimated "
             "parameters), so the working model stays that version exactly as stored and its "
-            "metrics stand. Make a genuinely different change"
-            + signal("; that version is kept and scored regardless")
-            + "."
+            "metrics stand. Make a genuinely different change; that version is kept and scored "
+            "regardless."
         )
     elif snapshotted:
         # The fit broke only AFTER snapshotting, so HEAD moved: report where it landed rather than

@@ -100,10 +100,9 @@ SERVER_INSTRUCTIONS = (
     "FITS and snapshots a version. There is no fit-free edit and no separate fit call: one "
     "call is one coherent change, scored once. Parameter VALUES come only from that fit, never "
     "by hand. Everything is logged: audit with `list_versions` / `diff_versions` / "
-    "`get_provenance` / `get_errors`. Every fitted version is kept"
-    + signals_mod.signal(" and the best one stands whatever comes after it")
-    + ", so an earlier fitted model re-authored exactly is refused, not re-fitted: that version "
-    "already stands for it."
+    "`get_provenance` / `get_errors`. Every fitted version is kept and the best one stands "
+    "whatever comes after it, so an earlier fitted model re-authored exactly is refused, not "
+    "re-fitted: that version already stands for it."
 )
 
 
@@ -2195,10 +2194,10 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         The flags to act on: `parameters_at_bound` (a parameter that re-pins after one widening is
         UNIDENTIFIABLE, not under-explored), `noise_sigma_report` with `noise_sigma_inflated` /
         `noise_sigma_collapsed` (an estimated sigma absorbing misfit or overfitting the noise: fix
-        the model's form, not the noise), the `residual_structure` ⦃verdict⦄⦅flags⦆, and
-        `merge_hints` (parameter pairs the data cannot separate whose merge the criterion would pay
-        for).⦃ With estimated sigmas, `reduced_chi2` and `chi2_gof_pvalue` sit near their null
-        whatever the fit and say nothing about adequacy.⦄
+        the model's form, not the noise), the `residual_structure` verdict, and `merge_hints`
+        (parameter pairs the data cannot separate whose merge the criterion would pay for).⦃ With
+        estimated sigmas, `reduced_chi2` and `chi2_gof_pvalue` sit near their null whatever the
+        fit and say nothing about adequacy.⦄
         """
         ctx = route()
         session = ctx.session
@@ -2367,7 +2366,7 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         fit is off, and which parameters it cannot pin. `sections` picks the half: 'residuals'
         (the default), 'parameters', or 'all'. Neither compiles a model, so the cost is the
         payload (2-8 kB each), re-sent in your history on every later turn: ask for 'parameters'
-        when ⦃the score has stalled and ⦄you need to know what to cut, not by reflex.
+        when the score has stalled and you need to know what to cut, not by reflex.
 
         It describes HEAD's fit, or with `version=N` stored version N's, read from what that fit
         stored and never refit; the reply's `version` names which.
@@ -2375,13 +2374,12 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         RESIDUALS: per observable the weighted `chi2`, `mean_weighted_residual` (bias), the worst
         |residual| and two sign-based structure tests (`sign_test`, `runs_test`, each with `p` and
         `low_power`), plus the `worst_n` worst points (measurement vs simulation) and the
-        noise-sigma report. Read it for WHERE and HOW the fit is off⦃, not WHETHER: the rolled-up
-        `residual_structure` verdict rides on the fit result⦄. An estimated sigma absorbs misfit, so
+        noise-sigma report. Read it for WHERE and HOW the fit is off, not WHETHER: the rolled-up
+        `residual_structure` verdict rides on the fit result. An estimated sigma absorbs misfit, so
         two ranked pointers say where it did: `sigma_heterogeneity` (per sigma, a Levene `p` that
         its series share one spread, and the series with the largest `rms` weighted residual) and
         `noise_sigma.fitted_over_data_noise`, each `low_power` on few points;
-        `structure_tests_caveat` says when ⦃no structure flag is weak evidence⦄⦅the structure tests
-        have little power⦆. On a large problem
+        `structure_tests_caveat` says when no structure flag is weak evidence. On a large problem
         `per_observable` is a worst-first subsample (`max_observables` by chi2, plus a few by bias
         and structure flag, with an `omitted` block); `max_observables=0` returns every row.
 
@@ -2628,12 +2626,12 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         how they scored. A row is its `version`, the `parent` it was derived from, its
         `neg_log_likelihood`, `criterion_value` (the score this session ranks by)⦃, `k`,
         `is_new_best` and `residual_flagged` (a residual test flagged one of its observables)⦄⦅ and
-        `k`⦆. `since=N` lists only the versions after N.⦃ `is_new_best` marks each version that
-        became the best model (the last one is `get_progress`'s `best_version`); every version is
-        kept, and the best one stands whatever comes after it.⦄ Where the session holds
+        `k`⦆. `since=N` lists only the versions after N. ⦃`is_new_best` marks each version that
+        became the best model (the last one is `get_progress`'s `best_version`); every⦄⦅Every⦆
+        version is kept, and the best one stands whatever comes after it. Where the session holds
         constraints, a version they break (committed before they changed) carries `violates`, their
-        ids: it cannot be restored⦃ and does not count as the best⦄. A version's whole record,
-        every score⦃ and why it did or did not become the best⦄, is `get_version(N)`."""
+        ids: it cannot be restored and does not count as the best. A version's whole record, every
+        score⦃ and why it did or did not become the best⦄, is `get_version(N)`."""
         ctx = route()
         session = ctx.session
         return _version_rows(session, session.provenance.list_versions(since))
@@ -2869,7 +2867,7 @@ def _register_constraint_tools(
         set, each a line as `list_constraints` lists them (`c1: EPO increases SOCS3, indirectly`,
         `c2: not EPO phosphorylates STAT5, directly`, `a1: STAT5{pY694} is active`). Every change
         from here on is checked against them. A stored version they break is flagged in
-        `list_versions`, can no longer be restored⦃, and no longer counts as the best⦄. The result
+        `list_versions`, can no longer be restored, and no longer counts as the best. The result
         says whether the update loosened or tightened the claims, and which versions break it,
         HEAD included; the next change must build a model that makes them. A version is checked
         against a constraint it was not committed under by tracing its model, which takes seconds
@@ -3045,12 +3043,12 @@ def create_server(
     read each fit's problem there, so on more than one machine it must be on a filesystem they
     share.
 
-    ``progress_signals`` (default on) keeps what tells the agent how well it is doing: the best
-    version and which fit became it, comparisons with the parent or the best, the chi2 goodness of
-    fit and the rolled-up residual verdict, and "kept regardless". Off withholds them from every
-    tool but ``get_progress`` and ``evaluate_validation_data``, which whoever runs the session reads
-    (:mod:`progress_signals`, :class:`_ProgressSignals`); each fit's own numbers stay, and the
-    stored record keeps everything.
+    ``progress_signals`` (default on) keeps the numbers that tell the agent how well it is doing:
+    the best version and which fit became it, score differences against the parent or the best,
+    and the chi2 goodness of fit. Off withholds them from every tool but ``get_progress`` and
+    ``evaluate_validation_data``, which whoever runs the session reads (:mod:`progress_signals`,
+    :class:`_ProgressSignals`); each fit's own numbers stay, and the stored record keeps
+    everything.
     """
     if constraints and entity_map is None:
         raise ValidationError(
