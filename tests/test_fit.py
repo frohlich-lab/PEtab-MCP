@@ -236,8 +236,11 @@ def test_a_near_free_tie_reaches_the_fit_result_as_a_merge_hint_row(fit_session,
     # ...and it is the cheapest row of the diagnosis's own priced list, not a second statistic —
     # including `move_scaled`, the field the price has to be read against
     ties = I.identifiability(sess)["merge_candidates"]["ties"]
-    assert {k: ties[0][k] for k in ("parameters", "dnll", "dscore", "move_scaled")} == hint
-    assert set(hint) == {"parameters", "dnll", "dscore", "move_scaled"}  # ~110 B on every fit
+    fields = ("parameters", "dnll", "dscore", "move_scaled")
+    assert {k: ties[0][k] for k in fields} == {k: hint[k] for k in fields}
+    # ~110 B on every fit, and the rename that takes it on a text-route server (#283)
+    assert set(hint) == {*fields, "take"}
+    assert hint["take"] == {"op": "rename", "old": "k2", "new": "k1"}
     # ...and the SCORE read carries the same one, so a caller that did not run the fit (another
     # agent, a client's finish gate, a final scoring) sees the tie the agent was shown.
     from petab_mcp import fitting
@@ -436,7 +439,10 @@ def test_a_restore_diagnoses_the_version_it_restored_not_the_last_fit(fit_sessio
     sess.restore_version(first["version"])
     diagnosis = I.identifiability(sess)
     assert diagnosis["available"] is True and "stale" not in diagnosis
-    assert I.merge_hints(diagnosis) == fitting.fit_summary(sess, sess.engine)["merge_hints"]
+    assert (
+        I.merge_hints(diagnosis, rename=True)
+        == fitting.fit_summary(sess, sess.engine)["merge_hints"]
+    )
 
 
 def test_fit_writes_the_structure_flag_into_the_version_meta(fit_session):

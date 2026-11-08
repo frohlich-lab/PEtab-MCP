@@ -41,7 +41,6 @@ from . import literals as _literals
 from . import reconcile as _reconcile
 from .constants import (
     NOISE_SIGMA_MIN_POINTS,
-    NEW_BEST_MIN_DELTA_SCORE,
     NOISE_SIGMA_COLLAPSE_FRACTION,
     PARAMETER_AT_BOUND_RELATIVE_TOL,
 )
@@ -931,6 +930,22 @@ def previous_optima(problem, optimization: dict[str, Any] | None, x0) -> list[li
     return out
 
 
+def renamed_optimization(optimization, renamed) -> dict[str, Any] | None:
+    """``optimization`` (``session.optimization``) with each id a ``rename`` carried
+    (:func:`model_edits.carried_renames` of ``renamed``) under its new name, so the warm starts
+    hold it at its fitted coordinates, as the reconcile gave it the old id's row. A merge renames
+    nothing here: the target keeps its own coordinate. ``optimization`` itself when nothing
+    moves."""
+    from .model_edits import carried_renames
+
+    names = (optimization or {}).get("x_names")
+    moves = carried_renames(names, renamed)[0] if names and renamed else {}
+    if not moves:
+        return optimization
+    new_of = {old: new for new, old in moves.items()}
+    return {**optimization, "x_names": [new_of.get(str(n), n) for n in names]}
+
+
 def warm_start_guesses(problem, parameter_df, n_starts: int, optimization=None):
     """``WARM_START_FRACTION`` of the multistart's start points, seeded from the PREVIOUS fit.
     Returns a ``(n_warm, dim_full)`` array — pyPESTO fills the first ``n_warm`` starts from it
@@ -1183,12 +1198,13 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     # parameter there are no candidates, so a non-finite objective at the nominal point means
     # exactly what it used to: the warm half would be spent jittering around a region that just
     # failed, where the fresh sample is the only way in.
-    _has_new = bool(set(problem.x_names) - set((session.optimization or {}).get("x_names") or []))
+    # A `rename` in this call carries each previous coordinate to its new id, as the reconcile
+    # carried its row: the renamed parameter is the previous fit's, not a new one.
+    previous = renamed_optimization(session.optimization, session.renamed)
+    _has_new = bool(set(problem.x_names) - set((previous or {}).get("x_names") or []))
     guesses = (
-        warm_start_guesses(
-            problem, session.problem.parameter_df, n_starts, optimization=session.optimization
-        )
-        if (objective_before is not None or (_has_new and session.optimization))
+        warm_start_guesses(problem, session.problem.parameter_df, n_starts, optimization=previous)
+        if (objective_before is not None or (_has_new and previous))
         else np.zeros((0, len(problem.x_names)))
     )
     problem.x_guesses_full = guesses
@@ -1201,7 +1217,7 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
         session.fit_per_start_timeout,
         engine.fit_engine,
         session.optimization,
-        parent_starts(problem, guesses, session.optimization),
+        parent_starts(problem, guesses, previous),
     )
     workers = getattr(pp_engine, "n_procs", 1) or 1
     if engine.fit_engine is not None:
@@ -2189,8 +2205,7 @@ def _slim_fitted_parameters(session, out: dict) -> Any:
         out["n_parameters_unchanged"] = len(fitted) - len(changed)
         out["fitted_parameters_note"] = (
             f"only parameters NEW, REMOVED or moved >1% vs version {base_v} (this fit's parent) "
-            f"are listed; {len(fitted) - len(changed)} unchanged "
-            "(read any value via get_parameters)."
+            f"are listed; {len(fitted) - len(changed)} unchanged."
         )
         out["fitted_parameters"] = None
         # Scales for everything the payload still NAMES (changed + removed). Nulling them
@@ -2311,21 +2326,17 @@ def compute_improvement(
     complexity criterion** (``bic`` unless configured otherwise — see :mod:`criteria`).
 
     ``is_new_best`` tracks ``criterion_value`` — the same complexity-penalised score the
-    early-stop checkpoint stores — so the flag, the non-improving-streak reset, and the
-    best-model checkpoint all move on one coherent notion of "better". A fit is a new best only
-    when that score beats the reference by at least ``NEW_BEST_MIN_DELTA_SCORE`` (the conventional
-    "positive evidence" bar), so a raw nll drop bought by an extra parameter that actually RAISES
-    the score does NOT count, and neither does a 1e-6 noise-floor twitch.
+    early-stop checkpoint stores — and is set when that score is strictly below the session's
+    best-score :class:`~petab_mcp.session.Checkpoint` (:func:`beats_best`), so the best is the
+    strict minimum, as a client's judge takes it. A raw nll drop bought by an extra parameter that
+    RAISES the score does not count. What counts as progress for the non-improving streak is a
+    separate, larger bar (:meth:`session.PetabSession.record_fit_progress`).
 
-    The reference is the session's best-score :class:`~petab_mcp.session.Checkpoint`, set on the
-    previous new best — not the raw running minimum. Comparing against
-    the checkpoint is what lets a slow, steady creep of < ``NEW_BEST_MIN_DELTA_SCORE`` per op
-    still register a new best once it CUMULATIVELY clears the bar, instead of starving the streak
-    while the fit genuinely improves. Must be called BEFORE :meth:`session.record_fit_progress`
-    updates the checkpoint, so a fit never compares against itself. The first scored fit (no
-    checkpoint yet) is always a new best. :meth:`session.PetabSession.fit` withdraws the flag
-    before stamping it where the checkpoint declines the fit, naming why in
-    ``new_best_declined``, so ``is_new_best`` marks exactly the versions that became the best.
+    Must be called BEFORE :meth:`session.record_fit_progress` updates the checkpoint, so a fit
+    never compares against itself. The first scored fit (no checkpoint yet) is always a new best.
+    :meth:`session.PetabSession.fit` withdraws the flag before stamping it where the checkpoint
+    declines the fit, naming why in ``new_best_declined``, so ``is_new_best`` marks exactly the
+    versions that became the best.
 
     The returned block carries the ranked pair ``criterion``/``criterion_value`` beside the
     canonical ``bic``, and is stamped into the fit event and the version meta — which is what
@@ -2358,7 +2369,7 @@ def compute_improvement(
     improvement_vs_best_prior = None
     if best_prior_score is not None and score is not None:
         improvement_vs_best_prior = best_prior_score - score
-    is_new_best = clears_new_best_bar(score, best_prior_score)
+    is_new_best = beats_best(score, best_prior_score)
 
     return {
         "neg_log_likelihood": nllh,
@@ -2387,17 +2398,14 @@ IMPROVEMENT_ON_RESULT = (
 )
 
 
-def clears_new_best_bar(score: float | None, best_score: float | None) -> bool:
-    """The ``is_new_best`` gate: there is a ``score``, and no checkpoint yet or it beats the
-    checkpoint by at least ``NEW_BEST_MIN_DELTA_SCORE``. One function because a durable resume
-    replays it over the fit events (:meth:`session.PetabSession._seed_progress_from_provenance`),
-    and a resume that gated differently would rebuild a checkpoint the live run never had.
+def beats_best(score: float | None, best_score: float | None) -> bool:
+    """The ``is_new_best`` test: there is a ``score``, and no checkpoint yet or it is strictly
+    below the checkpoint's, so a tie keeps the earlier version. One function because a durable
+    resume replays it over the fit events
+    (:meth:`session.PetabSession._seed_progress_from_provenance`), and a resume that ranked
+    differently would rebuild a checkpoint the live run never had.
     """
-    # ``<=`` so an improvement EXACTLY at the threshold counts as a new best — i.e. Δscore >= the
-    # gate (a strict ``<`` would exclude the boundary and leave the streak un-reset there).
-    return score is not None and (
-        best_score is None or score <= best_score - NEW_BEST_MIN_DELTA_SCORE
-    )
+    return score is not None and (best_score is None or score < best_score)
 
 
 def complexity_k(fitsim: dict[str, Any] | None) -> int | None:

@@ -785,6 +785,14 @@ def test_make_changes_builds_the_first_model_via_tool(tmp_path, sbml):
         desc = _structured(await mcp.call_tool("describe_problem", {}))
         assert desc["model_authored"] is False
         assert desc["n_reactions"] == 0
+        # REGRESSION #281: the seed's placeholder species were reported as `n_species`, and an
+        # agent built a two-state chain from `n_species: 2`. Nothing is counted on the seed.
+        assert "n_species" not in desc and "n_model_parameters" not in desc
+        structure = _structured(
+            await mcp.call_tool("get_model_structure", {"initial_conditions": ""})
+        )
+        assert structure["species"] == structure["parameters"] == []
+        assert structure["initial_conditions"] == []
 
         # `antimony` builds the first model when the problem ships model-less
         res = _structured(
@@ -802,6 +810,12 @@ def test_make_changes_builds_the_first_model_via_tool(tmp_path, sbml):
         desc2 = _structured(await mcp.call_tool("describe_problem", {}))
         assert desc2["model_authored"] is True  # the edit built the working model
         assert desc2["n_reactions"] == 2
+        assert desc2["n_species"] == 2 and desc2["n_model_parameters"] == 4
+        structure = _structured(
+            await mcp.call_tool("get_model_structure", {"initial_conditions": ""})
+        )
+        assert structure["species"] == ["A", "B"]
+        assert {row["species"] for row in structure["initial_conditions"]} == {"A", "B"}
 
     asyncio.run(go())
 
