@@ -117,11 +117,15 @@ jobs:
   # refusals' advice), problem_sbml.py (the expansion J is read off); pyproject.toml, whose pins
   # (sympy, PySB, INDRA) decide what the prover shows; the corpus, its test and this file. A
   # module the check comes to import joins the list.
+  #
+  # The same diff decides whether the container image is rebuilt (`image`, below): what the
+  # Dockerfile installs from, not the source, whose behaviour the test job covers.
   changes:
     name: regulator corpus changes
     runs-on: ubuntu-latest
     outputs:
       corpus: ${{ steps.diff.outputs.corpus }}
+      image: ${{ steps.diff.outputs.image }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -144,6 +148,7 @@ jobs:
           esac
           if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
             echo "corpus=true" >> "$GITHUB_OUTPUT"  # nothing to diff against: run it
+            echo "image=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           changed=$(git diff --name-only "$(git merge-base "$base" HEAD)" HEAD)
@@ -152,6 +157,11 @@ jobs:
             echo "corpus=true" >> "$GITHUB_OUTPUT"
           else
             echo "corpus=false" >> "$GITHUB_OUTPUT"
+          fi
+          if echo "$changed" | grep -qE '^(Dockerfile|\.dockerignore|pyproject\.toml|\.github/workflows/ci\.yml)$'; then
+            echo "image=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "image=false" >> "$GITHUB_OUTPUT"
           fi
 
   # Not a required check: skipped, it blocks nothing. On a change, one Python: a verdict is
@@ -195,6 +205,72 @@ jobs:
 
       - name: Run the regulator corpus
         run: python -m pytest -v -n 2 tests/test_regulator_corpus.py
+
+  # The container image (Dockerfile) builds, and the server in it answers over stdio on the toy
+  # problem. Not pushed anywhere: users build their own (README, "Container"). Skipped like the
+  # corpus job when nothing it installs from changed.
+  image:
+    name: container image
+    needs: changes
+    if: needs.changes.outputs.image == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # The GHA cache keeps the AMICI layer, which only a pyproject.toml change rebuilds.
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: petab-mcp:ci
+          build-args: PETAB_MCP_REF=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # As a client starts it: a non-root uid, the problem mounted at its host path, stdin open
+      # and no tty. stdout must carry nothing but JSON-RPC. One make_changes compiles a model in
+      # the image (its SWIG, CMake, compiler) and fits it on two worker processes (its HDF5).
+      - name: Fit the toy problem over stdio
+        timeout-minutes: 15  # a server that never answers would block readline() for good
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess, sys
+          problem = os.path.abspath("tests/data/toy_v2")
+          server = subprocess.Popen(
+              ["docker", "run", "--rm", "-i", "--user", f"{os.getuid()}:{os.getgid()}",
+               "-e", "PETAB_MCP_FIT_N_WORKERS=2", "-e", "PETAB_MCP_FIT_PER_START_TIMEOUT=60",
+               "-v", f"{problem}:{problem}", "petab-mcp:ci",
+               "--petab-yaml", f"{problem}/problem.yaml"],
+              stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+          def request(id, method, params):
+              server.stdin.write(json.dumps(
+                  {"jsonrpc": "2.0", "id": id, "method": method, "params": params}) + "\n")
+              server.stdin.flush()
+              for line in server.stdout:  # skipping notifications (progress, logs)
+                  message = json.loads(line)
+                  if message.get("id") == id:
+                      return message["result"]
+              sys.exit("the server closed stdout")
+          print(request(1, "initialize", {
+              "protocolVersion": "2025-06-18", "capabilities": {},
+              "clientInfo": {"name": "ci", "version": "0"}})["serverInfo"])
+          server.stdin.write('{"jsonrpc": "2.0", "method": "notifications/initialized"}\n')
+          print([t["name"] for t in request(2, "tools/list", {})["tools"]])
+          fit = request(3, "tools/call", {"name": "make_changes", "arguments": {
+              "justification": "CI: degradation of B",
+              "model_edits": [{"op": "add_reaction", "antimony": "deg: B => ; k3*B;"}],
+              "parameters": [{"parameter_id": "k3", "lower_bound": 1e-3, "upper_bound": 10,
+                              "scale": "log10"}],
+              "n_starts": 2}})
+          print(fit["content"][0]["text"][:2000])
+          server.stdin.close()
+          server.wait(timeout=60)
+          sys.exit("make_changes failed" if fit.get("isError") else 0)
+          PY
 
   lint:
     name: lint (ruff)

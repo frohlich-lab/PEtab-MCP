@@ -127,6 +127,43 @@ start time of the session's previous fit, or at its per-start cap (by default
 instead. A pool lost mid-fit, or a worker that cannot import a model, ends the call with
 `infrastructure_error: fit_pool: `, as a full disk does (see "Tools").
 
+## Container
+
+The [Dockerfile](Dockerfile) builds an image with the server, AMICI already compiled, and the
+toolchain AMICI compiles each model with at run time, so the host needs nothing but a container
+runtime. No image is published; build it from a checkout:
+
+```bash
+docker build --build-arg PETAB_MCP_REF=$(git rev-parse HEAD) -t petab-mcp .
+```
+
+The first build compiles AMICI and takes several minutes. The image is linux/amd64 only, because
+antimony ships no Linux arm64 wheel. On Apple silicon it builds and runs under emulation, which
+is slower.
+
+Mount the problem directory at its own path, and a build root if compiled models should outlive
+the container. Use `-i` but never `-t`, because stdout is the MCP channel:
+
+```bash
+docker run --rm -i --user "$(id -u):$(id -g)" \
+  -v "$PWD/problem:$PWD/problem" -v "$HOME/.cache/petab-mcp:/build" -e PETAB_MCP_BUILD_ROOT=/build \
+  petab-mcp --petab-yaml "$PWD/problem/problem.yaml"
+```
+
+On a cluster with Apptainer instead of Docker, convert the image and run `petab-mcp` from it.
+Do the conversion on your own machine or inside a job, not on a login node:
+
+```bash
+docker save petab-mcp -o petab-mcp.tar                       # where the image was built
+apptainer build petab-mcp.sif docker-archive://petab-mcp.tar # on the cluster
+apptainer exec --cleanenv --bind /path/to/problem petab-mcp.sif \
+  petab-mcp --petab-yaml /path/to/problem/problem.yaml
+```
+
+`--cleanenv` keeps the host's module environment (`LD_LIBRARY_PATH`, `PYTHONPATH`) out of the
+container. The image does not include the `dask` extra, and it has no `sbatch`, so
+`--slurm-max-jobs` is not available inside it.
+
 ## Tools
 
 `make_changes` is the single tool that changes the model or its parameter search space, and

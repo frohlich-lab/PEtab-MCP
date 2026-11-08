@@ -1,0 +1,8 @@
+# Only what the Dockerfile copies, so an unrelated change (tests, docs, a local .petab_mcp/)
+# never invalidates the build cache.
+*
+!pyproject.toml
+!README.md
+!LICENSE
+!src
+**/__pycache__
