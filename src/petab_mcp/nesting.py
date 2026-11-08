@@ -36,6 +36,7 @@ import re
 from typing import Any
 
 from .formatting import finite_float as _finite
+from .progress_signals import signal, signal_or
 from .provenance import model_diff
 
 # An nll worsening below this is numerical noise (the same optimum re-reported), not a nesting
@@ -52,14 +53,19 @@ _NLL_WORSE_TOLERANCE = 1e-3
 # Rides on every fit payload that fires it, and is re-sent in the agent's history each turn (PR
 # #23), so each stays ONE line: the numbers, the cause, and what NOT to conclude.
 NESTING_ADVISORY_TMPL = (
-    "INVALID COMPARISON vs {against}: k rose {parent_k}->{child_k} but neg_log_likelihood got "
-    "WORSE by {worse:.6g}, though the edit only added to {against} and its fitted values lie "
-    "inside the bounds — a model nested in its parent cannot fit worse. Either the fit "
-    "under-converged or a new term cannot be switched off inside its bounds. This does NOT show "
-    "the added structure fails to help: re-fit with more starts before concluding anything from "
-    "it."
+    signal_or(
+        "INVALID COMPARISON vs {against}: k rose {parent_k}->{child_k} but neg_log_likelihood got "
+        "WORSE by {worse:.6g}, though the edit only added to {against} and its fitted values lie "
+        "inside the bounds — a model nested in its parent cannot fit worse. Either the fit "
+        "under-converged or a new term cannot be switched off inside its bounds. This does NOT "
+        "show the added structure fails to help",
+        "This model is nested in {against}, and either its fit under-converged or a new term "
+        "cannot be switched off inside its bounds",
+    )
+    + ": re-fit with more starts before concluding anything from it."
 )
-NOT_NESTED_TMPL = (
+# A comparison and nothing else, so cut whole with progress signals off.
+NOT_NESTED_TMPL = signal(
     "vs {against}, not nested: {reason}. k rose {parent_k}->{child_k} and neg_log_likelihood got "
     "worse by {worse:.6g}, which a model not nested in its parent can do. It does not show the "
     "added structure fails to help; to test that, add only that structure to {against}."

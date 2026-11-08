@@ -31,6 +31,7 @@ from petab.v2.models.sbml_model import SbmlModel
 
 from . import messages as M
 from . import reconcile as R
+from .progress_signals import signal
 from .constants import (
     EXPONENT_WIDENING_WARNING_BOUND,
     NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD,
@@ -2548,19 +2549,20 @@ def bundle_result(
     base = fork if fork is not None else head_before
     best = session.best.version if session.best is not None else None
     on = f"v{base}" if base >= 0 else "the loaded problem"
-    best_is = f"best is v{best}." if best is not None else "no version is scored yet."
-    lineage = f"Applied to {on}; {best_is}"
+    best_is = signal(f"; best is v{best}" if best is not None else "; no version is scored yet")
+    lineage = f"Applied to {on}{best_is}."
     if committed:
         applied = True
-        message = f"Change applied to {on} and saved as v{version}; {best_is}"
+        message = f"Change applied to {on} and saved as v{version}{best_is}."
     elif no_change:
         applied = True
         message = (
             f"{lineage} No new version: this change gives the same model as version "
             f"{fit_result.get('duplicate_of_version')} (the same equations and estimated "
             "parameters), so the working model stays that version exactly as stored and its "
-            "metrics stand. Make a genuinely different change; that version is kept and scored "
-            "regardless."
+            "metrics stand. Make a genuinely different change"
+            + signal("; that version is kept and scored regardless")
+            + "."
         )
     elif snapshotted:
         # The fit broke only AFTER snapshotting, so HEAD moved: report where it landed rather than
@@ -2588,9 +2590,11 @@ def bundle_result(
         off_best = [
             M.warning(
                 M.SOURCE_TOOL,
-                f"v{base}, which this change was applied to, is not the best version; v{best} "
-                f"is. A change applies to the working model, now v{head_now}, unless "
-                f"`base_version` names another: send `base_version={best}` to change the best.",
+                signal(
+                    f"v{base}, which this change was applied to, is not the best version; v{best} "
+                    f"is. A change applies to the working model, now v{head_now}, unless "
+                    f"`base_version` names another: send `base_version={best}` to change the best."
+                ),
             )
         ]
     # Pipeline order: the tool's, the edit's messages, then the fit's. `run_fit` /

@@ -50,6 +50,7 @@ from .engine import build_lock
 from .errors import ModelUpdateError, PetabMcpError, disk_full_error
 from .formatting import finite_float as _flt
 from .parameters import structure_fingerprint
+from .progress_signals import signal
 from .problem import (
     LOG,
     LOG10,
@@ -2145,17 +2146,20 @@ def noise_sigma_collapsed(report: "dict[str, Any] | None") -> bool:
 # get_fit_summary (not just at a plateau stop) and echoed by a client's finish gate, so the agent
 # learns WHY a good-looking BIC won't be accepted and fixes the mechanism instead of the noise.
 NOISE_SIGMA_INFLATED_ADVICE = (
-    "an ESTIMATED noise sigma is inflated above its data-driven cap, absorbing the model misfit — "
-    "the chi2 goodness-of-fit is not genuine adequacy here. Do NOT widen or lean on the noise; fix "
-    "the mechanism so the residuals shrink at a plausible sigma (this result's residual_structure "
-    "verdict still flags the structure). A fit resting on an inflated sigma will "
-    "NOT be accepted as finished."
+    "an ESTIMATED noise sigma is inflated above its data-driven cap, absorbing the model misfit"
+    + signal(" — the chi2 goodness-of-fit is not genuine adequacy here")
+    + ". Do NOT widen or lean on the noise; fix the mechanism so the residuals shrink at a "
+    "plausible sigma (this result's residual_structure "
+    "verdict still flags the structure)."
+    + signal(" A fit resting on an inflated sigma will NOT be accepted as finished.")
 )
 NOISE_SIGMA_COLLAPSED_ADVICE = (
     "an ESTIMATED noise sigma has collapsed far below the data's own variability — the fit is "
-    "overfitting the noise for a good-looking score, not genuine adequacy. Prefer a simpler / more "
-    "parsimonious mechanism at a plausible sigma rather than one that drives the residuals to ~0. "
-    "A fit resting on a collapsed sigma will NOT be accepted as finished."
+    "overfitting the noise"
+    + signal(" for a good-looking score, not genuine adequacy")
+    + ". Prefer a simpler / more parsimonious mechanism at a plausible sigma rather than one that "
+    "drives the residuals to ~0."
+    + signal(" A fit resting on a collapsed sigma will NOT be accepted as finished.")
 )
 
 

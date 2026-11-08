@@ -54,6 +54,7 @@ from . import model as model_mod
 from . import model_edits as model_edits_mod
 from . import operations as ops_mod
 from . import parameters as param_mod
+from . import progress_signals as signals_mod
 from . import provenance as prov_mod
 from . import reconcile as reconcile_mod
 from . import regimes as regimes_mod
@@ -99,9 +100,10 @@ SERVER_INSTRUCTIONS = (
     "FITS and snapshots a version. There is no fit-free edit and no separate fit call: one "
     "call is one coherent change, scored once. Parameter VALUES come only from that fit, never "
     "by hand. Everything is logged: audit with `list_versions` / `diff_versions` / "
-    "`get_provenance` / `get_errors`. Every fitted version is kept and the best one stands "
-    "whatever comes after it, so an earlier fitted model re-authored exactly is refused, not "
-    "re-fitted: that version already stands for it."
+    "`get_provenance` / `get_errors`. Every fitted version is kept"
+    + signals_mod.signal(" and the best one stands whatever comes after it")
+    + ", so an earlier fitted model re-authored exactly is refused, not re-fitted: that version "
+    "already stands for it."
 )
 
 
@@ -545,6 +547,65 @@ class _InfrastructureErrors(Middleware):
                 raise
             self.logger.error("%s: %s", context.message.name, infra)
             raise ToolError(str(infra)) from exc
+
+
+class _ProgressSignals(Middleware):
+    """Sends every tool result, tool error, tool description and resource with its progress
+    signals kept or cut, as ``create_server(progress_signals=...)`` says
+    (:func:`progress_signals.strip`). Every tool but :data:`progress_signals.HARNESS_TOOLS`, which
+    only whoever runs the session reads. Outermost, so it renders the other middleware's errors
+    too."""
+
+    def __init__(self, signals: bool) -> None:
+        self.signals = signals
+
+    async def on_call_tool(self, context, call_next):
+        try:
+            result = await call_next(context)
+        except ToolError as exc:
+            raise ToolError(signals_mod.render(str(exc), self.signals)) from exc
+        signals = self.signals or context.message.name in signals_mod.HARNESS_TOOLS
+        structured = result.structured_content
+        if structured is None:
+            return result.model_copy(
+                update={
+                    "content": [
+                        b.model_copy(update={"text": signals_mod.render(b.text, signals)})
+                        if isinstance(getattr(b, "text", None), str)
+                        else b
+                        for b in result.content
+                    ]
+                }
+            )
+        if (structured := signals_mod.strip(structured, signals)) == result.structured_content:
+            return result
+        wrapped = (result.meta or {}).get("fastmcp", {}).get("wrap_result")
+        return ToolResult(
+            content=structured["result"] if wrapped else structured,
+            structured_content=structured,
+            meta=result.meta,
+        )
+
+    async def on_list_tools(self, context, call_next):
+        return [
+            t.model_copy(
+                update={
+                    "description": t.description and signals_mod.render(t.description, self.signals),
+                    "parameters": signals_mod.render_all(t.parameters, self.signals),
+                }
+            )
+            for t in await call_next(context)
+        ]
+
+    async def on_read_resource(self, context, call_next):
+        result = await call_next(context)
+        contents = [
+            c.model_copy(update={"content": signals_mod.render(c.content, self.signals)})
+            if isinstance(c.content, str)
+            else c
+            for c in result.contents
+        ]
+        return result.model_copy(update={"contents": contents})
 
 
 class _Cancellation(Middleware):
@@ -1156,13 +1217,13 @@ read its score; `false` with `no_change` → this model already IS the current v
 something else. `messages` is everything the call had to say, in pipeline order, each tagged \
 `level` and `source`.
 
-`message` names the version the change was applied to (the working model, or `base_version`'s) \
+`message` names the version the change was applied to (the working model, or `base_version`'s)⦃ \
 and the best version. `improvement.is_new_best` marks the version that became the best, \
 `progress.best_version`: the lowest score so far (`improvement_vs_best_prior` > 0), unless \
 `new_best_declined` says why not. `progress` is `get_progress`'s moving part: a new best resets \
 `non_improving_streak` only once the best has gained {STREAK_RESET_MIN_SCORE_GAIN:g} since the \
 last reset, a streak of {NON_IMPROVING_STREAK_CAP} sets `should_stop`, and \
-`score_improvement_over_last_n` spans the last {PLATEAU_WINDOW} fits.
+`score_improvement_over_last_n` spans the last {PLATEAU_WINDOW} fits⦄.
 
 The score's `k` is `n_estimated` + `hardcoded_constants`: a numeric literal in the model's math \
 is charged as a parameter too, bar a few structural ones, so freezing a fitted value costs what \
@@ -2134,10 +2195,10 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         The flags to act on: `parameters_at_bound` (a parameter that re-pins after one widening is
         UNIDENTIFIABLE, not under-explored), `noise_sigma_report` with `noise_sigma_inflated` /
         `noise_sigma_collapsed` (an estimated sigma absorbing misfit or overfitting the noise: fix
-        the model's form, not the noise), the `residual_structure` verdict, and `merge_hints`
-        (parameter pairs the data cannot separate whose merge the criterion would pay for). With
-        estimated sigmas, `reduced_chi2` and `chi2_gof_pvalue` sit near their null whatever the
-        fit and say nothing about adequacy.
+        the model's form, not the noise), the `residual_structure` ⦃verdict⦄⦅flags⦆, and
+        `merge_hints` (parameter pairs the data cannot separate whose merge the criterion would pay
+        for).⦃ With estimated sigmas, `reduced_chi2` and `chi2_gof_pvalue` sit near their null
+        whatever the fit and say nothing about adequacy.⦄
         """
         ctx = route()
         session = ctx.session
@@ -2306,7 +2367,7 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         fit is off, and which parameters it cannot pin. `sections` picks the half: 'residuals'
         (the default), 'parameters', or 'all'. Neither compiles a model, so the cost is the
         payload (2-8 kB each), re-sent in your history on every later turn: ask for 'parameters'
-        when the score has stalled and you need to know what to cut, not by reflex.
+        when ⦃the score has stalled and ⦄you need to know what to cut, not by reflex.
 
         It describes HEAD's fit, or with `version=N` stored version N's, read from what that fit
         stored and never refit; the reply's `version` names which.
@@ -2314,12 +2375,13 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         RESIDUALS: per observable the weighted `chi2`, `mean_weighted_residual` (bias), the worst
         |residual| and two sign-based structure tests (`sign_test`, `runs_test`, each with `p` and
         `low_power`), plus the `worst_n` worst points (measurement vs simulation) and the
-        noise-sigma report. Read it for WHERE and HOW the fit is off, not WHETHER: the rolled-up
-        `residual_structure` verdict rides on the fit result. An estimated sigma absorbs misfit, so
+        noise-sigma report. Read it for WHERE and HOW the fit is off⦃, not WHETHER: the rolled-up
+        `residual_structure` verdict rides on the fit result⦄. An estimated sigma absorbs misfit, so
         two ranked pointers say where it did: `sigma_heterogeneity` (per sigma, a Levene `p` that
         its series share one spread, and the series with the largest `rms` weighted residual) and
         `noise_sigma.fitted_over_data_noise`, each `low_power` on few points;
-        `structure_tests_caveat` says when no structure flag is weak evidence. On a large problem
+        `structure_tests_caveat` says when ⦃no structure flag is weak evidence⦄⦅the structure tests
+        have little power⦆. On a large problem
         `per_observable` is a worst-first subsample (`max_observables` by chi2, plus a few by bias
         and structure flag, with an `omitted` block); `max_observables=0` returns every row.
 
@@ -2483,7 +2545,7 @@ _REPLY_MAX_BYTES = 768 * 1024
 #: ``simulations_history`` already pages a version's records in SQL, and a second pager over the
 #: same rows is the growing menu the README's design notes rule out.
 _GET_VERSION_DOC = (
-    "A prior version's record (every score, the new-best bookkeeping, the noise model's report, "
+    "A prior version's record (every score, ⦃the new-best bookkeeping, ⦄the noise model's report, "
     "and `edit_warnings`: every warning its change and lint gave, in full, where its "
     "`make_changes` result folded a repeated one into a count), Antimony model and parameter "
     "table, to INSPECT it; for its model alone, "
@@ -2564,14 +2626,14 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
     def list_versions(since: int | None = None) -> list[dict[str, Any]]:
         """Every model version (each a fit), one row each: which structures have been tried and
         how they scored. A row is its `version`, the `parent` it was derived from, its
-        `neg_log_likelihood`, `criterion_value` (the score this session ranks by), `k`,
-        `is_new_best` and `residual_flagged` (a residual test flagged one of its observables).
-        `since=N` lists only the versions after N. `is_new_best` marks each version that became the
-        best model (the last one is `get_progress`'s `best_version`); every version is kept, and the
-        best one stands whatever comes after it. Where the session holds constraints, a version
-        they break (committed before they changed) carries `violates`, their ids: it cannot be
-        restored and does not count as the best. A version's whole record, every score and why it
-        did or did not become the best, is `get_version(N)`."""
+        `neg_log_likelihood`, `criterion_value` (the score this session ranks by)⦃, `k`,
+        `is_new_best` and `residual_flagged` (a residual test flagged one of its observables)⦄⦅ and
+        `k`⦆. `since=N` lists only the versions after N.⦃ `is_new_best` marks each version that
+        became the best model (the last one is `get_progress`'s `best_version`); every version is
+        kept, and the best one stands whatever comes after it.⦄ Where the session holds
+        constraints, a version they break (committed before they changed) carries `violates`, their
+        ids: it cannot be restored⦃ and does not count as the best⦄. A version's whole record,
+        every score⦃ and why it did or did not become the best⦄, is `get_version(N)`."""
         ctx = route()
         session = ctx.session
         return _version_rows(session, session.provenance.list_versions(since))
@@ -2618,8 +2680,8 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
     @mcp.tool(annotations=_READ_ONLY)
     def diff_versions(from_version: int, to_version: int) -> dict[str, Any]:
         """Diff two versions: Antimony unified diff + parameter add/remove/change + a `fit`
-        block with each version's neg_log_likelihood/chi2 and the neg-log-likelihood delta
-        (positive = the `to` version fits better)."""
+        block with each version's neg_log_likelihood/chi2⦃ and the neg-log-likelihood delta
+        (positive = the `to` version fits better)⦄."""
         ctx = route()
         session = ctx.session
         return ctx.run(
@@ -2638,7 +2700,7 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         fit instead of recompiling and refitting. Prefer this over re-authoring an earlier model
         with `make_changes`, which refuses an exact re-author of a fitted version; this reuses the
         existing fit and records a clean restore. Find the target with `list_versions`
-        (the best model is the last `is_new_best` one), then `restore_version(v)`. HEAD moves back
+        ⦃(the best model is the last `is_new_best` one), ⦄then `restore_version(v)`. HEAD moves back
         to that version: no version is added or erased, and the restore is recorded as a
         `rollback` event in the provenance log."""
         ctx = route()
@@ -2807,7 +2869,7 @@ def _register_constraint_tools(
         set, each a line as `list_constraints` lists them (`c1: EPO increases SOCS3, indirectly`,
         `c2: not EPO phosphorylates STAT5, directly`, `a1: STAT5{pY694} is active`). Every change
         from here on is checked against them. A stored version they break is flagged in
-        `list_versions`, can no longer be restored, and no longer counts as the best. The result
+        `list_versions`, can no longer be restored⦃, and no longer counts as the best⦄. The result
         says whether the update loosened or tightened the claims, and which versions break it,
         HEAD included; the next change must build a model that makes them. A version is checked
         against a constraint it was not committed under by tracing its model, which takes seconds
@@ -2932,6 +2994,7 @@ def create_server(
     constraints: str | None = None,
     constraint_updates: str = "off",
     cluster: Any | None = None,
+    progress_signals: bool = True,
 ) -> FastMCP:
     """Build a FastMCP server bound to the PEtab problem at ``yaml_path``.
 
@@ -2981,6 +3044,13 @@ def create_server(
     its starts in local processes. The workers import the compiled models from ``build_root`` and
     read each fit's problem there, so on more than one machine it must be on a filesystem they
     share.
+
+    ``progress_signals`` (default on) keeps what tells the agent how well it is doing: the best
+    version and which fit became it, comparisons with the parent or the best, the chi2 goodness of
+    fit and the rolled-up residual verdict, and "kept regardless". Off withholds them from every
+    tool but ``get_progress`` and ``evaluate_validation_data``, which whoever runs the session reads
+    (:mod:`progress_signals`, :class:`_ProgressSignals`); each fit's own numbers stay, and the
+    stored record keeps everything.
     """
     if constraints and entity_map is None:
         raise ValidationError(
@@ -3034,8 +3104,9 @@ def create_server(
     )
     mcp = FastMCP(
         "petab-mcp",
-        instructions=instructions,
+        instructions=signals_mod.render(instructions, progress_signals),
         middleware=[
+            _ProgressSignals(progress_signals),
             _InfrastructureErrors(
                 ctx.session.logger, ctx.engine.build_root, ctx.session.provenance.root
             ),
