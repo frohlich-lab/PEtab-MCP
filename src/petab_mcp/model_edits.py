@@ -1032,6 +1032,43 @@ def _untied(text: str, op: dict[str, Any], fixed: dict[str, str]) -> str | None:
     )
 
 
+def renames(edits: "list[dict[str, Any]]") -> list[tuple[str, str]]:
+    """The ``(old, new)`` of each ``rename`` in a batch :func:`apply_model_edits` applied, in
+    order: what :func:`carried_renames` follows a table's or a fit's ids through."""
+    return [
+        ((op.get("old") or "").strip(), (op.get("new") or "").strip())
+        for op in edits
+        if isinstance(op, dict) and (op.get("op") or "").strip() == "rename"
+    ]
+
+
+def carried_renames(names, pairs: "list[tuple[str, str]]") -> tuple[dict[str, str], dict[str, str]]:
+    """Where ``pairs`` (:func:`renames`) take each of ``names``, a parameter table's ids or a fit's:
+    ``({new: old}, {old: kept})``, each by the names the batch started and ended with.
+
+    A rename to a name not among them CARRIES ``old`` to ``new``: its row and its fitted
+    coordinate are ``new``'s. One to a name already there MERGES the two, and the target, ``kept``,
+    keeps its own: the batch says which symbol stays, so the tie starts from that one's value. A
+    rename of a name that is none of them (a species, a rule target) carries nothing."""
+    held = {str(n): str(n) for n in names}  # name now -> the name it started as
+    into: dict[str, str] = {}  # started as -> the started-as name it merged into
+    for old, new in pairs:
+        if old not in held:
+            continue
+        origin = held.pop(old)
+        if new in held:
+            into[origin] = held[new]
+        else:
+            held[new] = origin
+    now = {origin: name for name, origin in held.items()}
+    merged = {}
+    for origin, kept in into.items():
+        while kept in into:  # merged again later on
+            kept = into[kept]
+        merged[origin] = now[kept]
+    return {name: origin for name, origin in held.items() if name != origin}, merged
+
+
 def apply_model_edits(
     source: str,
     edits: "list[dict[str, Any]]",

@@ -808,3 +808,20 @@ def test_a_parameter_the_tables_read_too_is_kept_by_a_tie_not_renamed_away():
     out, _ = me.apply_model_edits(SRC, [{"op": "rename", "old": "k2", "new": "k1"}], fixed=fixed)
     assert "k2" not in out
     me.apply_model_edits(SRC, [{"op": "set_assignment", "id": "k1", "antimony": "A"}], fixed=fixed)
+
+
+def test_renames_follow_a_batch_to_the_names_it_ends_with():
+    """What a batch's renames do to a table's ids, as the reconcile and the warm starts read it: a
+    rename to a fresh name carries the row, through a chain; onto a name the table has it merges,
+    and the target keeps its own, under whatever the batch renames the target to later."""
+    names = ["k1", "k2", "k3"]
+    assert me.carried_renames(names, [("k2", "kb"), ("kb", "kc")]) == ({"kc": "k2"}, {})
+    assert me.carried_renames(names, [("k2", "k1")]) == ({}, {"k2": "k1"})
+    assert me.carried_renames(names, [("k2", "k1"), ("k1", "kf")]) == ({"kf": "k1"}, {"k2": "kf"})
+    assert me.carried_renames(names, [("k3", "k2"), ("k2", "k1")]) == ({}, {"k3": "k1", "k2": "k1"})
+    assert me.carried_renames(names, [("A", "B")]) == ({}, {})  # not a row: nothing to carry
+    ops = [
+        {"op": "set_rate_law", "id": "fwd", "antimony": "x"},
+        {"op": "rename", "old": " k2 ", "new": "k1"},
+    ]
+    assert me.renames(ops) == [("k2", "k1")]

@@ -380,6 +380,12 @@ class PetabSession:
         # the duration of such a call (see server.make_changes); everything else leaves it None
         # and the snapshot falls back to HEAD, which is correct for an edit of the working model.
         self.derived_from: int | None = None
+        # The `(old, new)` of each `rename` in the running `make_changes` call's `model_edits`
+        # (:func:`model_edits.renames`), set by the server for the call like `derived_from`: the
+        # reconcile carries each old id's row to its new id (`operations.set_model`), and the fit
+        # its warm-start coordinate (`fitting._run_fit`).
+        self.renamed: list[tuple[str, str]] = []
+
         # Which `make_changes` routes the server offers: True for the text routes, whose
         # `model_edits` take a merge hint as a `rename` (`identifiability.merge_hints`).
         self.text_route: bool = True
